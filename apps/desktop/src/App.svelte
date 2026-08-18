@@ -3,7 +3,8 @@
   import { app, init } from "./lib/state.svelte";
   import Sidebar from "./lib/Sidebar.svelte";
   import TopBar from "./lib/TopBar.svelte";
-  import SettingsPanel from "./lib/SettingsPanel.svelte";
+  import ProviderRail from "./lib/ProviderRail.svelte";
+  import SettingsModal from "./lib/SettingsModal.svelte";
   import Transcript from "./lib/Transcript.svelte";
   import Composer from "./lib/Composer.svelte";
 
@@ -18,13 +19,6 @@
     <TopBar />
     <div class="content">
       <Transcript />
-      {#if app.showSettings}
-        {#if app.connection}
-          <div class="settings-dropdown"><SettingsPanel /></div>
-        {:else}
-          <div class="settings-overlay"><SettingsPanel /></div>
-        {/if}
-      {/if}
       {#if app.toasts.length > 0}
         <div class="toasts">
           {#each app.toasts as t (t.id)}
@@ -35,12 +29,17 @@
     </div>
     <Composer />
   </div>
+  <ProviderRail />
+  {#if app.showSettings}
+    <div class="settings-overlay"><SettingsModal /></div>
+  {/if}
 </div>
 
 <style>
   .app {
+    position: relative;
     display: grid;
-    grid-template-columns: 260px 1fr;
+    grid-template-columns: 260px 1fr 240px;
     height: 100vh;
     overflow: hidden;
   }
@@ -64,12 +63,6 @@
     align-items: center;
     justify-content: center;
     background: rgba(13, 13, 20, 0.65);
-    z-index: 20;
-  }
-  .settings-dropdown {
-    position: absolute;
-    top: 0.5rem;
-    right: 0.75rem;
     z-index: 20;
   }
   .toasts {

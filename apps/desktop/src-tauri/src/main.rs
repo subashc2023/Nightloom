@@ -48,7 +48,8 @@ fn providers() -> Vec<ProviderInfo> {
 }
 
 /// Build the provider + `Chat` for this window; retry stalls are reported as
-/// `turn-notice` events. Creates a session if none is active yet.
+/// `turn-notice` events. Sessions are created lazily by `send`, so switching
+/// providers (or auto-connecting at launch) never leaves empty session logs.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 async fn connect(
@@ -89,11 +90,6 @@ async fn connect(
         model: chat.model.clone(),
     };
     *state.chat.lock().await = Some(chat);
-
-    let mut session = state.session.lock().await;
-    if session.is_none() {
-        *session = Some(Session::with_log(&state.log_dir).map_err(|e| e.to_string())?);
-    }
     Ok(info)
 }
 

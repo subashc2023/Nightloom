@@ -1,7 +1,17 @@
 import { listen } from "@tauri-apps/api/event";
 import * as api from "./api";
+import {
+  defaultDraft,
+  isProviderVisible,
+  loadLastConnection,
+  loadPrefs,
+  modelsFor,
+  saveLastConnection,
+  savePrefs,
+  thinkingString,
+  type CatalogPrefs,
+} from "./catalog";
 import type {
-  ConnectArgs,
   ProviderInfo,
   SessionEvent,
   SessionMeta,
@@ -35,7 +45,14 @@ export interface Connection {
 
 export const app = $state({
   providers: [] as ProviderInfo[],
+  /** Which providers/models the rail dropdowns offer (settings modal edits this). */
+  prefs: loadPrefs() as CatalogPrefs,
+  /** The rail's connection settings; any change re-connects via applyDraft(). */
+  draft: defaultDraft(),
   connection: null as Connection | null,
+  connecting: false,
+  /** Last connect failure, shown in the rail until the next attempt. */
+  connectError: null as string | null,
   sessions: [] as SessionMeta[],
   activeSessionId: null as string | null,
   /** Source of truth for the transcript (re-synced from the backend after each turn). */
@@ -47,7 +64,8 @@ export const app = $state({
   busy: false,
   /** Error banner shown in the transcript until the next send. */
   error: null as string | null,
-  showSettings: true,
+  /** Settings modal (provider/model visibility management). */
+  showSettings: false,
   toasts: [] as { id: number; text: string }[],
 });
 
@@ -58,12 +76,78 @@ export async function init(): Promise<void> {
   initialized = true;
   await listen<TurnEvent>("turn-event", (e) => applyTurnEvent(e.payload));
   await listen<string>("turn-notice", (e) => addToast(e.payload));
+  const last = loadLastConnection();
+  if (last) app.draft = last;
   try {
     app.providers = await api.providers();
   } catch (e) {
     app.error = String(e);
   }
   await refreshSessions();
+  await autoConnect();
+}
+
+/** A provider the backend can actually construct a client for right now. */
+export function usable(p: ProviderInfo): boolean {
+  // openai-chat can point at a local server without an API key.
+  return p.available || (p.kind === "openai-chat" && app.draft.baseUrl.trim() !== "");
+}
+
+/** Connect on launch: last-used provider if still usable, else the first that is. */
+async function autoConnect(): Promise<void> {
+  let target = app.providers.find((p) => p.kind === app.draft.provider);
+  if (!target || !usable(target)) {
+    target =
+      app.providers.find((p) => isProviderVisible(p.kind, app.prefs) && usable(p)) ??
+      app.providers.find(usable);
+    if (!target) return; // nothing usable — the rail shows why
+    app.draft.provider = target.kind;
+    app.draft.model = "";
+  }
+  if (!app.draft.model) {
+    const models = modelsFor(target.kind, app.prefs, target.default_model);
+    app.draft.model = target.default_model ?? models[0] ?? "";
+  }
+  if (!app.draft.model) return; // e.g. openai-chat before a model is chosen
+  await applyDraft();
+}
+
+/** (Re)connect with the rail's current settings. Called on every rail change. */
+export async function applyDraft(): Promise<void> {
+  const d = app.draft;
+  if (!d.provider || app.busy || app.connecting) return;
+  app.connecting = true;
+  app.connectError = null;
+  try {
+    const res = await api.connect({
+      provider: d.provider,
+      model: d.model.trim() || undefined,
+      baseUrl: d.baseUrl.trim() || undefined,
+      thinking: thinkingString(d),
+      system: d.system.trim() || undefined,
+      tools: d.tools,
+    });
+    app.connection = {
+      provider: res.provider,
+      model: res.model,
+      thinking: thinkingString(d),
+      tools: d.tools,
+    };
+    if (!d.model.trim()) d.model = res.model; // backend resolved the default
+    saveLastConnection({ ...d });
+  } catch (e) {
+    // The backend keeps the previous Chat on failure, so app.connection
+    // (if any) is still accurate — just surface the error.
+    app.connectError = String(e);
+  } finally {
+    app.connecting = false;
+  }
+}
+
+/** Mutate catalog prefs and persist them. */
+export function setPrefs(mutate: (p: CatalogPrefs) => void): void {
+  mutate(app.prefs);
+  savePrefs(JSON.parse(JSON.stringify(app.prefs)) as CatalogPrefs);
 }
 
 export async function refreshSessions(): Promise<void> {
@@ -71,24 +155,6 @@ export async function refreshSessions(): Promise<void> {
     app.sessions = await api.listSessions();
   } catch {
     // sidebar refresh is best-effort
-  }
-}
-
-export async function connect(args: ConnectArgs): Promise<void> {
-  const res = await api.connect(args);
-  app.connection = {
-    provider: res.provider,
-    model: res.model,
-    thinking: args.thinking ?? "default",
-    tools: args.tools,
-  };
-  app.showSettings = false;
-  if (app.events.length === 0) {
-    try {
-      app.events = await api.transcript();
-    } catch {
-      // no active session yet
-    }
   }
 }
 
@@ -135,6 +201,11 @@ export async function send(text: string): Promise<void> {
     app.busy = false;
     try {
       app.events = await api.transcript();
+      // Sessions are created lazily on first send; pick up the id.
+      const first = app.events[0];
+      if (first && first.event === "session_created") {
+        app.activeSessionId = first.id;
+      }
     } catch {
       // keep the locally-built view if re-sync fails
     }

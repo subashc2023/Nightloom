@@ -88,15 +88,19 @@ streamed.
 ## Desktop app
 
 Tauri 2 shell with a Svelte 5 frontend: streaming chat with collapsible
-thinking, tool-call chips with results, a session sidebar (sessions are
-JSONL logs in the OS app-data dir), and a provider/model/thinking picker
-that greys out providers whose API keys aren't set. Cancel mid-stream is
-the same interruption-safe path as the CLI's Ctrl-C.
+thinking, tool-call chips with results, and a session sidebar (sessions are
+JSONL logs in the OS app-data dir). A connection rail on the right holds
+provider/model dropdowns plus the thinking/tools/system knobs — any change
+reconnects immediately, and the app auto-connects to the last-used provider
+on launch. A settings modal controls which providers and models the
+dropdowns offer (with custom model ids per provider); preferences persist
+locally. Cancel mid-stream is the same interruption-safe path as the CLI's
+Ctrl-C.
 
 ```sh
-cd apps/desktop && npm install   # once
-cargo tauri dev                  # run (from apps/desktop or its src-tauri)
-cargo tauri build                # installer bundle
+npm install --prefix apps/desktop   # once
+cargo tauri dev                     # run — works from the repo root
+cargo tauri build                   # installer bundle
 ```
 
 ## Probe

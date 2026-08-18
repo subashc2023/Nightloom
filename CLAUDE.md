@@ -25,9 +25,9 @@ cargo run -p nightloom-cli -- probe
 cargo run -p nightloom-cli -- probe --runs 3 --target anthropic:claude-sonnet-5:effort=high
 
 # Desktop app (Tauri 2 + Svelte 5)
-cd apps/desktop && npm install   # once
-cargo tauri dev                  # run from apps/desktop or apps/desktop/src-tauri
-npm run check                    # svelte-check (from apps/desktop)
+npm install --prefix apps/desktop   # once
+cargo tauri dev                     # works from the repo root (tauri CLI finds apps/desktop)
+npm run check --prefix apps/desktop # svelte-check
 ```
 
 Providers are constructed from env keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`/`GOOGLE_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`); probe rows for unset providers are skipped. Local servers (Ollama, etc.) use `--provider openai-chat --base-url ... --model ...` with no key.
@@ -57,7 +57,7 @@ Five crates plus the desktop app, with a strict dependency direction: `nightloom
 
 **nightloom-cli** — `chat.rs` is a terminal renderer over `nightloom-service`: it maps `TurnEvent`s to stdout (dim thinking, tool chips) and wires Ctrl-C to the turn's `CancellationToken`; all loop/recording semantics live in the service. REPL commands `/new`, `/quit`; `--resume`/`--continue`; `--tools` enables the built-ins. `sessions.rs` prints `store::list`; `probe.rs` is the matrix runner (`--target provider:model:thinking-spec[:tools]`).
 
-**apps/desktop** (`nightloom-desktop`) — Tauri 2 shell + Svelte 5 frontend. `src-tauri/src/main.rs` exposes commands `providers` / `connect` / `list_sessions` / `new_session` / `open_session` / `transcript` / `send` / `cancel` over managed state (`Chat` + active `Session` in tokio mutexes, a swap-per-turn `CancellationToken`); `send` forwards `TurnEvent`s as `turn-event` window events, retry stalls as `turn-notice`. Session logs live in the OS app-data dir, not `.nightloom/`. The frontend (`src/lib/types.ts`) mirrors the serde shapes of `TurnEvent`, `SessionEvent`, and `ContentBlock` — changing those enums means updating that file; unknown tags are ignored on both sides, so additive variants are safe. The transcript is a projection of `SessionEvent[]`; after each turn the UI re-syncs via `transcript` rather than trusting its live buffer.
+**apps/desktop** (`nightloom-desktop`) — Tauri 2 shell + Svelte 5 frontend. `src-tauri/src/main.rs` exposes commands `providers` / `connect` / `list_sessions` / `new_session` / `open_session` / `transcript` / `send` / `cancel` over managed state (`Chat` + active `Session` in tokio mutexes, a swap-per-turn `CancellationToken`); `send` forwards `TurnEvent`s as `turn-event` window events, retry stalls as `turn-notice`. Sessions are created lazily by `send` (never by `connect`), so provider switching and launch auto-connect leave no empty logs; session logs live in the OS app-data dir, not `.nightloom/`. Connection UX: a right-hand rail (`ProviderRail.svelte`) with provider/model dropdowns and thinking/tools/system knobs re-connects on every change and auto-connects at launch to the last-used draft; `SettingsModal.svelte` toggles which providers/models the dropdowns offer. The curated model list, visibility prefs, and last connection live in `src/lib/catalog.ts` + localStorage (`nightloom.catalog-prefs`, `nightloom.last-connection`). The frontend (`src/lib/types.ts`) mirrors the serde shapes of `TurnEvent`, `SessionEvent`, and `ContentBlock` — changing those enums means updating that file; unknown tags are ignored on both sides, so additive variants are safe. The transcript is a projection of `SessionEvent[]`; after each turn the UI re-syncs via `transcript` rather than trusting its live buffer.
 
 Tool-call wire dialects, for adapter work: Anthropic buffers `input_json_delta` fragments per block index; OpenAI Responses reads complete items off `response.output_item.done`; Gemini gets whole `functionCall` parts (ids synthesized `call-N` when absent); chat/completions accumulates `delta.tool_calls` fragments by index and flushes at `[DONE]`. The probe's tool check (`ProbeSpec.tool_check`) is a two-leg fixture: the model must call `lookup_codeword` and the second leg's answer must contain the fabricated codeword.
 
