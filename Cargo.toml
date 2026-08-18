@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/nightloom-core",
     "crates/nightloom-providers",
+    "crates/nightloom-service",
     "crates/nightloom-evals",
     "crates/nightloom-cli",
 ]
@@ -15,6 +16,7 @@ license = "MIT"
 [workspace.dependencies]
 nightloom-core = { path = "crates/nightloom-core" }
 nightloom-providers = { path = "crates/nightloom-providers" }
+nightloom-service = { path = "crates/nightloom-service" }
 nightloom-evals = { path = "crates/nightloom-evals" }
 
 anyhow = "1"
@@ -22,6 +24,7 @@ thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
 futures = "0.3"
 async-trait = "0.1"
 async-stream = "0.3"

@@ -1,21 +1,17 @@
 [package]
-name = "nightloom-cli"
+name = "nightloom-service"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-[[bin]]
-name = "nightloom"
-path = "src/main.rs"
-
 [dependencies]
 nightloom-core.workspace = true
 nightloom-providers.workspace = true
-nightloom-service.workspace = true
-nightloom-evals.workspace = true
-anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+futures.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
-clap.workspace = true
-serde_json.workspace = true
+thiserror.workspace = true
 chrono.workspace = true
+async-trait.workspace = true

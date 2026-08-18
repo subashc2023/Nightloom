@@ -1,5 +1,6 @@
-//! Built-in demo tools for `--tools`: enough capability to exercise the
-//! tool-call round trip without any external dependencies.
+//! Built-in tools: enough capability to exercise the tool-call round trip
+//! without any external dependencies. Every shell (CLI, desktop) offers the
+//! same set.
 
 use chrono::{Local, Utc};
 use nightloom_core::ToolDef;
