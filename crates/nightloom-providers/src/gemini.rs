@@ -46,6 +46,22 @@ impl Gemini {
         if let Some(system) = &request.system {
             body["systemInstruction"] = json!({ "parts": [{ "text": system }] });
         }
+        // One tools entry wrapping every declaration; Gemini takes the JSON
+        // Schema under `parameters`.
+        if !request.tools.is_empty() {
+            let declarations: Vec<Value> = request
+                .tools
+                .iter()
+                .map(|t| {
+                    json!({
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.input_schema,
+                    })
+                })
+                .collect();
+            body["tools"] = json!([{ "functionDeclarations": declarations }]);
+        }
         body
     }
 }
@@ -56,12 +72,29 @@ fn to_wire_message(message: &Message) -> Value {
         Role::Assistant => "model",
     };
     // Thought parts from past turns are dropped (replaying them requires
-    // thought signatures, which we don't retain yet).
+    // thought signatures, which we don't retain yet). Gemini has no call ids
+    // in replay; function name + ordering pairs calls with results.
     let parts: Vec<Value> = message
         .content
         .iter()
         .filter_map(|block| match block {
             ContentBlock::Text { text } => Some(json!({ "text": text })),
+            ContentBlock::ToolUse { name, input, .. } => {
+                Some(json!({ "functionCall": { "name": name, "args": input } }))
+            }
+            ContentBlock::ToolResult {
+                name,
+                content,
+                is_error,
+                ..
+            } => {
+                let response = if *is_error {
+                    json!({ "error": content })
+                } else {
+                    json!({ "result": content })
+                };
+                Some(json!({ "functionResponse": { "name": name, "response": response } }))
+            }
             _ => None,
         })
         .collect();
@@ -100,6 +133,9 @@ impl Provider for Gemini {
             let mut usage = Usage::default();
             let mut stop_reason: Option<String> = None;
             let mut started = false;
+            // Gemini functionCall parts don't always carry an id; canonical
+            // ToolUse needs one, so synthesize call-N in stream order.
+            let mut call_index = 0u32;
 
             while let Some(event) = events.next().await {
                 let event = event.map_err(transport)?;
@@ -148,6 +184,20 @@ impl Provider for Gemini {
                                 yield StreamEvent::TextDelta(text.to_string());
                             }
                         }
+                        // functionCall parts arrive complete — no argument
+                        // deltas to buffer.
+                        if let Some(call) = part.get("functionCall") {
+                            let id = match call["id"].as_str() {
+                                Some(id) => id.to_string(),
+                                None => format!("call-{call_index}"),
+                            };
+                            call_index += 1;
+                            yield StreamEvent::ToolUse {
+                                id,
+                                name: call["name"].as_str().unwrap_or_default().to_string(),
+                                input: call.get("args").cloned().unwrap_or_else(|| json!({})),
+                            };
+                        }
                     }
                 }
             }
@@ -157,5 +207,104 @@ impl Provider for Gemini {
             yield StreamEvent::End { stop_reason };
         };
         Ok(Box::pin(stream))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nightloom_core::ToolDef;
+
+    fn request(messages: Vec<Message>, tools: Vec<ToolDef>) -> ChatRequest {
+        ChatRequest {
+            model: "gemini-test".into(),
+            system: None,
+            messages,
+            max_tokens: 64,
+            temperature: None,
+            thinking: Thinking::Default,
+            tools,
+        }
+    }
+
+    #[test]
+    fn tools_map_to_function_declarations() {
+        let schema = json!({ "type": "object", "properties": { "city": { "type": "string" } } });
+        let body = Gemini::body(&request(
+            vec![Message::user("hi")],
+            vec![ToolDef {
+                name: "get_weather".into(),
+                description: "Look up weather".into(),
+                input_schema: schema.clone(),
+            }],
+        ));
+        assert_eq!(
+            body["tools"],
+            json!([{ "functionDeclarations": [{
+                "name": "get_weather",
+                "description": "Look up weather",
+                "parameters": schema,
+            }] }])
+        );
+    }
+
+    #[test]
+    fn empty_tools_omit_the_field() {
+        let body = Gemini::body(&request(vec![Message::user("hi")], vec![]));
+        assert!(body.get("tools").is_none());
+    }
+
+    #[test]
+    fn tool_use_replays_as_function_call() {
+        let wire = to_wire_message(&Message::assistant(vec![ContentBlock::ToolUse {
+            id: "call-0".into(),
+            name: "get_weather".into(),
+            input: json!({ "city": "Oslo" }),
+        }]));
+        assert_eq!(
+            wire,
+            json!({ "role": "model", "parts": [
+                { "functionCall": { "name": "get_weather", "args": { "city": "Oslo" } } }
+            ]})
+        );
+    }
+
+    #[test]
+    fn tool_result_replays_as_function_response() {
+        let wire = to_wire_message(&Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "call-0".into(),
+                name: "get_weather".into(),
+                content: "12C, clear".into(),
+                is_error: false,
+            }],
+        });
+        assert_eq!(
+            wire,
+            json!({ "role": "user", "parts": [
+                { "functionResponse": {
+                    "name": "get_weather",
+                    "response": { "result": "12C, clear" },
+                } }
+            ]})
+        );
+    }
+
+    #[test]
+    fn errored_tool_result_uses_error_shape() {
+        let wire = to_wire_message(&Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "call-0".into(),
+                name: "get_weather".into(),
+                content: "city not found".into(),
+                is_error: true,
+            }],
+        });
+        assert_eq!(
+            wire["parts"][0]["functionResponse"]["response"],
+            json!({ "error": "city not found" })
+        );
     }
 }

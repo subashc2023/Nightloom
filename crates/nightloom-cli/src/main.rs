@@ -1,6 +1,7 @@
 mod chat;
 mod probe;
 mod sessions;
+mod tools;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};

@@ -108,7 +108,9 @@ pub enum StreamEvent {
         input: serde_json::Value,
     },
     Usage(Usage),
-    End { stop_reason: Option<String> },
+    End {
+        stop_reason: Option<String>,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]

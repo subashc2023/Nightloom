@@ -30,7 +30,7 @@ impl OpenAiResponses {
     }
 
     fn body(request: &ChatRequest) -> Result<Value, ProviderError> {
-        let input: Vec<Value> = request.messages.iter().map(to_wire_message).collect();
+        let input: Vec<Value> = request.messages.iter().flat_map(to_wire_items).collect();
         let mut body = json!({
             "model": request.model,
             "stream": true,
@@ -39,6 +39,23 @@ impl OpenAiResponses {
         });
         if let Some(system) = &request.system {
             body["instructions"] = json!(system);
+        }
+        if !request.tools.is_empty() {
+            // Responses puts name/description/parameters at the top level of
+            // the tool object, unlike chat/completions' nested "function".
+            let tools: Vec<Value> = request
+                .tools
+                .iter()
+                .map(|t| {
+                    json!({
+                        "type": "function",
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.input_schema,
+                    })
+                })
+                .collect();
+            body["tools"] = json!(tools);
         }
         if let Some(t) = request.temperature {
             body["temperature"] = json!(t);
@@ -58,13 +75,42 @@ impl OpenAiResponses {
     }
 }
 
-fn to_wire_message(message: &Message) -> Value {
+// One canonical message can span several Responses input items: tool calls
+// and tool results are top-level items there, not content parts.
+fn to_wire_items(message: &Message) -> Vec<Value> {
     // Responses distinguishes input (user) from output (assistant) text parts.
     let (role, part_type) = match message.role {
         Role::User => ("user", "input_text"),
         Role::Assistant => ("assistant", "output_text"),
     };
-    let content: Vec<Value> = message
+    let mut items = Vec::new();
+    if message.role == Role::User {
+        // Results must precede any commentary so they pair with the calls
+        // that immediately precede them in the replayed transcript.
+        for block in &message.content {
+            if let ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+                ..
+            } = block
+            {
+                // function_call_output has no error flag; fold it into the
+                // output text. (`name` is only carried for Gemini — drop it.)
+                let output = if *is_error {
+                    format!("ERROR: {content}")
+                } else {
+                    content.clone()
+                };
+                items.push(json!({
+                    "type": "function_call_output",
+                    "call_id": tool_use_id,
+                    "output": output,
+                }));
+            }
+        }
+    }
+    let text_parts: Vec<Value> = message
         .content
         .iter()
         .filter_map(|block| match block {
@@ -72,7 +118,23 @@ fn to_wire_message(message: &Message) -> Value {
             _ => None,
         })
         .collect();
-    json!({ "role": role, "content": content })
+    if !text_parts.is_empty() {
+        items.push(json!({ "role": role, "content": text_parts }));
+    }
+    if message.role == Role::Assistant {
+        for block in &message.content {
+            if let ContentBlock::ToolUse { id, name, input } = block {
+                items.push(json!({
+                    "type": "function_call",
+                    "call_id": id,
+                    "name": name,
+                    // Responses carries arguments as a JSON-encoded string.
+                    "arguments": input.to_string(),
+                }));
+            }
+        }
+    }
+    items
 }
 
 #[async_trait::async_trait]
@@ -127,6 +189,25 @@ impl Provider for OpenAiResponses {
                             yield StreamEvent::ThinkingDelta(text.to_string());
                         }
                     }
+                    // The done item carries the full call, so we can skip
+                    // stitching function_call_arguments deltas ourselves.
+                    "response.output_item.done" => {
+                        let item = &v["item"];
+                        if item["type"].as_str() == Some("function_call") {
+                            let args = item["arguments"].as_str().unwrap_or_default();
+                            // Empty string means a zero-argument call.
+                            let input: Value = if args.is_empty() {
+                                json!({})
+                            } else {
+                                serde_json::from_str(args).map_err(parse)?
+                            };
+                            yield StreamEvent::ToolUse {
+                                id: item["call_id"].as_str().unwrap_or_default().to_string(),
+                                name: item["name"].as_str().unwrap_or_default().to_string(),
+                                input,
+                            };
+                        }
+                    }
                     "response.completed" | "response.incomplete" => {
                         let r = &v["response"];
                         let u = &r["usage"];
@@ -163,12 +244,131 @@ impl Provider for OpenAiResponses {
                                 .to_string(),
                         })?;
                     }
-                    // output_item added/done, content_part events, deltas we
-                    // don't render yet (refusals, annotations), etc.
+                    // output_item.added, content_part events, incremental
+                    // function_call_arguments deltas, deltas we don't render
+                    // yet (refusals, annotations), etc.
                     _ => {}
                 }
             }
         };
         Ok(Box::pin(stream))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nightloom_core::ToolDef;
+
+    fn request(messages: Vec<Message>, tools: Vec<ToolDef>) -> ChatRequest {
+        ChatRequest {
+            model: "gpt-test".into(),
+            system: None,
+            messages,
+            max_tokens: 128,
+            temperature: None,
+            thinking: Thinking::Default,
+            tools,
+        }
+    }
+
+    #[test]
+    fn tools_serialize_flat() {
+        let body = OpenAiResponses::body(&request(
+            vec![Message::user("hi")],
+            vec![ToolDef {
+                name: "get_weather".into(),
+                description: "Look up weather".into(),
+                input_schema: json!({ "type": "object", "properties": {} }),
+            }],
+        ))
+        .unwrap();
+        assert_eq!(
+            body["tools"],
+            json!([{
+                "type": "function",
+                "name": "get_weather",
+                "description": "Look up weather",
+                "parameters": { "type": "object", "properties": {} },
+            }])
+        );
+    }
+
+    #[test]
+    fn no_tools_field_when_empty() {
+        let body = OpenAiResponses::body(&request(vec![Message::user("hi")], vec![])).unwrap();
+        assert!(body.get("tools").is_none());
+    }
+
+    #[test]
+    fn assistant_tool_use_becomes_function_call_item() {
+        let items = to_wire_items(&Message::assistant(vec![
+            ContentBlock::Text {
+                text: "checking".into(),
+            },
+            ContentBlock::ToolUse {
+                id: "call_1".into(),
+                name: "get_weather".into(),
+                input: json!({ "city": "Paris" }),
+            },
+        ]));
+        assert_eq!(
+            items,
+            vec![
+                json!({
+                    "role": "assistant",
+                    "content": [{ "type": "output_text", "text": "checking" }],
+                }),
+                json!({
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "get_weather",
+                    "arguments": "{\"city\":\"Paris\"}",
+                }),
+            ]
+        );
+    }
+
+    #[test]
+    fn user_tool_results_precede_text() {
+        let items = to_wire_items(&Message {
+            role: Role::User,
+            content: vec![
+                ContentBlock::Text {
+                    text: "follow-up".into(),
+                },
+                ContentBlock::ToolResult {
+                    tool_use_id: "call_1".into(),
+                    name: "get_weather".into(),
+                    content: "sunny".into(),
+                    is_error: false,
+                },
+                ContentBlock::ToolResult {
+                    tool_use_id: "call_2".into(),
+                    name: "get_weather".into(),
+                    content: "city not found".into(),
+                    is_error: true,
+                },
+            ],
+        });
+        assert_eq!(
+            items,
+            vec![
+                json!({
+                    "type": "function_call_output",
+                    "call_id": "call_1",
+                    "output": "sunny",
+                }),
+                json!({
+                    "type": "function_call_output",
+                    "call_id": "call_2",
+                    "output": "ERROR: city not found",
+                }),
+                json!({
+                    "role": "user",
+                    "content": [{ "type": "input_text", "text": "follow-up" }],
+                }),
+            ]
+        );
     }
 }

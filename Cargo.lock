@@ -728,6 +728,7 @@ name = "nightloom-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
  "clap",
  "futures",
@@ -755,9 +756,11 @@ dependencies = [
 name = "nightloom-evals"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "futures",
  "nightloom-core",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

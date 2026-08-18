@@ -7,6 +7,7 @@ use nightloom_core::{
     Thinking, Usage,
 };
 use serde_json::{Value, json};
+use std::collections::HashMap;
 
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
 const API_VERSION: &str = "2023-06-01";
@@ -36,6 +37,20 @@ impl Anthropic {
         });
         if let Some(system) = &request.system {
             body["system"] = json!(system);
+        }
+        if !request.tools.is_empty() {
+            let tools: Vec<Value> = request
+                .tools
+                .iter()
+                .map(|t| {
+                    json!({
+                        "name": t.name,
+                        "description": t.description,
+                        "input_schema": t.input_schema,
+                    })
+                })
+                .collect();
+            body["tools"] = json!(tools);
         }
         if let Some(t) = request.temperature {
             body["temperature"] = json!(t);
@@ -74,6 +89,25 @@ fn to_wire_message(message: &Message) -> Value {
         .iter()
         .filter_map(|block| match block {
             ContentBlock::Text { text } => Some(json!({ "type": "text", "text": text })),
+            ContentBlock::ToolUse { id, name, input } => Some(json!({
+                "type": "tool_use", "id": id, "name": name, "input": input,
+            })),
+            // The canonical block's `name` is for Gemini's benefit;
+            // Anthropic addresses results by call id only.
+            ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+                ..
+            } => {
+                let mut result = json!({
+                    "type": "tool_result", "tool_use_id": tool_use_id, "content": content,
+                });
+                if *is_error {
+                    result["is_error"] = json!(true);
+                }
+                Some(result)
+            }
             _ => None,
         })
         .collect();
@@ -109,6 +143,9 @@ impl Provider for Anthropic {
             let mut events = resp.bytes_stream().eventsource();
             let mut usage = Usage::default();
             let mut stop_reason: Option<String> = None;
+            // Tool-call arguments stream as partial JSON keyed by block
+            // index; buffer per index and emit one event at block stop.
+            let mut tool_blocks: HashMap<u64, (String, String, String)> = HashMap::new();
 
             while let Some(event) = events.next().await {
                 let event = event.map_err(transport)?;
@@ -121,6 +158,34 @@ impl Provider for Anthropic {
                         usage.input_tokens =
                             v["message"]["usage"]["input_tokens"].as_u64().unwrap_or(0);
                         yield StreamEvent::Start;
+                    }
+                    "content_block_start" => {
+                        if v["content_block"]["type"].as_str() == Some("tool_use")
+                            && let Some(index) = v["index"].as_u64()
+                        {
+                            let id = v["content_block"]["id"]
+                                .as_str()
+                                .unwrap_or_default()
+                                .to_string();
+                            let name = v["content_block"]["name"]
+                                .as_str()
+                                .unwrap_or_default()
+                                .to_string();
+                            tool_blocks.insert(index, (id, name, String::new()));
+                        }
+                    }
+                    "content_block_stop" => {
+                        if let Some(index) = v["index"].as_u64()
+                            && let Some((id, name, buf)) = tool_blocks.remove(&index)
+                        {
+                            // No deltas at all means a no-argument call.
+                            let input = if buf.is_empty() {
+                                json!({})
+                            } else {
+                                serde_json::from_str(&buf).map_err(parse)?
+                            };
+                            yield StreamEvent::ToolUse { id, name, input };
+                        }
                     }
                     "content_block_delta" => {
                         let delta = &v["delta"];
@@ -140,6 +205,14 @@ impl Provider for Anthropic {
                                     && !text.is_empty()
                                 {
                                     yield StreamEvent::ThinkingDelta(text.to_string());
+                                }
+                            }
+                            "input_json_delta" => {
+                                if let Some(index) = v["index"].as_u64()
+                                    && let Some((_, _, buf)) = tool_blocks.get_mut(&index)
+                                    && let Some(partial) = delta["partial_json"].as_str()
+                                {
+                                    buf.push_str(partial);
                                 }
                             }
                             _ => {}
@@ -167,11 +240,112 @@ impl Provider for Anthropic {
                                 .to_string(),
                         })?;
                     }
-                    // ping, content_block_start/stop, signature deltas, etc.
+                    // ping, signature deltas, etc.
                     _ => {}
                 }
             }
         };
         Ok(Box::pin(stream))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nightloom_core::ToolDef;
+
+    fn request(tools: Vec<ToolDef>) -> ChatRequest {
+        ChatRequest {
+            model: "claude-sonnet-5".into(),
+            system: None,
+            messages: vec![Message::user("hi")],
+            max_tokens: 1024,
+            temperature: None,
+            thinking: Thinking::Default,
+            tools,
+        }
+    }
+
+    #[test]
+    fn body_includes_tools_when_present() {
+        let body = Anthropic::body(&request(vec![ToolDef {
+            name: "get_weather".into(),
+            description: "Look up current weather".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": { "city": { "type": "string" } },
+                "required": ["city"],
+            }),
+        }]))
+        .unwrap();
+        assert_eq!(body["tools"][0]["name"], "get_weather");
+        assert_eq!(body["tools"][0]["description"], "Look up current weather");
+        assert_eq!(body["tools"][0]["input_schema"]["type"], "object");
+    }
+
+    #[test]
+    fn body_omits_tools_key_when_empty() {
+        let body = Anthropic::body(&request(vec![])).unwrap();
+        assert!(body.get("tools").is_none());
+    }
+
+    #[test]
+    fn wire_message_maps_tool_use() {
+        let msg = Message::assistant(vec![ContentBlock::ToolUse {
+            id: "toolu_01".into(),
+            name: "get_weather".into(),
+            input: json!({ "city": "Oslo" }),
+        }]);
+        assert_eq!(
+            to_wire_message(&msg),
+            json!({
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_use",
+                    "id": "toolu_01",
+                    "name": "get_weather",
+                    "input": { "city": "Oslo" },
+                }],
+            })
+        );
+    }
+
+    #[test]
+    fn wire_message_maps_tool_result() {
+        let msg = Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "toolu_01".into(),
+                name: "get_weather".into(),
+                content: "12C, overcast".into(),
+                is_error: false,
+            }],
+        };
+        // No `name` (Gemini-only) and no `is_error` unless set.
+        assert_eq!(
+            to_wire_message(&msg),
+            json!({
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_01",
+                    "content": "12C, overcast",
+                }],
+            })
+        );
+    }
+
+    #[test]
+    fn wire_message_keeps_is_error_flag() {
+        let msg = Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "toolu_01".into(),
+                name: "get_weather".into(),
+                content: "city not found".into(),
+                is_error: true,
+            }],
+        };
+        assert_eq!(to_wire_message(&msg)["content"][0]["is_error"], json!(true));
     }
 }

@@ -1,8 +1,9 @@
-use crate::{DIM, RESET, sessions};
+use crate::{DIM, RESET, sessions, tools};
 use anyhow::{Context, Result, bail};
 use futures::StreamExt;
 use nightloom_core::{
     ChatRequest, ContentBlock, Provider, Session, SessionEvent, StreamEvent, Thinking, Usage,
+    tool::{defs, run_tool},
 };
 use nightloom_providers::ProviderKind;
 use std::io::{self, Write};
@@ -32,6 +33,10 @@ pub struct ChatArgs {
 
     #[arg(long, default_value_t = 8192)]
     max_tokens: u32,
+
+    /// Enable the built-in tools (current_time, read_file, list_dir)
+    #[arg(long)]
+    tools: bool,
 
     /// Send one prompt, print the reply, and exit (no REPL)
     #[arg(long)]
@@ -131,7 +136,9 @@ fn print_recap(session: &Session) {
     }
 }
 
-/// Run one user turn: record it, stream the reply to stdout, record the reply.
+/// Run one user turn: record it, stream the reply to stdout, record the
+/// reply. With `--tools`, tool calls are executed and their results looped
+/// back to the provider until it answers in text (capped per turn).
 async fn run_turn(
     provider: &dyn Provider,
     model: &str,
@@ -139,61 +146,116 @@ async fn run_turn(
     args: &ChatArgs,
     input: &str,
 ) -> Result<()> {
+    const MAX_ROUNDS: usize = 8;
     session.record_user(input);
-    let request = ChatRequest {
-        model: model.to_string(),
-        system: args.system.clone(),
-        messages: session.messages(),
-        max_tokens: args.max_tokens,
-        temperature: None,
-        thinking: args.thinking.clone().unwrap_or(Thinking::Default),
-        tools: Vec::new(),
+    let tools = if args.tools {
+        tools::builtin()
+    } else {
+        Vec::new()
     };
 
-    let mut stream = provider.stream_chat(request).await?;
-    let mut stdout = io::stdout();
-    let mut text = String::new();
-    let mut thinking = String::new();
-    let mut in_thinking = false;
-    let mut usage = Usage::default();
-    let mut stop_reason = None;
+    for round in 1..=MAX_ROUNDS {
+        let request = ChatRequest {
+            model: model.to_string(),
+            system: args.system.clone(),
+            messages: session.messages(),
+            max_tokens: args.max_tokens,
+            temperature: None,
+            thinking: args.thinking.clone().unwrap_or(Thinking::Default),
+            tools: defs(&tools),
+        };
 
-    while let Some(event) = stream.next().await {
-        match event? {
-            StreamEvent::TextDelta(delta) => {
-                if in_thinking {
-                    write!(stdout, "{RESET}\n\n")?;
-                    in_thinking = false;
+        let mut stream = provider.stream_chat(request).await?;
+        let mut stdout = io::stdout();
+        let mut text = String::new();
+        let mut thinking = String::new();
+        let mut in_thinking = false;
+        let mut usage = Usage::default();
+        let mut stop_reason = None;
+        let mut calls = Vec::new();
+
+        while let Some(event) = stream.next().await {
+            match event? {
+                StreamEvent::TextDelta(delta) => {
+                    if in_thinking {
+                        write!(stdout, "{RESET}\n\n")?;
+                        in_thinking = false;
+                    }
+                    write!(stdout, "{delta}")?;
+                    stdout.flush()?;
+                    text.push_str(&delta);
                 }
-                write!(stdout, "{delta}")?;
-                stdout.flush()?;
-                text.push_str(&delta);
-            }
-            StreamEvent::ThinkingDelta(delta) => {
-                if !in_thinking {
-                    write!(stdout, "{DIM}")?;
-                    in_thinking = true;
+                StreamEvent::ThinkingDelta(delta) => {
+                    if !in_thinking {
+                        write!(stdout, "{DIM}")?;
+                        in_thinking = true;
+                    }
+                    write!(stdout, "{delta}")?;
+                    stdout.flush()?;
+                    thinking.push_str(&delta);
                 }
-                write!(stdout, "{delta}")?;
-                stdout.flush()?;
-                thinking.push_str(&delta);
+                StreamEvent::ToolUse { id, name, input } => {
+                    if in_thinking {
+                        write!(stdout, "{RESET}\n\n")?;
+                        in_thinking = false;
+                    }
+                    // Value's Display is compact single-line JSON.
+                    writeln!(stdout, "{DIM}⚒ {name} {input}{RESET}")?;
+                    stdout.flush()?;
+                    calls.push((id, name, input));
+                }
+                StreamEvent::Usage(u) => usage = u,
+                StreamEvent::End { stop_reason: r } => stop_reason = r,
+                _ => {}
             }
-            StreamEvent::Usage(u) => usage = u,
-            StreamEvent::End { stop_reason: r } => stop_reason = r,
-            _ => {}
+        }
+        if in_thinking {
+            write!(stdout, "{RESET}")?;
+        }
+        writeln!(stdout)?;
+
+        let mut blocks = Vec::new();
+        if !thinking.is_empty() {
+            blocks.push(ContentBlock::Thinking { text: thinking });
+        }
+        // A tool-only response has no text; recording an empty text block
+        // would replay as one, which providers reject.
+        if !text.is_empty() || calls.is_empty() {
+            blocks.push(ContentBlock::Text { text });
+        }
+        for (id, name, input) in &calls {
+            blocks.push(ContentBlock::ToolUse {
+                id: id.clone(),
+                name: name.clone(),
+                input: input.clone(),
+            });
+        }
+        session.record_assistant(model, blocks, stop_reason, usage);
+
+        if calls.is_empty() {
+            break;
+        }
+        // Execute even on the last round so no call is left without a
+        // result in the session; just don't go back to the provider.
+        for (id, name, input) in calls {
+            let result = run_tool(&tools, &id, &name, input).await;
+            if let ContentBlock::ToolResult {
+                content, is_error, ..
+            } = &result
+            {
+                let prefix = if *is_error { "error: " } else { "" };
+                println!(
+                    "{DIM}  → {prefix}{}{RESET}",
+                    sessions::one_line(content, 80)
+                );
+            }
+            session.record_tool_result(&result);
+        }
+        if round == MAX_ROUNDS {
+            println!("{DIM}warning: reached {MAX_ROUNDS} tool rounds this turn; stopping{RESET}");
+            break;
         }
     }
-    if in_thinking {
-        write!(stdout, "{RESET}")?;
-    }
-    writeln!(stdout)?;
-
-    let mut blocks = Vec::new();
-    if !thinking.is_empty() {
-        blocks.push(ContentBlock::Thinking { text: thinking });
-    }
-    blocks.push(ContentBlock::Text { text });
-    session.record_assistant(model, blocks, stop_reason, usage);
     Ok(())
 }
 

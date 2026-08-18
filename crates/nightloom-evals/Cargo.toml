@@ -7,4 +7,8 @@ license.workspace = true
 [dependencies]
 nightloom-core.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 futures.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true

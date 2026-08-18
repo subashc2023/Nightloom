@@ -57,10 +57,7 @@ impl Session {
             events: Vec::new(),
             log: None,
         };
-        s.record(SessionEvent::SessionCreated {
-            id,
-            at: Utc::now(),
-        });
+        s.record(SessionEvent::SessionCreated { id, at: Utc::now() });
         s
     }
 
@@ -73,10 +70,7 @@ impl Session {
             events: Vec::new(),
             log: Some(log),
         };
-        s.record(SessionEvent::SessionCreated {
-            id,
-            at: Utc::now(),
-        });
+        s.record(SessionEvent::SessionCreated { id, at: Utc::now() });
         Ok(s)
     }
 
@@ -247,7 +241,10 @@ impl JsonlLog {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let file = OpenOptions::new().create_new(true).append(true).open(&path)?;
+        let file = OpenOptions::new()
+            .create_new(true)
+            .append(true)
+            .open(&path)?;
         Ok(Self { path, file })
     }
 
@@ -277,9 +274,7 @@ mod tests {
         s.record_user("hello");
         s.record_assistant(
             "test-model",
-            vec![ContentBlock::Text {
-                text: "hi".into(),
-            }],
+            vec![ContentBlock::Text { text: "hi".into() }],
             Some("end_turn".into()),
             Usage {
                 input_tokens: 10,
