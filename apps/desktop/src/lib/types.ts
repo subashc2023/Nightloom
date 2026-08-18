@@ -42,6 +42,8 @@ export interface ConnectResult {
   /** What the model charges. Null for a model with no verified price; the
    *  UI then shows no dollar figure at all rather than $0.00. */
   price: Price | null;
+  /** MCP servers configured for this workspace, failures included. */
+  mcp: McpServerInfo[];
   /** Where the backend actually rooted the tools, after falling back. */
   workspace: string;
 }
@@ -56,6 +58,14 @@ export interface Usage {
    *  which is not the same as a 0% hit rate. */
   cache_read_tokens?: number;
   cache_write_tokens?: number;
+}
+
+/** One MCP server, as reported by `connect`. */
+export interface McpServerInfo {
+  name: string;
+  tools: number;
+  /** Non-null when the server failed to start; its tools are simply absent. */
+  error: string | null;
 }
 
 /** USD per million tokens, from the backend's pricing table. */

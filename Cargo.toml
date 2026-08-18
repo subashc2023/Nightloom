@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/nightloom-core",
     "crates/nightloom-providers",
+    "crates/nightloom-mcp",
     "crates/nightloom-service",
     "crates/nightloom-evals",
     "crates/nightloom-cli",
@@ -17,6 +18,7 @@ license = "MIT"
 [workspace.dependencies]
 nightloom-core = { path = "crates/nightloom-core" }
 nightloom-providers = { path = "crates/nightloom-providers" }
+nightloom-mcp = { path = "crates/nightloom-mcp" }
 nightloom-service = { path = "crates/nightloom-service" }
 nightloom-evals = { path = "crates/nightloom-evals" }
 

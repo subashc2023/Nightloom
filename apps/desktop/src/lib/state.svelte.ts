@@ -16,6 +16,7 @@ import type {
   ApprovalDecision,
   ApprovalRequest,
   ImageInput,
+  McpServerInfo,
   Price,
   ProviderInfo,
   SessionEvent,
@@ -54,6 +55,8 @@ export interface Connection {
   contextLimit: number | null;
   /** Per-MTok rates for the connected model; null when unpriced. */
   price: Price | null;
+  /** MCP servers for this workspace, including ones that failed to start. */
+  mcp: McpServerInfo[];
   /** Resolved workspace root the file tools operate in. */
   workspace: string;
 }
@@ -176,6 +179,7 @@ export async function applyDraft(): Promise<void> {
       tools: d.tools,
       contextLimit: res.context_limit ?? null,
       price: res.price ?? null,
+      mcp: res.mcp ?? [],
       workspace: res.workspace,
     };
     if (!d.model.trim()) d.model = res.model; // backend resolved the default

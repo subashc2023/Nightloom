@@ -6,6 +6,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use nightloom_core::Tool;
 use nightloom_core::{ImageInput, ProviderError, Session, SessionEvent, Thinking};
 use nightloom_service::approval::{Approver, AutoApprove, Decision, PendingCall};
 use nightloom_service::store::{self, SessionSummary};
@@ -14,7 +15,7 @@ use nightloom_service::{
 };
 use serde::Serialize;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio_util::sync::CancellationToken;
@@ -34,6 +35,32 @@ struct AppState {
     /// The half that resolves prompts, kept separately so `approve_call` can
     /// reach it without downcasting out of the policy.
     gate: Arc<WindowApprover>,
+    /// MCP servers, started once per workspace and kept.
+    ///
+    /// Cached rather than reconnected because the rail re-connects on every
+    /// knob change, and each reconnect would otherwise spawn a second copy of
+    /// every configured server and leak the first.
+    mcp: tokio::sync::Mutex<Option<McpState>>,
+}
+
+/// The MCP servers running for one workspace.
+struct McpState {
+    workspace: PathBuf,
+    /// Shared, so a subagent built later gets these same connections rather
+    /// than starting its own.
+    tools: Vec<Arc<dyn Tool>>,
+    servers: Vec<McpServerInfo>,
+}
+
+/// One server, as the UI sees it.
+#[derive(Clone, Serialize)]
+struct McpServerInfo {
+    name: String,
+    tools: usize,
+    /// `None` when it started. A server that failed is reported rather than
+    /// hidden: its tools are simply missing otherwise, and a model that has
+    /// been told nothing will confidently explain why it cannot help.
+    error: Option<String>,
 }
 
 /// Puts a `mutating` tool call to the user and waits for the answer.
@@ -138,6 +165,8 @@ struct ConnectedInfo {
     /// no verified price, which the UI shows as no dollar figure at all — a
     /// "$0.00" would read as free rather than as unknown.
     price: Option<Price>,
+    /// MCP servers configured for this workspace, including ones that failed.
+    mcp: Vec<McpServerInfo>,
 }
 
 const KEYRING_SERVICE: &str = "nightloom";
@@ -217,6 +246,49 @@ async fn list_models(provider: String, base_url: Option<String>) -> Result<Vec<S
         .map_err(|e| e.to_string())
 }
 
+/// Start the workspace's MCP servers, or hand back the ones already running.
+///
+/// Returns empty when tools are off, which also drops the connections: a
+/// session with no tools should not be holding server processes open.
+async fn ensure_mcp(state: &AppState, workspace: &Path, tools: bool) -> Vec<McpServerInfo> {
+    let mut guard = state.mcp.lock().await;
+    if !tools {
+        *guard = None;
+        return Vec::new();
+    }
+    if let Some(existing) = guard.as_ref()
+        && existing.workspace == workspace
+    {
+        return existing.servers.clone();
+    }
+    let config = nightloom_service::mcp::McpConfig::discover(workspace);
+    let mut shared: Vec<Arc<dyn Tool>> = Vec::new();
+    let mut servers = Vec::new();
+    for report in nightloom_service::mcp::connect_all(&config, workspace).await {
+        match report.outcome {
+            Ok(tools) => {
+                servers.push(McpServerInfo {
+                    name: report.name,
+                    tools: tools.len(),
+                    error: None,
+                });
+                shared.extend(tools.into_iter().map(Arc::from));
+            }
+            Err(e) => servers.push(McpServerInfo {
+                name: report.name,
+                tools: 0,
+                error: Some(e.to_string()),
+            }),
+        }
+    }
+    *guard = Some(McpState {
+        workspace: workspace.to_path_buf(),
+        tools: shared,
+        servers: servers.clone(),
+    });
+    servers
+}
+
 /// Everything `connect` was told, kept whole so a subagent can be built from
 /// the same description rather than from a half-copied subset of it.
 #[derive(Clone)]
@@ -236,7 +308,12 @@ struct ChatSpec {
 /// Build a `Chat` from a spec: the window's own chat, and — through the
 /// subagent factory — every subagent it spawns, so the two cannot drift into
 /// having different tools or a different workspace.
-fn build_chat(app: &AppHandle, policy: &Arc<AutoApprove>, spec: &ChatSpec) -> Result<Chat, String> {
+fn build_chat(
+    app: &AppHandle,
+    policy: &Arc<AutoApprove>,
+    spec: &ChatSpec,
+    mcp_tools: &[Arc<dyn Tool>],
+) -> Result<Chat, String> {
     let on_retry = {
         let app = app.clone();
         Box::new(move |e: &ProviderError, attempt: u32| {
@@ -282,6 +359,13 @@ fn build_chat(app: &AppHandle, policy: &Arc<AutoApprove>, spec: &ChatSpec) -> Re
     }
     if spec.tools {
         chat.tools = nightloom_service::tools::builtin_in(spec.workspace.clone());
+        // Cloned handles, not new connections: the servers were started once
+        // for this workspace and every subagent shares them.
+        chat.tools.extend(
+            mcp_tools
+                .iter()
+                .map(|t| Box::new(t.clone()) as Box<dyn Tool>),
+        );
         // Tied to the same toggle rather than always on: `compact_context` is
         // still a tool, and a connection that asked for none should not
         // quietly get a tools array — it changes what the provider is sent.
@@ -291,7 +375,8 @@ fn build_chat(app: &AppHandle, policy: &Arc<AutoApprove>, spec: &ChatSpec) -> Re
         // and replaces their approver, so this cannot recurse or route around
         // the gate.
         let (app, policy, spec) = (app.clone(), policy.clone(), spec.clone());
-        chat.enable_subagents(Arc::new(move || build_chat(&app, &policy, &spec)));
+        let mcp = mcp_tools.to_vec();
+        chat.enable_subagents(Arc::new(move || build_chat(&app, &policy, &spec, &mcp)));
     }
     if !spec.sidecar {
         chat.sidecar = Vec::new();
@@ -352,12 +437,21 @@ async fn connect(
         workspace,
         approval: approval.unwrap_or(true),
     };
-    let chat = build_chat(&app, &state.approval, &spec)?;
+    let mcp = ensure_mcp(&state, &spec.workspace, spec.tools).await;
+    let mcp_tools = state
+        .mcp
+        .lock()
+        .await
+        .as_ref()
+        .map(|m| m.tools.clone())
+        .unwrap_or_default();
+    let chat = build_chat(&app, &state.approval, &spec, &mcp_tools)?;
     let info = ConnectedInfo {
         provider: chat.provider.name().to_string(),
         model: chat.model.clone(),
         context_limit: chat.context_limit,
         price: chat.price,
+        mcp,
         workspace: spec.workspace.to_string_lossy().into_owned(),
     };
     *state.chat.lock().await = Some(chat);
@@ -562,6 +656,7 @@ fn main() {
                 // can change something outside the conversation.
                 approval: Arc::new(AutoApprove::new(gate.clone())),
                 gate,
+                mcp: tokio::sync::Mutex::new(None),
             });
             Ok(())
         })

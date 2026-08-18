@@ -19,6 +19,14 @@ pub use nightloom_providers::ProviderKind;
 pub use nightloom_providers::limits::context_limit;
 pub use nightloom_providers::models::list_models;
 pub use nightloom_providers::pricing::{Price, price};
+/// MCP: tools that live in another process.
+///
+/// Re-exported rather than wrapped. A shell needs the config type to discover
+/// servers, the report type to say which ones failed, and nothing in between
+/// that this crate could usefully add.
+pub mod mcp {
+    pub use nightloom_mcp::{McpConfig, McpError, McpTool, ServerReport, ServerSpec, connect_all};
+}
 pub use prompt::{PromptConfig, assemble};
 pub use sidecar::{SidecarContext, SidecarPart};
 pub use turn::{Chat, CompactOutcome, TurnEvent, TurnInput, TurnOutcome};

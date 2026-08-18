@@ -164,6 +164,28 @@
         {/if}
       </p>
     </label>
+
+    {#if app.connection && app.connection.mcp.length > 0}
+      <div class="field">
+        <span>MCP servers</span>
+        <ul class="mcp">
+          {#each app.connection.mcp as server (server.name)}
+            <li class:failed={server.error !== null}>
+              <span class="mcp-name">{server.name}</span>
+              {#if server.error}
+                <span class="mcp-note" title={server.error}>unavailable</span>
+              {:else}
+                <span class="mcp-note">{server.tools} tool{server.tools === 1 ? "" : "s"}</span>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+        <p class="hint">
+          From <code>.nightloom/mcp.json</code>. Their tools always ask before running —
+          nothing here vouches for what a server's tools do.
+        </p>
+      </div>
+    {/if}
   {/if}
 
   <label class="check">
@@ -330,5 +352,26 @@
   .manage:hover {
     color: var(--accent);
     border-color: var(--accent);
+  }
+  .mcp {
+    list-style: none;
+    margin: 0.3rem 0 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+  .mcp li {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.5rem;
+    font-size: 0.75rem;
+  }
+  .mcp-note {
+    color: var(--muted);
+  }
+  .mcp li.failed .mcp-name,
+  .mcp li.failed .mcp-note {
+    color: #e06c75;
   }
 </style>

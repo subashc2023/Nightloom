@@ -22,6 +22,33 @@ pub enum Effect {
     Mutating,
 }
 
+/// A tool held behind a shared pointer is still a tool.
+///
+/// This is what lets one connection be *shared* rather than duplicated. A
+/// `Chat` owns `Box<dyn Tool>`, so without this every subagent would need its
+/// own copy of every tool — which is harmless for a built-in that owns
+/// nothing, and quite wrong for one holding a live connection to another
+/// process: spawning a second copy of every MCP server per subagent would be
+/// the obvious way to do it and the wrong one.
+#[async_trait::async_trait]
+impl<T: Tool + ?Sized> Tool for std::sync::Arc<T> {
+    fn def(&self) -> ToolDef {
+        (**self).def()
+    }
+
+    async fn call(&self, input: Value) -> Result<String, String> {
+        (**self).call(input).await
+    }
+
+    fn effect(&self) -> Effect {
+        (**self).effect()
+    }
+
+    fn drain_events(&self) -> Vec<SessionEvent> {
+        (**self).drain_events()
+    }
+}
+
 /// An executable tool. Implementations live wherever the capability lives
 /// (CLI built-ins, eval fixtures, eventually MCP clients); core only defines
 /// the contract.

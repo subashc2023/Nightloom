@@ -1,11 +1,12 @@
 use crate::{DIM, RESET};
 use anyhow::{Context, Result};
+use nightloom_core::tool::Tool;
 use nightloom_core::{
     ContentBlock, ProviderError, SegmentKind, Session, SessionEvent, SystemPrompt, Thinking, Usage,
 };
 use nightloom_service::{
-    AutoApprove, Chat, Decision, PendingCall, PromptConfig, ProviderKind, TurnEvent, prompt, store,
-    tools,
+    AutoApprove, Chat, Decision, PendingCall, PromptConfig, ProviderKind, TurnEvent, mcp, prompt,
+    store, tools,
 };
 use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
@@ -76,9 +77,20 @@ pub struct ChatArgs {
     /// Directory for session logs
     #[arg(long, default_value = ".nightloom/sessions")]
     log_dir: PathBuf,
+
+    /// Skip MCP servers configured in .nightloom/mcp.json
+    #[arg(long)]
+    no_mcp: bool,
 }
 
-fn build_chat(args: &ChatArgs) -> Result<Chat> {
+/// Tools from MCP servers, shared rather than owned.
+///
+/// `Arc` because subagents get the same connections: a `Chat` owns
+/// `Box<dyn Tool>`, and building a subagent's tool set by reconnecting would
+/// start a second copy of every server process.
+type SharedTools = Vec<Arc<dyn Tool>>;
+
+fn build_chat(args: &ChatArgs, mcp_tools: &[Arc<dyn Tool>]) -> Result<Chat> {
     let (provider, model) = nightloom_service::connect(
         args.provider,
         args.model.clone(),
@@ -109,6 +121,13 @@ fn build_chat(args: &ChatArgs) -> Result<Chat> {
     chat.price = nightloom_service::price(args.provider, &chat.model);
     if args.tools {
         chat.tools = tools::builtin();
+        // Cloned Arcs, not fresh connections: every subagent shares the one
+        // set of server processes started at launch.
+        chat.tools.extend(
+            mcp_tools
+                .iter()
+                .map(|t| Box::new(t.clone()) as Box<dyn Tool>),
+        );
         chat.approver = approver(args);
         // Tied to the same flag rather than always on: `compact_context` is
         // still a tool, and a run that asked for no tools should not quietly
@@ -119,8 +138,9 @@ fn build_chat(args: &ChatArgs) -> Result<Chat> {
         // approver replaced by the engine, so this cannot recurse or slip
         // past the gate.
         let sub_args = args.clone();
+        let sub_mcp = mcp_tools.to_vec();
         chat.enable_subagents(Arc::new(move || {
-            build_chat(&sub_args).map_err(|e| e.to_string())
+            build_chat(&sub_args, &sub_mcp).map_err(|e| e.to_string())
         }));
     }
     if args.no_sidecar {
@@ -468,8 +488,37 @@ fn prompt_line() -> Result<Option<String>> {
     Ok(Some(line.trim().to_string()))
 }
 
+/// Start the configured MCP servers, reporting each on stderr.
+///
+/// A server that fails to start costs a line and nothing else. Failing the
+/// whole run because one of several servers is misconfigured would make MCP
+/// too brittle to leave switched on, and the tools that did connect are still
+/// worth having.
+async fn connect_mcp(args: &ChatArgs) -> SharedTools {
+    if args.no_mcp || !args.tools {
+        return Vec::new();
+    }
+    let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let config = mcp::McpConfig::discover(&workspace);
+    if config.is_empty() {
+        return Vec::new();
+    }
+    let mut shared: SharedTools = Vec::new();
+    for report in mcp::connect_all(&config, &workspace).await {
+        match report.outcome {
+            Ok(tools) => {
+                println!("{DIM}mcp: {} — {} tools{RESET}", report.name, tools.len());
+                shared.extend(tools.into_iter().map(Arc::from));
+            }
+            Err(e) => eprintln!("{DIM}mcp: {} unavailable — {e}{RESET}", report.name),
+        }
+    }
+    shared
+}
+
 pub async fn run(args: ChatArgs) -> Result<()> {
-    let chat = build_chat(&args)?;
+    let mcp_tools = connect_mcp(&args).await;
+    let chat = build_chat(&args, &mcp_tools)?;
     let mut session = open_session(&args)?;
 
     if let Some(prompt) = args.once.clone() {

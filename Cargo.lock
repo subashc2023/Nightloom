@@ -2206,6 +2206,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nightloom-mcp"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "nightloom-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+]
+
+[[package]]
 name = "nightloom-providers"
 version = "0.1.0"
 dependencies = [
@@ -2229,6 +2241,7 @@ dependencies = [
  "futures",
  "globset",
  "nightloom-core",
+ "nightloom-mcp",
  "nightloom-providers",
  "regex",
  "serde",
