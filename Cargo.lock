@@ -2201,8 +2201,10 @@ dependencies = [
  "async-trait",
  "futures",
  "nightloom-core",
+ "nightloom-service",
  "serde",
  "serde_json",
+ "tokio-util",
 ]
 
 [[package]]

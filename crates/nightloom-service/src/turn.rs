@@ -131,6 +131,15 @@ pub struct Chat {
     pub thinking: Thinking,
     pub max_tokens: u32,
     pub tools: Vec<Box<dyn Tool>>,
+    /// How many tool rounds one turn may take before the engine stops it.
+    ///
+    /// A runaway guard, not a budget, and it was measurably too tight at 8.
+    /// The `rename-across-files` eval — four files, one small edit each — took
+    /// Gemini 2.5 Flash ten rounds, and at 8 it was cut off mid-task on every
+    /// attempt while still working correctly. A cap that truncates ordinary
+    /// work is indistinguishable from a model that cannot do it, which is the
+    /// worse of the two failures because nothing in the transcript says which
+    /// happened. Raised to 24, which still bounds a loop.
     pub max_rounds: usize,
     /// Everything the preamble deliberately can't hold: the clock, the task
     /// list, how full the window is. Rendered fresh each turn onto the tail
@@ -171,7 +180,7 @@ impl Chat {
             thinking: Thinking::Default,
             max_tokens: 8192,
             tools: Vec::new(),
-            max_rounds: 8,
+            max_rounds: 24,
             sidecar: sidecar::default_parts(),
             context_limit: None,
             price: None,
