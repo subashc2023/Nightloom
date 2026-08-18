@@ -129,9 +129,23 @@ impl ProbeReport {
 /// usage fold straight into the report inside `stream_leg`.
 struct Leg {
     text: String,
-    tool_uses: Vec<(String, String, serde_json::Value)>,
+    /// Assistant content in stream order (thinking, text, tool calls),
+    /// ready to replay verbatim in a follow-up request.
+    blocks: Vec<ContentBlock>,
     saw_end: bool,
     stop_reason: Option<String>,
+}
+
+/// Flush accumulated thinking text into a block. Called with a signature at
+/// a signed-block boundary; called without one when any other block (or the
+/// stream end) interrupts pending thinking.
+fn flush_thinking(pending: &mut String, blocks: &mut Vec<ContentBlock>, signature: Option<String>) {
+    if !pending.is_empty() || signature.is_some() {
+        blocks.push(ContentBlock::Thinking {
+            text: std::mem::take(pending),
+            signature,
+        });
+    }
 }
 
 async fn stream_leg(
@@ -143,13 +157,14 @@ async fn stream_leg(
     let elapsed = |s: Instant| s.elapsed().as_millis() as u64;
     let mut leg = Leg {
         text: String::new(),
-        tool_uses: Vec::new(),
+        blocks: Vec::new(),
         saw_end: false,
         stop_reason: None,
     };
     // Providers that stream cumulative usage overwrite within the leg; the
     // leg's final figure is then added to the running total.
     let mut leg_usage: Option<Usage> = None;
+    let mut pending_thinking = String::new();
 
     match provider.stream_chat(request).await {
         Err(e) => report.error = Some(e.to_string()),
@@ -167,15 +182,30 @@ async fn stream_leg(
                         report.ttf_thinking_ms.get_or_insert_with(|| elapsed(start));
                         report.thinking_deltas += 1;
                         report.thinking_chars += d.chars().count() as u64;
+                        pending_thinking.push_str(&d);
+                    }
+                    Ok(StreamEvent::ThinkingSignature(sig)) => {
+                        flush_thinking(&mut pending_thinking, &mut leg.blocks, Some(sig));
+                    }
+                    Ok(StreamEvent::RedactedThinking { data }) => {
+                        flush_thinking(&mut pending_thinking, &mut leg.blocks, None);
+                        leg.blocks.push(ContentBlock::RedactedThinking { data });
                     }
                     Ok(StreamEvent::TextDelta(d)) => {
                         report.ttf_text_ms.get_or_insert_with(|| elapsed(start));
                         report.text_deltas += 1;
                         report.text_chars += d.chars().count() as u64;
                         leg.text.push_str(&d);
+                        flush_thinking(&mut pending_thinking, &mut leg.blocks, None);
+                        match leg.blocks.last_mut() {
+                            Some(ContentBlock::Text { text }) => text.push_str(&d),
+                            _ if !d.is_empty() => leg.blocks.push(ContentBlock::Text { text: d }),
+                            _ => {}
+                        }
                     }
                     Ok(StreamEvent::ToolUse { id, name, input }) => {
-                        leg.tool_uses.push((id, name, input));
+                        flush_thinking(&mut pending_thinking, &mut leg.blocks, None);
+                        leg.blocks.push(ContentBlock::ToolUse { id, name, input });
                     }
                     Ok(StreamEvent::Usage(u)) => leg_usage = Some(u),
                     Ok(StreamEvent::End { stop_reason }) => {
@@ -187,6 +217,7 @@ async fn stream_leg(
             }
         }
     }
+    flush_thinking(&mut pending_thinking, &mut leg.blocks, None);
     if let Some(u) = leg_usage {
         report.usage.get_or_insert_default().add(u);
     }
@@ -225,10 +256,18 @@ pub async fn run_probe(provider: &dyn Provider, spec: &ProbeSpec) -> ProbeReport
     let mut stop_reason = leg1.stop_reason.clone();
 
     if spec.tool_check {
-        report.tool_calls = leg1.tool_uses.len() as u64;
+        let tool_uses: Vec<_> = leg1
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::ToolUse { id, name, input } => Some((id, name, input)),
+                _ => None,
+            })
+            .collect();
+        report.tool_calls = tool_uses.len() as u64;
         let mut round_ok = false;
         if report.error.is_none() {
-            for (_, name, input) in &leg1.tool_uses {
+            for &(_, name, input) in &tool_uses {
                 if name != TOOL_NAME {
                     report.diagnostics.push(format!(
                         "tool call to unexpected tool {name:?} (only {TOOL_NAME} was offered)"
@@ -244,33 +283,38 @@ pub async fn run_probe(provider: &dyn Provider, spec: &ProbeSpec) -> ProbeReport
                     Some(_) => {}
                 }
             }
-            if leg1.tool_uses.is_empty() {
+            if tool_uses.is_empty() {
                 // The model ignored an offered-and-prompted-for tool: hard
                 // failure, whatever text it produced instead.
                 report
                     .diagnostics
                     .push("tool offered and prompted for, but model made no tool calls".into());
             } else {
-                // Leg 2: echo the assistant turn back (text + tool_use
-                // blocks), answer every call with the fabricated codeword,
-                // and let the model finish with the same tools on offer.
-                let mut assistant = Vec::new();
-                if !leg1.text.is_empty() {
-                    assistant.push(ContentBlock::Text {
-                        text: leg1.text.clone(),
-                    });
-                }
-                for (id, name, input) in &leg1.tool_uses {
-                    assistant.push(ContentBlock::ToolUse {
-                        id: id.clone(),
-                        name: name.clone(),
-                        input: input.clone(),
-                    });
-                }
-                let results = leg1
-                    .tool_uses
+                // Leg 2: echo the assistant turn back verbatim in stream
+                // order (thinking + text + tool_use blocks), answer every
+                // call with the fabricated codeword, and let the model
+                // finish with the same tools on offer.
+                let assistant = leg1.blocks.clone();
+                let signed = assistant
                     .iter()
-                    .map(|(id, name, _)| ContentBlock::ToolResult {
+                    .filter(|b| {
+                        matches!(
+                            b,
+                            ContentBlock::Thinking {
+                                signature: Some(_),
+                                ..
+                            }
+                        )
+                    })
+                    .count();
+                if signed > 0 {
+                    report.diagnostics.push(format!(
+                        "note: replayed {signed} signed thinking block(s) in leg 2"
+                    ));
+                }
+                let results = tool_uses
+                    .iter()
+                    .map(|&(id, name, _)| ContentBlock::ToolResult {
                         tool_use_id: id.clone(),
                         name: name.clone(),
                         content: CODEWORD.into(),
@@ -497,6 +541,61 @@ mod tests {
             }
             other => panic!("expected ToolResult, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn signed_thinking_replays_in_leg2_in_stream_order() {
+        let provider = Scripted::new(vec![
+            vec![
+                StreamEvent::ThinkingDelta("Need the ".into()),
+                StreamEvent::ThinkingDelta("codeword tool.".into()),
+                StreamEvent::ThinkingSignature("sig-1".into()),
+                StreamEvent::TextDelta("Looking it up.".into()),
+                StreamEvent::ToolUse {
+                    id: "call_1".into(),
+                    name: TOOL_NAME.into(),
+                    input: serde_json::json!({"key": "alpha"}),
+                },
+                usage(),
+                end("tool_use"),
+            ],
+            vec![
+                StreamEvent::TextDelta(format!("The codeword is {CODEWORD}.")),
+                usage(),
+                end("end_turn"),
+            ],
+        ]);
+        let report = block_on(run_probe(&provider, &tool_spec()));
+
+        assert!(report.ok, "diagnostics: {:?}", report.diagnostics);
+        assert_eq!(report.tool_round_ok, Some(true));
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|d| d == "note: replayed 1 signed thinking block(s) in leg 2"),
+            "diagnostics: {:?}",
+            report.diagnostics
+        );
+
+        // Leg 2's assistant turn replays the signed thinking block first,
+        // then the text, then the tool call — in stream order.
+        let requests = provider.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        let assistant = &requests[1].messages[1];
+        assert_eq!(assistant.content.len(), 3);
+        match &assistant.content[0] {
+            ContentBlock::Thinking { text, signature } => {
+                assert_eq!(text, "Need the codeword tool.");
+                assert_eq!(signature.as_deref(), Some("sig-1"));
+            }
+            other => panic!("expected Thinking, got {other:?}"),
+        }
+        assert!(matches!(
+            &assistant.content[1],
+            ContentBlock::Text { text } if text == "Looking it up."
+        ));
+        assert!(matches!(assistant.content[2], ContentBlock::ToolUse { .. }));
     }
 
     #[test]

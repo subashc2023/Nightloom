@@ -12,3 +12,4 @@ async-trait.workspace = true
 async-stream.workspace = true
 reqwest.workspace = true
 eventsource-stream.workspace = true
+tokio.workspace = true

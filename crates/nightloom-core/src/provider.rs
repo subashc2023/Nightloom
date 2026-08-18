@@ -107,6 +107,17 @@ pub enum StreamEvent {
         name: String,
         input: serde_json::Value,
     },
+    /// End of a signed thinking block: the provider's integrity signature
+    /// for every `ThinkingDelta` since the last boundary. Consumers should
+    /// flush accumulated thinking into a signed block on receipt. Only
+    /// vendors that sign thinking (Anthropic) emit this.
+    ThinkingSignature(String),
+    /// A thinking block the provider encrypted instead of streaming
+    /// (Anthropic `redacted_thinking`); `data` is opaque and only
+    /// meaningful replayed back to the same vendor.
+    RedactedThinking {
+        data: String,
+    },
     Usage(Usage),
     End {
         stop_reason: Option<String>,

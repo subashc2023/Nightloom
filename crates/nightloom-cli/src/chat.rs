@@ -5,7 +5,7 @@ use nightloom_core::{
     ChatRequest, ContentBlock, Provider, Session, SessionEvent, StreamEvent, Thinking, Usage,
     tool::{defs, run_tool},
 };
-use nightloom_providers::ProviderKind;
+use nightloom_providers::{ProviderKind, retry::Retry};
 use std::io::{self, Write};
 use std::path::PathBuf;
 
@@ -71,6 +71,11 @@ fn build_provider(args: &ChatArgs) -> Result<(Box<dyn Provider>, String)> {
     else {
         bail!("--model is required for provider {}", args.provider);
     };
+    // Transient failures (rate limits, overload, dropped connections) retry
+    // with backoff before a request has streamed anything.
+    let provider = Box::new(Retry::new(provider).on_retry(Box::new(|e, attempt| {
+        eprintln!("{DIM}transient provider error (attempt {attempt}): {e}; retrying…{RESET}");
+    })));
     Ok((provider, model))
 }
 
@@ -165,36 +170,100 @@ async fn run_turn(
             tools: defs(&tools),
         };
 
+        // Blocks are assembled in stream order: Anthropic requires thinking
+        // to precede the tool_use it led to, and interleaved thinking means
+        // thinking/text/tool_use can alternate within one message.
+        // A signature with no visible text still marks a real block (adaptive
+        // models can emit only empty deltas); it must be kept for replay.
+        fn flush_thinking(
+            buf: &mut String,
+            blocks: &mut Vec<ContentBlock>,
+            signature: Option<String>,
+        ) {
+            if !buf.is_empty() || signature.is_some() {
+                blocks.push(ContentBlock::Thinking {
+                    text: std::mem::take(buf),
+                    signature,
+                });
+            }
+        }
+        fn flush_text(buf: &mut String, blocks: &mut Vec<ContentBlock>) {
+            if !buf.is_empty() {
+                blocks.push(ContentBlock::Text {
+                    text: std::mem::take(buf),
+                });
+            }
+        }
+
         let mut stream = provider.stream_chat(request).await?;
         let mut stdout = io::stdout();
-        let mut text = String::new();
-        let mut thinking = String::new();
+        let mut blocks = Vec::new();
+        let mut text_buf = String::new();
+        let mut thinking_buf = String::new();
         let mut in_thinking = false;
         let mut usage = Usage::default();
         let mut stop_reason = None;
         let mut calls = Vec::new();
+        let mut interrupted = false;
+        let mut stream_err = None;
 
-        while let Some(event) = stream.next().await {
-            match event? {
+        let ctrl_c = tokio::signal::ctrl_c();
+        tokio::pin!(ctrl_c);
+        loop {
+            let event = tokio::select! {
+                _ = &mut ctrl_c => {
+                    interrupted = true;
+                    break;
+                }
+                next = stream.next() => match next {
+                    Some(Ok(event)) => event,
+                    Some(Err(e)) => {
+                        stream_err = Some(e);
+                        break;
+                    }
+                    None => break,
+                },
+            };
+            match event {
                 StreamEvent::TextDelta(delta) => {
+                    // Signed thinking was already flushed by ThinkingSignature;
+                    // this closes unsigned thinking when text starts.
+                    flush_thinking(&mut thinking_buf, &mut blocks, None);
                     if in_thinking {
                         write!(stdout, "{RESET}\n\n")?;
                         in_thinking = false;
                     }
                     write!(stdout, "{delta}")?;
                     stdout.flush()?;
-                    text.push_str(&delta);
+                    text_buf.push_str(&delta);
                 }
                 StreamEvent::ThinkingDelta(delta) => {
+                    flush_text(&mut text_buf, &mut blocks);
                     if !in_thinking {
                         write!(stdout, "{DIM}")?;
                         in_thinking = true;
                     }
                     write!(stdout, "{delta}")?;
                     stdout.flush()?;
-                    thinking.push_str(&delta);
+                    thinking_buf.push_str(&delta);
+                }
+                StreamEvent::ThinkingSignature(sig) => {
+                    flush_thinking(&mut thinking_buf, &mut blocks, Some(sig));
+                }
+                StreamEvent::RedactedThinking { data } => {
+                    flush_thinking(&mut thinking_buf, &mut blocks, None);
+                    flush_text(&mut text_buf, &mut blocks);
+                    if in_thinking {
+                        write!(stdout, "{RESET}\n\n")?;
+                        in_thinking = false;
+                    }
+                    writeln!(stdout, "{DIM}[redacted thinking]{RESET}")?;
+                    stdout.flush()?;
+                    blocks.push(ContentBlock::RedactedThinking { data });
                 }
                 StreamEvent::ToolUse { id, name, input } => {
+                    flush_thinking(&mut thinking_buf, &mut blocks, None);
+                    flush_text(&mut text_buf, &mut blocks);
                     if in_thinking {
                         write!(stdout, "{RESET}\n\n")?;
                         in_thinking = false;
@@ -202,6 +271,11 @@ async fn run_turn(
                     // Value's Display is compact single-line JSON.
                     writeln!(stdout, "{DIM}⚒ {name} {input}{RESET}")?;
                     stdout.flush()?;
+                    blocks.push(ContentBlock::ToolUse {
+                        id: id.clone(),
+                        name: name.clone(),
+                        input: input.clone(),
+                    });
                     calls.push((id, name, input));
                 }
                 StreamEvent::Usage(u) => usage = u,
@@ -213,21 +287,38 @@ async fn run_turn(
             write!(stdout, "{RESET}")?;
         }
         writeln!(stdout)?;
+        // Cancel the in-flight request before touching the session.
+        drop(stream);
 
-        let mut blocks = Vec::new();
-        if !thinking.is_empty() {
-            blocks.push(ContentBlock::Thinking { text: thinking });
+        flush_thinking(&mut thinking_buf, &mut blocks, None);
+        flush_text(&mut text_buf, &mut blocks);
+
+        if interrupted || stream_err.is_some() {
+            // These calls will never get results, and a tool_use without a
+            // result is invalid on replay — drop them from the record. The
+            // thinking/text streamed so far is kept.
+            blocks.retain(|b| !matches!(b, ContentBlock::ToolUse { .. }));
+            if !blocks.is_empty() {
+                let reason = if interrupted { "interrupted" } else { "error" };
+                session.record_assistant(model, blocks, Some(reason.into()), usage);
+            }
+            if let Some(e) = stream_err {
+                return Err(e.into());
+            }
+            println!("{DIM}interrupted{RESET}");
+            return Ok(());
         }
+
         // A tool-only response has no text; recording an empty text block
-        // would replay as one, which providers reject.
-        if !text.is_empty() || calls.is_empty() {
-            blocks.push(ContentBlock::Text { text });
-        }
-        for (id, name, input) in &calls {
-            blocks.push(ContentBlock::ToolUse {
-                id: id.clone(),
-                name: name.clone(),
-                input: input.clone(),
+        // would replay as one, which providers reject. An entirely empty
+        // reply still records one.
+        if calls.is_empty()
+            && !blocks
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Text { .. }))
+        {
+            blocks.push(ContentBlock::Text {
+                text: String::new(),
             });
         }
         session.record_assistant(model, blocks, stop_reason, usage);

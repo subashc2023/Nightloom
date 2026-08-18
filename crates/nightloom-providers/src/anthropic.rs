@@ -82,13 +82,26 @@ fn to_wire_message(message: &Message) -> Value {
         Role::User => "user",
         Role::Assistant => "assistant",
     };
-    // Thinking blocks from past turns are dropped: replaying them requires
-    // the signed originals, which we don't retain yet.
+    // Signed thinking and redacted_thinking blocks are replayed verbatim;
+    // unsigned thinking is filtered out below.
     let content: Vec<Value> = message
         .content
         .iter()
         .filter_map(|block| match block {
             ContentBlock::Text { text } => Some(json!({ "type": "text", "text": text })),
+            ContentBlock::Thinking {
+                text,
+                signature: Some(sig),
+            } => Some(json!({
+                "type": "thinking", "thinking": text, "signature": sig,
+            })),
+            // Anthropic rejects thinking blocks without a valid signature.
+            ContentBlock::Thinking {
+                signature: None, ..
+            } => None,
+            ContentBlock::RedactedThinking { data } => Some(json!({
+                "type": "redacted_thinking", "data": data,
+            })),
             ContentBlock::ToolUse { id, name, input } => Some(json!({
                 "type": "tool_use", "id": id, "name": name, "input": input,
             })),
@@ -146,6 +159,9 @@ impl Provider for Anthropic {
             // Tool-call arguments stream as partial JSON keyed by block
             // index; buffer per index and emit one event at block stop.
             let mut tool_blocks: HashMap<u64, (String, String, String)> = HashMap::new();
+            // Thinking signatures also stream as fragments keyed by block
+            // index; buffer and emit one event at block stop.
+            let mut thinking_sigs: HashMap<u64, String> = HashMap::new();
 
             while let Some(event) = events.next().await {
                 let event = event.map_err(transport)?;
@@ -160,18 +176,34 @@ impl Provider for Anthropic {
                         yield StreamEvent::Start;
                     }
                     "content_block_start" => {
-                        if v["content_block"]["type"].as_str() == Some("tool_use")
-                            && let Some(index) = v["index"].as_u64()
-                        {
-                            let id = v["content_block"]["id"]
-                                .as_str()
-                                .unwrap_or_default()
-                                .to_string();
-                            let name = v["content_block"]["name"]
-                                .as_str()
-                                .unwrap_or_default()
-                                .to_string();
-                            tool_blocks.insert(index, (id, name, String::new()));
+                        match v["content_block"]["type"].as_str().unwrap_or_default() {
+                            "tool_use" => {
+                                if let Some(index) = v["index"].as_u64() {
+                                    let id = v["content_block"]["id"]
+                                        .as_str()
+                                        .unwrap_or_default()
+                                        .to_string();
+                                    let name = v["content_block"]["name"]
+                                        .as_str()
+                                        .unwrap_or_default()
+                                        .to_string();
+                                    tool_blocks.insert(index, (id, name, String::new()));
+                                }
+                            }
+                            "thinking" => {
+                                if let Some(index) = v["index"].as_u64() {
+                                    thinking_sigs.insert(index, String::new());
+                                }
+                            }
+                            // Redacted blocks arrive whole, with no deltas.
+                            "redacted_thinking" => {
+                                if let Some(data) = v["content_block"]["data"].as_str() {
+                                    yield StreamEvent::RedactedThinking {
+                                        data: data.to_string(),
+                                    };
+                                }
+                            }
+                            _ => {}
                         }
                     }
                     "content_block_stop" => {
@@ -185,6 +217,12 @@ impl Provider for Anthropic {
                                 serde_json::from_str(&buf).map_err(parse)?
                             };
                             yield StreamEvent::ToolUse { id, name, input };
+                        }
+                        if let Some(index) = v["index"].as_u64()
+                            && let Some(buf) = thinking_sigs.remove(&index)
+                            && !buf.is_empty()
+                        {
+                            yield StreamEvent::ThinkingSignature(buf);
                         }
                     }
                     "content_block_delta" => {
@@ -205,6 +243,14 @@ impl Provider for Anthropic {
                                     && !text.is_empty()
                                 {
                                     yield StreamEvent::ThinkingDelta(text.to_string());
+                                }
+                            }
+                            "signature_delta" => {
+                                if let Some(index) = v["index"].as_u64()
+                                    && let Some(buf) = thinking_sigs.get_mut(&index)
+                                    && let Some(sig) = delta["signature"].as_str()
+                                {
+                                    buf.push_str(sig);
                                 }
                             }
                             "input_json_delta" => {
@@ -240,7 +286,7 @@ impl Provider for Anthropic {
                                 .to_string(),
                         })?;
                     }
-                    // ping, signature deltas, etc.
+                    // ping, etc.
                     _ => {}
                 }
             }
@@ -347,5 +393,60 @@ mod tests {
             }],
         };
         assert_eq!(to_wire_message(&msg)["content"][0]["is_error"], json!(true));
+    }
+
+    #[test]
+    fn wire_message_maps_signed_thinking() {
+        let msg = Message::assistant(vec![
+            ContentBlock::Thinking {
+                text: "considering options".into(),
+                signature: Some("sig_abc".into()),
+            },
+            ContentBlock::Text {
+                text: "answer".into(),
+            },
+        ]);
+        assert_eq!(
+            to_wire_message(&msg),
+            json!({
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "thinking",
+                        "thinking": "considering options",
+                        "signature": "sig_abc",
+                    },
+                    { "type": "text", "text": "answer" },
+                ],
+            })
+        );
+    }
+
+    #[test]
+    fn wire_message_drops_unsigned_thinking() {
+        let msg = Message::assistant(vec![
+            ContentBlock::Thinking {
+                text: "unsigned musings".into(),
+                signature: None,
+            },
+            ContentBlock::Text {
+                text: "answer".into(),
+            },
+        ]);
+        assert_eq!(
+            to_wire_message(&msg)["content"],
+            json!([{ "type": "text", "text": "answer" }])
+        );
+    }
+
+    #[test]
+    fn wire_message_maps_redacted_thinking() {
+        let msg = Message::assistant(vec![ContentBlock::RedactedThinking {
+            data: "opaque-payload".into(),
+        }]);
+        assert_eq!(
+            to_wire_message(&msg)["content"][0],
+            json!({ "type": "redacted_thinking", "data": "opaque-payload" })
+        );
     }
 }

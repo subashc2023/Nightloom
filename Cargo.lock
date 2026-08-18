@@ -774,6 +774,7 @@ dependencies = [
  "nightloom-core",
  "reqwest",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]

@@ -70,9 +70,15 @@ shape: complete `StreamEvent::ToolUse` events out, `ToolUse`/`ToolResult`
 content blocks replayed back in (Anthropic `tool_use` blocks, OpenAI
 Responses `function_call` items, Gemini `functionCall` parts, chat/completions
 `tool_calls`). Tool results are session events; the provider-facing message
-list is a projection. Known limitation: assistant thinking blocks are not
-replayed (signatures aren't retained yet), so combine tools with explicit
-thinking at your own risk on Anthropic.
+list is a projection. Anthropic thinking signatures (and `redacted_thinking`
+blocks) are retained and replayed, so tools compose with explicit thinking;
+unsigned thinking from other vendors is recorded for the log but dropped on
+replay.
+
+The REPL is interruption-safe: Ctrl-C mid-stream cancels the request and
+records the partial reply (pending tool calls are discarded), and transient
+provider failures (429/5xx/timeouts) retry with backoff before anything has
+streamed.
 
 ## Probe
 

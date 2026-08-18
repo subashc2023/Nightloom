@@ -19,6 +19,15 @@ pub enum ContentBlock {
     },
     Thinking {
         text: String,
+        /// Provider-issued integrity signature (Anthropic). Required to
+        /// replay the block; unsigned thinking is dropped by adapters.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
+    },
+    /// Thinking the provider encrypted instead of streaming (Anthropic
+    /// `redacted_thinking`). Opaque; replayed verbatim, dropped elsewhere.
+    RedactedThinking {
+        data: String,
     },
     /// A tool invocation the model requested. Lives in assistant messages.
     ToolUse {

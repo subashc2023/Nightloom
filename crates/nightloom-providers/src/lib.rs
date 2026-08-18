@@ -11,6 +11,7 @@ mod gemini;
 mod openai_compat;
 mod openai_responses;
 mod registry;
+pub mod retry;
 
 pub use anthropic::Anthropic;
 pub use gemini::Gemini;
