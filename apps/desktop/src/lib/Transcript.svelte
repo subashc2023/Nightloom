@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tick } from "svelte";
-  import { app, denialReason } from "./state.svelte";
+  import { app, denialReason, liveFlags, rewindTo } from "./state.svelte";
   import type { Segment } from "./state.svelte";
   import type { ApprovalRequest, ImageInput, Usage } from "./types";
   import AssistantMessage from "./AssistantMessage.svelte";
@@ -12,10 +12,20 @@
     stop_reason: string | null;
   }
 
-  type Item =
+  type Body =
     | { kind: "user"; text: string; images: ImageInput[] }
     | { kind: "assistant"; segs: Segment[]; footer: AssistantFooter }
     | { kind: "compaction"; summary: string };
+
+  /**
+   * A rendered turn, plus where it sits in the log.
+   *
+   * `index` is what `rewind` takes, and `superseded` marks a turn a rewind
+   * dropped. Superseded turns stay on screen, dimmed: the log keeps them so
+   * you can see what you undid, and hiding them would make a rewind
+   * indistinguishable from a delete.
+   */
+  type Item = Body & { index: number; superseded: boolean };
 
   // Project SessionEvents into renderable items. tool_result events are
   // consumed by lookup against tool_use blocks and never rendered standalone.
@@ -38,10 +48,15 @@
       }
     }
     const out: Item[] = [];
+    const live = liveFlags(app.events);
+    let index = -1;
+    const push = (body: Body) =>
+      out.push({ ...body, index, superseded: !live[index] });
     for (const e of app.events) {
+      index++;
       if (e.event === "user_message") {
         // Sessions logged before images existed carry no `images` key.
-        out.push({ kind: "user", text: e.text, images: e.images ?? [] });
+        push({ kind: "user", text: e.text, images: e.images ?? [] });
       } else if (e.event === "assistant_message") {
         const segs: Segment[] = [];
         for (const b of e.blocks) {
@@ -74,7 +89,7 @@
               break;
           }
         }
-        out.push({
+        push({
           kind: "assistant",
           segs,
           footer: {
@@ -84,7 +99,7 @@
           },
         });
       } else if (e.event === "compaction") {
-        out.push({ kind: "compaction", summary: e.summary });
+        push({ kind: "compaction", summary: e.summary });
       }
       // session_created / tool_result / unknown events: not rendered.
     }
@@ -130,7 +145,16 @@
   <div class="inner">
     {#each items as item, i (i)}
       {#if item.kind === "user"}
-        <div class="user-row">
+        <div class="user-row" class:superseded={item.superseded}>
+          {#if !item.superseded && !app.busy}
+            <button
+              class="rewind"
+              title="Rewind to here: this turn and everything after it stop counting. Files written by tools are not reverted."
+              onclick={() => void rewindTo(item.index)}
+            >
+              rewind
+            </button>
+          {/if}
           <div class="user-bubble">
             {#if item.images.length > 0}
               <div class="user-images">
@@ -147,12 +171,14 @@
           </div>
         </div>
       {:else if item.kind === "compaction"}
-        <details class="compaction">
+        <details class="compaction" class:superseded={item.superseded}>
           <summary>conversation compacted — earlier turns replaced by a summary</summary>
           <div class="compaction-body">{item.summary}</div>
         </details>
       {:else}
-        <AssistantMessage segs={item.segs} footer={item.footer} />
+        <div class:superseded={item.superseded}>
+          <AssistantMessage segs={item.segs} footer={item.footer} />
+        </div>
       {/if}
     {/each}
     {#if app.live}
@@ -187,7 +213,34 @@
   }
   .user-row {
     display: flex;
+    align-items: center;
     justify-content: flex-end;
+    gap: 0.4rem;
+  }
+  /* Dropped by a rewind: still shown, because the log still holds it and a
+     hidden turn would make a rewind look like a delete. */
+  .superseded {
+    opacity: 0.38;
+    filter: saturate(0.4);
+  }
+  .rewind {
+    opacity: 0;
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--muted);
+    font-size: 0.68rem;
+    padding: 0.1rem 0.4rem;
+    cursor: pointer;
+    transition: opacity 0.12s;
+  }
+  .user-row:hover .rewind,
+  .rewind:focus-visible {
+    opacity: 1;
+  }
+  .rewind:hover {
+    color: var(--text);
+    border-color: var(--muted);
   }
   .user-bubble {
     background: #8b7cf61a;

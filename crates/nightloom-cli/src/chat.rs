@@ -249,7 +249,7 @@ fn print_recap(session: &Session) {
     let mut assistant_turns = 0;
     let mut last_user = None;
     let mut last_assistant = None;
-    for event in session.events() {
+    for (_, event) in session.live_events() {
         match event {
             SessionEvent::UserMessage { text, .. } => {
                 user_turns += 1;
@@ -353,6 +353,55 @@ fn render(stdout: &mut io::Stdout, in_thinking: &mut bool, event: TurnEvent) -> 
 
 /// Run one user turn, streaming to stdout. Ctrl-C cancels the in-flight
 /// request; the service records the partial reply either way.
+/// The turns this session can be rewound to, numbered for `/rewind N`.
+///
+/// Numbered from 1 in display order rather than by event index: the index is
+/// a position in the log, which counts assistant messages and tool results
+/// too, so "rewind to 4" would land somewhere the user never sees.
+fn list_checkpoints(session: &Session) {
+    let points = session.checkpoints();
+    if points.is_empty() {
+        println!("{DIM}nothing to rewind to yet{RESET}");
+        return;
+    }
+    println!("{DIM}rewind to a turn with /rewind <n>:{RESET}");
+    for (n, c) in points.iter().enumerate() {
+        let label = if c.text.is_empty() && c.images > 0 {
+            format!(
+                "({} image{})",
+                c.images,
+                if c.images == 1 { "" } else { "s" }
+            )
+        } else {
+            store::one_line(&c.text, 72)
+        };
+        println!("{DIM}  {:>3}. {label}{RESET}", n + 1);
+    }
+}
+
+fn rewind_to(session: &mut Session, arg: &str) {
+    let points = session.checkpoints();
+    let Ok(n) = arg.parse::<usize>() else {
+        eprintln!("usage: /rewind <n>, where n is a turn from /rewind");
+        return;
+    };
+    let Some(point) = n.checked_sub(1).and_then(|i| points.get(i)) else {
+        eprintln!("no turn {n}; /rewind lists them");
+        return;
+    };
+    let label = store::one_line(&point.text, 60);
+    match session.rewind(point.index) {
+        Ok(dropped) => {
+            println!("{DIM}rewound to \"{label}\" — {dropped} events dropped{RESET}");
+            // Said plainly because it is the one thing a rewind does not do,
+            // and the gap between "the conversation forgot it" and "the disk
+            // forgot it" is where someone loses work.
+            println!("{DIM}files written by tools are untouched{RESET}");
+        }
+        Err(e) => eprintln!("cannot rewind: {e}"),
+    }
+}
+
 async fn run_turn(chat: &Chat, session: &mut Session, input: &str) -> Result<()> {
     let cancel = CancellationToken::new();
     let trigger = cancel.clone();
@@ -477,7 +526,15 @@ pub async fn run(args: ChatArgs) -> Result<()> {
                 }
                 continue;
             }
+            "/rewind" => {
+                list_checkpoints(&session);
+                continue;
+            }
             _ => {}
+        }
+        if let Some(arg) = line.strip_prefix("/rewind ") {
+            rewind_to(&mut session, arg.trim());
+            continue;
         }
         println!();
         if let Err(e) = run_turn(&chat, &mut session, &line).await {

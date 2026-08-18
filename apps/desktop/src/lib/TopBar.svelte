@@ -1,5 +1,12 @@
 <script lang="ts">
-  import { app, cacheHitRate, compactSession, contextUsed, sessionCost } from "./state.svelte";
+  import {
+    app,
+    cacheHitRate,
+    compactSession,
+    contextUsed,
+    liveFlags,
+    sessionCost,
+  } from "./state.svelte";
 
   /**
    * Context gauge. The denominator comes from the backend's limits table and
@@ -43,11 +50,13 @@
     return String(n);
   }
 
-  // Compaction needs at least one completed exchange to summarize.
-  const canCompact = $derived(
-    app.connection != null &&
-      app.events.some((e) => e.event === "assistant_message"),
-  );
+  // Compaction needs at least one completed exchange to summarize — one the
+  // projection still carries, since that is what the backend summarizes.
+  const canCompact = $derived.by(() => {
+    if (!app.connection) return false;
+    const live = liveFlags(app.events);
+    return app.events.some((e, i) => live[i] && e.event === "assistant_message");
+  });
 
   const annotation = $derived.by(() => {
     if (!app.connection) return "";

@@ -17,6 +17,6 @@ pub use prompt::{Segment, SegmentKind, SystemPrompt};
 pub use provider::{
     ChatRequest, EventStream, Provider, ProviderError, StreamEvent, Thinking, ToolDef, Usage,
 };
-pub use session::{Session, SessionCost, SessionEvent};
+pub use session::{Checkpoint, Session, SessionCost, SessionEvent};
 pub use todo::{TodoItem, TodoStatus};
 pub use tool::{Effect, Tool};

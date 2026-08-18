@@ -460,6 +460,28 @@ async fn compact(state: State<'_, AppState>) -> Result<CompactOutcome, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Rewind the active session to the turn at log index `to`, returning the
+/// transcript that results.
+///
+/// Returns the events rather than an acknowledgement so the UI re-syncs from
+/// the log in the same call: a rewind changes what every projection reads,
+/// and a UI that updated its own copy optimistically would be describing a
+/// conversation the model is no longer having.
+///
+/// Safe against a turn in flight without a check of its own: `send` holds the
+/// session lock for the whole turn, so this waits rather than cutting the log
+/// out from under a reply being recorded. It would still be a surprising
+/// thing to have queued, which is why the UI hides the control while busy.
+#[tauri::command]
+async fn rewind(state: State<'_, AppState>, to: usize) -> Result<Vec<SessionEvent>, String> {
+    let mut session_guard = state.session.lock().await;
+    let session = session_guard
+        .as_mut()
+        .ok_or_else(|| "no active session".to_string())?;
+    session.rewind(to)?;
+    Ok(session.events().to_vec())
+}
+
 /// Delete a session log. If it is the active session, the open log handle is
 /// dropped first (the next send starts a fresh session).
 #[tauri::command]
@@ -556,6 +578,7 @@ fn main() {
             send,
             cancel,
             compact,
+            rewind,
             delete_session,
             approve_call,
         ])

@@ -163,6 +163,9 @@ export type SessionEvent =
       cost?: number;
       at: string;
     }
+  // Supersedes events `to..` up to this marker. The log keeps them, so the
+  // UI can show what was dropped; see `liveFlags` in state.svelte.ts.
+  | { event: "rewind"; to: number; at: string }
   | {
       event: "tool_result";
       tool_use_id: string;

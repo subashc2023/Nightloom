@@ -498,12 +498,51 @@ export function denialReason(content: string, isError: boolean): string | null {
  * so a stale list must not outlive the work it described.
  */
 export function currentTodos(): TodoItem[] {
+  const live = liveFlags(app.events);
   for (let i = app.events.length - 1; i >= 0; i--) {
+    if (!live[i]) continue;
     const e = app.events[i];
     if (e.event === "todo_state") return e.todos;
     if (e.event === "compaction") return [];
   }
   return [];
+}
+
+/**
+ * Which events still count, after every `rewind` marker in the log.
+ *
+ * Mirrors `Session::live_flags` exactly, and has to: the backend projects the
+ * model's view from its copy and the transcript is projected from this one,
+ * so the two disagreeing means the user is reading a conversation the model
+ * is not having. Returned as flags over the full array rather than a filtered
+ * list because the superseded events are still rendered — greyed out, which
+ * is the entire reason a rewind supersedes instead of deleting.
+ */
+export function liveFlags(events: SessionEvent[]): boolean[] {
+  const live = events.map(() => true);
+  events.forEach((e, i) => {
+    if (e.event !== "rewind") return;
+    live[i] = false; // the marker is not part of the conversation
+    for (let j = e.to; j < i; j++) live[j] = false;
+  });
+  return live;
+}
+
+/**
+ * Rewind to the turn at log index `to`.
+ *
+ * Refused mid-turn: the running turn holds the session and would record its
+ * reply after the rewind landed, stitching the turn being undone onto the
+ * history it was removed from.
+ */
+export async function rewindTo(to: number): Promise<void> {
+  if (app.busy) return;
+  try {
+    app.events = await api.rewind(to);
+    app.error = null;
+  } catch (e) {
+    app.error = String(e);
+  }
 }
 
 /**
@@ -578,7 +617,12 @@ export function cacheHitRate(): number | null {
 }
 
 function lastAssistantUsage(): Usage | null {
+  // Live events only: the gauge describes the prefix the *next* request will
+  // carry, and a rewound turn is not in it. Cost is the deliberate opposite —
+  // it sums everything, because rewinding does not refund.
+  const live = liveFlags(app.events);
   for (let i = app.events.length - 1; i >= 0; i--) {
+    if (!live[i]) continue;
     const e = app.events[i];
     if (e.event === "assistant_message") return e.usage;
   }

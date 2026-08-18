@@ -7,6 +7,19 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
+/// A point a session can be rewound to.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Checkpoint {
+    /// Position in the event log, and the argument to [`Session::rewind`].
+    pub index: usize,
+    /// The user's message at that point, for a UI to label it with.
+    pub text: String,
+    /// How many images were attached, which the text alone does not say — an
+    /// uncaptioned attachment is a real turn with an empty `text`.
+    pub images: usize,
+    pub at: DateTime<Utc>,
+}
+
 /// What a session has cost, as far as the log can say.
 ///
 /// `unpriced_exchanges` is not a rounding detail: a session that ran entirely
@@ -72,6 +85,20 @@ pub enum SessionEvent {
         name: String,
         content: String,
         is_error: bool,
+        at: DateTime<Utc>,
+    },
+    /// Events `to..` (up to this marker) are superseded: the projection skips
+    /// them, as though the conversation had stopped just before `to`.
+    ///
+    /// A marker rather than a truncation, for the same reason `Compaction` is
+    /// one — the log stays append-only and a UI can still show what was
+    /// dropped. It also means a rewind can supersede a `Compaction` event
+    /// itself and bring the full history back, which a destructive rewind
+    /// could not: the summary would be gone and the originals with it.
+    Rewind {
+        /// Index into the event log of the first superseded event. Always a
+        /// `UserMessage`; see [`Session::rewind`].
+        to: usize,
         at: DateTime<Utc>,
     },
     /// Everything before this event is superseded by `summary`: the provider
@@ -222,11 +249,97 @@ impl Session {
         &self.events
     }
 
+    /// Which events still count, after every [`SessionEvent::Rewind`] in the
+    /// log has been applied.
+    ///
+    /// Chained and overlapping rewinds fall out of this without a special
+    /// case: each one clears its own range, and a later rewind reaching
+    /// further back simply clears a superset of an earlier one's range.
+    fn live_flags(&self) -> Vec<bool> {
+        let mut live = vec![true; self.events.len()];
+        for (i, e) in self.events.iter().enumerate() {
+            if let SessionEvent::Rewind { to, .. } = e {
+                // The marker is not itself part of the conversation.
+                live[i] = false;
+                for flag in live.iter_mut().take(i).skip(*to) {
+                    *flag = false;
+                }
+            }
+        }
+        live
+    }
+
+    /// The events that still count, with their positions in the full log.
+    ///
+    /// A UI wants both: the index is what [`Session::rewind`] takes, and
+    /// rendering the superseded ones greyed out beside the live ones is the
+    /// whole reason the log keeps them.
+    pub fn live_events(&self) -> Vec<(usize, &SessionEvent)> {
+        let live = self.live_flags();
+        self.events
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| live[*i])
+            .collect()
+    }
+
+    /// Points the session can be rewound to: every user message still live,
+    /// oldest first.
+    ///
+    /// Every user message is a checkpoint, rather than only the ones somebody
+    /// thought to plant. Planted checkpoints are the wrong shape for this —
+    /// you find out which turn you wanted back *after* the turn that spoiled
+    /// it, and by then it is too late to have marked it.
+    pub fn checkpoints(&self) -> Vec<Checkpoint> {
+        self.live_events()
+            .into_iter()
+            .filter_map(|(index, e)| match e {
+                SessionEvent::UserMessage { text, images, at } => Some(Checkpoint {
+                    index,
+                    text: text.clone(),
+                    images: images.len(),
+                    at: *at,
+                }),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Supersede everything from event `to` onward, returning how many live
+    /// events that dropped.
+    ///
+    /// `to` must be a live `UserMessage`, and the restriction is load-bearing
+    /// rather than tidiness: cutting anywhere else can land inside a tool
+    /// round and leave an assistant `tool_use` whose `tool_result` was
+    /// superseded, which every provider rejects on replay. A user message is
+    /// the one position where the preceding exchange is always complete.
+    ///
+    /// Nothing on disk is removed and no cost is refunded — the tokens were
+    /// spent, and [`Session::cost`] keeps counting them.
+    pub fn rewind(&mut self, to: usize) -> Result<usize, String> {
+        let live = self.live_flags();
+        match self.events.get(to) {
+            None => return Err(format!("no event at {to}")),
+            Some(SessionEvent::UserMessage { .. }) => {}
+            Some(_) => {
+                return Err(format!(
+                    "event {to} is not a user message; a session can only be rewound to the start of a turn"
+                ));
+            }
+        }
+        if !live[to] {
+            return Err(format!("event {to} was already rewound away"));
+        }
+        let dropped = live[to..].iter().filter(|l| **l).count();
+        self.record(SessionEvent::Rewind { to, at: Utc::now() });
+        Ok(dropped)
+    }
+
     /// The current task list: the most recent `TodoState`, or empty. A
     /// compaction clears it — the summary supersedes the plan that produced
     /// it, and a stale list would outlive the work it described.
     pub fn todos(&self) -> &[TodoItem] {
-        for e in self.events.iter().rev() {
+        for (_, e) in self.live_events().into_iter().rev() {
             match e {
                 SessionEvent::TodoState { todos, .. } => return todos,
                 SessionEvent::Compaction { .. } => return &[],
@@ -238,8 +351,9 @@ impl Session {
 
     /// Projection: what this session has cost so far.
     ///
-    /// Sums every recorded exchange, including ones before a compaction — the
-    /// summary saves future tokens, it does not refund past ones. Exchanges
+    /// Sums every recorded exchange, including ones a compaction or a rewind
+    /// has superseded — both save future tokens, neither refunds past ones,
+    /// and a bill that shrank when you rewound would be fiction. Exchanges
     /// with no recorded price are counted separately rather than as zero, so
     /// a caller can tell "$0.40" from "at least $0.40".
     pub fn cost(&self) -> SessionCost {
@@ -300,7 +414,7 @@ impl Session {
 
     fn project(&self) -> Vec<Message> {
         let mut messages: Vec<Message> = Vec::new();
-        for e in &self.events {
+        for (_, e) in self.live_events() {
             match e {
                 SessionEvent::UserMessage { text, images, .. } => {
                     let mut content: Vec<ContentBlock> = images
@@ -631,6 +745,178 @@ mod tests {
         // The tail is a tool-result message: appending text there is a wire
         // hazard, and round one already carried the sidecar.
         assert_eq!(msgs.last().unwrap().content.len(), 1);
+    }
+
+    /// One completed exchange: user, assistant. Returns the log index the
+    /// user message landed at.
+    fn exchange(s: &mut Session, user: &str, reply: &str) -> usize {
+        let at = s.events().len();
+        s.record_user(user);
+        s.record_assistant(
+            "test-model",
+            vec![ContentBlock::Text { text: reply.into() }],
+            Some("end_turn".into()),
+            Usage::default(),
+        );
+        at
+    }
+
+    #[test]
+    fn rewinding_drops_the_turn_and_everything_after_it() {
+        let mut s = Session::new();
+        exchange(&mut s, "one", "first");
+        let second = exchange(&mut s, "two", "second");
+        exchange(&mut s, "three", "third");
+        assert_eq!(s.messages().len(), 6);
+
+        assert_eq!(s.rewind(second).unwrap(), 4);
+        let msgs = s.messages();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].text(), "one");
+        assert_eq!(msgs[1].text(), "first");
+        // Superseded, not deleted: the log still holds every event, plus the
+        // marker. That is what lets a UI show what was dropped.
+        // SessionCreated + three exchanges + the marker.
+        assert_eq!(s.events().len(), 8);
+    }
+
+    #[test]
+    fn a_rewind_refuses_to_cut_inside_a_tool_round() {
+        let mut s = Session::new();
+        s.record_user("go");
+        s.record_assistant(
+            "test-model",
+            vec![ContentBlock::ToolUse {
+                id: "c1".into(),
+                name: "t".into(),
+                input: serde_json::json!({}),
+                signature: None,
+            }],
+            Some("tool_use".into()),
+            Usage::default(),
+        );
+        s.record_tool_result(&ContentBlock::ToolResult {
+            tool_use_id: "c1".into(),
+            name: "t".into(),
+            content: "done".into(),
+            is_error: false,
+        });
+        // Cutting at the tool result would leave the assistant's `tool_use`
+        // with no matching result, which every provider rejects on replay.
+        let err = s.rewind(2).unwrap_err();
+        assert!(err.contains("not a user message"), "{err}");
+        assert_eq!(s.messages().len(), 3);
+    }
+
+    #[test]
+    fn rewinds_chain_and_the_wider_one_wins() {
+        let mut s = Session::new();
+        let first = exchange(&mut s, "one", "first");
+        let second = exchange(&mut s, "two", "second");
+        exchange(&mut s, "three", "third");
+
+        s.rewind(second).unwrap();
+        assert_eq!(s.messages().len(), 2);
+        // Reaching further back over ground an earlier rewind already
+        // cleared: the ranges overlap, and the result is their union.
+        s.rewind(first).unwrap();
+        assert!(s.messages().is_empty());
+        assert!(s.checkpoints().is_empty());
+
+        // The same point cannot be rewound twice — it is already gone.
+        let err = s.rewind(second).unwrap_err();
+        assert!(err.contains("already rewound"), "{err}");
+    }
+
+    #[test]
+    fn a_rewind_can_undo_a_compaction() {
+        let mut s = Session::new();
+        exchange(&mut s, "one", "first");
+        let second = exchange(&mut s, "two", "second");
+        s.record(SessionEvent::Compaction {
+            summary: "they said things".into(),
+            at: Utc::now(),
+        });
+        // The compaction has superseded the history.
+        assert_eq!(s.messages().len(), 1);
+        assert!(s.messages()[0].text().contains("they said things"));
+
+        // Rewinding past it supersedes the compaction event itself, and the
+        // originals come back — which is only possible because neither
+        // operation deletes anything.
+        s.rewind(second).unwrap();
+        let msgs = s.messages();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].text(), "one");
+    }
+
+    #[test]
+    fn a_rewind_refunds_nothing() {
+        let mut s = Session::new();
+        let first = exchange(&mut s, "one", "first");
+        s.record_assistant_priced(
+            "test-model",
+            vec![ContentBlock::Text { text: "x".into() }],
+            Some("end_turn".into()),
+            Usage::default(),
+            Some(0.25),
+        );
+        s.rewind(first).unwrap();
+        assert!(s.messages().is_empty());
+        // The tokens were spent. A bill that shrank on rewind would be
+        // fiction, and the same is true of the token totals.
+        assert_eq!(s.cost().usd, 0.25);
+    }
+
+    #[test]
+    fn a_rewound_task_list_reverts_to_the_earlier_one() {
+        use crate::todo::{TodoItem, TodoStatus};
+        let mut s = Session::new();
+        exchange(&mut s, "one", "first");
+        s.record_todos(vec![TodoItem::new("early plan", TodoStatus::Pending)]);
+        let second = exchange(&mut s, "two", "second");
+        s.record_todos(vec![TodoItem::new("later plan", TodoStatus::InProgress)]);
+        assert_eq!(s.todos()[0].content, "later plan");
+
+        s.rewind(second).unwrap();
+        // The panel and the copy the model reads in its sidecar both come
+        // from here, so a stale list would desync them from the transcript.
+        assert_eq!(s.todos().len(), 1);
+        assert_eq!(s.todos()[0].content, "early plan");
+    }
+
+    #[test]
+    fn checkpoints_are_the_live_user_messages() {
+        let mut s = Session::new();
+        exchange(&mut s, "one", "first");
+        let second = exchange(&mut s, "two", "second");
+        exchange(&mut s, "three", "third");
+        let points = s.checkpoints();
+        let texts: Vec<&str> = points.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(texts, ["one", "two", "three"]);
+
+        s.rewind(second).unwrap();
+        let points = s.checkpoints();
+        let texts: Vec<&str> = points.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(texts, ["one"]);
+    }
+
+    #[test]
+    fn a_rewound_log_round_trips_through_jsonl() {
+        let dir = std::env::temp_dir().join(format!("nightloom-rewind-{}", uuid::Uuid::new_v4()));
+        let mut s = Session::with_log(&dir).unwrap();
+        exchange(&mut s, "one", "first");
+        let second = exchange(&mut s, "two", "second");
+        s.rewind(second).unwrap();
+        let path = s.log_path().unwrap().to_path_buf();
+        let events = s.events().len();
+        drop(s);
+
+        let loaded = Session::load(&path).unwrap();
+        assert_eq!(loaded.events().len(), events);
+        assert_eq!(loaded.messages().len(), 2);
+        assert_eq!(loaded.checkpoints().len(), 1);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

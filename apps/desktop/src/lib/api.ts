@@ -34,6 +34,11 @@ export function listModels(
   return invoke("list_models", { provider, baseUrl });
 }
 
+/** Rewind to the turn at log index `to`; resolves with the new transcript. */
+export function rewind(to: number): Promise<SessionEvent[]> {
+  return invoke("rewind", { to });
+}
+
 export function connect(args: ConnectArgs): Promise<ConnectResult> {
   return invoke("connect", {
     provider: args.provider,
