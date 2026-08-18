@@ -85,6 +85,101 @@ export function defaultDraft(): ConnectionDraft {
   };
 }
 
+export interface ThinkingSupport {
+  /** thinkingMode values the target accepts, in display order. */
+  choices: { value: string; label: string }[];
+  /** One-line explanation of how thinking behaves on this target. */
+  note: string;
+}
+
+const DEFAULT_CHOICE = { value: "default", label: "default" };
+const BUDGET_CHOICE = { value: "budget", label: "budget…" };
+const effortChoices = (levels: string[]) =>
+  levels.map((l) => ({ value: `effort-${l}`, label: `effort: ${l}` }));
+
+/**
+ * What the rail's thinking dropdown should offer for a (provider, model)
+ * pair. Mirrors what each adapter actually maps (the adapters still fail
+ * loudly on unsupported specs — this is the UI-side projection of that).
+ */
+export function thinkingSupport(kind: string, model: string): ThinkingSupport {
+  switch (kind) {
+    case "anthropic":
+      // Claude 5 family (claude-<name>-5[-date]) thinks adaptively and
+      // rejects token budgets; older ids (claude-haiku-4-5, claude-3-5-*)
+      // take budget-style thinking and no effort knob.
+      if (/^claude-[a-z]+-5($|-)/.test(model)) {
+        return {
+          choices: [DEFAULT_CHOICE, ...effortChoices(["low", "medium", "high"])],
+          note:
+            "Claude 5 thinks adaptively — effort steers how much, and the " +
+            "model may skip thinking on easy prompts. Token budgets are " +
+            "rejected by this family.",
+        };
+      }
+      return {
+        choices: [DEFAULT_CHOICE, BUDGET_CHOICE],
+        note:
+          "Claude ≤4.5 needs an explicit thinking-token budget (below max " +
+          "output tokens); default leaves thinking off.",
+      };
+    case "openai":
+      return {
+        choices: [
+          DEFAULT_CHOICE,
+          ...effortChoices(["minimal", "low", "medium", "high"]),
+        ],
+        note:
+          "Reasoning effort for gpt-5 models; the stream carries reasoning " +
+          "summaries, not raw chain-of-thought. Budgets are not supported.",
+      };
+    case "gemini":
+      if (/(^|-)gemini-3/.test(model)) {
+        return {
+          choices: [DEFAULT_CHOICE, ...effortChoices(["low", "high"])],
+          note: "Gemini 3 takes a thinking level (low | high) instead of a token budget.",
+        };
+      }
+      return {
+        choices: [DEFAULT_CHOICE, BUDGET_CHOICE],
+        note:
+          "Gemini 2.5 thinks by default (summaries streamed); a budget caps " +
+          "thinking tokens.",
+      };
+    case "openrouter":
+      return {
+        choices: [
+          DEFAULT_CHOICE,
+          ...effortChoices(["low", "medium", "high"]),
+          BUDGET_CHOICE,
+        ],
+        note:
+          "Effort or a token budget — OpenRouter normalizes either to " +
+          "whatever the upstream model supports.",
+      };
+    case "groq":
+      return {
+        choices: [DEFAULT_CHOICE, ...effortChoices(["low", "medium", "high"])],
+        note:
+          "Reasoning effort for gpt-oss models; hybrid reasoners (qwen) " +
+          "think regardless, with reasoning streamed either way.",
+      };
+    default: // openai-chat and anything unknown
+      return {
+        choices: [DEFAULT_CHOICE, ...effortChoices(["low", "medium", "high"])],
+        note: "Sent as reasoning_effort — support depends on the server and model.",
+      };
+  }
+}
+
+/** Coerce a draft's thinking mode to one its (provider, model) accepts. */
+export function sanitizeThinking(d: ConnectionDraft): void {
+  const support = thinkingSupport(d.provider, d.model);
+  if (!support.choices.some((c) => c.value === d.thinkingMode)) {
+    d.thinkingMode = "default";
+  }
+}
+
 /** The thinking-spec string the backend parses (`Thinking::FromStr`). */
 export function thinkingString(d: ConnectionDraft): string {
   if (d.thinkingMode === "budget") {

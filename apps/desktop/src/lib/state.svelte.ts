@@ -6,6 +6,7 @@ import {
   loadLastConnection,
   loadPrefs,
   modelsFor,
+  sanitizeThinking,
   saveLastConnection,
   savePrefs,
   thinkingString,
@@ -81,7 +82,10 @@ export async function init(): Promise<void> {
   await listen<TurnEvent>("turn-event", (e) => applyTurnEvent(e.payload));
   await listen<string>("turn-notice", (e) => addToast(e.payload));
   const last = loadLastConnection();
-  if (last) app.draft = last;
+  if (last) {
+    app.draft = last;
+    sanitizeThinking(app.draft);
+  }
   try {
     app.providers = await api.providers();
   } catch (e) {
@@ -120,6 +124,7 @@ async function autoConnect(): Promise<void> {
 export async function applyDraft(): Promise<void> {
   const d = app.draft;
   if (!d.provider || app.busy || app.connecting) return;
+  sanitizeThinking(d); // a saved draft may hold a mode this target rejects
   app.connecting = true;
   app.connectError = null;
   try {

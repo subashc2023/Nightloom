@@ -1,6 +1,12 @@
 <script lang="ts">
   import { app, applyDraft, usable } from "./state.svelte";
-  import { isProviderVisible, modelsFor, providerLabel } from "./catalog";
+  import {
+    isProviderVisible,
+    modelsFor,
+    providerLabel,
+    sanitizeThinking,
+    thinkingSupport,
+  } from "./catalog";
 
   // The current selection stays listed even if settings later hide it.
   const providers = $derived(
@@ -17,6 +23,7 @@
     return list;
   });
   const locked = $derived(app.busy || app.connecting);
+  const thinking = $derived(thinkingSupport(app.draft.provider, app.draft.model));
 
   const apply = () => void applyDraft();
 
@@ -27,7 +34,13 @@
       sel?.default_model && list.includes(sel.default_model)
         ? sel.default_model
         : (list[0] ?? "");
+    sanitizeThinking(app.draft);
     if (app.draft.model) apply();
+  }
+
+  function onModelChange() {
+    sanitizeThinking(app.draft);
+    apply();
   }
 </script>
 
@@ -57,7 +70,7 @@
   <label class="field">
     <span>Model</span>
     {#if models.length > 0}
-      <select bind:value={app.draft.model} onchange={apply} disabled={locked}>
+      <select bind:value={app.draft.model} onchange={onModelChange} disabled={locked}>
         {#each models as m (m)}
           <option value={m}>{m}</option>
         {/each}
@@ -66,7 +79,7 @@
       <input
         type="text"
         bind:value={app.draft.model}
-        onchange={apply}
+        onchange={onModelChange}
         placeholder="model id"
         disabled={locked}
       />
@@ -89,12 +102,11 @@
   <label class="field">
     <span>Thinking</span>
     <select bind:value={app.draft.thinkingMode} onchange={apply} disabled={locked}>
-      <option value="default">default</option>
-      <option value="effort-low">effort: low</option>
-      <option value="effort-medium">effort: medium</option>
-      <option value="effort-high">effort: high</option>
-      <option value="budget">budget…</option>
+      {#each thinking.choices as c (c.value)}
+        <option value={c.value}>{c.label}</option>
+      {/each}
     </select>
+    <p class="hint">{thinking.note}</p>
   </label>
   {#if app.draft.thinkingMode === "budget"}
     <label class="field">
@@ -190,6 +202,12 @@
   }
   .field > span {
     font-size: 0.72rem;
+    color: var(--dim);
+  }
+  .hint {
+    margin: 0;
+    font-size: 0.68rem;
+    line-height: 1.35;
     color: var(--dim);
   }
   select,

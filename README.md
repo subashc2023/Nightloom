@@ -92,7 +92,10 @@ thinking, tool-call chips with results, and a session sidebar (sessions are
 JSONL logs in the OS app-data dir). A connection rail on the right holds
 provider/model dropdowns plus the thinking/tools/system knobs — any change
 reconnects immediately, and the app auto-connects to the last-used provider
-on launch. A settings modal (provider list on the left, one pane at a time)
+on launch. The thinking control adapts to the selected target (Claude 5
+adaptive effort vs Claude ≤4.5 budgets, OpenAI effort incl. minimal, Gemini
+budgets vs Gemini 3 levels, OpenRouter either) with a note on how thinking
+behaves there. A settings modal (provider list on the left, one pane at a time)
 manages each provider: paste an API key (kept in the OS credential store —
 Windows Credential Manager / macOS Keychain — and it wins over the env
 var), fetch the provider's live model list from its API, and check which
