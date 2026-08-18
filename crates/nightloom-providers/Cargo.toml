@@ -1,0 +1,14 @@
+[package]
+name = "nightloom-providers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nightloom-core.workspace = true
+serde_json.workspace = true
+futures.workspace = true
+async-trait.workspace = true
+async-stream.workspace = true
+reqwest.workspace = true
+eventsource-stream.workspace = true

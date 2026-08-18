@@ -1,0 +1,10 @@
+[package]
+name = "nightloom-evals"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nightloom-core.workspace = true
+serde.workspace = true
+futures.workspace = true
