@@ -40,6 +40,14 @@ pub enum SessionEvent {
         is_error: bool,
         at: DateTime<Utc>,
     },
+    /// Everything before this event is superseded by `summary`: the provider
+    /// projection restarts here, re-seeded with the summary as a user
+    /// message. The log itself stays append-only — earlier events remain on
+    /// disk for UIs and audit.
+    Compaction {
+        summary: String,
+        at: DateTime<Utc>,
+    },
 }
 
 pub struct Session {
@@ -137,6 +145,13 @@ impl Session {
         });
     }
 
+    pub fn record_compaction(&mut self, summary: impl Into<String>) {
+        self.record(SessionEvent::Compaction {
+            summary: summary.into(),
+            at: Utc::now(),
+        });
+    }
+
     pub fn events(&self) -> &[SessionEvent] {
         &self.events
     }
@@ -185,6 +200,13 @@ impl Session {
                             content: vec![block],
                         }),
                     }
+                }
+                SessionEvent::Compaction { summary, .. } => {
+                    // The summary supersedes everything projected so far.
+                    messages.clear();
+                    messages.push(Message::user(format!(
+                        "The conversation so far was compacted into this summary:\n\n{summary}"
+                    )));
                 }
                 _ => {}
             }
@@ -327,6 +349,35 @@ mod tests {
             &msgs[2].content[0],
             ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "c1"
         ));
+    }
+
+    #[test]
+    fn compaction_resets_the_projection_but_keeps_the_log() {
+        let mut s = Session::new();
+        s.record_user("first question");
+        s.record_assistant(
+            "test-model",
+            vec![ContentBlock::Text {
+                text: "first answer".into(),
+            }],
+            Some("end_turn".into()),
+            Usage::default(),
+        );
+        s.record_compaction("the user asked a question and got an answer");
+        s.record_user("follow-up");
+
+        let msgs = s.messages();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].role, Role::User);
+        assert!(msgs[0].text().contains("compacted into this summary"));
+        assert!(
+            msgs[0]
+                .text()
+                .contains("the user asked a question and got an answer")
+        );
+        assert_eq!(msgs[1].text(), "follow-up");
+        // The log itself keeps the pre-compaction events.
+        assert_eq!(s.events().len(), 5);
     }
 
     #[test]

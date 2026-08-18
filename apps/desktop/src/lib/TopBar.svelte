@@ -1,5 +1,11 @@
 <script lang="ts">
-  import { app } from "./state.svelte";
+  import { app, compactSession } from "./state.svelte";
+
+  // Compaction needs at least one completed exchange to summarize.
+  const canCompact = $derived(
+    app.connection != null &&
+      app.events.some((e) => e.event === "assistant_message"),
+  );
 
   const annotation = $derived.by(() => {
     if (!app.connection) return "";
@@ -23,14 +29,26 @@
       <span class="annotation">not connected</span>
     {/if}
   </div>
-  <button
-    class="gear"
-    title="Settings"
-    aria-label="Settings"
-    onclick={() => (app.showSettings = !app.showSettings)}
-  >
-    ⚙
-  </button>
+  <div class="actions">
+    {#if canCompact}
+      <button
+        class="compact"
+        title="Replace earlier turns with a model-written summary"
+        onclick={() => void compactSession()}
+        disabled={app.busy}
+      >
+        {app.busy ? "…" : "Compact"}
+      </button>
+    {/if}
+    <button
+      class="gear"
+      title="Settings"
+      aria-label="Settings"
+      onclick={() => (app.showSettings = !app.showSettings)}
+    >
+      ⚙
+    </button>
+  </div>
 </header>
 
 <style>
@@ -55,6 +73,29 @@
   .annotation {
     color: var(--dim);
     font-size: 0.78rem;
+  }
+  .actions {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-shrink: 0;
+  }
+  .compact {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--dim);
+    font-size: 0.75rem;
+    padding: 0.25rem 0.55rem;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .compact:hover:not(:disabled) {
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+  .compact:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
   .gear {
     background: transparent;

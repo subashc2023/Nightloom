@@ -37,6 +37,12 @@ export interface TurnResult {
   usage: Usage;
 }
 
+export interface CompactResult {
+  interrupted: boolean;
+  summary: string;
+  usage: Usage;
+}
+
 export interface SessionMeta {
   id: string;
   path: string;
@@ -77,7 +83,8 @@ export type SessionEvent =
       content: string;
       is_error?: boolean;
       at: string;
-    };
+    }
+  | { event: "compaction"; summary: string; at: string };
 
 export type TurnEvent =
   | { type: "text_delta"; text: string }

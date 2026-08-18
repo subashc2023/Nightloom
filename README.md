@@ -64,9 +64,12 @@ cargo run -p nightloom-cli -- --tools
 cargo run -p nightloom-cli -- sessions            # list logs
 cargo run -p nightloom-cli -- --continue          # most recent
 cargo run -p nightloom-cli -- --resume 3f2a       # by id prefix
+cargo run -p nightloom-cli -- sessions --delete 3f2a   # delete a log
 ```
 
-REPL commands: `/new` (fresh session), `/quit`.
+REPL commands: `/new` (fresh session), `/compact` (replace earlier turns
+with a model-written summary — the context sent to the provider restarts
+from it, while the log keeps the full history), `/quit`.
 
 ## Tool use
 
@@ -101,7 +104,9 @@ Windows Credential Manager / macOS Keychain — and it wins over the env
 var), fetch the provider's live model list from its API, and check which
 models the rail's dropdown offers (plus custom ids); preferences persist
 locally. Cancel mid-stream is the same interruption-safe path as the CLI's
-Ctrl-C.
+Ctrl-C. Sessions can be deleted from the sidebar, and a Compact button
+collapses earlier turns into a summary (shown as a divider in the
+transcript) without losing the on-disk history.
 
 ```sh
 npm install --prefix apps/desktop   # once

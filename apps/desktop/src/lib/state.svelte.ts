@@ -218,6 +218,41 @@ export async function openSession(id: string): Promise<void> {
   }
 }
 
+/** Compact the active session: earlier turns collapse into a summary. */
+export async function compactSession(): Promise<void> {
+  if (!app.connection || app.busy) return;
+  app.busy = true;
+  app.error = null;
+  try {
+    const res = await api.compact();
+    if (res.interrupted) {
+      addToast("compaction cancelled — session unchanged");
+    } else {
+      addToast("session compacted");
+      app.events = await api.transcript();
+    }
+  } catch (e) {
+    app.error = String(e);
+  } finally {
+    app.busy = false;
+    void refreshSessions();
+  }
+}
+
+export async function deleteSession(id: string): Promise<void> {
+  if (app.busy) return;
+  try {
+    await api.deleteSession(id);
+    if (id === app.activeSessionId) {
+      app.activeSessionId = null;
+      app.events = [];
+    }
+  } catch (e) {
+    addToast(String(e));
+  }
+  await refreshSessions();
+}
+
 export async function send(text: string): Promise<void> {
   if (!app.connection || app.busy) return;
   app.error = null;

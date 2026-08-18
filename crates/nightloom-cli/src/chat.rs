@@ -224,6 +224,32 @@ async fn run_turn(chat: &Chat, session: &mut Session, input: &str) -> Result<()>
     Ok(())
 }
 
+/// Compact the session (Ctrl-C cancellable), reporting the outcome.
+async fn run_compact(chat: &Chat, session: &mut Session) -> Result<()> {
+    let cancel = CancellationToken::new();
+    let trigger = cancel.clone();
+    let ctrl_c = tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            trigger.cancel();
+        }
+    });
+    println!("{DIM}compacting session…{RESET}");
+    let result = chat.compact(session, &cancel).await;
+    ctrl_c.abort();
+
+    let outcome = result?;
+    if outcome.interrupted {
+        println!("{DIM}compaction cancelled; session unchanged{RESET}");
+        return Ok(());
+    }
+    println!(
+        "{DIM}compacted — earlier turns replaced by a summary ({} chars):{RESET}",
+        outcome.summary.chars().count()
+    );
+    println!("{DIM}{}{RESET}", outcome.summary);
+    Ok(())
+}
+
 fn prompt_line() -> Result<Option<String>> {
     print!("\nyou › ");
     io::stdout().flush()?;
@@ -255,7 +281,9 @@ pub async fn run(args: ChatArgs) -> Result<()> {
     if args.resume.is_some() || args.continue_ {
         print_recap(&session);
     }
-    println!("{DIM}/new starts a fresh session, /quit exits{RESET}");
+    println!(
+        "{DIM}/new starts a fresh session, /compact summarizes it in place, /quit exits{RESET}"
+    );
 
     loop {
         let Some(line) = prompt_line()? else {
@@ -267,6 +295,12 @@ pub async fn run(args: ChatArgs) -> Result<()> {
             "/new" => {
                 session = new_session(&args)?;
                 println!("{DIM}started new session {}{RESET}", session.id);
+                continue;
+            }
+            "/compact" => {
+                if let Err(e) = run_compact(&chat, &mut session).await {
+                    eprintln!("error: {e:#}");
+                }
                 continue;
             }
             _ => {}

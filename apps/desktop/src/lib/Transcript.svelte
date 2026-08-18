@@ -13,7 +13,8 @@
 
   type Item =
     | { kind: "user"; text: string }
-    | { kind: "assistant"; segs: Segment[]; footer: AssistantFooter };
+    | { kind: "assistant"; segs: Segment[]; footer: AssistantFooter }
+    | { kind: "compaction"; summary: string };
 
   // Project SessionEvents into renderable items. tool_result events are
   // consumed by lookup against tool_use blocks and never rendered standalone.
@@ -69,6 +70,8 @@
             stop_reason: e.stop_reason,
           },
         });
+      } else if (e.event === "compaction") {
+        out.push({ kind: "compaction", summary: e.summary });
       }
       // session_created / tool_result / unknown events: not rendered.
     }
@@ -102,6 +105,11 @@
         <div class="user-row">
           <div class="user-bubble">{item.text}</div>
         </div>
+      {:else if item.kind === "compaction"}
+        <details class="compaction">
+          <summary>conversation compacted — earlier turns replaced by a summary</summary>
+          <div class="compaction-body">{item.summary}</div>
+        </details>
       {:else}
         <AssistantMessage segs={item.segs} footer={item.footer} />
       {/if}
@@ -142,6 +150,32 @@
     white-space: pre-wrap;
     word-break: break-word;
     font-size: 0.92rem;
+  }
+  .compaction {
+    font-size: 0.78rem;
+    color: var(--dim);
+  }
+  .compaction summary {
+    cursor: pointer;
+    text-align: center;
+    list-style: none;
+  }
+  .compaction summary::before,
+  .compaction summary::after {
+    content: "—— ";
+  }
+  .compaction summary::after {
+    content: " ——";
+  }
+  .compaction[open] summary {
+    margin-bottom: 0.5rem;
+  }
+  .compaction-body {
+    border: 1px dashed var(--border);
+    border-radius: 8px;
+    padding: 0.6rem 0.8rem;
+    white-space: pre-wrap;
+    word-break: break-word;
   }
   .error-banner {
     color: var(--error);

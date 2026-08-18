@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  CompactResult,
   ConnectArgs,
   ConnectResult,
   ProviderInfo,
@@ -64,4 +65,14 @@ export function send(text: string): Promise<TurnResult> {
 
 export function cancel(): Promise<null> {
   return invoke("cancel");
+}
+
+/** Compact the active session (earlier turns superseded by a summary). */
+export function compact(): Promise<CompactResult> {
+  return invoke("compact");
+}
+
+/** Delete a session log; returns the deleted session's full id. */
+export function deleteSession(id: string): Promise<string> {
+  return invoke("delete_session", { id });
 }

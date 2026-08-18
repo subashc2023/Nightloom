@@ -153,6 +153,18 @@ pub fn latest(log_dir: &Path) -> Result<PathBuf, StoreError> {
     }
 }
 
+/// Delete a session log by ID (or unique prefix). Returns the full ID of the
+/// deleted session.
+pub fn delete(log_dir: &Path, prefix: &str) -> Result<String, StoreError> {
+    let path = find_by_prefix(log_dir, prefix)?;
+    let id = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    fs::remove_file(&path).map_err(io_err(&path))?;
+    Ok(id)
+}
+
 /// Collapse text to a single line, truncated to at most `max` chars.
 pub fn one_line(text: &str, max: usize) -> String {
     let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -198,6 +210,26 @@ mod tests {
         ));
         assert!(matches!(
             find_by_prefix(&dir, "zzzz"),
+            Err(StoreError::NotFound { .. })
+        ));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn delete_removes_by_prefix_and_respects_ambiguity() {
+        let dir = dir_with(&["aabbccdd-1111", "aabbeeff-2222"]);
+
+        assert!(matches!(
+            delete(&dir, "aabb"),
+            Err(StoreError::Ambiguous { .. })
+        ));
+        let id = delete(&dir, "aabbcc").unwrap();
+        assert_eq!(id, "aabbccdd-1111");
+        assert!(!dir.join("aabbccdd-1111.jsonl").exists());
+        assert!(dir.join("aabbeeff-2222.jsonl").exists());
+        assert!(matches!(
+            delete(&dir, "aabbcc"),
             Err(StoreError::NotFound { .. })
         ));
 

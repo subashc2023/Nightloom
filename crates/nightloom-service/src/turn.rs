@@ -1,6 +1,7 @@
 use futures::StreamExt;
 use nightloom_core::{
-    ChatRequest, ContentBlock, Provider, ProviderError, Session, StreamEvent, Thinking, Usage,
+    ChatRequest, ContentBlock, Message, Provider, ProviderError, Role, Session, StreamEvent,
+    Thinking, Usage,
     tool::{Tool, defs, run_tool},
 };
 use serde::Serialize;
@@ -46,6 +47,14 @@ pub enum TurnEvent {
 pub struct TurnOutcome {
     pub interrupted: bool,
     pub stop_reason: Option<String>,
+    pub usage: Usage,
+}
+
+/// Result of [`Chat::compact`]. `summary` is empty when `interrupted`.
+#[derive(Debug, Clone, Serialize)]
+pub struct CompactOutcome {
+    pub interrupted: bool,
+    pub summary: String,
     pub usage: Usage,
 }
 
@@ -281,7 +290,84 @@ impl Chat {
         }
         unreachable!("every round either returns or continues the tool loop")
     }
+
+    /// Compact the session: ask the model for a briefing-style summary of the
+    /// conversation so far and record it as a [`SessionEvent::Compaction`],
+    /// after which the provider projection restarts from the summary. The
+    /// summarization request runs without thinking or tools.
+    ///
+    /// Nothing is recorded on cancellation (`interrupted: true`) or error —
+    /// a partial summary would silently lose context.
+    ///
+    /// [`SessionEvent::Compaction`]: nightloom_core::SessionEvent::Compaction
+    pub async fn compact(
+        &self,
+        session: &mut Session,
+        cancel: &CancellationToken,
+    ) -> Result<CompactOutcome, ProviderError> {
+        let mut messages = session.messages();
+        if !messages.iter().any(|m| m.role == Role::Assistant) {
+            return Err(ProviderError::Config(
+                "nothing to compact: the session has no completed exchanges".into(),
+            ));
+        }
+        messages.push(Message::user(COMPACT_PROMPT));
+
+        let request = ChatRequest {
+            model: self.model.clone(),
+            system: None,
+            messages,
+            max_tokens: self.max_tokens,
+            temperature: None,
+            thinking: Thinking::Default,
+            tools: Vec::new(),
+        };
+        let mut stream = self.provider.stream_chat(request).await?;
+        let mut summary = String::new();
+        let mut usage = Usage::default();
+        loop {
+            let event = tokio::select! {
+                _ = cancel.cancelled() => {
+                    return Ok(CompactOutcome {
+                        interrupted: true,
+                        summary: String::new(),
+                        usage,
+                    });
+                }
+                next = stream.next() => match next {
+                    Some(Ok(event)) => event,
+                    Some(Err(e)) => return Err(e),
+                    None => break,
+                },
+            };
+            match event {
+                StreamEvent::TextDelta(delta) => summary.push_str(&delta),
+                StreamEvent::Usage(u) => usage = u,
+                _ => {}
+            }
+        }
+        let summary = summary.trim().to_string();
+        if summary.is_empty() {
+            return Err(ProviderError::Parse(
+                "empty summary from provider; session left unchanged".into(),
+            ));
+        }
+        session.record_compaction(&summary);
+        Ok(CompactOutcome {
+            interrupted: false,
+            summary,
+            usage,
+        })
+    }
 }
+
+/// The summarization instruction appended as the final user message when
+/// compacting.
+const COMPACT_PROMPT: &str = "Summarize this conversation so far as a briefing \
+for someone who will continue it: the user's goals, key facts and decisions, \
+relevant details from tool results, open questions, and the current state. Be \
+thorough but do not pad; write only the summary, with no preamble or \
+commentary.";
 
 #[cfg(test)]
 mod tests {
@@ -523,6 +609,80 @@ mod tests {
             session.events().last(),
             Some(SessionEvent::ToolResult { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn compact_records_summary_and_resets_projection() {
+        let provider = Scripted::provider(vec![
+            vec![
+                StreamEvent::TextDelta("the answer".into()),
+                StreamEvent::End {
+                    stop_reason: Some("end_turn".into()),
+                },
+            ],
+            vec![
+                StreamEvent::TextDelta("summary of it all".into()),
+                StreamEvent::End {
+                    stop_reason: Some("end_turn".into()),
+                },
+            ],
+        ]);
+        let chat = Chat::new(provider, "test-model");
+        let mut session = Session::new();
+        run(&chat, &mut session, "question").await.0.unwrap();
+
+        let cancel = CancellationToken::new();
+        let out = chat.compact(&mut session, &cancel).await.unwrap();
+        assert!(!out.interrupted);
+        assert_eq!(out.summary, "summary of it all");
+        assert!(matches!(
+            session.events().last(),
+            Some(SessionEvent::Compaction { summary, .. }) if summary == "summary of it all"
+        ));
+        // The projection restarts from the summary alone.
+        let msgs = session.messages();
+        assert_eq!(msgs.len(), 1);
+        assert!(msgs[0].text().contains("summary of it all"));
+    }
+
+    #[tokio::test]
+    async fn compact_refuses_a_session_with_no_exchanges() {
+        let chat = Chat::new(Scripted::provider(vec![]), "test-model");
+        let mut session = Session::new();
+        session.record_user("unanswered");
+        let cancel = CancellationToken::new();
+        let out = chat.compact(&mut session, &cancel).await;
+        assert!(matches!(out, Err(ProviderError::Config(_))));
+        assert_eq!(session.events().len(), 2); // nothing recorded
+    }
+
+    #[tokio::test]
+    async fn cancelled_compact_records_nothing() {
+        let provider: Box<dyn Provider> =
+            Box::new(Stall(Mutex::new(vec![StreamEvent::TextDelta(
+                "the answer".into(),
+            )])));
+        // First build a completed exchange with a scripted provider…
+        let seed = Chat::new(
+            Scripted::provider(vec![vec![
+                StreamEvent::TextDelta("hi".into()),
+                StreamEvent::End {
+                    stop_reason: Some("end_turn".into()),
+                },
+            ]]),
+            "test-model",
+        );
+        let mut session = Session::new();
+        run(&seed, &mut session, "hello").await.0.unwrap();
+        let before = session.events().len();
+
+        // …then compact against one that stalls, cancelling mid-stream.
+        let chat = Chat::new(provider, "test-model");
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let out = chat.compact(&mut session, &cancel).await.unwrap();
+        assert!(out.interrupted);
+        assert_eq!(session.events().len(), before);
     }
 
     #[tokio::test]

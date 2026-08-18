@@ -8,7 +8,7 @@
 
 use nightloom_core::{ProviderError, Session, SessionEvent, Thinking};
 use nightloom_service::store::{self, SessionSummary};
-use nightloom_service::{Chat, ProviderKind, TurnEvent, TurnOutcome};
+use nightloom_service::{Chat, CompactOutcome, ProviderKind, TurnEvent, TurnOutcome};
 use serde::Serialize;
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -86,8 +86,7 @@ fn providers() -> Vec<ProviderInfo> {
 #[tauri::command]
 fn set_api_key(provider: String, key: String) -> Result<(), String> {
     let kind: ProviderKind = provider.parse()?;
-    let entry =
-        keyring::Entry::new(KEYRING_SERVICE, kind.label()).map_err(|e| e.to_string())?;
+    let entry = keyring::Entry::new(KEYRING_SERVICE, kind.label()).map_err(|e| e.to_string())?;
     let key = key.trim();
     if key.is_empty() {
         return clear_api_key(provider);
@@ -98,8 +97,7 @@ fn set_api_key(provider: String, key: String) -> Result<(), String> {
 #[tauri::command]
 fn clear_api_key(provider: String) -> Result<(), String> {
     let kind: ProviderKind = provider.parse()?;
-    let entry =
-        keyring::Entry::new(KEYRING_SERVICE, kind.label()).map_err(|e| e.to_string())?;
+    let entry = keyring::Entry::new(KEYRING_SERVICE, kind.label()).map_err(|e| e.to_string())?;
     match entry.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(e) => Err(e.to_string()),
@@ -227,7 +225,48 @@ async fn send(
         .map_err(|e| e.to_string())
 }
 
-/// Interrupt the in-flight turn, if any.
+/// Compact the active session: earlier turns are superseded by a
+/// model-written summary (recorded as a session event; the log keeps the
+/// full history). Cancellable via `cancel`, which leaves the session
+/// unchanged.
+#[tauri::command]
+async fn compact(state: State<'_, AppState>) -> Result<CompactOutcome, String> {
+    let chat_guard = state.chat.lock().await;
+    let chat = chat_guard
+        .as_ref()
+        .ok_or_else(|| "not connected".to_string())?;
+    let mut session_guard = state.session.lock().await;
+    let session = session_guard
+        .as_mut()
+        .ok_or_else(|| "no active session".to_string())?;
+
+    let cancel = CancellationToken::new();
+    *state.cancel.lock().unwrap() = cancel.clone();
+    chat.compact(session, &cancel)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Delete a session log. If it is the active session, the open log handle is
+/// dropped first (the next send starts a fresh session).
+#[tauri::command]
+async fn delete_session(state: State<'_, AppState>, id: String) -> Result<String, String> {
+    let path = store::find_by_prefix(&state.log_dir, &id).map_err(|e| e.to_string())?;
+    let full_id = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    {
+        let mut session_guard = state.session.lock().await;
+        if session_guard.as_ref().is_some_and(|s| s.id == full_id) {
+            *session_guard = None;
+        }
+    }
+    std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+    Ok(full_id)
+}
+
+/// Interrupt the in-flight turn or compaction, if any.
 #[tauri::command]
 fn cancel(state: State<'_, AppState>) {
     state.cancel.lock().unwrap().cancel();
@@ -257,6 +296,8 @@ fn main() {
             transcript,
             send,
             cancel,
+            compact,
+            delete_session,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Nightloom");
