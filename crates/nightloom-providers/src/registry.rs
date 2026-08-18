@@ -56,6 +56,11 @@ impl ProviderKind {
             .find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()))
     }
 
+    /// Whether credentials for this provider are present in the environment.
+    pub fn has_credentials(self) -> bool {
+        self.key_from_env().is_some()
+    }
+
     /// Model used when the caller doesn't name one. `None` means the caller
     /// must be explicit (generic compat has no sensible default).
     pub fn default_model(self) -> Option<&'static str> {

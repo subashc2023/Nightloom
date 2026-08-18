@@ -2,10 +2,11 @@
 
 Model-agnostic LLM harness / desktop app. Current state: chat core —
 canonical message model, event-sourced sessions, streaming provider adapters
-for the big 4 plus OpenRouter, normalized tool use across all of them, and a
-CLI REPL with an agentic tool loop.
+for the big 4 plus OpenRouter, normalized tool use across all of them — with
+two shells on top: a CLI REPL with an agentic tool loop and a Tauri desktop
+app.
 
-## Crates
+## Layout
 
 - `nightloom-core` — conversation model, `Provider` trait, normalized
   `StreamEvent`, `Tool` trait + vendor-neutral `ToolDef`, append-only
@@ -16,8 +17,12 @@ CLI REPL with an agentic tool loop.
   `chat/completions` adapter covers Groq and OpenRouter as flavors, plus
   legacy OpenAI and local servers (Ollama / llama.cpp / LM Studio / vLLM)
   via `--base-url`.
+- `nightloom-service` — UI-agnostic turn engine: provider construction with
+  retry, the streaming tool loop, cancellation, session discovery, built-in
+  tools. Both shells drive conversations through it.
 - `nightloom-evals` — the probe engine (streaming health checks).
 - `nightloom-cli` — streaming REPL (`nightloom` binary).
+- `apps/desktop` — Tauri 2 + Svelte 5 desktop app.
 
 ## Providers
 
@@ -79,6 +84,20 @@ The REPL is interruption-safe: Ctrl-C mid-stream cancels the request and
 records the partial reply (pending tool calls are discarded), and transient
 provider failures (429/5xx/timeouts) retry with backoff before anything has
 streamed.
+
+## Desktop app
+
+Tauri 2 shell with a Svelte 5 frontend: streaming chat with collapsible
+thinking, tool-call chips with results, a session sidebar (sessions are
+JSONL logs in the OS app-data dir), and a provider/model/thinking picker
+that greys out providers whose API keys aren't set. Cancel mid-stream is
+the same interruption-safe path as the CLI's Ctrl-C.
+
+```sh
+cd apps/desktop && npm install   # once
+cargo tauri dev                  # run (from apps/desktop or its src-tauri)
+cargo tauri build                # installer bundle
+```
 
 ## Probe
 

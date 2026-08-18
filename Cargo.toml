@@ -6,6 +6,7 @@ members = [
     "crates/nightloom-service",
     "crates/nightloom-evals",
     "crates/nightloom-cli",
+    "apps/desktop/src-tauri",
 ]
 
 [workspace.package]
