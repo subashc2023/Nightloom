@@ -28,7 +28,25 @@ pub struct SidecarContext<'a> {
     /// context gauge reports usage but no percentage — better than guessing a
     /// limit and telling the model something false.
     pub context_limit: Option<u64>,
+    /// Whether the `compact_context` tool is actually on the request. The
+    /// gauge only recommends compaction when it is — advice to call a tool
+    /// that was never advertised buys a hallucinated call and an error
+    /// result, which is worse than saying nothing.
+    pub can_self_compact: bool,
 }
+
+/// Percentage of the window at which the gauge starts recommending
+/// compaction.
+///
+/// Proportional rather than absolute, because the two agree where it matters
+/// and diverge where it counts: on a 200k model this is 150k, and on a 1M
+/// model it is 750k rather than an early compaction that throws away most of
+/// a window the user is paying for.
+///
+/// Advice, not a trigger. The engine could compact here on its own, but it
+/// cannot tell a finished task from the middle of one — see
+/// [`crate::tools::CompactContext`].
+const COMPACT_ADVISORY_PCT: u64 = 75;
 
 /// The default set: clock, context gauge, task list. Cheap, and each one
 /// answers a question models otherwise waste a tool call or a guess on.
@@ -85,13 +103,22 @@ impl SidecarPart for ContextGauge {
         if used == 0 {
             return None;
         }
-        Some(match ctx.context_limit {
-            Some(limit) if limit > 0 => format!(
-                "context: ~{used} of {limit} tokens ({}%) — compact before you run out",
-                (used * 100 / limit).min(100)
-            ),
-            _ => format!("context: ~{used} tokens used"),
-        })
+        let Some(limit) = ctx.context_limit.filter(|l| *l > 0) else {
+            // No known limit means no honest percentage and so no honest
+            // advice: a warning needs a denominator, and inventing one would
+            // have the model throw away a conversation it had room for.
+            return Some(format!("context: ~{used} tokens used"));
+        };
+        let pct = (used * 100 / limit).min(100);
+        let mut line = format!("context: ~{used} of {limit} tokens ({pct}%)");
+        if pct >= COMPACT_ADVISORY_PCT && ctx.can_self_compact {
+            line.push_str(
+                " — the window is filling up. At your next natural stopping point, \
+                 call compact_context to summarize the conversation and free it. \
+                 Don't interrupt work in progress for it.",
+            );
+        }
+        Some(line)
     }
 }
 
@@ -131,7 +158,81 @@ mod tests {
             session,
             model: "test-model",
             context_limit: limit,
+            can_self_compact: true,
         }
+    }
+
+    /// Record one exchange whose reported usage puts the window at `pct`.
+    fn session_at(pct: u64, limit: u64) -> Session {
+        let mut session = Session::new();
+        session.record_user("q");
+        session.record_assistant(
+            "test-model",
+            vec![ContentBlock::Text { text: "a".into() }],
+            None,
+            Usage {
+                input_tokens: limit * pct / 100,
+                output_tokens: 0,
+                reasoning_tokens: None,
+            },
+        );
+        session
+    }
+
+    #[test]
+    fn the_gauge_says_nothing_about_compacting_below_the_threshold() {
+        let session = session_at(COMPACT_ADVISORY_PCT - 5, 200_000);
+        let out = ContextGauge.render(&ctx(&session, Some(200_000))).unwrap();
+        assert!(!out.contains("compact_context"), "{out}");
+    }
+
+    #[test]
+    fn the_gauge_recommends_compacting_past_the_threshold() {
+        let session = session_at(COMPACT_ADVISORY_PCT, 200_000);
+        let out = ContextGauge.render(&ctx(&session, Some(200_000))).unwrap();
+        assert!(out.contains("compact_context"), "{out}");
+        assert!(out.contains("natural stopping point"), "{out}");
+    }
+
+    /// The threshold is proportional, so a big window is not compacted at a
+    /// small model's number.
+    #[test]
+    fn a_million_token_window_is_not_advised_at_a_small_models_number() {
+        let session = session_at(20, 1_000_000);
+        let out = ContextGauge
+            .render(&ctx(&session, Some(1_000_000)))
+            .unwrap();
+        assert!(
+            out.starts_with("context: ~200000 of 1000000 tokens (20%)"),
+            "{out}"
+        );
+        assert!(!out.contains("compact_context"), "{out}");
+    }
+
+    /// Recommending a tool that was never advertised buys a hallucinated call
+    /// and an error result.
+    #[test]
+    fn no_advice_when_the_tool_is_not_on_the_request() {
+        let session = session_at(95, 200_000);
+        let out = ContextGauge
+            .render(&SidecarContext {
+                session: &session,
+                model: "test-model",
+                context_limit: Some(200_000),
+                can_self_compact: false,
+            })
+            .unwrap();
+        assert!(out.contains("(95%)"), "{out}");
+        assert!(!out.contains("compact_context"), "{out}");
+    }
+
+    /// Advice needs a denominator: with no known limit there is a number but
+    /// no honest judgement to attach to it.
+    #[test]
+    fn no_advice_without_a_known_limit() {
+        let session = session_at(95, 200_000);
+        let out = ContextGauge.render(&ctx(&session, None)).unwrap();
+        assert_eq!(out, "context: ~190000 tokens used");
     }
 
     #[test]

@@ -84,11 +84,19 @@ fn to_wire_message(message: &Message) -> Value {
     // and because the session projection coalesces a round's tool results
     // into one user message in call order. Gemini has no call ids in replay;
     // function name + ordering pairs calls with results.
+    // Images ride in the user turn only; a `model` turn carrying inline
+    // image data is not something the API accepts back.
+    let is_user = message.role == Role::User;
     let parts: Vec<Value> = message
         .content
         .iter()
         .filter_map(|block| match block {
             ContentBlock::Text { text } => Some(json!({ "text": text })),
+            // Both spellings are accepted; camelCase matches the rest of
+            // this body (`functionCall`, `thoughtSignature`).
+            ContentBlock::Image { media_type, data } if is_user => Some(json!({
+                "inlineData": { "mimeType": media_type, "data": data },
+            })),
             ContentBlock::ToolUse {
                 name,
                 input,
@@ -430,6 +438,46 @@ mod tests {
             ContentBlock::Thinking {
                 text: "hmm".into(),
                 signature: Some("sig-A".into()),
+            },
+            ContentBlock::Text {
+                text: "hello".into(),
+            },
+        ]));
+        assert_eq!(
+            wire,
+            json!({ "role": "model", "parts": [{ "text": "hello" }] })
+        );
+    }
+
+    #[test]
+    fn user_image_becomes_an_inline_data_part() {
+        let wire = to_wire_message(&Message {
+            role: Role::User,
+            content: vec![
+                ContentBlock::Image {
+                    media_type: "image/png".into(),
+                    data: "iVBORw0KGgo=".into(),
+                },
+                ContentBlock::Text {
+                    text: "what is this?".into(),
+                },
+            ],
+        });
+        assert_eq!(
+            wire,
+            json!({ "role": "user", "parts": [
+                { "inlineData": { "mimeType": "image/png", "data": "iVBORw0KGgo=" } },
+                { "text": "what is this?" },
+            ]})
+        );
+    }
+
+    #[test]
+    fn assistant_image_is_dropped_on_replay() {
+        let wire = to_wire_message(&Message::assistant(vec![
+            ContentBlock::Image {
+                media_type: "image/png".into(),
+                data: "iVBORw0KGgo=".into(),
             },
             ContentBlock::Text {
                 text: "hello".into(),

@@ -169,6 +169,38 @@ fn to_wire_messages(message: &Message) -> Vec<Value> {
                 }));
             }
         }
+        // An image forces `content` from a plain string into an array of
+        // parts, and that is a real compatibility cliff: plenty of the local
+        // and hosted servers behind this adapter only ever parse the string
+        // form. So the array shape appears only when there is an image to
+        // carry — a text-only turn still serializes exactly as it always
+        // did, string and all, and nothing changes for hosts without vision.
+        if message
+            .content
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Image { .. }))
+        {
+            let parts: Vec<Value> = message
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    // Empty text blocks are skipped: harmless folded into a
+                    // concatenated string, a rejected part on their own.
+                    ContentBlock::Text { text } if !text.is_empty() => {
+                        Some(json!({ "type": "text", "text": text }))
+                    }
+                    // This dialect names no media type of its own; it reads
+                    // one off the data URL.
+                    ContentBlock::Image { media_type, data } => Some(json!({
+                        "type": "image_url",
+                        "image_url": { "url": format!("data:{media_type};base64,{data}") },
+                    })),
+                    _ => None,
+                })
+                .collect();
+            out.push(json!({ "role": "user", "content": parts }));
+            return out;
+        }
         let text = message.text();
         if !text.is_empty() || out.is_empty() {
             out.push(json!({ "role": "user", "content": text }));
@@ -480,5 +512,135 @@ mod tests {
     fn plain_messages_keep_flat_string_shape() {
         let wire = to_wire_messages(&Message::user("hello"));
         assert_eq!(wire, vec![json!({ "role": "user", "content": "hello" })]);
+    }
+
+    #[test]
+    fn user_image_becomes_a_content_part_array() {
+        let wire = to_wire_messages(&Message {
+            role: Role::User,
+            content: vec![
+                ContentBlock::Image {
+                    media_type: "image/png".into(),
+                    data: "iVBORw0KGgo=".into(),
+                },
+                ContentBlock::Text {
+                    text: "what is this?".into(),
+                },
+            ],
+        });
+        assert_eq!(
+            wire,
+            vec![json!({
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": { "url": "data:image/png;base64,iVBORw0KGgo=" },
+                    },
+                    { "type": "text", "text": "what is this?" },
+                ],
+            })]
+        );
+    }
+
+    /// The array form is contagious if you let it be: the whole reason it is
+    /// gated on an image is that hosts which take only a string must keep
+    /// seeing the byte-identical body they saw before vision existed.
+    #[test]
+    fn imageless_bodies_are_byte_identical_to_the_string_form() {
+        let provider = OpenAiCompat::new("k", None);
+        let messages = vec![
+            Message::user("hello"),
+            Message::assistant(vec![ContentBlock::Text {
+                text: "hi there".into(),
+            }]),
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "call-1".into(),
+                    name: "get_weather".into(),
+                    content: "sunny".into(),
+                    is_error: false,
+                }],
+            },
+        ];
+        let body = provider.body(&request(messages, vec![])).unwrap();
+        assert_eq!(
+            body["messages"],
+            json!([
+                { "role": "user", "content": "hello" },
+                { "role": "assistant", "content": "hi there" },
+                { "role": "tool", "tool_call_id": "call-1", "content": "sunny" },
+            ])
+        );
+    }
+
+    /// No model emits an image, so one recorded against an assistant turn is
+    /// a replay hazard; it must not drag the turn into the array form.
+    #[test]
+    fn assistant_image_is_dropped_and_keeps_string_content() {
+        let wire = to_wire_messages(&Message::assistant(vec![
+            ContentBlock::Image {
+                media_type: "image/png".into(),
+                data: "iVBORw0KGgo=".into(),
+            },
+            ContentBlock::Text {
+                text: "answer".into(),
+            },
+        ]));
+        assert_eq!(
+            wire,
+            vec![json!({ "role": "assistant", "content": "answer" })]
+        );
+    }
+
+    /// An image with no accompanying text still has to produce a message —
+    /// the old string path would have emitted `"content": ""`.
+    #[test]
+    fn image_only_message_carries_just_the_image_part() {
+        let wire = to_wire_messages(&Message {
+            role: Role::User,
+            content: vec![ContentBlock::Image {
+                media_type: "image/jpeg".into(),
+                data: "/9j/4AAQ".into(),
+            }],
+        });
+        assert_eq!(
+            wire,
+            vec![json!({
+                "role": "user",
+                "content": [{
+                    "type": "image_url",
+                    "image_url": { "url": "data:image/jpeg;base64,/9j/4AAQ" },
+                }],
+            })]
+        );
+    }
+
+    /// Tool results still come out as their own `role: "tool"` messages and
+    /// stay ahead of the image-bearing user turn.
+    #[test]
+    fn tool_results_still_precede_an_image_bearing_user_turn() {
+        let wire = to_wire_messages(&Message {
+            role: Role::User,
+            content: vec![
+                ContentBlock::ToolResult {
+                    tool_use_id: "call-1".into(),
+                    name: "screenshot".into(),
+                    content: "captured".into(),
+                    is_error: false,
+                },
+                ContentBlock::Image {
+                    media_type: "image/png".into(),
+                    data: "iVBORw0KGgo=".into(),
+                },
+            ],
+        });
+        assert_eq!(wire.len(), 2);
+        assert_eq!(
+            wire[0],
+            json!({ "role": "tool", "tool_call_id": "call-1", "content": "captured" })
+        );
+        assert_eq!(wire[1]["content"][0]["type"], "image_url");
     }
 }

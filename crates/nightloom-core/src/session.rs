@@ -1,4 +1,4 @@
-use crate::message::{ContentBlock, Message, Role};
+use crate::message::{ContentBlock, ImageInput, Message, Role};
 use crate::provider::Usage;
 use crate::todo::TodoItem;
 use chrono::{DateTime, Utc};
@@ -22,6 +22,10 @@ pub enum SessionEvent {
     },
     UserMessage {
         text: String,
+        /// Images the user attached to this turn. Absent from every log
+        /// written before attachments existed, hence the `default`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<ImageInput>,
         at: DateTime<Utc>,
     },
     AssistantMessage {
@@ -132,8 +136,13 @@ impl Session {
     }
 
     pub fn record_user(&mut self, text: impl Into<String>) {
+        self.record_user_with_images(text, Vec::new());
+    }
+
+    pub fn record_user_with_images(&mut self, text: impl Into<String>, images: Vec<ImageInput>) {
         self.record(SessionEvent::UserMessage {
             text: text.into(),
+            images,
             at: Utc::now(),
         });
     }
@@ -200,11 +209,16 @@ impl Session {
     /// session can't resurrect last week's clock or a task list that has
     /// since moved on.
     ///
-    /// It attaches only when the projection ends in a plain user text
-    /// message — the first round of a turn. On tool-continuation rounds the
-    /// tail is a tool-result message, where an extra text block is a wire
-    /// hazard (Gemini pairs function responses strictly), and the sidecar
-    /// from round one is still in context anyway.
+    /// It attaches only when the projection ends in a user message carrying
+    /// no tool results — the first round of a turn. On tool-continuation
+    /// rounds the tail is a tool-result message, where an extra text block is
+    /// a wire hazard (Gemini pairs function responses strictly), and the
+    /// sidecar from round one is still in context anyway.
+    ///
+    /// The test is for the absence of `ToolResult`, not the presence of only
+    /// `Text`: a turn where the user attached an image is still round one,
+    /// and an "all blocks are text" rule would quietly drop the clock, the
+    /// gauge and the task list for exactly the turns that carry an image.
     pub fn messages_with_sidecar(&self, sidecar: Option<&str>) -> Vec<Message> {
         let mut messages = self.project();
         let Some(sidecar) = sidecar.map(str::trim).filter(|s| !s.is_empty()) else {
@@ -212,10 +226,10 @@ impl Session {
         };
         if let Some(last) = messages.last_mut()
             && last.role == Role::User
-            && last
+            && !last
                 .content
                 .iter()
-                .all(|b| matches!(b, ContentBlock::Text { .. }))
+                .any(|b| matches!(b, ContentBlock::ToolResult { .. }))
         {
             last.content.push(ContentBlock::Text {
                 text: sidecar.to_string(),
@@ -228,8 +242,25 @@ impl Session {
         let mut messages: Vec<Message> = Vec::new();
         for e in &self.events {
             match e {
-                SessionEvent::UserMessage { text, .. } => {
-                    messages.push(Message::user(text.clone()));
+                SessionEvent::UserMessage { text, images, .. } => {
+                    let mut content: Vec<ContentBlock> = images
+                        .iter()
+                        .map(|i| ContentBlock::Image {
+                            media_type: i.media_type.clone(),
+                            data: i.data.clone(),
+                        })
+                        .collect();
+                    // Images lead, as both Anthropic and OpenAI advise, and
+                    // an empty caption is omitted rather than sent: an empty
+                    // text block is rejected on the wire, and "here is an
+                    // image" with nothing said about it is a real turn.
+                    if !text.is_empty() || content.is_empty() {
+                        content.push(ContentBlock::Text { text: text.clone() });
+                    }
+                    messages.push(Message {
+                        role: Role::User,
+                        content,
+                    });
                 }
                 SessionEvent::AssistantMessage { blocks, .. } => {
                     messages.push(Message {
@@ -459,6 +490,59 @@ mod tests {
         assert_eq!(msgs[0].text(), "hello<status>now</status>");
         // …and it stays out of the log, so replay never resurrects it.
         assert_eq!(s.messages()[0].content.len(), 1);
+    }
+
+    fn one_image() -> Vec<ImageInput> {
+        vec![ImageInput {
+            media_type: "image/png".into(),
+            data: "aGk=".into(),
+        }]
+    }
+
+    #[test]
+    fn an_image_turn_projects_images_before_the_caption() {
+        let mut session = Session::new();
+        session.record_user_with_images("what is this?", one_image());
+        let messages = session.messages();
+        assert_eq!(messages.len(), 1);
+        assert!(matches!(
+            messages[0].content.as_slice(),
+            [ContentBlock::Image { .. }, ContentBlock::Text { .. }]
+        ));
+    }
+
+    /// An uncaptioned attachment is a real turn, and an empty text block is
+    /// rejected on the wire — so the caption is omitted, not sent empty.
+    #[test]
+    fn an_uncaptioned_image_carries_no_empty_text_block() {
+        let mut session = Session::new();
+        session.record_user_with_images("", one_image());
+        assert!(matches!(
+            session.messages()[0].content.as_slice(),
+            [ContentBlock::Image { .. }]
+        ));
+    }
+
+    /// A turn with an attachment is still round one. The old guard asked
+    /// whether every block was text, which quietly dropped the clock, the
+    /// gauge and the task list for exactly the turns carrying an image.
+    #[test]
+    fn sidecar_still_attaches_to_a_user_turn_with_an_image() {
+        let mut session = Session::new();
+        session.record_user_with_images("look", one_image());
+        let messages = session.messages_with_sidecar(Some("time: now"));
+        assert_eq!(messages[0].content.len(), 3);
+        assert!(messages[0].text().contains("time: now"));
+    }
+
+    /// Logs written before attachments existed have no `images` key at all.
+    #[test]
+    fn a_user_message_without_images_loads_and_stays_that_shape() {
+        let json = r#"{"event":"user_message","text":"hi","at":"2026-01-01T00:00:00Z"}"#;
+        let event: SessionEvent = serde_json::from_str(json).unwrap();
+        assert!(matches!(&event, SessionEvent::UserMessage { images, .. } if images.is_empty()));
+        let back = serde_json::to_string(&event).unwrap();
+        assert!(!back.contains("images"), "{back}");
     }
 
     #[test]

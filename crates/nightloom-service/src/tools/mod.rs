@@ -19,18 +19,22 @@
 //! Path-taking tools are confined to a [`Root`] — see that type for what the
 //! confinement does and does not cover.
 
+mod compact;
 mod files;
 mod root;
 mod search;
 mod shell;
+mod task;
 mod todo;
 
+pub use compact::{CompactContext, CompactSignal};
 pub use root::Root;
+pub use task::{Subagent, TurnHandle};
 pub use todo::TodoWrite;
 
 use chrono::{Local, Utc};
 use nightloom_core::ToolDef;
-use nightloom_core::tool::Tool;
+use nightloom_core::tool::{Effect, Tool};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
@@ -92,6 +96,10 @@ struct CurrentTime;
 
 #[async_trait::async_trait]
 impl Tool for CurrentTime {
+    fn effect(&self) -> Effect {
+        Effect::ReadOnly
+    }
+
     fn def(&self) -> ToolDef {
         ToolDef {
             name: "current_time".into(),
@@ -151,6 +159,36 @@ mod tests {
         );
     }
 
+    /// The classification an approval policy sorts on, pinned in one place.
+    ///
+    /// A tool that never declares an effect is `Mutating`, so the risk this
+    /// guards against is the opposite one: a tool talked into `ReadOnly`
+    /// because it is *usually* harmless, after which no user is ever asked
+    /// about it again.
+    #[test]
+    fn effects_are_classified_deliberately() {
+        let mut tools = builtin();
+        tools.push(Box::new(CompactContext::new(CompactSignal::new())));
+        let classified: Vec<(String, Effect)> =
+            tools.iter().map(|t| (t.def().name, t.effect())).collect();
+        assert_eq!(
+            classified,
+            [
+                ("read_file", Effect::ReadOnly),
+                ("write_file", Effect::Mutating),
+                ("edit_file", Effect::Mutating),
+                ("list_dir", Effect::ReadOnly),
+                ("glob", Effect::ReadOnly),
+                ("grep", Effect::ReadOnly),
+                ("bash", Effect::Mutating),
+                ("current_time", Effect::ReadOnly),
+                ("todo_write", Effect::Session),
+                ("compact_context", Effect::Session),
+            ]
+            .map(|(name, effect)| (name.to_string(), effect))
+        );
+    }
+
     /// Descriptions are tokens the model reads on every request. A wrapped
     /// literal that forgets its line-continuation backslash leaks a long run
     /// of source indentation into the prompt, which is invisible in the
@@ -158,7 +196,15 @@ mod tests {
     /// coming back.
     #[test]
     fn descriptions_carry_no_stray_whitespace() {
-        for tool in builtin() {
+        // The two that are not in `builtin()` still ship descriptions the
+        // model pays for, and are the likeliest to be missed by this guard.
+        let mut tools = builtin();
+        tools.push(Box::new(CompactContext::new(CompactSignal::new())));
+        tools.push(Box::new(Subagent::new(
+            std::sync::Arc::new(|| Err("not used".into())),
+            std::sync::Arc::new(TurnHandle::default()),
+        )));
+        for tool in tools {
             let def = tool.def();
             let d = &def.description;
             assert!(!d.is_empty(), "{}: empty description", def.name);

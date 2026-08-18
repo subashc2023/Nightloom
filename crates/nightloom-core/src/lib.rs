@@ -12,11 +12,11 @@ pub mod session;
 pub mod todo;
 pub mod tool;
 
-pub use message::{ContentBlock, Message, Role};
+pub use message::{ContentBlock, ImageInput, Message, Role};
 pub use prompt::{Segment, SegmentKind, SystemPrompt};
 pub use provider::{
     ChatRequest, EventStream, Provider, ProviderError, StreamEvent, Thinking, ToolDef, Usage,
 };
 pub use session::{Session, SessionEvent};
 pub use todo::{TodoItem, TodoStatus};
-pub use tool::Tool;
+pub use tool::{Effect, Tool};

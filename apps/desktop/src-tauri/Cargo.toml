@@ -13,6 +13,7 @@ nightloom-core.workspace = true
 nightloom-service.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+async-trait.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 # API keys entered in-app land in the OS credential store (Windows

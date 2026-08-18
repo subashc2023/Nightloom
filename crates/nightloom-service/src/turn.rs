@@ -1,11 +1,14 @@
+use crate::approval::{Approver, Decision, PendingCall, denial_message};
 use crate::sidecar::{self, SidecarContext, SidecarPart};
+use crate::tools::{CompactContext, CompactSignal, Subagent, TurnHandle};
 use futures::StreamExt;
 use nightloom_core::{
-    ChatRequest, ContentBlock, Message, Provider, ProviderError, Role, Session, StreamEvent,
-    SystemPrompt, Thinking, Usage,
-    tool::{Tool, defs, run_tool},
+    ChatRequest, ContentBlock, ImageInput, Message, Provider, ProviderError, Role, Session,
+    StreamEvent, SystemPrompt, Thinking, Usage,
+    tool::{Tool, defs, effect_of, run_tool},
 };
 use serde::Serialize;
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 /// Streaming progress of one turn, for a shell to render as it happens.
@@ -35,10 +38,28 @@ pub enum TurnEvent {
         content: String,
         is_error: bool,
     },
+    /// The user refused a call, so it never ran.
+    ///
+    /// There is no matching [`ToolResult`](TurnEvent::ToolResult) for it —
+    /// nothing was executed, and a result event would say otherwise. The
+    /// session log does record a `ToolResult` with `is_error: true`, because
+    /// the model has to be told and a `tool_use` block without a result is
+    /// invalid on replay; `reason` is what the shell put in it.
+    ToolDenied {
+        tool_use_id: String,
+        name: String,
+        reason: String,
+    },
     /// The per-turn tool-round cap was hit: the final round's results are
     /// recorded, but the model gets no further reply this turn.
     RoundLimit {
         rounds: usize,
+    },
+    /// The model asked to compact and the engine did, once the reply was
+    /// finished. The session's projection now restarts from `summary`, so a
+    /// shell holding a live transcript buffer has to re-read it.
+    Compacted {
+        summary: String,
     },
     /// One round's token accounting, as soon as the provider reports it.
     ///
@@ -50,6 +71,34 @@ pub enum TurnEvent {
     Usage {
         usage: Usage,
     },
+}
+
+/// What the user is sending this turn.
+///
+/// A bare `&str` or `String` converts, so the common text-only call reads the
+/// way it always did; attachments are the case that has to say so.
+#[derive(Debug, Clone, Default)]
+pub struct TurnInput {
+    pub text: String,
+    pub images: Vec<ImageInput>,
+}
+
+impl From<&str> for TurnInput {
+    fn from(text: &str) -> Self {
+        Self {
+            text: text.to_string(),
+            images: Vec::new(),
+        }
+    }
+}
+
+impl From<String> for TurnInput {
+    fn from(text: String) -> Self {
+        Self {
+            text,
+            images: Vec::new(),
+        }
+    }
 }
 
 /// How a turn ended. `usage` and `stop_reason` cover the whole turn: usage
@@ -90,6 +139,22 @@ pub struct Chat {
     /// the gauge reporting usage without a percentage rather than inventing
     /// a limit.
     pub context_limit: Option<u64>,
+    /// Who decides whether a tool call may run. `None` runs everything.
+    ///
+    /// Allow-by-default is deliberate. The alternative — refusing until a
+    /// policy is installed — would silently turn every existing caller
+    /// (the CLI, the probe, any embedder) into one whose tools all fail,
+    /// and it would do so at runtime rather than at the type level, since
+    /// the field has to have a default. A shell that wants a gate installs
+    /// one; see [`AutoApprove`](crate::AutoApprove) for the policy nearly
+    /// every shell wants.
+    pub approver: Option<Arc<dyn Approver>>,
+    /// Set when the model holds the `compact_context` tool. Read once per
+    /// turn, after the reply lands.
+    compact_signal: Option<CompactSignal>,
+    /// Set when the model holds the `task` tool. Refreshed each round so a
+    /// subagent inherits the live cancellation token and approval policy.
+    subagents: Option<Arc<TurnHandle>>,
 }
 
 impl Chat {
@@ -104,7 +169,46 @@ impl Chat {
             max_rounds: 8,
             sidecar: sidecar::default_parts(),
             context_limit: None,
+            approver: None,
+            compact_signal: None,
+            subagents: None,
         }
+    }
+
+    /// Hand the model the `task` tool: a subagent with its own context
+    /// window, whose only output is its final message.
+    ///
+    /// `factory` builds the sub-`Chat`, because only the shell knows how to
+    /// construct a provider. Whatever it returns has its own `task` tool
+    /// stripped and inherits this chat's approver, so a factory cannot open
+    /// a recursion or a hole around the approval gate by omission — see
+    /// [`TurnHandle`].
+    pub fn enable_subagents(
+        &mut self,
+        factory: Arc<dyn Fn() -> Result<Chat, String> + Send + Sync>,
+    ) {
+        let handle = Arc::new(TurnHandle::default());
+        self.tools
+            .push(Box::new(Subagent::new(factory, handle.clone())));
+        self.subagents = Some(handle);
+    }
+
+    /// Hand the model the `compact_context` tool and honour what it asks for.
+    ///
+    /// Both halves matter and they live in different places, which is why this
+    /// is one call rather than a tool the shell can push on its own: the tool
+    /// records the request, and the engine — the only thing that knows when a
+    /// turn is over — acts on it. Pushing [`CompactContext`] onto `tools`
+    /// without wiring the signal here would advertise a capability that
+    /// accepts every request and performs none of them.
+    ///
+    /// It also switches on the context gauge's advice to use it, so the model
+    /// is told the tool exists at the moment the number starts to matter.
+    pub fn enable_self_compaction(&mut self) {
+        let signal = CompactSignal::new();
+        self.tools
+            .push(Box::new(CompactContext::new(signal.clone())));
+        self.compact_signal = Some(signal);
     }
 
     /// Run one user turn: record it, stream the reply into the session and
@@ -115,17 +219,73 @@ impl Chat {
     /// pending tool calls stripped (a `tool_use` without a result is invalid
     /// on replay) and returns with `interrupted: true`; a mid-stream error
     /// records the same way, then surfaces as `Err`.
+    ///
+    /// If the model called `compact_context` during the turn (see
+    /// [`enable_self_compaction`](Self::enable_self_compaction)), the session
+    /// is compacted here — after the reply is complete, never mid-loop.
     pub async fn run_turn(
         &self,
         session: &mut Session,
-        input: &str,
+        input: impl Into<TurnInput>,
         cancel: &CancellationToken,
         on_event: &mut (dyn FnMut(TurnEvent) + Send),
     ) -> Result<TurnOutcome, ProviderError> {
-        session.record_user(input);
+        let outcome = self
+            .turn_rounds(session, input.into(), cancel, on_event)
+            .await;
+        // The request is taken either way: a compaction the model asked for
+        // during a turn that then failed is stale, and leaving the flag up
+        // would fire it at the end of the *next* turn instead.
+        if self.compact_signal.as_ref().is_some_and(|s| s.take())
+            && matches!(&outcome, Ok(o) if !o.interrupted)
+        {
+            // A failed summarization leaves the session untouched and does
+            // not fail the turn, which already succeeded. The model finds the
+            // window still full next turn and is advised again — the loop is
+            // self-correcting, and losing the reply over it would not be.
+            if let Ok(done) = self.compact(session, cancel).await
+                && !done.interrupted
+            {
+                on_event(TurnEvent::Compacted {
+                    summary: done.summary,
+                });
+            }
+        }
+        outcome
+    }
+
+    /// The streaming tool loop itself. [`run_turn`](Self::run_turn) wraps it
+    /// to settle a pending compaction at the boundary.
+    async fn turn_rounds(
+        &self,
+        session: &mut Session,
+        input: TurnInput,
+        cancel: &CancellationToken,
+        on_event: &mut (dyn FnMut(TurnEvent) + Send),
+    ) -> Result<TurnOutcome, ProviderError> {
+        session.record_user_with_images(input.text, input.images);
         let mut turn_usage = Usage::default();
 
         for round in 1..=self.max_rounds.max(1) {
+            // A turn cancelled while the previous round's tools ran must not
+            // open another request. The select below is not enough on its
+            // own: both of its branches are ready, so which one wins is a
+            // coin flip per event, and a fast stream can win every flip and
+            // carry the round — and any compaction it requested — through to
+            // completion after the user has already interrupted.
+            if cancel.is_cancelled() {
+                return Ok(TurnOutcome {
+                    interrupted: true,
+                    stop_reason: None,
+                    usage: turn_usage,
+                });
+            }
+            // Lend this turn's token and approval policy to any subagent the
+            // model spawns. Refreshed per round rather than captured at setup
+            // so the order a shell configures `Chat` in cannot matter.
+            if let Some(handle) = &self.subagents {
+                handle.lend(cancel, self.approver.clone());
+            }
             // Composed per round, but it only lands on round one: the
             // projection attaches it to a trailing *user text* message, and
             // later rounds end in tool results. Rounds 2+ still see round
@@ -136,6 +296,7 @@ impl Chat {
                     session,
                     model: &self.model,
                     context_limit: self.context_limit,
+                    can_self_compact: self.compact_signal.is_some(),
                 },
             );
             let request = ChatRequest {
@@ -314,22 +475,45 @@ impl Chat {
             }
             // Execute even on the last round so no call is left without a
             // result in the session; just don't go back to the provider.
+            // Approval is asked for on this round too, for the same reason:
+            // the call runs, so the user gets to stop it.
             for (id, name, input) in calls {
-                let result = run_tool(&self.tools, &id, &name, input).await;
-                if let ContentBlock::ToolResult {
-                    tool_use_id,
-                    name,
-                    content,
-                    is_error,
-                } = &result
-                {
-                    on_event(TurnEvent::ToolResult {
-                        tool_use_id: tool_use_id.clone(),
-                        name: name.clone(),
-                        content: content.clone(),
-                        is_error: *is_error,
-                    });
-                }
+                let result = match self.decide(&id, &name, &input).await {
+                    Some(reason) => {
+                        on_event(TurnEvent::ToolDenied {
+                            tool_use_id: id.clone(),
+                            name: name.clone(),
+                            reason: reason.clone(),
+                        });
+                        // Recorded like any failed call, even though nothing
+                        // ran: the model has to be told, and the tool_use
+                        // block needs the matching result replay requires.
+                        ContentBlock::ToolResult {
+                            tool_use_id: id.clone(),
+                            name: name.clone(),
+                            content: denial_message(&name, &reason),
+                            is_error: true,
+                        }
+                    }
+                    None => {
+                        let result = run_tool(&self.tools, &id, &name, input).await;
+                        if let ContentBlock::ToolResult {
+                            tool_use_id,
+                            name,
+                            content,
+                            is_error,
+                        } = &result
+                        {
+                            on_event(TurnEvent::ToolResult {
+                                tool_use_id: tool_use_id.clone(),
+                                name: name.clone(),
+                                content: content.clone(),
+                                is_error: *is_error,
+                            });
+                        }
+                        result
+                    }
+                };
                 session.record_tool_result(&result);
             }
             // Some tools write conversation state rather than just returning
@@ -352,6 +536,31 @@ impl Chat {
             }
         }
         unreachable!("every round either returns or continues the tool loop")
+    }
+
+    /// Put one call to the approver, if there is one. `Some(reason)` means
+    /// refused — the reason is the shell's, verbatim, and may be empty.
+    ///
+    /// A name that matches no registered tool is never asked about: there is
+    /// nothing to consent to, and [`run_tool`] already tells the model it
+    /// hallucinated the tool.
+    async fn decide(&self, id: &str, name: &str, input: &serde_json::Value) -> Option<String> {
+        let approver = self.approver.as_ref()?;
+        let effect = effect_of(&self.tools, name)?;
+        match approver
+            .approve(&PendingCall {
+                id,
+                name,
+                input,
+                effect,
+            })
+            .await
+        {
+            // `AllowAlways` is a promise about later calls that only the
+            // policy can keep; here it is simply a yes.
+            Decision::Allow | Decision::AllowAlways => None,
+            Decision::Deny(reason) => Some(reason),
+        }
     }
 
     /// Compact the session: ask the model for a briefing-style summary of the
@@ -437,8 +646,10 @@ commentary.";
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::approval::AutoApprove;
     use crate::tools::TodoWrite;
     use nightloom_core::TodoStatus;
+    use nightloom_core::tool::Effect;
     use nightloom_core::{EventStream, SessionEvent, ToolDef};
     use serde_json::json;
     use std::sync::{Arc, Mutex};
@@ -560,6 +771,258 @@ mod tests {
         async fn call(&self, input: serde_json::Value) -> Result<String, String> {
             Ok(input["msg"].as_str().unwrap_or_default().to_string())
         }
+    }
+
+    /// A second mutating tool, so a per-tool approval can be shown not to
+    /// cover its neighbour.
+    struct Shout;
+
+    #[async_trait::async_trait]
+    impl Tool for Shout {
+        fn def(&self) -> ToolDef {
+            ToolDef {
+                name: "shout".into(),
+                description: "echo the msg argument, loudly".into(),
+                input_schema: json!({ "type": "object" }),
+            }
+        }
+
+        async fn call(&self, input: serde_json::Value) -> Result<String, String> {
+            Ok(input["msg"].as_str().unwrap_or_default().to_uppercase())
+        }
+    }
+
+    /// A tool that only reports its name, for asserting on what a sub-chat
+    /// was actually offered.
+    struct Named(&'static str);
+
+    #[async_trait::async_trait]
+    impl Tool for Named {
+        fn def(&self) -> ToolDef {
+            ToolDef {
+                name: self.0.into(),
+                description: "a tool".into(),
+                input_schema: json!({ "type": "object" }),
+            }
+        }
+
+        async fn call(&self, _input: serde_json::Value) -> Result<String, String> {
+            Ok("ran".into())
+        }
+    }
+
+    /// Only the subagent's final message crosses back — that is the whole
+    /// bargain, and the reason the sub-session is never logged.
+    #[tokio::test]
+    async fn a_subagent_returns_only_its_final_answer() {
+        let (provider, _) = Scripted::recording(vec![
+            tool_call("task", json!({"prompt": "go find out"})),
+            says("the parent's reply"),
+        ]);
+        let mut chat = Chat::new(provider, "test-model");
+        chat.enable_subagents(Arc::new(|| {
+            Ok(Chat::new(
+                Scripted::provider(vec![tool_call("peek", json!({})), says("  THE ANSWER  ")]),
+                "sub-model",
+            ))
+        }));
+        // The sub-chat above calls `peek`, which it does not have; that is
+        // deliberate — the failure is the subagent's to handle and must not
+        // reach the parent, which sees only the final text.
+        let mut session = Session::new();
+        let (_, events) = run(&chat, &mut session, "question").await;
+
+        let result = events.iter().find_map(|e| match e {
+            TurnEvent::ToolResult { name, content, .. } if name == "task" => Some(content.clone()),
+            _ => None,
+        });
+        assert_eq!(result.as_deref(), Some("THE ANSWER"));
+
+        // The parent's log holds one exchange plus the task result — none of
+        // the subagent's own turns.
+        assert!(
+            !session
+                .events()
+                .iter()
+                .any(|e| matches!(e, SessionEvent::AssistantMessage { model, .. } if model == "sub-model")),
+            "the subagent's turns leaked into the parent log"
+        );
+    }
+
+    /// A subagent that can spawn subagents recurses until something runs out,
+    /// and a fresh window is the point anyway — so the tool is stripped from
+    /// whatever the factory hands back, rather than trusted not to be there.
+    #[tokio::test]
+    async fn a_subagent_is_not_offered_the_task_tool() {
+        let (sub_provider, sub_seen) = Scripted::recording(vec![says("done")]);
+        let sub_provider = Mutex::new(Some(sub_provider));
+        let (provider, _) =
+            Scripted::recording(vec![tool_call("task", json!({"prompt": "go"})), says("ok")]);
+        let mut chat = Chat::new(provider, "test-model");
+        chat.enable_subagents(Arc::new(move || {
+            let mut sub = Chat::new(
+                sub_provider.lock().unwrap().take().expect("one spawn"),
+                "sub-model",
+            );
+            // A factory that hands back the parent's whole tool set — the
+            // mistake the stripping exists to survive.
+            sub.tools = vec![Box::new(Named("task")), Box::new(Named("grep"))];
+            Ok(sub)
+        }));
+        run(&chat, &mut Session::new(), "question").await.0.unwrap();
+
+        let offered: Vec<String> = sub_seen.lock().unwrap()[0]
+            .tools
+            .iter()
+            .map(|t| t.name.clone())
+            .collect();
+        assert_eq!(offered, ["grep"], "the subagent was offered a task tool");
+    }
+
+    /// Without this the `task` tool is a door beside the approval gate: the
+    /// model could reach every mutating tool by asking a subagent to run it.
+    #[tokio::test]
+    async fn a_subagent_inherits_the_approval_policy() {
+        // Allow the spawn, refuse what the subagent then tries: the gate has
+        // to bite *inside* the subagent, not merely at its front door.
+        let (gate, asked) = Gate::new(|name| match name {
+            "task" => Decision::Allow,
+            _ => Decision::Deny("not this time".into()),
+        });
+        let (provider, _) =
+            Scripted::recording(vec![tool_call("task", json!({"prompt": "go"})), says("ok")]);
+        let mut chat = Chat::new(provider, "test-model");
+        chat.approver = Some(gate);
+        chat.enable_subagents(Arc::new(|| {
+            let mut sub = Chat::new(
+                Scripted::provider(vec![
+                    tool_call("echo", json!({"msg": "hi"})),
+                    says("finished anyway"),
+                ]),
+                "sub-model",
+            );
+            sub.tools = vec![Box::new(Echo)];
+            Ok(sub)
+        }));
+        run(&chat, &mut Session::new(), "question").await.0.unwrap();
+
+        // Both the parent's `task` call and the subagent's `echo` call were
+        // put to the same policy — the second is the one that matters.
+        assert_eq!(*asked.lock().unwrap(), ["task", "echo"]);
+    }
+
+    /// The whole point of routing compaction through a tool: it must land
+    /// *after* the reply, not in the middle of the loop that produced it.
+    #[tokio::test]
+    async fn a_requested_compaction_runs_once_the_reply_is_done() {
+        let (provider, seen) = Scripted::recording(vec![
+            tool_call("compact_context", json!({})),
+            says("here is the answer"),
+            says("SUMMARY OF EVERYTHING"),
+        ]);
+        let mut chat = Chat::new(provider, "test-model");
+        chat.enable_self_compaction();
+        let mut session = Session::new();
+        let (out, events) = run(&chat, &mut session, "question").await;
+        assert!(!out.unwrap().interrupted);
+
+        // Three requests: the call, the reply, then the summarizer — in that
+        // order. A compaction that fired mid-loop would have summarized a
+        // conversation the model had not finished having.
+        assert_eq!(seen.lock().unwrap().len(), 3);
+        assert!(
+            matches!(events.last(), Some(TurnEvent::Compacted { summary }) if summary == "SUMMARY OF EVERYTHING"),
+            "{events:?}"
+        );
+
+        // The reply survives compaction in the log even though the model can
+        // no longer see it: the log is the source of truth, the projection is
+        // what got shortened.
+        assert!(matches!(
+            session.events().last(),
+            Some(SessionEvent::Compaction { .. })
+        ));
+        let projected = session.messages();
+        assert_eq!(projected.len(), 1);
+        assert!(projected[0].text().contains("SUMMARY OF EVERYTHING"));
+    }
+
+    /// The tool has to be wired, not merely constructed: a shell that pushes
+    /// `CompactContext` itself gets a tool that accepts every request and
+    /// honours none, so `enable_self_compaction` is the only way in.
+    #[tokio::test]
+    async fn without_enabling_it_the_tool_is_not_offered() {
+        let (provider, seen) = Scripted::recording(vec![says("hi")]);
+        let chat = Chat::new(provider, "test-model");
+        let mut session = Session::new();
+        run(&chat, &mut session, "question").await.0.unwrap();
+        let requests = seen.lock().unwrap();
+        assert!(
+            !requests[0]
+                .tools
+                .iter()
+                .any(|t| t.name == "compact_context"),
+            "compact_context offered without being enabled"
+        );
+    }
+
+    /// An interrupted turn drops the request rather than carrying it into the
+    /// next one, where it would compact a conversation nobody asked to lose.
+    #[tokio::test]
+    async fn a_cancelled_turn_discards_the_compaction_request() {
+        let provider = Scripted::provider(vec![
+            tool_call("compact_context", json!({})),
+            says("reply"),
+            says("SUMMARY"),
+        ]);
+        let mut chat = Chat::new(provider, "test-model");
+        chat.enable_self_compaction();
+        let mut session = Session::new();
+
+        // Cancel from the callback, the moment the tool has actually run —
+        // pre-cancelling would race the tool call and could pass without ever
+        // raising the request the test is about.
+        let cancel = CancellationToken::new();
+        let mut events = Vec::new();
+        chat.run_turn(&mut session, "q", &cancel, &mut |e| {
+            if matches!(e, TurnEvent::ToolResult { .. }) {
+                cancel.cancel();
+            }
+            events.push(e);
+        })
+        .await
+        .unwrap();
+        assert!(
+            events.iter().any(
+                |e| matches!(e, TurnEvent::ToolResult { name, .. } if name == "compact_context")
+            ),
+            "the tool never ran, so the test proves nothing: {events:?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, TurnEvent::Compacted { .. }))
+        );
+
+        // And the stale request must not fire at the end of the next turn.
+        let mut events = Vec::new();
+        let cancel = CancellationToken::new();
+        chat.run_turn(&mut session, "q2", &cancel, &mut |e| events.push(e))
+            .await
+            .unwrap();
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, TurnEvent::Compacted { .. })),
+            "a request from a cancelled turn leaked into the next one"
+        );
+        assert!(
+            !session
+                .events()
+                .iter()
+                .any(|e| matches!(e, SessionEvent::Compaction { .. })),
+            "session was compacted despite the request being cancelled"
+        );
     }
 
     #[tokio::test]
@@ -967,6 +1430,241 @@ mod tests {
         let out = chat.compact(&mut session, &cancel).await.unwrap();
         assert!(out.interrupted);
         assert_eq!(session.events().len(), before);
+    }
+
+    /// A read-only sibling of `Echo`, for proving the gate sorts on effect.
+    struct Peek;
+
+    #[async_trait::async_trait]
+    impl Tool for Peek {
+        fn def(&self) -> ToolDef {
+            ToolDef {
+                name: "peek".into(),
+                description: "look at something".into(),
+                input_schema: json!({ "type": "object" }),
+            }
+        }
+
+        fn effect(&self) -> Effect {
+            Effect::ReadOnly
+        }
+
+        async fn call(&self, _input: serde_json::Value) -> Result<String, String> {
+            Ok("looked".into())
+        }
+    }
+
+    /// Answers from a closure and records every question, so a test can
+    /// assert on the questions that were *not* asked.
+    struct Gate {
+        asked: Arc<Mutex<Vec<String>>>,
+        answer: Box<dyn Fn(&str) -> Decision + Send + Sync>,
+    }
+
+    impl Gate {
+        fn new<F>(answer: F) -> (Arc<Self>, Arc<Mutex<Vec<String>>>)
+        where
+            F: Fn(&str) -> Decision + Send + Sync + 'static,
+        {
+            let asked = Arc::new(Mutex::new(Vec::new()));
+            let gate = Arc::new(Self {
+                asked: Arc::clone(&asked),
+                answer: Box::new(answer),
+            });
+            (gate, asked)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Approver for Gate {
+        async fn approve(&self, call: &PendingCall<'_>) -> Decision {
+            self.asked.lock().unwrap().push(call.name.to_string());
+            (self.answer)(call.name)
+        }
+    }
+
+    /// A refusal is a message to the model, not an abort: the call is
+    /// recorded as a failed result and the model gets a round to react.
+    #[tokio::test]
+    async fn a_denied_call_is_recorded_as_an_error_and_the_turn_continues() {
+        let (provider, seen) = Scripted::recording(vec![
+            tool_call("echo", json!({ "msg": "pong" })),
+            says("understood, I'll leave it alone"),
+        ]);
+        let mut chat = Chat::new(provider, "test-model");
+        chat.tools = vec![Box::new(Echo)];
+        let (gate, _) = Gate::new(|_| Decision::Deny("not that file".into()));
+        chat.approver = Some(gate);
+        let mut session = Session::new();
+        let (out, events) = run(&chat, &mut session, "call echo").await;
+
+        // The model was asked again after the refusal — that second request
+        // is the turn continuing.
+        assert_eq!(out.unwrap().stop_reason.as_deref(), Some("end_turn"));
+        assert_eq!(seen.lock().unwrap().len(), 2);
+
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, TurnEvent::ToolDenied { name, reason, .. }
+                    if name == "echo" && reason == "not that file"))
+        );
+        // Nothing executed, so nothing may claim to be a result of executing.
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, TurnEvent::ToolResult { .. }))
+        );
+
+        // But the log has one, or the tool_use block above it is invalid on
+        // replay — and its content is the denial, not the tool's output.
+        assert!(matches!(
+            session.events().iter().find(|e| matches!(e, SessionEvent::ToolResult { .. })),
+            Some(SessionEvent::ToolResult { is_error: true, content, .. })
+                if content.contains("refused permission") && content.contains("not that file")
+        ));
+        // user, assistant tool_use, user tool result, assistant text
+        assert_eq!(session.messages().len(), 4);
+    }
+
+    /// `AllowAlways` is remembered by the policy, not the engine — so it
+    /// only works if a shell wraps its prompt in [`AutoApprove`], which is
+    /// the arrangement this asserts end to end.
+    #[tokio::test]
+    async fn allow_always_stops_asking_for_that_tool_but_not_others() {
+        let (gate, asked) = Gate::new(|_| Decision::AllowAlways);
+        let provider = Scripted::provider(vec![
+            vec![
+                StreamEvent::ToolUse {
+                    id: "c1".into(),
+                    name: "echo".into(),
+                    input: json!({ "msg": "one" }),
+                    signature: None,
+                },
+                StreamEvent::ToolUse {
+                    id: "c2".into(),
+                    name: "echo".into(),
+                    input: json!({ "msg": "two" }),
+                    signature: None,
+                },
+                StreamEvent::ToolUse {
+                    id: "c3".into(),
+                    name: "shout".into(),
+                    input: json!({ "msg": "three" }),
+                    signature: None,
+                },
+                StreamEvent::End {
+                    stop_reason: Some("tool_use".into()),
+                },
+            ],
+            says("done"),
+        ]);
+        let mut chat = Chat::new(provider, "test-model");
+        chat.tools = vec![Box::new(Echo), Box::new(Shout)];
+        chat.approver = Some(Arc::new(AutoApprove::new(gate)));
+        let mut session = Session::new();
+        let (out, events) = run(&chat, &mut session, "call them").await;
+        assert!(!out.unwrap().interrupted);
+
+        assert_eq!(*asked.lock().unwrap(), ["echo", "shout"]);
+        // All three still ran: remembering the answer is not skipping the
+        // call.
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e, TurnEvent::ToolResult { .. }))
+                .count(),
+            3
+        );
+    }
+
+    /// Prompting on reads is how a user learns to answer without reading —
+    /// the gate has to stay quiet for anything that cannot act.
+    #[tokio::test]
+    async fn read_only_tools_are_never_asked_about() {
+        let (gate, asked) = Gate::new(|_| Decision::Deny("no".into()));
+        let provider = Scripted::provider(vec![tool_call("peek", json!({})), says("saw it")]);
+        let mut chat = Chat::new(provider, "test-model");
+        chat.tools = vec![Box::new(Peek)];
+        chat.approver = Some(Arc::new(AutoApprove::new(gate)));
+        let mut session = Session::new();
+        let (_, events) = run(&chat, &mut session, "have a look").await;
+
+        assert!(asked.lock().unwrap().is_empty());
+        assert!(events.iter().any(|e| matches!(
+            e,
+            TurnEvent::ToolResult { content, .. } if content == "looked"
+        )));
+    }
+
+    /// The default has to leave every existing caller — CLI, probe, any
+    /// embedder — running exactly as it did before the gate existed.
+    #[tokio::test]
+    async fn no_approver_runs_every_call() {
+        let provider = Scripted::provider(vec![
+            tool_call("echo", json!({ "msg": "pong" })),
+            says("done"),
+        ]);
+        let mut chat = Chat::new(provider, "test-model");
+        chat.tools = vec![Box::new(Echo)];
+        assert!(chat.approver.is_none());
+        let mut session = Session::new();
+        let (out, events) = run(&chat, &mut session, "call echo").await;
+        assert_eq!(out.unwrap().stop_reason.as_deref(), Some("end_turn"));
+        assert!(events.iter().any(|e| matches!(
+            e,
+            TurnEvent::ToolResult { content, is_error: false, .. } if content == "pong"
+        )));
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, TurnEvent::ToolDenied { .. }))
+        );
+    }
+
+    /// The final round executes its calls precisely so none is left without
+    /// a result; a refusal there has to hold the same line.
+    #[tokio::test]
+    async fn a_denial_on_the_final_round_still_records_a_result() {
+        let (gate, asked) = Gate::new(|_| Decision::Deny(String::new()));
+        let provider = Scripted::provider(vec![tool_call("echo", json!({ "msg": "pong" }))]);
+        let mut chat = Chat::new(provider, "test-model");
+        chat.tools = vec![Box::new(Echo)];
+        chat.approver = Some(gate);
+        chat.max_rounds = 1;
+        let mut session = Session::new();
+        let (out, events) = run(&chat, &mut session, "call echo").await;
+        assert!(!out.unwrap().interrupted);
+
+        assert_eq!(*asked.lock().unwrap(), ["echo"]);
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, TurnEvent::RoundLimit { rounds: 1 }))
+        );
+        assert!(matches!(
+            session.events().last(),
+            Some(SessionEvent::ToolResult { is_error: true, .. })
+        ));
+    }
+
+    /// A name no tool answers to is not a consent question. The model
+    /// invented the tool; there is nothing for a user to permit.
+    #[tokio::test]
+    async fn an_unknown_tool_is_not_put_to_the_user() {
+        let (gate, asked) = Gate::new(|_| Decision::Deny("no".into()));
+        let provider = Scripted::provider(vec![tool_call("no_such_tool", json!({})), says("oops")]);
+        let mut chat = Chat::new(provider, "test-model");
+        chat.tools = vec![Box::new(Echo)];
+        chat.approver = Some(gate);
+        let mut session = Session::new();
+        let (_, events) = run(&chat, &mut session, "go").await;
+
+        assert!(asked.lock().unwrap().is_empty());
+        assert!(events.iter().any(|e| matches!(
+            e,
+            TurnEvent::ToolResult { content, is_error: true, .. } if content.contains("unknown tool")
+        )));
     }
 
     #[tokio::test]

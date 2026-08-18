@@ -38,6 +38,9 @@ impl Bash {
 }
 
 #[async_trait::async_trait]
+// No `effect` override on purpose. `bash` is the least confined thing
+// here — it is not sandboxed at all — so the `Mutating` default is both
+// correct and the one that must never be relaxed.
 impl Tool for Bash {
     fn def(&self) -> ToolDef {
         ToolDef {

@@ -167,16 +167,25 @@ fn to_wire_items(message: &Message) -> Vec<Value> {
         }
         return items;
     }
-    let text_parts: Vec<Value> = message
+    // Only the user path reaches here — the assistant branch above returns —
+    // which is also why images need no role guard: an image recorded against
+    // an assistant turn falls into that branch's `_ => {}` and is dropped.
+    let parts: Vec<Value> = message
         .content
         .iter()
         .filter_map(|block| match block {
             ContentBlock::Text { text } => Some(json!({ "type": part_type, "text": text })),
+            // Responses takes the media type folded into a data URL rather
+            // than named separately, so the canonical pair is rejoined here.
+            ContentBlock::Image { media_type, data } => Some(json!({
+                "type": "input_image",
+                "image_url": format!("data:{media_type};base64,{data}"),
+            })),
             _ => None,
         })
         .collect();
-    if !text_parts.is_empty() {
-        items.push(json!({ "role": role, "content": text_parts }));
+    if !parts.is_empty() {
+        items.push(json!({ "role": role, "content": parts }));
     }
     items
 }
@@ -427,6 +436,55 @@ mod tests {
                     "content": [{ "type": "input_text", "text": "follow-up" }],
                 }),
             ]
+        );
+    }
+
+    #[test]
+    fn user_image_becomes_an_input_image_part() {
+        let items = to_wire_items(&Message {
+            role: Role::User,
+            content: vec![
+                ContentBlock::Image {
+                    media_type: "image/png".into(),
+                    data: "iVBORw0KGgo=".into(),
+                },
+                ContentBlock::Text {
+                    text: "what is this?".into(),
+                },
+            ],
+        });
+        assert_eq!(
+            items,
+            vec![json!({
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_image",
+                        "image_url": "data:image/png;base64,iVBORw0KGgo=",
+                    },
+                    { "type": "input_text", "text": "what is this?" },
+                ],
+            })]
+        );
+    }
+
+    #[test]
+    fn assistant_image_is_dropped() {
+        let items = to_wire_items(&Message::assistant(vec![
+            ContentBlock::Image {
+                media_type: "image/png".into(),
+                data: "iVBORw0KGgo=".into(),
+            },
+            ContentBlock::Text {
+                text: "it is sunny".into(),
+            },
+        ]));
+        assert_eq!(
+            items,
+            vec![json!({
+                "role": "assistant",
+                "content": [{ "type": "output_text", "text": "it is sunny" }],
+            })]
         );
     }
 

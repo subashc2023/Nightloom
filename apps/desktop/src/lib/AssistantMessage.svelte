@@ -1,7 +1,9 @@
 <script lang="ts">
   import type { Segment } from "./state.svelte";
-  import type { Usage } from "./types";
+  import type { ApprovalRequest, Usage } from "./types";
   import { renderMarkdown } from "./markdown";
+  import { compactJson } from "./toolinput";
+  import ApprovalPrompt from "./ApprovalPrompt.svelte";
 
   interface Footer {
     model: string;
@@ -13,8 +15,14 @@
     segs,
     footer = null,
     streaming = false,
-  }: { segs: Segment[]; footer?: Footer | null; streaming?: boolean } =
-    $props();
+    approvals = [],
+  }: {
+    segs: Segment[];
+    footer?: Footer | null;
+    streaming?: boolean;
+    /** Calls in these segments still waiting on the user's decision. */
+    approvals?: ApprovalRequest[];
+  } = $props();
 
   // Per-segment expansion overrides for thinking pills, keyed by index.
   // With no override, a thinking block is open only while actively streaming.
@@ -28,14 +36,6 @@
 
   function toggle(i: number, seg: Segment) {
     expanded[i] = !isOpen(i, seg);
-  }
-
-  function compactJson(input: unknown): string {
-    try {
-      return JSON.stringify(input) ?? "null";
-    } catch {
-      return String(input);
-    }
   }
 </script>
 
@@ -57,12 +57,25 @@
         <div class="tool-chip">
           <span class="tool-name">⚒ {seg.call.name}</span>
           <span class="tool-input">{compactJson(seg.call.input)}</span>
+          {#if seg.call.denied}<span class="denied-tag">denied</span>{/if}
         </div>
-        {#if seg.call.result}
+        {#if seg.call.denied}
+          <!-- The reason can come from the gate itself (a cancelled turn
+               refuses what it left parked), so it stands in for "you said no"
+               rather than being appended to it. -->
+          <div class="denied-note">
+            Not run — permission denied{seg.call.result?.content
+              ? `: ${seg.call.result.content}`
+              : "."}
+          </div>
+        {:else if seg.call.result}
           <pre
             class="tool-result"
             class:error={seg.call.result.is_error}>{seg.call.result.content}</pre>
         {/if}
+        {#each approvals.filter((a) => a.id === seg.call.id) as req (req.id)}
+          <ApprovalPrompt {req} />
+        {/each}
       </div>
     {:else if seg.kind === "notice"}
       <div class="notice">{seg.text}</div>
@@ -149,6 +162,19 @@
     white-space: pre-wrap;
     word-break: break-word;
     margin: 0;
+  }
+  .denied-tag {
+    color: var(--error);
+    border: 1px solid rgba(246, 109, 124, 0.4);
+    border-radius: 999px;
+    padding: 0 0.45rem;
+    font-size: 0.68rem;
+    white-space: nowrap;
+  }
+  .denied-note {
+    color: var(--dim);
+    font-size: 0.78rem;
+    word-break: break-word;
   }
   .tool-result.error {
     color: var(--error);

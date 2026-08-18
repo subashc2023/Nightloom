@@ -75,6 +75,8 @@ export interface ConnectionDraft {
   preamble: boolean;
   /** Attach the per-turn status block (time, tasks, context). */
   sidecar: boolean;
+  /** Ask before running a tool that can change files or run commands. */
+  approval: boolean;
   /**
    * Folder the file tools are rooted at, and where the preamble looks for
    * project instructions. Empty means "whatever the app was launched from",
@@ -94,6 +96,7 @@ export function defaultDraft(): ConnectionDraft {
     tools: false,
     preamble: true,
     sidecar: true,
+    approval: true,
     workspace: "",
   };
 }
@@ -281,6 +284,7 @@ export function loadLastConnection(): ConnectionDraft | null {
       // absent value means on, so only an explicit false turns them off.
       preamble: parsed.preamble !== false,
       sidecar: parsed.sidecar !== false,
+      approval: parsed.approval !== false,
     };
   } catch {
     return null;

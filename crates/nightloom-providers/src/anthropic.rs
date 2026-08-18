@@ -111,6 +111,9 @@ fn to_wire_message(message: &Message) -> Value {
         Role::User => "user",
         Role::Assistant => "assistant",
     };
+    // Images are user input only — no model emits one, and an `image` block
+    // in an assistant turn is a 400 rather than something the API ignores.
+    let is_user = message.role == Role::User;
     // Signed thinking and redacted_thinking blocks are replayed verbatim;
     // unsigned thinking is filtered out below.
     let content: Vec<Value> = message
@@ -118,6 +121,10 @@ fn to_wire_message(message: &Message) -> Value {
         .iter()
         .filter_map(|block| match block {
             ContentBlock::Text { text } => Some(json!({ "type": "text", "text": text })),
+            ContentBlock::Image { media_type, data } if is_user => Some(json!({
+                "type": "image",
+                "source": { "type": "base64", "media_type": media_type, "data": data },
+            })),
             ContentBlock::Thinking {
                 text,
                 signature: Some(sig),
@@ -492,6 +499,56 @@ mod tests {
             ContentBlock::Thinking {
                 text: "unsigned musings".into(),
                 signature: None,
+            },
+            ContentBlock::Text {
+                text: "answer".into(),
+            },
+        ]);
+        assert_eq!(
+            to_wire_message(&msg)["content"],
+            json!([{ "type": "text", "text": "answer" }])
+        );
+    }
+
+    #[test]
+    fn wire_message_maps_user_image() {
+        let msg = Message {
+            role: Role::User,
+            content: vec![
+                ContentBlock::Image {
+                    media_type: "image/png".into(),
+                    data: "iVBORw0KGgo=".into(),
+                },
+                ContentBlock::Text {
+                    text: "what is this?".into(),
+                },
+            ],
+        };
+        assert_eq!(
+            to_wire_message(&msg),
+            json!({
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": "iVBORw0KGgo=",
+                        },
+                    },
+                    { "type": "text", "text": "what is this?" },
+                ],
+            })
+        );
+    }
+
+    #[test]
+    fn wire_message_drops_assistant_image() {
+        let msg = Message::assistant(vec![
+            ContentBlock::Image {
+                media_type: "image/png".into(),
+                data: "iVBORw0KGgo=".into(),
             },
             ContentBlock::Text {
                 text: "answer".into(),

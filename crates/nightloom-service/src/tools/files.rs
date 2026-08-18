@@ -2,7 +2,7 @@
 
 use super::{Root, path_arg, str_arg, truncated};
 use nightloom_core::ToolDef;
-use nightloom_core::tool::Tool;
+use nightloom_core::tool::{Effect, Tool};
 use serde_json::{Value, json};
 use std::fs;
 
@@ -42,6 +42,10 @@ impl ReadFile {
 
 #[async_trait::async_trait]
 impl Tool for ReadFile {
+    fn effect(&self) -> Effect {
+        Effect::ReadOnly
+    }
+
     fn def(&self) -> ToolDef {
         ToolDef {
             name: "read_file".into(),
@@ -81,6 +85,8 @@ impl WriteFile {
 }
 
 #[async_trait::async_trait]
+// No `effect` override: writing a file changes the workspace, which is
+// what the `Mutating` default already says. Same for `EditFile` below.
 impl Tool for WriteFile {
     fn def(&self) -> ToolDef {
         ToolDef {
@@ -237,6 +243,10 @@ impl ListDir {
 
 #[async_trait::async_trait]
 impl Tool for ListDir {
+    fn effect(&self) -> Effect {
+        Effect::ReadOnly
+    }
+
     fn def(&self) -> ToolDef {
         ToolDef {
             name: "list_dir".into(),

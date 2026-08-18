@@ -1,7 +1,7 @@
 //! The model's task list.
 
 use chrono::Utc;
-use nightloom_core::tool::Tool;
+use nightloom_core::tool::{Effect, Tool};
 use nightloom_core::{SessionEvent, TodoItem, TodoStatus, ToolDef};
 use serde_json::{Value, json};
 use std::sync::Mutex;
@@ -30,6 +30,14 @@ pub struct TodoWrite {
 
 #[async_trait::async_trait]
 impl Tool for TodoWrite {
+    /// The list is conversation state and nothing else: it lands in the
+    /// session log and comes back through the sidecar. Nothing outside
+    /// the transcript can observe a write, so asking about one would be
+    /// a prompt with no decision behind it.
+    fn effect(&self) -> Effect {
+        Effect::Session
+    }
+
     fn def(&self) -> ToolDef {
         ToolDef {
             name: "todo_write".into(),

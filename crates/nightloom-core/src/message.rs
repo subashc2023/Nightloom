@@ -9,13 +9,29 @@ pub enum Role {
 
 /// Canonical content block. Modeled as a superset of provider formats;
 /// adapters translate down and drop what a given API can't express.
-/// Images and documents will be added as further variants.
+/// Documents will be added as a further variant.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ContentBlock {
     Text {
         text: String,
+    },
+    /// An image supplied by the user. Lives in user messages; no model emits
+    /// one, so an adapter that meets one in an assistant message drops it.
+    ///
+    /// The bytes are carried inline rather than by path or URL because the
+    /// session log is the source of truth and has to replay on its own: a
+    /// path stops meaning anything the moment the file is moved or the log
+    /// is opened on another machine, and a remote URL hands replay to
+    /// whoever is still hosting it. Inline base64 costs log size and buys a
+    /// transcript that stays valid.
+    Image {
+        /// IANA media type, e.g. `image/png`. Adapters that name the type
+        /// separately use it as-is; the ones that want a data URL build one.
+        media_type: String,
+        /// Base64-encoded bytes, with no `data:` URL prefix.
+        data: String,
     },
     Thinking {
         text: String,
@@ -62,6 +78,20 @@ pub enum ContentBlock {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         is_error: bool,
     },
+}
+
+/// An image attached to a user turn, as the session log stores it.
+///
+/// Same two fields as [`ContentBlock::Image`], kept as its own type because
+/// the log records a user turn as a caption plus attachments. A
+/// `Vec<ContentBlock>` there would also admit thinking blocks and tool
+/// results, which the projection would then have to police at read time
+/// instead of the type ruling them out at write time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageInput {
+    pub media_type: String,
+    /// Base64-encoded bytes, with no `data:` URL prefix.
+    pub data: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -146,6 +176,45 @@ mod tests {
             }
             other => panic!("expected tool_use, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn image_round_trips() {
+        let block = ContentBlock::Image {
+            media_type: "image/png".into(),
+            data: "iVBORw0KGgo=".into(),
+        };
+        let text = serde_json::to_string(&block).unwrap();
+        assert_eq!(
+            text,
+            r#"{"type":"image","media_type":"image/png","data":"iVBORw0KGgo="}"#
+        );
+        match serde_json::from_str::<ContentBlock>(&text).unwrap() {
+            ContentBlock::Image { media_type, data } => {
+                assert_eq!(media_type, "image/png");
+                assert_eq!(data, "iVBORw0KGgo=");
+            }
+            other => panic!("expected image, got {other:?}"),
+        }
+    }
+
+    /// `text()` is what shells and the compat adapters use to flatten a
+    /// message; an image must not leak its base64 into it.
+    #[test]
+    fn image_contributes_nothing_to_text() {
+        let msg = Message {
+            role: Role::User,
+            content: vec![
+                ContentBlock::Image {
+                    media_type: "image/png".into(),
+                    data: "iVBORw0KGgo=".into(),
+                },
+                ContentBlock::Text {
+                    text: "what is this?".into(),
+                },
+            ],
+        };
+        assert_eq!(msg.text(), "what is this?");
     }
 
     #[test]

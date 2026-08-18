@@ -128,6 +128,24 @@
   </label>
 
   {#if app.draft.tools}
+    <label class="check">
+      <input
+        type="checkbox"
+        bind:checked={app.draft.approval}
+        onchange={apply}
+        disabled={locked}
+      />
+      <span>ask before writing or running</span>
+    </label>
+    <p class="hint">
+      {#if app.draft.approval}
+        Calls that change files or run commands wait for you in the
+        transcript. Reads and task-list writes never ask.
+      {:else}
+        Every tool call runs unasked, including <code>bash</code>.
+      {/if}
+    </p>
+
     <label class="field">
       <span>Workspace</span>
       <input

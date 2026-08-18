@@ -13,6 +13,9 @@ import {
   type CatalogPrefs,
 } from "./catalog";
 import type {
+  ApprovalDecision,
+  ApprovalRequest,
+  ImageInput,
   ProviderInfo,
   SessionEvent,
   SessionMeta,
@@ -26,6 +29,8 @@ export interface ToolCallView {
   name: string;
   input: unknown;
   result: { content: string; is_error: boolean } | null;
+  /** Refused at the approval gate: nothing ran, `result` holds the reason. */
+  denied?: boolean;
 }
 
 /**
@@ -69,6 +74,12 @@ export const app = $state({
   /** Bumped on every turn-event so effects (auto-scroll) can depend on stream progress. */
   liveVersion: 0,
   /**
+   * Tool calls parked at the approval gate, oldest first. The turn is
+   * blocked on each of these, so every path that ends a turn has to empty
+   * this — a prompt left on screen after the turn is gone answers nothing.
+   */
+  pendingApprovals: [] as ApprovalRequest[],
+  /**
    * Newest per-round usage from the in-flight turn. Cleared when the turn
    * ends, at which point `contextUsed()` reads the same number back off the
    * trailing assistant message instead.
@@ -93,6 +104,9 @@ export async function init(): Promise<void> {
   initialized = true;
   await listen<TurnEvent>("turn-event", (e) => applyTurnEvent(e.payload));
   await listen<string>("turn-notice", (e) => addToast(e.payload));
+  await listen<ApprovalRequest>("tool-approval", (e) =>
+    app.pendingApprovals.push(e.payload),
+  );
   const last = loadLastConnection();
   if (last) {
     app.draft = last;
@@ -149,6 +163,7 @@ export async function applyDraft(): Promise<void> {
       tools: d.tools,
       preamble: d.preamble,
       sidecar: d.sidecar,
+      approval: d.approval,
       workspace: d.workspace.trim() || undefined,
     });
     app.connection = {
@@ -270,25 +285,34 @@ export async function deleteSession(id: string): Promise<void> {
   await refreshSessions();
 }
 
-export async function send(text: string): Promise<void> {
+export async function send(
+  text: string,
+  images: ImageInput[] = [],
+): Promise<void> {
   if (!app.connection || app.busy) return;
   app.error = null;
   app.events.push({
     event: "user_message",
     text,
+    // Mirror the backend's omission rather than logging an empty array, so the
+    // optimistic entry and the re-synced one project identically.
+    ...(images.length > 0 ? { images } : {}),
     at: new Date().toISOString(),
   });
   app.live = { segments: [] };
   app.liveUsage = null;
   app.busy = true;
   try {
-    await api.send(text);
+    await api.send(text, images.length > 0 ? images : undefined);
   } catch (e) {
     app.error = String(e);
   } finally {
     app.live = null;
     // The trailing assistant message now carries the same reading.
     app.liveUsage = null;
+    // The turn is over: anything still parked was answered by the backend
+    // (or died with the turn), so the prompts can no longer decide anything.
+    app.pendingApprovals = [];
     app.busy = false;
     try {
       app.events = await api.transcript();
@@ -307,6 +331,30 @@ export async function send(text: string): Promise<void> {
 export async function cancelTurn(): Promise<void> {
   try {
     await api.cancel();
+    // Cancelling refuses every parked prompt on the backend, so they stop
+    // being answerable — but only once the call actually lands. Clearing
+    // them before that could strand a still-running turn with no prompt.
+    app.pendingApprovals = [];
+  } catch (e) {
+    addToast(String(e));
+  }
+}
+
+/**
+ * Answer one approval prompt. Dropping it from the list before the call
+ * makes a double-click a no-op instead of a second, unanswerable decision.
+ */
+export async function resolveApproval(
+  id: string,
+  name: string,
+  decision: ApprovalDecision,
+  reason?: string,
+): Promise<void> {
+  const i = app.pendingApprovals.findIndex((r) => r.id === id);
+  if (i < 0) return;
+  app.pendingApprovals.splice(i, 1);
+  try {
+    await api.approveCall(id, name, decision, reason);
   } catch (e) {
     addToast(String(e));
   }
@@ -333,6 +381,27 @@ function applyTurnEvent(ev: TurnEvent): void {
   if (ev.type === "usage") {
     app.liveUsage = ev.usage;
     return;
+  }
+  if (ev.type === "compacted") {
+    // The Compaction event itself arrives with the post-turn transcript
+    // re-sync and renders there; this only makes the moment visible, matching
+    // what the manual compact button reports.
+    addToast("context compacted by the model");
+    if (app.live) {
+      closeThinking(app.live.segments);
+      app.live.segments.push({
+        kind: "notice",
+        text: "context compacted — earlier turns replaced by a summary",
+      });
+      app.liveVersion++;
+    }
+    return;
+  }
+  if (ev.type === "tool_denied" || ev.type === "tool_result") {
+    // The gate answered this one, whoever decided it — a prompt still on
+    // screen for it (cancellation denies server-side) can no longer be used.
+    const i = app.pendingApprovals.findIndex((r) => r.id === ev.tool_use_id);
+    if (i >= 0) app.pendingApprovals.splice(i, 1);
   }
   if (!app.live) return;
   const segments = app.live.segments;
@@ -373,6 +442,18 @@ function applyTurnEvent(ev: TurnEvent): void {
         }
       }
       break;
+    case "tool_denied":
+      // No tool_result follows a denial, so the call would otherwise render
+      // as in-flight until the post-turn re-sync replaced the whole message.
+      for (let i = segments.length - 1; i >= 0; i--) {
+        const seg = segments[i];
+        if (seg.kind === "tool" && seg.call.id === ev.tool_use_id) {
+          seg.call.denied = true;
+          seg.call.result = { content: ev.reason, is_error: true };
+          break;
+        }
+      }
+      break;
     case "round_limit":
       closeThinking(segments);
       segments.push({
@@ -385,6 +466,25 @@ function applyTurnEvent(ev: TurnEvent): void {
       break;
   }
   app.liveVersion++;
+}
+
+const DENIAL_PREFIX = "The user refused permission to run ";
+const DENIAL_REASON = "They said: ";
+
+/**
+ * Recognize a refused call in a re-synced `tool_result`, returning its
+ * reason ("" when none was given) or null if it is an ordinary failure.
+ *
+ * A denial is logged as a plain error result because that is what the model
+ * must read it as, so the message itself is the only marker. Reading it back
+ * is what keeps "you said no" from rendering as "the tool crashed" once the
+ * live buffer is replaced; a message that doesn't match still renders as the
+ * error it already was.
+ */
+export function denialReason(content: string, isError: boolean): string | null {
+  if (!isError || !content.startsWith(DENIAL_PREFIX)) return null;
+  const line = content.split("\n").find((l) => l.startsWith(DENIAL_REASON));
+  return line ? line.slice(DENIAL_REASON.length) : "";
 }
 
 /**

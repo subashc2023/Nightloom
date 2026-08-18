@@ -3,12 +3,16 @@ use anyhow::{Context, Result};
 use nightloom_core::{
     ContentBlock, ProviderError, SegmentKind, Session, SessionEvent, SystemPrompt, Thinking, Usage,
 };
-use nightloom_service::{Chat, PromptConfig, ProviderKind, TurnEvent, prompt, store, tools};
-use std::io::{self, Write};
+use nightloom_service::{
+    AutoApprove, Chat, Decision, PendingCall, PromptConfig, ProviderKind, TurnEvent, prompt, store,
+    tools,
+};
+use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-#[derive(clap::Args)]
+#[derive(clap::Args, Clone)]
 pub struct ChatArgs {
     /// anthropic | openai | openai-chat | gemini | groq | openrouter
     #[arg(long, default_value = "anthropic")]
@@ -42,10 +46,16 @@ pub struct ChatArgs {
     max_tokens: u32,
 
     /// Enable the built-in tools: read/write/edit files, list_dir, glob,
-    /// grep, bash, current_time, todo_write. File tools are confined to the
-    /// working directory; bash is not.
+    /// grep, bash, current_time, todo_write, compact_context. File tools are confined to the
+    /// working directory; bash is not. Calls that can change the machine ask
+    /// first unless --no-approval is set.
     #[arg(long)]
     tools: bool,
+
+    /// Run tool calls without asking. For unattended runs — the model gets to
+    /// write files and run shell commands with no one watching.
+    #[arg(long, visible_alias = "yolo")]
+    no_approval: bool,
 
     /// Send one prompt, print the reply, and exit (no REPL)
     #[arg(long)]
@@ -98,11 +108,84 @@ fn build_chat(args: &ChatArgs) -> Result<Chat> {
     chat.context_limit = nightloom_service::context_limit(args.provider, &chat.model);
     if args.tools {
         chat.tools = tools::builtin();
+        chat.approver = approver(args);
+        // Tied to the same flag rather than always on: `compact_context` is
+        // still a tool, and a run that asked for no tools should not quietly
+        // get a tools array — it changes what the provider is sent.
+        chat.enable_self_compaction();
+        // The subagent is built from the same arguments, so it gets the same
+        // provider, model and tool set. Its `task` tool is stripped and its
+        // approver replaced by the engine, so this cannot recurse or slip
+        // past the gate.
+        let sub_args = args.clone();
+        chat.enable_subagents(Arc::new(move || {
+            build_chat(&sub_args).map_err(|e| e.to_string())
+        }));
     }
     if args.no_sidecar {
         chat.sidecar = Vec::new();
     }
     Ok(chat)
+}
+
+/// The consent policy for this run, or `None` for no gate at all.
+///
+/// [`AutoApprove`] is what makes this one prompt per *tool* rather than one
+/// per call: reads and task-list writes never surface, and "always" is
+/// remembered for the life of the process.
+fn approver(args: &ChatArgs) -> Option<Arc<dyn nightloom_service::Approver>> {
+    if args.no_approval {
+        return None;
+    }
+    if !io::stdin().is_terminal() {
+        // Piped stdin still answers the prompt — it just answers with
+        // whatever is in the pipe, and with EOF once that runs out, which
+        // refuses every remaining call. That is the safe outcome but a
+        // baffling one to debug from the model's side, so say it once up
+        // front rather than once per call.
+        eprintln!(
+            "{DIM}warning: stdin is not a terminal, so approval prompts will be answered from \
+             the pipe and every call after it is exhausted will be refused. Pass --no-approval \
+             to run tools unattended.{RESET}"
+        );
+    }
+    Some(Arc::new(AutoApprove::from_fn(ask_approval)))
+}
+
+/// Ask the terminal about one call.
+///
+/// Synchronous on purpose: the REPL reads its own input this way, and by the
+/// time a tool runs the round's stream is finished and dropped, so there is
+/// nothing left for this task to poll while it waits for a human.
+fn ask_approval(call: &PendingCall<'_>) -> Decision {
+    let mut stdout = io::stdout();
+    // Its own line, flushed: `run_turn` has been streaming into this terminal
+    // and the cursor is wherever the last delta left it.
+    let _ = write!(
+        stdout,
+        "\n{DIM}⚠ {} wants to run{RESET} {}\n  [y] allow  [a] always allow {}  [n] deny — \
+         or type a reason › ",
+        call.name,
+        store::one_line(&call.input.to_string(), 160),
+        call.name,
+    );
+    let _ = stdout.flush();
+
+    let mut line = String::new();
+    if io::stdin().read_line(&mut line).unwrap_or(0) == 0 {
+        return Decision::Deny(
+            "there is no one at the terminal to approve this; the run is unattended".into(),
+        );
+    }
+    match line.trim() {
+        "y" | "yes" => Decision::Allow,
+        "a" | "always" => Decision::AllowAlways,
+        // Anything else is a refusal, and whatever was typed is what the
+        // model is told — "use the test script instead" is a far more useful
+        // answer than a bare no, and this is the only place to say it.
+        "n" | "no" | "" => Decision::Deny(String::new()),
+        reason => Decision::Deny(reason.to_string()),
+    }
 }
 
 /// One dim line naming the layers the preamble actually picked up — a
@@ -240,6 +323,23 @@ fn render(stdout: &mut io::Stdout, in_thinking: &mut bool, event: TurnEvent) -> 
                 store::one_line(&content, 80)
             )
         }
+        TurnEvent::ToolDenied { name, reason, .. } => {
+            close_thinking(stdout, in_thinking)?;
+            let reason = if reason.is_empty() {
+                String::new()
+            } else {
+                format!(": {reason}")
+            };
+            writeln!(stdout, "{DIM}  → denied, {name} did not run{reason}{RESET}")
+        }
+        TurnEvent::Compacted { summary } => {
+            writeln!(
+                stdout,
+                "
+{DIM}context compacted at the model's request — {} chars of summary{RESET}",
+                summary.len()
+            )
+        }
         TurnEvent::RoundLimit { rounds } => {
             writeln!(
                 stdout,
@@ -340,6 +440,16 @@ pub async fn run(args: ChatArgs) -> Result<()> {
         && let Some(line) = prompt_summary(&chat.system)
     {
         println!("{DIM}{line}{RESET}");
+    }
+    if args.tools {
+        println!(
+            "{DIM}{}{RESET}",
+            if args.no_approval {
+                "tools: on, approval off — file writes and shell commands run unasked"
+            } else {
+                "tools: on — anything that can change the machine asks first"
+            }
+        );
     }
     if args.resume.is_some() || args.continue_ {
         print_recap(&session);

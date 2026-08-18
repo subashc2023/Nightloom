@@ -10,7 +10,7 @@
 use super::Root;
 use globset::{GlobBuilder, GlobMatcher};
 use nightloom_core::ToolDef;
-use nightloom_core::tool::Tool;
+use nightloom_core::tool::{Effect, Tool};
 use regex::Regex;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -107,6 +107,10 @@ impl Glob {
 
 #[async_trait::async_trait]
 impl Tool for Glob {
+    fn effect(&self) -> Effect {
+        Effect::ReadOnly
+    }
+
     fn def(&self) -> ToolDef {
         ToolDef {
             name: "glob".into(),
@@ -193,6 +197,10 @@ impl Mode {
 
 #[async_trait::async_trait]
 impl Tool for Grep {
+    fn effect(&self) -> Effect {
+        Effect::ReadOnly
+    }
+
     fn def(&self) -> ToolDef {
         ToolDef {
             name: "grep".into(),
