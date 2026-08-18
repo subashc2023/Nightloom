@@ -60,6 +60,7 @@ fn build_chat(args: &ChatArgs) -> Result<Chat> {
     let (provider, model) = nightloom_service::connect(
         args.provider,
         args.model.clone(),
+        None,
         args.base_url.clone(),
         Some(Box::new(|e: &ProviderError, attempt: u32| {
             eprintln!("{DIM}transient provider error (attempt {attempt}): {e}; retrying…{RESET}");

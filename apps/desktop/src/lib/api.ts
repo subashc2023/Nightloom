@@ -14,6 +14,23 @@ export function providers(): Promise<ProviderInfo[]> {
   return invoke("providers");
 }
 
+/** Store an API key in the OS credential store (empty key clears it). */
+export function setApiKey(provider: string, key: string): Promise<null> {
+  return invoke("set_api_key", { provider, key });
+}
+
+export function clearApiKey(provider: string): Promise<null> {
+  return invoke("clear_api_key", { provider });
+}
+
+/** Model ids the provider's API currently offers. */
+export function listModels(
+  provider: string,
+  baseUrl?: string,
+): Promise<string[]> {
+  return invoke("list_models", { provider, baseUrl });
+}
+
 export function connect(args: ConnectArgs): Promise<ConnectResult> {
   return invoke("connect", {
     provider: args.provider,

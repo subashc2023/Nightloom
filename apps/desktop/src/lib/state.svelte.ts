@@ -64,8 +64,12 @@ export const app = $state({
   busy: false,
   /** Error banner shown in the transcript until the next send. */
   error: null as string | null,
-  /** Settings modal (provider/model visibility management). */
+  /** Settings modal (providers: API keys, model visibility). */
   showSettings: false,
+  /** Live model lists fetched from provider APIs, per provider kind. */
+  modelLists: {} as Record<string, string[]>,
+  /** Fetch status per provider kind (settings modal UI). */
+  modelFetch: {} as Record<string, { loading: boolean; error: string | null }>,
   toasts: [] as { id: number; text: string }[],
 });
 
@@ -141,6 +145,33 @@ export async function applyDraft(): Promise<void> {
     app.connectError = String(e);
   } finally {
     app.connecting = false;
+  }
+}
+
+/** Re-query provider availability (after storing/clearing an API key). */
+export async function refreshProviders(): Promise<void> {
+  try {
+    app.providers = await api.providers();
+  } catch {
+    // availability refresh is best-effort
+  }
+}
+
+/** Fetch a provider's live model list (cached until `force`). */
+export async function fetchModels(kind: string, force = false): Promise<void> {
+  if (!force && app.modelLists[kind]) return;
+  const status = (app.modelFetch[kind] ??= { loading: false, error: null });
+  if (status.loading) return;
+  status.loading = true;
+  status.error = null;
+  try {
+    const baseUrl =
+      kind === "openai-chat" ? app.draft.baseUrl.trim() || undefined : undefined;
+    app.modelLists[kind] = await api.listModels(kind, baseUrl);
+  } catch (e) {
+    status.error = String(e);
+  } finally {
+    status.loading = false;
   }
 }
 

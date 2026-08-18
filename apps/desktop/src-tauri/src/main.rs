@@ -26,6 +26,9 @@ struct ProviderInfo {
     kind: String,
     available: bool,
     default_model: Option<String>,
+    /// Where the key that would be used comes from: "stored" (entered in the
+    /// app, OS credential store) or "env"; absent when there is no key.
+    key_source: Option<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -34,17 +37,83 @@ struct ConnectedInfo {
     model: String,
 }
 
-/// Every provider Nightloom knows, with whether env credentials are present.
+const KEYRING_SERVICE: &str = "nightloom";
+
+/// Key entered in the app for this provider, from the OS credential store.
+/// `openai-chat` falls back to OpenAI's stored key, mirroring the shared
+/// `OPENAI_API_KEY` env var.
+fn stored_key(kind: ProviderKind) -> Option<String> {
+    let lookup = |label: &str| {
+        keyring::Entry::new(KEYRING_SERVICE, label)
+            .ok()
+            .and_then(|e| e.get_password().ok())
+            .filter(|k| !k.is_empty())
+    };
+    lookup(kind.label()).or_else(|| match kind {
+        ProviderKind::OpenaiChat => lookup(ProviderKind::Openai.label()),
+        _ => None,
+    })
+}
+
+fn key_source(kind: ProviderKind) -> Option<&'static str> {
+    if stored_key(kind).is_some() {
+        Some("stored")
+    } else if kind.has_credentials() {
+        Some("env")
+    } else {
+        None
+    }
+}
+
+/// Every provider Nightloom knows, with whether credentials are present
+/// (stored in-app or in the environment).
 #[tauri::command]
 fn providers() -> Vec<ProviderInfo> {
     ProviderKind::ALL
         .into_iter()
         .map(|kind| ProviderInfo {
             kind: kind.label().to_string(),
-            available: kind.has_credentials(),
+            available: key_source(kind).is_some(),
             default_model: kind.default_model().map(String::from),
+            key_source: key_source(kind),
         })
         .collect()
+}
+
+/// Store (or, with an empty key, remove) an API key in the OS credential
+/// store. The key is write-only from the UI's perspective: it is never sent
+/// back, only its presence (`key_source`) is.
+#[tauri::command]
+fn set_api_key(provider: String, key: String) -> Result<(), String> {
+    let kind: ProviderKind = provider.parse()?;
+    let entry =
+        keyring::Entry::new(KEYRING_SERVICE, kind.label()).map_err(|e| e.to_string())?;
+    let key = key.trim();
+    if key.is_empty() {
+        return clear_api_key(provider);
+    }
+    entry.set_password(key).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn clear_api_key(provider: String) -> Result<(), String> {
+    let kind: ProviderKind = provider.parse()?;
+    let entry =
+        keyring::Entry::new(KEYRING_SERVICE, kind.label()).map_err(|e| e.to_string())?;
+    match entry.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Model ids the provider's API currently offers (for the settings modal).
+#[tauri::command]
+async fn list_models(provider: String, base_url: Option<String>) -> Result<Vec<String>, String> {
+    let kind: ProviderKind = provider.parse()?;
+    let key = stored_key(kind);
+    nightloom_service::list_models(kind, key, base_url)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Build the provider + `Chat` for this window; retry stalls are reported as
@@ -76,8 +145,9 @@ async fn connect(
             );
         })
     };
-    let (provider, model) = nightloom_service::connect(kind, model, base_url, Some(on_retry))
-        .map_err(|e| e.to_string())?;
+    let (provider, model) =
+        nightloom_service::connect(kind, model, stored_key(kind), base_url, Some(on_retry))
+            .map_err(|e| e.to_string())?;
 
     let mut chat = Chat::new(provider, model);
     chat.system = system;
@@ -177,6 +247,9 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             providers,
+            set_api_key,
+            clear_api_key,
+            list_models,
             connect,
             list_sessions,
             new_session,

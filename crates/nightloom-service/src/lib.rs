@@ -12,22 +12,24 @@ pub mod tools;
 pub mod turn;
 
 pub use nightloom_providers::ProviderKind;
+pub use nightloom_providers::models::list_models;
 pub use turn::{Chat, TurnEvent, TurnOutcome};
 
 use nightloom_core::{Provider, ProviderError};
 use nightloom_providers::retry::{Retry, RetryNotify};
 
-/// Build a provider from environment credentials and resolve the model,
-/// wrapped in retry-on-open (transient failures back off before anything has
-/// streamed; mid-stream errors still surface). `on_retry` lets the shell
-/// report the stall.
+/// Build a provider and resolve the model, wrapped in retry-on-open
+/// (transient failures back off before anything has streamed; mid-stream
+/// errors still surface). An explicit `api_key` wins over environment
+/// credentials. `on_retry` lets the shell report the stall.
 pub fn connect(
     kind: ProviderKind,
     model: Option<String>,
+    api_key: Option<String>,
     base_url: Option<String>,
     on_retry: Option<RetryNotify>,
 ) -> Result<(Box<dyn Provider>, String), ProviderError> {
-    let provider = kind.from_env(base_url)?;
+    let provider = kind.build(api_key, base_url)?;
     let Some(model) = model.or_else(|| kind.default_model().map(String::from)) else {
         return Err(ProviderError::Config(format!(
             "a model is required for provider {kind}"

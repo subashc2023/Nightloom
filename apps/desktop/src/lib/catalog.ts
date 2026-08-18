@@ -3,6 +3,33 @@
 // is a starting point — the settings modal can hide entries or add custom
 // model ids per provider.
 
+/** Human-facing provider names ("openai-chat" is a wire format, not a brand). */
+export const PROVIDER_LABELS: Record<string, string> = {
+  anthropic: "Anthropic",
+  openai: "OpenAI",
+  "openai-chat": "OpenAI-compatible",
+  gemini: "Google Gemini",
+  groq: "Groq",
+  openrouter: "OpenRouter",
+};
+
+export function providerLabel(kind: string): string {
+  return PROVIDER_LABELS[kind] ?? kind;
+}
+
+/** One-line description shown in the settings pane for each provider. */
+export const PROVIDER_NOTES: Record<string, string> = {
+  anthropic: "Claude models via the Anthropic Messages API.",
+  openai: "GPT models via OpenAI's native Responses API.",
+  "openai-chat":
+    "Any server speaking the OpenAI chat/completions wire format — local " +
+    "runtimes (Ollama, LM Studio, llama.cpp, vLLM) via a base URL, or " +
+    "api.openai.com's legacy endpoint. Models are whatever the server hosts.",
+  gemini: "Gemini models via Google's Generative Language API.",
+  groq: "Open-weight models on Groq's LPU inference.",
+  openrouter: "One key for hundreds of models across hosts, via OpenRouter.",
+};
+
 /** Known-good model ids per provider (verified via `nightloom probe`). */
 export const CURATED: Record<string, string[]> = {
   anthropic: [

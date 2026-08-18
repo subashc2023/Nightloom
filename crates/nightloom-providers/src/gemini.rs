@@ -8,7 +8,7 @@ use nightloom_core::{
 };
 use serde_json::{Value, json};
 
-const DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com";
+pub(crate) const DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com";
 
 /// Native adapter for the Google Generative Language API
 /// (`models/{model}:streamGenerateContent?alt=sse`). Thought summaries stream

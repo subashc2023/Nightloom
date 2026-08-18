@@ -8,6 +8,7 @@
 
 mod anthropic;
 mod gemini;
+pub mod models;
 mod openai_compat;
 mod openai_responses;
 mod registry;

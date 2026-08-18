@@ -8,9 +8,9 @@ use nightloom_core::{
 };
 use serde_json::{Value, json};
 
-const OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
-const GROQ_BASE_URL: &str = "https://api.groq.com/openai/v1";
-const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
+pub(crate) const OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
+pub(crate) const GROQ_BASE_URL: &str = "https://api.groq.com/openai/v1";
+pub(crate) const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 
 /// Which `chat/completions` dialect this instance speaks. The wire format is
 /// nearly shared, but reasoning controls and usage accounting differ by host.

@@ -50,7 +50,7 @@ impl ProviderKind {
         }
     }
 
-    fn key_from_env(self) -> Option<String> {
+    pub(crate) fn key_from_env(self) -> Option<String> {
         self.env_keys()
             .iter()
             .find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()))
@@ -77,7 +77,18 @@ impl ProviderKind {
     /// Build the adapter using credentials from the environment. `base_url`
     /// overrides the default endpoint.
     pub fn from_env(self, base_url: Option<String>) -> Result<Box<dyn Provider>, ProviderError> {
-        let key = self.key_from_env();
+        self.build(None, base_url)
+    }
+
+    /// Build the adapter. An explicit `api_key` (e.g. one the user stored in
+    /// a shell's settings) wins over environment credentials; `base_url`
+    /// overrides the default endpoint.
+    pub fn build(
+        self,
+        api_key: Option<String>,
+        base_url: Option<String>,
+    ) -> Result<Box<dyn Provider>, ProviderError> {
+        let key = api_key.or_else(|| self.key_from_env());
         let missing = || ProviderError::Config(format!("{} is not set", self.env_keys()[0]));
         Ok(match self {
             Self::Anthropic => Box::new(Anthropic::new(key.ok_or_else(missing)?, base_url)),

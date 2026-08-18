@@ -1,6 +1,6 @@
 <script lang="ts">
   import { app, applyDraft, usable } from "./state.svelte";
-  import { isProviderVisible, modelsFor } from "./catalog";
+  import { isProviderVisible, modelsFor, providerLabel } from "./catalog";
 
   // The current selection stays listed even if settings later hide it.
   const providers = $derived(
@@ -48,7 +48,7 @@
     <select bind:value={app.draft.provider} onchange={onProviderChange} disabled={locked}>
       {#each providers as p (p.kind)}
         <option value={p.kind} disabled={!usable(p)}>
-          {p.kind}{usable(p) ? "" : " — no API key"}
+          {providerLabel(p.kind)}{usable(p) ? "" : " — no API key"}
         </option>
       {/each}
     </select>

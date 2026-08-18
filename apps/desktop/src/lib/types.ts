@@ -6,6 +6,8 @@ export interface ProviderInfo {
   kind: string;
   available: boolean;
   default_model: string | null;
+  /** Where the key in use comes from; null when no key is present. */
+  key_source: "stored" | "env" | null;
 }
 
 export interface ConnectArgs {

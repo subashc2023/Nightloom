@@ -9,8 +9,8 @@ use nightloom_core::{
 use serde_json::{Value, json};
 use std::collections::HashMap;
 
-const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
-const API_VERSION: &str = "2023-06-01";
+pub(crate) const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
+pub(crate) const API_VERSION: &str = "2023-06-01";
 
 pub struct Anthropic {
     client: reqwest::Client,
