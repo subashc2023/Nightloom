@@ -10,7 +10,7 @@ use nightloom_core::{ImageInput, ProviderError, Session, SessionEvent, Thinking}
 use nightloom_service::approval::{Approver, AutoApprove, Decision, PendingCall};
 use nightloom_service::store::{self, SessionSummary};
 use nightloom_service::{
-    Chat, CompactOutcome, PromptConfig, ProviderKind, TurnEvent, TurnInput, TurnOutcome,
+    Chat, CompactOutcome, Price, PromptConfig, ProviderKind, TurnEvent, TurnInput, TurnOutcome,
 };
 use serde::Serialize;
 use std::collections::HashMap;
@@ -134,6 +134,10 @@ struct ConnectedInfo {
     /// The resolved workspace root, so the UI can show where the file tools
     /// actually point rather than leaving the user to guess.
     workspace: String,
+    /// What this model charges, for the cost readout. `None` for a model with
+    /// no verified price, which the UI shows as no dollar figure at all — a
+    /// "$0.00" would read as free rather than as unknown.
+    price: Option<Price>,
 }
 
 const KEYRING_SERVICE: &str = "nightloom";
@@ -267,6 +271,9 @@ fn build_chat(app: &AppHandle, policy: &Arc<AutoApprove>, spec: &ChatSpec) -> Re
     // have no verified window for, which the gauge handles by reporting raw
     // token counts instead of a percentage.
     chat.context_limit = nightloom_service::context_limit(spec.kind, &chat.model);
+    // Same table discipline as the limit: an unpriced model records no cost
+    // rather than a zero, so the UI can distinguish free from unknown.
+    chat.price = nightloom_service::price(spec.kind, &chat.model);
     // On unless the UI says otherwise. The shared policy instance is reused
     // rather than rebuilt, so "always allow bash" survives the re-connect the
     // rail fires on every knob change.
@@ -350,6 +357,7 @@ async fn connect(
         provider: chat.provider.name().to_string(),
         model: chat.model.clone(),
         context_limit: chat.context_limit,
+        price: chat.price,
         workspace: spec.workspace.to_string_lossy().into_owned(),
     };
     *state.chat.lock().await = Some(chat);

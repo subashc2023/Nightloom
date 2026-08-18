@@ -7,6 +7,24 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
+/// What a session has cost, as far as the log can say.
+///
+/// `unpriced_exchanges` is not a rounding detail: a session that ran entirely
+/// on a model with no verified price has `usd == 0.0`, and rendering that as
+/// "$0.00" would claim it was free. Non-zero means `usd` is a floor.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct SessionCost {
+    pub usd: f64,
+    pub unpriced_exchanges: usize,
+}
+
+impl SessionCost {
+    /// Whether every exchange in the session had a known price.
+    pub fn is_complete(&self) -> bool {
+        self.unpriced_exchanges == 0
+    }
+}
+
 /// One entry in a session's append-only event log.
 ///
 /// The log is the source of truth; the message list sent to a provider and
@@ -33,6 +51,17 @@ pub enum SessionEvent {
         blocks: Vec<ContentBlock>,
         stop_reason: Option<String>,
         usage: Usage,
+        /// What this exchange cost in USD, recorded rather than derived.
+        ///
+        /// Cost is the one figure a projection cannot reconstruct: it needs
+        /// the provider (a model id alone does not name one — the same model
+        /// is billed differently direct and through OpenRouter) and it needs
+        /// the price *as it was that day*. Re-deriving an old session's cost
+        /// from today's table would quietly restate history every time a
+        /// vendor changes a rate. `None` where the model had no verified
+        /// price, which is not the same as free.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cost: Option<f64>,
         at: DateTime<Utc>,
     },
     /// One executed tool call. Consecutive results project into a single
@@ -154,11 +183,23 @@ impl Session {
         stop_reason: Option<String>,
         usage: Usage,
     ) {
+        self.record_assistant_priced(model, blocks, stop_reason, usage, None);
+    }
+
+    pub fn record_assistant_priced(
+        &mut self,
+        model: impl Into<String>,
+        blocks: Vec<ContentBlock>,
+        stop_reason: Option<String>,
+        usage: Usage,
+        cost: Option<f64>,
+    ) {
         self.record(SessionEvent::AssistantMessage {
             model: model.into(),
             blocks,
             stop_reason,
             usage,
+            cost,
             at: Utc::now(),
         });
     }
@@ -193,6 +234,25 @@ impl Session {
             }
         }
         &[]
+    }
+
+    /// Projection: what this session has cost so far.
+    ///
+    /// Sums every recorded exchange, including ones before a compaction — the
+    /// summary saves future tokens, it does not refund past ones. Exchanges
+    /// with no recorded price are counted separately rather than as zero, so
+    /// a caller can tell "$0.40" from "at least $0.40".
+    pub fn cost(&self) -> SessionCost {
+        let mut total = SessionCost::default();
+        for e in &self.events {
+            if let SessionEvent::AssistantMessage { cost, .. } = e {
+                match cost {
+                    Some(c) => total.usd += c,
+                    None => total.unpriced_exchanges += 1,
+                }
+            }
+        }
+        total
     }
 
     /// Projection: the message list to send to a provider.
@@ -400,6 +460,7 @@ mod tests {
                 input_tokens: 10,
                 output_tokens: 2,
                 reasoning_tokens: None,
+                ..Default::default()
             },
         );
         let msgs = s.messages();

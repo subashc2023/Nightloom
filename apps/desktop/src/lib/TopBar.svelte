@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { app, compactSession, contextUsed } from "./state.svelte";
+  import { app, cacheHitRate, compactSession, contextUsed, sessionCost } from "./state.svelte";
 
   /**
    * Context gauge. The denominator comes from the backend's limits table and
@@ -19,6 +19,23 @@
   const level = $derived(
     gauge?.ratio == null ? "" : gauge.ratio >= 0.9 ? "hot" : gauge.ratio >= 0.7 ? "warm" : "",
   );
+
+  /**
+   * Session spend. Shown only once there is something to show, and never as
+   * "$0.00" for a model with no price — an unknown cost and a free one look
+   * identical at two decimal places, and only one of them is true.
+   */
+  const spend = $derived.by(() => {
+    const c = sessionCost();
+    if (!c) return null;
+    if (c.usd === 0 && c.complete) return null;
+    // Sub-cent turns are the common case early in a session; two decimals
+    // would render most of them as $0.00 and look broken.
+    const digits = c.usd > 0 && c.usd < 0.01 ? 4 : 2;
+    return { text: `$${c.usd.toFixed(digits)}`, complete: c.complete };
+  });
+
+  const cached = $derived(cacheHitRate());
 
   function tokens(n: number): string {
     if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
@@ -73,6 +90,21 @@
     </div>
   {/if}
 
+  {#if spend}
+    <div
+      class="spend"
+      class:partial={!spend.complete}
+      title={spend.complete
+        ? "Session cost so far, summed from each exchange at the price in force when it ran"
+        : "At least this much: some exchanges ran on a model with no verified price"}
+    >
+      {spend.complete ? "" : "≥"}{spend.text}{#if cached != null}<span class="cache"
+          title="Share of the last request's prompt served from cache">
+          · {Math.round(cached * 100)}% cached</span
+        >{/if}
+    </div>
+  {/if}
+
   <div class="actions">
     {#if canCompact}
       <button
@@ -104,6 +136,19 @@
     border-bottom: 1px solid var(--border);
     padding: 0.4rem 0.75rem;
     min-height: 2.4rem;
+  }
+  .spend {
+    font-size: 0.72rem;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    margin-left: 0.6rem;
+  }
+  .spend.partial {
+    font-style: italic;
+  }
+  .cache {
+    opacity: 0.75;
   }
   .status {
     display: flex;

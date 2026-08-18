@@ -282,6 +282,11 @@ impl Provider for OpenAiResponses {
                             output_tokens: u["output_tokens"].as_u64().unwrap_or(0),
                             reasoning_tokens: u["output_tokens_details"]["reasoning_tokens"]
                                 .as_u64(),
+                            // Already a subset of `input_tokens` here, unlike
+                            // Anthropic. Cache writes are not billed or
+                            // reported separately.
+                            cache_read_tokens: u["input_tokens_details"]["cached_tokens"].as_u64(),
+                            cache_write_tokens: None,
                         });
                         // "completed", or the incomplete reason (e.g.
                         // "max_output_tokens") when the response was cut off.

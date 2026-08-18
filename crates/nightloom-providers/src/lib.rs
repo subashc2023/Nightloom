@@ -12,6 +12,7 @@ pub mod limits;
 pub mod models;
 mod openai_compat;
 mod openai_responses;
+pub mod pricing;
 mod registry;
 pub mod retry;
 

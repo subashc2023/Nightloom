@@ -256,6 +256,12 @@ fn read_usage(u: &Value, usage: &mut Usage) {
     usage.reasoning_tokens = u["completion_tokens_details"]["reasoning_tokens"]
         .as_u64()
         .or(usage.reasoning_tokens);
+    // A subset of prompt_tokens, as on the Responses API. Hosts that do no
+    // caching omit the field entirely, which stays None rather than becoming
+    // a reported 0% hit rate.
+    usage.cache_read_tokens = u["prompt_tokens_details"]["cached_tokens"]
+        .as_u64()
+        .or(usage.cache_read_tokens);
 }
 
 #[async_trait::async_trait]

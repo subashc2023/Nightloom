@@ -73,6 +73,21 @@ pub struct ChatRequest {
     pub tools: Vec<ToolDef>,
 }
 
+/// Token accounting for one request, normalized across vendors.
+///
+/// `input_tokens` is the **whole** prompt: every token the model read,
+/// cached or not. That normalization is not free — Anthropic reports
+/// `input_tokens` as the tokens that were *neither read from nor written to*
+/// the cache, so its three counters have to be summed, while OpenAI and
+/// Gemini already report an inclusive total that `cached_tokens` is a subset
+/// of. Leaving each vendor's own convention in place would mean a context
+/// gauge that reads near-empty on exactly the turns where caching is working,
+/// which is the opposite of the truth.
+///
+/// The cache fields are a breakdown of that total, not additions to it, and
+/// they are `Option` rather than `0` because "this host does not report
+/// caching" and "nothing was cached" are different facts: the first must not
+/// render as a 0% hit rate.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
     pub input_tokens: u64,
@@ -81,15 +96,47 @@ pub struct Usage {
     /// does; Anthropic counts thinking inside `output_tokens`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_tokens: Option<u64>,
+    /// Prompt tokens served from the cache, billed at a discount. A subset
+    /// of `input_tokens`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_tokens: Option<u64>,
+    /// Prompt tokens written into the cache, billed at a premium. A subset
+    /// of `input_tokens`. Only Anthropic bills this separately; the others
+    /// fold cache writes into ordinary input, so this stays `None` there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_tokens: Option<u64>,
 }
 
 impl Usage {
     pub fn add(&mut self, other: Usage) {
         self.input_tokens += other.input_tokens;
         self.output_tokens += other.output_tokens;
-        if let Some(r) = other.reasoning_tokens {
-            *self.reasoning_tokens.get_or_insert(0) += r;
-        }
+        add_opt(&mut self.reasoning_tokens, other.reasoning_tokens);
+        add_opt(&mut self.cache_read_tokens, other.cache_read_tokens);
+        add_opt(&mut self.cache_write_tokens, other.cache_write_tokens);
+    }
+
+    /// Prompt tokens that were neither read from nor written to the cache —
+    /// what the provider charges at the full input rate.
+    pub fn uncached_input_tokens(&self) -> u64 {
+        self.input_tokens
+            .saturating_sub(self.cache_read_tokens.unwrap_or(0))
+            .saturating_sub(self.cache_write_tokens.unwrap_or(0))
+    }
+
+    /// Share of the prompt served from cache, `None` on a host that does not
+    /// report caching at all. An empty prompt is `None` rather than 0%: a
+    /// rate needs a denominator, and this is the same rule the context gauge
+    /// follows for an unknown window.
+    pub fn cache_hit_rate(&self) -> Option<f64> {
+        let read = self.cache_read_tokens?;
+        (self.input_tokens > 0).then(|| read as f64 / self.input_tokens as f64)
+    }
+}
+
+fn add_opt(slot: &mut Option<u64>, other: Option<u64>) {
+    if let Some(v) = other {
+        *slot.get_or_insert(0) += v;
     }
 }
 

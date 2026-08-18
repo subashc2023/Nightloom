@@ -16,6 +16,7 @@ import type {
   ApprovalDecision,
   ApprovalRequest,
   ImageInput,
+  Price,
   ProviderInfo,
   SessionEvent,
   SessionMeta,
@@ -51,6 +52,8 @@ export interface Connection {
   tools: boolean;
   /** Context window of the connected model; null when unknown. */
   contextLimit: number | null;
+  /** Per-MTok rates for the connected model; null when unpriced. */
+  price: Price | null;
   /** Resolved workspace root the file tools operate in. */
   workspace: string;
 }
@@ -172,6 +175,7 @@ export async function applyDraft(): Promise<void> {
       thinking: thinkingString(d),
       tools: d.tools,
       contextLimit: res.context_limit ?? null,
+      price: res.price ?? null,
       workspace: res.workspace,
     };
     if (!d.model.trim()) d.model = res.model; // backend resolved the default
@@ -511,6 +515,66 @@ export function currentTodos(): TodoItem[] {
 export function contextUsed(): number | null {
   const u = app.liveUsage ?? lastAssistantUsage();
   return u ? u.input_tokens + u.output_tokens : null;
+}
+
+/**
+ * What this session has cost so far, in USD.
+ *
+ * Completed exchanges are read back from the log, where the backend recorded
+ * each one at the price in force when it ran — re-pricing them here would
+ * restate history whenever a vendor changes a rate, and the log is the source
+ * of truth for the same reason the transcript is. The in-flight round is the
+ * exception: it has no log entry yet, so it is priced live from the
+ * connection's rates and added on, which is the same live-then-log shape the
+ * context gauge uses.
+ *
+ * `complete` is false when some exchange had no price, making `usd` a floor.
+ * A session run entirely on an unpriced model is 0, and rendering that as
+ * "$0.00" would claim it was free.
+ */
+export function sessionCost(): { usd: number; complete: boolean } | null {
+  let usd = 0;
+  let complete = true;
+  let any = false;
+  for (const e of app.events) {
+    if (e.event !== "assistant_message") continue;
+    any = true;
+    if (typeof e.cost === "number") usd += e.cost;
+    else complete = false;
+  }
+  const live = app.liveUsage;
+  const price = app.connection?.price ?? null;
+  if (live) {
+    any = true;
+    if (price) usd += roundCost(live, price);
+    else complete = false;
+  }
+  return any ? { usd, complete } : null;
+}
+
+/** Mirrors `Price::cost` on the backend: three disjoint input slices. */
+function roundCost(u: Usage, p: Price): number {
+  const read = u.cache_read_tokens ?? 0;
+  const write = u.cache_write_tokens ?? 0;
+  const fresh = Math.max(0, u.input_tokens - read - write);
+  const at = (tokens: number, rate: number) => (tokens * rate) / 1e6;
+  return (
+    at(fresh, p.input) +
+    at(read, p.cache_read ?? p.input) +
+    at(write, p.cache_write ?? p.input) +
+    at(u.output_tokens, p.output)
+  );
+}
+
+/**
+ * Share of the newest round's prompt that was served from cache, or null on a
+ * host that reports no caching. Between turns it reads the trailing assistant
+ * message, exactly as the context gauge does.
+ */
+export function cacheHitRate(): number | null {
+  const u = app.liveUsage ?? lastAssistantUsage();
+  if (!u || u.cache_read_tokens == null || u.input_tokens === 0) return null;
+  return u.cache_read_tokens / u.input_tokens;
 }
 
 function lastAssistantUsage(): Usage | null {

@@ -106,6 +106,7 @@ fn build_chat(args: &ChatArgs) -> Result<Chat> {
     // Gives the sidecar's context gauge a denominator; `None` for a model
     // the table doesn't cover, which the gauge reports as a bare count.
     chat.context_limit = nightloom_service::context_limit(args.provider, &chat.model);
+    chat.price = nightloom_service::price(args.provider, &chat.model);
     if args.tools {
         chat.tools = tools::builtin();
         chat.approver = approver(args);
@@ -486,10 +487,21 @@ pub async fn run(args: ChatArgs) -> Result<()> {
 
     let u = session.total_usage();
     if u != Usage::default() {
-        println!(
-            "{DIM}session usage: {} in / {} out{RESET}",
-            u.input_tokens, u.output_tokens
-        );
+        let mut line = format!("{} in / {} out", u.input_tokens, u.output_tokens);
+        // Only when the host reports caching at all: no field means no rate,
+        // which is not the same as a 0% hit.
+        if let Some(rate) = u.cache_hit_rate() {
+            line.push_str(&format!(" ({:.0}% cached)", rate * 100.0));
+        }
+        let cost = session.cost();
+        if cost.usd > 0.0 || !cost.is_complete() {
+            // A floor rather than a total when some exchange had no price;
+            // saying "$0.02" for a session that was partly unpriced would be
+            // a smaller number than the user actually owes.
+            let approx = if cost.is_complete() { "" } else { "at least " };
+            line.push_str(&format!(" — {approx}${:.4}", cost.usd));
+        }
+        println!("{DIM}session usage: {line}{RESET}");
     }
     Ok(())
 }

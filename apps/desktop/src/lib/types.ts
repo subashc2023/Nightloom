@@ -39,14 +39,31 @@ export interface ConnectResult {
    * headroom that may not exist.
    */
   context_limit: number | null;
+  /** What the model charges. Null for a model with no verified price; the
+   *  UI then shows no dollar figure at all rather than $0.00. */
+  price: Price | null;
   /** Where the backend actually rooted the tools, after falling back. */
   workspace: string;
 }
 
 export interface Usage {
+  /** The whole prompt, cached or not — the backend normalizes Anthropic's
+   *  exclusive count into this inclusive one. */
   input_tokens: number;
   output_tokens: number;
   reasoning_tokens?: number;
+  /** Subsets of `input_tokens`. Absent means the host reports no caching,
+   *  which is not the same as a 0% hit rate. */
+  cache_read_tokens?: number;
+  cache_write_tokens?: number;
+}
+
+/** USD per million tokens, from the backend's pricing table. */
+export interface Price {
+  input: number;
+  output: number;
+  cache_read?: number | null;
+  cache_write?: number | null;
 }
 
 export interface TurnResult {
@@ -140,6 +157,10 @@ export type SessionEvent =
       blocks: ContentBlock[];
       stop_reason: string | null;
       usage: Usage;
+      // Recorded when the exchange ran, not derived now: prices change, and
+      // the provider that billed it is not recoverable from `model` alone.
+      // Absent means unpriced, which is not free.
+      cost?: number;
       at: string;
     }
   | {

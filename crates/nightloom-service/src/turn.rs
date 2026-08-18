@@ -7,6 +7,7 @@ use nightloom_core::{
     StreamEvent, SystemPrompt, Thinking, Usage,
     tool::{Tool, defs, effect_of, run_tool},
 };
+use nightloom_providers::pricing::Price;
 use serde::Serialize;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
@@ -139,6 +140,10 @@ pub struct Chat {
     /// the gauge reporting usage without a percentage rather than inventing
     /// a limit.
     pub context_limit: Option<u64>,
+    /// What this model charges, for the per-exchange cost recorded in the
+    /// log. `None` leaves the cost unrecorded rather than recorded as zero;
+    /// see [`SessionCost`](nightloom_core::SessionCost).
+    pub price: Option<Price>,
     /// Who decides whether a tool call may run. `None` runs everything.
     ///
     /// Allow-by-default is deliberate. The alternative — refusing until a
@@ -169,6 +174,7 @@ impl Chat {
             max_rounds: 8,
             sidecar: sidecar::default_parts(),
             context_limit: None,
+            price: None,
             approver: None,
             compact_signal: None,
             subagents: None,
@@ -440,7 +446,14 @@ impl Chat {
                 blocks.retain(|b| !matches!(b, ContentBlock::ToolUse { .. }));
                 if !blocks.is_empty() {
                     let reason = if interrupted { "interrupted" } else { "error" };
-                    session.record_assistant(&self.model, blocks, Some(reason.into()), usage);
+                    let cost = self.price.map(|p| p.cost(&usage));
+                    session.record_assistant_priced(
+                        &self.model,
+                        blocks,
+                        Some(reason.into()),
+                        usage,
+                        cost,
+                    );
                 }
                 if let Some(e) = stream_err {
                     return Err(e);
@@ -464,7 +477,10 @@ impl Chat {
                     text: String::new(),
                 });
             }
-            session.record_assistant(&self.model, blocks, stop_reason.clone(), usage);
+            // Per round, not per turn: a tool loop bills each round, and the
+            // last one's usage is not the turn's total.
+            let cost = self.price.map(|p| p.cost(&usage));
+            session.record_assistant_priced(&self.model, blocks, stop_reason.clone(), usage, cost);
 
             if calls.is_empty() {
                 return Ok(TurnOutcome {
@@ -1681,5 +1697,71 @@ mod tests {
             &msgs[1].content[..],
             [ContentBlock::Text { text }] if text.is_empty()
         ));
+    }
+
+    #[tokio::test]
+    async fn each_round_of_a_tool_loop_is_costed_separately() {
+        let round = |input: u64, output: u64, events: Vec<StreamEvent>| {
+            let mut v = vec![StreamEvent::Usage(Usage {
+                input_tokens: input,
+                output_tokens: output,
+                ..Default::default()
+            })];
+            v.extend(events);
+            v
+        };
+        let provider = Scripted::provider(vec![
+            round(1_000, 100, tool_call("current_time", json!({}))),
+            round(1_500, 50, says("half past")),
+        ]);
+        let mut chat = Chat::new(provider, "test-model");
+        chat.tools = crate::tools::builtin();
+        // $1/MTok in, $10/MTok out, no caching.
+        chat.price = Some(Price {
+            input: 1.0,
+            output: 10.0,
+            cache_read: None,
+            cache_write: None,
+        });
+        let mut session = Session::new();
+        let (out, _) = run(&chat, &mut session, "when").await;
+        assert!(out.is_ok());
+
+        let costs: Vec<Option<f64>> = session
+            .events()
+            .iter()
+            .filter_map(|e| match e {
+                SessionEvent::AssistantMessage { cost, .. } => Some(*cost),
+                _ => None,
+            })
+            .collect();
+        // Two rounds, each billed on its own usage. Costing the turn total
+        // once would charge the cached prefix a single time and undercount.
+        assert_eq!(costs.len(), 2);
+        let expected = [
+            (1_000.0 * 1.0 + 100.0 * 10.0) / 1e6,
+            (1_500.0 * 1.0 + 50.0 * 10.0) / 1e6,
+        ];
+        for (got, want) in costs.iter().zip(expected) {
+            assert!((got.unwrap() - want).abs() < 1e-12, "{got:?} vs {want}");
+        }
+        let total = session.cost();
+        assert!(total.is_complete());
+        assert!((total.usd - expected.iter().sum::<f64>()).abs() < 1e-12);
+    }
+
+    #[tokio::test]
+    async fn an_unpriced_model_records_no_cost_rather_than_zero() {
+        let provider = Scripted::provider(vec![says("hi")]);
+        let chat = Chat::new(provider, "some-local-model");
+        let mut session = Session::new();
+        let (out, _) = run(&chat, &mut session, "hi").await;
+        assert!(out.is_ok());
+        let total = session.cost();
+        assert_eq!(total.usd, 0.0);
+        // Zero dollars across one unpriced exchange is not a free session,
+        // and a UI has to be able to tell the two apart.
+        assert!(!total.is_complete());
+        assert_eq!(total.unpriced_exchanges, 1);
     }
 }

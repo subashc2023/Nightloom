@@ -18,6 +18,7 @@ pub use approval::{Approver, AutoApprove, Decision, PendingCall};
 pub use nightloom_providers::ProviderKind;
 pub use nightloom_providers::limits::context_limit;
 pub use nightloom_providers::models::list_models;
+pub use nightloom_providers::pricing::{Price, price};
 pub use prompt::{PromptConfig, assemble};
 pub use sidecar::{SidecarContext, SidecarPart};
 pub use turn::{Chat, CompactOutcome, TurnEvent, TurnInput, TurnOutcome};

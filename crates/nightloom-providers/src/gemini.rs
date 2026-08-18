@@ -208,6 +208,11 @@ impl Provider for Gemini {
                     usage.output_tokens = u["candidatesTokenCount"].as_u64().unwrap_or(0)
                         + thoughts.unwrap_or(0);
                     usage.reasoning_tokens = thoughts.or(usage.reasoning_tokens);
+                    // Already counted inside promptTokenCount; implicit
+                    // caching reports it, explicit cached content too.
+                    usage.cache_read_tokens = u["cachedContentTokenCount"]
+                        .as_u64()
+                        .or(usage.cache_read_tokens);
                 }
                 let Some(candidate) = v["candidates"].get(0) else {
                     continue;

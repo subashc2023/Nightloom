@@ -174,6 +174,7 @@ mod tests {
                 input_tokens: limit * pct / 100,
                 output_tokens: 0,
                 reasoning_tokens: None,
+                ..Default::default()
             },
         );
         session
@@ -265,6 +266,7 @@ mod tests {
                     input_tokens: input,
                     output_tokens: output,
                     reasoning_tokens: None,
+                    ..Default::default()
                 },
             );
         }
@@ -285,6 +287,7 @@ mod tests {
                 input_tokens: 40,
                 output_tokens: 2,
                 reasoning_tokens: None,
+                ..Default::default()
             },
         );
         let out = ContextGauge.render(&ctx(&session, None)).unwrap();

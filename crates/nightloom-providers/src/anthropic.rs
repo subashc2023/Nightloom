@@ -28,7 +28,8 @@ impl Anthropic {
     }
 
     fn body(request: &ChatRequest) -> Result<Value, ProviderError> {
-        let messages: Vec<Value> = request.messages.iter().map(to_wire_message).collect();
+        let mut messages: Vec<Value> = request.messages.iter().map(to_wire_message).collect();
+        mark_conversation_prefix(&mut messages);
         let mut body = json!({
             "model": request.model,
             "max_tokens": request.max_tokens,
@@ -40,7 +41,7 @@ impl Anthropic {
         // cache breakpoint, so one block per segment is what makes
         // `cache_anchor` expressible at all. Four is the per-request limit.
         if !request.system.is_empty() {
-            let anchors = request.system.cache_anchors(4);
+            let anchors = request.system.cache_anchors(SYSTEM_ANCHOR_BUDGET);
             let blocks: Vec<Value> = request
                 .system
                 .segments()
@@ -106,6 +107,42 @@ impl Anthropic {
     }
 }
 
+/// Breakpoints available to the system prompt, out of Anthropic's four per
+/// request. The fourth is reserved for [`mark_conversation_prefix`]; a fifth
+/// breakpoint is a 400, so the reservation has to come out of this budget
+/// rather than be added on top of it.
+const SYSTEM_ANCHOR_BUDGET: usize = 3;
+
+/// Put a rolling cache breakpoint at the end of the conversation *minus its
+/// last message*.
+///
+/// Without this the only cacheable prefix is the system prompt, and a preamble
+/// under Anthropic's 1024-token minimum is silently ignored — measured on this
+/// harness, a four-turn session reported `cache_read_input_tokens: 0` on every
+/// turn while the prompt grew from 299 to 369 tokens. The cache-boundary
+/// design the preamble and sidecar are split along was protecting a cache that
+/// never existed.
+///
+/// The last message is deliberately left outside. On round one of a turn it
+/// carries the sidecar, whose clock changes every turn: inside the breakpoint
+/// it would move the cached bytes each time and turn every read into a miss.
+/// Everything up to the previous message is byte-stable by construction, so
+/// each turn reads back the whole prior conversation and writes only the
+/// delta.
+fn mark_conversation_prefix(messages: &mut [Value]) {
+    let Some(i) = messages.len().checked_sub(2) else {
+        return;
+    };
+    // The breakpoint attaches to a content *block*, so it marks the last
+    // block of that message rather than the message itself.
+    if let Some(last) = messages[i]["content"]
+        .as_array_mut()
+        .and_then(|blocks| blocks.last_mut())
+    {
+        last["cache_control"] = json!({ "type": "ephemeral" });
+    }
+}
+
 fn to_wire_message(message: &Message) -> Value {
     let role = match message.role {
         Role::User => "user",
@@ -167,6 +204,23 @@ fn to_wire_message(message: &Message) -> Value {
     json!({ "role": role, "content": content })
 }
 
+/// Read the prompt side of `message_start.message.usage`.
+///
+/// Anthropic's `input_tokens` counts only the tokens that missed the cache
+/// entirely: the read and write counters sit *beside* it, not inside it.
+/// [`Usage`] is normalized the other way — inclusive, the way OpenAI and
+/// Gemini report it — so the three have to be summed. Skipping this makes the
+/// context gauge read near-empty on exactly the turns where the cache is
+/// working, which is the reverse of the truth.
+fn read_input_usage(u: &Value, usage: &mut Usage) {
+    let read = u["cache_read_input_tokens"].as_u64();
+    let write = u["cache_creation_input_tokens"].as_u64();
+    usage.input_tokens =
+        u["input_tokens"].as_u64().unwrap_or(0) + read.unwrap_or(0) + write.unwrap_or(0);
+    usage.cache_read_tokens = read;
+    usage.cache_write_tokens = write;
+}
+
 #[async_trait::async_trait]
 impl Provider for Anthropic {
     fn name(&self) -> &'static str {
@@ -211,8 +265,7 @@ impl Provider for Anthropic {
                 let v: Value = serde_json::from_str(&event.data).map_err(parse)?;
                 match v["type"].as_str().unwrap_or_default() {
                     "message_start" => {
-                        usage.input_tokens =
-                            v["message"]["usage"]["input_tokens"].as_u64().unwrap_or(0);
+                        read_input_usage(&v["message"]["usage"], &mut usage);
                         yield StreamEvent::Start;
                     }
                     "content_block_start" => {
@@ -338,6 +391,115 @@ impl Provider for Anthropic {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_conversation_prefix_is_cached_but_the_trailing_message_is_not() {
+        let req = ChatRequest {
+            model: "claude-sonnet-5".into(),
+            system: SystemPrompt::default(),
+            messages: vec![
+                Message::user("first"),
+                Message::assistant(vec![ContentBlock::Text {
+                    text: "reply".into(),
+                }]),
+                // Carries the sidecar in real use: the clock inside it moves
+                // every turn, so marking it would make every read a miss.
+                Message::user("second"),
+            ],
+            max_tokens: 16,
+            temperature: None,
+            thinking: Thinking::Default,
+            tools: Vec::new(),
+        };
+        let body = Anthropic::body(&req).unwrap();
+        let msgs = body["messages"].as_array().unwrap();
+        assert!(msgs[0]["content"][0]["cache_control"].is_null());
+        assert_eq!(msgs[1]["content"][0]["cache_control"]["type"], "ephemeral");
+        assert!(msgs[2]["content"][0]["cache_control"].is_null());
+    }
+
+    #[test]
+    fn a_single_message_conversation_has_nothing_stable_to_cache() {
+        let req = ChatRequest {
+            model: "claude-sonnet-5".into(),
+            system: SystemPrompt::default(),
+            messages: vec![Message::user("only")],
+            max_tokens: 16,
+            temperature: None,
+            thinking: Thinking::Default,
+            tools: Vec::new(),
+        };
+        let body = Anthropic::body(&req).unwrap();
+        assert!(body["messages"][0]["content"][0]["cache_control"].is_null());
+    }
+
+    #[test]
+    fn the_system_prompt_cannot_spend_the_conversation_breakpoint() {
+        // Five anchored segments plus the rolling conversation breakpoint
+        // would be six; Anthropic's limit is four and a fifth is a 400.
+        let mut system = SystemPrompt::default();
+        for i in 0..5 {
+            system.push(Segment::new(SegmentKind::Custom, format!("s{i}"), "text").anchored());
+        }
+        let req = ChatRequest {
+            model: "claude-sonnet-5".into(),
+            system,
+            messages: vec![
+                Message::user("a"),
+                Message::assistant(vec![ContentBlock::Text { text: "b".into() }]),
+            ],
+            max_tokens: 16,
+            temperature: None,
+            thinking: Thinking::Default,
+            tools: Vec::new(),
+        };
+        let body = Anthropic::body(&req).unwrap();
+        let marked = |v: &Value| {
+            v.as_array()
+                .unwrap()
+                .iter()
+                .filter(|b| !b["cache_control"].is_null())
+                .count()
+        };
+        assert_eq!(marked(&body["system"]), 3);
+        let in_messages: usize = body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| marked(&m["content"]))
+            .sum();
+        assert_eq!(in_messages, 1);
+        assert!(marked(&body["system"]) + in_messages <= 4);
+    }
+
+    #[test]
+    fn cached_prompt_tokens_are_summed_into_the_inclusive_total() {
+        // A warm cache: 10 fresh tokens, 4000 read back, 0 written. Taking
+        // `input_tokens` at face value would report a 10-token prompt.
+        let mut usage = Usage::default();
+        read_input_usage(
+            &json!({
+                "input_tokens": 10,
+                "cache_read_input_tokens": 4000,
+                "cache_creation_input_tokens": 0
+            }),
+            &mut usage,
+        );
+        assert_eq!(usage.input_tokens, 4010);
+        assert_eq!(usage.cache_read_tokens, Some(4000));
+        assert_eq!(usage.uncached_input_tokens(), 10);
+    }
+
+    #[test]
+    fn a_response_without_cache_fields_reports_no_cache_rather_than_zero() {
+        // Caching off is not a 0% hit rate — there is no rate to report.
+        let mut usage = Usage::default();
+        read_input_usage(&json!({ "input_tokens": 512 }), &mut usage);
+        assert_eq!(usage.input_tokens, 512);
+        assert_eq!(usage.cache_read_tokens, None);
+        assert_eq!(usage.cache_hit_rate(), None);
+    }
+
     use nightloom_core::{Segment, SegmentKind, SystemPrompt, ToolDef};
 
     fn request(tools: Vec<ToolDef>) -> ChatRequest {
