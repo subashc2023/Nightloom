@@ -95,6 +95,7 @@ pub async fn run_probe(provider: &dyn Provider, spec: &ProbeSpec) -> ProbeReport
         max_tokens: spec.max_tokens,
         temperature: None,
         thinking: spec.thinking.clone(),
+        tools: Vec::new(),
     };
 
     let start = Instant::now();

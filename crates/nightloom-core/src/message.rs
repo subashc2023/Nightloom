@@ -9,13 +9,33 @@ pub enum Role {
 
 /// Canonical content block. Modeled as a superset of provider formats;
 /// adapters translate down and drop what a given API can't express.
-/// Tool use, images, and documents will be added as further variants.
+/// Images and documents will be added as further variants.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ContentBlock {
-    Text { text: String },
-    Thinking { text: String },
+    Text {
+        text: String,
+    },
+    Thinking {
+        text: String,
+    },
+    /// A tool invocation the model requested. Lives in assistant messages.
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    /// The outcome of executing a tool call. Lives in user messages, paired
+    /// to its call by `tool_use_id`. `name` is carried redundantly because
+    /// Gemini addresses results by function name, not call id.
+    ToolResult {
+        tool_use_id: String,
+        name: String,
+        content: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        is_error: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

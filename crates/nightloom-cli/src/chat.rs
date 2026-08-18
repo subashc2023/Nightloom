@@ -147,6 +147,7 @@ async fn run_turn(
         max_tokens: args.max_tokens,
         temperature: None,
         thinking: args.thinking.clone().unwrap_or(Thinking::Default),
+        tools: Vec::new(),
     };
 
     let mut stream = provider.stream_chat(request).await?;

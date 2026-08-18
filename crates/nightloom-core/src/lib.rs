@@ -8,7 +8,11 @@
 pub mod message;
 pub mod provider;
 pub mod session;
+pub mod tool;
 
 pub use message::{ContentBlock, Message, Role};
-pub use provider::{ChatRequest, EventStream, Provider, ProviderError, StreamEvent, Thinking, Usage};
+pub use provider::{
+    ChatRequest, EventStream, Provider, ProviderError, StreamEvent, Thinking, ToolDef, Usage,
+};
 pub use session::{Session, SessionEvent};
+pub use tool::Tool;

@@ -30,6 +30,16 @@ pub enum SessionEvent {
         usage: Usage,
         at: DateTime<Utc>,
     },
+    /// One executed tool call. Consecutive results project into a single
+    /// user message of `ToolResult` blocks (the shape every provider
+    /// expects results in).
+    ToolResult {
+        tool_use_id: String,
+        name: String,
+        content: String,
+        is_error: bool,
+        at: DateTime<Utc>,
+    },
 }
 
 pub struct Session {
@@ -139,17 +149,71 @@ impl Session {
 
     /// Projection: the message list to send to a provider.
     pub fn messages(&self) -> Vec<Message> {
-        self.events
-            .iter()
-            .filter_map(|e| match e {
-                SessionEvent::UserMessage { text, .. } => Some(Message::user(text.clone())),
-                SessionEvent::AssistantMessage { blocks, .. } => Some(Message {
-                    role: Role::Assistant,
-                    content: blocks.clone(),
-                }),
-                _ => None,
-            })
-            .collect()
+        let mut messages: Vec<Message> = Vec::new();
+        for e in &self.events {
+            match e {
+                SessionEvent::UserMessage { text, .. } => {
+                    messages.push(Message::user(text.clone()));
+                }
+                SessionEvent::AssistantMessage { blocks, .. } => {
+                    messages.push(Message {
+                        role: Role::Assistant,
+                        content: blocks.clone(),
+                    });
+                }
+                SessionEvent::ToolResult {
+                    tool_use_id,
+                    name,
+                    content,
+                    is_error,
+                    ..
+                } => {
+                    let block = ContentBlock::ToolResult {
+                        tool_use_id: tool_use_id.clone(),
+                        name: name.clone(),
+                        content: content.clone(),
+                        is_error: *is_error,
+                    };
+                    // Results from one round of calls coalesce into the user
+                    // message a provider expects them in.
+                    match messages.last_mut() {
+                        Some(m)
+                            if m.role == Role::User
+                                && matches!(
+                                    m.content.last(),
+                                    Some(ContentBlock::ToolResult { .. })
+                                ) =>
+                        {
+                            m.content.push(block)
+                        }
+                        _ => messages.push(Message {
+                            role: Role::User,
+                            content: vec![block],
+                        }),
+                    }
+                }
+                _ => {}
+            }
+        }
+        messages
+    }
+
+    pub fn record_tool_result(&mut self, block: &ContentBlock) {
+        if let ContentBlock::ToolResult {
+            tool_use_id,
+            name,
+            content,
+            is_error,
+        } = block
+        {
+            self.record(SessionEvent::ToolResult {
+                tool_use_id: tool_use_id.clone(),
+                name: name.clone(),
+                content: content.clone(),
+                is_error: *is_error,
+                at: Utc::now(),
+            });
+        }
     }
 
     pub fn total_usage(&self) -> Usage {
@@ -228,6 +292,46 @@ mod tests {
         assert_eq!(msgs[0].text(), "hello");
         assert_eq!(msgs[1].text(), "hi");
         assert_eq!(s.total_usage().input_tokens, 10);
+    }
+
+    #[test]
+    fn tool_results_project_into_one_user_message() {
+        let mut s = Session::new();
+        s.record_user("what's 2+2 and 3+3?");
+        s.record_assistant(
+            "test-model",
+            vec![
+                ContentBlock::ToolUse {
+                    id: "c1".into(),
+                    name: "add".into(),
+                    input: serde_json::json!({"a": 2, "b": 2}),
+                },
+                ContentBlock::ToolUse {
+                    id: "c2".into(),
+                    name: "add".into(),
+                    input: serde_json::json!({"a": 3, "b": 3}),
+                },
+            ],
+            Some("tool_use".into()),
+            Usage::default(),
+        );
+        for (id, out) in [("c1", "4"), ("c2", "6")] {
+            s.record_tool_result(&ContentBlock::ToolResult {
+                tool_use_id: id.into(),
+                name: "add".into(),
+                content: out.into(),
+                is_error: false,
+            });
+        }
+        let msgs = s.messages();
+        // user question, assistant tool calls, ONE user message of results
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[2].role, Role::User);
+        assert_eq!(msgs[2].content.len(), 2);
+        assert!(matches!(
+            &msgs[2].content[0],
+            ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "c1"
+        ));
     }
 
     #[test]

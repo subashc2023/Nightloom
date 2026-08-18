@@ -49,6 +49,15 @@ impl fmt::Display for Thinking {
     }
 }
 
+/// A tool the model may call, described vendor-neutrally. `input_schema` is
+/// a JSON Schema object; adapters rename it to each API's field.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolDef {
+    pub name: String,
+    pub description: String,
+    pub input_schema: serde_json::Value,
+}
+
 #[derive(Debug, Clone)]
 pub struct ChatRequest {
     pub model: String,
@@ -57,6 +66,8 @@ pub struct ChatRequest {
     pub max_tokens: u32,
     pub temperature: Option<f32>,
     pub thinking: Thinking,
+    /// Tools the model may call this turn. Empty means tool use is off.
+    pub tools: Vec<ToolDef>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -88,6 +99,14 @@ pub enum StreamEvent {
     Start,
     TextDelta(String),
     ThinkingDelta(String),
+    /// A complete tool call. Adapters buffer partial-argument deltas and
+    /// emit one event per call once its input parses — argument fragments
+    /// are too vendor-shaped to normalize incrementally.
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
     Usage(Usage),
     End { stop_reason: Option<String> },
 }
