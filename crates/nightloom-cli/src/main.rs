@@ -1,5 +1,6 @@
 mod chat;
 mod probe;
+mod sessions;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -26,6 +27,8 @@ struct Cli {
 enum Command {
     /// Streaming health probe: TTFT + reasoning/usage diagnostics per model
     Probe(probe::ProbeArgs),
+    /// List session logs, most recent first
+    Sessions(sessions::SessionsArgs),
 }
 
 #[tokio::main]
@@ -33,6 +36,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Some(Command::Probe(args)) => probe::run(args).await,
+        Some(Command::Sessions(args)) => sessions::run(args),
         None => chat::run(cli.chat).await,
     }
 }

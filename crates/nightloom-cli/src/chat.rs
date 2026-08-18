@@ -1,7 +1,9 @@
-use crate::{DIM, RESET};
+use crate::{DIM, RESET, sessions};
 use anyhow::{Context, Result, bail};
 use futures::StreamExt;
-use nightloom_core::{ChatRequest, ContentBlock, Provider, Session, StreamEvent, Thinking, Usage};
+use nightloom_core::{
+    ChatRequest, ContentBlock, Provider, Session, SessionEvent, StreamEvent, Thinking, Usage,
+};
 use nightloom_providers::ProviderKind;
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -35,6 +37,14 @@ pub struct ChatArgs {
     #[arg(long)]
     once: Option<String>,
 
+    /// Resume a session by ID (full UUID or unambiguous prefix)
+    #[arg(long, value_name = "SESSION", conflicts_with_all = ["continue_", "no_log"])]
+    resume: Option<String>,
+
+    /// Resume the most recently modified session in the log dir
+    #[arg(long = "continue", conflicts_with = "no_log")]
+    continue_: bool,
+
     /// Don't write a session log
     #[arg(long)]
     no_log: bool,
@@ -64,6 +74,60 @@ fn new_session(args: &ChatArgs) -> Result<Session> {
         Ok(Session::new())
     } else {
         Session::with_log(&args.log_dir).context("failed to create session log")
+    }
+}
+
+fn open_session(args: &ChatArgs) -> Result<Session> {
+    let path = if let Some(prefix) = &args.resume {
+        Some(sessions::find_by_prefix(&args.log_dir, prefix)?)
+    } else if args.continue_ {
+        Some(sessions::latest(&args.log_dir)?)
+    } else {
+        None
+    };
+    match path {
+        Some(path) => Session::load(&path)
+            .with_context(|| format!("failed to load session {}", path.display())),
+        None => new_session(args),
+    }
+}
+
+/// Enough context to pick the conversation back up: turn counts plus the
+/// last exchange.
+fn print_recap(session: &Session) {
+    let mut user_turns = 0;
+    let mut assistant_turns = 0;
+    let mut last_user = None;
+    let mut last_assistant = None;
+    for event in session.events() {
+        match event {
+            SessionEvent::UserMessage { text, .. } => {
+                user_turns += 1;
+                last_user = Some(text.as_str());
+            }
+            SessionEvent::AssistantMessage { blocks, .. } => {
+                assistant_turns += 1;
+                last_assistant = Some(blocks);
+            }
+            _ => {}
+        }
+    }
+    println!(
+        "{DIM}resumed session {} — {user_turns} user / {assistant_turns} assistant turns{RESET}",
+        session.id
+    );
+    if let Some(text) = last_user {
+        println!("{DIM}  you › {}{RESET}", sessions::one_line(text, 100));
+    }
+    if let Some(blocks) = last_assistant {
+        let text: String = blocks
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        println!("{DIM}  model › {}{RESET}", sessions::one_line(&text, 100));
     }
 }
 
@@ -144,16 +208,24 @@ fn prompt_line() -> Result<Option<String>> {
 
 pub async fn run(args: ChatArgs) -> Result<()> {
     let (provider, model) = build_provider(&args)?;
-    let mut session = new_session(&args)?;
+    let mut session = open_session(&args)?;
 
     if let Some(prompt) = args.once.clone() {
         run_turn(provider.as_ref(), &model, &mut session, &args, &prompt).await?;
         return Ok(());
     }
 
-    println!("nightloom v{} — {}:{}", env!("CARGO_PKG_VERSION"), provider.name(), model);
+    println!(
+        "nightloom v{} — {}:{}",
+        env!("CARGO_PKG_VERSION"),
+        provider.name(),
+        model
+    );
     if let Some(path) = session.log_path() {
         println!("{DIM}session log: {}{RESET}", path.display());
+    }
+    if args.resume.is_some() || args.continue_ {
+        print_recap(&session);
     }
     println!("{DIM}/new starts a fresh session, /quit exits{RESET}");
 
@@ -179,7 +251,10 @@ pub async fn run(args: ChatArgs) -> Result<()> {
 
     let u = session.total_usage();
     if u != Usage::default() {
-        println!("{DIM}session usage: {} in / {} out{RESET}", u.input_tokens, u.output_tokens);
+        println!(
+            "{DIM}session usage: {} in / {} out{RESET}",
+            u.input_tokens, u.output_tokens
+        );
     }
     Ok(())
 }
