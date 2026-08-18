@@ -1,7 +1,9 @@
 use crate::{DIM, RESET};
 use anyhow::{Context, Result};
-use nightloom_core::{ContentBlock, ProviderError, Session, SessionEvent, Thinking, Usage};
-use nightloom_service::{Chat, ProviderKind, TurnEvent, store, tools};
+use nightloom_core::{
+    ContentBlock, ProviderError, SegmentKind, Session, SessionEvent, SystemPrompt, Thinking, Usage,
+};
+use nightloom_service::{Chat, PromptConfig, ProviderKind, TurnEvent, prompt, store, tools};
 use std::io::{self, Write};
 use std::path::PathBuf;
 use tokio_util::sync::CancellationToken;
@@ -20,9 +22,17 @@ pub struct ChatArgs {
     #[arg(long)]
     base_url: Option<String>,
 
-    /// System prompt
+    /// Extra system-prompt text, appended after the built-in preamble
     #[arg(long)]
     system: Option<String>,
+
+    /// Skip the built-in preamble (identity, environment, project instructions)
+    #[arg(long)]
+    bare: bool,
+
+    /// Don't attach the per-turn status block (time, tasks, context)
+    #[arg(long)]
+    no_sidecar: bool,
 
     /// Reasoning control: default | budget=N | effort=LEVEL (support varies by provider)
     #[arg(long)]
@@ -31,7 +41,7 @@ pub struct ChatArgs {
     #[arg(long, default_value_t = 8192)]
     max_tokens: u32,
 
-    /// Enable the built-in tools (current_time, read_file, list_dir)
+    /// Enable the built-in tools (current_time, read_file, list_dir, todo_write)
     #[arg(long)]
     tools: bool,
 
@@ -68,13 +78,56 @@ fn build_chat(args: &ChatArgs) -> Result<Chat> {
     )
     .with_context(|| format!("cannot build provider {}", args.provider))?;
     let mut chat = Chat::new(provider, model);
-    chat.system = args.system.clone();
+    // `--bare` drops every discovered layer; `--system` is the shell-supplied
+    // one and survives either way, appended last.
+    let on = !args.bare;
+    chat.system = prompt::assemble(&PromptConfig {
+        identity: on,
+        environment: on,
+        project_instructions: on,
+        user_memory: on,
+        cwd: std::env::current_dir().context("cannot read the current directory")?,
+        custom: args.system.clone(),
+    });
     chat.thinking = args.thinking.clone().unwrap_or(Thinking::Default);
     chat.max_tokens = args.max_tokens;
     if args.tools {
         chat.tools = tools::builtin();
     }
+    if args.no_sidecar {
+        chat.sidecar = Vec::new();
+    }
     Ok(chat)
+}
+
+/// One dim line naming the layers the preamble actually picked up — a
+/// projection of the assembled prompt, not a second run of the discovery.
+fn prompt_summary(system: &SystemPrompt) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    let mut project_at: Option<usize> = None;
+    let mut project = 0usize;
+    for segment in system.segments() {
+        match segment.kind {
+            SegmentKind::Identity => parts.push("identity".into()),
+            SegmentKind::Environment => parts.push("environment".into()),
+            SegmentKind::UserMemory => parts.push("user memory".into()),
+            SegmentKind::ProjectInstructions => {
+                // Collapse the walk's files into one count, in place.
+                project += 1;
+                if project_at.is_none() {
+                    project_at = Some(parts.len());
+                    parts.push(String::new());
+                }
+            }
+            SegmentKind::Custom => parts.push("--system".into()),
+            _ => {}
+        }
+    }
+    if let Some(i) = project_at {
+        let plural = if project == 1 { "" } else { "s" };
+        parts[i] = format!("{project} project file{plural}");
+    }
+    (!parts.is_empty()).then(|| format!("prompt: {}", parts.join(", ")))
 }
 
 fn new_session(args: &ChatArgs) -> Result<Session> {
@@ -277,6 +330,11 @@ pub async fn run(args: ChatArgs) -> Result<()> {
     );
     if let Some(path) = session.log_path() {
         println!("{DIM}session log: {}{RESET}", path.display());
+    }
+    if !args.bare
+        && let Some(line) = prompt_summary(&chat.system)
+    {
+        println!("{DIM}{line}{RESET}");
     }
     if args.resume.is_some() || args.continue_ {
         print_recap(&session);

@@ -7,12 +7,16 @@
 //! token — whatever those mean (stdout + Ctrl-C, IPC events + a button) is
 //! the shell's business.
 
+pub mod prompt;
+pub mod sidecar;
 pub mod store;
 pub mod tools;
 pub mod turn;
 
 pub use nightloom_providers::ProviderKind;
 pub use nightloom_providers::models::list_models;
+pub use prompt::{PromptConfig, assemble};
+pub use sidecar::{SidecarContext, SidecarPart};
 pub use turn::{Chat, CompactOutcome, TurnEvent, TurnOutcome};
 
 use nightloom_core::{Provider, ProviderError};

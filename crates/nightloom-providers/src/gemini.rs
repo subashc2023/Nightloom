@@ -43,7 +43,7 @@ impl Gemini {
             Thinking::Effort(e) => json!({ "thinkingLevel": e, "includeThoughts": true }),
         };
         let mut body = json!({ "contents": contents, "generationConfig": generation });
-        if let Some(system) = &request.system {
+        if let Some(system) = request.system.render_flat() {
             body["systemInstruction"] = json!({ "parts": [{ "text": system }] });
         }
         // One tools entry wrapping every declaration; Gemini takes the JSON
@@ -213,12 +213,12 @@ impl Provider for Gemini {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nightloom_core::ToolDef;
+    use nightloom_core::{SystemPrompt, ToolDef};
 
     fn request(messages: Vec<Message>, tools: Vec<ToolDef>) -> ChatRequest {
         ChatRequest {
             model: "gemini-test".into(),
-            system: None,
+            system: SystemPrompt::default(),
             messages,
             max_tokens: 64,
             temperature: None,

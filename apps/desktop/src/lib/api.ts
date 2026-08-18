@@ -40,6 +40,8 @@ export function connect(args: ConnectArgs): Promise<ConnectResult> {
     thinking: args.thinking,
     system: args.system,
     tools: args.tools,
+    preamble: args.preamble,
+    sidecar: args.sidecar,
   });
 }
 

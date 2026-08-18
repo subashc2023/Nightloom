@@ -1,5 +1,6 @@
 use crate::message::{ContentBlock, Message, Role};
 use crate::provider::Usage;
+use crate::todo::TodoItem;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
@@ -46,6 +47,14 @@ pub enum SessionEvent {
     /// disk for UIs and audit.
     Compaction {
         summary: String,
+        at: DateTime<Utc>,
+    },
+    /// The model's task list, as of this point. Each write records the whole
+    /// list; the latest event wins. Not part of the message projection — it
+    /// reaches the model through the per-turn sidecar instead, so the list
+    /// is always current rather than a trail of stale copies.
+    TodoState {
+        todos: Vec<TodoItem>,
         at: DateTime<Utc>,
     },
 }
@@ -152,12 +161,70 @@ impl Session {
         });
     }
 
+    pub fn record_todos(&mut self, todos: Vec<TodoItem>) {
+        self.record(SessionEvent::TodoState {
+            todos,
+            at: Utc::now(),
+        });
+    }
+
     pub fn events(&self) -> &[SessionEvent] {
         &self.events
     }
 
+    /// The current task list: the most recent `TodoState`, or empty. A
+    /// compaction clears it — the summary supersedes the plan that produced
+    /// it, and a stale list would outlive the work it described.
+    pub fn todos(&self) -> &[TodoItem] {
+        for e in self.events.iter().rev() {
+            match e {
+                SessionEvent::TodoState { todos, .. } => return todos,
+                SessionEvent::Compaction { .. } => return &[],
+                _ => {}
+            }
+        }
+        &[]
+    }
+
     /// Projection: the message list to send to a provider.
     pub fn messages(&self) -> Vec<Message> {
+        self.messages_with_sidecar(None)
+    }
+
+    /// The same projection with a per-turn sidecar appended to the user's
+    /// message: current time, task list, context gauge — whatever the shell
+    /// wants the model to know about *now*.
+    ///
+    /// The sidecar is deliberately not an event. It is composed at
+    /// projection time and never written to the log, so replaying an old
+    /// session can't resurrect last week's clock or a task list that has
+    /// since moved on.
+    ///
+    /// It attaches only when the projection ends in a plain user text
+    /// message — the first round of a turn. On tool-continuation rounds the
+    /// tail is a tool-result message, where an extra text block is a wire
+    /// hazard (Gemini pairs function responses strictly), and the sidecar
+    /// from round one is still in context anyway.
+    pub fn messages_with_sidecar(&self, sidecar: Option<&str>) -> Vec<Message> {
+        let mut messages = self.project();
+        let Some(sidecar) = sidecar.map(str::trim).filter(|s| !s.is_empty()) else {
+            return messages;
+        };
+        if let Some(last) = messages.last_mut()
+            && last.role == Role::User
+            && last
+                .content
+                .iter()
+                .all(|b| matches!(b, ContentBlock::Text { .. }))
+        {
+            last.content.push(ContentBlock::Text {
+                text: sidecar.to_string(),
+            });
+        }
+        messages
+    }
+
+    fn project(&self) -> Vec<Message> {
         let mut messages: Vec<Message> = Vec::new();
         for e in &self.events {
             match e {
@@ -378,6 +445,67 @@ mod tests {
         assert_eq!(msgs[1].text(), "follow-up");
         // The log itself keeps the pre-compaction events.
         assert_eq!(s.events().len(), 5);
+    }
+
+    #[test]
+    fn sidecar_attaches_to_a_trailing_user_message() {
+        let mut s = Session::new();
+        s.record_user("hello");
+        let msgs = s.messages_with_sidecar(Some("<status>now</status>"));
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].content.len(), 2);
+        assert_eq!(msgs[0].text(), "hello<status>now</status>");
+        // …and it stays out of the log, so replay never resurrects it.
+        assert_eq!(s.messages()[0].content.len(), 1);
+    }
+
+    #[test]
+    fn sidecar_skips_a_trailing_tool_result_message() {
+        let mut s = Session::new();
+        s.record_user("go");
+        s.record_assistant(
+            "test-model",
+            vec![ContentBlock::ToolUse {
+                id: "c1".into(),
+                name: "add".into(),
+                input: serde_json::json!({}),
+            }],
+            Some("tool_use".into()),
+            Usage::default(),
+        );
+        s.record_tool_result(&ContentBlock::ToolResult {
+            tool_use_id: "c1".into(),
+            name: "add".into(),
+            content: "4".into(),
+            is_error: false,
+        });
+        let msgs = s.messages_with_sidecar(Some("<status>now</status>"));
+        // The tail is a tool-result message: appending text there is a wire
+        // hazard, and round one already carried the sidecar.
+        assert_eq!(msgs.last().unwrap().content.len(), 1);
+    }
+
+    #[test]
+    fn todos_take_the_latest_state_and_reset_on_compaction() {
+        use crate::todo::{TodoItem, TodoStatus};
+        let mut s = Session::new();
+        s.record_todos(vec![TodoItem::new("first", TodoStatus::Pending)]);
+        s.record_todos(vec![TodoItem::new("second", TodoStatus::InProgress)]);
+        assert_eq!(s.todos().len(), 1);
+        assert_eq!(s.todos()[0].content, "second");
+        // The list is not part of the message projection.
+        assert!(s.messages().is_empty());
+
+        s.record_user("q");
+        s.record_assistant(
+            "test-model",
+            vec![ContentBlock::Text { text: "a".into() }],
+            None,
+            Usage::default(),
+        );
+        s.record_compaction("summary");
+        // The summary supersedes the plan that produced it.
+        assert!(s.todos().is_empty());
     }
 
     #[test]

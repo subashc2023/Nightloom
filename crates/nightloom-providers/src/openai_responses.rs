@@ -37,7 +37,7 @@ impl OpenAiResponses {
             "input": input,
             "max_output_tokens": request.max_tokens,
         });
-        if let Some(system) = &request.system {
+        if let Some(system) = request.system.render_flat() {
             body["instructions"] = json!(system);
         }
         if !request.tools.is_empty() {
@@ -258,12 +258,12 @@ impl Provider for OpenAiResponses {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nightloom_core::ToolDef;
+    use nightloom_core::{SystemPrompt, ToolDef};
 
     fn request(messages: Vec<Message>, tools: Vec<ToolDef>) -> ChatRequest {
         ChatRequest {
             model: "gpt-test".into(),
-            system: None,
+            system: SystemPrompt::default(),
             messages,
             max_tokens: 128,
             temperature: None,

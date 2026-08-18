@@ -71,7 +71,7 @@ impl OpenAiCompat {
 
     fn body(&self, request: &ChatRequest) -> Result<Value, ProviderError> {
         let mut messages: Vec<Value> = Vec::new();
-        if let Some(system) = &request.system {
+        if let Some(system) = request.system.render_flat() {
             messages.push(json!({ "role": "system", "content": system }));
         }
         for m in &request.messages {
@@ -342,12 +342,12 @@ impl Provider for OpenAiCompat {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nightloom_core::ToolDef;
+    use nightloom_core::{Segment, SegmentKind, SystemPrompt, ToolDef};
 
     fn request(messages: Vec<Message>, tools: Vec<ToolDef>) -> ChatRequest {
         ChatRequest {
             model: "test-model".into(),
-            system: None,
+            system: SystemPrompt::default(),
             messages,
             max_tokens: 64,
             temperature: None,
@@ -380,6 +380,32 @@ mod tests {
                 },
             }])
         );
+    }
+
+    #[test]
+    fn system_segments_collapse_into_one_leading_system_message() {
+        let mut prompt = SystemPrompt::new();
+        prompt
+            .push(Segment::new(SegmentKind::Custom, "a", "first"))
+            .push(Segment::new(SegmentKind::Custom, "b", "second"));
+        let mut req = request(vec![Message::user("hi")], vec![]);
+        req.system = prompt;
+        let body = OpenAiCompat::new("k", None).body(&req).unwrap();
+        assert_eq!(
+            body["messages"][0],
+            json!({ "role": "system", "content": "first\n\nsecond" })
+        );
+        assert_eq!(body["messages"][1]["role"], "user");
+    }
+
+    #[test]
+    fn no_system_message_when_prompt_empty() {
+        let provider = OpenAiCompat::new("k", None);
+        let body = provider
+            .body(&request(vec![Message::user("hi")], vec![]))
+            .unwrap();
+        assert_eq!(body["messages"][0]["role"], "user");
+        assert_eq!(body["messages"].as_array().unwrap().len(), 1);
     }
 
     #[test]

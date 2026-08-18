@@ -1,6 +1,7 @@
 use futures::StreamExt;
 use nightloom_core::{
-    ChatRequest, ContentBlock, Message, Provider, Role, StreamEvent, Thinking, ToolDef, Usage,
+    ChatRequest, ContentBlock, Message, Provider, Role, StreamEvent, SystemPrompt, Thinking,
+    ToolDef, Usage,
 };
 use serde::Serialize;
 use std::time::Instant;
@@ -239,7 +240,9 @@ pub async fn run_probe(provider: &dyn Provider, spec: &ProbeSpec) -> ProbeReport
     let user = Message::user(prompt);
     let request = ChatRequest {
         model: spec.model.clone(),
-        system: None,
+        // Deliberately bare: the probe measures raw streaming behavior, and a
+        // preamble would distort TTFT and the token counts it reports.
+        system: SystemPrompt::default(),
         messages: vec![user.clone()],
         max_tokens: spec.max_tokens,
         temperature: None,
@@ -323,7 +326,7 @@ pub async fn run_probe(provider: &dyn Provider, spec: &ProbeSpec) -> ProbeReport
                     .collect();
                 let request2 = ChatRequest {
                     model: spec.model.clone(),
-                    system: None,
+                    system: SystemPrompt::default(),
                     messages: vec![
                         user,
                         Message::assistant(assistant),

@@ -83,6 +83,7 @@ impl Provider for Retry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nightloom_core::SystemPrompt;
     use std::sync::atomic::{AtomicU32, Ordering};
 
     /// Fails with the scripted error until `failures` calls have been made,
@@ -111,7 +112,7 @@ mod tests {
     fn request() -> ChatRequest {
         ChatRequest {
             model: "m".into(),
-            system: None,
+            system: SystemPrompt::default(),
             messages: vec![],
             max_tokens: 16,
             temperature: None,

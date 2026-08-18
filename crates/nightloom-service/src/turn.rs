@@ -1,7 +1,8 @@
+use crate::sidecar::{self, SidecarContext, SidecarPart};
 use futures::StreamExt;
 use nightloom_core::{
     ChatRequest, ContentBlock, Message, Provider, ProviderError, Role, Session, StreamEvent,
-    Thinking, Usage,
+    SystemPrompt, Thinking, Usage,
     tool::{Tool, defs, run_tool},
 };
 use serde::Serialize;
@@ -63,11 +64,22 @@ pub struct CompactOutcome {
 pub struct Chat {
     pub provider: Box<dyn Provider>,
     pub model: String,
-    pub system: Option<String>,
+    /// The static, cache-stable preamble. Assemble it once (see
+    /// [`crate::prompt::assemble`]) and leave it alone — every byte that
+    /// changes between turns costs a full cache miss.
+    pub system: SystemPrompt,
     pub thinking: Thinking,
     pub max_tokens: u32,
     pub tools: Vec<Box<dyn Tool>>,
     pub max_rounds: usize,
+    /// Everything the preamble deliberately can't hold: the clock, the task
+    /// list, how full the window is. Rendered fresh each turn onto the tail
+    /// of the user's message. Empty disables it.
+    pub sidecar: Vec<Box<dyn SidecarPart>>,
+    /// The model's input-token limit, for the context gauge. `None` leaves
+    /// the gauge reporting usage without a percentage rather than inventing
+    /// a limit.
+    pub context_limit: Option<u64>,
 }
 
 impl Chat {
@@ -75,11 +87,13 @@ impl Chat {
         Self {
             provider,
             model: model.into(),
-            system: None,
+            system: SystemPrompt::default(),
             thinking: Thinking::Default,
             max_tokens: 8192,
             tools: Vec::new(),
             max_rounds: 8,
+            sidecar: sidecar::default_parts(),
+            context_limit: None,
         }
     }
 
@@ -102,10 +116,22 @@ impl Chat {
         let mut turn_usage = Usage::default();
 
         for round in 1..=self.max_rounds.max(1) {
+            // Composed per round, but it only lands on round one: the
+            // projection attaches it to a trailing *user text* message, and
+            // later rounds end in tool results. Rounds 2+ still see round
+            // one's copy in the replayed history.
+            let sidecar = sidecar::render(
+                &self.sidecar,
+                &SidecarContext {
+                    session,
+                    model: &self.model,
+                    context_limit: self.context_limit,
+                },
+            );
             let request = ChatRequest {
                 model: self.model.clone(),
                 system: self.system.clone(),
-                messages: session.messages(),
+                messages: session.messages_with_sidecar(sidecar.as_deref()),
                 max_tokens: self.max_tokens,
                 temperature: None,
                 thinking: self.thinking.clone(),
@@ -277,6 +303,14 @@ impl Chat {
                 }
                 session.record_tool_result(&result);
             }
+            // Some tools write conversation state rather than just returning
+            // a result to read once (the task list). Fold that into the log
+            // now, so the next round's sidecar renders it.
+            for tool in &self.tools {
+                for event in tool.drain_events() {
+                    session.record(event);
+                }
+            }
             if round == self.max_rounds.max(1) {
                 on_event(TurnEvent::RoundLimit {
                     rounds: self.max_rounds,
@@ -315,7 +349,9 @@ impl Chat {
 
         let request = ChatRequest {
             model: self.model.clone(),
-            system: None,
+            // Deliberately bare: the summarizer is not the assistant, and a
+            // preamble telling it who to be only skews the summary.
+            system: SystemPrompt::default(),
             messages,
             max_tokens: self.max_tokens,
             temperature: None,
@@ -372,16 +408,34 @@ commentary.";
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::TodoWrite;
+    use nightloom_core::TodoStatus;
     use nightloom_core::{EventStream, SessionEvent, ToolDef};
     use serde_json::json;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
-    /// Yields one scripted stream per `stream_chat` call, in order.
-    struct Scripted(Mutex<Vec<Vec<StreamEvent>>>);
+    /// Yields one scripted stream per `stream_chat` call, in order, and keeps
+    /// every request it was handed so tests can assert on what actually went
+    /// over the wire.
+    struct Scripted {
+        scripts: Mutex<Vec<Vec<StreamEvent>>>,
+        seen: Arc<Mutex<Vec<ChatRequest>>>,
+    }
+
+    type Seen = Arc<Mutex<Vec<ChatRequest>>>;
 
     impl Scripted {
         fn provider(scripts: Vec<Vec<StreamEvent>>) -> Box<dyn Provider> {
-            Box::new(Self(Mutex::new(scripts)))
+            Self::recording(scripts).0
+        }
+
+        fn recording(scripts: Vec<Vec<StreamEvent>>) -> (Box<dyn Provider>, Seen) {
+            let seen: Seen = Arc::new(Mutex::new(Vec::new()));
+            let provider = Box::new(Self {
+                scripts: Mutex::new(scripts),
+                seen: Arc::clone(&seen),
+            });
+            (provider, seen)
         }
     }
 
@@ -391,12 +445,40 @@ mod tests {
             "scripted"
         }
 
-        async fn stream_chat(&self, _: ChatRequest) -> Result<EventStream, ProviderError> {
-            let mut scripts = self.0.lock().unwrap();
+        async fn stream_chat(&self, request: ChatRequest) -> Result<EventStream, ProviderError> {
+            self.seen.lock().unwrap().push(request);
+            let mut scripts = self.scripts.lock().unwrap();
             assert!(!scripts.is_empty(), "provider called more than scripted");
             let events = scripts.remove(0);
             Ok(Box::pin(futures::stream::iter(events.into_iter().map(Ok))))
         }
+    }
+
+    fn tool_call(name: &str, input: serde_json::Value) -> Vec<StreamEvent> {
+        vec![
+            StreamEvent::ToolUse {
+                id: "c1".into(),
+                name: name.into(),
+                input,
+            },
+            StreamEvent::End {
+                stop_reason: Some("tool_use".into()),
+            },
+        ]
+    }
+
+    fn says(text: &str) -> Vec<StreamEvent> {
+        vec![
+            StreamEvent::TextDelta(text.into()),
+            StreamEvent::End {
+                stop_reason: Some("end_turn".into()),
+            },
+        ]
+    }
+
+    /// Text of the last message in a captured request.
+    fn tail_text(requests: &[ChatRequest], i: usize) -> String {
+        requests[i].messages.last().unwrap().text()
     }
 
     /// Yields its events, then never terminates — for cancellation tests.
@@ -448,6 +530,84 @@ mod tests {
         async fn call(&self, input: serde_json::Value) -> Result<String, String> {
             Ok(input["msg"].as_str().unwrap_or_default().to_string())
         }
+    }
+
+    #[tokio::test]
+    async fn the_sidecar_rides_the_first_round_and_stays_out_of_the_log() {
+        let (provider, seen) =
+            Scripted::recording(vec![tool_call("echo", json!({"msg": "hi"})), says("done")]);
+        let mut chat = Chat::new(provider, "test-model");
+        chat.tools = vec![Box::new(Echo)];
+        let mut session = Session::new();
+        run(&chat, &mut session, "question").await.0.unwrap();
+
+        let requests = seen.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        // Round one: the user's text, then the status block beside it.
+        assert!(tail_text(&requests, 0).starts_with("question"));
+        assert!(tail_text(&requests, 0).contains("<session-status>"));
+        // Round two ends in tool results — appending text there is the wire
+        // hazard the projection refuses to create.
+        assert!(!tail_text(&requests, 1).contains("<session-status>"));
+
+        // And none of it is in the log, so replay stays clean.
+        assert_eq!(session.messages()[0].text(), "question");
+        assert!(matches!(
+            &session.events()[1],
+            SessionEvent::UserMessage { text, .. } if text == "question"
+        ));
+    }
+
+    #[tokio::test]
+    async fn an_empty_sidecar_sends_the_user_text_alone() {
+        let (provider, seen) = Scripted::recording(vec![says("ok")]);
+        let mut chat = Chat::new(provider, "test-model");
+        chat.sidecar = Vec::new();
+        let mut session = Session::new();
+        run(&chat, &mut session, "question").await.0.unwrap();
+
+        let requests = seen.lock().unwrap();
+        assert_eq!(requests[0].messages[0].content.len(), 1);
+        assert_eq!(tail_text(&requests, 0), "question");
+    }
+
+    #[tokio::test]
+    async fn a_todo_write_is_logged_and_read_back_on_the_next_turn() {
+        let (provider, seen) = Scripted::recording(vec![
+            tool_call(
+                "todo_write",
+                json!({"todos": [
+                    {"content": "write the docs", "status": "in_progress"},
+                    {"content": "ship it", "status": "pending"}
+                ]}),
+            ),
+            says("planned"),
+            says("still going"),
+        ]);
+        let mut chat = Chat::new(provider, "test-model");
+        chat.tools = vec![Box::new(TodoWrite::default())];
+        let mut session = Session::new();
+        run(&chat, &mut session, "plan the work").await.0.unwrap();
+
+        // The tool's write reached the log through `drain_events`.
+        assert_eq!(session.todos().len(), 2);
+        assert_eq!(session.todos()[0].status, TodoStatus::InProgress);
+        assert!(
+            session
+                .events()
+                .iter()
+                .any(|e| matches!(e, SessionEvent::TodoState { .. }))
+        );
+
+        run(&chat, &mut session, "carry on").await.0.unwrap();
+
+        // …and comes back to the model on the next turn. This read-back is
+        // the whole point: a list the model can't see is a list it forgets.
+        let requests = seen.lock().unwrap();
+        let next = tail_text(&requests, 2);
+        assert!(next.contains("tasks:"), "{next}");
+        assert!(next.contains("[~] write the docs"), "{next}");
+        assert!(next.contains("[ ] ship it"), "{next}");
     }
 
     async fn run(

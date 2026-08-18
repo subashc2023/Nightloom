@@ -127,6 +127,16 @@
     <span>built-in tools</span>
   </label>
 
+  <label class="check">
+    <input type="checkbox" bind:checked={app.draft.preamble} onchange={apply} disabled={locked} />
+    <span>system preamble</span>
+  </label>
+
+  <label class="check">
+    <input type="checkbox" bind:checked={app.draft.sidecar} onchange={apply} disabled={locked} />
+    <span>per-turn status</span>
+  </label>
+
   <label class="field">
     <span>System prompt</span>
     <textarea

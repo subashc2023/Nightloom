@@ -1,4 +1,5 @@
 use crate::message::Message;
+use crate::prompt::SystemPrompt;
 use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -61,7 +62,9 @@ pub struct ToolDef {
 #[derive(Debug, Clone)]
 pub struct ChatRequest {
     pub model: String,
-    pub system: Option<String>,
+    /// The cache-stable system prompt. Adapters render it to whatever shape
+    /// their vendor takes; an empty prompt means the field is omitted.
+    pub system: SystemPrompt,
     pub messages: Vec<Message>,
     pub max_tokens: u32,
     pub temperature: Option<f32>,

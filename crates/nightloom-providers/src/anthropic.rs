@@ -35,8 +35,26 @@ impl Anthropic {
             "stream": true,
             "messages": messages,
         });
-        if let Some(system) = &request.system {
-            body["system"] = json!(system);
+        // `system` goes out as an array of text blocks rather than a plain
+        // string: block boundaries are the only place Anthropic accepts a
+        // cache breakpoint, so one block per segment is what makes
+        // `cache_anchor` expressible at all. Four is the per-request limit.
+        if !request.system.is_empty() {
+            let anchors = request.system.cache_anchors(4);
+            let blocks: Vec<Value> = request
+                .system
+                .segments()
+                .iter()
+                .enumerate()
+                .map(|(i, s)| {
+                    let mut block = json!({ "type": "text", "text": s.text });
+                    if anchors.contains(&i) {
+                        block["cache_control"] = json!({ "type": "ephemeral" });
+                    }
+                    block
+                })
+                .collect();
+            body["system"] = json!(blocks);
         }
         if !request.tools.is_empty() {
             let tools: Vec<Value> = request
@@ -298,12 +316,12 @@ impl Provider for Anthropic {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nightloom_core::ToolDef;
+    use nightloom_core::{Segment, SegmentKind, SystemPrompt, ToolDef};
 
     fn request(tools: Vec<ToolDef>) -> ChatRequest {
         ChatRequest {
             model: "claude-sonnet-5".into(),
-            system: None,
+            system: SystemPrompt::default(),
             messages: vec![Message::user("hi")],
             max_tokens: 1024,
             temperature: None,
@@ -327,6 +345,36 @@ mod tests {
         assert_eq!(body["tools"][0]["name"], "get_weather");
         assert_eq!(body["tools"][0]["description"], "Look up current weather");
         assert_eq!(body["tools"][0]["input_schema"]["type"], "object");
+    }
+
+    #[test]
+    fn system_becomes_text_blocks_with_cache_control_on_anchors() {
+        let mut prompt = SystemPrompt::new();
+        prompt
+            .push(Segment::new(SegmentKind::Custom, "identity", "who you are"))
+            .push(Segment::new(SegmentKind::Custom, "env", "where you are").anchored())
+            .push(Segment::new(SegmentKind::Custom, "extra", "what to do"));
+        let mut req = request(vec![]);
+        req.system = prompt;
+        let body = Anthropic::body(&req).unwrap();
+        assert_eq!(
+            body["system"],
+            json!([
+                { "type": "text", "text": "who you are" },
+                {
+                    "type": "text",
+                    "text": "where you are",
+                    "cache_control": { "type": "ephemeral" },
+                },
+                { "type": "text", "text": "what to do" },
+            ])
+        );
+    }
+
+    #[test]
+    fn body_omits_system_key_when_prompt_empty() {
+        let body = Anthropic::body(&request(vec![])).unwrap();
+        assert!(body.get("system").is_none());
     }
 
     #[test]

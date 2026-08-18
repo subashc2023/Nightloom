@@ -8,7 +8,7 @@
 
 use nightloom_core::{ProviderError, Session, SessionEvent, Thinking};
 use nightloom_service::store::{self, SessionSummary};
-use nightloom_service::{Chat, CompactOutcome, ProviderKind, TurnEvent, TurnOutcome};
+use nightloom_service::{Chat, CompactOutcome, PromptConfig, ProviderKind, TurnEvent, TurnOutcome};
 use serde::Serialize;
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -117,6 +117,11 @@ async fn list_models(provider: String, base_url: Option<String>) -> Result<Vec<S
 /// Build the provider + `Chat` for this window; retry stalls are reported as
 /// `turn-notice` events. Sessions are created lazily by `send`, so switching
 /// providers (or auto-connecting at launch) never leaves empty session logs.
+///
+/// `preamble` gates the assembled system prompt (identity, environment,
+/// project instructions, user memory) and `sidecar` the per-turn status
+/// block. Both default to on when absent, so a frontend that predates them
+/// keeps the full behaviour.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 async fn connect(
@@ -128,6 +133,8 @@ async fn connect(
     thinking: Option<String>,
     system: Option<String>,
     tools: bool,
+    preamble: Option<bool>,
+    sidecar: Option<bool>,
 ) -> Result<ConnectedInfo, String> {
     let kind: ProviderKind = provider.parse()?;
     let thinking = match thinking {
@@ -147,11 +154,24 @@ async fn connect(
         nightloom_service::connect(kind, model, stored_key(kind), base_url, Some(on_retry))
             .map_err(|e| e.to_string())?;
 
+    let preamble = preamble.unwrap_or(true);
     let mut chat = Chat::new(provider, model);
-    chat.system = system;
+    // The textarea's text is the `custom` layer, appended after whatever the
+    // preamble discovered; with the preamble off it is the whole prompt.
+    chat.system = nightloom_service::prompt::assemble(&PromptConfig {
+        identity: preamble,
+        environment: preamble,
+        project_instructions: preamble,
+        user_memory: preamble,
+        cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+        custom: system,
+    });
     chat.thinking = thinking;
     if tools {
         chat.tools = nightloom_service::tools::builtin();
+    }
+    if !sidecar.unwrap_or(true) {
+        chat.sidecar = Vec::new();
     }
     let info = ConnectedInfo {
         provider: chat.provider.name().to_string(),

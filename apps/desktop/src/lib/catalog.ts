@@ -71,6 +71,10 @@ export interface ConnectionDraft {
   budget: number;
   system: string;
   tools: boolean;
+  /** Assemble the built-in preamble (identity, environment, project files). */
+  preamble: boolean;
+  /** Attach the per-turn status block (time, tasks, context). */
+  sidecar: boolean;
 }
 
 export function defaultDraft(): ConnectionDraft {
@@ -82,6 +86,8 @@ export function defaultDraft(): ConnectionDraft {
     budget: 8192,
     system: "",
     tools: false,
+    preamble: true,
+    sidecar: true,
   };
 }
 
@@ -261,7 +267,14 @@ export function loadLastConnection(): ConnectionDraft | null {
     if (typeof parsed.provider !== "string" || parsed.provider === "") {
       return null;
     }
-    return { ...defaultDraft(), ...parsed };
+    return {
+      ...defaultDraft(),
+      ...parsed,
+      // Drafts saved before these knobs existed have neither field; an
+      // absent value means on, so only an explicit false turns them off.
+      preamble: parsed.preamble !== false,
+      sidecar: parsed.sidecar !== false,
+    };
   } catch {
     return null;
   }

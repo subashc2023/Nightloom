@@ -135,6 +135,8 @@ export async function applyDraft(): Promise<void> {
       thinking: thinkingString(d),
       system: d.system.trim() || undefined,
       tools: d.tools,
+      preamble: d.preamble,
+      sidecar: d.sidecar,
     });
     app.connection = {
       provider: res.provider,

@@ -1,5 +1,6 @@
 use crate::message::ContentBlock;
 use crate::provider::ToolDef;
+use crate::session::SessionEvent;
 use serde_json::Value;
 
 /// An executable tool. Implementations live wherever the capability lives
@@ -13,6 +14,17 @@ pub trait Tool: Send + Sync {
     /// and is fed back to the model rather than aborting the turn — the
     /// model gets to see and react to tool failures.
     async fn call(&self, input: Value) -> Result<String, String>;
+
+    /// Session state this tool produced since the last drain, to be appended
+    /// to the log by the turn engine. Almost every tool returns nothing; the
+    /// exceptions are tools whose output *is* conversation state rather than
+    /// a result to read once — the task list, for instance.
+    ///
+    /// This is how a tool writes to the log without the `Tool` contract
+    /// having to hand out a `&mut Session` it could corrupt.
+    fn drain_events(&self) -> Vec<SessionEvent> {
+        Vec::new()
+    }
 }
 
 /// Find a tool by name and execute one call, producing the result block to

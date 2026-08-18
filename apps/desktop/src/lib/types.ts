@@ -16,8 +16,13 @@ export interface ConnectArgs {
   baseUrl?: string;
   /** "default" | "effort=low|medium|high" | "budget=<N>" */
   thinking?: string;
+  /** Extra system-prompt text, appended after the assembled preamble. */
   system?: string;
   tools: boolean;
+  /** Assemble the built-in preamble; omitted reads as true on the backend. */
+  preamble: boolean;
+  /** Attach the per-turn status block; omitted reads as true. */
+  sidecar: boolean;
 }
 
 export interface ConnectResult {
