@@ -1,5 +1,30 @@
 <script lang="ts">
-  import { app, compactSession } from "./state.svelte";
+  import { app, compactSession, contextUsed } from "./state.svelte";
+
+  /**
+   * Context gauge. The denominator comes from the backend's limits table and
+   * is null for models it doesn't know; in that case the raw count is shown
+   * with no bar, because a guessed window would tell the reader — and the
+   * model reading the same figure in its sidecar — that there is headroom
+   * nobody verified.
+   */
+  const gauge = $derived.by(() => {
+    const used = contextUsed();
+    if (used == null) return null;
+    const limit = app.connection?.contextLimit ?? null;
+    const ratio = limit ? Math.min(used / limit, 1) : null;
+    return { used, limit, ratio };
+  });
+
+  const level = $derived(
+    gauge?.ratio == null ? "" : gauge.ratio >= 0.9 ? "hot" : gauge.ratio >= 0.7 ? "warm" : "",
+  );
+
+  function tokens(n: number): string {
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
+    if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+    return String(n);
+  }
 
   // Compaction needs at least one completed exchange to summarize.
   const canCompact = $derived(
@@ -29,6 +54,25 @@
       <span class="annotation">not connected</span>
     {/if}
   </div>
+  {#if gauge}
+    <div
+      class="gauge {level}"
+      title={gauge.limit
+        ? `${gauge.used.toLocaleString()} of ${gauge.limit.toLocaleString()} context tokens`
+        : `${gauge.used.toLocaleString()} context tokens — window size unknown for this model`}
+    >
+      {#if gauge.ratio != null}
+        <div class="bar"><div class="fill" style:width="{gauge.ratio * 100}%"></div></div>
+      {/if}
+      <span class="figure">
+        {tokens(gauge.used)}{#if gauge.limit}<span class="of"> / {tokens(gauge.limit)}</span
+          ><span class="pct"> · {Math.round((gauge.ratio ?? 0) * 100)}%</span>{:else}
+          <span class="of"> tokens</span>
+        {/if}
+      </span>
+    </div>
+  {/if}
+
   <div class="actions">
     {#if canCompact}
       <button
@@ -73,6 +117,42 @@
   .annotation {
     color: var(--dim);
     font-size: 0.78rem;
+  }
+  .gauge {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-size: 0.72rem;
+    color: var(--dim);
+    flex-shrink: 0;
+    margin-left: auto;
+    padding-right: 0.6rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .bar {
+    width: 64px;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--border);
+    overflow: hidden;
+  }
+  .fill {
+    height: 100%;
+    background: var(--accent);
+    transition: width 120ms linear;
+  }
+  .gauge.warm .fill {
+    background: #e0b341;
+  }
+  .gauge.hot {
+    color: var(--error);
+  }
+  .gauge.hot .fill {
+    background: var(--error);
+  }
+  .of,
+  .pct {
+    color: var(--dim);
   }
   .actions {
     display: flex;

@@ -3,7 +3,7 @@
   import { app, init } from "./lib/state.svelte";
   import Sidebar from "./lib/Sidebar.svelte";
   import TopBar from "./lib/TopBar.svelte";
-  import ProviderRail from "./lib/ProviderRail.svelte";
+  import RightRail from "./lib/RightRail.svelte";
   import SettingsModal from "./lib/SettingsModal.svelte";
   import Transcript from "./lib/Transcript.svelte";
   import Composer from "./lib/Composer.svelte";
@@ -29,7 +29,7 @@
     </div>
     <Composer />
   </div>
-  <ProviderRail />
+  <RightRail />
   {#if app.showSettings}
     <div class="settings-overlay"><SettingsModal /></div>
   {/if}

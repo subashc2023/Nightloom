@@ -44,7 +44,7 @@
   }
 </script>
 
-<aside class="rail">
+<div class="rail">
   <div class="status">
     {#if app.connecting}
       <span class="dot pending"></span><span>connecting…</span>
@@ -127,6 +127,27 @@
     <span>built-in tools</span>
   </label>
 
+  {#if app.draft.tools}
+    <label class="field">
+      <span>Workspace</span>
+      <input
+        type="text"
+        bind:value={app.draft.workspace}
+        onchange={apply}
+        placeholder="folder the tools work in"
+        disabled={locked}
+      />
+      <p class="hint">
+        {#if app.connection}
+          Rooted at <code>{app.connection.workspace}</code>. The file tools refuse
+          paths outside it; bash is not confined.
+        {:else}
+          Defaults to the folder the app was launched from.
+        {/if}
+      </p>
+    </label>
+  {/if}
+
   <label class="check">
     <input type="checkbox" bind:checked={app.draft.preamble} onchange={apply} disabled={locked} />
     <span>system preamble</span>
@@ -156,18 +177,19 @@
   <button class="manage" onclick={() => (app.showSettings = true)}>
     Providers &amp; models…
   </button>
-</aside>
+</div>
 
 <style>
+  /* Chrome (panel background, left border) belongs to RightRail now;
+     this is one pane inside its tab strip. */
   .rail {
-    background: var(--panel);
-    border-left: 1px solid var(--border);
     display: flex;
     flex-direction: column;
     gap: 0.7rem;
     padding: 0.75rem;
     overflow-y: auto;
     min-height: 0;
+    flex: 1;
   }
   .status {
     display: flex;
@@ -219,6 +241,10 @@
     font-size: 0.68rem;
     line-height: 1.35;
     color: var(--dim);
+  }
+  .hint code {
+    font-size: 0.66rem;
+    word-break: break-all;
   }
   select,
   input[type="text"],

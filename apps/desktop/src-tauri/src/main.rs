@@ -35,6 +35,13 @@ struct ProviderInfo {
 struct ConnectedInfo {
     provider: String,
     model: String,
+    /// The model's context window, or `None` when the limits table doesn't
+    /// know it — the UI gauge then shows a raw token count instead of a
+    /// percentage rather than implying headroom nobody verified.
+    context_limit: Option<u64>,
+    /// The resolved workspace root, so the UI can show where the file tools
+    /// actually point rather than leaving the user to guess.
+    workspace: String,
 }
 
 const KEYRING_SERVICE: &str = "nightloom";
@@ -135,6 +142,7 @@ async fn connect(
     tools: bool,
     preamble: Option<bool>,
     sidecar: Option<bool>,
+    workspace: Option<String>,
 ) -> Result<ConnectedInfo, String> {
     let kind: ProviderKind = provider.parse()?;
     let thinking = match thinking {
@@ -154,6 +162,18 @@ async fn connect(
         nightloom_service::connect(kind, model, stored_key(kind), base_url, Some(on_retry))
             .map_err(|e| e.to_string())?;
 
+    // The folder this conversation is about: it roots the file tools and is
+    // where the preamble looks for NIGHTLOOM.md/AGENTS.md and the git branch.
+    // A GUI process's cwd is whatever the launcher happened to set — the
+    // install directory, or C:\Windows\System32 — so leaving it implicit
+    // would point the tools somewhere arbitrary and unmentioned. An
+    // unreadable or missing path falls back to cwd rather than failing the
+    // connect, and the resolved value goes back to the UI to be shown.
+    let workspace = workspace
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir())
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
     let preamble = preamble.unwrap_or(true);
     let mut chat = Chat::new(provider, model);
     // The textarea's text is the `custom` layer, appended after whatever the
@@ -163,12 +183,16 @@ async fn connect(
         environment: preamble,
         project_instructions: preamble,
         user_memory: preamble,
-        cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+        cwd: workspace.clone(),
         custom: system,
     });
     chat.thinking = thinking;
+    // Gives the sidecar's context gauge a denominator; `None` for a model we
+    // have no verified window for, which the gauge handles by reporting raw
+    // token counts instead of a percentage.
+    chat.context_limit = nightloom_service::context_limit(kind, &chat.model);
     if tools {
-        chat.tools = nightloom_service::tools::builtin();
+        chat.tools = nightloom_service::tools::builtin_in(workspace.clone());
     }
     if !sidecar.unwrap_or(true) {
         chat.sidecar = Vec::new();
@@ -176,6 +200,8 @@ async fn connect(
     let info = ConnectedInfo {
         provider: chat.provider.name().to_string(),
         model: chat.model.clone(),
+        context_limit: chat.context_limit,
+        workspace: workspace.to_string_lossy().into_owned(),
     };
     *state.chat.lock().await = Some(chat);
     Ok(info)

@@ -23,11 +23,22 @@ export interface ConnectArgs {
   preamble: boolean;
   /** Attach the per-turn status block; omitted reads as true. */
   sidecar: boolean;
+  /** Root for the file tools and project-instruction discovery. */
+  workspace?: string;
 }
 
 export interface ConnectResult {
   provider: string;
   model: string;
+  /**
+   * The model's context window, when the backend knows it. Null for models
+   * absent from the limits table — the gauge then shows raw token counts
+   * rather than a percentage, because a guessed denominator would claim
+   * headroom that may not exist.
+   */
+  context_limit: number | null;
+  /** Where the backend actually rooted the tools, after falling back. */
+  workspace: string;
 }
 
 export interface Usage {
@@ -57,11 +68,19 @@ export interface SessionMeta {
   first_user: string | null;
 }
 
+/** One entry of the model's task list (`todo_write`). */
+export interface TodoItem {
+  content: string;
+  status: "pending" | "in_progress" | "completed";
+}
+
 export type ContentBlock =
   | { type: "text"; text: string }
   | { type: "thinking"; text: string; signature?: string }
   | { type: "redacted_thinking"; data: string }
-  | { type: "tool_use"; id: string; name: string; input: unknown }
+  | { type: "tool_use"; id: string; name: string; input: unknown; signature?: string }
+  /** OpenAI Responses reasoning item, replayed by id. Nothing to render. */
+  | { type: "reasoning_ref"; id: string }
   | {
       type: "tool_result";
       tool_use_id: string;
@@ -89,6 +108,7 @@ export type SessionEvent =
       is_error?: boolean;
       at: string;
     }
+  | { event: "todo_state"; todos: TodoItem[]; at: string }
   | { event: "compaction"; summary: string; at: string };
 
 export type TurnEvent =
@@ -103,4 +123,5 @@ export type TurnEvent =
       content: string;
       is_error: boolean;
     }
-  | { type: "round_limit"; rounds: number };
+  | { type: "round_limit"; rounds: number }
+  | { type: "usage"; usage: Usage };

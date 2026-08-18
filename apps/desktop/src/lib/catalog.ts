@@ -75,6 +75,12 @@ export interface ConnectionDraft {
   preamble: boolean;
   /** Attach the per-turn status block (time, tasks, context). */
   sidecar: boolean;
+  /**
+   * Folder the file tools are rooted at, and where the preamble looks for
+   * project instructions. Empty means "whatever the app was launched from",
+   * which is rarely what anyone wants — the rail shows what it resolved to.
+   */
+  workspace: string;
 }
 
 export function defaultDraft(): ConnectionDraft {
@@ -88,6 +94,7 @@ export function defaultDraft(): ConnectionDraft {
     tools: false,
     preamble: true,
     sidecar: true,
+    workspace: "",
   };
 }
 

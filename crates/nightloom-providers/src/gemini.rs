@@ -71,16 +71,43 @@ fn to_wire_message(message: &Message) -> Value {
         Role::User => "user",
         Role::Assistant => "model",
     };
-    // Thought parts from past turns are dropped (replaying them requires
-    // thought signatures, which we don't retain yet). Gemini has no call ids
-    // in replay; function name + ordering pairs calls with results.
+    // Thought summary parts are dropped: Google only *recommends* replaying
+    // the signature that lands on a text-only response, and doing it
+    // faithfully would mean signing a canonical Text block. Function calls
+    // are the mandatory case and are handled below.
+    //
+    // Part order is the contract here. Google requires the parts of a
+    // response to come back exactly as they arrived, so a parallel-call
+    // round trips as `model:[FC1+sig, FC2]` then `user:[FR1, FR2]` — never
+    // interleaved call/result pairs. That holds because this maps one
+    // canonical message to one `contents` entry and preserves block order,
+    // and because the session projection coalesces a round's tool results
+    // into one user message in call order. Gemini has no call ids in replay;
+    // function name + ordering pairs calls with results.
     let parts: Vec<Value> = message
         .content
         .iter()
         .filter_map(|block| match block {
             ContentBlock::Text { text } => Some(json!({ "text": text })),
-            ContentBlock::ToolUse { name, input, .. } => {
-                Some(json!({ "functionCall": { "name": name, "args": input } }))
+            ContentBlock::ToolUse {
+                name,
+                input,
+                signature,
+                ..
+            } => {
+                let mut part = json!({ "functionCall": { "name": name, "args": input } });
+                // Gemini 3 hard-fails a replayed call that lost its thought
+                // signature ("Function call ... is missing a
+                // `thought_signature`"), and the field sits on the *part*,
+                // beside `functionCall`, not inside it. Google signs only the
+                // first call of a response, so an unsigned sibling stays
+                // unsigned — replay what we were handed, nothing more.
+                // Gemini 2.5 never signs and never validates, so `None` here
+                // reproduces today's body byte for byte.
+                if let Some(sig) = signature {
+                    part["thoughtSignature"] = json!(sig);
+                }
+                Some(part)
             }
             ContentBlock::ToolResult {
                 name,
@@ -136,6 +163,13 @@ impl Provider for Gemini {
             // Gemini functionCall parts don't always carry an id; canonical
             // ToolUse needs one, so synthesize call-N in stream order.
             let mut call_index = 0u32;
+            // A thought signature seen on a part that isn't a function call.
+            // Streaming can deliver one on a part with *empty text* just
+            // before the finish reason, so parts are never skipped for being
+            // textless. On a text-only response this is the optional,
+            // never-validated signature and we let it go; on a response
+            // whose first call somehow arrived unsigned it is that call's.
+            let mut pending_signature: Option<String> = None;
 
             while let Some(event) = events.next().await {
                 let event = event.map_err(transport)?;
@@ -175,6 +209,12 @@ impl Provider for Gemini {
                 }
                 if let Some(parts) = candidate["content"]["parts"].as_array() {
                     for part in parts {
+                        // Read the signature before anything else: it rides
+                        // on the part, not inside functionCall, and a part
+                        // carrying one may have no text and no call at all.
+                        let signature = part["thoughtSignature"]
+                            .as_str()
+                            .map(str::to_string);
                         if let Some(text) = part["text"].as_str()
                             && !text.is_empty()
                         {
@@ -191,12 +231,26 @@ impl Provider for Gemini {
                                 Some(id) => id.to_string(),
                                 None => format!("call-{call_index}"),
                             };
+                            // Only the first call of a response is signed;
+                            // parallel siblings must stay unsigned, so the
+                            // stray-signature fallback applies to the first
+                            // call and no other.
+                            let signature = signature.or_else(|| {
+                                if call_index == 0 {
+                                    pending_signature.take()
+                                } else {
+                                    None
+                                }
+                            });
                             call_index += 1;
                             yield StreamEvent::ToolUse {
                                 id,
                                 name: call["name"].as_str().unwrap_or_default().to_string(),
                                 input: call.get("args").cloned().unwrap_or_else(|| json!({})),
+                                signature,
                             };
+                        } else if signature.is_some() {
+                            pending_signature = signature;
                         }
                     }
                 }
@@ -254,18 +308,136 @@ mod tests {
         assert!(body.get("tools").is_none());
     }
 
+    /// A Gemini 2.5-shaped call: nothing signed anything, so the body must
+    /// come out exactly as it did before signatures existed.
     #[test]
     fn tool_use_replays_as_function_call() {
         let wire = to_wire_message(&Message::assistant(vec![ContentBlock::ToolUse {
             id: "call-0".into(),
             name: "get_weather".into(),
             input: json!({ "city": "Oslo" }),
+            signature: None,
         }]));
         assert_eq!(
             wire,
             json!({ "role": "model", "parts": [
                 { "functionCall": { "name": "get_weather", "args": { "city": "Oslo" } } }
             ]})
+        );
+    }
+
+    /// The Gemini 3 requirement: the signature the stream handed us has to
+    /// reappear on the part, beside `functionCall`, in the replayed body.
+    #[test]
+    fn signature_survives_into_the_replayed_body() {
+        let body = Gemini::body(&request(
+            vec![
+                Message::user("weather in Oslo?"),
+                Message::assistant(vec![ContentBlock::ToolUse {
+                    id: "call-0".into(),
+                    name: "get_weather".into(),
+                    input: json!({ "city": "Oslo" }),
+                    signature: Some("sig-A".into()),
+                }]),
+                Message {
+                    role: Role::User,
+                    content: vec![ContentBlock::ToolResult {
+                        tool_use_id: "call-0".into(),
+                        name: "get_weather".into(),
+                        content: "12C".into(),
+                        is_error: false,
+                    }],
+                },
+            ],
+            vec![],
+        ));
+        assert_eq!(
+            body["contents"][1],
+            json!({ "role": "model", "parts": [{
+                "functionCall": { "name": "get_weather", "args": { "city": "Oslo" } },
+                "thoughtSignature": "sig-A",
+            }]})
+        );
+    }
+
+    /// Parallel calls: Google signs only the first part, and every part must
+    /// come back in position — all calls in the model turn, all results in
+    /// the user turn, never interleaved as call/result pairs.
+    #[test]
+    fn parallel_calls_sign_only_the_first_part_and_keep_order() {
+        let body = Gemini::body(&request(
+            vec![
+                Message::user("weather in Oslo and Paris?"),
+                Message::assistant(vec![
+                    ContentBlock::ToolUse {
+                        id: "call-0".into(),
+                        name: "get_weather".into(),
+                        input: json!({ "city": "Oslo" }),
+                        signature: Some("sig-A".into()),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "call-1".into(),
+                        name: "get_weather".into(),
+                        input: json!({ "city": "Paris" }),
+                        signature: None,
+                    },
+                ]),
+                Message {
+                    role: Role::User,
+                    content: vec![
+                        ContentBlock::ToolResult {
+                            tool_use_id: "call-0".into(),
+                            name: "get_weather".into(),
+                            content: "12C".into(),
+                            is_error: false,
+                        },
+                        ContentBlock::ToolResult {
+                            tool_use_id: "call-1".into(),
+                            name: "get_weather".into(),
+                            content: "19C".into(),
+                            is_error: false,
+                        },
+                    ],
+                },
+            ],
+            vec![],
+        ));
+        let model = &body["contents"][1];
+        assert_eq!(model["parts"][0]["thoughtSignature"], json!("sig-A"));
+        assert_eq!(model["parts"][0]["functionCall"]["args"]["city"], "Oslo");
+        // The sibling stays unsigned — inventing a signature for it would
+        // not match what the model produced.
+        assert!(model["parts"][1].get("thoughtSignature").is_none());
+        assert_eq!(model["parts"][1]["functionCall"]["args"]["city"], "Paris");
+        assert_eq!(model["parts"].as_array().unwrap().len(), 2);
+        // Results follow as their own turn, in call order.
+        let results = &body["contents"][2];
+        assert_eq!(results["role"], "user");
+        assert_eq!(
+            results["parts"][0]["functionResponse"]["response"]["result"],
+            "12C"
+        );
+        assert_eq!(
+            results["parts"][1]["functionResponse"]["response"]["result"],
+            "19C"
+        );
+    }
+
+    /// Thinking blocks still never reach the wire, signed or not.
+    #[test]
+    fn thinking_blocks_are_still_dropped_on_replay() {
+        let wire = to_wire_message(&Message::assistant(vec![
+            ContentBlock::Thinking {
+                text: "hmm".into(),
+                signature: Some("sig-A".into()),
+            },
+            ContentBlock::Text {
+                text: "hello".into(),
+            },
+        ]));
+        assert_eq!(
+            wire,
+            json!({ "role": "model", "parts": [{ "text": "hello" }] })
         );
     }
 

@@ -8,6 +8,7 @@
 
 mod anthropic;
 mod gemini;
+pub mod limits;
 pub mod models;
 mod openai_compat;
 mod openai_responses;
@@ -16,6 +17,7 @@ pub mod retry;
 
 pub use anthropic::Anthropic;
 pub use gemini::Gemini;
+pub use limits::context_limit;
 pub use openai_compat::OpenAiCompat;
 pub use openai_responses::OpenAiResponses;
 pub use registry::ProviderKind;

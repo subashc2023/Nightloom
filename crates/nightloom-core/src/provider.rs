@@ -109,6 +109,18 @@ pub enum StreamEvent {
         id: String,
         name: String,
         input: serde_json::Value,
+        /// Opaque replay token the provider attached to this call, to be
+        /// recorded and handed back verbatim (Gemini's `thoughtSignature`).
+        /// `None` from every vendor that doesn't sign tool calls.
+        signature: Option<String>,
+    },
+    /// A handle to a reasoning artifact the provider kept server-side
+    /// (OpenAI Responses `reasoning` items). Emitted in stream order — after
+    /// the thinking deltas it summarizes, before the tool call it led to —
+    /// so consumers can record it in the position the vendor expects it
+    /// replayed in. `id` is opaque and only meaningful to its issuer.
+    ReasoningRef {
+        id: String,
     },
     /// End of a signed thinking block: the provider's integrity signature
     /// for every `ThinkingDelta` since the last boundary. Consumers should

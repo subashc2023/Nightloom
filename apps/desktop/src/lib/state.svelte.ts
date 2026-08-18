@@ -16,7 +16,9 @@ import type {
   ProviderInfo,
   SessionEvent,
   SessionMeta,
+  TodoItem,
   TurnEvent,
+  Usage,
 } from "./types";
 
 export interface ToolCallView {
@@ -42,6 +44,10 @@ export interface Connection {
   model: string;
   thinking: string;
   tools: boolean;
+  /** Context window of the connected model; null when unknown. */
+  contextLimit: number | null;
+  /** Resolved workspace root the file tools operate in. */
+  workspace: string;
 }
 
 export const app = $state({
@@ -62,6 +68,12 @@ export const app = $state({
   live: null as { segments: Segment[] } | null,
   /** Bumped on every turn-event so effects (auto-scroll) can depend on stream progress. */
   liveVersion: 0,
+  /**
+   * Newest per-round usage from the in-flight turn. Cleared when the turn
+   * ends, at which point `contextUsed()` reads the same number back off the
+   * trailing assistant message instead.
+   */
+  liveUsage: null as Usage | null,
   busy: false,
   /** Error banner shown in the transcript until the next send. */
   error: null as string | null,
@@ -137,12 +149,15 @@ export async function applyDraft(): Promise<void> {
       tools: d.tools,
       preamble: d.preamble,
       sidecar: d.sidecar,
+      workspace: d.workspace.trim() || undefined,
     });
     app.connection = {
       provider: res.provider,
       model: res.model,
       thinking: thinkingString(d),
       tools: d.tools,
+      contextLimit: res.context_limit ?? null,
+      workspace: res.workspace,
     };
     if (!d.model.trim()) d.model = res.model; // backend resolved the default
     saveLastConnection({ ...d });
@@ -264,6 +279,7 @@ export async function send(text: string): Promise<void> {
     at: new Date().toISOString(),
   });
   app.live = { segments: [] };
+  app.liveUsage = null;
   app.busy = true;
   try {
     await api.send(text);
@@ -271,6 +287,8 @@ export async function send(text: string): Promise<void> {
     app.error = String(e);
   } finally {
     app.live = null;
+    // The trailing assistant message now carries the same reading.
+    app.liveUsage = null;
     app.busy = false;
     try {
       app.events = await api.transcript();
@@ -312,6 +330,10 @@ function closeThinking(segments: Segment[]): void {
 }
 
 function applyTurnEvent(ev: TurnEvent): void {
+  if (ev.type === "usage") {
+    app.liveUsage = ev.usage;
+    return;
+  }
   if (!app.live) return;
   const segments = app.live.segments;
   const last = segments[segments.length - 1];
@@ -363,4 +385,38 @@ function applyTurnEvent(ev: TurnEvent): void {
       break;
   }
   app.liveVersion++;
+}
+
+/**
+ * The model's current task list, projected from the log exactly the way
+ * `Session::todos()` projects it in the core: latest snapshot wins, and a
+ * compaction clears it — the summary supersedes the plan that produced it,
+ * so a stale list must not outlive the work it described.
+ */
+export function currentTodos(): TodoItem[] {
+  for (let i = app.events.length - 1; i >= 0; i--) {
+    const e = app.events[i];
+    if (e.event === "todo_state") return e.todos;
+    if (e.event === "compaction") return [];
+  }
+  return [];
+}
+
+/**
+ * Tokens the next request will carry as its prefix: the newest round's
+ * input plus output. Deliberately not the running total, which counts the
+ * prefix once per round and would race past the window while the real
+ * context sat half empty.
+ */
+export function contextUsed(): number | null {
+  const u = app.liveUsage ?? lastAssistantUsage();
+  return u ? u.input_tokens + u.output_tokens : null;
+}
+
+function lastAssistantUsage(): Usage | null {
+  for (let i = app.events.length - 1; i >= 0; i--) {
+    const e = app.events[i];
+    if (e.event === "assistant_message") return e.usage;
+  }
+  return null;
 }

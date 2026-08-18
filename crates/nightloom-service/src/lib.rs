@@ -14,6 +14,7 @@ pub mod tools;
 pub mod turn;
 
 pub use nightloom_providers::ProviderKind;
+pub use nightloom_providers::limits::context_limit;
 pub use nightloom_providers::models::list_models;
 pub use prompt::{PromptConfig, assemble};
 pub use sidecar::{SidecarContext, SidecarPart};

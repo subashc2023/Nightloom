@@ -40,6 +40,16 @@ pub enum TurnEvent {
     RoundLimit {
         rounds: usize,
     },
+    /// One round's token accounting, as soon as the provider reports it.
+    ///
+    /// `input_tokens + output_tokens` is what the *next* request will carry
+    /// as its prefix, which makes this the live reading a context gauge
+    /// wants — not the turn total, which double-counts the prefix once per
+    /// round. Shells that only refresh between turns can ignore it and read
+    /// the same number off the trailing `AssistantMessage` instead.
+    Usage {
+        usage: Usage,
+    },
 }
 
 /// How a turn ended. `usage` and `stop_reason` cover the whole turn: usage
@@ -216,7 +226,12 @@ impl Chat {
                         on_event(TurnEvent::RedactedThinking);
                         blocks.push(ContentBlock::RedactedThinking { data });
                     }
-                    StreamEvent::ToolUse { id, name, input } => {
+                    StreamEvent::ToolUse {
+                        id,
+                        name,
+                        input,
+                        signature,
+                    } => {
                         flush_thinking(&mut thinking_buf, &mut blocks, None);
                         flush_text(&mut text_buf, &mut blocks);
                         on_event(TurnEvent::ToolCall {
@@ -224,12 +239,25 @@ impl Chat {
                             name: name.clone(),
                             input: input.clone(),
                         });
+                        // The signature is recorded but never rendered: it is
+                        // a wire artifact the next round has to hand back,
+                        // not something a shell has any use for.
                         blocks.push(ContentBlock::ToolUse {
                             id: id.clone(),
                             name: name.clone(),
                             input: input.clone(),
+                            signature,
                         });
                         calls.push((id, name, input));
+                    }
+                    // Invisible to shells — it carries no text — but it has
+                    // to land between the thinking it summarizes and the
+                    // call it led to, which is why it is a block and not a
+                    // field on the message.
+                    StreamEvent::ReasoningRef { id } => {
+                        flush_thinking(&mut thinking_buf, &mut blocks, None);
+                        flush_text(&mut text_buf, &mut blocks);
+                        blocks.push(ContentBlock::ReasoningRef { id });
                     }
                     StreamEvent::Usage(u) => usage = u,
                     StreamEvent::End { stop_reason: r } => stop_reason = r,
@@ -242,6 +270,7 @@ impl Chat {
             flush_thinking(&mut thinking_buf, &mut blocks, None);
             flush_text(&mut text_buf, &mut blocks);
             turn_usage.add(usage);
+            on_event(TurnEvent::Usage { usage });
 
             if interrupted || stream_err.is_some() {
                 // These calls will never get results, and a tool_use without
@@ -460,6 +489,7 @@ mod tests {
                 id: "c1".into(),
                 name: name.into(),
                 input,
+                signature: None,
             },
             StreamEvent::End {
                 stop_reason: Some("tool_use".into()),
@@ -658,6 +688,7 @@ mod tests {
                     id: "c1".into(),
                     name: "echo".into(),
                     input: json!({ "msg": "pong" }),
+                    signature: None,
                 },
                 StreamEvent::End {
                     stop_reason: Some("tool_use".into()),
@@ -689,6 +720,97 @@ mod tests {
         )));
     }
 
+    /// Replay tokens are opaque to the engine but must survive the trip
+    /// into the log and back out into the next round's request — Gemini 3
+    /// rejects a function call replayed without its thought signature.
+    #[tokio::test]
+    async fn tool_call_signature_survives_into_the_next_round() {
+        let (provider, seen) = Scripted::recording(vec![
+            vec![
+                StreamEvent::ThinkingDelta("need the tool".into()),
+                StreamEvent::ToolUse {
+                    id: "c1".into(),
+                    name: "echo".into(),
+                    input: json!({ "msg": "pong" }),
+                    signature: Some("sig-A".into()),
+                },
+                // A parallel sibling: unsigned by design, and it has to stay
+                // that way rather than inherit the first call's signature.
+                StreamEvent::ToolUse {
+                    id: "c2".into(),
+                    name: "echo".into(),
+                    input: json!({ "msg": "ping" }),
+                    signature: None,
+                },
+                StreamEvent::End {
+                    stop_reason: Some("tool_use".into()),
+                },
+            ],
+            says("done"),
+        ]);
+        let mut chat = Chat::new(provider, "test-model");
+        chat.tools = vec![Box::new(Echo)];
+        let mut session = Session::new();
+        run(&chat, &mut session, "call echo").await.0.unwrap();
+
+        let requests = seen.lock().unwrap();
+        let replayed = &requests[1].messages[1].content;
+        assert!(
+            matches!(
+                &replayed[..],
+                [
+                    ContentBlock::Thinking { .. },
+                    ContentBlock::ToolUse { signature: Some(a), .. },
+                    ContentBlock::ToolUse { signature: None, .. },
+                ] if a == "sig-A"
+            ),
+            "replayed blocks: {replayed:?}"
+        );
+    }
+
+    /// The OpenAI Responses artifact: recorded between the thinking it
+    /// summarizes and the call it led to, so the adapter can put it back in
+    /// the position the API validates.
+    #[tokio::test]
+    async fn reasoning_ref_is_recorded_in_stream_order() {
+        let (provider, seen) = Scripted::recording(vec![
+            vec![
+                StreamEvent::ThinkingDelta("planning".into()),
+                StreamEvent::ReasoningRef {
+                    id: "rs_abc".into(),
+                },
+                StreamEvent::ToolUse {
+                    id: "c1".into(),
+                    name: "echo".into(),
+                    input: json!({ "msg": "pong" }),
+                    signature: None,
+                },
+                StreamEvent::End {
+                    stop_reason: Some("tool_use".into()),
+                },
+            ],
+            says("done"),
+        ]);
+        let mut chat = Chat::new(provider, "test-model");
+        chat.tools = vec![Box::new(Echo)];
+        let mut session = Session::new();
+        run(&chat, &mut session, "call echo").await.0.unwrap();
+
+        let requests = seen.lock().unwrap();
+        let replayed = &requests[1].messages[1].content;
+        assert!(
+            matches!(
+                &replayed[..],
+                [
+                    ContentBlock::Thinking { .. },
+                    ContentBlock::ReasoningRef { id },
+                    ContentBlock::ToolUse { .. },
+                ] if id == "rs_abc"
+            ),
+            "replayed blocks: {replayed:?}"
+        );
+    }
+
     #[tokio::test]
     async fn cancel_strips_pending_tool_calls_and_records_partial() {
         let provider: Box<dyn Provider> = Box::new(Stall(Mutex::new(vec![
@@ -697,6 +819,7 @@ mod tests {
                 id: "c1".into(),
                 name: "echo".into(),
                 input: json!({}),
+                signature: None,
             },
         ])));
         let chat = Chat::new(provider, "test-model");
@@ -746,6 +869,7 @@ mod tests {
                     id: "c".into(),
                     name: "echo".into(),
                     input: json!({ "msg": "again" }),
+                    signature: None,
                 },
                 StreamEvent::End {
                     stop_reason: Some("tool_use".into()),

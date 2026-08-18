@@ -204,9 +204,26 @@ async fn stream_leg(
                             _ => {}
                         }
                     }
-                    Ok(StreamEvent::ToolUse { id, name, input }) => {
+                    Ok(StreamEvent::ToolUse {
+                        id,
+                        name,
+                        input,
+                        signature,
+                    }) => {
                         flush_thinking(&mut pending_thinking, &mut leg.blocks, None);
-                        leg.blocks.push(ContentBlock::ToolUse { id, name, input });
+                        // Carried through so leg 2 replays the call exactly
+                        // as the model issued it — Gemini 3 rejects a
+                        // function call that lost its thought signature.
+                        leg.blocks.push(ContentBlock::ToolUse {
+                            id,
+                            name,
+                            input,
+                            signature,
+                        });
+                    }
+                    Ok(StreamEvent::ReasoningRef { id }) => {
+                        flush_thinking(&mut pending_thinking, &mut leg.blocks, None);
+                        leg.blocks.push(ContentBlock::ReasoningRef { id });
                     }
                     Ok(StreamEvent::Usage(u)) => leg_usage = Some(u),
                     Ok(StreamEvent::End { stop_reason }) => {
@@ -263,7 +280,9 @@ pub async fn run_probe(provider: &dyn Provider, spec: &ProbeSpec) -> ProbeReport
             .blocks
             .iter()
             .filter_map(|b| match b {
-                ContentBlock::ToolUse { id, name, input } => Some((id, name, input)),
+                ContentBlock::ToolUse {
+                    id, name, input, ..
+                } => Some((id, name, input)),
                 _ => None,
             })
             .collect();
@@ -502,6 +521,7 @@ mod tests {
                     id: "call_1".into(),
                     name: TOOL_NAME.into(),
                     input: serde_json::json!({"key": "alpha"}),
+                    signature: None,
                 },
                 usage(),
                 end("tool_use"),
@@ -558,6 +578,7 @@ mod tests {
                     id: "call_1".into(),
                     name: TOOL_NAME.into(),
                     input: serde_json::json!({"key": "alpha"}),
+                    signature: None,
                 },
                 usage(),
                 end("tool_use"),
@@ -625,6 +646,7 @@ mod tests {
                     id: "call_1".into(),
                     name: TOOL_NAME.into(),
                     input: serde_json::json!({"key": "alpha"}),
+                    signature: None,
                 },
                 usage(),
                 end("tool_use"),
@@ -649,6 +671,7 @@ mod tests {
                     id: "call_1".into(),
                     name: TOOL_NAME.into(),
                     input: serde_json::json!({"key": "beta"}),
+                    signature: None,
                 },
                 usage(),
                 end("tool_use"),

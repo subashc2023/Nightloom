@@ -41,7 +41,9 @@ pub struct ChatArgs {
     #[arg(long, default_value_t = 8192)]
     max_tokens: u32,
 
-    /// Enable the built-in tools (current_time, read_file, list_dir, todo_write)
+    /// Enable the built-in tools: read/write/edit files, list_dir, glob,
+    /// grep, bash, current_time, todo_write. File tools are confined to the
+    /// working directory; bash is not.
     #[arg(long)]
     tools: bool,
 
@@ -91,6 +93,9 @@ fn build_chat(args: &ChatArgs) -> Result<Chat> {
     });
     chat.thinking = args.thinking.clone().unwrap_or(Thinking::Default);
     chat.max_tokens = args.max_tokens;
+    // Gives the sidecar's context gauge a denominator; `None` for a model
+    // the table doesn't cover, which the gauge reports as a bare count.
+    chat.context_limit = nightloom_service::context_limit(args.provider, &chat.model);
     if args.tools {
         chat.tools = tools::builtin();
     }

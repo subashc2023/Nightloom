@@ -110,6 +110,63 @@ fn to_wire_items(message: &Message) -> Vec<Value> {
             }
         }
     }
+    if message.role == Role::Assistant {
+        // Assistant blocks are walked in stream order rather than grouped by
+        // kind: Responses requires a `reasoning` item to be immediately
+        // followed by the item it produced, so the recorded order is the
+        // wire order.
+        let mut text_parts: Vec<Value> = Vec::new();
+        let flush = |items: &mut Vec<Value>, text_parts: &mut Vec<Value>| {
+            if !text_parts.is_empty() {
+                items.push(json!({ "role": role, "content": std::mem::take(text_parts) }));
+            }
+        };
+        for block in &message.content {
+            match block {
+                ContentBlock::Text { text } => {
+                    text_parts.push(json!({ "type": part_type, "text": text }));
+                }
+                // Replayed statelessly by id rather than via
+                // `previous_response_id`: the session log is already the one
+                // source of truth, and a server-side conversation handle
+                // would be a second one that can drift from it. The tradeoff
+                // is that we depend on the item still being retrievable —
+                // requests are stored by default, which is what makes the
+                // bare id enough. A zero-data-retention mode (`store: false`)
+                // would instead need the item's `encrypted_content`, which is
+                // a second opaque field and deliberately not modelled here.
+                ContentBlock::ReasoningRef { id } => {
+                    flush(&mut items, &mut text_parts);
+                    items.push(json!({ "type": "reasoning", "id": id, "summary": [] }));
+                }
+                ContentBlock::ToolUse {
+                    id, name, input, ..
+                } => {
+                    flush(&mut items, &mut text_parts);
+                    items.push(json!({
+                        "type": "function_call",
+                        "call_id": id,
+                        "name": name,
+                        // Responses carries arguments as a JSON-encoded string.
+                        "arguments": input.to_string(),
+                    }));
+                }
+                _ => {}
+            }
+        }
+        flush(&mut items, &mut text_parts);
+        // A reasoning item with nothing after it is rejected ("provided
+        // without its required following item"). That happens whenever a
+        // turn was cancelled or errored after the reasoning item but before
+        // the call it was leading to, which the engine then strips.
+        while items
+            .last()
+            .is_some_and(|i| i["type"].as_str() == Some("reasoning"))
+        {
+            items.pop();
+        }
+        return items;
+    }
     let text_parts: Vec<Value> = message
         .content
         .iter()
@@ -120,19 +177,6 @@ fn to_wire_items(message: &Message) -> Vec<Value> {
         .collect();
     if !text_parts.is_empty() {
         items.push(json!({ "role": role, "content": text_parts }));
-    }
-    if message.role == Role::Assistant {
-        for block in &message.content {
-            if let ContentBlock::ToolUse { id, name, input } = block {
-                items.push(json!({
-                    "type": "function_call",
-                    "call_id": id,
-                    "name": name,
-                    // Responses carries arguments as a JSON-encoded string.
-                    "arguments": input.to_string(),
-                }));
-            }
-        }
     }
     items
 }
@@ -193,6 +237,16 @@ impl Provider for OpenAiResponses {
                     // stitching function_call_arguments deltas ourselves.
                     "response.output_item.done" => {
                         let item = &v["item"];
+                        // The reasoning *summary* streams as thinking deltas
+                        // above; the replayable artifact is the reasoning
+                        // item itself. Capturing its id here — after its
+                        // summary deltas, before the next item's — puts it in
+                        // the recorded position the API expects it back in.
+                        if item["type"].as_str() == Some("reasoning")
+                            && let Some(id) = item["id"].as_str()
+                        {
+                            yield StreamEvent::ReasoningRef { id: id.to_string() };
+                        }
                         if item["type"].as_str() == Some("function_call") {
                             let args = item["arguments"].as_str().unwrap_or_default();
                             // Empty string means a zero-argument call.
@@ -205,6 +259,9 @@ impl Provider for OpenAiResponses {
                                 id: item["call_id"].as_str().unwrap_or_default().to_string(),
                                 name: item["name"].as_str().unwrap_or_default().to_string(),
                                 input,
+                                // OpenAI doesn't sign calls; its reasoning
+                                // travels as its own item.
+                                signature: None,
                             };
                         }
                     }
@@ -310,6 +367,7 @@ mod tests {
                 id: "call_1".into(),
                 name: "get_weather".into(),
                 input: json!({ "city": "Paris" }),
+                signature: None,
             },
         ]));
         assert_eq!(
@@ -369,6 +427,83 @@ mod tests {
                     "content": [{ "type": "input_text", "text": "follow-up" }],
                 }),
             ]
+        );
+    }
+
+    /// A reasoning item is replayed in the position it was recorded in:
+    /// after the summary it produced (which never reaches the wire) and
+    /// immediately before the call it led to.
+    #[test]
+    fn reasoning_item_replays_before_the_call_it_led_to() {
+        let items = to_wire_items(&Message::assistant(vec![
+            ContentBlock::Thinking {
+                text: "the user wants weather".into(),
+                signature: None,
+            },
+            ContentBlock::ReasoningRef {
+                id: "rs_abc".into(),
+            },
+            ContentBlock::ToolUse {
+                id: "call_1".into(),
+                name: "get_weather".into(),
+                input: json!({ "city": "Paris" }),
+                signature: None,
+            },
+        ]));
+        assert_eq!(
+            items,
+            vec![
+                json!({ "type": "reasoning", "id": "rs_abc", "summary": [] }),
+                json!({
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "get_weather",
+                    "arguments": "{\"city\":\"Paris\"}",
+                }),
+            ]
+        );
+    }
+
+    #[test]
+    fn reasoning_item_precedes_the_message_it_produced() {
+        let items = to_wire_items(&Message::assistant(vec![
+            ContentBlock::ReasoningRef {
+                id: "rs_abc".into(),
+            },
+            ContentBlock::Text {
+                text: "it is sunny".into(),
+            },
+        ]));
+        assert_eq!(
+            items,
+            vec![
+                json!({ "type": "reasoning", "id": "rs_abc", "summary": [] }),
+                json!({
+                    "role": "assistant",
+                    "content": [{ "type": "output_text", "text": "it is sunny" }],
+                }),
+            ]
+        );
+    }
+
+    /// An interrupted turn leaves a reasoning item with nothing after it;
+    /// the API rejects that, so it is dropped rather than replayed.
+    #[test]
+    fn dangling_reasoning_item_is_dropped() {
+        let items = to_wire_items(&Message::assistant(vec![
+            ContentBlock::Text {
+                text: "checking".into(),
+            },
+            ContentBlock::ReasoningRef {
+                id: "rs_abc".into(),
+            },
+        ]));
+        assert_eq!(
+            items,
+            vec![json!({
+                "role": "assistant",
+                "content": [{ "type": "output_text", "text": "checking" }],
+            })]
         );
     }
 }

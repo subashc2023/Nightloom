@@ -86,8 +86,19 @@ impl Anthropic {
             }
             // Claude 5 family: budget-style thinking is rejected; these
             // models take adaptive thinking plus an output effort level.
+            //
+            // `display` is sent explicitly because its default is
+            // `"omitted"` on these models, and omitted means the server
+            // skips streaming thinking tokens entirely — you get one
+            // thinking block holding a real signature and no text.
+            // Measured on claude-sonnet-5 with a prompt hard enough to
+            // force reasoning: adaptive alone streamed a single empty
+            // thinking_delta, adaptive + summarized streamed sixteen. A
+            // shell that asked for thinking and rendered nothing would
+            // look broken, so asking for it is the honest default; the
+            // cost is the summary's output tokens.
             Thinking::Effort(e) => {
-                body["thinking"] = json!({ "type": "adaptive" });
+                body["thinking"] = json!({ "type": "adaptive", "display": "summarized" });
                 body["output_config"] = json!({ "effort": e });
             }
         }
@@ -120,7 +131,11 @@ fn to_wire_message(message: &Message) -> Value {
             ContentBlock::RedactedThinking { data } => Some(json!({
                 "type": "redacted_thinking", "data": data,
             })),
-            ContentBlock::ToolUse { id, name, input } => Some(json!({
+            // The replay token (Gemini's) means nothing here; Anthropic
+            // signs thinking blocks, not calls.
+            ContentBlock::ToolUse {
+                id, name, input, ..
+            } => Some(json!({
                 "type": "tool_use", "id": id, "name": name, "input": input,
             })),
             // The canonical block's `name` is for Gemini's benefit;
@@ -234,7 +249,7 @@ impl Provider for Anthropic {
                             } else {
                                 serde_json::from_str(&buf).map_err(parse)?
                             };
-                            yield StreamEvent::ToolUse { id, name, input };
+                            yield StreamEvent::ToolUse { id, name, input, signature: None };
                         }
                         if let Some(index) = v["index"].as_u64()
                             && let Some(buf) = thinking_sigs.remove(&index)
@@ -389,6 +404,7 @@ mod tests {
             id: "toolu_01".into(),
             name: "get_weather".into(),
             input: json!({ "city": "Oslo" }),
+            signature: None,
         }]);
         assert_eq!(
             to_wire_message(&msg),

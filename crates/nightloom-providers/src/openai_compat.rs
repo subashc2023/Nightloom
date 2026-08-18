@@ -179,7 +179,9 @@ fn to_wire_messages(message: &Message) -> Vec<Value> {
         .content
         .iter()
         .filter_map(|block| match block {
-            ContentBlock::ToolUse { id, name, input } => Some(json!({
+            ContentBlock::ToolUse {
+                id, name, input, ..
+            } => Some(json!({
                 "id": id,
                 "type": "function",
                 // Arguments travel as a JSON-encoded string, not an object.
@@ -277,6 +279,8 @@ impl Provider for OpenAiCompat {
                             id: call.id.unwrap_or_else(|| format!("call-{index}")),
                             name: call.name,
                             input,
+                            // No chat/completions host signs calls.
+                            signature: None,
                         };
                     }
                     yield StreamEvent::Usage(usage);
@@ -423,6 +427,7 @@ mod tests {
             id: "call-1".into(),
             name: "get_weather".into(),
             input: json!({ "city": "Oslo" }),
+            signature: None,
         }]));
         assert_eq!(
             wire,
