@@ -19,3 +19,4 @@ tokio-util.workspace = true
 # API keys entered in-app land in the OS credential store (Windows
 # Credential Manager / macOS Keychain / Secret Service), never on disk.
 keyring = { version = "3", features = ["windows-native", "apple-native", "sync-secret-service"] }
+tauri-plugin-dialog = "2"

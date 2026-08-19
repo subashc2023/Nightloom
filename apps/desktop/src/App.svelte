@@ -7,10 +7,21 @@
   import SettingsModal from "./lib/SettingsModal.svelte";
   import Transcript from "./lib/Transcript.svelte";
   import Composer from "./lib/Composer.svelte";
+  import NoteView from "./lib/NoteView.svelte";
+  import Welcome from "./lib/Welcome.svelte";
 
   onMount(() => {
     void init();
   });
+
+  /**
+   * A conversation with nothing in it yet gets the launcher instead of an
+   * empty transcript with a docked composer: an empty pane is where the two
+   * questions that actually start a chat belong — which folder, and what do
+   * you want. `app.live` is checked as well as the log so the switch happens
+   * on the first send rather than on the re-sync a whole turn later.
+   */
+  const blank = $derived(app.events.length === 0 && !app.live);
 </script>
 
 <div class="app">
@@ -18,7 +29,13 @@
   <div class="main">
     <TopBar />
     <div class="content">
-      <Transcript />
+      {#if app.view === "note"}
+        <NoteView />
+      {:else if blank}
+        <Welcome />
+      {:else}
+        <Transcript />
+      {/if}
       {#if app.toasts.length > 0}
         <div class="toasts">
           {#each app.toasts as t (t.id)}
@@ -27,7 +44,9 @@
         </div>
       {/if}
     </div>
-    <Composer />
+    {#if app.view === "chat" && !blank}
+      <Composer />
+    {/if}
   </div>
   <RightRail />
   {#if app.showSettings}

@@ -2,6 +2,14 @@
   import { app, addToast, send, cancelTurn } from "./state.svelte";
   import type { Attachment } from "./types";
 
+  /**
+   * `floating` drops the docked chrome (top border, panel fill) for the
+   * new-chat page, where the composer sits in the middle of the pane rather
+   * than at the bottom of a transcript. One component either way: a second
+   * composer would be a second place to fix a paste bug.
+   */
+  let { floating = false }: { floating?: boolean } = $props();
+
   let text = $state("");
   let attachments = $state<Attachment[]>([]);
   let ta = $state<HTMLTextAreaElement | null>(null);
@@ -139,6 +147,7 @@
 
 <div
   class="composer"
+  class:floating
   class:dropping={dragDepth > 0}
   role="group"
   aria-label="message composer"
@@ -200,8 +209,27 @@
     border-top: 1px solid var(--border);
     padding: 0.75rem 1rem;
   }
+  .composer.floating {
+    background: transparent;
+    border-top: none;
+    padding: 0;
+    width: 100%;
+  }
   .composer.dropping {
     background: #8b7cf60f;
+  }
+  .composer.floating.dropping {
+    background: transparent;
+  }
+  .composer.floating .row,
+  .composer.floating .attachments,
+  .composer.floating .hint {
+    max-width: none;
+  }
+  .composer.floating textarea {
+    background: var(--panel);
+    padding: 0.7rem 0.9rem;
+    font-size: 0.95rem;
   }
   .attachments {
     max-width: 46rem;

@@ -8,6 +8,7 @@
 //! the shell's business.
 
 pub mod approval;
+pub mod project;
 pub mod prompt;
 pub mod sidecar;
 pub mod store;
@@ -27,7 +28,8 @@ pub use nightloom_providers::pricing::{Price, price};
 pub mod mcp {
     pub use nightloom_mcp::{McpConfig, McpError, McpTool, ServerReport, ServerSpec, connect_all};
 }
-pub use prompt::{PromptConfig, assemble};
+pub use project::{Note, Project, Registry};
+pub use prompt::{ProjectContext, PromptConfig, assemble};
 pub use sidecar::{SidecarContext, SidecarPart};
 pub use turn::{Chat, CompactOutcome, TurnEvent, TurnInput, TurnOutcome};
 

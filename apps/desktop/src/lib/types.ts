@@ -46,6 +46,49 @@ export interface ConnectResult {
   mcp: McpServerInfo[];
   /** Where the backend actually rooted the tools, after falling back. */
   workspace: string;
+  /**
+   * The project this connection is filed under, echoed back from the
+   * backend. Read rather than assumed: an open project overrides the
+   * workspace the rail last saved, so this is the authority on which folder
+   * the chat is actually in.
+   */
+  project: ProjectInfo | null;
+}
+
+/**
+ * A project: a folder the user named, plus what is in it.
+ *
+ * The folder is the identity. Chats live in `<root>/.nightloom/sessions`,
+ * shared notes in `<root>/.nightloom/notes`, and instructions in
+ * `<root>/AGENTS.md` — so a project is a set of conventions over a directory
+ * rather than a record in a database somewhere else.
+ */
+export interface ProjectInfo {
+  id: string;
+  name: string;
+  root: string;
+  notes_dir: string;
+  /** Notes in the docspace, and chats logged under this project. */
+  notes: number;
+  chats: number;
+  /**
+   * False when the folder has moved or been deleted. Shown, not hidden: an
+   * unplugged drive is not a decision to forget a project.
+   */
+  exists: boolean;
+  /** ISO8601 */
+  last_opened: string;
+}
+
+/** One file in a project's shared notes directory. */
+export interface Note {
+  /** Path relative to the notes dir, always with `/` separators. */
+  name: string;
+  bytes: number;
+  /** ISO8601 */
+  modified: string;
+  /** First heading or first non-empty line; null for a non-text file. */
+  summary: string | null;
 }
 
 export interface Usage {

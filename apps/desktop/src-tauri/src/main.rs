@@ -9,9 +9,11 @@
 use nightloom_core::Tool;
 use nightloom_core::{ImageInput, ProviderError, Session, SessionEvent, Thinking, WireView};
 use nightloom_service::approval::{Approver, AutoApprove, Decision, PendingCall};
+use nightloom_service::project::{self, Note, Project, Registry};
 use nightloom_service::store::{self, SessionSummary};
 use nightloom_service::{
-    Chat, CompactOutcome, Price, PromptConfig, ProviderKind, TurnEvent, TurnInput, TurnOutcome,
+    Chat, CompactOutcome, Price, ProjectContext, PromptConfig, ProviderKind, TurnEvent, TurnInput,
+    TurnOutcome,
 };
 use serde::Serialize;
 use std::collections::HashMap;
@@ -26,7 +28,21 @@ struct AppState {
     /// Swapped per turn. Shared with [`WindowApprover`], which has to wait on
     /// whichever token is current at the moment it asks.
     cancel: Arc<std::sync::Mutex<CancellationToken>>,
-    log_dir: PathBuf,
+    /// The project registry and which project is open.
+    ///
+    /// One mutex over both halves rather than two, because every question
+    /// worth asking touches both ("where do chats go", "what is this called")
+    /// and two locks would need an ordering rule of their own. This one is a
+    /// **leaf**: callers clone what they need out of it and drop the guard
+    /// before taking `chat` or `session`, so it can never be part of a cycle.
+    workspaces: tokio::sync::Mutex<Workspaces>,
+    /// Where chats go when no project is open, in the OS app-data dir.
+    ///
+    /// Unfiled chats stay here rather than being forced into a folder: the
+    /// quickest useful thing this app does is answer a question that has
+    /// nothing to do with any directory, and making that require choosing a
+    /// project first would be a worse app.
+    default_log_dir: PathBuf,
     /// The approval policy, built once for the process and reused by every
     /// `connect`. Rebuilding it there would silently forget every "always
     /// allow" the user granted, because the rail re-connects on every
@@ -41,6 +57,65 @@ struct AppState {
     /// knob change, and each reconnect would otherwise spawn a second copy of
     /// every configured server and leak the first.
     mcp: tokio::sync::Mutex<Option<McpState>>,
+}
+
+/// The registry, plus the project currently open.
+struct Workspaces {
+    registry: Registry,
+    active: Option<Project>,
+}
+
+impl AppState {
+    /// The open project, cloned out. Cloning rather than lending is the whole
+    /// lock discipline: no caller holds the registry while it takes another
+    /// lock, so no ordering rule has to be remembered.
+    async fn active(&self) -> Option<Project> {
+        self.workspaces.lock().await.active.clone()
+    }
+
+    /// Where the current chats live: the open project's log directory, or the
+    /// app-data one when nothing is open.
+    async fn log_dir(&self) -> PathBuf {
+        match self.active().await {
+            Some(project) => project.session_dir(),
+            None => self.default_log_dir.clone(),
+        }
+    }
+}
+
+/// A project as the UI shows it: the registry entry plus the two counts that
+/// make a picker row worth reading, and whether the folder is still there.
+#[derive(Serialize, Clone)]
+struct ProjectInfo {
+    id: String,
+    name: String,
+    root: String,
+    notes_dir: String,
+    /// Notes in the docspace, and chats logged under the project.
+    notes: usize,
+    chats: usize,
+    /// False when the folder has moved or been deleted. Reported rather than
+    /// filtered out: an unplugged drive is not a decision to forget a project,
+    /// and a row that silently vanished would be the more alarming answer.
+    exists: bool,
+    last_opened: String,
+}
+
+impl ProjectInfo {
+    fn of(project: &Project) -> Self {
+        Self {
+            id: project.id.clone(),
+            name: project.name.clone(),
+            root: project.root.to_string_lossy().into_owned(),
+            notes_dir: project.notes_dir().to_string_lossy().into_owned(),
+            notes: project::list_notes(&project.notes_dir()).len(),
+            chats: store::list(&project.session_dir())
+                .map(|s| s.len())
+                .unwrap_or(0),
+            exists: project.exists(),
+            last_opened: project.last_opened.to_rfc3339(),
+        }
+    }
 }
 
 /// The MCP servers running for one workspace.
@@ -167,6 +242,9 @@ struct ConnectedInfo {
     price: Option<Price>,
     /// MCP servers configured for this workspace, including ones that failed.
     mcp: Vec<McpServerInfo>,
+    /// The project this connection is filed under, echoed back so the UI's
+    /// notion of "open project" and the backend's cannot drift apart.
+    project: Option<ProjectInfo>,
 }
 
 const KEYRING_SERVICE: &str = "nightloom";
@@ -303,6 +381,9 @@ struct ChatSpec {
     sidecar: bool,
     workspace: PathBuf,
     approval: bool,
+    /// The open project, for the shared-notes prompt layer. `None` for an
+    /// unfiled chat, which has no docspace to index.
+    project: Option<ProjectContext>,
 }
 
 /// Build a `Chat` from a spec: the window's own chat, and — through the
@@ -340,6 +421,9 @@ fn build_chat(
         environment: spec.preamble,
         project_instructions: spec.preamble,
         user_memory: spec.preamble,
+        // Gated on the preamble like every other discovered layer: `--bare`
+        // and its desktop equivalent mean "nothing but what I typed".
+        project: spec.preamble.then(|| spec.project.clone()).flatten(),
         cwd: spec.workspace.clone(),
         custom: spec.system.clone(),
     });
@@ -414,16 +498,24 @@ async fn connect(
         None => Thinking::Default,
     };
     // The folder this conversation is about: it roots the file tools and is
-    // where the preamble looks for NIGHTLOOM.md/AGENTS.md and the git branch.
+    // where the preamble looks for AGENTS.md files and the git branch.
     // A GUI process's cwd is whatever the launcher happened to set — the
     // install directory, or C:\Windows\System32 — so leaving it implicit
     // would point the tools somewhere arbitrary and unmentioned. An
     // unreadable or missing path falls back to cwd rather than failing the
     // connect, and the resolved value goes back to the UI to be shown.
-    let workspace = workspace
-        .map(PathBuf::from)
-        .filter(|p| p.is_dir())
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    //
+    // An open project **wins** over whatever the rail last saved: the project
+    // is the folder, and a chat filed under one that rooted its tools
+    // somewhere else would be a project in name only.
+    let active = state.active().await;
+    let workspace = match &active {
+        Some(project) => project.root.clone(),
+        None => workspace
+            .map(PathBuf::from)
+            .filter(|p| p.is_dir())
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
+    };
 
     let spec = ChatSpec {
         kind,
@@ -436,6 +528,10 @@ async fn connect(
         sidecar: sidecar.unwrap_or(true),
         workspace,
         approval: approval.unwrap_or(true),
+        project: active.as_ref().map(|p| ProjectContext {
+            name: p.name.clone(),
+            notes_dir: p.notes_dir(),
+        }),
     };
     let mcp = ensure_mcp(&state, &spec.workspace, spec.tools).await;
     let mcp_tools = state
@@ -453,19 +549,21 @@ async fn connect(
         price: chat.price,
         mcp,
         workspace: spec.workspace.to_string_lossy().into_owned(),
+        project: active.as_ref().map(ProjectInfo::of),
     };
     *state.chat.lock().await = Some(chat);
     Ok(info)
 }
 
+/// The open project's chats, or the unfiled ones when none is open.
 #[tauri::command]
-fn list_sessions(state: State<'_, AppState>) -> Result<Vec<SessionSummary>, String> {
-    store::list(&state.log_dir).map_err(|e| e.to_string())
+async fn list_sessions(state: State<'_, AppState>) -> Result<Vec<SessionSummary>, String> {
+    store::list(&state.log_dir().await).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn new_session(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let session = Session::with_log(&state.log_dir).map_err(|e| e.to_string())?;
+    let session = Session::with_log(&state.log_dir().await).map_err(|e| e.to_string())?;
     let id = session.id.clone();
     *state.session.lock().await = Some(session);
     Ok(serde_json::json!({ "id": id }))
@@ -475,7 +573,7 @@ async fn new_session(state: State<'_, AppState>) -> Result<serde_json::Value, St
 /// full event log for the UI to render.
 #[tauri::command]
 async fn open_session(state: State<'_, AppState>, id: String) -> Result<Vec<SessionEvent>, String> {
-    let path = store::find_by_prefix(&state.log_dir, &id).map_err(|e| e.to_string())?;
+    let path = store::find_by_prefix(&state.log_dir().await, &id).map_err(|e| e.to_string())?;
     let session = Session::load(path).map_err(|e| e.to_string())?;
     let events = session.events().to_vec();
     *state.session.lock().await = Some(session);
@@ -511,9 +609,10 @@ async fn send(
         .as_ref()
         .ok_or_else(|| "not connected".to_string())?;
 
+    let log_dir = state.log_dir().await;
     let mut session_guard = state.session.lock().await;
     if session_guard.is_none() {
-        *session_guard = Some(Session::with_log(&state.log_dir).map_err(|e| e.to_string())?);
+        *session_guard = Some(Session::with_log(&log_dir).map_err(|e| e.to_string())?);
     }
     let session = session_guard.as_mut().expect("session ensured above");
 
@@ -647,7 +746,7 @@ async fn edit_context(
 /// dropped first (the next send starts a fresh session).
 #[tauri::command]
 async fn delete_session(state: State<'_, AppState>, id: String) -> Result<String, String> {
-    let path = store::find_by_prefix(&state.log_dir, &id).map_err(|e| e.to_string())?;
+    let path = store::find_by_prefix(&state.log_dir().await, &id).map_err(|e| e.to_string())?;
     let full_id = path
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
@@ -660,6 +759,192 @@ async fn delete_session(state: State<'_, AppState>, id: String) -> Result<String
     }
     std::fs::remove_file(&path).map_err(|e| e.to_string())?;
     Ok(full_id)
+}
+
+// ---- projects ----------------------------------------------------------
+
+/// Ask the OS for a folder. `None` when the user cancelled.
+///
+/// Driven from Rust rather than from the frontend so the app needs no dialog
+/// permission in its capability set and no matching npm package: the only
+/// thing the webview can do here is ask, and the only thing it gets back is a
+/// path the user chose themselves.
+#[tauri::command]
+async fn pick_folder(app: AppHandle, state: State<'_, AppState>) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let start = match state.active().await {
+        Some(project) => Some(project.root),
+        None => project::config_dir().map(|d| d.parent().unwrap_or(&d).to_path_buf()),
+    };
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let mut builder = app.dialog().file().set_title("Choose a project folder");
+    if let Some(start) = start.filter(|p| p.is_dir()) {
+        builder = builder.set_directory(start);
+    }
+    builder.pick_folder(move |picked| {
+        let _ = tx.send(picked);
+    });
+    Ok(rx
+        .await
+        .ok()
+        .flatten()
+        .and_then(|p| p.into_path().ok())
+        .map(|p| project::normalize(&p).to_string_lossy().into_owned()))
+}
+
+#[tauri::command]
+async fn list_projects(state: State<'_, AppState>) -> Result<Vec<ProjectInfo>, String> {
+    Ok(state
+        .workspaces
+        .lock()
+        .await
+        .registry
+        .projects()
+        .iter()
+        .map(ProjectInfo::of)
+        .collect())
+}
+
+#[tauri::command]
+async fn active_project(state: State<'_, AppState>) -> Result<Option<ProjectInfo>, String> {
+    Ok(state.active().await.as_ref().map(ProjectInfo::of))
+}
+
+/// Register a folder as a project. Idempotent: the same folder is the same
+/// project, so this doubles as "open the one I already have".
+#[tauri::command]
+async fn create_project(
+    state: State<'_, AppState>,
+    path: String,
+    name: Option<String>,
+) -> Result<ProjectInfo, String> {
+    let mut guard = state.workspaces.lock().await;
+    let project = guard.registry.add(PathBuf::from(path), name)?;
+    Ok(ProjectInfo::of(&project))
+}
+
+/// Open a project: its chats become the listing and its folder the workspace.
+///
+/// Drops the active session, because a session is a handle on a log file in
+/// the *previous* project's directory — carrying it across would append the
+/// next turn to a conversation the sidebar no longer lists.
+///
+/// Does not re-connect. The frontend does that with the settings it already
+/// holds, and doing it here would mean this command needed everything
+/// `connect` needs just to pass it through unchanged.
+#[tauri::command]
+async fn open_project(state: State<'_, AppState>, id: String) -> Result<ProjectInfo, String> {
+    let project = {
+        let mut guard = state.workspaces.lock().await;
+        let project = guard
+            .registry
+            .find(&id)
+            .cloned()
+            .ok_or_else(|| format!("no project {id}"))?;
+        guard.registry.touch(&id);
+        guard.active = Some(project.clone());
+        project
+    };
+    *state.session.lock().await = None;
+    Ok(ProjectInfo::of(&project))
+}
+
+/// Leave the open project; later chats are unfiled again.
+#[tauri::command]
+async fn close_project(state: State<'_, AppState>) -> Result<(), String> {
+    state.workspaces.lock().await.active = None;
+    *state.session.lock().await = None;
+    Ok(())
+}
+
+#[tauri::command]
+async fn rename_project(
+    state: State<'_, AppState>,
+    id: String,
+    name: String,
+) -> Result<ProjectInfo, String> {
+    let mut guard = state.workspaces.lock().await;
+    let project = guard.registry.rename(&id, &name)?;
+    if guard.active.as_ref().is_some_and(|p| p.id == id) {
+        guard.active = Some(project.clone());
+    }
+    Ok(ProjectInfo::of(&project))
+}
+
+/// Remove a project from the list. **Forgets, never deletes** — the folder,
+/// its notes and its chats are all still on disk, and the UI says so.
+#[tauri::command]
+async fn forget_project(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let closed = {
+        let mut guard = state.workspaces.lock().await;
+        guard.registry.forget(&id)?;
+        let closed = guard.active.as_ref().is_some_and(|p| p.id == id);
+        if closed {
+            guard.active = None;
+        }
+        closed
+    };
+    if closed {
+        *state.session.lock().await = None;
+    }
+    Ok(())
+}
+
+// ---- the docspace ------------------------------------------------------
+
+/// The notes directory of the open project, or an error naming why there
+/// isn't one. Every note command needs this and none of them should guess.
+async fn notes_dir(state: &AppState) -> Result<PathBuf, String> {
+    state
+        .active()
+        .await
+        .map(|p| p.notes_dir())
+        .ok_or_else(|| "no project is open, so there is no shared notes folder".to_string())
+}
+
+#[tauri::command]
+async fn list_notes(state: State<'_, AppState>) -> Result<Vec<Note>, String> {
+    Ok(project::list_notes(&notes_dir(&state).await?))
+}
+
+#[tauri::command]
+async fn read_note(state: State<'_, AppState>, name: String) -> Result<String, String> {
+    project::read_note(&notes_dir(&state).await?, &name)
+}
+
+/// Write a note. Also how a new one is created — there is no separate
+/// "create", because a note is a file and an empty one is a real note.
+#[tauri::command]
+async fn save_note(
+    state: State<'_, AppState>,
+    name: String,
+    content: String,
+) -> Result<Note, String> {
+    project::write_note(&notes_dir(&state).await?, &name, &content)
+}
+
+#[tauri::command]
+async fn delete_note(state: State<'_, AppState>, name: String) -> Result<(), String> {
+    project::delete_note(&notes_dir(&state).await?, &name)
+}
+
+/// Show a folder in the OS file manager.
+///
+/// The docspace is a real directory and its whole appeal is that it is: the
+/// user can drop a PDF in it, edit a note in their own editor, or put it under
+/// version control. A button that opens it is what makes that discoverable.
+#[tauri::command]
+async fn reveal(state: State<'_, AppState>, path: Option<String>) -> Result<(), String> {
+    let target = match path {
+        Some(p) => PathBuf::from(p),
+        None => notes_dir(&state).await?,
+    };
+    // Created on demand: the docspace does not exist until something is in it,
+    // and "open the folder" is a reasonable way to put the first thing there.
+    if !target.exists() {
+        std::fs::create_dir_all(&target).map_err(|e| e.to_string())?;
+    }
+    project::reveal(&target).map_err(|e| e.to_string())
 }
 
 /// Interrupt the in-flight turn or compaction, if any.
@@ -705,8 +990,9 @@ fn approve_call(
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let log_dir = app.path().app_data_dir()?.join("sessions");
+            let default_log_dir = app.path().app_data_dir()?.join("sessions");
             let cancel = Arc::new(std::sync::Mutex::new(CancellationToken::new()));
             let gate = Arc::new(WindowApprover {
                 app: app.handle().clone(),
@@ -717,7 +1003,15 @@ fn main() {
                 chat: tokio::sync::Mutex::new(None),
                 session: tokio::sync::Mutex::new(None),
                 cancel,
-                log_dir,
+                workspaces: tokio::sync::Mutex::new(Workspaces {
+                    registry: Registry::load(),
+                    // Nothing open at launch. The frontend reopens the last
+                    // project if it had one, which keeps "which project was
+                    // I in" a UI preference rather than a second source of
+                    // truth beside the registry.
+                    active: None,
+                }),
+                default_log_dir,
                 // `AutoApprove` answers read-only and session-only calls
                 // itself, so the window is only ever asked about calls that
                 // can change something outside the conversation.
@@ -745,6 +1039,19 @@ fn main() {
             edit_context,
             delete_session,
             approve_call,
+            pick_folder,
+            list_projects,
+            active_project,
+            create_project,
+            open_project,
+            close_project,
+            rename_project,
+            forget_project,
+            list_notes,
+            read_note,
+            save_note,
+            delete_note,
+            reveal,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Nightloom");

@@ -17,7 +17,9 @@ import type {
   ApprovalRequest,
   ImageInput,
   McpServerInfo,
+  Note,
   Price,
+  ProjectInfo,
   ProviderInfo,
   SessionEvent,
   SessionMeta,
@@ -25,6 +27,30 @@ import type {
   TurnEvent,
   Usage,
 } from "./types";
+
+/**
+ * Which project the app reopens at launch. A UI preference, not a source of
+ * truth — the backend registry is that, and this only records where the user
+ * left off.
+ */
+const LAST_PROJECT_KEY = "nightloom.last-project";
+
+function loadLastProject(): string | null {
+  try {
+    return localStorage.getItem(LAST_PROJECT_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function saveLastProject(id: string | null): void {
+  try {
+    if (id) localStorage.setItem(LAST_PROJECT_KEY, id);
+    else localStorage.removeItem(LAST_PROJECT_KEY);
+  } catch {
+    // best-effort
+  }
+}
 
 export interface ToolCallView {
   id: string;
@@ -65,6 +91,27 @@ export const app = $state({
   providers: [] as ProviderInfo[],
   /** Which providers/models the rail dropdowns offer (settings modal edits this). */
   prefs: loadPrefs() as CatalogPrefs,
+  /** Every registered project, newest-opened first. */
+  projects: [] as ProjectInfo[],
+  /**
+   * The open project, or null for an unfiled chat.
+   *
+   * Not derived from `draft.workspace`: an open project overrides it on the
+   * backend, and two answers to "which folder is this" is one too many.
+   */
+  project: null as ProjectInfo | null,
+  /** The open project's shared notes. Empty when nothing is open. */
+  notes: [] as Note[],
+  /**
+   * What the centre pane shows. "note" is the docspace editor, which replaces
+   * the transcript rather than floating over it — reading and writing a note
+   * is work, not a dialog.
+   */
+  view: "chat" as "chat" | "note",
+  /** The note open in the centre pane, when `view` is "note". */
+  openNote: null as string | null,
+  /** Which half of the left sidebar is showing. */
+  leftTab: "chats" as "chats" | "notes",
   /** The rail's connection settings; any change re-connects via applyDraft(). */
   draft: defaultDraft(),
   connection: null as Connection | null,
@@ -123,8 +170,184 @@ export async function init(): Promise<void> {
   } catch (e) {
     app.error = String(e);
   }
+  await refreshProjects();
+  // Reopen where the user left off *before* connecting: the project decides
+  // the workspace, so connecting first would root the tools at the previous
+  // folder and then immediately re-connect to correct it.
+  const lastProject = loadLastProject();
+  if (lastProject && app.projects.some((p) => p.id === lastProject)) {
+    try {
+      app.project = await api.openProject(lastProject);
+      // Opening bumps last-opened on the backend, so the list read a
+      // moment ago is already stale in its ordering.
+      await refreshProjects();
+    } catch {
+      // A project whose folder vanished must not stop the app launching.
+      saveLastProject(null);
+    }
+  }
   await refreshSessions();
+  await refreshNotes();
   await autoConnect();
+}
+
+// ---- projects ----
+
+export async function refreshProjects(): Promise<void> {
+  try {
+    app.projects = await api.listProjects();
+  } catch (e) {
+    addToast(String(e));
+  }
+}
+
+export async function refreshNotes(): Promise<void> {
+  if (!app.project) {
+    app.notes = [];
+    return;
+  }
+  try {
+    app.notes = await api.listNotes();
+  } catch {
+    // A docspace that cannot be listed shows as empty; the failure surfaces
+    // when something is actually read or written.
+    app.notes = [];
+  }
+}
+
+/**
+ * Open a project (or, with null, leave the one that is open) and re-point
+ * everything at it.
+ *
+ * One function rather than a handful the callers compose, because the order
+ * matters and getting it wrong is silent: the backend has to know the project
+ * before `connect` reads it — the project decides the workspace — and the
+ * chat list has to be re-read after, since it comes from the project folder.
+ */
+export async function useProject(id: string | null): Promise<void> {
+  if (app.busy) return;
+  try {
+    if (id) {
+      app.project = await api.openProject(id);
+    } else {
+      await api.closeProject();
+      app.project = null;
+    }
+  } catch (e) {
+    addToast(String(e));
+    return;
+  }
+  saveLastProject(app.project?.id ?? null);
+  app.activeSessionId = null;
+  app.events = [];
+  app.error = null;
+  app.view = "chat";
+  app.openNote = null;
+  await applyDraft();
+  await refreshProjects();
+  await refreshSessions();
+  await refreshNotes();
+}
+
+/**
+ * Pick a folder and open it as a project.
+ *
+ * `createProject` is idempotent on the path, so choosing a folder that is
+ * already a project opens it rather than erroring — which is what someone who
+ * navigated back to it meant.
+ */
+export async function addProject(): Promise<void> {
+  let path: string | null = null;
+  try {
+    path = await api.pickFolder();
+  } catch (e) {
+    addToast(String(e));
+    return;
+  }
+  if (!path) return; // cancelled
+  try {
+    const project = await api.createProject(path);
+    await refreshProjects();
+    await useProject(project.id);
+  } catch (e) {
+    addToast(String(e));
+  }
+}
+
+export async function renameProject(id: string, name: string): Promise<void> {
+  try {
+    const project = await api.renameProject(id, name);
+    if (app.project?.id === id) app.project = project;
+    await refreshProjects();
+  } catch (e) {
+    addToast(String(e));
+  }
+}
+
+/**
+ * Drop a project from the list. Nothing on disk is touched, and the toast
+ * says so — a "remove" next to a folder full of work has to be unambiguous.
+ */
+export async function forgetProject(id: string): Promise<void> {
+  const wasOpen = app.project?.id === id;
+  try {
+    await api.forgetProject(id);
+  } catch (e) {
+    addToast(String(e));
+    return;
+  }
+  addToast(
+    "Removed from the list — the folder, its notes and its chats are untouched on disk.",
+  );
+  await refreshProjects();
+  if (wasOpen) await useProject(null);
+}
+
+export async function revealFolder(path?: string): Promise<void> {
+  try {
+    await api.reveal(path);
+  } catch (e) {
+    addToast(String(e));
+  }
+}
+
+// ---- the docspace ----
+
+export function showNote(name: string): void {
+  app.openNote = name;
+  app.view = "note";
+  // So the list highlighting the open note is the list on screen — this is
+  // also reachable from the welcome page, where the sidebar may be on Chats.
+  app.leftTab = "notes";
+}
+
+export function closeNote(): void {
+  app.view = "chat";
+  app.openNote = null;
+}
+
+export async function saveNote(name: string, content: string): Promise<boolean> {
+  try {
+    await api.saveNote(name, content);
+  } catch (e) {
+    addToast(String(e));
+    return false;
+  }
+  await refreshNotes();
+  await refreshProjects();
+  return true;
+}
+
+export async function deleteNote(name: string): Promise<void> {
+  try {
+    await api.deleteNote(name);
+  } catch (e) {
+    addToast(String(e));
+    return;
+  }
+  if (app.openNote === name) closeNote();
+  await refreshNotes();
+  await refreshProjects();
 }
 
 /** A provider the backend can actually construct a client for right now. */
@@ -182,6 +405,10 @@ export async function applyDraft(): Promise<void> {
       mcp: res.mcp ?? [],
       workspace: res.workspace,
     };
+    // The backend is the authority on which project a connection is filed
+    // under: an open project overrides the workspace the rail saved, so
+    // reading it back is what keeps the two from disagreeing.
+    app.project = res.project ?? null;
     if (!d.model.trim()) d.model = res.model; // backend resolved the default
     saveLastConnection({ ...d });
   } catch (e) {
@@ -241,6 +468,7 @@ export async function newSession(): Promise<void> {
     app.activeSessionId = id;
     app.events = [];
     app.error = null;
+    closeNote();
     await refreshSessions();
   } catch (e) {
     app.error = String(e);
@@ -253,6 +481,7 @@ export async function openSession(id: string): Promise<void> {
     app.events = await api.openSession(id);
     app.activeSessionId = id;
     app.error = null;
+    closeNote();
   } catch (e) {
     app.error = String(e);
   }
@@ -333,6 +562,9 @@ export async function send(
       // keep the locally-built view if re-sync fails
     }
     void refreshSessions();
+    // The turn may have written to the docspace, and the sidebar showing a
+    // note the model just left is the visible half of "shared knowledge".
+    void refreshNotes();
   }
 }
 

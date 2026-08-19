@@ -113,11 +113,17 @@ fn build_chat(
     chat.system = prompt::assemble(&PromptConfig {
         identity: true,
         environment: true,
-        // Off: the eval's fixtures are the whole world for this run, and a
-        // NIGHTLOOM.md discovered from the temp directory's ancestors would
-        // silently change the instructions between machines.
+        // Off: the eval's fixtures are the whole world for this run, and an
+        // AGENTS.md discovered from the temp directory's ancestors would
+        // silently change the instructions between machines. The walk runs to
+        // the filesystem root, so that is not a hypothetical — one file in a
+        // home directory would reach every eval workspace on that box.
         project_instructions: false,
         user_memory: false,
+        // Same reason, one layer down: a docspace index is discovered state,
+        // and an eval whose prompt depends on what a previous run left in the
+        // workspace is not measuring the model.
+        project: None,
         cwd: workspace.to_path_buf(),
         custom: None,
     });

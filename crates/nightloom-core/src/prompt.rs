@@ -26,8 +26,12 @@ pub enum SegmentKind {
     Identity,
     /// Stable facts about the host: cwd, OS, shell, repo. Never the clock.
     Environment,
-    /// Instructions discovered in the project tree (NIGHTLOOM.md, AGENTS.md).
+    /// Instructions discovered in the directory tree (AGENTS.md).
     ProjectInstructions,
+    /// Index of the project's shared notes directory — what earlier
+    /// conversations in this project left behind. The index only; the
+    /// contents are read on demand with the file tools.
+    ProjectNotes,
     /// User-level standing preferences, from the config dir.
     UserMemory,
     /// Anything a shell supplies directly (`--system`, the desktop textarea).

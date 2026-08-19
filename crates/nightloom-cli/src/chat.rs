@@ -6,8 +6,8 @@ use nightloom_core::{
     SystemPrompt, Thinking, Usage,
 };
 use nightloom_service::{
-    AutoApprove, Chat, Decision, PendingCall, PromptConfig, ProviderKind, TurnEvent, mcp, prompt,
-    store, tools,
+    AutoApprove, Chat, Decision, PendingCall, ProjectContext, PromptConfig, ProviderKind,
+    TurnEvent, mcp, project, prompt, store, tools,
 };
 use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
@@ -106,12 +106,24 @@ fn build_chat(args: &ChatArgs, mcp_tools: &[Arc<dyn Tool>]) -> Result<Chat> {
     // `--bare` drops every discovered layer; `--system` is the shell-supplied
     // one and survives either way, appended last.
     let on = !args.bare;
+    let cwd = std::env::current_dir().context("cannot read the current directory")?;
     chat.system = prompt::assemble(&PromptConfig {
         identity: on,
         environment: on,
         project_instructions: on,
         user_memory: on,
-        cwd: std::env::current_dir().context("cannot read the current directory")?,
+        // The CLI's project is wherever it was run: one folder, its
+        // `.nightloom/notes`, and the same docspace the desktop app shows for
+        // it. Tied to `--tools` because an index of files the model has no
+        // way to read is a paragraph of wasted prompt.
+        project: (on && args.tools).then(|| ProjectContext {
+            name: cwd
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| cwd.display().to_string()),
+            notes_dir: cwd.join(project::DOT_DIR).join(project::NOTES_DIR),
+        }),
+        cwd,
         custom: args.system.clone(),
     });
     chat.thinking = args.thinking.clone().unwrap_or(Thinking::Default);
