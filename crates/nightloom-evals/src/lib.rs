@@ -16,4 +16,4 @@ pub mod suite;
 pub mod task;
 
 pub use probe::{ProbeReport, ProbeSpec, run_probe};
-pub use task::{Attempt, Task, TaskReport, run_task};
+pub use task::{Attempt, Call, Outcome, Task, TaskReport, Trace, run_task};

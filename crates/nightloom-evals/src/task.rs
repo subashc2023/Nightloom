@@ -28,9 +28,100 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-/// Verdict on one finished attempt: the workspace it left behind, and what it
-/// said last.
-pub type Check = fn(&Path, &str) -> Result<(), String>;
+/// How much of a call's arguments to keep.
+///
+/// Enough to say *which* file a `read_file` read, which is all a shape check
+/// asks; not enough for a `write_file` to carry a whole generated file into
+/// every report.
+const CALL_INPUT: usize = 256;
+
+/// Everything a check gets to look at: the workspace as the model left it,
+/// what it said last, and what it did to get there.
+pub struct Outcome<'a> {
+    pub dir: &'a Path,
+    pub answer: &'a str,
+    pub trace: &'a Trace,
+}
+
+/// Verdict on one finished attempt.
+pub type Check = fn(&Outcome) -> Result<(), String>;
+
+/// One tool call the model made.
+#[derive(Debug, Clone, Serialize)]
+pub struct Call {
+    pub name: String,
+    /// The arguments as JSON, truncated to [`CALL_INPUT`].
+    pub input: String,
+}
+
+impl Call {
+    /// Whether the arguments mention `needle`, path separators normalized.
+    ///
+    /// The same file reaches a tool as `relay/2c/node.txt` from one model and
+    /// as an absolute Windows path from another, and a check that spelled the
+    /// difference out would be asserting something about the platform rather
+    /// than about the model.
+    pub fn mentions(&self, needle: &str) -> bool {
+        slashes(&self.input).contains(&slashes(needle))
+    }
+}
+
+fn slashes(s: &str) -> String {
+    // Twice over: a backslash is one character in a path and two in the JSON
+    // the path was serialized into.
+    s.replace("\\\\", "/").replace('\\', "/")
+}
+
+/// What the turn did, round by round.
+///
+/// The disk cannot answer some questions. Whether three files were read one
+/// after another or all at once leaves exactly the same workspace behind, and
+/// it is the difference between a model that chains tool calls and one that
+/// batches them — so a suite that only inspected the disk could not see the
+/// thing these tasks exist to measure.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Trace {
+    /// One entry per round, in order; a round with no calls is an empty entry.
+    pub rounds: Vec<Vec<Call>>,
+}
+
+impl Trace {
+    pub fn total_calls(&self) -> usize {
+        self.rounds.iter().map(|r| r.len()).sum()
+    }
+
+    /// How many rounds made at least one call — the length of the chain.
+    pub fn rounds_with_calls(&self) -> usize {
+        self.rounds.iter().filter(|r| !r.is_empty()).count()
+    }
+
+    /// The most calls the model issued in a single round — the width of the
+    /// widest batch, and the only evidence that it parallelized at all.
+    pub fn widest_round(&self) -> usize {
+        self.rounds.iter().map(|r| r.len()).max().unwrap_or(0)
+    }
+
+    /// Calls per round, empty rounds dropped: `"1,3"`. For error messages,
+    /// where the shape *is* the diagnosis.
+    pub fn shape(&self) -> String {
+        let widths: Vec<String> = self
+            .rounds
+            .iter()
+            .filter(|r| !r.is_empty())
+            .map(|r| r.len().to_string())
+            .collect();
+        if widths.is_empty() {
+            "no tool calls".to_string()
+        } else {
+            widths.join(",")
+        }
+    }
+
+    /// Which round first called a tool matching `matches`.
+    pub fn first_round_where(&self, matches: impl Fn(&Call) -> bool) -> Option<usize> {
+        self.rounds.iter().position(|r| r.iter().any(&matches))
+    }
+}
 
 /// One job to give a model.
 pub struct Task {
@@ -65,6 +156,9 @@ pub struct Attempt {
     /// USD, when the model has a verified price.
     pub cost: Option<f64>,
     pub elapsed_ms: u64,
+    /// The calls, round by round. Kept in the report as well as handed to the
+    /// check: when a shape task fails, the shape is the whole explanation.
+    pub trace: Trace,
 }
 
 /// Every attempt at one task on one target.
@@ -141,6 +235,7 @@ where
         output_tokens: 0,
         cost: None,
         elapsed_ms: 0,
+        trace: Trace::default(),
     };
 
     let workspace = match Workspace::lay_out(task, index) {
@@ -156,15 +251,27 @@ where
     let cancel = CancellationToken::new();
     let (mut rounds, mut tool_calls, mut denied_calls) = (0, 0, 0);
     let mut hit_round_limit = false;
+    let mut trace = Trace::default();
+    let mut this_round: Vec<Call> = Vec::new();
     let started = Instant::now();
     let outcome = {
         let mut on_event = |e: TurnEvent| match e {
-            TurnEvent::ToolCall { .. } => tool_calls += 1,
+            TurnEvent::ToolCall { name, input, .. } => {
+                tool_calls += 1;
+                this_round.push(Call {
+                    name,
+                    input: truncate(&input.to_string()),
+                });
+            }
             TurnEvent::ToolDenied { .. } => denied_calls += 1,
             TurnEvent::RoundLimit { .. } => hit_round_limit = true,
             // One `Usage` per round is the engine's contract, which makes it
-            // the round counter as well.
-            TurnEvent::Usage { .. } => rounds += 1,
+            // the round counter — and the round *boundary*, since it arrives
+            // after the stream has finished and before any tool runs.
+            TurnEvent::Usage { .. } => {
+                rounds += 1;
+                trace.rounds.push(std::mem::take(&mut this_round));
+            }
             _ => {}
         };
         chat.run_turn(&mut session, task.instruction, &cancel, &mut on_event)
@@ -182,7 +289,11 @@ where
     let final_text = last_assistant_text(&session);
     // The check reads the workspace as the model left it. Nothing is cleaned
     // up before it runs, and the temp directory only goes away with the guard.
-    let verdict = (task.check)(workspace.path(), &final_text);
+    let verdict = (task.check)(&Outcome {
+        dir: workspace.path(),
+        answer: &final_text,
+        trace: &trace,
+    });
     Attempt {
         ok: verdict.is_ok(),
         failure: verdict.err().map(|why| {
@@ -210,6 +321,14 @@ where
             c.is_complete().then_some(c.usd)
         },
         elapsed_ms,
+        trace,
+    }
+}
+
+fn truncate(s: &str) -> String {
+    match s.char_indices().nth(CALL_INPUT) {
+        Some((cut, _)) => format!("{}…", &s[..cut]),
+        None => s.to_string(),
     }
 }
 
@@ -274,7 +393,7 @@ mod tests {
         name: "fixture",
         instruction: "unused",
         files: &[("a/b.txt", "hello"), ("top.txt", "world")],
-        check: |_, _| Ok(()),
+        check: |_| Ok(()),
     };
 
     #[test]
@@ -326,6 +445,7 @@ mod tests {
             output_tokens: 0,
             cost: Some(0.5),
             elapsed_ms: ms,
+            trace: Trace::default(),
         };
         let report = TaskReport {
             task: "t".into(),
@@ -356,6 +476,7 @@ mod tests {
                 output_tokens: 0,
                 cost: None,
                 elapsed_ms: 1,
+                trace: Trace::default(),
             }],
         };
         assert_eq!(report.cost(), None);

@@ -218,8 +218,18 @@ fn print_row(report: &TaskReport, verbose: bool) {
     );
     if verbose || passed < total {
         for (i, a) in report.attempts.iter().enumerate() {
-            if let Some(reason) = &a.failure {
-                println!("{DIM}    run {}: {reason}{RESET}", i + 1);
+            match &a.failure {
+                // The shape tasks put the shape in their own message, where it
+                // is the diagnosis rather than a statistic.
+                Some(reason) => println!("{DIM}    run {}: {reason}{RESET}", i + 1),
+                None if verbose => {
+                    println!(
+                        "{DIM}    run {}: ok — calls {}{RESET}",
+                        i + 1,
+                        a.trace.shape()
+                    )
+                }
+                None => {}
             }
         }
     }
