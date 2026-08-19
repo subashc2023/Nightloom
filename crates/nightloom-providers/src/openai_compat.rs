@@ -4,7 +4,7 @@ use eventsource_stream::Eventsource;
 use futures::StreamExt;
 use nightloom_core::{
     ChatRequest, ContentBlock, EventStream, Message, Provider, ProviderError, Role, StreamEvent,
-    Thinking, Usage,
+    Thinking, Usage, undeliverable_document,
 };
 use serde_json::{Value, json};
 
@@ -24,6 +24,22 @@ enum Flavor {
     /// OpenRouter: unified `reasoning` object (effort or max_tokens),
     /// usage requested via `usage: {include: true}`.
     OpenRouter,
+}
+
+impl Flavor {
+    /// Whether this host accepts a `file` content part.
+    ///
+    /// OpenRouter does and documents it. `Generic` is the awkward one: it
+    /// covers OpenAI's own `chat/completions`, which takes a file part, and
+    /// every local server reached through `base_url`, which does not — and
+    /// the flavor cannot tell which end it is pointed at. The two mistakes
+    /// are not symmetric, which is what settles it. A part a local host does
+    /// not understand fails the whole request, and every later turn of that
+    /// conversation with it; declining to send one costs a single attachment
+    /// the model is then told, in words, that it cannot see.
+    fn takes_documents(self) -> bool {
+        matches!(self, Flavor::OpenRouter)
+    }
 }
 
 pub struct OpenAiCompat {
@@ -75,7 +91,7 @@ impl OpenAiCompat {
             messages.push(json!({ "role": "system", "content": system }));
         }
         for m in &request.messages {
-            messages.extend(to_wire_messages(m));
+            messages.extend(to_wire_messages(m, self.flavor));
         }
         let mut body = json!({
             "model": request.model,
@@ -142,7 +158,7 @@ impl OpenAiCompat {
 
 /// One canonical message can expand to several wire messages: tool results
 /// become standalone `role: "tool"` entries in this dialect.
-fn to_wire_messages(message: &Message) -> Vec<Value> {
+fn to_wire_messages(message: &Message, flavor: Flavor) -> Vec<Value> {
     let mut out = Vec::new();
     if message.role == Role::User {
         // Tool results must directly follow the assistant tool_calls message,
@@ -169,17 +185,25 @@ fn to_wire_messages(message: &Message) -> Vec<Value> {
                 }));
             }
         }
-        // An image forces `content` from a plain string into an array of
-        // parts, and that is a real compatibility cliff: plenty of the local
-        // and hosted servers behind this adapter only ever parse the string
-        // form. So the array shape appears only when there is an image to
-        // carry — a text-only turn still serializes exactly as it always
-        // did, string and all, and nothing changes for hosts without vision.
-        if message
-            .content
-            .iter()
-            .any(|b| matches!(b, ContentBlock::Image { .. }))
-        {
+        // An attachment forces `content` from a plain string into an array
+        // of parts, and that is a real compatibility cliff: plenty of the
+        // local and hosted servers behind this adapter only ever parse the
+        // string form. So the array shape appears only when there is
+        // something to carry — a text-only turn still serializes exactly as
+        // it always did, string and all, and nothing changes for hosts
+        // without vision.
+        //
+        // A document on a host that has no file part is therefore *not*
+        // reason enough: it goes out as a notice, and a notice is text. A
+        // turn that stepped into the array form to say "this could not be
+        // delivered" would break the string-only servers on exactly the
+        // request it exists to keep working.
+        let needs_parts = message.content.iter().any(|b| match b {
+            ContentBlock::Image { .. } => true,
+            ContentBlock::Document { .. } => flavor.takes_documents(),
+            _ => false,
+        });
+        if needs_parts {
             let parts: Vec<Value> = message
                 .content
                 .iter()
@@ -195,13 +219,48 @@ fn to_wire_messages(message: &Message) -> Vec<Value> {
                         "type": "image_url",
                         "image_url": { "url": format!("data:{media_type};base64,{data}") },
                     })),
+                    ContentBlock::Document {
+                        media_type,
+                        name,
+                        data,
+                    } => Some(if flavor.takes_documents() {
+                        json!({
+                            "type": "file",
+                            "file": {
+                                "filename": name,
+                                "file_data": format!("data:{media_type};base64,{data}"),
+                            },
+                        })
+                    } else {
+                        json!({
+                            "type": "text",
+                            "text": undeliverable_document(name, media_type),
+                        })
+                    }),
                     _ => None,
                 })
                 .collect();
             out.push(json!({ "role": "user", "content": parts }));
             return out;
         }
-        let text = message.text();
+        // Undeliverable documents lead, where the attachments they stand in
+        // for would have.
+        let notices: Vec<String> = message
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Document {
+                    media_type, name, ..
+                } => Some(undeliverable_document(name, media_type)),
+                _ => None,
+            })
+            .collect();
+        let caption = message.text();
+        let text = match (notices.is_empty(), caption.is_empty()) {
+            (true, _) => caption,
+            (false, true) => notices.join("\n"),
+            (false, false) => format!("{}\n{caption}", notices.join("\n")),
+        };
         if !text.is_empty() || out.is_empty() {
             out.push(json!({ "role": "user", "content": text }));
         }
@@ -461,12 +520,15 @@ mod tests {
 
     #[test]
     fn assistant_tool_use_becomes_tool_calls_with_string_arguments() {
-        let wire = to_wire_messages(&Message::assistant(vec![ContentBlock::ToolUse {
-            id: "call-1".into(),
-            name: "get_weather".into(),
-            input: json!({ "city": "Oslo" }),
-            signature: None,
-        }]));
+        let wire = to_wire_messages(
+            &Message::assistant(vec![ContentBlock::ToolUse {
+                id: "call-1".into(),
+                name: "get_weather".into(),
+                input: json!({ "city": "Oslo" }),
+                signature: None,
+            }]),
+            Flavor::Generic,
+        );
         assert_eq!(
             wire,
             vec![json!({
@@ -484,26 +546,29 @@ mod tests {
 
     #[test]
     fn tool_results_precede_user_text() {
-        let wire = to_wire_messages(&Message {
-            role: Role::User,
-            content: vec![
-                ContentBlock::Text {
-                    text: "thanks".into(),
-                },
-                ContentBlock::ToolResult {
-                    tool_use_id: "call-1".into(),
-                    name: "get_weather".into(),
-                    content: "sunny".into(),
-                    is_error: false,
-                },
-                ContentBlock::ToolResult {
-                    tool_use_id: "call-2".into(),
-                    name: "get_weather".into(),
-                    content: "no such city".into(),
-                    is_error: true,
-                },
-            ],
-        });
+        let wire = to_wire_messages(
+            &Message {
+                role: Role::User,
+                content: vec![
+                    ContentBlock::Text {
+                        text: "thanks".into(),
+                    },
+                    ContentBlock::ToolResult {
+                        tool_use_id: "call-1".into(),
+                        name: "get_weather".into(),
+                        content: "sunny".into(),
+                        is_error: false,
+                    },
+                    ContentBlock::ToolResult {
+                        tool_use_id: "call-2".into(),
+                        name: "get_weather".into(),
+                        content: "no such city".into(),
+                        is_error: true,
+                    },
+                ],
+            },
+            Flavor::Generic,
+        );
         assert_eq!(
             wire,
             vec![
@@ -516,24 +581,27 @@ mod tests {
 
     #[test]
     fn plain_messages_keep_flat_string_shape() {
-        let wire = to_wire_messages(&Message::user("hello"));
+        let wire = to_wire_messages(&Message::user("hello"), Flavor::Generic);
         assert_eq!(wire, vec![json!({ "role": "user", "content": "hello" })]);
     }
 
     #[test]
     fn user_image_becomes_a_content_part_array() {
-        let wire = to_wire_messages(&Message {
-            role: Role::User,
-            content: vec![
-                ContentBlock::Image {
-                    media_type: "image/png".into(),
-                    data: "iVBORw0KGgo=".into(),
-                },
-                ContentBlock::Text {
-                    text: "what is this?".into(),
-                },
-            ],
-        });
+        let wire = to_wire_messages(
+            &Message {
+                role: Role::User,
+                content: vec![
+                    ContentBlock::Image {
+                        media_type: "image/png".into(),
+                        data: "iVBORw0KGgo=".into(),
+                    },
+                    ContentBlock::Text {
+                        text: "what is this?".into(),
+                    },
+                ],
+            },
+            Flavor::Generic,
+        );
         assert_eq!(
             wire,
             vec![json!({
@@ -552,6 +620,115 @@ mod tests {
     /// The array form is contagious if you let it be: the whole reason it is
     /// gated on an image is that hosts which take only a string must keep
     /// seeing the byte-identical body they saw before vision existed.
+    /// OpenRouter documents a `file` part and parses the PDF on its side.
+    #[test]
+    fn openrouter_carries_a_pdf_as_a_file_part() {
+        let wire = to_wire_messages(
+            &Message {
+                role: Role::User,
+                content: vec![
+                    ContentBlock::Document {
+                        media_type: "application/pdf".into(),
+                        name: "contract.pdf".into(),
+                        data: "JVBERi0=".into(),
+                    },
+                    ContentBlock::Text {
+                        text: "summarize".into(),
+                    },
+                ],
+            },
+            Flavor::OpenRouter,
+        );
+        assert_eq!(
+            wire,
+            vec![json!({
+                "role": "user",
+                "content": [
+                    {
+                        "type": "file",
+                        "file": {
+                            "filename": "contract.pdf",
+                            "file_data": "data:application/pdf;base64,JVBERi0=",
+                        },
+                    },
+                    { "type": "text", "text": "summarize" },
+                ],
+            })]
+        );
+    }
+
+    /// A host that cannot take a file part is told in words, and the model
+    /// with it. The alternative shapes are both worse: sending the part
+    /// anyway 400s the request against every local server behind this
+    /// adapter, and dropping the block silently leaves a caption asking
+    /// about a document the model will answer as though it had read.
+    ///
+    /// And the notice stays in the *string* form. A notice is text, so
+    /// stepping into the parts array to deliver it would break the
+    /// string-only servers on exactly the request meant to keep working.
+    #[test]
+    fn a_host_without_document_support_gets_a_notice_not_the_bytes() {
+        let wire = to_wire_messages(
+            &Message {
+                role: Role::User,
+                content: vec![
+                    ContentBlock::Document {
+                        media_type: "application/pdf".into(),
+                        name: "contract.pdf".into(),
+                        data: "JVBERi0=".into(),
+                    },
+                    ContentBlock::Text {
+                        text: "summarize".into(),
+                    },
+                ],
+            },
+            Flavor::Generic,
+        );
+        assert_eq!(wire.len(), 1);
+        assert_eq!(wire[0]["role"], "user");
+        let content = wire[0]["content"].as_str().expect("the string form");
+        assert!(content.contains("contract.pdf"), "{content}");
+        assert!(
+            !content.contains("JVBERi0="),
+            "the bytes went out anyway: {content}"
+        );
+        assert!(content.ends_with("summarize"), "the caption still trails");
+    }
+
+    /// An image alongside an undeliverable document does force the array,
+    /// because the image needs it. The document is a text part there.
+    #[test]
+    fn a_notice_rides_as_a_text_part_when_an_image_forces_the_array() {
+        let wire = to_wire_messages(
+            &Message {
+                role: Role::User,
+                content: vec![
+                    ContentBlock::Image {
+                        media_type: "image/png".into(),
+                        data: "iVBORw0KGgo=".into(),
+                    },
+                    ContentBlock::Document {
+                        media_type: "application/pdf".into(),
+                        name: "contract.pdf".into(),
+                        data: "JVBERi0=".into(),
+                    },
+                ],
+            },
+            Flavor::Generic,
+        );
+        let parts = wire[0]["content"].as_array().expect("parts");
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0]["type"], "image_url");
+        assert_eq!(parts[1]["type"], "text");
+        assert!(
+            parts[1]["text"]
+                .as_str()
+                .is_some_and(|t| t.contains("contract.pdf")),
+            "{:?}",
+            parts[1]
+        );
+    }
+
     #[test]
     fn imageless_bodies_are_byte_identical_to_the_string_form() {
         let provider = OpenAiCompat::new("k", None);
@@ -585,15 +762,18 @@ mod tests {
     /// a replay hazard; it must not drag the turn into the array form.
     #[test]
     fn assistant_image_is_dropped_and_keeps_string_content() {
-        let wire = to_wire_messages(&Message::assistant(vec![
-            ContentBlock::Image {
-                media_type: "image/png".into(),
-                data: "iVBORw0KGgo=".into(),
-            },
-            ContentBlock::Text {
-                text: "answer".into(),
-            },
-        ]));
+        let wire = to_wire_messages(
+            &Message::assistant(vec![
+                ContentBlock::Image {
+                    media_type: "image/png".into(),
+                    data: "iVBORw0KGgo=".into(),
+                },
+                ContentBlock::Text {
+                    text: "answer".into(),
+                },
+            ]),
+            Flavor::Generic,
+        );
         assert_eq!(
             wire,
             vec![json!({ "role": "assistant", "content": "answer" })]
@@ -604,13 +784,16 @@ mod tests {
     /// the old string path would have emitted `"content": ""`.
     #[test]
     fn image_only_message_carries_just_the_image_part() {
-        let wire = to_wire_messages(&Message {
-            role: Role::User,
-            content: vec![ContentBlock::Image {
-                media_type: "image/jpeg".into(),
-                data: "/9j/4AAQ".into(),
-            }],
-        });
+        let wire = to_wire_messages(
+            &Message {
+                role: Role::User,
+                content: vec![ContentBlock::Image {
+                    media_type: "image/jpeg".into(),
+                    data: "/9j/4AAQ".into(),
+                }],
+            },
+            Flavor::Generic,
+        );
         assert_eq!(
             wire,
             vec![json!({
@@ -627,21 +810,24 @@ mod tests {
     /// stay ahead of the image-bearing user turn.
     #[test]
     fn tool_results_still_precede_an_image_bearing_user_turn() {
-        let wire = to_wire_messages(&Message {
-            role: Role::User,
-            content: vec![
-                ContentBlock::ToolResult {
-                    tool_use_id: "call-1".into(),
-                    name: "screenshot".into(),
-                    content: "captured".into(),
-                    is_error: false,
-                },
-                ContentBlock::Image {
-                    media_type: "image/png".into(),
-                    data: "iVBORw0KGgo=".into(),
-                },
-            ],
-        });
+        let wire = to_wire_messages(
+            &Message {
+                role: Role::User,
+                content: vec![
+                    ContentBlock::ToolResult {
+                        tool_use_id: "call-1".into(),
+                        name: "screenshot".into(),
+                        content: "captured".into(),
+                        is_error: false,
+                    },
+                    ContentBlock::Image {
+                        media_type: "image/png".into(),
+                        data: "iVBORw0KGgo=".into(),
+                    },
+                ],
+            },
+            Flavor::Generic,
+        );
         assert_eq!(wire.len(), 2);
         assert_eq!(
             wire[0],

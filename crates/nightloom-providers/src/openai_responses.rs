@@ -168,8 +168,9 @@ fn to_wire_items(message: &Message) -> Vec<Value> {
         return items;
     }
     // Only the user path reaches here — the assistant branch above returns —
-    // which is also why images need no role guard: an image recorded against
-    // an assistant turn falls into that branch's `_ => {}` and is dropped.
+    // which is also why attachments need no role guard: an image or document
+    // recorded against an assistant turn falls into that branch's `_ => {}`
+    // and is dropped.
     let parts: Vec<Value> = message
         .content
         .iter()
@@ -180,6 +181,17 @@ fn to_wire_items(message: &Message) -> Vec<Value> {
             ContentBlock::Image { media_type, data } => Some(json!({
                 "type": "input_image",
                 "image_url": format!("data:{media_type};base64,{data}"),
+            })),
+            // `filename` is required here rather than optional, which is one
+            // of the two reasons the canonical block carries a name at all.
+            ContentBlock::Document {
+                media_type,
+                name,
+                data,
+            } => Some(json!({
+                "type": "input_file",
+                "filename": name,
+                "file_data": format!("data:{media_type};base64,{data}"),
             })),
             _ => None,
         })
@@ -468,6 +480,39 @@ mod tests {
                         "image_url": "data:image/png;base64,iVBORw0KGgo=",
                     },
                     { "type": "input_text", "text": "what is this?" },
+                ],
+            })]
+        );
+    }
+
+    /// `filename` is required on an `input_file`, not optional, which is one
+    /// of the two reasons the canonical block carries a name.
+    #[test]
+    fn a_pdf_becomes_an_input_file_named_for_its_source() {
+        let items = to_wire_items(&Message {
+            role: Role::User,
+            content: vec![
+                ContentBlock::Document {
+                    media_type: "application/pdf".into(),
+                    name: "contract.pdf".into(),
+                    data: "JVBERi0=".into(),
+                },
+                ContentBlock::Text {
+                    text: "summarize".into(),
+                },
+            ],
+        });
+        assert_eq!(
+            items,
+            vec![json!({
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_file",
+                        "filename": "contract.pdf",
+                        "file_data": "data:application/pdf;base64,JVBERi0=",
+                    },
+                    { "type": "input_text", "text": "summarize" },
                 ],
             })]
         );

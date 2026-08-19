@@ -89,6 +89,7 @@
   const KIND_LABEL: Record<BlockKind, string> = {
     text: "text",
     image: "image",
+    document: "document",
     thinking: "thinking",
     redacted_thinking: "thinking (encrypted)",
     tool_use: "tool call",

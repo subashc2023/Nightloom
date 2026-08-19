@@ -230,7 +230,7 @@ cargo tauri build                        # installer bundle
 ```
 
 Streaming chat with collapsible thinking, tool chips, inline approval prompts,
-and image attachments by paste or drop. Projects live on the left with a
+and image or PDF attachments by paste or drop. Projects live on the left with a
 Chats/Notes tab strip; the right-hand rail holds the connection knobs, the
 model's task list, and a context panel that itemizes the wire with a
 remove/restore button per block. A settings modal manages per-provider API

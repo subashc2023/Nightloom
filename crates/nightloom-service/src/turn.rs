@@ -4,8 +4,8 @@ use crate::store::one_line;
 use crate::tools::{CompactContext, CompactSignal, Subagent, TurnHandle};
 use futures::StreamExt;
 use nightloom_core::{
-    ChatRequest, ContentBlock, Effect, ImageInput, Message, Provider, ProviderError, Role, Session,
-    StreamEvent, SystemPrompt, Thinking, Usage, WireView,
+    ChatRequest, ContentBlock, DocumentInput, Effect, ImageInput, Message, Provider, ProviderError,
+    Role, Session, StreamEvent, SystemPrompt, Thinking, Usage, WireView,
     tool::{Tool, defs, effect_of, run_tool},
 };
 use nightloom_providers::pricing::Price;
@@ -83,13 +83,14 @@ pub enum TurnEvent {
 pub struct TurnInput {
     pub text: String,
     pub images: Vec<ImageInput>,
+    pub documents: Vec<DocumentInput>,
 }
 
 impl From<&str> for TurnInput {
     fn from(text: &str) -> Self {
         Self {
             text: text.to_string(),
-            images: Vec::new(),
+            ..Self::default()
         }
     }
 }
@@ -98,7 +99,7 @@ impl From<String> for TurnInput {
     fn from(text: String) -> Self {
         Self {
             text,
-            images: Vec::new(),
+            ..Self::default()
         }
     }
 }
@@ -376,7 +377,7 @@ impl Chat {
         cancel: &CancellationToken,
         on_event: &mut (dyn FnMut(TurnEvent) + Send),
     ) -> Result<TurnOutcome, ProviderError> {
-        session.record_user_with_images(input.text, input.images);
+        session.record_user_with_attachments(input.text, input.images, input.documents);
         let mut turn_usage = Usage::default();
 
         for round in 1..=self.max_rounds.max(1) {

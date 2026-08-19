@@ -9,7 +9,6 @@ pub enum Role {
 
 /// Canonical content block. Modeled as a superset of provider formats;
 /// adapters translate down and drop what a given API can't express.
-/// Documents will be added as a further variant.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
@@ -30,6 +29,28 @@ pub enum ContentBlock {
         /// IANA media type, e.g. `image/png`. Adapters that name the type
         /// separately use it as-is; the ones that want a data URL build one.
         media_type: String,
+        /// Base64-encoded bytes, with no `data:` URL prefix.
+        data: String,
+    },
+    /// A document supplied by the user, carried whole rather than as text
+    /// somebody extracted from it first. Lives in user messages on the same
+    /// footing as [`ContentBlock::Image`] — no model emits one, so an
+    /// adapter meeting one in an assistant message drops it — and inline for
+    /// the same reason: a session log that pointed at a file would stop
+    /// meaning anything once the file moved.
+    ///
+    /// `name` is a required field on two of the four wire dialects, but it
+    /// would earn its place here without that. It is the handle the model
+    /// and the user share for the thing ("clause 4 of contract.pdf"), and a
+    /// turn carrying three unnamed attachments leaves them nothing to say
+    /// but "the first document".
+    Document {
+        /// IANA media type. `application/pdf` is the only one every vendor
+        /// that accepts documents at all agrees on, and the only one the
+        /// shells offer.
+        media_type: String,
+        /// The filename as the user had it.
+        name: String,
         /// Base64-encoded bytes, with no `data:` URL prefix.
         data: String,
     },
@@ -92,6 +113,43 @@ pub struct ImageInput {
     pub media_type: String,
     /// Base64-encoded bytes, with no `data:` URL prefix.
     pub data: String,
+}
+
+/// A document attached to a user turn, as the session log stores it.
+///
+/// The [`ImageInput`] argument applies unchanged: the log records a user
+/// turn as a caption plus attachments, and a `Vec<ContentBlock>` there would
+/// admit thinking blocks and tool results the projection would then have to
+/// police at read time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DocumentInput {
+    pub media_type: String,
+    pub name: String,
+    /// Base64-encoded bytes, with no `data:` URL prefix.
+    pub data: String,
+}
+
+/// What stands in for a document the host on the other end cannot carry.
+///
+/// Prompt text addressed to the model, like a tool description or a denial
+/// reason, and a *substitution* rather than a drop. Dropping the block would
+/// leave a caption asking about a document and nothing to say one was ever
+/// there, so the model answers as though it had read it. There is no third
+/// option worth having: refusing to build the request would be the loud
+/// failure this project prefers everywhere else, but content is not a knob —
+/// the desktop lets you change provider mid-session and keep the log, and a
+/// hard failure would make every later turn of that conversation impossible
+/// on that host rather than one attachment unreadable.
+///
+/// Naming the file is what makes the recovery available. The model can say
+/// which document it cannot see, and the log is untouched, so the same turn
+/// replays whole on the next provider that can read it.
+pub fn undeliverable_document(name: &str, media_type: &str) -> String {
+    let opening = format!("[The user attached a document, \"{name}\" ({media_type}), ");
+    opening
+        + "which this provider cannot accept, so its contents are not in this "
+        + "request. Say so rather than answering from the filename; another "
+        + "provider may be able to read it.]"
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,5 +1,5 @@
 use crate::context::{BlockSource, estimate_tokens};
-use crate::message::{ContentBlock, ImageInput, Message, Role};
+use crate::message::{ContentBlock, DocumentInput, ImageInput, Message, Role};
 use crate::provider::Usage;
 use crate::todo::TodoItem;
 use chrono::{DateTime, Utc};
@@ -15,9 +15,11 @@ pub struct Checkpoint {
     pub index: usize,
     /// The user's message at that point, for a UI to label it with.
     pub text: String,
-    /// How many images were attached, which the text alone does not say — an
-    /// uncaptioned attachment is a real turn with an empty `text`.
+    /// How many images and documents were attached, which the text alone
+    /// does not say — an uncaptioned attachment is a real turn with an empty
+    /// `text`.
     pub images: usize,
+    pub documents: usize,
     pub at: DateTime<Utc>,
 }
 
@@ -58,6 +60,9 @@ pub enum SessionEvent {
         /// written before attachments existed, hence the `default`.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         images: Vec<ImageInput>,
+        /// Documents the user attached, on the same terms as `images`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        documents: Vec<DocumentInput>,
         at: DateTime<Utc>,
     },
     AssistantMessage {
@@ -237,21 +242,42 @@ pub struct SourcedMessage {
 /// something is missing, and it says the content still exists because the
 /// useful next move — asking for it — is only available if the model knows
 /// it is there to ask for.
-pub fn elision_marker(tokens: u64, images: usize) -> String {
-    let what = match (tokens, images) {
-        (0, 0) => "Content was".to_string(),
-        (0, n) => format!("{n} image{} {} ", n_plural(n), were_or_was(n)),
-        (t, 0) => format!("About {t} tokens of content were "),
-        (t, n) => format!(
-            "About {t} tokens of content and {n} image{} were ",
-            n_plural(n)
-        ),
+pub fn elision_marker(tokens: u64, images: usize, documents: usize) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if tokens > 0 {
+        parts.push(format!("about {tokens} tokens of content"));
+    }
+    if images > 0 {
+        parts.push(format!("{images} image{}", n_plural(images)));
+    }
+    if documents > 0 {
+        parts.push(format!("{documents} document{}", n_plural(documents)));
+    }
+    // A lone attachment is the only singular case: a token count reads as
+    // plural however small it is, and so does any list of two things.
+    let singular = parts.is_empty() || (parts.len() == 1 && images + documents == 1);
+    let what = match parts.len() {
+        0 => "content".to_string(),
+        1 => parts.remove(0),
+        _ => {
+            let last = parts.pop().expect("more than one part");
+            format!("{} and {last}", parts.join(", "))
+        }
     };
-    let what = what.trim_end();
     format!(
-        "[{what} removed from the context by the user to save space. \
-         It is still in the session log; ask if you need it.]"
+        "[{} {} removed from the context by the user to save space. \
+         It is still in the session log; ask if you need it.]",
+        capitalized(&what),
+        if singular { "was" } else { "were" }
     )
+}
+
+fn capitalized(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
 }
 
 /// What stands in for a tool result that was never recorded.
@@ -396,7 +422,7 @@ fn elide_assistant(blocks: &[ContentBlock], index: usize) -> Vec<SourcedBlock> {
     // adjacent to the call it produced, which OpenAI Responses requires.
     let mut out = vec![SourcedBlock::event(
         ContentBlock::Text {
-            text: elision_marker(dropped, 0),
+            text: elision_marker(dropped, 0, 0),
         },
         index,
     )];
@@ -406,10 +432,6 @@ fn elide_assistant(blocks: &[ContentBlock], index: usize) -> Vec<SourcedBlock> {
 
 fn n_plural(n: usize) -> &'static str {
     if n == 1 { "" } else { "s" }
-}
-
-fn were_or_was(n: usize) -> &'static str {
-    if n == 1 { "was" } else { "were" }
 }
 
 /// What [`Session::load`] had to work around to open a log.
@@ -613,13 +635,19 @@ impl Session {
     }
 
     pub fn record_user(&mut self, text: impl Into<String>) {
-        self.record_user_with_images(text, Vec::new());
+        self.record_user_with_attachments(text, Vec::new(), Vec::new());
     }
 
-    pub fn record_user_with_images(&mut self, text: impl Into<String>, images: Vec<ImageInput>) {
+    pub fn record_user_with_attachments(
+        &mut self,
+        text: impl Into<String>,
+        images: Vec<ImageInput>,
+        documents: Vec<DocumentInput>,
+    ) {
         self.record(SessionEvent::UserMessage {
             text: text.into(),
             images,
+            documents,
             at: Utc::now(),
         });
     }
@@ -722,10 +750,16 @@ impl Session {
         self.live_events()
             .into_iter()
             .filter_map(|(index, e)| match e {
-                SessionEvent::UserMessage { text, images, at } => Some(Checkpoint {
+                SessionEvent::UserMessage {
+                    text,
+                    images,
+                    documents,
+                    at,
+                } => Some(Checkpoint {
                     index,
                     text: text.clone(),
                     images: images.len(),
+                    documents: documents.len(),
                     at: *at,
                 }),
                 _ => None,
@@ -1005,11 +1039,20 @@ impl Session {
         let mut messages: Vec<SourcedMessage> = Vec::new();
         for (i, e) in self.live_events() {
             match e {
-                SessionEvent::UserMessage { text, images, .. } => {
+                SessionEvent::UserMessage {
+                    text,
+                    images,
+                    documents,
+                    ..
+                } => {
                     let content = if elided[i] {
                         vec![SourcedBlock::event(
                             ContentBlock::Text {
-                                text: elision_marker(estimate_tokens(text), images.len()),
+                                text: elision_marker(
+                                    estimate_tokens(text),
+                                    images.len(),
+                                    documents.len(),
+                                ),
                             },
                             i,
                         )]
@@ -1026,10 +1069,20 @@ impl Session {
                                 )
                             })
                             .collect();
-                        // Images lead, as both Anthropic and OpenAI advise,
-                        // and an empty caption is omitted rather than sent:
-                        // an empty text block is rejected on the wire, and
-                        // "here is an image" with nothing said about it is a
+                        content.extend(documents.iter().map(|doc| {
+                            SourcedBlock::event(
+                                ContentBlock::Document {
+                                    media_type: doc.media_type.clone(),
+                                    name: doc.name.clone(),
+                                    data: doc.data.clone(),
+                                },
+                                i,
+                            )
+                        }));
+                        // Attachments lead, as both Anthropic and OpenAI
+                        // advise, and an empty caption is omitted rather than
+                        // sent: an empty text block is rejected on the wire,
+                        // and "here is a file" with nothing said about it is a
                         // real turn.
                         if !text.is_empty() || content.is_empty() {
                             content.push(SourcedBlock::event(
@@ -1073,7 +1126,7 @@ impl Session {
                         tool_use_id: tool_use_id.clone(),
                         name: name.clone(),
                         content: if elided[i] {
-                            elision_marker(estimate_tokens(content), 0)
+                            elision_marker(estimate_tokens(content), 0, 0)
                         } else {
                             content.clone()
                         },
@@ -1442,12 +1495,13 @@ mod tests {
     #[test]
     fn an_image_makes_the_view_total_a_floor() {
         let mut s = Session::new();
-        s.record_user_with_images(
+        s.record_user_with_attachments(
             "what is this?",
             vec![ImageInput {
                 media_type: "image/png".into(),
                 data: "A".repeat(40_000),
             }],
+            Vec::new(),
         );
         let view = WireView::assemble(None, &s, None, None);
         assert_eq!(view.totals.unestimated, 1);
@@ -1608,7 +1662,7 @@ mod tests {
     #[test]
     fn an_image_turn_projects_images_before_the_caption() {
         let mut session = Session::new();
-        session.record_user_with_images("what is this?", one_image());
+        session.record_user_with_attachments("what is this?", one_image(), Vec::new());
         let messages = session.messages();
         assert_eq!(messages.len(), 1);
         assert!(matches!(
@@ -1622,7 +1676,7 @@ mod tests {
     #[test]
     fn an_uncaptioned_image_carries_no_empty_text_block() {
         let mut session = Session::new();
-        session.record_user_with_images("", one_image());
+        session.record_user_with_attachments("", one_image(), Vec::new());
         assert!(matches!(
             session.messages()[0].content.as_slice(),
             [ContentBlock::Image { .. }]
@@ -1635,10 +1689,73 @@ mod tests {
     #[test]
     fn sidecar_still_attaches_to_a_user_turn_with_an_image() {
         let mut session = Session::new();
-        session.record_user_with_images("look", one_image());
+        session.record_user_with_attachments("look", one_image(), Vec::new());
         let messages = session.messages_with_sidecar(Some("time: now"));
         assert_eq!(messages[0].content.len(), 3);
         assert!(messages[0].text().contains("time: now"));
+    }
+
+    fn one_document() -> Vec<DocumentInput> {
+        vec![DocumentInput {
+            media_type: "application/pdf".into(),
+            name: "contract.pdf".into(),
+            data: "JVBERi0=".into(),
+        }]
+    }
+
+    #[test]
+    fn a_document_turn_projects_the_document_before_the_caption() {
+        let mut session = Session::new();
+        session.record_user_with_attachments("summarize", Vec::new(), one_document());
+        assert!(matches!(
+            session.messages()[0].content.as_slice(),
+            [ContentBlock::Document { .. }, ContentBlock::Text { .. }]
+        ));
+    }
+
+    /// Attachments of both kinds lead, and the caption still trails them.
+    #[test]
+    fn a_turn_can_carry_an_image_and_a_document_at_once() {
+        let mut session = Session::new();
+        session.record_user_with_attachments("compare these", one_image(), one_document());
+        assert!(matches!(
+            session.messages()[0].content.as_slice(),
+            [
+                ContentBlock::Image { .. },
+                ContentBlock::Document { .. },
+                ContentBlock::Text { .. }
+            ]
+        ));
+    }
+
+    /// The same argument the `images` key makes: a log written before
+    /// documents existed has no key for them and must round-trip without
+    /// growing an empty one.
+    #[test]
+    fn a_user_message_without_documents_loads_and_stays_that_shape() {
+        let json = r#"{"event":"user_message","text":"hi","at":"2026-01-01T00:00:00Z"}"#;
+        let event: SessionEvent = serde_json::from_str(json).unwrap();
+        assert!(
+            matches!(&event, SessionEvent::UserMessage { documents, .. } if documents.is_empty())
+        );
+        let back = serde_json::to_string(&event).unwrap();
+        assert!(!back.contains("documents"), "{back}");
+    }
+
+    /// The marker is the only thing the model sees of an elided turn, so it
+    /// has to name what went missing rather than only that something did.
+    #[test]
+    fn the_elision_marker_names_every_kind_of_attachment() {
+        let both = elision_marker(120, 2, 1);
+        assert!(both.contains("2 images"), "{both}");
+        assert!(both.contains("1 document"), "{both}");
+        assert!(both.contains("were removed"), "{both}");
+
+        let one = elision_marker(0, 0, 1);
+        assert!(one.starts_with("[1 document was removed"), "{one}");
+
+        let neither = elision_marker(0, 0, 0);
+        assert!(neither.starts_with("[Content was removed"), "{neither}");
     }
 
     /// Logs written before attachments existed have no `images` key at all.

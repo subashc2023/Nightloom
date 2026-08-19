@@ -164,12 +164,28 @@ export interface ImageInput {
 }
 
 /**
- * A composer attachment: an `ImageInput` plus what the thumbnail strip needs
- * to identify it. Only the `ImageInput` half crosses the IPC boundary.
+ * A document sent with a user message. `name` is not decoration: two of the
+ * four wire dialects require a filename on the part, and it is what the
+ * model has to say back when it refers to the file.
  */
-export interface Attachment extends ImageInput {
-  id: number;
+export interface DocumentInput {
+  media_type: string;
   name: string;
+  data: string;
+}
+
+/**
+ * A composer attachment: what crosses the IPC boundary plus what the strip
+ * needs to render it. `kind` is what tells a thumbnail from a file chip —
+ * `media_type` could be sniffed for it, but a chip that mis-sniffs renders
+ * a broken <img>, and the composer already knows which branch accepted it.
+ */
+export interface Attachment {
+  id: number;
+  kind: "image" | "document";
+  media_type: string;
+  name: string;
+  data: string;
 }
 
 /** What running a tool can touch. Classified on the backend, per tool. */
@@ -199,6 +215,7 @@ export interface TodoItem {
 export type ContentBlock =
   | { type: "text"; text: string }
   | { type: "image"; media_type: string; data: string }
+  | { type: "document"; media_type: string; name: string; data: string }
   | { type: "thinking"; text: string; signature?: string }
   | { type: "redacted_thinking"; data: string }
   | { type: "tool_use"; id: string; name: string; input: unknown; signature?: string }
@@ -214,9 +231,15 @@ export type ContentBlock =
 
 export type SessionEvent =
   | { event: "session_created"; id: string; at: string }
-  // `images` is absent, not empty, on messages logged without any — including
-  // every message logged before images existed.
-  | { event: "user_message"; text: string; images?: ImageInput[]; at: string }
+  // `images` and `documents` are absent, not empty, on messages logged
+  // without any — including every message logged before attachments existed.
+  | {
+      event: "user_message";
+      text: string;
+      images?: ImageInput[];
+      documents?: DocumentInput[];
+      at: string;
+    }
   | {
       event: "assistant_message";
       model: string;
@@ -283,9 +306,9 @@ export type TurnEvent =
 
 /**
  * Item size. `tokens` is an *estimate* (the backend has no tokenizer, by
- * design), and null where even an estimate would be invention — an image,
- * whose cost depends on pixel dimensions nothing here decodes. Render a null
- * as a byte size, never as a token count.
+ * design), and null where even an estimate would be invention — an image or
+ * a document, whose cost depends on what a vendor's own decoder makes of the
+ * bytes. Render a null as a byte size, never as a token count.
  */
 export interface Size {
   bytes: number;
@@ -306,6 +329,7 @@ export interface ContextTotals {
 export type BlockKind =
   | "text"
   | "image"
+  | "document"
   | "thinking"
   | "redacted_thinking"
   | "tool_use"

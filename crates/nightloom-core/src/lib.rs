@@ -17,7 +17,7 @@ pub use context::{
     BlockKind, BlockSource, ContextTotals, Size, WireBlock, WireMessage, WireSegment, WireView,
     estimate_tokens,
 };
-pub use message::{ContentBlock, ImageInput, Message, Role};
+pub use message::{ContentBlock, DocumentInput, ImageInput, Message, Role, undeliverable_document};
 pub use prompt::{Segment, SegmentKind, SystemPrompt};
 pub use provider::{
     ChatRequest, EventStream, Provider, ProviderError, StreamEvent, Thinking, ToolDef, Usage,

@@ -97,6 +97,16 @@ fn to_wire_message(message: &Message) -> Value {
             ContentBlock::Image { media_type, data } if is_user => Some(json!({
                 "inlineData": { "mimeType": media_type, "data": data },
             })),
+            // A PDF rides in as an image does — an inline blob typed by its
+            // mime. The filename is the one thing this dialect cannot carry:
+            // a blob part has no field for it, and inventing one would risk
+            // a 400 on the whole request to pass on a label the caption
+            // usually repeats anyway.
+            ContentBlock::Document {
+                media_type, data, ..
+            } if is_user => Some(json!({
+                "inlineData": { "mimeType": media_type, "data": data },
+            })),
             ContentBlock::ToolUse {
                 name,
                 input,
@@ -473,6 +483,32 @@ mod tests {
             json!({ "role": "user", "parts": [
                 { "inlineData": { "mimeType": "image/png", "data": "iVBORw0KGgo=" } },
                 { "text": "what is this?" },
+            ]})
+        );
+    }
+
+    /// A blob part is typed by its mime and nothing else, so a PDF takes the
+    /// same shape an image does — and the filename has nowhere to go.
+    #[test]
+    fn a_pdf_rides_in_as_inline_data_without_its_name() {
+        let wire = to_wire_message(&Message {
+            role: Role::User,
+            content: vec![
+                ContentBlock::Document {
+                    media_type: "application/pdf".into(),
+                    name: "contract.pdf".into(),
+                    data: "JVBERi0=".into(),
+                },
+                ContentBlock::Text {
+                    text: "summarize".into(),
+                },
+            ],
+        });
+        assert_eq!(
+            wire,
+            json!({ "role": "user", "parts": [
+                { "inlineData": { "mimeType": "application/pdf", "data": "JVBERi0=" } },
+                { "text": "summarize" },
             ]})
         );
     }

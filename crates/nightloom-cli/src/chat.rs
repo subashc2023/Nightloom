@@ -399,12 +399,8 @@ fn list_checkpoints(session: &Session) {
     }
     println!("{DIM}rewind to a turn with /rewind <n>:{RESET}");
     for (n, c) in points.iter().enumerate() {
-        let label = if c.text.is_empty() && c.images > 0 {
-            format!(
-                "({} image{})",
-                c.images,
-                if c.images == 1 { "" } else { "s" }
-            )
+        let label = if c.text.is_empty() && c.images + c.documents > 0 {
+            attachment_label(c.images, c.documents)
         } else {
             store::one_line(&c.text, 72)
         };
@@ -465,8 +461,8 @@ fn show_context(chat: &Chat, session: &Session) {
     }
     if !view.totals.is_complete() {
         println!(
-            "{DIM}  {} item(s) carry tokens that cannot be estimated (images), so the \
-             total is a floor{RESET}",
+            "{DIM}  {} item(s) carry tokens that cannot be estimated (images, \
+             documents), so the total is a floor{RESET}",
             view.totals.unestimated
         );
     }
@@ -525,10 +521,29 @@ fn size_cell(size: nightloom_core::Size) -> String {
     }
 }
 
+/// How an uncaptioned turn is listed, since its text says nothing.
+fn attachment_label(images: usize, documents: usize) -> String {
+    let mut parts = Vec::new();
+    if images > 0 {
+        parts.push(format!(
+            "{images} image{}",
+            if images == 1 { "" } else { "s" }
+        ));
+    }
+    if documents > 0 {
+        parts.push(format!(
+            "{documents} document{}",
+            if documents == 1 { "" } else { "s" }
+        ));
+    }
+    format!("({})", parts.join(", "))
+}
+
 fn kind_label(kind: BlockKind) -> &'static str {
     match kind {
         BlockKind::Text => "text",
         BlockKind::Image => "image",
+        BlockKind::Document => "document",
         BlockKind::Thinking => "thinking",
         BlockKind::RedactedThinking => "thinking*",
         BlockKind::ToolUse => "tool call",

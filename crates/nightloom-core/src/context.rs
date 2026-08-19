@@ -6,7 +6,8 @@
 //! transcript is a rendering of events while a request is a rendering of
 //! [`Session::messages_with_sidecar`], and the two differ in exactly the
 //! places that matter: tool results coalesce, a compaction replaces
-//! everything before it, images arrive as base64 the transcript shows as a
+//! everything before it, images and documents arrive as base64 the
+//! transcript shows as a
 //! thumbnail, and the sidecar is composed at projection time and never
 //! logged at all.
 //!
@@ -125,6 +126,7 @@ impl ContextTotals {
 pub enum BlockKind {
     Text,
     Image,
+    Document,
     Thinking,
     RedactedThinking,
     ToolUse,
@@ -323,6 +325,14 @@ fn wire_block(sb: &SourcedBlock, elided: &[bool], session: &Session) -> WireBloc
             // Base64 carries three bytes in every four characters. The
             // decoded size is what a reader means by "how big is this
             // image"; the token cost of it is not derivable from either.
+            Size::opaque(data.len() / 4 * 3),
+        ),
+        // The name, not the media type: every document is a PDF, and what
+        // a reader is looking for in a list of them is which one this is.
+        ContentBlock::Document { name, data, .. } => (
+            BlockKind::Document,
+            name.clone(),
+            false,
             Size::opaque(data.len() / 4 * 3),
         ),
         ContentBlock::Thinking { text, .. } => {

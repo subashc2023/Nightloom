@@ -4,6 +4,7 @@ import type {
   CompactResult,
   ConnectArgs,
   ConnectResult,
+  DocumentInput,
   ImageInput,
   Note,
   ProjectInfo,
@@ -97,8 +98,12 @@ export function transcript(): Promise<SessionEvent[]> {
   return invoke("transcript");
 }
 
-export function send(text: string, images?: ImageInput[]): Promise<TurnResult> {
-  return invoke("send", { text, images });
+export function send(
+  text: string,
+  images?: ImageInput[],
+  documents?: DocumentInput[],
+): Promise<TurnResult> {
+  return invoke("send", { text, images, documents });
 }
 
 export function cancel(): Promise<null> {

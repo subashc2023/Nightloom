@@ -19,14 +19,20 @@
 
   const MAX_HEIGHT = 200; // ~8 rows
 
-  // The four types every provider we speak to accepts.
-  const ACCEPTED = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+  // The four image types every provider we speak to accepts.
+  const IMAGES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
 
-  // Anthropic rejects a base64 image over ~10 MB and nothing checks it before
-  // the wire, so the refusal has to happen here. base64 inflates by 4/3, and
-  // the cap applies to the encoded payload.
-  const MAX_BASE64_BYTES = 10 * 1024 * 1024;
-  const MAX_FILE_BYTES = Math.floor((MAX_BASE64_BYTES / 4) * 3);
+  // PDF is the only document type every vendor that takes documents at all
+  // agrees on. A .txt or .md needs no envelope — paste it, or point the file
+  // tools at it — so widening this would buy a second path to the same place.
+  const DOCUMENTS = ["application/pdf"];
+
+  // Anthropic rejects a base64 image over ~10 MB and a PDF over ~32 MB, and
+  // nothing checks either before the wire, so the refusal has to happen here.
+  // base64 inflates by 4/3, and the caps apply to the encoded payload.
+  const MAX_IMAGE_BASE64 = 10 * 1024 * 1024;
+  const MAX_DOCUMENT_BASE64 = 32 * 1024 * 1024;
+  const encodedLimit = (n: number) => Math.floor((n / 4) * 3);
 
   let attachSeq = 0;
 
@@ -58,20 +64,31 @@
   }
 
   function describe(file: File): string {
-    return file.name || "pasted image";
+    return (
+      file.name ||
+      (file.type.startsWith("image/") ? "pasted image" : "pasted file")
+    );
+  }
+
+  function kindOf(type: string): "image" | "document" | null {
+    if (IMAGES.includes(type)) return "image";
+    if (DOCUMENTS.includes(type)) return "document";
+    return null;
   }
 
   async function accept(files: Iterable<File>): Promise<void> {
     for (const file of files) {
-      if (!ACCEPTED.includes(file.type)) {
+      const kind = kindOf(file.type);
+      if (!kind) {
         addToast(
-          `${describe(file)}: ${file.type || "unknown type"} not supported — png, jpeg, webp or gif only`,
+          `${describe(file)}: ${file.type || "unknown type"} not supported — png, jpeg, webp, gif or pdf only`,
         );
         continue;
       }
-      if (file.size > MAX_FILE_BYTES) {
+      const cap = kind === "image" ? MAX_IMAGE_BASE64 : MAX_DOCUMENT_BASE64;
+      if (file.size > encodedLimit(cap)) {
         addToast(
-          `${describe(file)} is too large — the limit is 10 MB once base64-encoded (about 7.5 MB of file)`,
+          `${describe(file)} is too large — the limit is ${cap / 1024 / 1024} MB once base64-encoded (about ${Math.round(encodedLimit(cap) / 1024 / 1024)} MB of file)`,
         );
         continue;
       }
@@ -79,6 +96,7 @@
         const data = await readBase64(file);
         attachments.push({
           id: ++attachSeq,
+          kind,
           name: describe(file),
           media_type: file.type,
           data,
@@ -129,16 +147,19 @@
 
   async function submit() {
     const t = text.trim();
-    const images = attachments.map(({ media_type, data }) => ({
-      media_type,
-      data,
-    }));
-    if ((!t && images.length === 0) || !app.connection || app.busy) return;
+    const images = attachments
+      .filter((a) => a.kind === "image")
+      .map(({ media_type, data }) => ({ media_type, data }));
+    const documents = attachments
+      .filter((a) => a.kind === "document")
+      .map(({ media_type, name, data }) => ({ media_type, name, data }));
+    const empty = !t && attachments.length === 0;
+    if (empty || !app.connection || app.busy) return;
     const pending = attachments;
     text = "";
     attachments = [];
     requestAnimationFrame(autogrow);
-    await send(t, images);
+    await send(t, images, documents);
     // send() reports failures on app.error instead of throwing, and a turn
     // that never reached the model should not cost the user its attachments.
     if (app.error) attachments = pending;
@@ -160,7 +181,14 @@
     <div class="attachments">
       {#each attachments as a (a.id)}
         <div class="attachment">
-          <img src={`data:${a.media_type};base64,${a.data}`} alt={a.name} />
+          {#if a.kind === "image"}
+            <img src={`data:${a.media_type};base64,${a.data}`} alt={a.name} />
+          {:else}
+            <span class="file" title={a.name}>
+              <span class="file-ext">PDF</span>
+              <span class="file-name">{a.name}</span>
+            </span>
+          {/if}
           <button
             class="remove"
             title="remove {a.name}"
@@ -199,7 +227,7 @@
   {#if !app.connection}
     <div class="hint">connect a provider to start</div>
   {:else if dragDepth > 0}
-    <div class="hint">drop images to attach</div>
+    <div class="hint">drop images or PDFs to attach</div>
   {/if}
 </div>
 
@@ -249,6 +277,32 @@
     border: 1px solid var(--border);
     border-radius: 8px;
     display: block;
+  }
+  /* A document has no thumbnail to show, so the chip carries its name — the
+     one thing that tells three attachments apart. */
+  .file {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 0.2rem;
+    width: 7rem;
+    height: 4rem;
+    padding: 0 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel);
+    line-height: 1.2;
+  }
+  .file-ext {
+    font-size: 0.65rem;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+  }
+  .file-name {
+    font-size: 0.7rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .remove {
     position: absolute;

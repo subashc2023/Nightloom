@@ -2,7 +2,12 @@
   import { tick } from "svelte";
   import { app, denialReason, liveFlags, rewindTo } from "./state.svelte";
   import type { Segment } from "./state.svelte";
-  import type { ApprovalRequest, ImageInput, Usage } from "./types";
+  import type {
+    ApprovalRequest,
+    DocumentInput,
+    ImageInput,
+    Usage,
+  } from "./types";
   import AssistantMessage from "./AssistantMessage.svelte";
   import ApprovalPrompt from "./ApprovalPrompt.svelte";
 
@@ -13,7 +18,12 @@
   }
 
   type Body =
-    | { kind: "user"; text: string; images: ImageInput[] }
+    | {
+        kind: "user";
+        text: string;
+        images: ImageInput[];
+        documents: DocumentInput[];
+      }
     | { kind: "assistant"; segs: Segment[]; footer: AssistantFooter }
     | { kind: "compaction"; summary: string };
 
@@ -55,8 +65,13 @@
     for (const e of app.events) {
       index++;
       if (e.event === "user_message") {
-        // Sessions logged before images existed carry no `images` key.
-        push({ kind: "user", text: e.text, images: e.images ?? [] });
+        // Sessions logged before attachments existed carry neither key.
+        push({
+          kind: "user",
+          text: e.text,
+          images: e.images ?? [],
+          documents: e.documents ?? [],
+        });
       } else if (e.event === "assistant_message") {
         const segs: Segment[] = [];
         for (const b of e.blocks) {
@@ -167,6 +182,16 @@
                 {/each}
               </div>
             {/if}
+            {#if item.documents.length > 0}
+              <div class="user-files">
+                {#each item.documents as doc, j (j)}
+                  <span class="user-file" title={doc.media_type}>
+                    <span class="user-file-ext">PDF</span>
+                    {doc.name}
+                  </span>
+                {/each}
+              </div>
+            {/if}
             {#if item.text}<div class="user-text">{item.text}</div>{/if}
           </div>
         </div>
@@ -272,6 +297,33 @@
     border: 1px solid var(--border);
     border-radius: 8px;
     display: block;
+  }
+  /* Nothing to render of a PDF, so the turn shows what was attached rather
+     than nothing at all — a caption asking about a file the transcript does
+     not mention reads as a question about nothing. */
+  .user-files {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-bottom: 0.4rem;
+  }
+  .user-files:last-child {
+    margin-bottom: 0;
+  }
+  .user-file {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.35rem;
+    padding: 0.2rem 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 0.8rem;
+    word-break: break-all;
+  }
+  .user-file-ext {
+    font-size: 0.62rem;
+    letter-spacing: 0.05em;
+    color: var(--dim);
   }
   .compaction {
     font-size: 0.78rem;

@@ -19,6 +19,7 @@ import {
 import type {
   ApprovalDecision,
   ApprovalRequest,
+  DocumentInput,
   ImageInput,
   McpServerInfo,
   Note,
@@ -590,6 +591,7 @@ export async function deleteSession(id: string): Promise<void> {
 export async function send(
   text: string,
   images: ImageInput[] = [],
+  documents: DocumentInput[] = [],
 ): Promise<void> {
   if (!app.connection || app.busy) return;
   app.error = null;
@@ -599,13 +601,18 @@ export async function send(
     // Mirror the backend's omission rather than logging an empty array, so the
     // optimistic entry and the re-synced one project identically.
     ...(images.length > 0 ? { images } : {}),
+    ...(documents.length > 0 ? { documents } : {}),
     at: new Date().toISOString(),
   });
   app.live = { segments: [] };
   app.liveUsage = null;
   app.busy = true;
   try {
-    await api.send(text, images.length > 0 ? images : undefined);
+    await api.send(
+      text,
+      images.length > 0 ? images : undefined,
+      documents.length > 0 ? documents : undefined,
+    );
   } catch (e) {
     app.error = String(e);
   } finally {

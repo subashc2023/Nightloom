@@ -162,6 +162,18 @@ fn to_wire_message(message: &Message) -> Value {
                 "type": "image",
                 "source": { "type": "base64", "media_type": media_type, "data": data },
             })),
+            // A PDF is a `document` block with the same base64 source shape.
+            // `title` is where the filename goes, and it is not decoration:
+            // Anthropic quotes it back when the model cites the file.
+            ContentBlock::Document {
+                media_type,
+                name,
+                data,
+            } if is_user => Some(json!({
+                "type": "document",
+                "source": { "type": "base64", "media_type": media_type, "data": data },
+                "title": name,
+            })),
             ContentBlock::Thinking {
                 text,
                 signature: Some(sig),
@@ -702,6 +714,64 @@ mod tests {
                     { "type": "text", "text": "what is this?" },
                 ],
             })
+        );
+    }
+
+    /// The filename lands in `title`, which Anthropic quotes back when the
+    /// model cites the file. Dropping it would leave a conversation about
+    /// three attachments with nothing to call any of them.
+    #[test]
+    fn a_pdf_becomes_a_document_block_carrying_its_name() {
+        let msg = Message {
+            role: Role::User,
+            content: vec![
+                ContentBlock::Document {
+                    media_type: "application/pdf".into(),
+                    name: "contract.pdf".into(),
+                    data: "JVBERi0=".into(),
+                },
+                ContentBlock::Text {
+                    text: "what does clause 4 say?".into(),
+                },
+            ],
+        };
+        assert_eq!(
+            to_wire_message(&msg),
+            json!({
+                "role": "user",
+                "content": [
+                    {
+                        "type": "document",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "application/pdf",
+                            "data": "JVBERi0=",
+                        },
+                        "title": "contract.pdf",
+                    },
+                    { "type": "text", "text": "what does clause 4 say?" },
+                ],
+            })
+        );
+    }
+
+    /// No model emits a document, and a `document` block in an assistant
+    /// turn is a 400 rather than something the API ignores.
+    #[test]
+    fn assistant_document_is_dropped_on_replay() {
+        let msg = Message::assistant(vec![
+            ContentBlock::Document {
+                media_type: "application/pdf".into(),
+                name: "contract.pdf".into(),
+                data: "JVBERi0=".into(),
+            },
+            ContentBlock::Text {
+                text: "answer".into(),
+            },
+        ]);
+        assert_eq!(
+            to_wire_message(&msg)["content"],
+            json!([{ "type": "text", "text": "answer" }])
         );
     }
 

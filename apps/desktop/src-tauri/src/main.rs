@@ -7,7 +7,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use nightloom_core::Tool;
-use nightloom_core::{ImageInput, ProviderError, Session, SessionEvent, Thinking, WireView};
+use nightloom_core::{
+    DocumentInput, ImageInput, ProviderError, Session, SessionEvent, Thinking, WireView,
+};
 use nightloom_service::approval::{Approver, AutoApprove, Decision, PendingCall};
 use nightloom_service::project::{self, Note, Project, Registry};
 use nightloom_service::store::{self, SessionMatch, SessionSummary};
@@ -657,16 +659,17 @@ async fn transcript(state: State<'_, AppState>) -> Result<Vec<SessionEvent>, Str
 
 /// Run one user turn, streaming progress as `turn-event` window events.
 ///
-/// `images` are base64 payloads the frontend already read off a paste or a
-/// drop. They go into the session log verbatim rather than as file paths, so
-/// the transcript keeps rendering after the source file moves — see
-/// [`nightloom_core::ImageInput`].
+/// `images` and `documents` are base64 payloads the frontend already read
+/// off a paste or a drop. They go into the session log verbatim rather than
+/// as file paths, so the transcript keeps rendering after the source file
+/// moves — see [`nightloom_core::ImageInput`].
 #[tauri::command]
 async fn send(
     app: AppHandle,
     state: State<'_, AppState>,
     text: String,
     images: Option<Vec<ImageInput>>,
+    documents: Option<Vec<DocumentInput>>,
 ) -> Result<TurnOutcome, String> {
     let chat_guard = state.chat.lock().await;
     let chat = chat_guard
@@ -689,6 +692,7 @@ async fn send(
     let input = TurnInput {
         text,
         images: images.unwrap_or_default(),
+        documents: documents.unwrap_or_default(),
     };
     chat.run_turn(session, input, &cancel, &mut on_event)
         .await
