@@ -592,6 +592,26 @@ fn edit_context(session: &mut Session, verb: &str, args: &str) {
     }
 }
 
+/// Rename the session by hand.
+///
+/// The escape hatch the generated name needs rather than a nicety: a name is
+/// written once, from the first exchange, and a long conversation that has
+/// moved on keeps describing where it started. Re-naming it automatically
+/// would mean paying for a model call on some guess about when a chat has
+/// drifted, which is not a judgement the engine is in a position to make —
+/// and the user, who can see both the name and the conversation, is.
+///
+/// A rename is an append like everything else here: the old name stays in
+/// the log and the projection takes the latest.
+fn rename(session: &mut Session, name: &str) {
+    if name.is_empty() {
+        eprintln!("{DIM}usage: /name <text>{RESET}");
+        return;
+    }
+    session.record_title(name);
+    println!("{DIM}named “{name}”{RESET}");
+}
+
 async fn run_turn(chat: &Chat, session: &mut Session, input: &str) -> Result<()> {
     let cancel = CancellationToken::new();
     let trigger = cancel.clone();
@@ -740,6 +760,7 @@ pub async fn run(args: ChatArgs) -> Result<()> {
         "{DIM}/new starts a fresh session, /compact summarizes it in place, /quit exits{RESET}"
     );
     println!("{DIM}/context itemizes what the next request carries, /rewind undoes a turn{RESET}");
+    println!("{DIM}/name renames the session for the listing{RESET}");
 
     loop {
         let Some(line) = prompt_line()? else {
@@ -768,6 +789,17 @@ pub async fn run(args: ChatArgs) -> Result<()> {
                 continue;
             }
             _ => {}
+        }
+        if let Some(arg) = line.strip_prefix("/name ") {
+            rename(&mut session, arg.trim());
+            continue;
+        }
+        if line == "/name" {
+            match session.title() {
+                Some(title) => println!("{DIM}“{title}” — /name <text> to change it{RESET}"),
+                None => println!("{DIM}unnamed — /name <text> to name it{RESET}"),
+            }
+            continue;
         }
         if let Some(arg) = line.strip_prefix("/rewind ") {
             rewind_to(&mut session, arg.trim());

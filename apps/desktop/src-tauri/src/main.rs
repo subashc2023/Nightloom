@@ -579,6 +579,39 @@ async fn search_sessions(
     store::search(&state.log_dir().await, &query).map_err(|e| e.to_string())
 }
 
+/// Rename a session, recording a `Title` event on its log.
+///
+/// The escape hatch the generated name needs: a name is written once, from
+/// the first exchange, so a long conversation that has moved on keeps
+/// describing where it started. It is an append like everything else here —
+/// the old name stays in the log and the projection takes the latest.
+///
+/// Renaming the *active* session goes through the handle already open on its
+/// log rather than loading a second one, which would leave two writers
+/// appending to one file.
+#[tauri::command]
+async fn rename_session(
+    state: State<'_, AppState>,
+    id: String,
+    title: String,
+) -> Result<(), String> {
+    let title = title.trim().to_string();
+    if title.is_empty() {
+        return Err("a name cannot be empty".into());
+    }
+    let mut session_guard = state.session.lock().await;
+    if let Some(active) = session_guard.as_mut().filter(|s| s.id == id) {
+        active.record_title(title);
+        return Ok(());
+    }
+    drop(session_guard);
+
+    let path = store::find_by_prefix(&state.log_dir().await, &id).map_err(|e| e.to_string())?;
+    let mut session = Session::load(&path).map_err(|e| e.to_string())?;
+    session.record_title(title);
+    Ok(())
+}
+
 #[tauri::command]
 async fn new_session(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let session = Session::with_log(&state.log_dir().await).map_err(|e| e.to_string())?;
@@ -1060,6 +1093,7 @@ fn main() {
             connect,
             list_sessions,
             search_sessions,
+            rename_session,
             new_session,
             open_session,
             transcript,

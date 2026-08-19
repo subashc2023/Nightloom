@@ -81,6 +81,10 @@ export function searchSessions(query: string): Promise<SessionHit[]> {
   return invoke("search_sessions", { query });
 }
 
+export function renameSession(id: string, title: string): Promise<void> {
+  return invoke("rename_session", { id, title });
+}
+
 export function newSession(): Promise<{ id: string }> {
   return invoke("new_session");
 }

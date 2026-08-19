@@ -2,9 +2,11 @@
   import {
     app,
     addProject,
+    addToast,
     deleteSession,
     newSession,
     openSession,
+    refreshSessions,
   } from "./state.svelte";
   import * as api from "./api";
   import type { SessionHit } from "./types";
@@ -23,6 +25,32 @@
     }
     confirming = null;
     void deleteSession(id);
+  }
+
+  // Inline rename. A name is generated once, from the first exchange, so a
+  // long chat that has moved on keeps describing where it started; renaming
+  // it automatically would mean guessing when a conversation has drifted,
+  // which the user can see and the app cannot.
+  let renaming = $state<string | null>(null);
+  let draft = $state("");
+
+  function startRename(id: string, current: string) {
+    renaming = id;
+    draft = current;
+  }
+
+  async function commitRename(id: string) {
+    const name = draft.trim();
+    renaming = null;
+    // Unchanged or emptied is a cancel, not a rename: an empty name would
+    // leave the row labelled by its opening message with no way back.
+    if (!name) return;
+    try {
+      await api.renameSession(id, name);
+      await refreshSessions();
+    } catch (e) {
+      addToast(String(e));
+    }
   }
 
   // The search box. `query` is what is typed and `hits` is what came back;
@@ -193,18 +221,43 @@
       <div class="session-list">
         {#each app.sessions as s (s.id)}
           <div class="session-item" class:active={s.id === app.activeSessionId}>
-            <button
-              class="session-row"
-              onclick={() => void openSession(s.id)}
-              disabled={app.busy}
-            >
-              <span class="snippet"
-                >{s.title ?? s.first_user ?? "empty session"}</span
+            {#if renaming === s.id}
+              <!-- svelte-ignore a11y_autofocus -->
+              <input
+                class="rename"
+                aria-label="Session name"
+                bind:value={draft}
+                autofocus
+                onblur={() => void commitRename(s.id)}
+                onkeydown={(e) => {
+                  if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                  else if (e.key === "Escape") renaming = null;
+                }}
+              />
+            {:else}
+              <button
+                class="session-row"
+                onclick={() => void openSession(s.id)}
+                ondblclick={() =>
+                  startRename(s.id, s.title ?? s.first_user ?? "")}
+                disabled={app.busy}
               >
-              <span class="meta"
-                >{s.id.slice(0, 8)} · {relativeTime(s.modified)}</span
+                <span class="snippet"
+                  >{s.title ?? s.first_user ?? "empty session"}</span
+                >
+                <span class="meta"
+                  >{s.id.slice(0, 8)} · {relativeTime(s.modified)}</span
+                >
+              </button>
+              <button
+                class="rename-btn"
+                title="Rename session"
+                aria-label="Rename session"
+                onclick={() => startRename(s.id, s.title ?? s.first_user ?? "")}
               >
-            </button>
+                ✎
+              </button>
+            {/if}
             <button
               class="delete"
               class:confirming={confirming === s.id}
@@ -481,5 +534,40 @@
     font-size: 0.72rem;
     line-height: 1.35;
     color: var(--dim);
+  }
+
+  .rename {
+    flex: 1;
+    min-width: 0;
+    padding: 0.35rem 0.45rem;
+    font: inherit;
+    font-size: 0.8rem;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+  }
+
+  .rename:focus {
+    outline: none;
+  }
+
+  .rename-btn {
+    padding: 0 0.3rem;
+    font-size: 0.75rem;
+    color: var(--dim);
+    background: none;
+    border: none;
+    cursor: pointer;
+    opacity: 0;
+  }
+
+  .session-item:hover .rename-btn,
+  .rename-btn:focus-visible {
+    opacity: 1;
+  }
+
+  .rename-btn:hover {
+    color: var(--text);
   }
 </style>

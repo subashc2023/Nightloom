@@ -206,6 +206,13 @@ the conversation so far. Deriving a name without a model is what both shells
 did before, and it is the part that stops working: forty chats all beginning
 "can you help me" are a list you open one by one.
 
+Renaming is an ordinary append, so the old name stays in the log and the
+latest wins — `/name <text>` in the REPL, a pencil or a double-click in the
+sidebar. It exists because a name is written once and a long conversation
+that has moved on keeps describing where it started; deciding automatically
+when a chat has drifted is not a judgement the engine is in a position to
+make, and the person looking at both the name and the conversation is.
+
 Search covers **the conversation and not tool output**. A tool result is
 whatever a file happened to contain, so searching it would return every
 session that ever read a file mentioning the word — close to all of them, and
