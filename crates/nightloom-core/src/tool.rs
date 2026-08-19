@@ -86,6 +86,28 @@ pub trait Tool: Send + Sync {
     }
 }
 
+/// The most one tool result may put on the wire.
+///
+/// A backstop, not a replacement for a tool truncating its own output. A
+/// tool that knows what it cut can say something useful about it — `grep`
+/// reports how many files matched and tells the model to narrow the pattern
+/// — and every built-in does exactly that, well under this ceiling. This is
+/// for the tools that never considered the question: one arriving over MCP,
+/// whose output is whatever another process decided to return, or a
+/// third-party implementation compiled against this trait. That is the same
+/// population [`Tool::effect`] defaults to `Mutating` for, and the argument
+/// is the same one — the safe reading of silence is that nobody vouched for
+/// this, and a limit applied per tool is one every future tool can escape by
+/// omission.
+///
+/// Four times the 16 KiB the built-ins cap at, deliberately. A ceiling low
+/// enough to pre-empt a tool that *did* think about its own size would
+/// replace a shaped truncation with a blunt one, which is the wrong trade in
+/// the only cases where the shaped one exists. Roughly 16k tokens: a large
+/// but legitimate result still arrives whole, and no single call can spend a
+/// context window it does not own.
+pub const RESULT_LIMIT: usize = 64 * 1024;
+
 /// Find a tool by name and execute one call, producing the result block to
 /// send back. An unknown tool name is itself an error result: the model
 /// hallucinated a tool, and should be told so.
@@ -95,8 +117,8 @@ pub async fn run_tool(tools: &[Box<dyn Tool>], id: &str, name: &str, input: Valu
         None => Err(format!("unknown tool: {name}")),
     };
     let (content, is_error) = match outcome {
-        Ok(content) => (content, false),
-        Err(message) => (message, true),
+        Ok(content) => (capped(content), false),
+        Err(message) => (capped(message), true),
     };
     ContentBlock::ToolResult {
         tool_use_id: id.to_string(),
@@ -119,4 +141,146 @@ pub fn effect_of(tools: &[Box<dyn Tool>], name: &str) -> Option<Effect> {
 
 pub fn defs(tools: &[Box<dyn Tool>]) -> Vec<ToolDef> {
     tools.iter().map(|t| t.def()).collect()
+}
+
+/// Cut an oversized result down to [`RESULT_LIMIT`], saying so.
+///
+/// The notice is addressed to the model, like every other string a tool
+/// sends back: a result that stops early without saying it stopped reads as
+/// a file that ended there, and the model acts on it as if it were whole.
+/// Naming the full size is what turns "this is all of it" into "ask for a
+/// smaller part of it".
+///
+/// Applied to failures too. An `is_error` result is a block on the wire like
+/// any other, and a server that fails with a megabyte of JSON at it is not a
+/// hypothetical.
+fn capped(text: String) -> String {
+    if text.len() <= RESULT_LIMIT {
+        return text;
+    }
+    let mut cut = RESULT_LIMIT;
+    while !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let total = text.len();
+    format!(
+        "{}\n… (tool result truncated: {cut} of {total} bytes. Ask for a smaller part of it.)",
+        &text[..cut]
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `futures` is already a dependency and a runtime is not: core has no
+    /// async tests otherwise, and adding tokio for four of them would put a
+    /// runtime in the one crate that deliberately has none.
+    fn run<F: std::future::Future>(f: F) -> F::Output {
+        futures::executor::block_on(f)
+    }
+
+    struct Fixed(Result<String, String>);
+
+    #[async_trait::async_trait]
+    impl Tool for Fixed {
+        fn def(&self) -> ToolDef {
+            ToolDef {
+                name: "fixed".into(),
+                description: String::new(),
+                input_schema: Value::Null,
+            }
+        }
+
+        async fn call(&self, _input: Value) -> Result<String, String> {
+            self.0.clone()
+        }
+    }
+
+    fn call(outcome: Result<String, String>) -> (String, bool) {
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Fixed(outcome))];
+        match run(run_tool(&tools, "c1", "fixed", Value::Null)) {
+            ContentBlock::ToolResult {
+                content, is_error, ..
+            } => (content, is_error),
+            other => panic!("not a tool result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_result_within_the_limit_is_untouched() {
+        let text = "x".repeat(RESULT_LIMIT);
+        let (content, is_error) = call(Ok(text.clone()));
+        assert_eq!(content, text, "a result exactly at the limit is not cut");
+        assert!(!is_error);
+    }
+
+    #[test]
+    fn an_oversized_result_is_cut_and_says_it_was() {
+        let total = RESULT_LIMIT + 5_000;
+        let (content, is_error) = call(Ok("x".repeat(total)));
+        assert!(!is_error, "truncation is not a failure of the call");
+        assert!(
+            content.len() < total,
+            "the result was not cut: {} bytes",
+            content.len()
+        );
+        // The model has to be able to tell a cut result from a short one,
+        // and to know what to ask for instead.
+        assert!(
+            content.contains("truncated"),
+            "no notice on a cut result: {}",
+            &content[content.len() - 200..]
+        );
+        assert!(
+            content.contains(&total.to_string()),
+            "the notice does not name the full size"
+        );
+    }
+
+    #[test]
+    fn the_cut_lands_on_a_character_boundary() {
+        // Three bytes each, so RESULT_LIMIT (65536) falls inside one.
+        let (content, _) = call(Ok("界".repeat(30_000)));
+        let body = content
+            .split('\n')
+            .next()
+            .expect("a body before the notice");
+        assert!(body.chars().all(|c| c == '界'), "the cut split a character");
+        assert_eq!(body.len() % 3, 0, "the cut is not on a boundary");
+        assert!(body.len() <= RESULT_LIMIT);
+        assert!(
+            body.len() > RESULT_LIMIT - 3,
+            "cut back further than needed"
+        );
+    }
+
+    #[test]
+    fn a_failure_is_capped_like_a_success() {
+        // A server that fails with a megabyte of JSON attached is not a
+        // hypothetical, and an error result is a block on the wire like any
+        // other.
+        let (content, is_error) = call(Err("e".repeat(RESULT_LIMIT + 1)));
+        assert!(is_error, "still an error");
+        assert!(content.contains("truncated"));
+        assert!(content.len() < RESULT_LIMIT + 1_000);
+    }
+
+    #[test]
+    fn a_hallucinated_tool_is_an_error_result_not_an_abort() {
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Fixed(Ok("never runs".into())))];
+        match run(run_tool(&tools, "c1", "no_such_tool", Value::Null)) {
+            ContentBlock::ToolResult {
+                content,
+                is_error,
+                tool_use_id,
+                ..
+            } => {
+                assert!(is_error);
+                assert!(content.contains("no_such_tool"), "{content}");
+                assert_eq!(tool_use_id, "c1", "the call it answers");
+            }
+            other => panic!("not a tool result: {other:?}"),
+        }
+    }
 }

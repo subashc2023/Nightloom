@@ -994,7 +994,7 @@ mod tests {
     use crate::approval::AutoApprove;
     use crate::tools::TodoWrite;
     use nightloom_core::TodoStatus;
-    use nightloom_core::tool::Effect;
+    use nightloom_core::tool::{Effect, RESULT_LIMIT};
     use nightloom_core::{EventStream, SessionEvent, ToolDef};
     use serde_json::json;
     use std::sync::{Arc, Mutex};
@@ -1958,6 +1958,51 @@ mod tests {
             e,
             TurnEvent::ToolResult { content, .. } if content == "looked"
         )));
+    }
+
+    /// The 64 KiB ceiling is in `run_tool`, which is the funnel every call
+    /// goes through — so it covers a tool that never truncates its own
+    /// output, which is the whole population it exists for. What this adds
+    /// over the unit test on the funnel is the second half: the *log* keeps
+    /// the capped text, so nothing downstream re-inflates it and a session
+    /// reopened tomorrow replays what was actually sent.
+    #[tokio::test]
+    async fn one_tool_result_cannot_swallow_the_context() {
+        let fat = "x".repeat(RESULT_LIMIT * 2);
+        let provider =
+            Scripted::provider(vec![tool_call("echo", json!({ "msg": fat })), says("done")]);
+        let mut chat = Chat::new(provider, "test-model");
+        chat.tools = vec![Box::new(Echo)];
+        let mut session = Session::new();
+        let (out, events) = run(&chat, &mut session, "call echo").await;
+        assert!(out.is_ok(), "a cut result is not a failed turn");
+
+        let announced = events
+            .iter()
+            .find_map(|e| match e {
+                TurnEvent::ToolResult { content, .. } => Some(content.clone()),
+                _ => None,
+            })
+            .expect("a result was announced");
+        assert!(
+            announced.len() < RESULT_LIMIT + 1_000,
+            "{} bytes reached the shell",
+            announced.len()
+        );
+        assert!(announced.contains("truncated"));
+
+        let logged = session
+            .events()
+            .iter()
+            .find_map(|e| match e {
+                SessionEvent::ToolResult { content, .. } => Some(content.clone()),
+                _ => None,
+            })
+            .expect("a result was logged");
+        assert_eq!(
+            logged, announced,
+            "the log and the shell saw the same bytes"
+        );
     }
 
     /// The default has to leave every existing caller — CLI, probe, any
