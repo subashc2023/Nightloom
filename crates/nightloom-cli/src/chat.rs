@@ -720,6 +720,11 @@ pub async fn run(args: ChatArgs) -> Result<()> {
             }
         );
     }
+    if let Some(notice) = session.load_report().summary() {
+        // Loud rather than dim: a log that did not read back cleanly is the
+        // one thing here the user may want to act on before typing.
+        eprintln!("{DIM}warning: {notice}{RESET}");
+    }
     if args.resume.is_some() || args.continue_ {
         print_recap(&session);
     }

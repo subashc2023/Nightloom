@@ -571,10 +571,23 @@ async fn new_session(state: State<'_, AppState>) -> Result<serde_json::Value, St
 
 /// Resolve a session ID (or unique prefix), make it active, and return its
 /// full event log for the UI to render.
+///
+/// A log that did not read back cleanly still opens — see
+/// [`Session::load`] — and says so as a `turn-notice` toast rather than as a
+/// failure. Refusing the session would be the wrong trade in both directions:
+/// the events that did read are the user's conversation, and the ones that
+/// did not are worth a sentence rather than silence.
 #[tauri::command]
-async fn open_session(state: State<'_, AppState>, id: String) -> Result<Vec<SessionEvent>, String> {
+async fn open_session(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Vec<SessionEvent>, String> {
     let path = store::find_by_prefix(&state.log_dir().await, &id).map_err(|e| e.to_string())?;
     let session = Session::load(path).map_err(|e| e.to_string())?;
+    if let Some(notice) = session.load_report().summary() {
+        let _ = app.emit("turn-notice", notice);
+    }
     let events = session.events().to_vec();
     *state.session.lock().await = Some(session);
     Ok(events)

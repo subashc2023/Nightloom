@@ -1,0 +1,78 @@
+# Everything here is what `cargo test`, `cargo clippy`, `cargo fmt` and
+# `npm run check` already do locally. The point of running them here is that
+# nothing in this workspace talks to a provider from a test — adapters assert
+# on the request body they build and the turn engine runs against scripted
+# providers — so the whole suite is hermetic and there is no reason for a push
+# to be the first place a regression is noticed.
+#
+# `probe` and `eval` are deliberately absent: both spend money against a real
+# model, and both answer a question ("does this model still finish the job")
+# that a commit cannot regress on its own.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  # The six library/CLI crates, on both platforms that matter: `shell.rs`
+  # picks `cmd /C` or `sh -c` per OS and `root.rs` resolves symlinks, so a
+  # single-platform run would leave half of each untested.
+  rust:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}
+      - name: cargo fmt
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo fmt --all -- --check
+      - name: cargo clippy
+        run: cargo clippy --workspace --exclude nightloom-desktop --all-targets
+      - name: cargo test
+        run: cargo test --workspace --exclude nightloom-desktop
+
+  # The desktop app is its own job because it is the one crate with a build
+  # that is not just Rust: `generate_context!` reads `apps/desktop/dist`, which
+  # is gitignored, so the frontend has to be built before the crate will
+  # compile at all. Windows only — that is what this app is developed and
+  # shipped on, and a Linux runner would need the whole webkit2gtk/libsoup
+  # apt set to check the same code.
+  desktop:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: desktop
+      - run: npm ci
+        working-directory: apps/desktop
+      - name: svelte-check
+        run: npm run check
+        working-directory: apps/desktop
+      - name: build frontend
+        run: npm run build
+        working-directory: apps/desktop
+      - name: cargo clippy
+        run: cargo clippy -p nightloom-desktop --all-targets

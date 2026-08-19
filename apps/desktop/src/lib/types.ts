@@ -234,7 +234,12 @@ export type SessionEvent =
   // only the context panel cares.
   | { event: "elide"; targets: number[]; at: string }
   | { event: "unelide"; targets: number[]; at: string }
-  | { event: "compaction"; summary: string; at: string };
+  | { event: "compaction"; summary: string; at: string }
+  // A log entry the backend could not read: an event from a newer build, or a
+  // line the disk damaged. It holds its index so that `rewind` and `elide`,
+  // which address events by position, still point where they were aimed. There
+  // is nothing to render, and the transcript's if/else chain skips it.
+  | { event: "unknown" };
 
 export type TurnEvent =
   | { type: "text_delta"; text: string }
@@ -299,7 +304,11 @@ export type BlockKind =
  */
 export type BlockSource =
   | { from: "event"; index: number }
-  | { from: "sidecar" };
+  | { from: "sidecar" }
+  // Supplied by the projection to keep the request well-formed — today, the
+  // result of a tool call the process died before recording. No log event sits
+  // behind it, so the context panel offers no remove button for it.
+  | { from: "repair" };
 
 export interface WireBlock {
   kind: BlockKind;

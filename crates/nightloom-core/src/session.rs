@@ -5,7 +5,7 @@ use crate::todo::TodoItem;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 /// A point a session can be rewound to.
@@ -159,6 +159,31 @@ pub enum SessionEvent {
         targets: Vec<usize>,
         at: DateTime<Utc>,
     },
+    /// A log entry this build cannot read: an event written by a newer
+    /// Nightloom, or a line the filesystem left damaged.
+    ///
+    /// It exists so that loading a log is *total*. The enum being
+    /// `#[non_exhaustive]` says new variants are expected and protects
+    /// downstream `match` arms, but it does nothing for serde — without a
+    /// catch-all, one unrecognized tag makes the whole session refuse to
+    /// open, and the session written by yesterday's build is not a session
+    /// anybody agreed to lose.
+    ///
+    /// It is kept *in place* rather than skipped, and that is the load-bearing
+    /// part. [`SessionEvent::Rewind`] and [`SessionEvent::Elide`] address
+    /// events by index, so dropping an unreadable line would renumber every
+    /// event after it and silently re-aim every marker in the log at the
+    /// wrong turn. A placeholder holds the position; the raw line stays on
+    /// disk untouched, so a newer build reading the same file still gets the
+    /// real event back.
+    ///
+    /// The projection ignores it, which is the honest thing an old build can
+    /// do and not a free one: if the unknown event was itself a marker that
+    /// supersedes content, that content is on the wire again. Hence
+    /// [`LoadReport`] — a shell is expected to say so rather than let it pass
+    /// unremarked.
+    #[serde(other)]
+    Unknown,
 }
 
 /// A projected content block with the log event that produced it.
@@ -215,6 +240,114 @@ pub fn elision_marker(tokens: u64, images: usize) -> String {
     )
 }
 
+/// What stands in for a tool result that was never recorded.
+///
+/// Prompt text addressed to the model, like [`elision_marker`] and like a
+/// denial reason. It says the result is *missing* rather than empty, because
+/// those call for opposite moves: an empty result is an answer, and a missing
+/// one is a call to make again. It declines to claim the tool did not run,
+/// which the log genuinely does not know — the process may have died after the
+/// work was done and before it was written down.
+pub fn orphan_marker(name: &str) -> String {
+    format!(
+        "[No result was recorded for this call: Nightloom stopped before \
+         `{name}` returned. Whether it ran at all is unknown, so check rather \
+         than assume, and call it again if you still need it.]"
+    )
+}
+
+/// Give every `tool_use` in the projection a `tool_result` to match.
+///
+/// A turn records the assistant's calls and then records what they returned,
+/// which leaves a window between the two — as long as a `bash` timeout, an MCP
+/// round trip, or a whole subagent turn — in which the process can die. What
+/// is left on disk is an assistant message holding a `tool_use` that nothing
+/// answers, and every provider rejects that on replay. Untreated it is the
+/// worst shape of bug this log can produce: the session lists normally, opens
+/// normally, renders its whole history, and then fails with a 400 on every
+/// turn forever, with nothing anywhere saying which of the events is at fault.
+///
+/// It is answered in the projection rather than repaired in the log, and that
+/// follows the rule the rest of this module already keeps: the log records
+/// what happened, and no tool result happened. `Elide` makes the same trade —
+/// keep the structure valid by construction on the way to the wire, and leave
+/// the history saying exactly what it said.
+///
+/// A partly-recorded round is the ordinary case here, not an edge one: three
+/// calls with two results is precisely what a crash between them looks like.
+/// So the check is per call id, and a supplied result joins the round's
+/// existing results rather than forming a second message that would split the
+/// round in two.
+fn answer_orphaned_calls(messages: &mut Vec<SourcedMessage>) {
+    let mut i = 0;
+    while i < messages.len() {
+        if messages[i].role != Role::Assistant {
+            i += 1;
+            continue;
+        }
+        let calls: Vec<(String, String)> = messages[i]
+            .content
+            .iter()
+            .filter_map(|b| match &b.block {
+                ContentBlock::ToolUse { id, name, .. } => Some((id.clone(), name.clone())),
+                _ => None,
+            })
+            .collect();
+        if calls.is_empty() {
+            i += 1;
+            continue;
+        }
+        // The round's results, if any of them were recorded before the stop.
+        let round = messages.get(i + 1).filter(|m| {
+            m.role == Role::User
+                && m.content
+                    .iter()
+                    .any(|b| matches!(b.block, ContentBlock::ToolResult { .. }))
+        });
+        let answered: Vec<&str> = round
+            .map(|m| {
+                m.content
+                    .iter()
+                    .filter_map(|b| match &b.block {
+                        ContentBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.as_str()),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let had_round = round.is_some();
+        let missing: Vec<SourcedBlock> = calls
+            .iter()
+            .filter(|(id, _)| !answered.contains(&id.as_str()))
+            .map(|(id, name)| SourcedBlock {
+                block: ContentBlock::ToolResult {
+                    tool_use_id: id.clone(),
+                    name: name.clone(),
+                    content: orphan_marker(name),
+                    is_error: true,
+                },
+                source: BlockSource::Repair,
+            })
+            .collect();
+        if missing.is_empty() {
+            i += 1;
+            continue;
+        }
+        if had_round {
+            messages[i + 1].content.extend(missing);
+        } else {
+            messages.insert(
+                i + 1,
+                SourcedMessage {
+                    role: Role::User,
+                    content: missing,
+                },
+            );
+        }
+        i += 1;
+    }
+}
+
 /// An elided assistant message: readable content replaced by a marker,
 /// replay tokens kept verbatim.
 ///
@@ -265,10 +398,79 @@ fn were_or_was(n: usize) -> &'static str {
     if n == 1 { "was" } else { "were" }
 }
 
+/// What [`Session::load`] had to work around to open a log.
+///
+/// The log is the source of truth for a conversation, so opening one is not
+/// allowed to be all-or-nothing: a single line this build cannot read must
+/// not cost every turn recorded before it. That tolerance has to be visible,
+/// though, or it becomes silent damage — hence a report rather than a
+/// `Result`, and [`LoadReport::summary`] so both shells say the same sentence
+/// about it instead of each inventing one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LoadReport {
+    /// Entries whose `event` tag this build does not know, held in place as
+    /// [`SessionEvent::Unknown`]. Almost always a log written by a newer
+    /// Nightloom.
+    pub unknown_events: usize,
+    /// Entries that were not readable JSON, held in place the same way.
+    pub damaged_lines: usize,
+    /// A final partial record, discarded. Distinct from a damaged line
+    /// because it is the one entry that may never have finished being
+    /// written, which makes discarding it recovery rather than loss.
+    pub torn_tail: bool,
+}
+
+impl LoadReport {
+    /// Whether the log read back exactly as written.
+    pub fn is_clean(&self) -> bool {
+        self.unknown_events == 0 && self.damaged_lines == 0 && !self.torn_tail
+    }
+
+    /// One line for a shell to show, or `None` when there is nothing to say.
+    ///
+    /// It names the consequence rather than the count alone: an unreadable
+    /// event that happened to be a `Rewind` or an `Elide` is not being
+    /// honoured, so content the user had hidden is on the wire again, and
+    /// that is the part worth knowing.
+    pub fn summary(&self) -> Option<String> {
+        if self.is_clean() {
+            return None;
+        }
+        let mut parts = Vec::new();
+        if self.unknown_events > 0 {
+            parts.push(format!(
+                "{} event{} written by a newer version",
+                self.unknown_events,
+                n_plural(self.unknown_events)
+            ));
+        }
+        if self.damaged_lines > 0 {
+            parts.push(format!(
+                "{} damaged line{}",
+                self.damaged_lines,
+                n_plural(self.damaged_lines)
+            ));
+        }
+        if self.torn_tail {
+            parts.push("an unfinished final entry".to_string());
+        }
+        let mut out = format!("session log: {} could not be read", parts.join(" and "));
+        if self.unknown_events > 0 || self.damaged_lines > 0 {
+            out.push_str(
+                "; they keep their place in the log, but anything they hid or undid \
+                 is no longer being applied",
+            );
+        }
+        out.push('.');
+        Some(out)
+    }
+}
+
 pub struct Session {
     pub id: String,
     events: Vec<SessionEvent>,
     log: Option<JsonlLog>,
+    load_report: LoadReport,
 }
 
 impl Session {
@@ -279,6 +481,7 @@ impl Session {
             id: id.clone(),
             events: Vec::new(),
             log: None,
+            load_report: LoadReport::default(),
         };
         s.record(SessionEvent::SessionCreated { id, at: Utc::now() });
         s
@@ -292,6 +495,7 @@ impl Session {
             id: id.clone(),
             events: Vec::new(),
             log: Some(log),
+            load_report: LoadReport::default(),
         };
         s.record(SessionEvent::SessionCreated { id, at: Utc::now() });
         Ok(s)
@@ -299,19 +503,69 @@ impl Session {
 
     /// Rebuild a session from a previously written JSONL log and reopen it
     /// for appending.
+    ///
+    /// Reading is *total*: every line becomes exactly one event, and one this
+    /// build cannot parse becomes [`SessionEvent::Unknown`] rather than an
+    /// error. A log is not a document that is either valid or worthless — it
+    /// is the only copy of a conversation, and the failure it has to survive
+    /// is the process dying mid-write, which is exactly when refusing to open
+    /// would cost the most. [`Session::load_report`] says what was worked
+    /// around; only I/O failures are still `Err`.
+    ///
+    /// The placeholder holds its position deliberately. `Rewind` and `Elide`
+    /// name their targets by index, so skipping a line would renumber the log
+    /// and re-aim every marker in it at a different turn — a quiet corruption
+    /// where the loud one was merely an inconvenience.
+    ///
+    /// Nothing is written here. A torn final record is noted and put right on
+    /// the first append, so viewing a session never modifies it and a log on
+    /// read-only media still opens.
     pub fn load(path: impl AsRef<Path>) -> io::Result<Self> {
         let path = path.as_ref();
-        let reader = BufReader::new(File::open(path)?);
+        let raw = fs::read_to_string(path)?;
         let mut events = Vec::new();
-        for line in reader.lines() {
-            let line = line?;
-            if line.trim().is_empty() {
+        let mut report = LoadReport::default();
+
+        // A record is committed when its newline is: `writeln!` puts the
+        // payload and the terminator down together, so a file that does not
+        // end in one stopped in the middle of a write.
+        let torn = !raw.is_empty() && !raw.ends_with('\n');
+        let last_start = raw.rfind('\n').map_or(0, |i| i + 1);
+        let mut repair = None;
+
+        let mut offset = 0usize;
+        for line in raw.split_inclusive('\n') {
+            let start = offset;
+            offset += line.len();
+            let text = line.trim_end_matches(['\n', '\r']);
+            if text.trim().is_empty() {
                 continue;
             }
-            let event: SessionEvent = serde_json::from_str(&line)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            events.push(event);
+            match serde_json::from_str::<SessionEvent>(text) {
+                Ok(SessionEvent::Unknown) => {
+                    report.unknown_events += 1;
+                    events.push(SessionEvent::Unknown);
+                }
+                Ok(event) => events.push(event),
+                // The final partial record is the one entry that may never
+                // have happened, and the only one whose removal moves no
+                // index.
+                Err(_) if torn && start == last_start => {
+                    report.torn_tail = true;
+                    repair = Some(Repair::TruncateTo(start as u64));
+                }
+                Err(_) => {
+                    report.damaged_lines += 1;
+                    events.push(SessionEvent::Unknown);
+                }
+            }
         }
+        if torn && repair.is_none() {
+            // The last record parsed but its terminator never landed. Left
+            // alone, the next append would fuse onto the end of it.
+            repair = Some(Repair::Separator);
+        }
+
         let id = events
             .iter()
             .find_map(|e| match e {
@@ -322,8 +576,15 @@ impl Session {
         Ok(Self {
             id,
             events,
-            log: Some(JsonlLog::append_to(path)?),
+            log: Some(JsonlLog::append_to(path, repair)?),
+            load_report: report,
         })
+    }
+
+    /// What opening this session's log had to work around. Clean for a
+    /// session that was created rather than loaded.
+    pub fn load_report(&self) -> LoadReport {
+        self.load_report
     }
 
     pub fn record(&mut self, event: SessionEvent) {
@@ -808,6 +1069,7 @@ impl Session {
                 _ => {}
             }
         }
+        answer_orphaned_calls(&mut messages);
         messages
     }
 
@@ -850,9 +1112,26 @@ impl Default for Session {
     }
 }
 
+/// A half-written record at the end of a log, and what putting it right takes.
+///
+/// Held until the first append rather than applied when the log is opened:
+/// reading a session is not allowed to modify it, both because a viewer that
+/// silently rewrites what it is showing is hard to trust and because a log on
+/// read-only media would otherwise fail to open at all. Nothing needs the
+/// repair until something needs to write past it.
+#[derive(Debug, Clone, Copy)]
+enum Repair {
+    /// Discard a partial final record by cutting the file back to this length.
+    TruncateTo(u64),
+    /// The final record is intact but its newline never landed; supply one so
+    /// the next record does not fuse onto it.
+    Separator,
+}
+
 struct JsonlLog {
     path: PathBuf,
     file: File,
+    repair: Option<Repair>,
 }
 
 impl JsonlLog {
@@ -864,22 +1143,44 @@ impl JsonlLog {
             .create_new(true)
             .append(true)
             .open(&path)?;
-        Ok(Self { path, file })
+        Ok(Self {
+            path,
+            file,
+            repair: None,
+        })
     }
 
-    fn append_to(path: &Path) -> io::Result<Self> {
+    fn append_to(path: &Path, repair: Option<Repair>) -> io::Result<Self> {
         let file = OpenOptions::new().append(true).open(path)?;
         Ok(Self {
             path: path.to_path_buf(),
             file,
+            repair,
         })
     }
 
     fn append(&mut self, event: &SessionEvent) -> io::Result<()> {
+        if let Some(repair) = self.repair.take() {
+            self.repair_tail(repair)?;
+        }
         let line = serde_json::to_string(event)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         writeln!(self.file, "{line}")?;
         self.file.flush()
+    }
+
+    fn repair_tail(&mut self, repair: Repair) -> io::Result<()> {
+        match repair {
+            // Through a second handle on purpose: an append-mode file has no
+            // write access to the bytes already in it on Windows, where
+            // `set_len` through `self.file` would fail. Appends afterwards
+            // still land at the end, since append mode seeks there per write.
+            Repair::TruncateTo(len) => OpenOptions::new()
+                .write(true)
+                .open(&self.path)?
+                .set_len(len),
+            Repair::Separator => self.file.write_all(b"\n"),
+        }
     }
 }
 
@@ -1536,6 +1837,296 @@ mod tests {
         let loaded = Session::load(&path).unwrap();
         assert_eq!(loaded.messages().len(), 1);
         assert_eq!(loaded.messages()[0].text(), "persisted?");
+        assert!(loaded.load_report().is_clean());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A temp dir plus a session logged into it, for the crash-recovery tests.
+    fn logged_session(tag: &str) -> (PathBuf, Session) {
+        let dir = std::env::temp_dir().join(format!("nightloom-{tag}-{}", uuid::Uuid::new_v4()));
+        let s = Session::with_log(&dir).unwrap();
+        (dir, s)
+    }
+
+    /// The shape a crash between a call and its result leaves on disk: an
+    /// assistant `tool_use` that nothing answers.
+    fn orphaned_call_session() -> Session {
+        let mut s = Session::new();
+        s.record_user("read the file");
+        s.record_assistant(
+            "test-model",
+            vec![ContentBlock::ToolUse {
+                id: "c1".into(),
+                name: "read_file".into(),
+                input: serde_json::json!({ "path": "a.txt" }),
+                signature: None,
+            }],
+            Some("tool_use".into()),
+            Usage::default(),
+        );
+        s
+    }
+
+    #[test]
+    fn an_unanswered_call_gets_a_result_on_the_wire() {
+        let s = orphaned_call_session();
+        let messages = s.messages();
+
+        // user, assistant(tool_use), user(result) — the shape a provider
+        // accepts, rather than the two-message shape it 400s on.
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[2].role, Role::User);
+        match &messages[2].content[0] {
+            ContentBlock::ToolResult {
+                tool_use_id,
+                name,
+                content,
+                is_error,
+            } => {
+                assert_eq!(tool_use_id, "c1");
+                assert_eq!(name, "read_file");
+                assert!(*is_error);
+                assert!(content.contains("No result was recorded"));
+                // It must not claim the call did not run: the process may
+                // have died after the work was done and before it was logged.
+                assert!(content.contains("Whether it ran at all is unknown"));
+            }
+            other => panic!("expected a supplied tool result, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_supplied_result_is_marked_as_the_projections_own() {
+        let s = orphaned_call_session();
+        let blocks = &s.messages_sourced(None)[2].content;
+        assert_eq!(blocks[0].source, BlockSource::Repair);
+        // Nothing in the log produced it, so nothing in the log can act on it.
+        let view = WireView::assemble(None, &s, None, None);
+        let repaired = &view.messages[2].blocks[0];
+        assert!(!repaired.elidable);
+        assert!(!repaired.elided);
+    }
+
+    #[test]
+    fn a_half_recorded_round_is_completed_call_by_call() {
+        let mut s = Session::new();
+        s.record_user("read both");
+        s.record_assistant(
+            "test-model",
+            vec![
+                ContentBlock::ToolUse {
+                    id: "c1".into(),
+                    name: "read_file".into(),
+                    input: serde_json::json!({ "path": "a.txt" }),
+                    signature: None,
+                },
+                ContentBlock::ToolUse {
+                    id: "c2".into(),
+                    name: "read_file".into(),
+                    input: serde_json::json!({ "path": "b.txt" }),
+                    signature: None,
+                },
+            ],
+            Some("tool_use".into()),
+            Usage::default(),
+        );
+        // Only the first call's result was written before the stop.
+        s.record_tool_result(&ContentBlock::ToolResult {
+            tool_use_id: "c1".into(),
+            name: "read_file".into(),
+            content: "contents of a".into(),
+            is_error: false,
+        });
+
+        let messages = s.messages();
+        assert_eq!(messages.len(), 3);
+        // Both results land in the one message the round belongs in, rather
+        // than the supplied one splitting the round across two.
+        assert_eq!(messages[2].content.len(), 2);
+        assert_eq!(tool_content(&messages[2].content[0]), "contents of a");
+        assert!(tool_content(&messages[2].content[1]).contains("No result was recorded"));
+    }
+
+    #[test]
+    fn a_completed_round_is_left_alone() {
+        let s = tool_round_session();
+        let before = s.messages();
+        // Every call already has its result; nothing is supplied, and in
+        // particular no block is appended to a round that was fine.
+        assert_eq!(before.len(), 4);
+        assert_eq!(before[2].content.len(), 1);
+        assert!(
+            s.messages_sourced(None)
+                .iter()
+                .flat_map(|m| &m.content)
+                .all(|b| b.source != BlockSource::Repair)
+        );
+    }
+
+    #[test]
+    fn an_elided_call_still_gets_its_missing_result() {
+        let mut s = orphaned_call_session();
+        // Eliding the assistant turn keeps the `tool_use` verbatim, so the
+        // call it holds still needs answering.
+        s.elide([2]).unwrap();
+        let messages = s.messages();
+        assert_eq!(messages.len(), 3);
+        assert!(tool_content(&messages[2].content[0]).contains("No result was recorded"));
+    }
+
+    #[test]
+    fn a_rewound_orphan_needs_no_result() {
+        let mut s = orphaned_call_session();
+        // Rewinding past the turn supersedes the call itself.
+        s.rewind(1).unwrap();
+        assert!(s.messages().is_empty());
+    }
+
+    #[test]
+    fn a_torn_final_record_costs_only_itself() {
+        let (dir, mut s) = logged_session("torn");
+        s.record_user("hello");
+        s.record_assistant(
+            "test-model",
+            vec![ContentBlock::Text { text: "hi".into() }],
+            Some("end_turn".into()),
+            Usage::default(),
+        );
+        let path = s.log_path().unwrap().to_path_buf();
+        drop(s);
+
+        // A write that stopped partway: no terminator, so no committed record.
+        let mut raw = std::fs::read_to_string(&path).unwrap();
+        raw.push_str("{\"event\":\"user_message\",\"text\":\"trunc");
+        std::fs::write(&path, raw).unwrap();
+
+        let mut loaded = Session::load(&path).unwrap();
+        assert_eq!(loaded.messages().len(), 2);
+        assert!(loaded.load_report().torn_tail);
+        assert_eq!(loaded.load_report().damaged_lines, 0);
+
+        // The next append has to land on its own line rather than fusing onto
+        // the fragment, so the log still reads back as what is in memory.
+        loaded.record_user("after the crash");
+        let events = loaded.events().len();
+        drop(loaded);
+        let again = Session::load(&path).unwrap();
+        assert!(again.load_report().is_clean());
+        assert_eq!(again.events().len(), events);
+        assert_eq!(again.messages().len(), 3);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_record_whose_newline_never_landed_is_kept() {
+        let (dir, mut s) = logged_session("nonewline");
+        s.record_user("hello");
+        let path = s.log_path().unwrap().to_path_buf();
+        drop(s);
+
+        // The payload is all there; only the terminator is missing.
+        let raw = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, raw.trim_end_matches('\n')).unwrap();
+
+        let mut loaded = Session::load(&path).unwrap();
+        assert_eq!(loaded.messages().len(), 1);
+        assert!(loaded.load_report().is_clean());
+
+        loaded.record_user("second");
+        drop(loaded);
+        let again = Session::load(&path).unwrap();
+        assert_eq!(again.messages().len(), 2);
+        assert!(again.load_report().is_clean());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn viewing_a_session_never_writes_to_its_log() {
+        let (dir, mut s) = logged_session("readonly");
+        s.record_user("hello");
+        let path = s.log_path().unwrap().to_path_buf();
+        drop(s);
+        let mut raw = std::fs::read_to_string(&path).unwrap();
+        raw.push_str("{\"event\":\"user_me");
+        std::fs::write(&path, &raw).unwrap();
+
+        let loaded = Session::load(&path).unwrap();
+        assert!(loaded.load_report().torn_tail);
+        drop(loaded);
+        // The repair is owed, not done: nothing needed to write past it.
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), raw);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_event_this_build_cannot_read_keeps_its_place() {
+        let (dir, mut s) = logged_session("unknown");
+        s.record_user("one");
+        s.record_assistant(
+            "test-model",
+            vec![ContentBlock::Text {
+                text: "first".into(),
+            }],
+            Some("end_turn".into()),
+            Usage::default(),
+        );
+        let path = s.log_path().unwrap().to_path_buf();
+        drop(s);
+
+        // Two lines a future build might write, and one the disk mangled.
+        let mut raw = std::fs::read_to_string(&path).unwrap();
+        raw.push_str("{\"event\":\"future_marker\",\"at\":\"2026-01-01T00:00:00Z\"}\n");
+        raw.push_str("{\"event\":\"user_message\",\"text\":\n");
+        std::fs::write(&path, raw).unwrap();
+
+        let mut loaded = Session::load(&path).unwrap();
+        let report = loaded.load_report();
+        assert_eq!(report.unknown_events, 1);
+        assert_eq!(report.damaged_lines, 1);
+        assert!(!report.torn_tail);
+        assert!(report.summary().unwrap().contains("newer version"));
+
+        // The conversation is intact and the placeholders hold their indices,
+        // which is what keeps an index-addressed marker aimed at the right
+        // turn: the reply is still event 2, so rewinding to the user message
+        // at 1 drops exactly that exchange.
+        assert_eq!(loaded.messages().len(), 2);
+        assert_eq!(loaded.events().len(), 5);
+        assert!(matches!(loaded.events()[3], SessionEvent::Unknown));
+        assert!(matches!(loaded.events()[4], SessionEvent::Unknown));
+        assert_eq!(loaded.checkpoints()[0].index, 1);
+        loaded.rewind(1).unwrap();
+        assert!(loaded.messages().is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_unreadable_log_is_still_a_session_to_append_to() {
+        let (dir, mut s) = logged_session("append-after");
+        s.record_user("one");
+        let path = s.log_path().unwrap().to_path_buf();
+        drop(s);
+        let mut raw = std::fs::read_to_string(&path).unwrap();
+        raw.push_str("{\"event\":\"future_marker\",\"at\":\"2026-01-01T00:00:00Z\"}\n");
+        std::fs::write(&path, raw).unwrap();
+
+        let mut loaded = Session::load(&path).unwrap();
+        loaded.record_user("two");
+        drop(loaded);
+
+        // The unknown line is untouched on disk, so the build that understands
+        // it still gets it back.
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("future_marker"));
+        let again = Session::load(&path).unwrap();
+        assert_eq!(again.load_report().unknown_events, 1);
+        assert_eq!(again.messages().len(), 2);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_clean_load_says_nothing() {
+        assert_eq!(LoadReport::default().summary(), None);
+        assert!(Session::new().load_report().is_clean());
     }
 }

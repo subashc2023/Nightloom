@@ -147,6 +147,17 @@ pub enum BlockSource {
     /// Composed at projection time and never written to the log. Nothing can
     /// be done to it from the log side; it changes on its own next turn.
     Sidecar,
+    /// Supplied by the projection to keep the request well-formed, standing in
+    /// for something the log does not contain.
+    ///
+    /// Today that is exactly one thing: the result of a `tool_use` that never
+    /// got one, because the process died between recording the call and
+    /// recording what it returned. It is worth a source of its own rather than
+    /// being attributed to the event that needed it — a reader looking at the
+    /// context deserves to know that this particular block is Nightloom
+    /// talking, not the model and not a tool, and there is no log event to act
+    /// on behind it.
+    Repair,
 }
 
 /// One block as it will reach the provider.
@@ -290,7 +301,7 @@ impl WireView {
             .filter(|b| b.elided)
             .filter_map(|b| match b.source {
                 BlockSource::Event { index } => Some(index),
-                BlockSource::Sidecar => None,
+                BlockSource::Sidecar | BlockSource::Repair => None,
             })
             .collect();
         out.sort_unstable();
@@ -355,6 +366,9 @@ fn wire_block(sb: &SourcedBlock, elided: &[bool], session: &Session) -> WireBloc
 
     let (kind, source, is_elided, elidable) = match sb.source {
         BlockSource::Sidecar => (BlockKind::Sidecar, BlockSource::Sidecar, false, false),
+        // Not elidable, and not because it is small: there is no log event to
+        // hide, and the block is the thing keeping the request valid.
+        BlockSource::Repair => (kind, BlockSource::Repair, false, false),
         BlockSource::Event { index } => (
             kind,
             BlockSource::Event { index },
