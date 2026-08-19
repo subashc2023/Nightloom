@@ -33,6 +33,24 @@ pub struct SessionSummary {
     pub modified: DateTime<Utc>,
     pub user_turns: usize,
     pub first_user: Option<String>,
+    /// The session's name, if it has been given one. `None` is ordinary
+    /// rather than exceptional — a chat one turn old has not been named yet,
+    /// and a log written before titles existed never will be — so a picker
+    /// wants [`SessionSummary::label`] rather than this field on its own.
+    pub title: Option<String>,
+}
+
+impl SessionSummary {
+    /// What to show in a picker: the session's name, or failing that its
+    /// opening message, clipped to `max`.
+    ///
+    /// Here rather than in each shell because the fallback is the part worth
+    /// agreeing on. Two shells listing the same directory should not be able
+    /// to disagree about what a chat is called.
+    pub fn label(&self, max: usize) -> String {
+        let text = self.title.as_deref().or(self.first_user.as_deref());
+        text.map(|t| one_line(t, max)).unwrap_or_default()
+    }
 }
 
 fn io_err(path: &Path) -> impl FnOnce(io::Error) -> StoreError {
@@ -62,6 +80,7 @@ fn summarize(path: &Path) -> Result<SessionSummary, StoreError> {
     let mut id = None;
     let mut user_turns = 0;
     let mut first_user = None;
+    let mut title = None;
     for line in content.lines().filter(|l| !l.trim().is_empty()) {
         // Unknown or malformed lines shouldn't sink the whole listing; future
         // SessionEvent variants show up here before this crate learns them.
@@ -76,6 +95,12 @@ fn summarize(path: &Path) -> Result<SessionSummary, StoreError> {
                 }
                 user_turns += 1;
             }
+            // Latest wins, matching `Session::title`. This scan is the raw
+            // log rather than the live projection — like `user_turns` beside
+            // it, which counts superseded turns too — and the two agree in
+            // practice anyway: a rewind that supersedes a name leaves the
+            // session unnamed, and the next turn records a fresh one after it.
+            SessionEvent::Title { text, .. } => title = Some(text),
             _ => {}
         }
     }
@@ -88,6 +113,7 @@ fn summarize(path: &Path) -> Result<SessionSummary, StoreError> {
         modified: modified.into(),
         user_turns,
         first_user,
+        title,
     })
 }
 
@@ -240,6 +266,33 @@ mod tests {
     fn missing_dir_lists_empty() {
         let dir = std::env::temp_dir().join("nightloom-store-test-does-not-exist");
         assert!(list(&dir).unwrap().is_empty());
+    }
+
+    /// A named session is shown by its name; an unnamed one falls back to
+    /// what was asked, which is all there was before.
+    #[test]
+    fn a_label_prefers_the_title_and_falls_back_to_the_opening_message() {
+        let mut s = SessionSummary {
+            id: "abc".into(),
+            path: PathBuf::new(),
+            modified: Utc::now(),
+            user_turns: 1,
+            first_user: Some("can you help me rename a function\neverywhere".into()),
+            title: None,
+        };
+        assert_eq!(s.label(60), "can you help me rename a function everywhere");
+
+        s.title = Some("Renaming fetch_rows across the crate".into());
+        assert_eq!(s.label(60), "Renaming fetch_rows across the crate");
+
+        // Nothing to say is empty, not a placeholder: only the shell knows
+        // what an empty session should read as in its own listing.
+        let blank = SessionSummary {
+            first_user: None,
+            title: None,
+            ..s
+        };
+        assert_eq!(blank.label(60), "");
     }
 
     #[test]

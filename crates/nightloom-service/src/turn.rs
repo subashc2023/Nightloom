@@ -1,5 +1,6 @@
 use crate::approval::{Approver, Decision, PendingCall, denial_message};
 use crate::sidecar::{self, SidecarContext, SidecarPart};
+use crate::store::one_line;
 use crate::tools::{CompactContext, CompactSignal, Subagent, TurnHandle};
 use futures::StreamExt;
 use nightloom_core::{
@@ -197,6 +198,9 @@ pub struct Chat {
     /// Set when the model holds the `compact_context` tool. Read once per
     /// turn, after the reply lands.
     compact_signal: Option<CompactSignal>,
+    /// Whether an unnamed session gets a name at the end of a turn. See
+    /// [`Chat::enable_titles`].
+    auto_title: bool,
     /// Set when the model holds the `task` tool. Refreshed each round so a
     /// subagent inherits the live cancellation token and approval policy.
     subagents: Option<Arc<TurnHandle>>,
@@ -217,6 +221,7 @@ impl Chat {
             price: None,
             approver: None,
             compact_signal: None,
+            auto_title: false,
             subagents: None,
         }
     }
@@ -289,6 +294,25 @@ impl Chat {
         self.compact_signal = Some(signal);
     }
 
+    /// Name a session once, at the end of the first turn that leaves it
+    /// with a completed exchange and no name.
+    ///
+    /// Opt-in rather than always on, because the caller is the one paying:
+    /// titling is a second provider request, and switching it on for
+    /// everybody would put one at the end of every eval workspace and every
+    /// probe, where it buys nothing and spends against the numbers being
+    /// measured. A subagent should not have it either — its session is
+    /// in-memory and nobody will ever pick it out of a list — which is why
+    /// this is a call a shell makes on the chat it built rather than
+    /// something `build_chat` turns on for everything it returns.
+    ///
+    /// It fires on the next turn of a session that has no name, not only on
+    /// a new one, so a log written before any of this existed gets a name
+    /// the first time it is picked up again.
+    pub fn enable_titles(&mut self) {
+        self.auto_title = true;
+    }
+
     /// Run one user turn: record it, stream the reply into the session and
     /// `on_event`, execute tool calls and loop their results back to the
     /// provider until it answers in text (capped at `max_rounds`).
@@ -328,6 +352,17 @@ impl Chat {
                     summary: done.summary,
                 });
             }
+        }
+        // A name for the session, from the exchange that settled what it is
+        // about. Failures are silent and deliberately so: a title is a label
+        // on a file, the session is still unnamed and will be tried again
+        // next turn, and there is no version of "the reply is lost because
+        // naming it did not work" that is the right trade.
+        if self.auto_title
+            && matches!(&outcome, Ok(o) if !o.interrupted)
+            && session.title().is_none()
+        {
+            let _ = self.title(session, cancel).await;
         }
         outcome
     }
@@ -819,7 +854,131 @@ impl Chat {
             usage,
         })
     }
+
+    /// Name this session from its first exchange, recording the result as a
+    /// [`SessionEvent::Title`].
+    ///
+    /// The *first* exchange, not the conversation so far, and that is the
+    /// whole shape of it. A title answers "which chat was that", a question
+    /// already settled once the model has replied once — so titling from the
+    /// full history would cost more every turn it fired and would make the
+    /// name depend on when it happened to run rather than on what the
+    /// conversation is. Two clipped excerpts is the entire request.
+    ///
+    /// Runs bare like [`compact`](Self::compact): no preamble, no sidecar,
+    /// no tools, no thinking. `Ok(None)` means cancelled, with the session
+    /// left unnamed; a model that spends its whole allowance thinking and
+    /// returns no text is an `Err` for the same reason, and both are
+    /// recoverable by the session simply staying nameless until next turn.
+    ///
+    /// [`SessionEvent::Title`]: nightloom_core::SessionEvent::Title
+    pub async fn title(
+        &self,
+        session: &mut Session,
+        cancel: &CancellationToken,
+    ) -> Result<Option<String>, ProviderError> {
+        let Some(excerpt) = first_exchange(session) else {
+            return Err(ProviderError::Config(
+                "nothing to title: the session has no completed exchanges".into(),
+            ));
+        };
+
+        let request = ChatRequest {
+            model: self.model.clone(),
+            system: SystemPrompt::default(),
+            messages: vec![Message::user(format!("{TITLE_PROMPT}\n\n{excerpt}"))],
+            // Room for a model that thinks before answering, which some hosts
+            // do by default; the answer itself is six words.
+            max_tokens: TITLE_MAX_TOKENS,
+            temperature: None,
+            thinking: Thinking::Default,
+            tools: Vec::new(),
+        };
+        let mut stream = self.provider.stream_chat(request).await?;
+        let mut raw = String::new();
+        loop {
+            let event = tokio::select! {
+                _ = cancel.cancelled() => return Ok(None),
+                next = stream.next() => match next {
+                    Some(Ok(event)) => event,
+                    Some(Err(e)) => return Err(e),
+                    None => break,
+                },
+            };
+            if let StreamEvent::TextDelta(delta) = event {
+                raw.push_str(&delta);
+            }
+        }
+
+        let title = clean_title(&raw);
+        if title.is_empty() {
+            return Err(ProviderError::Parse(
+                "empty title from provider; session left unnamed".into(),
+            ));
+        }
+        session.record_title(&title);
+        Ok(Some(title))
+    }
 }
+
+/// The first user message and the first assistant reply as plain text,
+/// clipped — or `None` when there is no reply yet, which is the same test
+/// [`Chat::compact`] makes and for the same reason: there is nothing to
+/// summarize or to name until the model has said something.
+///
+/// Read off the *projection* rather than the raw log, so a compacted session
+/// is named from its summary rather than from history the model can no
+/// longer see. Images are skipped: `Message::text` takes text blocks only,
+/// and an uncaptioned attachment leaves the assistant's reply to name the
+/// turn on its own.
+fn first_exchange(session: &Session) -> Option<String> {
+    let messages = session.messages();
+    let first = |role: Role| -> String {
+        messages
+            .iter()
+            .find(|m| m.role == role)
+            .map(Message::text)
+            .unwrap_or_default()
+    };
+    if !messages.iter().any(|m| m.role == Role::Assistant) {
+        return None;
+    }
+    let asked = one_line(&first(Role::User), TITLE_EXCERPT);
+    let replied = one_line(&first(Role::Assistant), TITLE_EXCERPT);
+    Some(format!("User: {asked}\n\nAssistant: {replied}"))
+}
+
+/// Trim a model's answer down to a name.
+///
+/// They answer this question well and package it variously: quoted, bolded,
+/// with a trailing period, occasionally with a line of commentary under it.
+/// Taking the first non-empty line and stripping the wrapping is cheaper
+/// than a stricter prompt and, unlike a validator, does not throw away a
+/// good title over its punctuation.
+fn clean_title(raw: &str) -> String {
+    let line = raw.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+    let stripped = line
+        .trim()
+        .trim_matches(|c: char| matches!(c, '"' | '\'' | '\u{201c}' | '\u{201d}' | '*' | '#'))
+        .trim()
+        .trim_end_matches(['.', ':']);
+    one_line(stripped, TITLE_MAX_CHARS)
+}
+
+/// The instruction, sent as the whole request alongside the excerpt.
+const TITLE_PROMPT: &str = "Name the conversation below, for a list of saved \
+chats. At most six words. Say what it is about, using the user's own words \
+for it where they gave you any, and prefer the specific noun to the general \
+one. Write the title by itself: no quotes, no trailing period, no preamble.";
+
+/// How much of each side of the first exchange the namer is shown.
+const TITLE_EXCERPT: usize = 600;
+
+/// Long enough for a model that thinks before it answers.
+const TITLE_MAX_TOKENS: u32 = 512;
+
+/// A name, not a sentence — and a column in a sidebar.
+const TITLE_MAX_CHARS: usize = 60;
 
 /// The summarization instruction appended as the final user message when
 /// compacting.
@@ -2166,5 +2325,125 @@ mod tests {
                 _ => Decision::Allow,
             }
         }
+    }
+
+    /// The point of the feature: a session comes out of its first turn with
+    /// a name, generated from that turn and nothing else.
+    #[tokio::test]
+    async fn a_session_is_named_from_its_first_exchange() {
+        let (provider, seen) = Scripted::recording(vec![
+            says("Renaming it in four files and one test."),
+            says("Renaming fetch_rows across the crate"),
+        ]);
+        let mut chat = Chat::new(provider, "test-model");
+        chat.enable_titles();
+        let mut session = Session::new();
+        let _ = run(&chat, &mut session, "rename fetch_rows everywhere").await;
+
+        assert_eq!(
+            session.title(),
+            Some("Renaming fetch_rows across the crate")
+        );
+
+        // Two clipped excerpts and the instruction, not the conversation:
+        // the naming request must not grow with the session it names.
+        let requests = seen.lock().unwrap();
+        let naming = &requests[1];
+        assert_eq!(naming.messages.len(), 1);
+        assert!(naming.tools.is_empty());
+        assert!(naming.system.segments().is_empty());
+        let sent = naming.messages[0].text();
+        assert!(sent.contains("rename fetch_rows everywhere"), "{sent}");
+        assert!(sent.contains("four files and one test"), "{sent}");
+    }
+
+    /// Once, not once a turn. The scripted provider panics if called a third
+    /// time, which is the assertion.
+    #[tokio::test]
+    async fn a_named_session_is_not_named_again() {
+        let provider = Scripted::provider(vec![
+            says("first reply"),
+            says("A name for it"),
+            says("second reply"),
+        ]);
+        let mut chat = Chat::new(provider, "test-model");
+        chat.enable_titles();
+        let mut session = Session::new();
+        let _ = run(&chat, &mut session, "one").await;
+        let _ = run(&chat, &mut session, "two").await;
+
+        assert_eq!(session.title(), Some("A name for it"));
+        let names = session
+            .events()
+            .iter()
+            .filter(|e| matches!(e, SessionEvent::Title { .. }))
+            .count();
+        assert_eq!(names, 1);
+    }
+
+    /// Off unless a shell asks, so the probe and the eval suite are not
+    /// quietly paying for a second call at the end of every turn.
+    #[tokio::test]
+    async fn titling_is_off_unless_asked_for() {
+        // One script only: a title call would panic the provider.
+        let provider = Scripted::provider(vec![says("reply")]);
+        let chat = Chat::new(provider, "test-model");
+        let mut session = Session::new();
+        let _ = run(&chat, &mut session, "one").await;
+        assert_eq!(session.title(), None);
+    }
+
+    /// A model that answers with nothing usable leaves the session nameless
+    /// rather than failing the turn — and gets asked again next turn.
+    #[tokio::test]
+    async fn an_unusable_title_does_not_cost_the_turn() {
+        let provider = Scripted::provider(vec![says("the reply"), says("   ")]);
+        let mut chat = Chat::new(provider, "test-model");
+        chat.enable_titles();
+        let mut session = Session::new();
+        let (out, _) = run(&chat, &mut session, "one").await;
+
+        assert!(out.is_ok());
+        assert_eq!(session.title(), None);
+        assert_eq!(session.messages().len(), 2);
+    }
+
+    /// Models package a title variously. Unwrapping it is cheaper than a
+    /// stricter prompt and does not throw away a good name over a full stop.
+    #[test]
+    fn a_title_is_stripped_of_its_packaging() {
+        assert_eq!(clean_title("Renaming fetch_rows"), "Renaming fetch_rows");
+        assert_eq!(
+            clean_title("  \"Renaming fetch_rows.\"  "),
+            "Renaming fetch_rows"
+        );
+        assert_eq!(
+            clean_title("**Renaming fetch_rows**"),
+            "Renaming fetch_rows"
+        );
+        assert_eq!(
+            clean_title("\u{201c}Renaming fetch_rows\u{201d}"),
+            "Renaming fetch_rows"
+        );
+        assert_eq!(
+            clean_title("Renaming fetch_rows\n\nI kept it short as asked."),
+            "Renaming fetch_rows"
+        );
+        assert_eq!(clean_title("\n\n"), "");
+        // Long enough to need clipping: a name is a column, not a sentence.
+        let long = "a ".repeat(60);
+        assert!(clean_title(&long).chars().count() <= TITLE_MAX_CHARS + 1);
+    }
+
+    /// Nothing to name until the model has spoken, the same test `compact`
+    /// makes before summarizing.
+    #[tokio::test]
+    async fn titling_refuses_a_session_with_no_reply() {
+        let provider = Scripted::provider(vec![]);
+        let chat = Chat::new(provider, "test-model");
+        let mut session = Session::new();
+        session.record_user("just asked");
+        let cancel = CancellationToken::new();
+        assert!(chat.title(&mut session, &cancel).await.is_err());
     }
 }

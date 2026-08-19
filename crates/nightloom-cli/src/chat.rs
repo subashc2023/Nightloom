@@ -688,13 +688,18 @@ async fn connect_mcp(args: &ChatArgs) -> SharedTools {
 
 pub async fn run(args: ChatArgs) -> Result<()> {
     let mcp_tools = connect_mcp(&args).await;
-    let chat = build_chat(&args, &mcp_tools)?;
+    let mut chat = build_chat(&args, &mcp_tools)?;
     let mut session = open_session(&args)?;
 
     if let Some(prompt) = args.once.clone() {
         run_turn(&chat, &mut session, &prompt).await?;
         return Ok(());
     }
+    // After the one-shot path, deliberately. `--once` is a single answer to a
+    // single question, and doubling what it costs to label a log the user is
+    // unlikely to come back to is the wrong trade; a REPL session is exactly
+    // the one they will.
+    chat.enable_titles();
 
     println!(
         "nightloom v{} — {}:{}",
@@ -704,6 +709,9 @@ pub async fn run(args: ChatArgs) -> Result<()> {
     );
     if let Some(path) = session.log_path() {
         println!("{DIM}session log: {}{RESET}", path.display());
+    }
+    if let Some(title) = session.title() {
+        println!("{DIM}“{title}”{RESET}");
     }
     if !args.bare
         && let Some(line) = prompt_summary(&chat.system)
@@ -774,8 +782,15 @@ pub async fn run(args: ChatArgs) -> Result<()> {
             continue;
         }
         println!();
+        let was_named = session.title().is_some();
         if let Err(e) = run_turn(&chat, &mut session, &line).await {
             eprintln!("\nerror: {e:#}");
+        }
+        // Said once, when it happens: the name is what `nightloom sessions`
+        // will list this conversation under, and a feature that spends a
+        // provider call should say that it did.
+        if !was_named && let Some(title) = session.title() {
+            println!("{DIM}named “{title}”{RESET}");
         }
     }
 

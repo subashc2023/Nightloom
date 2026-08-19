@@ -72,7 +72,7 @@ cargo run -p nightloom-cli -- --provider openai-chat \
   --base-url http://localhost:11434/v1 --model llama3.3
 
 # Sessions
-cargo run -p nightloom-cli -- sessions             # list logs
+cargo run -p nightloom-cli -- sessions             # list logs, by name
 cargo run -p nightloom-cli -- --continue           # resume the most recent
 cargo run -p nightloom-cli -- --resume 3f2a        # resume by id prefix
 cargo run -p nightloom-cli -- sessions --delete 3f2a
@@ -196,6 +196,14 @@ Cost is recorded per exchange rather than re-derived, because a model id alone
 does not name a provider and yesterday's price is not today's. An unpriced
 model contributes no dollar figure at all rather than `$0.00`, and a session
 containing one renders its total with a `≥`.
+
+A session's **name** is recorded the same way and for the same reason: it
+comes out of a model call already paid for, so re-deriving it would mean
+paying again on every listing. It is written once, at the end of the first
+turn, from that turn alone — two clipped excerpts and an instruction, never
+the conversation so far. Deriving a name without a model is what both shells
+did before, and it is the part that stops working: forty chats all beginning
+"can you help me" are a list you open one by one.
 
 ## Desktop app
 

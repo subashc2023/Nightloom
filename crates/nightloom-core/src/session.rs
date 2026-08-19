@@ -118,6 +118,20 @@ pub enum SessionEvent {
         todos: Vec<TodoItem>,
         at: DateTime<Utc>,
     },
+    /// What to call this session in a list of them. The latest one wins, the
+    /// same way a `TodoState` does.
+    ///
+    /// Recorded rather than derived, for the reason a cost is: it is written
+    /// by a model call that has already been paid for, and re-deriving it
+    /// would mean paying again on every listing, on every log, every time a
+    /// sidebar repainted. Deriving it *without* a model — the opening
+    /// message, clipped — is what both shells did before, and it is the
+    /// thing that stops working: forty chats whose names all begin "can you
+    /// help me" are a list you have to open one by one.
+    Title {
+        text: String,
+        at: DateTime<Utc>,
+    },
     /// The listed events keep their place in the conversation but stop
     /// carrying their content: the projection substitutes a marker naming
     /// roughly what was removed.
@@ -645,6 +659,13 @@ impl Session {
         });
     }
 
+    pub fn record_title(&mut self, text: impl Into<String>) {
+        self.record(SessionEvent::Title {
+            text: text.into(),
+            at: Utc::now(),
+        });
+    }
+
     pub fn record_todos(&mut self, todos: Vec<TodoItem>) {
         self.record(SessionEvent::TodoState {
             todos,
@@ -868,6 +889,32 @@ impl Session {
             }
         }
         &[]
+    }
+
+    /// The session's name: the most recent live [`SessionEvent::Title`].
+    ///
+    /// A [`Compaction`] does *not* clear it, and that is where this parts
+    /// company with [`todos`](Self::todos). A summary supersedes the plan
+    /// that produced it, so a task list outliving its work is stale; a
+    /// summary does not make the conversation a *different* conversation,
+    /// so its name still fits.
+    ///
+    /// A [`Rewind`] does supersede it, like anything else it reaches back
+    /// past, and that is worth having rather than an exception to write
+    /// down: a rewind to the opening message is the one edit that makes the
+    /// old name describe a turn that no longer counts, and leaving the
+    /// session unnamed is what gets it named again from what it became.
+    ///
+    /// [`Compaction`]: SessionEvent::Compaction
+    /// [`Rewind`]: SessionEvent::Rewind
+    pub fn title(&self) -> Option<&str> {
+        self.live_events()
+            .into_iter()
+            .rev()
+            .find_map(|(_, e)| match e {
+                SessionEvent::Title { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
     }
 
     /// Projection: what this session has cost so far.
@@ -2128,5 +2175,44 @@ mod tests {
     fn a_clean_load_says_nothing() {
         assert_eq!(LoadReport::default().summary(), None);
         assert!(Session::new().load_report().is_clean());
+    }
+
+    /// The latest name wins, and a compaction is not a rename: the summary
+    /// supersedes the history, not the subject.
+    #[test]
+    fn a_title_is_the_latest_one_and_outlives_a_compaction() {
+        let mut s = Session::new();
+        assert_eq!(s.title(), None);
+
+        exchange(&mut s, "one", "first");
+        s.record_title("A first guess");
+        assert_eq!(s.title(), Some("A first guess"));
+
+        s.record_title("What it turned out to be");
+        assert_eq!(s.title(), Some("What it turned out to be"));
+
+        // Unlike the task list, which a compaction clears.
+        s.record_compaction("a summary");
+        assert_eq!(s.title(), Some("What it turned out to be"));
+    }
+
+    /// Rewinding past the name that describes a turn drops the name with it,
+    /// which is what gets the session named again from what it became.
+    #[test]
+    fn a_rewind_past_a_title_leaves_the_session_unnamed() {
+        let mut s = Session::new();
+        let first = exchange(&mut s, "one", "first");
+        s.record_title("Named from the first turn");
+        exchange(&mut s, "two", "second");
+        assert_eq!(s.title(), Some("Named from the first turn"));
+
+        s.rewind(first).unwrap();
+        assert_eq!(s.title(), None);
+        // The log kept it, like every other marker in here.
+        assert!(
+            s.events()
+                .iter()
+                .any(|e| matches!(e, SessionEvent::Title { .. }))
+        );
     }
 }

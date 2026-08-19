@@ -541,7 +541,11 @@ async fn connect(
         .as_ref()
         .map(|m| m.tools.clone())
         .unwrap_or_default();
-    let chat = build_chat(&app, &state.approval, &spec, &mcp_tools)?;
+    let mut chat = build_chat(&app, &state.approval, &spec, &mcp_tools)?;
+    // Here rather than inside `build_chat`, which is also the subagent
+    // factory: a subagent's session is in-memory and never appears in the
+    // sidebar, so naming one would be a provider call nobody can ever see.
+    chat.enable_titles();
     let info = ConnectedInfo {
         provider: chat.provider.name().to_string(),
         model: chat.model.clone(),

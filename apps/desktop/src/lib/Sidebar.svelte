@@ -110,7 +110,9 @@
               onclick={() => void openSession(s.id)}
               disabled={app.busy}
             >
-              <span class="snippet">{s.first_user ?? "empty session"}</span>
+              <span class="snippet"
+                >{s.title ?? s.first_user ?? "empty session"}</span
+              >
               <span class="meta"
                 >{s.id.slice(0, 8)} · {relativeTime(s.modified)}</span
               >

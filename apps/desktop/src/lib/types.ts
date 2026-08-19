@@ -138,6 +138,10 @@ export interface SessionMeta {
   modified: string;
   user_turns: number;
   first_user: string | null;
+  /** The session's name. Null until its first turn has been named, and
+   *  permanently null for a log written before names existed — so render
+   *  `title ?? first_user`, never `title` alone. */
+  title: string | null;
 }
 
 /**
@@ -228,6 +232,10 @@ export type SessionEvent =
       at: string;
     }
   | { event: "todo_state"; todos: TodoItem[]; at: string }
+  // What the session is called. Not rendered in the transcript — the sidebar
+  // reads it off `SessionSummary.title` instead — but part of the union so a
+  // reader of the log sees every kind of line that can be in one.
+  | { event: "title"; text: string; at: string }
   // Content markers, not deletions: the listed events keep their place in the
   // conversation and project a stand-in instead of their payload. The log
   // still holds the content, so the transcript renders these turns in full and

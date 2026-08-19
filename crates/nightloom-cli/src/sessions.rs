@@ -25,10 +25,7 @@ pub fn run(args: SessionsArgs) -> Result<()> {
         return Ok(());
     }
 
-    println!(
-        "{:<10} {:<17} {:>5}  first message",
-        "id", "modified", "turns"
-    );
+    println!("{:<10} {:<17} {:>5}  name", "id", "modified", "turns");
     for s in &sessions {
         let short_id: String = s.id.chars().take(8).collect();
         let modified = s
@@ -40,10 +37,9 @@ pub fn run(args: SessionsArgs) -> Result<()> {
             short_id,
             modified,
             s.user_turns,
-            s.first_user
-                .as_deref()
-                .map(|t| store::one_line(t, 60))
-                .unwrap_or_default(),
+            // The session's name where it has one, its opening message where
+            // it does not — a log written before names existed still lists.
+            s.label(60),
         );
     }
     Ok(())
