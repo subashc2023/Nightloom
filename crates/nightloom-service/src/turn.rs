@@ -3,7 +3,7 @@ use crate::sidecar::{self, SidecarContext, SidecarPart};
 use crate::tools::{CompactContext, CompactSignal, Subagent, TurnHandle};
 use futures::StreamExt;
 use nightloom_core::{
-    ChatRequest, ContentBlock, ImageInput, Message, Provider, ProviderError, Role, Session,
+    ChatRequest, ContentBlock, Effect, ImageInput, Message, Provider, ProviderError, Role, Session,
     StreamEvent, SystemPrompt, Thinking, Usage, WireView,
     tool::{Tool, defs, effect_of, run_tool},
 };
@@ -99,6 +99,37 @@ impl From<String> for TurnInput {
             text,
             images: Vec::new(),
         }
+    }
+}
+
+/// One call from a round with consent already settled, on its way to running.
+struct PlannedCall {
+    id: String,
+    name: String,
+    input: serde_json::Value,
+    /// The user's reason, when they refused it. Nothing runs.
+    denial: Option<String>,
+    /// Whether this call may overlap its neighbours: approved, and read-only,
+    /// so it cannot change what another call in the round sees.
+    concurrent: bool,
+}
+
+/// Announce an executed call's result. Denials never reach here — nothing ran,
+/// and a `ToolResult` event would say otherwise.
+fn emit_result(result: &ContentBlock, on_event: &mut (dyn FnMut(TurnEvent) + Send)) {
+    if let ContentBlock::ToolResult {
+        tool_use_id,
+        name,
+        content,
+        is_error,
+    } = result
+    {
+        on_event(TurnEvent::ToolResult {
+            tool_use_id: tool_use_id.clone(),
+            name: name.clone(),
+            content: content.clone(),
+            is_error: *is_error,
+        });
     }
 }
 
@@ -534,43 +565,8 @@ impl Chat {
             // result in the session; just don't go back to the provider.
             // Approval is asked for on this round too, for the same reason:
             // the call runs, so the user gets to stop it.
-            for (id, name, input) in calls {
-                let result = match self.decide(&id, &name, &input).await {
-                    Some(reason) => {
-                        on_event(TurnEvent::ToolDenied {
-                            tool_use_id: id.clone(),
-                            name: name.clone(),
-                            reason: reason.clone(),
-                        });
-                        // Recorded like any failed call, even though nothing
-                        // ran: the model has to be told, and the tool_use
-                        // block needs the matching result replay requires.
-                        ContentBlock::ToolResult {
-                            tool_use_id: id.clone(),
-                            name: name.clone(),
-                            content: denial_message(&name, &reason),
-                            is_error: true,
-                        }
-                    }
-                    None => {
-                        let result = run_tool(&self.tools, &id, &name, input).await;
-                        if let ContentBlock::ToolResult {
-                            tool_use_id,
-                            name,
-                            content,
-                            is_error,
-                        } = &result
-                        {
-                            on_event(TurnEvent::ToolResult {
-                                tool_use_id: tool_use_id.clone(),
-                                name: name.clone(),
-                                content: content.clone(),
-                                is_error: *is_error,
-                            });
-                        }
-                        result
-                    }
-                };
+            let plan = self.plan_round(calls, on_event).await;
+            for result in self.execute(plan, on_event).await {
                 session.record_tool_result(&result);
             }
             // Some tools write conversation state rather than just returning
@@ -593,6 +589,139 @@ impl Chat {
             }
         }
         unreachable!("every round either returns or continues the tool loop")
+    }
+
+    /// Settle consent for one round's calls, in the order the model made them.
+    ///
+    /// Sequential, deliberately, and it stays that way even though execution
+    /// no longer is: a shell asked for three approvals at once has no sensible
+    /// rendering, and the user should be shown the calls in the order the
+    /// model asked for them rather than in whatever order three prompts
+    /// happened to resolve.
+    async fn plan_round(
+        &self,
+        calls: Vec<(String, String, serde_json::Value)>,
+        on_event: &mut (dyn FnMut(TurnEvent) + Send),
+    ) -> Vec<PlannedCall> {
+        let mut plan = Vec::with_capacity(calls.len());
+        for (id, name, input) in calls {
+            let denial = self.decide(&id, &name, &input).await;
+            if let Some(reason) = &denial {
+                on_event(TurnEvent::ToolDenied {
+                    tool_use_id: id.clone(),
+                    name: name.clone(),
+                    reason: reason.clone(),
+                });
+            }
+            // Read-only is the whole test, and it is the classification the
+            // approval gate already sorts on rather than a second axis every
+            // future tool has to answer. A refused call is never concurrent
+            // because it never runs.
+            let concurrent =
+                denial.is_none() && matches!(effect_of(&self.tools, &name), Some(Effect::ReadOnly));
+            plan.push(PlannedCall {
+                id,
+                name,
+                input,
+                denial,
+                concurrent,
+            });
+        }
+        plan
+    }
+
+    /// Run a planned round, returning its results in call order.
+    ///
+    /// A *run of adjacent read-only calls* overlaps; everything else keeps its
+    /// position and runs alone. Adjacency is the load-bearing half. Hoisting
+    /// every read to the front of the round would be faster still and would
+    /// reorder a round that reads what another call in that same round writes,
+    /// turning a slow answer into a wrong one — where adjacent reads cannot
+    /// affect what each other sees, so overlapping them changes nothing but
+    /// the clock.
+    ///
+    /// Mutating calls stay serial for the reason the two failures are not
+    /// symmetric: two `edit_file` calls racing on one file silently lose an
+    /// edit, while run one after another the second fails loudly with an
+    /// `old_string` that no longer matches, which the model can see and act
+    /// on. A tool this engine cannot classify (a hallucinated name, anything
+    /// arriving over MCP) is serial by the same default that makes it
+    /// `Mutating`.
+    async fn execute(
+        &self,
+        plan: Vec<PlannedCall>,
+        on_event: &mut (dyn FnMut(TurnEvent) + Send),
+    ) -> Vec<ContentBlock> {
+        let mut results = Vec::with_capacity(plan.len());
+        let mut batch: Vec<PlannedCall> = Vec::new();
+        for call in plan {
+            if call.concurrent {
+                batch.push(call);
+                continue;
+            }
+            self.drain_batch(&mut batch, &mut results, on_event).await;
+            // A refusal was already announced as `ToolDenied` when consent was
+            // settled, and must not also arrive as a `ToolResult`: nothing
+            // ran, so a result event would be a lie, and a shell with a live
+            // buffer closes the pending call on one or the other.
+            let denied = call.denial.is_some();
+            let result = self.run_one(call).await;
+            if !denied {
+                emit_result(&result, on_event);
+            }
+            results.push(result);
+        }
+        self.drain_batch(&mut batch, &mut results, on_event).await;
+        results
+    }
+
+    /// Run everything gathered so far at once, appending results in order.
+    async fn drain_batch(
+        &self,
+        batch: &mut Vec<PlannedCall>,
+        results: &mut Vec<ContentBlock>,
+        on_event: &mut (dyn FnMut(TurnEvent) + Send),
+    ) {
+        let batch = std::mem::take(batch);
+        if batch.is_empty() {
+            return;
+        }
+        let done =
+            futures::future::join_all(batch.into_iter().map(|call| self.run_one(call))).await;
+        // Emitted after the batch rather than as each call lands, so the
+        // events a shell renders stay in the order the model called them.
+        // What that costs is the difference between the fastest and the
+        // slowest read in one batch, which is not a difference anybody sees.
+        for result in done {
+            emit_result(&result, on_event);
+            results.push(result);
+        }
+    }
+
+    /// One call: the refusal it already collected, or the tool.
+    async fn run_one(&self, call: PlannedCall) -> ContentBlock {
+        let PlannedCall {
+            id,
+            name,
+            input,
+            denial,
+            ..
+        } = call;
+        match denial {
+            // Recorded like any failed call, even though nothing ran: the
+            // model has to be told, and the tool_use block needs the matching
+            // result replay requires.
+            Some(reason) => {
+                let content = denial_message(&name, &reason);
+                ContentBlock::ToolResult {
+                    tool_use_id: id,
+                    name,
+                    content,
+                    is_error: true,
+                }
+            }
+            None => run_tool(&self.tools, &id, &name, input).await,
+        }
     }
 
     /// Put one call to the approver, if there is one. `Some(reason)` means
@@ -763,6 +892,24 @@ mod tests {
                 stop_reason: Some("tool_use".into()),
             },
         ]
+    }
+
+    /// A round of several calls, the shape a model emits when it decides the
+    /// work is independent.
+    fn tool_calls(calls: &[(&str, &str)]) -> Vec<StreamEvent> {
+        let mut events: Vec<StreamEvent> = calls
+            .iter()
+            .map(|(id, name)| StreamEvent::ToolUse {
+                id: (*id).into(),
+                name: (*name).into(),
+                input: json!({ "msg": id }),
+                signature: None,
+            })
+            .collect();
+        events.push(StreamEvent::End {
+            stop_reason: Some("tool_use".into()),
+        });
+        events
     }
 
     fn says(text: &str) -> Vec<StreamEvent> {
@@ -1804,5 +1951,220 @@ mod tests {
         // and a UI has to be able to tell the two apart.
         assert!(!total.is_complete());
         assert_eq!(total.unpriced_exchanges, 1);
+    }
+
+    /// Records the order calls actually ran in, and the peak number in flight
+    /// at once. `effect` is what the engine sorts on, so one type covers both
+    /// sides of the concurrency rule.
+    struct Observer {
+        name: &'static str,
+        effect: Effect,
+        log: Arc<Mutex<Vec<String>>>,
+        active: Arc<std::sync::atomic::AtomicUsize>,
+        peak: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Observer {
+        fn boxed(name: &'static str, effect: Effect, w: &Watch) -> Box<dyn Tool> {
+            Box::new(Self {
+                name,
+                effect,
+                log: Arc::clone(&w.log),
+                active: Arc::clone(&w.active),
+                peak: Arc::clone(&w.peak),
+            })
+        }
+    }
+
+    /// The shared counters an `Observer` writes to.
+    #[derive(Clone, Default)]
+    struct Watch {
+        log: Arc<Mutex<Vec<String>>>,
+        active: Arc<std::sync::atomic::AtomicUsize>,
+        peak: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Watch {
+        fn order(&self) -> Vec<String> {
+            self.log.lock().unwrap().clone()
+        }
+        fn peak(&self) -> usize {
+            self.peak.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Tool for Observer {
+        fn def(&self) -> ToolDef {
+            ToolDef {
+                name: self.name.into(),
+                description: "an observed tool".into(),
+                input_schema: json!({ "type": "object" }),
+            }
+        }
+
+        fn effect(&self) -> Effect {
+            self.effect
+        }
+
+        async fn call(&self, input: serde_json::Value) -> Result<String, String> {
+            use std::sync::atomic::Ordering::SeqCst;
+            let msg = input["msg"].as_str().unwrap_or_default().to_string();
+            let now = self.active.fetch_add(1, SeqCst) + 1;
+            self.peak.fetch_max(now, SeqCst);
+            self.log.lock().unwrap().push(msg.clone());
+            // Long enough that sequential execution cannot look concurrent.
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            self.active.fetch_sub(1, SeqCst);
+            Ok(msg)
+        }
+    }
+
+    /// The win: a model that asks for three reads at once gets three reads at
+    /// once, rather than one after another.
+    #[tokio::test]
+    async fn adjacent_read_only_calls_run_at_the_same_time() {
+        let watch = Watch::default();
+        let provider = Scripted::provider(vec![
+            tool_calls(&[("a", "look"), ("b", "look"), ("c", "look")]),
+            says("done"),
+        ]);
+        let mut chat = Chat::new(provider, "test-model");
+        chat.tools = vec![Observer::boxed("look", Effect::ReadOnly, &watch)];
+        let mut session = Session::new();
+        let (out, _) = run(&chat, &mut session, "read three things").await;
+
+        assert!(out.is_ok());
+        assert_eq!(watch.peak(), 3);
+    }
+
+    /// A mutating call is not something to race, so it runs alone.
+    #[tokio::test]
+    async fn a_mutating_call_never_overlaps_anything() {
+        let watch = Watch::default();
+        let provider = Scripted::provider(vec![
+            tool_calls(&[("a", "edit"), ("b", "edit"), ("c", "edit")]),
+            says("done"),
+        ]);
+        let mut chat = Chat::new(provider, "test-model");
+        chat.tools = vec![Observer::boxed("edit", Effect::Mutating, &watch)];
+        let mut session = Session::new();
+        let _ = run(&chat, &mut session, "edit three things").await;
+
+        assert_eq!(watch.peak(), 1);
+        assert_eq!(watch.order(), ["a", "b", "c"]);
+    }
+
+    /// Only *adjacent* reads overlap. Hoisting every read to the front of the
+    /// round would be faster and would let a read see the file as it was
+    /// before a write in the same round — a wrong answer instead of a slow
+    /// one.
+    #[tokio::test]
+    async fn a_write_between_two_reads_keeps_its_place() {
+        let watch = Watch::default();
+        let provider = Scripted::provider(vec![
+            tool_calls(&[("a", "look"), ("b", "edit"), ("c", "look")]),
+            says("done"),
+        ]);
+        let mut chat = Chat::new(provider, "test-model");
+        chat.tools = vec![
+            Observer::boxed("look", Effect::ReadOnly, &watch),
+            Observer::boxed("edit", Effect::Mutating, &watch),
+        ];
+        let mut session = Session::new();
+        let _ = run(&chat, &mut session, "read, write, read").await;
+
+        assert_eq!(watch.order(), ["a", "b", "c"]);
+        assert_eq!(watch.peak(), 1);
+    }
+
+    /// Whatever order they finished in, the model sees them in the order it
+    /// asked — Gemini pairs function responses by position, and a shell
+    /// renders the events as a transcript.
+    #[tokio::test]
+    async fn results_are_recorded_and_announced_in_call_order() {
+        let watch = Watch::default();
+        let provider = Scripted::provider(vec![
+            tool_calls(&[("a", "look"), ("b", "look"), ("c", "look")]),
+            says("done"),
+        ]);
+        let mut chat = Chat::new(provider, "test-model");
+        chat.tools = vec![Observer::boxed("look", Effect::ReadOnly, &watch)];
+        let mut session = Session::new();
+        let (_, events) = run(&chat, &mut session, "read three things").await;
+
+        let announced: Vec<String> = events
+            .iter()
+            .filter_map(|e| match e {
+                TurnEvent::ToolResult { content, .. } => Some(content.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(announced, ["a", "b", "c"]);
+
+        let logged: Vec<String> = session
+            .events()
+            .iter()
+            .filter_map(|e| match e {
+                SessionEvent::ToolResult { content, .. } => Some(content.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(logged, ["a", "b", "c"]);
+    }
+
+    /// A refusal is settled before anything runs, and still arrives as
+    /// `ToolDenied` rather than `ToolResult` — with the neighbouring reads
+    /// unaffected.
+    #[tokio::test]
+    async fn a_denial_in_a_batch_stops_only_itself() {
+        let watch = Watch::default();
+        let provider = Scripted::provider(vec![
+            tool_calls(&[("a", "look"), ("b", "edit"), ("c", "look")]),
+            says("done"),
+        ]);
+        let mut chat = Chat::new(provider, "test-model");
+        chat.tools = vec![
+            Observer::boxed("look", Effect::ReadOnly, &watch),
+            Observer::boxed("edit", Effect::Mutating, &watch),
+        ];
+        chat.approver = Some(Arc::new(Denies));
+        let mut session = Session::new();
+        let (_, events) = run(&chat, &mut session, "read, write, read").await;
+
+        // The write never ran; the reads did, in place.
+        assert_eq!(watch.order(), ["a", "c"]);
+        assert!(events.iter().any(|e| matches!(
+            e,
+            TurnEvent::ToolDenied { name, .. } if name == "edit"
+        )));
+        assert!(!events.iter().any(|e| matches!(
+            e,
+            TurnEvent::ToolResult { name, .. } if name == "edit"
+        )));
+        // The log still carries a result for it: a tool_use without one is
+        // invalid on replay.
+        let logged: Vec<&str> = session
+            .events()
+            .iter()
+            .filter_map(|e| match e {
+                SessionEvent::ToolResult { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(logged, ["look", "edit", "look"]);
+    }
+
+    /// Refuses everything mutating, with a reason.
+    struct Denies;
+
+    #[async_trait::async_trait]
+    impl Approver for Denies {
+        async fn approve(&self, call: &PendingCall<'_>) -> Decision {
+            match call.effect {
+                Effect::Mutating => Decision::Deny("not this time".into()),
+                _ => Decision::Allow,
+            }
+        }
     }
 }

@@ -23,7 +23,8 @@ pub use provider::{
     ChatRequest, EventStream, Provider, ProviderError, StreamEvent, Thinking, ToolDef, Usage,
 };
 pub use session::{
-    Checkpoint, Session, SessionCost, SessionEvent, SourcedBlock, SourcedMessage, elision_marker,
+    Checkpoint, LoadReport, Session, SessionCost, SessionEvent, SourcedBlock, SourcedMessage,
+    elision_marker, orphan_marker,
 };
 pub use todo::{TodoItem, TodoStatus};
 pub use tool::{Effect, Tool};
