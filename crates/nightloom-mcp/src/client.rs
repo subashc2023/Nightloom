@@ -38,17 +38,37 @@ pub struct ServerInfo {
 
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, McpError>>>>>;
 
-/// A connected MCP server.
-pub struct Client {
-    /// The name this server is configured under, used to prefix its tools.
-    name: String,
+/// How a client reaches its server.
+///
+/// The two differ in where request/reply correlation lives, which is the only
+/// thing above this layer that would notice. A pipe is shared by every
+/// in-flight call, so replies have to be matched back by id and a reader task
+/// has to be running to do it. HTTP correlates by construction — the answer
+/// arrives on the request's own response — so that whole apparatus is absent
+/// on that side rather than stubbed out.
+enum Wire {
+    Stream(StreamWire),
+    Http(crate::http::HttpWire),
+}
+
+/// A server on the other end of a pipe, usually a child process.
+struct StreamWire {
     writer: tokio::sync::Mutex<Box<dyn AsyncWrite + Send + Unpin>>,
     pending: Pending,
-    next_id: AtomicU64,
     stderr: Arc<Mutex<String>>,
     /// Kept alive for the life of the client: dropping the handle would
     /// orphan the process rather than stop it.
     _child: Option<tokio::process::Child>,
+}
+
+/// A connected MCP server.
+pub struct Client {
+    /// The name this server is configured under, used to prefix its tools.
+    name: String,
+    /// One counter whichever wire is in use: a JSON-RPC id has to be unique
+    /// per connection, and how the bytes travel does not change that.
+    next_id: AtomicU64,
+    wire: Wire,
 }
 
 impl Client {
@@ -112,12 +132,28 @@ impl Client {
         spawn_reader(reader, Arc::clone(&pending), Arc::clone(&stderr));
         Self {
             name: name.to_string(),
-            writer: tokio::sync::Mutex::new(Box::new(writer)),
-            pending,
             next_id: AtomicU64::new(1),
-            stderr,
-            _child: child,
+            wire: Wire::Stream(StreamWire {
+                writer: tokio::sync::Mutex::new(Box::new(writer)),
+                pending,
+                stderr,
+                _child: child,
+            }),
         }
+    }
+
+    /// Talk to a server that lives behind a URL, over Streamable HTTP.
+    ///
+    /// Nothing is opened here — there is no connection to open. The first
+    /// evidence that a URL is wrong or a token is stale arrives on
+    /// [`Client::initialize`], which is the same place a stdio server that
+    /// starts and then refuses the handshake fails.
+    pub fn http(name: &str, url: &str, headers: &[(String, String)]) -> Result<Self, McpError> {
+        Ok(Self {
+            name: name.to_string(),
+            next_id: AtomicU64::new(1),
+            wire: Wire::Http(crate::http::HttpWire::new(url, headers)?),
+        })
     }
 
     pub fn name(&self) -> &str {
@@ -161,6 +197,12 @@ impl Client {
                 .unwrap_or(PROTOCOL_VERSION)
                 .to_string(),
         };
+        // Over HTTP the agreed version rides on every later request as a
+        // header. Recorded before the notification below, so even that first
+        // message carries it.
+        if let Wire::Http(w) = &self.wire {
+            w.set_protocol_version(&info.protocol_version);
+        }
         // The spec requires this before any other request; a strict server
         // rejects everything until it arrives.
         self.notify("notifications/initialized", json!({})).await?;
@@ -210,10 +252,56 @@ impl Client {
 
     async fn request(&self, method: &str, params: Value) -> Result<Value, McpError> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let message = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
+        let reply = match &self.wire {
+            Wire::Stream(w) => w.request(id, &message).await?,
+            // The same cap as the stdio side, applied in one place rather than
+            // configured on the HTTP client: a request that streams its reply
+            // has no single deadline reqwest could enforce for us.
+            Wire::Http(w) => match tokio::time::timeout(REQUEST_TIMEOUT, w.send(&message)).await {
+                Err(_) => return Err(McpError::Timeout(REQUEST_TIMEOUT)),
+                Ok(sent) => sent?.ok_or_else(|| {
+                    McpError::Protocol("the server accepted the request without answering".into())
+                })?,
+            },
+        };
+        unwrap_reply(reply)
+    }
+
+    async fn notify(&self, method: &str, params: Value) -> Result<(), McpError> {
+        let message = json!({ "jsonrpc": "2.0", "method": method, "params": params });
+        match &self.wire {
+            Wire::Stream(w) => w.write_line(&message).await,
+            Wire::Http(w) => tokio::time::timeout(REQUEST_TIMEOUT, w.send(&message))
+                .await
+                .map_err(|_| McpError::Timeout(REQUEST_TIMEOUT))?
+                .map(|_| ()),
+        }
+    }
+}
+
+/// Turn a JSON-RPC reply into a result, whichever wire carried it.
+///
+/// Shared rather than done per transport, because the distinction it draws is
+/// the protocol's and not the pipe's: an `error` object is a server that
+/// answered and said no, which is a different thing from a connection that
+/// broke.
+fn unwrap_reply(message: Value) -> Result<Value, McpError> {
+    if let Some(err) = message.get("error").filter(|e| !e.is_null()) {
+        return Err(McpError::Rpc {
+            code: err["code"].as_i64().unwrap_or(0),
+            message: err["message"].as_str().unwrap_or("unknown").to_string(),
+        });
+    }
+    Ok(message.get("result").cloned().unwrap_or(Value::Null))
+}
+
+impl StreamWire {
+    /// Write one request and wait for the reply carrying its id.
+    async fn request(&self, id: u64, message: &Value) -> Result<Value, McpError> {
         let (tx, rx) = oneshot::channel();
         self.pending.lock().unwrap().insert(id, tx);
-        let line = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
-        if let Err(e) = self.write_line(&line).await {
+        if let Err(e) = self.write_line(message).await {
             self.pending.lock().unwrap().remove(&id);
             return Err(e);
         }
@@ -227,11 +315,6 @@ impl Client {
                 Err(McpError::Timeout(REQUEST_TIMEOUT))
             }
         }
-    }
-
-    async fn notify(&self, method: &str, params: Value) -> Result<(), McpError> {
-        self.write_line(&json!({ "jsonrpc": "2.0", "method": method, "params": params }))
-            .await
     }
 
     async fn write_line(&self, value: &Value) -> Result<(), McpError> {
@@ -329,15 +412,10 @@ fn spawn_reader(
             let Some(tx) = pending.lock().unwrap().remove(&id) else {
                 continue;
             };
-            let reply = if let Some(err) = msg.get("error").filter(|e| !e.is_null()) {
-                Err(McpError::Rpc {
-                    code: err["code"].as_i64().unwrap_or(0),
-                    message: err["message"].as_str().unwrap_or("unknown").to_string(),
-                })
-            } else {
-                Ok(msg.get("result").cloned().unwrap_or(Value::Null))
-            };
-            let _ = tx.send(reply);
+            // Handed on raw: whether a reply is a result or an error is the
+            // protocol's question, and `unwrap_reply` answers it identically
+            // for both wires.
+            let _ = tx.send(Ok(msg));
         }
         // EOF. Everyone still waiting gets told, rather than waiting out the
         // full timeout for an answer that is never coming.

@@ -109,13 +109,18 @@ impl ServerReport {
 
 async fn connect_one(name: &str, spec: &crate::ServerSpec, workspace: &Path) -> ServerReport {
     let outcome = async {
-        let env: Vec<(String, String)> = spec
-            .env
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        let cwd = spec.cwd.as_ref().map(Path::new).unwrap_or(workspace);
-        let client = Client::stdio(name, &spec.command, &spec.args, &env, Some(cwd)).await?;
+        let client = match spec.transport()? {
+            crate::Transport::Stdio {
+                command,
+                args,
+                env,
+                cwd,
+            } => {
+                let cwd = cwd.as_deref().map(Path::new).unwrap_or(workspace);
+                Client::stdio(name, &command, &args, &env, Some(cwd)).await?
+            }
+            crate::Transport::Http { url, headers } => Client::http(name, &url, &headers)?,
+        };
         client.initialize().await?;
         let client = Arc::new(client);
         let listed = client.list_tools().await?;

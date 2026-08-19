@@ -25,10 +25,11 @@
 
 mod client;
 mod config;
+mod http;
 mod tool;
 
 pub use client::{Client, ServerInfo};
-pub use config::{McpConfig, ServerSpec};
+pub use config::{McpConfig, ServerSpec, Transport};
 pub use tool::{McpTool, ServerReport, connect_all};
 
 /// Everything that can go wrong talking to an MCP server.
@@ -53,6 +54,22 @@ pub enum McpError {
     Closed(Option<String>),
     #[error("MCP request timed out after {0:?}")]
     Timeout(std::time::Duration),
+    /// A non-2xx answer from an HTTP server. Carries a trimmed body, because
+    /// the status alone rarely says which of a URL, a token or a payload was
+    /// wrong.
+    #[error("MCP server returned HTTP {status}{}", if .body.is_empty() { String::new() } else { format!(": {}", .body) })]
+    Http { status: u16, body: String },
+    /// The server forgot the session, which it is entitled to do at any time.
+    /// Distinct from a plain 404 so a caller can tell "reconnect" from "that
+    /// URL is wrong".
+    #[error("the MCP session expired; the server no longer recognises it")]
+    SessionExpired,
+    /// A `${VAR}` in the config with nothing behind it.
+    #[error("{0} is referenced in mcp.json but not set in the environment")]
+    MissingEnv(String),
+    /// The entry in `mcp.json` does not describe a reachable server.
+    #[error("invalid MCP server entry: {0}")]
+    BadSpec(String),
     #[error("could not read MCP config {path}: {source}")]
     Config {
         path: String,

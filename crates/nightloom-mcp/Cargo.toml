@@ -11,3 +11,11 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+reqwest.workspace = true
+eventsource-stream.workspace = true
+futures.workspace = true
+
+[dev-dependencies]
+# Only to hand-build a `reqwest::Response` in the SSE tests: the reader has
+# to be exercised without a server on a port.
+http = "1"
