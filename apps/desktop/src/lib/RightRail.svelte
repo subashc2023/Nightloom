@@ -1,40 +1,45 @@
 <script lang="ts">
   import ProviderRail from "./ProviderRail.svelte";
   import TaskPanel from "./TaskPanel.svelte";
+  import ContextPanel from "./ContextPanel.svelte";
   import { currentTodos } from "./state.svelte";
 
-  let tab = $state<"connection" | "tasks">("connection");
+  type Tab = "connection" | "tasks" | "context";
+
+  let tab = $state<Tab>("connection");
 
   const open = $derived(
     currentTodos().filter((t) => t.status !== "completed").length,
   );
+
+  const TABS: { id: Tab; label: string }[] = [
+    { id: "connection", label: "Model" },
+    { id: "tasks", label: "Tasks" },
+    { id: "context", label: "Context" },
+  ];
 </script>
 
 <aside class="rail">
   <div class="tabs" role="tablist">
-    <button
-      role="tab"
-      aria-selected={tab === "connection"}
-      class:active={tab === "connection"}
-      onclick={() => (tab = "connection")}
-    >
-      Connection
-    </button>
-    <button
-      role="tab"
-      aria-selected={tab === "tasks"}
-      class:active={tab === "tasks"}
-      onclick={() => (tab = "tasks")}
-    >
-      Tasks
-      {#if open > 0}<span class="badge">{open}</span>{/if}
-    </button>
+    {#each TABS as t (t.id)}
+      <button
+        role="tab"
+        aria-selected={tab === t.id}
+        class:active={tab === t.id}
+        onclick={() => (tab = t.id)}
+      >
+        {t.label}
+        {#if t.id === "tasks" && open > 0}<span class="badge">{open}</span>{/if}
+      </button>
+    {/each}
   </div>
 
   {#if tab === "connection"}
     <ProviderRail />
-  {:else}
+  {:else if tab === "tasks"}
     <TaskPanel />
+  {:else}
+    <ContextPanel />
   {/if}
 </aside>
 
@@ -47,40 +52,51 @@
     min-height: 0;
     overflow: hidden;
   }
+  /* A segmented control rather than underlined tabs: three short words in a
+     240px column read better as one pill than as three headings. */
   .tabs {
     display: flex;
     flex-shrink: 0;
-    border-bottom: 1px solid var(--border);
+    gap: 2px;
+    margin: 0.6rem 0.7rem 0;
+    padding: 2px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
   }
   .tabs button {
     flex: 1;
     background: transparent;
     border: none;
-    border-bottom: 2px solid transparent;
+    border-radius: 6px;
     color: var(--dim);
     font-family: inherit;
-    font-size: 0.75rem;
-    padding: 0.5rem 0.4rem;
+    font-size: 0.72rem;
+    padding: 0.28rem 0.3rem;
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 0.3rem;
+    gap: 0.28rem;
+    transition:
+      background 0.12s ease,
+      color 0.12s ease;
   }
   .tabs button:hover {
     color: var(--text);
   }
   .tabs button.active {
     color: var(--text);
-    border-bottom-color: var(--accent);
+    background: var(--panel);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
   }
   .badge {
     background: var(--accent);
     color: var(--bg);
     border-radius: 999px;
-    font-size: 0.62rem;
+    font-size: 0.6rem;
     line-height: 1;
-    padding: 0.15rem 0.32rem;
+    padding: 0.13rem 0.28rem;
     font-variant-numeric: tabular-nums;
   }
 </style>

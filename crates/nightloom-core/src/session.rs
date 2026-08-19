@@ -1,3 +1,4 @@
+use crate::context::{BlockSource, estimate_tokens};
 use crate::message::{ContentBlock, ImageInput, Message, Role};
 use crate::provider::Usage;
 use crate::todo::TodoItem;
@@ -117,6 +118,151 @@ pub enum SessionEvent {
         todos: Vec<TodoItem>,
         at: DateTime<Utc>,
     },
+    /// The listed events keep their place in the conversation but stop
+    /// carrying their content: the projection substitutes a marker naming
+    /// roughly what was removed.
+    ///
+    /// Elision is *content* removal, never *structural* removal, and that
+    /// distinction is the whole safety argument. Dropping an event outright
+    /// would be the obvious implementation and it is unusable: an assistant
+    /// `tool_use` whose `tool_result` vanished — or the reverse — is a 400
+    /// on every provider, which is the same trap that forces
+    /// [`Session::rewind`] to cut only at a user message. Because an elided
+    /// event still projects a block of the same kind in the same position,
+    /// with `tool_use` and reasoning handles kept verbatim, an elision
+    /// cannot produce an invalid request by construction rather than by a
+    /// validity check somebody has to remember to run.
+    ///
+    /// It is also a marker rather than a rewrite, like [`SessionEvent::Rewind`]
+    /// and [`SessionEvent::Compaction`]: the log keeps the content, so a UI
+    /// can still show it, [`Session::unelide`] can bring it back, and a
+    /// rewind that supersedes *this* event restores what it hid.
+    ///
+    /// What it does not do is refund the cache. An elision in the middle of
+    /// a conversation changes the bytes at that point, so every cached
+    /// prefix past it is invalidated and the next turn pays full price for
+    /// the remainder. That is usually a good trade — a 40k-token tool result
+    /// costs more than one missed prefix — but it is a cost, and a shell
+    /// should say so.
+    Elide {
+        /// Indices into the event log. Always live, and always events that
+        /// [`Session::is_elidable`] accepts.
+        targets: Vec<usize>,
+        at: DateTime<Utc>,
+    },
+    /// Restores content hidden by an earlier [`SessionEvent::Elide`].
+    ///
+    /// Exists because the alternative to an undo is a user who does not dare
+    /// use the feature: elision looks destructive even though it never was,
+    /// and the log has held the content the whole time.
+    Unelide {
+        targets: Vec<usize>,
+        at: DateTime<Utc>,
+    },
+}
+
+/// A projected content block with the log event that produced it.
+///
+/// The mapping exists only inside the projection — by the time a
+/// [`Message`] is built, a tool result has been coalesced with its
+/// neighbours and a compaction summary has replaced the events it
+/// superseded. A shell that wants to *act* on an item in the context needs
+/// the index back, so the projection hands it out rather than making every
+/// caller re-derive it.
+#[derive(Debug, Clone)]
+pub struct SourcedBlock {
+    pub block: ContentBlock,
+    pub source: BlockSource,
+}
+
+impl SourcedBlock {
+    fn event(block: ContentBlock, index: usize) -> Self {
+        Self {
+            block,
+            source: BlockSource::Event { index },
+        }
+    }
+}
+
+/// A projected message with per-block provenance.
+#[derive(Debug, Clone)]
+pub struct SourcedMessage {
+    pub role: Role,
+    pub content: Vec<SourcedBlock>,
+}
+
+/// What an elided event says in place of its content.
+///
+/// Prompt text, addressed to the model, like a tool description or a denial
+/// reason. It names a size because the model can otherwise only see that
+/// something is missing, and it says the content still exists because the
+/// useful next move — asking for it — is only available if the model knows
+/// it is there to ask for.
+pub fn elision_marker(tokens: u64, images: usize) -> String {
+    let what = match (tokens, images) {
+        (0, 0) => "Content was".to_string(),
+        (0, n) => format!("{n} image{} {} ", n_plural(n), were_or_was(n)),
+        (t, 0) => format!("About {t} tokens of content were "),
+        (t, n) => format!(
+            "About {t} tokens of content and {n} image{} were ",
+            n_plural(n)
+        ),
+    };
+    let what = what.trim_end();
+    format!(
+        "[{what} removed from the context by the user to save space. \
+         It is still in the session log; ask if you need it.]"
+    )
+}
+
+/// An elided assistant message: readable content replaced by a marker,
+/// replay tokens kept verbatim.
+///
+/// `ToolUse` survives because a call whose result went missing — or the
+/// reverse — is rejected by every provider, and because its `signature`
+/// carries Gemini's `thoughtSignature`, which round two of a tool loop
+/// hard-requires. `ReasoningRef` survives for the same reason on the OpenAI
+/// side. What goes is what a reader would call content: the text and the
+/// thinking.
+///
+/// Dropping thinking is safe *between* turns and would not be inside one.
+/// Anthropic wants the final assistant turn's thinking blocks back while a
+/// tool loop is still open and ignores them on earlier turns; elision acts
+/// on a session whose last round has already closed, so the loop that needed
+/// them is over.
+fn elide_assistant(blocks: &[ContentBlock], index: usize) -> Vec<SourcedBlock> {
+    let mut dropped = 0u64;
+    let mut kept: Vec<SourcedBlock> = Vec::new();
+    for b in blocks {
+        match b {
+            ContentBlock::ToolUse { .. } | ContentBlock::ReasoningRef { .. } => {
+                kept.push(SourcedBlock::event(b.clone(), index));
+            }
+            ContentBlock::Text { text } | ContentBlock::Thinking { text, .. } => {
+                dropped += estimate_tokens(text);
+            }
+            _ => {}
+        }
+    }
+    // The marker leads. An assistant message that opens with text and then
+    // calls a tool is the ordinary shape, and it keeps any `ReasoningRef`
+    // adjacent to the call it produced, which OpenAI Responses requires.
+    let mut out = vec![SourcedBlock::event(
+        ContentBlock::Text {
+            text: elision_marker(dropped, 0),
+        },
+        index,
+    )];
+    out.extend(kept);
+    out
+}
+
+fn n_plural(n: usize) -> &'static str {
+    if n == 1 { "" } else { "s" }
+}
+
+fn were_or_was(n: usize) -> &'static str {
+    if n == 1 { "was" } else { "were" }
 }
 
 pub struct Session {
@@ -335,6 +481,120 @@ impl Session {
         Ok(dropped)
     }
 
+    /// Which events are currently standing in for their content.
+    ///
+    /// Elide and unelide markers are applied in log order, so the last word
+    /// on any index wins. Only *live* markers count, which is what makes
+    /// rewind compose with elision for free: rewinding past an elision
+    /// supersedes the marker along with everything else in the range, and
+    /// the content comes back — the same property that lets a rewind undo a
+    /// compaction.
+    pub(crate) fn elide_flags(&self) -> Vec<bool> {
+        let live = self.live_flags();
+        let mut elided = vec![false; self.events.len()];
+        for (i, e) in self.events.iter().enumerate() {
+            if !live[i] {
+                continue;
+            }
+            let (targets, on) = match e {
+                SessionEvent::Elide { targets, .. } => (targets, true),
+                SessionEvent::Unelide { targets, .. } => (targets, false),
+                _ => continue,
+            };
+            for &t in targets {
+                if let Some(flag) = elided.get_mut(t) {
+                    *flag = on;
+                }
+            }
+        }
+        elided
+    }
+
+    /// Whether the event at `index` carries content that elision can remove.
+    ///
+    /// The three that do are the three that put bytes on the wire: a user
+    /// message, an assistant reply, and a tool result. A `Compaction` is
+    /// excluded deliberately even though its summary is content — it is
+    /// already the compressed form of everything behind it, and hiding it
+    /// would leave the projection restarting from a marker that explains
+    /// nothing.
+    pub fn is_elidable(&self, index: usize) -> bool {
+        matches!(
+            self.events.get(index),
+            Some(
+                SessionEvent::UserMessage { .. }
+                    | SessionEvent::AssistantMessage { .. }
+                    | SessionEvent::ToolResult { .. }
+            )
+        )
+    }
+
+    /// Replace the content of `targets` with a marker, returning how many
+    /// were newly hidden.
+    ///
+    /// Nothing is deleted, no cost is refunded, and the files a hidden tool
+    /// call wrote are still on disk — this removes bytes from the *next
+    /// request*, not from history. Already-elided targets are accepted and
+    /// not counted, so a UI can re-send a selection without special-casing.
+    pub fn elide(&mut self, targets: impl IntoIterator<Item = usize>) -> Result<usize, String> {
+        let targets: Vec<usize> = targets.into_iter().collect();
+        let live = self.live_flags();
+        let already = self.elide_flags();
+        let mut fresh = Vec::new();
+        for t in targets {
+            match self.events.get(t) {
+                None => return Err(format!("no event at {t}")),
+                Some(_) if !self.is_elidable(t) => {
+                    return Err(format!(
+                        "event {t} carries no removable content; only user messages, assistant replies and tool results do"
+                    ));
+                }
+                Some(_) => {}
+            }
+            if !live[t] {
+                return Err(format!(
+                    "event {t} is not part of the live conversation and is already costing nothing"
+                ));
+            }
+            if !already[t] && !fresh.contains(&t) {
+                fresh.push(t);
+            }
+        }
+        if fresh.is_empty() {
+            return Ok(0);
+        }
+        let n = fresh.len();
+        self.record(SessionEvent::Elide {
+            targets: fresh,
+            at: Utc::now(),
+        });
+        Ok(n)
+    }
+
+    /// Bring back content hidden by [`Session::elide`], returning how many
+    /// were restored.
+    pub fn unelide(&mut self, targets: impl IntoIterator<Item = usize>) -> Result<usize, String> {
+        let elided = self.elide_flags();
+        let mut restore = Vec::new();
+        for t in targets {
+            if t >= self.events.len() {
+                return Err(format!("no event at {t}"));
+            }
+            if elided[t] && !restore.contains(&t) {
+                restore.push(t);
+            }
+        }
+        if restore.is_empty() {
+            return Ok(0);
+        }
+        let n = restore.len();
+        self.record(SessionEvent::Unelide {
+            targets: restore,
+            at: Utc::now(),
+        });
+        Ok(n)
+    }
+
     /// The current task list: the most recent `TodoState`, or empty. A
     /// compaction clears it — the summary supersedes the plan that produced
     /// it, and a stale list would outlive the work it described.
@@ -394,7 +654,24 @@ impl Session {
     /// and an "all blocks are text" rule would quietly drop the clock, the
     /// gauge and the task list for exactly the turns that carry an image.
     pub fn messages_with_sidecar(&self, sidecar: Option<&str>) -> Vec<Message> {
-        let mut messages = self.project();
+        self.messages_sourced(sidecar)
+            .into_iter()
+            .map(|m| Message {
+                role: m.role,
+                content: m.content.into_iter().map(|b| b.block).collect(),
+            })
+            .collect()
+    }
+
+    /// The same projection, with each block tagged by the event that
+    /// produced it.
+    ///
+    /// This is the projection; [`Session::messages_with_sidecar`] is it with
+    /// the tags dropped. One implementation rather than two, because a
+    /// context view that itemized a *different* list from the one the engine
+    /// sends would be worse than no view at all.
+    pub fn messages_sourced(&self, sidecar: Option<&str>) -> Vec<SourcedMessage> {
+        let mut messages = self.project_sourced();
         let Some(sidecar) = sidecar.map(str::trim).filter(|s| !s.is_empty()) else {
             return messages;
         };
@@ -403,43 +680,74 @@ impl Session {
             && !last
                 .content
                 .iter()
-                .any(|b| matches!(b, ContentBlock::ToolResult { .. }))
+                .any(|b| matches!(b.block, ContentBlock::ToolResult { .. }))
         {
-            last.content.push(ContentBlock::Text {
-                text: sidecar.to_string(),
+            last.content.push(SourcedBlock {
+                block: ContentBlock::Text {
+                    text: sidecar.to_string(),
+                },
+                source: BlockSource::Sidecar,
             });
         }
         messages
     }
 
-    fn project(&self) -> Vec<Message> {
-        let mut messages: Vec<Message> = Vec::new();
-        for (_, e) in self.live_events() {
+    fn project_sourced(&self) -> Vec<SourcedMessage> {
+        let elided = self.elide_flags();
+        let mut messages: Vec<SourcedMessage> = Vec::new();
+        for (i, e) in self.live_events() {
             match e {
                 SessionEvent::UserMessage { text, images, .. } => {
-                    let mut content: Vec<ContentBlock> = images
-                        .iter()
-                        .map(|i| ContentBlock::Image {
-                            media_type: i.media_type.clone(),
-                            data: i.data.clone(),
-                        })
-                        .collect();
-                    // Images lead, as both Anthropic and OpenAI advise, and
-                    // an empty caption is omitted rather than sent: an empty
-                    // text block is rejected on the wire, and "here is an
-                    // image" with nothing said about it is a real turn.
-                    if !text.is_empty() || content.is_empty() {
-                        content.push(ContentBlock::Text { text: text.clone() });
-                    }
-                    messages.push(Message {
+                    let content = if elided[i] {
+                        vec![SourcedBlock::event(
+                            ContentBlock::Text {
+                                text: elision_marker(estimate_tokens(text), images.len()),
+                            },
+                            i,
+                        )]
+                    } else {
+                        let mut content: Vec<SourcedBlock> = images
+                            .iter()
+                            .map(|img| {
+                                SourcedBlock::event(
+                                    ContentBlock::Image {
+                                        media_type: img.media_type.clone(),
+                                        data: img.data.clone(),
+                                    },
+                                    i,
+                                )
+                            })
+                            .collect();
+                        // Images lead, as both Anthropic and OpenAI advise,
+                        // and an empty caption is omitted rather than sent:
+                        // an empty text block is rejected on the wire, and
+                        // "here is an image" with nothing said about it is a
+                        // real turn.
+                        if !text.is_empty() || content.is_empty() {
+                            content.push(SourcedBlock::event(
+                                ContentBlock::Text { text: text.clone() },
+                                i,
+                            ));
+                        }
+                        content
+                    };
+                    messages.push(SourcedMessage {
                         role: Role::User,
                         content,
                     });
                 }
                 SessionEvent::AssistantMessage { blocks, .. } => {
-                    messages.push(Message {
+                    let content = if elided[i] {
+                        elide_assistant(blocks, i)
+                    } else {
+                        blocks
+                            .iter()
+                            .map(|b| SourcedBlock::event(b.clone(), i))
+                            .collect()
+                    };
+                    messages.push(SourcedMessage {
                         role: Role::Assistant,
-                        content: blocks.clone(),
+                        content,
                     });
                 }
                 SessionEvent::ToolResult {
@@ -449,25 +757,34 @@ impl Session {
                     is_error,
                     ..
                 } => {
+                    // Elided or not, this stays a `ToolResult` block with the
+                    // same id: it is the other half of a `tool_use`, and a
+                    // result that turned into plain text would orphan the
+                    // call it answers.
                     let block = ContentBlock::ToolResult {
                         tool_use_id: tool_use_id.clone(),
                         name: name.clone(),
-                        content: content.clone(),
+                        content: if elided[i] {
+                            elision_marker(estimate_tokens(content), 0)
+                        } else {
+                            content.clone()
+                        },
                         is_error: *is_error,
                     };
+                    let block = SourcedBlock::event(block, i);
                     // Results from one round of calls coalesce into the user
                     // message a provider expects them in.
                     match messages.last_mut() {
                         Some(m)
                             if m.role == Role::User
                                 && matches!(
-                                    m.content.last(),
+                                    m.content.last().map(|b| &b.block),
                                     Some(ContentBlock::ToolResult { .. })
                                 ) =>
                         {
                             m.content.push(block)
                         }
-                        _ => messages.push(Message {
+                        _ => messages.push(SourcedMessage {
                             role: Role::User,
                             content: vec![block],
                         }),
@@ -476,9 +793,17 @@ impl Session {
                 SessionEvent::Compaction { summary, .. } => {
                     // The summary supersedes everything projected so far.
                     messages.clear();
-                    messages.push(Message::user(format!(
-                        "The conversation so far was compacted into this summary:\n\n{summary}"
-                    )));
+                    messages.push(SourcedMessage {
+                        role: Role::User,
+                        content: vec![SourcedBlock::event(
+                            ContentBlock::Text {
+                                text: format!(
+                                    "The conversation so far was compacted into this summary:\n\n{summary}"
+                                ),
+                            },
+                            i,
+                        )],
+                    });
                 }
                 _ => {}
             }
@@ -561,6 +886,264 @@ impl JsonlLog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::{BlockKind, BlockSource, WireView};
+    use crate::prompt::{Segment, SegmentKind, SystemPrompt};
+
+    /// The content of a `ToolResult` block, for assertions.
+    fn tool_content(block: &ContentBlock) -> &str {
+        match block {
+            ContentBlock::ToolResult { content, .. } => content,
+            other => panic!("expected a tool result, got {other:?}"),
+        }
+    }
+
+    /// One tool round: user (1), assistant with thinking + tool_use (2), the
+    /// result (3), the final reply (4).
+    fn tool_round_session() -> Session {
+        let mut s = Session::new();
+        s.record_user("read the file");
+        s.record_assistant(
+            "test-model",
+            vec![
+                ContentBlock::Thinking {
+                    text: "I should read it".into(),
+                    signature: Some("sig".into()),
+                },
+                ContentBlock::ToolUse {
+                    id: "c1".into(),
+                    name: "read_file".into(),
+                    input: serde_json::json!({"path": "a.txt"}),
+                    signature: Some("gemini-sig".into()),
+                },
+            ],
+            Some("tool_use".into()),
+            Usage::default(),
+        );
+        s.record_tool_result(&ContentBlock::ToolResult {
+            tool_use_id: "c1".into(),
+            name: "read_file".into(),
+            content: "x".repeat(4_000),
+            is_error: false,
+        });
+        s.record_assistant(
+            "test-model",
+            vec![ContentBlock::Text {
+                text: "it says x a lot".into(),
+            }],
+            Some("end_turn".into()),
+            Usage::default(),
+        );
+        s
+    }
+
+    #[test]
+    fn eliding_a_tool_result_keeps_it_paired_to_its_call() {
+        let mut s = tool_round_session();
+        assert_eq!(s.elide([3]).unwrap(), 1);
+
+        let msgs = s.messages();
+        // Same four messages in the same roles: elision removes content, not
+        // structure.
+        assert_eq!(msgs.len(), 4);
+        match &msgs[2].content[0] {
+            ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                ..
+            } => {
+                assert_eq!(tool_use_id, "c1", "the call must keep its answer");
+                assert!(content.contains("removed from the context"), "{content}");
+                assert!(content.contains("1000 tokens"), "size named: {content}");
+                assert!(content.len() < 400, "the marker replaced the payload");
+            }
+            other => panic!("expected a tool result, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn eliding_an_assistant_turn_keeps_its_tool_calls_and_replay_tokens() {
+        let mut s = tool_round_session();
+        s.elide([2]).unwrap();
+
+        let blocks = &s.messages()[1].content;
+        // Marker first, then the call — thinking is gone, the call is not.
+        assert!(matches!(&blocks[0], ContentBlock::Text { text } if text.contains("removed")));
+        match &blocks[1] {
+            ContentBlock::ToolUse { id, signature, .. } => {
+                assert_eq!(id, "c1");
+                assert_eq!(
+                    signature.as_deref(),
+                    Some("gemini-sig"),
+                    "a replay token is not content and must survive elision"
+                );
+            }
+            other => panic!("expected the tool call to survive, got {other:?}"),
+        }
+        assert_eq!(blocks.len(), 2, "thinking dropped, nothing else");
+    }
+
+    #[test]
+    fn elision_is_reversible_and_the_log_kept_everything() {
+        let mut s = tool_round_session();
+        s.elide([3]).unwrap();
+        assert!(tool_content(&s.messages()[2].content[0]).contains("removed"));
+
+        assert_eq!(s.unelide([3]).unwrap(), 1);
+        assert!(
+            tool_content(&s.messages()[2].content[0]).starts_with("xxxx"),
+            "the payload was never gone from the log"
+        );
+        // Both markers are on the log, appended rather than rewritten.
+        assert!(
+            s.events()
+                .iter()
+                .any(|e| matches!(e, SessionEvent::Elide { .. }))
+        );
+        assert!(
+            s.events()
+                .iter()
+                .any(|e| matches!(e, SessionEvent::Unelide { .. }))
+        );
+    }
+
+    /// A rewind that supersedes the elide marker takes the elision with it,
+    /// the same way it can undo a compaction.
+    #[test]
+    fn a_rewind_past_an_elision_restores_the_content() {
+        let mut s = tool_round_session();
+        s.elide([3]).unwrap();
+        s.record_user("another turn");
+        let checkpoint = s.checkpoints().last().unwrap().index;
+        s.rewind(checkpoint).unwrap();
+
+        // That cut at the later user message, which is after the elide
+        // marker, so the elision still stands.
+        assert!(s.elide_flags()[3]);
+
+        // Rewinding to the first user message supersedes everything after
+        // it, the marker included.
+        s.rewind(1).unwrap();
+        assert!(!s.elide_flags()[3], "the elide marker was superseded too");
+    }
+
+    #[test]
+    fn elision_refuses_what_it_cannot_do_safely() {
+        let mut s = tool_round_session();
+        assert!(s.elide([0]).is_err(), "session_created carries no content");
+        assert!(s.elide([99]).is_err(), "no such event");
+        // Idempotent rather than an error: a UI re-sending a selection is
+        // not a mistake.
+        s.elide([3]).unwrap();
+        assert_eq!(s.elide([3]).unwrap(), 0);
+    }
+
+    #[test]
+    fn the_wire_view_itemizes_the_same_list_the_engine_sends() {
+        let s = tool_round_session();
+        let mut prompt = SystemPrompt::new();
+        prompt.push(Segment::new(SegmentKind::Identity, "identity", "be brief").anchored());
+
+        let view = WireView::assemble(Some(&prompt), &s, Some("<status>now</status>"), Some(1_000));
+
+        assert_eq!(view.system.len(), 1);
+        assert!(view.system[0].cache_anchor);
+
+        let sent = s.messages_with_sidecar(Some("<status>now</status>"));
+        assert_eq!(view.messages.len(), sent.len());
+        for (m, w) in sent.iter().zip(&view.messages) {
+            assert_eq!(m.role, w.role);
+            assert_eq!(m.content.len(), w.blocks.len());
+        }
+
+        // The 4,000-character tool result dominates, and its block points
+        // back at the event that would remove it.
+        let biggest = view
+            .messages
+            .iter()
+            .flat_map(|m| &m.blocks)
+            .max_by_key(|b| b.size.bytes)
+            .unwrap();
+        assert_eq!(biggest.kind, BlockKind::ToolResult);
+        assert_eq!(biggest.source, BlockSource::Event { index: 3 });
+        assert!(biggest.elidable);
+        assert!(!biggest.elided);
+        assert!(biggest.truncated, "a preview, not the payload");
+
+        assert!(view.totals.tokens > 1_000);
+        assert!(view.totals.is_complete());
+        assert!(view.fraction_used().unwrap() > 1.0);
+    }
+
+    /// The sidecar is in the view because it is on the wire, and marked as
+    /// something no log index can act on.
+    #[test]
+    fn the_view_marks_the_sidecar_as_unremovable() {
+        let mut s = Session::new();
+        s.record_user("hi");
+        let view = WireView::assemble(None, &s, Some("<status>now</status>"), None);
+
+        let last = view.messages.last().unwrap().blocks.last().unwrap();
+        assert_eq!(last.kind, BlockKind::Sidecar);
+        assert_eq!(last.source, BlockSource::Sidecar);
+        assert!(!last.elidable);
+        assert!(view.fraction_used().is_none(), "no limit, no percentage");
+    }
+
+    /// An image contributes bytes it cannot contribute an estimate for, so
+    /// the total has to declare itself a floor rather than read low.
+    #[test]
+    fn an_image_makes_the_view_total_a_floor() {
+        let mut s = Session::new();
+        s.record_user_with_images(
+            "what is this?",
+            vec![ImageInput {
+                media_type: "image/png".into(),
+                data: "A".repeat(40_000),
+            }],
+        );
+        let view = WireView::assemble(None, &s, None, None);
+        assert_eq!(view.totals.unestimated, 1);
+        assert!(!view.totals.is_complete());
+        assert!(view.totals.bytes > 29_000, "decoded size counted");
+    }
+
+    #[test]
+    fn an_elided_view_reports_what_would_restore_it() {
+        let mut s = tool_round_session();
+        s.elide([3]).unwrap();
+        let view = WireView::assemble(None, &s, None, None);
+        assert_eq!(view.elided_events(), vec![3]);
+        assert!(
+            view.messages
+                .iter()
+                .flat_map(|m| &m.blocks)
+                .any(|b| b.elided && b.elidable)
+        );
+    }
+
+    #[test]
+    fn elide_markers_round_trip_through_jsonl() {
+        let dir = std::env::temp_dir().join(format!("nightloom-elide-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut s = Session::with_log(&dir).unwrap();
+        s.record_user("hello");
+        s.record_assistant(
+            "test-model",
+            vec![ContentBlock::Text {
+                text: "a long reply".into(),
+            }],
+            Some("end_turn".into()),
+            Usage::default(),
+        );
+        s.elide([2]).unwrap();
+        let path = s.log_path().unwrap().to_path_buf();
+        let reloaded = Session::load(&path).unwrap();
+
+        assert!(reloaded.elide_flags()[2]);
+        assert!(reloaded.messages()[1].text().contains("removed"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn projection_skips_non_message_events() {

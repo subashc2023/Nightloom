@@ -7,7 +7,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use nightloom_core::Tool;
-use nightloom_core::{ImageInput, ProviderError, Session, SessionEvent, Thinking};
+use nightloom_core::{ImageInput, ProviderError, Session, SessionEvent, Thinking, WireView};
 use nightloom_service::approval::{Approver, AutoApprove, Decision, PendingCall};
 use nightloom_service::store::{self, SessionSummary};
 use nightloom_service::{
@@ -576,6 +576,73 @@ async fn rewind(state: State<'_, AppState>, to: usize) -> Result<Vec<SessionEven
     Ok(session.events().to_vec())
 }
 
+/// What removing items changed: the new view, plus the transcript, because
+/// an elision moves both.
+#[derive(Serialize)]
+struct ContextEdit {
+    view: WireView,
+    events: Vec<SessionEvent>,
+    /// How many items the call actually changed. Zero is not an error — a UI
+    /// re-sending a selection that is already hidden is not a mistake.
+    changed: usize,
+}
+
+/// Itemize the request the active chat would send right now.
+///
+/// Needs both locks because the view is the *request*, not the log: the
+/// preamble and the sidecar live on the `Chat` and only the `Session` knows
+/// the conversation. Taking them in the same order `compact` does (chat,
+/// then session) so the two can never deadlock against each other.
+#[tauri::command]
+async fn context_view(state: State<'_, AppState>) -> Result<WireView, String> {
+    let chat_guard = state.chat.lock().await;
+    let chat = chat_guard
+        .as_ref()
+        .ok_or_else(|| "not connected".to_string())?;
+    let session_guard = state.session.lock().await;
+    let Some(session) = session_guard.as_ref() else {
+        // Sessions are created lazily by `send`, so "no session yet" is the
+        // ordinary state at launch rather than a failure. An empty session
+        // still has a preamble worth showing, which is the answer to "what
+        // am I starting with".
+        return Ok(chat.context_view(&Session::new()));
+    };
+    Ok(chat.context_view(session))
+}
+
+/// Remove or restore the content of log events, returning the new view and
+/// transcript together.
+///
+/// Both come back for the same reason [`rewind`] returns the transcript: the
+/// UI re-syncs from the log rather than patching its own copy, and an
+/// elision changes what every projection reads.
+#[tauri::command]
+async fn edit_context(
+    state: State<'_, AppState>,
+    targets: Vec<usize>,
+    remove: bool,
+) -> Result<ContextEdit, String> {
+    let chat_guard = state.chat.lock().await;
+    let chat = chat_guard
+        .as_ref()
+        .ok_or_else(|| "not connected".to_string())?;
+    let mut session_guard = state.session.lock().await;
+    let session = session_guard
+        .as_mut()
+        .ok_or_else(|| "no active session".to_string())?;
+
+    let changed = if remove {
+        session.elide(targets)?
+    } else {
+        session.unelide(targets)?
+    };
+    Ok(ContextEdit {
+        view: chat.context_view(session),
+        events: session.events().to_vec(),
+        changed,
+    })
+}
+
 /// Delete a session log. If it is the active session, the open log handle is
 /// dropped first (the next send starts a fresh session).
 #[tauri::command]
@@ -674,6 +741,8 @@ fn main() {
             cancel,
             compact,
             rewind,
+            context_view,
+            edit_context,
             delete_session,
             approve_call,
         ])

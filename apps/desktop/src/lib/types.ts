@@ -185,6 +185,12 @@ export type SessionEvent =
       at: string;
     }
   | { event: "todo_state"; todos: TodoItem[]; at: string }
+  // Content markers, not deletions: the listed events keep their place in the
+  // conversation and project a stand-in instead of their payload. The log
+  // still holds the content, so the transcript renders these turns in full and
+  // only the context panel cares.
+  | { event: "elide"; targets: number[]; at: string }
+  | { event: "unelide"; targets: number[]; at: string }
   | { event: "compaction"; summary: string; at: string };
 
 export type TurnEvent =
@@ -209,3 +215,90 @@ export type TurnEvent =
   /** The model compacted the context itself, mid-turn, via `compact_context`. */
   | { type: "compacted"; summary: string }
   | { type: "usage"; usage: Usage };
+
+/**
+ * Item size. `tokens` is an *estimate* (the backend has no tokenizer, by
+ * design), and null where even an estimate would be invention — an image,
+ * whose cost depends on pixel dimensions nothing here decodes. Render a null
+ * as a byte size, never as a token count.
+ */
+export interface Size {
+  bytes: number;
+  tokens: number | null;
+}
+
+/**
+ * A sum that knows what it could not count. `unestimated > 0` means `tokens`
+ * is a floor and should be shown with a `≥`, exactly like a session cost
+ * with unpriced exchanges.
+ */
+export interface ContextTotals {
+  tokens: number;
+  bytes: number;
+  unestimated: number;
+}
+
+export type BlockKind =
+  | "text"
+  | "image"
+  | "thinking"
+  | "redacted_thinking"
+  | "tool_use"
+  | "reasoning_ref"
+  | "tool_result"
+  /** The per-turn status block. Composed at projection time, never logged. */
+  | "sidecar";
+
+/**
+ * Where a projected block came from. `event` carries the log index that
+ * `editContext` acts on; `sidecar` has no index because there is nothing in
+ * the log to act on.
+ */
+export type BlockSource =
+  | { from: "event"; index: number }
+  | { from: "sidecar" };
+
+export interface WireBlock {
+  kind: BlockKind;
+  /** Leading characters only — never the whole payload. */
+  preview: string;
+  truncated: boolean;
+  size: Size;
+  source: BlockSource;
+  /** The source event's content is currently replaced by a marker. */
+  elided: boolean;
+  /** Whether `editContext` would accept this block's source event. */
+  elidable: boolean;
+}
+
+export interface WireMessage {
+  role: "user" | "assistant";
+  blocks: WireBlock[];
+  totals: ContextTotals;
+}
+
+export interface WireSegment {
+  kind: string;
+  name: string;
+  preview: string;
+  truncated: boolean;
+  size: Size;
+  /** Where the cached prefix is claimed to end. */
+  cache_anchor: boolean;
+}
+
+/** The request the backend would send right now, itemized. */
+export interface WireView {
+  system: WireSegment[];
+  messages: WireMessage[];
+  /** Over system and messages both — the figure to compare to the limit. */
+  totals: ContextTotals;
+  context_limit: number | null;
+}
+
+/** What `editContext` changed: both projections, plus how many items moved. */
+export interface ContextEdit {
+  view: WireView;
+  events: SessionEvent[];
+  changed: number;
+}

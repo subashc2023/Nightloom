@@ -4,7 +4,7 @@ use crate::tools::{CompactContext, CompactSignal, Subagent, TurnHandle};
 use futures::StreamExt;
 use nightloom_core::{
     ChatRequest, ContentBlock, ImageInput, Message, Provider, ProviderError, Role, Session,
-    StreamEvent, SystemPrompt, Thinking, Usage,
+    StreamEvent, SystemPrompt, Thinking, Usage, WireView,
     tool::{Tool, defs, effect_of, run_tool},
 };
 use nightloom_providers::pricing::Price;
@@ -188,6 +188,38 @@ impl Chat {
             compact_signal: None,
             subagents: None,
         }
+    }
+
+    /// Itemize the request this chat would send for `session` right now.
+    ///
+    /// Built from the same three pieces [`Chat::run_turn`] assembles — the
+    /// preamble, the projection, and a freshly rendered sidecar — rather
+    /// than from a description of them. A context view that reimplemented
+    /// the assembly would be a second thing to keep in step with the engine,
+    /// and it would drift in exactly the places worth looking at, since
+    /// those are the places the engine is doing something non-obvious.
+    ///
+    /// The sidecar is rendered as it would be for the *first* round of a
+    /// turn, which is the only round it attaches to and, between turns, also
+    /// the next thing that will really be sent. It shows up in the view
+    /// marked as unremovable: it is regenerated every turn, so there is
+    /// nothing in the log to act on.
+    pub fn context_view(&self, session: &Session) -> WireView {
+        let sidecar = sidecar::render(
+            &self.sidecar,
+            &SidecarContext {
+                session,
+                model: &self.model,
+                context_limit: self.context_limit,
+                can_self_compact: self.compact_signal.is_some(),
+            },
+        );
+        WireView::assemble(
+            Some(&self.system),
+            session,
+            sidecar.as_deref(),
+            self.context_limit,
+        )
     }
 
     /// Hand the model the `task` tool: a subagent with its own context

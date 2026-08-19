@@ -6,9 +6,11 @@ import type {
   ConnectResult,
   ImageInput,
   ProviderInfo,
+  ContextEdit,
   SessionEvent,
   SessionMeta,
   TurnResult,
+  WireView,
 } from "./types";
 
 // All backend errors reject with a plain string.
@@ -100,4 +102,23 @@ export function compact(): Promise<CompactResult> {
 /** Delete a session log; returns the deleted session's full id. */
 export function deleteSession(id: string): Promise<string> {
   return invoke("delete_session", { id });
+}
+
+/** Itemize the request the active chat would send right now. */
+export function contextView(): Promise<WireView> {
+  return invoke("context_view");
+}
+
+/**
+ * Remove (`remove: true`) or restore the content of log events.
+ *
+ * Resolves with the new view *and* the new transcript: an elision changes
+ * every projection off the log, so the UI re-syncs from the backend rather
+ * than patching its own copy — the same contract `rewind` uses.
+ */
+export function editContext(
+  targets: number[],
+  remove: boolean,
+): Promise<ContextEdit> {
+  return invoke("edit_context", { targets, remove });
 }

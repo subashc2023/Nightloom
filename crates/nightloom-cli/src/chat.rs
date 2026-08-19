@@ -2,7 +2,8 @@ use crate::{DIM, RESET};
 use anyhow::{Context, Result};
 use nightloom_core::tool::Tool;
 use nightloom_core::{
-    ContentBlock, ProviderError, SegmentKind, Session, SessionEvent, SystemPrompt, Thinking, Usage,
+    BlockKind, BlockSource, ContentBlock, ProviderError, SegmentKind, Session, SessionEvent,
+    SystemPrompt, Thinking, Usage,
 };
 use nightloom_service::{
     AutoApprove, Chat, Decision, PendingCall, PromptConfig, ProviderKind, TurnEvent, mcp, prompt,
@@ -422,6 +423,163 @@ fn rewind_to(session: &mut Session, arg: &str) {
     }
 }
 
+/// Itemize what the next request will carry, largest contributors visible.
+///
+/// The numbers in the left column are *event indices*, not display positions
+/// — the opposite of `/rewind`, and for the opposite reason. A checkpoint
+/// list is filtered, so an index there would point at something the user
+/// never saw; this list is the context itself, one line per block, and the
+/// index is the handle `/context drop` needs. Several lines sharing an index
+/// is the honest rendering: an assistant turn that thought and then called a
+/// tool is one event, and dropping it drops both.
+fn show_context(chat: &Chat, session: &Session) {
+    let view = chat.context_view(session);
+    let floor = if view.totals.is_complete() { "" } else { "≥" };
+
+    match (view.context_limit, view.fraction_used()) {
+        (Some(limit), Some(frac)) => println!(
+            "\ncontext: {floor}{} of {} tokens ({:.0}%)",
+            thousands(view.totals.tokens),
+            thousands(limit),
+            frac * 100.0
+        ),
+        // No limit means no denominator, so no percentage — the same rule
+        // the sidecar gauge follows rather than inventing a window.
+        _ => println!(
+            "\ncontext: {floor}{} tokens (no known limit for {})",
+            thousands(view.totals.tokens),
+            chat.model
+        ),
+    }
+    if !view.totals.is_complete() {
+        println!(
+            "{DIM}  {} item(s) carry tokens that cannot be estimated (images), so the \
+             total is a floor{RESET}",
+            view.totals.unestimated
+        );
+    }
+
+    if !view.system.is_empty() {
+        println!("\n{DIM}system prompt{RESET}");
+        for seg in &view.system {
+            let anchor = if seg.cache_anchor {
+                format!("{DIM}  (cache anchor){RESET}")
+            } else {
+                String::new()
+            };
+            println!("  {:>9}  {}{anchor}", size_cell(seg.size), seg.name);
+        }
+    }
+
+    println!("\n{DIM}conversation{RESET}");
+    for msg in &view.messages {
+        for block in &msg.blocks {
+            let slot = match block.source {
+                BlockSource::Event { index } => format!("{index:>4}"),
+                // Nothing in the log to point at: it is composed fresh every
+                // turn and vanishes from the next one on its own.
+                BlockSource::Sidecar => "   ~".to_string(),
+                _ => "   ?".to_string(),
+            };
+            let label = kind_label(block.kind);
+            // `one_line` adds its own ellipsis, so `block.truncated` (which
+            // reports the view's own 280-character cut) must not add a second.
+            let preview = store::one_line(&block.preview, 46);
+            let mark = if block.elided { " [removed]" } else { "" };
+            println!(
+                "  {slot}  {:>9}  {label:<12} {DIM}{preview}{RESET}{mark}",
+                size_cell(block.size)
+            );
+        }
+    }
+
+    let elided = view.elided_events();
+    if !elided.is_empty() {
+        println!(
+            "\n{DIM}{} item(s) removed; /context keep <n>… restores them{RESET}",
+            elided.len()
+        );
+    }
+    println!("{DIM}/context drop <n>… removes an item's content from the next request{RESET}");
+}
+
+/// A size cell: estimated tokens, or a byte count where no estimate is
+/// honest. Never a guessed token figure — an image sized "1,024 tokens"
+/// would be a number somebody could act on and nobody could defend.
+fn size_cell(size: nightloom_core::Size) -> String {
+    match size.tokens {
+        Some(t) => format!("{} tok", thousands(t)),
+        None => format!("{} KB", thousands((size.bytes / 1024).max(1) as u64)),
+    }
+}
+
+fn kind_label(kind: BlockKind) -> &'static str {
+    match kind {
+        BlockKind::Text => "text",
+        BlockKind::Image => "image",
+        BlockKind::Thinking => "thinking",
+        BlockKind::RedactedThinking => "thinking*",
+        BlockKind::ToolUse => "tool call",
+        BlockKind::ReasoningRef => "reasoning",
+        BlockKind::ToolResult => "tool result",
+        BlockKind::Sidecar => "sidecar",
+        _ => "?",
+    }
+}
+
+fn thousands(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// `/context drop 3 7` and `/context keep 3`.
+fn edit_context(session: &mut Session, verb: &str, args: &str) {
+    let mut targets = Vec::new();
+    for token in args.split_whitespace() {
+        match token.parse::<usize>() {
+            Ok(n) => targets.push(n),
+            Err(_) => {
+                eprintln!("not an item number: {token}");
+                return;
+            }
+        }
+    }
+    if targets.is_empty() {
+        eprintln!("usage: /context {verb} <n>…, with numbers from /context");
+        return;
+    }
+
+    let result = match verb {
+        "drop" => session.elide(targets),
+        _ => session.unelide(targets),
+    };
+    match result {
+        Ok(0) => println!("{DIM}nothing changed{RESET}"),
+        Ok(n) if verb == "drop" => {
+            println!("{DIM}{n} item(s) removed from the context{RESET}");
+            // Both of these are the gap between what the user just saw
+            // happen and what actually happened, which is where surprises
+            // live. The log line mirrors what /rewind says about files.
+            println!(
+                "{DIM}the content stays in the session log — /context keep <n>… restores it{RESET}"
+            );
+            println!(
+                "{DIM}the prompt cache is invalidated from here on, so the next turn costs \
+                 full price for what follows{RESET}"
+            );
+        }
+        Ok(n) => println!("{DIM}{n} item(s) restored{RESET}"),
+        Err(e) => eprintln!("cannot {verb}: {e}"),
+    }
+}
+
 async fn run_turn(chat: &Chat, session: &mut Session, input: &str) -> Result<()> {
     let cancel = CancellationToken::new();
     let trigger = cancel.clone();
@@ -556,6 +714,7 @@ pub async fn run(args: ChatArgs) -> Result<()> {
     println!(
         "{DIM}/new starts a fresh session, /compact summarizes it in place, /quit exits{RESET}"
     );
+    println!("{DIM}/context itemizes what the next request carries, /rewind undoes a turn{RESET}");
 
     loop {
         let Some(line) = prompt_line()? else {
@@ -579,10 +738,22 @@ pub async fn run(args: ChatArgs) -> Result<()> {
                 list_checkpoints(&session);
                 continue;
             }
+            "/context" => {
+                show_context(&chat, &session);
+                continue;
+            }
             _ => {}
         }
         if let Some(arg) = line.strip_prefix("/rewind ") {
             rewind_to(&mut session, arg.trim());
+            continue;
+        }
+        if let Some(arg) = line.strip_prefix("/context drop ") {
+            edit_context(&mut session, "drop", arg);
+            continue;
+        }
+        if let Some(arg) = line.strip_prefix("/context keep ") {
+            edit_context(&mut session, "keep", arg);
             continue;
         }
         println!();
