@@ -5,12 +5,16 @@ import {
   isProviderVisible,
   loadLastConnection,
   loadPrefs,
+  loadPrompts,
   modelsFor,
+  newPromptId,
   sanitizeThinking,
   saveLastConnection,
   savePrefs,
+  savePrompts,
   thinkingString,
   type CatalogPrefs,
+  type SavedPrompt,
 } from "./catalog";
 import type {
   ApprovalDecision,
@@ -143,6 +147,10 @@ export const app = $state({
   error: null as string | null,
   /** Settings modal (providers: API keys, model visibility). */
   showSettings: false,
+  /** The user's saved system prompts, newest-written first. */
+  prompts: loadPrompts() as SavedPrompt[],
+  /** Prompt library modal; a string is the id it opens on. */
+  showPrompts: false,
   /** Live model lists fetched from provider APIs, per provider kind. */
   modelLists: {} as Record<string, string[]>,
   /** Fetch status per provider kind (settings modal UI). */
@@ -417,6 +425,63 @@ export async function applyDraft(): Promise<void> {
     app.connectError = String(e);
   } finally {
     app.connecting = false;
+  }
+}
+
+// ---- saved system prompts ----
+
+/**
+ * Put a saved prompt on the draft and re-connect. `null` clears it.
+ *
+ * The text is *copied* onto the draft rather than referenced, so the chat's
+ * prompt is whatever was applied — editing the library entry afterwards does
+ * not silently change the prompt a running chat was connected with.
+ */
+export async function usePrompt(id: string | null): Promise<void> {
+  const p = id ? app.prompts.find((x) => x.id === id) : null;
+  app.draft.promptId = p?.id ?? null;
+  app.draft.system = p?.text ?? "";
+  await applyDraft();
+}
+
+/**
+ * Write a prompt into the library. Passing an `id` updates that entry (a
+ * rename included), otherwise a new one is added and returned.
+ */
+export function storePrompt(
+  name: string,
+  text: string,
+  id?: string | null,
+): string {
+  const now = Date.now();
+  const trimmed = name.trim() || "Untitled";
+  const existing = id ? app.prompts.find((p) => p.id === id) : undefined;
+  if (existing) {
+    existing.name = trimmed;
+    existing.text = text;
+    existing.updated = now;
+  } else {
+    id = newPromptId();
+    app.prompts.unshift({ id, name: trimmed, text, updated: now });
+  }
+  app.prompts.sort((a, b) => b.updated - a.updated);
+  savePrompts([...app.prompts]);
+  return id!;
+}
+
+/**
+ * Remove a prompt. A chat connected with it keeps its text — the draft holds
+ * a copy — but loses the pointer, so the rail stops naming a prompt that is
+ * no longer in the library.
+ */
+export function deletePrompt(id: string): void {
+  const i = app.prompts.findIndex((p) => p.id === id);
+  if (i < 0) return;
+  app.prompts.splice(i, 1);
+  savePrompts([...app.prompts]);
+  if (app.draft.promptId === id) {
+    app.draft.promptId = null;
+    saveLastConnection({ ...app.draft });
   }
 }
 

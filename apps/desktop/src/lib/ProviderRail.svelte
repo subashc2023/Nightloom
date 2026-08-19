@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { app, applyDraft, usable } from "./state.svelte";
+  import { app, applyDraft, usable, usePrompt } from "./state.svelte";
   import {
     isProviderVisible,
     modelsFor,
@@ -42,6 +42,17 @@
     sanitizeThinking(app.draft);
     apply();
   }
+
+  /**
+   * The chat is running a system prompt that is not in the library — either
+   * typed before the library existed, or one whose saved entry was deleted.
+   * It gets its own dropdown entry rather than reading as "None", which
+   * would claim there is no system prompt while one is on every request.
+   */
+  const custom = $derived(
+    app.draft.system.trim() !== "" &&
+      !app.prompts.some((p) => p.id === app.draft.promptId),
+  );
 
   // The long-form explanations live on the control they explain, not beside
   // it: the rail is 240px wide, and a paragraph per knob is most of the panel.
@@ -226,14 +237,32 @@
   {/if}
 
   <div class="group">
-    <span class="lbl">System</span>
-    <textarea
-      rows="3"
-      bind:value={app.draft.system}
-      onchange={apply}
-      placeholder="optional"
-      disabled={locked}
-    ></textarea>
+    <div class="row">
+      <span class="lbl">System</span>
+      <select
+        value={app.draft.promptId ?? (custom ? "__custom" : "")}
+        onchange={(e) => {
+          const v = e.currentTarget.value;
+          if (v === "__custom") return; // already showing it
+          void usePrompt(v || null);
+        }}
+        disabled={locked}
+        title={app.draft.system || "No system prompt beyond the preamble."}
+      >
+        <option value="">None</option>
+        {#if custom}
+          <option value="__custom">Custom (unsaved)</option>
+        {/if}
+        {#each app.prompts as p (p.id)}
+          <option value={p.id}>{p.name}</option>
+        {/each}
+      </select>
+      <button
+        class="icon"
+        title="Saved system prompts"
+        onclick={() => (app.showPrompts = true)}>✎</button
+      >
+    </div>
   </div>
 
   {#if app.connectError}
@@ -327,8 +356,7 @@
   }
   select,
   input[type="text"],
-  input[type="number"],
-  textarea {
+  input[type="number"] {
     background: var(--bg);
     color: var(--text);
     border: 1px solid var(--border);
@@ -338,9 +366,6 @@
     font-family: inherit;
     width: 100%;
     min-width: 0;
-  }
-  textarea {
-    resize: vertical;
   }
   .path {
     font-family: var(--mono);
@@ -355,14 +380,12 @@
     text-align: left;
   }
   select:focus,
-  input:focus,
-  textarea:focus {
+  input:focus {
     outline: none;
     border-color: var(--accent);
   }
   select:disabled,
-  input:disabled,
-  textarea:disabled {
+  input:disabled {
     opacity: 0.55;
   }
   option:disabled {
@@ -427,6 +450,23 @@
   .warn code {
     font-family: var(--mono);
     font-size: 0.64rem;
+  }
+
+  .icon {
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--dim);
+    font-family: inherit;
+    font-size: 0.75rem;
+    line-height: 1;
+    padding: 0.3rem 0.4rem;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .icon:hover {
+    color: var(--accent);
+    border-color: var(--accent);
   }
 
   .mcp-row {

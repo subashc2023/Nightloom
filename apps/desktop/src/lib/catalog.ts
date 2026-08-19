@@ -83,6 +83,13 @@ export interface ConnectionDraft {
    * which is rarely what anyone wants — the rail shows what it resolved to.
    */
   workspace: string;
+  /**
+   * The saved prompt `system` came from, or null for one-off text. Held as
+   * an id rather than a name so renaming a prompt does not orphan the draft
+   * pointing at it, and kept on the draft so the rail can show which one is
+   * in use after a relaunch.
+   */
+  promptId: string | null;
 }
 
 export function defaultDraft(): ConnectionDraft {
@@ -98,7 +105,17 @@ export function defaultDraft(): ConnectionDraft {
     sidecar: true,
     approval: true,
     workspace: "",
+    promptId: null,
   };
+}
+
+/** A named system prompt the user keeps around and reuses across chats. */
+export interface SavedPrompt {
+  id: string;
+  name: string;
+  text: string;
+  /** Epoch ms of the last write, newest first in the library. */
+  updated: number;
 }
 
 export interface ThinkingSupport {
@@ -232,6 +249,51 @@ export function isProviderVisible(kind: string, prefs: CatalogPrefs): boolean {
 
 const PREFS_KEY = "nightloom.catalog-prefs";
 const LAST_KEY = "nightloom.last-connection";
+const PROMPTS_KEY = "nightloom.prompts";
+
+/**
+ * Saved system prompts, newest-written first.
+ *
+ * These live with the app rather than in a project's `.nightloom/notes`,
+ * because a system prompt is about how you want the model to behave and not
+ * about a folder — and because an unfiled chat, which is the quickest thing
+ * this app does, has no folder to read one out of. Anything that *is* about
+ * the project belongs in the docspace, which the preamble already indexes.
+ */
+export function loadPrompts(): SavedPrompt[] {
+  try {
+    const raw = localStorage.getItem(PROMPTS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter(
+        (p): p is SavedPrompt =>
+          !!p && typeof p.id === "string" && typeof p.text === "string",
+      )
+      .map((p) => ({
+        id: p.id,
+        name: typeof p.name === "string" && p.name ? p.name : "Untitled",
+        text: p.text,
+        updated: typeof p.updated === "number" ? p.updated : 0,
+      }));
+  } catch {
+    return [];
+  }
+}
+
+export function savePrompts(list: SavedPrompt[]): void {
+  try {
+    localStorage.setItem(PROMPTS_KEY, JSON.stringify(list));
+  } catch {
+    // best-effort, like every other preference here
+  }
+}
+
+/** Ids only have to be unique within one browser profile's library. */
+export function newPromptId(): string {
+  return `p${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+}
 
 export function loadPrefs(): CatalogPrefs {
   const fallback: CatalogPrefs = {

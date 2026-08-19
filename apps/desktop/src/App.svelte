@@ -5,6 +5,7 @@
   import TopBar from "./lib/TopBar.svelte";
   import RightRail from "./lib/RightRail.svelte";
   import SettingsModal from "./lib/SettingsModal.svelte";
+  import PromptLibrary from "./lib/PromptLibrary.svelte";
   import Transcript from "./lib/Transcript.svelte";
   import Composer from "./lib/Composer.svelte";
   import NoteView from "./lib/NoteView.svelte";
@@ -51,6 +52,9 @@
   <RightRail />
   {#if app.showSettings}
     <div class="settings-overlay"><SettingsModal /></div>
+  {/if}
+  {#if app.showPrompts}
+    <div class="settings-overlay"><PromptLibrary /></div>
   {/if}
 </div>
 
