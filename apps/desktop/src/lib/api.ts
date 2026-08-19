@@ -11,6 +11,7 @@ import type {
   ContextEdit,
   SessionEvent,
   SessionMeta,
+  SessionHit,
   TurnResult,
   WireView,
 } from "./types";
@@ -74,6 +75,10 @@ export function approveCall(
 
 export function listSessions(): Promise<SessionMeta[]> {
   return invoke("list_sessions");
+}
+
+export function searchSessions(query: string): Promise<SessionHit[]> {
+  return invoke("search_sessions", { query });
 }
 
 export function newSession(): Promise<{ id: string }> {

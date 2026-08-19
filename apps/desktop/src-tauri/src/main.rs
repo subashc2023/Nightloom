@@ -10,7 +10,7 @@ use nightloom_core::Tool;
 use nightloom_core::{ImageInput, ProviderError, Session, SessionEvent, Thinking, WireView};
 use nightloom_service::approval::{Approver, AutoApprove, Decision, PendingCall};
 use nightloom_service::project::{self, Note, Project, Registry};
-use nightloom_service::store::{self, SessionSummary};
+use nightloom_service::store::{self, SessionMatch, SessionSummary};
 use nightloom_service::{
     Chat, CompactOutcome, Price, ProjectContext, PromptConfig, ProviderKind, TurnEvent, TurnInput,
     TurnOutcome,
@@ -565,6 +565,20 @@ async fn list_sessions(state: State<'_, AppState>) -> Result<Vec<SessionSummary>
     store::list(&state.log_dir().await).map_err(|e| e.to_string())
 }
 
+/// The same chats, filtered to the ones that mention `query`.
+///
+/// A backend call rather than a filter over the list the sidebar already
+/// holds, because that list carries a name and an opening message and the
+/// thing you are trying to find is usually neither — it is a sentence from
+/// the middle of a conversation, which only the log has.
+#[tauri::command]
+async fn search_sessions(
+    state: State<'_, AppState>,
+    query: String,
+) -> Result<Vec<SessionMatch>, String> {
+    store::search(&state.log_dir().await, &query).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn new_session(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let session = Session::with_log(&state.log_dir().await).map_err(|e| e.to_string())?;
@@ -1045,6 +1059,7 @@ fn main() {
             list_models,
             connect,
             list_sessions,
+            search_sessions,
             new_session,
             open_session,
             transcript,

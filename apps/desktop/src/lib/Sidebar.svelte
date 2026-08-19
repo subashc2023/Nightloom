@@ -6,6 +6,8 @@
     newSession,
     openSession,
   } from "./state.svelte";
+  import * as api from "./api";
+  import type { SessionHit } from "./types";
   import { relativeTime } from "./time";
   import NotesPanel from "./NotesPanel.svelte";
   import ProjectMenu from "./ProjectMenu.svelte";
@@ -22,6 +24,48 @@
     confirming = null;
     void deleteSession(id);
   }
+
+  // The search box. `query` is what is typed and `hits` is what came back;
+  // an empty query means "not searching" rather than "everything matched",
+  // so the list falls back to `app.sessions` on its own.
+  let query = $state("");
+  let hits = $state<SessionHit[] | null>(null);
+  let searching = $state(false);
+
+  // Debounced, because every keystroke would otherwise re-read every log in
+  // the directory. `seq` is what makes a slow early request unable to
+  // overwrite a fast later one — the results would be for a query nobody is
+  // looking at any more.
+  let seq = 0;
+  $effect(() => {
+    // Read so switching projects re-runs the search: `search_sessions` looks
+    // in whichever log directory is open, and results from the folder you
+    // just left would be rows that no longer list.
+    void app.project?.id;
+    const q = query.trim();
+    if (!q) {
+      hits = null;
+      searching = false;
+      return;
+    }
+    searching = true;
+    const mine = ++seq;
+    const timer = setTimeout(() => {
+      void api
+        .searchSessions(q)
+        .then((found) => {
+          if (mine !== seq) return;
+          hits = found;
+        })
+        .catch(() => {
+          if (mine === seq) hits = [];
+        })
+        .finally(() => {
+          if (mine === seq) searching = false;
+        });
+    }, 180);
+    return () => clearTimeout(timer);
+  });
 
   /**
    * The path, shortened from the left. A project root is usually deep and the
@@ -90,7 +134,51 @@
     <button class="new-chat" onclick={() => void newSession()} disabled={app.busy}>
       New chat
     </button>
-    {#if app.sessions.length === 0}
+    {#if app.sessions.length > 0 || query}
+      <input
+        class="search"
+        type="search"
+        placeholder="Search chats"
+        aria-label="Search chats"
+        bind:value={query}
+      />
+    {/if}
+    {#if hits !== null}
+      <!-- Searching replaces the list rather than filtering it in place: the
+           rows carry an excerpt and a hit count that the ordinary listing has
+           nothing to put in. -->
+      {#if hits.length === 0}
+        <p class="hint">
+          {searching ? "Searching…" : `Nothing mentions “${query.trim()}”.`}
+        </p>
+      {:else}
+        <div class="session-list">
+          {#each hits as s (s.id)}
+            <div
+              class="session-item"
+              class:active={s.id === app.activeSessionId}
+            >
+              <button
+                class="session-row"
+                onclick={() => void openSession(s.id)}
+                disabled={app.busy}
+              >
+                <span class="snippet"
+                  >{s.title ?? s.first_user ?? "empty session"}</span
+                >
+                <span class="excerpt">{s.excerpt}</span>
+                <span class="meta"
+                  >{s.hits}
+                  {s.hits === 1 ? "mention" : "mentions"} · {relativeTime(
+                    s.modified,
+                  )}</span
+                >
+              </button>
+            </div>
+          {/each}
+        </div>
+      {/if}
+    {:else if app.sessions.length === 0}
       <p class="hint">
         No chats {app.project ? "in this project" : "yet"}.
         {#if !app.project}
@@ -358,5 +446,40 @@
     font-size: 0.72rem;
     color: var(--dim);
     font-family: var(--mono);
+  }
+
+  .search {
+    width: 100%;
+    box-sizing: border-box;
+    margin-bottom: 0.4rem;
+    padding: 0.3rem 0.45rem;
+    font: inherit;
+    font-size: 0.78rem;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+  }
+
+  .search:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+
+  .search::placeholder {
+    color: var(--dim);
+  }
+
+  /* Why the session matched. Wraps to two lines and stops: it is evidence,
+     not the message. */
+  .excerpt {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    font-size: 0.72rem;
+    line-height: 1.35;
+    color: var(--dim);
   }
 </style>

@@ -144,6 +144,15 @@ export interface SessionMeta {
   title: string | null;
 }
 
+/** A session that matched a search. Flattened on the Rust side, so it is a
+ *  `SessionMeta` with the two extra fields rather than a wrapper. */
+export interface SessionHit extends SessionMeta {
+  /** How many messages contain the query. */
+  hits: number;
+  /** Text around the first one, prefixed with who said it. */
+  excerpt: string;
+}
+
 /**
  * An image sent with a user message. `data` is raw base64 with no `data:`
  * prefix — the backend stores it verbatim and each adapter builds whatever

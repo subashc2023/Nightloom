@@ -73,6 +73,7 @@ cargo run -p nightloom-cli -- --provider openai-chat \
 
 # Sessions
 cargo run -p nightloom-cli -- sessions             # list logs, by name
+cargo run -p nightloom-cli -- sessions borrow      # ones that mention it
 cargo run -p nightloom-cli -- --continue           # resume the most recent
 cargo run -p nightloom-cli -- --resume 3f2a        # resume by id prefix
 cargo run -p nightloom-cli -- sessions --delete 3f2a
@@ -204,6 +205,13 @@ turn, from that turn alone — two clipped excerpts and an instruction, never
 the conversation so far. Deriving a name without a model is what both shells
 did before, and it is the part that stops working: forty chats all beginning
 "can you help me" are a list you open one by one.
+
+Search covers **the conversation and not tool output**. A tool result is
+whatever a file happened to contain, so searching it would return every
+session that ever read a file mentioning the word — close to all of them, and
+never the one being looked for. Excerpts are clipped around the hit rather
+than from the start of the message, because a result that does not show why it
+matched reads as a false positive.
 
 ## Desktop app
 
