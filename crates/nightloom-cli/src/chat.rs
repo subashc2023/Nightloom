@@ -5,6 +5,7 @@ use nightloom_core::{
     BlockKind, BlockSource, ContentBlock, ProviderError, SegmentKind, Session, SessionEvent,
     SystemPrompt, Thinking, Usage,
 };
+use nightloom_service::credentials;
 use nightloom_service::tools::{Reviewer, Root};
 use nightloom_service::{
     AutoApprove, Chat, Decision, PendingCall, ProjectContext, PromptConfig, ProviderKind,
@@ -135,7 +136,9 @@ fn build_chat(args: &ChatArgs, mcp_tools: &[Arc<dyn Tool>]) -> Result<Chat> {
     let (provider, model) = nightloom_service::connect(
         args.provider,
         args.model.clone(),
-        None,
+        // Stored first, then the environment — the same resolver the desktop
+        // uses, so a key set in either shell works in both.
+        credentials::provider_key(args.provider),
         args.base_url.clone(),
         Some(Box::new(|e: &ProviderError, attempt: u32| {
             eprintln!("{DIM}transient provider error (attempt {attempt}): {e}; retrying…{RESET}");
@@ -206,7 +209,7 @@ fn build_chat(args: &ChatArgs, mcp_tools: &[Arc<dyn Tool>]) -> Result<Chat> {
             // tool set genuinely differs between machines — see
             // `tools::web_tools`. Both are `Mutating`, so both pass through
             // the same gate as `bash`.
-            chat.tools.extend(tools::web_tools(tools::env_search_key));
+            chat.tools.extend(tools::web_tools(credentials::search_key));
         }
         if !args.no_review {
             // Cloned first: the bench excludes whatever lineage is under
@@ -871,7 +874,7 @@ pub async fn run(args: ChatArgs) -> Result<()> {
         // never searches, and the user is left wondering why it guessed.
         println!(
             "{DIM}{}{RESET}",
-            match tools::search_backend(tools::env_search_key) {
+            match tools::search_backend(credentials::search_key) {
                 Some(backend) => format!("web: web_fetch and web_search via {}", backend.label()),
                 None => format!(
                     "web: web_fetch only — set {} for web_search",

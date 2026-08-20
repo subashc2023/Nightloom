@@ -3,6 +3,7 @@ use anyhow::{Context, Result, bail};
 use nightloom_core::Thinking;
 use nightloom_evals::{ProbeReport, ProbeSpec, run_probe};
 use nightloom_providers::ProviderKind;
+use nightloom_service::credentials;
 use std::path::PathBuf;
 
 /// Answer is 3901; the check catches a model that streams garbage that still
@@ -271,7 +272,9 @@ pub async fn run(args: ProbeArgs) -> Result<()> {
             ProviderKind::Openai | ProviderKind::OpenaiChat => args.openai_base_url.clone(),
             _ => None,
         };
-        let provider = target.kind.from_env(base_url);
+        let provider = target
+            .kind
+            .build(credentials::provider_key(target.kind), base_url);
         for _ in 0..args.runs {
             let report = match &provider {
                 Ok(p) => run_probe(p.as_ref(), &spec).await,

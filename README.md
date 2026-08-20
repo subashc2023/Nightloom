@@ -50,6 +50,23 @@ Six crates, strict dependency direction: `nightloom-core` ←
 | `groq`        | chat/completions flavor | `GROQ_API_KEY`                    | openai/gpt-oss-120b |
 | `openrouter`  | chat/completions flavor | `OPENROUTER_API_KEY`              | openrouter/auto     |
 
+Keys come from the OS credential store first and the environment second, and
+both shells resolve them the same way — a key set in the desktop's settings
+pane works in the CLI, and one set with `nightloom keys set` works in the app:
+
+```sh
+nightloom keys                       # what has a key, and where from
+nightloom keys set anthropic         # prompts, or reads a piped key on stdin
+nightloom keys rm anthropic          # forgets the stored one; env is untouched
+```
+
+The key is never taken as a command-line argument — that puts it in shell
+history and in `ps`. A stored key wins over the environment, which is what
+`keys` prints per row so a forgotten `ANTHROPIC_API_KEY` cannot quietly be
+the one in use. There is no store on a headless box (no D-Bus session, no
+unlocked keyring); every read falls through to the environment rather than
+prompting, so nothing here breaks over SSH or in CI.
+
 Every adapter streams thinking when the model exposes it, and every adapter
 replays reasoning the way its own vendor requires — which is not uniform, and
 where "drop it all" is wrong in three dialects out of four. Anthropic needs

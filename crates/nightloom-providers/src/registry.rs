@@ -40,6 +40,15 @@ impl ProviderKind {
         }
     }
 
+    /// The environment variable a user would set for this provider — the
+    /// first one, where several are accepted. Public because a shell has to
+    /// *name* it: "no key for anthropic (set ANTHROPIC_API_KEY)" is the whole
+    /// content of the message, and a shell deriving that string itself would
+    /// be a second copy of this table to keep in step.
+    pub fn env_key(self) -> &'static str {
+        self.env_keys()[0]
+    }
+
     fn env_keys(self) -> &'static [&'static str] {
         match self {
             Self::Anthropic => &["ANTHROPIC_API_KEY"],
@@ -50,7 +59,13 @@ impl ProviderKind {
         }
     }
 
-    pub(crate) fn key_from_env(self) -> Option<String> {
+    /// This provider's key from the environment.
+    ///
+    /// Public because credential resolution is stated in one place
+    /// (`nightloom_service::credentials`), and a resolver that could read
+    /// the store but not the environment would have to leave half the order
+    /// to whoever called it next.
+    pub fn key_from_env(self) -> Option<String> {
         self.env_keys()
             .iter()
             .find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()))

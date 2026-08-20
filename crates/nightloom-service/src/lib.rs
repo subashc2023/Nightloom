@@ -8,6 +8,7 @@
 //! the shell's business.
 
 pub mod approval;
+pub mod credentials;
 pub mod import;
 pub mod project;
 pub mod prompt;
@@ -17,6 +18,7 @@ pub mod tools;
 pub mod turn;
 
 pub use approval::{Approver, AutoApprove, Decision, PendingCall};
+pub use credentials::{CredentialError, KeySource, provider_key, search_key};
 pub use nightloom_providers::ProviderKind;
 pub use nightloom_providers::limits::context_limit;
 pub use nightloom_providers::models::list_models;

@@ -1,6 +1,7 @@
 mod chat;
 mod eval;
 mod import;
+mod keys;
 mod probe;
 mod sessions;
 
@@ -35,6 +36,8 @@ enum Command {
     Sessions(sessions::SessionsArgs),
     /// Import a claude.ai account export: projects, knowledge and chats
     Import(import::ImportArgs),
+    /// API keys in the OS credential store, shared with the desktop app
+    Keys(keys::KeysArgs),
 }
 
 #[tokio::main]
@@ -45,6 +48,7 @@ async fn main() -> Result<()> {
         Some(Command::Eval(args)) => eval::run(args).await,
         Some(Command::Sessions(args)) => sessions::run(args),
         Some(Command::Import(args)) => import::run(args),
+        Some(Command::Keys(args)) => keys::run(args),
         None => chat::run(cli.chat).await,
     }
 }

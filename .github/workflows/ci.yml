@@ -31,6 +31,13 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      # `nightloom-service` reaches the OS credential store, and on Linux
+      # that is Secret Service over D-Bus — a system library, so the Linux
+      # leg needs its headers to link at all. Windows and macOS use their
+      # native stores and need nothing installed.
+      - name: libdbus (Linux credential store)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy

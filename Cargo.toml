@@ -39,3 +39,7 @@ clap = { version = "4", features = ["derive"] }
 regex = "1"
 globset = "0.4"
 walkdir = "2"
+# Backend choice per platform. `sync-secret-service` is the persistent Linux
+# store (GNOME Keyring / KWallet); `linux-native` alone is kernel keyutils,
+# which is session-scoped and would silently lose a key on reboot.
+keyring = { version = "3", features = ["windows-native", "apple-native", "sync-secret-service"] }

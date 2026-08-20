@@ -103,7 +103,7 @@ fn build_chat(
     let (provider, model) = nightloom_service::connect(
         target.kind,
         target.model.clone(),
-        None,
+        nightloom_service::credentials::provider_key(target.kind),
         None,
         None::<Box<dyn Fn(&nightloom_core::ProviderError, u32) + Send + Sync>>,
     )

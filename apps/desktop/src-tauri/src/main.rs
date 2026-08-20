@@ -11,6 +11,7 @@ use nightloom_core::{
     DocumentInput, ImageInput, ProviderError, Session, SessionEvent, Thinking, WireView,
 };
 use nightloom_service::approval::{Approver, AutoApprove, Decision, PendingCall};
+use nightloom_service::credentials::{self, KeySource};
 use nightloom_service::import;
 use nightloom_service::project::{self, Note, Project, Registry};
 use nightloom_service::store::{self, SessionMatch, SessionSummary};
@@ -235,7 +236,7 @@ struct ProviderInfo {
     default_model: Option<String>,
     /// Where the key that would be used comes from: "stored" (entered in the
     /// app, OS credential store) or "env"; absent when there is no key.
-    key_source: Option<&'static str>,
+    key_source: Option<KeySource>,
 }
 
 #[derive(Serialize)]
@@ -280,57 +281,6 @@ struct ReviewerInfo {
     model: String,
 }
 
-const KEYRING_SERVICE: &str = "nightloom";
-
-/// Key entered in the app for this provider, from the OS credential store.
-/// `openai-chat` falls back to OpenAI's stored key, mirroring the shared
-/// `OPENAI_API_KEY` env var.
-fn stored_key(kind: ProviderKind) -> Option<String> {
-    let lookup = |label: &str| {
-        keyring::Entry::new(KEYRING_SERVICE, label)
-            .ok()
-            .and_then(|e| e.get_password().ok())
-            .filter(|k| !k.is_empty())
-    };
-    lookup(kind.label()).or_else(|| match kind {
-        ProviderKind::OpenaiChat => lookup(ProviderKind::Openai.label()),
-        _ => None,
-    })
-}
-
-/// The credential-store entry for a search backend.
-///
-/// Namespaced rather than stored under the bare name: provider labels and
-/// backend names share one keyring service, and a future provider called
-/// "brave" would otherwise silently read a search key as its API key.
-fn search_entry(backend: SearchBackend) -> String {
-    format!("search:{}", backend.name())
-}
-
-/// A search key, from the credential store first and the environment second.
-///
-/// The order matters more here than for providers: a desktop process
-/// inherits whatever environment its launcher had, which on Windows is
-/// usually nothing at all, so the store is the only route that works for an
-/// app started from a Start-menu shortcut.
-fn search_key(backend: SearchBackend) -> Option<String> {
-    keyring::Entry::new(KEYRING_SERVICE, &search_entry(backend))
-        .ok()
-        .and_then(|e| e.get_password().ok())
-        .filter(|k| !k.trim().is_empty())
-        .or_else(|| nightloom_service::tools::env_search_key(backend))
-}
-
-fn key_source(kind: ProviderKind) -> Option<&'static str> {
-    if stored_key(kind).is_some() {
-        Some("stored")
-    } else if kind.has_credentials() {
-        Some("env")
-    } else {
-        None
-    }
-}
-
 /// Every provider Nightloom knows, with whether credentials are present
 /// (stored in-app or in the environment).
 #[tauri::command]
@@ -339,9 +289,9 @@ fn providers() -> Vec<ProviderInfo> {
         .into_iter()
         .map(|kind| ProviderInfo {
             kind: kind.label().to_string(),
-            available: key_source(kind).is_some(),
+            available: credentials::provider_key_source(kind).is_some(),
             default_model: kind.default_model().map(String::from),
-            key_source: key_source(kind),
+            key_source: credentials::provider_key_source(kind),
         })
         .collect()
 }
@@ -352,22 +302,13 @@ fn providers() -> Vec<ProviderInfo> {
 #[tauri::command]
 fn set_api_key(provider: String, key: String) -> Result<(), String> {
     let kind: ProviderKind = provider.parse()?;
-    let entry = keyring::Entry::new(KEYRING_SERVICE, kind.label()).map_err(|e| e.to_string())?;
-    let key = key.trim();
-    if key.is_empty() {
-        return clear_api_key(provider);
-    }
-    entry.set_password(key).map_err(|e| e.to_string())
+    credentials::set_provider_key(kind, &key).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn clear_api_key(provider: String) -> Result<(), String> {
     let kind: ProviderKind = provider.parse()?;
-    let entry = keyring::Entry::new(KEYRING_SERVICE, kind.label()).map_err(|e| e.to_string())?;
-    match entry.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(e) => Err(e.to_string()),
-    }
+    credentials::clear_provider_key(kind).map_err(|e| e.to_string())
 }
 
 /// A search backend as the settings pane shows it.
@@ -378,7 +319,7 @@ struct SearchBackendInfo {
     /// Named in the UI because it is the other way to set this, and the one
     /// a user who scripts the CLI already uses.
     env_key: String,
-    key_source: Option<&'static str>,
+    key_source: Option<KeySource>,
     /// Whether this is the one that would actually answer. Only the first
     /// backend with a key is used, so a second key set is inert — and a
     /// settings pane showing two filled boxes with no hint of which one is
@@ -389,25 +330,14 @@ struct SearchBackendInfo {
 /// The search backends, with whether each has a key and which one answers.
 #[tauri::command]
 fn search_backends() -> Vec<SearchBackendInfo> {
-    let active = nightloom_service::tools::search_backend(search_key);
+    let active = nightloom_service::tools::search_backend(credentials::search_key);
     SearchBackend::ALL
         .into_iter()
         .map(|backend| SearchBackendInfo {
             name: backend.name().to_string(),
             label: backend.label().to_string(),
             env_key: backend.env_key().to_string(),
-            key_source: if keyring::Entry::new(KEYRING_SERVICE, &search_entry(backend))
-                .ok()
-                .and_then(|e| e.get_password().ok())
-                .filter(|k| !k.trim().is_empty())
-                .is_some()
-            {
-                Some("stored")
-            } else if nightloom_service::tools::env_search_key(backend).is_some() {
-                Some("env")
-            } else {
-                None
-            },
+            key_source: credentials::search_key_source(backend),
             active: active == Some(backend),
         })
         .collect()
@@ -419,23 +349,14 @@ fn search_backends() -> Vec<SearchBackendInfo> {
 fn set_search_key(backend: String, key: String) -> Result<(), String> {
     let backend = SearchBackend::from_name(&backend)
         .ok_or_else(|| format!("no search backend named {backend}"))?;
-    let entry =
-        keyring::Entry::new(KEYRING_SERVICE, &search_entry(backend)).map_err(|e| e.to_string())?;
-    let key = key.trim();
-    if key.is_empty() {
-        return match entry.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(e) => Err(e.to_string()),
-        };
-    }
-    entry.set_password(key).map_err(|e| e.to_string())
+    credentials::set_search_key(backend, &key).map_err(|e| e.to_string())
 }
 
 /// Model ids the provider's API currently offers (for the settings modal).
 #[tauri::command]
 async fn list_models(provider: String, base_url: Option<String>) -> Result<Vec<String>, String> {
     let kind: ProviderKind = provider.parse()?;
-    let key = stored_key(kind);
+    let key = credentials::stored_provider_key(kind);
     nightloom_service::list_models(kind, key, base_url)
         .await
         .map_err(|e| e.to_string())
@@ -546,7 +467,7 @@ fn build_chat(
     let (provider, model) = nightloom_service::connect(
         spec.kind,
         spec.model.clone(),
-        stored_key(spec.kind),
+        credentials::provider_key(spec.kind),
         spec.base_url.clone(),
         Some(on_retry),
     )
@@ -594,7 +515,7 @@ fn build_chat(
             // set differs between machines; both tools are `Mutating` and
             // pass the same gate as `bash`.
             chat.tools
-                .extend(nightloom_service::tools::web_tools(search_key));
+                .extend(nightloom_service::tools::web_tools(credentials::search_key));
         }
         // Its own toggle, and inside `tools` rather than beside it: it is
         // still a tool, and a connection that asked for none should not
@@ -644,23 +565,25 @@ fn reviewers(
     model: &str,
     mcp_tools: &[Arc<dyn Tool>],
 ) -> Vec<Reviewer> {
-    nightloom_service::tools::bench(spec.kind, model, |k| key_source(k).is_some())
-        .into_iter()
-        .map(|candidate| {
-            let mut spec = spec.clone();
-            spec.kind = candidate.kind;
-            spec.model = Some(candidate.model);
-            // Belonged to the provider being replaced: a base URL pointing at
-            // a local server is not where this reviewer lives.
-            spec.base_url = None;
-            let (app, policy, mcp) = (app.clone(), policy.clone(), mcp_tools.to_vec());
-            Reviewer::new(
-                candidate.name,
-                candidate.description,
-                Arc::new(move || build_chat(&app, &policy, &spec, &mcp)),
-            )
-        })
-        .collect()
+    nightloom_service::tools::bench(spec.kind, model, |k| {
+        credentials::provider_key_source(k).is_some()
+    })
+    .into_iter()
+    .map(|candidate| {
+        let mut spec = spec.clone();
+        spec.kind = candidate.kind;
+        spec.model = Some(candidate.model);
+        // Belonged to the provider being replaced: a base URL pointing at
+        // a local server is not where this reviewer lives.
+        spec.base_url = None;
+        let (app, policy, mcp) = (app.clone(), policy.clone(), mcp_tools.to_vec());
+        Reviewer::new(
+            candidate.name,
+            candidate.description,
+            Arc::new(move || build_chat(&app, &policy, &spec, &mcp)),
+        )
+    })
+    .collect()
 }
 
 /// Build the provider + `Chat` for this window; retry stalls are reported as
@@ -758,20 +681,22 @@ async fn connect(
         // Asked of the bench directly rather than of `reviewers`: the rail
         // wants the names, not five closures that can each build a provider.
         reviewers: if spec.tools {
-            nightloom_service::tools::bench(spec.kind, &chat.model, |k| key_source(k).is_some())
-                .into_iter()
-                .map(|r| ReviewerInfo {
-                    name: r.name,
-                    model: r.description,
-                })
-                .collect()
+            nightloom_service::tools::bench(spec.kind, &chat.model, |k| {
+                credentials::provider_key_source(k).is_some()
+            })
+            .into_iter()
+            .map(|r| ReviewerInfo {
+                name: r.name,
+                model: r.description,
+            })
+            .collect()
         } else {
             Vec::new()
         },
         workspace: spec.workspace.to_string_lossy().into_owned(),
         project: active.as_ref().map(ProjectInfo::of),
         search: (spec.tools && spec.web)
-            .then(|| nightloom_service::tools::search_backend(search_key))
+            .then(|| nightloom_service::tools::search_backend(credentials::search_key))
             .flatten()
             .map(|b| b.label().to_string()),
     };

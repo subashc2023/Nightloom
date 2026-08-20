@@ -22,3 +22,12 @@ walkdir.workspace = true
 uuid.workspace = true
 reqwest.workspace = true
 zip = { version = "8", default-features = false, features = ["deflate"] }
+keyring = { workspace = true, optional = true }
+
+[features]
+default = ["keyring"]
+# The OS credential store. Optional so an embedder — or a build for a
+# headless box with no D-Bus development headers — can drop the dependency;
+# `credentials` still compiles, reads as "no stored key", and falls through
+# to the environment.
+keyring = ["dep:keyring"]
