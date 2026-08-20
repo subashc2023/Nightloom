@@ -77,6 +77,14 @@
   }
 
   async function accept(files: Iterable<File>): Promise<void> {
+    // Refused here rather than at send: Claude Code takes a prompt on argv
+    // and reads no attachments from us, and a chip sitting in the composer
+    // is a promise the send would have to break. Named, like every other
+    // refusal in here, so it does not read as a drop that silently failed.
+    if (app.connection?.engine === "claude-code") {
+      addToast("Claude Code takes text only — attachments are not sent on this engine");
+      return;
+    }
     for (const file of files) {
       const kind = kindOf(file.type);
       if (!kind) {

@@ -137,6 +137,34 @@ pub enum SessionEvent {
         text: String,
         at: DateTime<Utc>,
     },
+    /// The external agent session this log mirrors, when a turn was run by
+    /// one instead of by a provider call.
+    ///
+    /// Recorded because otherwise a conversation ends when the window does.
+    /// An agent that owns its own history — Claude Code does — replays it
+    /// from a handle of its own, and Nightloom's log is a *record* of that
+    /// conversation rather than the thing replayed. Without the handle
+    /// written down, reopening the chat tomorrow shows every turn and then
+    /// starts a fresh one with no memory of any of it: a transcript that
+    /// lies about being continuous, which is worse than a chat that plainly
+    /// did not persist.
+    ///
+    /// Latest wins, the way a [`Title`] does, since one Nightloom session
+    /// can span several of the agent's own (each turn opens one and resumes
+    /// it next time). `agent` names which agent the handle belongs to, so a
+    /// second one later cannot have its ids read as the first one's.
+    ///
+    /// Not part of the message projection: it is metadata about where the
+    /// conversation is kept, not a turn in it.
+    ///
+    /// [`Title`]: SessionEvent::Title
+    AgentSession {
+        /// Which agent, e.g. `claude-code`.
+        agent: String,
+        /// The agent's own session id — what it takes to resume.
+        id: String,
+        at: DateTime<Utc>,
+    },
     /// The listed events keep their place in the conversation but stop
     /// carrying their content: the projection substitutes a marker naming
     /// roughly what was removed.
@@ -741,6 +769,24 @@ impl Session {
         });
     }
 
+    /// Note which of an external agent's sessions this log now mirrors.
+    ///
+    /// A no-op when it is already the current one: the handle usually
+    /// survives a turn unchanged, and appending an identical event per turn
+    /// would bury the conversation in bookkeeping.
+    pub fn record_agent_session(&mut self, agent: impl Into<String>, id: impl Into<String>) {
+        let agent = agent.into();
+        let id = id.into();
+        if self.agent_session() == Some((agent.as_str(), id.as_str())) {
+            return;
+        }
+        self.record(SessionEvent::AgentSession {
+            agent,
+            id,
+            at: Utc::now(),
+        });
+    }
+
     pub fn record_todos(&mut self, todos: Vec<TodoItem>) {
         self.record(SessionEvent::TodoState {
             todos,
@@ -994,6 +1040,23 @@ impl Session {
             .rev()
             .find_map(|(_, e)| match e {
                 SessionEvent::Title { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+    }
+
+    /// Projection: the external agent session this log currently mirrors.
+    ///
+    /// Read off the live events like a [`title`](Self::title), so a rewind
+    /// that supersedes the marker gives back whichever one was current
+    /// before it — which is the honest answer, even though a shell driving
+    /// an agent should be refusing the rewind in the first place: the
+    /// agent's history is not this log's to cut.
+    pub fn agent_session(&self) -> Option<(&str, &str)> {
+        self.live_events()
+            .into_iter()
+            .rev()
+            .find_map(|(_, e)| match e {
+                SessionEvent::AgentSession { agent, id, .. } => Some((agent.as_str(), id.as_str())),
                 _ => None,
             })
     }
@@ -2378,5 +2441,42 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, SessionEvent::Title { .. }))
         );
+    }
+
+    #[test]
+    fn an_agent_session_is_the_latest_handle_and_is_not_a_message() {
+        let mut s = Session::new();
+        s.record_user("one");
+        s.record_agent_session("claude-code", "abc");
+        s.record_assistant(
+            "m",
+            vec![ContentBlock::Text {
+                text: "first".into(),
+            }],
+            None,
+            Usage::default(),
+        );
+        s.record_agent_session("claude-code", "def");
+
+        assert_eq!(s.agent_session(), Some(("claude-code", "def")));
+        // Metadata about where the conversation is kept, not a turn in it.
+        assert_eq!(s.messages().len(), 2);
+    }
+
+    #[test]
+    fn an_unchanged_agent_session_is_not_recorded_twice() {
+        let mut s = Session::new();
+        s.record_agent_session("claude-code", "abc");
+        s.record_agent_session("claude-code", "abc");
+        assert_eq!(
+            s.events()
+                .iter()
+                .filter(|e| matches!(e, SessionEvent::AgentSession { .. }))
+                .count(),
+            1
+        );
+        // A different agent's identical id is a different handle.
+        s.record_agent_session("codex", "abc");
+        assert_eq!(s.agent_session(), Some(("codex", "abc")));
     }
 }

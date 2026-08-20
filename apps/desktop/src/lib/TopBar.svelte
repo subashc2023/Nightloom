@@ -54,6 +54,11 @@
   // projection still carries, since that is what the backend summarizes.
   const canCompact = $derived.by(() => {
     if (!app.connection) return false;
+    // Compaction rewrites what the *log* projects onto the next request, and
+    // on the agent engine nothing projects: the next turn resumes a history
+    // Claude Code keeps. The button would change what this window shows and
+    // nothing about the conversation, which is worse than not offering it.
+    if (app.connection.engine === "claude-code") return false;
     const live = liveFlags(app.events);
     return app.events.some((e, i) => live[i] && e.event === "assistant_message");
   });
@@ -61,6 +66,7 @@
   const annotation = $derived.by(() => {
     if (!app.connection) return "";
     const parts: string[] = [];
+    if (app.connection.engine === "claude-code") parts.push("subscription");
     if (app.connection.thinking !== "default") {
       parts.push(app.connection.thinking);
     }

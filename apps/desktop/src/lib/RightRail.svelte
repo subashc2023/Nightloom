@@ -2,7 +2,7 @@
   import ProviderRail from "./ProviderRail.svelte";
   import TaskPanel from "./TaskPanel.svelte";
   import ContextPanel from "./ContextPanel.svelte";
-  import { currentTodos } from "./state.svelte";
+  import { app, currentTodos } from "./state.svelte";
 
   type Tab = "connection" | "tasks" | "context";
 
@@ -12,11 +12,24 @@
     currentTodos().filter((t) => t.status !== "completed").length,
   );
 
-  const TABS: { id: Tab; label: string }[] = [
+  /**
+   * The context panel itemizes the request the next turn will send, and on
+   * the agent engine there is no such request to itemize — Claude Code
+   * assembles its own from a history it keeps. The tab is dropped rather
+   * than shown empty, and the selection with it, or switching engines would
+   * leave the rail parked on a pane that no longer exists.
+   */
+  const agentMode = $derived(app.connection?.engine === "claude-code");
+
+  const TABS: { id: Tab; label: string }[] = $derived([
     { id: "connection", label: "Model" },
     { id: "tasks", label: "Tasks" },
-    { id: "context", label: "Context" },
-  ];
+    ...(agentMode ? [] : [{ id: "context" as Tab, label: "Context" }]),
+  ]);
+
+  $effect(() => {
+    if (agentMode && tab === "context") tab = "connection";
+  });
 </script>
 
 <aside class="rail">
@@ -38,7 +51,7 @@
     <ProviderRail />
   {:else if tab === "tasks"}
     <TaskPanel />
-  {:else}
+  {:else if !agentMode}
     <ContextPanel />
   {/if}
 </aside>

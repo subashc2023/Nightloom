@@ -17,6 +17,14 @@
 
   /** The notes worth surfacing here: what a new chat in this project inherits. */
   const inherited = $derived(app.notes.slice(0, 4));
+
+  /**
+   * On the Claude Code engine the notes are still on disk and its tools can
+   * read them — but nothing indexes them into its prompt, because it
+   * assembles its own. So they are shown without the claim that a new chat
+   * starts knowing about them, which on this engine it does not.
+   */
+  const agentMode = $derived(app.connection?.engine === "claude-code");
 </script>
 
 <div class="welcome">
@@ -55,7 +63,9 @@
       <div class="notes">
         <button
           class="notes-head"
-          title="Show the notes folder"
+          title={agentMode
+            ? "In the workspace, and readable by Claude Code's tools — but not indexed into its prompt: it assembles its own."
+            : "Show the notes folder"}
           onclick={() => void revealFolder(app.project?.notes_dir)}
         >
           Notes ↗
@@ -71,6 +81,13 @@
           </button>
         {/if}
       </div>
+    {/if}
+
+    {#if agentMode}
+      <p class="engine-note">
+        Running on Claude Code — billed to your Claude subscription. It brings
+        its own loop, tools and history.
+      </p>
     {/if}
 
     {#if !app.project}
@@ -172,6 +189,13 @@
   }
   .path:hover {
     color: var(--accent);
+  }
+  .engine-note {
+    margin: 0;
+    font-size: 0.78rem;
+    line-height: 1.45;
+    color: var(--dim);
+    max-width: 34rem;
   }
   .warn {
     margin: 0;

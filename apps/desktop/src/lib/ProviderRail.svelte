@@ -1,12 +1,31 @@
 <script lang="ts">
-  import { app, applyDraft, usable, usePrompt } from "./state.svelte";
+  import { app, applyDraft, useEngine, usable, usePrompt } from "./state.svelte";
   import {
+    AGENT_MODELS,
     isProviderVisible,
     modelsFor,
     providerLabel,
     sanitizeThinking,
     thinkingSupport,
   } from "./catalog";
+
+  const agentMode = $derived(app.draft.engine === "claude-code");
+  const agent = $derived(app.connection?.agent ?? null);
+
+  /**
+   * The last turn's plan window, phrased. This is the only figure in an
+   * agent turn that is about what the turn actually spent — the dollar total
+   * beside it is the CLI's estimate of what the same turn *would* have cost
+   * on the API, which is worth showing precisely because it is the number
+   * not being charged.
+   */
+  const plan = $derived.by(() => {
+    const p = app.agentTurn?.plan;
+    if (!p) return null;
+    const window = p.rateLimitType ?? "plan";
+    const status = p.status ?? "unknown";
+    return `${window} window ${status}${p.isUsingOverage ? ", on overage" : ""}`;
+  });
 
   // The current selection stays listed even if settings later hide it.
   const providers = $derived(
@@ -66,6 +85,25 @@
 </script>
 
 <div class="rail">
+  <div class="engines" role="group" aria-label="Engine">
+    <button
+      class:on={!agentMode}
+      disabled={locked}
+      onclick={() => void useEngine("provider")}
+      title="An API key and Nightloom's own loop: tools, approval gate, sidecar and context editing."
+    >
+      Provider
+    </button>
+    <button
+      class:on={agentMode}
+      disabled={locked}
+      onclick={() => void useEngine("claude-code")}
+      title="Drive the signed-in Claude Code CLI, so turns are billed to your Claude subscription instead of an API key. It owns the loop, the tools and the history."
+    >
+      Claude Code
+    </button>
+  </div>
+
   <div class="status" title={app.connection?.workspace ?? ""}>
     {#if app.connecting}
       <span class="dot pending"></span><span class="dim">connecting…</span>
@@ -79,6 +117,57 @@
     {/if}
   </div>
 
+  {#if agentMode}
+    <div class="group">
+      <div class="row">
+        <span class="lbl">Binary</span>
+        <input
+          type="text"
+          bind:value={app.draft.agentBinary}
+          onchange={apply}
+          placeholder="claude"
+          disabled={locked}
+          title={agent?.version
+            ? `${agent.binary} — ${agent.version}`
+            : "The Claude Code CLI to run. Leave empty for `claude` on PATH."}
+        />
+      </div>
+
+      <div class="row">
+        <span class="lbl">Model</span>
+        <input
+          type="text"
+          list="agent-models"
+          bind:value={app.draft.agentModel}
+          onchange={apply}
+          placeholder="default"
+          disabled={locked}
+          title="An alias (fable, opus, sonnet, haiku) or a full model id. The CLI resolves it; the snapshot it picked is shown above once a turn has run."
+        />
+        <datalist id="agent-models">
+          {#each AGENT_MODELS.filter(Boolean) as m (m)}
+            <option value={m}></option>
+          {/each}
+        </datalist>
+      </div>
+
+      {#if agent}
+        <p class="note" class:warn={!agent.subscription}>
+          {#if agent.subscription}
+            Billed to your Claude subscription — <code>ANTHROPIC_API_KEY</code> is
+            withheld from the CLI.
+          {:else}
+            An API key in the environment will be used, and the API billed.
+          {/if}
+        </p>
+        {#if agent.resume}
+          <p class="note">
+            Continuing Claude Code session <code>{agent.resume.slice(0, 8)}</code>.
+          </p>
+        {/if}
+      {/if}
+    </div>
+  {:else}
   <div class="group">
     <div class="row">
       <span class="lbl">Provider</span>
@@ -156,11 +245,14 @@
       </div>
     {/if}
   </div>
+  {/if}
 
   <div class="group">
     <label
       class="sw"
-      title="read_file, edit_file, bash, grep and the rest — rooted at the folder below."
+      title={agentMode
+        ? "Claude Code's own tools — Read, Edit, Bash and the rest. Off runs it with none."
+        : "read_file, edit_file, bash, grep and the rest — rooted at the folder below."}
     >
       <span>Tools</span>
       <input type="checkbox" bind:checked={app.draft.tools} onchange={apply} disabled={locked} />
@@ -169,9 +261,11 @@
     {#if app.draft.tools}
       <label
         class="sw"
-        title="Calls that change files or run commands wait for you in the transcript. Reads and task-list writes never ask."
+        title={agentMode
+          ? "Claude Code runs its own permission checks in `dontAsk` mode: anything not already permitted is refused. Off is `bypassPermissions`."
+          : "Calls that change files or run commands wait for you in the transcript. Reads and task-list writes never ask."}
       >
-        <span>Ask before writing</span>
+        <span>{agentMode ? "Restrict permissions" : "Ask before writing"}</span>
         <input
           type="checkbox"
           bind:checked={app.draft.approval}
@@ -182,7 +276,18 @@
       {#if !app.draft.approval}
         <p class="warn">Every call runs unasked, including <code>bash</code>.</p>
       {/if}
+      {#if agentMode}
+        <!-- Said rather than implied: the switch above is the familiar one
+             and the gate behind it is not. Nightloom's approval prompt gates
+             calls its own engine is about to run, and this engine runs its
+             own — headless, with nobody to ask. -->
+        <p class="note">
+          Claude Code decides these itself. Nightloom's approval prompt does not
+          run on this engine.
+        </p>
+      {/if}
 
+      {#if !agentMode}
       <label
         class="sw"
         title="web_fetch reads a URL, web_search finds one. Both leave this machine, and both ask first."
@@ -203,17 +308,43 @@
           disabled={locked}
         />
       </label>
+      {/if}
     {/if}
 
-    <label class="sw" title="Identity, environment, AGENTS.md instructions and the notes index.">
-      <span>Preamble</span>
-      <input type="checkbox" bind:checked={app.draft.preamble} onchange={apply} disabled={locked} />
-    </label>
+    {#if agentMode}
+      <label
+        class="sw"
+        title="Run without the host's CLAUDE.md, hooks, plugins and MCP servers. This is --safe-mode and not --bare: bare mode never reads OAuth credentials, so it would put the turn back on an API key."
+      >
+        <span>Safe mode</span>
+        <input
+          type="checkbox"
+          bind:checked={app.draft.agentSafeMode}
+          onchange={apply}
+          disabled={locked}
+        />
+      </label>
+    {:else}
+      <label class="sw" title="Identity, environment, AGENTS.md instructions and the notes index.">
+        <span>Preamble</span>
+        <input
+          type="checkbox"
+          bind:checked={app.draft.preamble}
+          onchange={apply}
+          disabled={locked}
+        />
+      </label>
 
-    <label class="sw" title="Clock, context gauge and task list, appended to each turn.">
-      <span>Per-turn status</span>
-      <input type="checkbox" bind:checked={app.draft.sidecar} onchange={apply} disabled={locked} />
-    </label>
+      <label class="sw" title="Clock, context gauge and task list, appended to each turn.">
+        <span>Per-turn status</span>
+        <input
+          type="checkbox"
+          bind:checked={app.draft.sidecar}
+          onchange={apply}
+          disabled={locked}
+        />
+      </label>
+    {/if}
   </div>
 
   {#if app.draft.tools}
@@ -238,7 +369,7 @@
         />
       </div>
 
-      {#if app.connection && app.connection.mcp.length > 0}
+      {#if !agentMode && app.connection && app.connection.mcp.length > 0}
         <div class="row mcp-row">
           <span class="lbl">MCP</span>
           <div class="mcp">
@@ -257,7 +388,7 @@
         </div>
       {/if}
 
-      {#if app.connection && app.draft.web}
+      {#if !agentMode && app.connection && app.draft.web}
         <div class="row mcp-row">
           <span class="lbl">Web</span>
           <div class="mcp">
@@ -278,7 +409,7 @@
         </div>
       {/if}
 
-      {#if app.connection && app.draft.tools}
+      {#if !agentMode && app.connection && app.draft.tools}
         <div class="row mcp-row">
           <span class="lbl">Review</span>
           <div class="mcp">
@@ -313,7 +444,10 @@
           void usePrompt(v || null);
         }}
         disabled={locked}
-        title={app.draft.system || "No system prompt beyond the preamble."}
+        title={app.draft.system ||
+          (agentMode
+            ? "Appended to Claude Code's own system prompt."
+            : "No system prompt beyond the preamble.")}
       >
         <option value="">None</option>
         {#if custom}
@@ -330,6 +464,22 @@
       >
     </div>
   </div>
+
+  {#if agentMode && app.agentTurn}
+    <div class="group">
+      {#if plan}
+        <p class="note">plan: {plan}</p>
+      {/if}
+      {#if app.agentTurn.cost_usd != null}
+        <p
+          class="note dim"
+          title="What the same turn would have cost on the API. Under a subscription it is not charged — which is the only reading of this number that is true."
+        >
+          last turn ≈ ${app.agentTurn.cost_usd.toFixed(4)} on the API — not charged
+        </p>
+      {/if}
+    </div>
+  {/if}
 
   {#if app.connectError}
     <div class="error">{app.connectError}</div>
@@ -516,6 +666,57 @@
   .warn code {
     font-family: var(--mono);
     font-size: 0.64rem;
+  }
+
+  /* A statement of fact about the connection, where .warn is a caution. */
+  .note {
+    margin: 0;
+    font-size: 0.68rem;
+    line-height: 1.35;
+    color: var(--dim);
+  }
+  .note.dim {
+    opacity: 0.75;
+  }
+  .note.warn {
+    color: var(--error);
+  }
+  .note code {
+    font-family: var(--mono);
+    font-size: 0.64rem;
+  }
+
+  /* Two buttons reading as one control, so the choice looks like a mode and
+     not like two things you could have both of. */
+  .engines {
+    display: flex;
+    gap: 1px;
+    padding: 0 0 0.55rem;
+  }
+  .engines button {
+    flex: 1;
+    padding: 0.28rem 0.3rem;
+    font-size: 0.68rem;
+    font-family: inherit;
+    color: var(--dim);
+    background: var(--panel-alt, rgba(127, 127, 127, 0.08));
+    border: 1px solid var(--border);
+    cursor: pointer;
+  }
+  .engines button:first-child {
+    border-radius: 3px 0 0 3px;
+  }
+  .engines button:last-child {
+    border-radius: 0 3px 3px 0;
+  }
+  .engines button.on {
+    color: var(--fg);
+    background: var(--bg);
+    border-color: var(--accent);
+  }
+  .engines button:disabled {
+    cursor: default;
+    opacity: 0.6;
   }
 
   .icon {

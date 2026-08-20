@@ -33,6 +33,75 @@ export interface ConnectArgs {
   workspace?: string;
 }
 
+/**
+ * Connecting the Claude Code engine: turns run through the signed-in CLI and
+ * are billed to the subscription instead of to an API key.
+ *
+ * A separate shape from `ConnectArgs` rather than a provider value on it,
+ * because almost none of that call's fields mean anything here — Claude Code
+ * assembles its own prompt and runs its own loop, so a base URL, a thinking
+ * mode, a preamble and a sidecar all have nobody to talk to.
+ */
+export interface AgentConnectArgs {
+  /** The CLI to run. Defaults to `claude` on PATH. */
+  binary?: string;
+  /** A model alias (`opus`, `sonnet`, `haiku`) or a full id. */
+  model?: string;
+  workspace?: string;
+  tools: boolean;
+  /**
+   * Maps to the CLI's permission mode: on means `dontAsk`, off means
+   * `bypassPermissions`. Nightloom's own approval prompt does not run on this
+   * engine — the gate belongs to whoever owns the loop, and that is not us.
+   */
+  approval: boolean;
+  /**
+   * Run without the host's CLAUDE.md, hooks, plugins and MCP servers. This is
+   * `--safe-mode` and not `--bare`: bare mode never reads OAuth credentials,
+   * so it would silently put the turn back on an API key.
+   */
+  safeMode: boolean;
+  /** Stop the turn if the CLI's own cost estimate passes this. */
+  budget?: number;
+  /** Appended to Claude Code's system prompt. */
+  system?: string;
+}
+
+/** The agent engine as the rail shows it; see the Rust `AgentInfo`. */
+export interface AgentInfo {
+  binary: string;
+  /** What `--version` printed at connect. */
+  version: string | null;
+  /** The API key is withheld, so the turn goes to the plan. */
+  subscription: boolean;
+  /** "dontAsk" | "bypassPermissions", or null when tools are off. */
+  permission_mode: string | null;
+  safe_mode: boolean;
+  /** The agent session this chat continues, when it has one. */
+  resume: string | null;
+}
+
+/** What one agent turn spent, and which plan window it came out of. */
+export interface AgentTurnResult {
+  /** The model the CLI resolved the alias to. */
+  model: string | null;
+  context_limit: number | null;
+  /** The CLI's estimate of what this turn would have cost on the API. Not a
+   *  bill: nothing here is charged per token under a subscription. */
+  cost_usd: number | null;
+  rounds: number | null;
+  /** Present only on an OAuth run, which makes it the one honest signal that
+   *  the turn was billed to the plan and not to a key. */
+  plan: {
+    status: string | null;
+    rateLimitType: string | null;
+    resetsAt: number | null;
+    isUsingOverage: boolean;
+  } | null;
+  notices: string[];
+  is_error: boolean;
+}
+
 /** A reviewer as the rail shows it: the name the model asks for, and the
  *  model actually behind it. */
 export interface ReviewerInfo {
@@ -57,6 +126,17 @@ export interface SearchBackendInfo {
 export interface ConnectResult {
   provider: string;
   model: string;
+  /**
+   * Which engine is behind this connection: "provider" or "claude-code".
+   *
+   * More than a label. The controls that rewind, compact and itemize the
+   * context all act on the session log, and on the agent engine that log is a
+   * record of a conversation kept somewhere else — so they would change what
+   * the window shows and nothing about what the next turn replays.
+   */
+  engine: string;
+  /** Present only on the agent engine. */
+  agent: AgentInfo | null;
   /**
    * The model's context window, when the backend knows it. Null for models
    * absent from the limits table — the gauge then shows raw token counts
@@ -316,6 +396,10 @@ export type SessionEvent =
   // conversation and project a stand-in instead of their payload. The log
   // still holds the content, so the transcript renders these turns in full and
   // only the context panel cares.
+  // Which of an external agent's sessions this log mirrors. Metadata about
+  // where the conversation is kept rather than a turn in it, so the
+  // transcript skips it; latest wins, like a title.
+  | { event: "agent_session"; agent: string; id: string; at: string }
   | { event: "elide"; targets: number[]; at: string }
   | { event: "unelide"; targets: number[]; at: string }
   | { event: "compaction"; summary: string; at: string }

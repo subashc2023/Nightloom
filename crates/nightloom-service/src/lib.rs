@@ -7,6 +7,7 @@
 //! token — whatever those mean (stdout + Ctrl-C, IPC events + a button) is
 //! the shell's business.
 
+pub mod agent;
 pub mod approval;
 pub mod credentials;
 pub mod import;
@@ -17,6 +18,7 @@ pub mod store;
 pub mod tools;
 pub mod turn;
 
+pub use agent::{AgentError, AgentOutcome, AgentSpec, ClaudeCodeAgent, Recorder};
 pub use approval::{Approver, AutoApprove, Decision, PendingCall};
 pub use credentials::{CredentialError, KeySource, provider_key, search_key};
 pub use nightloom_providers::ProviderKind;

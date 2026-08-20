@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AgentConnectArgs,
+  AgentTurnResult,
   ApprovalDecision,
   CompactResult,
   ConnectArgs,
@@ -62,6 +64,33 @@ export function connect(args: ConnectArgs): Promise<ConnectResult> {
     selfCompact: args.selfCompact,
     workspace: args.workspace,
   });
+}
+
+/**
+ * Connect the Claude Code engine. Rejects if the binary will not run, which
+ * is where that failure belongs: the alternative is a turn that dies with a
+ * process error the first time the user sends anything.
+ */
+export function connectAgent(args: AgentConnectArgs): Promise<ConnectResult> {
+  return invoke("connect_agent", {
+    binary: args.binary,
+    model: args.model,
+    workspace: args.workspace,
+    tools: args.tools,
+    approval: args.approval,
+    safeMode: args.safeMode,
+    budget: args.budget,
+    system: args.system,
+  });
+}
+
+/**
+ * Run one turn on the agent engine. Streams the same `turn-event`s the
+ * provider path does, which is what lets the transcript render both without
+ * knowing which produced a turn.
+ */
+export function sendAgent(text: string): Promise<AgentTurnResult> {
+  return invoke("send_agent", { text });
 }
 
 /** The search backends, with which has a key and which one answers. */

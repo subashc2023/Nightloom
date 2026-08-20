@@ -14,9 +14,12 @@ import {
   savePrompts,
   thinkingString,
   type CatalogPrefs,
+  type Engine,
   type SavedPrompt,
 } from "./catalog";
 import type {
+  AgentInfo,
+  AgentTurnResult,
   ApprovalDecision,
   ApprovalRequest,
   DocumentInput,
@@ -98,6 +101,14 @@ export interface Connection {
   /** Which provider answers `web_search`, or null when no key is set and the
    *  tool is absent. `web_fetch` needs none and is always there. */
   search: string | null;
+  /**
+   * Which engine is running. Read from the backend's answer rather than from
+   * the draft that asked, so the two cannot disagree about it — the same
+   * reason `project` is read back.
+   */
+  engine: Engine;
+  /** Present only on the agent engine. */
+  agent: AgentInfo | null;
 }
 
 export const app = $state({
@@ -166,6 +177,16 @@ export const app = $state({
   modelLists: {} as Record<string, string[]>,
   /** Fetch status per provider kind (settings modal UI). */
   modelFetch: {} as Record<string, { loading: boolean; error: string | null }>,
+  /**
+   * What the last agent turn reported: the plan window it came out of, and
+   * the CLI's estimate of what the same turn would have cost on the API.
+   *
+   * Kept apart from the cost readout in the top bar, which sums money that
+   * was actually charged. Under a subscription none of this was, and showing
+   * an estimate where a bill goes would be the one reading of the number
+   * that is false.
+   */
+  agentTurn: null as AgentTurnResult | null,
   toasts: [] as { id: number; text: string }[],
 });
 
@@ -408,6 +429,12 @@ export function usable(p: ProviderInfo): boolean {
 
 /** Connect on launch: last-used provider if still usable, else the first that is. */
 async function autoConnect(): Promise<void> {
+  // The agent engine has no key to check and no model list to fall back
+  // through — the binary either runs or the rail says why not.
+  if (app.draft.engine === "claude-code") {
+    await applyDraft();
+    return;
+  }
   let target = app.providers.find((p) => p.kind === app.draft.provider);
   if (!target || !usable(target)) {
     target =
@@ -428,7 +455,9 @@ async function autoConnect(): Promise<void> {
 /** (Re)connect with the rail's current settings. Called on every rail change. */
 export async function applyDraft(): Promise<void> {
   const d = app.draft;
-  if (!d.provider || app.busy || app.connecting) return;
+  if (app.busy || app.connecting) return;
+  if (d.engine === "claude-code") return applyAgentDraft();
+  if (!d.provider) return;
   sanitizeThinking(d); // a saved draft may hold a mode this target rejects
   app.connecting = true;
   app.connectError = null;
@@ -458,6 +487,8 @@ export async function applyDraft(): Promise<void> {
       reviewers: res.reviewers ?? [],
       workspace: res.workspace,
       search: res.search ?? null,
+      engine: "provider",
+      agent: null,
     };
     // The backend is the authority on which project a connection is filed
     // under: an open project overrides the workspace the rail saved, so
@@ -472,6 +503,72 @@ export async function applyDraft(): Promise<void> {
   } finally {
     app.connecting = false;
   }
+}
+
+/**
+ * Connect the agent engine with the rail's current settings.
+ *
+ * Its own function rather than a branch inside `applyDraft` because almost
+ * nothing in that call survives the crossing: no thinking mode, no base URL,
+ * no preamble or sidecar, no MCP or reviewers. What it shares is the shape —
+ * one connect per rail change, the backend's answer read back rather than the
+ * draft echoed — and that is what `Connection` is.
+ */
+async function applyAgentDraft(): Promise<void> {
+  const d = app.draft;
+  app.connecting = true;
+  app.connectError = null;
+  try {
+    const res = await api.connectAgent({
+      binary: d.agentBinary.trim() || undefined,
+      model: d.agentModel.trim() || undefined,
+      workspace: d.workspace.trim() || undefined,
+      tools: d.tools,
+      approval: d.approval,
+      safeMode: d.agentSafeMode,
+      budget: d.agentBudget > 0 ? d.agentBudget : undefined,
+      system: d.system.trim() || undefined,
+    });
+    app.connection = {
+      provider: res.provider,
+      model: res.model,
+      // Claude Code decides its own reasoning; there is no knob here to
+      // report, and "default" is the honest thing for the annotation to say.
+      thinking: "default",
+      tools: d.tools,
+      contextLimit: res.context_limit ?? null,
+      price: res.price ?? null,
+      mcp: res.mcp ?? [],
+      reviewers: res.reviewers ?? [],
+      workspace: res.workspace,
+      search: res.search ?? null,
+      engine: "claude-code",
+      agent: res.agent ?? null,
+    };
+    app.project = res.project ?? null;
+    saveLastConnection({ ...d });
+  } catch (e) {
+    // A failure here is usually the binary: not installed, or not on the
+    // PATH this process inherited. The rail shows the message, which names
+    // both possibilities.
+    app.connectError = String(e);
+    app.connection = null;
+  } finally {
+    app.connecting = false;
+  }
+}
+
+/** Switch engines and re-connect. */
+export async function useEngine(engine: Engine): Promise<void> {
+  if (app.draft.engine === engine || app.busy || app.connecting) return;
+  app.draft.engine = engine;
+  // The previous engine's connection is not this engine's, and leaving it up
+  // while the new connect runs would show a provider chip over an agent
+  // chat. A failed connect leaves it null, which reads as "not connected"
+  // beside the error — which is what happened.
+  app.connection = null;
+  app.agentTurn = null;
+  await applyDraft();
 }
 
 // ---- saved system prompts ----
@@ -593,6 +690,7 @@ export async function newSession(): Promise<void> {
     app.activeSessionId = id;
     app.events = [];
     app.error = null;
+    app.agentTurn = null;
     closeNote();
     await refreshSessions();
   } catch (e) {
@@ -606,6 +704,8 @@ export async function openSession(id: string): Promise<void> {
     app.events = await api.openSession(id);
     app.activeSessionId = id;
     app.error = null;
+    // The plan window and estimate belong to the chat you just left.
+    app.agentTurn = null;
     closeNote();
   } catch (e) {
     app.error = String(e);
@@ -653,6 +753,17 @@ export async function send(
   documents: DocumentInput[] = [],
 ): Promise<void> {
   if (!app.connection || app.busy) return;
+  if (app.connection.engine === "claude-code") {
+    // Claude Code takes a prompt on argv and reads no attachments from us.
+    // Refusing loudly rather than sending the caption alone: a question
+    // about an image the model never received gets a confident answer about
+    // nothing, which is the failure mode worth spending a toast on.
+    if (images.length > 0 || documents.length > 0) {
+      addToast("Claude Code takes text only — attachments are not sent on this engine");
+      return;
+    }
+    return sendAgent(text);
+  }
   app.error = null;
   app.events.push({
     event: "user_message",
@@ -695,6 +806,54 @@ export async function send(
     void refreshSessions();
     // The turn may have written to the docspace, and the sidebar showing a
     // note the model just left is the visible half of "shared knowledge".
+    void refreshNotes();
+  }
+}
+
+/**
+ * One turn on the agent engine.
+ *
+ * The same shape as `send` down to the re-sync, and deliberately so: the
+ * transcript is a projection of the log either way, and the backend records
+ * an agent turn in the same events a provider turn writes. What differs is
+ * what comes back — a plan window and an estimate instead of a stop reason
+ * and a bill — and that the window's own approval prompts never fire, since
+ * the gate belongs to whoever owns the loop.
+ */
+async function sendAgent(text: string): Promise<void> {
+  app.error = null;
+  app.events.push({ event: "user_message", text, at: new Date().toISOString() });
+  app.live = { segments: [] };
+  app.liveUsage = null;
+  app.busy = true;
+  try {
+    const res = await api.sendAgent(text);
+    app.agentTurn = res;
+    // The CLI resolves an alias to a real model id, which is the first
+    // moment a context window can be looked up at all: `sonnet` is in no
+    // limits table and a guessed denominator would promise headroom nobody
+    // verified.
+    if (app.connection && res.context_limit != null) {
+      app.connection.contextLimit = res.context_limit;
+    }
+    if (app.connection && res.model) app.connection.model = res.model;
+    for (const notice of res.notices) addToast(notice);
+  } catch (e) {
+    app.error = String(e);
+  } finally {
+    app.live = null;
+    app.liveUsage = null;
+    app.busy = false;
+    try {
+      app.events = await api.transcript();
+      const first = app.events[0];
+      if (first && first.event === "session_created") {
+        app.activeSessionId = first.id;
+      }
+    } catch {
+      // keep the locally-built view if re-sync fails
+    }
+    void refreshSessions();
     void refreshNotes();
   }
 }

@@ -62,7 +62,47 @@ export interface CatalogPrefs {
 }
 
 /** Everything needed to (re)connect: the rail edits this, connect sends it. */
+/**
+ * Which engine a chat runs on.
+ *
+ * "provider" is an API key and Nightloom's own loop; "claude-code" drives the
+ * signed-in CLI as a subprocess, so the turn is billed to a Claude
+ * subscription instead. They are two engines behind one event stream rather
+ * than a sixth provider under the first, because Claude Code owns the loop,
+ * the tools and the history — there is no request here for Nightloom to make.
+ */
+export type Engine = "provider" | "claude-code";
+
+/**
+ * Model aliases the CLI accepts, in its own order, plus "" for whatever it
+ * defaults to.
+ *
+ * Suggestions rather than a closed list, which is why the rail offers them
+ * through a `datalist` and not a `select`: `--model` takes a full id
+ * (`claude-fable-5`) as readily as an alias, the aliases themselves move with
+ * the CLI's releases rather than with ours, and which ones a given account can
+ * actually reach depends on its plan. A closed list can only be wrong in the
+ * direction that matters — it silently withholds a model the user is paying
+ * for, with nowhere to type it.
+ */
+export const AGENT_MODELS = ["", "fable", "opus", "sonnet", "haiku"];
+
 export interface ConnectionDraft {
+  /** Which engine the rail is on. Absent on drafts saved before it existed,
+   *  which read as "provider" — the only engine there was. */
+  engine: Engine;
+  /** The CLI to run on the agent engine. Empty means `claude` on PATH. */
+  agentBinary: string;
+  /** A model alias or full id for the agent engine. Kept apart from `model`
+   *  so switching engines does not hand one a model id the other cannot
+   *  resolve, and switching back finds what you last chose. */
+  agentModel: string;
+  /** Run the agent without the host's CLAUDE.md, hooks, plugins and MCP. */
+  agentSafeMode: boolean;
+  /** Stop a turn once the CLI's own estimate passes this many dollars. 0 is
+   *  no cap, which is the default: under a subscription the estimate is not
+   *  a bill, and a cap on it stops turns for no saving. */
+  agentBudget: number;
   provider: string;
   model: string;
   baseUrl: string;
@@ -109,6 +149,11 @@ export interface ConnectionDraft {
 
 export function defaultDraft(): ConnectionDraft {
   return {
+    engine: "provider",
+    agentBinary: "",
+    agentModel: "",
+    agentSafeMode: false,
+    agentBudget: 0,
     provider: "anthropic",
     model: "",
     baseUrl: "",
@@ -566,6 +611,11 @@ export function loadLastConnection(): ConnectionDraft | null {
       // a draft written before there was a switch — which is exactly the
       // state the switch exists to get out of. Only an explicit true is on.
       selfCompact: parsed.selfCompact === true,
+      // A saved draft from before the agent engine has no `engine`, and the
+      // engine it was written on is the one that existed. Anything else is
+      // read strictly, so a stray value cannot land the rail on an engine
+      // with no controls showing.
+      engine: parsed.engine === "claude-code" ? "claude-code" : "provider",
     };
   } catch {
     return null;

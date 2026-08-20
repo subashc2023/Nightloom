@@ -1,3 +1,4 @@
+mod agent;
 mod chat;
 mod eval;
 mod import;
@@ -49,6 +50,9 @@ async fn main() -> Result<()> {
         Some(Command::Sessions(args)) => sessions::run(args),
         Some(Command::Import(args)) => import::run(args),
         Some(Command::Keys(args)) => keys::run(args),
+        // `--agent` swaps the engine, not the provider: Claude Code owns
+        // the loop and the tools, and Nightloom renders what it streams.
+        None if cli.chat.agent.is_some() => agent::run(cli.chat).await,
         None => chat::run(cli.chat).await,
     }
 }

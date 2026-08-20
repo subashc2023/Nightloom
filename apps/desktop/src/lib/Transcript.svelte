@@ -161,7 +161,10 @@
     {#each items as item, i (i)}
       {#if item.kind === "user"}
         <div class="user-row" class:superseded={item.superseded}>
-          {#if !item.superseded && !app.busy}
+          <!-- Not offered on the agent engine: the history the next turn
+               replays is Claude Code's, so cutting this log would change what
+               the window shows and nothing about the conversation. -->
+          {#if !item.superseded && !app.busy && app.connection?.engine !== "claude-code"}
             <button
               class="rewind"
               title="Rewind to here: this turn and everything after it stop counting. Files written by tools are not reverted."

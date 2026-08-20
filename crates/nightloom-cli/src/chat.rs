@@ -24,7 +24,7 @@ pub struct ChatArgs {
 
     /// Model ID (each provider has a default; openai-chat requires one)
     #[arg(long)]
-    model: Option<String>,
+    pub(crate) model: Option<String>,
 
     /// Override the provider's API base URL (e.g. http://localhost:11434/v1)
     #[arg(long)]
@@ -32,11 +32,11 @@ pub struct ChatArgs {
 
     /// Extra system-prompt text, appended after the built-in preamble
     #[arg(long)]
-    system: Option<String>,
+    pub(crate) system: Option<String>,
 
     /// Skip the built-in preamble (identity, environment, project instructions)
     #[arg(long)]
-    bare: bool,
+    pub(crate) bare: bool,
 
     /// Don't attach the per-turn status block (time, tasks, context)
     #[arg(long)]
@@ -55,16 +55,16 @@ pub struct ChatArgs {
     /// working directory; bash is not. Calls that can change the machine ask
     /// first unless --no-approval is set.
     #[arg(long)]
-    tools: bool,
+    pub(crate) tools: bool,
 
     /// Run tool calls without asking. For unattended runs — the model gets to
     /// write files and run shell commands with no one watching.
     #[arg(long, visible_alias = "yolo")]
-    no_approval: bool,
+    pub(crate) no_approval: bool,
 
     /// Send one prompt, print the reply, and exit (no REPL)
     #[arg(long)]
-    once: Option<String>,
+    pub(crate) once: Option<String>,
 
     /// Resume a session by ID (full UUID or unambiguous prefix)
     #[arg(long, value_name = "SESSION", conflicts_with_all = ["continue_", "no_log"])]
@@ -100,6 +100,32 @@ pub struct ChatArgs {
     /// supersedes everything before it, and /compact is always available.
     #[arg(long)]
     self_compact: bool,
+
+    /// Drive a signed-in agent CLI instead of calling a provider API, so the
+    /// turn is billed to that CLI's login — a Claude subscription rather than
+    /// an API key. Claude Code then owns the loop, the tools and the history,
+    /// so --thinking, --self-compact, /context and /rewind do not apply.
+    #[arg(long, value_name = "KIND")]
+    pub(crate) agent: Option<AgentKind>,
+
+    /// The agent executable, for a version manager or a checkout
+    #[arg(long, default_value = "claude", value_name = "PATH")]
+    pub(crate) agent_binary: String,
+
+    /// Stop an agent turn once it has spent this much (USD)
+    #[arg(long, value_name = "USD")]
+    pub(crate) agent_budget: Option<f64>,
+}
+
+/// Which agent CLI `--agent` drives.
+///
+/// An enum with one arm rather than a bool, because the shape generalizes:
+/// Codex, Gemini CLI and OpenCode all speak a streaming JSON dialect over a
+/// signed-in session, and the seam here is the translator, not the flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum AgentKind {
+    /// Anthropic's Claude Code, billed to your Claude plan
+    ClaudeCode,
 }
 
 /// Where this run's session logs live.
@@ -409,7 +435,11 @@ fn print_recap(session: &Session) {
 
 /// Terminal rendering of one turn event. Thinking prints dim; the
 /// `in_thinking` flag tracks the open dim span across events.
-fn render(stdout: &mut io::Stdout, in_thinking: &mut bool, event: TurnEvent) -> io::Result<()> {
+pub(crate) fn render(
+    stdout: &mut io::Stdout,
+    in_thinking: &mut bool,
+    event: TurnEvent,
+) -> io::Result<()> {
     let close_thinking = |stdout: &mut io::Stdout, in_thinking: &mut bool| -> io::Result<()> {
         if *in_thinking {
             write!(stdout, "{RESET}\n\n")?;
@@ -776,7 +806,7 @@ async fn run_compact(chat: &Chat, session: &mut Session) -> Result<()> {
     Ok(())
 }
 
-fn prompt_line() -> Result<Option<String>> {
+pub(crate) fn prompt_line() -> Result<Option<String>> {
     print!("\nyou › ");
     io::stdout().flush()?;
     let mut line = String::new();

@@ -17,8 +17,8 @@ use nightloom_service::project::{self, Note, Project, Registry};
 use nightloom_service::store::{self, SessionMatch, SessionSummary};
 use nightloom_service::tools::{Reviewer, Root, SearchBackend};
 use nightloom_service::{
-    Chat, CompactOutcome, Price, ProjectContext, PromptConfig, ProviderKind, TurnEvent, TurnInput,
-    TurnOutcome,
+    AgentSpec, Chat, ClaudeCodeAgent, CompactOutcome, Price, ProjectContext, PromptConfig,
+    ProviderKind, Recorder, TurnEvent, TurnInput, TurnOutcome,
 };
 use serde::Serialize;
 use std::collections::HashMap;
@@ -29,6 +29,18 @@ use tokio_util::sync::CancellationToken;
 
 struct AppState {
     chat: tokio::sync::Mutex<Option<Chat>>,
+    /// The Claude Code agent, when the rail is on that engine instead.
+    ///
+    /// `Some` here **is** what "agent mode" means, rather than a third field
+    /// saying so: `connect` clears it and `connect_agent` clears the `Chat`,
+    /// so the two can never both be live and no invariant has to be
+    /// maintained between a mode flag and the thing it describes.
+    ///
+    /// Held mutably across turns because the agent owns the history: each
+    /// turn opens or continues one of its sessions, and carrying that id
+    /// into the next `--resume` is the only way this is a conversation at
+    /// all.
+    agent: tokio::sync::Mutex<Option<ClaudeCodeAgent>>,
     session: tokio::sync::Mutex<Option<Session>>,
     /// Swapped per turn. Shared with [`WindowApprover`], which has to wait on
     /// whichever token is current at the moment it asks.
@@ -270,6 +282,49 @@ struct ConnectedInfo {
     /// `reviewers` is: a model that cannot search does not announce it, it
     /// simply guesses, and the user has no way to tell those apart.
     search: Option<String>,
+    /// Which engine is behind this connection: `provider` or `claude-code`.
+    ///
+    /// The UI needs it for more than a label. Half the controls above the
+    /// transcript act on the session log, and in agent mode the log is a
+    /// record of a conversation kept somewhere else — so rewinding or
+    /// compacting it would change what the window shows and nothing about
+    /// what the next turn actually replays.
+    engine: String,
+    /// Present only on the agent engine, and then it carries the facts the
+    /// rail has no other way to learn: which binary answered, what version
+    /// it is, and whether the turn will be billed to the plan or to a key.
+    agent: Option<AgentInfo>,
+}
+
+/// The agent engine as the rail shows it.
+#[derive(Serialize, Clone)]
+struct AgentInfo {
+    binary: String,
+    /// What `--version` printed. Probed at connect rather than assumed,
+    /// because "the binary is on PATH" and "the binary runs" are different
+    /// facts and only the second one matters here.
+    version: Option<String>,
+    /// `ANTHROPIC_API_KEY` is withheld from the child, so the turn goes to
+    /// the subscription. False means an inherited key may silently bill the
+    /// API instead — which is the whole failure this engine exists to avoid,
+    /// and it is invisible in the transcript, so the rail says it out loud.
+    subscription: bool,
+    /// `dontAsk` or `bypassPermissions`, or `None` when tools are off.
+    ///
+    /// Nightloom's own approval gate does not apply on this engine: the loop
+    /// is Claude Code's and the prompt would have nobody to ask, headless.
+    /// Naming the mode is what stops the familiar switch implying the
+    /// familiar gate.
+    permission_mode: Option<String>,
+    /// The CLI ran without the host's CLAUDE.md, hooks, plugins and MCP
+    /// servers. Note that this is `--safe-mode` and never `--bare`: bare
+    /// mode never reads OAuth credentials, so it would force the run back
+    /// onto an API key.
+    safe_mode: bool,
+    /// The agent session this chat continues, when it has one — read back
+    /// off the log, so reopening a chat tomorrow resumes it rather than
+    /// starting a fresh one behind an unchanged transcript.
+    resume: Option<String>,
 }
 
 /// A reviewer as the rail shows it: the name the model asks for, and the
@@ -699,9 +754,182 @@ async fn connect(
             .then(|| nightloom_service::tools::search_backend(credentials::search_key))
             .flatten()
             .map(|b| b.label().to_string()),
+        engine: "provider".into(),
+        agent: None,
     };
     *state.chat.lock().await = Some(chat);
+    // One engine at a time: `Some` in either slot is what says which is
+    // live, so connecting to a provider is what ends agent mode. The chat
+    // itself is not cheap enough to rebuild casually, but the agent is a
+    // spec and a process that has already exited.
+    *state.agent.lock().await = None;
     Ok(info)
+}
+
+/// The default binary, matching the CLI's `--agent-binary`.
+const AGENT_BINARY: &str = "claude";
+
+/// Refuse a command that edits the conversation while the agent engine is
+/// live.
+///
+/// Rewinding, compacting and eliding all work by changing what the *log*
+/// projects onto the next request. On this engine nothing projects: the next
+/// turn is `--resume <id>` against a history Claude Code keeps, so every one
+/// of them would rewrite the window and leave the conversation exactly as it
+/// was. A control that appears to work and does nothing is worse than one
+/// that is not offered, so the UI hides these and this is the backstop under
+/// that — the two have to agree, and only one of them is checkable.
+async fn not_in_agent_mode(state: &AppState, what: &str) -> Result<(), String> {
+    if state.agent.lock().await.is_some() {
+        return Err(format!(
+            "cannot {what} on the Claude Code engine: it keeps its own history, and this log is a record of it"
+        ));
+    }
+    Ok(())
+}
+
+/// Connect the Claude Code engine: turns run through the signed-in CLI and
+/// are billed to the subscription rather than to an API key.
+///
+/// Deliberately a command of its own rather than a `provider` value on
+/// [`connect`]. Almost none of that call's arguments mean anything here — no
+/// base URL, no thinking mode, no preamble or sidecar, no MCP list, no
+/// reviewers — because Claude Code assembles its own prompt and runs its own
+/// loop. A shared entry point would be one whose arguments are mostly inert,
+/// which is the shape that invites a knob to be silently ignored.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn connect_agent(
+    state: State<'_, AppState>,
+    binary: Option<String>,
+    model: Option<String>,
+    workspace: Option<String>,
+    tools: bool,
+    approval: Option<bool>,
+    safe_mode: Option<bool>,
+    budget: Option<f64>,
+    system: Option<String>,
+) -> Result<ConnectedInfo, String> {
+    // Same rule as `connect`: an open project wins over the rail's saved
+    // folder, or a chat filed under a project would be running somewhere
+    // else entirely.
+    let active = state.active().await;
+    let workspace = match &active {
+        Some(project) => project.workspace_dir(),
+        None => workspace
+            .map(PathBuf::from)
+            .filter(|p| p.is_dir())
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
+    };
+
+    let mut spec = AgentSpec::new(workspace.clone());
+    spec.binary = binary
+        .map(|b| b.trim().to_string())
+        .filter(|b| !b.is_empty())
+        .unwrap_or_else(|| AGENT_BINARY.into());
+    spec.model = model
+        .map(|m| m.trim().to_string())
+        .filter(|m| !m.is_empty());
+    spec.max_budget_usd = budget.filter(|b| *b > 0.0);
+    spec.safe_mode = safe_mode.unwrap_or(false);
+    spec.append_system_prompt = system
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty());
+    if tools {
+        // Headless has no way to ask, so the two honest settings are "deny
+        // anything not already permitted" and "run everything". The window's
+        // approval prompt is not one of them: it gates calls the engine is
+        // about to run, and this engine runs its own.
+        spec.permission_mode = Some(if approval.unwrap_or(true) {
+            "dontAsk".into()
+        } else {
+            "bypassPermissions".into()
+        });
+    } else {
+        spec.tools = Some(Vec::new());
+    }
+
+    // Probed rather than assumed. A missing or unrunnable binary is the
+    // overwhelmingly likely first failure on this engine, and finding out at
+    // connect gives the rail something to show instead of a turn that dies
+    // with a process error the first time the user sends anything.
+    let version = agent_version(&spec.binary).await?;
+
+    // Pick the conversation back up if the open chat already has one. This
+    // is the case where a session was started on the agent, the rail was
+    // switched to a provider and back — without it the transcript would
+    // carry on and the agent would have forgotten all of it.
+    if let Some(session) = state.session.lock().await.as_ref()
+        && let Some((agent, id)) = session.agent_session()
+        && agent == AGENT
+    {
+        spec.resume = Some(id.to_string());
+    }
+
+    let info = ConnectedInfo {
+        provider: AGENT.into(),
+        model: spec.model.clone().unwrap_or_else(|| "default".into()),
+        // Unknown until the CLI names the model it resolved: an alias like
+        // `sonnet` is not in the limits table and never will be. The first
+        // turn reports the real id and the gauge picks a denominator up
+        // then, which is later than ideal and better than a guessed window.
+        context_limit: None,
+        // No per-token bill under a subscription, and the CLI's own dollar
+        // figure is an estimate of what the API *would* have charged. Left
+        // `None` so the cost readout never renders it as money spent; the
+        // rail shows it per turn, saying what it is.
+        price: None,
+        mcp: Vec::new(),
+        reviewers: Vec::new(),
+        workspace: workspace.to_string_lossy().into_owned(),
+        project: active.as_ref().map(ProjectInfo::of),
+        search: None,
+        engine: AGENT.into(),
+        agent: Some(AgentInfo {
+            binary: spec.binary.clone(),
+            version,
+            subscription: spec.use_subscription,
+            permission_mode: spec.permission_mode.clone(),
+            safe_mode: spec.safe_mode,
+            resume: spec.resume.clone(),
+        }),
+    };
+    *state.agent.lock().await = Some(ClaudeCodeAgent::new(spec));
+    *state.chat.lock().await = None;
+    Ok(info)
+}
+
+/// Which agent a recorded [`SessionEvent::AgentSession`] belongs to.
+const AGENT: &str = "claude-code";
+
+/// The model the last recorded exchange ran on, whatever superseded it since.
+///
+/// Read off the whole log rather than the live projection: a compaction or a
+/// rewind changes what the next request carries and says nothing about which
+/// snapshot the CLI resolves an alias to.
+fn last_model(session: &Session) -> Option<String> {
+    session.events().iter().rev().find_map(|e| match e {
+        SessionEvent::AssistantMessage { model, .. } if !model.is_empty() => Some(model.clone()),
+        _ => None,
+    })
+}
+
+/// Ask the binary what it is, so a connect fails here rather than mid-turn.
+async fn agent_version(binary: &str) -> Result<Option<String>, String> {
+    let out = tokio::process::Command::new(binary)
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .output()
+        .await
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => format!(
+                "could not start {binary}: not found. Install Claude Code, or name the binary in the rail."
+            ),
+            _ => format!("could not start {binary}: {e}"),
+        })?;
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    Ok((!text.is_empty()).then_some(text))
 }
 
 /// The open project's chats, or the unfiled ones when none is open.
@@ -762,7 +990,23 @@ async fn new_session(state: State<'_, AppState>) -> Result<serde_json::Value, St
     let session = Session::with_log(&state.log_dir().await).map_err(|e| e.to_string())?;
     let id = session.id.clone();
     *state.session.lock().await = Some(session);
+    // A new chat is a new conversation on the agent too. Left set, the next
+    // turn would resume the previous chat's history behind an empty
+    // transcript — the same lie in the other direction from the one
+    // `SessionEvent::AgentSession` exists to prevent.
+    adopt_agent_session(&state, None).await;
     Ok(serde_json::json!({ "id": id }))
+}
+
+/// Point the agent at `resume` (or at nothing), if the agent engine is live.
+///
+/// Nothing happens on the provider engine, which is what lets the session
+/// commands call this unconditionally instead of each asking which engine is
+/// running.
+async fn adopt_agent_session(state: &AppState, resume: Option<String>) {
+    if let Some(agent) = state.agent.lock().await.as_mut() {
+        agent.set_resume(resume);
+    }
 }
 
 /// Resolve a session ID (or unique prefix), make it active, and return its
@@ -785,7 +1029,15 @@ async fn open_session(
         let _ = app.emit("turn-notice", notice);
     }
     let events = session.events().to_vec();
+    // Reopening an agent chat resumes the conversation it is a record of.
+    // Without this the transcript would scroll back a week and the next turn
+    // would begin with a model that had never seen any of it.
+    let resume = session
+        .agent_session()
+        .filter(|(agent, _)| *agent == AGENT)
+        .map(|(_, id)| id.to_string());
     *state.session.lock().await = Some(session);
+    adopt_agent_session(&state, resume).await;
     Ok(events)
 }
 
@@ -842,12 +1094,134 @@ async fn send(
         .map_err(|e| e.to_string())
 }
 
+/// What one agent turn spent and where it went.
+///
+/// Separate from [`TurnOutcome`] because almost none of it is the same
+/// question. A provider turn's outcome is about the request; this is about a
+/// subscription — which plan window the turn came out of, and what the same
+/// turn would have cost on the API, which is worth showing precisely because
+/// it is the number *not* being charged.
+#[derive(Serialize)]
+struct AgentTurn {
+    /// The model the CLI resolved to, and its window if the table knows it.
+    /// Reported rather than guessed at connect: `sonnet` is an alias, and
+    /// only the CLI can say which snapshot it means today.
+    model: Option<String>,
+    context_limit: Option<u64>,
+    /// The CLI's own client-side estimate, and **not** a bill.
+    cost_usd: Option<f64>,
+    /// Assistant turns the CLI took internally, tool rounds included.
+    rounds: Option<u32>,
+    /// The plan window. Present only on an OAuth run, which makes it the one
+    /// honest signal that this turn was billed to the plan and not to a key.
+    plan: Option<nightloom_service::agent::RateLimitInfo>,
+    notices: Vec<String>,
+    is_error: bool,
+}
+
+/// Run one user turn on the agent engine, streaming the same `turn-event`s
+/// the provider path does.
+///
+/// The turn is recorded into the session log in the ordinary shape — see
+/// [`Recorder`] for why, and for the pairing guarantee that keeps the log
+/// replayable if the rail is later switched back to a provider. What the log
+/// is *not* is the thing the next turn replays: that is the agent's own
+/// session, resumed by the id recorded alongside.
+#[tauri::command]
+async fn send_agent(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    text: String,
+) -> Result<AgentTurn, String> {
+    let mut agent_guard = state.agent.lock().await;
+    let agent = agent_guard
+        .as_mut()
+        .ok_or_else(|| "not connected".to_string())?;
+
+    let log_dir = state.log_dir().await;
+    let mut session_guard = state.session.lock().await;
+    if session_guard.is_none() {
+        *session_guard = Some(Session::with_log(&log_dir).map_err(|e| e.to_string())?);
+    }
+    let session = session_guard.as_mut().expect("session ensured above");
+    session.record_user(&text);
+
+    let cancel = CancellationToken::new();
+    *state.cancel.lock().unwrap() = cancel.clone();
+
+    // Seeded from the last turn rather than from the rail, because what the
+    // rail holds may be an alias. `sonnet` is not in the limits or pricing
+    // tables and never will be — only the CLI can say which snapshot it
+    // means today, and it says so on its `init` line, which arrives before
+    // any event and so after this recorder has to exist. The previous turn
+    // already asked that question and the log kept the answer.
+    //
+    // The agent remembers it too, which covers a *new* chat on a connection
+    // that has already run one. What is left is the first turn after a
+    // connect, whose messages carry the alias up to the one that closes the
+    // turn — every message after that, in every later turn, carries the id.
+    let seed = last_model(session)
+        .or_else(|| agent.resolved_model().map(String::from))
+        .or_else(|| agent.spec().model.clone())
+        .unwrap_or_else(|| AGENT.into());
+    // Rendered live and recorded in one pass. Two passes over the same
+    // stream would be two chances for the window and the log to disagree
+    // about what happened.
+    let mut recorder = Recorder::new(session, seed);
+    let mut on_event = |e: TurnEvent| {
+        let _ = app.emit("turn-event", &e);
+        recorder.push(&e);
+    };
+    let result = agent.run_turn(&text, &cancel, &mut on_event).await;
+
+    match result {
+        Ok(outcome) => {
+            if let Some(model) = &outcome.model {
+                recorder.set_model(model.clone());
+            }
+            recorder.finish(if outcome.is_error {
+                Some("error")
+            } else {
+                Some("end_turn")
+            });
+            // Written after the turn rather than before it: an id from a run
+            // that then failed to start is a handle to nothing, and the next
+            // turn resuming it would fail for a reason nobody could see.
+            if let Some(id) = &outcome.session_id {
+                session.record_agent_session(AGENT, id);
+            }
+            agent.follow_on(&outcome);
+            let context_limit = outcome
+                .model
+                .as_deref()
+                .and_then(|m| nightloom_service::context_limit(ProviderKind::Anthropic, m));
+            Ok(AgentTurn {
+                model: outcome.model,
+                context_limit,
+                cost_usd: outcome.cost_usd,
+                rounds: outcome.rounds,
+                plan: outcome.rate_limit,
+                notices: outcome.notices,
+                is_error: outcome.is_error,
+            })
+        }
+        Err(e) => {
+            // Whatever streamed before the failure is still what happened,
+            // and the pairing guarantee is exactly for this: a turn killed
+            // mid-round leaves calls open, and `finish` closes them.
+            recorder.finish(Some("error"));
+            Err(e.to_string())
+        }
+    }
+}
+
 /// Compact the active session: earlier turns are superseded by a
 /// model-written summary (recorded as a session event; the log keeps the
 /// full history). Cancellable via `cancel`, which leaves the session
 /// unchanged.
 #[tauri::command]
 async fn compact(state: State<'_, AppState>) -> Result<CompactOutcome, String> {
+    not_in_agent_mode(&state, "compact").await?;
     let chat_guard = state.chat.lock().await;
     let chat = chat_guard
         .as_ref()
@@ -878,6 +1252,7 @@ async fn compact(state: State<'_, AppState>) -> Result<CompactOutcome, String> {
 /// thing to have queued, which is why the UI hides the control while busy.
 #[tauri::command]
 async fn rewind(state: State<'_, AppState>, to: usize) -> Result<Vec<SessionEvent>, String> {
+    not_in_agent_mode(&state, "rewind").await?;
     let mut session_guard = state.session.lock().await;
     let session = session_guard
         .as_mut()
@@ -905,6 +1280,7 @@ struct ContextEdit {
 /// then session) so the two can never deadlock against each other.
 #[tauri::command]
 async fn context_view(state: State<'_, AppState>) -> Result<WireView, String> {
+    not_in_agent_mode(&state, "itemize the context").await?;
     let chat_guard = state.chat.lock().await;
     let chat = chat_guard
         .as_ref()
@@ -932,6 +1308,7 @@ async fn edit_context(
     targets: Vec<usize>,
     remove: bool,
 ) -> Result<ContextEdit, String> {
+    not_in_agent_mode(&state, "edit the context").await?;
     let chat_guard = state.chat.lock().await;
     let chat = chat_guard
         .as_ref()
@@ -962,11 +1339,16 @@ async fn delete_session(state: State<'_, AppState>, id: String) -> Result<String
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
-    {
+    let was_active = {
         let mut session_guard = state.session.lock().await;
-        if session_guard.as_ref().is_some_and(|s| s.id == full_id) {
+        let active = session_guard.as_ref().is_some_and(|s| s.id == full_id);
+        if active {
             *session_guard = None;
         }
+        active
+    };
+    if was_active {
+        adopt_agent_session(&state, None).await;
     }
     std::fs::remove_file(&path).map_err(|e| e.to_string())?;
     Ok(full_id)
@@ -1170,6 +1552,7 @@ async fn open_project(
         project
     };
     *state.session.lock().await = None;
+    adopt_agent_session(&state, None).await;
     // After the guard is dropped, and before the counts are read: a project
     // opened for the first time since the move has its chats and notes still
     // in the folder, and `ProjectInfo` would report zero of each.
@@ -1182,6 +1565,7 @@ async fn open_project(
 async fn close_project(state: State<'_, AppState>) -> Result<(), String> {
     state.workspaces.lock().await.active = None;
     *state.session.lock().await = None;
+    adopt_agent_session(&state, None).await;
     Ok(())
 }
 
@@ -1388,6 +1772,7 @@ fn main() {
             });
             app.manage(AppState {
                 chat: tokio::sync::Mutex::new(None),
+                agent: tokio::sync::Mutex::new(None),
                 session: tokio::sync::Mutex::new(None),
                 cancel,
                 workspaces: tokio::sync::Mutex::new(Workspaces {
@@ -1416,6 +1801,7 @@ fn main() {
             set_search_key,
             list_models,
             connect,
+            connect_agent,
             list_sessions,
             search_sessions,
             rename_session,
@@ -1423,6 +1809,7 @@ fn main() {
             open_session,
             transcript,
             send,
+            send_agent,
             cancel,
             compact,
             rewind,
