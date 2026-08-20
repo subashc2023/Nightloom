@@ -44,11 +44,161 @@
 
 use super::root::Root;
 use super::task::TurnHandle;
-use crate::turn::Chat;
+use crate::turn::{Chat, TurnEvent};
 use nightloom_core::tool::{Effect, Tool};
 use nightloom_core::{Session, ToolDef};
+use nightloom_providers::ProviderKind;
 use serde_json::{Value, json};
 use std::sync::Arc;
+
+/// One curated second opinion, and the two ways to reach it.
+struct Candidate {
+    /// What the model asks for, and what a person calls this prior.
+    name: &'static str,
+    /// The training lineage. Two rows sharing one would be the same reviewer
+    /// wearing different labels, which is most of what this table exists to
+    /// prevent — see [`BENCH`].
+    family: &'static str,
+    /// Through OpenRouter, which is the preferred route.
+    routed: &'static str,
+    /// Direct, for when there is no OpenRouter key. `None` for a lab this
+    /// workspace has no adapter for, which is then simply not offered rather
+    /// than substituted.
+    native: Option<(ProviderKind, &'static str)>,
+}
+
+/// The bench: which second opinions are worth having, chosen rather than
+/// enumerated.
+///
+/// The first version of this offered every provider with a key set, and that
+/// was wrong on its own terms rather than merely long. It listed Groq's
+/// `openai/gpt-oss-120b` beside OpenAI's own model as two different reviewers
+/// when they are one lineage behind two pipes, and it listed
+/// `openrouter/auto` — a router, which has no fixed prior at all and so
+/// cannot be a second one. What the tool is buying is *a different prior*, so
+/// the unit has to be the lineage and the table has to be one row per lineage.
+/// Four are offered at a time, since the row matching whatever is under review
+/// is dropped.
+///
+/// Model choice within a lineage is deliberately mid-to-upper rather than the
+/// flagship: a review is a whole agentic turn against another vendor, and the
+/// job — read a document, open the files it makes claims about, say what
+/// breaks — is not the one that separates a flagship from the model below it.
+///
+/// Ids come from the same tables `limits.rs` and `pricing.rs` use, so a
+/// review still reports a context window and a cost. Editing this list is the
+/// intended way to change the bench; nothing here is discovered at runtime.
+const BENCH: [Candidate; 5] = [
+    Candidate {
+        name: "claude",
+        family: "anthropic",
+        routed: "anthropic/claude-opus-4.8",
+        native: Some((ProviderKind::Anthropic, "claude-opus-4-8")),
+    },
+    Candidate {
+        name: "gpt",
+        family: "openai",
+        routed: "openai/gpt-5.4",
+        native: Some((ProviderKind::Openai, "gpt-5.4")),
+    },
+    Candidate {
+        name: "gemini",
+        family: "google",
+        routed: "google/gemini-3.1-pro-preview",
+        native: Some((ProviderKind::Gemini, "gemini-3.1-pro-preview")),
+    },
+    Candidate {
+        name: "grok",
+        family: "x-ai",
+        routed: "x-ai/grok-4.6",
+        native: None,
+    },
+    Candidate {
+        name: "deepseek",
+        family: "deepseek",
+        routed: "deepseek/deepseek-v4-pro",
+        native: None,
+    },
+];
+
+/// A reviewer resolved to a route, for a shell to turn into a [`Reviewer`].
+///
+/// The shell supplies only the factory, because building a provider is the
+/// one thing this crate cannot do for it; which reviewers exist and how they
+/// are reached is decided here so the two shells cannot curate differently.
+pub struct ReviewerSpec {
+    pub name: String,
+    pub description: String,
+    pub kind: ProviderKind,
+    pub model: String,
+}
+
+/// The reviewers available for a chat on `connected`/`model`.
+///
+/// **OpenRouter is preferred whenever its key is present**, and takes the
+/// whole bench with it rather than filling gaps in a native list. One key then
+/// buys four distinct priors, billing lands in one place, and — the part that
+/// matters for the request — the list stops depending on which native keys
+/// happen to be exported, so the tool description is the same string from one
+/// run to the next instead of changing shape with the environment.
+///
+/// Without it, each candidate falls back to its own vendor, and the ones with
+/// no adapter here drop out. Nothing is ever substituted: a bench of two is
+/// the honest answer to two keys.
+///
+/// The row for the lineage **under review** is always dropped, and lineage is
+/// read off the model id rather than the provider — `openai/gpt-oss-120b` on
+/// Groq is OpenAI's, and `anthropic/claude-sonnet-5` through OpenRouter is
+/// Claude no matter which pipe carried it. A review by the model being
+/// reviewed is the one answer this tool must never return.
+pub fn bench(
+    connected: ProviderKind,
+    model: &str,
+    has_key: impl Fn(ProviderKind) -> bool,
+) -> Vec<ReviewerSpec> {
+    let under_review = lineage(connected, model);
+    let routed = has_key(ProviderKind::Openrouter);
+    BENCH
+        .iter()
+        .filter(|c| c.family != under_review)
+        .filter_map(|c| {
+            let (kind, model) = if routed {
+                (ProviderKind::Openrouter, c.routed)
+            } else {
+                let (kind, model) = c.native?;
+                has_key(kind).then_some((kind, model))?
+            };
+            Some(ReviewerSpec {
+                name: c.name.to_string(),
+                description: format!("{model}, via {}", kind.label()),
+                kind,
+                model: model.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// Which lineage a model belongs to.
+///
+/// The `vendor/model` prefix is the answer wherever there is one, which
+/// covers every routed id and Groq's hosted ones; the provider is only the
+/// fallback for vendors that ship bare ids. An unrecognised combination
+/// returns `""`, which matches no row and so excludes nothing — the safe
+/// direction, since offering one reviewer too many costs a call and offering
+/// the model under review costs the point of the tool. `openrouter/auto` is
+/// the case that cannot be answered: it is a router, and which lineage it
+/// picks is not known until after the request.
+fn lineage(kind: ProviderKind, model: &str) -> &str {
+    if let Some((vendor, _)) = model.split_once('/') {
+        return vendor;
+    }
+    match kind {
+        ProviderKind::Anthropic => "anthropic",
+        ProviderKind::Openai => "openai",
+        ProviderKind::Gemini => "google",
+        _ => "",
+    }
+}
 
 /// One configured second opinion: a name the model asks for, a description of
 /// what it actually is, and how to build it.
@@ -268,12 +418,21 @@ impl Tool for Review {
 
         let mut session = Session::new();
         let cancel = self.handle.cancel();
+        // Watched only to explain a turn that produced no text. Seen live: a
+        // reviewer came back empty once and the parent spent two rounds
+        // globbing for a file that was never the problem, because the message
+        // guessed at the cause instead of reporting it.
+        let (mut rounds, mut calls) = (None, 0usize);
         let outcome = chat
             .run_turn(
                 &mut session,
                 instruction(path, input["focus"].as_str()),
                 &cancel,
-                &mut |_| {},
+                &mut |e| match e {
+                    TurnEvent::RoundLimit { rounds: n } => rounds = Some(n),
+                    TurnEvent::ToolCall { .. } => calls += 1,
+                    _ => {}
+                },
             )
             .await
             .map_err(|e| format!("the {} reviewer failed: {e}", reviewer.name))?;
@@ -292,11 +451,23 @@ impl Tool for Review {
             .map(|m| m.text().trim().to_string())
             .unwrap_or_default();
         if answer.is_empty() {
-            return Err(format!(
-                "the {} reviewer finished without producing an answer; it may have run out of \
-                 tool rounds.",
-                reviewer.name
-            ));
+            // The two causes call for different responses from the parent
+            // and are indistinguishable as an empty string, so say which
+            // one happened rather than offering both as a guess.
+            return Err(match rounds {
+                Some(n) => format!(
+                    "the {} reviewer stopped at its {n}-round limit without answering. Point \
+                     it at a smaller document, or name a focus so it reads less.",
+                    reviewer.name
+                ),
+                None => format!(
+                    "the {} reviewer ended its turn with no text after {calls} tool call(s) \
+                     (stop reason: {}). The document and the path are fine; ask again, or \
+                     ask a different reviewer.",
+                    reviewer.name,
+                    outcome.stop_reason.as_deref().unwrap_or("none reported")
+                ),
+            });
         }
         // Attributed, because three of these can come back in one round and
         // findings from different priors are not interchangeable — which two
@@ -321,6 +492,14 @@ mod tests {
     /// careless shell handed over. Both are yielded once, which is all a
     /// single `review` call needs.
     fn reviewer_over(tools: Vec<Box<dyn Tool>>, scripts: Vec<Vec<StreamEvent>>) -> Reviewer {
+        reviewer_capped(tools, scripts, 24)
+    }
+
+    fn reviewer_capped(
+        tools: Vec<Box<dyn Tool>>,
+        scripts: Vec<Vec<StreamEvent>>,
+        max_rounds: usize,
+    ) -> Reviewer {
         let parts = Arc::new(Mutex::new(Some((tools, scripts))));
         Reviewer::new(
             "other",
@@ -329,6 +508,7 @@ mod tests {
                 let (tools, scripts) = parts.lock().unwrap().take().unwrap_or_default();
                 let mut chat = chat_scripted(scripts);
                 chat.tools = tools;
+                chat.max_rounds = max_rounds;
                 Ok(chat)
             }),
         )
@@ -500,6 +680,112 @@ mod tests {
         // "Nothing found" has to be sayable, or a reviewer invents a list.
         assert!(p.contains("If you find nothing serious"));
         assert!(instruction("plan.md", Some("   ")).len() < p.len());
+    }
+
+    /// The table's one invariant: a lineage appears once. Two rows sharing
+    /// one would be the same prior offered under two names, which is what the
+    /// enumerate-every-key version did — Groq's `openai/gpt-oss-120b` beside
+    /// OpenAI's own model — and it is invisible from the outside, since both
+    /// answer.
+    #[test]
+    fn no_two_reviewers_are_the_same_model_twice() {
+        let mut seen: Vec<&str> = BENCH.iter().map(|c| c.family).collect();
+        seen.sort_unstable();
+        let n = seen.len();
+        seen.dedup();
+        assert_eq!(seen.len(), n, "two candidates share a lineage");
+    }
+
+    /// One key buys the whole bench, and it takes precedence over the native
+    /// routes rather than filling gaps in them — so the list does not change
+    /// shape with whichever other keys happen to be exported.
+    #[test]
+    fn openrouter_carries_the_whole_bench_when_it_can() {
+        let all = bench(ProviderKind::Anthropic, "claude-sonnet-5", |_| true);
+        assert!(all.iter().all(|r| r.kind == ProviderKind::Openrouter));
+        assert_eq!(all.len(), BENCH.len() - 1);
+        assert!(all.iter().all(|r| r.name != "claude"));
+    }
+
+    /// Lineage is read off the model, not the provider: Groq serving
+    /// `openai/gpt-oss-120b` is OpenAI's prior behind another pipe, and
+    /// offering "gpt" as its second opinion would be the model reviewing
+    /// itself.
+    #[test]
+    fn the_lineage_under_review_is_dropped_whichever_pipe_carried_it() {
+        let groq = bench(ProviderKind::Groq, "openai/gpt-oss-120b", |_| true);
+        assert!(groq.iter().all(|r| r.name != "gpt"), "{:?}", names(&groq));
+
+        let routed = bench(ProviderKind::Openrouter, "anthropic/claude-opus-5", |_| {
+            true
+        });
+        assert!(routed.iter().all(|r| r.name != "claude"));
+
+        // A local model behind openai-chat matches nothing, so nothing is
+        // dropped — the safe direction.
+        assert_eq!(
+            bench(ProviderKind::OpenaiChat, "llama-3.1-8b", |_| true).len(),
+            BENCH.len()
+        );
+    }
+
+    /// Without OpenRouter each candidate falls back to its own vendor, and a
+    /// lineage with no adapter here is simply not offered. Nothing is ever
+    /// substituted: a bench of one is the honest answer to one key.
+    #[test]
+    fn without_openrouter_the_bench_is_whatever_has_its_own_key() {
+        let only_gemini = bench(ProviderKind::Anthropic, "claude-sonnet-5", |k| {
+            k == ProviderKind::Gemini
+        });
+        assert_eq!(names(&only_gemini), ["gemini"]);
+        assert_eq!(only_gemini[0].kind, ProviderKind::Gemini);
+
+        // grok and deepseek have no native adapter, so a machine with every
+        // native key and no OpenRouter one still cannot reach them.
+        let native = bench(ProviderKind::Anthropic, "claude-sonnet-5", |k| {
+            k != ProviderKind::Openrouter
+        });
+        assert_eq!(names(&native), ["gpt", "gemini"]);
+
+        assert!(bench(ProviderKind::Anthropic, "claude-sonnet-5", |_| false).is_empty());
+    }
+
+    fn names(specs: &[ReviewerSpec]) -> Vec<&str> {
+        specs.iter().map(|s| s.name.as_str()).collect()
+    }
+
+    /// An empty answer has two causes that call for different responses and
+    /// look identical from outside, so the message names the one that
+    /// happened. Seen live: a reviewer came back empty, the message guessed
+    /// "may have run out of tool rounds", and the parent spent two rounds
+    /// looking for a file that was never missing.
+    #[tokio::test]
+    async fn an_empty_review_says_which_way_it_ended() {
+        let dir = test_dir("review-empty");
+        fs::write(dir.join("plan.md"), "# Plan").unwrap();
+
+        let capped = review_in(
+            &dir,
+            reviewer_capped(
+                builtin_in(&dir),
+                vec![tool_call("read_file", json!({ "path": "plan.md" }))],
+                1,
+            ),
+        );
+        let err = capped
+            .call(json!({ "reviewer": "other", "path": "plan.md" }))
+            .await
+            .unwrap_err();
+        assert!(err.contains("stopped at its 1-round limit"), "{err}");
+
+        let silent = review_in(&dir, reviewer_over(Vec::new(), vec![says("")]));
+        let err = silent
+            .call(json!({ "reviewer": "other", "path": "plan.md" }))
+            .await
+            .unwrap_err();
+        assert!(err.contains("no text after 0 tool call(s)"), "{err}");
+        assert!(err.contains("end_turn"), "{err}");
+        fs::remove_dir_all(&dir).ok();
     }
 
     /// A tool nobody can reach is worse than no tool: it costs prompt tokens

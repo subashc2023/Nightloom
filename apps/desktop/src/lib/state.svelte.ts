@@ -22,6 +22,7 @@ import type {
   DocumentInput,
   ImageInput,
   McpServerInfo,
+  ReviewerInfo,
   Note,
   Price,
   ProjectInfo,
@@ -88,9 +89,9 @@ export interface Connection {
   price: Price | null;
   /** MCP servers for this workspace, including ones that failed to start. */
   mcp: McpServerInfo[];
-  /** Models `review` can ask for a second opinion; empty when there is no
-   *  second provider, in which case the tool is not offered at all. */
-  reviewers: string[];
+  /** The curated bench `review` can ask for a second opinion; empty when no
+   *  other lineage is reachable, in which case the tool is not offered. */
+  reviewers: ReviewerInfo[];
   /** Resolved workspace root the file tools operate in. */
   workspace: string;
 }

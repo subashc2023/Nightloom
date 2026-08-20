@@ -161,7 +161,12 @@ fn build_chat(args: &ChatArgs, mcp_tools: &[Arc<dyn Tool>]) -> Result<Chat> {
             build_chat(&sub_args, &sub_mcp).map_err(|e| e.to_string())
         }));
         if !args.no_review {
-            chat.enable_reviews(reviewers(args, mcp_tools), Root::new(&cwd));
+            // Cloned first: the bench excludes whatever lineage is under
+            // review, so it needs the model this chat actually resolved to,
+            // and `chat` is about to be borrowed mutably.
+            let model = chat.model.clone();
+            let bench = reviewers(args, &model, mcp_tools);
+            chat.enable_reviews(bench, Root::new(&cwd));
         }
     }
     if args.no_sidecar {
@@ -170,40 +175,29 @@ fn build_chat(args: &ChatArgs, mcp_tools: &[Arc<dyn Tool>]) -> Result<Chat> {
     Ok(chat)
 }
 
-/// Every other provider this machine has credentials for, as reviewers.
+/// The curated bench, resolved into buildable reviewers.
 ///
-/// No configuration, because the useful default is discoverable: a key that
-/// is set is a provider the user already pays for, and the whole value of the
-/// tool is that the reviewer is not the model being reviewed — so the current
-/// provider is excluded and nothing takes its place. A machine with one key
-/// gets an empty list and no `review` tool, which is the honest outcome. It
-/// must never be a silent fall back to the model under review, which would
-/// return something shaped like a second opinion that is not one.
-///
-/// Each reviewer runs on its provider's default model, and is built by the
-/// same `build_chat` as everything else, so it gets the same preamble, the
-/// same workspace and the same MCP connections — then `review` strips it to
-/// the read-only ones.
-fn reviewers(args: &ChatArgs, mcp_tools: &[Arc<dyn Tool>]) -> Vec<Reviewer> {
-    ProviderKind::ALL
+/// Which reviewers exist, and whether they route through OpenRouter, is
+/// [`tools::bench`]'s decision rather than this shell's — the desktop asks
+/// the same question and the two must not answer it differently. All that is
+/// left here is the half only a shell can do: build a `Chat` for a named
+/// provider and model, which is the same `build_chat` everything else uses,
+/// so a reviewer gets the same preamble, workspace and MCP connections before
+/// `review` strips it to the read-only tools.
+fn reviewers(args: &ChatArgs, model: &str, mcp_tools: &[Arc<dyn Tool>]) -> Vec<Reviewer> {
+    tools::bench(args.provider, model, ProviderKind::has_credentials)
         .into_iter()
-        .filter(|k| *k != args.provider && k.has_credentials())
-        .map(|kind| {
+        .map(|spec| {
             let mut sub = args.clone();
-            sub.provider = kind;
-            // Both belong to the provider being replaced: a model id from
-            // another vendor is a 404, and a base URL pointed at a local
-            // server is not where this reviewer lives.
-            sub.model = None;
+            sub.provider = spec.kind;
+            sub.model = Some(spec.model);
+            // Belonged to the provider being replaced: a base URL pointed at
+            // a local server is not where this reviewer lives.
             sub.base_url = None;
             let mcp = mcp_tools.to_vec();
-            let description = match kind.default_model() {
-                Some(model) => format!("{model}, via {}", kind.label()),
-                None => kind.label().to_string(),
-            };
             Reviewer::new(
-                kind.label(),
-                description,
+                spec.name,
+                spec.description,
                 Arc::new(move || build_chat(&sub, &mcp).map_err(|e| e.to_string())),
             )
         })

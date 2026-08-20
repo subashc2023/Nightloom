@@ -29,6 +29,13 @@ export interface ConnectArgs {
   workspace?: string;
 }
 
+/** A reviewer as the rail shows it: the name the model asks for, and the
+ *  model actually behind it. */
+export interface ReviewerInfo {
+  name: string;
+  model: string;
+}
+
 export interface ConnectResult {
   provider: string;
   model: string;
@@ -45,13 +52,12 @@ export interface ConnectResult {
   /** MCP servers configured for this workspace, failures included. */
   mcp: McpServerInfo[];
   /**
-   * Models the `review` tool can ask for a second opinion, as
-   * "model, via provider". Empty when this machine has credentials for only
-   * the connected provider, in which case the tool is not offered at all —
-   * a review by the model under review is the one answer it must not give,
-   * so there is deliberately no fallback.
+   * The curated bench the `review` tool can ask for a second opinion. Empty
+   * when no other lineage is reachable, in which case the tool is not offered
+   * at all — a review by the model under review is the one answer it must not
+   * give, so there is deliberately no fallback.
    */
-  reviewers: string[];
+  reviewers: ReviewerInfo[];
   /** Where the backend actually rooted the tools, after falling back. */
   workspace: string;
   /**

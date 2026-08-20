@@ -29,7 +29,7 @@ mod task;
 mod todo;
 
 pub use compact::{CompactContext, CompactSignal};
-pub use review::{Review, Reviewer};
+pub use review::{Review, Reviewer, ReviewerSpec, bench};
 pub use root::Root;
 pub use task::{Subagent, TurnHandle};
 pub use todo::TodoWrite;

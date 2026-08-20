@@ -251,10 +251,19 @@ struct ConnectedInfo {
     /// rail can say which they are: a review is a call against another vendor,
     /// and "off because there is no second key" is not something the user can
     /// work out from a tool that simply never gets used.
-    reviewers: Vec<String>,
+    reviewers: Vec<ReviewerInfo>,
     /// The project this connection is filed under, echoed back so the UI's
     /// notion of "open project" and the backend's cannot drift apart.
     project: Option<ProjectInfo>,
+}
+
+/// A reviewer as the rail shows it: the name the model asks for, and the
+/// model actually behind it. Both, because the name is what appears in a tool
+/// chip mid-turn and the model is what the user is choosing to pay for.
+#[derive(Serialize)]
+struct ReviewerInfo {
+    name: String,
+    model: String,
 }
 
 const KEYRING_SERVICE: &str = "nightloom";
@@ -473,10 +482,12 @@ fn build_chat(
         chat.enable_subagents(Arc::new(move || {
             build_chat(&sub_app, &sub_policy, &sub_spec, &sub_mcp)
         }));
-        chat.enable_reviews(
-            reviewers(app, policy, spec, mcp_tools),
-            Root::new(spec.workspace.clone()),
-        );
+        // Cloned first: the bench excludes whatever lineage is under review,
+        // so it needs the model this chat actually resolved to, and `chat` is
+        // about to be borrowed mutably.
+        let model = chat.model.clone();
+        let bench = reviewers(app, policy, spec, &model, mcp_tools);
+        chat.enable_reviews(bench, Root::new(spec.workspace.clone()));
     }
     if !spec.sidecar {
         chat.sidecar = Vec::new();
@@ -484,45 +495,39 @@ fn build_chat(
     Ok(chat)
 }
 
-/// Every *other* provider this machine has credentials for, as reviewers.
+/// The curated bench, resolved into buildable reviewers.
 ///
-/// No configuration and no picker, because the useful default is
-/// discoverable: a key that is set — in the app's credential store or in the
-/// environment — is a provider the user already pays for. The connected
-/// provider is excluded and nothing takes its place, so a machine with one
-/// key offers no reviewers and never advertises the tool. That is the honest
-/// outcome, and the one thing this must never do is quietly fall back to the
-/// model under review, which hands back something shaped like a second
-/// opinion that is not one.
+/// Which reviewers exist, and whether they route through OpenRouter, is
+/// [`tools::bench`]'s decision rather than this shell's — the CLI asks the
+/// same question and the two must not answer it differently. Left here is the
+/// half only a shell can do: build a `Chat` for a named provider and model,
+/// from the same `ChatSpec` as the window's own, so a reviewer inherits the
+/// workspace, the project and the MCP connections before `review` strips it
+/// to the read-only tools.
 ///
-/// Built from the same `ChatSpec` as the window's own chat, so a reviewer
-/// inherits the workspace, the project and the MCP connections — `review`
-/// then strips it to the read-only tools.
+/// A key counts whether it is in the app's credential store or the
+/// environment, which is the same test the settings pane shows as
+/// `key_source`.
 fn reviewers(
     app: &AppHandle,
     policy: &Arc<AutoApprove>,
     spec: &ChatSpec,
+    model: &str,
     mcp_tools: &[Arc<dyn Tool>],
 ) -> Vec<Reviewer> {
-    ProviderKind::ALL
+    nightloom_service::tools::bench(spec.kind, model, |k| key_source(k).is_some())
         .into_iter()
-        .filter(|k| *k != spec.kind && key_source(*k).is_some())
-        .map(|kind| {
+        .map(|candidate| {
             let mut spec = spec.clone();
-            spec.kind = kind;
-            // Both belonged to the provider being replaced: another vendor's
-            // model id is a 404, and a base URL pointing at a local server is
-            // not where this reviewer lives.
-            spec.model = None;
+            spec.kind = candidate.kind;
+            spec.model = Some(candidate.model);
+            // Belonged to the provider being replaced: a base URL pointing at
+            // a local server is not where this reviewer lives.
             spec.base_url = None;
-            let description = match kind.default_model() {
-                Some(model) => format!("{model}, via {}", kind.label()),
-                None => kind.label().to_string(),
-            };
             let (app, policy, mcp) = (app.clone(), policy.clone(), mcp_tools.to_vec());
             Reviewer::new(
-                kind.label(),
-                description,
+                candidate.name,
+                candidate.description,
                 Arc::new(move || build_chat(&app, &policy, &spec, &mcp)),
             )
         })
@@ -613,10 +618,15 @@ async fn connect(
         context_limit: chat.context_limit,
         price: chat.price,
         mcp,
+        // Asked of the bench directly rather than of `reviewers`: the rail
+        // wants the names, not five closures that can each build a provider.
         reviewers: if spec.tools {
-            reviewers(&app, &state.approval, &spec, &mcp_tools)
+            nightloom_service::tools::bench(spec.kind, &chat.model, |k| key_source(k).is_some())
                 .into_iter()
-                .map(|r| r.description)
+                .map(|r| ReviewerInfo {
+                    name: r.name,
+                    model: r.description,
+                })
                 .collect()
         } else {
             Vec::new()

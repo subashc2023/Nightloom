@@ -239,12 +239,12 @@
           <span class="lbl">Review</span>
           <div class="mcp">
             {#if app.connection.reviewers.length > 0}
-              {#each app.connection.reviewers as reviewer (reviewer)}
+              {#each app.connection.reviewers as reviewer (reviewer.name)}
                 <span
                   class="chip"
-                  title="A second opinion on a document, from {reviewer}. It reads the file and this workspace, never this conversation."
+                  title="{reviewer.model} — a second opinion on a document. It reads the file and this workspace, never this conversation."
                 >
-                  {reviewer.split(",")[0]}
+                  {reviewer.name}
                 </span>
               {/each}
             {:else}
