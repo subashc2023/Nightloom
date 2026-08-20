@@ -72,7 +72,7 @@
             disabled={app.busy}
             onclick={() => void choose(p.id)}
             ondblclick={() => startRename(p.id, p.name)}
-            title={p.root}
+            title={p.root ?? "No folder — notes and chats only"}
           >
             <span class="name">
               {p.name}
@@ -94,9 +94,9 @@
             >
             <button
               class="icon"
-              title="Show folder"
+              title={p.root ? "Show folder" : "Show notes folder"}
               aria-label="Show {p.name} folder"
-              onclick={() => void revealFolder(p.root)}>↗</button
+              onclick={() => void revealFolder(p.root ?? p.notes_dir)}>↗</button
             >
             <button
               class="icon remove"

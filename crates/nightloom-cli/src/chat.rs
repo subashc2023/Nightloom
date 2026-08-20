@@ -103,15 +103,25 @@ pub struct ChatArgs {
 
 /// Where this run's session logs live.
 ///
-/// An explicit `--log-dir` wins; otherwise it is the store for the current
-/// folder, which is the same directory the desktop app writes for it. Both
-/// derive it from the path alone, so `--continue` here resumes the chat the
-/// app was having in this folder without either consulting the other.
+/// An explicit `--log-dir` wins. Otherwise: the project registered on this
+/// folder, if one is — which is what makes `--continue` here resume the chat
+/// the desktop app was having in the same folder — and an ad-hoc store keyed
+/// by the path when nobody has registered it, which is the ordinary case for
+/// a CLI run in a directory the user never named.
+///
+/// The registry is read and never written. Running the CLI somewhere is not a
+/// statement that the folder is a project, and a tool that quietly filled the
+/// desktop's project list with every directory you happened to `cd` into
+/// would be a worse tool.
 fn log_dir(args: &ChatArgs) -> PathBuf {
-    args.log_dir.clone().unwrap_or_else(|| {
-        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        project::store_for(&cwd).join(project::SESSIONS_DIR)
-    })
+    if let Some(explicit) = &args.log_dir {
+        return explicit.clone();
+    }
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    project::Registry::load()
+        .find_by_workspace(&cwd)
+        .map(|p| p.session_dir())
+        .unwrap_or_else(|| project::store_for(&cwd).join(project::SESSIONS_DIR))
 }
 
 /// Tools from MCP servers, shared rather than owned.
@@ -142,17 +152,18 @@ fn build_chat(args: &ChatArgs, mcp_tools: &[Arc<dyn Tool>]) -> Result<Chat> {
         environment: on,
         project_instructions: on,
         user_memory: on,
-        // The CLI's project is wherever it was run: one folder, and the same
-        // docspace the desktop app shows for it — both derive the store from
-        // the path, so neither needs a registry to agree with the other.
-        // Tied to `--tools` because an index of files the model has no way to
-        // read is a paragraph of wasted prompt.
+        // The CLI's project is wherever it was run: one folder, and its
+        // `.agents` — the same docspace the desktop shows for that folder,
+        // and inside the tree the file tools are already rooted at, so it
+        // needs nothing but a relative path to reach. Tied to `--tools`
+        // because an index of files the model has no way to read is a
+        // paragraph of wasted prompt.
         project: (on && args.tools).then(|| ProjectContext {
             name: cwd
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| cwd.display().to_string()),
-            notes_dir: project::store_for(&cwd).join(project::NOTES_DIR),
+            notes_dir: cwd.join(project::AGENTS_DIR),
         }),
         cwd: cwd.clone(),
         custom: args.system.clone(),
@@ -164,13 +175,7 @@ fn build_chat(args: &ChatArgs, mcp_tools: &[Arc<dyn Tool>]) -> Result<Chat> {
     chat.context_limit = nightloom_service::context_limit(args.provider, &chat.model);
     chat.price = nightloom_service::price(args.provider, &chat.model);
     if args.tools {
-        // The docspace is a second tree rather than part of the workspace:
-        // it lives under ~/.nightloom, and its index is in the system prompt,
-        // so without it the model gets a list of notes and no way to open one.
-        chat.tools = tools::builtin_in(tools::Root::new(cwd.clone()).with(
-            "docspace",
-            project::store_for(&cwd).join(project::NOTES_DIR),
-        ));
+        chat.tools = tools::builtin_in(cwd.clone());
         // Cloned Arcs, not fresh connections: every subagent shares the one
         // set of server processes started at launch.
         chat.tools.extend(

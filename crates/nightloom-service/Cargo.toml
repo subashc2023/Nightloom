@@ -19,5 +19,6 @@ async-trait.workspace = true
 regex.workspace = true
 globset.workspace = true
 walkdir.workspace = true
+uuid.workspace = true
 reqwest.workspace = true
 zip = { version = "8", default-features = false, features = ["deflate"] }

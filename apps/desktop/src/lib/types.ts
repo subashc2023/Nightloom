@@ -95,17 +95,22 @@ export interface ConnectResult {
 }
 
 /**
- * A project: a folder the user named, plus what is in it.
+ * A project: something the user named, which *may* be about a folder.
  *
- * The folder is the identity. Chats live in `<root>/.nightloom/sessions`,
- * shared notes in `<root>/.nightloom/notes`, and instructions in
- * `<root>/AGENTS.md` — so a project is a set of conventions over a directory
- * rather than a record in a database somewhere else.
+ * Notes live in `<root>/.agents` and instructions in `<root>/AGENTS.md`, both
+ * inside the folder and both the user's to commit. Chats live outside it, in
+ * `~/.nightloom/projects/<id>/sessions`, because a repository is not a place
+ * to leave personal history.
  */
 export interface ProjectInfo {
   id: string;
   name: string;
-  root: string;
+  /**
+   * The folder, or null for a project about no folder — an imported claude.ai
+   * project is instructions, documents and conversations with no code
+   * anywhere. Anything rendering this has to handle the null.
+   */
+  root: string | null;
   notes_dir: string;
   /** Notes in the docspace, and chats logged under this project. */
   notes: number;
@@ -438,6 +443,7 @@ export interface ContextEdit {
 /** One project produced by a claude.ai import. */
 export type ImportedProject = {
   name: string;
+  /** Empty when the import was asked for no folders. */
   root: string;
   chats: number;
   already: number;

@@ -438,42 +438,31 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
-    /// The whole point of `Root`'s second tree: the docspace lives under
-    /// `~/.nightloom`, its index is in the system prompt, and a model handed
-    /// that index has to be able to open what it names.
+    /// The docspace is inside the workspace, so the tools reach it with no
+    /// special case at all — which is the argument for putting it there.
     #[tokio::test]
-    async fn the_docspace_is_readable_and_writable_from_outside_the_workspace() {
+    async fn the_docspace_is_readable_and_writable_as_an_ordinary_path() {
         let dir = test_dir("files-docspace");
-        let workspace = dir.join("work");
-        let notes = dir.join("store").join("notes");
-        fs::create_dir_all(&workspace).unwrap();
-        fs::create_dir_all(&notes).unwrap();
-        fs::write(notes.join("decisions.md"), "# Decisions").unwrap();
+        let (read, write, ..) = tools(&dir);
+        fs::create_dir_all(dir.join(".agents")).unwrap();
+        fs::write(dir.join(".agents").join("decisions.md"), "# Decisions").unwrap();
 
-        let root = Root::new(&workspace).with("docspace", &notes);
-        let read = ReadFile::new(root.clone());
-        let write = WriteFile::new(root.clone());
-
-        let note = notes.join("decisions.md");
         let out = read
-            .call(json!({ "path": note.to_str().unwrap() }))
+            .call(json!({ "path": ".agents/decisions.md" }))
             .await
             .unwrap();
         assert!(out.contains("# Decisions"), "{out}");
 
-        // Writing a *new* note matters separately: `write_file` checks
-        // lexically because the path does not exist yet, which is the half of
-        // the containment argument the second tree could most easily miss.
-        let fresh = notes.join("sub").join("plan.md");
+        // A new note in a subdirectory: `write_file` creates parents, which is
+        // why the docspace needs no tool of its own.
         write
-            .call(json!({ "path": fresh.to_str().unwrap(), "content": "plan" }))
+            .call(json!({ "path": ".agents/plans/next.md", "content": "plan" }))
             .await
             .unwrap();
-        assert_eq!(fs::read_to_string(&fresh).unwrap(), "plan");
-
-        // A bare note name is still a workspace path, and nothing else: the
-        // second tree must not quietly become a search path.
-        assert!(read.call(json!({ "path": "decisions.md" })).await.is_err());
+        assert_eq!(
+            fs::read_to_string(dir.join(".agents").join("plans").join("next.md")).unwrap(),
+            "plan"
+        );
         fs::remove_dir_all(&dir).ok();
     }
 

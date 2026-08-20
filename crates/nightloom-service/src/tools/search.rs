@@ -475,40 +475,24 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
-    /// And still searchable now that it lives outside the workspace — by
-    /// being pointed at, which is the difference the notes index carries a
-    /// full path for.
+    /// And searchable by an ordinary walk, which is the claim that a
+    /// docspace needs no retrieval layer rests on.
     #[tokio::test]
-    async fn the_docspace_is_searchable_from_outside_the_workspace() {
-        let dir = test_dir("search-docspace-out");
-        let workspace = dir.join("work");
-        let notes = dir.join("store").join("notes");
-        fs::create_dir_all(&workspace).unwrap();
-        fs::create_dir_all(&notes).unwrap();
+    async fn the_agents_dir_is_walked_like_any_other() {
+        let dir = test_dir("search-agents");
+        fs::create_dir_all(dir.join(".agents")).unwrap();
         fs::write(
-            notes.join("decisions.md"),
+            dir.join(".agents").join("decisions.md"),
             "codeword alpaca
 ",
         )
         .unwrap();
 
-        let root = Root::new(&workspace).with("docspace", &notes);
-        let found = Grep::new(root.clone())
-            .call(json!({ "pattern": "alpaca", "path": notes.to_str().unwrap() }))
-            .await
-            .unwrap();
-        assert!(found.ends_with("notes/decisions.md"), "{found}");
-
-        // Un-pointed, a search is a search of the workspace and finds nothing:
-        // the second tree is reachable, not merged in.
-        let workspace_only = Grep::new(root)
+        let found = Grep::new(Root::new(&dir))
             .call(json!({ "pattern": "alpaca" }))
             .await
             .unwrap();
-        assert!(
-            workspace_only.starts_with("no matches for"),
-            "{workspace_only}"
-        );
+        assert_eq!(found, ".agents/decisions.md");
         fs::remove_dir_all(&dir).ok();
     }
 

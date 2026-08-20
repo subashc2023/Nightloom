@@ -176,13 +176,18 @@ export function pickExport(): Promise<string | null> {
 }
 
 /**
- * Import a claude.ai export into `into`, one folder per project, and register
- * what it produced so the projects list shows it.
+ * Import a claude.ai export as projects, and register them so the list shows
+ * them.
+ *
+ * `into` is optional and normally omitted: an imported project is
+ * instructions, documents and conversations with no code anywhere, so there
+ * is no folder to make. Pass one only when the user means to keep code
+ * alongside them.
  */
 export function importClaude(
   exportPath: string,
-  into: string,
   unfiled: boolean,
+  into?: string,
 ): Promise<ImportSummary> {
   return invoke("import_claude", { export: exportPath, into, unfiled });
 }

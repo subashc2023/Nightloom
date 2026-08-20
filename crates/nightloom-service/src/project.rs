@@ -1,39 +1,44 @@
-//! Projects: a named folder, the chats held in it, and the notes they share.
+//! Projects: a named thing you come back to, the chats held in it, and the
+//! notes they share.
 //!
-//! A project is deliberately *not* a new storage system. It is a folder the
-//! user picked. The folder stays the unit of *identity* — what a chat is
-//! about, what the file tools are rooted at, where `AGENTS.md` and `mcp.json`
-//! are found — while everything Nightloom itself writes lives in the user's
-//! home:
+//! A project is **not** a folder. It has an identity of its own — an id, a
+//! name — and *may* point at a working directory. The distinction was forced
+//! by the importer: a claude.ai project is instructions, documents and
+//! conversations, with no code anywhere in it, and while identity was derived
+//! from a path the import had to invent an empty directory per project purely
+//! so there was something to hash. A model that makes you fabricate the thing
+//! it claims to be about is the wrong model.
 //!
-//! * `<root>/AGENTS.md` — instructions, already discovered by the preamble's
-//!   directory walk. Nothing here has to do anything for that to work.
-//! * `<root>/.nightloom/mcp.json` — server config, and the only thing left in
-//!   the folder. It is *configuration*: written by hand, usually checked in,
-//!   and copied between projects on purpose.
-//! * `~/.nightloom/projects/<id>/sessions/` — the project's chats.
-//! * `~/.nightloom/projects/<id>/notes/` — the docspace: plain files every
-//!   chat in the project can read and write, indexed into the system prompt so
-//!   a new conversation starts knowing what the previous ones left behind.
+//! Three more things fall out of the separation, each of which was previously
+//! impossible rather than merely awkward: moving or renaming a folder stops
+//! orphaning a year of chats (repoint `workspace`), two projects can share one
+//! folder when there are two workstreams in it, and a project can exist with
+//! no folder at all.
 //!
-//! The split is between **config and data**. A folder someone works in is
-//! theirs; a repo is not a place to leave chat logs, gitignored or not, and a
-//! year of conversations scattered one-directory-per-checkout is a history
-//! nobody can look through. Keying the store by the id — an FNV-1a over the
-//! case-folded canonical path — is what keeps the folder as the identity
-//! anyway: `nightloom --continue` in a folder still resumes the conversation
-//! the desktop app was having there, because both derive the same id from the
-//! same path without either consulting a registry.
+//! ## Where things live
 //!
-//! Two costs, both real and both accepted. The history no longer travels with
-//! the work — copying the folder copies the code and not the chats — and the
-//! docspace is no longer inside the workspace the file tools are rooted at,
-//! which is why [`Root`] grew a second tree rather than the docspace growing
-//! tools of its own. Moving the folder orphans its store, the same way it
-//! already orphaned its registry entry.
+//! ```text
+//! <workspace>/AGENTS.md      instructions      (yours, usually committed)
+//! <workspace>/.agents/       the docspace      (yours, committable)
+//! ~/.nightloom/projects/<id>/sessions/   the chats
+//! ```
 //!
-//! [`migrate`] moves a pre-move `<root>/.nightloom/{sessions,notes}` into the
-//! store the first time the project is opened.
+//! The split is **about the code / about you**. Notes describe the codebase,
+//! so they sit with it: a teammate can read them, a diff can review them, and
+//! the file tools reach them by a plain relative path because they are inside
+//! the tree those tools are already rooted at. Chats are personal history and
+//! a repository is not the place for them, whatever `.gitignore` says.
+//!
+//! A project with no workspace gets one made for it at
+//! `~/.nightloom/projects/<id>/workspace/`, so the *rule* is the same in both
+//! cases: instructions and notes are inside the workspace, chats are a
+//! sibling of it and never in it. That is what keeps the docspace reachable
+//! without the file tools needing a second permitted tree, and what keeps a
+//! transcript from ever being inside the tree it could be searched from.
+//!
+//! [`migrate`] moves a folder laid out the old way — `.nightloom/sessions`
+//! into the store, `.nightloom/notes` into `.agents` — the first time it is
+//! opened.
 
 use std::fs;
 use std::io;
@@ -49,8 +54,19 @@ use crate::tools::Root;
 pub const DOT_DIR: &str = ".nightloom";
 /// Subdirectory of `~/.nightloom` holding one directory per project.
 pub const PROJECTS_DIR: &str = "projects";
-/// Subdirectory of [`DOT_DIR`] holding the shared notes.
+/// The docspace, inside the workspace: `<workspace>/.agents`.
+///
+/// Named for the convention `AGENTS.md` already established beside it rather
+/// than for this program. A directory of markdown that a team might read, a
+/// reviewer might comment on and a repository might carry is a different
+/// object from a directory of session logs, and only one of them is clutter.
+pub const AGENTS_DIR: &str = ".agents";
+/// Subdirectory of a project's store holding the notes of a project that has
+/// no workspace of its own — see [`Project::workspace_dir`].
 pub const NOTES_DIR: &str = "notes";
+/// Subdirectory of a project's store standing in for a workspace when the
+/// project has no folder.
+pub const WORKSPACE_DIR: &str = "workspace";
 /// Subdirectory of [`DOT_DIR`] holding this project's session logs.
 pub const SESSIONS_DIR: &str = "sessions";
 
@@ -67,15 +83,40 @@ const NOTE_DEPTH: usize = 4;
 /// Bytes read from a note to derive its one-line summary.
 const SUMMARY_PROBE: usize = 512;
 
-/// A folder the user named and wants to come back to.
+/// Something the user named and wants to come back to.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
-    /// Derived from the normalized path, not random: adding the same folder
-    /// twice is the same project rather than a duplicate entry, and an id
-    /// written into a config file last month still resolves today.
+    /// Stable for the life of the project and derived from nothing.
+    ///
+    /// It used to be an FNV-1a over the folder's path, which made `add`
+    /// idempotent for free and cost more than it bought: a renamed folder
+    /// became a different project and orphaned every chat in it, two projects
+    /// could not share a directory, and a project could not exist without
+    /// one. Idempotence is now a lookup by workspace, which is the question
+    /// actually being asked. Ids already written by the old scheme are kept
+    /// as-is — they were only ever opaque handles, and re-deriving them would
+    /// orphan exactly what this change exists to stop orphaning.
     pub id: String,
     pub name: String,
-    pub root: PathBuf,
+    /// The folder this project is about, if it is about one.
+    ///
+    /// `None` for a project with no code — an imported claude.ai project is
+    /// the case that forced this, being instructions, documents and
+    /// conversations and nothing else. Read `root` too, which is what this
+    /// field was called when it was mandatory.
+    #[serde(default, alias = "root")]
+    pub workspace: Option<PathBuf>,
+    /// Where this project came from, when it did not come from the file
+    /// dialog. `"claude:<uuid>"` for an import.
+    ///
+    /// Provenance rather than decoration: it is what makes re-importing an
+    /// export idempotent now that identity is not a hash of a path. Matching
+    /// on the *name* instead would be the mistake this module already refuses
+    /// to make about conversations — two claude.ai projects can share a name,
+    /// and a project can be renamed here without ceasing to be the one that
+    /// was imported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
     pub created: DateTime<Utc>,
     /// Bumped by [`Registry::touch`], so the picker can lead with what the
     /// user was last working on.
@@ -83,33 +124,57 @@ pub struct Project {
 }
 
 impl Project {
-    /// `<root>/.nightloom` — project *configuration* (`mcp.json`), and the
-    /// pre-move location of the store that [`migrate`] empties.
-    pub fn dot_dir(&self) -> PathBuf {
-        self.root.join(DOT_DIR)
+    /// `~/.nightloom/projects/<id>` — what Nightloom keeps for this project.
+    pub fn store_dir(&self) -> PathBuf {
+        store_dir(&self.id)
     }
 
-    /// `~/.nightloom/projects/<id>` — everything Nightloom writes for this
-    /// project.
-    pub fn store_dir(&self) -> PathBuf {
-        store_dir(&self.id, &self.root)
+    /// The directory the file tools are rooted at and the preamble walks.
+    ///
+    /// A project with no folder gets one inside its store, so that everything
+    /// downstream — tool rooting, `AGENTS.md` discovery, the docspace index —
+    /// has exactly one case to handle instead of two.
+    pub fn workspace_dir(&self) -> PathBuf {
+        self.workspace
+            .clone()
+            .unwrap_or_else(|| self.store_dir().join(WORKSPACE_DIR))
+    }
+
+    /// The shared docspace: `<workspace>/.agents`.
+    ///
+    /// Inside the workspace, which is the whole point rather than a detail.
+    /// The model reaches a note with a plain relative path, `grep` finds one
+    /// in an ordinary walk, and a team can read what the last conversation
+    /// left behind — none of which is true of a directory in someone's home.
+    pub fn notes_dir(&self) -> PathBuf {
+        self.workspace_dir().join(AGENTS_DIR)
     }
 
     /// Where this project's chats are logged.
+    ///
+    /// A *sibling* of the workspace and never inside it, for two reasons that
+    /// point the same way: a transcript inside the searched tree feeds the
+    /// conversation back into its own greps, and a chat log is not something
+    /// to leave in somebody's repository.
     pub fn session_dir(&self) -> PathBuf {
         self.store_dir().join(SESSIONS_DIR)
     }
 
-    /// The shared docspace.
-    pub fn notes_dir(&self) -> PathBuf {
-        self.store_dir().join(NOTES_DIR)
+    /// `<workspace>/.nightloom` — where `mcp.json` is looked for. `None` for a
+    /// project with no folder, which has no repo-local config to read.
+    pub fn dot_dir(&self) -> Option<PathBuf> {
+        self.workspace.as_ref().map(|w| w.join(DOT_DIR))
     }
 
     /// Whether the folder is still there. A project whose folder was moved is
     /// reported as missing rather than dropped from the registry: an unplugged
-    /// external drive is not a decision to forget a project.
+    /// external drive is not a decision to forget a project. A project with no
+    /// folder is never missing — there is nothing to be missing.
     pub fn exists(&self) -> bool {
-        self.root.is_dir()
+        match &self.workspace {
+            Some(root) => root.is_dir(),
+            None => true,
+        }
     }
 }
 
@@ -174,20 +239,39 @@ impl Registry {
         self.projects.iter().find(|p| p.id == id)
     }
 
+    /// The project pointed at this folder, if one is.
+    ///
+    /// What both shells ask instead of hashing the path: the CLI to find out
+    /// whose chats belong to the directory it was run in, the desktop to keep
+    /// the file dialog from making a second project out of one folder.
+    /// First match wins — the design permits two projects on one folder, and
+    /// the one the picker lands on is simply the older of them.
+    pub fn find_by_workspace(&self, root: impl AsRef<Path>) -> Option<&Project> {
+        let root = normalize(root.as_ref());
+        self.projects
+            .iter()
+            .find(|p| p.workspace.as_deref() == Some(root.as_path()))
+    }
+
     /// Register a folder, or return the existing entry for it.
     ///
-    /// Idempotent because the id is derived from the path: picking the same
+    /// Idempotent by *workspace* rather than by a hash of it: picking the same
     /// folder from the file dialog twice is not two projects, and erroring
     /// would be a worse answer than "you are already here". An explicit
-    /// `name` on a second add renames.
+    /// `name` on a second add renames. Deliberately making a second project
+    /// on the same folder goes through [`Registry::create`], which is a
+    /// different question and deserves a different call.
     pub fn add(&mut self, root: impl AsRef<Path>, name: Option<String>) -> Result<Project, String> {
         let root = normalize(root.as_ref());
         if !root.is_dir() {
             return Err(format!("{} is not a folder", root.display()));
         }
-        let id = path_id(&root);
         let now = Utc::now();
-        if let Some(existing) = self.projects.iter_mut().find(|p| p.id == id) {
+        if let Some(existing) = self
+            .projects
+            .iter_mut()
+            .find(|p| p.workspace.as_deref() == Some(root.as_path()))
+        {
             if let Some(name) = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()) {
                 existing.name = name;
             }
@@ -196,16 +280,52 @@ impl Registry {
             self.save();
             return Ok(out);
         }
+        let name = name
+            .map(|n| n.trim().to_string())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| default_name(&root));
+        self.create(name, Some(root), None)
+    }
+
+    /// The project imported from a given source, if one was.
+    pub fn find_by_source(&self, source: &str) -> Option<&Project> {
+        self.projects
+            .iter()
+            .find(|p| p.source.as_deref() == Some(source))
+    }
+
+    /// Make a project, whether or not it has a folder.
+    ///
+    /// Never idempotent — every call is a new project with a new id. That is
+    /// what a second workstream on one folder needs, and what an import needs
+    /// once it has established, via [`Registry::find_by_source`], that this is
+    /// not a project it already made.
+    pub fn create(
+        &mut self,
+        name: impl Into<String>,
+        workspace: Option<PathBuf>,
+        source: Option<String>,
+    ) -> Result<Project, String> {
+        let name = name.into().trim().to_string();
+        if name.is_empty() {
+            return Err("a project needs a name".to_string());
+        }
+        let now = Utc::now();
         let project = Project {
-            id,
-            name: name
-                .map(|n| n.trim().to_string())
-                .filter(|n| !n.is_empty())
-                .unwrap_or_else(|| default_name(&root)),
-            root,
+            id: new_id(),
+            name,
+            workspace,
+            source,
             created: now,
             last_opened: now,
         };
+        // The stand-in workspace has to exist before anything roots a tool at
+        // it or walks it for `AGENTS.md`; a real one was checked by `add`.
+        if project.workspace.is_none() {
+            let dir = project.workspace_dir();
+            fs::create_dir_all(&dir)
+                .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+        }
         self.projects.push(project.clone());
         self.save();
         Ok(project)
@@ -371,30 +491,36 @@ fn path_id(root: &Path) -> String {
     format!("{hash:016x}")
 }
 
-/// `~/.nightloom/projects/<id>`, the directory holding everything Nightloom
-/// writes for one project.
+/// `~/.nightloom/projects/<id>`, the directory holding what Nightloom keeps
+/// for one project.
 ///
-/// `root` is only the fallback: with no home directory — a real state in a
-/// stripped environment, and the one `config_dir` already reports as `None` —
-/// the store goes back into the folder, because a project with nowhere to put
-/// its chats would otherwise have to fail rather than degrade.
-pub fn store_dir(id: &str, root: &Path) -> PathBuf {
-    match config_dir() {
-        Some(home) => home.join(PROJECTS_DIR).join(id),
-        None => root.join(DOT_DIR),
-    }
+/// Falls back to a temp-adjacent path only when there is no home at all, which
+/// `config_dir` already reports as `None` and which is a real state in a
+/// stripped environment. Degrading beats failing: a project that cannot find
+/// somewhere to log a chat should still hold a conversation.
+pub fn store_dir(id: &str) -> PathBuf {
+    let base = config_dir().unwrap_or_else(|| std::env::temp_dir().join(DOT_DIR));
+    base.join(PROJECTS_DIR).join(id)
 }
 
-/// The store for a folder, without consulting the registry.
+/// The store for a folder that no project claims.
 ///
-/// This is what makes the CLI and the desktop agree on where a folder's chats
-/// are while only one of them has a registry: the id is derived from the path,
-/// so `nightloom --continue` run in a folder opens the same directory the
-/// desktop app writes for it, and neither has to have heard of the other.
+/// The CLI runs wherever it is run, usually in a folder nobody has registered,
+/// and its chats have to go somewhere that is still *that folder's* chats
+/// tomorrow. So an unclaimed folder gets an ad-hoc store keyed by its path —
+/// the old identity scheme, kept for exactly the case it was right for. Once a
+/// project claims the folder, [`Registry::find_by_workspace`] answers instead
+/// and this is not consulted.
 pub fn store_for(root: &Path) -> PathBuf {
-    let root = normalize(root);
-    let id = path_id(&root);
-    store_dir(&id, &root)
+    store_dir(&path_id(&normalize(root)))
+}
+
+/// A fresh project id.
+///
+/// A uuid rather than a slug of the name, because two claude.ai projects can
+/// share a name and are still two projects.
+fn new_id() -> String {
+    uuid::Uuid::new_v4().to_string()
 }
 
 /// What [`migrate`] moved.
@@ -430,7 +556,8 @@ impl Migrated {
         } else {
             parts.join(" and ")
         };
-        let mut line = format!("moved {moved} out of .nightloom/ into ~/.nightloom");
+        let mut line =
+            format!("moved {moved} out of .nightloom/ — chats to ~/.nightloom, notes to .agents/");
         if !self.skipped.is_empty() {
             line.push_str(&format!(
                 "; left {} in place ({})",
@@ -442,22 +569,26 @@ impl Migrated {
     }
 }
 
-/// Move a pre-move `<root>/.nightloom/{sessions,notes}` into the home store.
+/// Move a folder laid out the old way: `.nightloom/sessions` into the store,
+/// `.nightloom/notes` into `.agents`.
 ///
 /// Idempotent and cheap to call — one `stat` when there is nothing to do — so
-/// a shell can run it every time it opens a project rather than remembering
+/// a shell can run it every time it opens a folder rather than remembering
 /// whether it has. Three rules, all of them the conservative reading:
 ///
-/// * **Nothing already in the store is overwritten.** A name that collides is
-///   left where it is and reported, on the same argument the importer makes:
-///   a docspace is a working directory, and a migration that could undo a
-///   week of notes would be worse than no migration.
+/// * **Nothing already at the destination is overwritten.** A name that
+///   collides is left where it is and reported, on the same argument the
+///   importer makes: a docspace is a working directory, and a migration that
+///   could undo a week of notes would be worse than no migration.
 /// * **`mcp.json` and anything else in `.nightloom/` stays.** Only the two
 ///   directories that moved are touched, and the dot directory itself is
 ///   removed only if the OS agrees it is empty.
 /// * **A file that cannot be moved is left, not lost.** `rename` across
 ///   volumes fails, so a copy-then-remove fallback runs; if the copy fails the
 ///   original stays put and lands in `skipped`.
+///
+/// Keyed on the *folder*, not on a `Project`, because it has to run for a
+/// folder nobody has registered — which is every folder the CLI is run in.
 pub fn migrate(root: &Path) -> Migrated {
     let mut out = Migrated::default();
     let legacy = root.join(DOT_DIR);
@@ -465,21 +596,17 @@ pub fn migrate(root: &Path) -> Migrated {
         return out;
     }
     let store = store_for(root);
-    // With no home directory the store *is* the legacy directory; there is
-    // nowhere to move anything to, and moving a file onto itself would be a
-    // deletion with extra steps.
-    if store == legacy {
-        return out;
-    }
-    for (sub, counter) in [
-        (SESSIONS_DIR, &mut out.sessions),
-        (NOTES_DIR, &mut out.notes),
+    // The two halves go to different places, which is the whole shape of the
+    // layout: chats out of the folder entirely, notes back into it under the
+    // name they should have had.
+    for (sub, to, counter) in [
+        (SESSIONS_DIR, store.join(SESSIONS_DIR), &mut out.sessions),
+        (NOTES_DIR, root.join(AGENTS_DIR), &mut out.notes),
     ] {
         let from = legacy.join(sub);
         if !from.is_dir() {
             continue;
         }
-        let to = store.join(sub);
         if fs::create_dir_all(&to).is_err() {
             out.skipped.push(format!("{sub}/"));
             continue;
@@ -709,20 +836,96 @@ mod tests {
     }
 
     #[test]
-    fn the_store_is_outside_the_folder_and_keyed_by_it() {
-        let dir = temp_dir("store");
-        let store = store_for(&dir);
-        assert!(
-            !store.starts_with(&dir),
-            "{} is inside the project folder",
-            store.display()
-        );
-        // The CLI derives this without a registry and the desktop derives it
-        // with one; if the two ever disagreed, `--continue` in a folder would
-        // open a different conversation from the one the app was having.
+    fn chats_live_outside_the_folder_and_notes_live_in_it() {
+        let dir = temp_dir("layout");
         let mut reg = Registry::load_from(dir.join("registry.json"));
         let project = reg.add(&dir, None).unwrap();
-        assert_eq!(project.store_dir(), store);
+
+        // The split the whole design turns on: a transcript is never inside
+        // the tree the file tools are rooted at, and a note always is.
+        assert!(!project.session_dir().starts_with(&dir));
+        assert_eq!(project.workspace_dir(), normalize(&dir));
+        assert_eq!(project.notes_dir(), normalize(&dir).join(AGENTS_DIR));
+        assert!(project.notes_dir().starts_with(project.workspace_dir()));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_project_needs_no_folder() {
+        let dir = temp_dir("folderless");
+        let mut reg = Registry::load_from(dir.join("registry.json"));
+        // What an imported claude.ai project is: a name, some documents and
+        // some conversations, and no code anywhere.
+        let project = reg.create("Thesis", None, None).unwrap();
+
+        assert!(project.workspace.is_none());
+        assert!(project.exists(), "nothing to be missing");
+        // It still gets a workspace, so everything downstream — tool rooting,
+        // AGENTS.md discovery, the notes index — has one case and not two.
+        assert!(project.workspace_dir().is_dir());
+        assert_eq!(
+            project.notes_dir(),
+            project.workspace_dir().join(AGENTS_DIR)
+        );
+        assert!(!project.session_dir().starts_with(project.workspace_dir()));
+        fs::remove_dir_all(&dir).ok();
+        fs::remove_dir_all(project.store_dir()).ok();
+    }
+
+    #[test]
+    fn two_projects_can_share_one_folder_but_the_picker_makes_only_one() {
+        let dir = temp_dir("share");
+        let mut reg = Registry::load_from(dir.join("registry.json"));
+
+        // The file dialog is idempotent: picking the same folder twice is one
+        // project, which is what the path-derived id used to buy for free.
+        let first = reg.add(&dir, None).unwrap();
+        let again = reg.add(&dir, None).unwrap();
+        assert_eq!(first.id, again.id);
+
+        // Asking for a second one deliberately is a different call, and gets
+        // a project of its own — impossible while identity was the path.
+        let second = reg
+            .create("Second workstream", Some(normalize(&dir)), None)
+            .unwrap();
+        assert_ne!(first.id, second.id);
+        assert_ne!(first.session_dir(), second.session_dir());
+        assert_eq!(
+            reg.find_by_workspace(&dir).map(|p| p.id.clone()),
+            Some(first.id)
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A registry written before projects had an identity of their own.
+    #[test]
+    fn an_old_entry_keeps_its_id_and_its_folder() {
+        let dir = temp_dir("legacy-registry");
+        let path = dir.join("projects.json");
+        let entry = Project {
+            id: "b7815b022ba43238".to_string(),
+            name: "Old".to_string(),
+            workspace: Some(normalize(&dir)),
+            source: None,
+            created: Utc::now(),
+            last_opened: Utc::now(),
+        };
+        // Written under the old field name, which is the point of the test.
+        let raw = serde_json::to_string(&entry)
+            .unwrap()
+            .replace("workspace", "root");
+        fs::write(&path, format!(r#"{{"version":1,"projects":[{raw}]}}"#)).unwrap();
+
+        let reg = Registry::load_from(&path);
+        let project = &reg.projects()[0];
+        // The id is kept rather than re-derived: it addresses a store full of
+        // chats, and regenerating it would orphan exactly what this change
+        // exists to stop orphaning.
+        assert_eq!(project.id, "b7815b022ba43238");
+        assert_eq!(
+            project.workspace.as_deref(),
+            Some(normalize(&dir).as_path())
+        );
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -747,10 +950,12 @@ mod tests {
         assert_eq!(moved.notes, 2, "a nested note is still a note");
         assert!(moved.skipped.is_empty(), "{:?}", moved.skipped);
 
+        // The two halves go different ways: chats out of the folder, notes
+        // back into it under the name they should have had.
         let store = store_for(&dir);
         assert!(store.join(SESSIONS_DIR).join("a.jsonl").is_file());
         assert_eq!(
-            fs::read_to_string(store.join(NOTES_DIR).join("sub").join("deep.md")).unwrap(),
+            fs::read_to_string(dir.join(AGENTS_DIR).join("sub").join("deep.md")).unwrap(),
             "deep"
         );
         // Configuration stays in the folder, and so therefore does the dot
@@ -772,9 +977,8 @@ mod tests {
         fs::create_dir_all(legacy.join(NOTES_DIR)).unwrap();
         fs::write(legacy.join(NOTES_DIR).join("plan.md"), "old").unwrap();
 
-        let store = store_for(&dir);
-        fs::create_dir_all(store.join(NOTES_DIR)).unwrap();
-        fs::write(store.join(NOTES_DIR).join("plan.md"), "current").unwrap();
+        fs::create_dir_all(dir.join(AGENTS_DIR)).unwrap();
+        fs::write(dir.join(AGENTS_DIR).join("plan.md"), "current").unwrap();
 
         let moved = migrate(&dir);
         assert_eq!(moved.notes, 0);
@@ -782,7 +986,7 @@ mod tests {
         // Both copies survive: the newer one where it was, the older one
         // where the user can still go and find it.
         assert_eq!(
-            fs::read_to_string(store.join(NOTES_DIR).join("plan.md")).unwrap(),
+            fs::read_to_string(dir.join(AGENTS_DIR).join("plan.md")).unwrap(),
             "current"
         );
         assert_eq!(
@@ -790,7 +994,6 @@ mod tests {
             "old"
         );
         fs::remove_dir_all(&dir).ok();
-        fs::remove_dir_all(&store).ok();
     }
 
     #[test]
@@ -840,7 +1043,10 @@ mod tests {
         let reloaded = Registry::load_from(&path);
         let project = reloaded.find(&id).expect("id survives a reload");
         assert_eq!(project.name, "Kept");
-        assert_eq!(project.root, normalize(&dir));
+        assert_eq!(
+            project.workspace.as_deref(),
+            Some(normalize(&dir).as_path())
+        );
     }
 
     #[test]

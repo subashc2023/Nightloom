@@ -224,7 +224,9 @@
           class="path"
           class:tail={!!app.project}
           type="text"
-          value={app.project ? app.project.root : app.draft.workspace}
+          value={app.project
+            ? (app.project.root ?? app.connection?.workspace ?? "")
+            : app.draft.workspace}
           oninput={(e) => {
             if (!app.project) app.draft.workspace = e.currentTarget.value;
           }}

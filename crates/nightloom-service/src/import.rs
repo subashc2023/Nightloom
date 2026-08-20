@@ -79,7 +79,7 @@ use serde::de::DeserializeOwned;
 
 use nightloom_core::{ContentBlock, Session, SessionEvent, Usage};
 
-use crate::project::{NOTES_DIR, SESSIONS_DIR, read_note, write_note};
+use crate::project::{Registry, read_note, write_note};
 
 /// Bytes of one flattened tool *result* kept in the transcript.
 ///
@@ -440,8 +440,16 @@ fn parse_array<T: DeserializeOwned>(
 
 /// What to import and where to put it.
 pub struct ImportOptions {
-    /// Folder the project folders are created under.
-    pub into: PathBuf,
+    /// Folder the project folders are created under, if the user wants
+    /// folders at all.
+    ///
+    /// `None` is the ordinary case and the reason a project stopped being a
+    /// folder: a claude.ai project is instructions, documents and
+    /// conversations, and creating an empty directory to hold no code was
+    /// something this module did only because identity was a hash of a path.
+    /// Give it a path when the imported project is somewhere you also intend
+    /// to keep code.
+    pub into: Option<PathBuf>,
     /// Import conversations belonging to no project, into one folder of their
     /// own. Off by default: for most accounts these are the bulk of the
     /// export and have nothing to do with any project.
@@ -452,12 +460,25 @@ pub struct ImportOptions {
 }
 
 impl ImportOptions {
-    pub fn new(into: impl Into<PathBuf>) -> Self {
+    /// Import into projects with no folder.
+    pub fn new() -> Self {
         Self {
-            into: into.into(),
+            into: None,
             unfiled: false,
             only: Vec::new(),
         }
+    }
+
+    /// Also give each imported project a folder under `into`.
+    pub fn into_folder(mut self, into: impl Into<PathBuf>) -> Self {
+        self.into = Some(into.into());
+        self
+    }
+}
+
+impl Default for ImportOptions {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -465,7 +486,10 @@ impl ImportOptions {
 #[derive(Debug, Clone, Default)]
 pub struct ProjectOutcome {
     pub name: String,
-    pub root: PathBuf,
+    /// The project this became, so a caller can open it without a lookup.
+    pub id: String,
+    /// The folder it was given, when it was given one.
+    pub root: Option<PathBuf>,
     /// Whether `AGENTS.md` was written. False when the project had no
     /// instructions, or when the folder already had a file of that name.
     pub instructions: bool,
@@ -523,14 +547,24 @@ impl ImportReport {
 
 /// Write an export's projects into `opts.into`.
 ///
-/// Creates one folder per project and leaves it a working Nightloom project:
+/// Creates one project per claude.ai project and leaves each a working one:
 /// instructions where the preamble looks for them, knowledge in the docspace,
-/// conversations in the session log directory. Registering the folders is the
-/// caller's, since a registry is a user-level thing and this function is also
-/// what the tests drive.
-pub fn import(export: &Export, opts: &ImportOptions) -> Result<ImportReport, String> {
-    fs::create_dir_all(&opts.into)
-        .map_err(|e| format!("cannot create {}: {e}", opts.into.display()))?;
+/// conversations in the session log directory.
+///
+/// Takes the registry rather than leaving registration to the caller, which
+/// is not a convenience — a project's id decides where its store is, so
+/// nothing can be written until the project exists. It is also what makes a
+/// second run of an import add the chats you have had since rather than a
+/// second copy of every project: an existing entry is found by
+/// [`Registry::find_by_source`] and written into again.
+pub fn import(
+    export: &Export,
+    opts: &ImportOptions,
+    registry: &mut Registry,
+) -> Result<ImportReport, String> {
+    if let Some(into) = &opts.into {
+        fs::create_dir_all(into).map_err(|e| format!("cannot create {}: {e}", into.display()))?;
+    }
 
     let mut report = ImportReport {
         unreadable: export.unreadable,
@@ -558,7 +592,7 @@ pub fn import(export: &Export, opts: &ImportOptions) -> Result<ImportReport, Str
             .get(project.uuid.as_str())
             .cloned()
             .unwrap_or_default();
-        let outcome = import_project(project, &conversations, &opts.into, &mut slugs)?;
+        let outcome = import_project(project, &conversations, opts, registry, &mut slugs)?;
         report.projects.push(outcome);
     }
 
@@ -573,7 +607,7 @@ pub fn import(export: &Export, opts: &ImportOptions) -> Result<ImportReport, Str
             prompt_template: String::new(),
             docs: Vec::new(),
         };
-        let outcome = import_project(&holder, &unfiled, &opts.into, &mut slugs)?;
+        let outcome = import_project(&holder, &unfiled, opts, registry, &mut slugs)?;
         report.projects.push(outcome);
         report.unfiled = 0;
     }
@@ -595,7 +629,8 @@ fn wanted(project: &ExportedProject, only: &[String]) -> bool {
 fn import_project(
     project: &ExportedProject,
     conversations: &[&ExportedConversation],
-    into: &Path,
+    opts: &ImportOptions,
+    registry: &mut Registry,
     slugs: &mut HashSet<String>,
 ) -> Result<ProjectOutcome, String> {
     let name = if project.name.trim().is_empty() {
@@ -603,22 +638,45 @@ fn import_project(
     } else {
         project.name.trim()
     };
-    let root = into.join(unique_slug(name, &project.uuid, slugs));
-    // The folder has to exist before the store is derived from it: the id is
-    // an FNV-1a over the *canonical* path, and canonicalizing a directory that
-    // is not there yet falls back to the uncanonical spelling — which would
-    // hash to a different id than every later open of the same project.
-    fs::create_dir_all(&root).map_err(|e| format!("cannot create {}: {e}", root.display()))?;
-    let store = crate::project::store_for(&root);
-    let sessions = store.join(SESSIONS_DIR);
-    let notes = store.join(NOTES_DIR);
+    // The uuid, not the name: two claude.ai projects can share a name, and
+    // one renamed here is still the one that was imported. An export with no
+    // uuid — the synthesized holder for unfiled chats — gets a fixed source
+    // for the same reason, so a second import adds to it rather than making
+    // "Unfiled chats" twice.
+    let source = if project.uuid.is_empty() {
+        "claude:unfiled".to_string()
+    } else {
+        format!("claude:{}", project.uuid)
+    };
+
+    let existing = registry.find_by_source(&source).cloned();
+    let project_entry = match existing {
+        Some(entry) => entry,
+        None => {
+            let workspace = match &opts.into {
+                Some(into) => {
+                    let root = into.join(unique_slug(name, &project.uuid, slugs));
+                    fs::create_dir_all(&root)
+                        .map_err(|e| format!("cannot create {}: {e}", root.display()))?;
+                    Some(crate::project::normalize(&root))
+                }
+                None => None,
+            };
+            registry.create(name, workspace, Some(source))?
+        }
+    };
+
+    let root = project_entry.workspace_dir();
+    let sessions = project_entry.session_dir();
+    let notes = project_entry.notes_dir();
     fs::create_dir_all(&sessions)
         .map_err(|e| format!("cannot create {}: {e}", sessions.display()))?;
     fs::create_dir_all(&notes).map_err(|e| format!("cannot create {}: {e}", notes.display()))?;
 
     let mut outcome = ProjectOutcome {
         name: name.to_string(),
-        root: root.clone(),
+        id: project_entry.id.clone(),
+        root: project_entry.workspace.clone(),
         ..Default::default()
     };
 
@@ -1156,13 +1214,34 @@ mod tests {
         }])
     }
 
-    fn session_of(root: &Path, uuid: &str) -> Session {
-        Session::load(
-            crate::project::store_for(root)
-                .join(SESSIONS_DIR)
-                .join(format!("{uuid}.jsonl")),
-        )
-        .unwrap()
+    /// Import with a registry kept in `into`, so a second run of the same
+    /// test sees the projects the first run made — which is what makes the
+    /// idempotence tests test anything.
+    fn run_with(export: &Export, opts: ImportOptions, into: &Path) -> ImportReport {
+        let mut registry = Registry::load_from(into.join("projects.json"));
+        import(export, &opts, &mut registry).unwrap()
+    }
+
+    fn run(export: &Export, into: &Path) -> ImportReport {
+        run_with(export, ImportOptions::new().into_folder(into), into)
+    }
+
+    fn sessions_of(outcome: &ProjectOutcome) -> PathBuf {
+        crate::project::store_dir(&outcome.id).join(crate::project::SESSIONS_DIR)
+    }
+
+    fn workspace_of(outcome: &ProjectOutcome) -> PathBuf {
+        outcome.root.clone().unwrap_or_else(|| {
+            crate::project::store_dir(&outcome.id).join(crate::project::WORKSPACE_DIR)
+        })
+    }
+
+    fn notes_of(outcome: &ProjectOutcome) -> PathBuf {
+        workspace_of(outcome).join(crate::project::AGENTS_DIR)
+    }
+
+    fn session_of(outcome: &ProjectOutcome, uuid: &str) -> Session {
+        Session::load(sessions_of(outcome).join(format!("{uuid}.jsonl"))).unwrap()
     }
 
     fn assistant_blocks_of(session: &Session) -> Vec<ContentBlock> {
@@ -1196,7 +1275,7 @@ mod tests {
         );
 
         let into = test_dir("import-out");
-        let report = import(&export, &ImportOptions::new(&into)).unwrap();
+        let report = run(&export, &into);
         assert_eq!(report.projects.len(), 1);
         let project = &report.projects[0];
         assert_eq!(project.imported, 1);
@@ -1204,15 +1283,14 @@ mod tests {
         // The duplicate upload of outline.md is one note, not two.
         assert_eq!(project.notes, 2);
 
-        let root = &project.root;
-        let agents = fs::read_to_string(root.join("AGENTS.md")).unwrap();
+        let agents = fs::read_to_string(workspace_of(project).join("AGENTS.md")).unwrap();
         assert!(agents.contains("Always cite a source."), "{agents}");
         assert!(
             agents.contains("Everything for the dissertation."),
             "{agents}"
         );
 
-        let notes = crate::project::store_for(root).join(NOTES_DIR);
+        let notes = notes_of(project);
         assert_eq!(
             fs::read_to_string(notes.join("outline.md")).unwrap(),
             "# Outline\n\nChapter one."
@@ -1221,7 +1299,7 @@ mod tests {
         // docspace is by convention.
         assert!(notes.join("sources.md").exists());
 
-        let session = session_of(root, "c-1");
+        let session = session_of(project, "c-1");
         assert_eq!(session.title(), Some("Framing chapter two"));
         assert_eq!(session.messages().len(), 2);
         // The conversation's own timestamp, not the moment it was imported.
@@ -1249,17 +1327,62 @@ mod tests {
         );
         let into = test_dir("import-twice");
 
-        let first = import(&export, &ImportOptions::new(&into)).unwrap();
+        let first = run(&export, &into);
         assert_eq!((first.imported(), first.already()), (1, 0));
 
-        let second = import(&export, &ImportOptions::new(&into)).unwrap();
+        let second = run(&export, &into);
         assert_eq!((second.imported(), second.already()), (0, 1));
 
-        let sessions =
-            fs::read_dir(crate::project::store_for(&second.projects[0].root).join(SESSIONS_DIR))
-                .unwrap()
-                .count();
+        let sessions = fs::read_dir(sessions_of(&second.projects[0]))
+            .unwrap()
+            .count();
         assert_eq!(sessions, 1);
+    }
+
+    /// The case that forced a project to stop being a folder: a claude.ai
+    /// project is instructions, documents and conversations, and nothing here
+    /// should have to invent a directory to hold no code.
+    #[test]
+    fn a_project_can_be_imported_without_a_folder_at_all() {
+        let (_src, export) = export_of(
+            "folderless",
+            one_project(),
+            json!([{
+                "uuid": "c-1",
+                "name": "Chapter one",
+                "project_uuid": "p-1",
+                "created_at": "2024-05-01T09:00:00Z",
+                "updated_at": "2024-05-01T09:10:00Z",
+                "chat_messages": [message("m-1", "human", "hello")],
+            }]),
+        );
+
+        let into = test_dir("import-folderless");
+        let mut registry = Registry::load_from(into.join("projects.json"));
+        let report = import(&export, &ImportOptions::new(), &mut registry).unwrap();
+
+        let outcome = &report.projects[0];
+        assert!(outcome.root.is_none(), "no folder was asked for");
+        // Nothing was written under the directory the registry happens to
+        // live in: an import with no `--into` creates no folders anywhere the
+        // user can trip over.
+        assert!(!into.join("thesis").exists());
+
+        // And it is a working project regardless — instructions where the
+        // preamble looks, notes in the docspace, the chat in the log dir.
+        let project = registry.find_by_source("claude:p-1").unwrap().clone();
+        assert!(project.workspace.is_none());
+        assert!(project.workspace_dir().join("AGENTS.md").is_file());
+        assert!(project.notes_dir().join("outline.md").is_file());
+        assert!(project.session_dir().join("c-1.jsonl").is_file());
+
+        // A second run adds what is new rather than a second project.
+        let again = import(&export, &ImportOptions::new(), &mut registry).unwrap();
+        assert_eq!((again.imported(), again.already()), (0, 1));
+        assert_eq!(registry.projects().len(), 1);
+
+        fs::remove_dir_all(project.store_dir()).ok();
+        fs::remove_dir_all(&into).ok();
     }
 
     /// The safety-critical one. A `tool_use` in an export names one of
@@ -1312,8 +1435,8 @@ mod tests {
         );
 
         let into = test_dir("import-tools");
-        let report = import(&export, &ImportOptions::new(&into)).unwrap();
-        let session = session_of(&report.projects[0].root, "c-1");
+        let report = run(&export, &into);
+        let session = session_of(&report.projects[0], "c-1");
         let blocks = assistant_blocks_of(&session);
 
         assert!(
@@ -1371,8 +1494,8 @@ mod tests {
         );
 
         let into = test_dir("import-thinking");
-        let report = import(&export, &ImportOptions::new(&into)).unwrap();
-        let blocks = assistant_blocks_of(&session_of(&report.projects[0].root, "c-1"));
+        let report = run(&export, &into);
+        let blocks = assistant_blocks_of(&session_of(&report.projects[0], "c-1"));
         let thinking: Vec<_> = blocks
             .iter()
             .filter_map(|b| match b {
@@ -1405,15 +1528,15 @@ mod tests {
         );
 
         let into = test_dir("import-unlinked");
-        let report = import(&export, &ImportOptions::new(&into)).unwrap();
+        let report = run(&export, &into);
         assert_eq!(report.unfiled, 1);
         assert_eq!(report.projects[0].imported, 0);
 
         // And it is importable on request, into a folder of its own.
         let into = test_dir("import-unlinked-on");
-        let mut opts = ImportOptions::new(&into);
+        let mut opts = ImportOptions::new().into_folder(&into);
         opts.unfiled = true;
-        let report = import(&export, &opts).unwrap();
+        let report = run_with(&export, opts, &into);
         assert_eq!(report.unfiled, 0);
         assert_eq!(report.projects.len(), 2);
         assert_eq!(report.projects[1].imported, 1);
@@ -1454,10 +1577,10 @@ mod tests {
         );
 
         let into = test_dir("import-branch");
-        let report = import(&export, &ImportOptions::new(&into)).unwrap();
+        let report = run(&export, &into);
         assert_eq!(report.projects[0].superseded, 1);
 
-        let session = session_of(&report.projects[0].root, "c-1");
+        let session = session_of(&report.projects[0], "c-1");
         let text: Vec<String> = session
             .events()
             .iter()
@@ -1501,7 +1624,7 @@ mod tests {
         assert_eq!(export.conversations.len(), 1);
 
         let into = test_dir("import-torn");
-        let report = import(&export, &ImportOptions::new(&into)).unwrap();
+        let report = run(&export, &into);
         assert_eq!(report.projects[0].imported, 1);
         assert_eq!(report.unreadable, 1);
     }
@@ -1534,8 +1657,8 @@ mod tests {
         );
 
         let into = test_dir("import-unknown-block");
-        let report = import(&export, &ImportOptions::new(&into)).unwrap();
-        let blocks = assistant_blocks_of(&session_of(&report.projects[0].root, "c-1"));
+        let report = run(&export, &into);
+        let blocks = assistant_blocks_of(&session_of(&report.projects[0], "c-1"));
         assert_eq!(blocks.len(), 1);
         assert!(matches!(&blocks[0], ContentBlock::Text { text } if text == "still here"));
     }
@@ -1563,8 +1686,8 @@ mod tests {
         );
 
         let into = test_dir("import-empty");
-        let report = import(&export, &ImportOptions::new(&into)).unwrap();
-        let session = session_of(&report.projects[0].root, "c-1");
+        let report = run(&export, &into);
+        let session = session_of(&report.projects[0], "c-1");
         let roles: Vec<&str> = session
             .events()
             .iter()
@@ -1598,10 +1721,8 @@ mod tests {
         );
 
         let into = test_dir("import-mtime");
-        let report = import(&export, &ImportOptions::new(&into)).unwrap();
-        let log = crate::project::store_for(&report.projects[0].root)
-            .join(SESSIONS_DIR)
-            .join("c-1.jsonl");
+        let report = run(&export, &into);
+        let log = sessions_of(&report.projects[0]).join("c-1.jsonl");
         let modified = fs::metadata(&log).unwrap().modified().unwrap();
         let expected: std::time::SystemTime = "2024-06-01T10:45:00Z"
             .parse::<DateTime<Utc>>()
@@ -1635,19 +1756,17 @@ mod tests {
         );
         let into = test_dir("import-preserve");
 
-        let first = import(&export, &ImportOptions::new(&into)).unwrap();
-        let root = first.projects[0].root.clone();
+        let first = run(&export, &into);
+        let root = workspace_of(&first.projects[0]);
         assert!(first.projects[0].instructions);
         assert!(first.projects[0].warnings.is_empty());
 
         // The user edits both, as they are meant to.
-        let note = crate::project::store_for(&root)
-            .join(NOTES_DIR)
-            .join("outline.md");
+        let note = notes_of(&first.projects[0]).join("outline.md");
         fs::write(&note, "# Outline\n\nMy own rewrite.").unwrap();
         fs::write(root.join("AGENTS.md"), "my own instructions").unwrap();
 
-        let second = import(&export, &ImportOptions::new(&into)).unwrap();
+        let second = run(&export, &into);
         assert_eq!(
             fs::read_to_string(&note).unwrap(),
             "# Outline\n\nMy own rewrite."
@@ -1681,8 +1800,8 @@ mod tests {
             }]),
         );
         let into = test_dir("import-quiet");
-        import(&export, &ImportOptions::new(&into)).unwrap();
-        let second = import(&export, &ImportOptions::new(&into)).unwrap();
+        run(&export, &into);
+        let second = run(&export, &into);
         assert!(
             second.projects[0].warnings.is_empty(),
             "{:?}",
@@ -1726,7 +1845,7 @@ mod tests {
         assert_eq!(export.conversations.len(), 1);
 
         let into = test_dir("import-zip-out");
-        let report = import(&export, &ImportOptions::new(&into)).unwrap();
+        let report = run(&export, &into);
         assert_eq!(report.imported(), 1);
     }
 
@@ -1741,7 +1860,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("AGENTS.md"), "mine, do not touch").unwrap();
 
-        let report = import(&export, &ImportOptions::new(&into)).unwrap();
+        let report = run(&export, &into);
         assert!(!report.projects[0].instructions);
         assert_eq!(
             fs::read_to_string(root.join("AGENTS.md")).unwrap(),
@@ -1763,7 +1882,7 @@ mod tests {
             json!([]),
         );
         let into = test_dir("import-collide");
-        let report = import(&export, &ImportOptions::new(&into)).unwrap();
+        let report = run(&export, &into);
         assert_eq!(report.projects.len(), 2);
         assert_ne!(report.projects[0].root, report.projects[1].root);
     }
@@ -1784,7 +1903,7 @@ mod tests {
             }]),
         );
         let into = test_dir("import-escape");
-        let report = import(&export, &ImportOptions::new(&into)).unwrap();
+        let report = run(&export, &into);
         assert_eq!(report.projects[0].imported, 0);
         assert!(!report.projects[0].warnings.is_empty());
         assert!(!into.join("escaped.jsonl").exists());

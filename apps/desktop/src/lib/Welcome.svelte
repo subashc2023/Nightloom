@@ -25,10 +25,10 @@
       <h1>{app.project.name}</h1>
       <button
         class="path"
-        title="Show this folder"
-        onclick={() => void revealFolder(app.project?.root)}
+        title={app.project.root ? "Show this folder" : "Show the notes folder"}
+        onclick={() => void revealFolder(app.project?.root ?? app.project?.notes_dir)}
       >
-        {app.project.root} ↗
+        {app.project.root ?? "No folder — notes and chats only"} ↗
       </button>
       {#if !app.project.exists}
         <p class="warn">
@@ -96,7 +96,7 @@
             class="recent-row"
             disabled={app.busy}
             onclick={() => void useProject(p.id)}
-            title={p.root}
+            title={p.root ?? "No folder — notes and chats only"}
           >
             <span class="recent-name">{p.name}</span>
             <span class="recent-meta">

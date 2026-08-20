@@ -26,13 +26,20 @@ pub struct SessionsArgs {
 /// first thing run in a folder after an upgrade, and "no sessions" would be
 /// the wrong answer to give about a directory full of them.
 fn log_dir(args: &SessionsArgs) -> PathBuf {
-    args.log_dir.clone().unwrap_or_else(|| {
-        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        if let Some(line) = project::migrate(&cwd).summary() {
-            eprintln!("nightloom: {line}");
-        }
-        project::store_for(&cwd).join(project::SESSIONS_DIR)
-    })
+    if let Some(explicit) = &args.log_dir {
+        return explicit.clone();
+    }
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    if let Some(line) = project::migrate(&cwd).summary() {
+        eprintln!("nightloom: {line}");
+    }
+    // The project registered on this folder, or the ad-hoc store for it. Same
+    // resolution `chat.rs` uses, and it has to be: listing has to look where
+    // chatting writes.
+    project::Registry::load()
+        .find_by_workspace(&cwd)
+        .map(|p| p.session_dir())
+        .unwrap_or_else(|| project::store_for(&cwd).join(project::SESSIONS_DIR))
 }
 
 pub fn run(args: SessionsArgs) -> Result<()> {

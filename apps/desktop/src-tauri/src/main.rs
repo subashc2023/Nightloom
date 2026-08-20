@@ -95,7 +95,11 @@ impl AppState {
 struct ProjectInfo {
     id: String,
     name: String,
-    root: String,
+    /// The folder this project is about, or `null` for one that is about no
+    /// folder — an imported claude.ai project, until it is given one.
+    root: Option<String>,
+    /// Where its notes are: `<root>/.agents`, or the stand-in workspace inside
+    /// the store for a project with no folder. Shown, and used by `reveal`.
     notes_dir: String,
     /// Notes in the docspace, and chats logged under the project.
     notes: usize,
@@ -112,7 +116,10 @@ impl ProjectInfo {
         Self {
             id: project.id.clone(),
             name: project.name.clone(),
-            root: project.root.to_string_lossy().into_owned(),
+            root: project
+                .workspace
+                .as_ref()
+                .map(|r| r.to_string_lossy().into_owned()),
             notes_dir: project.notes_dir().to_string_lossy().into_owned(),
             notes: project::list_notes(&project.notes_dir()).len(),
             chats: store::list(&project.session_dir())
@@ -508,18 +515,13 @@ struct ChatSpec {
 }
 
 impl ChatSpec {
-    /// What the file tools may reach: the workspace, plus the docspace as a
-    /// second tree.
+    /// What the file tools may reach: the workspace, and only that.
     ///
-    /// The second tree is not a convenience. The docspace lives under
-    /// `~/.nightloom` and its index is in the system prompt, so without it the
-    /// model is handed a list of notes and no way to open one — the worst of
-    /// the three possible states, worse than having no docspace at all.
+    /// One tree, which is what putting the docspace at `<workspace>/.agents`
+    /// buys — a note is an ordinary relative path inside a directory the
+    /// tools were already rooted at.
     fn root(&self) -> Root {
-        match &self.project {
-            Some(p) => Root::new(self.workspace.clone()).with("docspace", p.notes_dir.clone()),
-            None => Root::new(self.workspace.clone()),
-        }
+        Root::new(self.workspace.clone())
     }
 }
 
@@ -700,12 +702,13 @@ async fn connect(
     // unreadable or missing path falls back to cwd rather than failing the
     // connect, and the resolved value goes back to the UI to be shown.
     //
-    // An open project **wins** over whatever the rail last saved: the project
-    // is the folder, and a chat filed under one that rooted its tools
-    // somewhere else would be a project in name only.
+    // An open project **wins** over whatever the rail last saved: a chat
+    // filed under a project that rooted its tools somewhere else would be a
+    // project in name only. A project with no folder of its own gets the
+    // stand-in one inside its store, so this has a path either way.
     let active = state.active().await;
     let workspace = match &active {
-        Some(project) => project.root.clone(),
+        Some(project) => project.workspace_dir(),
         None => workspace
             .map(PathBuf::from)
             .filter(|p| p.is_dir())
@@ -1056,7 +1059,7 @@ async fn delete_session(state: State<'_, AppState>, id: String) -> Result<String
 async fn pick_folder(app: AppHandle, state: State<'_, AppState>) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
     let start = match state.active().await {
-        Some(project) => Some(project.root),
+        Some(project) => project.workspace,
         None => project::config_dir().map(|d| d.parent().unwrap_or(&d).to_path_buf()),
     };
     let (tx, rx) = tokio::sync::oneshot::channel();
@@ -1145,44 +1148,51 @@ async fn pick_export(app: AppHandle) -> Result<Option<String>, String> {
 /// routinely hundreds of megabytes, and the runtime it would otherwise sit on
 /// is the one carrying the window's events.
 ///
-/// Registering here rather than leaving it to the frontend is most of the
-/// point: an imported folder that is not in the registry is a folder and not a
-/// project, so the user would have to re-pick each one through the file dialog
-/// to see chats that are already sitting in it.
+/// The import owns the registry for the duration, which is not a convenience:
+/// a project's id decides where its chats are written, so nothing can be
+/// written before the project exists. It also means a second import adds the
+/// chats you have had since rather than a second copy of every project.
+///
+/// `into` is optional. Without it the imported projects have no folder, which
+/// is what a claude.ai project actually is.
 #[tauri::command]
 async fn import_claude(
     state: State<'_, AppState>,
     export: String,
-    into: String,
+    into: Option<String>,
     unfiled: bool,
 ) -> Result<ImportSummary, String> {
-    let destination = PathBuf::from(into);
-    let report = tokio::task::spawn_blocking(move || {
+    let destination = into.filter(|s| !s.trim().is_empty()).map(PathBuf::from);
+    // The registry is taken across the blocking hop and put back, rather than
+    // the lock being held over it: this is minutes of file I/O on a big
+    // archive, and every project command would be stuck behind it.
+    let mut registry = { state.workspaces.lock().await.registry.clone() };
+    let (report, registry) = tokio::task::spawn_blocking(move || {
         let export = import::read_export(Path::new(&export))?;
-        let mut options = import::ImportOptions::new(destination);
+        let mut options = import::ImportOptions::new();
+        options.into = destination;
         options.unfiled = unfiled;
-        import::import(&export, &options)
+        let report = import::import(&export, &options, &mut registry)?;
+        Ok::<_, String>((report, registry))
     })
     .await
     .map_err(|e| format!("the import did not finish: {e}"))??;
 
     let mut guard = state.workspaces.lock().await;
+    guard.registry = registry;
     let mut projects = Vec::new();
     for outcome in &report.projects {
-        let mut warnings = outcome.warnings.clone();
-        if let Err(e) = guard
-            .registry
-            .add(&outcome.root, Some(outcome.name.clone()))
-        {
-            warnings.push(format!("not added to the project list: {e}"));
-        }
         projects.push(ImportedProject {
             name: outcome.name.clone(),
-            root: outcome.root.to_string_lossy().into_owned(),
+            root: outcome
+                .root
+                .as_ref()
+                .map(|r| r.to_string_lossy().into_owned())
+                .unwrap_or_default(),
             chats: outcome.imported,
             already: outcome.already,
             notes: outcome.notes,
-            warnings,
+            warnings: outcome.warnings.clone(),
         });
     }
 
@@ -1387,7 +1397,10 @@ fn approve_call(
 /// files inside a folder the user chose, and moving somebody's notes without
 /// mentioning it is not a thing to do quietly even when it is the right move.
 fn announce_migration(app: &AppHandle, project: &Project) {
-    if let Some(line) = project::migrate(&project.root).summary() {
+    let Some(root) = &project.workspace else {
+        return;
+    };
+    if let Some(line) = project::migrate(root).summary() {
         let _ = app.emit("turn-notice", format!("{}: {line}", project.name));
     }
 }

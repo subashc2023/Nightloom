@@ -114,14 +114,21 @@
       class:unfiled={!app.project}
       aria-expanded={menu}
       onclick={() => (menu = !menu)}
-      title={app.project?.root ?? "No project — chats are not tied to a folder"}
+      title={app.project?.root ??
+        (app.project ? "No folder — notes and chats only" : "No project — chats are not tied to a folder")}
     >
       <span class="chip-main">
         <span class="chip-name">{app.project?.name ?? "No project"}</span>
         <span class="caret">⌄</span>
       </span>
       <span class="chip-path">
-        {app.project ? shortPath(app.project.root) : "unfiled chats"}
+        {#if !app.project}
+          unfiled chats
+        {:else if app.project.root}
+          {shortPath(app.project.root)}
+        {:else}
+          no folder
+        {/if}
       </span>
     </button>
     {#if menu}

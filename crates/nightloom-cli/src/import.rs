@@ -11,9 +11,12 @@ pub struct ImportArgs {
     #[arg(value_name = "EXPORT")]
     export: PathBuf,
 
-    /// Where to create one folder per project
-    #[arg(long, default_value = "claude-projects", value_name = "DIR")]
-    into: PathBuf,
+    /// Also give each imported project a folder here. Omit it and the
+    /// projects have no folder, which is what a claude.ai project is: some
+    /// instructions, some documents and a pile of conversations, with no code
+    /// anywhere. Pass it when you mean to keep code alongside them.
+    #[arg(long, value_name = "DIR")]
+    into: Option<PathBuf>,
 
     /// List what the export holds and write nothing
     #[arg(long)]
@@ -27,7 +30,11 @@ pub struct ImportArgs {
     #[arg(long)]
     unfiled: bool,
 
-    /// Do not add the imported folders to the project list
+    /// Import without adding anything to the project list.
+    ///
+    /// Rarely what you want now that a project *is* the registry entry: with
+    /// no folder there is nothing else pointing at what was written, so this
+    /// leaves the chats on disk and nothing listing them.
     #[arg(long)]
     no_register: bool,
 }
@@ -39,11 +46,18 @@ pub fn run(args: ImportArgs) -> Result<()> {
         return list(&export);
     }
 
-    let mut opts = ImportOptions::new(&args.into);
+    let mut opts = ImportOptions::new();
+    opts.into = args.into.clone();
     opts.unfiled = args.unfiled;
     opts.only = args.only.clone();
 
-    let report = import::import(&export, &opts).map_err(|e| anyhow!(e))?;
+    // The registry is not optional to the import itself — a project's id is
+    // what decides where its chats are written, so nothing can be written
+    // before the project exists. `--no-register` therefore throws the result
+    // away afterwards rather than skipping it, which is why it is a poor
+    // idea and says so.
+    let mut registry = Registry::load();
+    let report = import::import(&export, &opts, &mut registry).map_err(|e| anyhow!(e))?;
     if report.projects.is_empty() {
         println!("nothing to import");
         if !export.conversations.is_empty() {
@@ -55,7 +69,6 @@ pub fn run(args: ImportArgs) -> Result<()> {
         return Ok(());
     }
 
-    let mut registry = (!args.no_register).then(Registry::load);
     for project in &report.projects {
         let mut counts = vec![format!("{} chat(s)", project.imported)];
         if project.already > 0 {
@@ -74,16 +87,24 @@ pub fn run(args: ImportArgs) -> Result<()> {
             ));
         }
         println!("{}", project.name);
-        println!("  {DIM}{}{RESET}", project.root.display());
+        match &project.root {
+            Some(root) => println!("  {DIM}{}{RESET}", root.display()),
+            None => println!("  {DIM}no folder — chats and notes only{RESET}"),
+        }
         println!("  {}", counts.join(", "));
         for warning in &project.warnings {
             println!("  {DIM}! {warning}{RESET}");
         }
-        if let Some(registry) = registry.as_mut()
-            && let Err(e) = registry.add(&project.root, Some(project.name.clone()))
-        {
-            println!("  {DIM}! not added to the project list: {e}{RESET}");
+    }
+
+    if args.no_register {
+        for project in &report.projects {
+            let _ = registry.forget(&project.id);
         }
+        println!();
+        println!(
+            "{DIM}--no-register: the projects were removed from the list. What was              written is still on disk, but nothing lists it.{RESET}"
+        );
     }
 
     println!();
@@ -91,7 +112,7 @@ pub fn run(args: ImportArgs) -> Result<()> {
     if report.unfiled > 0 {
         println!(
             "{DIM}{} conversation(s) carry no project link and were left out; \
-             --unfiled imports them into a folder of their own{RESET}",
+             --unfiled imports them into a project of their own{RESET}",
             report.unfiled
         );
     }
