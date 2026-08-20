@@ -41,6 +41,16 @@ const SKIP_DIRS: [&str; 3] = [".git", "target", "node_modules"];
 /// the folder was false the whole time. Matching on the name alone is too
 /// wide the other way: `sessions` and `evals` are ordinary names for ordinary
 /// directories in somebody else's repository.
+///
+/// The docspace has since moved to `~/.nightloom`, out of the workspace
+/// entirely, so a walk from the root no longer reaches it either way -- but
+/// this stays, and not only for folders that predate the move. A workspace
+/// can be any directory the user picks, including one with a `.nightloom` in
+/// it, and the reason a transcript must not feed itself back into its own
+/// searches did not change with where the transcript is kept. The docspace
+/// is still searchable, by giving `grep` or `glob` the path the notes index
+/// names -- both resolve their `path` argument through the same [`Root`] the
+/// second tree is registered on.
 const SKIP_UNDER_NIGHTLOOM: [&str; 3] = ["sessions", "probes", "evals"];
 
 /// Result caps. A tool result is context the model pays for on every
@@ -118,6 +128,15 @@ fn relative(base: &Path, path: &Path) -> String {
         .replace('\\', "/")
 }
 
+/// Paths in and out are not the same path.
+///
+/// A pattern is matched against the path *relative to the search directory*,
+/// so `path: "src"` with `**/*.rs` means what it reads as. What comes back is
+/// the path relative to the workspace root — or in full, for a hit in a tree
+/// outside it, such as the docspace. The distinction is the difference
+/// between a result and a usable one: what a search returns is what the model
+/// hands to `read_file` next, and a name that resolves somewhere else is
+/// worse than no result.
 pub struct Glob {
     root: Root,
 }
@@ -165,9 +184,17 @@ impl Tool for Glob {
             return Err(format!("{} is not a directory", self.root.show(&base)));
         }
 
+        // Matched on the base-relative path and *reported* on the one the
+        // root shows, which are the same string only when the search covers
+        // the whole workspace. They were conflated before, so `path: "src"`
+        // answered `main.rs` for `src/main.rs` — a handle that resolves, when
+        // the model passes it straight to `read_file`, to a different file or
+        // to none. Harmless-looking until the docspace moved out of the
+        // workspace, where every hit came back as a bare note name that
+        // resolves against the workspace and finds nothing.
         let mut hits: Vec<String> = walk_files(&base)
-            .map(|p| relative(&base, &p))
-            .filter(|rel| matcher.is_match(rel))
+            .filter(|p| matcher.is_match(relative(&base, p)))
+            .map(|p| self.root.show(&p))
             .collect();
         hits.sort();
 
@@ -288,12 +315,14 @@ impl Tool for Grep {
         let mut files = files;
         files.sort();
         for file in files {
-            let shown = relative(&base, &file);
+            // The `glob` filter matches the base-relative path, the output
+            // names the path the model can pass back. See `Glob::call`.
             if let Some(filter) = &filter
-                && !filter.is_match(&shown)
+                && !filter.is_match(relative(&base, &file))
             {
                 continue;
             }
+            let shown = self.root.show(&file);
             if std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0) > GREP_MAX_FILE_BYTES {
                 continue;
             }
@@ -446,6 +475,43 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
+    /// And still searchable now that it lives outside the workspace — by
+    /// being pointed at, which is the difference the notes index carries a
+    /// full path for.
+    #[tokio::test]
+    async fn the_docspace_is_searchable_from_outside_the_workspace() {
+        let dir = test_dir("search-docspace-out");
+        let workspace = dir.join("work");
+        let notes = dir.join("store").join("notes");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::create_dir_all(&notes).unwrap();
+        fs::write(
+            notes.join("decisions.md"),
+            "codeword alpaca
+",
+        )
+        .unwrap();
+
+        let root = Root::new(&workspace).with("docspace", &notes);
+        let found = Grep::new(root.clone())
+            .call(json!({ "pattern": "alpaca", "path": notes.to_str().unwrap() }))
+            .await
+            .unwrap();
+        assert!(found.ends_with("notes/decisions.md"), "{found}");
+
+        // Un-pointed, a search is a search of the workspace and finds nothing:
+        // the second tree is reachable, not merged in.
+        let workspace_only = Grep::new(root)
+            .call(json!({ "pattern": "alpaca" }))
+            .await
+            .unwrap();
+        assert!(
+            workspace_only.starts_with("no matches for"),
+            "{workspace_only}"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
     #[tokio::test]
     async fn glob_rejects_a_bad_pattern_and_an_escaping_path() {
         let dir = fixture("search-glob-err");
@@ -511,11 +577,14 @@ mod tests {
         let out = tool.call(json!({ "pattern": "nowhere" })).await.unwrap();
         assert_eq!(out, "no matches for \"nowhere\"");
 
+        // Named from the workspace root, not from the search target: this
+        // string is the handle the model passes to `read_file` next, and
+        // "lib.rs" — which is what it used to answer — is not that file.
         let single = tool
             .call(json!({ "pattern": "TODO", "path": "src/lib.rs", "output_mode": "count" }))
             .await
             .unwrap();
-        assert_eq!(single, "lib.rs:2");
+        assert_eq!(single, "src/lib.rs:2");
         fs::remove_dir_all(&dir).ok();
     }
 

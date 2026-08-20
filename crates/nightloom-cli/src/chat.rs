@@ -77,9 +77,10 @@ pub struct ChatArgs {
     #[arg(long)]
     no_log: bool,
 
-    /// Directory for session logs
-    #[arg(long, default_value = ".nightloom/sessions")]
-    log_dir: PathBuf,
+    /// Directory for session logs. Defaults to this folder's store under
+    /// ~/.nightloom (NIGHTLOOM_HOME overrides where that is).
+    #[arg(long)]
+    log_dir: Option<PathBuf>,
 
     /// Skip MCP servers configured in .nightloom/mcp.json
     #[arg(long)]
@@ -98,6 +99,19 @@ pub struct ChatArgs {
     /// supersedes everything before it, and /compact is always available.
     #[arg(long)]
     self_compact: bool,
+}
+
+/// Where this run's session logs live.
+///
+/// An explicit `--log-dir` wins; otherwise it is the store for the current
+/// folder, which is the same directory the desktop app writes for it. Both
+/// derive it from the path alone, so `--continue` here resumes the chat the
+/// app was having in this folder without either consulting the other.
+fn log_dir(args: &ChatArgs) -> PathBuf {
+    args.log_dir.clone().unwrap_or_else(|| {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        project::store_for(&cwd).join(project::SESSIONS_DIR)
+    })
 }
 
 /// Tools from MCP servers, shared rather than owned.
@@ -128,16 +142,17 @@ fn build_chat(args: &ChatArgs, mcp_tools: &[Arc<dyn Tool>]) -> Result<Chat> {
         environment: on,
         project_instructions: on,
         user_memory: on,
-        // The CLI's project is wherever it was run: one folder, its
-        // `.nightloom/notes`, and the same docspace the desktop app shows for
-        // it. Tied to `--tools` because an index of files the model has no
-        // way to read is a paragraph of wasted prompt.
+        // The CLI's project is wherever it was run: one folder, and the same
+        // docspace the desktop app shows for it — both derive the store from
+        // the path, so neither needs a registry to agree with the other.
+        // Tied to `--tools` because an index of files the model has no way to
+        // read is a paragraph of wasted prompt.
         project: (on && args.tools).then(|| ProjectContext {
             name: cwd
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| cwd.display().to_string()),
-            notes_dir: cwd.join(project::DOT_DIR).join(project::NOTES_DIR),
+            notes_dir: project::store_for(&cwd).join(project::NOTES_DIR),
         }),
         cwd: cwd.clone(),
         custom: args.system.clone(),
@@ -149,7 +164,13 @@ fn build_chat(args: &ChatArgs, mcp_tools: &[Arc<dyn Tool>]) -> Result<Chat> {
     chat.context_limit = nightloom_service::context_limit(args.provider, &chat.model);
     chat.price = nightloom_service::price(args.provider, &chat.model);
     if args.tools {
-        chat.tools = tools::builtin();
+        // The docspace is a second tree rather than part of the workspace:
+        // it lives under ~/.nightloom, and its index is in the system prompt,
+        // so without it the model gets a list of notes and no way to open one.
+        chat.tools = tools::builtin_in(tools::Root::new(cwd.clone()).with(
+            "docspace",
+            project::store_for(&cwd).join(project::NOTES_DIR),
+        ));
         // Cloned Arcs, not fresh connections: every subagent shares the one
         // set of server processes started at launch.
         chat.tools.extend(
@@ -320,15 +341,15 @@ fn new_session(args: &ChatArgs) -> Result<Session> {
     if args.no_log {
         Ok(Session::new())
     } else {
-        Session::with_log(&args.log_dir).context("failed to create session log")
+        Session::with_log(log_dir(args)).context("failed to create session log")
     }
 }
 
 fn open_session(args: &ChatArgs) -> Result<Session> {
     let path = if let Some(prefix) = &args.resume {
-        Some(store::find_by_prefix(&args.log_dir, prefix)?)
+        Some(store::find_by_prefix(&log_dir(args), prefix)?)
     } else if args.continue_ {
-        Some(store::latest(&args.log_dir)?)
+        Some(store::latest(&log_dir(args))?)
     } else {
         None
     };
@@ -786,6 +807,18 @@ async fn connect_mcp(args: &ChatArgs) -> SharedTools {
 }
 
 pub async fn run(args: ChatArgs) -> Result<()> {
+    // Before anything reads a log directory or indexes a docspace. A folder
+    // whose chats and notes are still in `.nightloom/` has them moved into
+    // this folder's store, so `--continue` opens the conversation that was
+    // actually happening here rather than starting a new one beside it. Said
+    // out loud, on the same argument the desktop's toast makes: files inside
+    // a folder the user chose were moved, and that is not a silent operation.
+    if args.log_dir.is_none()
+        && let Ok(cwd) = std::env::current_dir()
+        && let Some(line) = project::migrate(&cwd).summary()
+    {
+        eprintln!("nightloom: {line}");
+    }
     let mcp_tools = connect_mcp(&args).await;
     let mut chat = build_chat(&args, &mcp_tools)?;
     let mut session = open_session(&args)?;

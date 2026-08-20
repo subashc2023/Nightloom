@@ -7,8 +7,12 @@
 //! |---|---|
 //! | the project | a folder, registered |
 //! | its custom instructions (`prompt_template`) | `<root>/AGENTS.md` |
-//! | its knowledge documents (`docs`) | `<root>/.nightloom/notes/` |
-//! | its conversations | `<root>/.nightloom/sessions/*.jsonl` |
+//! | its knowledge documents (`docs`) | the project's docspace |
+//! | its conversations | the project's session logs |
+//!
+//! The last two live under `~/.nightloom/projects/<id>/`, keyed off the folder
+//! this import creates — see [`crate::project`] for why Nightloom's own data
+//! is not written into the user's folder.
 //!
 //! Nothing new is stored to make that work. The preamble already walks for
 //! `AGENTS.md`, the docspace is already indexed into the system prompt, and
@@ -75,7 +79,7 @@ use serde::de::DeserializeOwned;
 
 use nightloom_core::{ContentBlock, Session, SessionEvent, Usage};
 
-use crate::project::{DOT_DIR, NOTES_DIR, SESSIONS_DIR, read_note, write_note};
+use crate::project::{NOTES_DIR, SESSIONS_DIR, read_note, write_note};
 
 /// Bytes of one flattened tool *result* kept in the transcript.
 ///
@@ -600,8 +604,14 @@ fn import_project(
         project.name.trim()
     };
     let root = into.join(unique_slug(name, &project.uuid, slugs));
-    let sessions = root.join(DOT_DIR).join(SESSIONS_DIR);
-    let notes = root.join(DOT_DIR).join(NOTES_DIR);
+    // The folder has to exist before the store is derived from it: the id is
+    // an FNV-1a over the *canonical* path, and canonicalizing a directory that
+    // is not there yet falls back to the uncanonical spelling — which would
+    // hash to a different id than every later open of the same project.
+    fs::create_dir_all(&root).map_err(|e| format!("cannot create {}: {e}", root.display()))?;
+    let store = crate::project::store_for(&root);
+    let sessions = store.join(SESSIONS_DIR);
+    let notes = store.join(NOTES_DIR);
     fs::create_dir_all(&sessions)
         .map_err(|e| format!("cannot create {}: {e}", sessions.display()))?;
     fs::create_dir_all(&notes).map_err(|e| format!("cannot create {}: {e}", notes.display()))?;
@@ -1148,7 +1158,7 @@ mod tests {
 
     fn session_of(root: &Path, uuid: &str) -> Session {
         Session::load(
-            root.join(DOT_DIR)
+            crate::project::store_for(root)
                 .join(SESSIONS_DIR)
                 .join(format!("{uuid}.jsonl")),
         )
@@ -1202,7 +1212,7 @@ mod tests {
             "{agents}"
         );
 
-        let notes = root.join(DOT_DIR).join(NOTES_DIR);
+        let notes = crate::project::store_for(root).join(NOTES_DIR);
         assert_eq!(
             fs::read_to_string(notes.join("outline.md")).unwrap(),
             "# Outline\n\nChapter one."
@@ -1245,9 +1255,10 @@ mod tests {
         let second = import(&export, &ImportOptions::new(&into)).unwrap();
         assert_eq!((second.imported(), second.already()), (0, 1));
 
-        let sessions = fs::read_dir(second.projects[0].root.join(DOT_DIR).join(SESSIONS_DIR))
-            .unwrap()
-            .count();
+        let sessions =
+            fs::read_dir(crate::project::store_for(&second.projects[0].root).join(SESSIONS_DIR))
+                .unwrap()
+                .count();
         assert_eq!(sessions, 1);
     }
 
@@ -1588,9 +1599,7 @@ mod tests {
 
         let into = test_dir("import-mtime");
         let report = import(&export, &ImportOptions::new(&into)).unwrap();
-        let log = report.projects[0]
-            .root
-            .join(DOT_DIR)
+        let log = crate::project::store_for(&report.projects[0].root)
             .join(SESSIONS_DIR)
             .join("c-1.jsonl");
         let modified = fs::metadata(&log).unwrap().modified().unwrap();
@@ -1632,7 +1641,9 @@ mod tests {
         assert!(first.projects[0].warnings.is_empty());
 
         // The user edits both, as they are meant to.
-        let note = root.join(DOT_DIR).join(NOTES_DIR).join("outline.md");
+        let note = crate::project::store_for(&root)
+            .join(NOTES_DIR)
+            .join("outline.md");
         fs::write(&note, "# Outline\n\nMy own rewrite.").unwrap();
         fs::write(root.join("AGENTS.md"), "my own instructions").unwrap();
 

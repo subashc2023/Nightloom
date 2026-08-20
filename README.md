@@ -178,18 +178,29 @@ since a server wanting past the gate would only have to name its tool
 
 ## Projects and the docspace
 
-A **project is a folder**, plus three conventions inside it: `AGENTS.md` for
-instructions, `.nightloom/sessions/` for its chats, and `.nightloom/notes/`
-for a docspace the chats share. Shared knowledge between chats therefore needs
-no database and no retrieval layer — it needs a directory the model can
-already read and write, and a system-prompt layer telling it what is in there.
-The notes reach the model as an **index** (names, sizes, first headings), not
-as content: inlining them would put an unbounded pile of text in the one place
-that has to stay small.
+A **project is a folder** — the folder is the *identity*, not the storage.
+What lives in it is what a person writes and often checks in: `AGENTS.md` for
+instructions and `.nightloom/mcp.json` for servers. Its chats and its
+docspace live in `~/.nightloom/projects/<id>/`, keyed by a hash of the
+folder's canonical path.
 
-Two things fall out, and both are wanted: the history travels with the work,
-and the two shells share a log for the same folder. `nightloom --continue` in
-a project directory resumes the conversation the desktop app was having.
+Shared knowledge between chats therefore needs no database and no retrieval
+layer — it needs a directory the model can read and write, and a system-prompt
+layer telling it what is in there. The notes reach the model as an **index**
+(names, sizes, first headings), not as content: inlining them would put an
+unbounded pile of text in the one place that has to stay small. Because the
+docspace sits outside the workspace, the file tools carry it as a second
+permitted tree and the index names it in full — a note is opened by the path
+the index gives, not by a bare name.
+
+`NIGHTLOOM_HOME` moves the whole directory. Both shells derive the store from
+the path alone, so `nightloom --continue` in a project directory resumes the
+conversation the desktop app was having there without either consulting the
+other. Opening a folder laid out the old way migrates it: nothing already in
+the store is overwritten, `mcp.json` stays put, and both shells say what
+moved. What this gives up, and it is a real cost, is that the history no
+longer travels with the work — copy the folder and you copy the code, not the
+chats.
 
 ## Context
 
@@ -257,9 +268,11 @@ lists, and which models the dropdowns offer. Named system prompts live in a
 prompt library; applying one copies its text onto the draft, so editing a
 library entry cannot silently change a chat already connected with it.
 
-Chats filed under a project go to that project's `.nightloom/sessions/`;
-unfiled chats go to the OS app-data dir, because the quickest useful thing
-this app does is answer a question that has nothing to do with any directory.
+Chats filed under a project go to that project's store; unfiled chats go to
+`~/.nightloom/unfiled/`, because the quickest useful thing this app does is
+answer a question that has nothing to do with any directory — and they sit
+beside the projects rather than in the OS app-data dir so everything Nightloom
+has written is under one directory you can open.
 
 ## Probe and eval
 
@@ -319,8 +332,10 @@ adapter tests assert on the request body the adapter builds, and engine tests
 drive the turn loop against scripted providers. CI runs the same commands on
 Linux and Windows.
 
-Run artifacts land under `.nightloom/` (gitignored): `sessions/`, `notes/`,
-`probes/`, `evals/`.
+Session logs and notes live under `~/.nightloom` (see **Projects and the
+docspace**); `NIGHTLOOM_HOME` moves them. What still lands in the folder is
+`.nightloom/mcp.json`, written by hand, and `probes/` and `evals/` where those
+commands are run.
 
 `CLAUDE.md` is the long-form architecture document — why each boundary is
 where it is, and what went wrong before it moved there.

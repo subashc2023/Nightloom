@@ -438,6 +438,45 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
+    /// The whole point of `Root`'s second tree: the docspace lives under
+    /// `~/.nightloom`, its index is in the system prompt, and a model handed
+    /// that index has to be able to open what it names.
+    #[tokio::test]
+    async fn the_docspace_is_readable_and_writable_from_outside_the_workspace() {
+        let dir = test_dir("files-docspace");
+        let workspace = dir.join("work");
+        let notes = dir.join("store").join("notes");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::create_dir_all(&notes).unwrap();
+        fs::write(notes.join("decisions.md"), "# Decisions").unwrap();
+
+        let root = Root::new(&workspace).with("docspace", &notes);
+        let read = ReadFile::new(root.clone());
+        let write = WriteFile::new(root.clone());
+
+        let note = notes.join("decisions.md");
+        let out = read
+            .call(json!({ "path": note.to_str().unwrap() }))
+            .await
+            .unwrap();
+        assert!(out.contains("# Decisions"), "{out}");
+
+        // Writing a *new* note matters separately: `write_file` checks
+        // lexically because the path does not exist yet, which is the half of
+        // the containment argument the second tree could most easily miss.
+        let fresh = notes.join("sub").join("plan.md");
+        write
+            .call(json!({ "path": fresh.to_str().unwrap(), "content": "plan" }))
+            .await
+            .unwrap();
+        assert_eq!(fs::read_to_string(&fresh).unwrap(), "plan");
+
+        // A bare note name is still a workspace path, and nothing else: the
+        // second tree must not quietly become a search path.
+        assert!(read.call(json!({ "path": "decisions.md" })).await.is_err());
+        fs::remove_dir_all(&dir).ok();
+    }
+
     #[tokio::test]
     async fn list_dir_marks_directories_and_defaults_to_the_root() {
         let dir = test_dir("files-list");

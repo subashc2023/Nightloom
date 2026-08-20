@@ -1,29 +1,39 @@
 //! Projects: a named folder, the chats held in it, and the notes they share.
 //!
 //! A project is deliberately *not* a new storage system. It is a folder the
-//! user picked, plus three conventions inside it:
+//! user picked. The folder stays the unit of *identity* — what a chat is
+//! about, what the file tools are rooted at, where `AGENTS.md` and `mcp.json`
+//! are found — while everything Nightloom itself writes lives in the user's
+//! home:
 //!
 //! * `<root>/AGENTS.md` — instructions, already discovered by the preamble's
 //!   directory walk. Nothing here has to do anything for that to work.
-//! * `<root>/.nightloom/sessions/` — the project's chats, so opening the
-//!   project lists its conversations and nobody else's.
-//! * `<root>/.nightloom/notes/` — the docspace: plain files that every chat
-//!   in the project can read and write, indexed into the system prompt so a
-//!   new conversation starts knowing what the previous ones left behind.
+//! * `<root>/.nightloom/mcp.json` — server config, and the only thing left in
+//!   the folder. It is *configuration*: written by hand, usually checked in,
+//!   and copied between projects on purpose.
+//! * `~/.nightloom/projects/<id>/sessions/` — the project's chats.
+//! * `~/.nightloom/projects/<id>/notes/` — the docspace: plain files every
+//!   chat in the project can read and write, indexed into the system prompt so
+//!   a new conversation starts knowing what the previous ones left behind.
 //!
-//! Choosing the folder as the unit of identity is what makes the shared
-//! knowledge work without a database. The file tools are already rooted at a
-//! workspace, the preamble already reads instructions out of one, and MCP
-//! servers are already configured per workspace — so "project" names something
-//! the rest of the system was already organized around, and the registry only
-//! has to remember which folders the user cares about and what to call them.
+//! The split is between **config and data**. A folder someone works in is
+//! theirs; a repo is not a place to leave chat logs, gitignored or not, and a
+//! year of conversations scattered one-directory-per-checkout is a history
+//! nobody can look through. Keying the store by the id — an FNV-1a over the
+//! case-folded canonical path — is what keeps the folder as the identity
+//! anyway: `nightloom --continue` in a folder still resumes the conversation
+//! the desktop app was having there, because both derive the same id from the
+//! same path without either consulting a registry.
 //!
-//! It also means the history travels with the work: copy the folder and the
-//! notes and chats come with it, and `nightloom --continue` run in that folder
-//! resumes the same conversations the desktop app was having. The cost, stated
-//! plainly because it is a real one, is that Nightloom writes a `.nightloom`
-//! directory into a folder the user chose — the same directory the CLI already
-//! creates in whatever it is run from.
+//! Two costs, both real and both accepted. The history no longer travels with
+//! the work — copying the folder copies the code and not the chats — and the
+//! docspace is no longer inside the workspace the file tools are rooted at,
+//! which is why [`Root`] grew a second tree rather than the docspace growing
+//! tools of its own. Moving the folder orphans its store, the same way it
+//! already orphaned its registry entry.
+//!
+//! [`migrate`] moves a pre-move `<root>/.nightloom/{sessions,notes}` into the
+//! store the first time the project is opened.
 
 use std::fs;
 use std::io;
@@ -34,10 +44,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::tools::Root;
 
-/// The per-workspace directory everything project-scoped lives under. Shared
-/// with `mcp.json` discovery and the CLI's session logs on purpose: one place
-/// per folder rather than one per feature.
+/// The dot directory: `<root>/.nightloom` in a project (where `mcp.json`
+/// lives) and `~/.nightloom` in the user's home (where everything else does).
 pub const DOT_DIR: &str = ".nightloom";
+/// Subdirectory of `~/.nightloom` holding one directory per project.
+pub const PROJECTS_DIR: &str = "projects";
 /// Subdirectory of [`DOT_DIR`] holding the shared notes.
 pub const NOTES_DIR: &str = "notes";
 /// Subdirectory of [`DOT_DIR`] holding this project's session logs.
@@ -72,19 +83,26 @@ pub struct Project {
 }
 
 impl Project {
-    /// `<root>/.nightloom`.
+    /// `<root>/.nightloom` — project *configuration* (`mcp.json`), and the
+    /// pre-move location of the store that [`migrate`] empties.
     pub fn dot_dir(&self) -> PathBuf {
         self.root.join(DOT_DIR)
     }
 
+    /// `~/.nightloom/projects/<id>` — everything Nightloom writes for this
+    /// project.
+    pub fn store_dir(&self) -> PathBuf {
+        store_dir(&self.id, &self.root)
+    }
+
     /// Where this project's chats are logged.
     pub fn session_dir(&self) -> PathBuf {
-        self.dot_dir().join(SESSIONS_DIR)
+        self.store_dir().join(SESSIONS_DIR)
     }
 
     /// The shared docspace.
     pub fn notes_dir(&self) -> PathBuf {
-        self.dot_dir().join(NOTES_DIR)
+        self.store_dir().join(NOTES_DIR)
     }
 
     /// Whether the folder is still there. A project whose folder was moved is
@@ -252,10 +270,41 @@ impl Registry {
     }
 }
 
-/// `~/.nightloom`, where the user's own `AGENTS.md` and the project registry
-/// live. `None` when neither `HOME` nor `USERPROFILE` is set, which is a real
+/// Overrides [`config_dir`] for the life of the process. See [`set_config_dir`].
+static CONFIG_OVERRIDE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Point every path derived from the user's home somewhere else.
+///
+/// Set once per process and honoured ahead of `NIGHTLOOM_HOME` and the home
+/// directory both. It exists for the test suite, which now writes session
+/// logs and notes under the config dir and must not put them in the
+/// developer's real `~/.nightloom` — an env var could not do that job, being
+/// process-global state that parallel tests race on. Returns whether this
+/// call was the one that set it.
+pub fn set_config_dir(path: impl Into<PathBuf>) -> bool {
+    CONFIG_OVERRIDE.set(path.into()).is_ok()
+}
+
+/// `~/.nightloom`: the user's own `AGENTS.md`, the project registry, and one
+/// directory per project holding its chats and notes.
+///
+/// `NIGHTLOOM_HOME` overrides the location outright — for a portable install,
+/// or to file it under whatever directory the user's other agent tools share.
+/// It is taken as the directory itself, not as a home to append `.nightloom`
+/// to, since somebody setting it has picked the path they want.
+///
+/// `None` when neither it nor `HOME` nor `USERPROFILE` is set, which is a real
 /// state in a stripped environment and reads as "no user config".
 pub fn config_dir() -> Option<PathBuf> {
+    if let Some(path) = CONFIG_OVERRIDE.get() {
+        return Some(path.clone());
+    }
+    if let Some(explicit) = std::env::var("NIGHTLOOM_HOME")
+        .ok()
+        .filter(|h| !h.is_empty())
+    {
+        return Some(PathBuf::from(explicit));
+    }
     let home = std::env::var("HOME")
         .ok()
         .filter(|h| !h.is_empty())
@@ -320,6 +369,175 @@ fn path_id(root: &Path) -> String {
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     format!("{hash:016x}")
+}
+
+/// `~/.nightloom/projects/<id>`, the directory holding everything Nightloom
+/// writes for one project.
+///
+/// `root` is only the fallback: with no home directory — a real state in a
+/// stripped environment, and the one `config_dir` already reports as `None` —
+/// the store goes back into the folder, because a project with nowhere to put
+/// its chats would otherwise have to fail rather than degrade.
+pub fn store_dir(id: &str, root: &Path) -> PathBuf {
+    match config_dir() {
+        Some(home) => home.join(PROJECTS_DIR).join(id),
+        None => root.join(DOT_DIR),
+    }
+}
+
+/// The store for a folder, without consulting the registry.
+///
+/// This is what makes the CLI and the desktop agree on where a folder's chats
+/// are while only one of them has a registry: the id is derived from the path,
+/// so `nightloom --continue` run in a folder opens the same directory the
+/// desktop app writes for it, and neither has to have heard of the other.
+pub fn store_for(root: &Path) -> PathBuf {
+    let root = normalize(root);
+    let id = path_id(&root);
+    store_dir(&id, &root)
+}
+
+/// What [`migrate`] moved.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Migrated {
+    pub sessions: usize,
+    pub notes: usize,
+    /// Files left behind because something of that name was already in the
+    /// store, or because the move itself failed. Named rather than counted:
+    /// the whole point of not overwriting is that the user can go and look.
+    pub skipped: Vec<String>,
+}
+
+impl Migrated {
+    pub fn is_empty(&self) -> bool {
+        self.sessions == 0 && self.notes == 0 && self.skipped.is_empty()
+    }
+
+    /// One line for a shell to print, or `None` when nothing moved.
+    pub fn summary(&self) -> Option<String> {
+        if self.is_empty() {
+            return None;
+        }
+        let mut parts = Vec::new();
+        if self.sessions > 0 {
+            parts.push(format!("{} session log(s)", self.sessions));
+        }
+        if self.notes > 0 {
+            parts.push(format!("{} note(s)", self.notes));
+        }
+        let moved = if parts.is_empty() {
+            "nothing".to_string()
+        } else {
+            parts.join(" and ")
+        };
+        let mut line = format!("moved {moved} out of .nightloom/ into ~/.nightloom");
+        if !self.skipped.is_empty() {
+            line.push_str(&format!(
+                "; left {} in place ({})",
+                self.skipped.len(),
+                self.skipped.join(", ")
+            ));
+        }
+        Some(line)
+    }
+}
+
+/// Move a pre-move `<root>/.nightloom/{sessions,notes}` into the home store.
+///
+/// Idempotent and cheap to call — one `stat` when there is nothing to do — so
+/// a shell can run it every time it opens a project rather than remembering
+/// whether it has. Three rules, all of them the conservative reading:
+///
+/// * **Nothing already in the store is overwritten.** A name that collides is
+///   left where it is and reported, on the same argument the importer makes:
+///   a docspace is a working directory, and a migration that could undo a
+///   week of notes would be worse than no migration.
+/// * **`mcp.json` and anything else in `.nightloom/` stays.** Only the two
+///   directories that moved are touched, and the dot directory itself is
+///   removed only if the OS agrees it is empty.
+/// * **A file that cannot be moved is left, not lost.** `rename` across
+///   volumes fails, so a copy-then-remove fallback runs; if the copy fails the
+///   original stays put and lands in `skipped`.
+pub fn migrate(root: &Path) -> Migrated {
+    let mut out = Migrated::default();
+    let legacy = root.join(DOT_DIR);
+    if !legacy.is_dir() {
+        return out;
+    }
+    let store = store_for(root);
+    // With no home directory the store *is* the legacy directory; there is
+    // nowhere to move anything to, and moving a file onto itself would be a
+    // deletion with extra steps.
+    if store == legacy {
+        return out;
+    }
+    for (sub, counter) in [
+        (SESSIONS_DIR, &mut out.sessions),
+        (NOTES_DIR, &mut out.notes),
+    ] {
+        let from = legacy.join(sub);
+        if !from.is_dir() {
+            continue;
+        }
+        let to = store.join(sub);
+        if fs::create_dir_all(&to).is_err() {
+            out.skipped.push(format!("{sub}/"));
+            continue;
+        }
+        move_tree(&from, &to, sub, counter, &mut out.skipped);
+        // Only when the OS agrees it is empty — a subdirectory the user made
+        // in their own notes folder is theirs, and so is whatever was left
+        // behind by a collision.
+        let _ = fs::remove_dir(&from);
+    }
+    let _ = fs::remove_dir(&legacy);
+    out
+}
+
+/// Move every file under `from` into `to`, preserving relative layout.
+fn move_tree(from: &Path, to: &Path, label: &str, moved: &mut usize, skipped: &mut Vec<String>) {
+    let Ok(entries) = fs::read_dir(from) else {
+        skipped.push(format!("{label}/"));
+        return;
+    };
+    for entry in entries.flatten() {
+        let source = entry.path();
+        let Some(name) = source.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+            continue;
+        };
+        let target = to.join(&name);
+        if source.is_dir() {
+            if fs::create_dir_all(&target).is_err() {
+                skipped.push(format!("{label}/{name}/"));
+                continue;
+            }
+            move_tree(&source, &target, &format!("{label}/{name}"), moved, skipped);
+            let _ = fs::remove_dir(&source);
+            continue;
+        }
+        if target.exists() {
+            skipped.push(format!("{label}/{name}"));
+            continue;
+        }
+        // `rename` is atomic and cheap on one volume and fails across two,
+        // which a home directory on a different drive from the work is.
+        if fs::rename(&source, &target).is_ok() {
+            *moved += 1;
+            continue;
+        }
+        match fs::copy(&source, &target) {
+            Ok(_) => {
+                // The copy is the migration; failing to remove the original
+                // leaves a duplicate, which is the safe direction to fail in.
+                let _ = fs::remove_file(&source);
+                *moved += 1;
+            }
+            Err(_) => {
+                let _ = fs::remove_file(&target);
+                skipped.push(format!("{label}/{name}"));
+            }
+        }
+    }
 }
 
 // ---- the docspace ----
@@ -478,6 +696,9 @@ mod tests {
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
     fn temp_dir(label: &str) -> PathBuf {
+        // Same reason as `tools::test_dir`: a store path is derived from the
+        // config dir, and a test must not write into the real one.
+        set_config_dir(std::env::temp_dir().join(format!("nightloom-home-{}", std::process::id())));
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
             "nightloom-project-{label}-{}-{n}",
@@ -485,6 +706,99 @@ mod tests {
         ));
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn the_store_is_outside_the_folder_and_keyed_by_it() {
+        let dir = temp_dir("store");
+        let store = store_for(&dir);
+        assert!(
+            !store.starts_with(&dir),
+            "{} is inside the project folder",
+            store.display()
+        );
+        // The CLI derives this without a registry and the desktop derives it
+        // with one; if the two ever disagreed, `--continue` in a folder would
+        // open a different conversation from the one the app was having.
+        let mut reg = Registry::load_from(dir.join("registry.json"));
+        let project = reg.add(&dir, None).unwrap();
+        assert_eq!(project.store_dir(), store);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn migration_moves_the_old_layout_and_leaves_config_alone() {
+        let dir = temp_dir("migrate");
+        let legacy = dir.join(DOT_DIR);
+        fs::create_dir_all(legacy.join(SESSIONS_DIR)).unwrap();
+        fs::create_dir_all(legacy.join(NOTES_DIR).join("sub")).unwrap();
+        fs::write(
+            legacy.join(SESSIONS_DIR).join("a.jsonl"),
+            "{}
+",
+        )
+        .unwrap();
+        fs::write(legacy.join(NOTES_DIR).join("plan.md"), "# plan").unwrap();
+        fs::write(legacy.join(NOTES_DIR).join("sub").join("deep.md"), "deep").unwrap();
+        fs::write(legacy.join("mcp.json"), "{}").unwrap();
+
+        let moved = migrate(&dir);
+        assert_eq!(moved.sessions, 1);
+        assert_eq!(moved.notes, 2, "a nested note is still a note");
+        assert!(moved.skipped.is_empty(), "{:?}", moved.skipped);
+
+        let store = store_for(&dir);
+        assert!(store.join(SESSIONS_DIR).join("a.jsonl").is_file());
+        assert_eq!(
+            fs::read_to_string(store.join(NOTES_DIR).join("sub").join("deep.md")).unwrap(),
+            "deep"
+        );
+        // Configuration stays in the folder, and so therefore does the dot
+        // directory holding it.
+        assert!(legacy.join("mcp.json").is_file());
+        assert!(!legacy.join(SESSIONS_DIR).exists());
+
+        // Idempotent: a second open must not report a migration that already
+        // happened, or every launch would announce one.
+        assert!(migrate(&dir).is_empty());
+        fs::remove_dir_all(&dir).ok();
+        fs::remove_dir_all(&store).ok();
+    }
+
+    #[test]
+    fn migration_never_overwrites_what_is_already_in_the_store() {
+        let dir = temp_dir("migrate-collide");
+        let legacy = dir.join(DOT_DIR);
+        fs::create_dir_all(legacy.join(NOTES_DIR)).unwrap();
+        fs::write(legacy.join(NOTES_DIR).join("plan.md"), "old").unwrap();
+
+        let store = store_for(&dir);
+        fs::create_dir_all(store.join(NOTES_DIR)).unwrap();
+        fs::write(store.join(NOTES_DIR).join("plan.md"), "current").unwrap();
+
+        let moved = migrate(&dir);
+        assert_eq!(moved.notes, 0);
+        assert_eq!(moved.skipped, vec!["notes/plan.md".to_string()]);
+        // Both copies survive: the newer one where it was, the older one
+        // where the user can still go and find it.
+        assert_eq!(
+            fs::read_to_string(store.join(NOTES_DIR).join("plan.md")).unwrap(),
+            "current"
+        );
+        assert_eq!(
+            fs::read_to_string(legacy.join(NOTES_DIR).join("plan.md")).unwrap(),
+            "old"
+        );
+        fs::remove_dir_all(&dir).ok();
+        fs::remove_dir_all(&store).ok();
+    }
+
+    #[test]
+    fn migration_is_free_when_there_is_nothing_to_move() {
+        let dir = temp_dir("migrate-none");
+        assert!(migrate(&dir).is_empty());
+        assert!(migrate(&dir).summary().is_none());
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

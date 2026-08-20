@@ -321,7 +321,7 @@ pub fn project_notes_segment(project: &ProjectContext) -> Segment {
     text.push_str(
         "Shared notes for this project. Every conversation in it sees this index,          and anything written here reaches later conversations — this is where to          leave something for your next self.
 
-         Read one with read_file and add or revise one with write_file / edit_file,          using paths under the directory above. Only this index is loaded          automatically; the contents are not.
+         Read one with read_file and add or revise one with write_file / edit_file.          This directory is outside the workspace, so give the full path shown          above rather than a bare note name — a bare name resolves against the          workspace and finds a different file, or none. Only this index is          loaded automatically; the contents are not.
 
          Worth writing down: a task list that outlives one conversation, a decision          and why it was made, a map of something that took real work to figure out.          Not worth writing down: anything already obvious from the code, or a          summary of what you just said. Revise a stale note rather than adding a          second one beside it — a wrong note costs more than a missing one.
 ",

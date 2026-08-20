@@ -2,17 +2,70 @@
 
 use std::path::{Component, Path, PathBuf};
 
-/// The directory every path argument is resolved against, and outside of
+/// One permitted tree.
+#[derive(Clone, Debug)]
+struct Anchor {
+    /// Absolute and lexically normalized, but *not* canonicalized: on Windows
+    /// canonicalization yields a verbatim `\\?\C:\...` prefix that an
+    /// absolute path typed by the model would never match, so keeping this
+    /// form is what lets `starts_with` compare like with like.
+    path: PathBuf,
+    /// `path` canonicalized, used only for the symlink comparison where both
+    /// sides are canonical. `None` when the tree does not exist.
+    real: Option<PathBuf>,
+}
+
+impl Anchor {
+    fn new(path: PathBuf) -> Self {
+        let real = path.canonicalize().ok();
+        Self { path, real }
+    }
+
+    /// Whether `candidate` — already lexically normalized — is inside this
+    /// tree, by *both* checks.
+    ///
+    /// Split out because it is now run against several trees, and running
+    /// only half of it against one of them is precisely the hole the
+    /// two-check design exists to close.
+    fn holds(&self, candidate: &Path) -> bool {
+        if !candidate.starts_with(&self.path) {
+            return false;
+        }
+        if let Some(real_root) = &self.real
+            && let Some(existing) = deepest_existing(candidate)
+            && let Ok(real) = existing.canonicalize()
+            && !real.starts_with(real_root)
+        {
+            return false;
+        }
+        true
+    }
+}
+
+/// The directories every path argument is resolved against, and outside of
 /// which the file tools refuse to work.
 ///
-/// Two checks run, because neither alone is sufficient:
+/// There is a **primary** tree — the workspace, which relative arguments
+/// resolve against and which paths are displayed relative to — and zero or
+/// more additional trees.
+///
+/// The docspace is the only additional tree today, and it is the reason they
+/// exist: notes live under `~/.nightloom` rather than in the project folder,
+/// so a single-tree root would leave the model unable to read the notes its
+/// own system prompt indexes. Of the two ways out, this is the smaller — the
+/// other being a note-shaped `read`/`write` pair beside the file tools, which
+/// is a second way to do what `read_file` already does, one more surface to
+/// classify for `Effect`, and a second implementation of the containment
+/// argument to keep in step with this one.
+///
+/// Two checks run per tree, because neither alone is sufficient:
 ///
 /// * **Lexical.** `..` and `.` are resolved by walking components, without
 ///   touching the filesystem. This is the check that works for paths that do
 ///   not exist yet — which `write_file` needs, and which `Path::canonicalize`
 ///   cannot give us because it errors on a missing path.
 /// * **Real.** The deepest *existing* ancestor of the candidate is
-///   canonicalized and compared against the canonicalized root. This is what
+///   canonicalized and compared against the canonicalized tree. This is what
 ///   catches a symlink inside the tree pointing out of it; no amount of
 ///   lexical normalization can see a symlink.
 ///
@@ -26,38 +79,49 @@ use std::path::{Component, Path, PathBuf};
 /// * It is a check at resolve time, so a path swapped for a symlink between
 ///   the check and the open (TOCTOU) is not covered.
 /// * `bash` is not confined by it at all. Its working directory is set to the
-///   root and that is the whole of it; its description says so plainly.
+///   primary tree and that is the whole of it; its description says so
+///   plainly. It does not gain the additional trees and does not need to —
+///   it never had a boundary for them to widen.
 #[derive(Clone, Debug)]
 pub struct Root {
-    /// Absolute and lexically normalized, but *not* canonicalized: on Windows
-    /// canonicalization yields a verbatim `\\?\C:\...` prefix that an
-    /// absolute path typed by the model would never match, so keeping this
-    /// form is what lets `starts_with` compare like with like.
-    path: PathBuf,
-    /// `path` canonicalized, used only for the symlink comparison where both
-    /// sides are canonical. `None` when the root does not exist.
-    real: Option<PathBuf>,
+    primary: Anchor,
+    /// Each additional tree with the name the model is told for it, so a
+    /// refusal can say where else it is allowed to reach.
+    extra: Vec<(String, Anchor)>,
 }
 
 impl Root {
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        let raw = path.into();
-        let absolute = if raw.is_absolute() {
-            raw
-        } else {
-            std::env::current_dir().unwrap_or_default().join(raw)
-        };
-        let path = normalize(&absolute);
-        let real = path.canonicalize().ok();
-        Self { path, real }
+        Self {
+            primary: Anchor::new(absolutize(path.into())),
+            extra: Vec::new(),
+        }
+    }
+
+    /// Permit an additional tree, named for the refusal message.
+    ///
+    /// A tree that is already inside the primary one is dropped rather than
+    /// added: it is reachable as it stands, and keeping it would give `show`
+    /// two renderings of one path. That is not hypothetical — a docspace
+    /// pointed back inside the workspace is exactly the pre-move layout, and
+    /// an imported project can still be sitting in it.
+    pub fn with(mut self, name: impl Into<String>, path: impl Into<PathBuf>) -> Self {
+        let anchor = Anchor::new(absolutize(path.into()));
+        if anchor.path.starts_with(&self.primary.path)
+            || self.extra.iter().any(|(_, a)| a.path == anchor.path)
+        {
+            return self;
+        }
+        self.extra.push((name.into(), anchor));
+        self
     }
 
     pub fn path(&self) -> &Path {
-        &self.path
+        &self.primary.path
     }
 
     /// Resolve a tool's path argument, or explain to the model why it cannot
-    /// be used. A relative argument is taken relative to the root.
+    /// be used. A relative argument is taken relative to the primary tree.
     pub fn resolve(&self, arg: &str) -> Result<PathBuf, String> {
         if arg.is_empty() {
             return Err("path must not be empty; use \".\" for the workspace root".to_string());
@@ -70,26 +134,33 @@ impl Root {
         let joined = if raw.is_absolute() {
             raw.to_path_buf()
         } else {
-            self.path.join(raw)
+            self.primary.path.join(raw)
         };
         let candidate = normalize(&joined);
-        if !candidate.starts_with(&self.path) {
-            return Err(self.escaped(arg));
+        // Containment is judged on where the path *lands*, never on how it was
+        // spelled — so a relative `../notes/x.md` that normalizes into the
+        // docspace is allowed, exactly as the absolute spelling of the same
+        // file is. Refusing it would be a second rule, weaker than this one
+        // and disagreeing with it, which is the divergence the check-then-open
+        // discipline above exists to avoid. It grants nothing extra either:
+        // the destination is a permitted tree however the model got there.
+        if self.primary.holds(&candidate) || self.extra.iter().any(|(_, a)| a.holds(&candidate)) {
+            return Ok(candidate);
         }
-        if let Some(real_root) = &self.real
-            && let Some(existing) = deepest_existing(&candidate)
-            && let Ok(real) = existing.canonicalize()
-            && !real.starts_with(real_root)
-        {
-            return Err(self.escaped(arg));
-        }
-        Ok(candidate)
+        Err(self.escaped(arg))
     }
 
     /// How a path inside the root should be shown back to the model: relative
-    /// to the root, with forward slashes on every platform.
+    /// to the primary tree, with forward slashes on every platform.
+    ///
+    /// Only the primary tree gets a relative rendering. A path in an
+    /// additional tree is shown in full, because what `show` returns is what
+    /// the model passes back on its next call, and a bare `decisions.md`
+    /// would resolve against the workspace — a different file, or no file.
     pub fn show(&self, path: &Path) -> String {
-        let relative = path.strip_prefix(&self.path).unwrap_or(path);
+        let Ok(relative) = path.strip_prefix(&self.primary.path) else {
+            return path.to_string_lossy().replace('\\', "/");
+        };
         let shown = relative.to_string_lossy().replace('\\', "/");
         if shown.is_empty() {
             ".".to_string()
@@ -99,12 +170,19 @@ impl Root {
     }
 
     fn escaped(&self, arg: &str) -> String {
-        format!(
+        let mut msg = format!(
             "path \"{arg}\" is outside the workspace root ({}). The file tools only reach paths \
              inside that directory. Pass a path within it — a relative path is resolved from the \
              root, so \"src/main.rs\" works and \"../..\" does not.",
-            self.path.display()
-        )
+            self.primary.path.display()
+        );
+        for (name, anchor) in &self.extra {
+            msg.push_str(&format!(
+                " The {name} is reachable too, by its full path ({}).",
+                anchor.path.display()
+            ));
+        }
+        msg
     }
 }
 
@@ -112,6 +190,42 @@ impl Default for Root {
     fn default() -> Self {
         Self::new(std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
     }
+}
+
+impl From<PathBuf> for Root {
+    fn from(path: PathBuf) -> Self {
+        Root::new(path)
+    }
+}
+
+impl From<&Path> for Root {
+    fn from(path: &Path) -> Self {
+        Root::new(path.to_path_buf())
+    }
+}
+
+impl From<&PathBuf> for Root {
+    fn from(path: &PathBuf) -> Self {
+        Root::new(path.clone())
+    }
+}
+
+impl From<&str> for Root {
+    fn from(path: &str) -> Self {
+        Root::new(PathBuf::from(path))
+    }
+}
+
+/// A relative path is taken from the process's cwd, which is the right
+/// reading for a CLI argument and the reason a GUI must always pass an
+/// absolute one.
+fn absolutize(raw: PathBuf) -> PathBuf {
+    let absolute = if raw.is_absolute() {
+        raw
+    } else {
+        std::env::current_dir().unwrap_or_default().join(raw)
+    };
+    normalize(&absolute)
 }
 
 /// Resolve `.` and `..` without consulting the filesystem. A `..` that would
@@ -227,6 +341,81 @@ mod tests {
             let err = root.resolve("escape/secret.txt").unwrap_err();
             assert!(err.contains("outside the workspace root"), "{err}");
         }
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_extra_tree_is_reachable_and_its_neighbours_are_not() {
+        let dir = test_dir("root-extra");
+        let workspace = dir.join("work");
+        let notes = dir.join("notes");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::create_dir_all(&notes).unwrap();
+
+        let root = Root::new(&workspace).with("docspace", &notes);
+        let note = notes.join("decisions.md");
+        assert!(root.resolve(note.to_str().unwrap()).is_ok());
+        // Permitting one tree must not permit its parent, so the sibling the
+        // docspace sits beside is still refused — as is the parent itself.
+        assert!(
+            root.resolve(dir.join("other.txt").to_str().unwrap())
+                .is_err()
+        );
+        assert!(root.resolve("../secrets.txt").is_err());
+        // A `..` that lands *in* the docspace is allowed, because the rule is
+        // about the destination and not the spelling. The alternative is a
+        // second, spelling-based rule that disagrees with this one.
+        assert!(root.resolve("../notes/decisions.md").is_ok());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_path_in_an_extra_tree_is_shown_in_full() {
+        let dir = test_dir("root-extra-show");
+        let workspace = dir.join("work");
+        let notes = dir.join("notes");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::create_dir_all(&notes).unwrap();
+
+        let root = Root::new(&workspace).with("docspace", &notes);
+        let resolved = root
+            .resolve(notes.join("decisions.md").to_str().unwrap())
+            .unwrap();
+        let shown = root.show(&resolved);
+        // Round-trips: what the model is shown is what it may pass back.
+        assert!(shown.ends_with("notes/decisions.md"), "{shown}");
+        assert_eq!(root.resolve(&shown).unwrap(), resolved);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_extra_tree_inside_the_workspace_is_dropped() {
+        let dir = test_dir("root-extra-nested");
+        let notes = dir.join(".nightloom").join("notes");
+        fs::create_dir_all(&notes).unwrap();
+
+        let root = Root::new(&dir).with("docspace", &notes);
+        let resolved = root.resolve(notes.join("a.md").to_str().unwrap()).unwrap();
+        // Still one rendering of the path, relative to the workspace: adding
+        // a tree already inside it must not change how it is shown.
+        assert_eq!(root.show(&resolved), ".nightloom/notes/a.md");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_refusal_names_the_extra_tree() {
+        let dir = test_dir("root-extra-msg");
+        let workspace = dir.join("work");
+        let notes = dir.join("notes");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::create_dir_all(&notes).unwrap();
+
+        let root = Root::new(&workspace).with("docspace", &notes);
+        let err = root.resolve("../../secrets.txt").unwrap_err();
+        // A model told only "outside the workspace" would conclude the notes
+        // its system prompt indexes are unreachable.
+        assert!(err.contains("docspace"), "{err}");
+        assert!(err.contains(&notes.display().to_string()), "{err}");
         fs::remove_dir_all(&dir).ok();
     }
 }

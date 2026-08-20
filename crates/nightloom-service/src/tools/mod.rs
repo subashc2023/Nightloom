@@ -53,8 +53,12 @@ pub fn builtin() -> Vec<Box<dyn Tool>> {
 
 /// The built-in tools, with every path argument resolved against — and
 /// confined to — `root`.
-pub fn builtin_in(root: impl Into<PathBuf>) -> Vec<Box<dyn Tool>> {
-    let root = Root::new(root);
+///
+/// Takes a [`Root`] rather than a path so a caller can hand over one carrying
+/// the docspace as a second tree; a bare path still works and means a
+/// workspace and nothing else.
+pub fn builtin_in(root: impl Into<Root>) -> Vec<Box<dyn Tool>> {
+    let root = root.into();
     vec![
         Box::new(files::ReadFile::new(root.clone())),
         Box::new(files::WriteFile::new(root.clone())),
@@ -92,6 +96,14 @@ fn truncated(text: String) -> String {
 
 #[cfg(test)]
 pub(crate) fn test_dir(name: &str) -> PathBuf {
+    // Anything deriving a path from the user's home — a project's session
+    // logs and its docspace both do — must land in the temp tree and not in
+    // the developer's real `~/.nightloom`. Set here rather than per test
+    // because it is a process-wide `OnceLock`: whichever test runs first sets
+    // it, and the rest see the same base.
+    crate::project::set_config_dir(
+        std::env::temp_dir().join(format!("nightloom-home-{}", std::process::id())),
+    );
     let dir = std::env::temp_dir().join(format!("nightloom-tools-{}-{name}", std::process::id()));
     std::fs::remove_dir_all(&dir).ok();
     std::fs::create_dir_all(&dir).unwrap();

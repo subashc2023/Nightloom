@@ -1,4 +1,5 @@
 use anyhow::Result;
+use nightloom_service::project;
 use nightloom_service::store::{self, SessionSummary};
 use std::path::PathBuf;
 
@@ -8,18 +9,36 @@ pub struct SessionsArgs {
     #[arg(value_name = "QUERY")]
     query: Option<String>,
 
-    /// Directory for session logs
-    #[arg(long, default_value = ".nightloom/sessions")]
-    log_dir: PathBuf,
+    /// Directory for session logs. Defaults to this folder's store under
+    /// ~/.nightloom (NIGHTLOOM_HOME overrides where that is).
+    #[arg(long)]
+    log_dir: Option<PathBuf>,
 
     /// Delete a session log by ID (full UUID or unambiguous prefix)
     #[arg(long, value_name = "SESSION")]
     delete: Option<String>,
 }
 
+/// Where to look, with `--log-dir` winning over this folder's store.
+///
+/// Migrating first is what stops a folder whose chats are still in
+/// `.nightloom/` from listing none of them: this subcommand is often the
+/// first thing run in a folder after an upgrade, and "no sessions" would be
+/// the wrong answer to give about a directory full of them.
+fn log_dir(args: &SessionsArgs) -> PathBuf {
+    args.log_dir.clone().unwrap_or_else(|| {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        if let Some(line) = project::migrate(&cwd).summary() {
+            eprintln!("nightloom: {line}");
+        }
+        project::store_for(&cwd).join(project::SESSIONS_DIR)
+    })
+}
+
 pub fn run(args: SessionsArgs) -> Result<()> {
+    let log_dir = log_dir(&args);
     if let Some(prefix) = &args.delete {
-        let id = store::delete(&args.log_dir, prefix)?;
+        let id = store::delete(&log_dir, prefix)?;
         println!("deleted session {id}");
         return Ok(());
     }
@@ -27,9 +46,9 @@ pub fn run(args: SessionsArgs) -> Result<()> {
         return search(&args, query);
     }
 
-    let sessions = store::list(&args.log_dir)?;
+    let sessions = store::list(&log_dir)?;
     if sessions.is_empty() {
-        println!("no sessions in {}", args.log_dir.display());
+        println!("no sessions in {}", log_dir.display());
         return Ok(());
     }
     println!("{:<10} {:<17} {:>5}  name", "id", "modified", "turns");
@@ -40,12 +59,10 @@ pub fn run(args: SessionsArgs) -> Result<()> {
 }
 
 fn search(args: &SessionsArgs, query: &str) -> Result<()> {
-    let found = store::search(&args.log_dir, query)?;
+    let log_dir = log_dir(args);
+    let found = store::search(&log_dir, query)?;
     if found.is_empty() {
-        println!(
-            "no session in {} mentions {query:?}",
-            args.log_dir.display()
-        );
+        println!("no session in {} mentions {query:?}", log_dir.display());
         return Ok(());
     }
     // Hits rather than turns in this column: which of two matches is the

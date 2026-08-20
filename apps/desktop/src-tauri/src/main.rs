@@ -40,12 +40,14 @@ struct AppState {
     /// **leaf**: callers clone what they need out of it and drop the guard
     /// before taking `chat` or `session`, so it can never be part of a cycle.
     workspaces: tokio::sync::Mutex<Workspaces>,
-    /// Where chats go when no project is open, in the OS app-data dir.
+    /// Where chats go when no project is open: `~/.nightloom/unfiled/sessions`.
     ///
-    /// Unfiled chats stay here rather than being forced into a folder: the
+    /// Unfiled chats stay unfiled rather than being forced into a folder: the
     /// quickest useful thing this app does is answer a question that has
     /// nothing to do with any directory, and making that require choosing a
-    /// project first would be a worse app.
+    /// project first would be a worse app. They sit beside the projects'
+    /// stores rather than in the OS app-data dir so that everything Nightloom
+    /// has written for this user is under one directory they can open.
     default_log_dir: PathBuf,
     /// The approval policy, built once for the process and reused by every
     /// `connect`. Rebuilding it there would silently forget every "always
@@ -505,6 +507,22 @@ struct ChatSpec {
     project: Option<ProjectContext>,
 }
 
+impl ChatSpec {
+    /// What the file tools may reach: the workspace, plus the docspace as a
+    /// second tree.
+    ///
+    /// The second tree is not a convenience. The docspace lives under
+    /// `~/.nightloom` and its index is in the system prompt, so without it the
+    /// model is handed a list of notes and no way to open one — the worst of
+    /// the three possible states, worse than having no docspace at all.
+    fn root(&self) -> Root {
+        match &self.project {
+            Some(p) => Root::new(self.workspace.clone()).with("docspace", p.notes_dir.clone()),
+            None => Root::new(self.workspace.clone()),
+        }
+    }
+}
+
 /// Build a `Chat` from a spec: the window's own chat, and — through the
 /// subagent factory — every subagent it spawns, so the two cannot drift into
 /// having different tools or a different workspace.
@@ -561,7 +579,7 @@ fn build_chat(
         chat.approver = Some(policy.clone());
     }
     if spec.tools {
-        chat.tools = nightloom_service::tools::builtin_in(spec.workspace.clone());
+        chat.tools = nightloom_service::tools::builtin_in(spec.root());
         // Cloned handles, not new connections: the servers were started once
         // for this workspace and every subagent shares them.
         chat.tools.extend(
@@ -596,7 +614,7 @@ fn build_chat(
         // about to be borrowed mutably.
         let model = chat.model.clone();
         let bench = reviewers(app, policy, spec, &model, mcp_tools);
-        chat.enable_reviews(bench, Root::new(spec.workspace.clone()));
+        chat.enable_reviews(bench, spec.root());
     }
     if !spec.sidecar {
         chat.sidecar = Vec::new();
@@ -1179,12 +1197,14 @@ async fn import_claude(
 
 #[tauri::command]
 async fn create_project(
+    app: AppHandle,
     state: State<'_, AppState>,
     path: String,
     name: Option<String>,
 ) -> Result<ProjectInfo, String> {
     let mut guard = state.workspaces.lock().await;
     let project = guard.registry.add(PathBuf::from(path), name)?;
+    announce_migration(&app, &project);
     Ok(ProjectInfo::of(&project))
 }
 
@@ -1198,7 +1218,11 @@ async fn create_project(
 /// holds, and doing it here would mean this command needed everything
 /// `connect` needs just to pass it through unchanged.
 #[tauri::command]
-async fn open_project(state: State<'_, AppState>, id: String) -> Result<ProjectInfo, String> {
+async fn open_project(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<ProjectInfo, String> {
     let project = {
         let mut guard = state.workspaces.lock().await;
         let project = guard
@@ -1211,6 +1235,10 @@ async fn open_project(state: State<'_, AppState>, id: String) -> Result<ProjectI
         project
     };
     *state.session.lock().await = None;
+    // After the guard is dropped, and before the counts are read: a project
+    // opened for the first time since the move has its chats and notes still
+    // in the folder, and `ProjectInfo` would report zero of each.
+    announce_migration(&app, &project);
     Ok(ProjectInfo::of(&project))
 }
 
@@ -1353,11 +1381,67 @@ fn approve_call(
     Ok(())
 }
 
+/// Migrate a project's pre-move `.nightloom/` and say so if anything moved.
+///
+/// A toast rather than silence, unlike the unfiled chats: this one touches
+/// files inside a folder the user chose, and moving somebody's notes without
+/// mentioning it is not a thing to do quietly even when it is the right move.
+fn announce_migration(app: &AppHandle, project: &Project) {
+    if let Some(line) = project::migrate(&project.root).summary() {
+        let _ = app.emit("turn-notice", format!("{}: {line}", project.name));
+    }
+}
+
+/// Move unfiled session logs out of the OS app-data dir into `~/.nightloom`.
+///
+/// Deliberately thinner than `project::migrate`: there is one flat directory
+/// of `.jsonl` files and no configuration mixed in with them, so the whole
+/// job is "move what is not already there". Silent, because it runs before a
+/// window exists to say anything in, and because a user who never used the
+/// old location has nothing to be told.
+fn adopt_unfiled(from: &Path, to: &Path) {
+    let Ok(entries) = std::fs::read_dir(from) else {
+        return;
+    };
+    if std::fs::create_dir_all(to).is_err() {
+        return;
+    }
+    for entry in entries.flatten() {
+        let source = entry.path();
+        if !source.is_file() {
+            continue;
+        }
+        let Some(name) = source.file_name() else {
+            continue;
+        };
+        let target = to.join(name);
+        if target.exists() {
+            continue;
+        }
+        // Same fallback as `project::migrate`, and for the same reason: the
+        // app-data dir and the home dir are routinely on different volumes.
+        if std::fs::rename(&source, &target).is_err() && std::fs::copy(&source, &target).is_ok() {
+            let _ = std::fs::remove_file(&source);
+        }
+    }
+    let _ = std::fs::remove_dir(from);
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let default_log_dir = app.path().app_data_dir()?.join("sessions");
+            // App-data is now the *previous* home for unfiled chats, kept
+            // only long enough to move them. A user who has been running this
+            // app has a sidebar full of them, and a release that silently
+            // emptied it would read as data loss whatever the changelog said.
+            let legacy_unfiled = app.path().app_data_dir()?.join("sessions");
+            let default_log_dir = project::config_dir()
+                .map(|home| home.join("unfiled").join(project::SESSIONS_DIR))
+                .unwrap_or_else(|| legacy_unfiled.clone());
+            if default_log_dir != legacy_unfiled {
+                adopt_unfiled(&legacy_unfiled, &default_log_dir);
+            }
             let cancel = Arc::new(std::sync::Mutex::new(CancellationToken::new()));
             let gate = Arc::new(WindowApprover {
                 app: app.handle().clone(),
