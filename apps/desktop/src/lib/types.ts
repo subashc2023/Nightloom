@@ -27,6 +27,8 @@ export interface ConnectArgs {
   approval: boolean;
   /** Offer web_fetch and web_search; omitted reads as true. */
   web: boolean;
+  /** Offer compact_context; omitted reads as false. */
+  selfCompact: boolean;
   /** Root for the file tools and project-instruction discovery. */
   workspace?: string;
 }

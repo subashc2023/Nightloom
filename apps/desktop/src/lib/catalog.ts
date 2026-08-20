@@ -85,6 +85,14 @@ export interface ConnectionDraft {
    */
   web: boolean;
   /**
+   * Offer `compact_context`, letting the model ask for its own history to be
+   * summarised at the end of a turn. Off by default and a knob of its own
+   * rather than riding on `tools`: it is the one tool whose effect is on the
+   * conversation instead of on the workspace, and a summary that replaces an
+   * afternoon of context is not something to hand over without being asked.
+   */
+  selfCompact: boolean;
+  /**
    * Folder the file tools are rooted at, and where the preamble looks for
    * project instructions. Empty means "whatever the app was launched from",
    * which is rarely what anyone wants — the rail shows what it resolved to.
@@ -112,6 +120,7 @@ export function defaultDraft(): ConnectionDraft {
     sidecar: true,
     approval: true,
     web: true,
+    selfCompact: false,
     workspace: "",
     promptId: null,
   };
@@ -552,6 +561,11 @@ export function loadLastConnection(): ConnectionDraft | null {
       sidecar: parsed.sidecar !== false,
       approval: parsed.approval !== false,
       web: parsed.web !== false,
+      // The opposite reading to the four above, and deliberately: this one
+      // used to be on unconditionally with `tools`, so an absent value means
+      // a draft written before there was a switch — which is exactly the
+      // state the switch exists to get out of. Only an explicit true is on.
+      selfCompact: parsed.selfCompact === true,
     };
   } catch {
     return null;

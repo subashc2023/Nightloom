@@ -452,6 +452,7 @@ export async function applyDraft(): Promise<void> {
       sidecar: d.sidecar,
       approval: d.approval,
       web: d.web,
+      selfCompact: d.selfCompact,
       workspace: d.workspace.trim() || undefined,
     });
     app.connection = {

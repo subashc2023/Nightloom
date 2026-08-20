@@ -59,6 +59,7 @@ export function connect(args: ConnectArgs): Promise<ConnectResult> {
     sidecar: args.sidecar,
     approval: args.approval,
     web: args.web,
+    selfCompact: args.selfCompact,
     workspace: args.workspace,
   });
 }

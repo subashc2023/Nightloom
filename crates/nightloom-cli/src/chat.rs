@@ -49,8 +49,8 @@ pub struct ChatArgs {
     max_tokens: u32,
 
     /// Enable the built-in tools: read/write/edit files, list_dir, glob,
-    /// grep, bash, current_time, todo_write, compact_context, and the web
-    /// tools. File tools are confined to the
+    /// grep, bash, current_time, todo_write and the web
+    /// tools (compact_context is --self-compact). File tools are confined to the
     /// working directory; bash is not. Calls that can change the machine ask
     /// first unless --no-approval is set.
     #[arg(long)]
@@ -92,6 +92,12 @@ pub struct ChatArgs {
     /// Don't offer the web tools (web_fetch, web_search)
     #[arg(long)]
     no_web: bool,
+
+    /// Let the model ask for its own history to be summarised, by offering it
+    /// `compact_context`. Opt-in rather than on with --tools: a compaction
+    /// supersedes everything before it, and /compact is always available.
+    #[arg(long)]
+    self_compact: bool,
 }
 
 /// Tools from MCP servers, shared rather than owned.
@@ -152,10 +158,14 @@ fn build_chat(args: &ChatArgs, mcp_tools: &[Arc<dyn Tool>]) -> Result<Chat> {
                 .map(|t| Box::new(t.clone()) as Box<dyn Tool>),
         );
         chat.approver = approver(args);
-        // Tied to the same flag rather than always on: `compact_context` is
-        // still a tool, and a run that asked for no tools should not quietly
-        // get a tools array — it changes what the provider is sent.
-        chat.enable_self_compaction();
+        // Off unless asked for. It is still a tool, so it needs --tools to
+        // be on at all — a run that asked for no tools should not quietly get
+        // a tools array, which changes what the provider is sent — but the
+        // second question is separate: the rest of the set acts on the
+        // workspace, and this one acts on the conversation.
+        if args.self_compact {
+            chat.enable_self_compaction();
+        }
         // The subagent is built from the same arguments, so it gets the same
         // provider, model and tool set. Its `task` tool is stripped and its
         // approver replaced by the engine, so this cannot recurse or slip

@@ -190,6 +190,19 @@
         <span>Web access</span>
         <input type="checkbox" bind:checked={app.draft.web} onchange={apply} disabled={locked} />
       </label>
+
+      <label
+        class="sw"
+        title="Offers compact_context, so the model can ask for its own history to be summarised at the end of a turn. Off means only you compact, from the button above the transcript."
+      >
+        <span>Self-compaction</span>
+        <input
+          type="checkbox"
+          bind:checked={app.draft.selfCompact}
+          onchange={apply}
+          disabled={locked}
+        />
+      </label>
     {/if}
 
     <label class="sw" title="Identity, environment, AGENTS.md instructions and the notes index.">

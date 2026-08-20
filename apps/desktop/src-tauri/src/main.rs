@@ -494,6 +494,12 @@ struct ChatSpec {
     /// are happy to let a model edit is not automatically one you are happy
     /// to have quoted into a third party's query log.
     web: bool,
+    /// Whether the model may ask for its own history to be summarised.
+    /// Its own knob rather than riding on `tools` because it is the one tool
+    /// whose effect lands on the conversation instead of on the workspace:
+    /// a compaction supersedes everything before it, and handing that over
+    /// unasked is a different decision from handing over `edit_file`.
+    self_compact: bool,
     /// The open project, for the shared-notes prompt layer. `None` for an
     /// unfiled chat, which has no docspace to index.
     project: Option<ProjectContext>,
@@ -570,10 +576,12 @@ fn build_chat(
             chat.tools
                 .extend(nightloom_service::tools::web_tools(search_key));
         }
-        // Tied to the same toggle rather than always on: `compact_context` is
+        // Its own toggle, and inside `tools` rather than beside it: it is
         // still a tool, and a connection that asked for none should not
         // quietly get a tools array — it changes what the provider is sent.
-        chat.enable_self_compaction();
+        if spec.self_compact {
+            chat.enable_self_compaction();
+        }
         // Subagents are built from this same spec, so they inherit the
         // workspace and the tool set. The engine strips their own `task` tool
         // and replaces their approver, so this cannot recurse or route around
@@ -659,6 +667,7 @@ async fn connect(
     workspace: Option<String>,
     approval: Option<bool>,
     web: Option<bool>,
+    self_compact: Option<bool>,
 ) -> Result<ConnectedInfo, String> {
     let kind: ProviderKind = provider.parse()?;
     let thinking = match thinking {
@@ -697,6 +706,10 @@ async fn connect(
         workspace,
         approval: approval.unwrap_or(true),
         web: web.unwrap_or(true),
+        // The one knob that defaults *off*: an absent value is a caller that
+        // predates the switch, and the behaviour the switch exists to stop
+        // is precisely the one that used to happen without asking.
+        self_compact: self_compact.unwrap_or(false),
         project: active.as_ref().map(|p| ProjectContext {
             name: p.name.clone(),
             notes_dir: p.notes_dir(),

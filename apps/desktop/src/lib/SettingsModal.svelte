@@ -44,10 +44,16 @@
   const candidates = $derived.by(() => {
     const seen = new Set<string>();
     const all: string[] = [];
+    // Fetched before custom, deliberately. `customModels` is also the *storage*
+    // for "this id is on", so an id that came from the API lands in it the
+    // moment it is switched on — and with custom read first, turning a chip on
+    // moved it (and its whole family, which sorts by its first member's index)
+    // to the top of the list under the user's cursor. Read in the order the
+    // lists were *sourced* and a toggle changes nothing but the chip.
     for (const m of [
       ...(CURATED[selected] ?? []),
-      ...(app.prefs.customModels[selected] ?? []),
       ...(app.modelLists[selected] ?? []),
+      ...(app.prefs.customModels[selected] ?? []),
     ]) {
       if (!seen.has(m)) {
         seen.add(m);
@@ -60,12 +66,6 @@
 
   /** The same list folded by release tag and split into families. */
   const sections = $derived(groupModels(candidates));
-  const foldedCount = $derived(
-    sections.reduce(
-      (n, s) => n + s.entries.reduce((k, e) => k + e.folded.length, 0),
-      0,
-    ),
-  );
   const onCount = $derived(
     sections.reduce(
       (n, s) => n + s.entries.filter((e) => modelOn(selected, e.id)).length,
@@ -474,12 +474,7 @@
         </form>
         <div class="hint">
           {onCount} of {sections.reduce((n, s) => n + s.entries.length, 0)} in the
-          rail's dropdown. Selecting hides nothing permanently — nothing is deleted.
-          {#if foldedCount}
-            {foldedCount} dated release{foldedCount > 1 ? "s" : ""} folded into the
-            id{foldedCount > 1 ? "s" : ""} above; <code>+n</code> opens one to pin a
-            specific snapshot.
-          {/if}
+          rail's dropdown.
         </div>
       </section>
     </div>
@@ -491,9 +486,15 @@
     background: var(--panel);
     border: 1px solid var(--border);
     border-radius: 12px;
-    width: 48rem;
-    max-width: calc(100vw - 4rem);
-    height: min(34rem, calc(100vh - 6rem));
+    /* Sized off the window rather than pinned to it: the model list is the
+       one pane that is always longer than the space given to it, so a fixed
+       34rem left a maximised window showing the same eight rows a small one
+       did. Clamped at both ends — a proportional box alone would be unusable
+       on a short window and absurd on a 4K one. */
+    width: clamp(34rem, 74vw, 68rem);
+    max-width: calc(100vw - 3rem);
+    height: clamp(24rem, 82vh, 54rem);
+    max-height: calc(100vh - 3rem);
     display: grid;
     grid-template-columns: 11rem 1fr;
     overflow: hidden;
@@ -672,7 +673,13 @@
     letter-spacing: normal;
   }
   .models-section {
+    /* Takes whatever the pane has left, so the extra height a larger window
+       gives the modal lands on the list rather than on empty space below it. */
+    flex: 1 1 auto;
     min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
   }
   .filter {
     flex: none;
@@ -682,7 +689,11 @@
     flex-direction: column;
     gap: 0.6rem;
     overflow-y: auto;
-    max-height: 17rem;
+    /* The scroller, so the filter above it and the add-model form below it
+       stay put while the list moves. `min-height` rather than a fixed height:
+       on a very short window it gives way and the pane scrolls instead. */
+    flex: 1 1 auto;
+    min-height: 6rem;
   }
   .family {
     display: flex;

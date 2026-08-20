@@ -106,8 +106,11 @@ anything has streamed; mid-stream errors never retry.
 
 `--tools` turns on the built-ins: `read_file`, `write_file`, `edit_file`,
 `list_dir`, `glob`, `grep`, `bash`, `current_time`, `todo_write`,
-`compact_context`, `web_fetch`, `web_search`, `task` (subagents) and
-`review` (a second opinion from another vendor). Path-taking tools resolve their
+`web_fetch`, `web_search`, `task` (subagents) and
+`review` (a second opinion from another vendor). `--self-compact` adds one
+more, `compact_context` — separate because every other tool here acts on the
+workspace and that one acts on the conversation, superseding everything
+before it. Path-taking tools resolve their
 argument against a workspace root and refuse anything outside it, checked both
 lexically and by canonicalizing the deepest existing ancestor so a symlink
 cannot point out. It is a guard rail, not a sandbox — `bash` is not confined
@@ -201,10 +204,12 @@ TTFT rather than failing loudly.
 `--bare` drops the preamble, `--no-sidecar` drops the status block.
 
 Past 75% of the window the gauge starts *recommending* `compact_context` at
-the model's next natural stopping point. It is advice, not a trigger: the
-engine knows how full the window is but not whether this is a sensible place
-to stop, and firing automatically mid-task discards exactly the detail the
-next step needed.
+the model's next natural stopping point — and only where the tool is actually
+on the request, since recommending one that was never advertised buys a
+hallucinated call. It is advice, not a trigger: the engine knows how full the
+window is but not whether this is a sensible place to stop, and firing
+automatically mid-task discards exactly the detail the next step needed. With
+`--self-compact` off nobody compacts but you, from `/compact`.
 
 Cost is recorded per exchange rather than re-derived, because a model id alone
 does not name a provider and yesterday's price is not today's. An unpriced
