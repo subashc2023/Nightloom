@@ -1,5 +1,6 @@
 mod chat;
 mod eval;
+mod import;
 mod probe;
 mod sessions;
 
@@ -32,6 +33,8 @@ enum Command {
     Eval(eval::EvalArgs),
     /// List session logs, most recent first
     Sessions(sessions::SessionsArgs),
+    /// Import a claude.ai account export: projects, knowledge and chats
+    Import(import::ImportArgs),
 }
 
 #[tokio::main]
@@ -41,6 +44,7 @@ async fn main() -> Result<()> {
         Some(Command::Probe(args)) => probe::run(args).await,
         Some(Command::Eval(args)) => eval::run(args).await,
         Some(Command::Sessions(args)) => sessions::run(args),
+        Some(Command::Import(args)) => import::run(args),
         None => chat::run(cli.chat).await,
     }
 }

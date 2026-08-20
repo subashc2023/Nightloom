@@ -283,6 +283,45 @@ export async function addProject(): Promise<void> {
   }
 }
 
+/**
+ * Import a claude.ai export: pick the archive, pick where the projects go,
+ * write them, then show the list.
+ *
+ * Two dialogs rather than one, because the two paths answer different
+ * questions and neither has a defensible default — the archive is wherever
+ * the browser put it, and where a year of somebody's chats should live is not
+ * a decision to make on their behalf.
+ */
+export async function importFromClaude(): Promise<void> {
+  let archive: string | null = null;
+  try {
+    archive = await api.pickExport();
+  } catch (e) {
+    addToast(String(e));
+    return;
+  }
+  if (!archive) return; // cancelled
+
+  let into: string | null = null;
+  try {
+    into = await api.pickFolder();
+  } catch (e) {
+    addToast(String(e));
+    return;
+  }
+  if (!into) return;
+
+  addToast("Importing…");
+  try {
+    const result = await api.importClaude(archive, into, true);
+    await refreshProjects();
+    addToast(`Imported ${result.summary}`);
+    for (const warning of result.warnings.slice(0, 3)) addToast(warning);
+  } catch (e) {
+    addToast(String(e));
+  }
+}
+
 export async function renameProject(id: string, name: string): Promise<void> {
   try {
     const project = await api.renameProject(id, name);

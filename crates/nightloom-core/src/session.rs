@@ -537,6 +537,53 @@ impl Session {
         Ok(s)
     }
 
+    /// The same log under an id and a creation time the *caller* supplies.
+    ///
+    /// This is what importing a conversation that happened somewhere else
+    /// needs, and both of the things [`Session::with_log`] decides for itself
+    /// are wrong for it. A fresh uuid would make re-running an import a second
+    /// copy of every chat rather than a no-op, and `Utc::now()` would date a
+    /// year-old conversation to this afternoon — which is not a cosmetic loss,
+    /// since every listing in both shells sorts on it, so an afternoon of
+    /// importing would flatten a year of history into one timestamp.
+    ///
+    /// Idempotency is the file, not a check somebody remembers to run: the id
+    /// *is* the filename and the log is created with `create_new`, so a second
+    /// import of the same conversation fails here with
+    /// [`io::ErrorKind::AlreadyExists`] and a caller walking a thousand of them
+    /// reads that as "already have this one" rather than as a failure.
+    ///
+    /// The id is validated because it becomes a path segment and, unlike the
+    /// generated one, it came from outside — an export is a zip that arrived by
+    /// email, and `../../..` in a conversation id would otherwise be a write
+    /// wherever it pointed.
+    pub fn with_log_as(
+        dir: impl AsRef<Path>,
+        id: impl Into<String>,
+        at: DateTime<Utc>,
+    ) -> io::Result<Self> {
+        let id = id.into();
+        if id.is_empty()
+            || !id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{id:?} is not usable as a session id"),
+            ));
+        }
+        let log = JsonlLog::create(dir.as_ref().join(format!("{id}.jsonl")))?;
+        let mut s = Self {
+            id: id.clone(),
+            events: Vec::new(),
+            log: Some(log),
+            load_report: LoadReport::default(),
+        };
+        s.record(SessionEvent::SessionCreated { id, at });
+        Ok(s)
+    }
+
     /// Rebuild a session from a previously written JSONL log and reopen it
     /// for appending.
     ///

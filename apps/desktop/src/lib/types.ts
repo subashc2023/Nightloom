@@ -395,3 +395,21 @@ export interface ContextEdit {
   events: SessionEvent[];
   changed: number;
 }
+
+/** One project produced by a claude.ai import. */
+export type ImportedProject = {
+  name: string;
+  root: string;
+  chats: number;
+  already: number;
+  notes: number;
+  warnings: string[];
+};
+
+export type ImportSummary = {
+  projects: ImportedProject[];
+  unfiled: number;
+  unreadable: number;
+  summary: string;
+  warnings: string[];
+};

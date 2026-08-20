@@ -6,6 +6,7 @@ import type {
   ConnectResult,
   DocumentInput,
   ImageInput,
+  ImportSummary,
   Note,
   ProjectInfo,
   ProviderInfo,
@@ -150,6 +151,23 @@ export function editContext(
  */
 export function pickFolder(): Promise<string | null> {
   return invoke("pick_folder");
+}
+
+/** Ask the OS for the claude.ai export zip; null when the user cancelled. */
+export function pickExport(): Promise<string | null> {
+  return invoke("pick_export");
+}
+
+/**
+ * Import a claude.ai export into `into`, one folder per project, and register
+ * what it produced so the projects list shows it.
+ */
+export function importClaude(
+  exportPath: string,
+  into: string,
+  unfiled: boolean,
+): Promise<ImportSummary> {
+  return invoke("import_claude", { export: exportPath, into, unfiled });
 }
 
 export function listProjects(): Promise<ProjectInfo[]> {

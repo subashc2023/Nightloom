@@ -2,6 +2,7 @@
   import {
     app,
     addProject,
+    importFromClaude,
     revealFolder,
     showNote,
     useProject,
@@ -78,6 +79,13 @@
       </button>
     {/if}
 
+    <button class="import" onclick={() => void importFromClaude()}>
+      Import from Claude…
+    </button>
+    <span class="import-note">
+      Turns a claude.ai export into projects: instructions, knowledge and chats.
+    </span>
+
     {#if others.length > 0}
       <div class="recent">
         <span class="recent-head">
@@ -107,6 +115,26 @@
 </div>
 
 <style>
+  .import {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.4rem 0.8rem;
+    color: var(--dim);
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.85rem;
+  }
+  .import:hover {
+    color: var(--text);
+    border-color: var(--accent);
+  }
+  .import-note {
+    font-size: 0.75rem;
+    color: var(--dim);
+    max-width: 30rem;
+    text-align: center;
+  }
   .welcome {
     flex: 1;
     min-height: 0;

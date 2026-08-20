@@ -11,6 +11,7 @@ use nightloom_core::{
     DocumentInput, ImageInput, ProviderError, Session, SessionEvent, Thinking, WireView,
 };
 use nightloom_service::approval::{Approver, AutoApprove, Decision, PendingCall};
+use nightloom_service::import;
 use nightloom_service::project::{self, Note, Project, Registry};
 use nightloom_service::store::{self, SessionMatch, SessionSummary};
 use nightloom_service::{
@@ -880,6 +881,106 @@ async fn active_project(state: State<'_, AppState>) -> Result<Option<ProjectInfo
 
 /// Register a folder as a project. Idempotent: the same folder is the same
 /// project, so this doubles as "open the one I already have".
+/// One project an import produced.
+#[derive(Serialize)]
+struct ImportedProject {
+    name: String,
+    root: String,
+    chats: usize,
+    already: usize,
+    notes: usize,
+    warnings: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct ImportSummary {
+    projects: Vec<ImportedProject>,
+    unfiled: usize,
+    unreadable: usize,
+    summary: String,
+    warnings: Vec<String>,
+}
+
+/// Choose the claude.ai export archive.
+///
+/// Driven from Rust for the same reason [`pick_folder`] is: the webview needs
+/// no filesystem permission in its capability set, and it gets back a path the
+/// user chose rather than one it asked for.
+#[tauri::command]
+async fn pick_export(app: AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_title("Choose your claude.ai export")
+        .add_filter("Claude export", &["zip"])
+        .pick_file(move |picked| {
+            let _ = tx.send(picked);
+        });
+    Ok(rx
+        .await
+        .ok()
+        .flatten()
+        .and_then(|p| p.into_path().ok())
+        .map(|p| p.to_string_lossy().into_owned()))
+}
+
+/// Import a claude.ai export and register what it produced.
+///
+/// On a blocking thread because it is file I/O over an archive that is
+/// routinely hundreds of megabytes, and the runtime it would otherwise sit on
+/// is the one carrying the window's events.
+///
+/// Registering here rather than leaving it to the frontend is most of the
+/// point: an imported folder that is not in the registry is a folder and not a
+/// project, so the user would have to re-pick each one through the file dialog
+/// to see chats that are already sitting in it.
+#[tauri::command]
+async fn import_claude(
+    state: State<'_, AppState>,
+    export: String,
+    into: String,
+    unfiled: bool,
+) -> Result<ImportSummary, String> {
+    let destination = PathBuf::from(into);
+    let report = tokio::task::spawn_blocking(move || {
+        let export = import::read_export(Path::new(&export))?;
+        let mut options = import::ImportOptions::new(destination);
+        options.unfiled = unfiled;
+        import::import(&export, &options)
+    })
+    .await
+    .map_err(|e| format!("the import did not finish: {e}"))??;
+
+    let mut guard = state.workspaces.lock().await;
+    let mut projects = Vec::new();
+    for outcome in &report.projects {
+        let mut warnings = outcome.warnings.clone();
+        if let Err(e) = guard
+            .registry
+            .add(&outcome.root, Some(outcome.name.clone()))
+        {
+            warnings.push(format!("not added to the project list: {e}"));
+        }
+        projects.push(ImportedProject {
+            name: outcome.name.clone(),
+            root: outcome.root.to_string_lossy().into_owned(),
+            chats: outcome.imported,
+            already: outcome.already,
+            notes: outcome.notes,
+            warnings,
+        });
+    }
+
+    Ok(ImportSummary {
+        summary: report.summary(),
+        projects,
+        unfiled: report.unfiled,
+        unreadable: report.unreadable,
+        warnings: report.warnings.clone(),
+    })
+}
+
 #[tauri::command]
 async fn create_project(
     state: State<'_, AppState>,
@@ -1110,6 +1211,8 @@ fn main() {
             delete_session,
             approve_call,
             pick_folder,
+            pick_export,
+            import_claude,
             list_projects,
             active_project,
             create_project,

@@ -8,6 +8,7 @@
 //! the shell's business.
 
 pub mod approval;
+pub mod import;
 pub mod project;
 pub mod prompt;
 pub mod sidecar;
