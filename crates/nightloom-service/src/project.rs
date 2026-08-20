@@ -61,13 +61,13 @@ pub const PROJECTS_DIR: &str = "projects";
 /// reviewer might comment on and a repository might carry is a different
 /// object from a directory of session logs, and only one of them is clutter.
 pub const AGENTS_DIR: &str = ".agents";
-/// Subdirectory of a project's store holding the notes of a project that has
-/// no workspace of its own — see [`Project::workspace_dir`].
+/// The docspace's name *before* it became `.agents` inside the workspace.
+/// Read by [`migrate`] and written by nothing.
 pub const NOTES_DIR: &str = "notes";
 /// Subdirectory of a project's store standing in for a workspace when the
 /// project has no folder.
 pub const WORKSPACE_DIR: &str = "workspace";
-/// Subdirectory of [`DOT_DIR`] holding this project's session logs.
+/// Subdirectory of a project's store holding its session logs.
 pub const SESSIONS_DIR: &str = "sessions";
 
 /// Registry filename, in the user's config dir.
