@@ -22,12 +22,26 @@ use walkdir::{DirEntry, WalkDir};
 /// that makes the tools useless. Anything else can be narrowed with the
 /// pattern itself.
 ///
-/// `.nightloom` is on the list for a different reason than the rest. It holds
-/// the session logs, so anything the model says is on disk one turn later and
-/// matches its own searches from then on — a live run had `grep alpha` return
-/// the transcript of the turn that asked for it. Left in, every search would
-/// feed the conversation back to itself and grow the longer the session ran.
-const SKIP_DIRS: [&str; 4] = [".git", ".nightloom", "target", "node_modules"];
+const SKIP_DIRS: [&str; 3] = [".git", "target", "node_modules"];
+
+/// Run artifacts under `.nightloom`, skipped for a different reason than the
+/// rest and by **position** rather than by name.
+///
+/// The reason: the session log holds the conversation, so anything the model
+/// says is on disk one turn later and matches its own searches from then on -
+/// a live run had `grep alpha` return the transcript of the turn that asked
+/// for it. Left in, every search feeds the conversation back to itself and
+/// grows the longer the session runs.
+///
+/// The position: `.nightloom` itself was on the blanket list, which was too
+/// wide by exactly one directory. It took `.nightloom/notes` with it, so the
+/// docspace -- the one place this project tells the model to leave something
+/// for its next self -- was the one place it could not search for it, and the
+/// claim that a note needs no retrieval layer because `grep` already reads
+/// the folder was false the whole time. Matching on the name alone is too
+/// wide the other way: `sessions` and `evals` are ordinary names for ordinary
+/// directories in somebody else's repository.
+const SKIP_UNDER_NIGHTLOOM: [&str; 3] = ["sessions", "probes", "evals"];
 
 /// Result caps. A tool result is context the model pays for on every
 /// subsequent turn, so an unbounded listing is worse than a truncated one.
@@ -41,8 +55,8 @@ const GREP_MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 
 const GLOB_DESC: &str = "Find files by name pattern, anywhere under a directory. Returns \
      matching file paths, sorted. Use this instead of shelling out to find or ls -R — it is \
-     faster, it skips .git, .nightloom, target and node_modules, and its output is capped so \
-     it cannot flood the conversation. Patterns are glob syntax ('*.rs', 'src/**/test_*.py', \
+     faster, it skips .git, target, node_modules and the session logs under .nightloom, and \
+     its output is capped so it cannot flood the conversation. Patterns are glob syntax ('*.rs', 'src/**/test_*.py', \
      'Cargo.toml'); '*' crosses directory separators, so '*.rs' and '**/*.rs' both match at \
      any depth. Only files are returned, never directories.";
 
@@ -51,15 +65,24 @@ const GREP_DESC: &str = "Search file contents with a regular expression. Use thi
      find where something lives, then read those files or re-run with output_mode 'content' \
      for the matching lines with their line numbers. Narrow a wide search with the glob filter \
      ('*.rs') rather than by grepping the whole tree twice. Binary and non-UTF-8 files are \
-     skipped, as are .git, .nightloom, target and node_modules.";
+     skipped, as are .git, target, node_modules and the session logs under .nightloom.";
 
 fn skipped(entry: &DirEntry) -> bool {
-    entry.depth() > 0
-        && entry.file_type().is_dir()
+    if entry.depth() == 0 || !entry.file_type().is_dir() {
+        return false;
+    }
+    let Some(name) = entry.file_name().to_str() else {
+        return false;
+    };
+    if SKIP_DIRS.contains(&name) {
+        return true;
+    }
+    SKIP_UNDER_NIGHTLOOM.contains(&name)
         && entry
-            .file_name()
-            .to_str()
-            .is_some_and(|name| SKIP_DIRS.contains(&name))
+            .path()
+            .parent()
+            .and_then(Path::file_name)
+            .is_some_and(|parent| parent == ".nightloom")
 }
 
 /// Walk `dir`, yielding files only. Symlinks are not followed, which keeps
@@ -390,6 +413,36 @@ mod tests {
 
         let config = tool.call(json!({ "pattern": "config" })).await.unwrap();
         assert!(config.starts_with("no files match"), ".git must be skipped");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The docspace is meant to be searchable. `.nightloom` was on the skip
+    /// list wholesale, which took `.nightloom/notes` with it — so the one
+    /// directory the project tells the model to leave things in was the one
+    /// directory it could not search for them in.
+    #[tokio::test]
+    async fn the_docspace_is_searchable_but_the_session_logs_are_not() {
+        let dir = test_dir("search-docspace");
+        fs::create_dir_all(dir.join(".nightloom/notes")).unwrap();
+        fs::create_dir_all(dir.join(".nightloom/sessions")).unwrap();
+        fs::write(
+            dir.join(".nightloom/notes/decisions.md"),
+            "codeword alpaca\n",
+        )
+        .unwrap();
+        fs::write(dir.join(".nightloom/sessions/a.jsonl"), "codeword alpaca\n").unwrap();
+
+        let found = Grep::new(Root::new(&dir))
+            .call(json!({ "pattern": "alpaca" }))
+            .await
+            .unwrap();
+        assert_eq!(found, ".nightloom/notes/decisions.md");
+
+        let listed = Glob::new(Root::new(&dir))
+            .call(json!({ "pattern": "*.md" }))
+            .await
+            .unwrap();
+        assert_eq!(listed, ".nightloom/notes/decisions.md");
         fs::remove_dir_all(&dir).ok();
     }
 

@@ -157,9 +157,7 @@ pub fn environment_segment(cwd: &Path) -> Segment {
         format!("cwd: {}", cwd.display()),
         format!("os: {} ({})", std::env::consts::OS, std::env::consts::ARCH),
     ];
-    if let Some(shell) = host_shell() {
-        lines.push(format!("shell: {shell}"));
-    }
+    lines.push(format!("shell: {}", tool_shell()));
     if let Some(git) = find_git_repo(cwd) {
         lines.push(format!("git repo: {}", git.root.display()));
         if let Some(branch) = git.branch {
@@ -171,18 +169,25 @@ pub fn environment_segment(cwd: &Path) -> Segment {
     Segment::new(SegmentKind::Environment, "environment", text)
 }
 
-fn host_shell() -> Option<String> {
+/// The shell the `bash` tool runs a command in — deliberately **not** the one
+/// the user launched from.
+///
+/// This read the launching terminal before, off `PSModulePath` on Windows and
+/// `$SHELL` elsewhere, and that is a fact the model cannot act on: it never
+/// touches the user's terminal, only the one `tools::shell` spawns. A live
+/// session read `shell: powershell` here, opened with `Get-ChildItem`, and
+/// spent two rounds discovering it had been handed cmd.exe — the environment
+/// segment is the model's environment, and describing somebody else's is
+/// worse than saying nothing. `$SHELL` was the same lie more quietly on Unix,
+/// naming zsh or fish where `sh -c` is what runs.
+///
+/// It names the invocation as well as the binary, because "cmd.exe" alone
+/// still leaves the quoting and builtin rules to be guessed at.
+fn tool_shell() -> &'static str {
     if cfg!(windows) {
-        // `ComSpec` is pinned to cmd.exe on every Windows box regardless of
-        // what the user actually runs, so it can't answer this on its own.
-        // `PSModulePath` is set by PowerShell and not by cmd, which makes it
-        // the better tell.
-        if std::env::var_os("PSModulePath").is_some() {
-            return Some("powershell".to_string());
-        }
-        std::env::var("ComSpec").ok().filter(|s| !s.is_empty())
+        "cmd.exe (your `bash` tool runs `cmd /C <command>`)"
     } else {
-        std::env::var("SHELL").ok().filter(|s| !s.is_empty())
+        "sh (your `bash` tool runs `sh -c <command>`)"
     }
 }
 

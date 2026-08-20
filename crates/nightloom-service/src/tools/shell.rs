@@ -75,20 +75,7 @@ impl Tool for Bash {
             .unwrap_or(DEFAULT_TIMEOUT_MS)
             .clamp(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS);
 
-        // Windows uses `cmd /C` rather than PowerShell deliberately: cmd.exe
-        // is present on every Windows install, starts in single-digit
-        // milliseconds where powershell.exe costs hundreds, and is not gated
-        // by an execution policy. Either way the model hands us one command
-        // line, which is exactly what `/C` and `-c` take.
-        let mut cmd = if cfg!(windows) {
-            let mut c = Command::new("cmd");
-            c.arg("/C").arg(command);
-            c
-        } else {
-            let mut c = Command::new("sh");
-            c.arg("-c").arg(command);
-            c
-        };
+        let mut cmd = shell_command(command);
         cmd.current_dir(self.root.path())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -152,6 +139,41 @@ impl Tool for Bash {
             )),
         }
     }
+}
+
+/// The child process for one command line.
+///
+/// Windows uses `cmd /C` rather than PowerShell deliberately: cmd.exe is
+/// present on every Windows install, starts in single-digit milliseconds
+/// where powershell.exe costs hundreds, and is not gated by an execution
+/// policy. Either way the model hands us one command line, which is exactly
+/// what `/C` and `-c` take.
+///
+/// The Windows arm has to bypass `Command::arg`, and that is not a detail.
+/// `arg` applies the MSVC argv quoting rules, which cmd.exe does not parse —
+/// it has its own rule about the first and last quote on the line. So a
+/// command carrying any quote at all arrived mangled: `echo "a b"` reached
+/// the shell as `echo \"a b\"`, and `type "C:\a b\c.txt"` came back
+/// "The filename, directory name, or volume label syntax is incorrect" for a
+/// path that was correct when the model wrote it. Quoting a path containing
+/// spaces is the one thing this tool's own description tells the model to do,
+/// so following the instruction was what broke the call — and the error names
+/// the path rather than the quoting, which sends the model looking for a file
+/// that is sitting right there. `raw_arg` passes the line through untouched,
+/// which is the only thing cmd wants.
+#[cfg(windows)]
+fn shell_command(command: &str) -> Command {
+    use std::os::windows::process::CommandExt;
+    let mut std_cmd = std::process::Command::new("cmd");
+    std_cmd.raw_arg("/C").raw_arg(command);
+    Command::from(std_cmd)
+}
+
+#[cfg(not(windows))]
+fn shell_command(command: &str) -> Command {
+    let mut c = Command::new("sh");
+    c.arg("-c").arg(command);
+    c
 }
 
 fn code(status: &std::process::ExitStatus) -> String {
@@ -247,6 +269,42 @@ mod tests {
             .await
             .unwrap();
         assert!(out.ends_with("(no output)"), "{out}");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The exact call that failed in a live session: a quoted path is what
+    /// this tool's description asks for, and MSVC argv quoting turned it into
+    /// a syntax error naming the path rather than the quotes.
+    #[tokio::test]
+    async fn a_quoted_path_containing_spaces_reaches_the_shell_intact() {
+        let dir = test_dir("shell-quoted-path");
+        fs::create_dir_all(dir.join("a b")).unwrap();
+        fs::write(dir.join("a b").join("c.txt"), "content-here").unwrap();
+        let command = if cfg!(windows) {
+            "type \"a b\\c.txt\""
+        } else {
+            "cat \"a b/c.txt\""
+        };
+        let out = bash(&dir)
+            .call(json!({ "command": command }))
+            .await
+            .unwrap();
+        assert!(out.contains("content-here"), "{out}");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// And nothing may re-escape on the way through: cmd echoes the quotes it
+    /// was given, so a leaked backslash is visible in the output.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn msvc_argv_quoting_does_not_leak_into_the_command_line() {
+        let dir = test_dir("shell-quoting");
+        let out = bash(&dir)
+            .call(json!({ "command": "echo \"a b\"" }))
+            .await
+            .unwrap();
+        assert!(out.contains("\"a b\""), "{out}");
+        assert!(!out.contains('\\'), "MSVC quoting leaked through: {out}");
         fs::remove_dir_all(&dir).ok();
     }
 
