@@ -4,10 +4,18 @@
     applyDraft,
     fetchModels,
     refreshProviders,
+    refreshSearchBackends,
     setPrefs,
   } from "./state.svelte";
   import * as api from "./api";
-  import { CURATED, PROVIDER_NOTES, providerLabel } from "./catalog";
+  import {
+    CURATED,
+    PROVIDER_NOTES,
+    groupModels,
+    providerLabel,
+    type ModelEntry,
+    type ModelSection,
+  } from "./catalog";
 
   let selected = $state(app.draft.provider || app.providers[0]?.kind || "");
   let keyDraft = $state("");
@@ -15,9 +23,22 @@
   let keyError = $state<string | null>(null);
   let filter = $state("");
   let addDraft = $state("");
+  /** Fold groups the user has opened, keyed by the canonical id they fold into. */
+  let expanded = $state<Record<string, boolean>>({});
 
-  const provider = $derived(app.providers.find((p) => p.kind === selected));
+  // One selection across both nav groups, with search backends namespaced so
+  // a backend and a provider can never collide on a bare name.
+  const searchSel = $derived(
+    selected.startsWith("search:")
+      ? (app.searchBackends.find((b) => b.name === selected.slice(7)) ?? null)
+      : null,
+  );
+  const provider = $derived(
+    searchSel ? undefined : app.providers.find((p) => p.kind === selected),
+  );
   const fetchState = $derived(app.modelFetch[selected]);
+
+  void refreshSearchBackends();
 
   /** Everything checkable for the selected provider: curated ∪ custom ∪ fetched. */
   const candidates = $derived.by(() => {
@@ -36,6 +57,21 @@
     const q = filter.trim().toLowerCase();
     return q ? all.filter((m) => m.toLowerCase().includes(q)) : all;
   });
+
+  /** The same list folded by release tag and split into families. */
+  const sections = $derived(groupModels(candidates));
+  const foldedCount = $derived(
+    sections.reduce(
+      (n, s) => n + s.entries.reduce((k, e) => k + e.folded.length, 0),
+      0,
+    ),
+  );
+  const onCount = $derived(
+    sections.reduce(
+      (n, s) => n + s.entries.filter((e) => modelOn(selected, e.id)).length,
+      0,
+    ),
+  );
 
   // Opening a provider's pane fetches its live model list once (if it has a key).
   $effect(() => {
@@ -84,6 +120,34 @@
     });
   }
 
+  /** Turn a whole family on or off in one write rather than one per chip. */
+  function setSection(kind: string, s: ModelSection, on: boolean) {
+    setPrefs((p) => {
+      for (const e of s.entries) {
+        const curated = (CURATED[kind] ?? []).includes(e.id);
+        const list = curated ? (p.hiddenModels[kind] ??= []) : (p.customModels[kind] ??= []);
+        // For a curated id the list holds what is *off*, for a custom id what
+        // is *on* — so the same membership edit inverts between them.
+        const want = curated ? !on : on;
+        const i = list.indexOf(e.id);
+        if (want && i < 0) list.push(e.id);
+        if (!want && i >= 0) list.splice(i, 1);
+      }
+    });
+  }
+  function sectionAllOn(kind: string, s: ModelSection): boolean {
+    return s.entries.every((e) => modelOn(kind, e.id));
+  }
+
+  /**
+   * Folded snapshots stay hidden until asked for — except one the user already
+   * turned on, which must stay visible or there would be a model in the rail's
+   * dropdown with no switch anywhere in here to turn it back off.
+   */
+  function showFolded(kind: string, e: ModelEntry): boolean {
+    return expanded[e.id] || e.folded.some((f) => modelOn(kind, f));
+  }
+
   function addCustom() {
     const model = addDraft.trim();
     if (!model) return;
@@ -108,6 +172,26 @@
       if (selected === app.draft.provider && !app.connection) {
         void applyDraft();
       }
+    } catch (e) {
+      keyError = String(e);
+    } finally {
+      keyBusy = false;
+    }
+  }
+
+  async function saveSearchKey(clear = false) {
+    if (!searchSel || keyBusy) return;
+    const key = clear ? "" : keyDraft.trim();
+    if (!key && !clear) return;
+    keyBusy = true;
+    keyError = null;
+    try {
+      await api.setSearchKey(searchSel.name, key);
+      keyDraft = "";
+      await refreshSearchBackends();
+      // The tool set changes with the key, and the rail's chip is read off
+      // the connection — so re-connect rather than leave it stale.
+      if (app.draft.tools && app.draft.web) void applyDraft();
     } catch (e) {
       keyError = String(e);
     } finally {
@@ -150,13 +234,84 @@
         <span class="nav-label">{providerLabel(p.kind)}</span>
       </button>
     {/each}
+    <div class="nav-title search-title">Web search</div>
+    {#each app.searchBackends as b (b.name)}
+      <button
+        class="nav-item"
+        class:active={"search:" + b.name === selected}
+        onclick={() => select("search:" + b.name)}
+      >
+        <span class="dot" class:ok={b.key_source !== null}></span>
+        <span class="nav-label">{b.label}</span>
+      </button>
+    {/each}
     <div class="nav-spacer"></div>
     <button class="close" onclick={() => (app.showSettings = false)}>
       Close
     </button>
   </nav>
 
-  {#if provider}
+  {#if searchSel}
+    <div class="pane">
+      <div class="pane-head">
+        <span class="pane-title">{searchSel.label}</span>
+        <span class="slug">{searchSel.env_key}</span>
+      </div>
+      <p class="note">
+        A key here turns on <code>web_search</code>. Only one backend is used —
+        the first of Tavily, Brave and Exa with a key — so a second key set is
+        inert until the one above it is cleared. <code>web_fetch</code> needs no
+        key and is always available.
+      </p>
+
+      <section class="section">
+        <div class="section-title">API key</div>
+        <div class="key-status">
+          {#if searchSel.key_source === "stored"}
+            Using a key stored in the OS credential store.{searchSel.active
+              ? " This is the backend answering searches."
+              : " Another backend is ahead of it, so this key is unused."}
+          {:else if searchSel.key_source === "env"}
+            Using a key from {searchSel.env_key}.{searchSel.active
+              ? " This is the backend answering searches."
+              : " Another backend is ahead of it, so this key is unused."}
+          {:else}
+            No key set.
+          {/if}
+        </div>
+        <form
+          class="key-form"
+          onsubmit={(e) => {
+            e.preventDefault();
+            void saveSearchKey();
+          }}
+        >
+          <input
+            type="password"
+            bind:value={keyDraft}
+            placeholder="paste API key…"
+            autocomplete="off"
+            disabled={keyBusy}
+          />
+          <button type="submit" disabled={keyBusy || !keyDraft.trim()}>
+            save
+          </button>
+          {#if searchSel.key_source === "stored"}
+            <button
+              type="button"
+              onclick={() => void saveSearchKey(true)}
+              disabled={keyBusy}
+            >
+              clear
+            </button>
+          {/if}
+        </form>
+        {#if keyError}
+          <div class="error">{keyError}</div>
+        {/if}
+      </section>
+    </div>
+  {:else if provider}
     <div class="pane">
       <div class="pane-head">
         <span class="pane-title">{providerLabel(provider.kind)}</span>
@@ -166,14 +321,16 @@
         <p class="note">{PROVIDER_NOTES[provider.kind]}</p>
       {/if}
 
-      <label class="row visible-row">
-        <input
-          type="checkbox"
-          checked={railVisible(provider.kind)}
-          onchange={() => toggleRail(provider.kind)}
-        />
-        <span>Show in the connection rail</span>
-      </label>
+      <div class="carts">
+        <button
+          class="cart"
+          class:on={railVisible(provider.kind)}
+          aria-pressed={railVisible(provider.kind)}
+          onclick={() => toggleRail(provider.kind)}
+        >
+          show in the connection rail
+        </button>
+      </div>
 
       <section class="section">
         <div class="section-title">API key</div>
@@ -248,15 +405,57 @@
           />
         {/if}
         <div class="model-list">
-          {#each candidates as m (m)}
-            <label class="row">
-              <input
-                type="checkbox"
-                checked={modelOn(provider.kind, m)}
-                onchange={() => toggleModel(provider.kind, m)}
-              />
-              <span class="model">{m}</span>
-            </label>
+          {#each sections as s, i (s.name + "#" + i)}
+            <div class="family">
+              <div class="family-head" class:bare={!s.name}>
+                <span class="family-name">{s.name}</span>
+                <span class="family-rule"></span>
+                <button
+                  class="bulk"
+                  onclick={() => setSection(provider.kind, s, !sectionAllOn(provider.kind, s))}
+                >
+                  {sectionAllOn(provider.kind, s) ? "none" : "all"}
+                </button>
+              </div>
+              <div class="carts">
+                {#each s.entries as e (e.id)}
+                  <span class="cart-group">
+                    <button
+                      class="cart"
+                      class:on={modelOn(provider.kind, e.id)}
+                      class:joined={e.folded.length > 0}
+                      aria-pressed={modelOn(provider.kind, e.id)}
+                      onclick={() => toggleModel(provider.kind, e.id)}
+                    >
+                      {e.id}
+                    </button>
+                    {#if e.folded.length}
+                      <button
+                        class="fold"
+                        class:open={showFolded(provider.kind, e)}
+                        aria-expanded={showFolded(provider.kind, e)}
+                        onclick={() => (expanded[e.id] = !expanded[e.id])}
+                        title={`${e.folded.length} dated release${e.folded.length > 1 ? "s" : ""} folded into this one`}
+                      >
+                        +{e.folded.length}
+                      </button>
+                    {/if}
+                  </span>
+                  {#if showFolded(provider.kind, e)}
+                    {#each e.folded as f (f)}
+                      <button
+                        class="cart snap"
+                        class:on={modelOn(provider.kind, f)}
+                        aria-pressed={modelOn(provider.kind, f)}
+                        onclick={() => toggleModel(provider.kind, f)}
+                      >
+                        {f}
+                      </button>
+                    {/each}
+                  {/if}
+                {/each}
+              </div>
+            </div>
           {:else}
             <div class="hint">
               No models listed yet — fetch from the API or add one below.
@@ -274,8 +473,13 @@
           <button type="submit" disabled={!addDraft.trim()}>add</button>
         </form>
         <div class="hint">
-          Checked models appear in the rail's dropdown. Unchecking hides —
-          nothing is deleted.
+          {onCount} of {sections.reduce((n, s) => n + s.entries.length, 0)} in the
+          rail's dropdown. Selecting hides nothing permanently — nothing is deleted.
+          {#if foldedCount}
+            {foldedCount} dated release{foldedCount > 1 ? "s" : ""} folded into the
+            id{foldedCount > 1 ? "s" : ""} above; <code>+n</code> opens one to pin a
+            specific snapshot.
+          {/if}
         </div>
       </section>
     </div>
@@ -287,7 +491,7 @@
     background: var(--panel);
     border: 1px solid var(--border);
     border-radius: 12px;
-    width: 44rem;
+    width: 48rem;
     max-width: calc(100vw - 4rem);
     height: min(34rem, calc(100vh - 6rem));
     display: grid;
@@ -304,6 +508,10 @@
     gap: 2px;
     overflow-y: auto;
   }
+  .search-title {
+    margin-top: 14px;
+  }
+
   .nav-title {
     font-size: 0.72rem;
     color: var(--dim);
@@ -463,21 +671,6 @@
     text-transform: none;
     letter-spacing: normal;
   }
-  .row {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    font-size: 0.8rem;
-    padding: 0.1rem 0;
-    cursor: pointer;
-  }
-  .row input[type="checkbox"] {
-    accent-color: var(--accent);
-    flex-shrink: 0;
-  }
-  .visible-row {
-    font-size: 0.82rem;
-  }
   .models-section {
     min-height: 0;
   }
@@ -487,16 +680,135 @@
   .model-list {
     display: flex;
     flex-direction: column;
-    gap: 1px;
+    gap: 0.6rem;
     overflow-y: auto;
-    max-height: 14rem;
+    max-height: 17rem;
   }
-  .model {
+  .family {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+  .family-head {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+  }
+  .family-name {
     font-family: var(--mono);
-    font-size: 0.76rem;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    font-size: 0.7rem;
+    color: var(--dim);
+    letter-spacing: 0.02em;
     white-space: nowrap;
+  }
+  .family-name:empty {
+    display: none;
+  }
+  .family-rule {
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+  .family-head.bare .family-rule {
+    background: transparent;
+  }
+  .bulk {
+    background: transparent;
+    border: none;
+    color: var(--dim);
+    font-size: 0.68rem;
+    padding: 0 0.15rem;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.1s;
+  }
+  .family:hover .bulk,
+  .bulk:focus-visible {
+    opacity: 1;
+  }
+  .bulk:hover {
+    color: var(--accent);
+  }
+
+  /* Cartouches: the chip *is* the switch, so its state has to read off the
+     chip itself — border, fill and text weight together, since colour alone
+     would leave the two states a shade apart on a dim list. */
+  .carts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+  }
+  .cart-group {
+    display: inline-flex;
+    align-items: stretch;
+  }
+  .cart {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    line-height: 1.1;
+    padding: 0.28rem 0.6rem;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--dim);
+    cursor: pointer;
+    white-space: nowrap;
+    transition:
+      color 0.1s,
+      border-color 0.1s,
+      background 0.1s;
+  }
+  .cart:hover {
+    color: var(--text);
+    border-color: var(--dim);
+  }
+  .cart.on {
+    color: var(--text);
+    border-color: var(--accent);
+    background: rgba(139, 124, 246, 0.18);
+  }
+  .cart.on:hover {
+    border-color: var(--accent);
+    background: rgba(139, 124, 246, 0.28);
+  }
+  .cart:focus-visible,
+  .fold:focus-visible {
+    outline: 1px solid var(--accent);
+    outline-offset: 1px;
+  }
+  .cart.joined {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+    border-right: none;
+    padding-right: 0.45rem;
+  }
+  .fold {
+    font-family: var(--mono);
+    font-size: 0.66rem;
+    padding: 0 0.45rem;
+    border: 1px solid var(--border);
+    border-left: 1px solid var(--border);
+    border-radius: 0 999px 999px 0;
+    background: transparent;
+    color: var(--dim);
+    cursor: pointer;
+  }
+  .fold:hover,
+  .fold.open {
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+  /* A pinned snapshot is a chip like any other, one step quieter so the id it
+     was folded into still reads as the family's default. */
+  .cart.snap {
+    font-size: 0.68rem;
+    padding: 0.24rem 0.5rem;
+    border-style: dashed;
+    opacity: 0.85;
+  }
+  .cart.snap.on {
+    border-style: solid;
+    opacity: 1;
   }
   .hint {
     color: var(--dim);

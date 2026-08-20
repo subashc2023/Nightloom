@@ -78,6 +78,13 @@ export interface ConnectionDraft {
   /** Ask before running a tool that can change files or run commands. */
   approval: boolean;
   /**
+   * Offer the web tools. Separate from `tools` because the questions are
+   * different: a folder you are happy to let a model edit is not
+   * automatically one you are happy to have quoted into a third party's
+   * query log.
+   */
+  web: boolean;
+  /**
    * Folder the file tools are rooted at, and where the preamble looks for
    * project instructions. Empty means "whatever the app was launched from",
    * which is rarely what anyone wants — the rail shows what it resolved to.
@@ -104,6 +111,7 @@ export function defaultDraft(): ConnectionDraft {
     preamble: true,
     sidecar: true,
     approval: true,
+    web: true,
     workspace: "",
     promptId: null,
   };
@@ -245,6 +253,202 @@ export function isProviderVisible(kind: string, prefs: CatalogPrefs): boolean {
   return !prefs.hiddenProviders.includes(kind);
 }
 
+// ---- model list shaping (folding dated snapshots, grouping by family) ----
+//
+// A fetched provider list is a flat wall of ids in whatever order the vendor
+// returned them, and most of its length is the same handful of models wearing
+// different release dates. Two passes make it readable, and both are
+// *presentation*: nothing here rewrites a preference or invents an id, so the
+// rail still offers exactly the strings the user turned on.
+
+/**
+ * A trailing release tag: a date in any of the shapes vendors ship, a `-latest`
+ * alias, or a Vertex-style `-001` revision.
+ *
+ * Deliberately narrow. Two digits (`gpt-4`, `grok-3`) and anything carrying a
+ * letter (`gpt-oss-120b`, `llama-3.1-405b`) are parameter counts and version
+ * numbers, not dates, and folding those away would merge models that are
+ * genuinely different. The revision arm requires a leading zero for the same
+ * reason — `-002` is a revision, `-405` is a size.
+ */
+const RELEASE_TAG =
+  /[-@](?:latest|\d{4}-\d{2}-\d{2}|\d{2}-\d{4}|\d{2}-\d{2}|\d{8}|\d{6}|\d{4}|0\d{2})$/;
+
+/** The id with its release tag removed, or the id unchanged when it has none. */
+function foldBase(id: string): string {
+  const m = RELEASE_TAG.exec(id);
+  if (!m) return id;
+  const base = id.slice(0, m.index);
+  // Never fold a name away entirely: an id that is *only* a tag after its
+  // vendor path (`some-vendor/2024-08-06`) has no base to fold into.
+  return /[a-z]/i.test(base.slice(base.lastIndexOf("/") + 1)) ? base : id;
+}
+
+/** Sort key for a snapshot within its fold group: digits only, newest last. */
+function releaseKey(id: string, base: string): string {
+  const tag = id.slice(base.length + 1);
+  if (tag === "latest") return "￿";
+  return tag.replace(/\D/g, "").padEnd(8, "0");
+}
+
+/**
+ * One offerable model plus the dated snapshots that collapsed into it.
+ *
+ * `id` is always a string the provider actually listed — untagged if there is
+ * one, else `-latest`, else the newest snapshot. It is never synthesized: a
+ * family whose only ids carry dates has no untagged form, and offering one
+ * would be a 404 the user finds out about a turn later.
+ */
+export interface ModelEntry {
+  id: string;
+  /** Superseded ids, newest first. Hidden until asked for. */
+  folded: string[];
+}
+
+/** A run of entries sharing a prefix. `name` is "" when they share nothing. */
+export interface ModelSection {
+  name: string;
+  entries: ModelEntry[];
+}
+
+/**
+ * Split an id into grouping tokens. A vendor path is one token (keeping its
+ * slash, so it re-joins correctly), and the rest splits on `-`: `-` is the
+ * separator every vendor uses between family, size and variant, which is what
+ * makes a token trie find real families where a character-wise common prefix
+ * would not — `gpt-5` and `gpt-oss` share four characters and nothing else.
+ */
+function idTokens(id: string): string[] {
+  const slash = id.lastIndexOf("/");
+  const rest = slash >= 0 ? id.slice(slash + 1) : id;
+  const head = slash >= 0 ? [id.slice(0, slash + 1)] : [];
+  return [...head, ...rest.split("-").filter(Boolean)];
+}
+
+function joinTokens(toks: string[]): string {
+  return toks.reduce(
+    (acc, t) => (acc === "" || acc.endsWith("/") ? acc + t : `${acc}-${t}`),
+    "",
+  );
+}
+
+/**
+ * Above this many entries a group is split at its next branching token.
+ * Below it, the group is left whole: a heading over three chips is noise, and
+ * splitting `claude-sonnet-5 / claude-opus-5 / claude-haiku-4-5` by family
+ * would put every model under a heading of its own.
+ */
+const FLAT_MAX = 12;
+
+interface Grouped extends ModelEntry {
+  tokens: string[];
+  order: number;
+}
+
+/** A section mid-build, still carrying the ordering keys. */
+interface Built {
+  name: string;
+  entries: Grouped[];
+}
+
+/**
+ * Advance past the tokens every entry shares, then either emit the group whole
+ * or fan it out one level and recurse. Recursion re-checks `FLAT_MAX`, so depth
+ * follows how crowded a branch actually is — OpenRouter's three hundred ids
+ * split by vendor and then again inside whichever vendor is large, while a
+ * six-model provider stays one list.
+ */
+function partition(entries: Grouped[], depth: number, out: Built[]): void {
+  let d = depth;
+  for (;;) {
+    const tok = entries[0].tokens[d];
+    if (tok === undefined || !entries.every((e) => e.tokens[d] === tok)) break;
+    d++;
+  }
+  const name = joinTokens(entries[0].tokens.slice(0, d));
+  if (entries.length <= FLAT_MAX) {
+    out.push({ name, entries });
+    return;
+  }
+  const buckets = new Map<string, Grouped[]>();
+  const here: Grouped[] = [];
+  for (const e of entries) {
+    const tok = e.tokens[d];
+    if (tok === undefined) here.push(e);
+    else (buckets.get(tok) ?? buckets.set(tok, []).get(tok)!).push(e);
+  }
+  if (buckets.size <= 1) {
+    out.push({ name, entries });
+    return;
+  }
+  // Entries that end exactly here (`gpt-5` beside `gpt-5-mini`) are their own
+  // section rather than being pushed into an arbitrary sibling.
+  if (here.length) out.push({ name, entries: here });
+  for (const bucket of buckets.values()) partition(bucket, d + 1, out);
+}
+
+/**
+ * Fold dated snapshots and group what is left into families.
+ *
+ * Input order is respected throughout — curated ids come first in the list the
+ * settings pane assembles, and they stay first here — so the sections a user
+ * sees on a provider they have never fetched are the hand-picked ones in the
+ * order they were picked.
+ */
+export function groupModels(ids: string[]): ModelSection[] {
+  const folds = new Map<string, string[]>();
+  for (const id of ids) {
+    const base = foldBase(id);
+    (folds.get(base) ?? folds.set(base, []).get(base)!).push(id);
+  }
+
+  const entries: Grouped[] = [];
+  let order = 0;
+  for (const [base, variants] of folds) {
+    let canonical = variants.find((v) => v === base);
+    if (!canonical) {
+      const ranked = [...variants].sort((a, b) =>
+        releaseKey(b, base).localeCompare(releaseKey(a, base)),
+      );
+      canonical = ranked[0];
+    }
+    const folded = variants
+      .filter((v) => v !== canonical)
+      .sort((a, b) => releaseKey(b, base).localeCompare(releaseKey(a, base)));
+    entries.push({
+      id: canonical,
+      folded,
+      tokens: idTokens(canonical),
+      order: order++,
+    });
+  }
+  if (entries.length === 0) return [];
+
+  const built: Built[] = [];
+  partition(entries, 0, built);
+  built.sort((a, b) => a.entries[0].order - b.entries[0].order);
+  for (const s of built) s.entries.sort((a, b) => a.order - b.order);
+
+  // A vendor that contributed one model gets a heading identical to the chip
+  // under it. Rather than repeat every such id twice, they collect into one
+  // unheaded block at the end — the ids are self-describing, and a column of
+  // one-line sections is what makes a fetched list unreadable in the first
+  // place.
+  const out: ModelSection[] = [];
+  const strays: Grouped[] = [];
+  for (const s of built) {
+    if (s.entries.length === 1 && s.name === s.entries[0].id) strays.push(s.entries[0]);
+    else out.push({ name: s.name.replace(/\/$/, ""), entries: s.entries });
+  }
+  if (strays.length) out.push({ name: "", entries: strays });
+  // A lone section's heading only restates the list under it.
+  if (out.length === 1) out[0].name = "";
+  return out.map((s) => ({
+    name: s.name,
+    entries: s.entries.map((e) => ({ id: e.id, folded: e.folded })),
+  }));
+}
+
 // ---- persistence ----
 
 const PREFS_KEY = "nightloom.catalog-prefs";
@@ -347,6 +551,7 @@ export function loadLastConnection(): ConnectionDraft | null {
       preamble: parsed.preamble !== false,
       sidecar: parsed.sidecar !== false,
       approval: parsed.approval !== false,
+      web: parsed.web !== false,
     };
   } catch {
     return null;

@@ -14,7 +14,7 @@ use nightloom_service::approval::{Approver, AutoApprove, Decision, PendingCall};
 use nightloom_service::import;
 use nightloom_service::project::{self, Note, Project, Registry};
 use nightloom_service::store::{self, SessionMatch, SessionSummary};
-use nightloom_service::tools::{Reviewer, Root};
+use nightloom_service::tools::{Reviewer, Root, SearchBackend};
 use nightloom_service::{
     Chat, CompactOutcome, Price, ProjectContext, PromptConfig, ProviderKind, TurnEvent, TurnInput,
     TurnOutcome,
@@ -255,6 +255,11 @@ struct ConnectedInfo {
     /// The project this connection is filed under, echoed back so the UI's
     /// notion of "open project" and the backend's cannot drift apart.
     project: Option<ProjectInfo>,
+    /// Which search provider `web_search` will query, or `None` when no key
+    /// is set and the tool is therefore absent. Echoed for the same reason
+    /// `reviewers` is: a model that cannot search does not announce it, it
+    /// simply guesses, and the user has no way to tell those apart.
+    search: Option<String>,
 }
 
 /// A reviewer as the rail shows it: the name the model asks for, and the
@@ -282,6 +287,29 @@ fn stored_key(kind: ProviderKind) -> Option<String> {
         ProviderKind::OpenaiChat => lookup(ProviderKind::Openai.label()),
         _ => None,
     })
+}
+
+/// The credential-store entry for a search backend.
+///
+/// Namespaced rather than stored under the bare name: provider labels and
+/// backend names share one keyring service, and a future provider called
+/// "brave" would otherwise silently read a search key as its API key.
+fn search_entry(backend: SearchBackend) -> String {
+    format!("search:{}", backend.name())
+}
+
+/// A search key, from the credential store first and the environment second.
+///
+/// The order matters more here than for providers: a desktop process
+/// inherits whatever environment its launcher had, which on Windows is
+/// usually nothing at all, so the store is the only route that works for an
+/// app started from a Start-menu shortcut.
+fn search_key(backend: SearchBackend) -> Option<String> {
+    keyring::Entry::new(KEYRING_SERVICE, &search_entry(backend))
+        .ok()
+        .and_then(|e| e.get_password().ok())
+        .filter(|k| !k.trim().is_empty())
+        .or_else(|| nightloom_service::tools::env_search_key(backend))
 }
 
 fn key_source(kind: ProviderKind) -> Option<&'static str> {
@@ -331,6 +359,67 @@ fn clear_api_key(provider: String) -> Result<(), String> {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(e) => Err(e.to_string()),
     }
+}
+
+/// A search backend as the settings pane shows it.
+#[derive(Serialize)]
+struct SearchBackendInfo {
+    name: String,
+    label: String,
+    /// Named in the UI because it is the other way to set this, and the one
+    /// a user who scripts the CLI already uses.
+    env_key: String,
+    key_source: Option<&'static str>,
+    /// Whether this is the one that would actually answer. Only the first
+    /// backend with a key is used, so a second key set is inert — and a
+    /// settings pane showing two filled boxes with no hint of which one is
+    /// live would be actively misleading.
+    active: bool,
+}
+
+/// The search backends, with whether each has a key and which one answers.
+#[tauri::command]
+fn search_backends() -> Vec<SearchBackendInfo> {
+    let active = nightloom_service::tools::search_backend(search_key);
+    SearchBackend::ALL
+        .into_iter()
+        .map(|backend| SearchBackendInfo {
+            name: backend.name().to_string(),
+            label: backend.label().to_string(),
+            env_key: backend.env_key().to_string(),
+            key_source: if keyring::Entry::new(KEYRING_SERVICE, &search_entry(backend))
+                .ok()
+                .and_then(|e| e.get_password().ok())
+                .filter(|k| !k.trim().is_empty())
+                .is_some()
+            {
+                Some("stored")
+            } else if nightloom_service::tools::env_search_key(backend).is_some() {
+                Some("env")
+            } else {
+                None
+            },
+            active: active == Some(backend),
+        })
+        .collect()
+}
+
+/// Store (or, with an empty key, remove) a search backend's API key.
+/// Write-only from the UI's perspective, exactly like a provider key.
+#[tauri::command]
+fn set_search_key(backend: String, key: String) -> Result<(), String> {
+    let backend = SearchBackend::from_name(&backend)
+        .ok_or_else(|| format!("no search backend named {backend}"))?;
+    let entry =
+        keyring::Entry::new(KEYRING_SERVICE, &search_entry(backend)).map_err(|e| e.to_string())?;
+    let key = key.trim();
+    if key.is_empty() {
+        return match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(e.to_string()),
+        };
+    }
+    entry.set_password(key).map_err(|e| e.to_string())
 }
 
 /// Model ids the provider's API currently offers (for the settings modal).
@@ -400,6 +489,11 @@ struct ChatSpec {
     sidecar: bool,
     workspace: PathBuf,
     approval: bool,
+    /// Whether this chat can reach the network. Separate from `tools`
+    /// because the two questions are genuinely different — a workspace you
+    /// are happy to let a model edit is not automatically one you are happy
+    /// to have quoted into a third party's query log.
+    web: bool,
     /// The open project, for the shared-notes prompt layer. `None` for an
     /// unfiled chat, which has no docspace to index.
     project: Option<ProjectContext>,
@@ -469,6 +563,13 @@ fn build_chat(
                 .iter()
                 .map(|t| Box::new(t.clone()) as Box<dyn Tool>),
         );
+        if spec.web {
+            // `web_search` appears only when a backend key is set, so this
+            // set differs between machines; both tools are `Mutating` and
+            // pass the same gate as `bash`.
+            chat.tools
+                .extend(nightloom_service::tools::web_tools(search_key));
+        }
         // Tied to the same toggle rather than always on: `compact_context` is
         // still a tool, and a connection that asked for none should not
         // quietly get a tools array — it changes what the provider is sent.
@@ -557,6 +658,7 @@ async fn connect(
     sidecar: Option<bool>,
     workspace: Option<String>,
     approval: Option<bool>,
+    web: Option<bool>,
 ) -> Result<ConnectedInfo, String> {
     let kind: ProviderKind = provider.parse()?;
     let thinking = match thinking {
@@ -594,6 +696,7 @@ async fn connect(
         sidecar: sidecar.unwrap_or(true),
         workspace,
         approval: approval.unwrap_or(true),
+        web: web.unwrap_or(true),
         project: active.as_ref().map(|p| ProjectContext {
             name: p.name.clone(),
             notes_dir: p.notes_dir(),
@@ -633,6 +736,10 @@ async fn connect(
         },
         workspace: spec.workspace.to_string_lossy().into_owned(),
         project: active.as_ref().map(ProjectInfo::of),
+        search: (spec.tools && spec.web)
+            .then(|| nightloom_service::tools::search_backend(search_key))
+            .flatten()
+            .map(|b| b.label().to_string()),
     };
     *state.chat.lock().await = Some(chat);
     Ok(info)
@@ -1270,6 +1377,8 @@ fn main() {
             providers,
             set_api_key,
             clear_api_key,
+            search_backends,
+            set_search_key,
             list_models,
             connect,
             list_sessions,

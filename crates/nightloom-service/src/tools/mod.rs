@@ -17,7 +17,9 @@
 //! so every message here says what to do next, not merely what went wrong.
 //!
 //! Path-taking tools are confined to a [`Root`] — see that type for what the
-//! confinement does and does not cover.
+//! confinement does and does not cover. The web tools are the exception that
+//! proves it: there is no root for the network, so they are gated by their
+//! `Effect` instead — see [`web`].
 
 mod compact;
 mod files;
@@ -27,12 +29,14 @@ mod search;
 mod shell;
 mod task;
 mod todo;
+mod web;
 
 pub use compact::{CompactContext, CompactSignal};
 pub use review::{Review, Reviewer, ReviewerSpec, bench};
 pub use root::Root;
 pub use task::{Subagent, TurnHandle};
 pub use todo::TodoWrite;
+pub use web::{Fetch, SearchBackend, WebSearch, env_search_key, search_backend, web_tools};
 
 use chrono::{Local, Utc};
 use nightloom_core::ToolDef;
@@ -171,6 +175,9 @@ mod tests {
     fn effects_are_classified_deliberately() {
         let mut tools = builtin();
         tools.push(Box::new(CompactContext::new(CompactSignal::new())));
+        // Added by the shells rather than by `builtin`, and the two whose
+        // classification is least obvious: fetching a page reads like a read.
+        tools.extend(web_tools(|_| Some("k".into())));
         let classified: Vec<(String, Effect)> =
             tools.iter().map(|t| (t.def().name, t.effect())).collect();
         assert_eq!(
@@ -186,6 +193,8 @@ mod tests {
                 ("current_time", Effect::ReadOnly),
                 ("todo_write", Effect::Session),
                 ("compact_context", Effect::Session),
+                ("web_fetch", Effect::Mutating),
+                ("web_search", Effect::Mutating),
             ]
             .map(|(name, effect)| (name.to_string(), effect))
         );
@@ -202,6 +211,7 @@ mod tests {
         // model pays for, and are the likeliest to be missed by this guard.
         let mut tools = builtin();
         tools.push(Box::new(CompactContext::new(CompactSignal::new())));
+        tools.extend(web_tools(|_| Some("k".into())));
         tools.push(Box::new(Subagent::new(
             std::sync::Arc::new(|| Err("not used".into())),
             std::sync::Arc::new(TurnHandle::default()),

@@ -49,7 +49,8 @@ pub struct ChatArgs {
     max_tokens: u32,
 
     /// Enable the built-in tools: read/write/edit files, list_dir, glob,
-    /// grep, bash, current_time, todo_write, compact_context. File tools are confined to the
+    /// grep, bash, current_time, todo_write, compact_context, and the web
+    /// tools. File tools are confined to the
     /// working directory; bash is not. Calls that can change the machine ask
     /// first unless --no-approval is set.
     #[arg(long)]
@@ -87,6 +88,10 @@ pub struct ChatArgs {
     /// Don't offer the review tool, even where a second provider's key is set
     #[arg(long)]
     no_review: bool,
+
+    /// Don't offer the web tools (web_fetch, web_search)
+    #[arg(long)]
+    no_web: bool,
 }
 
 /// Tools from MCP servers, shared rather than owned.
@@ -160,6 +165,13 @@ fn build_chat(args: &ChatArgs, mcp_tools: &[Arc<dyn Tool>]) -> Result<Chat> {
         chat.enable_subagents(Arc::new(move || {
             build_chat(&sub_args, &sub_mcp).map_err(|e| e.to_string())
         }));
+        if !args.no_web {
+            // `web_search` is here only when a backend key is set, so the
+            // tool set genuinely differs between machines — see
+            // `tools::web_tools`. Both are `Mutating`, so both pass through
+            // the same gate as `bash`.
+            chat.tools.extend(tools::web_tools(tools::env_search_key));
+        }
         if !args.no_review {
             // Cloned first: the bench excludes whatever lineage is under
             // review, so it needs the model this chat actually resolved to,
@@ -802,6 +814,21 @@ pub async fn run(args: ChatArgs) -> Result<()> {
                 "tools: on, approval off — file writes and shell commands run unasked"
             } else {
                 "tools: on — anything that can change the machine asks first"
+            }
+        );
+    }
+    if args.tools && !args.no_web {
+        // Said out loud because the failure is otherwise invisible: a model
+        // with no `web_search` does not report that it has none, it simply
+        // never searches, and the user is left wondering why it guessed.
+        println!(
+            "{DIM}{}{RESET}",
+            match tools::search_backend(tools::env_search_key) {
+                Some(backend) => format!("web: web_fetch and web_search via {}", backend.label()),
+                None => format!(
+                    "web: web_fetch only — set {} for web_search",
+                    tools::SearchBackend::ALL.map(|b| b.env_key()).join(", ")
+                ),
             }
         );
     }

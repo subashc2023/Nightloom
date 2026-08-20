@@ -106,7 +106,8 @@ anything has streamed; mid-stream errors never retry.
 
 `--tools` turns on the built-ins: `read_file`, `write_file`, `edit_file`,
 `list_dir`, `glob`, `grep`, `bash`, `current_time`, `todo_write`,
-`compact_context`, and `task` (subagents). Path-taking tools resolve their
+`compact_context`, `web_fetch`, `web_search`, `task` (subagents) and
+`review` (a second opinion from another vendor). Path-taking tools resolve their
 argument against a workspace root and refuse anything outside it, checked both
 lexically and by canonicalizing the deepest existing ancestor so a symlink
 cannot point out. It is a guard rail, not a sandbox — `bash` is not confined
@@ -127,6 +128,18 @@ Anything else typed becomes the denial reason, handed to the model verbatim —
 a denial is a message, not an abort, so the model can try something else
 instead of repeating the identical call. `--no-approval` (alias `--yolo`)
 runs unattended.
+
+`web_fetch` reads a URL: HTML comes back as text with headings, list markers
+and links kept, so a link worth following appears as `[text](url)` and can be
+fetched in turn. `web_search` needs one of `TAVILY_API_KEY`, `BRAVE_API_KEY`
+or `EXA_API_KEY` and is not offered without one — nothing is substituted, and
+a tool that fails every call would cost a round trip to discover that.
+
+Both are **`Mutating`**, so both ask first. Reading a page reads like a read,
+and every other read here is `ReadOnly` — but those are confined to the
+workspace root, and there is no root for a network. The model composes the
+URL out of whatever it has read, so the only containment available is a
+person seeing it before it is sent. `--no-web` withholds them entirely.
 
 Subagents (`task`) run a focused instruction in a nested chat with its own
 session and return only their final message. The point is not parallelism, it
@@ -289,7 +302,7 @@ truncating ordinary work.
 ## Development
 
 ```sh
-cargo test --workspace          # ~280 tests, no network
+cargo test --workspace          # ~380 tests, no network
 cargo clippy --workspace
 cargo fmt
 npm run check --prefix apps/desktop

@@ -182,6 +182,14 @@
       {#if !app.draft.approval}
         <p class="warn">Every call runs unasked, including <code>bash</code>.</p>
       {/if}
+
+      <label
+        class="sw"
+        title="web_fetch reads a URL, web_search finds one. Both leave this machine, and both ask first."
+      >
+        <span>Web access</span>
+        <input type="checkbox" bind:checked={app.draft.web} onchange={apply} disabled={locked} />
+      </label>
     {/if}
 
     <label class="sw" title="Identity, environment, AGENTS.md instructions and the notes index.">
@@ -230,6 +238,27 @@
                 <b>{server.error ? "✕" : server.tools}</b>
               </span>
             {/each}
+          </div>
+        </div>
+      {/if}
+
+      {#if app.connection && app.draft.web}
+        <div class="row mcp-row">
+          <span class="lbl">Web</span>
+          <div class="mcp">
+            <span
+              class="chip"
+              title="Read a URL. It cannot run JavaScript, so a page built in the browser comes back empty."
+            >
+              web_fetch
+            </span>
+            {#if app.connection.search}
+              <span class="chip" title="Queries are sent to {app.connection.search}.">
+                web_search
+              </span>
+            {:else}
+              <span class="none">no search key — add one in Settings</span>
+            {/if}
           </div>
         </div>
       {/if}

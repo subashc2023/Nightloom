@@ -27,6 +27,7 @@ import type {
   Price,
   ProjectInfo,
   ProviderInfo,
+  SearchBackendInfo,
   SessionEvent,
   SessionMeta,
   TodoItem,
@@ -94,10 +95,15 @@ export interface Connection {
   reviewers: ReviewerInfo[];
   /** Resolved workspace root the file tools operate in. */
   workspace: string;
+  /** Which provider answers `web_search`, or null when no key is set and the
+   *  tool is absent. `web_fetch` needs none and is always there. */
+  search: string | null;
 }
 
 export const app = $state({
   providers: [] as ProviderInfo[],
+  /** Web-search backends and which one has a key (settings modal edits this). */
+  searchBackends: [] as SearchBackendInfo[],
   /** Which providers/models the rail dropdowns offer (settings modal edits this). */
   prefs: loadPrefs() as CatalogPrefs,
   /** Every registered project, newest-opened first. */
@@ -445,6 +451,7 @@ export async function applyDraft(): Promise<void> {
       preamble: d.preamble,
       sidecar: d.sidecar,
       approval: d.approval,
+      web: d.web,
       workspace: d.workspace.trim() || undefined,
     });
     app.connection = {
@@ -457,6 +464,7 @@ export async function applyDraft(): Promise<void> {
       mcp: res.mcp ?? [],
       reviewers: res.reviewers ?? [],
       workspace: res.workspace,
+      search: res.search ?? null,
     };
     // The backend is the authority on which project a connection is filed
     // under: an open project overrides the workspace the rail saved, so
@@ -539,21 +547,35 @@ export async function refreshProviders(): Promise<void> {
   }
 }
 
+/** Re-query which search backends have a key (after storing/clearing one). */
+export async function refreshSearchBackends(): Promise<void> {
+  try {
+    app.searchBackends = await api.searchBackends();
+  } catch {
+    // same: the rail degrades to "no search key" rather than failing
+  }
+}
+
 /** Fetch a provider's live model list (cached until `force`). */
 export async function fetchModels(kind: string, force = false): Promise<void> {
   if (!force && app.modelLists[kind]) return;
-  const status = (app.modelFetch[kind] ??= { loading: false, error: null });
-  if (status.loading) return;
-  status.loading = true;
-  status.error = null;
+  // Every write goes through `app.modelFetch[kind]` rather than through a
+  // local alias: `??=` evaluates to the *raw* right-hand object, not the
+  // deep-`$state` proxy the store wrapped it in, so mutating the alias
+  // updated the target while the UI kept reading a stale signal — which is
+  // what left the button saying "fetching…" forever once a fetch finished.
+  app.modelFetch[kind] ??= { loading: false, error: null };
+  if (app.modelFetch[kind].loading) return;
+  app.modelFetch[kind].loading = true;
+  app.modelFetch[kind].error = null;
   try {
     const baseUrl =
       kind === "openai-chat" ? app.draft.baseUrl.trim() || undefined : undefined;
     app.modelLists[kind] = await api.listModels(kind, baseUrl);
   } catch (e) {
-    status.error = String(e);
+    app.modelFetch[kind].error = String(e);
   } finally {
-    status.loading = false;
+    app.modelFetch[kind].loading = false;
   }
 }
 

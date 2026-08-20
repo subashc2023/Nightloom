@@ -10,6 +10,7 @@ import type {
   Note,
   ProjectInfo,
   ProviderInfo,
+  SearchBackendInfo,
   ContextEdit,
   SessionEvent,
   SessionMeta,
@@ -57,8 +58,23 @@ export function connect(args: ConnectArgs): Promise<ConnectResult> {
     preamble: args.preamble,
     sidecar: args.sidecar,
     approval: args.approval,
+    web: args.web,
     workspace: args.workspace,
   });
+}
+
+/** The search backends, with which has a key and which one answers. */
+export function searchBackends(): Promise<SearchBackendInfo[]> {
+  return invoke("search_backends");
+}
+
+/**
+ * Store a search backend's key, or remove it when `key` is empty. Write-only
+ * from here, exactly like a provider key: the UI only ever learns whether one
+ * is set, never what it is.
+ */
+export function setSearchKey(backend: string, key: string): Promise<null> {
+  return invoke("set_search_key", { backend, key });
 }
 
 /**

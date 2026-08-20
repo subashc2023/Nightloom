@@ -25,6 +25,8 @@ export interface ConnectArgs {
   sidecar: boolean;
   /** Ask before running `mutating` tools; omitted reads as true. */
   approval: boolean;
+  /** Offer web_fetch and web_search; omitted reads as true. */
+  web: boolean;
   /** Root for the file tools and project-instruction discovery. */
   workspace?: string;
 }
@@ -34,6 +36,20 @@ export interface ConnectArgs {
 export interface ReviewerInfo {
   name: string;
   model: string;
+}
+
+/**
+ * A search backend as the settings pane shows it. `active` is the one that
+ * would actually answer: only the first backend with a key is used, so a
+ * second key set is inert, and two filled boxes with no hint of which is live
+ * would be worse than one.
+ */
+export interface SearchBackendInfo {
+  name: string;
+  label: string;
+  env_key: string;
+  key_source: "stored" | "env" | null;
+  active: boolean;
 }
 
 export interface ConnectResult {
@@ -60,6 +76,13 @@ export interface ConnectResult {
   reviewers: ReviewerInfo[];
   /** Where the backend actually rooted the tools, after falling back. */
   workspace: string;
+  /**
+   * Which search provider `web_search` queries, or null when no key is set
+   * and the tool is therefore absent. Read for the same reason `reviewers`
+   * is: a model with no search does not say so, it guesses, and there is no
+   * way to tell those apart from the transcript.
+   */
+  search: string | null;
   /**
    * The project this connection is filed under, echoed back from the
    * backend. Read rather than assumed: an open project overrides the
