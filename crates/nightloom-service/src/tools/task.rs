@@ -55,11 +55,11 @@ impl TurnHandle {
         *self.approver.lock().unwrap() = approver;
     }
 
-    fn cancel(&self) -> CancellationToken {
+    pub(crate) fn cancel(&self) -> CancellationToken {
         self.cancel.lock().unwrap().clone().unwrap_or_default()
     }
 
-    fn approver(&self) -> Option<Arc<dyn Approver>> {
+    pub(crate) fn approver(&self) -> Option<Arc<dyn Approver>> {
         self.approver.lock().unwrap().clone()
     }
 }

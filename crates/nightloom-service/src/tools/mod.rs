@@ -21,6 +21,7 @@
 
 mod compact;
 mod files;
+mod review;
 mod root;
 mod search;
 mod shell;
@@ -28,6 +29,7 @@ mod task;
 mod todo;
 
 pub use compact::{CompactContext, CompactSignal};
+pub use review::{Review, Reviewer};
 pub use root::Root;
 pub use task::{Subagent, TurnHandle};
 pub use todo::TodoWrite;
@@ -202,6 +204,15 @@ mod tests {
         tools.push(Box::new(CompactContext::new(CompactSignal::new())));
         tools.push(Box::new(Subagent::new(
             std::sync::Arc::new(|| Err("not used".into())),
+            std::sync::Arc::new(TurnHandle::default()),
+        )));
+        tools.push(Box::new(Review::new(
+            vec![Reviewer::new(
+                "gemini",
+                "gemini-3-pro, from Google",
+                std::sync::Arc::new(|| Err("not used".into())),
+            )],
+            Root::new("."),
             std::sync::Arc::new(TurnHandle::default()),
         )));
         for tool in tools {

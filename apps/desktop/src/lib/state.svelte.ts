@@ -88,6 +88,9 @@ export interface Connection {
   price: Price | null;
   /** MCP servers for this workspace, including ones that failed to start. */
   mcp: McpServerInfo[];
+  /** Models `review` can ask for a second opinion; empty when there is no
+   *  second provider, in which case the tool is not offered at all. */
+  reviewers: string[];
   /** Resolved workspace root the file tools operate in. */
   workspace: string;
 }
@@ -451,6 +454,7 @@ export async function applyDraft(): Promise<void> {
       contextLimit: res.context_limit ?? null,
       price: res.price ?? null,
       mcp: res.mcp ?? [],
+      reviewers: res.reviewers ?? [],
       workspace: res.workspace,
     };
     // The backend is the authority on which project a connection is filed

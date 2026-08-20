@@ -14,6 +14,7 @@ use nightloom_service::approval::{Approver, AutoApprove, Decision, PendingCall};
 use nightloom_service::import;
 use nightloom_service::project::{self, Note, Project, Registry};
 use nightloom_service::store::{self, SessionMatch, SessionSummary};
+use nightloom_service::tools::{Reviewer, Root};
 use nightloom_service::{
     Chat, CompactOutcome, Price, ProjectContext, PromptConfig, ProviderKind, TurnEvent, TurnInput,
     TurnOutcome,
@@ -245,6 +246,12 @@ struct ConnectedInfo {
     price: Option<Price>,
     /// MCP servers configured for this workspace, including ones that failed.
     mcp: Vec<McpServerInfo>,
+    /// The models available to the `review` tool as a second opinion, empty
+    /// when this machine has credentials for only one provider. Echoed so the
+    /// rail can say which they are: a review is a call against another vendor,
+    /// and "off because there is no second key" is not something the user can
+    /// work out from a tool that simply never gets used.
+    reviewers: Vec<String>,
     /// The project this connection is filed under, echoed back so the UI's
     /// notion of "open project" and the backend's cannot drift apart.
     project: Option<ProjectInfo>,
@@ -461,14 +468,65 @@ fn build_chat(
         // workspace and the tool set. The engine strips their own `task` tool
         // and replaces their approver, so this cannot recurse or route around
         // the gate.
-        let (app, policy, spec) = (app.clone(), policy.clone(), spec.clone());
-        let mcp = mcp_tools.to_vec();
-        chat.enable_subagents(Arc::new(move || build_chat(&app, &policy, &spec, &mcp)));
+        let (sub_app, sub_policy, sub_spec) = (app.clone(), policy.clone(), spec.clone());
+        let sub_mcp = mcp_tools.to_vec();
+        chat.enable_subagents(Arc::new(move || {
+            build_chat(&sub_app, &sub_policy, &sub_spec, &sub_mcp)
+        }));
+        chat.enable_reviews(
+            reviewers(app, policy, spec, mcp_tools),
+            Root::new(spec.workspace.clone()),
+        );
     }
     if !spec.sidecar {
         chat.sidecar = Vec::new();
     }
     Ok(chat)
+}
+
+/// Every *other* provider this machine has credentials for, as reviewers.
+///
+/// No configuration and no picker, because the useful default is
+/// discoverable: a key that is set — in the app's credential store or in the
+/// environment — is a provider the user already pays for. The connected
+/// provider is excluded and nothing takes its place, so a machine with one
+/// key offers no reviewers and never advertises the tool. That is the honest
+/// outcome, and the one thing this must never do is quietly fall back to the
+/// model under review, which hands back something shaped like a second
+/// opinion that is not one.
+///
+/// Built from the same `ChatSpec` as the window's own chat, so a reviewer
+/// inherits the workspace, the project and the MCP connections — `review`
+/// then strips it to the read-only tools.
+fn reviewers(
+    app: &AppHandle,
+    policy: &Arc<AutoApprove>,
+    spec: &ChatSpec,
+    mcp_tools: &[Arc<dyn Tool>],
+) -> Vec<Reviewer> {
+    ProviderKind::ALL
+        .into_iter()
+        .filter(|k| *k != spec.kind && key_source(*k).is_some())
+        .map(|kind| {
+            let mut spec = spec.clone();
+            spec.kind = kind;
+            // Both belonged to the provider being replaced: another vendor's
+            // model id is a 404, and a base URL pointing at a local server is
+            // not where this reviewer lives.
+            spec.model = None;
+            spec.base_url = None;
+            let description = match kind.default_model() {
+                Some(model) => format!("{model}, via {}", kind.label()),
+                None => kind.label().to_string(),
+            };
+            let (app, policy, mcp) = (app.clone(), policy.clone(), mcp_tools.to_vec());
+            Reviewer::new(
+                kind.label(),
+                description,
+                Arc::new(move || build_chat(&app, &policy, &spec, &mcp)),
+            )
+        })
+        .collect()
 }
 
 /// Build the provider + `Chat` for this window; retry stalls are reported as
@@ -555,6 +613,14 @@ async fn connect(
         context_limit: chat.context_limit,
         price: chat.price,
         mcp,
+        reviewers: if spec.tools {
+            reviewers(&app, &state.approval, &spec, &mcp_tools)
+                .into_iter()
+                .map(|r| r.description)
+                .collect()
+        } else {
+            Vec::new()
+        },
         workspace: spec.workspace.to_string_lossy().into_owned(),
         project: active.as_ref().map(ProjectInfo::of),
     };

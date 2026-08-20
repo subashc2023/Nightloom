@@ -44,6 +44,14 @@ export interface ConnectResult {
   price: Price | null;
   /** MCP servers configured for this workspace, failures included. */
   mcp: McpServerInfo[];
+  /**
+   * Models the `review` tool can ask for a second opinion, as
+   * "model, via provider". Empty when this machine has credentials for only
+   * the connected provider, in which case the tool is not offered at all —
+   * a review by the model under review is the one answer it must not give,
+   * so there is deliberately no fallback.
+   */
+  reviewers: string[];
   /** Where the backend actually rooted the tools, after falling back. */
   workspace: string;
   /**

@@ -5,6 +5,7 @@ use nightloom_core::{
     BlockKind, BlockSource, ContentBlock, ProviderError, SegmentKind, Session, SessionEvent,
     SystemPrompt, Thinking, Usage,
 };
+use nightloom_service::tools::{Reviewer, Root};
 use nightloom_service::{
     AutoApprove, Chat, Decision, PendingCall, ProjectContext, PromptConfig, ProviderKind,
     TurnEvent, mcp, project, prompt, store, tools,
@@ -82,6 +83,10 @@ pub struct ChatArgs {
     /// Skip MCP servers configured in .nightloom/mcp.json
     #[arg(long)]
     no_mcp: bool,
+
+    /// Don't offer the review tool, even where a second provider's key is set
+    #[arg(long)]
+    no_review: bool,
 }
 
 /// Tools from MCP servers, shared rather than owned.
@@ -123,7 +128,7 @@ fn build_chat(args: &ChatArgs, mcp_tools: &[Arc<dyn Tool>]) -> Result<Chat> {
                 .unwrap_or_else(|| cwd.display().to_string()),
             notes_dir: cwd.join(project::DOT_DIR).join(project::NOTES_DIR),
         }),
-        cwd,
+        cwd: cwd.clone(),
         custom: args.system.clone(),
     });
     chat.thinking = args.thinking.clone().unwrap_or(Thinking::Default);
@@ -155,11 +160,54 @@ fn build_chat(args: &ChatArgs, mcp_tools: &[Arc<dyn Tool>]) -> Result<Chat> {
         chat.enable_subagents(Arc::new(move || {
             build_chat(&sub_args, &sub_mcp).map_err(|e| e.to_string())
         }));
+        if !args.no_review {
+            chat.enable_reviews(reviewers(args, mcp_tools), Root::new(&cwd));
+        }
     }
     if args.no_sidecar {
         chat.sidecar = Vec::new();
     }
     Ok(chat)
+}
+
+/// Every other provider this machine has credentials for, as reviewers.
+///
+/// No configuration, because the useful default is discoverable: a key that
+/// is set is a provider the user already pays for, and the whole value of the
+/// tool is that the reviewer is not the model being reviewed — so the current
+/// provider is excluded and nothing takes its place. A machine with one key
+/// gets an empty list and no `review` tool, which is the honest outcome. It
+/// must never be a silent fall back to the model under review, which would
+/// return something shaped like a second opinion that is not one.
+///
+/// Each reviewer runs on its provider's default model, and is built by the
+/// same `build_chat` as everything else, so it gets the same preamble, the
+/// same workspace and the same MCP connections — then `review` strips it to
+/// the read-only ones.
+fn reviewers(args: &ChatArgs, mcp_tools: &[Arc<dyn Tool>]) -> Vec<Reviewer> {
+    ProviderKind::ALL
+        .into_iter()
+        .filter(|k| *k != args.provider && k.has_credentials())
+        .map(|kind| {
+            let mut sub = args.clone();
+            sub.provider = kind;
+            // Both belong to the provider being replaced: a model id from
+            // another vendor is a 404, and a base URL pointed at a local
+            // server is not where this reviewer lives.
+            sub.model = None;
+            sub.base_url = None;
+            let mcp = mcp_tools.to_vec();
+            let description = match kind.default_model() {
+                Some(model) => format!("{model}, via {}", kind.label()),
+                None => kind.label().to_string(),
+            };
+            Reviewer::new(
+                kind.label(),
+                description,
+                Arc::new(move || build_chat(&sub, &mcp).map_err(|e| e.to_string())),
+            )
+        })
+        .collect()
 }
 
 /// The consent policy for this run, or `None` for no gate at all.

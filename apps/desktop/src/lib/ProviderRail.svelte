@@ -233,6 +233,28 @@
           </div>
         </div>
       {/if}
+
+      {#if app.connection && app.draft.tools}
+        <div class="row mcp-row">
+          <span class="lbl">Review</span>
+          <div class="mcp">
+            {#if app.connection.reviewers.length > 0}
+              {#each app.connection.reviewers as reviewer (reviewer)}
+                <span
+                  class="chip"
+                  title="A second opinion on a document, from {reviewer}. It reads the file and this workspace, never this conversation."
+                >
+                  {reviewer.split(",")[0]}
+                </span>
+              {/each}
+            {:else}
+              <span class="none"
+                >no second provider — add another API key in Settings</span
+              >
+            {/if}
+          </div>
+        </div>
+      {/if}
     </div>
   {/if}
 
@@ -471,6 +493,10 @@
 
   .mcp-row {
     align-items: flex-start;
+  }
+  .none {
+    font-size: 0.68rem;
+    color: var(--dim);
   }
   .mcp {
     display: flex;

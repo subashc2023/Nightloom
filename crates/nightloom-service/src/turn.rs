@@ -1,7 +1,7 @@
 use crate::approval::{Approver, Decision, PendingCall, denial_message};
 use crate::sidecar::{self, SidecarContext, SidecarPart};
 use crate::store::one_line;
-use crate::tools::{CompactContext, CompactSignal, Subagent, TurnHandle};
+use crate::tools::{CompactContext, CompactSignal, Review, Reviewer, Root, Subagent, TurnHandle};
 use futures::StreamExt;
 use nightloom_core::{
     ChatRequest, ContentBlock, DocumentInput, Effect, ImageInput, Message, Provider, ProviderError,
@@ -202,9 +202,12 @@ pub struct Chat {
     /// Whether an unnamed session gets a name at the end of a turn. See
     /// [`Chat::enable_titles`].
     auto_title: bool,
-    /// Set when the model holds the `task` tool. Refreshed each round so a
-    /// subagent inherits the live cancellation token and approval policy.
-    subagents: Option<Arc<TurnHandle>>,
+    /// Set when the model holds a tool that runs a nested `Chat` — `task` or
+    /// `review`. Refreshed each round so whatever it spawns inherits the live
+    /// cancellation token and approval policy. One handle serves both: a
+    /// second would be a second thing the round loop has to remember to lend
+    /// to, and forgetting is silent — a subagent that never sees a Ctrl-C.
+    handle: Option<Arc<TurnHandle>>,
 }
 
 impl Chat {
@@ -223,7 +226,7 @@ impl Chat {
             approver: None,
             compact_signal: None,
             auto_title: false,
-            subagents: None,
+            handle: None,
         }
     }
 
@@ -271,10 +274,40 @@ impl Chat {
         &mut self,
         factory: Arc<dyn Fn() -> Result<Chat, String> + Send + Sync>,
     ) {
-        let handle = Arc::new(TurnHandle::default());
+        let handle = self.turn_handle();
+        self.tools.push(Box::new(Subagent::new(factory, handle)));
+    }
+
+    /// Hand the model the `review` tool: an adversarial read of a document it
+    /// wrote, by a model that is not this one.
+    ///
+    /// Each [`Reviewer`] carries its own factory because the whole value is
+    /// that the reviewer is *different* — a second prior, and a context that
+    /// never saw this conversation. A shell with no second set of credentials
+    /// should pass an empty list, which advertises nothing; what it must not
+    /// do is hand back a factory for the model under review, since that
+    /// returns something shaped like a second opinion that is not one.
+    ///
+    /// `root` is the workspace, used only to tell the model a path is not
+    /// there before spending a provider call finding out.
+    ///
+    /// The reviewer's tool set is stripped to read-only by the tool itself,
+    /// not by the factory — see [`Review::effect`] for what that buys.
+    pub fn enable_reviews(&mut self, reviewers: Vec<Reviewer>, root: Root) {
+        if reviewers.is_empty() {
+            return;
+        }
+        let handle = self.turn_handle();
         self.tools
-            .push(Box::new(Subagent::new(factory, handle.clone())));
-        self.subagents = Some(handle);
+            .push(Box::new(Review::new(reviewers, root, handle)));
+    }
+
+    /// The lend point for nested chats, created on first use. See
+    /// [`Chat::handle`].
+    fn turn_handle(&mut self) -> Arc<TurnHandle> {
+        self.handle
+            .get_or_insert_with(|| Arc::new(TurnHandle::default()))
+            .clone()
     }
 
     /// Hand the model the `compact_context` tool and honour what it asks for.
@@ -394,10 +427,11 @@ impl Chat {
                     usage: turn_usage,
                 });
             }
-            // Lend this turn's token and approval policy to any subagent the
-            // model spawns. Refreshed per round rather than captured at setup
-            // so the order a shell configures `Chat` in cannot matter.
-            if let Some(handle) = &self.subagents {
+            // Lend this turn's token and approval policy to any nested chat
+            // the model spawns — a subagent or a reviewer. Refreshed per round
+            // rather than captured at setup so the order a shell configures
+            // `Chat` in cannot matter.
+            if let Some(handle) = &self.handle {
                 handle.lend(cancel, self.approver.clone());
             }
             // Composed per round, but it only lands on round one: the
@@ -990,7 +1024,7 @@ thorough but do not pad; write only the summary, with no preamble or \
 commentary.";
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::approval::AutoApprove;
     use crate::tools::TodoWrite;
@@ -1040,7 +1074,7 @@ mod tests {
         }
     }
 
-    fn tool_call(name: &str, input: serde_json::Value) -> Vec<StreamEvent> {
+    pub(crate) fn tool_call(name: &str, input: serde_json::Value) -> Vec<StreamEvent> {
         vec![
             StreamEvent::ToolUse {
                 id: "c1".into(),
@@ -1072,7 +1106,7 @@ mod tests {
         events
     }
 
-    fn says(text: &str) -> Vec<StreamEvent> {
+    pub(crate) fn says(text: &str) -> Vec<StreamEvent> {
         vec![
             StreamEvent::TextDelta(text.into()),
             StreamEvent::End {
@@ -1082,6 +1116,13 @@ mod tests {
     }
 
     /// Text of the last message in a captured request.
+    /// A `Chat` over the scripted provider, for another module's tests to
+    /// drive a real turn against. The mocking layer stays in one place; see
+    /// the crate conventions.
+    pub(crate) fn chat_scripted(scripts: Vec<Vec<StreamEvent>>) -> Chat {
+        Chat::new(Scripted::provider(scripts), "scripted-model")
+    }
+
     fn tail_text(requests: &[ChatRequest], i: usize) -> String {
         requests[i].messages.last().unwrap().text()
     }
