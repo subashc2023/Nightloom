@@ -8,7 +8,7 @@
 //! cargo run -p nightloom-service --example web -- --search "tokio select macro"
 //! ```
 
-use nightloom_core::tool::Tool;
+use nightloom_core::tool::{CancellationToken, Tool};
 use nightloom_service::tools::{Fetch, SearchBackend, env_search_key, web_tools};
 use serde_json::json;
 
@@ -26,13 +26,20 @@ async fn main() {
                 return;
             };
             println!("{}\n", search.def().description);
-            report(search.call(json!({ "query": query })).await);
+            report(
+                search
+                    .call(json!({ "query": query }), &CancellationToken::new())
+                    .await,
+            );
         }
         Some(url) => {
             let offset = args.get(1).and_then(|o| o.parse::<u64>().ok()).unwrap_or(0);
             report(
                 Fetch::new()
-                    .call(json!({ "url": url, "offset": offset }))
+                    .call(
+                        json!({ "url": url, "offset": offset }),
+                        &CancellationToken::new(),
+                    )
                     .await,
             );
         }

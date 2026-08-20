@@ -9,17 +9,22 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::oneshot;
+// Via core rather than a dependency of our own: the re-export exists so an
+// implementor of the trait can name the type the contract uses.
+use nightloom_core::tool::CancellationToken;
 
 /// The protocol version this client asks for.
 const PROTOCOL_VERSION: &str = "2025-06-18";
 
 /// How long a single request may take before it is abandoned.
 ///
-/// A cap rather than patience, because [`nightloom_core::Tool::call`] takes no
-/// cancellation token: a server that never answers would otherwise hold the
-/// turn open forever, and no amount of Ctrl-C would reach it. Timing out
-/// produces an error the model can read and work around, which is the same
-/// shape every other tool failure has.
+/// A cap rather than patience. Ctrl-C reaches a call in flight now — the
+/// token [`nightloom_core::Tool::call`] takes is passed down to
+/// [`Client::call_tool`] — but that only helps while somebody is watching. A
+/// server that never answers still has to fail on its own, or an unattended
+/// run holds the turn open forever. Timing out produces an error the model
+/// can read and work around, which is the same shape every other tool
+/// failure has.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// How much of a server's stderr to keep for diagnostics.
@@ -233,11 +238,22 @@ impl Client {
     }
 
     /// Call a tool, returning its content flattened to text.
-    pub async fn call_tool(&self, name: &str, arguments: Value) -> Result<CallOutcome, McpError> {
+    ///
+    /// The only request carrying a cancellation token, and the only one that
+    /// needs one: `initialize` and `tools/list` run while a server is being
+    /// connected, where there is no turn to interrupt. A `tools/call` is
+    /// inside somebody's turn and may run for as long as the server likes.
+    pub async fn call_tool(
+        &self,
+        name: &str,
+        arguments: Value,
+        cancel: &CancellationToken,
+    ) -> Result<CallOutcome, McpError> {
         let result = self
-            .request(
+            .request_cancellable(
                 "tools/call",
                 json!({ "name": name, "arguments": arguments }),
+                Some(cancel),
             )
             .await?;
         Ok(CallOutcome {
@@ -251,19 +267,44 @@ impl Client {
     }
 
     async fn request(&self, method: &str, params: Value) -> Result<Value, McpError> {
+        self.request_cancellable(method, params, None).await
+    }
+
+    async fn request_cancellable(
+        &self,
+        method: &str,
+        params: Value,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<Value, McpError> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let message = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
         let reply = match &self.wire {
-            Wire::Stream(w) => w.request(id, &message).await?,
+            Wire::Stream(w) => w.request(id, &message, cancel).await?,
             // The same cap as the stdio side, applied in one place rather than
             // configured on the HTTP client: a request that streams its reply
-            // has no single deadline reqwest could enforce for us.
-            Wire::Http(w) => match tokio::time::timeout(REQUEST_TIMEOUT, w.send(&message)).await {
-                Err(_) => return Err(McpError::Timeout(REQUEST_TIMEOUT)),
-                Ok(sent) => sent?.ok_or_else(|| {
-                    McpError::Protocol("the server accepted the request without answering".into())
-                })?,
-            },
+            // has no single deadline reqwest could enforce for us. Abandoning
+            // this future is a clean abort, reqwest dropping the connection
+            // with it, where the stdio side has a pending-reply table to tidy
+            // — which is why only that one is handed the token itself.
+            Wire::Http(w) => {
+                let sent = tokio::time::timeout(REQUEST_TIMEOUT, w.send(&message));
+                let sent = match cancel {
+                    Some(c) => tokio::select! {
+                        biased;
+                        _ = c.cancelled() => return Err(McpError::Cancelled),
+                        sent = sent => sent,
+                    },
+                    None => sent.await,
+                };
+                match sent {
+                    Err(_) => return Err(McpError::Timeout(REQUEST_TIMEOUT)),
+                    Ok(sent) => sent?.ok_or_else(|| {
+                        McpError::Protocol(
+                            "the server accepted the request without answering".into(),
+                        )
+                    })?,
+                }
+            }
         };
         unwrap_reply(reply)
     }
@@ -298,14 +339,38 @@ fn unwrap_reply(message: Value) -> Result<Value, McpError> {
 
 impl StreamWire {
     /// Write one request and wait for the reply carrying its id.
-    async fn request(&self, id: u64, message: &Value) -> Result<Value, McpError> {
+    ///
+    /// Cancellation is handled in here rather than by racing this future from
+    /// outside, because the entry in `pending` outlives the future that
+    /// registered it: dropped from above, the id would sit in the table until
+    /// the connection closed and the reader would later answer a receiver
+    /// nobody holds. One abandoned entry per interrupted call is not a leak
+    /// anybody would notice, which is exactly why it would never be found.
+    async fn request(
+        &self,
+        id: u64,
+        message: &Value,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<Value, McpError> {
         let (tx, rx) = oneshot::channel();
         self.pending.lock().unwrap().insert(id, tx);
         if let Err(e) = self.write_line(message).await {
             self.pending.lock().unwrap().remove(&id);
             return Err(e);
         }
-        match tokio::time::timeout(REQUEST_TIMEOUT, rx).await {
+        let waited = tokio::time::timeout(REQUEST_TIMEOUT, rx);
+        let waited = match cancel {
+            Some(c) => tokio::select! {
+                biased;
+                _ = c.cancelled() => {
+                    self.pending.lock().unwrap().remove(&id);
+                    return Err(McpError::Cancelled);
+                }
+                waited = waited => waited,
+            },
+            None => waited.await,
+        };
+        match waited {
             Ok(Ok(result)) => result,
             // The reader task drops the sender when the stream ends without
             // having answered this id.
@@ -480,6 +545,19 @@ mod tests {
         Client::from_streams("test", cr, cw, None, None)
     }
 
+    /// A server that takes the request and never answers, holding the stream
+    /// open: the shape a slow tool has, and the one an EOF cannot rescue.
+    fn stalled() -> Client {
+        let (client_side, mut server_side) = tokio::io::duplex(8192);
+        let (cr, cw) = tokio::io::split(client_side);
+        tokio::spawn(async move {
+            let (sr, _sw) = tokio::io::split(&mut server_side);
+            let mut lines = BufReader::new(sr).lines();
+            while let Ok(Some(_)) = lines.next_line().await {}
+        });
+        Client::from_streams("test", cr, cw, None, None)
+    }
+
     #[tokio::test]
     async fn handshake_records_the_version_the_server_chose() {
         let c = scripted(vec![json!({"result": {
@@ -521,7 +599,10 @@ mod tests {
             "content": [{"type": "text", "text": "no such file"}],
             "isError": true
         }})]);
-        let out = c.call_tool("read", json!({})).await.unwrap();
+        let out = c
+            .call_tool("read", json!({}), &CancellationToken::new())
+            .await
+            .unwrap();
         // The server answered; the *tool* failed. Only a broken server is an
         // Err, and the difference decides whether the session is still usable.
         assert!(out.is_error);
@@ -533,7 +614,10 @@ mod tests {
         let c = scripted(vec![
             json!({"error": {"code": -32601, "message": "no method"}}),
         ]);
-        let err = c.call_tool("nope", json!({})).await.unwrap_err();
+        let err = c
+            .call_tool("nope", json!({}), &CancellationToken::new())
+            .await
+            .unwrap_err();
         assert!(matches!(err, McpError::Rpc { code: -32601, .. }), "{err}");
     }
 
@@ -541,9 +625,48 @@ mod tests {
     async fn a_server_that_dies_fails_the_call_instead_of_hanging() {
         // No replies scripted: the task returns and drops the stream.
         let c = scripted(vec![]);
-        let err = c.call_tool("anything", json!({})).await.unwrap_err();
+        let err = c
+            .call_tool("anything", json!({}), &CancellationToken::new())
+            .await
+            .unwrap_err();
         // Without the EOF sweep this would sit out the full request timeout.
         assert!(matches!(err, McpError::Closed(_)), "{err}");
+    }
+
+    /// A server that has taken the request and is still thinking about it is
+    /// the case Ctrl-C exists for — the one the 60-second timeout could only
+    /// ever answer by waiting out the full minute.
+    #[tokio::test]
+    async fn cancelling_a_call_fails_it_at_once_rather_than_at_the_timeout() {
+        // One reply is scripted, but the harness only writes it in answer to
+        // a line it has read; nothing else arrives, so this call is left
+        // waiting exactly as it would be on a slow server.
+        let c = stalled();
+        let cancel = CancellationToken::new();
+        let trigger = cancel.clone();
+        tokio::spawn(async move { trigger.cancel() });
+        let err = c.call_tool("slow", json!({}), &cancel).await.unwrap_err();
+        // Not `Timeout`: the server is fine, and telling the model its server
+        // is unwell would send it looking for a fault that is not there.
+        assert!(matches!(err, McpError::Cancelled), "{err}");
+    }
+
+    /// The reason cancellation is handled inside `StreamWire::request` rather
+    /// than by racing it from outside. A dropped future would leave its id in
+    /// the pending table for the life of the connection.
+    #[tokio::test]
+    async fn a_cancelled_call_leaves_nothing_behind_in_the_pending_table() {
+        let c = stalled();
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let _ = c.call_tool("slow", json!({}), &cancel).await;
+        let Wire::Stream(w) = &c.wire else {
+            panic!("scripted clients are stdio")
+        };
+        assert!(
+            w.pending.lock().unwrap().is_empty(),
+            "an interrupted call left its reply slot registered"
+        );
     }
 
     #[test]

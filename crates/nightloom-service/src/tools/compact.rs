@@ -17,7 +17,7 @@
 //! and leaves the timing to it.
 
 use nightloom_core::ToolDef;
-use nightloom_core::tool::{Effect, Tool};
+use nightloom_core::tool::{CancellationToken, Effect, Tool};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -84,7 +84,7 @@ impl Tool for CompactContext {
         }
     }
 
-    async fn call(&self, _input: Value) -> Result<String, String> {
+    async fn call(&self, _input: Value, _cancel: &CancellationToken) -> Result<String, String> {
         self.signal.raise();
         // Phrased as a deadline rather than a receipt: the model has one more
         // reply in which to say anything that depends on history it is about
@@ -107,7 +107,9 @@ mod tests {
         let tool = CompactContext::new(signal.clone());
         assert!(!signal.take(), "starts unraised");
 
-        tool.call(json!({})).await.unwrap();
+        tool.call(json!({}), &CancellationToken::new())
+            .await
+            .unwrap();
         assert!(signal.take(), "raised by the call");
         assert!(!signal.take(), "and cleared by the taking");
     }
@@ -117,8 +119,12 @@ mod tests {
     async fn repeated_calls_collapse_into_one_request() {
         let signal = CompactSignal::new();
         let tool = CompactContext::new(signal.clone());
-        tool.call(json!({})).await.unwrap();
-        tool.call(json!({})).await.unwrap();
+        tool.call(json!({}), &CancellationToken::new())
+            .await
+            .unwrap();
+        tool.call(json!({}), &CancellationToken::new())
+            .await
+            .unwrap();
         assert!(signal.take());
         assert!(!signal.take());
     }

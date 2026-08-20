@@ -2,7 +2,7 @@
 
 use crate::{Client, McpConfig, McpError};
 use nightloom_core::ToolDef;
-use nightloom_core::tool::{Effect, Tool};
+use nightloom_core::tool::{CancellationToken, Effect, Tool};
 use serde_json::{Value, json};
 use std::path::Path;
 use std::sync::Arc;
@@ -58,8 +58,12 @@ impl Tool for McpTool {
         }
     }
 
-    async fn call(&self, input: Value) -> Result<String, String> {
-        match self.client.call_tool(&self.remote_name, input).await {
+    async fn call(&self, input: Value, cancel: &CancellationToken) -> Result<String, String> {
+        match self
+            .client
+            .call_tool(&self.remote_name, input, cancel)
+            .await
+        {
             // A tool that ran and failed: the model gets the server's own
             // words, which is what it needs to try something else.
             Ok(out) if out.is_error => Err(if out.text.is_empty() {

@@ -40,7 +40,35 @@ pub use web::{Fetch, SearchBackend, WebSearch, env_search_key, search_backend, w
 
 use chrono::{Local, Utc};
 use nightloom_core::ToolDef;
-use nightloom_core::tool::{Effect, Tool};
+use nightloom_core::tool::{CancellationToken, Effect, Tool};
+
+/// What a tool says when the turn was interrupted while it was working.
+///
+/// One string rather than a phrasing per tool, because it is prompt text
+/// like every other tool result: the model is reading the wreckage of a turn
+/// the user stopped on purpose, and three different sentences for one event
+/// invite it to treat them as three different problems. It reports the
+/// interruption as a fact and asks for nothing — retrying is the last thing
+/// anybody wants here.
+pub(crate) const INTERRUPTED: &str =
+    "the turn was interrupted before this call finished; nothing was returned";
+
+/// Run `f`, giving up if the turn is cancelled first.
+///
+/// For work that is genuinely abandonable — a request in flight, where
+/// dropping the future closes the connection and leaves nothing behind. A
+/// child process is not abandonable and does not use this: `bash` has to kill
+/// what it started, so it selects on the token itself and keeps its handle.
+pub(crate) async fn interruptible<T>(
+    cancel: &CancellationToken,
+    f: impl std::future::Future<Output = T>,
+) -> Result<T, String> {
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => Err(INTERRUPTED.to_string()),
+        out = f => Ok(out),
+    }
+}
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
@@ -126,7 +154,7 @@ impl Tool for CurrentTime {
         }
     }
 
-    async fn call(&self, _input: Value) -> Result<String, String> {
+    async fn call(&self, _input: Value, _cancel: &CancellationToken) -> Result<String, String> {
         Ok(format!(
             "local: {}\nutc:   {}",
             Local::now().format("%Y-%m-%d %H:%M:%S %:z"),
@@ -142,7 +170,10 @@ mod tests {
 
     #[tokio::test]
     async fn current_time_reports_local_and_utc() {
-        let out = CurrentTime.call(json!({})).await.unwrap();
+        let out = CurrentTime
+            .call(json!({}), &CancellationToken::new())
+            .await
+            .unwrap();
         assert!(out.starts_with("local: "));
         assert!(out.contains("\nutc:   "));
         assert!(out.ends_with(" UTC"));
@@ -151,7 +182,14 @@ mod tests {
     #[tokio::test]
     async fn unknown_tool_becomes_error_result() {
         let tools = builtin();
-        let block = run_tool(&tools, "c1", "no_such_tool", json!({})).await;
+        let block = run_tool(
+            &tools,
+            "c1",
+            "no_such_tool",
+            json!({}),
+            &CancellationToken::new(),
+        )
+        .await;
         assert!(matches!(
             block,
             nightloom_core::ContentBlock::ToolResult { is_error: true, .. }

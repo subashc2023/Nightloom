@@ -47,7 +47,7 @@
 
 use super::{READ_LIMIT, str_arg};
 use nightloom_core::ToolDef;
-use nightloom_core::tool::{Effect, Tool};
+use nightloom_core::tool::{CancellationToken, Effect, Tool};
 use reqwest::{Client, Url};
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -139,18 +139,20 @@ impl Tool for Fetch {
         }
     }
 
-    async fn call(&self, input: Value) -> Result<String, String> {
+    async fn call(&self, input: Value, cancel: &CancellationToken) -> Result<String, String> {
         let raw = str_arg(&input, "url")?;
         let url = parse_url(&raw)?;
         let offset = input["offset"].as_u64().unwrap_or(0) as usize;
 
-        let response = self
-            .client
-            .get(url.clone())
-            .header(reqwest::header::ACCEPT, ACCEPT)
-            .send()
-            .await
-            .map_err(|e| format!("cannot fetch {url}: {}", why(&e)))?;
+        let response = super::interruptible(
+            cancel,
+            self.client
+                .get(url.clone())
+                .header(reqwest::header::ACCEPT, ACCEPT)
+                .send(),
+        )
+        .await?
+        .map_err(|e| format!("cannot fetch {url}: {}", why(&e)))?;
 
         let status = response.status();
         let landed = response.url().clone();
@@ -160,7 +162,8 @@ impl Tool for Fetch {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_ascii_lowercase();
-        let bytes = capped_body(response).await?;
+        // The download is the long half of a fetch, not the handshake.
+        let bytes = super::interruptible(cancel, capped_body(response)).await??;
 
         let kind = classify(&content_type, &bytes);
 
@@ -1042,7 +1045,7 @@ impl Tool for WebSearch {
         }
     }
 
-    async fn call(&self, input: Value) -> Result<String, String> {
+    async fn call(&self, input: Value, cancel: &CancellationToken) -> Result<String, String> {
         let query = str_arg(&input, "query")?;
         if query.trim().is_empty() {
             return Err("query is empty".into());
@@ -1053,15 +1056,19 @@ impl Tool for WebSearch {
             .unwrap_or(DEFAULT_RESULTS)
             .clamp(1, MAX_RESULTS);
 
-        let response = self
-            .backend
-            .request(&self.client, &self.key, &query, count)
-            .send()
-            .await
-            .map_err(|e| format!("cannot reach {}: {}", self.backend.label(), why(&e)))?;
+        let response = super::interruptible(
+            cancel,
+            self.backend
+                .request(&self.client, &self.key, &query, count)
+                .send(),
+        )
+        .await?
+        .map_err(|e| format!("cannot reach {}: {}", self.backend.label(), why(&e)))?;
 
         let status = response.status();
-        let body = response.text().await.unwrap_or_default();
+        let body = super::interruptible(cancel, response.text())
+            .await?
+            .unwrap_or_default();
         if !status.is_success() {
             return Err(format!(
                 "{} returned {status}.{}\n{}",

@@ -636,7 +636,7 @@ impl Chat {
             // Approval is asked for on this round too, for the same reason:
             // the call runs, so the user gets to stop it.
             let plan = self.plan_round(calls, on_event).await;
-            for result in self.execute(plan, on_event).await {
+            for result in self.execute(plan, cancel, on_event).await {
                 session.record_tool_result(&result);
             }
             // Some tools write conversation state rather than just returning
@@ -717,9 +717,20 @@ impl Chat {
     /// on. A tool this engine cannot classify (a hallucinated name, anything
     /// arriving over MCP) is serial by the same default that makes it
     /// `Mutating`.
+    ///
+    /// The turn's token goes down to every call, and the engine does *not*
+    /// race the calls against it. A tool that is dropped part way through
+    /// never produces a result, and a `tool_use` with no `tool_result` is
+    /// rejected on replay by every provider — the same invalid shape
+    /// `orphan_marker` exists to repair after a crash, which would be a
+    /// strange thing to manufacture on purpose in response to a Ctrl-C. So
+    /// an interrupted round still finishes and still records a result for
+    /// everything it started; what the token buys is that those results
+    /// arrive in milliseconds rather than at the end of a ten-minute build.
     async fn execute(
         &self,
         plan: Vec<PlannedCall>,
+        cancel: &CancellationToken,
         on_event: &mut (dyn FnMut(TurnEvent) + Send),
     ) -> Vec<ContentBlock> {
         let mut results = Vec::with_capacity(plan.len());
@@ -729,19 +740,21 @@ impl Chat {
                 batch.push(call);
                 continue;
             }
-            self.drain_batch(&mut batch, &mut results, on_event).await;
+            self.drain_batch(&mut batch, &mut results, cancel, on_event)
+                .await;
             // A refusal was already announced as `ToolDenied` when consent was
             // settled, and must not also arrive as a `ToolResult`: nothing
             // ran, so a result event would be a lie, and a shell with a live
             // buffer closes the pending call on one or the other.
             let denied = call.denial.is_some();
-            let result = self.run_one(call).await;
+            let result = self.run_one(call, cancel).await;
             if !denied {
                 emit_result(&result, on_event);
             }
             results.push(result);
         }
-        self.drain_batch(&mut batch, &mut results, on_event).await;
+        self.drain_batch(&mut batch, &mut results, cancel, on_event)
+            .await;
         results
     }
 
@@ -750,6 +763,7 @@ impl Chat {
         &self,
         batch: &mut Vec<PlannedCall>,
         results: &mut Vec<ContentBlock>,
+        cancel: &CancellationToken,
         on_event: &mut (dyn FnMut(TurnEvent) + Send),
     ) {
         let batch = std::mem::take(batch);
@@ -757,7 +771,8 @@ impl Chat {
             return;
         }
         let done =
-            futures::future::join_all(batch.into_iter().map(|call| self.run_one(call))).await;
+            futures::future::join_all(batch.into_iter().map(|call| self.run_one(call, cancel)))
+                .await;
         // Emitted after the batch rather than as each call lands, so the
         // events a shell renders stay in the order the model called them.
         // What that costs is the difference between the fastest and the
@@ -769,7 +784,7 @@ impl Chat {
     }
 
     /// One call: the refusal it already collected, or the tool.
-    async fn run_one(&self, call: PlannedCall) -> ContentBlock {
+    async fn run_one(&self, call: PlannedCall, cancel: &CancellationToken) -> ContentBlock {
         let PlannedCall {
             id,
             name,
@@ -790,7 +805,7 @@ impl Chat {
                     is_error: true,
                 }
             }
-            None => run_tool(&self.tools, &id, &name, input).await,
+            None => run_tool(&self.tools, &id, &name, input, cancel).await,
         }
     }
 
@@ -1173,7 +1188,11 @@ pub(crate) mod tests {
             }
         }
 
-        async fn call(&self, input: serde_json::Value) -> Result<String, String> {
+        async fn call(
+            &self,
+            input: serde_json::Value,
+            _cancel: &CancellationToken,
+        ) -> Result<String, String> {
             Ok(input["msg"].as_str().unwrap_or_default().to_string())
         }
     }
@@ -1192,7 +1211,11 @@ pub(crate) mod tests {
             }
         }
 
-        async fn call(&self, input: serde_json::Value) -> Result<String, String> {
+        async fn call(
+            &self,
+            input: serde_json::Value,
+            _cancel: &CancellationToken,
+        ) -> Result<String, String> {
             Ok(input["msg"].as_str().unwrap_or_default().to_uppercase())
         }
     }
@@ -1211,7 +1234,11 @@ pub(crate) mod tests {
             }
         }
 
-        async fn call(&self, _input: serde_json::Value) -> Result<String, String> {
+        async fn call(
+            &self,
+            _input: serde_json::Value,
+            _cancel: &CancellationToken,
+        ) -> Result<String, String> {
             Ok("ran".into())
         }
     }
@@ -1837,6 +1864,119 @@ pub(crate) mod tests {
         assert_eq!(session.events().len(), before);
     }
 
+    /// Announces that it is running, then waits for the turn's own token.
+    ///
+    /// Both halves are load-bearing. The interrupt has to arrive while a call
+    /// is genuinely in flight — cancelling any earlier takes the engine's
+    /// stream-cancel path, which strips the pending call and never reaches a
+    /// tool at all, so a test that cancels on `ToolCall` proves nothing. And
+    /// the wait is what makes this a check rather than a tautology: hand this
+    /// tool any token but the live one and it blocks forever, which is why
+    /// the runs below are wrapped in a timeout.
+    struct Blocker {
+        running: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait::async_trait]
+    impl Tool for Blocker {
+        fn def(&self) -> ToolDef {
+            ToolDef {
+                name: "blocker".into(),
+                description: "waits".into(),
+                input_schema: json!({ "type": "object" }),
+            }
+        }
+
+        async fn call(
+            &self,
+            _input: serde_json::Value,
+            cancel: &CancellationToken,
+        ) -> Result<String, String> {
+            self.running.notify_one();
+            cancel.cancelled().await;
+            Err("interrupted".into())
+        }
+    }
+
+    /// Run a turn whose one tool call is interrupted while it is running.
+    async fn interrupted_tool_turn(session: &mut Session) -> TurnOutcome {
+        let provider =
+            Scripted::provider(vec![tool_call("blocker", json!({})), says("never reached")]);
+        let mut chat = Chat::new(provider, "test-model");
+        let running = Arc::new(tokio::sync::Notify::new());
+        chat.tools = vec![Box::new(Blocker {
+            running: running.clone(),
+        })];
+
+        let cancel = CancellationToken::new();
+        let trigger = cancel.clone();
+        tokio::spawn(async move {
+            running.notified().await;
+            trigger.cancel();
+        });
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            chat.run_turn(session, "go", &cancel, &mut |_| {}),
+        )
+        .await
+        .expect("the tool was never handed the live token")
+        .unwrap()
+    }
+
+    /// The point of the whole exercise: a tool call already in flight can be
+    /// told to stop, so a turn is not held open for the length of the longest
+    /// thing the model happened to start.
+    #[tokio::test]
+    async fn a_tool_is_handed_the_turns_own_cancellation_token() {
+        let mut session = Session::new();
+        let outcome = interrupted_tool_turn(&mut session).await;
+        assert!(outcome.interrupted);
+        // The tool ran, saw the token and said so. Without the wiring this
+        // would have timed out above; without the *result* being recorded it
+        // would be the orphan the next test is about.
+        let recorded = session.events().iter().any(|e| {
+            matches!(e, SessionEvent::ToolResult { content, is_error, .. }
+                if *is_error && content.contains("interrupted"))
+        });
+        assert!(recorded, "the interrupted call recorded no result");
+    }
+
+    /// The restraint that makes the token safe to hand out: an interrupted
+    /// round still records a result for every call it started.
+    ///
+    /// Racing the calls against the token would be the obvious implementation
+    /// and would leave an assistant `tool_use` with no `tool_result` —
+    /// invalid on replay against every provider, and the exact damage
+    /// `orphan_marker` exists to repair after a crash. So the engine asks a
+    /// tool to stop and waits for it to say that it did.
+    #[tokio::test]
+    async fn an_interrupted_round_still_answers_every_call_it_started() {
+        let mut session = Session::new();
+        interrupted_tool_turn(&mut session).await;
+
+        // Read off the projection rather than the log: that is the list a
+        // provider is sent, and it is where an orphan would be a 400.
+        let mut announced: Vec<String> = Vec::new();
+        let mut answered: Vec<String> = Vec::new();
+        for message in session.messages() {
+            for block in &message.content {
+                match block {
+                    ContentBlock::ToolUse { id, .. } => announced.push(id.clone()),
+                    ContentBlock::ToolResult { tool_use_id, .. } => {
+                        answered.push(tool_use_id.clone())
+                    }
+                    _ => {}
+                }
+            }
+        }
+        assert_eq!(announced, vec!["c1".to_string()], "the call was not made");
+        assert_eq!(
+            answered, announced,
+            "an interrupted round left a tool_use with no tool_result"
+        );
+    }
+
     /// A read-only sibling of `Echo`, for proving the gate sorts on effect.
     struct Peek;
 
@@ -1854,7 +1994,11 @@ pub(crate) mod tests {
             Effect::ReadOnly
         }
 
-        async fn call(&self, _input: serde_json::Value) -> Result<String, String> {
+        async fn call(
+            &self,
+            _input: serde_json::Value,
+            _cancel: &CancellationToken,
+        ) -> Result<String, String> {
             Ok("looked".into())
         }
     }
@@ -2253,7 +2397,11 @@ pub(crate) mod tests {
             self.effect
         }
 
-        async fn call(&self, input: serde_json::Value) -> Result<String, String> {
+        async fn call(
+            &self,
+            input: serde_json::Value,
+            _cancel: &CancellationToken,
+        ) -> Result<String, String> {
             use std::sync::atomic::Ordering::SeqCst;
             let msg = input["msg"].as_str().unwrap_or_default().to_string();
             let now = self.active.fetch_add(1, SeqCst) + 1;

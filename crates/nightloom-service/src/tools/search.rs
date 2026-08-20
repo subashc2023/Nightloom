@@ -7,10 +7,10 @@
 //! matcher. `globset` is a matcher over paths we produce ourselves, so both
 //! tools see exactly the same tree with exactly the same glob semantics.
 
-use super::Root;
+use super::{INTERRUPTED, Root};
 use globset::{GlobBuilder, GlobMatcher};
 use nightloom_core::ToolDef;
-use nightloom_core::tool::{Effect, Tool};
+use nightloom_core::tool::{CancellationToken, Effect, Tool};
 use regex::Regex;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -174,7 +174,7 @@ impl Tool for Glob {
         }
     }
 
-    async fn call(&self, input: Value) -> Result<String, String> {
+    async fn call(&self, input: Value, cancel: &CancellationToken) -> Result<String, String> {
         let pattern = input["pattern"]
             .as_str()
             .ok_or_else(|| "missing required argument: pattern".to_string())?;
@@ -192,10 +192,18 @@ impl Tool for Glob {
         // to none. Harmless-looking until the docspace moved out of the
         // workspace, where every hit came back as a bare note name that
         // resolves against the workspace and finds nothing.
-        let mut hits: Vec<String> = walk_files(&base)
-            .filter(|p| matcher.is_match(relative(&base, p)))
-            .map(|p| self.root.show(&p))
-            .collect();
+        // A synchronous walk, so the check is a flag read rather than a
+        // select: cheap enough per entry to be invisible, and the only thing
+        // between Ctrl-C and the end of a walk over a large tree.
+        let mut hits: Vec<String> = Vec::new();
+        for path in walk_files(&base) {
+            if cancel.is_cancelled() {
+                return Err(INTERRUPTED.to_string());
+            }
+            if matcher.is_match(relative(&base, &path)) {
+                hits.push(self.root.show(&path));
+            }
+        }
         hits.sort();
 
         if hits.is_empty() {
@@ -281,7 +289,7 @@ impl Tool for Grep {
         }
     }
 
-    async fn call(&self, input: Value) -> Result<String, String> {
+    async fn call(&self, input: Value, cancel: &CancellationToken) -> Result<String, String> {
         let pattern = input["pattern"]
             .as_str()
             .ok_or_else(|| "missing required argument: pattern".to_string())?;
@@ -315,6 +323,11 @@ impl Tool for Grep {
         let mut files = files;
         files.sort();
         for file in files {
+            // Per file rather than per line: a regex over one file is quick,
+            // and a tree of them is what makes a `grep` worth interrupting.
+            if cancel.is_cancelled() {
+                return Err(INTERRUPTED.to_string());
+            }
             // The `glob` filter matches the base-relative path, the output
             // names the path the model can pass back. See `Glob::call`.
             if let Some(filter) = &filter
@@ -428,19 +441,31 @@ mod tests {
     async fn glob_matches_at_any_depth_and_skips_dot_git() {
         let dir = fixture("search-glob");
         let tool = Glob::new(Root::new(&dir));
-        let out = tool.call(json!({ "pattern": "*.rs" })).await.unwrap();
+        let out = tool
+            .call(json!({ "pattern": "*.rs" }), &CancellationToken::new())
+            .await
+            .unwrap();
         assert_eq!(out, "src/lib.rs\nsrc/main.rs");
 
         let scoped = tool
-            .call(json!({ "pattern": "**/*.md", "path": "." }))
+            .call(
+                json!({ "pattern": "**/*.md", "path": "." }),
+                &CancellationToken::new(),
+            )
             .await
             .unwrap();
         assert_eq!(scoped, "notes.md");
 
-        let none = tool.call(json!({ "pattern": "*.toml" })).await.unwrap();
+        let none = tool
+            .call(json!({ "pattern": "*.toml" }), &CancellationToken::new())
+            .await
+            .unwrap();
         assert!(none.starts_with("no files match"), "{none}");
 
-        let config = tool.call(json!({ "pattern": "config" })).await.unwrap();
+        let config = tool
+            .call(json!({ "pattern": "config" }), &CancellationToken::new())
+            .await
+            .unwrap();
         assert!(config.starts_with("no files match"), ".git must be skipped");
         fs::remove_dir_all(&dir).ok();
     }
@@ -462,13 +487,13 @@ mod tests {
         fs::write(dir.join(".nightloom/sessions/a.jsonl"), "codeword alpaca\n").unwrap();
 
         let found = Grep::new(Root::new(&dir))
-            .call(json!({ "pattern": "alpaca" }))
+            .call(json!({ "pattern": "alpaca" }), &CancellationToken::new())
             .await
             .unwrap();
         assert_eq!(found, ".nightloom/notes/decisions.md");
 
         let listed = Glob::new(Root::new(&dir))
-            .call(json!({ "pattern": "*.md" }))
+            .call(json!({ "pattern": "*.md" }), &CancellationToken::new())
             .await
             .unwrap();
         assert_eq!(listed, ".nightloom/notes/decisions.md");
@@ -489,7 +514,7 @@ mod tests {
         .unwrap();
 
         let found = Grep::new(Root::new(&dir))
-            .call(json!({ "pattern": "alpaca" }))
+            .call(json!({ "pattern": "alpaca" }), &CancellationToken::new())
             .await
             .unwrap();
         assert_eq!(found, ".agents/decisions.md");
@@ -500,10 +525,16 @@ mod tests {
     async fn glob_rejects_a_bad_pattern_and_an_escaping_path() {
         let dir = fixture("search-glob-err");
         let tool = Glob::new(Root::new(&dir));
-        let err = tool.call(json!({ "pattern": "[" })).await.unwrap_err();
+        let err = tool
+            .call(json!({ "pattern": "[" }), &CancellationToken::new())
+            .await
+            .unwrap_err();
         assert!(err.contains("not a valid glob pattern"), "{err}");
         let escape = tool
-            .call(json!({ "pattern": "*", "path": "../.." }))
+            .call(
+                json!({ "pattern": "*", "path": "../.." }),
+                &CancellationToken::new(),
+            )
             .await
             .unwrap_err();
         assert!(escape.contains("outside the workspace root"), "{escape}");
@@ -514,7 +545,10 @@ mod tests {
     async fn grep_files_with_matches_is_the_default_mode() {
         let dir = fixture("search-grep-files");
         let tool = Grep::new(Root::new(&dir));
-        let out = tool.call(json!({ "pattern": "TODO" })).await.unwrap();
+        let out = tool
+            .call(json!({ "pattern": "TODO" }), &CancellationToken::new())
+            .await
+            .unwrap();
         assert_eq!(out, "src/lib.rs\nsrc/main.rs");
         fs::remove_dir_all(&dir).ok();
     }
@@ -524,7 +558,10 @@ mod tests {
         let dir = fixture("search-grep-content");
         let tool = Grep::new(Root::new(&dir));
         let out = tool
-            .call(json!({ "pattern": "TODO: (one|ship)", "output_mode": "content" }))
+            .call(
+                json!({ "pattern": "TODO: (one|ship)", "output_mode": "content" }),
+                &CancellationToken::new(),
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -539,13 +576,19 @@ mod tests {
         let dir = fixture("search-grep-count");
         let tool = Grep::new(Root::new(&dir));
         let out = tool
-            .call(json!({ "pattern": "TODO", "output_mode": "count" }))
+            .call(
+                json!({ "pattern": "TODO", "output_mode": "count" }),
+                &CancellationToken::new(),
+            )
             .await
             .unwrap();
         assert_eq!(out, "src/lib.rs:2\nsrc/main.rs:1");
 
         let filtered = tool
-            .call(json!({ "pattern": "TODO", "glob": "*main*", "output_mode": "count" }))
+            .call(
+                json!({ "pattern": "TODO", "glob": "*main*", "output_mode": "count" }),
+                &CancellationToken::new(),
+            )
             .await
             .unwrap();
         assert_eq!(filtered, "src/main.rs:1");
@@ -558,14 +601,20 @@ mod tests {
         let tool = Grep::new(Root::new(&dir));
         // The binary fixture contains 0xfe, which would match as a byte but
         // must never be read as text.
-        let out = tool.call(json!({ "pattern": "nowhere" })).await.unwrap();
+        let out = tool
+            .call(json!({ "pattern": "nowhere" }), &CancellationToken::new())
+            .await
+            .unwrap();
         assert_eq!(out, "no matches for \"nowhere\"");
 
         // Named from the workspace root, not from the search target: this
         // string is the handle the model passes to `read_file` next, and
         // "lib.rs" — which is what it used to answer — is not that file.
         let single = tool
-            .call(json!({ "pattern": "TODO", "path": "src/lib.rs", "output_mode": "count" }))
+            .call(
+                json!({ "pattern": "TODO", "path": "src/lib.rs", "output_mode": "count" }),
+                &CancellationToken::new(),
+            )
             .await
             .unwrap();
         assert_eq!(single, "src/lib.rs:2");
@@ -576,13 +625,19 @@ mod tests {
     async fn grep_rejects_a_bad_regex_and_a_bad_output_mode() {
         let dir = fixture("search-grep-err");
         let tool = Grep::new(Root::new(&dir));
-        let bad_regex = tool.call(json!({ "pattern": "(" })).await.unwrap_err();
+        let bad_regex = tool
+            .call(json!({ "pattern": "(" }), &CancellationToken::new())
+            .await
+            .unwrap_err();
         assert!(
             bad_regex.contains("not a valid regular expression"),
             "{bad_regex}"
         );
         let bad_mode = tool
-            .call(json!({ "pattern": "x", "output_mode": "lines" }))
+            .call(
+                json!({ "pattern": "x", "output_mode": "lines" }),
+                &CancellationToken::new(),
+            )
             .await
             .unwrap_err();
         assert!(bad_mode.contains("output_mode must be"), "{bad_mode}");

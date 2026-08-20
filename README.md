@@ -116,8 +116,13 @@ REPL commands: `/new`, `/compact`, `/quit`, `/rewind`, `/context`.
   produce a request a provider rejects.
 
 Ctrl-C mid-stream cancels the turn and records the partial reply with pending
-tool calls stripped. Transient provider failures retry with backoff before
-anything has streamed; mid-stream errors never retry.
+tool calls stripped. It also reaches a tool call already in flight: every tool
+is handed the turn's token, so an interrupted `bash` kills what it started
+rather than running to its timeout. The round still finishes and still records
+a result for every call it made — a `tool_use` with no `tool_result` is
+invalid on replay against every provider, so nothing is abandoned, only asked
+to stop. Transient provider failures retry with backoff before anything has
+streamed; mid-stream errors never retry.
 
 ## Tools
 

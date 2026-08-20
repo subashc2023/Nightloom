@@ -45,7 +45,7 @@
 use super::root::Root;
 use super::task::TurnHandle;
 use crate::turn::{Chat, TurnEvent};
-use nightloom_core::tool::{Effect, Tool};
+use nightloom_core::tool::{CancellationToken, Effect, Tool};
 use nightloom_core::{Session, ToolDef};
 use nightloom_providers::ProviderKind;
 use serde_json::{Value, json};
@@ -364,7 +364,10 @@ impl Tool for Review {
         }
     }
 
-    async fn call(&self, input: Value) -> Result<String, String> {
+    /// Ignored here and honoured through the `TurnHandle`, exactly as in
+    /// `task` — the reviewer is a nested `Chat` holding the spawning turn's
+    /// token.
+    async fn call(&self, input: Value, _cancel: &CancellationToken) -> Result<String, String> {
         let name = input["reviewer"]
             .as_str()
             .unwrap_or_default()
@@ -551,7 +554,10 @@ mod tests {
         );
 
         let out = review
-            .call(json!({ "reviewer": "other", "path": "plan.md" }))
+            .call(
+                json!({ "reviewer": "other", "path": "plan.md" }),
+                &CancellationToken::new(),
+            )
             .await
             .unwrap();
 
@@ -592,7 +598,10 @@ mod tests {
             ),
         );
         review
-            .call(json!({ "reviewer": "other", "path": "plan.md" }))
+            .call(
+                json!({ "reviewer": "other", "path": "plan.md" }),
+                &CancellationToken::new(),
+            )
             .await
             .unwrap();
         fs::remove_dir_all(&dir).ok();
@@ -631,7 +640,10 @@ mod tests {
             ),
         );
         review
-            .call(json!({ "reviewer": "other", "path": "plan.md" }))
+            .call(
+                json!({ "reviewer": "other", "path": "plan.md" }),
+                &CancellationToken::new(),
+            )
             .await
             .unwrap();
         fs::remove_dir_all(&dir).ok();
@@ -644,7 +656,10 @@ mod tests {
         let dir = test_dir("review-missing");
         let review = review_in(&dir, reviewer_over(Vec::new(), Vec::new()));
         let err = review
-            .call(json!({ "reviewer": "other", "path": "plan.md" }))
+            .call(
+                json!({ "reviewer": "other", "path": "plan.md" }),
+                &CancellationToken::new(),
+            )
             .await
             .unwrap_err();
         assert!(err.contains("write the document first"), "{err}");
@@ -660,7 +675,10 @@ mod tests {
         let dir = test_dir("review-unknown");
         let review = review_in(&dir, reviewer_over(Vec::new(), Vec::new()));
         let err = review
-            .call(json!({ "reviewer": "gemini", "path": "plan.md" }))
+            .call(
+                json!({ "reviewer": "gemini", "path": "plan.md" }),
+                &CancellationToken::new(),
+            )
             .await
             .unwrap_err();
         assert!(err.contains("no reviewer called"), "{err}");
@@ -773,14 +791,20 @@ mod tests {
             ),
         );
         let err = capped
-            .call(json!({ "reviewer": "other", "path": "plan.md" }))
+            .call(
+                json!({ "reviewer": "other", "path": "plan.md" }),
+                &CancellationToken::new(),
+            )
             .await
             .unwrap_err();
         assert!(err.contains("stopped at its 1-round limit"), "{err}");
 
         let silent = review_in(&dir, reviewer_over(Vec::new(), vec![says("")]));
         let err = silent
-            .call(json!({ "reviewer": "other", "path": "plan.md" }))
+            .call(
+                json!({ "reviewer": "other", "path": "plan.md" }),
+                &CancellationToken::new(),
+            )
             .await
             .unwrap_err();
         assert!(err.contains("no text after 0 tool call(s)"), "{err}");

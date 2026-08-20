@@ -54,6 +54,12 @@ pub enum McpError {
     Closed(Option<String>),
     #[error("MCP request timed out after {0:?}")]
     Timeout(std::time::Duration),
+    /// The turn was interrupted while this request was in flight.
+    /// Distinct from [`McpError::Timeout`] because the two want different
+    /// words: a timeout says the server is unwell, where this says the user
+    /// pressed Ctrl-C and nothing is wrong with anything.
+    #[error("the request was interrupted")]
+    Cancelled,
     /// A non-2xx answer from an HTTP server. Carries a trimmed body, because
     /// the status alone rarely says which of a URL, a token or a payload was
     /// wrong.

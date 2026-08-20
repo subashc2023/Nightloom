@@ -2,7 +2,7 @@
 
 use super::{Root, path_arg, str_arg, truncated};
 use nightloom_core::ToolDef;
-use nightloom_core::tool::{Effect, Tool};
+use nightloom_core::tool::{CancellationToken, Effect, Tool};
 use serde_json::{Value, json};
 use std::fs;
 
@@ -63,7 +63,7 @@ impl Tool for ReadFile {
         }
     }
 
-    async fn call(&self, input: Value) -> Result<String, String> {
+    async fn call(&self, input: Value, _cancel: &CancellationToken) -> Result<String, String> {
         let arg = path_arg(&input)?;
         let path = self.root.resolve(&arg)?;
         let shown = self.root.show(&path);
@@ -109,7 +109,7 @@ impl Tool for WriteFile {
         }
     }
 
-    async fn call(&self, input: Value) -> Result<String, String> {
+    async fn call(&self, input: Value, _cancel: &CancellationToken) -> Result<String, String> {
         let arg = path_arg(&input)?;
         let content = str_arg(&input, "content")?;
         let path = self.root.resolve(&arg)?;
@@ -171,7 +171,7 @@ impl Tool for EditFile {
         }
     }
 
-    async fn call(&self, input: Value) -> Result<String, String> {
+    async fn call(&self, input: Value, _cancel: &CancellationToken) -> Result<String, String> {
         let arg = path_arg(&input)?;
         let old = str_arg(&input, "old_string")?;
         let new = str_arg(&input, "new_string")?;
@@ -263,7 +263,7 @@ impl Tool for ListDir {
         }
     }
 
-    async fn call(&self, input: Value) -> Result<String, String> {
+    async fn call(&self, input: Value, _cancel: &CancellationToken) -> Result<String, String> {
         let arg = input["path"].as_str().unwrap_or(".").to_string();
         let path = self.root.resolve(&arg)?;
         let shown = self.root.show(&path);
@@ -306,16 +306,25 @@ mod tests {
         let (read, write, ..) = tools(&dir);
 
         let created = write
-            .call(json!({ "path": "a/b/note.txt", "content": "hello" }))
+            .call(
+                json!({ "path": "a/b/note.txt", "content": "hello" }),
+                &CancellationToken::new(),
+            )
             .await
             .unwrap();
         assert_eq!(created, "Created a/b/note.txt (5 bytes)");
 
-        let back = read.call(json!({ "path": "a/b/note.txt" })).await.unwrap();
+        let back = read
+            .call(json!({ "path": "a/b/note.txt" }), &CancellationToken::new())
+            .await
+            .unwrap();
         assert_eq!(back, "hello");
 
         let again = write
-            .call(json!({ "path": "a/b/note.txt", "content": "goodbye" }))
+            .call(
+                json!({ "path": "a/b/note.txt", "content": "goodbye" }),
+                &CancellationToken::new(),
+            )
             .await
             .unwrap();
         assert_eq!(again, "Overwrote a/b/note.txt (7 bytes)");
@@ -327,7 +336,10 @@ mod tests {
         let dir = test_dir("files-truncate");
         let (read, ..) = tools(&dir);
         fs::write(dir.join("big.txt"), "x".repeat(READ_LIMIT + 100)).unwrap();
-        let out = read.call(json!({ "path": "big.txt" })).await.unwrap();
+        let out = read
+            .call(json!({ "path": "big.txt" }), &CancellationToken::new())
+            .await
+            .unwrap();
         assert!(out.ends_with("… (truncated)"));
         assert_eq!(out.len(), READ_LIMIT + "… (truncated)".len());
         fs::remove_dir_all(&dir).ok();
@@ -337,11 +349,16 @@ mod tests {
     async fn read_file_errors_on_missing_and_non_utf8() {
         let dir = test_dir("files-read-err");
         let (read, ..) = tools(&dir);
-        let missing = read.call(json!({ "path": "nope.txt" })).await;
+        let missing = read
+            .call(json!({ "path": "nope.txt" }), &CancellationToken::new())
+            .await;
         assert!(missing.unwrap_err().contains("cannot read"));
 
         fs::write(dir.join("bin.dat"), [0xff, 0xfe, 0x00, 0x80]).unwrap();
-        let err = read.call(json!({ "path": "bin.dat" })).await.unwrap_err();
+        let err = read
+            .call(json!({ "path": "bin.dat" }), &CancellationToken::new())
+            .await
+            .unwrap_err();
         assert!(err.contains("not valid UTF-8"));
         fs::remove_dir_all(&dir).ok();
     }
@@ -351,7 +368,12 @@ mod tests {
         let dir = test_dir("files-escape");
         let (read, write, ..) = tools(&dir);
 
-        let relative = read.call(json!({ "path": "../../secrets" })).await;
+        let relative = read
+            .call(
+                json!({ "path": "../../secrets" }),
+                &CancellationToken::new(),
+            )
+            .await;
         assert!(
             relative.unwrap_err().contains("outside the workspace root"),
             "relative escape must be rejected"
@@ -359,7 +381,10 @@ mod tests {
 
         let outside = dir.parent().unwrap().join("escaped.txt");
         let absolute = write
-            .call(json!({ "path": outside.to_str().unwrap(), "content": "nope" }))
+            .call(
+                json!({ "path": outside.to_str().unwrap(), "content": "nope" }),
+                &CancellationToken::new(),
+            )
             .await;
         assert!(absolute.unwrap_err().contains("outside the workspace root"));
         assert!(!outside.exists(), "the write must not have happened");
@@ -372,7 +397,10 @@ mod tests {
         let (_, _, edit, _) = tools(&dir);
         fs::write(dir.join("s.txt"), "alpha\nbeta\ngamma\n").unwrap();
         let out = edit
-            .call(json!({ "path": "s.txt", "old_string": "beta", "new_string": "BETA" }))
+            .call(
+                json!({ "path": "s.txt", "old_string": "beta", "new_string": "BETA" }),
+                &CancellationToken::new(),
+            )
             .await
             .unwrap();
         assert_eq!(out, "Edited s.txt: replaced 1 occurrence.");
@@ -389,7 +417,10 @@ mod tests {
         let (_, _, edit, _) = tools(&dir);
         fs::write(dir.join("s.txt"), "x = 1;\ny = 1;\nz = 1;\n").unwrap();
         let err = edit
-            .call(json!({ "path": "s.txt", "old_string": "= 1;", "new_string": "= 2;" }))
+            .call(
+                json!({ "path": "s.txt", "old_string": "= 1;", "new_string": "= 2;" }),
+                &CancellationToken::new(),
+            )
             .await
             .unwrap_err();
         assert!(err.contains("matches 3 places"), "{err}");
@@ -408,12 +439,15 @@ mod tests {
         let (_, _, edit, _) = tools(&dir);
         fs::write(dir.join("s.txt"), "old old old\n").unwrap();
         let out = edit
-            .call(json!({
-                "path": "s.txt",
-                "old_string": "old",
-                "new_string": "new",
-                "replace_all": true
-            }))
+            .call(
+                json!({
+                    "path": "s.txt",
+                    "old_string": "old",
+                    "new_string": "new",
+                    "replace_all": true
+                }),
+                &CancellationToken::new(),
+            )
             .await
             .unwrap();
         assert_eq!(out, "Edited s.txt: replaced 3 occurrences.");
@@ -430,7 +464,10 @@ mod tests {
         let (_, _, edit, _) = tools(&dir);
         fs::write(dir.join("s.txt"), "alpha\n").unwrap();
         let err = edit
-            .call(json!({ "path": "s.txt", "old_string": "omega", "new_string": "x" }))
+            .call(
+                json!({ "path": "s.txt", "old_string": "omega", "new_string": "x" }),
+                &CancellationToken::new(),
+            )
             .await
             .unwrap_err();
         assert!(err.contains("was not found"), "{err}");
@@ -448,7 +485,10 @@ mod tests {
         fs::write(dir.join(".agents").join("decisions.md"), "# Decisions").unwrap();
 
         let out = read
-            .call(json!({ "path": ".agents/decisions.md" }))
+            .call(
+                json!({ "path": ".agents/decisions.md" }),
+                &CancellationToken::new(),
+            )
             .await
             .unwrap();
         assert!(out.contains("# Decisions"), "{out}");
@@ -456,7 +496,10 @@ mod tests {
         // A new note in a subdirectory: `write_file` creates parents, which is
         // why the docspace needs no tool of its own.
         write
-            .call(json!({ "path": ".agents/plans/next.md", "content": "plan" }))
+            .call(
+                json!({ "path": ".agents/plans/next.md", "content": "plan" }),
+                &CancellationToken::new(),
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -472,7 +515,10 @@ mod tests {
         let (.., list) = tools(&dir);
         fs::create_dir_all(dir.join("sub")).unwrap();
         fs::write(dir.join("file.txt"), "hi").unwrap();
-        let out = list.call(json!({})).await.unwrap();
+        let out = list
+            .call(json!({}), &CancellationToken::new())
+            .await
+            .unwrap();
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines, ["file.txt", "sub/"]);
         fs::remove_dir_all(&dir).ok();

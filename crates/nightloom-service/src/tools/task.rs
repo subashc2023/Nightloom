@@ -109,7 +109,13 @@ impl Tool for Subagent {
         }
     }
 
-    async fn call(&self, input: Value) -> Result<String, String> {
+    /// The token is ignored *here* and honoured anyway: a subagent runs a
+    /// nested `Chat`, and the turn's token reaches it through the
+    /// `TurnHandle` the round loop refreshes — the same route the approval
+    /// policy takes. Racing this future against the token as well would
+    /// abandon a sub-turn part way through recording its own session, to
+    /// arrive at the answer it was already going to give.
+    async fn call(&self, input: Value, _cancel: &CancellationToken) -> Result<String, String> {
         let prompt = input["prompt"]
             .as_str()
             .filter(|p| !p.trim().is_empty())

@@ -4,6 +4,11 @@ use crate::session::SessionEvent;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Re-exported so an implementor can name the type [`Tool::call`] takes
+/// without adding a dependency of its own. The contract lives here; the
+/// primitive is `tokio-util`'s.
+pub use tokio_util::sync::CancellationToken;
+
 /// What running a tool can do outside the conversation — the axis an
 /// approval policy sorts on, so that a shell can wave through the tools that
 /// only look and stop on the ones that act.
@@ -36,8 +41,8 @@ impl<T: Tool + ?Sized> Tool for std::sync::Arc<T> {
         (**self).def()
     }
 
-    async fn call(&self, input: Value) -> Result<String, String> {
-        (**self).call(input).await
+    async fn call(&self, input: Value, cancel: &CancellationToken) -> Result<String, String> {
+        (**self).call(input, cancel).await
     }
 
     fn effect(&self) -> Effect {
@@ -59,7 +64,23 @@ pub trait Tool: Send + Sync {
     /// Execute the call. `Err` becomes a `ToolResult` with `is_error: true`
     /// and is fed back to the model rather than aborting the turn — the
     /// model gets to see and react to tool failures.
-    async fn call(&self, input: Value) -> Result<String, String>;
+    ///
+    /// `cancel` is the turn's token, and it is an *asking*, not an enforced
+    /// deadline. The engine does not abandon a call it cannot cancel, and
+    /// that restraint is the whole reason the token has to be a parameter:
+    /// dropping the future would leave a `tool_use` with no `tool_result`,
+    /// which is invalid on replay against every provider — the failure
+    /// [`orphan_marker`](crate::session::orphan_marker) exists to repair
+    /// after a crash and should not be manufactured on purpose here. So a
+    /// cancelled turn still gets a result for every call it started, and a
+    /// tool that wants Ctrl-C to mean something has to return one.
+    ///
+    /// Honour it if there is anything to honour: a child process to kill, a
+    /// request in flight, a directory walk part way through. Most tools
+    /// finish in microseconds and correctly ignore it. Returning `Err` on
+    /// cancellation is right — nothing was produced, and the model is
+    /// reading the result of a turn the user has already interrupted.
+    async fn call(&self, input: Value, cancel: &CancellationToken) -> Result<String, String>;
 
     /// What running this tool can do outside the conversation.
     ///
@@ -111,9 +132,15 @@ pub const RESULT_LIMIT: usize = 64 * 1024;
 /// Find a tool by name and execute one call, producing the result block to
 /// send back. An unknown tool name is itself an error result: the model
 /// hallucinated a tool, and should be told so.
-pub async fn run_tool(tools: &[Box<dyn Tool>], id: &str, name: &str, input: Value) -> ContentBlock {
+pub async fn run_tool(
+    tools: &[Box<dyn Tool>],
+    id: &str,
+    name: &str,
+    input: Value,
+    cancel: &CancellationToken,
+) -> ContentBlock {
     let outcome = match tools.iter().find(|t| t.def().name == name) {
-        Some(tool) => tool.call(input).await,
+        Some(tool) => tool.call(input, cancel).await,
         None => Err(format!("unknown tool: {name}")),
     };
     let (content, is_error) = match outcome {
@@ -192,14 +219,20 @@ mod tests {
             }
         }
 
-        async fn call(&self, _input: Value) -> Result<String, String> {
+        async fn call(&self, _input: Value, _cancel: &CancellationToken) -> Result<String, String> {
             self.0.clone()
         }
     }
 
     fn call(outcome: Result<String, String>) -> (String, bool) {
         let tools: Vec<Box<dyn Tool>> = vec![Box::new(Fixed(outcome))];
-        match run(run_tool(&tools, "c1", "fixed", Value::Null)) {
+        match run(run_tool(
+            &tools,
+            "c1",
+            "fixed",
+            Value::Null,
+            &CancellationToken::new(),
+        )) {
             ContentBlock::ToolResult {
                 content, is_error, ..
             } => (content, is_error),
@@ -255,6 +288,30 @@ mod tests {
         );
     }
 
+    /// The contract [`Tool::call`] documents, pinned: cancelling does not
+    /// let the engine skip a call it has already announced. A `tool_use`
+    /// with no matching `tool_result` is invalid on replay against every
+    /// provider, so an interrupted turn still owes the log a result — and
+    /// the token is a parameter precisely so a tool can supply one rather
+    /// than be dropped.
+    #[test]
+    fn a_cancelled_call_still_produces_a_result_block() {
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(Fixed(Err("interrupted".into())))];
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        match run(run_tool(&tools, "c1", "fixed", Value::Null, &cancel)) {
+            ContentBlock::ToolResult {
+                tool_use_id,
+                is_error,
+                ..
+            } => {
+                assert_eq!(tool_use_id, "c1", "the result must answer the call by id");
+                assert!(is_error);
+            }
+            other => panic!("not a tool result: {other:?}"),
+        }
+    }
+
     #[test]
     fn a_failure_is_capped_like_a_success() {
         // A server that fails with a megabyte of JSON attached is not a
@@ -269,7 +326,13 @@ mod tests {
     #[test]
     fn a_hallucinated_tool_is_an_error_result_not_an_abort() {
         let tools: Vec<Box<dyn Tool>> = vec![Box::new(Fixed(Ok("never runs".into())))];
-        match run(run_tool(&tools, "c1", "no_such_tool", Value::Null)) {
+        match run(run_tool(
+            &tools,
+            "c1",
+            "no_such_tool",
+            Value::Null,
+            &CancellationToken::new(),
+        )) {
             ContentBlock::ToolResult {
                 content,
                 is_error,

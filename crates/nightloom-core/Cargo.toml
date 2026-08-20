@@ -10,5 +10,9 @@ serde.workspace = true
 serde_json.workspace = true
 futures.workspace = true
 async-trait.workspace = true
+# `CancellationToken` only: a tool call is the one place in this crate
+# where an operation outlives the event that started it, and the contract for
+# stopping it belongs beside the trait rather than in each shell.
+tokio-util.workspace = true
 chrono.workspace = true
 uuid.workspace = true

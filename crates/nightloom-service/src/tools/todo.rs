@@ -1,7 +1,7 @@
 //! The model's task list.
 
 use chrono::Utc;
-use nightloom_core::tool::{Effect, Tool};
+use nightloom_core::tool::{CancellationToken, Effect, Tool};
 use nightloom_core::{SessionEvent, TodoItem, TodoStatus, ToolDef};
 use serde_json::{Value, json};
 use std::sync::Mutex;
@@ -69,7 +69,7 @@ impl Tool for TodoWrite {
         }
     }
 
-    async fn call(&self, input: Value) -> Result<String, String> {
+    async fn call(&self, input: Value, _cancel: &CancellationToken) -> Result<String, String> {
         let items = input["todos"]
             .as_array()
             .ok_or_else(|| "missing required argument: todos (an array)".to_string())?;
@@ -118,10 +118,13 @@ mod tests {
     async fn todo_write_stages_one_event_per_write() {
         let tool = TodoWrite::default();
         let out = tool
-            .call(json!({"todos": [
-                {"content": "read the config", "status": "completed"},
-                {"content": "wire the sidecar", "status": "in_progress"}
-            ]}))
+            .call(
+                json!({"todos": [
+                    {"content": "read the config", "status": "completed"},
+                    {"content": "wire the sidecar", "status": "in_progress"}
+                ]}),
+                &CancellationToken::new(),
+            )
             .await
             .unwrap();
         assert_eq!(out, "Task list updated: 2 tasks, 1 open.");
@@ -143,7 +146,10 @@ mod tests {
     async fn todo_write_rejects_a_bad_status_without_staging() {
         let tool = TodoWrite::default();
         let err = tool
-            .call(json!({"todos": [{"content": "x", "status": "done"}]}))
+            .call(
+                json!({"todos": [{"content": "x", "status": "done"}]}),
+                &CancellationToken::new(),
+            )
             .await
             .unwrap_err();
         assert!(err.contains("status must be"), "{err}");
