@@ -24,10 +24,19 @@
 //!
 //! There is no Projects API and no per-project export: the account-wide
 //! privacy export (Settings → Privacy → Export Data, which arrives as a zip by
-//! email) is the whole of the programmatic surface. It holds `projects.json`
-//! and `conversations.json`, and this module reads both out of the zip
-//! directly, because "unzip it first" is a step that goes wrong on a 400 MB
-//! archive and buys nothing.
+//! email) is the whole of the programmatic surface. It holds the projects and
+//! the conversations, and this module reads both out of the zip directly,
+//! because "unzip it first" is a step that goes wrong on a 400 MB archive and
+//! buys nothing.
+//!
+//! The archive's own layout has moved twice and is not a contract. The
+//! conversations have stayed one `conversations.json`, but the projects, which
+//! used to be one `projects.json`, now ship as a `projects/` directory holding
+//! one file per project. Reading only the single file meant a current export
+//! parsed zero projects and filed every conversation as unfiled -- a silent,
+//! total failure of the half of this feature that has a project in it, so the
+//! reader takes either shape and concatenates the shards when the single file
+//! is absent.
 //!
 //! ## Two decisions worth defending
 //!
@@ -97,6 +106,8 @@ const SLUG_LIMIT: usize = 60;
 /// Filenames looked for, at any depth, in a zip or a folder.
 const CONVERSATIONS: &str = "conversations.json";
 const PROJECTS: &str = "projects.json";
+/// Directory the current export shards the projects into, one file each.
+const PROJECTS_DIR: &str = "projects";
 
 // ---------------------------------------------------------------------------
 // The export's own shapes
@@ -293,64 +304,119 @@ pub struct Export {
 /// two `.json` files are found by basename at any depth, since the archive has
 /// been shipped both flat and inside a dated directory.
 pub fn read_export(path: &Path) -> Result<Export, String> {
-    let files = if path.is_dir() {
+    let mut files = if path.is_dir() {
         read_dir_files(path)?
     } else if path.is_file() {
         read_zip_files(path)?
     } else {
         return Err(format!("{} does not exist", path.display()));
     };
+    // Neither a zip's entry order nor a directory listing is guaranteed, and
+    // the shards decide the order the projects are imported in.
+    files.project_shards.sort_by(|a, b| a.0.cmp(&b.0));
 
     if files.is_empty() {
         return Err(format!(
-            "no {CONVERSATIONS} or {PROJECTS} in {} — point this at the zip \
-             Anthropic emailed you, or at a folder it was unpacked into",
+            "no {CONVERSATIONS}, {PROJECTS} or {PROJECTS_DIR}/ in {} — point this at \
+             the zip Anthropic emailed you, or at a folder it was unpacked into",
             path.display()
         ));
     }
 
     let mut export = Export::default();
-    if let Some(raw) = files.get(PROJECTS) {
-        export.projects = parse_array(raw, "projects", "project", &mut export);
+    match &files.projects {
+        Some(raw) => export.projects = parse_array(raw, "projects", "project", &mut export),
+        // The current export has no `projects.json` at all: concatenating the
+        // shards is the whole of the difference, since one file holds what one
+        // element of that array held. Only when it is absent, so an archive
+        // carrying both is read the way it always was rather than having every
+        // project counted twice.
+        None => {
+            for (label, raw) in &files.project_shards {
+                let shard = parse_projects_shard(raw, label, &mut export);
+                export.projects.extend(shard);
+            }
+        }
     }
-    if let Some(raw) = files.get(CONVERSATIONS) {
+    if let Some(raw) = &files.conversations {
         export.conversations = parse_array(raw, "conversations", "conversation", &mut export);
     }
     Ok(export)
 }
 
-fn read_dir_files(dir: &Path) -> Result<HashMap<String, Vec<u8>>, String> {
-    let mut out = HashMap::new();
-    let mut stack = vec![dir.to_path_buf()];
+/// The bytes an export was found to hold, before any of it is parsed.
+///
+/// A struct rather than a map keyed by filename because the shards are a list
+/// and the other two are not, and a map would have to encode that in its keys.
+#[derive(Debug, Default)]
+struct ExportFiles {
+    projects: Option<Vec<u8>>,
+    conversations: Option<Vec<u8>>,
+    /// `projects/<name>.json`, carrying its label for the warnings a bad one
+    /// produces — "skipped a project" names nothing when there are ninety
+    /// files it could have come from.
+    project_shards: Vec<(String, Vec<u8>)>,
+}
+
+impl ExportFiles {
+    fn is_empty(&self) -> bool {
+        self.projects.is_none() && self.conversations.is_none() && self.project_shards.is_empty()
+    }
+}
+
+fn read_dir_files(dir: &Path) -> Result<ExportFiles, String> {
+    let mut out = ExportFiles::default();
     // Two levels: the archive ships flat or inside one dated directory, and a
     // deeper walk would start reading whatever else is in the folder someone
-    // pointed at.
-    let mut depth = 0;
-    while let Some(current) = stack.pop() {
+    // pointed at. `projects/` is a third level in the dated case, so it is
+    // descended into by name wherever it turns up — the depth is carried per
+    // directory rather than counted per pop, or a second directory beside the
+    // dated one would push the budget past whichever was visited first.
+    let mut stack = vec![(dir.to_path_buf(), 0usize)];
+    while let Some((current, depth)) = stack.pop() {
         let Ok(entries) = fs::read_dir(&current) else {
             continue;
         };
+        let sharded = current.file_name().and_then(|n| n.to_str()) == Some(PROJECTS_DIR);
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_dir() && depth < 1 {
-                stack.push(path);
-            } else if let Some(name) = path.file_name().and_then(|n| n.to_str())
-                && (name == CONVERSATIONS || name == PROJECTS)
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if path.is_dir() {
+                if depth < 1 || (depth < 2 && name == PROJECTS_DIR) {
+                    stack.push((path.clone(), depth + 1));
+                }
+            } else if name == PROJECTS
                 && let Ok(bytes) = fs::read(&path)
             {
-                out.insert(name.to_string(), bytes);
+                out.projects = Some(bytes);
+            } else if name == CONVERSATIONS
+                && let Ok(bytes) = fs::read(&path)
+            {
+                out.conversations = Some(bytes);
+            } else if sharded
+                && name.ends_with(".json")
+                && let Ok(bytes) = fs::read(&path)
+            {
+                out.project_shards.push((shard_label(name), bytes));
             }
         }
-        depth += 1;
     }
     Ok(out)
 }
 
-fn read_zip_files(path: &Path) -> Result<HashMap<String, Vec<u8>>, String> {
+/// How a shard is named in a warning: enough to find the file, and nothing
+/// that could be mistaken for a path this import will open.
+fn shard_label(name: &str) -> String {
+    format!("{PROJECTS_DIR}/{name}")
+}
+
+fn read_zip_files(path: &Path) -> Result<ExportFiles, String> {
     let file = fs::File::open(path).map_err(|e| format!("cannot open {}: {e}", path.display()))?;
     let mut zip = zip::ZipArchive::new(file)
         .map_err(|e| format!("{} is not a readable zip: {e}", path.display()))?;
-    let mut out = HashMap::new();
+    let mut out = ExportFiles::default();
     for i in 0..zip.len() {
         let mut entry = match zip.by_index(i) {
             Ok(e) => e,
@@ -359,22 +425,27 @@ fn read_zip_files(path: &Path) -> Result<HashMap<String, Vec<u8>>, String> {
         if !entry.is_file() {
             continue;
         }
-        // Matched on the basename and never written to disk, so the entry
-        // name is read as a label rather than as a path.
-        let name = entry
-            .name()
-            .rsplit('/')
-            .next()
-            .unwrap_or_default()
-            .to_string();
-        if name != CONVERSATIONS && name != PROJECTS {
+        // Matched on the last two segments and never written to disk, so the
+        // entry name is read as a label rather than as a path. Owned before
+        // the read, which needs the entry back mutably.
+        let mut segments = entry.name().rsplit('/');
+        let name = segments.next().unwrap_or_default().to_string();
+        let parent = segments.next().unwrap_or_default().to_string();
+        let sharded = parent == PROJECTS_DIR && name != PROJECTS && name.ends_with(".json");
+        if !sharded && name != CONVERSATIONS && name != PROJECTS {
             continue;
         }
         let mut buf = Vec::new();
         entry
             .read_to_end(&mut buf)
             .map_err(|e| format!("cannot read {name} out of the archive: {e}"))?;
-        out.insert(name, buf);
+        if sharded {
+            out.project_shards.push((shard_label(&name), buf));
+        } else if name == PROJECTS {
+            out.projects = Some(buf);
+        } else {
+            out.conversations = Some(buf);
+        }
     }
     Ok(out)
 }
@@ -419,6 +490,50 @@ fn parse_array<T: DeserializeOwned>(
         }
     };
 
+    parse_items(items, what, export)
+}
+
+/// Parse one `projects/<name>.json`.
+///
+/// A shard holds the project object itself, which is what one element of
+/// `projects.json` was. An array is read too, since the shards are being
+/// concatenated anyway and a file holding two costs nothing to accept, and so
+/// are the wrapper shapes the single file ships in — read as a project,
+/// `{"projects": [...]}` would parse into one with every field defaulted,
+/// which imports as a nameless empty project rather than as nothing.
+fn parse_projects_shard(raw: &[u8], label: &str, export: &mut Export) -> Vec<ExportedProject> {
+    let value: serde_json::Value = match serde_json::from_slice(raw) {
+        Ok(v) => v,
+        Err(e) => {
+            export.warnings.push(format!("{label} is not JSON: {e}"));
+            return Vec::new();
+        }
+    };
+    match value {
+        serde_json::Value::Array(items) => parse_items(items, "project", export),
+        serde_json::Value::Object(mut map) => {
+            let wrapper = ["projects", "data"]
+                .into_iter()
+                .find(|key| matches!(map.get(*key), Some(serde_json::Value::Array(_))));
+            match wrapper.and_then(|key| map.remove(key)) {
+                Some(serde_json::Value::Array(items)) => parse_items(items, "project", export),
+                _ => parse_items(vec![serde_json::Value::Object(map)], "project", export),
+            }
+        }
+        _ => {
+            export.warnings.push(format!("{label} holds no project"));
+            Vec::new()
+        }
+    }
+}
+
+/// The element-wise half both readers share: what could not be read is counted
+/// and named, and the rest of the file still arrives.
+fn parse_items<T: DeserializeOwned>(
+    items: Vec<serde_json::Value>,
+    what: &str,
+    export: &mut Export,
+) -> Vec<T> {
     let mut out = Vec::with_capacity(items.len());
     for item in items {
         match serde_json::from_value(item) {
@@ -1808,6 +1923,133 @@ mod tests {
             second.projects[0].warnings
         );
         assert_eq!(second.projects[0].already, 1);
+    }
+
+    /// The export stopped shipping `projects.json` and started shipping a
+    /// `projects/` directory with one file per project. Reading only the
+    /// single file parsed zero projects, so every conversation in the archive
+    /// came back unfiled — the whole of the feature failing quietly.
+    #[test]
+    fn a_projects_directory_stands_in_for_projects_json() {
+        let dir = test_dir("import-src-sharded");
+        let shards = dir.join(PROJECTS_DIR);
+        fs::create_dir_all(&shards).unwrap();
+        // One project per file, as the export writes them, and the object
+        // itself rather than an array of one.
+        for project in one_project().as_array().unwrap() {
+            let uuid = project["uuid"].as_str().unwrap();
+            fs::write(
+                shards.join(format!("{uuid}.json")),
+                serde_json::to_vec_pretty(project).unwrap(),
+            )
+            .unwrap();
+        }
+        fs::write(
+            shards.join("p-2.json"),
+            serde_json::to_vec_pretty(&json!({
+                "uuid": "p-2",
+                "name": "Second Project",
+                "prompt_template": "Be brief.",
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            dir.join(CONVERSATIONS),
+            serde_json::to_vec_pretty(&json!([{
+                "uuid": "c-1",
+                "name": "Sharded",
+                "project_uuid": "p-1",
+                "created_at": "2025-03-04T05:06:07Z",
+                "chat_messages": [message("m-1", "human", "hello")],
+            }]))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let export = read_export(&dir).unwrap();
+        assert_eq!(export.projects.len(), 2);
+        // Sorted by shard name, so two runs of one archive agree.
+        assert_eq!(export.projects[0].uuid, "p-1");
+        assert_eq!(export.projects[1].uuid, "p-2");
+        assert_eq!(export.conversations.len(), 1);
+
+        let into = test_dir("import-sharded-out");
+        let report = run(&export, &into);
+        assert_eq!(report.unfiled, 0, "{:?}", report.warnings);
+        assert_eq!(report.imported(), 1);
+        let thesis = report
+            .projects
+            .iter()
+            .find(|p| p.name == "Thesis Research")
+            .expect("the sharded project");
+        assert_eq!(thesis.imported, 1);
+        assert_eq!(thesis.notes, 2);
+        assert!(thesis.instructions);
+    }
+
+    /// An archive carrying both is read the way it always was: the shards are
+    /// a fallback, not a second source, or every project in it would be
+    /// imported twice.
+    #[test]
+    fn projects_json_wins_over_a_projects_directory() {
+        let dir = test_dir("import-src-both");
+        fs::write(
+            dir.join(PROJECTS),
+            serde_json::to_vec_pretty(&one_project()).unwrap(),
+        )
+        .unwrap();
+        let shards = dir.join(PROJECTS_DIR);
+        fs::create_dir_all(&shards).unwrap();
+        fs::write(
+            shards.join("p-1.json"),
+            serde_json::to_vec_pretty(&one_project()[0]).unwrap(),
+        )
+        .unwrap();
+        fs::write(dir.join(CONVERSATIONS), b"[]").unwrap();
+
+        let export = read_export(&dir).unwrap();
+        assert_eq!(export.projects.len(), 1);
+    }
+
+    /// Nested inside the dated directory, which is where the shards actually
+    /// sit — one level deeper than the walk used to reach.
+    #[test]
+    fn sharded_projects_are_read_out_of_a_nested_zip() {
+        use std::io::Write as _;
+
+        let dir = test_dir("import-zip-sharded");
+        let path = dir.join("data.zip");
+        let mut zip = zip::ZipWriter::new(fs::File::create(&path).unwrap());
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        zip.start_file("data-2025-03-04/projects/p-1.json", options)
+            .unwrap();
+        zip.write_all(&serde_json::to_vec(&one_project()[0]).unwrap())
+            .unwrap();
+        zip.start_file("data-2025-03-04/conversations.json", options)
+            .unwrap();
+        zip.write_all(
+            &serde_json::to_vec(&json!([{
+                "uuid": "c-1",
+                "name": "From a sharded zip",
+                "project_uuid": "p-1",
+                "created_at": "2025-03-04T05:06:07Z",
+                "chat_messages": [message("m-1", "human", "hello")],
+            }]))
+            .unwrap(),
+        )
+        .unwrap();
+        zip.finish().unwrap();
+
+        let export = read_export(&path).unwrap();
+        assert_eq!(export.projects.len(), 1);
+        assert_eq!(export.projects[0].name, "Thesis Research");
+
+        let into = test_dir("import-zip-sharded-out");
+        let report = run(&export, &into);
+        assert_eq!(report.unfiled, 0);
+        assert_eq!(report.imported(), 1);
     }
 
     /// The zip is what arrives in the email, so it is what the reader takes.
