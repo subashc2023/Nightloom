@@ -375,17 +375,18 @@ struct SearchBackendInfo {
     /// a user who scripts the CLI already uses.
     env_key: String,
     key_source: Option<KeySource>,
-    /// Whether this is the one that would actually answer. Only the first
-    /// backend with a key is used, so a second key set is inert — and a
-    /// settings pane showing two filled boxes with no hint of which one is
-    /// live would be actively misleading.
-    active: bool,
+    /// Where this backend sits in the chain, 1-based, or `None` with no key.
+    /// A position rather than a flag because every key is used: they are
+    /// asked in turn, and a pane showing three filled boxes with no hint of
+    /// the order would leave the reader to guess at the whole behaviour.
+    order: Option<u32>,
 }
 
-/// The search backends, with whether each has a key and which one answers.
+/// The search backends, with whether each has a key and where in the chain
+/// `web_search` will reach it.
 #[tauri::command]
 fn search_backends() -> Vec<SearchBackendInfo> {
-    let active = nightloom_service::tools::search_backend(credentials::search_key);
+    let chain = nightloom_service::tools::search_backends(credentials::search_key);
     SearchBackend::ALL
         .into_iter()
         .map(|backend| SearchBackendInfo {
@@ -393,7 +394,10 @@ fn search_backends() -> Vec<SearchBackendInfo> {
             label: backend.label().to_string(),
             env_key: backend.env_key().to_string(),
             key_source: credentials::search_key_source(backend),
-            active: active == Some(backend),
+            order: chain
+                .iter()
+                .position(|b| *b == backend)
+                .map(|i| i as u32 + 1),
         })
         .collect()
 }
@@ -750,10 +754,19 @@ async fn connect(
         },
         workspace: spec.workspace.to_string_lossy().into_owned(),
         project: active.as_ref().map(ProjectInfo::of),
+        // The whole chain, not the head: the rail's chip is where a user
+        // finds out which third parties see their queries, and naming one of
+        // three would be a worse answer than naming none.
         search: (spec.tools && spec.web)
-            .then(|| nightloom_service::tools::search_backend(credentials::search_key))
-            .flatten()
-            .map(|b| b.label().to_string()),
+            .then(|| nightloom_service::tools::search_backends(credentials::search_key))
+            .filter(|chain| !chain.is_empty())
+            .map(|chain| {
+                chain
+                    .iter()
+                    .map(|b| b.label())
+                    .collect::<Vec<_>>()
+                    .join(" → ")
+            }),
         engine: "provider".into(),
         agent: None,
     };

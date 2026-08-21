@@ -904,11 +904,21 @@ pub async fn run(args: ChatArgs) -> Result<()> {
         // never searches, and the user is left wondering why it guessed.
         println!(
             "{DIM}{}{RESET}",
-            match tools::search_backend(credentials::search_key) {
-                Some(backend) => format!("web: web_fetch and web_search via {}", backend.label()),
-                None => format!(
+            match tools::search_backends(credentials::search_key).as_slice() {
+                // Every key is named, not just the first: they are a chain,
+                // and a second one is what keeps search working when the
+                // first is rejected or runs out of credit.
+                [] => format!(
                     "web: web_fetch only — set {} for web_search",
                     tools::SearchBackend::ALL.map(|b| b.env_key()).join(", ")
+                ),
+                chain => format!(
+                    "web: web_fetch and web_search via {}",
+                    chain
+                        .iter()
+                        .map(|b| b.label())
+                        .collect::<Vec<_>>()
+                        .join(", then ")
                 ),
             }
         );

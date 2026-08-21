@@ -399,7 +399,13 @@
               web_fetch
             </span>
             {#if app.connection.search}
-              <span class="chip" title="Queries are sent to {app.connection.search}.">
+              <!-- The whole chain, arrowed. A query goes to one of them, but
+                   which one depends on whether the ones before it answered,
+                   so all of them can see a query and all of them are named. -->
+              <span
+                class="chip"
+                title="Queries are sent to {app.connection.search}, in that order — the next one only if the one before it cannot answer."
+              >
                 web_search
               </span>
             {:else}

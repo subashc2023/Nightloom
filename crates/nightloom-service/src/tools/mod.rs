@@ -36,7 +36,9 @@ pub use review::{Review, Reviewer, ReviewerSpec, bench};
 pub use root::Root;
 pub use task::{Subagent, TurnHandle};
 pub use todo::TodoWrite;
-pub use web::{Fetch, SearchBackend, WebSearch, env_search_key, search_backend, web_tools};
+pub use web::{
+    Fetch, SearchBackend, WebSearch, env_search_key, search_backend, search_backends, web_tools,
+};
 
 use chrono::{Local, Utc};
 use nightloom_core::ToolDef;

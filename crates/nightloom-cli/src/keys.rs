@@ -135,10 +135,10 @@ fn list() -> Result<()> {
         );
     }
 
-    // Only the first backend with a key is ever queried, so a second one set
-    // is inert — and a list that showed two as configured with no hint of
-    // which answers would be actively misleading.
-    let active = nightloom_service::tools::search_backend(credentials::search_key);
+    // Backends with a key form a chain rather than a winner: a list that
+    // showed three as configured without saying in what order they are asked
+    // would leave the reader to guess, and the order is the whole behaviour.
+    let chain = nightloom_service::tools::search_backends(credentials::search_key);
     println!("\nsearch");
     for backend in SearchBackend::ALL {
         row(
@@ -147,8 +147,20 @@ fn list() -> Result<()> {
             credentials::search_key_source(backend),
             backend.env_key(),
         );
-        if active == Some(backend) {
-            println!("{DIM}{:width$}    ^ answers web_search{RESET}", "");
+    }
+    if !chain.is_empty() {
+        println!(
+            "{DIM}  web_search asks {}{RESET}",
+            chain
+                .iter()
+                .map(|b| b.name())
+                .collect::<Vec<_>>()
+                .join(", then ")
+        );
+        if chain.len() > 1 {
+            println!(
+                "{DIM}  the next one takes over when a key is rejected or a plan runs out{RESET}"
+            );
         }
     }
 

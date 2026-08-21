@@ -16,6 +16,7 @@
     type ModelEntry,
     type ModelSection,
   } from "./catalog";
+  import type { SearchBackendInfo } from "./types";
 
   let selected = $state(app.draft.provider || app.providers[0]?.kind || "");
   let keyDraft = $state("");
@@ -36,6 +37,21 @@
   const provider = $derived(
     searchSel ? undefined : app.providers.find((p) => p.kind === selected),
   );
+
+  /**
+   * Where this key sits in the chain. Worth a sentence rather than a badge:
+   * a spare that is never reached looks identical to a key that does nothing,
+   * and the difference is the reason to have set it.
+   */
+  function chainNote(b: SearchBackendInfo): string {
+    if (b.order === null) return "";
+    if (b.order === 1) return " Searches are sent here first.";
+    const ahead = app.searchBackends
+      .filter((o) => o.order !== null && o.order < b.order!)
+      .map((o) => o.label)
+      .join(" and ");
+    return ` Held in reserve: searches go here if ${ahead} cannot answer.`;
+  }
   const fetchState = $derived(app.modelFetch[selected]);
 
   void refreshSearchBackends();
@@ -258,23 +274,21 @@
         <span class="slug">{searchSel.env_key}</span>
       </div>
       <p class="note">
-        A key here turns on <code>web_search</code>. Only one backend is used —
-        the first of Tavily, Brave and Exa with a key — so a second key set is
-        inert until the one above it is cleared. <code>web_fetch</code> needs no
-        key and is always available.
+        A key here turns on <code>web_search</code>. Every backend with a key is
+        asked in turn — Tavily, then Brave, then Exa — until one answers, and
+        one whose key is rejected or whose credit has run out drops out for the
+        rest of the session. A second key is a spare, not a second search: one
+        query is never sent to more than one of them.
+        <code>web_fetch</code> needs no key and is always available.
       </p>
 
       <section class="section">
         <div class="section-title">API key</div>
         <div class="key-status">
           {#if searchSel.key_source === "stored"}
-            Using a key stored in the OS credential store.{searchSel.active
-              ? " This is the backend answering searches."
-              : " Another backend is ahead of it, so this key is unused."}
+            Using a key stored in the OS credential store.{chainNote(searchSel)}
           {:else if searchSel.key_source === "env"}
-            Using a key from {searchSel.env_key}.{searchSel.active
-              ? " This is the backend answering searches."
-              : " Another backend is ahead of it, so this key is unused."}
+            Using a key from {searchSel.env_key}.{chainNote(searchSel)}
           {:else}
             No key set.
           {/if}

@@ -44,12 +44,25 @@
 //! engine's HTML with no key was rejected for the reason nothing else here is
 //! substituted either — a facility that silently degrades is worse than one
 //! that is honestly missing.
+//!
+//! **Several keys make a chain, not a fan-out.** Every backend with a key is
+//! ordered by preference and tried in turn until one answers, and a backend
+//! that answers with a dead key or a spent plan leaves the chain for the life
+//! of the process rather than costing a wasted request on every later search.
+//! Querying all three per search and merging is the obvious other reading and
+//! it is wrong in the direction that matters: it triples the requests, so it
+//! empties three free tiers in the time one would have lasted, which is the
+//! exact inverse of what a second key is for. It is also worse to read —
+//! Tavily returns extracted page content, Brave an index snippet and Exa a
+//! semantic excerpt, so a merged list is one where the model cannot tell how
+//! far to trust a snippet from its length or its shape.
 
 use super::{READ_LIMIT, str_arg};
 use nightloom_core::ToolDef;
 use nightloom_core::tool::{CancellationToken, Effect, Tool};
 use reqwest::{Client, Url};
 use serde_json::{Value, json};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
 /// Long enough for a slow origin, short enough that a hung server does not
@@ -964,12 +977,7 @@ fn clean_snippet(raw: &str) -> String {
 /// consulted too, which also covers the next vendor with its own opinion
 /// about which code means "who are you".
 fn advice(backend: SearchBackend, status: u16, body: &str) -> String {
-    let auth = matches!(status, 401 | 403) || {
-        let body = body.to_ascii_lowercase();
-        ["api key", "token", "unauthor", "subscription", "credential"]
-            .iter()
-            .any(|s| body.contains(s))
-    };
+    let auth = is_auth_failure(status, body);
     if auth {
         format!(
             " The {} API key looks wrong or expired; tell the user rather than retrying \
@@ -988,6 +996,65 @@ fn advice(backend: SearchBackend, status: u16, body: &str) -> String {
     }
 }
 
+/// Whether a rejection is about who is asking rather than what was asked.
+///
+/// Split out of [`advice`] because the chain needs the same judgement for a
+/// different purpose: the model is told to stop retrying, and the backend is
+/// taken out of the chain. The status alone does not identify one — verified
+/// live, Brave answers an invalid subscription token with 422 where Tavily
+/// and Exa answer 401 — so the body is consulted too.
+fn is_auth_failure(status: u16, body: &str) -> bool {
+    matches!(status, 401 | 403) || {
+        let body = body.to_ascii_lowercase();
+        ["api key", "token", "unauthor", "subscription", "credential"]
+            .iter()
+            .any(|s| body.contains(s))
+    }
+}
+
+/// Whether a rejection means the plan behind the key is spent.
+///
+/// Deliberately *not* 429, which is the other thing a vendor says when it
+/// will not serve a query and means the opposite for the chain: Brave's free
+/// tier allows one query a second, so a 429 there is a pace complaint that
+/// the next search will not hit, and retiring the backend over it would
+/// throw away a working key on the first fast round of tool calls.
+fn is_plan_spent(status: u16, body: &str) -> bool {
+    status == 402 || {
+        let body = body.to_ascii_lowercase();
+        ["quota", "credit", "exhaust", "insufficient", "plan limit"]
+            .iter()
+            .any(|s| body.contains(s))
+    }
+}
+
+/// What a failed search means for the backend that failed it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Fault {
+    /// The key is dead or the plan is spent. Every later query gets the same
+    /// answer, so the backend leaves the chain rather than being paid for
+    /// again on every search.
+    Retire,
+    /// A rate limit, a transport failure, a 5xx. Real, and the next backend
+    /// should answer this query — but the next query starts here again,
+    /// because none of those say anything about the key.
+    Skip,
+    /// The query's own fault, or the turn was interrupted. Asking a second
+    /// vendor the same bad question spends a request to be told the same
+    /// thing, so the chain stops here.
+    Fatal,
+}
+
+fn fault_of(status: u16, body: &str) -> Fault {
+    if is_auth_failure(status, body) || is_plan_spent(status, body) {
+        Fault::Retire
+    } else if status == 429 || status >= 500 {
+        Fault::Skip
+    } else {
+        Fault::Fatal
+    }
+}
+
 struct Hit {
     title: String,
     url: String,
@@ -1001,18 +1068,122 @@ const MAX_RESULTS: usize = 10;
 const SNIPPET_LIMIT: usize = 500;
 
 pub struct WebSearch {
-    backend: SearchBackend,
-    key: String,
+    /// Every backend with a key, in preference order. Tried in turn until one
+    /// answers — see the module doc for why this is a chain and not a
+    /// fan-out.
+    chain: Vec<(SearchBackend, String)>,
+    /// Which backends have left the chain, one bit each. `AtomicU8` rather
+    /// than a cursor because a rejection can retire a backend that is not at
+    /// the head: the head may have been skipped for a rate limit on the way
+    /// past, and it has done nothing to deserve being dropped.
+    retired: AtomicU8,
     client: Client,
 }
 
 impl WebSearch {
+    /// A chain of one, which is what a single key gives.
     pub fn new(backend: SearchBackend, key: impl Into<String>) -> Self {
+        Self::over(vec![(backend, key.into())])
+    }
+
+    pub fn over(chain: Vec<(SearchBackend, String)>) -> Self {
         Self {
-            backend,
-            key: key.into(),
+            chain,
+            retired: AtomicU8::new(0),
             client: http_client(),
         }
+    }
+
+    fn is_retired(&self, index: usize) -> bool {
+        self.retired.load(Ordering::Relaxed) & (1 << index) != 0
+    }
+
+    fn retire(&self, index: usize) {
+        self.retired.fetch_or(1 << index, Ordering::Relaxed);
+    }
+
+    /// How the description says where a query goes.
+    ///
+    /// It names **every** backend in the chain rather than only the head, and
+    /// is fixed for the life of the tool. Both halves matter. A description
+    /// naming one vendor while the query can reach three is the kind of quiet
+    /// difference a user would want to have been told about before their
+    /// query left the machine. And naming whichever backend is currently at
+    /// the head would rewrite the tool definition mid-session, which is the
+    /// outermost layer of the prompt cache — a failover would silently cost a
+    /// full cache miss on every remaining turn.
+    fn chain_phrase(&self) -> String {
+        let names: Vec<&str> = self.chain.iter().map(|(b, _)| b.label()).collect();
+        match names.as_slice() {
+            [only] => only.to_string(),
+            [head, rest @ ..] => format!(
+                "{head}, or {} if it is unavailable",
+                rest.join(" and then ")
+            ),
+            [] => "no configured backend".into(),
+        }
+    }
+
+    /// One backend, one query. `Err` carries what the failure means for the
+    /// chain as well as what to tell the model.
+    async fn ask(
+        &self,
+        backend: SearchBackend,
+        key: &str,
+        query: &str,
+        count: usize,
+        cancel: &CancellationToken,
+    ) -> Result<Vec<Hit>, (Fault, String)> {
+        let response = super::interruptible(
+            cancel,
+            backend.request(&self.client, key, query, count).send(),
+        )
+        .await
+        .map_err(|e| (Fault::Fatal, e))?
+        .map_err(|e| {
+            (
+                Fault::Skip,
+                format!("cannot reach {}: {}", backend.label(), why(&e)),
+            )
+        })?;
+
+        let status = response.status();
+        let body = super::interruptible(cancel, response.text())
+            .await
+            .map_err(|e| (Fault::Fatal, e))?
+            .unwrap_or_default();
+        if !status.is_success() {
+            return Err((
+                fault_of(status.as_u16(), &body),
+                format!(
+                    "{} returned {status}.{}\n{}",
+                    backend.label(),
+                    advice(backend, status.as_u16(), &body),
+                    body.chars().take(300).collect::<String>().trim()
+                ),
+            ));
+        }
+        backend
+            .parse(&body)
+            .map_err(|e| (Fault::Skip, e))
+            .and_then(|hits| {
+                if hits.is_empty() {
+                    // Not a reason to ask the next vendor. A query that
+                    // matched nothing here will usually match nothing there,
+                    // and finding that out costs a request off a free tier
+                    // that the chain exists to make last.
+                    Err((
+                        Fault::Fatal,
+                        format!(
+                            "no results for {query:?}. Try fewer or more distinctive terms; a \
+                             question in prose usually matches less than the words that would \
+                             appear on the page."
+                        ),
+                    ))
+                } else {
+                    Ok(hits)
+                }
+            })
     }
 }
 
@@ -1027,7 +1198,7 @@ impl Tool for WebSearch {
     fn def(&self) -> ToolDef {
         ToolDef {
             name: "web_search".into(),
-            description: format!("{SEARCH_DESC_PREFIX}{}.", self.backend.label()),
+            description: format!("{SEARCH_DESC_PREFIX}{}.", self.chain_phrase()),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -1056,45 +1227,79 @@ impl Tool for WebSearch {
             .unwrap_or(DEFAULT_RESULTS)
             .clamp(1, MAX_RESULTS);
 
-        let response = super::interruptible(
-            cancel,
-            self.backend
-                .request(&self.client, &self.key, &query, count)
-                .send(),
-        )
-        .await?
-        .map_err(|e| format!("cannot reach {}: {}", self.backend.label(), why(&e)))?;
+        // What the head of the chain did instead of answering. Reported with
+        // the results rather than swallowed: a failover that says nothing is
+        // one where a dead key goes unnoticed for as long as a second key
+        // holds out, and the model's answer would name a vendor the user did
+        // not think they were using.
+        let mut notes: Vec<String> = Vec::new();
+        let mut last: Option<String> = None;
 
-        let status = response.status();
-        let body = super::interruptible(cancel, response.text())
-            .await?
-            .unwrap_or_default();
-        if !status.is_success() {
-            return Err(format!(
-                "{} returned {status}.{}\n{}",
-                self.backend.label(),
-                advice(self.backend, status.as_u16(), &body),
-                body.chars().take(300).collect::<String>().trim()
-            ));
+        for (index, (backend, key)) in self.chain.iter().enumerate() {
+            if self.is_retired(index) {
+                continue;
+            }
+            match self.ask(*backend, key, &query, count, cancel).await {
+                Ok(hits) => return Ok(render(&query, *backend, &hits, &notes)),
+                Err((fault, message)) => {
+                    if fault == Fault::Fatal {
+                        return Err(message);
+                    }
+                    if fault == Fault::Retire {
+                        self.retire(index);
+                        notes.push(format!(
+                            "{} is out of the chain for this session: {}",
+                            backend.label(),
+                            first_line(&message)
+                        ));
+                    } else {
+                        notes.push(format!(
+                            "{} did not answer: {}",
+                            backend.label(),
+                            first_line(&message)
+                        ));
+                    }
+                    last = Some(message);
+                }
+            }
         }
 
-        let hits = self.backend.parse(&body)?;
-        if hits.is_empty() {
-            return Err(format!(
-                "no results for {query:?}. Try fewer or more distinctive terms; a question in \
-                 prose usually matches less than the words that would appear on the page."
-            ));
-        }
-        Ok(render(&query, self.backend, &hits))
+        Err(match last {
+            Some(message) if self.chain.len() > 1 => {
+                format!("every search backend failed. Last was {message}")
+            }
+            Some(message) => message,
+            // Every backend had already retired on an earlier query, so this
+            // one never left the machine.
+            None => format!(
+                "web_search has no backend left: {}. Tell the user rather than retrying.",
+                self.chain
+                    .iter()
+                    .map(|(b, _)| format!("{} was rejected or is out of credit", b.label()))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+        })
     }
 }
 
-fn render(query: &str, backend: SearchBackend, hits: &[Hit]) -> String {
-    let mut out = format!(
+/// A tool error is several lines — advice, then the vendor's own body. A note
+/// beside a set of results wants the first line only.
+fn first_line(message: &str) -> &str {
+    message.lines().next().unwrap_or(message).trim()
+}
+
+fn render(query: &str, backend: SearchBackend, hits: &[Hit], notes: &[String]) -> String {
+    let mut out = String::new();
+    for note in notes {
+        out.push_str(note);
+        out.push('\n');
+    }
+    out.push_str(&format!(
         "{} results for {query:?} from {}\n",
         hits.len(),
         backend.label()
-    );
+    ));
     for (n, hit) in hits.iter().enumerate() {
         let title = if hit.title.is_empty() {
             "(untitled)"
@@ -1123,11 +1328,11 @@ fn render(query: &str, backend: SearchBackend, hits: &[Hit]) -> String {
 /// The web tools available in this environment.
 ///
 /// `web_fetch` always; `web_search` only when a backend has a key, and then
-/// only the first one in [`SearchBackend::ALL`] that does. The alternative —
-/// advertising `web_search` and failing every call with "no key" — spends
-/// prompt on a tool the model cannot use and buys a round trip to find that
-/// out, which is the same argument [`super::bench`] makes for an empty
-/// reviewer list meaning no `review` tool at all.
+/// over every backend that does, in [`SearchBackend::ALL`] order. The
+/// alternative — advertising `web_search` and failing every call with "no
+/// key" — spends prompt on a tool the model cannot use and buys a round trip
+/// to find that out, which is the same argument [`super::bench`] makes for an
+/// empty reviewer list meaning no `review` tool at all.
 ///
 /// `key` is supplied by the shell because the two shells answer it
 /// differently: the CLI reads the environment, and the desktop reads its
@@ -1135,23 +1340,34 @@ fn render(query: &str, backend: SearchBackend, hits: &[Hit]) -> String {
 /// launcher had, which on Windows is usually none at all.
 pub fn web_tools(key: impl Fn(SearchBackend) -> Option<String>) -> Vec<Box<dyn Tool>> {
     let mut tools: Vec<Box<dyn Tool>> = vec![Box::new(Fetch::new())];
-    if let Some(backend) = search_backend(&key)
-        && let Some(k) = key(backend)
-    {
-        tools.push(Box::new(WebSearch::new(backend, k)));
+    let chain: Vec<(SearchBackend, String)> = SearchBackend::ALL
+        .into_iter()
+        .filter_map(|b| key(b).map(|k| (b, k)))
+        .collect();
+    if !chain.is_empty() {
+        tools.push(Box::new(WebSearch::over(chain)));
     }
     tools
 }
 
-/// Which backend will answer, if any.
+/// Which backends `web_search` will ask, in the order it will ask them.
 ///
-/// Separate from [`web_tools`] so a shell can *say* which one without
+/// Separate from [`web_tools`] so a shell can *say* where queries go without
 /// re-deriving the choice — a startup line naming Brave while the tool
 /// queried Tavily would be worse than no line at all. It is also the answer
 /// to the question a user actually has when search never happens, which is
 /// not "is it broken" but "did you find my key".
+pub fn search_backends(key: impl Fn(SearchBackend) -> Option<String>) -> Vec<SearchBackend> {
+    SearchBackend::ALL
+        .into_iter()
+        .filter(|b| key(*b).is_some())
+        .collect()
+}
+
+/// The backend that answers first, which is the whole answer for the common
+/// case of one key.
 pub fn search_backend(key: impl Fn(SearchBackend) -> Option<String>) -> Option<SearchBackend> {
-    SearchBackend::ALL.into_iter().find(|b| key(*b).is_some())
+    search_backends(key).into_iter().next()
 }
 
 /// The environment-variable lookup, which is the whole of the CLI's answer
@@ -1571,7 +1787,7 @@ mod tests {
             url: "https://a/b".into(),
             snippet: "words".into(),
         }];
-        let out = render("async rust", SearchBackend::Brave, &hits);
+        let out = render("async rust", SearchBackend::Brave, &hits, &[]);
         assert!(out.contains("1. Async Rust\nhttps://a/b\nwords"), "{out}");
         assert!(out.contains("Brave Search"), "{out}");
         assert!(out.ends_with("Use web_fetch on a result's URL to read the page itself."));
@@ -1610,13 +1826,19 @@ mod tests {
     }
 
     #[test]
-    fn the_first_backend_with_a_key_is_the_one_used() {
+    fn the_preferred_backend_is_the_one_named_first() {
         let both = web_tools(|b| (b != SearchBackend::Tavily).then(|| "k".to_string()));
         assert_eq!(both.len(), 2);
         assert!(both[1].def().description.contains("Brave Search"));
 
-        let all = web_tools(|_| Some("k".into()));
-        assert!(all[1].def().description.contains("Tavily"));
+        // Order is the behaviour, so the description has to carry it: Tavily
+        // is asked before Brave, and a sentence naming them the other way
+        // round would be a true list and a false claim.
+        let all = web_tools(|_| Some("k".into())).pop().unwrap();
+        let desc = all.def().description;
+        let at = |label: &str| desc.find(label).expect(label);
+        assert!(at("Tavily") < at("Brave Search"));
+        assert!(at("Brave Search") < at("Exa"));
     }
 
     /// Both tools reach the network, and neither is confined by a `Root`.
@@ -1643,5 +1865,111 @@ mod tests {
             assert_eq!(SearchBackend::from_name(&b.name().to_uppercase()), Some(b));
         }
         assert_eq!(SearchBackend::from_name("google"), None);
+    }
+
+    /// The retirement set is a bitmask, so the table has to fit in it.
+    #[test]
+    fn every_backend_has_a_bit() {
+        assert!(SearchBackend::ALL.len() <= 8);
+    }
+
+    #[test]
+    fn every_key_joins_the_chain_in_preference_order() {
+        assert_eq!(
+            search_backends(|_| Some("k".into())),
+            SearchBackend::ALL.to_vec()
+        );
+        assert_eq!(
+            search_backends(|b| (b != SearchBackend::Tavily).then(|| "k".into())),
+            vec![SearchBackend::Brave, SearchBackend::Exa]
+        );
+        assert!(search_backends(|_| None).is_empty());
+        // The head is still the whole answer for one key, which is what the
+        // shells' one-line summaries ask for.
+        assert_eq!(
+            search_backend(|b| (b == SearchBackend::Exa).then(|| "k".into())),
+            Some(SearchBackend::Exa)
+        );
+    }
+
+    /// The description is the only place a user is told where their queries
+    /// go, so a spare that can be reached has to be named in it.
+    #[test]
+    fn the_description_names_every_backend_a_query_can_reach() {
+        let one = WebSearch::new(SearchBackend::Tavily, "k");
+        assert!(one.chain_phrase().contains("Tavily"));
+        assert!(!one.chain_phrase().contains("Brave"));
+
+        let all = WebSearch::over(
+            SearchBackend::ALL
+                .into_iter()
+                .map(|b| (b, "k".to_string()))
+                .collect(),
+        );
+        let desc = all.def().description;
+        for b in SearchBackend::ALL {
+            assert!(
+                desc.contains(b.label()),
+                "{} is unnamed in {desc}",
+                b.label()
+            );
+        }
+    }
+
+    /// A rejected key and a spent plan are permanent; a rate limit is not.
+    /// Getting this backwards either throws away a working key on the first
+    /// fast round of tool calls, or pays a doomed request on every search
+    /// for the rest of the session.
+    #[test]
+    fn only_a_permanent_failure_retires_a_backend() {
+        assert_eq!(fault_of(401, ""), Fault::Retire);
+        // Verified live: Brave answers a bad subscription token with 422.
+        assert_eq!(fault_of(422, "Invalid subscription token"), Fault::Retire);
+        assert_eq!(fault_of(402, ""), Fault::Retire);
+        assert_eq!(
+            fault_of(400, "You have exhausted your monthly credits"),
+            Fault::Retire
+        );
+
+        assert_eq!(fault_of(429, "Too Many Requests"), Fault::Skip);
+        assert_eq!(fault_of(503, ""), Fault::Skip);
+
+        // The query's own fault: asking a second vendor buys the same answer
+        // at the price of a request.
+        assert_eq!(fault_of(400, "query must not be empty"), Fault::Fatal);
+    }
+
+    #[test]
+    fn a_retired_backend_is_not_asked_again() {
+        let search = WebSearch::over(vec![
+            (SearchBackend::Tavily, "k".into()),
+            (SearchBackend::Brave, "k".into()),
+        ]);
+        assert!(!search.is_retired(0));
+        search.retire(0);
+        assert!(search.is_retired(0));
+        // Retiring the head must not take the spare with it — the bitmask is
+        // there so a rejection lands on one backend and no other.
+        assert!(!search.is_retired(1));
+    }
+
+    #[test]
+    fn a_failover_says_so_beside_the_results() {
+        let hits = vec![Hit {
+            title: "t".into(),
+            url: "https://example.com".into(),
+            snippet: "s".into(),
+        }];
+        let quiet = render("q", SearchBackend::Brave, &hits, &[]);
+        assert!(quiet.starts_with("1 results"));
+
+        let noisy = render(
+            "q",
+            SearchBackend::Brave,
+            &hits,
+            &["Tavily is out of the chain for this session: spent".into()],
+        );
+        assert!(noisy.starts_with("Tavily is out of the chain"));
+        assert!(noisy.contains("from Brave Search"));
     }
 }

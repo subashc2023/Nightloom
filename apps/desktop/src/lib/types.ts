@@ -117,17 +117,17 @@ export interface ReviewerInfo {
 }
 
 /**
- * A search backend as the settings pane shows it. `active` is the one that
- * would actually answer: only the first backend with a key is used, so a
- * second key set is inert, and two filled boxes with no hint of which is live
- * would be worse than one.
+ * A search backend as the settings pane shows it. `order` is its 1-based
+ * place in the chain, or null with no key: every key is used, asked in turn
+ * until one answers, so the position is what a reader needs and a bare "this
+ * one is live" flag would not say.
  */
 export interface SearchBackendInfo {
   name: string;
   label: string;
   env_key: string;
   key_source: "stored" | "env" | null;
-  active: boolean;
+  order: number | null;
 }
 
 export interface ConnectResult {
@@ -166,10 +166,11 @@ export interface ConnectResult {
   /** Where the backend actually rooted the tools, after falling back. */
   workspace: string;
   /**
-   * Which search provider `web_search` queries, or null when no key is set
-   * and the tool is therefore absent. Read for the same reason `reviewers`
-   * is: a model with no search does not say so, it guesses, and there is no
-   * way to tell those apart from the transcript.
+   * Which search providers `web_search` queries — the whole chain, arrowed in
+   * the order they are asked — or null when no key is set and the tool is
+   * therefore absent. Read for the same reason `reviewers` is: a model with
+   * no search does not say so, it guesses, and there is no way to tell those
+   * apart from the transcript.
    */
   search: string | null;
   /**
