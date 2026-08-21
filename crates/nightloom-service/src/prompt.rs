@@ -21,6 +21,40 @@ use std::path::{Path, PathBuf};
 use nightloom_core::{Segment, SegmentKind, SystemPrompt};
 
 /// Built-in behavioural instructions, used unless a shell turns identity off.
+///
+/// # Telling the model it may issue independent calls together does nothing
+///
+/// A standing observation about this file is that nothing in it — nor in any
+/// of the eleven tool descriptions — tells the model that calls which do not
+/// depend on each other can go out in one round, which the engine goes to
+/// real trouble to support (`turn.rs`'s `plan_round` / `execute` overlaps
+/// adjacent read-only calls). A capability built, tested and unadvertised.
+///
+/// It was tried, as one sentence here: *"Calls that don't depend on each
+/// other should go out together rather than one at a time — there is nothing
+/// to wait for."* Worded to describe the situation and avoid the words
+/// "parallel" and "batch", which `nightloom-evals`' `THREE_PARALLEL` records
+/// as summoning `multi_tool_use.parallel` out of gpt-5-mini at 4x the cost.
+///
+/// Measured on the full suite, 3 targets x 7 tasks x 3 runs either side
+/// (gpt-oss-120b via Groq, gemini-2.5-flash, gpt-5-mini). **The effect was
+/// exactly zero.** `Trace::widest_round` stayed at 1.0 on every task but
+/// `three-parallel` — across 54 attempts on the other six, not one model
+/// grouped a call before the change or after it — and `three-parallel` was
+/// already 3.0 on the two models that pass it. Pass rate went 54/63 to
+/// 50/63, the whole drop on gpt-oss-120b and inside the noise a sample of
+/// three per cell can produce.
+///
+/// The explanation is in `three-parallel` itself: gpt-oss-120b fails it 0/3
+/// *with the task's own instruction asking for one batch*, while gemini and
+/// gpt-5-mini pass it 3/3 and group nothing anywhere else. Grouping is a
+/// post-training habit that the task instruction can reach and a preamble
+/// cannot — so this is not an instruction-following gap with a sentence
+/// missing from it, and there is no headroom here to win. Leaving the
+/// sentence in would have cost ~32 tokens on every request in every session,
+/// forever, for a measured effect of nothing.
+///
+/// Do not re-add it without a measurement that shows a different answer.
 pub const DEFAULT_IDENTITY: &str = "You are Nightloom, a model-agnostic assistant running in a terminal or desktop harness.
 
 Be direct and concrete. Answer what was asked, at the length the question deserves — no preamble, no restating the question back, no summary of what you just said.
