@@ -69,6 +69,13 @@ export interface AgentConnectArgs {
 
 /** The agent engine as the rail shows it; see the Rust `AgentInfo`. */
 export interface AgentInfo {
+  /**
+   * The binary that actually answered, which is the *resolved* path and not
+   * necessarily the name that was asked for: a GUI process on macOS gets a
+   * minimal PATH, so a bare `claude` is looked for in the usual install
+   * locations too. The two differ exactly when that fallback did something,
+   * which is worth showing rather than hiding.
+   */
   binary: string;
   /** What `--version` printed at connect. */
   version: string | null;

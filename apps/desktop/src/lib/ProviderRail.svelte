@@ -129,7 +129,7 @@
           disabled={locked}
           title={agent?.version
             ? `${agent.binary} — ${agent.version}`
-            : "The Claude Code CLI to run. Leave empty for `claude` on PATH."}
+            : "The Claude Code CLI to run. Left empty, `claude` is looked for on PATH and then in the usual install locations (~/.local/bin, /opt/homebrew/bin, /usr/local/bin). Give an absolute path if it lives somewhere else."}
         />
       </div>
 

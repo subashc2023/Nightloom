@@ -18,7 +18,7 @@ use nightloom_service::store::{self, SessionMatch, SessionSummary};
 use nightloom_service::tools::{Reviewer, Root, SearchBackend};
 use nightloom_service::{
     AgentSpec, Chat, ClaudeCodeAgent, CompactOutcome, Price, ProjectContext, PromptConfig,
-    ProviderKind, Recorder, TurnEvent, TurnInput, TurnOutcome,
+    ProviderKind, Recorder, TurnEvent, TurnInput, TurnOutcome, resolve_binary, searched_locations,
 };
 use serde::Serialize;
 use std::collections::HashMap;
@@ -853,7 +853,7 @@ async fn connect_agent(
     // overwhelmingly likely first failure on this engine, and finding out at
     // connect gives the rail something to show instead of a turn that dies
     // with a process error the first time the user sends anything.
-    let version = agent_version(&spec.binary).await?;
+    let (resolved_binary, version) = agent_version(&spec.binary).await?;
 
     // Pick the conversation back up if the open chat already has one. This
     // is the case where a session was started on the agent, the rail was
@@ -886,7 +886,7 @@ async fn connect_agent(
         search: None,
         engine: AGENT.into(),
         agent: Some(AgentInfo {
-            binary: spec.binary.clone(),
+            binary: resolved_binary,
             version,
             subscription: spec.use_subscription,
             permission_mode: spec.permission_mode.clone(),
@@ -915,8 +915,18 @@ fn last_model(session: &Session) -> Option<String> {
 }
 
 /// Ask the binary what it is, so a connect fails here rather than mid-turn.
-async fn agent_version(binary: &str) -> Result<Option<String>, String> {
-    let out = tokio::process::Command::new(binary)
+///
+/// Resolved through [`resolve_binary`] rather than spawned by name, and this
+/// is the entry point where that matters most: a GUI process on macOS gets
+/// launchd's minimal `PATH` and never reads a login shell, so the default
+/// `claude` did not resolve for any macOS user who installed Claude Code the
+/// documented way — the connect failed with "not found" while the identical
+/// default worked from a terminal. The resolved path is returned so the rail
+/// can show which binary actually answered rather than the name it was asked
+/// for; the two differ exactly when this fallback did something.
+async fn agent_version(binary: &str) -> Result<(String, Option<String>), String> {
+    let resolved = resolve_binary(binary);
+    let out = tokio::process::Command::new(&resolved)
         .arg("--version")
         .stdin(std::process::Stdio::null())
         .kill_on_drop(true)
@@ -924,12 +934,13 @@ async fn agent_version(binary: &str) -> Result<Option<String>, String> {
         .await
         .map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => format!(
-                "could not start {binary}: not found. Install Claude Code, or name the binary in the rail."
+                "could not start {binary}: not found. Looked in {}. Install Claude Code, or give the rail an absolute path to it.",
+                searched_locations().join(", ")
             ),
             _ => format!("could not start {binary}: {e}"),
         })?;
     let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    Ok((!text.is_empty()).then_some(text))
+    Ok((resolved, (!text.is_empty()).then_some(text)))
 }
 
 /// The open project's chats, or the unfiled ones when none is open.

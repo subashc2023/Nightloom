@@ -56,7 +56,7 @@ const STDERR_TAIL: usize = 4096;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AgentError {
-    #[error("could not start {binary}: {source}")]
+    #[error("could not start {binary}: {source}{}", not_found_hint(.source))]
     Spawn {
         binary: String,
         #[source]
@@ -70,6 +70,21 @@ pub enum AgentError {
     },
     #[error("transport error: {0}")]
     Io(#[from] std::io::Error),
+}
+
+/// Where to look, appended to a "not found" and to nothing else.
+///
+/// The failure this answers is invisible from the message alone: the binary
+/// is installed, `claude` runs in the user's terminal, and the same default
+/// resolves to nothing under a GUI process's environment. Naming the
+/// directories that were tried is the difference between a bug report and a
+/// user checking one path.
+fn not_found_hint(source: &std::io::Error) -> String {
+    if source.kind() == std::io::ErrorKind::NotFound {
+        format!(" (looked in {})", searched_locations().join(", "))
+    } else {
+        String::new()
+    }
 }
 
 fn tail(stderr: &str) -> String {
@@ -123,6 +138,30 @@ pub struct AgentSpec {
     /// the run back onto an API key, defeating the only reason this module
     /// exists. Safe mode keeps auth, model selection and permissions
     /// working and drops only the configuration.
+    ///
+    /// It also emits `--strict-mcp-config`, which reads as redundant and is
+    /// belt-and-braces on purpose. `--safe-mode` lists MCP servers among
+    /// what it disables, and on macOS it was reported dropping the local
+    /// ones while leaving the account-level claude.ai connectors in place:
+    /// asked to read a file in the workspace, the child called
+    /// `mcp__claude_ai_Google_Drive__search_files` and then said it had no
+    /// `Read` tool at all. That is the worst shape available — not a
+    /// missing capability but a *substituted* one, so the turn fails in a
+    /// way that reads as a stupid model rather than a wrong tool set.
+    /// `--strict-mcp-config` is "only servers from `--mcp-config`", and with
+    /// no `--mcp-config` supplied that is none, which is what safe mode
+    /// already promised.
+    ///
+    /// What is **verified** and what is not, since the two are different:
+    /// the flag pair is accepted by CLI 2.1.238 and on Windows — where this
+    /// machine has both a user-level `mcpServers` entry and
+    /// `claudeAiMcpEverConnected` — safe mode alone already reports
+    /// `mcp_servers: []` with no `mcp__` tool on the request, so the fix is
+    /// confirmed harmless but the failure it targets could not be
+    /// reproduced here. It is the documented guarantee for exactly this
+    /// question, which is the right thing to ask for whether the gap turns
+    /// out to be a CLI bug or a platform difference, and asking twice costs
+    /// one argument.
     ///
     /// [`--bare`]: https://code.claude.com/docs/en/headless
     pub safe_mode: bool,
@@ -211,6 +250,9 @@ impl AgentSpec {
         }
         if self.safe_mode {
             a.push("--safe-mode".into());
+            // See the field doc: safe mode alone left the account-level
+            // claude.ai connectors on the request.
+            a.push("--strict-mcp-config".into());
         }
         if let Some(id) = &self.resume {
             a.push("--resume".into());
@@ -295,7 +337,7 @@ impl ClaudeCodeAgent {
         cancel: &CancellationToken,
         on_event: &mut (dyn FnMut(TurnEvent) + Send),
     ) -> Result<AgentOutcome, AgentError> {
-        let mut cmd = Command::new(&self.spec.binary);
+        let mut cmd = Command::new(resolve_binary(&self.spec.binary));
         cmd.args(self.spec.args(prompt))
             .current_dir(&self.spec.workspace)
             // Null rather than inherited: with a terminal on the other end
@@ -391,6 +433,114 @@ impl ClaudeCodeAgent {
         }
         Ok(outcome)
     }
+}
+
+/// Where to look for the CLI when a bare name does not resolve on `PATH`.
+///
+/// Unix only, and that is the bug rather than a platform Nightloom cares
+/// less about. A GUI process on macOS is started by launchd, which hands it
+/// a minimal `PATH` — `/usr/bin:/bin:/usr/sbin:/sbin` — and never sources a
+/// login shell, so `.zshrc` might as well not exist. Claude Code's own
+/// installer puts the binary in `~/.local/bin`, which is in none of that, so
+/// the desktop app failed to find a working `claude` for **every** macOS
+/// user who installed it the documented way, while the same default worked
+/// perfectly from a terminal. Linux launched from a `.desktop` entry is the
+/// same story. Windows is not: a GUI process there inherits the machine and
+/// user `PATH` out of the registry, so the case this exists for cannot
+/// arise, and probing Unix directories on it would be theatre.
+///
+/// Resolving through a **login shell** is the general answer and is
+/// deliberately not what this does. `$SHELL -lic 'command -v claude'` covers
+/// version managers this list cannot, and it also runs the user's entire
+/// startup configuration on the connect path, where it can be slow and can
+/// hang outright on a broken rc file. That trades a reliable connect for
+/// coverage of a case that already has a working answer — [`AgentSpec::binary`]
+/// takes an absolute path, and both shells expose it.
+#[cfg(unix)]
+fn candidate_dirs() -> Vec<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let mut dirs = Vec::new();
+    if let Some(h) = &home {
+        // The native installer's location, and so the one that matters.
+        dirs.push(h.join(".local/bin"));
+    }
+    // Apple silicon homebrew, then Intel homebrew and the usual npm prefix.
+    dirs.push(PathBuf::from("/opt/homebrew/bin"));
+    dirs.push(PathBuf::from("/usr/local/bin"));
+    if let Some(h) = &home {
+        dirs.push(h.join(".bun/bin"));
+        dirs.push(h.join(".volta/bin"));
+        dirs.push(h.join(".npm-global/bin"));
+    }
+    dirs
+}
+
+#[cfg(not(unix))]
+fn candidate_dirs() -> Vec<PathBuf> {
+    Vec::new()
+}
+
+/// Everywhere a bare binary name is looked for, for an error message.
+///
+/// A "not found" that does not say where it looked leaves the user with
+/// nothing to check, which is most of why the original report had to be
+/// diagnosed by hand.
+pub fn searched_locations() -> Vec<String> {
+    let mut out = vec!["PATH".to_string()];
+    out.extend(candidate_dirs().iter().map(|d| d.display().to_string()));
+    out
+}
+
+/// The path to actually spawn for a configured binary name.
+///
+/// `PATH` wins whenever it resolves, and that ordering is load-bearing
+/// rather than tidiness: a user running the CLI through a version manager
+/// has a `PATH` entry that is *correct* and may well also have a stale
+/// `~/.local/bin/claude` from an install they replaced. Preferring the
+/// candidate list would silently run the wrong one — a worse failure than
+/// the one being fixed, because it succeeds.
+///
+/// A name carrying a separator is returned untouched: the user pointed
+/// somewhere on purpose, and second-guessing that is not this function's
+/// job. So is a name nothing resolves, so the error names what was asked
+/// for rather than something invented here.
+pub fn resolve_binary(binary: &str) -> String {
+    if binary.chars().any(std::path::is_separator) {
+        return binary.to_string();
+    }
+    if which_on_path(binary).is_some() {
+        return binary.to_string();
+    }
+    for dir in candidate_dirs() {
+        let candidate = dir.join(binary);
+        if candidate.is_file() {
+            return candidate.to_string_lossy().into_owned();
+        }
+    }
+    binary.to_string()
+}
+
+/// Whether a bare name resolves on `PATH`.
+///
+/// Hand-rolled for the same reason `project.rs` hand-rolls FNV-1a and
+/// `prompt.rs` reads `.git/HEAD` rather than spawning git: it is a dozen
+/// lines against a transitive dependency tree. Unix only, because the
+/// fallback it guards is — on Windows nothing here is consulted and
+/// `Command` does its own resolution, `PATHEXT` and all, exactly as before.
+#[cfg(unix)]
+fn which_on_path(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .filter(|d| !d.as_os_str().is_empty())
+        .map(|d| d.join(name))
+        .find(|p| p.is_file())
+}
+
+#[cfg(not(unix))]
+fn which_on_path(_name: &str) -> Option<PathBuf> {
+    // Never reached: `candidate_dirs` is empty off Unix, so `resolve_binary`
+    // returns the name unchanged whatever this says.
+    None
 }
 
 /// Kill the child and anything it started.
@@ -529,5 +679,56 @@ mod tests {
     #[test]
     fn subscription_is_the_default() {
         assert!(spec().use_subscription);
+    }
+
+    /// Safe mode has to ask for the MCP guarantee twice.
+    ///
+    /// `--safe-mode` lists MCP servers among what it disables and was
+    /// observed leaving the account-level claude.ai connectors on the
+    /// request anyway, so the child answered a "read this file" by calling
+    /// Google Drive. The flag is not decoration and dropping it would
+    /// restore the bug silently.
+    #[test]
+    fn safe_mode_also_asks_for_strict_mcp_config() {
+        let mut s = spec();
+        s.safe_mode = true;
+        let a = s.args("hi");
+        assert!(a.iter().any(|x| x == "--safe-mode"));
+        assert!(a.iter().any(|x| x == "--strict-mcp-config"));
+    }
+
+    /// And only under safe mode: without it the host's own servers are
+    /// exactly what the user is asking to keep.
+    #[test]
+    fn strict_mcp_config_is_not_sent_unasked() {
+        assert!(!spec().args("hi").iter().any(|x| x == "--strict-mcp-config"));
+    }
+
+    /// A path the user typed is honoured as typed. Second-guessing it would
+    /// override the one escape hatch the fallback leaves them.
+    #[test]
+    fn an_explicit_path_is_never_rewritten() {
+        for named in ["/opt/claude/bin/claude", "./claude", "../tools/claude"] {
+            assert_eq!(resolve_binary(named), named);
+        }
+    }
+
+    /// A name nothing resolves comes back unchanged, so the error names
+    /// what was asked for rather than a directory invented here.
+    #[test]
+    fn an_unresolvable_name_is_returned_as_asked() {
+        let name = "nightloom-no-such-binary-9f3a";
+        assert_eq!(resolve_binary(name), name);
+    }
+
+    /// `PATH` is searched first and said first. Preferring a candidate
+    /// directory would silently run a stale install in front of the one the
+    /// user's version manager put on `PATH`.
+    #[test]
+    fn path_leads_the_places_that_are_searched() {
+        assert_eq!(
+            searched_locations().first().map(String::as_str),
+            Some("PATH")
+        );
     }
 }
