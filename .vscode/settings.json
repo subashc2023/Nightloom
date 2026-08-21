@@ -1,0 +1,12 @@
+{
+  // Load exactly this workspace. Without pinning, rust-analyzer discovers the
+  // Cargo.toml inside .claude/worktrees/<name>/ and loads that stale copy of the
+  // whole workspace as a second project — duplicate crate graphs, doubled memory,
+  // and a Problems panel full of diagnostics for code that is not on this branch.
+  "rust-analyzer.linkedProjects": ["Cargo.toml"],
+  "rust-analyzer.files.exclude": [".claude"],
+
+  // The repo is LF-only (see .gitattributes): rust-analyzer's lexer rejects the
+  // bare CR inside a string literal that rustc quietly normalizes away.
+  "files.eol": "\n"
+}

@@ -1,0 +1,13 @@
+# Normalize every text file to LF, in the repository and in the working tree.
+#
+# rustc silently normalizes CRLF away when it reads a source file; rust-analyzer's
+# lexer does not, and rejects the bare CR inside a string literal. A CRLF checkout
+# therefore turns every line-continuation ("...text \<newline>   more...") and every
+# multi-line string in the codebase into a phantom "unknown character escape" /
+# "Character must be escaped" error in the editor, with type-inference fallout
+# downstream, while `cargo check` stays perfectly clean.
+* text=auto eol=lf
+
+*.png  binary
+*.ico  binary
+*.icns binary
