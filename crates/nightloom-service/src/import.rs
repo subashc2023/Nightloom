@@ -24,10 +24,21 @@
 //!
 //! There is no Projects API and no per-project export: the account-wide
 //! privacy export (Settings → Privacy → Export Data, which arrives as a zip by
-//! email) is the whole of the programmatic surface. It holds `projects.json`
-//! and `conversations.json`, and this module reads both out of the zip
+//! email) is the whole of the programmatic surface. It is read out of the zip
 //! directly, because "unzip it first" is a step that goes wrong on a 400 MB
 //! archive and buys nothing.
+//!
+//! **The projects moved, and neither layout is documented.** They used to be
+//! one `projects.json` holding an array; current exports ship a `projects/`
+//! directory with one file per project instead, each holding the object that
+//! used to be one element of that array. Both are read, because both are in
+//! circulation — but the array is preferred and the directory read *only*
+//! when it is absent, since an archive carrying both would otherwise import
+//! every project twice. Getting this wrong fails in the worst available
+//! shape, which is why it went unnoticed: no project parses, so no
+//! instructions and no documents are written, and every conversation falls
+//! through to the unfiled path that exists for chats with no project link.
+//! Nothing errors. It reads as an account whose projects were all deleted.
 //!
 //! ## Two decisions worth defending
 //!
@@ -97,6 +108,9 @@ const SLUG_LIMIT: usize = 60;
 /// Filenames looked for, at any depth, in a zip or a folder.
 const CONVERSATIONS: &str = "conversations.json";
 const PROJECTS: &str = "projects.json";
+/// The directory current exports ship *instead of* [`PROJECTS`], holding one
+/// file per project rather than one array of them.
+const PROJECTS_DIR: &str = "projects";
 
 // ---------------------------------------------------------------------------
 // The export's own shapes
@@ -285,13 +299,62 @@ pub struct Export {
     pub warnings: Vec<String>,
 }
 
+/// The parts of an export a reader collects, in either layout.
+///
+/// A struct rather than a map keyed by filename, because the precedence rule
+/// is the whole point: `projects` and `project_files` are two spellings of
+/// one thing and are never both read.
+#[derive(Default)]
+struct ExportFiles {
+    conversations: Option<Vec<u8>>,
+    /// `projects.json` — every project in one array, the older layout.
+    projects: Option<Vec<u8>>,
+    /// `projects/*.json` — one project per file, kept with its name so a
+    /// warning can say which of twenty could not be read.
+    project_files: Vec<(String, Vec<u8>)>,
+}
+
+impl ExportFiles {
+    fn is_empty(&self) -> bool {
+        self.conversations.is_none() && self.projects.is_none() && self.project_files.is_empty()
+    }
+
+    /// Sort one file into the export it belongs to.
+    ///
+    /// `in_projects` — whether the file's directory is the `projects/` one —
+    /// is the only thing that identifies a per-project file. They are named
+    /// by uuid, so there is nothing in the name to match on.
+    fn take(&mut self, name: &str, in_projects: bool, bytes: Vec<u8>) {
+        // Unzipping on a Mac and re-zipping the folder is an ordinary thing
+        // to have happened, and `__MACOSX/projects/._p.json` is not a project.
+        if name.starts_with('.') {
+            return;
+        }
+        if name == CONVERSATIONS {
+            self.conversations = Some(bytes);
+        } else if in_projects && name.ends_with(".json") {
+            self.project_files.push((name.to_string(), bytes));
+        } else if name == PROJECTS {
+            self.projects = Some(bytes);
+        }
+    }
+
+    /// Order the per-project files by name, so two runs of the same import
+    /// read them in the same order — a directory listing arrives in whatever
+    /// order the filesystem or the archive happened to give.
+    fn sorted(mut self) -> Self {
+        self.project_files.sort_by(|a, b| a.0.cmp(&b.0));
+        self
+    }
+}
+
 /// Read an export from the zip Anthropic emails, or from a folder it was
 /// already unpacked into.
 ///
 /// Both are accepted because both are what people have: the zip is what
-/// arrives, and a folder is what is left after someone opened it to look. The
-/// two `.json` files are found by basename at any depth, since the archive has
-/// been shipped both flat and inside a dated directory.
+/// arrives, and a folder is what is left after someone opened it to look.
+/// Files are found by path *segment* rather than by full path, since the
+/// archive has shipped both flat and inside a dated directory.
 pub fn read_export(path: &Path) -> Result<Export, String> {
     let files = if path.is_dir() {
         read_dir_files(path)?
@@ -303,54 +366,77 @@ pub fn read_export(path: &Path) -> Result<Export, String> {
 
     if files.is_empty() {
         return Err(format!(
-            "no {CONVERSATIONS} or {PROJECTS} in {} — point this at the zip \
-             Anthropic emailed you, or at a folder it was unpacked into",
+            "no {CONVERSATIONS}, {PROJECTS} or {PROJECTS_DIR}/ in {} — point this at the \
+             zip Anthropic emailed you, or at a folder it was unpacked into",
             path.display()
         ));
     }
 
     let mut export = Export::default();
-    if let Some(raw) = files.get(PROJECTS) {
-        export.projects = parse_array(raw, "projects", "project", &mut export);
+    match &files.projects {
+        // The array, when the archive still carries one.
+        Some(raw) => export.projects = parse_array(raw, "projects", "project", &mut export),
+        // Otherwise the directory that replaced it, one project per file.
+        None => {
+            for (name, raw) in &files.project_files {
+                let parsed = parse_project_file(raw, name, &mut export);
+                export.projects.extend(parsed);
+            }
+        }
     }
-    if let Some(raw) = files.get(CONVERSATIONS) {
+    if let Some(raw) = &files.conversations {
         export.conversations = parse_array(raw, "conversations", "conversation", &mut export);
     }
     Ok(export)
 }
 
-fn read_dir_files(dir: &Path) -> Result<HashMap<String, Vec<u8>>, String> {
-    let mut out = HashMap::new();
-    let mut stack = vec![dir.to_path_buf()];
-    // Two levels: the archive ships flat or inside one dated directory, and a
-    // deeper walk would start reading whatever else is in the folder someone
-    // pointed at.
-    let mut depth = 0;
-    while let Some(current) = stack.pop() {
+/// Walk a folder for the files an export is made of.
+///
+/// Two directory levels and no further: the archive unpacks flat or into one
+/// dated directory, and `projects/` is then one level below that. A deeper
+/// walk would start reading whatever else is in the folder someone pointed at.
+fn read_dir_files(dir: &Path) -> Result<ExportFiles, String> {
+    let mut out = ExportFiles::default();
+    let mut stack = vec![(dir.to_path_buf(), 0usize)];
+    while let Some((current, depth)) = stack.pop() {
         let Ok(entries) = fs::read_dir(&current) else {
             continue;
         };
+        let in_projects = current
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n == PROJECTS_DIR);
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_dir() && depth < 1 {
-                stack.push(path);
-            } else if let Some(name) = path.file_name().and_then(|n| n.to_str())
-                && (name == CONVERSATIONS || name == PROJECTS)
-                && let Ok(bytes) = fs::read(&path)
-            {
-                out.insert(name.to_string(), bytes);
+            if path.is_dir() {
+                if depth < 2 {
+                    stack.push((path, depth + 1));
+                }
+                continue;
             }
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if name != CONVERSATIONS
+                && name != PROJECTS
+                && !(in_projects && name.ends_with(".json"))
+            {
+                continue;
+            }
+            let Ok(bytes) = fs::read(&path) else {
+                continue;
+            };
+            out.take(name, in_projects, bytes);
         }
-        depth += 1;
     }
-    Ok(out)
+    Ok(out.sorted())
 }
 
-fn read_zip_files(path: &Path) -> Result<HashMap<String, Vec<u8>>, String> {
+fn read_zip_files(path: &Path) -> Result<ExportFiles, String> {
     let file = fs::File::open(path).map_err(|e| format!("cannot open {}: {e}", path.display()))?;
     let mut zip = zip::ZipArchive::new(file)
         .map_err(|e| format!("{} is not a readable zip: {e}", path.display()))?;
-    let mut out = HashMap::new();
+    let mut out = ExportFiles::default();
     for i in 0..zip.len() {
         let mut entry = match zip.by_index(i) {
             Ok(e) => e,
@@ -359,24 +445,22 @@ fn read_zip_files(path: &Path) -> Result<HashMap<String, Vec<u8>>, String> {
         if !entry.is_file() {
             continue;
         }
-        // Matched on the basename and never written to disk, so the entry
-        // name is read as a label rather than as a path.
-        let name = entry
-            .name()
-            .rsplit('/')
-            .next()
-            .unwrap_or_default()
-            .to_string();
-        if name != CONVERSATIONS && name != PROJECTS {
+        // Split for its last two segments and never written to disk, so the
+        // entry name is read as a label rather than as a path.
+        let full = entry.name().to_string();
+        let mut segments = full.rsplit('/');
+        let name = segments.next().unwrap_or_default().to_string();
+        let in_projects = segments.next().unwrap_or_default() == PROJECTS_DIR;
+        if name != CONVERSATIONS && name != PROJECTS && !(in_projects && name.ends_with(".json")) {
             continue;
         }
         let mut buf = Vec::new();
         entry
             .read_to_end(&mut buf)
             .map_err(|e| format!("cannot read {name} out of the archive: {e}"))?;
-        out.insert(name, buf);
+        out.take(&name, in_projects, buf);
     }
-    Ok(out)
+    Ok(out.sorted())
 }
 
 /// Parse a top-level array, element by element.
@@ -419,6 +503,38 @@ fn parse_array<T: DeserializeOwned>(
         }
     };
 
+    parse_items(items, what, export)
+}
+
+/// Parse one file out of a `projects/` directory.
+///
+/// Each holds the single object that used to be one element of the
+/// `projects.json` array. An array is read too: the layout has changed once
+/// already, and tolerating both costs one match arm against a reader that
+/// silently imports nothing.
+fn parse_project_file(raw: &[u8], name: &str, export: &mut Export) -> Vec<ExportedProject> {
+    let value: serde_json::Value = match serde_json::from_slice(raw) {
+        Ok(v) => v,
+        Err(e) => {
+            export
+                .warnings
+                .push(format!("{PROJECTS_DIR}/{name} is not JSON: {e}"));
+            return Vec::new();
+        }
+    };
+    let what = format!("project from {PROJECTS_DIR}/{name}");
+    match value {
+        serde_json::Value::Array(items) => parse_items(items, &what, export),
+        object => parse_items(vec![object], &what, export),
+    }
+}
+
+/// Parse elements one at a time, counting what could not be read.
+fn parse_items<T: DeserializeOwned>(
+    items: Vec<serde_json::Value>,
+    what: &str,
+    export: &mut Export,
+) -> Vec<T> {
     let mut out = Vec::with_capacity(items.len());
     for item in items {
         match serde_json::from_value(item) {
@@ -582,6 +698,26 @@ pub fn import(
         }
     }
     report.unfiled = unfiled.len();
+
+    // The link is in the archive or it is nowhere — `project_uuid` is absent
+    // from some accounts' conversations entirely, and a name is never guessed
+    // into one. Said out loud because of the shape it leaves: every project
+    // imported with its instructions and its documents, and every chat in a
+    // pile beside them, which is indistinguishable from a filing bug.
+    if !export.projects.is_empty() && by_project.is_empty() && !export.conversations.is_empty() {
+        // First, not appended: every other line in this list is one record
+        // that could not be read, and both shells clip the list — the desktop
+        // to three. This one is about the import as a whole.
+        report.warnings.insert(
+            0,
+            format!(
+                "none of the {} conversation(s) in this export record which project they \
+                 belonged to, so all of them are unfiled — that link is not in the \
+                 archive and cannot be recovered from it",
+                export.conversations.len()
+            ),
+        );
+    }
 
     let mut slugs: HashSet<String> = HashSet::new();
     for project in &export.projects {
@@ -1847,6 +1983,149 @@ mod tests {
         let into = test_dir("import-zip-out");
         let report = run(&export, &into);
         assert_eq!(report.imported(), 1);
+    }
+
+    /// The layout current exports actually ship: no `projects.json` anywhere,
+    /// and one file per project in a `projects/` directory beside the
+    /// conversations. Against a reader that knew only the array, this parsed
+    /// zero projects, wrote no instructions and no documents, and sent every
+    /// conversation down the unfiled path — with nothing raised anywhere.
+    #[test]
+    fn projects_ship_as_a_directory_of_one_file_each() {
+        use std::io::Write as _;
+
+        let dir = test_dir("import-projects-dir");
+        let path = dir.join("data.zip");
+        let mut zip = zip::ZipWriter::new(fs::File::create(&path).unwrap());
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+
+        // One object per file — the element the array used to hold.
+        zip.start_file("data-2026-08-19/projects/p-1.json", options)
+            .unwrap();
+        zip.write_all(&serde_json::to_vec(&one_project()[0]).unwrap())
+            .unwrap();
+        zip.start_file("data-2026-08-19/projects/p-2.json", options)
+            .unwrap();
+        zip.write_all(
+            &serde_json::to_vec(&json!({
+                "uuid": "p-2",
+                "name": "Recipes",
+                "prompt_template": "Metric units.",
+                "docs": [],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        // A Mac's resource fork sits in the same directory and is not a project.
+        zip.start_file("__MACOSX/projects/._p-1.json", options)
+            .unwrap();
+        zip.write_all(b"not json").unwrap();
+        zip.start_file("data-2026-08-19/conversations.json", options)
+            .unwrap();
+        zip.write_all(
+            &serde_json::to_vec(&json!([{
+                "uuid": "c-1",
+                "name": "Chapter one",
+                "project_uuid": "p-1",
+                "created_at": "2026-08-19T05:06:07Z",
+                "chat_messages": [message("m-1", "human", "hello")],
+            }]))
+            .unwrap(),
+        )
+        .unwrap();
+        zip.finish().unwrap();
+
+        let export = read_export(&path).unwrap();
+        assert_eq!(export.projects.len(), 2, "{:?}", export.warnings);
+        assert_eq!(export.unreadable, 0, "{:?}", export.warnings);
+        let thesis = &export.projects[0];
+        assert_eq!(thesis.uuid, "p-1");
+        // The half the reporter noticed missing: instructions and documents.
+        assert_eq!(thesis.prompt_template, "Always cite a source.");
+        assert_eq!(thesis.docs.len(), 3);
+
+        let into = test_dir("import-projects-dir-out");
+        let report = run(&export, &into);
+        assert_eq!(report.projects.len(), 2);
+        assert!(report.projects[0].instructions);
+        assert_eq!(report.imported(), 1);
+    }
+
+    /// The same layout after somebody unzipped it to look, which puts
+    /// `projects/` two directories below the one they point at.
+    #[test]
+    fn a_projects_directory_is_found_in_an_unpacked_folder() {
+        let dir = test_dir("import-unpacked");
+        let dated = dir.join("data-2026-08-19");
+        fs::create_dir_all(dated.join(PROJECTS_DIR)).unwrap();
+        fs::write(
+            dated.join(PROJECTS_DIR).join("p-1.json"),
+            serde_json::to_vec_pretty(&one_project()[0]).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            dated.join(CONVERSATIONS),
+            serde_json::to_vec_pretty(&json!([])).unwrap(),
+        )
+        .unwrap();
+
+        let export = read_export(&dir).unwrap();
+        assert_eq!(export.projects.len(), 1, "{:?}", export.warnings);
+        assert_eq!(export.projects[0].name, "Thesis Research");
+    }
+
+    /// An archive carrying both layouts must import every project once. The
+    /// array is the one read, and the directory is not also walked.
+    #[test]
+    fn the_array_wins_when_an_export_carries_both_layouts() {
+        use std::io::Write as _;
+
+        let dir = test_dir("import-both-layouts");
+        let path = dir.join("data.zip");
+        let mut zip = zip::ZipWriter::new(fs::File::create(&path).unwrap());
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        zip.start_file("projects.json", options).unwrap();
+        zip.write_all(&serde_json::to_vec(&one_project()).unwrap())
+            .unwrap();
+        zip.start_file("projects/p-1.json", options).unwrap();
+        zip.write_all(&serde_json::to_vec(&one_project()[0]).unwrap())
+            .unwrap();
+        zip.finish().unwrap();
+
+        let export = read_export(&path).unwrap();
+        assert_eq!(export.projects.len(), 1);
+        assert_eq!(export.projects[0].uuid, "p-1");
+    }
+
+    /// Restoring the projects cannot restore the filing: some accounts export
+    /// no link at all, and what that leaves — every project imported with its
+    /// instructions, every chat in a pile beside them — is indistinguishable
+    /// from a filing bug unless it is said out loud.
+    #[test]
+    fn an_export_with_no_project_link_says_so() {
+        let (_src, export) = export_of(
+            "no-link",
+            one_project(),
+            json!([{
+                "uuid": "c-1",
+                "name": "Belongs to nothing",
+                "created_at": "2026-08-19T05:06:07Z",
+                "chat_messages": [message("m-1", "human", "hello")],
+            }]),
+        );
+        let into = test_dir("import-no-link");
+        let report = run(&export, &into);
+        assert_eq!(report.unfiled, 1);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("cannot be recovered")),
+            "{:?}",
+            report.warnings
+        );
     }
 
     /// An existing `AGENTS.md` means the folder is somebody's real project,

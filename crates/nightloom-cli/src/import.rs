@@ -160,6 +160,17 @@ fn list(export: &Export) -> Result<()> {
         filed,
         export.conversations.len() - filed
     );
+    // `--list` never reaches the import, so the observation it would make
+    // about a link that is not in the archive has to be made again here —
+    // this is the command someone runs *before* deciding, and "0 filed" on
+    // its own reads as a bug in the reader that just found the projects.
+    if !export.projects.is_empty() && filed == 0 && !export.conversations.is_empty() {
+        println!(
+            "{DIM}no conversation here records which project it belonged to — that link \
+             is not in the archive, so these chats can only be imported unfiled \
+             (--unfiled){RESET}"
+        );
+    }
     if export.unreadable > 0 {
         println!(
             "{DIM}{} record(s) could not be read{RESET}",
