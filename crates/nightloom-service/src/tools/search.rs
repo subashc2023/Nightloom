@@ -42,15 +42,15 @@ const SKIP_DIRS: [&str; 3] = [".git", "target", "node_modules"];
 /// wide the other way: `sessions` and `evals` are ordinary names for ordinary
 /// directories in somebody else's repository.
 ///
-/// The docspace has since moved to `~/.nightloom`, out of the workspace
-/// entirely, so a walk from the root no longer reaches it either way -- but
-/// this stays, and not only for folders that predate the move. A workspace
-/// can be any directory the user picks, including one with a `.nightloom` in
-/// it, and the reason a transcript must not feed itself back into its own
-/// searches did not change with where the transcript is kept. The docspace
-/// is still searchable, by giving `grep` or `glob` the path the notes index
-/// names -- both resolve their `path` argument through the same [`Root`] the
-/// second tree is registered on.
+/// The docspace has since moved twice more and is now `<workspace>/.agents`,
+/// with the chats out at `~/.nightloom` -- so against a folder laid out the
+/// current way this positional skip matches nothing at all. It stays anyway.
+/// A workspace is any directory the user picks, including one still laid out
+/// the old way, and the reason a transcript must not feed itself back into
+/// its own searches did not change with where the transcript is kept. The
+/// docspace needs no exception of its own any more: `.agents` is an ordinary
+/// directory inside the tree the walk already starts from, which is the whole
+/// argument for keeping it there.
 const SKIP_UNDER_NIGHTLOOM: [&str; 3] = ["sessions", "probes", "evals"];
 
 /// Result caps. A tool result is context the model pays for on every
@@ -518,6 +518,16 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(found, ".agents/decisions.md");
+
+        // And by the pattern a model actually types for "everything here".
+        // `.agents` is a dot directory, and a walk that quietly skipped those
+        // the way a shell glob does would leave the docspace invisible again
+        // by a different route.
+        let listed = Glob::new(Root::new(&dir))
+            .call(json!({ "pattern": "*" }), &CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(listed, ".agents/decisions.md");
         fs::remove_dir_all(&dir).ok();
     }
 

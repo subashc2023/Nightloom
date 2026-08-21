@@ -84,9 +84,9 @@ pub fn builtin() -> Vec<Box<dyn Tool>> {
 /// The built-in tools, with every path argument resolved against — and
 /// confined to — `root`.
 ///
-/// Takes a [`Root`] rather than a path so a caller can hand over one carrying
-/// the docspace as a second tree; a bare path still works and means a
-/// workspace and nothing else.
+/// Takes anything `Into<Root>`, so a caller holding a plain path hands over
+/// the path. There is no second tree to carry: the docspace is
+/// `<workspace>/.agents`, inside the one tree being confined to.
 pub fn builtin_in(root: impl Into<Root>) -> Vec<Box<dyn Tool>> {
     let root = root.into();
     vec![

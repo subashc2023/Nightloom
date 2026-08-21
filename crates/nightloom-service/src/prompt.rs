@@ -343,23 +343,48 @@ pub fn user_instruction_path() -> Option<PathBuf> {
 /// Always a segment, never `None`, even for an empty docspace: a facility the
 /// model is not told about is a facility nobody uses, and the empty case is
 /// where saying what it is for matters most.
+///
+/// **What it says about the path is load-bearing, and it was wrong for
+/// thirteen commits.** The docspace spent one commit at `~/.nightloom`, and
+/// this segment told the model the directory was outside the workspace and to
+/// give the absolute path. Moving it back to `<workspace>/.agents` left that
+/// sentence behind, and nothing failed: the model does as it is told, an
+/// absolute path inside the root resolves like any other, and every call
+/// succeeds. What was lost is the reason the docspace sits inside the tree at
+/// all — a model told the notes are somewhere else has no reason to
+/// expect `grep` or `glob` to reach them, and will not look. A prompt that is
+/// wrong in a direction nothing errors on is the expensive kind.
 pub fn project_notes_segment(project: &ProjectContext) -> Segment {
     let notes = crate::project::list_notes(&project.notes_dir);
     let name = &project.name;
     let dir = project.notes_dir.display();
+    // The path the model should actually type. The docspace is a directory
+    // inside the workspace, so its final component *is* its path relative to
+    // the root every file tool already resolves against.
+    let rel = project
+        .notes_dir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| project.notes_dir.display().to_string());
 
     let mut text = format!(
         "<project-notes project=\"{name}\" dir=\"{dir}\">
 "
     );
-    text.push_str(
-        "Shared notes for this project. Every conversation in it sees this index,          and anything written here reaches later conversations — this is where to          leave something for your next self.
-
-         Read one with read_file and add or revise one with write_file / edit_file.          This directory is outside the workspace, so give the full path shown          above rather than a bare note name — a bare name resolves against the          workspace and finds a different file, or none. Only this index is          loaded automatically; the contents are not.
-
-         Worth writing down: a task list that outlives one conversation, a decision          and why it was made, a map of something that took real work to figure out.          Not worth writing down: anything already obvious from the code, or a          summary of what you just said. Revise a stale note rather than adding a          second one beside it — a wrong note costs more than a missing one.
-",
-    );
+    text.push_str(&format!(
+        "Shared notes for this project. Every conversation in it sees this index, and \
+         anything written here reaches later conversations — this is where to leave \
+         something for your next self.\n\n\
+         Read one with read_file and add or revise one with write_file / edit_file. This \
+         directory is inside the workspace, so a relative path reaches it ({rel}/<name>), \
+         and grep and glob walk it like any other folder — a note can be found without \
+         being read first. Only this index is loaded automatically; the contents are not.\n\n\
+         Worth writing down: a task list that outlives one conversation, a decision and \
+         why it was made, a map of something that took real work to figure out. Not worth \
+         writing down: anything already obvious from the code, or a summary of what you \
+         just said. Revise a stale note rather than adding a second one beside it — a \
+         wrong note costs more than a missing one.\n"
+    ));
     if notes.is_empty() {
         text.push_str(
             "
@@ -493,6 +518,35 @@ the body text",
         let segs = assemble(&cfg).segments().to_vec();
         assert_eq!(segs.len(), 1);
         assert!(segs[0].text.contains("currently empty"), "{}", segs[0].text);
+    }
+
+    /// The segment tells the model how to reach a note; `Root` is what
+    /// decides whether that is true. It said "outside the workspace, give the
+    /// full path" for thirteen commits after the docspace moved back inside
+    /// one, and no call ever failed over it — an absolute path resolves too.
+    /// So the claim went untested while being wrong. This is that test: the
+    /// path the segment names, resolved the way every file tool resolves a
+    /// path argument, is the note on disk.
+    #[test]
+    fn the_notes_segment_names_a_path_the_file_tools_resolve() {
+        let dir = temp_dir("notes-reachable");
+        let notes = dir.join(crate::project::AGENTS_DIR);
+        crate::project::write_note(&notes, "plan.md", "# Plan").unwrap();
+
+        let mut cfg = bare(dir.clone());
+        cfg.project = Some(ProjectContext {
+            name: "Reach".into(),
+            notes_dir: notes,
+        });
+        let text = assemble(&cfg).segments()[0].text.clone();
+
+        assert!(text.contains(".agents/<name>"), "{text}");
+        assert!(!text.contains("outside the workspace"), "{text}");
+
+        let resolved = crate::tools::Root::new(&dir)
+            .resolve(".agents/plan.md")
+            .expect("the relative path the segment names must resolve");
+        assert!(resolved.is_file(), "{resolved:?}");
     }
 
     #[test]
