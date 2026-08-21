@@ -85,8 +85,8 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Deserializer};
 
 use nightloom_core::{ContentBlock, Session, SessionEvent, Usage};
 
@@ -119,25 +119,25 @@ const PROJECTS_DIR: &str = "projects";
 /// A project as claude.ai exports it.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ExportedProject {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub uuid: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub description: String,
     /// The project's custom instructions, under the name the export gives them.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub prompt_template: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub docs: Vec<ExportedDoc>,
 }
 
 /// One knowledge document attached to a project.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ExportedDoc {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub filename: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub content: String,
 }
 
@@ -149,7 +149,7 @@ pub struct ExportedDoc {
 #[derive(Debug, Clone, Deserialize)]
 pub struct ExportedConversation {
     pub uuid: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub name: String,
     #[serde(default)]
     pub created_at: Option<DateTime<Utc>>,
@@ -168,7 +168,7 @@ pub struct ExportedConversation {
     pub project: Option<ProjectRef>,
     #[serde(default)]
     pub current_leaf_message_uuid: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub chat_messages: Vec<ExportedMessage>,
 }
 
@@ -191,16 +191,16 @@ pub struct ProjectRef {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ExportedMessage {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub uuid: String,
     /// `"human"` or `"assistant"`.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub sender: String,
     /// The flat rendering, kept by the export alongside `content`. Used only
     /// when `content` is absent, which older exports do.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub text: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub content: Vec<ExportedBlock>,
     #[serde(default)]
     pub created_at: Option<DateTime<Utc>>,
@@ -208,9 +208,9 @@ pub struct ExportedMessage {
     pub index: Option<i64>,
     #[serde(default)]
     pub parent_message_uuid: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub attachments: Vec<ExportedAttachment>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub files: Vec<ExportedFile>,
 }
 
@@ -225,31 +225,31 @@ pub struct ExportedMessage {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ExportedBlock {
     Text {
-        #[serde(default)]
+        #[serde(default, deserialize_with = "null_as_default")]
         text: String,
     },
     Thinking {
-        #[serde(default)]
+        #[serde(default, deserialize_with = "null_as_default")]
         thinking: String,
     },
     VoiceNote {
         #[serde(default)]
         title: Option<String>,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "null_as_default")]
         text: String,
     },
     ToolUse {
-        #[serde(default)]
+        #[serde(default, deserialize_with = "null_as_default")]
         name: String,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "null_as_default")]
         input: serde_json::Value,
     },
     ToolResult {
-        #[serde(default)]
+        #[serde(default, deserialize_with = "null_as_default")]
         name: String,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "null_as_default")]
         content: Vec<ToolResultPart>,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "null_as_default")]
         is_error: bool,
     },
     #[serde(other)]
@@ -271,18 +271,38 @@ pub struct ToolResultPart {
 /// log that claims to hold bytes it does not have.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ExportedAttachment {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub file_name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub file_type: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub extracted_content: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ExportedFile {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub file_name: String,
+}
+
+/// Read a `null` as the field's default.
+///
+/// `#[serde(default)]` covers a field that is *absent*, not one that is present
+/// and null — a distinction the export does not observe. A real archive
+/// carries `"filename": null` on an attachment whose name was lost, and one of
+/// those failed the entire conversation it appeared in: six chats out of 1,817,
+/// each otherwise perfectly readable, dropped over a missing filename nothing
+/// downstream needed. The argument the module makes about one bad record not
+/// costing the other nine hundred applies inside a record too, so every field
+/// that has a sensible empty value takes one rather than refusing.
+///
+/// `Option` fields are left alone: null is already what they are for.
+fn null_as_default<'de, D, T>(de: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Ok(Option::<T>::deserialize(de)?.unwrap_or_default())
 }
 
 // ---------------------------------------------------------------------------
@@ -2049,6 +2069,48 @@ mod tests {
         let report = run(&export, &into);
         assert_eq!(report.projects.len(), 2);
         assert!(report.projects[0].instructions);
+        assert_eq!(report.imported(), 1);
+    }
+
+    /// `#[serde(default)]` answers a field that is missing, not one that is
+    /// present and null, and a real export writes `"filename": null` on an
+    /// attachment whose name was lost. That failed the whole conversation:
+    /// six otherwise readable chats out of 1,817 dropped over a name nothing
+    /// downstream needed.
+    #[test]
+    fn a_null_where_a_string_was_expected_does_not_cost_the_conversation() {
+        let mut msg = message("m-1", "human", "what is in this file?");
+        msg["attachments"] = json!([{
+            "file_name": null,
+            "file_type": null,
+            "extracted_content": "the contents",
+        }]);
+        msg["files"] = json!([{ "file_name": null }]);
+        let (_src, export) = export_of(
+            "nulls",
+            json!([{
+                "uuid": "p-1",
+                "name": "Nulls",
+                "prompt_template": null,
+                "description": null,
+                "docs": [{ "filename": null, "content": null }],
+            }]),
+            json!([{
+                "uuid": "c-1",
+                "name": null,
+                "project_uuid": "p-1",
+                "created_at": "2025-03-04T05:06:07Z",
+                "chat_messages": [msg],
+            }]),
+        );
+
+        assert_eq!(export.unreadable, 0, "{:?}", export.warnings);
+        assert_eq!(export.conversations.len(), 1);
+        assert_eq!(export.projects.len(), 1);
+
+        let into = test_dir("import-nulls-out");
+        let report = run(&export, &into);
+        assert_eq!(report.unfiled, 0);
         assert_eq!(report.imported(), 1);
     }
 
