@@ -33,8 +33,10 @@ const PUMP_GRACE: Duration = Duration::from_secs(2);
 /// Output captured so far, readable whether or not the reader ever finishes.
 type Captured = Arc<Mutex<Vec<u8>>>;
 
-const BASH_DESC: &str = "Run a shell command from the workspace root and get back its combined \
-     stdout and stderr plus its exit code. Use it for builds, tests, version control and \
+const BASH_DESC: &str = "Run a shell command from the workspace root and get back its exit code, its \
+     stdout, and then whatever it wrote to stderr under a [stderr] marker. A nonzero exit \
+     code is a result, not a failure of the call, and stderr is collected at the end rather \
+     than interleaved where it was written. Use it for builds, tests, version control and \
      anything else with a command line interface. Do not use it to read, write or search \
      files: read_file, write_file, edit_file, glob and grep exist for that, and they are \
      faster, they handle paths consistently across platforms, and their output is shaped for \
@@ -181,6 +183,16 @@ impl Tool for Bash {
             if !body.is_empty() && !body.ends_with('\n') {
                 body.push('\n');
             }
+            // Named, because the two streams are drained into separate
+            // buffers and joined afterwards: everything a command wrote to
+            // stderr arrives in one run at the end rather than interleaved
+            // where it happened. Unlabelled it reads as ordinary trailing
+            // output, and a `fatal:` line sitting under the output of the
+            // command before it is the shape that misleads. The marker names
+            // the stream and claims nothing about failure — plenty of
+            // working commands write here, and the exit code above is what
+            // says whether anything went wrong.
+            body.push_str("[stderr]\n");
             body.push_str(&stderr_text);
         }
         let mut body = if body.trim().is_empty() {
@@ -349,6 +361,30 @@ mod tests {
             .await
             .unwrap();
         assert!(out.starts_with("exit code: 3\n"), "{out}");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// stdout and stderr are drained into separate buffers and joined at the
+    /// end, so a diagnostic arrives detached from the output it followed. A
+    /// live run showed `fatal: not a git repository` sitting under three
+    /// lines of unrelated stdout with nothing to say it came from anywhere
+    /// else, which reads as the tail of the command's own output.
+    #[tokio::test]
+    async fn names_the_stream_when_a_command_writes_to_stderr() {
+        let dir = test_dir("shell-stderr");
+        let command = if cfg!(windows) {
+            "echo out & echo err 1>&2"
+        } else {
+            "echo out; echo err 1>&2"
+        };
+        let out = bash(&dir)
+            .call(json!({ "command": command }), &CancellationToken::new())
+            .await
+            .unwrap();
+        let marker = out.find("[stderr]").unwrap_or_else(|| panic!("{out}"));
+        // The marker introduces the stderr run rather than trailing it.
+        assert!(out[..marker].contains("out"), "{out}");
+        assert!(out[marker..].contains("err"), "{out}");
         fs::remove_dir_all(&dir).ok();
     }
 
