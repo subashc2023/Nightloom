@@ -170,3 +170,30 @@ button {
 .markdown th {
   background: var(--panel);
 }
+
+/* ---- math (KaTeX; its own stylesheet is imported by markdown.ts) ---- */
+
+/* KaTeX sizes itself at 1.21em against body text. That is calibrated for a
+   document, and beside a 0.92rem chat paragraph it reads as a heading. */
+.markdown .katex {
+  font-size: 1.05em;
+}
+
+/* A display formula is a block of its own and can be wider than the pane;
+   let it scroll rather than push the whole transcript sideways. The vertical
+   axis has to be named too — CSS turns a `visible` into `auto` the moment
+   its partner scrolls, and a stray vertical scrollbar on one equation looks
+   like a bug; the padding is the clearance that buys instead. */
+.markdown .katex-display {
+  margin: 0.8em 0;
+  padding: 0.4em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.markdown .katex-error,
+.markdown .math-error {
+  font-family: var(--mono);
+  font-size: 0.85em;
+  color: var(--error);
+}
