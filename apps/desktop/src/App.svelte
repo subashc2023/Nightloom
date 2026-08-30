@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { app, init } from "./lib/state.svelte";
   import Sidebar from "./lib/Sidebar.svelte";
+  import TitleBar from "./lib/TitleBar.svelte";
   import TopBar from "./lib/TopBar.svelte";
   import RightRail from "./lib/RightRail.svelte";
   import SettingsModal from "./lib/SettingsModal.svelte";
@@ -25,45 +26,61 @@
   const blank = $derived(app.events.length === 0 && !app.live);
 </script>
 
-<div class="app">
-  <Sidebar />
-  <div class="main">
-    <TopBar />
-    <div class="content">
-      {#if app.view === "note"}
-        <NoteView />
-      {:else if blank}
-        <Welcome />
-      {:else}
-        <Transcript />
-      {/if}
-      {#if app.toasts.length > 0}
-        <div class="toasts">
-          {#each app.toasts as t (t.id)}
-            <div class="toast">{t.text}</div>
-          {/each}
-        </div>
+<!--
+  The title bar spans the whole window rather than sitting inside the centre
+  column, because it is the window's own chrome and not a toolbar: with the
+  system frame off there has to be somewhere to grab at the top of the screen
+  wherever the pointer is, including over the sidebar and the rail.
+-->
+<div class="shell">
+  <TitleBar />
+  <div class="app">
+    <Sidebar />
+    <div class="main">
+      <TopBar />
+      <div class="content">
+        {#if app.view === "note"}
+          <NoteView />
+        {:else if blank}
+          <Welcome />
+        {:else}
+          <Transcript />
+        {/if}
+        {#if app.toasts.length > 0}
+          <div class="toasts">
+            {#each app.toasts as t (t.id)}
+              <div class="toast">{t.text}</div>
+            {/each}
+          </div>
+        {/if}
+      </div>
+      {#if app.view === "chat" && !blank}
+        <Composer />
       {/if}
     </div>
-    {#if app.view === "chat" && !blank}
-      <Composer />
+    <RightRail />
+    {#if app.showSettings}
+      <div class="settings-overlay"><SettingsModal /></div>
+    {/if}
+    {#if app.showPrompts}
+      <div class="settings-overlay"><PromptLibrary /></div>
     {/if}
   </div>
-  <RightRail />
-  {#if app.showSettings}
-    <div class="settings-overlay"><SettingsModal /></div>
-  {/if}
-  {#if app.showPrompts}
-    <div class="settings-overlay"><PromptLibrary /></div>
-  {/if}
 </div>
 
 <style>
+  .shell {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    overflow: hidden;
+  }
   .app {
     position: relative;
     display: grid;
     grid-template-columns: 260px 1fr 240px;
-    height: 100vh;
+    flex: 1;
+    min-height: 0;
     overflow: hidden;
   }
   .main {

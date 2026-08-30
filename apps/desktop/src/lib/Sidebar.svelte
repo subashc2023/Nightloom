@@ -106,8 +106,6 @@
 </script>
 
 <aside class="sidebar">
-  <div class="wordmark">nightloom</div>
-
   <div class="project">
     <button
       class="chip"
@@ -296,16 +294,12 @@
     min-height: 0;
     overflow: hidden;
   }
-  .wordmark {
-    color: var(--accent);
-    font-size: 1.05rem;
-    letter-spacing: 0.22em;
-    padding: 1rem 1rem 0.6rem;
-    user-select: none;
-  }
+  /* The wordmark that used to head this column lives in the title bar now,
+     directly above and in the same panel colour, so the project chip is what
+     the sidebar starts with. */
   .project {
     position: relative;
-    padding: 0 0.5rem 0.6rem;
+    padding: 0.75rem 0.5rem 0.6rem;
   }
   .chip {
     width: 100%;

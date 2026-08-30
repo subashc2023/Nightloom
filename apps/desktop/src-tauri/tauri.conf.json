@@ -10,16 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [
-      {
-        "title": "Nightloom",
-        "width": 1150,
-        "height": 780,
-        "minWidth": 700,
-        "minHeight": 500,
-        "dragDropEnabled": false
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": null
     }

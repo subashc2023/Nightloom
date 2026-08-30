@@ -1773,6 +1773,60 @@ fn adopt_unfiled(from: &Path, to: &Path) {
     let _ = std::fs::remove_dir(from);
 }
 
+/// The window, built here rather than declared in `tauri.conf.json`.
+///
+/// What it should be differs per platform and the config file has no way to
+/// say so. Windows and Linux get **no system frame at all** — the title bar is
+/// ours, drawn in the webview, so the app looks like one thing rather than a
+/// dark app wearing a light-grey caption strip. macOS keeps its frame and
+/// hides only the title, because the traffic lights are where every Mac user
+/// reaches and re-drawing them on the right would be the opposite of native.
+///
+/// Declaring `decorations: false` in the config and undoing it here for macOS
+/// was the other reading and it is worse in both directions: there is no
+/// runtime setter for the macOS title-bar style, so that platform would get a
+/// full system caption bar *above* ours, and the platform this exists for
+/// would show a system frame for however many frames the setup hook takes.
+fn build_window(app: &tauri::App) -> tauri::Result<()> {
+    #[allow(unused_mut)]
+    let mut win = tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::default())
+        .title("Nightloom")
+        .inner_size(1150.0, 780.0)
+        .min_inner_size(700.0, 500.0)
+        // Tauri's OS-level file-drop handler otherwise swallows a drop before
+        // the webview sees an HTML5 `drop` event, and the composer takes
+        // attachments by drop. On Windows, disabling it is the documented
+        // requirement; paste works either way, which is what makes the
+        // omission easy to miss.
+        .disable_drag_drop_handler()
+        // Exact, synchronous, and available before the first paint — which a
+        // command could not be. The title bar reads it to decide whether it
+        // draws window buttons or leaves room for the traffic lights, and a
+        // bar that laid itself out twice would flicker on every launch.
+        .initialization_script(format!(
+            "globalThis.__NIGHTLOOM_PLATFORM__ = {:?};",
+            std::env::consts::OS
+        ));
+
+    // tao keeps `WS_THICKFRAME` on a borderless window, so the resize border,
+    // the drop shadow and the maximize-without-covering-the-taskbar case all
+    // still come from the system on Windows. GTK gives no such thing, which
+    // is why the bar supplies its own resize edges on Linux.
+    #[cfg(not(target_os = "macos"))]
+    {
+        win = win.decorations(false);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        win = win
+            .title_bar_style(tauri::TitleBarStyle::Overlay)
+            .hidden_title(true);
+    }
+
+    win.build()?;
+    Ok(())
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -1815,6 +1869,12 @@ fn main() {
                 gate,
                 mcp: tokio::sync::Mutex::new(None),
             });
+            // Last, and that ordering is load-bearing rather than tidiness:
+            // the webview starts loading the moment the window exists and its
+            // first paint calls straight into `providers` and `list_sessions`,
+            // which resolve `State<AppState>` and panic if nothing has managed
+            // it yet.
+            build_window(app)?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
