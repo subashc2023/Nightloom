@@ -1778,9 +1778,20 @@ fn adopt_unfiled(from: &Path, to: &Path) {
 /// What it should be differs per platform and the config file has no way to
 /// say so. Windows and Linux get **no system frame at all** — the title bar is
 /// ours, drawn in the webview, so the app looks like one thing rather than a
-/// dark app wearing a light-grey caption strip. macOS keeps its frame and
-/// hides only the title, because the traffic lights are where every Mac user
-/// reaches and re-drawing them on the right would be the opposite of native.
+/// dark app wearing a light-grey caption strip.
+///
+/// **macOS keeps its frame, whole and untouched**, and that is the opposite
+/// of what it looked like it should get. The obvious move there is the one
+/// every modern Mac app makes — hide the title and overlay the traffic lights
+/// on our own bar (`TitleBarStyle::Overlay` + `hidden_title`) — and it was
+/// tried and reverted, because a window zoomed with it on leaves a strip of
+/// the desktop showing above the content: the frame's height comes out of the
+/// window and nothing fills it. A sliver of somebody's wallpaper along the top
+/// edge is a worse failure than a system title bar, which is at least what the
+/// platform looks like. So macOS is *native*, and what would have gone in a
+/// bar of ours goes in [`mac_menu`] instead — the menu bar at the top of the
+/// screen is where a Mac user looks for an app's commands anyway, and it is
+/// the one piece of chrome that already melds with the notch.
 ///
 /// Declaring `decorations: false` in the config and undoing it here for macOS
 /// was the other reading and it is worse in both directions: there is no
@@ -1816,20 +1827,124 @@ fn build_window(app: &tauri::App) -> tauri::Result<()> {
     {
         win = win.decorations(false);
     }
-    #[cfg(target_os = "macos")]
-    {
-        win = win
-            .title_bar_style(tauri::TitleBarStyle::Overlay)
-            .hidden_title(true);
-    }
 
     win.build()?;
     Ok(())
 }
 
+/// The macOS menu bar.
+///
+/// It exists because macOS is the one platform here with no title bar of ours
+/// to hang anything on, and because it is where the commands belong on that
+/// platform regardless: ⌘, opens settings in every Mac app, and a user who
+/// reaches for it and finds nothing has learned that this is a port.
+///
+/// Nothing here is decoration. Tauri installs a default menu on macOS when an
+/// app sets none, and it is not enough on either count — it has no Settings
+/// item, and its File menu can only close the window. The **Edit** submenu is
+/// the one that has to be here whatever else is: a webview on macOS takes ⌘C
+/// and ⌘V from the menu, so an app that replaces the default menu without it
+/// silently breaks copy and paste in every text box it has.
+///
+/// The four custom items are *forwarded to the webview* rather than performed
+/// here (see [`mac_menu_event`]). Each one is a frontend flow — a modal, a
+/// file dialog, a re-connect — and the backend has no way to run half of one.
+#[cfg(target_os = "macos")]
+fn mac_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    use tauri::menu::{AboutMetadata, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+
+    let pkg = app.package_info();
+    let about = AboutMetadata {
+        name: Some(pkg.name.clone()),
+        version: Some(pkg.version.to_string()),
+        ..Default::default()
+    };
+
+    // Accelerators parse leniently — an unrecognized one is dropped rather
+    // than refused — so these are the spellings muda documents, not guesses.
+    let settings = MenuItemBuilder::with_id("settings", "Settings…")
+        .accelerator("CmdOrCtrl+,")
+        .build(app)?;
+    let new_chat = MenuItemBuilder::with_id("new_chat", "New Chat")
+        .accelerator("CmdOrCtrl+N")
+        .build(app)?;
+    let add_project = MenuItemBuilder::with_id("add_project", "Open Folder as Project…")
+        .accelerator("CmdOrCtrl+O")
+        .build(app)?;
+    let import = MenuItemBuilder::with_id("import_claude", "Import from claude.ai…").build(app)?;
+
+    let app_menu = SubmenuBuilder::new(app, pkg.name.clone())
+        .about(Some(about))
+        .separator()
+        .item(&settings)
+        .separator()
+        .services()
+        .separator()
+        .hide()
+        .hide_others()
+        .show_all()
+        .separator()
+        .quit()
+        .build()?;
+
+    let file = SubmenuBuilder::new(app, "File")
+        .item(&new_chat)
+        .separator()
+        .item(&add_project)
+        .item(&import)
+        .separator()
+        .close_window()
+        .build()?;
+
+    let edit = SubmenuBuilder::new(app, "Edit")
+        .undo()
+        .redo()
+        .separator()
+        .cut()
+        .copy()
+        .paste()
+        .select_all()
+        .build()?;
+
+    let view = SubmenuBuilder::new(app, "View").fullscreen().build()?;
+
+    let window = SubmenuBuilder::new(app, "Window")
+        .minimize()
+        .maximize()
+        .separator()
+        .bring_all_to_front()
+        .build()?;
+
+    MenuBuilder::new(app)
+        .items(&[&app_menu, &file, &edit, &view, &window])
+        .build()
+}
+
+/// Hands a menu click to the webview as a `menu` event carrying the item's id.
+///
+/// Predefined items (quit, copy, minimize) are performed by the OS and arrive
+/// here too; the frontend ignores every id it does not know, which is also
+/// what makes adding an item a one-line change on each side.
+#[cfg(target_os = "macos")]
+fn mac_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
+    let _ = app.emit("menu", event.id().0.as_str());
+}
+
 fn main() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
+    #[allow(unused_mut)]
+    let mut builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
+
+    // Only on macOS. On Windows and Linux a menu is drawn *inside* the window,
+    // under a caption bar this app no longer has — it would be a grey strip
+    // across the top of a themed window, which is the thing the borderless
+    // frame exists to be rid of. Those platforms have the title bar's own gear
+    // instead.
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder.menu(mac_menu).on_menu_event(mac_menu_event);
+    }
+
+    builder
         .setup(|app| {
             // App-data is now the *previous* home for unfiled chats, kept
             // only long enough to move them. A user who has been running this

@@ -120,8 +120,14 @@
     </div>
   {/if}
 
-  <div class="actions">
-    {#if canCompact}
+  <!--
+    Compaction and nothing else. The settings gear used to sit beside it and
+    moved up into the window's title bar, where it belongs: this bar describes
+    the conversation — which model, how full its window is, what it has cost —
+    and settings are about the app.
+  -->
+  {#if canCompact}
+    <div class="actions">
       <button
         class="compact"
         title="Replace earlier turns with a model-written summary"
@@ -130,16 +136,8 @@
       >
         {app.busy ? "…" : "Compact"}
       </button>
-    {/if}
-    <button
-      class="gear"
-      title="Settings"
-      aria-label="Settings"
-      onclick={() => (app.showSettings = !app.showSettings)}
-    >
-      ⚙
-    </button>
-  </div>
+    </div>
+  {/if}
 </header>
 
 <style>
@@ -236,19 +234,5 @@
   .compact:disabled {
     opacity: 0.5;
     cursor: default;
-  }
-  .gear {
-    background: transparent;
-    border: none;
-    color: var(--dim);
-    font-size: 1rem;
-    cursor: pointer;
-    padding: 0.2rem 0.4rem;
-    border-radius: 6px;
-    line-height: 1;
-  }
-  .gear:hover {
-    color: var(--text);
-    background: #1b1830;
   }
 </style>

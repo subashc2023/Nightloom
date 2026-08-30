@@ -17,16 +17,9 @@ export const platform: string =
   (globalThis as unknown as { __NIGHTLOOM_PLATFORM__?: string }).__NIGHTLOOM_PLATFORM__ ?? "";
 
 /**
- * macOS keeps its system frame — the title is hidden and the traffic lights
- * are overlaid on our bar — so there the bar draws no buttons of its own and
- * leaves room at the left for the ones the OS already put there.
+ * macOS keeps its system frame, whole. There is therefore no bar of ours on
+ * that platform at all — a second one under the system's is the opposite of
+ * native — and what would have gone in it is in the menu bar instead, which
+ * is where a Mac user looks for an app's commands anyway.
  */
 export const isMac = platform === "macos";
-
-/**
- * GTK gives an undecorated window no resize edge that the webview does not
- * cover, so the bar supplies its own. Windows needs none: tao keeps
- * `WS_THICKFRAME` on a borderless window, so the system border, the resize
- * cursors and Aero Snap all still work.
- */
-export const isLinux = platform === "linux";

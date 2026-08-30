@@ -192,6 +192,37 @@ export const app = $state({
 
 let initialized = false;
 
+/**
+ * A click in the macOS menu bar (`mac_menu` in `main.rs`), which is where
+ * that platform's window commands live because its frame is native and there
+ * is no bar of ours to hang them on.
+ *
+ * Every id here names a flow that already exists and is reached some other
+ * way as well — nothing is only in the menu, so a Windows user is missing no
+ * capability. Unknown ids are ignored rather than logged: the OS performs its
+ * own predefined items (quit, copy, minimize) and forwards them here anyway.
+ *
+ * Settings *opens* rather than toggles. A menu item reading "Settings…" that
+ * closed the pane when it happened to be open would be answering a question
+ * nobody asked.
+ */
+function runMenuCommand(id: string): void {
+  switch (id) {
+    case "settings":
+      app.showSettings = true;
+      break;
+    case "new_chat":
+      void newSession();
+      break;
+    case "add_project":
+      void addProject();
+      break;
+    case "import_claude":
+      void importFromClaude();
+      break;
+  }
+}
+
 export async function init(): Promise<void> {
   if (initialized) return;
   initialized = true;
@@ -200,6 +231,7 @@ export async function init(): Promise<void> {
   await listen<ApprovalRequest>("tool-approval", (e) =>
     app.pendingApprovals.push(e.payload),
   );
+  await listen<string>("menu", (e) => runMenuCommand(e.payload));
   const last = loadLastConnection();
   if (last) {
     app.draft = last;
