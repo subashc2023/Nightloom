@@ -200,6 +200,14 @@ export async function init(): Promise<void> {
   await listen<ApprovalRequest>("tool-approval", (e) =>
     app.pendingApprovals.push(e.payload),
   );
+  // A folder coming back is something that happens outside this window, so
+  // nothing in here would otherwise notice it. Re-reading on focus is what
+  // makes the missing-folder warning's "until it comes back" a promise the UI
+  // can keep: the user leaves to put the folder back and it has cleared by
+  // the time they return. Cheap enough to leave unconditional — one command
+  // that stats a handful of paths, and only when the window is activated —
+  // where a poll would be a filesystem check every few seconds forever.
+  window.addEventListener("focus", () => void refreshProjects());
   const last = loadLastConnection();
   if (last) {
     app.draft = last;
@@ -238,6 +246,23 @@ export async function refreshProjects(): Promise<void> {
     app.projects = await api.listProjects();
   } catch (e) {
     addToast(String(e));
+    return;
+  }
+  // Keep the open project in step with the list it is a row of. `app.project`
+  // is otherwise a snapshot taken at open/connect/rename, and `exists` is a
+  // fact about the disk that changes underneath it — so the Welcome pane went
+  // on saying the folder was gone after it came back, while the project menu,
+  // reading this same list, said it was fine. Two answers to one question,
+  // and the warning's own "until it comes back" was the one that was wrong.
+  //
+  // Only a matching row updates it. A project missing from the list has been
+  // forgotten, and closing it is `forgetProject`'s job — doing it here would
+  // put a second, silent close in the one function everything else calls to
+  // refresh.
+  const open = app.project;
+  if (open) {
+    const fresh = app.projects.find((p) => p.id === open.id);
+    if (fresh) app.project = fresh;
   }
 }
 
