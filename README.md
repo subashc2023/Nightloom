@@ -10,6 +10,11 @@ are all projections of an append-only event log. Compaction, rewind and
 elision are *markers*, never deletions — so a UI can show what was dropped,
 and undo is always available.
 
+![The Nightloom desktop app on a workspace project: the chat list and notes on
+the left, an empty conversation in the middle, and the model panel on the right
+showing the OpenRouter provider, the thinking mode, and toggles for tools, web
+access, self-compaction and the knowledge base.](docs/images/desktop.png)
+
 ## Quickstart
 
 Needs Rust 1.85+ (edition 2024). Nothing else for the CLI.
