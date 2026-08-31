@@ -24,9 +24,11 @@ import type {
   ApprovalRequest,
   DocumentInput,
   ImageInput,
+  KnowledgeInfo,
   McpServerInfo,
   ReviewerInfo,
   Note,
+  NoteScope,
   Price,
   ProjectInfo,
   ProviderInfo,
@@ -101,6 +103,9 @@ export interface Connection {
   /** Which provider answers `web_search`, or null when no key is set and the
    *  tool is absent. `web_fetch` needs none and is always there. */
   search: string | null;
+  /** The knowledge base the model can reach, or null when the switch is off
+   *  (always null on the agent engine, which owns its own file access). */
+  knowledge: KnowledgeInfo | null;
   /**
    * Which engine is running. Read from the backend's answer rather than from
    * the draft that asked, so the two cannot disagree about it — the same
@@ -129,13 +134,27 @@ export const app = $state({
   /** The open project's shared notes. Empty when nothing is open. */
   notes: [] as Note[],
   /**
-   * What the centre pane shows. "note" is the docspace editor, which replaces
-   * the transcript rather than floating over it — reading and writing a note
-   * is work, not a dialog.
+   * The user's knowledge base. Listed whether or not a project is open, which
+   * is the point of it — an unfiled chat has a vault.
    */
-  view: "chat" as "chat" | "note",
-  /** The note open in the centre pane, when `view` is "note". */
-  openNote: null as string | null,
+  vault: [] as Note[],
+  /** Where the vault is; null on a machine with no user config directory. */
+  knowledge: null as KnowledgeInfo | null,
+  /**
+   * What the centre pane shows. "note" is the note editor and "graph" the
+   * vault's link graph, both of which replace the transcript rather than
+   * floating over it — reading, writing and navigating notes is work, not a
+   * dialog.
+   */
+  view: "chat" as "chat" | "note" | "graph",
+  /**
+   * The note open in the centre pane, when `view` is "note".
+   *
+   * Carries its scope: the two stores can hold a note of the same name, and a
+   * bare string would make saving depend on which sidebar tab happened to be
+   * showing.
+   */
+  openNote: null as { scope: NoteScope; name: string } | null,
   /** Which half of the left sidebar is showing. */
   leftTab: "chats" as "chats" | "notes",
   /** The rail's connection settings; any change re-connects via applyDraft(). */
@@ -259,6 +278,7 @@ export async function init(): Promise<void> {
     }
   }
   await refreshSessions();
+  await refreshKnowledge();
   await refreshNotes();
   await autoConnect();
 }
@@ -273,18 +293,59 @@ export async function refreshProjects(): Promise<void> {
   }
 }
 
+/**
+ * Re-read both note stores.
+ *
+ * Called after every turn, which is the visible half of shared knowledge: a
+ * note the model just left appears in the sidebar without a reload. Both are
+ * refreshed together because the model can write to either.
+ */
 export async function refreshNotes(): Promise<void> {
-  if (!app.project) {
+  if (app.project) {
+    try {
+      app.notes = await api.listNotes("project");
+    } catch {
+      // A store that cannot be listed shows as empty; the failure surfaces
+      // when something is actually read or written.
+      app.notes = [];
+    }
+  } else {
     app.notes = [];
-    return;
   }
   try {
-    app.notes = await api.listNotes();
+    app.vault = await api.listNotes("knowledge");
   } catch {
-    // A docspace that cannot be listed shows as empty; the failure surfaces
-    // when something is actually read or written.
-    app.notes = [];
+    app.vault = [];
   }
+}
+
+/** Where the vault is. Read on launch and after Settings repoints it. */
+export async function refreshKnowledge(): Promise<void> {
+  try {
+    app.knowledge = await api.knowledgeInfo();
+  } catch {
+    app.knowledge = null;
+  }
+}
+
+/**
+ * Point the knowledge base at a folder, or back at the default with null.
+ *
+ * Re-connects afterwards, because the vault is part of what `connect` roots
+ * the file tools at and indexes into the preamble — leaving it would have the
+ * sidebar showing one folder and the model reading another.
+ */
+export async function useKnowledgeDir(dir: string | null): Promise<void> {
+  try {
+    app.knowledge = await api.setKnowledgeDir(dir);
+  } catch (e) {
+    addToast(String(e));
+    return;
+  }
+  // The open note may not exist in the new vault.
+  if (app.openNote?.scope === "knowledge") closeNote();
+  await refreshNotes();
+  await applyDraft();
 }
 
 /**
@@ -416,11 +477,18 @@ export async function revealFolder(path?: string): Promise<void> {
 
 // ---- the docspace ----
 
-export function showNote(name: string): void {
-  app.openNote = name;
+export function showNote(scope: NoteScope, name: string): void {
+  app.openNote = { scope, name };
   app.view = "note";
   // So the list highlighting the open note is the list on screen — this is
-  // also reachable from the welcome page, where the sidebar may be on Chats.
+  // also reachable from the welcome page and from the graph, where the
+  // sidebar may be on Chats.
+  app.leftTab = "notes";
+}
+
+export function showGraph(): void {
+  app.view = "graph";
+  app.openNote = null;
   app.leftTab = "notes";
 }
 
@@ -429,9 +497,13 @@ export function closeNote(): void {
   app.openNote = null;
 }
 
-export async function saveNote(name: string, content: string): Promise<boolean> {
+export async function saveNote(
+  scope: NoteScope,
+  name: string,
+  content: string,
+): Promise<boolean> {
   try {
-    await api.saveNote(name, content);
+    await api.saveNote(scope, name, content);
   } catch (e) {
     addToast(String(e));
     return false;
@@ -441,14 +513,14 @@ export async function saveNote(name: string, content: string): Promise<boolean> 
   return true;
 }
 
-export async function deleteNote(name: string): Promise<void> {
+export async function deleteNote(scope: NoteScope, name: string): Promise<void> {
   try {
-    await api.deleteNote(name);
+    await api.deleteNote(scope, name);
   } catch (e) {
     addToast(String(e));
     return;
   }
-  if (app.openNote === name) closeNote();
+  if (app.openNote?.scope === scope && app.openNote.name === name) closeNote();
   await refreshNotes();
   await refreshProjects();
 }
@@ -506,6 +578,7 @@ export async function applyDraft(): Promise<void> {
       approval: d.approval,
       web: d.web,
       selfCompact: d.selfCompact,
+      knowledge: d.knowledge,
       workspace: d.workspace.trim() || undefined,
     });
     app.connection = {
@@ -519,6 +592,7 @@ export async function applyDraft(): Promise<void> {
       reviewers: res.reviewers ?? [],
       workspace: res.workspace,
       search: res.search ?? null,
+      knowledge: res.knowledge ?? null,
       engine: "provider",
       agent: null,
     };
@@ -574,6 +648,7 @@ async function applyAgentDraft(): Promise<void> {
       reviewers: res.reviewers ?? [],
       workspace: res.workspace,
       search: res.search ?? null,
+      knowledge: res.knowledge ?? null,
       engine: "claude-code",
       agent: res.agent ?? null,
     };

@@ -5,40 +5,76 @@
     deleteNote,
     revealFolder,
     saveNote,
+    showGraph,
     showNote,
   } from "./state.svelte";
+  import type { Note, NoteScope } from "./types";
   import { relativeTime } from "./time";
 
-  let creating = $state(false);
+  /**
+   * Two stores, one panel.
+   *
+   * **Project** is `<workspace>/.agents` — about the code, committable, and
+   * only there while a project is open. **Knowledge** is the user's own vault
+   * — about them, the same one in every project, and present with no project
+   * at all. That last part is the headline rather than a detail: the quickest
+   * thing this app does is a chat with no folder, and until now that chat had
+   * no notes of any kind.
+   *
+   * They are sections of one panel rather than a third sidebar tab because
+   * the question "where did I write that down" has two answers and a user
+   * should be able to see both without choosing first.
+   */
+
+  /** Which section is being created in, or null when nothing is. */
+  let creating = $state<NoteScope | null>(null);
   let draftName = $state("");
   let confirming = $state<string | null>(null);
+  /** Sections start open; collapsing is per-session and deliberately not
+   *  persisted — it is a glance, not a preference. */
+  let collapsed = $state<Record<NoteScope, boolean>>({
+    project: false,
+    knowledge: false,
+  });
 
-  function begin() {
-    creating = true;
+  function begin(scope: NoteScope) {
+    creating = scope;
     draftName = "";
+    collapsed[scope] = false;
   }
 
   /**
    * Create the note and open it. `.md` is appended when the name has no
-   * extension — the docspace is markdown by convention and a note called
-   * `decisions` should not become an extensionless file nobody's editor
-   * knows what to do with.
+   * extension — both stores are markdown by convention and a note called
+   * `decisions` should not become an extensionless file nobody's editor knows
+   * what to do with.
    */
-  async function create() {
+  async function create(scope: NoteScope) {
     const name = draftName.trim();
-    creating = false;
+    creating = null;
     if (!name) return;
     const full = /\.[a-z0-9]+$/i.test(name) ? name : `${name}.md`;
-    if (await saveNote(full, "")) showNote(full);
+    if (await saveNote(scope, full, "")) showNote(scope, full);
   }
 
-  function onDelete(name: string) {
-    if (confirming !== name) {
-      confirming = name;
+  /** Keyed by scope as well as name: the two stores can hold `plan.md` each,
+   *  and a bare name would arm both delete buttons at once. */
+  function onDelete(scope: NoteScope, name: string) {
+    const key = `${scope}:${name}`;
+    if (confirming !== key) {
+      confirming = key;
       return;
     }
     confirming = null;
-    void deleteNote(name);
+    void deleteNote(scope, name);
+  }
+
+  function isOpen(scope: NoteScope, name: string): boolean {
+    return (
+      app.view === "note" &&
+      app.openNote?.scope === scope &&
+      app.openNote.name === name
+    );
   }
 
   function size(bytes: number): string {
@@ -48,17 +84,36 @@
   }
 </script>
 
-{#if !app.project}
-  <div class="empty">
-    <p>
-      Notes are shared inside a project: every chat in the same folder reads
-      the same set, and anything written there reaches later conversations.
-    </p>
-    <button onclick={() => void addProject()}>Choose a folder…</button>
+{#snippet list(scope: NoteScope, notes: Note[])}
+  <div class="list">
+    {#each notes as n (n.name)}
+      <div class="item" class:active={isOpen(scope, n.name)}>
+        <button class="row" onclick={() => showNote(scope, n.name)}>
+          <span class="name">{n.name}</span>
+          {#if n.summary}<span class="summary">{n.summary}</span>{/if}
+          <span class="meta">{size(n.bytes)} · {relativeTime(n.modified)}</span>
+        </button>
+        <button
+          class="delete"
+          class:confirming={confirming === `${scope}:${n.name}`}
+          title={confirming === `${scope}:${n.name}`
+            ? "Click again to delete this file"
+            : "Delete note"}
+          aria-label="Delete {n.name}"
+          onclick={() => onDelete(scope, n.name)}
+          onmouseleave={() =>
+            confirming === `${scope}:${n.name}` && (confirming = null)}
+        >
+          {confirming === `${scope}:${n.name}` ? "sure?" : "×"}
+        </button>
+      </div>
+    {/each}
   </div>
-{:else}
+{/snippet}
+
+{#snippet newRow(scope: NoteScope)}
   <div class="bar">
-    {#if creating}
+    {#if creating === scope}
       <!-- svelte-ignore a11y_autofocus -->
       <input
         class="new-name"
@@ -66,58 +121,167 @@
         placeholder="note name"
         bind:value={draftName}
         onkeydown={(e) => {
-          if (e.key === "Enter") void create();
-          if (e.key === "Escape") creating = false;
+          if (e.key === "Enter") void create(scope);
+          if (e.key === "Escape") creating = null;
         }}
-        onblur={() => void create()}
+        onblur={() => void create(scope)}
       />
     {:else}
-      <button class="add" onclick={begin}>New note</button>
+      <button class="add" onclick={() => begin(scope)}>New note</button>
+      {#if scope === "knowledge"}
+        <button
+          class="folder"
+          title="Show the link graph"
+          aria-label="Show the link graph"
+          class:on={app.view === "graph"}
+          onclick={showGraph}>◈</button
+        >
+      {/if}
       <button
         class="folder"
-        title="Show the notes folder"
-        aria-label="Show the notes folder"
-        onclick={() => void revealFolder(app.project?.notes_dir)}>↗</button
+        title="Show the folder"
+        aria-label="Show the folder"
+        onclick={() =>
+          void revealFolder(
+            scope === "project" ? app.project?.notes_dir : app.knowledge?.dir,
+          )}>↗</button
       >
     {/if}
   </div>
+{/snippet}
 
-  {#if app.notes.length === 0}
-    <p class="hint">
-      Nothing here yet. The model can write notes with the file tools, and the
-      index of this folder is in its system prompt — so a task list left here
-      is still there in the next chat.
-    </p>
-  {:else}
-    <div class="list">
-      {#each app.notes as n (n.name)}
-        <div class="item" class:active={app.view === "note" && app.openNote === n.name}>
-          <button class="row" onclick={() => showNote(n.name)}>
-            <span class="name">{n.name}</span>
-            {#if n.summary}<span class="summary">{n.summary}</span>{/if}
-            <span class="meta">{size(n.bytes)} · {relativeTime(n.modified)}</span>
-          </button>
-          <button
-            class="delete"
-            class:confirming={confirming === n.name}
-            title={confirming === n.name
-              ? "Click again to delete this file"
-              : "Delete note"}
-            aria-label="Delete {n.name}"
-            onclick={() => onDelete(n.name)}
-            onmouseleave={() => confirming === n.name && (confirming = null)}
+<div class="panel">
+  <!-- The project's own notes. Absent rather than empty when nothing is
+       open: there is no folder for them to be about. -->
+  <section>
+    <button
+      class="head"
+      onclick={() => (collapsed.project = !collapsed.project)}
+      aria-expanded={!collapsed.project}
+    >
+      <span class="chev" class:shut={collapsed.project}>▾</span>
+      <span class="title">Project</span>
+      {#if app.project}<span class="count">{app.notes.length}</span>{/if}
+    </button>
+
+    {#if !collapsed.project}
+      {#if !app.project}
+        <div class="empty">
+          <p>
+            Notes about the code live in the folder, so a teammate can read
+            them and a diff can review them. Open a project to get a set.
+          </p>
+          <button class="pick" onclick={() => void addProject()}
+            >Choose a folder…</button
           >
-            {confirming === n.name ? "sure?" : "×"}
-          </button>
         </div>
-      {/each}
-    </div>
-  {/if}
-{/if}
+      {:else}
+        {@render newRow("project")}
+        {#if app.notes.length === 0}
+          <p class="hint">
+            Nothing here yet. The model writes these with the file tools, and
+            the index of the folder is in its system prompt — so a task list
+            left here is still there in the next chat.
+          </p>
+        {:else}
+          {@render list("project", app.notes)}
+        {/if}
+      {/if}
+    {/if}
+  </section>
+
+  <!-- The vault. Shown whether or not a project is open, which is the whole
+       point of it being separate. -->
+  <section>
+    <button
+      class="head"
+      onclick={() => (collapsed.knowledge = !collapsed.knowledge)}
+      aria-expanded={!collapsed.knowledge}
+    >
+      <span class="chev" class:shut={collapsed.knowledge}>▾</span>
+      <span class="title">Knowledge</span>
+      <span class="count">{app.vault.length}</span>
+      {#if app.knowledge}<span class="alias">{app.knowledge.alias}</span>{/if}
+    </button>
+
+    {#if !collapsed.knowledge}
+      {#if !app.knowledge}
+        <p class="hint">
+          No user config directory on this machine, so there is nowhere to keep
+          a knowledge base.
+        </p>
+      {:else}
+        {@render newRow("knowledge")}
+        {#if app.vault.length === 0}
+          <p class="hint">
+            Yours, not this folder's — the same set in every project and in a
+            chat with no project at all. Worth keeping here: a decision and why
+            it was made, a person, something that took real work to figure out.
+            Notes link to each other with <code>[[name]]</code>.
+          </p>
+        {:else}
+          {@render list("knowledge", app.vault)}
+        {/if}
+      {/if}
+    {/if}
+  </section>
+</div>
 
 <style>
+  .panel {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+  }
+  section {
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+  }
+  /* A header the whole width so the hit target is the row, not the caret. */
+  .head {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    background: transparent;
+    border: none;
+    padding: 0.5rem 0.75rem 0.4rem;
+    cursor: pointer;
+    color: var(--dim);
+    font-family: inherit;
+    text-align: left;
+  }
+  .head:hover {
+    color: var(--text);
+  }
+  .chev {
+    font-size: 0.6rem;
+    transition: transform 0.12s ease;
+  }
+  .chev.shut {
+    transform: rotate(-90deg);
+  }
+  .title {
+    font-size: 0.68rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  .count {
+    font-size: 0.68rem;
+    opacity: 0.7;
+  }
+  /* The string the system prompt uses, so the panel and the model call the
+     vault the same thing. */
+  .alias {
+    margin-left: auto;
+    font-family: var(--mono);
+    font-size: 0.66rem;
+    opacity: 0.5;
+  }
   .empty {
-    padding: 0.5rem 0.75rem;
+    padding: 0.15rem 0.75rem 0.5rem;
     display: flex;
     flex-direction: column;
     gap: 0.6rem;
@@ -130,9 +294,13 @@
     color: var(--dim);
   }
   .hint {
-    padding: 0.25rem 0.75rem 0.75rem;
+    padding: 0.1rem 0.75rem 0.75rem;
   }
-  .empty button {
+  .hint code {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+  }
+  .pick {
     background: transparent;
     border: 1px solid var(--border);
     border-radius: 8px;
@@ -143,7 +311,7 @@
     cursor: pointer;
     text-align: left;
   }
-  .empty button:hover {
+  .pick:hover {
     border-color: var(--accent);
     color: var(--accent);
   }
@@ -182,6 +350,10 @@
     color: var(--text);
     border-color: var(--dim);
   }
+  .folder.on {
+    color: var(--accent);
+    border-color: var(--accent);
+  }
   .new-name {
     flex: 1;
     min-width: 0;
@@ -197,8 +369,6 @@
     outline: none;
   }
   .list {
-    flex: 1;
-    overflow-y: auto;
     padding: 0 0.5rem 0.75rem;
     display: flex;
     flex-direction: column;

@@ -71,7 +71,11 @@
           Notes ↗
         </button>
         {#each inherited as n (n.name)}
-          <button class="note" onclick={() => showNote(n.name)} title={n.summary ?? n.name}>
+          <button
+            class="note"
+            onclick={() => showNote("project", n.name)}
+            title={n.summary ?? n.name}
+          >
             {n.name}
           </button>
         {/each}

@@ -40,6 +40,7 @@
 //! into the store, `.nightloom/notes` into `.agents` — the first time it is
 //! opened.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -694,6 +695,77 @@ pub fn list_notes(dir: &Path) -> Vec<Note> {
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out.truncate(NOTE_LIMIT);
     out
+}
+
+/// Ceiling on the counting walk. Far above [`NOTE_LIMIT`] because counting is
+/// a `read_dir` and a metadata check per entry with none of the 512-byte
+/// summary probes, and because the number this produces is *stated* — one that
+/// stops early has to say so rather than quietly shrink the vault.
+const COUNT_LIMIT: usize = 50_000;
+
+/// How many notes sit in each folder, keyed by the folder prefix (`""` for the
+/// vault root, else `people/`). The `bool` is whether the walk saw everything.
+///
+/// This exists because [`list_notes`] cannot answer the question. It stops at
+/// [`NOTE_LIMIT`] **mid-walk**, in whatever order the filesystem handed
+/// directories back, so its length is not the size of the vault and whole
+/// folders can be absent from it with nothing saying so. That was survivable
+/// while the index was a flat list openly admitting it was cut. It stopped
+/// being survivable the moment the index began stating a total and a count per
+/// folder, because a wrong number in a system prompt is not a shorter answer
+/// than a missing one — it is a fact the model has no reason to doubt and no
+/// way to check. Measured: a vault of 204 notes reported 200 and omitted an
+/// entire folder from the map.
+pub fn note_counts(dir: &Path) -> (BTreeMap<String, usize>, bool) {
+    let mut counts = BTreeMap::new();
+    let mut seen = 0usize;
+    let exhaustive = walk_counts(dir, dir, 0, &mut counts, &mut seen);
+    (counts, exhaustive)
+}
+
+fn walk_counts(
+    base: &Path,
+    dir: &Path,
+    depth: usize,
+    counts: &mut BTreeMap<String, usize>,
+    seen: &mut usize,
+) -> bool {
+    if depth > NOTE_DEPTH {
+        // The depth bound is the same one `list_notes` walks under, so a note
+        // deeper than the index ever reaches is not one this count should
+        // claim either. Not a truncation of the walk — a definition of it.
+        return true;
+    }
+    let Ok(entries) = fs::read_dir(dir) else {
+        return true;
+    };
+    for entry in entries.flatten() {
+        if *seen >= COUNT_LIMIT {
+            return false;
+        }
+        let path = entry.path();
+        let Ok(meta) = entry.metadata() else { continue };
+        if meta.is_dir() {
+            if !walk_counts(base, &path, depth + 1, counts, seen) {
+                return false;
+            }
+            continue;
+        }
+        if !meta.is_file() {
+            continue;
+        }
+        let Ok(relative) = path.strip_prefix(base) else {
+            continue;
+        };
+        let name = relative.to_string_lossy().replace('\\', "/");
+        let prefix = match name.rfind('/') {
+            Some(cut) => name[..=cut].to_string(),
+            None => String::new(),
+        };
+        *counts.entry(prefix).or_insert(0) += 1;
+        *seen += 1;
+    }
+    true
 }
 
 fn walk_notes(base: &Path, dir: &Path, depth: usize, out: &mut Vec<Note>) {

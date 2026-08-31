@@ -16,6 +16,7 @@
 //! text, because composing it means touching the filesystem and the host
 //! environment, which core knows nothing about.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use nightloom_core::{Segment, SegmentKind, SystemPrompt};
@@ -94,6 +95,12 @@ pub struct PromptConfig {
     /// field, because neither half is useful alone — a notes index nobody can
     /// attribute to a project, or a project name with nowhere to write.
     pub project: Option<ProjectContext>,
+    /// The user's knowledge vault, when this chat can reach one.
+    ///
+    /// A second `Option` rather than a field on [`ProjectContext`], because
+    /// the vault is not the project's: it is the same vault in every project
+    /// and in a chat with no project at all, which is the case it exists for.
+    pub knowledge: Option<KnowledgeContext>,
     /// Directory the assembly is relative to.
     pub cwd: PathBuf,
     /// Shell-supplied text, appended last (CLI --system, desktop textarea).
@@ -108,6 +115,7 @@ impl Default for PromptConfig {
             project_instructions: true,
             user_memory: true,
             project: None,
+            knowledge: None,
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             custom: None,
         }
@@ -122,6 +130,15 @@ pub struct ProjectContext {
     pub name: String,
     /// The shared notes directory. Indexed, never inlined.
     pub notes_dir: PathBuf,
+}
+
+/// What the prompt needs to know about the knowledge vault.
+#[derive(Debug, Clone)]
+pub struct KnowledgeContext {
+    /// Where the vault is. Named in the segment so a user who has repointed
+    /// it can see which folder the model is reading — and so a vault that is
+    /// somewhere unexpected is visible rather than mysterious.
+    pub dir: PathBuf,
 }
 
 /// Assemble in fixed order: identity, environment, user memory, project
@@ -151,6 +168,11 @@ pub fn assemble(config: &PromptConfig) -> SystemPrompt {
     }
     if let Some(project) = &config.project {
         prompt.push(project_notes_segment(project));
+    }
+    // After the docspace, so that the sentence telling the two apart arrives
+    // with both indexes already read.
+    if let Some(knowledge) = &config.knowledge {
+        prompt.push(knowledge_segment(knowledge));
     }
     if let Some(custom) = &config.custom {
         prompt.push(Segment::new(SegmentKind::Custom, "custom", custom.clone()));
@@ -418,6 +440,258 @@ Notes now:
     Segment::new(SegmentKind::ProjectNotes, "project-notes", text)
 }
 
+/// How many bytes of *listing* the vault index may occupy.
+///
+/// The docspace has no such limit and does not need one: it is a handful of
+/// files about one folder, and every one of them is relevant to the chat that
+/// is open. A vault is neither. It is meant to grow for years, and an index
+/// that grew with it would make the facility worse the more it was used —
+/// paying more prompt on every turn of every chat to list notes that have
+/// nothing to do with the question. So the listing is capped and the rest is
+/// reachable by search, which is the trade the docspace makes about note
+/// *contents* applied one level up.
+const VAULT_INDEX_BUDGET: usize = 4 * 1024;
+
+/// The knowledge vault: an index of what the user knows.
+///
+/// The same shape as [`project_notes_segment`] and for the same reasons — the
+/// index and never the contents, a segment rather than a sidecar part because
+/// it is stable for the life of a `Chat` and so is written to the cache once
+/// and read free afterwards, and emitted even when empty because a facility
+/// the model was never told about is one nobody uses.
+///
+/// Three things it says earn their tokens:
+///
+/// * **`@kb/<name>` is the path.** The vault is outside the workspace, so
+///   `Root` reaches it by alias; a model that does not know the alias has no
+///   way to open a note it can see in the index.
+/// * **`[[name]]` means `@kb/<name>.md`.** Links are the point of a vault, and
+///   a model that reads one as decoration will not follow it.
+/// * **What belongs here versus the docspace.** This is the sentence that
+///   keeps the two stores from collapsing into one. Without it, "shared notes"
+///   and "knowledge" are two folders with indistinguishable descriptions, and
+///   the model will write to whichever it saw last — at which point neither is
+///   trustworthy, because neither is reliably about what it claims.
+///
+/// **Grouped by folder, most recently edited first within each**, with an
+/// exact count beside every folder — and this is the shape rather than one
+/// flat recency list because a flat list stops being true at scale while a
+/// map does not. Run the arithmetic: an entry is ~55 bytes, so 4 KiB lists
+/// about 75 notes. Against a vault of 2,000 that is 4%, and there is no
+/// version of "list more" that fixes it — the proposal to add a first-line
+/// snippet to each entry takes it to ~130 bytes, so *four times* the budget
+/// would list 6% instead of 4%. Both designs fail at that size; what separates
+/// them is that a flat 4% still *reads* like a catalogue, and a model that
+/// finds no hit in one concludes the vault does not cover the subject. A
+/// folder line with a count cannot mislead that way however hard it is cut,
+/// and grouping is not merely cheap but **negative** cost: the repeated path
+/// prefix is factored out of every line beneath it.
+///
+/// Recency survives *within* a folder and is deliberately no longer the
+/// top-level order. It is a good proxy for "what am I working on" and a poor
+/// one for "what does a stranger need to see", and this index is read by a
+/// stranger at the start of every chat: in a vault, unedited means **settled**
+/// rather than stale, so a decision that is supposed to never change again
+/// sorts below a typo fix in an archived note. The original objection to name
+/// order was that it makes the end of the alphabet the part nobody sees — that
+/// objection was about *hiding*, and an exact count per folder hides nothing.
+/// Budget is handed out **round-robin across folders** for the same reason, so
+/// every folder shows one note before any folder shows five.
+///
+/// Past the cap the index **leads with the fact that it is a sample** rather
+/// than appending a footnote to a listing that already read as authoritative.
+/// The count and the way to search were there before and were in the wrong
+/// place: underneath ~75 plausible-looking entries, which is precisely where a
+/// reader who has stopped looking will not reach.
+///
+/// Two limits sit under this and they are not the same one. The **byte
+/// budget** decides how much of the listing survives, and is what round-robin
+/// divides. [`crate::project::list_notes`]'s own cap decides how many notes
+/// were ever materialized, stopping mid-walk in filesystem order — so past it
+/// there are folders with nothing to list, whatever the budget says. That is
+/// why the counts come from [`crate::project::note_counts`] and not from the
+/// listing: the map stays true above both limits (`zzz/ (3 notes, 0 shown)`),
+/// and only the sample beneath it thins out.
+///
+/// Deliberately **no link counts per note**, though the data is there — it
+/// would mean reading every note in full at assembly, where listing costs a
+/// stat and a 512-byte probe. Re-examined and kept: asked to justify the field,
+/// a model instead recovered the entire link structure of a test vault with one
+/// `grep` mid-conversation. That is the whole case — a per-turn cost paid by
+/// the one chat that needs it beats a per-chat prompt cost paid by every chat
+/// that does not.
+pub fn knowledge_segment(knowledge: &KnowledgeContext) -> Segment {
+    let mut notes = crate::project::list_notes(&knowledge.dir);
+    notes.sort_by(|a, b| {
+        b.modified
+            .cmp(&a.modified)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    let dir = knowledge.dir.display();
+    let alias = crate::tools::VAULT_ALIAS;
+
+    let mut text = format!("<knowledge dir=\"{dir}\">\n");
+    text.push_str(&format!(
+        "The user's own knowledge base — what *they* know, kept across every project and \
+         available in every conversation, including ones with no project open. It is theirs \
+         rather than yours: treat what is written here as something they rely on, revise \
+         carefully, and say when you have changed something.\n\n\
+         Reach a note at {alias}/<name> — the vault lives outside the workspace, and that \
+         prefix is how the file tools address it. read_file to read one, write_file and \
+         edit_file to add or revise one, and glob or grep with path \"{alias}\" to search the \
+         whole vault. Only this index is loaded automatically; the contents are not.\n\n\
+         Notes link to each other with [[name]], which means {alias}/<name>.md. Follow one by \
+         reading that path. Writing [[name]] for a note that does not exist yet is normal — it \
+         is how the user plans one.\n\n\
+         What belongs here: something that stays true after this folder is closed — a decision \
+         and why it was made, a person, a technique, a conclusion reached the hard way, a \
+         standing preference. What does not: anything about the code in front of you, which \
+         goes in the project's own notes instead. The distinction is the whole value of having \
+         both, so put a note where it belongs rather than where it is convenient.\n"
+    ));
+
+    if notes.is_empty() {
+        text.push_str("\nThe knowledge base is currently empty.\n");
+    } else {
+        // `BTreeMap` for the folder order, so the *shape* of the vault is
+        // stable between chats and only the notes inside a folder reorder as
+        // they are edited. The root's empty prefix sorts first for free.
+        //
+        // Seeded from `note_counts` rather than from the listing, so a folder
+        // the listing never reached is still on the map with a true count.
+        // `list_notes` stops mid-walk at its own cap, which makes its length
+        // and its folder set both smaller than the vault's.
+        let (counts, exhaustive) = crate::project::note_counts(&knowledge.dir);
+        let mut by_folder: BTreeMap<&str, Vec<&crate::project::Note>> = BTreeMap::new();
+        for prefix in counts.keys() {
+            by_folder.entry(prefix.as_str()).or_default();
+        }
+        for note in &notes {
+            let prefix = match note.name.rfind('/') {
+                Some(cut) => &note.name[..=cut],
+                None => "",
+            };
+            by_folder.entry(prefix).or_default().push(note);
+        }
+        let folders: Vec<(&str, Vec<&crate::project::Note>)> = by_folder.into_iter().collect();
+        let held = |prefix: &str, listed: usize| counts.get(prefix).copied().unwrap_or(listed);
+        let total: usize = counts.values().sum::<usize>().max(notes.len());
+
+        // Folder headers are reserved before any note is listed: they are the
+        // map, and a map with folders missing is the failure this shape exists
+        // to avoid. Reserved at the *cut* spelling, which is the longer of the
+        // two, so the budget can only be undershot.
+        let mut used: usize = folders
+            .iter()
+            .filter(|(prefix, _)| !prefix.is_empty())
+            .map(|(prefix, group)| folder_header(prefix, held(prefix, group.len()), 0).len())
+            .sum();
+
+        // Round-robin, so a folder late in the alphabet is not starved by one
+        // early in it. A refused line is skipped rather than ending the walk,
+        // since a shorter entry after it may still fit.
+        let mut shown = vec![0usize; folders.len()];
+        let mut total_shown = 0usize;
+        loop {
+            let mut progressed = false;
+            for (i, (prefix, group)) in folders.iter().enumerate() {
+                let Some(note) = group.get(shown[i]) else {
+                    continue;
+                };
+                let line = note_entry(prefix, note);
+                if used + line.len() > VAULT_INDEX_BUDGET && total_shown > 0 {
+                    continue;
+                }
+                used += line.len();
+                shown[i] += 1;
+                total_shown += 1;
+                progressed = true;
+            }
+            if !progressed {
+                break;
+            }
+        }
+
+        if total_shown < total {
+            // "over N" rather than a bare number when the counting walk hit
+            // its own ceiling: a floor stated as a floor is usable, and the
+            // one thing this sentence must never do is understate the vault
+            // while sounding exact.
+            let scale = if exhaustive {
+                format!("{total} notes")
+            } else {
+                format!("over {total} notes")
+            };
+            text.push_str(&format!(
+                "\nThe vault holds {scale}. What follows is a sample of {total_shown} of them \
+                 and not the whole vault: the count beside each folder is exact, the listing \
+                 under it is not. To reach anything not listed, glob \"{alias}/**\" or grep \
+                 with path \"{alias}\" — do that before concluding the vault is silent on \
+                 something.\n\n"
+            ));
+        } else {
+            text.push_str("\nNotes, by folder, most recently edited first within each:\n");
+        }
+        // Said rather than left to convention. The folder prefix is factored
+        // out of the lines beneath it, which is where the grouping pays for
+        // itself, and the cost of that is one composition step the model has
+        // to make: `async.md` under `rust/` is a note whose name is
+        // `rust/async.md`. Ten words is cheap against a wrong path.
+        if folders.iter().any(|(prefix, _)| !prefix.is_empty()) {
+            text.push_str(&format!(
+                "A note's name is its folder plus the line beneath it — async.md listed under \
+                 rust/ is {alias}/rust/async.md.\n"
+            ));
+        }
+
+        for (i, (prefix, group)) in folders.iter().enumerate() {
+            let in_folder = held(prefix, group.len());
+            if !prefix.is_empty() {
+                text.push_str(&folder_header(prefix, in_folder, shown[i]));
+            }
+            for note in group.iter().take(shown[i]) {
+                text.push_str(&note_entry(prefix, note));
+            }
+            // The root has no header to carry its count, so a cut there would
+            // otherwise be the one omission this format does not admit to.
+            if prefix.is_empty() && shown[i] < in_folder {
+                text.push_str(&format!(
+                    "  … {} more at the vault root, not listed\n",
+                    in_folder - shown[i]
+                ));
+            }
+        }
+    }
+    text.push_str("</knowledge>");
+
+    Segment::new(SegmentKind::Knowledge, "knowledge", text)
+}
+
+/// `  people/ (34 notes, 6 shown)` — exact whatever the budget did to the
+/// listing beneath it, which is the whole reason a folder line is worth more
+/// than the six entries it displaces.
+fn folder_header(prefix: &str, total: usize, shown: usize) -> String {
+    let notes = if total == 1 { "note" } else { "notes" };
+    if shown < total {
+        format!("  {prefix} ({total} {notes}, {shown} shown)\n")
+    } else {
+        format!("  {prefix} ({total} {notes})\n")
+    }
+}
+
+/// One note, with its folder factored out — `people/rowan-vasquez.md` under
+/// `people/` is listed as `rowan-vasquez.md`. The saving is why grouping costs
+/// less than the flat list it replaces rather than more.
+fn note_entry(prefix: &str, note: &crate::project::Note) -> String {
+    let base = &note.name[prefix.len()..];
+    let size = human_bytes(note.bytes);
+    let indent = if prefix.is_empty() { "  " } else { "    " };
+    match &note.summary {
+        Some(summary) => format!("{indent}{base} ({size}) — {summary}\n"),
+        None => format!("{indent}{base} ({size})\n"),
+    }
+}
+
 fn human_bytes(bytes: u64) -> String {
     if bytes >= 1024 * 1024 {
         format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
@@ -471,6 +745,7 @@ mod tests {
             project_instructions: false,
             user_memory: false,
             project: None,
+            knowledge: None,
             cwd,
             custom: None,
         }
@@ -547,6 +822,219 @@ the body text",
             .resolve(".agents/plan.md")
             .expect("the relative path the segment names must resolve");
         assert!(resolved.is_file(), "{resolved:?}");
+    }
+
+    /// The same test the docspace segment gets, and for the same reason: the
+    /// segment tells the model how to reach a note, and `Root` is what decides
+    /// whether that is true. Here it matters more, not less — the vault really
+    /// *is* outside the workspace, so the alias is the only way in and a wrong
+    /// sentence would not merely lose an affordance, it would lose the vault.
+    #[test]
+    fn the_knowledge_segment_names_a_path_the_file_tools_resolve() {
+        let dir = temp_dir("vault-reachable");
+        let vault = dir.join("vault");
+        crate::project::write_note(&vault, "rust/async.md", "# Cancellation is a parameter")
+            .unwrap();
+
+        let mut cfg = bare(dir.clone());
+        cfg.knowledge = Some(KnowledgeContext { dir: vault.clone() });
+
+        let segs = assemble(&cfg).segments().to_vec();
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].kind, SegmentKind::Knowledge);
+        let text = &segs[0].text;
+        assert!(text.contains("@kb/<name>"), "{text}");
+        // The folder is factored out of the entry, so the name the model has
+        // to build is the header plus the line under it. Both halves have to
+        // be there, and the composition has to be stated rather than assumed.
+        assert!(text.contains("rust/ (1 note)"), "{text}");
+        assert!(text.contains("    async.md"), "{text}");
+        assert!(text.contains("folder plus the line beneath it"), "{text}");
+        assert!(text.contains("Cancellation is a parameter"), "{text}");
+
+        let resolved = crate::tools::Root::new(&dir)
+            .with_vault(&vault)
+            .resolve("@kb/rust/async.md")
+            .expect("the aliased path the segment names must resolve");
+        assert!(resolved.is_file(), "{resolved:?}");
+    }
+
+    /// The sentence that stops the two stores collapsing into one. If it goes
+    /// missing, both indexes describe "shared notes" and the model writes to
+    /// whichever it read last.
+    #[test]
+    fn the_knowledge_segment_says_what_belongs_in_it_rather_than_the_docspace() {
+        let dir = temp_dir("vault-distinct");
+        let mut cfg = bare(dir.clone());
+        cfg.knowledge = Some(KnowledgeContext {
+            dir: dir.join("vault"),
+        });
+        let text = assemble(&cfg).segments()[0].text.clone();
+
+        assert!(text.contains("currently empty"), "{text}");
+        assert!(text.contains("after this folder is closed"), "{text}");
+        assert!(text.contains("project's own notes"), "{text}");
+        // And the link syntax, which is the other thing only this segment says.
+        assert!(text.contains("[[name]]"), "{text}");
+    }
+
+    /// A vault is meant to grow for years, so the listing is capped. What has
+    /// to be true is that the cut *says so* — a listing that stops silently
+    /// reads as a vault that ends there, and a model that believes it has seen
+    /// everything will not search for the rest.
+    #[test]
+    fn a_large_vault_is_cut_and_says_how_much_it_did_not_list() {
+        let dir = temp_dir("vault-budget");
+        let vault = dir.join("vault");
+        for i in 0..150 {
+            crate::project::write_note(
+                &vault,
+                &format!("note-{i:03}-with-a-reasonably-long-name.md"),
+                &format!("# Heading {i} on a note whose summary line is deliberately wordy"),
+            )
+            .unwrap();
+        }
+
+        let mut cfg = bare(dir.clone());
+        cfg.knowledge = Some(KnowledgeContext { dir: vault });
+        let text = assemble(&cfg).segments()[0].text.clone();
+
+        // Leading with the sample, not appending a footnote to a listing that
+        // already read as authoritative: the exact total, an explicit "not the
+        // whole vault", and the way to reach the rest — all above the entries
+        // rather than under seventy of them.
+        assert!(text.contains("The vault holds 150 notes"), "{text}");
+        assert!(text.contains("not the whole vault"), "{text}");
+        assert!(text.contains("grep with path \"@kb\""), "{text}");
+        assert!(
+            text.contains("more at the vault root, not listed"),
+            "{text}"
+        );
+        let (lead, listing) = text.split_once("note-").expect("some note is listed");
+        assert!(lead.contains("not the whole vault"), "the warning leads");
+        assert!(
+            !listing.contains("not the whole vault"),
+            "and is not repeated"
+        );
+        // The cap is on the listing, and the prose above it is not a licence
+        // to blow the budget many times over.
+        assert!(text.len() < 3 * VAULT_INDEX_BUDGET, "{} bytes", text.len());
+    }
+
+    /// No folder may go unmentioned, and no count may be a guess — even when
+    /// the note *listing* never reached the folder at all.
+    ///
+    /// This is the property that makes a cut index a map rather than a
+    /// truncated catalogue, and it cannot come from the listing: `list_notes`
+    /// stops at its own cap mid-walk, in filesystem order, so on this fixture
+    /// it returns two hundred notes all from `aaa/` and has never heard of
+    /// `zzz/`. Seeded from the listing, the index would have said the vault
+    /// holds 200 notes in one folder. It holds 204 in three.
+    #[test]
+    fn a_folder_the_listing_never_reached_is_still_on_the_map() {
+        let dir = temp_dir("vault-folders");
+        let vault = dir.join("vault");
+        crate::project::write_note(&vault, "at-the-root.md", "# At the root").unwrap();
+        for i in 0..200 {
+            crate::project::write_note(
+                &vault,
+                &format!("aaa/crowded-{i:03}-with-a-long-name.md"),
+                &format!("# Crowded note {i} with a deliberately wordy summary line"),
+            )
+            .unwrap();
+        }
+        for i in 0..3 {
+            crate::project::write_note(
+                &vault,
+                &format!("zzz/rare-{i}.md"),
+                &format!("# Rare note {i}"),
+            )
+            .unwrap();
+        }
+        // The premise: the listing really is blind to `zzz/`, so the map is
+        // not merely duplicating what it could have read off `notes`.
+        let listed = crate::project::list_notes(&vault);
+        assert_eq!(listed.len(), 200);
+        assert!(!listed.iter().any(|n| n.name.starts_with("zzz/")));
+
+        let mut cfg = bare(dir.clone());
+        cfg.knowledge = Some(KnowledgeContext { dir: vault });
+        let text = assemble(&cfg).segments()[0].text.clone();
+
+        assert!(text.contains("The vault holds 204 notes"), "{text}");
+        assert!(text.contains("  aaa/ (200 notes,"), "{text}");
+        // Named, counted truthfully, and honest that it showed nothing.
+        assert!(text.contains("  zzz/ (3 notes, 0 shown)"), "{text}");
+        assert!(text.len() < 3 * VAULT_INDEX_BUDGET, "{} bytes", text.len());
+    }
+
+    /// Budget is shared across folders rather than spent front-to-back, so a
+    /// folder late in the alphabet still shows something.
+    ///
+    /// Kept under `list_notes`'s own cap deliberately: this is a claim about
+    /// how the *byte budget* is divided, and above that cap the listing is
+    /// already short of notes to divide. The two limits are separate and only
+    /// this one is round-robin's to answer.
+    #[test]
+    fn the_budget_is_shared_across_folders_rather_than_first_come() {
+        let dir = temp_dir("vault-fair");
+        let vault = dir.join("vault");
+        for i in 0..150 {
+            crate::project::write_note(
+                &vault,
+                &format!("aaa/crowded-{i:03}-with-a-deliberately-long-name.md"),
+                &format!("# Crowded note {i} with a summary line that is also wordy"),
+            )
+            .unwrap();
+        }
+        for i in 0..3 {
+            crate::project::write_note(
+                &vault,
+                &format!("zzz/rare-{i}.md"),
+                &format!("# Rare note {i}"),
+            )
+            .unwrap();
+        }
+
+        let mut cfg = bare(dir.clone());
+        cfg.knowledge = Some(KnowledgeContext { dir: vault });
+        let text = assemble(&cfg).segments()[0].text.clone();
+
+        // `aaa/` is cut by the budget, and `zzz/` — which front-to-back would
+        // never have been reached — is listed whole.
+        assert!(text.contains("  aaa/ (150 notes,"), "{text}");
+        assert!(text.contains("  zzz/ (3 notes)"), "{text}");
+        assert!(text.contains("rare-0.md"), "{text}");
+        assert!(text.contains("rare-2.md"), "{text}");
+        assert!(text.len() < 3 * VAULT_INDEX_BUDGET, "{} bytes", text.len());
+    }
+
+    /// Two stores, two segments, in a fixed order — so a reader of the context
+    /// panel can tell what each cost, and neither can be mistaken for the
+    /// other.
+    #[test]
+    fn the_docspace_and_the_vault_are_separate_segments() {
+        let dir = temp_dir("vault-and-docspace");
+        crate::project::write_note(&dir.join(".agents"), "plan.md", "# Plan").unwrap();
+        crate::project::write_note(&dir.join("vault"), "ada.md", "# Ada").unwrap();
+
+        let mut cfg = bare(dir.clone());
+        cfg.project = Some(ProjectContext {
+            name: "Both".into(),
+            notes_dir: dir.join(".agents"),
+        });
+        cfg.knowledge = Some(KnowledgeContext {
+            dir: dir.join("vault"),
+        });
+
+        let segs = assemble(&cfg).segments().to_vec();
+        assert_eq!(segs.len(), 2);
+        assert_eq!(segs[0].kind, SegmentKind::ProjectNotes);
+        assert_eq!(segs[1].kind, SegmentKind::Knowledge);
+        assert!(segs[0].text.contains("plan.md"), "{}", segs[0].text);
+        assert!(!segs[0].text.contains("ada.md"), "{}", segs[0].text);
+        assert!(segs[1].text.contains("ada.md"), "{}", segs[1].text);
+        assert!(!segs[1].text.contains("plan.md"), "{}", segs[1].text);
     }
 
     #[test]

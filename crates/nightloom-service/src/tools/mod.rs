@@ -33,7 +33,7 @@ mod web;
 
 pub use compact::{CompactContext, CompactSignal};
 pub use review::{Review, Reviewer, ReviewerSpec, bench};
-pub use root::Root;
+pub use root::{Root, VAULT_ALIAS};
 pub use task::{Subagent, TurnHandle};
 pub use todo::TodoWrite;
 pub use web::{

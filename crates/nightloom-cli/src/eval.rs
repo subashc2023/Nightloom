@@ -124,6 +124,10 @@ fn build_chat(
         // and an eval whose prompt depends on what a previous run left in the
         // workspace is not measuring the model.
         project: None,
+        // And the vault is the same argument at its worst — it is not even
+        // per-workspace, so the developer's own notes would reach every eval
+        // on that machine and none on any other.
+        knowledge: None,
         cwd: workspace.to_path_buf(),
         custom: None,
     });

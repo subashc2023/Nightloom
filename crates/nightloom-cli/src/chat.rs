@@ -8,8 +8,8 @@ use nightloom_core::{
 use nightloom_service::credentials;
 use nightloom_service::tools::{Reviewer, Root};
 use nightloom_service::{
-    AutoApprove, Chat, Decision, PendingCall, ProjectContext, PromptConfig, ProviderKind,
-    TurnEvent, mcp, project, prompt, store, tools,
+    AutoApprove, Chat, Decision, KnowledgeContext, PendingCall, ProjectContext, PromptConfig,
+    ProviderKind, TurnEvent, knowledge, mcp, project, prompt, store, tools,
 };
 use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
@@ -95,6 +95,13 @@ pub struct ChatArgs {
     #[arg(long)]
     no_web: bool,
 
+    /// Don't give the model the knowledge base: no @kb tree, no index in the
+    /// preamble. Its own flag rather than riding on --tools, because turning
+    /// tools on has always meant "may write inside this folder" and the vault
+    /// is a second directory, outside it.
+    #[arg(long)]
+    no_knowledge: bool,
+
     /// Let the model ask for its own history to be summarised, by offering it
     /// `compact_context`. Opt-in rather than on with --tools: a compaction
     /// supersedes everything before it, and /compact is always available.
@@ -176,6 +183,7 @@ fn build_chat(args: &ChatArgs, mcp_tools: &[Arc<dyn Tool>]) -> Result<Chat> {
     // one and survives either way, appended last.
     let on = !args.bare;
     let cwd = std::env::current_dir().context("cannot read the current directory")?;
+    let vault = vault(args);
     chat.system = prompt::assemble(&PromptConfig {
         identity: on,
         environment: on,
@@ -194,6 +202,12 @@ fn build_chat(args: &ChatArgs, mcp_tools: &[Arc<dyn Tool>]) -> Result<Chat> {
                 .unwrap_or_else(|| cwd.display().to_string()),
             notes_dir: cwd.join(project::AGENTS_DIR),
         }),
+        // The same vault wherever the CLI was run, which is the whole point:
+        // it is the user's, not the folder's. Tied to `--tools` on the
+        // docspace's argument, and to `--bare` like every other layer.
+        knowledge: (on && args.tools)
+            .then(|| vault.clone().map(|dir| KnowledgeContext { dir }))
+            .flatten(),
         cwd: cwd.clone(),
         custom: args.system.clone(),
     });
@@ -204,7 +218,7 @@ fn build_chat(args: &ChatArgs, mcp_tools: &[Arc<dyn Tool>]) -> Result<Chat> {
     chat.context_limit = nightloom_service::context_limit(args.provider, &chat.model);
     chat.price = nightloom_service::price(args.provider, &chat.model);
     if args.tools {
-        chat.tools = tools::builtin_in(cwd.clone());
+        chat.tools = tools::builtin_in(workspace_root(&cwd, vault.as_deref()));
         // Cloned Arcs, not fresh connections: every subagent shares the one
         // set of server processes started at launch.
         chat.tools.extend(
@@ -243,6 +257,11 @@ fn build_chat(args: &ChatArgs, mcp_tools: &[Arc<dyn Tool>]) -> Result<Chat> {
             // and `chat` is about to be borrowed mutably.
             let model = chat.model.clone();
             let bench = reviewers(args, &model, mcp_tools);
+            // Deliberately the workspace and not the vault. A reviewer runs on
+            // a *second vendor*, and the vault is the user's personal
+            // knowledge; there is no reason a critic reading a document in
+            // this folder needs it, and "no reason to" is the wrong guarantee
+            // when the alternative is not handing it over at all.
             chat.enable_reviews(bench, Root::new(&cwd));
         }
     }
@@ -250,6 +269,28 @@ fn build_chat(args: &ChatArgs, mcp_tools: &[Arc<dyn Tool>]) -> Result<Chat> {
         chat.sidecar = Vec::new();
     }
     Ok(chat)
+}
+
+/// The knowledge vault this run may reach.
+///
+/// `None` for `--no-knowledge`, and `None` when there is no user config
+/// directory to keep one in — a stripped environment with no `HOME`, which
+/// reads as "no vault" the same way it already reads as "no user memory".
+fn vault(args: &ChatArgs) -> Option<PathBuf> {
+    if args.no_knowledge {
+        return None;
+    }
+    knowledge::vault_dir()
+}
+
+/// The tree the file tools may reach: the folder the CLI was run in, plus the
+/// vault when there is one.
+fn workspace_root(cwd: &std::path::Path, vault: Option<&std::path::Path>) -> Root {
+    let root = Root::new(cwd.to_path_buf());
+    match vault {
+        Some(dir) => root.with_vault(dir.to_path_buf()),
+        None => root,
+    }
 }
 
 /// The curated bench, resolved into buildable reviewers.
@@ -895,6 +936,22 @@ pub async fn run(args: ChatArgs) -> Result<()> {
                 "tools: on, approval off — file writes and shell commands run unasked"
             } else {
                 "tools: on — anything that can change the machine asks first"
+            }
+        );
+    }
+    if args.tools {
+        // Named for two reasons, both about what the user cannot otherwise
+        // see. Turning tools on has always meant "may write inside this
+        // folder", and the vault is a second directory outside it — a change
+        // in reach belongs on screen. And a vault that has been repointed is
+        // invisible from here: a model quietly reading the wrong folder looks
+        // exactly like a model that has forgotten everything.
+        println!(
+            "{DIM}{}{RESET}",
+            match vault(&args) {
+                Some(dir) => format!("knowledge: @kb — {}", dir.display()),
+                None if args.no_knowledge => "knowledge: off (--no-knowledge)".to_string(),
+                None => "knowledge: off — no user config directory to keep a vault in".to_string(),
             }
         );
     }

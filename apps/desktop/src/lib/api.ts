@@ -9,7 +9,10 @@ import type {
   DocumentInput,
   ImageInput,
   ImportSummary,
+  KnowledgeInfo,
+  LinkGraph,
   Note,
+  NoteScope,
   ProjectInfo,
   ProviderInfo,
   SearchBackendInfo,
@@ -62,6 +65,7 @@ export function connect(args: ConnectArgs): Promise<ConnectResult> {
     approval: args.approval,
     web: args.web,
     selfCompact: args.selfCompact,
+    knowledge: args.knowledge,
     workspace: args.workspace,
   });
 }
@@ -195,8 +199,8 @@ export function editContext(
  * filesystem access of its own — it can ask, and it gets back a path the user
  * chose themselves.
  */
-export function pickFolder(): Promise<string | null> {
-  return invoke("pick_folder");
+export function pickFolder(title?: string, startAt?: string): Promise<string | null> {
+  return invoke("pick_folder", { title, startAt });
 }
 
 /** Ask the OS for the claude.ai export zip; null when the user cancelled. */
@@ -259,26 +263,51 @@ export function forgetProject(id: string): Promise<null> {
   return invoke("forget_project", { id });
 }
 
-// ---- the shared notes docspace ----
+// ---- notes: the project docspace and the knowledge base ----
+//
+// One `scope` argument rather than a second set of four calls: the operations
+// are identical and only the folder differs.
 
-export function listNotes(): Promise<Note[]> {
-  return invoke("list_notes");
+export function listNotes(scope: NoteScope): Promise<Note[]> {
+  return invoke("list_notes", { scope });
 }
 
-export function readNote(name: string): Promise<string> {
-  return invoke("read_note", { name });
+export function readNote(scope: NoteScope, name: string): Promise<string> {
+  return invoke("read_note", { scope, name });
 }
 
 /** Write a note. Also how one is created; an empty note is a real note. */
-export function saveNote(name: string, content: string): Promise<Note> {
-  return invoke("save_note", { name, content });
+export function saveNote(scope: NoteScope, name: string, content: string): Promise<Note> {
+  return invoke("save_note", { scope, name, content });
 }
 
-export function deleteNote(name: string): Promise<null> {
-  return invoke("delete_note", { name });
+export function deleteNote(scope: NoteScope, name: string): Promise<null> {
+  return invoke("delete_note", { scope, name });
 }
 
 /** Show a folder in the OS file manager; defaults to the docspace. */
 export function reveal(path?: string): Promise<null> {
   return invoke("reveal", { path });
+}
+
+// ---- the knowledge base ----
+
+/** Where the vault is; null on a machine with no user config directory. */
+export function knowledgeInfo(): Promise<KnowledgeInfo | null> {
+  return invoke("knowledge_info");
+}
+
+/**
+ * Point the vault at a folder, or back at the default with `null`.
+ *
+ * Moves nothing — both folders are left as they are, which is what makes an
+ * existing Obsidian vault usable as-is.
+ */
+export function setKnowledgeDir(dir: string | null): Promise<KnowledgeInfo | null> {
+  return invoke("set_knowledge_dir", { dir });
+}
+
+/** The vault as notes and the links between them. */
+export function knowledgeGraph(): Promise<LinkGraph> {
+  return invoke("knowledge_graph");
 }

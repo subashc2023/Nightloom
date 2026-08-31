@@ -308,6 +308,29 @@
           disabled={locked}
         />
       </label>
+
+      <!-- On screen rather than implied by the tools switch, because it is a
+           change in *reach*: tools alone has always meant "may write inside
+           this folder", and the knowledge base is a second directory outside
+           it. -->
+      <label
+        class="sw"
+        title="Gives the model your knowledge base as @kb — an index of it in the system prompt, and read, write and search over it with the file tools. Off keeps the model inside the workspace."
+      >
+        <span>Knowledge base</span>
+        <input
+          type="checkbox"
+          bind:checked={app.draft.knowledge}
+          onchange={apply}
+          disabled={locked}
+        />
+      </label>
+      {#if app.draft.knowledge && app.connection?.knowledge}
+        <p class="note">
+          Reads and writes <code>{app.connection.knowledge.dir}</code>, outside
+          the workspace.
+        </p>
+      {/if}
       {/if}
     {/if}
 
@@ -687,9 +710,13 @@
   .note.warn {
     color: var(--error);
   }
+  /* `anywhere` rather than `break-word`: a Windows path has no space and no
+     hyphen to break at, so without it the longest run sets the rail's width
+     and the whole column grows a horizontal scrollbar. */
   .note code {
     font-family: var(--mono);
     font-size: 0.64rem;
+    overflow-wrap: anywhere;
   }
 
   /* Two buttons reading as one control, so the choice looks like a mode and

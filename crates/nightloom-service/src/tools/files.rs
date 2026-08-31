@@ -55,7 +55,10 @@ impl Tool for ReadFile {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "File to read, relative to the workspace root."
+                        "description": format!(
+                            "File to read, relative to the workspace root.{}",
+                            self.root.path_hint()
+                        )
                     }
                 },
                 "required": ["path"]
@@ -97,7 +100,11 @@ impl Tool for WriteFile {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "File to write, relative to the workspace root. Missing parent directories are created."
+                        "description": format!(
+                            "File to write, relative to the workspace root. Missing parent \
+                             directories are created.{}",
+                            self.root.path_hint()
+                        )
                     },
                     "content": {
                         "type": "string",
@@ -151,7 +158,10 @@ impl Tool for EditFile {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "File to edit, relative to the workspace root."
+                        "description": format!(
+                            "File to edit, relative to the workspace root.{}",
+                            self.root.path_hint()
+                        )
                     },
                     "old_string": {
                         "type": "string",
@@ -256,7 +266,11 @@ impl Tool for ListDir {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Directory to list, relative to the workspace root. Defaults to the root."
+                        "description": format!(
+                            "Directory to list, relative to the workspace root. Defaults to the \
+                             root.{}",
+                            self.root.path_hint()
+                        )
                     }
                 }
             }),

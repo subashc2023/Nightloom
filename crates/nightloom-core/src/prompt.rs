@@ -32,6 +32,14 @@ pub enum SegmentKind {
     /// conversations in this project left behind. The index only; the
     /// contents are read on demand with the file tools.
     ProjectNotes,
+    /// Index of the user's knowledge vault — what they know, as against what
+    /// this folder contains. Separate from [`SegmentKind::ProjectNotes`]
+    /// because the two answer different questions and a reader looking at
+    /// what the request cost should be able to tell them apart; separate from
+    /// [`SegmentKind::UserMemory`] because standing instructions and
+    /// standing knowledge are not the same thing. The index only, like the
+    /// docspace and for the same reason.
+    Knowledge,
     /// User-level standing preferences, from the config dir.
     UserMemory,
     /// Anything a shell supplies directly (`--system`, the desktop textarea).

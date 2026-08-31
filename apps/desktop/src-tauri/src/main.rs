@@ -17,8 +17,9 @@ use nightloom_service::project::{self, Note, Project, Registry};
 use nightloom_service::store::{self, SessionMatch, SessionSummary};
 use nightloom_service::tools::{Reviewer, Root, SearchBackend};
 use nightloom_service::{
-    AgentSpec, Chat, ClaudeCodeAgent, CompactOutcome, Price, ProjectContext, PromptConfig,
-    ProviderKind, Recorder, TurnEvent, TurnInput, TurnOutcome, resolve_binary, searched_locations,
+    AgentSpec, Chat, ClaudeCodeAgent, CompactOutcome, KnowledgeContext, Price, ProjectContext,
+    PromptConfig, ProviderKind, Recorder, TurnEvent, TurnInput, TurnOutcome, resolve_binary,
+    searched_locations,
 };
 use serde::Serialize;
 use std::collections::HashMap;
@@ -282,6 +283,11 @@ struct ConnectedInfo {
     /// `reviewers` is: a model that cannot search does not announce it, it
     /// simply guesses, and the user has no way to tell those apart.
     search: Option<String>,
+    /// The knowledge vault this connection can reach, or `None` when the
+    /// switch is off. Echoed for the same reason `search` is: a folder the
+    /// model is quietly reading — or quietly not reading — is not something
+    /// the user can work out from the transcript.
+    knowledge: Option<KnowledgeInfo>,
     /// Which engine is behind this connection: `provider` or `claude-code`.
     ///
     /// The UI needs it for more than a label. Half the controls above the
@@ -492,16 +498,33 @@ struct ChatSpec {
     /// The open project, for the shared-notes prompt layer. `None` for an
     /// unfiled chat, which has no docspace to index.
     project: Option<ProjectContext>,
+    /// The user's knowledge vault, when this chat may reach it.
+    ///
+    /// Its own switch rather than riding on `tools`, because turning tools on
+    /// has always meant "may write inside this folder" and the vault is a
+    /// second directory outside it. That is a real change in what the model
+    /// can touch, and it belongs on screen rather than in a release note.
+    /// Unlike `project` it is **not** gated on the open project: the vault is
+    /// the same in every project and in an unfiled chat, which is the case it
+    /// exists for.
+    knowledge: Option<PathBuf>,
 }
 
 impl ChatSpec {
-    /// What the file tools may reach: the workspace, and only that.
+    /// What the file tools may reach: the workspace, plus the vault when the
+    /// user has left it switched on.
     ///
-    /// One tree, which is what putting the docspace at `<workspace>/.agents`
-    /// buys — a note is an ordinary relative path inside a directory the
-    /// tools were already rooted at.
+    /// The workspace alone is what the docspace living at `<workspace>/.agents`
+    /// buys — a note is an ordinary relative path inside a directory the tools
+    /// were already rooted at. The vault cannot be arranged that way, holding
+    /// what the user knows rather than what this folder contains, so it is a
+    /// named second tree reached as `@kb/…`.
     fn root(&self) -> Root {
-        Root::new(self.workspace.clone())
+        let root = Root::new(self.workspace.clone());
+        match &self.knowledge {
+            Some(dir) => root.with_vault(dir.clone()),
+            None => root,
+        }
     }
 }
 
@@ -543,6 +566,10 @@ fn build_chat(
         // Gated on the preamble like every other discovered layer: `--bare`
         // and its desktop equivalent mean "nothing but what I typed".
         project: spec.preamble.then(|| spec.project.clone()).flatten(),
+        knowledge: spec
+            .preamble
+            .then(|| spec.knowledge.clone().map(|dir| KnowledgeContext { dir }))
+            .flatten(),
         cwd: spec.workspace.clone(),
         custom: spec.system.clone(),
     });
@@ -635,6 +662,11 @@ fn reviewers(
         // Belonged to the provider being replaced: a base URL pointing at
         // a local server is not where this reviewer lives.
         spec.base_url = None;
+        // A reviewer runs on a *second vendor*, and the vault is the user's
+        // personal knowledge. A critic reading a document in this workspace
+        // has no reason to want it, and "no reason to" is the wrong guarantee
+        // when not handing it over at all is available.
+        spec.knowledge = None;
         let (app, policy, mcp) = (app.clone(), policy.clone(), mcp_tools.to_vec());
         Reviewer::new(
             candidate.name,
@@ -670,6 +702,7 @@ async fn connect(
     approval: Option<bool>,
     web: Option<bool>,
     self_compact: Option<bool>,
+    knowledge: Option<bool>,
 ) -> Result<ConnectedInfo, String> {
     let kind: ProviderKind = provider.parse()?;
     let thinking = match thinking {
@@ -713,6 +746,13 @@ async fn connect(
         // predates the switch, and the behaviour the switch exists to stop
         // is precisely the one that used to happen without asking.
         self_compact: self_compact.unwrap_or(false),
+        // On unless the UI says otherwise, and `None` regardless when there is
+        // no config directory to keep a vault in — the same state the CLI
+        // reports as "no vault", not a failure to connect.
+        knowledge: knowledge
+            .unwrap_or(true)
+            .then(nightloom_service::knowledge::vault_dir)
+            .flatten(),
         project: active.as_ref().map(|p| ProjectContext {
             name: p.name.clone(),
             notes_dir: p.notes_dir(),
@@ -767,6 +807,9 @@ async fn connect(
                     .collect::<Vec<_>>()
                     .join(" → ")
             }),
+        knowledge: spec.knowledge.clone().map(|dir| {
+            KnowledgeInfo::of(dir, KnowledgeInfo::current().is_none_or(|k| k.is_default))
+        }),
         engine: "provider".into(),
         agent: None,
     };
@@ -897,6 +940,11 @@ async fn connect_agent(
         workspace: workspace.to_string_lossy().into_owned(),
         project: active.as_ref().map(ProjectInfo::of),
         search: None,
+        // Claude Code owns its own tools and its own file access, so nothing
+        // here roots them and the vault is not on the request. Said as `None`
+        // rather than echoed hopefully: the rail would otherwise chip a folder
+        // this engine never reads.
+        knowledge: None,
         engine: AGENT.into(),
         agent: Some(AgentInfo {
             binary: resolved_binary,
@@ -1387,14 +1435,27 @@ async fn delete_session(state: State<'_, AppState>, id: String) -> Result<String
 /// thing the webview can do here is ask, and the only thing it gets back is a
 /// path the user chose themselves.
 #[tauri::command]
-async fn pick_folder(app: AppHandle, state: State<'_, AppState>) -> Result<Option<String>, String> {
+async fn pick_folder(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    title: Option<String>,
+    start_at: Option<String>,
+) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
-    let start = match state.active().await {
-        Some(project) => project.workspace,
-        None => project::config_dir().map(|d| d.parent().unwrap_or(&d).to_path_buf()),
+    // The caller's starting point wins when it gave one — picking a knowledge
+    // folder should open near the current vault, not near the project.
+    let start = match start_at.map(PathBuf::from) {
+        Some(dir) => Some(dir),
+        None => match state.active().await {
+            Some(project) => project.workspace,
+            None => project::config_dir().map(|d| d.parent().unwrap_or(&d).to_path_buf()),
+        },
     };
     let (tx, rx) = tokio::sync::oneshot::channel();
-    let mut builder = app.dialog().file().set_title("Choose a project folder");
+    let mut builder = app
+        .dialog()
+        .file()
+        .set_title(title.as_deref().unwrap_or("Choose a project folder"));
     if let Some(start) = start.filter(|p| p.is_dir()) {
         builder = builder.set_directory(start);
     }
@@ -1626,26 +1687,71 @@ async fn forget_project(state: State<'_, AppState>, id: String) -> Result<(), St
     Ok(())
 }
 
-// ---- the docspace ------------------------------------------------------
+// ---- notes: the docspace and the vault ---------------------------------
 
-/// The notes directory of the open project, or an error naming why there
-/// isn't one. Every note command needs this and none of them should guess.
-async fn notes_dir(state: &AppState) -> Result<PathBuf, String> {
-    state
-        .active()
-        .await
-        .map(|p| p.notes_dir())
-        .ok_or_else(|| "no project is open, so there is no shared notes folder".to_string())
+/// Which of the two note stores a command means.
+///
+/// One parameter rather than four more commands, because the four operations
+/// are identical — [`project::list_notes`] and its siblings already take the
+/// directory, so both stores are the same code with a different path. What
+/// differs is only which folder, and which of the two can be missing.
+///
+/// An unrecognized value is an error rather than a default. The two stores
+/// hold different things, and a typo that quietly wrote a personal note into
+/// somebody's repository is exactly the failure the split exists to prevent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum NoteScope {
+    /// `<workspace>/.agents` — about the code, and only while a project is
+    /// open.
+    Project,
+    /// The user's vault — about them, and available with no project at all.
+    Knowledge,
+}
+
+impl Default for NoteScope {
+    /// What a frontend that predates the vault meant by every note call.
+    fn default() -> Self {
+        Self::Project
+    }
+}
+
+/// The directory a scope names, or an error saying why there isn't one.
+///
+/// Every note command needs this and none of them should guess. The two
+/// failures are genuinely different and each says so: a project scope with no
+/// project open is a state the user can fix by opening one, and a knowledge
+/// scope with no config directory is a machine with no home to keep a vault
+/// in.
+async fn scope_dir(state: &AppState, scope: NoteScope) -> Result<PathBuf, String> {
+    match scope {
+        NoteScope::Project => state
+            .active()
+            .await
+            .map(|p| p.notes_dir())
+            .ok_or_else(|| "no project is open, so there is no shared notes folder".to_string()),
+        NoteScope::Knowledge => nightloom_service::knowledge::vault_dir()
+            .ok_or_else(|| "no user config directory to keep a knowledge base in".to_string()),
+    }
 }
 
 #[tauri::command]
-async fn list_notes(state: State<'_, AppState>) -> Result<Vec<Note>, String> {
-    Ok(project::list_notes(&notes_dir(&state).await?))
+async fn list_notes(
+    state: State<'_, AppState>,
+    scope: Option<NoteScope>,
+) -> Result<Vec<Note>, String> {
+    Ok(project::list_notes(
+        &scope_dir(&state, scope.unwrap_or_default()).await?,
+    ))
 }
 
 #[tauri::command]
-async fn read_note(state: State<'_, AppState>, name: String) -> Result<String, String> {
-    project::read_note(&notes_dir(&state).await?, &name)
+async fn read_note(
+    state: State<'_, AppState>,
+    scope: Option<NoteScope>,
+    name: String,
+) -> Result<String, String> {
+    project::read_note(&scope_dir(&state, scope.unwrap_or_default()).await?, &name)
 }
 
 /// Write a note. Also how a new one is created — there is no separate
@@ -1653,15 +1759,104 @@ async fn read_note(state: State<'_, AppState>, name: String) -> Result<String, S
 #[tauri::command]
 async fn save_note(
     state: State<'_, AppState>,
+    scope: Option<NoteScope>,
     name: String,
     content: String,
 ) -> Result<Note, String> {
-    project::write_note(&notes_dir(&state).await?, &name, &content)
+    project::write_note(
+        &scope_dir(&state, scope.unwrap_or_default()).await?,
+        &name,
+        &content,
+    )
 }
 
 #[tauri::command]
-async fn delete_note(state: State<'_, AppState>, name: String) -> Result<(), String> {
-    project::delete_note(&notes_dir(&state).await?, &name)
+async fn delete_note(
+    state: State<'_, AppState>,
+    scope: Option<NoteScope>,
+    name: String,
+) -> Result<(), String> {
+    project::delete_note(&scope_dir(&state, scope.unwrap_or_default()).await?, &name)
+}
+
+// ---- the knowledge vault -----------------------------------------------
+
+/// Where the vault is and what is in it.
+#[derive(Serialize, Clone)]
+struct KnowledgeInfo {
+    dir: String,
+    /// How the model addresses it, so the UI can show the same string the
+    /// prompt does rather than inventing its own name for it.
+    alias: String,
+    notes: usize,
+    /// Whether it sits where it would with nothing configured. What a "Reset
+    /// to default" control switches off, and worth showing regardless: a vault
+    /// pointing somewhere forgotten looks identical to an empty one.
+    is_default: bool,
+    /// False until the first note is written. Not an error — the docspace is
+    /// created the same way, and a vault nobody has written in yet is the
+    /// ordinary state of a new install.
+    exists: bool,
+}
+
+impl KnowledgeInfo {
+    fn of(dir: PathBuf, is_default: bool) -> Self {
+        Self {
+            notes: project::list_notes(&dir).len(),
+            exists: dir.is_dir(),
+            alias: nightloom_service::tools::VAULT_ALIAS.to_string(),
+            is_default,
+            dir: dir.to_string_lossy().into_owned(),
+        }
+    }
+
+    /// `None` on a machine with no config directory, which reads as "no
+    /// vault" the same way it reads as "no user memory".
+    fn current() -> Option<Self> {
+        let config = project::config_dir()?;
+        Some(Self::of(
+            nightloom_service::knowledge::vault_dir_in(&config),
+            nightloom_service::knowledge::is_default_location_in(&config),
+        ))
+    }
+}
+
+#[tauri::command]
+async fn knowledge_info() -> Result<Option<KnowledgeInfo>, String> {
+    Ok(KnowledgeInfo::current())
+}
+
+/// Point the vault at a folder, or back at the default with `None`.
+///
+/// **Moves nothing.** Both directories are left exactly as they are, which is
+/// what makes an existing Obsidian vault usable as-is — and what stops a
+/// changed setting from relocating somebody's notes.
+#[tauri::command]
+async fn set_knowledge_dir(dir: Option<String>) -> Result<Option<KnowledgeInfo>, String> {
+    let chosen = dir.map(PathBuf::from).filter(|d| !d.as_os_str().is_empty());
+    if let Some(dir) = &chosen {
+        // A folder the user picked through a dialog exists; one typed into the
+        // field may not, and creating it is friendlier than refusing a path
+        // that is only a moment from being right.
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    }
+    nightloom_service::knowledge::set_vault_dir(chosen.as_deref())?;
+    Ok(KnowledgeInfo::current())
+}
+
+/// The vault as notes and the links between them.
+///
+/// Built on a blocking thread: it reads every note in the vault, which is file
+/// I/O over a folder that may hold years of them, and the runtime it would
+/// otherwise sit on is the one carrying the window's events.
+#[tauri::command]
+async fn knowledge_graph() -> Result<nightloom_service::LinkGraph, String> {
+    let dir = nightloom_service::knowledge::vault_dir()
+        .ok_or_else(|| "no user config directory to keep a knowledge base in".to_string())?;
+    tauri::async_runtime::spawn_blocking(move || nightloom_service::LinkGraph::build(&dir))
+        .await
+        .map_err(|e| format!("cannot read the knowledge base: {e}"))
 }
 
 /// Show a folder in the OS file manager.
@@ -1673,7 +1868,7 @@ async fn delete_note(state: State<'_, AppState>, name: String) -> Result<(), Str
 async fn reveal(state: State<'_, AppState>, path: Option<String>) -> Result<(), String> {
     let target = match path {
         Some(p) => PathBuf::from(p),
-        None => notes_dir(&state).await?,
+        None => scope_dir(&state, NoteScope::Project).await?,
     };
     // Created on demand: the docspace does not exist until something is in it,
     // and "open the folder" is a reasonable way to put the first thing there.
@@ -2030,6 +2225,9 @@ fn main() {
             read_note,
             save_note,
             delete_note,
+            knowledge_info,
+            set_knowledge_dir,
+            knowledge_graph,
             reveal,
         ])
         .run(tauri::generate_context!())

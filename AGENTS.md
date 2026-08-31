@@ -96,11 +96,29 @@ The event log is the source of truth. The provider message list
   change only what the projection reads. A fourth follows the same three rules:
   the log keeps the content, a UI can show what was hidden, and a `Rewind` that
   supersedes the marker undoes it for free.
-- **Project notes live in `<workspace>/.agents`** and reach the model as an
-  index, never as content. That directory is *inside* the tree the file tools
-  are rooted at, which is what lets `Root` stay one tree and `grep`/`glob` find
-  a note in an ordinary walk. Don't add a retrieval layer or a second task-list
-  mechanism beside `todo_write`.
+- **Two note stores, and the line between them matters.** *Project notes* live
+  in `<workspace>/.agents` — about the code, committable, inside the tree the
+  file tools are rooted at, so `grep`/`glob` find one in an ordinary walk. The
+  *knowledge vault* lives in `~/.nightloom/knowledge` (repointable) — about the
+  **user**, the same one in every project and in a chat with no project at all,
+  reached as `@kb/<name>` through `Root`'s one named second tree. Both reach
+  the model as an index, never as content. Don't add a retrieval layer, a
+  `kb_read`, or a second task-list mechanism beside `todo_write`: the vault
+  reuses `project.rs`'s note functions and the existing file tools, and the
+  only two things `knowledge.rs` adds are a location and `[[wikilinks]]`.
+  The vault index is **a map, not a catalogue**: grouped by folder with an
+  exact count on each, budget shared round-robin, and past the cap it leads
+  with "this is a sample" rather than footnoting it. Counts come from
+  `project::note_counts`, never from `list_notes` — that stops mid-walk at its
+  own cap, so its length is not the size of the vault. Don't add per-note
+  snippets or link counts to it; both were measured and refused.
+- **An empty search result names its scope.** `grep`/`glob` walk the workspace
+  only unless given a `path`, so a bare `no matches` was indistinguishable from
+  an answer about everything reachable — measured wrong on four providers over
+  a vault question. Both tools now name the directory searched and say when a
+  vault was not reached. A glob pattern matches the base-relative path *or* the
+  reported one, because feeding back the `@kb/` prefix the tool had just
+  printed used to return zero, silently.
 - **Turn semantics live in two files** and usually change together:
   `service/turn.rs` and `core/session.rs`. A shell that seems to need its own
   loop logic is a sign something belongs in `turn.rs`.

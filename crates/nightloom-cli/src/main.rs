@@ -3,6 +3,7 @@ mod chat;
 mod eval;
 mod import;
 mod keys;
+mod knowledge;
 mod probe;
 mod sessions;
 
@@ -39,6 +40,8 @@ enum Command {
     Import(import::ImportArgs),
     /// API keys in the OS credential store, shared with the desktop app
     Keys(keys::KeysArgs),
+    /// Where your knowledge base is, and where it should be
+    Knowledge(knowledge::KnowledgeArgs),
 }
 
 #[tokio::main]
@@ -50,6 +53,7 @@ async fn main() -> Result<()> {
         Some(Command::Sessions(args)) => sessions::run(args),
         Some(Command::Import(args)) => import::run(args),
         Some(Command::Keys(args)) => keys::run(args),
+        Some(Command::Knowledge(args)) => knowledge::run(args),
         // `--agent` swaps the engine, not the provider: Claude Code owns
         // the loop and the tools, and Nightloom renders what it streams.
         None if cli.chat.agent.is_some() => agent::run(cli.chat).await,

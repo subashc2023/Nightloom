@@ -29,6 +29,15 @@ export interface ConnectArgs {
   web: boolean;
   /** Offer compact_context; omitted reads as false. */
   selfCompact: boolean;
+  /**
+   * Give the model the knowledge base: the `@kb` tree and its index in the
+   * preamble. Omitted reads as true.
+   *
+   * Its own switch rather than riding on `tools`, because turning tools on has
+   * always meant "may write inside this folder" and the vault is a second
+   * directory outside it.
+   */
+  knowledge: boolean;
   /** Root for the file tools and project-instruction discovery. */
   workspace?: string;
 }
@@ -174,6 +183,14 @@ export interface ConnectResult {
    */
   search: string | null;
   /**
+   * The knowledge base this connection can reach, or null when the switch is
+   * off (and always null on the agent engine, which owns its own file
+   * access). Read for the same reason `search` is: a folder the model is
+   * quietly reading — or quietly not reading — cannot be worked out from the
+   * transcript.
+   */
+  knowledge: KnowledgeInfo | null;
+  /**
    * The project this connection is filed under, echoed back from the
    * backend. Read rather than assumed: an open project overrides the
    * workspace the rail last saved, so this is the authority on which folder
@@ -212,7 +229,62 @@ export interface ProjectInfo {
   last_opened: string;
 }
 
-/** One file in a project's shared notes directory. */
+/**
+ * Which of the two note stores a call means.
+ *
+ * `project` is `<workspace>/.agents` — about the code, and only while a
+ * project is open. `knowledge` is the user's own vault — about them, the same
+ * one in every project, and available with no project at all.
+ */
+export type NoteScope = "project" | "knowledge";
+
+/** Where the knowledge base is and what is in it. */
+export interface KnowledgeInfo {
+  dir: string;
+  /** How the model addresses it (`@kb`), so the UI shows the same string the
+   *  system prompt does rather than inventing a name for it. */
+  alias: string;
+  notes: number;
+  /** Whether it sits where it would with nothing configured. */
+  is_default: boolean;
+  /** False until the first note is written — the ordinary state of a new
+   *  install, not an error. */
+  exists: boolean;
+}
+
+/** What a `[[link]]` target turned out to name. */
+export type Resolution =
+  | { kind: "note"; index: number }
+  /** Two or more notes share the basename. Reported rather than picked: the
+   *  user is the only one who knows which was meant. */
+  | { kind: "ambiguous"; indexes: number[] }
+  /** Nothing answers to it — normal in a vault, where writing `[[thing]]`
+   *  before the note exists is how a note gets planned. */
+  | { kind: "missing" };
+
+/** A resolved link between two notes, by index into `LinkGraph.notes`. */
+export interface Edge {
+  from: number;
+  to: number;
+}
+
+/** A link that names no single note, kept with the note that wrote it. */
+export interface BrokenLink {
+  from: number;
+  target: string;
+  resolution: Resolution;
+}
+
+/** The vault as notes and the links between them. */
+export interface LinkGraph {
+  notes: Note[];
+  /** Deduplicated, and self-links dropped: what a graph draws is whether two
+   *  notes are connected. */
+  edges: Edge[];
+  broken: BrokenLink[];
+}
+
+/** One file in a project's shared notes directory, or in the vault. */
 export interface Note {
   /** Path relative to the notes dir, always with `/` separators. */
   name: string;

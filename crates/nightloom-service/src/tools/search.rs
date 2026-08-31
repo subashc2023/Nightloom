@@ -7,7 +7,7 @@
 //! matcher. `globset` is a matcher over paths we produce ourselves, so both
 //! tools see exactly the same tree with exactly the same glob semantics.
 
-use super::{INTERRUPTED, Root};
+use super::{INTERRUPTED, Root, VAULT_ALIAS};
 use globset::{GlobBuilder, GlobMatcher};
 use nightloom_core::ToolDef;
 use nightloom_core::tool::{CancellationToken, Effect, Tool};
@@ -128,6 +128,54 @@ fn relative(base: &Path, path: &Path) -> String {
         .replace('\\', "/")
 }
 
+/// A pattern is matched against the base-relative path **and** against the
+/// path as it is reported back, either one counting as a hit.
+///
+/// Those are the same string only when the search covers the whole workspace,
+/// and the gap between them is one a model falls into by doing exactly the
+/// right thing: `grep` prints `@kb/brindle-outage.md`, so a filter to narrow
+/// that same search gets written `@kb/**/*.md` — which matched nothing, the
+/// filter having been shown `brindle-outage.md`. Measured live against a
+/// four-provider vault test: one pattern and one path returned six files or
+/// none depending only on whether the prefix the tool had just printed was
+/// repeated back to it, and it returned the empty one silently, which is the
+/// worst available shape for a wrong answer.
+///
+/// Accepting both is deliberately the permissive reading rather than moving
+/// to the shown path alone. `path: "src"` with the pattern `main.rs` means
+/// what it reads as today, and matching only the shown `src/main.rs` would
+/// break it — trading one silent zero for another.
+fn hit(matcher: &GlobMatcher, base_relative: &str, shown: &str) -> bool {
+    matcher.is_match(base_relative) || matcher.is_match(shown)
+}
+
+/// What an empty result appends when a vault exists and this search did not
+/// reach it.
+///
+/// An empty result is a claim, and `no matches for "checksum"` reads as "not
+/// in your notes" when what actually happened is that the vault was never
+/// looked at — searching the workspace only is the deliberate default, and
+/// nothing in the answer said so. Measured across four providers, every one
+/// ran an unscoped search over a vault-only question and every one of them
+/// named the ambiguity unprompted; one caught itself solely by re-running the
+/// identical query scoped. Naming the scope costs a clause and turns a
+/// confident wrong answer into an obvious next call.
+fn vault_note(root: &Root, target: &Path) -> String {
+    let Some(vault) = root.vault_path() else {
+        return String::new();
+    };
+    // A vault nested inside the workspace *was* searched, and so was a search
+    // already rooted inside the vault. Saying otherwise would be its own
+    // small lie.
+    if vault.starts_with(target) || target.starts_with(vault) {
+        return String::new();
+    }
+    // A dash rather than a full stop: the workspace root shows as ".", and a
+    // sentence break after it renders "under ..", which names a parent
+    // directory to anything reading it as a path.
+    format!(" — the knowledge vault was not searched; pass path \"{VAULT_ALIAS}\" to search it")
+}
+
 /// Paths in and out are not the same path.
 ///
 /// A pattern is matched against the path *relative to the search directory*,
@@ -162,11 +210,15 @@ impl Tool for Glob {
                 "properties": {
                     "pattern": {
                         "type": "string",
-                        "description": "Glob pattern to match against paths relative to the search directory, e.g. \"**/*.rs\"."
+                        "description": "Glob pattern, e.g. \"**/*.rs\". Matched against the path relative to the search directory, or against the path as it appears in results — either form works, so a prefix you were shown can be repeated back."
                     },
                     "path": {
                         "type": "string",
-                        "description": "Directory to search under, relative to the workspace root. Defaults to the root."
+                        "description": format!(
+                            "Directory to search under, relative to the workspace root. Defaults \
+                             to the root.{}",
+                            self.root.path_hint()
+                        )
                     }
                 },
                 "required": ["pattern"]
@@ -200,16 +252,18 @@ impl Tool for Glob {
             if cancel.is_cancelled() {
                 return Err(INTERRUPTED.to_string());
             }
-            if matcher.is_match(relative(&base, &path)) {
-                hits.push(self.root.show(&path));
+            let shown = self.root.show(&path);
+            if hit(&matcher, &relative(&base, &path), &shown) {
+                hits.push(shown);
             }
         }
         hits.sort();
 
         if hits.is_empty() {
             return Ok(format!(
-                "no files match \"{pattern}\" under {}",
-                self.root.show(&base)
+                "no files match \"{pattern}\" under {}{}",
+                self.root.show(&base),
+                vault_note(&self.root, &base)
             ));
         }
         let total = hits.len();
@@ -272,11 +326,15 @@ impl Tool for Grep {
                     },
                     "path": {
                         "type": "string",
-                        "description": "File or directory to search, relative to the workspace root. Defaults to the root."
+                        "description": format!(
+                            "File or directory to search, relative to the workspace root. \
+                             Defaults to the root.{}",
+                            self.root.path_hint()
+                        )
                     },
                     "glob": {
                         "type": "string",
-                        "description": "Only search files whose path matches this glob, e.g. \"*.rs\"."
+                        "description": "Only search files whose path matches this glob, e.g. \"*.rs\". Matched against the path relative to the search directory, or against the path as it appears in results — either form works."
                     },
                     "output_mode": {
                         "type": "string",
@@ -328,14 +386,15 @@ impl Tool for Grep {
             if cancel.is_cancelled() {
                 return Err(INTERRUPTED.to_string());
             }
-            // The `glob` filter matches the base-relative path, the output
-            // names the path the model can pass back. See `Glob::call`.
+            // The `glob` filter takes either the base-relative path or the
+            // one the output names, since the model has only ever been shown
+            // the second. See `hit`.
+            let shown = self.root.show(&file);
             if let Some(filter) = &filter
-                && !filter.is_match(relative(&base, &file))
+                && !hit(filter, &relative(&base, &file), &shown)
             {
                 continue;
             }
-            let shown = self.root.show(&file);
             if std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0) > GREP_MAX_FILE_BYTES {
                 continue;
             }
@@ -367,7 +426,11 @@ impl Tool for Grep {
         }
 
         if paths.is_empty() {
-            return Ok(format!("no matches for \"{pattern}\""));
+            return Ok(format!(
+                "no matches for \"{pattern}\" under {}{}",
+                self.root.show(&target),
+                vault_note(&self.root, &target)
+            ));
         }
 
         Ok(match mode {
@@ -531,6 +594,122 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
+    /// Both halves of a vault search that were measured wrong against four
+    /// providers on the same afternoon.
+    ///
+    /// The first: an unscoped search answers about the workspace, which is
+    /// the deliberate default and was indistinguishable from an answer about
+    /// everything. Every model tested ran one, and the negative reads as
+    /// "not in your notes".
+    ///
+    /// The second: the filter was shown one spelling of a path and the model
+    /// was shown another, so narrowing a search with the prefix it had just
+    /// been printed silently emptied it.
+    #[tokio::test]
+    async fn an_empty_result_names_its_scope_and_a_filter_takes_either_spelling() {
+        let dir = test_dir("search-vault");
+        let workspace = dir.join("workspace");
+        let vault = dir.join("vault");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::create_dir_all(vault.join("decisions")).unwrap();
+        fs::write(workspace.join("main.rs"), "fn main() {}\n").unwrap();
+        fs::write(
+            vault.join("decisions").join("quorum.md"),
+            "# Quorum\n\nThere is deliberately no checksum in the header.\n",
+        )
+        .unwrap();
+
+        let grep = Grep::new(Root::new(&workspace).with_vault(&vault));
+
+        // Unscoped: the workspace only, and it says so rather than leaving
+        // the model to conclude the vault does not mention it.
+        let unscoped = grep
+            .call(json!({ "pattern": "checksum" }), &CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            unscoped,
+            "no matches for \"checksum\" under . — the knowledge vault was not \
+             searched; pass path \"@kb\" to search it"
+        );
+
+        // And the advice it gives is advice that works.
+        let scoped = grep
+            .call(
+                json!({ "pattern": "checksum", "path": "@kb" }),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(scoped, "@kb/decisions/quorum.md");
+
+        // A search already inside the vault does not get told to search the
+        // vault, and neither does an empty one there.
+        let inside = grep
+            .call(
+                json!({ "pattern": "nowhere", "path": "@kb" }),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(inside, "no matches for \"nowhere\" under @kb");
+
+        // The filter takes the base-relative spelling and the printed one
+        // alike. Before, the second was a silent zero.
+        for pattern in ["**/*.md", "@kb/**/*.md"] {
+            let filtered = grep
+                .call(
+                    json!({ "pattern": "checksum", "path": "@kb", "glob": pattern }),
+                    &CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(filtered, "@kb/decisions/quorum.md", "glob {pattern}");
+        }
+
+        // Same for `glob`'s own pattern, and the base-relative reading still
+        // means what it always did — an exact name under a `path` must keep
+        // matching, which is why this is permissive rather than a switch.
+        let tool = Glob::new(Root::new(&workspace).with_vault(&vault));
+        for pattern in ["**/*.md", "@kb/**/*.md"] {
+            let listed = tool
+                .call(
+                    json!({ "pattern": pattern, "path": "@kb" }),
+                    &CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(listed, "@kb/decisions/quorum.md", "pattern {pattern}");
+        }
+        let exact = tool
+            .call(
+                json!({ "pattern": "quorum.md", "path": "@kb/decisions" }),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(exact, "@kb/decisions/quorum.md");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A vault nested inside the workspace *was* searched by an unscoped
+    /// walk, so claiming otherwise would be its own small lie.
+    #[tokio::test]
+    async fn a_nested_vault_is_not_reported_as_unsearched() {
+        let dir = test_dir("search-vault-nested");
+        fs::create_dir_all(dir.join("kb")).unwrap();
+        fs::write(dir.join("kb").join("note.md"), "nothing here\n").unwrap();
+
+        let out = Grep::new(Root::new(&dir).with_vault(dir.join("kb")))
+            .call(json!({ "pattern": "absent" }), &CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(out, "no matches for \"absent\" under .");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
     #[tokio::test]
     async fn glob_rejects_a_bad_pattern_and_an_escaping_path() {
         let dir = fixture("search-glob-err");
@@ -615,7 +794,10 @@ mod tests {
             .call(json!({ "pattern": "nowhere" }), &CancellationToken::new())
             .await
             .unwrap();
-        assert_eq!(out, "no matches for \"nowhere\"");
+        // The scope is named even with no vault in play: an empty result is a
+        // claim about somewhere, and which somewhere is the half that was
+        // missing.
+        assert_eq!(out, "no matches for \"nowhere\" under .");
 
         // Named from the workspace root, not from the search target: this
         // string is the handle the model passes to `read_file` next, and

@@ -10,6 +10,7 @@
   import Transcript from "./lib/Transcript.svelte";
   import Composer from "./lib/Composer.svelte";
   import NoteView from "./lib/NoteView.svelte";
+  import GraphView from "./lib/GraphView.svelte";
   import Welcome from "./lib/Welcome.svelte";
 
   onMount(() => {
@@ -41,6 +42,8 @@
       <div class="content">
         {#if app.view === "note"}
           <NoteView />
+        {:else if app.view === "graph"}
+          <GraphView />
         {:else if blank}
           <Welcome />
         {:else}

@@ -133,6 +133,17 @@ export interface ConnectionDraft {
    */
   selfCompact: boolean;
   /**
+   * Give the model the knowledge base: the `@kb` tree and its index in the
+   * preamble.
+   *
+   * On by default — the vault is only worth having if it is there — but a
+   * knob of its own rather than riding on `tools`, because turning tools on
+   * has always meant "may write inside this folder" and the vault is a second
+   * directory outside it. A change in what the model can reach belongs on
+   * screen.
+   */
+  knowledge: boolean;
+  /**
    * Folder the file tools are rooted at, and where the preamble looks for
    * project instructions. Empty means "whatever the app was launched from",
    * which is rarely what anyone wants — the rail shows what it resolved to.
@@ -166,6 +177,7 @@ export function defaultDraft(): ConnectionDraft {
     approval: true,
     web: true,
     selfCompact: false,
+    knowledge: true,
     workspace: "",
     promptId: null,
   };
@@ -606,7 +618,8 @@ export function loadLastConnection(): ConnectionDraft | null {
       sidecar: parsed.sidecar !== false,
       approval: parsed.approval !== false,
       web: parsed.web !== false,
-      // The opposite reading to the four above, and deliberately: this one
+      knowledge: parsed.knowledge !== false,
+      // The opposite reading to the five above, and deliberately: this one
       // used to be on unconditionally with `tools`, so an absent value means
       // a draft written before there was a switch — which is exactly the
       // state the switch exists to get out of. Only an explicit true is on.

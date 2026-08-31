@@ -6,6 +6,7 @@
     refreshProviders,
     refreshSearchBackends,
     setPrefs,
+    useKnowledgeDir,
   } from "./state.svelte";
   import * as api from "./api";
   import {
@@ -100,6 +101,19 @@
     keyError = null;
     filter = "";
     addDraft = "";
+  }
+
+  /**
+   * The native folder dialog, opened at the current vault so "choose folder"
+   * starts where the user last was rather than at a project they are not
+   * thinking about.
+   */
+  async function pickKnowledge() {
+    const picked = await api.pickFolder(
+      "Choose a knowledge base folder",
+      app.knowledge?.dir,
+    );
+    if (picked) await useKnowledgeDir(picked);
   }
 
   function railVisible(kind: string): boolean {
@@ -261,13 +275,75 @@
         <span class="nav-label">{b.label}</span>
       </button>
     {/each}
+    <div class="nav-title search-title">Knowledge</div>
+    <button
+      class="nav-item"
+      class:active={selected === "knowledge"}
+      onclick={() => select("knowledge")}
+    >
+      <span class="dot" class:ok={!!app.knowledge}></span>
+      <span class="nav-label">Knowledge base</span>
+    </button>
     <div class="nav-spacer"></div>
     <button class="close" onclick={() => (app.showSettings = false)}>
       Close
     </button>
   </nav>
 
-  {#if searchSel}
+  {#if selected === "knowledge"}
+    <div class="pane">
+      <div class="pane-head">
+        <span class="pane-title">Knowledge base</span>
+        <span class="slug">{app.knowledge?.alias ?? "@kb"}</span>
+      </div>
+      <p class="note">
+        Your own notes, kept across every project and available in every
+        conversation — including one with no project open, which the project's
+        own notes can never be. The model reads, writes and searches them with
+        the file tools at <code>{app.knowledge?.alias ?? "@kb"}</code>, and an
+        index of the folder is in its system prompt. Notes link to each other
+        with <code>[[name]]</code>.
+      </p>
+
+      <section class="section">
+        <div class="section-title">Folder</div>
+        <div class="key-status">
+          {#if !app.knowledge}
+            No user config directory on this machine, so there is nowhere to
+            keep one.
+          {:else}
+            <code class="path">{app.knowledge.dir}</code>
+            <br />
+            {app.knowledge.notes} note{app.knowledge.notes === 1 ? "" : "s"}{app
+              .knowledge.is_default
+              ? ", the default location"
+              : ", set here rather than the default"}{app.knowledge.exists
+              ? ""
+              : " — not created yet; it appears with the first note"}.
+          {/if}
+        </div>
+        <!-- Repointing moves nothing, and saying so is the point: someone
+             aiming this at an existing Obsidian vault needs to know their
+             files stay where they are. -->
+        <p class="note small">
+          Point this at any folder — an existing Obsidian vault works as-is.
+          Nothing is moved or copied: the old folder and the new one are both
+          left exactly as they are.
+        </p>
+        <div class="key-form">
+          <button disabled={!app.knowledge} onclick={() => void pickKnowledge()}
+            >Choose folder…</button
+          >
+          <button
+            disabled={!app.knowledge || app.knowledge.is_default}
+            onclick={() => void useKnowledgeDir(null)}
+          >
+            Reset to default
+          </button>
+        </div>
+      </section>
+    </div>
+  {:else if searchSel}
     <div class="pane">
       <div class="pane-head">
         <span class="pane-title">{searchSel.label}</span>
@@ -636,6 +712,17 @@
   }
   .key-status {
     font-size: 0.78rem;
+  }
+  .note.small {
+    font-size: 0.74rem;
+  }
+  /* Wraps rather than ellipsizes: a folder you cannot read the end of is one
+     you cannot check you picked correctly. */
+  .path {
+    font-family: var(--mono);
+    font-size: 0.76rem;
+    color: var(--text);
+    overflow-wrap: anywhere;
   }
   .key-form,
   .add {
