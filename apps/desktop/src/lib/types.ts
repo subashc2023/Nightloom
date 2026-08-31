@@ -239,6 +239,16 @@ export interface ProjectInfo {
 export type NoteScope = "project" | "knowledge";
 
 /** Where the knowledge base is and what is in it. */
+/** What one dream did, flattened for a toast. `git` arrives as a finished
+ *  sentence — the frontend has nothing to add to it. */
+export interface DreamReport {
+  consolidated: number;
+  remaining: number;
+  interrupted: boolean;
+  git: string;
+  cost_usd: number | null;
+}
+
 export interface KnowledgeInfo {
   dir: string;
   /** How the model addresses it (`@kb`), so the UI shows the same string the

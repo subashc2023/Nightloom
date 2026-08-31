@@ -7,6 +7,7 @@ import type {
   ConnectArgs,
   ConnectResult,
   DocumentInput,
+  DreamReport,
   ImageInput,
   ImportSummary,
   KnowledgeInfo,
@@ -310,4 +311,33 @@ export function setKnowledgeDir(dir: string | null): Promise<KnowledgeInfo | nul
 /** The vault as notes and the links between them. */
 export function knowledgeGraph(): Promise<LinkGraph> {
   return invoke("knowledge_graph");
+}
+
+/** Observations awaiting the next dream. */
+export function dreamStatus(): Promise<number> {
+  return invoke("dream_status");
+}
+
+/**
+ * Run one consolidation pass over the observation log. Streams
+ * `dream-event`s (the `TurnEvent` shape, on its own channel) while it works,
+ * and resolves with what the pass did.
+ */
+export function dream(args: {
+  provider: string;
+  model?: string;
+  baseUrl?: string;
+  thinking?: string;
+}): Promise<DreamReport> {
+  return invoke("dream", {
+    provider: args.provider,
+    model: args.model,
+    baseUrl: args.baseUrl,
+    thinking: args.thinking,
+  });
+}
+
+/** Interrupt the in-flight dream; nothing is consumed. */
+export function cancelDream(): Promise<null> {
+  return invoke("cancel_dream");
 }

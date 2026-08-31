@@ -77,6 +77,15 @@ struct AppState {
     /// knob change, and each reconnect would otherwise spawn a second copy of
     /// every configured server and leak the first.
     mcp: tokio::sync::Mutex<Option<McpState>>,
+    /// One dream at a time. Taken with `try_lock`, so a second request while
+    /// one runs is refused with a sentence rather than queued behind a job
+    /// that spends money — a queue here would be a bill the user did not
+    /// mean to run up twice.
+    dreaming: tokio::sync::Mutex<()>,
+    /// Swapped per dream, the way `cancel` is swapped per turn. Separate
+    /// from it because a dream is not a turn: stopping the chat must not
+    /// stop the dream, and stopping the dream must not stop the chat.
+    dream_cancel: Arc<std::sync::Mutex<CancellationToken>>,
 }
 
 /// The registry, plus the project currently open.
@@ -608,6 +617,25 @@ fn build_chat(
         // quietly get a tools array — it changes what the provider is sent.
         if spec.self_compact {
             chat.enable_self_compaction();
+        }
+        // The memory inbox rides the knowledge switch: turning knowledge off
+        // turns the memory system off whole, vault and inbox alike. Gated on
+        // the config dir rather than the vault existing, because `remember`
+        // only appends — an observation is judged and filed by the dream
+        // pass, not here. Reviewers never get it: they are built from a spec
+        // whose `knowledge` was cleared.
+        if spec.knowledge.is_some()
+            && let Some(config) = project::config_dir()
+        {
+            let source = spec.project.as_ref().map(|p| p.name.clone()).or_else(|| {
+                spec.workspace
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+            });
+            chat.tools
+                .push(Box::new(nightloom_service::tools::Remember::new(
+                    config, source,
+                )));
         }
         // Subagents are built from this same spec, so they inherit the
         // workspace and the tool set. The engine strips their own `task` tool
@@ -1859,6 +1887,127 @@ async fn knowledge_graph() -> Result<nightloom_service::LinkGraph, String> {
         .map_err(|e| format!("cannot read the knowledge base: {e}"))
 }
 
+// ---- the dream -----------------------------------------------------------
+
+/// How many observations await the next dream — the badge over the Dream
+/// button. Cheap on purpose: one file read, no locks, no model, so the UI
+/// can ask after every turn.
+#[tauri::command]
+async fn dream_status() -> Result<usize, String> {
+    Ok(project::config_dir()
+        .map(|c| nightloom_service::observe::pending_count_in(&c))
+        .unwrap_or(0))
+}
+
+/// What one dream did, flattened for the UI. `git` is a finished sentence
+/// rather than an enum, because the frontend has nothing to add to it.
+#[derive(Serialize)]
+struct DreamReport {
+    consolidated: usize,
+    remaining: usize,
+    interrupted: bool,
+    git: String,
+    cost_usd: Option<f64>,
+}
+
+/// Run one consolidation pass over the observation log.
+///
+/// Takes its connection from the arguments rather than reusing the window's
+/// `Chat`: a dream is its own job with its own system prompt and tool set
+/// (see `service::dream::prepare`), and it works the same whichever engine
+/// the window is on — which is why this is deliberately *not* gated by
+/// `not_in_agent_mode`. Progress streams out as `dream-event`s, the same
+/// `TurnEvent` shape `turn-event` carries but on its own channel, so a
+/// running chat and a running dream cannot interleave in the transcript.
+#[tauri::command]
+async fn dream(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    provider: String,
+    model: Option<String>,
+    base_url: Option<String>,
+    thinking: Option<String>,
+) -> Result<DreamReport, String> {
+    let Some(config) = project::config_dir() else {
+        return Err("no user config directory — there is no observation log to consolidate".into());
+    };
+    let Some(vault) = nightloom_service::knowledge::vault_dir() else {
+        return Err("no user config directory — there is no vault to consolidate into".into());
+    };
+    let Ok(_running) = state.dreaming.try_lock() else {
+        return Err("a dream is already running".into());
+    };
+    // A first dream on a fresh install: an empty folder is a better start
+    // than a pass that opens by erroring on list_dir.
+    std::fs::create_dir_all(&vault).map_err(|e| e.to_string())?;
+
+    let kind: ProviderKind = provider.parse()?;
+    let thinking = match thinking {
+        Some(s) => s.parse::<Thinking>()?,
+        None => Thinking::Default,
+    };
+    let (provider, model) =
+        nightloom_service::connect(kind, model, credentials::provider_key(kind), base_url, None)
+            .map_err(|e| e.to_string())?;
+    let mut chat = Chat::new(provider, model);
+    chat.thinking = thinking;
+    chat.context_limit = nightloom_service::context_limit(kind, &chat.model);
+    chat.price = nightloom_service::price(kind, &chat.model);
+    nightloom_service::dream::prepare(&mut chat, &vault);
+
+    let cancel = CancellationToken::new();
+    *state.dream_cancel.lock().unwrap() = cancel.clone();
+    let emitter = app.clone();
+    let mut on_event = move |event: TurnEvent| {
+        let _ = emitter.emit("dream-event", &event);
+    };
+    let outcome = nightloom_service::dream::run(&chat, &vault, &config, &cancel, &mut on_event)
+        .await?
+        // Checked non-empty by the UI before offering the button; a race
+        // with a CLI dream is the only way here, and "nothing left" is its
+        // honest report.
+        .ok_or_else(|| "nothing left to consolidate".to_string())?;
+    Ok(DreamReport {
+        consolidated: outcome.consolidated,
+        remaining: outcome.remaining,
+        interrupted: outcome.interrupted,
+        git: dream_git_line(&outcome.git_before, &outcome.git_after),
+        cost_usd: outcome.cost_usd,
+    })
+}
+
+/// One sentence about rollback — the CLI's `print_git`, phrased for a toast.
+/// Both snapshots ran on the same folder, so `after` carries the story.
+fn dream_git_line(
+    before: &nightloom_service::dream::GitNote,
+    after: &nightloom_service::dream::GitNote,
+) -> String {
+    use nightloom_service::dream::GitNote;
+    if let GitNote::Failed(e) = before
+        && !matches!(after, GitNote::Failed(_))
+    {
+        return format!("pre-dream git snapshot failed: {e}");
+    }
+    match after {
+        GitNote::NotARepo => {
+            "the vault is not a git repository, so there is no rollback for this pass".into()
+        }
+        GitNote::Committed { hash } if hash.is_empty() => "vault committed".into(),
+        GitNote::Committed { hash } => format!("vault committed ({hash})"),
+        GitNote::Clean => "vault unchanged".into(),
+        GitNote::Failed(e) => format!("git snapshot failed: {e}"),
+    }
+}
+
+/// Interrupt the in-flight dream, if any. Separate from `cancel` because a
+/// dream is not a turn: the Stop button over the transcript must not kill a
+/// consolidation, and stopping a consolidation must not kill the reply the
+/// user is reading.
+#[tauri::command]
+fn cancel_dream(state: State<'_, AppState>) {
+    state.dream_cancel.lock().unwrap().cancel();
+}
+
 /// Show a folder in the OS file manager.
 ///
 /// The docspace is a real directory and its whole appeal is that it is: the
@@ -2178,6 +2327,8 @@ fn main() {
                 approval: Arc::new(AutoApprove::new(gate.clone())),
                 gate,
                 mcp: tokio::sync::Mutex::new(None),
+                dreaming: tokio::sync::Mutex::new(()),
+                dream_cancel: Arc::new(std::sync::Mutex::new(CancellationToken::new())),
             });
             // Last, and that ordering is load-bearing rather than tidiness:
             // the webview starts loading the moment the window exists and its
@@ -2228,6 +2379,9 @@ fn main() {
             knowledge_info,
             set_knowledge_dir,
             knowledge_graph,
+            dream_status,
+            dream,
+            cancel_dream,
             reveal,
         ])
         .run(tauri::generate_context!())

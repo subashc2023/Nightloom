@@ -206,6 +206,12 @@ export const app = $state({
    * that is false.
    */
   agentTurn: null as AgentTurnResult | null,
+  /** Observations awaiting the next dream — the badge on the Dream button. */
+  dreamPending: 0,
+  /** A dream is running; the button becomes its progress line. */
+  dreaming: false,
+  /** The dream's most recent tool call, for the running button's tooltip. */
+  dreamActivity: "",
   toasts: [] as { id: number; text: string }[],
 });
 
@@ -247,6 +253,12 @@ export async function init(): Promise<void> {
   initialized = true;
   await listen<TurnEvent>("turn-event", (e) => applyTurnEvent(e.payload));
   await listen<string>("turn-notice", (e) => addToast(e.payload));
+  // The dream's own channel: a running chat and a running dream must not
+  // interleave in the transcript, so its events never reach applyTurnEvent.
+  // All the panel wants from them is a sign of life.
+  await listen<TurnEvent>("dream-event", (e) => {
+    if (e.payload.type === "tool_call") app.dreamActivity = e.payload.name;
+  });
   await listen<ApprovalRequest>("tool-approval", (e) =>
     app.pendingApprovals.push(e.payload),
   );
@@ -280,6 +292,7 @@ export async function init(): Promise<void> {
   await refreshSessions();
   await refreshKnowledge();
   await refreshNotes();
+  await refreshDreamStatus();
   await autoConnect();
 }
 
@@ -325,6 +338,68 @@ export async function refreshKnowledge(): Promise<void> {
     app.knowledge = await api.knowledgeInfo();
   } catch {
     app.knowledge = null;
+  }
+}
+
+/** Re-count the memory inbox. Cheap: one file read on the backend. */
+export async function refreshDreamStatus(): Promise<void> {
+  try {
+    app.dreamPending = await api.dreamStatus();
+  } catch {
+    // No config dir reads as zero on the backend; anything else is not
+    // worth a toast for a badge.
+  }
+}
+
+/**
+ * Run one dream with the rail's current provider settings.
+ *
+ * The connection travels as arguments rather than reusing the window's chat:
+ * a dream is its own job with its own prompt and tool set, and it works the
+ * same whichever engine the window is on — except that the agent engine has
+ * no provider to lend it, which gets a sentence instead of a guess.
+ */
+export async function runDream(): Promise<void> {
+  if (app.dreaming) return;
+  const d = app.draft;
+  if (d.engine === "claude-code") {
+    addToast("dreaming runs on a provider API — pick a provider in the rail first");
+    return;
+  }
+  app.dreaming = true;
+  app.dreamActivity = "";
+  try {
+    const r = await api.dream({
+      provider: d.provider,
+      model: d.model || undefined,
+      baseUrl: d.baseUrl.trim() || undefined,
+      thinking: thinkingString(d),
+    });
+    addToast(
+      r.interrupted
+        ? "dream interrupted — nothing consumed; the same batch is offered next time"
+        : `dream: consolidated ${r.consolidated} observation${r.consolidated === 1 ? "" : "s"}` +
+            (r.remaining > 0 ? `, ${r.remaining} left for the next run` : "") +
+            ` — ${r.git}` +
+            (r.cost_usd != null ? ` ($${r.cost_usd.toFixed(4)})` : ""),
+    );
+  } catch (e) {
+    addToast(`dream failed: ${String(e)}`);
+  } finally {
+    app.dreaming = false;
+    app.dreamActivity = "";
+  }
+  // The pass writes notes and consumes the inbox; both surfaces follow.
+  await refreshNotes();
+  await refreshDreamStatus();
+}
+
+/** Interrupt the in-flight dream. Nothing is consumed; the batch returns. */
+export async function stopDream(): Promise<void> {
+  try {
+    await api.cancelDream();
+  } catch (e) {
+    addToast(String(e));
   }
 }
 
@@ -914,6 +989,8 @@ export async function send(
     // The turn may have written to the docspace, and the sidebar showing a
     // note the model just left is the visible half of "shared knowledge".
     void refreshNotes();
+    // And it may have remembered something; the Dream badge follows.
+    void refreshDreamStatus();
   }
 }
 

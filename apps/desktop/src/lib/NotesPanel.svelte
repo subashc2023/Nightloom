@@ -4,9 +4,11 @@
     addProject,
     deleteNote,
     revealFolder,
+    runDream,
     saveNote,
     showGraph,
     showNote,
+    stopDream,
   } from "./state.svelte";
   import type { Note, NoteScope } from "./types";
   import { relativeTime } from "./time";
@@ -129,6 +131,25 @@
     {:else}
       <button class="add" onclick={() => begin(scope)}>New note</button>
       {#if scope === "knowledge"}
+        <!-- The Dream button renders only with a backlog, the same rule as
+             the CLI's startup line: an inbox with nothing in it needs no
+             chrome, and a backlog the user cannot see is one that never
+             gets consolidated. -->
+        {#if app.dreaming}
+          <button
+            class="dream running"
+            title={app.dreamActivity
+              ? `dreaming — ${app.dreamActivity}`
+              : "dreaming…"}
+            onclick={() => void stopDream()}>dreaming… ✕</button
+          >
+        {:else if app.dreamPending > 0}
+          <button
+            class="dream"
+            title="Consolidate remembered observations into the vault"
+            onclick={() => void runDream()}>Dream · {app.dreamPending}</button
+          >
+        {/if}
         <button
           class="folder"
           title="Show the link graph"
@@ -335,6 +356,24 @@
   .add:hover {
     border-color: var(--accent);
     color: var(--accent);
+  }
+  .dream {
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--accent);
+    font-family: inherit;
+    font-size: 0.8rem;
+    padding: 0.35rem 0.55rem;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .dream:hover {
+    border-color: var(--accent);
+  }
+  .dream.running {
+    color: var(--dim);
+    font-style: italic;
   }
   .folder {
     background: transparent;

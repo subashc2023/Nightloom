@@ -64,8 +64,13 @@ integrative):
   automation, the trigger the evidence supports is a disjunction — backlog
   volume, or a compaction event (the moment raw history stops replaying) —
   not a wall clock.
-- **Desktop surface.** A Dream button and the pending count belong in the
-  rail; phase 2.
+- ~~**Desktop surface.**~~ Built (phase 2): the Notes panel's Knowledge bar
+  shows a `Dream · N` button when the inbox has a backlog (hidden at zero,
+  the CLI startup line's rule), running it streams `dream-event`s and ends
+  in a toast with the git line; `remember` rides the rail's knowledge
+  switch. The dream takes the rail's provider settings as arguments and is
+  available on either engine — the agent engine just needs a provider
+  picked first.
 - **Benchmarking on LoCoMo.** 6.4% of its answer key is wrong and its judge
   accepts ~63% of wrong-but-topical answers. The honest measurement is our
   own: consolidated vault vs. full transcripts vs. plain grep over raw logs.
