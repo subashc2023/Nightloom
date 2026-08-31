@@ -121,6 +121,7 @@ nightloom sessions --delete 3f2a
 | `--no-approval` (`--yolo`) | run tool calls without asking |
 | `--self-compact` | also offer `compact_context` |
 | `--no-web` `--no-review` `--no-mcp` | withhold a tool group |
+| `--no-knowledge` | withhold the vault — the `@kb` tree and its index |
 | `--bare` `--no-sidecar` `--system` | preamble and per-turn status block |
 | `--once` | one prompt, print the reply, exit |
 | `--resume` `--continue` `--log-dir` `--no-log` | session logs |
@@ -211,6 +212,7 @@ folder at all.
 ```text
 <workspace>/AGENTS.md                  instructions  (yours, usually committed)
 <workspace>/.agents/                   the docspace  (yours, committable)
+~/.nightloom/knowledge/                the vault     (yours, repointable)
 ~/.nightloom/projects/<id>/sessions/   the chats
 ```
 
@@ -226,6 +228,32 @@ just a directory the model can read and write. Notes reach it as an **index**
 `NIGHTLOOM_HOME` moves the home. The CLI reads the registry to find the
 project registered on the folder it was run in, so `nightloom --continue`
 resumes the conversation the desktop app was having there.
+
+### The knowledge vault
+
+The docspace is about the code in front of you. The **vault** is about you —
+what stays true after this folder is closed: a decision made two projects
+ago, a person, a technique. One vault, the same in every project *and in a
+chat with no project at all*, which is the case the docspace can never serve.
+
+It is a plain folder of markdown, reached by the same file tools as
+everything else under the alias `@kb/<name>` — no database, no retrieval
+layer, no new tool. `[[wikilinks]]` resolve by Obsidian's rule (path, else
+unique basename; ambiguity reported, never guessed), so pointing it at an
+existing Obsidian vault works as-is:
+
+```sh
+nightloom knowledge                          # where it is
+nightloom knowledge --set ~/Documents/Vault  # e.g. an Obsidian vault
+nightloom knowledge --reset                  # back to ~/.nightloom/knowledge
+```
+
+Repointing writes a path and moves nothing. The model gets an **index** —
+grouped by folder with exact counts, never contents — and a bare `grep`
+still searches the workspace only, so reaching into the vault is always
+explicit. The desktop lists both stores in the Notes panel, renders links
+and backlinks, and draws the link graph; the CLI names the vault at startup
+and `--no-knowledge` withholds it for one run.
 
 ### Importing from claude.ai
 
@@ -256,7 +284,8 @@ cargo tauri build                        # installer bundle
 ```
 
 Streaming chat with collapsible thinking, tool chips, inline approval prompts,
-and image or PDF attachments by paste or drop. Projects on the left with a
+math rendering (all four TeX delimiters, guarded so `$5` stays money), and
+image or PDF attachments by paste or drop. Projects on the left with a
 Chats/Notes tab strip; a right-hand rail holds the connection knobs, the
 model's task list, and a context panel that itemizes the wire with a
 remove/restore button per block. Settings manages per-provider keys, live
