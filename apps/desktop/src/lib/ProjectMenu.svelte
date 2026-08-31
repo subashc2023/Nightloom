@@ -125,9 +125,10 @@
     </button>
   {/if}
   <p class="note">
-    A project is a folder. Its chats live in <code>.nightloom/sessions</code>,
-    its shared notes in <code>.nightloom/notes</code>, and its standing
-    instructions in <code>AGENTS.md</code> at the top.
+    A project is a folder. Its shared notes live in <code>.agents</code> inside
+    it and its standing instructions in <code>AGENTS.md</code> at the top — both
+    yours to commit. The chats are kept outside, in
+    <code>~/.nightloom/projects</code>.
   </p>
 </div>
 

@@ -60,6 +60,16 @@ a slow early request cannot overwrite the results of a fast later one, and it
 re-runs when the open project changes — the directory it searches follows the
 project, and rows from the folder you just left are rows that no longer list.
 
+`list_sessions` and `search_sessions` both go through the local `blocking`
+helper. A Tauri command is a future on the shared runtime, and these two walk a
+directory of logs that an import can leave thousands of files deep, so running
+them inline held a thread a streaming turn was also using. `ProjectInfo` asks
+`store::count` for its chat count rather than `store::list(dir).len()`, which
+read every log named in a listing to arrive at a number `read_dir` already had —
+on the rail-refresh path, and once per project in the picker. See
+[service-data.md](service-data.md#listing-is-a-cache-not-an-index) for what
+`store` does now and why the cached listing is a cache rather than an index.
+
 ## Agent mode (`connect_agent` / `send_agent`)
 
 The Claude Code engine, reached from the rail's Provider / Claude Code switch:

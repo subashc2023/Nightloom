@@ -18,7 +18,7 @@ over it.
 
 ```sh
 cargo build                      # build workspace
-cargo test                       # all tests (428 at last count)
+cargo test                       # all tests (535 at last count)
 cargo test -p nightloom-core     # one crate
 cargo clippy --workspace         # must be clean
 cargo fmt

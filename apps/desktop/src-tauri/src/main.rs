@@ -145,9 +145,11 @@ impl ProjectInfo {
                 .map(|r| r.to_string_lossy().into_owned()),
             notes_dir: project.notes_dir().to_string_lossy().into_owned(),
             notes: project::list_notes(&project.notes_dir()).len(),
-            chats: store::list(&project.session_dir())
-                .map(|s| s.len())
-                .unwrap_or(0),
+            // Counted, not listed. This runs on every rail refresh and once
+            // per project in the project picker, and `list` reads every log
+            // it names — a hundred megabytes, after an import, to learn a
+            // number that `read_dir` already knows.
+            chats: store::count(&project.session_dir()),
             exists: project.exists(),
             last_opened: project.last_opened.to_rfc3339(),
         }
@@ -349,6 +351,24 @@ struct AgentInfo {
 struct ReviewerInfo {
     name: String,
     model: String,
+}
+
+/// Run synchronous filesystem work off the runtime, reporting its error as a
+/// string the way every command here does.
+///
+/// A Tauri command is a future on the shared runtime: work that blocks in one
+/// blocks a thread that a streaming turn is also using. Anything that walks a
+/// directory of session logs belongs here.
+async fn blocking<T, E, F>(f: F) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, E> + Send + 'static,
+    T: Send + 'static,
+    E: std::fmt::Display + Send + 'static,
+{
+    match tokio::task::spawn_blocking(f).await {
+        Ok(out) => out.map_err(|e| e.to_string()),
+        Err(e) => Err(format!("the file system task did not finish: {e}")),
+    }
 }
 
 /// Every provider Nightloom knows, with whether credentials are present
@@ -1033,9 +1053,14 @@ async fn agent_version(binary: &str) -> Result<(String, Option<String>), String>
 }
 
 /// The open project's chats, or the unfiled ones when none is open.
+///
+/// On the blocking pool, like the search below it: both walk a directory of
+/// logs, and an imported history is thousands of them. Holding a runtime
+/// thread for that stalls whatever turn is streaming into the window.
 #[tauri::command]
 async fn list_sessions(state: State<'_, AppState>) -> Result<Vec<SessionSummary>, String> {
-    store::list(&state.log_dir().await).map_err(|e| e.to_string())
+    let dir = state.log_dir().await;
+    blocking(move || store::list(&dir)).await
 }
 
 /// The same chats, filtered to the ones that mention `query`.
@@ -1049,7 +1074,8 @@ async fn search_sessions(
     state: State<'_, AppState>,
     query: String,
 ) -> Result<Vec<SessionMatch>, String> {
-    store::search(&state.log_dir().await, &query).map_err(|e| e.to_string())
+    let dir = state.log_dir().await;
+    blocking(move || store::search(&dir, &query)).await
 }
 
 /// Rename a session, recording a `Title` event on its log.
@@ -2003,7 +2029,7 @@ fn dream_git_line(
         return format!("pre-dream git snapshot failed: {e}");
     }
     // What the pre-dream snapshot committed was the user's own uncommitted
-    // work â€” necessary, so that reverting the dream does not take an edit of
+    // work — necessary, so that reverting the dream does not take an edit of
     // theirs with it, and worth saying rather than leaving to be found in
     // `git log`.
     let swept = match before {
@@ -2114,6 +2140,12 @@ fn announce_migration(app: &AppHandle, project: &Project) {
 /// job is "move what is not already there". Silent, because it runs before a
 /// window exists to say anything in, and because a user who never used the
 /// old location has nothing to be told.
+///
+/// `store`'s cached listing rides along with everything else, which is both
+/// harmless and worth having: a move keeps each log's size and mtime, so the
+/// entries still validate at the new address and a thousand imported chats do
+/// not all have to be read again on the first listing after the move. If
+/// anything about that fails to hold, the listing rebuilds itself.
 fn adopt_unfiled(from: &Path, to: &Path) {
     let Ok(entries) = std::fs::read_dir(from) else {
         return;

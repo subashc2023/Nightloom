@@ -439,6 +439,75 @@ then points somewhere else in the string the caller is about to slice.
 3,000 characters in would not appear in a leading excerpt and a result that does
 not show why it matched reads as a false positive.
 
+### Listing is a cache, not an index
+
+`list` used to read every byte of every log: on a corpus of 1,800 imported
+chats (106 MB) a warm listing took **237 ms**, and it ran on every rail
+refresh, because `ProjectInfo` reached for `list(dir).len()` to fill in a
+chat count. It now takes **3.8 ms**. Four changes, in the order they matter:
+
+- **`count`, not `list().len()`.** A project row wants a number `read_dir`
+  already knows. Nothing else in that call ever needed a log opened.
+- **`log_files` takes size and mtime off the `DirEntry`.** On Windows the
+  directory scan already carries both, so `entry.metadata()` is free where
+  `fs::metadata(&path)` re-opens the file — measured at 34 ms of the 40 ms
+  that remained once the reads were gone, and more than everything else in
+  `list` put together. `latest` got the same win for nothing.
+- **`Peek`, a three-variant mirror of `SessionEvent`,** and `LISTED`, which
+  matches the raw line before any parsing. Deserializing an internally-tagged
+  enum buffers the whole object even to throw it away, so without the
+  prefilter a 60 KB tool result costs 60 KB of parse to learn it is not a
+  title. This is the only part coupled to the writer — it needs compact JSON —
+  and `a_listing_reads_the_tags_the_writer_actually_emits` pins it against
+  `Session`'s own output rather than against a literal.
+- **`Listing`, a `.listing.json` beside the logs.**
+
+The last is a **cache and deliberately not an index**, and the distinction is
+the whole design:
+
+- The logs stay the only source of truth. Every entry is re-validated against
+  its file's size and mtime on each listing, and *anything* unexpected —
+  missing file, wrong version, unparseable JSON, a size that shrank, a clock
+  that went backwards — falls through to reading the log. The worst a stale or
+  corrupt cache can do is cost one rescan.
+- An index that writers maintained could instead be **wrong**, and the way it
+  would show is a session that exists not appearing in the picker. That is the
+  worst available bug in a resume picker, and it does not self-heal.
+- It would also have more than one writer, one of them a different process:
+  `Session::record` appends, but the importer writes its logs directly and
+  backdates them with `stamp`, never touching `Session` — and the CLI and the
+  desktop write the same directories at once. That means a lock and a
+  crash-consistency story between the log append and the index update, which
+  is exactly the complexity `record` was simplified away from.
+
+It is cheap because logs only ever grow: `id` and `first_user` fix at their
+first occurrence, `user_turns` counts upward, `title` is latest-wins. So an
+entry carries a **byte offset** and a log that gained a turn costs the bytes it
+gained. The offset stops at the last newline, so a log being appended to right
+now is not half-counted and the torn line is re-read next time — the same rule
+as the dream's watermark, for the same reason. Writes go through a
+process-named temp file and a rename, so two shells listing at once lose an
+update rather than a file, and a directory that cannot be written to still
+lists.
+
+**One bad row costs the row, not the listing.** A picker that shows nothing is
+worse than one that shows all but one chat, and both readers used to fail
+whole over a single file: a log deleted between the directory scan and the
+open — one window deleting a chat while another lists — took the listing down
+with it, and so did a *directory* named `something.jsonl`, which fails to open
+with a different error on every platform (`IsADirectory` on Linux, access
+denied on Windows). `skip_deleted` now drops a row whose file is `NotFound`,
+`log_files` skips directories, and `log_paths` makes the same not-a-directory
+test from the entry type so `count` cannot disagree with the `list` it labels.
+Every *other* error still propagates: quietly returning a short list is the
+silent-truncation bug, not the fix for it.
+
+`search` is not cached and not cacheable this way: it needs the text a summary
+throws away. What would help it is a full-text index, which is a much larger
+thing — and search is something a user asks for, where listing happens on its
+own. Both now read bytes rather than `read_to_string`, so one byte that is not
+UTF-8 costs that line instead of returning an empty picker.
+
 ## `lib.rs::connect`
 
 Builds a provider (explicit `api_key` wins over env), resolves the model, wraps
