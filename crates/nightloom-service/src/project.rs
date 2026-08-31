@@ -743,6 +743,9 @@ fn walk_counts(
         if *seen >= COUNT_LIMIT {
             return false;
         }
+        if hidden(&entry) {
+            continue;
+        }
         let path = entry.path();
         let Ok(meta) = entry.metadata() else { continue };
         if meta.is_dir() {
@@ -768,6 +771,20 @@ fn walk_counts(
     true
 }
 
+/// Whether a directory entry is machinery rather than a note.
+///
+/// Dot-entries are excluded from both walks: `.git` once the vault is under
+/// version control (which the dream pass itself recommends), `.obsidian` and
+/// `.trash` in a real Obsidian vault, `.DS_Store`. Found on a screenshot, not
+/// in review — the first `git init`-ed vault listed forty entries of git
+/// plumbing as notes, and an Obsidian vault had been quietly indexing its
+/// workspace config into the system prompt all along. The file tools can
+/// still *reach* a hidden path when asked by name; it is the index and the
+/// counts that must not present machinery as knowledge.
+fn hidden(entry: &fs::DirEntry) -> bool {
+    entry.file_name().to_string_lossy().starts_with('.')
+}
+
 fn walk_notes(base: &Path, dir: &Path, depth: usize, out: &mut Vec<Note>) {
     if depth > NOTE_DEPTH || out.len() >= NOTE_LIMIT {
         return;
@@ -776,6 +793,9 @@ fn walk_notes(base: &Path, dir: &Path, depth: usize, out: &mut Vec<Note>) {
         return;
     };
     for entry in entries.flatten() {
+        if hidden(&entry) {
+            continue;
+        }
         let path = entry.path();
         let Ok(meta) = entry.metadata() else { continue };
         if meta.is_dir() {
@@ -1155,5 +1175,30 @@ mod tests {
         assert!(list_notes(&dir.join("notes")).is_empty());
         // Nothing was created just by asking.
         assert!(!dir.join("notes").exists());
+    }
+
+    /// A vault under version control, or an Obsidian vault with its config
+    /// folder, must not have its machinery listed or counted as notes. Found
+    /// live: the first `git init`-ed vault listed forty entries of git
+    /// plumbing the moment the dream pass's own advice was followed.
+    #[test]
+    fn dot_entries_are_machinery_not_notes() {
+        let dir = temp_dir("dotted");
+        let notes = dir.join("notes");
+        write_note(&notes, "real.md", "# A note\n").unwrap();
+        fs::create_dir_all(notes.join(".git/hooks")).unwrap();
+        fs::write(notes.join(".git/config"), "[core]\n").unwrap();
+        fs::write(notes.join(".git/hooks/pre-commit"), "#!/bin/sh\n").unwrap();
+        fs::create_dir_all(notes.join(".obsidian")).unwrap();
+        fs::write(notes.join(".obsidian/workspace.json"), "{}\n").unwrap();
+        fs::write(notes.join(".DS_Store"), "junk").unwrap();
+
+        let listed = list_notes(&notes);
+        let names: Vec<&str> = listed.iter().map(|n| n.name.as_str()).collect();
+        assert_eq!(names, vec!["real.md"]);
+
+        let (counts, exhaustive) = note_counts(&notes);
+        assert!(exhaustive);
+        assert_eq!(counts.values().sum::<usize>(), 1);
     }
 }
