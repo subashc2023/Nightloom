@@ -22,7 +22,11 @@ const EDIT_FILE_DESC: &str = "Replace an exact string in a file. This is the pre
      character for character including indentation; the match is literal, not a regex or a \
      fuzzy match. old_string must identify exactly one place in the file, so include enough \
      surrounding lines to make it unique — a bare identifier or a lone closing brace will not \
-     be. Set replace_all when you intend to change every occurrence, such as renaming a symbol.";
+     be. Set replace_all when you intend to change every occurrence, such as renaming a symbol. \
+     The match stays a literal substring rather than a whole word, so a bare name also rewrites \
+     every longer name that contains it — renaming `read` this way would also hit `read_all` and \
+     `unread`. Include the characters that bound the name in the code so a rename cannot reach a \
+     symbol you did not mean.";
 
 const LIST_DIR_DESC: &str = "List the entries of a directory, one per line, with directories \
      marked by a trailing '/'. Use this to orient yourself in an unfamiliar part of the tree. \
