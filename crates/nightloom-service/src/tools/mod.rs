@@ -23,6 +23,7 @@
 
 mod compact;
 mod files;
+mod remember;
 mod review;
 mod root;
 mod search;
@@ -32,6 +33,7 @@ mod todo;
 mod web;
 
 pub use compact::{CompactContext, CompactSignal};
+pub use remember::Remember;
 pub use review::{Review, Reviewer, ReviewerSpec, bench};
 pub use root::{Root, VAULT_ALIAS};
 pub use task::{Subagent, TurnHandle};
@@ -230,6 +232,11 @@ mod tests {
         // Added by the shells rather than by `builtin`, and the two whose
         // classification is least obvious: fetching a page reads like a read.
         tools.extend(web_tools(|_| Some("k".into())));
+        // Also shell-added. `Session` for a durable write deserves its row
+        // here more than most: the argument (the inbox is quarantine, the
+        // dream pass is the gate) lives on the impl, and this pin is what
+        // makes revisiting it deliberate.
+        tools.push(Box::new(Remember::new(std::env::temp_dir(), None)));
         let classified: Vec<(String, Effect)> =
             tools.iter().map(|t| (t.def().name, t.effect())).collect();
         assert_eq!(
@@ -247,6 +254,7 @@ mod tests {
                 ("compact_context", Effect::Session),
                 ("web_fetch", Effect::Mutating),
                 ("web_search", Effect::Mutating),
+                ("remember", Effect::Session),
             ]
             .map(|(name, effect)| (name.to_string(), effect))
         );

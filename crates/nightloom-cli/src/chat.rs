@@ -226,6 +226,17 @@ fn build_chat(args: &ChatArgs, mcp_tools: &[Arc<dyn Tool>]) -> Result<Chat> {
                 .iter()
                 .map(|t| Box::new(t.clone()) as Box<dyn Tool>),
         );
+        // The memory inbox rides the knowledge flag: `--no-knowledge` turns
+        // the memory system off whole, vault and inbox alike. `remember`
+        // itself needs no vault — an observation is judged and filed by the
+        // dream pass, not here — so it is gated on the config dir instead.
+        if !args.no_knowledge
+            && let Some(config) = project::config_dir()
+        {
+            let source = cwd.file_name().map(|n| n.to_string_lossy().into_owned());
+            chat.tools
+                .push(Box::new(tools::Remember::new(config, source)));
+        }
         chat.approver = approver(args);
         // Off unless asked for. It is still a tool, so it needs --tools to
         // be on at all — a run that asked for no tools should not quietly get
@@ -954,6 +965,20 @@ pub async fn run(args: ChatArgs) -> Result<()> {
                 None => "knowledge: off — no user config directory to keep a vault in".to_string(),
             }
         );
+        // The nudge that makes dreaming periodic without making it automatic:
+        // an unattended pass spends real money, so the user runs it — but
+        // only if something tells them there is a backlog to run it on.
+        if !args.no_knowledge
+            && let Some(config) = project::config_dir()
+        {
+            let pending = nightloom_service::observe::pending_count_in(&config);
+            if pending > 0 {
+                println!(
+                    "{DIM}memory: {pending} observation{} awaiting `nightloom dream`{RESET}",
+                    if pending == 1 { "" } else { "s" }
+                );
+            }
+        }
     }
     if args.tools && !args.no_web {
         // Said out loud because the failure is otherwise invisible: a model

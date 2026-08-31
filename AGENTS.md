@@ -119,6 +119,18 @@ The event log is the source of truth. The provider message list
   vault was not reached. A glob pattern matches the base-relative path *or* the
   reported one, because feeding back the `@kb/` prefix the tool had just
   printed used to return zero, silently.
+- **Memory is an inbox plus a dream, and only the dream writes the vault's
+  consolidated notes.** Sessions capture through the `remember` tool — an
+  append to `~/.nightloom/observations.jsonl`, typed by provenance
+  (`user_stated`/`inferred`/`external`), no model call on the write path —
+  and `nightloom dream` is the batch pass that files, supersedes and
+  abstracts into the vault, under git when the vault is a repo. The inbox is
+  never read back into a conversation and never pruned; the watermark
+  (`dream.json`) is a byte offset that advances only on an uninterrupted
+  pass. Don't add a consolidation step to the write path, don't let the
+  dream delete notes (supersession is strikethrough-with-date), and don't
+  auto-schedule it — it spends money unattended. The design and the
+  research behind it: `.agents/dreaming.md`.
 - **Turn semantics live in two files** and usually change together:
   `service/turn.rs` and `core/session.rs`. A shell that seems to need its own
   loop logic is a sign something belongs in `turn.rs`.

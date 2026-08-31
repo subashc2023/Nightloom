@@ -1,5 +1,6 @@
 mod agent;
 mod chat;
+mod dream;
 mod eval;
 mod import;
 mod keys;
@@ -42,6 +43,8 @@ enum Command {
     Keys(keys::KeysArgs),
     /// Where your knowledge base is, and where it should be
     Knowledge(knowledge::KnowledgeArgs),
+    /// Consolidate remembered observations into the knowledge vault
+    Dream(dream::DreamArgs),
 }
 
 #[tokio::main]
@@ -54,6 +57,7 @@ async fn main() -> Result<()> {
         Some(Command::Import(args)) => import::run(args),
         Some(Command::Keys(args)) => keys::run(args),
         Some(Command::Knowledge(args)) => knowledge::run(args),
+        Some(Command::Dream(args)) => dream::run(args).await,
         // `--agent` swaps the engine, not the provider: Claude Code owns
         // the loop and the tools, and Nightloom renders what it streams.
         None if cli.chat.agent.is_some() => agent::run(cli.chat).await,

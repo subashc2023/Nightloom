@@ -147,9 +147,9 @@ invalid on replay against every provider.
 ## Tools
 
 `--tools` enables `read_file`, `write_file`, `edit_file`, `list_dir`, `glob`,
-`grep`, `bash`, `current_time`, `todo_write`, `web_fetch`, `web_search`,
-`task` (subagents) and `review` (a second opinion from another vendor).
-`--self-compact` adds `compact_context`.
+`grep`, `bash`, `current_time`, `todo_write`, `remember`, `web_fetch`,
+`web_search`, `task` (subagents) and `review` (a second opinion from another
+vendor). `--self-compact` adds `compact_context`.
 
 Every tool declares an `Effect` — `ReadOnly`, `Session` or `Mutating` — and
 **the default is `Mutating`**. Anything mutating asks first:
@@ -254,6 +254,30 @@ still searches the workspace only, so reaching into the vault is always
 explicit. The desktop lists both stores in the Notes panel, renders links
 and backlinks, and draws the link graph; the CLI names the vault at startup
 and `--no-knowledge` withholds it for one run.
+
+### Remembering and dreaming
+
+During any chat the model can `remember` — one observation, appended to
+`~/.nightloom/observations.jsonl` with a timestamp and a provenance type
+(the user said it / the model inferred it / it came from fetched content).
+Nothing reads that inbox back into a conversation; it is evidence, not
+memory.
+
+```sh
+nightloom dream --dry-run   # what's pending; spends nothing
+nightloom dream             # consolidate the inbox into the vault
+```
+
+The dream is the only writer of consolidated notes: it files each durable
+observation into the note it belongs in, supersedes contradicted claims
+(struck through with a date — never erased), links what relates, and steps
+back for conclusions no single observation states. If the vault is a git
+repository it commits before and after, so `git log -p` is the audit trail
+and revert is free. The raw log is never pruned, a failed pass consumes
+nothing, and fetched content is never promoted past attribution — that is
+the poisoning defense. Deliberately manual: an unattended pass spends real
+money, so the CLI just tells you at startup how many observations are
+waiting.
 
 ### Importing from claude.ai
 

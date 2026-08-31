@@ -10,8 +10,10 @@
 pub mod agent;
 pub mod approval;
 pub mod credentials;
+pub mod dream;
 pub mod import;
 pub mod knowledge;
+pub mod observe;
 pub mod project;
 pub mod prompt;
 pub mod sidecar;
