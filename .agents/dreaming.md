@@ -77,9 +77,13 @@ integrative):
   switch. The dream takes the rail's provider settings as arguments and is
   available on either engine — the agent engine just needs a provider
   picked first.
-- **Benchmarking on LoCoMo.** 6.4% of its answer key is wrong and its judge
-  accepts ~63% of wrong-but-topical answers. The honest measurement is our
-  own: consolidated vault vs. full transcripts vs. plain grep over raw logs.
+- ~~**Benchmarking on LoCoMo.**~~ Measured (2026-08-30), but not on LoCoMo —
+  6.4% of its answer key is wrong and its judge accepts ~63% of
+  wrong-but-topical answers, so the honest measurement was our own:
+  consolidated vault vs. full transcripts vs. plain grep over raw logs. See
+  the retrieval bench below. Headline: the vault's value at this scale is
+  **attribution and synthesis, not compression** — raw logs lose exactly the
+  questions where the answer lives in no single greppable line.
 
 ## The dream-model bench (2026-08-30)
 
@@ -114,6 +118,72 @@ style note — plausible pedagogy, but not in any observation.
 Fixture and all eight vault diffs were under the session's temp dir
 (`dreambench/`); the method is reproducible from this note — seed the same
 traps, `git log -p` each vault, judge against the instruction.
+
+## The retrieval bench (2026-08-30)
+
+Does the consolidated vault actually make answers better? Three conditions
+over one corpus: **(a) vault** — tools plus the dreamed knowledge vault,
+empty workspace; **(b) full context** — every transcript inline in the
+prompt, no tools; **(c) raw logs** — tools plus the session JSONL in the
+workspace, no vault, one line saying where the logs are.
+
+The corpus: 10 synthetic sessions in Nightloom's real JSONL shape (tool
+noise included), two fictional projects over four months. From them, 15
+observations at deliberately ~85% capture — one fact (a grafana URL,
+mentioned as an aside) exists only in a transcript, because capture loss is
+part of what is being measured. The vault was built by a real dream pass
+(deepseek-v4-flash, $0.0018). 12 questions with a written key: 4 recall, 2
+supersession, 1 temporal, 1 synthesis, 1 preference, 1 uncaptured, 2 absent
+(the correct answer is "not recorded"). Two answering models, 72 calls,
+~$0.33 total.
+
+| condition | haiku | deepseek | $/12q (haiku) | $/12q (ds) | wall (haiku/ds) |
+|---|---|---|---|---|---|
+| (a) vault | 11/12 | 11/12 | $0.125 | $0.0045 | 31s / 115s |
+| (b) full context | **12/12** | **12/12** | $0.021 | $0.0012 | 16s / 50s |
+| (c) raw logs | 10/12 | 11/12 | $0.177 | $0.0056 | 62s / 242s |
+
+What the misses were is the finding; the totals alone would mislead.
+
+- **Full context wins at toy scale — and only exists at toy scale.** The
+  whole corpus renders to 4.8 KB, so (b) is both best and cheapest here. Its
+  cost is linear in history and it stops existing past the context window;
+  the vault's per-question cost is flat (index + one targeted note read)
+  regardless of how many months sit behind it. A real account export was
+  1,823 conversations.
+- **The vault's one miss is capture loss, and it failed honestly.** Both
+  models answered the uncaptured-grafana question "not recorded" from the
+  vault — no hallucination, just a fact `remember` never wrote down. The
+  design's real exposure is the write side, not the read side; it argues for
+  generous capture, since the dream is the filter anyway.
+- **Raw logs fail on attribution, not string retrieval.** Haiku's first
+  move was `grep -l "lanternfish"` — which matched 3 of the 6 lanternfish
+  sessions, because conversations don't say their project's name out loud.
+  Both of haiku's (c) misses trace to that one wrong narrowing. The dream
+  *filing* sessions under `lanternfish/` supplies exactly the attribution
+  the raw logs lack. Consolidation's measured value here is organization,
+  not compression.
+- **Synthesis is where raw logs consistently drop.** Both models' (c) runs
+  missed the recurring-failure question (three backfill OOMs, each after a
+  batch-size change — stated nowhere as one fact); both (a) runs answered
+  it in a single read, because the dream had already written the incident
+  table. Even deepseek's stronger search — it found the grafana aside and
+  reconstructed all three incidents *when asked about batch size directly*
+  — read the same three incidents as one-plus-an-unrelated-pool-bug when
+  the question demanded assembly.
+- **Zero hallucinations in 72 answers.** Every miss was an honest "not
+  recorded"; both absent probes (Kafka, an email address) came back correct
+  in all six condition-model cells.
+- **The vault also beats raw logs on cost and latency** ($0.125 vs $0.177,
+  31s vs 62s on haiku; 2–4x on deepseek), by replacing grep spelunking with
+  one index lookup and one read.
+- One wart, consistent with the dream bench's caution: deepseek-as-answerer
+  once cited a vault note's date as 2025 where the note says 2026 — small
+  details are where it slips.
+
+The corpus, runner and all 72 answer files were under the session's temp
+dir (`membench/`); reproducible from this note — same traps, same three
+conditions, grade against a written key, never a model judge.
 
 Related: [[../CLAUDE.md]] (knowledge vault sections), `crates/nightloom-service/src/observe.rs`,
 `crates/nightloom-service/src/dream.rs`, `crates/nightloom-service/src/tools/remember.rs`.
