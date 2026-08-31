@@ -11,7 +11,7 @@
 //! sessions replay without last week's clock or a task list that has since
 //! moved on.
 
-use nightloom_core::{Session, SessionEvent, TodoStatus};
+use nightloom_core::{Session, TodoStatus};
 
 /// One contributor to the sidecar. Returning `None` omits the part entirely
 /// — an empty task list should take up no tokens, not print "(none)".
@@ -91,14 +91,17 @@ impl SidecarPart for Clock {
 /// what the model then produced is very close to what the next request will
 /// bill as input. That beats summing every turn's usage, which double-counts
 /// the whole prefix on each round.
+///
+/// Which turn counts is [`Session::context_usage`]'s to decide, because the
+/// answer is a projection off the log like any other: a rewound turn and
+/// anything before a compaction are not on the wire, and reading them was how
+/// a freshly compacted conversation got told its window was still nearly full.
+/// Nothing is rendered for the one turn where there is no honest figure.
 pub struct ContextGauge;
 
 impl SidecarPart for ContextGauge {
     fn render(&self, ctx: &SidecarContext<'_>) -> Option<String> {
-        let usage = ctx.session.events().iter().rev().find_map(|e| match e {
-            SessionEvent::AssistantMessage { usage, .. } => Some(*usage),
-            _ => None,
-        })?;
+        let usage = ctx.session.context_usage()?;
         let used = usage.input_tokens + usage.output_tokens;
         if used == 0 {
             return None;
@@ -193,6 +196,56 @@ mod tests {
         let out = ContextGauge.render(&ctx(&session, Some(200_000))).unwrap();
         assert!(out.contains("compact_context"), "{out}");
         assert!(out.contains("natural stopping point"), "{out}");
+    }
+
+    #[test]
+    fn a_compaction_ends_the_gauge_rather_than_carrying_the_old_number_over() {
+        // Everything before a `Compaction` is off the wire, so reading a
+        // usage figure from the far side of one described a conversation that
+        // no longer existed: the turn right after a compaction was told its
+        // window was 90% full, and the advisory that number triggers asked the
+        // model to compact what it had just compacted. There is no honest
+        // estimate until the next reply reports its own, so the gauge says
+        // nothing for exactly one turn.
+        let mut session = session_at(COMPACT_ADVISORY_PCT + 5, 200_000);
+        assert!(ContextGauge.render(&ctx(&session, Some(200_000))).is_some());
+
+        session.record_compaction("a summary of everything above");
+        assert!(
+            ContextGauge.render(&ctx(&session, Some(200_000))).is_none(),
+            "the pre-compaction window was still being reported"
+        );
+
+        // And it comes back on its own, from the first turn to report usage
+        // against the compacted conversation.
+        session.record_user("what now");
+        session.record_assistant(
+            "test-model",
+            vec![ContentBlock::Text { text: "a".into() }],
+            None,
+            Usage {
+                input_tokens: 4_000,
+                output_tokens: 0,
+                reasoning_tokens: None,
+                ..Default::default()
+            },
+        );
+        let out = ContextGauge.render(&ctx(&session, Some(200_000))).unwrap();
+        assert!(
+            out.starts_with("context: ~4000 of 200000 tokens (2%)"),
+            "{out}"
+        );
+        assert!(!out.contains("compact_context"), "{out}");
+    }
+
+    #[test]
+    fn a_rewound_turn_does_not_set_the_gauge() {
+        // A superseded turn is not on the wire either, and its usage described
+        // a request that is no longer being made.
+        let mut session = session_at(COMPACT_ADVISORY_PCT + 5, 200_000);
+        // Event 0 is the session's creation; the turn starts at 1.
+        session.rewind(1).unwrap();
+        assert!(ContextGauge.render(&ctx(&session, Some(200_000))).is_none());
     }
 
     /// The threshold is proportional, so a big window is not compacted at a

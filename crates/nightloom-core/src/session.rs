@@ -442,6 +442,14 @@ fn elide_assistant(blocks: &[ContentBlock], index: usize) -> Vec<SourcedBlock> {
             ContentBlock::Text { text } | ContentBlock::Thinking { text, .. } => {
                 dropped += estimate_tokens(text);
             }
+            // `RedactedThinking` goes too, and is not counted: its payload is
+            // an opaque blob whose length says nothing about how many tokens
+            // it stands for, and a size the user cannot act on is worse in the
+            // marker than absent from it. Dropping it is safe on the same
+            // ground as dropping thinking — a signature is only required
+            // *within* the turn that produced it, and an elision only applies
+            // to a round that has already closed.
+            ContentBlock::RedactedThinking { .. } => {}
             _ => {}
         }
     }
@@ -530,11 +538,43 @@ impl LoadReport {
     }
 }
 
+/// The point at which a session stopped reaching its log, and why.
+///
+/// A write failure is not allowed to be a gap. `Rewind` and `Elide` name their
+/// targets by index, so a log missing one event in the middle renumbers every
+/// event after it and re-aims every marker recorded since at a different turn —
+/// the same quiet corruption [`SessionEvent::Unknown`] holds its place to
+/// prevent, arriving instead through the error path. So the first failed append
+/// seals the log: what is on disk stays a correctly numbered *prefix* of the
+/// conversation, which is the recoverable half of a bad situation, and the
+/// turns after it live in memory for as long as the process does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WriteFailure {
+    /// Index of the first event that did not reach the log. Everything before
+    /// it is on disk, at the index it has in memory.
+    pub from_event: usize,
+    /// What the filesystem said.
+    pub error: String,
+}
+
+impl WriteFailure {
+    /// One line for a shell to show. Says what stopped rather than what
+    /// failed, because a stderr line no GUI has is how this went unnoticed.
+    pub fn summary(&self) -> String {
+        format!(
+            "session log: writing stopped at event {} ({}); this conversation \
+             is no longer being saved.",
+            self.from_event, self.error
+        )
+    }
+}
+
 pub struct Session {
     pub id: String,
     events: Vec<SessionEvent>,
     log: Option<JsonlLog>,
     load_report: LoadReport,
+    write_failure: Option<WriteFailure>,
 }
 
 impl Session {
@@ -546,6 +586,7 @@ impl Session {
             events: Vec::new(),
             log: None,
             load_report: LoadReport::default(),
+            write_failure: None,
         };
         s.record(SessionEvent::SessionCreated { id, at: Utc::now() });
         s
@@ -560,6 +601,7 @@ impl Session {
             events: Vec::new(),
             log: Some(log),
             load_report: LoadReport::default(),
+            write_failure: None,
         };
         s.record(SessionEvent::SessionCreated { id, at: Utc::now() });
         Ok(s)
@@ -607,6 +649,7 @@ impl Session {
             events: Vec::new(),
             log: Some(log),
             load_report: LoadReport::default(),
+            write_failure: None,
         };
         s.record(SessionEvent::SessionCreated { id, at });
         Ok(s)
@@ -621,7 +664,9 @@ impl Session {
     /// is the only copy of a conversation, and the failure it has to survive
     /// is the process dying mid-write, which is exactly when refusing to open
     /// would cost the most. [`Session::load_report`] says what was worked
-    /// around; only I/O failures are still `Err`.
+    /// around; only I/O failures are still `Err` — including a line the
+    /// filesystem left as bytes that are not text, which costs that line and
+    /// nothing else.
     ///
     /// The placeholder holds its position deliberately. `Rewind` and `Elide`
     /// name their targets by index, so skipping a line would renumber the log
@@ -633,22 +678,30 @@ impl Session {
     /// read-only media still opens.
     pub fn load(path: impl AsRef<Path>) -> io::Result<Self> {
         let path = path.as_ref();
-        let raw = fs::read_to_string(path)?;
+        // Read bytes and decode a line at a time, rather than the whole file at
+        // once: a log the filesystem mangled a byte of is exactly the damaged
+        // line this reader exists to survive, and requiring the file to be
+        // valid UTF-8 end to end would spend the entire conversation on it. A
+        // line that will not decode fails to parse and becomes `Unknown` in
+        // place, like any other line this build cannot read. Offsets stay on
+        // the raw bytes, since that is what `Repair::TruncateTo` cuts.
+        let raw = fs::read(path)?;
         let mut events = Vec::new();
         let mut report = LoadReport::default();
 
         // A record is committed when its newline is: `writeln!` puts the
         // payload and the terminator down together, so a file that does not
         // end in one stopped in the middle of a write.
-        let torn = !raw.is_empty() && !raw.ends_with('\n');
-        let last_start = raw.rfind('\n').map_or(0, |i| i + 1);
+        let torn = raw.last().is_some_and(|b| *b != b'\n');
+        let last_start = raw.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
         let mut repair = None;
 
         let mut offset = 0usize;
-        for line in raw.split_inclusive('\n') {
+        for line in raw.split_inclusive(|b| *b == b'\n') {
             let start = offset;
             offset += line.len();
-            let text = line.trim_end_matches(['\n', '\r']);
+            let decoded = String::from_utf8_lossy(line);
+            let text = decoded.trim_end_matches(['\n', '\r']);
             if text.trim().is_empty() {
                 continue;
             }
@@ -689,6 +742,7 @@ impl Session {
             events,
             log: Some(JsonlLog::append_to(path, repair)?),
             load_report: report,
+            write_failure: None,
         })
     }
 
@@ -700,13 +754,34 @@ impl Session {
 
     pub fn record(&mut self, event: SessionEvent) {
         if let Some(log) = &mut self.log {
-            // Persistence failure shouldn't lose the in-memory turn; surface
-            // it on stderr and carry on.
+            // A persistence failure must not lose the in-memory turn, and must
+            // not write the *next* one either: an event missing from the middle
+            // of the log renumbers everything after it, so a `Rewind` or
+            // `Elide` recorded later — carrying the in-memory index — would
+            // come back aimed at a different turn. Sealing the log keeps what
+            // reached the disk a correctly numbered prefix. See
+            // [`WriteFailure`].
             if let Err(e) = log.append(&event) {
                 eprintln!("nightloom: failed to write session log: {e}");
+                self.write_failure = Some(WriteFailure {
+                    from_event: self.events.len(),
+                    error: e.to_string(),
+                });
+                self.log = None;
             }
         }
         self.events.push(event);
+    }
+
+    /// Where this session stopped being written to disk, if it did.
+    ///
+    /// `None` for a healthy session and for one that never had a log. A shell
+    /// that shows nothing here is telling the user their conversation is being
+    /// saved when it stopped being saved some turns ago, which is why this is a
+    /// queryable state rather than the stderr line it used to be — a GUI has no
+    /// stderr to lose it to.
+    pub fn write_failure(&self) -> Option<&WriteFailure> {
+        self.write_failure.as_ref()
     }
 
     pub fn record_user(&mut self, text: impl Into<String>) {
@@ -816,6 +891,37 @@ impl Session {
             }
         }
         live
+    }
+
+    /// The usage the next request's size is estimated from.
+    ///
+    /// The last *live* assistant turn's, and nothing from before a compaction.
+    /// Input plus output of that turn is very close to what the next request
+    /// bills as input, which beats summing every turn — that double-counts the
+    /// whole prefix on each round.
+    ///
+    /// The two boundaries are the point. A rewound turn is not on the wire, and
+    /// neither is anything before a `Compaction`: that marker clears everything
+    /// projected before it, so a figure from the far side of one describes a
+    /// conversation no longer being sent. Reading past it had the gauge report
+    /// a window still 90% full on the turn immediately after the summary that
+    /// emptied it — and the advisory built on that number then asked the model
+    /// to compact the conversation it had just compacted. `None` rather than a
+    /// guess for the one turn in between, since the next reply reports its own
+    /// usage and there is no honest estimate until it does.
+    pub fn context_usage(&self) -> Option<Usage> {
+        let live = self.live_flags();
+        self.events
+            .iter()
+            .enumerate()
+            .rev()
+            .filter(|(i, _)| live[*i])
+            .find_map(|(_, e)| match e {
+                SessionEvent::AssistantMessage { usage, .. } => Some(Some(*usage)),
+                SessionEvent::Compaction { .. } => Some(None),
+                _ => None,
+            })
+            .flatten()
     }
 
     /// The events that still count, with their positions in the full log.
@@ -2402,6 +2508,85 @@ mod tests {
     fn a_clean_load_says_nothing() {
         assert_eq!(LoadReport::default().summary(), None);
         assert!(Session::new().load_report().is_clean());
+    }
+
+    #[test]
+    fn a_line_of_bytes_that_are_not_text_costs_only_itself() {
+        let (dir, mut s) = logged_session("mangled");
+        s.record_user("one");
+        s.record_assistant(
+            "test-model",
+            vec![ContentBlock::Text {
+                text: "first".into(),
+            }],
+            Some("end_turn".into()),
+            Usage::default(),
+        );
+        let path = s.log_path().unwrap().to_path_buf();
+        drop(s);
+
+        // A line the filesystem left as bytes that do not decode. Reading the
+        // whole file as text used to fail the load outright, spending the
+        // entire conversation on one damaged line — the loud failure this
+        // reader exists to turn into a placeholder.
+        let mut raw = std::fs::read(&path).unwrap();
+        raw.extend_from_slice(b"{\"event\":\"user_message\",\"text\":\"\xff\xfe\"}\n");
+        raw.extend_from_slice(b"{\"event\":\"user_message\",\"text\":\"after\",");
+        raw.extend_from_slice(b"\"images\":[],\"documents\":[],");
+        raw.extend_from_slice(b"\"at\":\"2026-01-01T00:00:00Z\"}\n");
+        std::fs::write(&path, raw).unwrap();
+
+        let mut loaded = Session::load(&path).unwrap();
+        assert_eq!(loaded.load_report().damaged_lines, 1);
+        assert!(!loaded.load_report().torn_tail);
+
+        // The turns on either side of it survive, and the placeholder holds its
+        // index, so a marker still lands on the turn it names.
+        assert_eq!(loaded.events().len(), 5);
+        assert!(matches!(loaded.events()[3], SessionEvent::Unknown));
+        assert_eq!(loaded.messages().len(), 3);
+        loaded.rewind(1).unwrap();
+        assert!(loaded.messages().is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_failed_append_seals_the_log_rather_than_writing_past_the_gap() {
+        let (dir, mut s) = logged_session("write-fail");
+        s.record_user("one");
+        let path = s.log_path().unwrap().to_path_buf();
+        drop(s);
+
+        // A torn tail leaves a repair owed, and the repair opens the path
+        // again — so deleting the file makes the next append fail for a
+        // reason that has nothing to do with the event being written.
+        let mut raw = std::fs::read_to_string(&path).unwrap();
+        raw.push_str("{\"event\":\"user_me");
+        std::fs::write(&path, raw).unwrap();
+        let mut loaded = Session::load(&path).unwrap();
+        assert!(loaded.load_report().torn_tail);
+        let before = loaded.events().len();
+        std::fs::remove_file(&path).unwrap();
+
+        loaded.record_user("two");
+        let failure = loaded.write_failure().expect("the failure is a state");
+        assert_eq!(failure.from_event, before);
+        assert!(failure.summary().contains("no longer being saved"));
+
+        // The log is let go of, not merely complained about. Were it kept,
+        // these two events would land in a log missing the one before them,
+        // and every index in it from there on would name a different turn than
+        // it does in memory — so a `Rewind` recorded now would come back aimed
+        // one turn early.
+        assert!(loaded.log_path().is_none());
+        std::fs::write(&path, b"").unwrap();
+        loaded.record_user("three");
+        loaded.record_user("four");
+        assert_eq!(std::fs::read(&path).unwrap(), b"");
+
+        // The turns are still here; only their persistence stopped.
+        assert_eq!(loaded.events().len(), before + 3);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The latest name wins, and a compaction is not a rename: the summary

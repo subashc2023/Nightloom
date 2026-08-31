@@ -573,8 +573,6 @@ pub(crate) fn render(
     }
 }
 
-/// Run one user turn, streaming to stdout. Ctrl-C cancels the in-flight
-/// request; the service records the partial reply either way.
 /// The turns this session can be rewound to, numbered for `/rewind N`.
 ///
 /// Numbered from 1 in display order rather than by event index: the index is
@@ -816,6 +814,9 @@ fn rename(session: &mut Session, name: &str) {
     println!("{DIM}named “{name}”{RESET}");
 }
 
+/// Run one user turn, streaming to stdout. Ctrl-C cancels the in-flight
+/// request; the service records the partial reply either way.
+///
 /// Returns whether a compaction landed during the turn — the model asking
 /// through `compact_context` and the engine honouring it at the boundary —
 /// which is what `--auto-dream` keys on.
@@ -1131,6 +1132,7 @@ pub async fn run(args: ChatArgs) -> Result<()> {
     println!("{DIM}/context itemizes what the next request carries, /rewind undoes a turn{RESET}");
     println!("{DIM}/name renames the session for the listing{RESET}");
 
+    let mut reported_write_failure = false;
     loop {
         let Some(line) = prompt_line()? else {
             break;
@@ -1140,6 +1142,7 @@ pub async fn run(args: ChatArgs) -> Result<()> {
             "/quit" | "/exit" => break,
             "/new" => {
                 session = new_session(&args)?;
+                reported_write_failure = false;
                 println!("{DIM}started new session {}{RESET}", session.id);
                 continue;
             }
@@ -1198,6 +1201,13 @@ pub async fn run(args: ChatArgs) -> Result<()> {
         // provider call should say that it did.
         if !was_named && let Some(title) = session.title() {
             println!("{DIM}named “{title}”{RESET}");
+        }
+        // Once, on the turn it happens. A session that stopped reaching its
+        // log still answers, so nothing else on screen would say that the
+        // conversation being typed is no longer being kept.
+        if !reported_write_failure && let Some(failure) = session.write_failure() {
+            eprintln!("\n{DIM}warning: {}{RESET}", failure.summary());
+            reported_write_failure = true;
         }
         if compacted {
             auto_dream(&args).await;

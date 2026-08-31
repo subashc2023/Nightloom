@@ -1189,9 +1189,16 @@ async fn send(
         images: images.unwrap_or_default(),
         documents: documents.unwrap_or_default(),
     };
-    chat.run_turn(session, input, &cancel, &mut on_event)
-        .await
-        .map_err(|e| e.to_string())
+    let sealed_before = session.write_failure().is_some();
+    let outcome = chat.run_turn(session, input, &cancel, &mut on_event).await;
+    // On the transition only, which needs no flag to remember: a log seals
+    // once, and a turn that sealed it looks from here exactly like one that
+    // did not. There is no stderr behind this window for the notice to go to,
+    // and a chat that stopped being saved goes on answering as if it were.
+    if !sealed_before && let Some(failure) = session.write_failure() {
+        let _ = app.emit("turn-notice", failure.summary());
+    }
+    outcome.map_err(|e| e.to_string())
 }
 
 /// What one agent turn spent and where it went.
@@ -1244,6 +1251,10 @@ async fn send_agent(
         *session_guard = Some(Session::with_log(&log_dir).map_err(|e| e.to_string())?);
     }
     let session = session_guard.as_mut().expect("session ensured above");
+    // Sampled before the first append of the turn. See `send`: an agent turn
+    // records into the same log through `Recorder`, so it can seal it the same
+    // way, and this window has no stderr for the notice to go to either.
+    let sealed_before = session.write_failure().is_some();
     session.record_user(&text);
 
     let cancel = CancellationToken::new();
@@ -1289,6 +1300,9 @@ async fn send_agent(
             // turn resuming it would fail for a reason nobody could see.
             if let Some(id) = &outcome.session_id {
                 session.record_agent_session(AGENT, id);
+            }
+            if !sealed_before && let Some(failure) = session.write_failure() {
+                let _ = app.emit("turn-notice", failure.summary());
             }
             agent.follow_on(&outcome);
             let context_limit = outcome
