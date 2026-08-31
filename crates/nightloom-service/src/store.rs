@@ -5,6 +5,7 @@
 use chrono::{DateTime, Utc};
 use nightloom_core::{ContentBlock, SessionEvent};
 use serde::{Deserialize, Serialize};
+use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Read, Seek, SeekFrom};
@@ -469,7 +470,7 @@ pub fn list(log_dir: &Path) -> Result<Vec<SessionSummary>, StoreError> {
         }
         .write(log_dir);
     }
-    sessions.sort_by(|a, b| b.modified.cmp(&a.modified));
+    sessions.sort_by_key(|s| Reverse(s.modified));
     Ok(sessions)
 }
 
@@ -543,7 +544,7 @@ pub fn search(log_dir: &Path, query: &str) -> Result<Vec<SessionMatch>, StoreErr
             });
         }
     }
-    found.sort_by(|a, b| b.summary.modified.cmp(&a.summary.modified));
+    found.sort_by_key(|m| Reverse(m.summary.modified));
     Ok(found)
 }
 

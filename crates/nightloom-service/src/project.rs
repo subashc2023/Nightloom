@@ -232,7 +232,7 @@ impl Registry {
     /// Newest-opened first, which is the order a picker wants.
     pub fn projects(&self) -> Vec<Project> {
         let mut out = self.projects.clone();
-        out.sort_by(|a, b| b.last_opened.cmp(&a.last_opened));
+        out.sort_by_key(|p| std::cmp::Reverse(p.last_opened));
         out
     }
 

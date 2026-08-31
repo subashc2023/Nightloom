@@ -142,7 +142,7 @@ impl<'a> Recorder<'a> {
     /// that failed before it said anything from one that merely said little.
     pub fn finish(mut self, stop_reason: Option<&str>) -> bool {
         self.flush_prose();
-        let orphans: Vec<(String, String)> = self.open.drain(..).collect();
+        let orphans: Vec<(String, String)> = std::mem::take(&mut self.open);
         let reason = if orphans.is_empty() {
             stop_reason
         } else {
