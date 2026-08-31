@@ -30,7 +30,23 @@ impl OpenAiResponses {
     }
 
     fn body(request: &ChatRequest) -> Result<Value, ProviderError> {
-        let input: Vec<Value> = request.messages.iter().flat_map(to_wire_items).collect();
+        Self::body_with(request, true)
+    }
+
+    /// `keep_reasoning: false` drops every replayed `reasoning` item.
+    ///
+    /// The one caller that passes `false` is the retry in [`Provider::
+    /// stream_chat`]. Dropping them is always safe on the wire: a reasoning
+    /// item is a standalone input item, and the only ordering rule about them
+    /// — that one must be followed by the item it produced — cannot be broken
+    /// by removing all of them.
+    fn body_with(request: &ChatRequest, keep_reasoning: bool) -> Result<Value, ProviderError> {
+        let input: Vec<Value> = request
+            .messages
+            .iter()
+            .flat_map(to_wire_items)
+            .filter(|item| keep_reasoning || item["type"].as_str() != Some("reasoning"))
+            .collect();
         let mut body = json!({
             "model": request.model,
             "stream": true,
@@ -214,20 +230,93 @@ impl Provider for OpenAiResponses {
                 "missing OpenAI API key (set OPENAI_API_KEY)".into(),
             ));
         }
-        let resp = self
-            .client
-            .post(format!("{}/responses", self.base_url))
-            .bearer_auth(&self.api_key)
-            .json(&Self::body(&request)?)
-            .send()
-            .await
-            .map_err(transport)?;
+        let send = async |body: Value| {
+            self.client
+                .post(format!("{}/responses", self.base_url))
+                .bearer_auth(&self.api_key)
+                .json(&body)
+                .send()
+                .await
+                .map_err(transport)
+        };
+
+        let resp = send(Self::body(&request)?).await?;
         if !resp.status().is_success() {
-            return Err(api_error(resp).await);
+            let err = api_error(resp).await;
+            // A reasoning item is the one thing this harness replays that the
+            // log does not actually hold: it is a handle into OpenAI's store,
+            // and the store forgets. Images are inlined precisely so a log
+            // replays on its own; this cannot be, so the failure it produces
+            // has to be survivable instead. Left alone it is the worst shape
+            // available — a session that reopens after the retention window
+            // fails on this turn and on every turn after it, permanently,
+            // over reasoning that was never part of the conversation.
+            //
+            // So: drop the handles and ask once more. What is lost is the
+            // model's own prior reasoning, which had already expired; what is
+            // kept is the conversation.
+            if is_missing_reasoning_item(&err) && replays_reasoning(&request) {
+                let resp = send(Self::body_with(&request, false)?).await?;
+                if !resp.status().is_success() {
+                    return Err(api_error(resp).await);
+                }
+                return Ok(normalize(resp.bytes_stream()));
+            }
+            return Err(err);
         }
 
-        let stream = try_stream! {
-            let mut events = resp.bytes_stream().eventsource();
+        Ok(normalize(resp.bytes_stream()))
+    }
+}
+
+/// Whether this request replays a reasoning handle at all. Without one there
+/// is nothing for the retry to drop, and retrying would only spend a second
+/// request on the same rejection.
+fn replays_reasoning(request: &ChatRequest) -> bool {
+    request
+        .messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .any(|b| matches!(b, ContentBlock::ReasoningRef { .. }))
+}
+
+/// Whether a rejection is the API saying it no longer has an item we replayed.
+///
+/// Matched on the message because the status and code do not distinguish it:
+/// it arrives as an ordinary 400 `invalid_request_error` naming the item id.
+/// Deliberately narrow — a 400 that is genuinely about the request must not be
+/// retried into a second identical failure, so this asks for the item shape
+/// (`rs_…` or the word reasoning) *and* for the API's not-found phrasing.
+fn is_missing_reasoning_item(err: &ProviderError) -> bool {
+    let ProviderError::Api {
+        status: 400,
+        message,
+    } = err
+    else {
+        return false;
+    };
+    let m = message.to_ascii_lowercase();
+    (m.contains("not found") || m.contains("expired") || m.contains("no longer exists"))
+        && (m.contains("rs_") || m.contains("reasoning"))
+}
+
+/// Turn the Responses API's SSE body into `StreamEvent`s.
+///
+/// Split from the request half so a canned body can reach the two things this
+/// dialect does that no other does: reasoning that arrives as a server-side
+/// handle to be replayed by id, and tool calls read whole off an item-done
+/// event rather than assembled from argument deltas.
+pub(crate) fn normalize<S, B, E>(body: S) -> EventStream
+where
+    S: futures::Stream<Item = Result<B, E>> + Send + 'static,
+    B: AsRef<[u8]> + Send + 'static,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    Box::pin(try_stream! {
+            let mut events = Box::pin(body).eventsource();
+            // Whether a terminal `response.*` event arrived. Without one the
+            // stream ending is a dropped connection, not a finished turn.
+            let mut completed = false;
 
             while let Some(event) = events.next().await {
                 let event = event.map_err(transport)?;
@@ -307,6 +396,7 @@ impl Provider for OpenAiResponses {
                             .or(r["status"].as_str())
                             .map(String::from);
                         yield StreamEvent::End { stop_reason };
+                        completed = true;
                         break;
                     }
                     "response.failed" => {
@@ -333,9 +423,10 @@ impl Provider for OpenAiResponses {
                     _ => {}
                 }
             }
-        };
-        Ok(Box::pin(stream))
-    }
+            if !completed {
+                Err(crate::truncated("openai"))?;
+            }
+    })
 }
 
 #[cfg(test)]
@@ -572,6 +663,77 @@ mod tests {
         );
     }
 
+    /// A reasoning handle points into OpenAI's store rather than at anything
+    /// the log holds, and the store forgets. Reopening a session past the
+    /// retention window then fails on this turn and on every turn after it,
+    /// forever, over reasoning that was never part of the conversation — so
+    /// the rejection is recognized and the handles are dropped for one retry.
+    #[test]
+    fn an_expired_reasoning_handle_is_recognized_and_droppable() {
+        let convo = vec![
+            Message::user("what is the weather"),
+            Message::assistant(vec![
+                ContentBlock::ReasoningRef {
+                    id: "rs_abc".into(),
+                },
+                ContentBlock::Text {
+                    text: "sunny".into(),
+                },
+            ]),
+            Message::user("and tomorrow"),
+        ];
+        let req = request(convo, vec![]);
+        assert!(replays_reasoning(&req));
+
+        // What OpenAI actually answers with, as an ordinary 400 whose only
+        // distinguishing mark is the sentence.
+        let stale = ProviderError::Api {
+            status: 400,
+            message: "Item with id 'rs_abc' not found. Items are not persisted \
+                      when `store` is set to false."
+                .into(),
+        };
+        assert!(is_missing_reasoning_item(&stale));
+
+        // The retry sends the same conversation with the handles gone, and
+        // nothing else removed — dropping a reasoning item cannot strand the
+        // item it preceded, since that rule is only about a *trailing* one.
+        let body = OpenAiResponses::body_with(&req, false).unwrap();
+        let input = body["input"].as_array().unwrap();
+        assert!(
+            !input.iter().any(|i| i["type"] == "reasoning"),
+            "{input:#?}"
+        );
+        assert_eq!(
+            input.len(),
+            3,
+            "the conversation itself was cut: {input:#?}"
+        );
+    }
+
+    #[test]
+    fn an_ordinary_bad_request_is_not_retried_as_an_expiry() {
+        // The retry has to be narrow. A 400 that is genuinely about the
+        // request would otherwise be sent a second time to fail identically,
+        // and the user would wait twice for one error.
+        for message in [
+            "Invalid value for 'max_output_tokens'",
+            "model gpt-nonexistent not found",
+            "Unsupported parameter: 'reasoning.effort' for this model",
+        ] {
+            let err = ProviderError::Api {
+                status: 400,
+                message: message.into(),
+            };
+            assert!(!is_missing_reasoning_item(&err), "{message}");
+        }
+        // Nor is a request that replays no handle worth a second attempt.
+        assert!(!replays_reasoning(&request(
+            vec![Message::user("hi")],
+            vec![]
+        )));
+    }
+
     #[test]
     fn reasoning_item_precedes_the_message_it_produced() {
         let items = to_wire_items(&Message::assistant(vec![
@@ -613,5 +775,292 @@ mod tests {
                 "content": [{ "type": "output_text", "text": "checking" }],
             })]
         );
+    }
+
+    // ---- normalize: the streaming half ----
+
+    /// One SSE frame, framed the way the wire frames it.
+    fn sse(data: Value) -> String {
+        format!("data: {data}\n\n")
+    }
+
+    /// Feed a canned body through [`normalize`], in the chunks given, and
+    /// collect everything it yields.
+    ///
+    /// Where the chunks break is part of the input on purpose: a socket
+    /// splits wherever it likes, including halfway through a frame, and the
+    /// eventsource layer under `normalize` is what has to survive it.
+    async fn drain(chunks: &[&str]) -> Vec<Result<StreamEvent, ProviderError>> {
+        let body = futures::stream::iter(
+            chunks
+                .iter()
+                .map(|c| Ok::<_, std::io::Error>(c.to_string()))
+                .collect::<Vec<_>>(),
+        );
+        normalize(body).collect::<Vec<_>>().await
+    }
+
+    /// The same, for a body expected to stream to a clean end.
+    async fn events(chunks: &[&str]) -> Vec<StreamEvent> {
+        drain(chunks)
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .expect("the canned body streams to a clean end")
+    }
+
+    /// A line per event. `StreamEvent` has no `PartialEq`, and the order
+    /// these arrive in is most of what is being pinned here.
+    fn shapes(events: &[StreamEvent]) -> Vec<String> {
+        events
+            .iter()
+            .map(|e| match e {
+                StreamEvent::Start => "start".to_string(),
+                StreamEvent::TextDelta(t) => format!("text {t}"),
+                StreamEvent::ThinkingDelta(t) => format!("thinking {t}"),
+                StreamEvent::ReasoningRef { id } => format!("reasoning {id}"),
+                StreamEvent::ToolUse {
+                    id, name, input, ..
+                } => format!("tool {id} {name} {input}"),
+                StreamEvent::Usage(_) => "usage".to_string(),
+                StreamEvent::End { stop_reason } => format!("end {stop_reason:?}"),
+                other => format!("{other:?}"),
+            })
+            .collect()
+    }
+
+    fn reported_usage(events: &[StreamEvent]) -> Usage {
+        events
+            .iter()
+            .find_map(|e| match e {
+                StreamEvent::Usage(u) => Some(*u),
+                _ => None,
+            })
+            .expect("a usage event")
+    }
+
+    /// The reasoning item is the replayable artifact, and Responses rejects
+    /// it on the next turn unless it comes back immediately before the item
+    /// it produced. Emitting it anywhere but where it fell in the stream —
+    /// with the tool calls, or all at the end — records a position the API
+    /// will refuse.
+    #[tokio::test]
+    async fn the_reasoning_ref_lands_between_its_summary_and_the_call_it_led_to() {
+        let body = [
+            sse(json!({ "type": "response.created" })),
+            sse(json!({ "type": "response.reasoning_summary_text.delta", "delta": "weighing " })),
+            sse(json!({ "type": "response.reasoning_summary_text.delta", "delta": "options" })),
+            sse(json!({
+                "type": "response.output_item.done",
+                "item": { "type": "reasoning", "id": "rs_abc" },
+            })),
+            sse(json!({ "type": "response.output_text.delta", "delta": "checking" })),
+            sse(json!({
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "get_weather",
+                    "arguments": "{\"city\":\"Oslo\"}",
+                },
+            })),
+            sse(json!({
+                "type": "response.completed",
+                "response": { "status": "completed", "usage": {} },
+            })),
+        ]
+        .concat();
+        let seen = events(&[&body]).await;
+        assert_eq!(
+            shapes(&seen),
+            [
+                "start",
+                "thinking weighing ",
+                "thinking options",
+                "reasoning rs_abc",
+                "text checking",
+                "tool call_1 get_weather {\"city\":\"Oslo\"}",
+                "usage",
+                "end Some(\"completed\")",
+            ]
+        );
+    }
+
+    /// The done item carries the whole call, so the incremental
+    /// `function_call_arguments.delta` frames beside it are noise —
+    /// stitching those too would emit every call twice.
+    #[tokio::test]
+    async fn a_tool_call_is_read_whole_off_item_done_not_from_its_argument_deltas() {
+        let body = [
+            sse(json!({ "type": "response.created" })),
+            sse(json!({
+                "type": "response.function_call_arguments.delta",
+                "item_id": "fc_1",
+                "delta": "{\"city\":",
+            })),
+            sse(json!({
+                "type": "response.function_call_arguments.delta",
+                "item_id": "fc_1",
+                "delta": "\"Oslo\"}",
+            })),
+            sse(json!({
+                "type": "response.function_call_arguments.done",
+                "item_id": "fc_1",
+                "arguments": "{\"city\":\"Oslo\"}",
+            })),
+            sse(json!({
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "function_call",
+                    "id": "fc_1",
+                    "call_id": "call_1",
+                    "name": "get_weather",
+                    "arguments": "{\"city\":\"Oslo\"}",
+                },
+            })),
+            sse(json!({
+                "type": "response.completed",
+                "response": { "status": "completed", "usage": {} },
+            })),
+        ]
+        .concat();
+        // The wire break lands inside the done item's arguments string.
+        let cut = body.rfind("Oslo").expect("the done item");
+        let (head, tail) = body.split_at(cut);
+        let seen = events(&[head, tail]).await;
+        assert_eq!(
+            shapes(&seen),
+            [
+                "start",
+                "tool call_1 get_weather {\"city\":\"Oslo\"}",
+                "usage",
+                "end Some(\"completed\")",
+            ]
+        );
+    }
+
+    /// Reasoning is billed as output and cached input at a discount.
+    /// Dropping either reports a cost that is not the one charged, and the
+    /// cached count in particular is a subset of the input rather than an
+    /// addition to it.
+    #[tokio::test]
+    async fn completed_usage_carries_the_reasoning_and_cached_counts() {
+        let body = sse(json!({
+            "type": "response.completed",
+            "response": {
+                "status": "completed",
+                "usage": {
+                    "input_tokens": 1200,
+                    "output_tokens": 512,
+                    "output_tokens_details": { "reasoning_tokens": 448 },
+                    "input_tokens_details": { "cached_tokens": 1024 },
+                },
+            },
+        }));
+        let seen = events(&[&body]).await;
+        assert_eq!(
+            reported_usage(&seen),
+            Usage {
+                input_tokens: 1200,
+                output_tokens: 512,
+                reasoning_tokens: Some(448),
+                cache_read_tokens: Some(1024),
+                cache_write_tokens: None,
+            }
+        );
+    }
+
+    /// A response cut off at the token ceiling still closes its stream
+    /// properly — as `response.incomplete`, whose status is only ever
+    /// "incomplete". The reason sits one level down, and it is what tells a
+    /// truncated reply from a finished one.
+    #[tokio::test]
+    async fn an_incomplete_response_reports_why_it_stopped() {
+        let body = [
+            sse(json!({ "type": "response.created" })),
+            sse(json!({ "type": "response.output_text.delta", "delta": "as far as I" })),
+            sse(json!({
+                "type": "response.incomplete",
+                "response": {
+                    "status": "incomplete",
+                    "incomplete_details": { "reason": "max_output_tokens" },
+                    "usage": { "input_tokens": 12, "output_tokens": 128 },
+                },
+            })),
+        ]
+        .concat();
+        let seen = events(&[&body]).await;
+        assert_eq!(
+            shapes(&seen),
+            [
+                "start",
+                "text as far as I",
+                "usage",
+                "end Some(\"max_output_tokens\")",
+            ]
+        );
+        assert_eq!(reported_usage(&seen).output_tokens, 128);
+    }
+
+    /// A failure arrives inside a 200 response, after tokens have already
+    /// streamed. Treating it as one more unknown event type ends the turn
+    /// quietly and records the fragment as the model's answer.
+    #[tokio::test]
+    async fn a_failed_response_fails_the_stream() {
+        let body = [
+            sse(json!({ "type": "response.created" })),
+            sse(json!({
+                "type": "response.failed",
+                "response": { "error": { "message": "the model overloaded" } },
+            })),
+        ]
+        .concat();
+        let seen = drain(&[&body]).await;
+        let Some(Err(ProviderError::Api { status, message })) = seen.last() else {
+            panic!("the failure did not end the stream: {seen:?}");
+        };
+        assert_eq!(*status, 200);
+        assert_eq!(message, "the model overloaded");
+    }
+
+    /// The bare `error` frame is the same fact with the message one level
+    /// higher up; reading it out of `response.error` finds nothing and
+    /// reports an unknown failure instead of the one that happened.
+    #[tokio::test]
+    async fn a_bare_error_event_fails_the_stream_with_its_own_message() {
+        let body = [
+            sse(json!({ "type": "response.created" })),
+            sse(json!({ "type": "error", "code": "server_error", "message": "upstream timeout" })),
+        ]
+        .concat();
+        let seen = drain(&[&body]).await;
+        let Some(Err(ProviderError::Api { message, .. })) = seen.last() else {
+            panic!("the error did not end the stream: {seen:?}");
+        };
+        assert_eq!(message, "upstream timeout");
+    }
+
+    /// A dropped connection ends the byte stream in silence, which from
+    /// above looks exactly like a model that finished — so a truncated reply
+    /// gets recorded as a complete one, with no usage and no stop reason to
+    /// give it away.
+    #[tokio::test]
+    async fn a_stream_that_stops_before_a_terminal_event_is_an_error() {
+        let body = [
+            sse(json!({ "type": "response.created" })),
+            sse(json!({ "type": "response.output_text.delta", "delta": "half an ans" })),
+        ]
+        .concat();
+        let seen = drain(&[&body]).await;
+        assert!(
+            !seen
+                .iter()
+                .any(|e| matches!(e, Ok(StreamEvent::End { .. }))),
+            "a truncated stream was closed out as a finished one: {seen:?}"
+        );
+        let Some(Err(ProviderError::Transport(message))) = seen.last() else {
+            panic!("the truncated stream ended quietly: {seen:?}");
+        };
+        assert!(message.contains("incomplete"), "{message}");
     }
 }

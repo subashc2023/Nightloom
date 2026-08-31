@@ -122,8 +122,22 @@ impl OpenAiCompat {
                 body["max_tokens"] = json!(request.max_tokens);
                 body["usage"] = json!({ "include": true });
             }
-            Flavor::Generic | Flavor::Groq => {
+            Flavor::Groq => {
                 body["max_completion_tokens"] = json!(request.max_tokens);
+                body["stream_options"] = json!({ "include_usage": true });
+            }
+            Flavor::Generic => {
+                // Both spellings, because this flavor is aimed at whatever is
+                // listening on a `--base-url`. `max_completion_tokens` is what
+                // current OpenAI wants and what it needs to see; the servers
+                // that predate it — llama.cpp, Ollama, vLLM, LM Studio and the
+                // rest — know only `max_tokens`, and a field a server does not
+                // recognize it simply ignores. Sending only the new name meant
+                // an unbounded reply on exactly the local endpoints this
+                // flavor exists to serve, which surfaces as a hang rather than
+                // as an error.
+                body["max_completion_tokens"] = json!(request.max_tokens);
+                body["max_tokens"] = json!(request.max_tokens);
                 body["stream_options"] = json!({ "include_usage": true });
             }
         }
@@ -310,8 +324,14 @@ struct PendingToolCall {
 }
 
 fn read_usage(u: &Value, usage: &mut Usage) {
-    usage.input_tokens = u["prompt_tokens"].as_u64().unwrap_or(0);
-    usage.output_tokens = u["completion_tokens"].as_u64().unwrap_or(0);
+    // Carried forward rather than defaulted to zero, like the two fields
+    // below: a host that sends usage more than once — Groq sends it twice, by
+    // two different routes — must not be able to erase a count by omitting it
+    // the second time. Zero is a figure, and the wrong one.
+    usage.input_tokens = u["prompt_tokens"].as_u64().unwrap_or(usage.input_tokens);
+    usage.output_tokens = u["completion_tokens"]
+        .as_u64()
+        .unwrap_or(usage.output_tokens);
     usage.reasoning_tokens = u["completion_tokens_details"]["reasoning_tokens"]
         .as_u64()
         .or(usage.reasoning_tokens);
@@ -348,12 +368,32 @@ impl Provider for OpenAiCompat {
         if !resp.status().is_success() {
             return Err(api_error(resp).await);
         }
+        Ok(normalize(resp.bytes_stream()))
+    }
+}
 
-        let stream = try_stream! {
-            let mut events = resp.bytes_stream().eventsource();
+/// Turn a `chat/completions` SSE body into `StreamEvent`s.
+///
+/// Split from the request half so a canned body can reach what varies across
+/// the hosts this one adapter serves: tool-call fragments accumulated by index
+/// and flushed at the end, two spellings of exposed reasoning, usage arriving
+/// under three different keys, and servers that close without `[DONE]`.
+pub(crate) fn normalize<S, B, E>(body: S) -> EventStream
+where
+    S: futures::Stream<Item = Result<B, E>> + Send + 'static,
+    B: AsRef<[u8]> + Send + 'static,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    Box::pin(try_stream! {
+            let mut events = Box::pin(body).eventsource();
             let mut usage = Usage::default();
             let mut stop_reason: Option<String> = None;
             let mut started = false;
+            // Whether `[DONE]` arrived. Tool calls are buffered until it does,
+            // so a stream that stops short loses them outright — the reply
+            // would arrive looking complete and simply not have called
+            // anything.
+            let mut done = false;
             // Keyed by fragment index; BTreeMap keeps emission in call order.
             let mut tool_calls: std::collections::BTreeMap<u64, PendingToolCall> =
                 std::collections::BTreeMap::new();
@@ -364,24 +404,7 @@ impl Provider for OpenAiCompat {
                     continue;
                 }
                 if event.data.trim() == "[DONE]" {
-                    for (index, call) in std::mem::take(&mut tool_calls) {
-                        // Models signal "no arguments" with an empty string.
-                        let input = if call.arguments.trim().is_empty() {
-                            json!({})
-                        } else {
-                            serde_json::from_str(&call.arguments).map_err(parse)?
-                        };
-                        yield StreamEvent::ToolUse {
-                            // Some local servers omit ids entirely.
-                            id: call.id.unwrap_or_else(|| format!("call-{index}")),
-                            name: call.name,
-                            input,
-                            // No chat/completions host signs calls.
-                            signature: None,
-                        };
-                    }
-                    yield StreamEvent::Usage(usage);
-                    yield StreamEvent::End { stop_reason: stop_reason.clone() };
+                    done = true;
                     break;
                 }
                 let v: Value = serde_json::from_str(&event.data).map_err(parse)?;
@@ -435,9 +458,42 @@ impl Provider for OpenAiCompat {
                     }
                 }
             }
-        };
-        Ok(Box::pin(stream))
-    }
+
+            // A stream that stopped with neither `[DONE]` nor a
+            // `finish_reason` did not finish — whatever text arrived is a
+            // fragment, and any tool call still in the buffer never happened.
+            // Ending quietly here would hand the engine a truncated reply
+            // wearing the shape of a complete one.
+            //
+            // Either terminator is enough, though. `[DONE]` is a convention
+            // plenty of compatible servers skip, closing the connection the
+            // moment the last chunk is out, and the model's own
+            // `finish_reason` is the stronger statement of the two.
+            if !done && stop_reason.is_none() {
+                Err(crate::truncated("chat/completions"))?;
+            }
+            // Drained in index order, which is call order: the id a server
+            // omitted is synthesized here, and the model reads the calls in
+            // the order they are yielded.
+            for (_index, call) in std::mem::take(&mut tool_calls) {
+                // Models signal "no arguments" with an empty string.
+                let input = if call.arguments.trim().is_empty() {
+                    json!({})
+                } else {
+                    serde_json::from_str(&call.arguments).map_err(parse)?
+                };
+                yield StreamEvent::ToolUse {
+                    // Some local servers omit ids entirely.
+                    id: call.id.unwrap_or_else(crate::synthetic_call_id),
+                    name: call.name,
+                    input,
+                    // No chat/completions host signs calls.
+                    signature: None,
+                };
+            }
+            yield StreamEvent::Usage(usage);
+            yield StreamEvent::End { stop_reason };
+    })
 }
 
 #[cfg(test)]
@@ -834,5 +890,262 @@ mod tests {
             json!({ "role": "tool", "tool_call_id": "call-1", "content": "captured" })
         );
         assert_eq!(wire[1]["content"][0]["type"], "image_url");
+    }
+
+    // ---- normalize: the streaming half ----
+
+    /// One SSE frame, framed the way the wire frames it.
+    fn sse(data: Value) -> String {
+        format!("data: {data}\n\n")
+    }
+
+    /// Feed a canned body through [`normalize`], in the chunks given, and
+    /// collect everything it yields.
+    ///
+    /// Where the chunks break is part of the input on purpose: a socket
+    /// splits wherever it likes, including halfway through a frame, and the
+    /// eventsource layer under `normalize` is what has to survive it.
+    async fn drain(chunks: &[&str]) -> Vec<Result<StreamEvent, ProviderError>> {
+        let body = futures::stream::iter(
+            chunks
+                .iter()
+                .map(|c| Ok::<_, std::io::Error>(c.to_string()))
+                .collect::<Vec<_>>(),
+        );
+        normalize(body).collect::<Vec<_>>().await
+    }
+
+    /// The same, for a body expected to stream to a clean end.
+    async fn events(chunks: &[&str]) -> Vec<StreamEvent> {
+        drain(chunks)
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .expect("the canned body streams to a clean end")
+    }
+
+    /// A line per event. `StreamEvent` has no `PartialEq`, and the order
+    /// these arrive in is half of what is being pinned.
+    fn shapes(events: &[StreamEvent]) -> Vec<String> {
+        events
+            .iter()
+            .map(|e| match e {
+                StreamEvent::Start => "start".to_string(),
+                StreamEvent::TextDelta(t) => format!("text {t}"),
+                StreamEvent::ThinkingDelta(t) => format!("thinking {t}"),
+                StreamEvent::ToolUse {
+                    id, name, input, ..
+                } => format!("tool {id} {name} {input}"),
+                StreamEvent::Usage(_) => "usage".to_string(),
+                StreamEvent::End { stop_reason } => format!("end {stop_reason:?}"),
+                other => format!("{other:?}"),
+            })
+            .collect()
+    }
+
+    fn reported_usage(events: &[StreamEvent]) -> Usage {
+        events
+            .iter()
+            .find_map(|e| match e {
+                StreamEvent::Usage(u) => Some(*u),
+                _ => None,
+            })
+            .expect("a usage event")
+    }
+
+    /// A tool-call fragment carries an index and nothing else tying it to
+    /// its call, and the socket splits the argument pieces again on top of
+    /// that. Accumulating by arrival order splices two parallel calls
+    /// together; draining by arrival order hands the model the calls in an
+    /// order it did not ask for.
+    #[tokio::test]
+    async fn tool_arguments_split_across_chunks_arrive_as_one_call_per_index() {
+        let fragment = |f: Value| sse(json!({ "choices": [{ "delta": { "tool_calls": [f] } }] }));
+        let body = [
+            fragment(json!({
+                "index": 0,
+                "id": "call_a",
+                "function": { "name": "get_weather", "arguments": "" },
+            })),
+            fragment(json!({
+                "index": 1,
+                "id": "call_b",
+                "function": { "name": "get_time", "arguments": "" },
+            })),
+            // The server finishes the second call's arguments first.
+            fragment(json!({ "index": 1, "function": { "arguments": "{\"zone\":" } })),
+            fragment(json!({ "index": 1, "function": { "arguments": "\"CET\"}" } })),
+            fragment(json!({ "index": 0, "function": { "arguments": "{\"city\":" } })),
+            fragment(json!({ "index": 0, "function": { "arguments": "\"Oslo\"}" } })),
+            sse(json!({ "choices": [{ "delta": {}, "finish_reason": "tool_calls" }] })),
+            "data: [DONE]\n\n".to_string(),
+        ]
+        .concat();
+        // The wire break lands inside one of the argument fragments.
+        let cut = body.find("Oslo").expect("the last fragment");
+        let (head, tail) = body.split_at(cut);
+        let seen = events(&[head, tail]).await;
+        assert_eq!(
+            shapes(&seen),
+            [
+                "start",
+                "tool call_a get_weather {\"city\":\"Oslo\"}",
+                "tool call_b get_time {\"zone\":\"CET\"}",
+                "usage",
+                "end Some(\"tool_calls\")",
+            ]
+        );
+    }
+
+    /// Exposed reasoning goes by two names across the servers behind this
+    /// one adapter — DeepSeek-style `reasoning_content` against Groq's and
+    /// OpenRouter's `reasoning`. Reading one spelling renders the other
+    /// host's thinking as nothing at all.
+    #[tokio::test]
+    async fn both_reasoning_spellings_stream_as_thinking() {
+        for key in ["reasoning_content", "reasoning"] {
+            let body = [
+                sse(json!({ "choices": [{ "delta": { key: "weighing it" } }] })),
+                sse(json!({ "choices": [{ "delta": { "content": "12C" } }] })),
+                sse(json!({ "choices": [{ "delta": {}, "finish_reason": "stop" }] })),
+                "data: [DONE]\n\n".to_string(),
+            ]
+            .concat();
+            let seen = events(&[&body]).await;
+            assert_eq!(
+                shapes(&seen),
+                [
+                    "start",
+                    "thinking weighing it",
+                    "text 12C",
+                    "usage",
+                    "end Some(\"stop\")"
+                ],
+                "under {key}"
+            );
+        }
+    }
+
+    /// Groq reports the turn's usage under `x_groq` on the final chunk while
+    /// every other host uses `usage`. Reading only the shared key bills a
+    /// Groq turn at zero.
+    #[tokio::test]
+    async fn usage_is_read_from_both_the_shared_key_and_groqs() {
+        let counts = json!({
+            "prompt_tokens": 1200,
+            "completion_tokens": 64,
+            "completion_tokens_details": { "reasoning_tokens": 40 },
+            "prompt_tokens_details": { "cached_tokens": 1024 },
+        });
+        let expected = Usage {
+            input_tokens: 1200,
+            output_tokens: 64,
+            reasoning_tokens: Some(40),
+            cache_read_tokens: Some(1024),
+            cache_write_tokens: None,
+        };
+        for final_chunk in [
+            json!({ "choices": [], "usage": counts }),
+            // Groq's final chunk leaves the shared key null and puts the
+            // real counts one level down.
+            json!({ "choices": [], "usage": null, "x_groq": { "usage": counts } }),
+        ] {
+            let body = [
+                sse(
+                    json!({ "choices": [{ "delta": { "content": "hi" }, "finish_reason": null }] }),
+                ),
+                sse(json!({ "choices": [{ "delta": {}, "finish_reason": "stop" }] })),
+                sse(final_chunk.clone()),
+                "data: [DONE]\n\n".to_string(),
+            ]
+            .concat();
+            let seen = events(&[&body]).await;
+            assert_eq!(reported_usage(&seen), expected, "under {final_chunk}");
+        }
+    }
+
+    /// Plenty of compatible servers — the local ones this flavor exists to
+    /// serve — close the connection the moment the last chunk is out and
+    /// never send `[DONE]`. Insisting on it fails a turn that finished, and
+    /// takes the calls buffered until the terminator down with it: the reply
+    /// would arrive looking complete and simply not have called anything.
+    #[tokio::test]
+    async fn a_server_that_closes_without_done_still_delivers_its_buffered_calls() {
+        let body = [
+            sse(json!({ "choices": [{ "delta": { "tool_calls": [{
+                "index": 0,
+                "id": "call_a",
+                "function": { "name": "get_weather", "arguments": "{\"city\":\"Oslo\"}" },
+            }] } }] })),
+            sse(json!({ "choices": [{ "delta": {}, "finish_reason": "tool_calls" }] })),
+        ]
+        .concat();
+        let seen = events(&[&body]).await;
+        assert_eq!(
+            shapes(&seen),
+            [
+                "start",
+                "tool call_a get_weather {\"city\":\"Oslo\"}",
+                "usage",
+                "end Some(\"tool_calls\")",
+            ]
+        );
+    }
+
+    /// The same local servers omit call ids and send `""` for a call that
+    /// takes no arguments. An empty id collides with every other empty id in
+    /// the approval table, and `""` handed to the JSON parser is an error
+    /// that fails the whole turn rather than a call.
+    #[tokio::test]
+    async fn a_call_with_no_id_and_no_arguments_is_still_usable() {
+        let body = [
+            sse(json!({ "choices": [{ "delta": { "tool_calls": [{
+                "index": 0,
+                "function": { "name": "list_notes", "arguments": "" },
+            }] } }] })),
+            sse(json!({ "choices": [{ "delta": {}, "finish_reason": "tool_calls" }] })),
+            "data: [DONE]\n\n".to_string(),
+        ]
+        .concat();
+        let seen = events(&[&body]).await;
+        let Some(StreamEvent::ToolUse {
+            id, name, input, ..
+        }) = seen
+            .iter()
+            .find(|e| matches!(e, StreamEvent::ToolUse { .. }))
+        else {
+            panic!("the call was dropped: {seen:?}");
+        };
+        assert!(!id.is_empty(), "a call with no id of its own got none");
+        assert_eq!(name, "list_notes");
+        assert_eq!(*input, json!({}));
+    }
+
+    /// Neither terminator means the stream stopped rather than finished:
+    /// whatever text arrived is a fragment, and the call still in the buffer
+    /// never happened.
+    #[tokio::test]
+    async fn a_stream_with_neither_done_nor_a_finish_reason_is_an_error() {
+        let body = [
+            sse(json!({ "choices": [{ "delta": { "content": "half an ans" } }] })),
+            sse(json!({ "choices": [{ "delta": { "tool_calls": [{
+                "index": 0,
+                "id": "call_a",
+                "function": { "name": "bash", "arguments": "{\"cmd\":" },
+            }] } }] })),
+        ]
+        .concat();
+        let seen = drain(&[&body]).await;
+        assert!(
+            !seen.iter().any(|e| matches!(
+                e,
+                Ok(StreamEvent::ToolUse { .. }) | Ok(StreamEvent::End { .. })
+            )),
+            "a truncated stream was closed out as a finished one: {seen:?}"
+        );
+        let Some(Err(ProviderError::Transport(message))) = seen.last() else {
+            panic!("the truncated stream ended quietly: {seen:?}");
+        };
+        assert!(message.contains("incomplete"), "{message}");
     }
 }

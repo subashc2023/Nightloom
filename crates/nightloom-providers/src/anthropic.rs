@@ -135,10 +135,23 @@ fn mark_conversation_prefix(messages: &mut [Value]) {
     };
     // The breakpoint attaches to a content *block*, so it marks the last
     // block of that message rather than the message itself.
-    if let Some(last) = messages[i]["content"]
-        .as_array_mut()
-        .and_then(|blocks| blocks.last_mut())
-    {
+    let Some(blocks) = messages[i]["content"].as_array_mut() else {
+        return;
+    };
+    // Not every block will take one. Anthropic rejects `cache_control` on a
+    // `thinking` or `redacted_thinking` block, and a turn interrupted while
+    // the model was still thinking ends in exactly that — a shape the rest of
+    // this harness takes some trouble to keep replayable, which a 400 here
+    // would undo. Walk back to the last block that can hold the anchor; if
+    // the message is nothing but thinking, this turn simply goes uncached
+    // rather than unsent.
+    let anchorable = |b: &Value| {
+        !matches!(
+            b["type"].as_str(),
+            Some("thinking") | Some("redacted_thinking")
+        )
+    };
+    if let Some(last) = blocks.iter_mut().rev().find(|b| anchorable(b)) {
         last["cache_control"] = json!({ "type": "ephemeral" });
     }
 }
@@ -213,8 +226,29 @@ fn to_wire_message(message: &Message) -> Value {
             _ => None,
         })
         .collect();
+    // A turn every block of which was filtered out goes out as an empty
+    // content array, which Anthropic rejects. It happens for a real shape:
+    // an assistant turn interrupted while it was still thinking, replayed
+    // after a switch to Anthropic, whose thinking carries another vendor's
+    // signature and so cannot be sent. Dropping the message instead would
+    // leave two user turns adjacent, which the API rejects for its own
+    // reason — so it keeps its place and says what became of it, the way an
+    // elided block does.
+    let content = if content.is_empty() {
+        vec![json!({ "type": "text", "text": NOTHING_REPLAYABLE })]
+    } else {
+        content
+    };
     json!({ "role": role, "content": content })
 }
+
+/// What stands in for a turn with nothing left to send after filtering.
+///
+/// Addressed to the model, like every other marker this harness substitutes:
+/// it says the content is gone and why, so the reply is not written as though
+/// the turn had been empty.
+const NOTHING_REPLAYABLE: &str = "[this turn's content was recorded against a \
+     different provider and cannot be replayed here]";
 
 /// Read the prompt side of `message_start.message.usage`.
 ///
@@ -257,9 +291,28 @@ impl Provider for Anthropic {
         if !resp.status().is_success() {
             return Err(api_error(resp).await);
         }
+        Ok(normalize(resp.bytes_stream()))
+    }
+}
 
-        let stream = try_stream! {
-            let mut events = resp.bytes_stream().eventsource();
+/// Turn Anthropic's SSE body into `StreamEvent`s.
+///
+/// Split from the request half because it is a pure function of the bytes, and
+/// because this is the half with something to get wrong: tool arguments and
+/// thinking signatures both arrive as fragments keyed by block index and have
+/// to be buffered and flushed at the right event, and a stream that stops is
+/// not a stream that ended. Asserting on a request body cannot reach any of
+/// that; a canned body can.
+pub(crate) fn normalize<S, B, E>(body: S) -> EventStream
+where
+    S: futures::Stream<Item = Result<B, E>> + Send + 'static,
+    B: AsRef<[u8]> + Send + 'static,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    Box::pin(try_stream! {
+            // Pinned here so the caller can hand over any stream it has,
+            // rather than only ones that happen to be `Unpin`.
+            let mut events = Box::pin(body).eventsource();
             let mut usage = Usage::default();
             let mut stop_reason: Option<String> = None;
             // Tool-call arguments stream as partial JSON keyed by block
@@ -268,6 +321,9 @@ impl Provider for Anthropic {
             // Thinking signatures also stream as fragments keyed by block
             // index; buffer and emit one event at block stop.
             let mut thinking_sigs: HashMap<u64, String> = HashMap::new();
+            // Whether `message_stop` arrived. Without it the stream ending is
+            // a dropped connection, not a finished turn.
+            let mut stopped = false;
 
             while let Some(event) = events.next().await {
                 let event = event.map_err(transport)?;
@@ -380,6 +436,7 @@ impl Provider for Anthropic {
                     "message_stop" => {
                         yield StreamEvent::Usage(usage);
                         yield StreamEvent::End { stop_reason: stop_reason.clone() };
+                        stopped = true;
                         break;
                     }
                     "error" => {
@@ -395,9 +452,10 @@ impl Provider for Anthropic {
                     _ => {}
                 }
             }
-        };
-        Ok(Box::pin(stream))
-    }
+            if !stopped {
+                Err(crate::truncated("anthropic"))?;
+            }
+    })
 }
 
 #[cfg(test)]
@@ -801,5 +859,375 @@ mod tests {
             to_wire_message(&msg)["content"][0],
             json!({ "type": "redacted_thinking", "data": "opaque-payload" })
         );
+    }
+
+    // ---- normalize: the streaming half ----
+
+    /// One SSE frame, framed the way the wire frames it.
+    fn sse(data: Value) -> String {
+        format!("data: {data}\n\n")
+    }
+
+    /// Feed a canned body through [`normalize`], in the chunks given, and
+    /// collect everything it yields.
+    ///
+    /// Where the chunks break is part of the input on purpose: a socket
+    /// splits wherever it likes, including halfway through a frame, and the
+    /// eventsource layer under `normalize` is what has to survive it.
+    async fn drain(chunks: &[&str]) -> Vec<Result<StreamEvent, ProviderError>> {
+        let body = futures::stream::iter(
+            chunks
+                .iter()
+                .map(|c| Ok::<_, std::io::Error>(c.to_string()))
+                .collect::<Vec<_>>(),
+        );
+        normalize(body).collect::<Vec<_>>().await
+    }
+
+    /// The same, for a body expected to stream to a clean end.
+    async fn events(chunks: &[&str]) -> Vec<StreamEvent> {
+        drain(chunks)
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .expect("the canned body streams to a clean end")
+    }
+
+    /// A line per event. `StreamEvent` has no `PartialEq`, and the order
+    /// these arrive in is half of what is being pinned.
+    fn shapes(events: &[StreamEvent]) -> Vec<String> {
+        events
+            .iter()
+            .map(|e| match e {
+                StreamEvent::Start => "start".to_string(),
+                StreamEvent::TextDelta(t) => format!("text {t}"),
+                StreamEvent::ThinkingDelta(t) => format!("thinking {t}"),
+                StreamEvent::ThinkingSignature(s) => format!("signature {s}"),
+                StreamEvent::RedactedThinking { data } => format!("redacted {data}"),
+                StreamEvent::ToolUse {
+                    id, name, input, ..
+                } => format!("tool {id} {name} {input}"),
+                StreamEvent::Usage(_) => "usage".to_string(),
+                StreamEvent::End { stop_reason } => format!("end {stop_reason:?}"),
+                other => format!("{other:?}"),
+            })
+            .collect()
+    }
+
+    /// The one `Usage` event of a turn, and an assertion that it was one.
+    fn reported_usage(events: &[StreamEvent]) -> Usage {
+        let mut found = events.iter().filter_map(|e| match e {
+            StreamEvent::Usage(u) => Some(*u),
+            _ => None,
+        });
+        let usage = found.next().expect("a usage event");
+        assert!(found.next().is_none(), "usage was reported more than once");
+        usage
+    }
+
+    /// Arguments stream as partial-JSON fragments and the socket splits them
+    /// again wherever it likes. Emitting per fragment, or parsing a buffer
+    /// still missing its tail, turns one call into several malformed ones.
+    #[tokio::test]
+    async fn tool_arguments_split_across_chunks_arrive_as_one_call() {
+        let body = [
+            sse(json!({ "type": "message_start", "message": { "usage": { "input_tokens": 9 } } })),
+            sse(json!({
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": { "type": "tool_use", "id": "toolu_01", "name": "get_weather" },
+            })),
+            sse(json!({
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": { "type": "input_json_delta", "partial_json": "{\"city\":" },
+            })),
+            sse(json!({
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": { "type": "input_json_delta", "partial_json": "\"Oslo\"}" },
+            })),
+            sse(json!({ "type": "content_block_stop", "index": 0 })),
+            sse(json!({
+                "type": "message_delta",
+                "delta": { "stop_reason": "tool_use" },
+                "usage": { "output_tokens": 7 },
+            })),
+            sse(json!({ "type": "message_stop" })),
+        ]
+        .concat();
+        // The wire break lands inside the second fragment's payload.
+        let cut = body.find("Oslo").expect("the second fragment");
+        let (head, tail) = body.split_at(cut);
+        let seen = events(&[head, tail]).await;
+        assert_eq!(
+            shapes(&seen),
+            [
+                "start",
+                "tool toolu_01 get_weather {\"city\":\"Oslo\"}",
+                "usage",
+                "end Some(\"tool_use\")",
+            ]
+        );
+    }
+
+    /// Two calls in one turn stream their fragments interleaved, told apart
+    /// by block index alone. One shared buffer splices Paris's arguments
+    /// into Oslo's and leaves neither call parseable.
+    #[tokio::test]
+    async fn interleaved_tool_blocks_keep_their_arguments_apart() {
+        let start = |index: u64, id: &str, name: &str| {
+            sse(json!({
+                "type": "content_block_start",
+                "index": index,
+                "content_block": { "type": "tool_use", "id": id, "name": name },
+            }))
+        };
+        let fragment = |index: u64, partial: &str| {
+            sse(json!({
+                "type": "content_block_delta",
+                "index": index,
+                "delta": { "type": "input_json_delta", "partial_json": partial },
+            }))
+        };
+        let body = [
+            sse(json!({ "type": "message_start", "message": { "usage": { "input_tokens": 9 } } })),
+            start(0, "toolu_01", "get_weather"),
+            start(1, "toolu_02", "get_time"),
+            fragment(0, "{\"city\":"),
+            fragment(1, "{\"zone\":"),
+            fragment(0, "\"Oslo\"}"),
+            fragment(1, "\"CET\"}"),
+            sse(json!({ "type": "content_block_stop", "index": 0 })),
+            sse(json!({ "type": "content_block_stop", "index": 1 })),
+            sse(json!({ "type": "message_delta", "delta": { "stop_reason": "tool_use" } })),
+            sse(json!({ "type": "message_stop" })),
+        ]
+        .concat();
+        let seen = events(&[&body]).await;
+        assert_eq!(
+            shapes(&seen),
+            [
+                "start",
+                "tool toolu_01 get_weather {\"city\":\"Oslo\"}",
+                "tool toolu_02 get_time {\"zone\":\"CET\"}",
+                "usage",
+                "end Some(\"tool_use\")",
+            ]
+        );
+    }
+
+    /// A call that takes no arguments streams no `input_json_delta` at all.
+    /// An empty buffer handed to the JSON parser is an error, not a call —
+    /// and the error would take down the whole turn with it.
+    #[tokio::test]
+    async fn a_call_with_no_argument_fragments_becomes_an_empty_object() {
+        let body = [
+            sse(json!({ "type": "message_start", "message": { "usage": {} } })),
+            sse(json!({
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": { "type": "tool_use", "id": "toolu_01", "name": "list_notes" },
+            })),
+            sse(json!({ "type": "content_block_stop", "index": 0 })),
+            sse(json!({ "type": "message_delta", "delta": { "stop_reason": "tool_use" } })),
+            sse(json!({ "type": "message_stop" })),
+        ]
+        .concat();
+        let seen = events(&[&body]).await;
+        assert_eq!(shapes(&seen)[1], "tool toolu_01 list_notes {}");
+    }
+
+    /// The signature that makes a thinking block replayable arrives in
+    /// pieces like everything else. One event per fragment records several
+    /// partial signatures, each of which Anthropic rejects on replay — and
+    /// the empty delta an adaptive model opens the block with is not a
+    /// thinking token, so counting it skews delta counts and TTFT.
+    #[tokio::test]
+    async fn signature_fragments_accumulate_into_one_thinking_signature() {
+        let signature = |part: &str| {
+            sse(json!({
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": { "type": "signature_delta", "signature": part },
+            }))
+        };
+        let thinking = |text: &str| {
+            sse(json!({
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": { "type": "thinking_delta", "thinking": text },
+            }))
+        };
+        let body = [
+            sse(json!({ "type": "message_start", "message": { "usage": {} } })),
+            sse(json!({
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": { "type": "thinking", "thinking": "" },
+            })),
+            thinking(""),
+            thinking("weighing "),
+            thinking("options"),
+            signature("sig_"),
+            signature("aa"),
+            signature("bb"),
+            sse(json!({ "type": "content_block_stop", "index": 0 })),
+            sse(json!({ "type": "message_delta", "delta": { "stop_reason": "end_turn" } })),
+            sse(json!({ "type": "message_stop" })),
+        ]
+        .concat();
+        // Break the wire in the middle of the second signature fragment.
+        let cut = body.find("\"aa\"").expect("the second fragment");
+        let (head, tail) = body.split_at(cut);
+        let seen = events(&[head, tail]).await;
+        assert_eq!(
+            shapes(&seen),
+            [
+                "start",
+                "thinking weighing ",
+                "thinking options",
+                "signature sig_aabb",
+                "usage",
+                "end Some(\"end_turn\")",
+            ]
+        );
+    }
+
+    /// A redacted block carries its whole payload on `content_block_start`
+    /// and streams no deltas. Waiting for a delta that never comes drops it,
+    /// and with it the only thing that makes the turn replayable.
+    #[tokio::test]
+    async fn redacted_thinking_is_read_off_its_block_start() {
+        let body = [
+            sse(json!({ "type": "message_start", "message": { "usage": {} } })),
+            sse(json!({
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": { "type": "redacted_thinking", "data": "EroBCk" },
+            })),
+            sse(json!({ "type": "content_block_stop", "index": 0 })),
+            sse(json!({
+                "type": "content_block_start",
+                "index": 1,
+                "content_block": { "type": "text", "text": "" },
+            })),
+            sse(json!({
+                "type": "content_block_delta",
+                "index": 1,
+                "delta": { "type": "text_delta", "text": "done" },
+            })),
+            sse(json!({ "type": "content_block_stop", "index": 1 })),
+            sse(json!({ "type": "message_delta", "delta": { "stop_reason": "end_turn" } })),
+            sse(json!({ "type": "message_stop" })),
+        ]
+        .concat();
+        let seen = events(&[&body]).await;
+        assert_eq!(
+            shapes(&seen),
+            [
+                "start",
+                "redacted EroBCk",
+                "text done",
+                "usage",
+                "end Some(\"end_turn\")",
+            ]
+        );
+    }
+
+    /// The prompt size is spread over three counters on `message_start` and
+    /// the output count arrives on a later event again. Reporting
+    /// `input_tokens` as handed over makes the context gauge read near-empty
+    /// on exactly the turns the cache is working.
+    #[tokio::test]
+    async fn usage_lands_once_at_message_stop_with_the_cache_counters_folded_in() {
+        let body = [
+            sse(json!({
+                "type": "message_start",
+                "message": { "usage": {
+                    "input_tokens": 10,
+                    "cache_read_input_tokens": 4000,
+                    "cache_creation_input_tokens": 120,
+                } },
+            })),
+            sse(json!({
+                "type": "message_delta",
+                "delta": { "stop_reason": "end_turn" },
+                "usage": { "output_tokens": 64 },
+            })),
+            sse(json!({ "type": "message_stop" })),
+        ]
+        .concat();
+        let seen = events(&[&body]).await;
+        assert_eq!(
+            reported_usage(&seen),
+            Usage {
+                input_tokens: 4130,
+                output_tokens: 64,
+                reasoning_tokens: None,
+                cache_read_tokens: Some(4000),
+                cache_write_tokens: Some(120),
+            }
+        );
+    }
+
+    /// An overload arrives inside a 200 response, after tokens have already
+    /// streamed. Treating it as one more unknown event type ends the turn
+    /// quietly and records the fragment as the model's answer.
+    #[tokio::test]
+    async fn a_mid_stream_error_event_fails_the_stream() {
+        let body = [
+            sse(json!({ "type": "message_start", "message": { "usage": {} } })),
+            sse(json!({
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": { "type": "text_delta", "text": "partial" },
+            })),
+            sse(json!({
+                "type": "error",
+                "error": { "type": "overloaded_error", "message": "Overloaded" },
+            })),
+        ]
+        .concat();
+        let seen = drain(&[&body]).await;
+        assert_eq!(seen.len(), 3, "{seen:?}");
+        let Some(Err(ProviderError::Api { status, message })) = seen.last() else {
+            panic!("the error did not end the stream: {seen:?}");
+        };
+        assert_eq!(*status, 200);
+        assert_eq!(message, "Overloaded");
+    }
+
+    /// A dropped connection ends the byte stream in silence, which from
+    /// above looks exactly like a model that finished: the half-written
+    /// reply is recorded as a complete one and the call still buffered when
+    /// the bytes stopped is simply lost.
+    #[tokio::test]
+    async fn a_stream_that_stops_before_message_stop_is_an_error() {
+        let body = [
+            sse(json!({ "type": "message_start", "message": { "usage": {} } })),
+            sse(json!({
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": { "type": "tool_use", "id": "toolu_01", "name": "bash" },
+            })),
+            sse(json!({
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": { "type": "input_json_delta", "partial_json": "{\"cmd\":\"ls" },
+            })),
+        ]
+        .concat();
+        let seen = drain(&[&body]).await;
+        assert!(
+            !seen
+                .iter()
+                .any(|e| matches!(e, Ok(StreamEvent::ToolUse { .. }))),
+            "a call that never finished streaming was emitted anyway: {seen:?}"
+        );
+        let Some(Err(ProviderError::Transport(message))) = seen.last() else {
+            panic!("the truncated stream ended quietly: {seen:?}");
+        };
+        assert!(message.contains("incomplete"), "{message}");
     }
 }

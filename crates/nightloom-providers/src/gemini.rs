@@ -172,9 +172,25 @@ impl Provider for Gemini {
         if !resp.status().is_success() {
             return Err(api_error(resp).await);
         }
+        Ok(normalize(resp.bytes_stream()))
+    }
+}
 
-        let stream = try_stream! {
-            let mut events = resp.bytes_stream().eventsource();
+/// Turn Gemini's SSE body into `StreamEvent`s.
+///
+/// Split from the request half so a canned body can reach the parts that are
+/// particular to this dialect: thought parts flagged rather than typed, a
+/// signature that rides on the *part* and may arrive on one carrying nothing
+/// else, ids synthesized for calls that have none, and usage arithmetic that
+/// has to be re-normalized on the way through.
+pub(crate) fn normalize<S, B, E>(body: S) -> EventStream
+where
+    S: futures::Stream<Item = Result<B, E>> + Send + 'static,
+    B: AsRef<[u8]> + Send + 'static,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    Box::pin(try_stream! {
+            let mut events = Box::pin(body).eventsource();
             let mut usage = Usage::default();
             let mut stop_reason: Option<String> = None;
             let mut started = false;
@@ -211,13 +227,30 @@ impl Provider for Gemini {
                 // usageMetadata grows across chunks; the last one is complete.
                 if let Some(u) = v.get("usageMetadata") {
                     let thoughts = u["thoughtsTokenCount"].as_u64();
-                    usage.input_tokens = u["promptTokenCount"].as_u64().unwrap_or(0);
+                    // Each field falls back to what a previous chunk reported
+                    // rather than to zero. A late chunk that carries only some
+                    // of them — a `usageMetadata` announcing the thought count
+                    // alone, say — would otherwise overwrite the prompt count
+                    // with 0 and leave the session's totals reading low, which
+                    // is the one direction a cost figure must never be wrong
+                    // in.
+                    usage.input_tokens = u["promptTokenCount"]
+                        .as_u64()
+                        .unwrap_or(usage.input_tokens);
                     // Normalized convention: output_tokens includes reasoning
                     // (as Anthropic and OpenAI count it); Gemini reports the
-                    // two separately.
-                    usage.output_tokens = u["candidatesTokenCount"].as_u64().unwrap_or(0)
-                        + thoughts.unwrap_or(0);
-                    usage.reasoning_tokens = thoughts.or(usage.reasoning_tokens);
+                    // two separately. The carry-forward has to reach the
+                    // thought count *here* and not only in `reasoning_tokens`
+                    // below: a later chunk repeating the candidate count
+                    // without repeating the thought count would otherwise
+                    // recompute the sum with zero reasoning, leaving a `Usage`
+                    // that contradicts itself — reasoning_tokens larger than
+                    // the output_tokens supposedly containing them.
+                    let thoughts = thoughts.or(usage.reasoning_tokens);
+                    if let Some(candidates) = u["candidatesTokenCount"].as_u64() {
+                        usage.output_tokens = candidates + thoughts.unwrap_or(0);
+                    }
+                    usage.reasoning_tokens = thoughts;
                     // Already counted inside promptTokenCount; implicit
                     // caching reports it, explicit cached content too.
                     usage.cache_read_tokens = u["cachedContentTokenCount"]
@@ -252,7 +285,7 @@ impl Provider for Gemini {
                         if let Some(call) = part.get("functionCall") {
                             let id = match call["id"].as_str() {
                                 Some(id) => id.to_string(),
-                                None => format!("call-{call_index}"),
+                                None => crate::synthetic_call_id(),
                             };
                             // Only the first call of a response is signed;
                             // parallel siblings must stay unsigned, so the
@@ -279,12 +312,17 @@ impl Provider for Gemini {
                 }
             }
             // No terminator event; the server just closes the stream after
-            // the chunk carrying finishReason + final usage.
+            // the chunk carrying finishReason + final usage. So the finish
+            // reason is the only evidence the close was the end of a response
+            // rather than a connection dropping partway through one — and
+            // ending quietly on the second would hand the engine a fragment
+            // that looks exactly like a finished turn.
+            if stop_reason.is_none() {
+                Err(crate::truncated("gemini"))?;
+            }
             yield StreamEvent::Usage(usage);
             yield StreamEvent::End { stop_reason };
-        };
-        Ok(Box::pin(stream))
-    }
+    })
 }
 
 #[cfg(test)]
@@ -567,5 +605,295 @@ mod tests {
             wire["parts"][0]["functionResponse"]["response"],
             json!({ "error": "city not found" })
         );
+    }
+
+    // ---- normalize: the streaming half ----
+
+    /// One SSE frame, framed the way the wire frames it.
+    fn sse(data: Value) -> String {
+        format!("data: {data}\n\n")
+    }
+
+    /// Feed a canned body through [`normalize`], in the chunks given, and
+    /// collect everything it yields.
+    ///
+    /// Where the chunks break is part of the input on purpose: a socket
+    /// splits wherever it likes, including halfway through a frame, and the
+    /// eventsource layer under `normalize` is what has to survive it.
+    async fn drain(chunks: &[&str]) -> Vec<Result<StreamEvent, ProviderError>> {
+        let body = futures::stream::iter(
+            chunks
+                .iter()
+                .map(|c| Ok::<_, std::io::Error>(c.to_string()))
+                .collect::<Vec<_>>(),
+        );
+        normalize(body).collect::<Vec<_>>().await
+    }
+
+    /// The same, for a body expected to stream to a clean end.
+    async fn events(chunks: &[&str]) -> Vec<StreamEvent> {
+        drain(chunks)
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .expect("the canned body streams to a clean end")
+    }
+
+    /// A line per event. `StreamEvent` has no `PartialEq`, and the order
+    /// these arrive in is half of what is being pinned. Calls are described
+    /// by name and signature rather than by id — the id is synthesized and
+    /// deliberately not stable across runs.
+    fn shapes(events: &[StreamEvent]) -> Vec<String> {
+        events
+            .iter()
+            .map(|e| match e {
+                StreamEvent::Start => "start".to_string(),
+                StreamEvent::TextDelta(t) => format!("text {t}"),
+                StreamEvent::ThinkingDelta(t) => format!("thinking {t}"),
+                StreamEvent::ToolUse {
+                    name,
+                    input,
+                    signature,
+                    ..
+                } => format!("tool {name} {input} sig={signature:?}"),
+                StreamEvent::Usage(_) => "usage".to_string(),
+                StreamEvent::End { stop_reason } => format!("end {stop_reason:?}"),
+                other => format!("{other:?}"),
+            })
+            .collect()
+    }
+
+    fn call_ids(events: &[StreamEvent]) -> Vec<&str> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                StreamEvent::ToolUse { id, .. } => Some(id.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn reported_usage(events: &[StreamEvent]) -> Usage {
+        events
+            .iter()
+            .find_map(|e| match e {
+                StreamEvent::Usage(u) => Some(*u),
+                _ => None,
+            })
+            .expect("a usage event")
+    }
+
+    /// Gemini flags a thought part rather than typing it, so the model's
+    /// reasoning is told from its answer by one boolean sitting beside the
+    /// text. Missing it renders the reasoning as the reply.
+    #[tokio::test]
+    async fn thought_parts_become_thinking_and_plain_parts_become_text() {
+        let body = [
+            sse(json!({ "candidates": [{ "content": { "parts": [
+                { "text": "weighing the options", "thought": true },
+            ] } }] })),
+            sse(json!({ "candidates": [{ "content": { "parts": [
+                { "text": "it is " },
+                { "text": "12C" },
+            ] } }] })),
+            sse(json!({
+                "candidates": [{ "content": { "parts": [] }, "finishReason": "STOP" }],
+                "usageMetadata": { "promptTokenCount": 12, "candidatesTokenCount": 5 },
+            })),
+        ]
+        .concat();
+        // The wire break lands inside the answer's first part.
+        let cut = body.find("it is ").expect("the answer");
+        let (head, tail) = body.split_at(cut);
+        let seen = events(&[head, tail]).await;
+        assert_eq!(
+            shapes(&seen),
+            [
+                "start",
+                "thinking weighing the options",
+                "text it is ",
+                "text 12C",
+                "usage",
+                "end Some(\"STOP\")",
+            ]
+        );
+    }
+
+    /// The signature rides on the *part*, not inside `functionCall`, and
+    /// streaming delivers one on a part with empty text just before the
+    /// finish reason. Skipping textless parts loses it and Gemini 3 refuses
+    /// the replay; handing it to every call in the chunk signs a sibling
+    /// Google never signed, which it refuses just as hard.
+    #[tokio::test]
+    async fn a_signature_on_a_textless_part_attaches_to_the_first_call_only() {
+        let body = [
+            sse(json!({ "candidates": [{ "content": { "parts": [
+                { "text": "", "thoughtSignature": "sig-A" },
+            ] } }] })),
+            sse(json!({
+                "candidates": [{
+                    "content": { "parts": [
+                        { "functionCall": { "name": "get_weather", "args": { "city": "Oslo" } } },
+                        { "functionCall": { "name": "get_weather", "args": { "city": "Paris" } } },
+                    ] },
+                    "finishReason": "STOP",
+                }],
+                "usageMetadata": { "promptTokenCount": 40, "candidatesTokenCount": 12 },
+            })),
+        ]
+        .concat();
+        let seen = events(&[&body]).await;
+        assert_eq!(
+            shapes(&seen),
+            [
+                "start",
+                "tool get_weather {\"city\":\"Oslo\"} sig=Some(\"sig-A\")",
+                "tool get_weather {\"city\":\"Paris\"} sig=None",
+                "usage",
+                "end Some(\"STOP\")",
+            ]
+        );
+    }
+
+    /// Gemini usually omits call ids, and canonical `ToolUse` needs one. Two
+    /// calls sharing an id collide in the session log and in the approval
+    /// table, which keys the prompt a user is answering by exactly that id.
+    #[tokio::test]
+    async fn parallel_calls_without_ids_get_distinct_synthesized_ones() {
+        let body = sse(json!({
+            "candidates": [{
+                "content": { "parts": [
+                    { "functionCall": { "name": "read", "args": { "path": "a" } } },
+                    { "functionCall": { "name": "read", "args": { "path": "b" } } },
+                    // A host that does supply one keeps it: the synthesized
+                    // id is a fallback, not a rewrite.
+                    { "functionCall": { "id": "fc_9", "name": "read", "args": { "path": "c" } } },
+                ] },
+                "finishReason": "STOP",
+            }],
+            "usageMetadata": { "promptTokenCount": 40, "candidatesTokenCount": 12 },
+        }));
+        let seen = events(&[&body]).await;
+        let ids = call_ids(&seen);
+        assert_eq!(ids.len(), 3, "{seen:?}");
+        assert_eq!(ids[2], "fc_9");
+        assert!(ids.iter().all(|id| !id.is_empty()), "{ids:?}");
+        assert_ne!(ids[0], ids[1], "two calls answered to one id");
+    }
+
+    /// Gemini reports thought tokens beside the candidate count rather than
+    /// inside it. Passing the candidate count through undercounts the output
+    /// of every reasoning turn, and the bill computed from it.
+    #[tokio::test]
+    async fn output_tokens_fold_in_the_thought_tokens() {
+        let body = sse(json!({
+            "candidates": [{ "content": { "parts": [{ "text": "hi" }] }, "finishReason": "STOP" }],
+            "usageMetadata": {
+                "promptTokenCount": 1200,
+                "candidatesTokenCount": 30,
+                "thoughtsTokenCount": 480,
+                "cachedContentTokenCount": 900,
+            },
+        }));
+        let seen = events(&[&body]).await;
+        assert_eq!(
+            reported_usage(&seen),
+            Usage {
+                input_tokens: 1200,
+                output_tokens: 510,
+                reasoning_tokens: Some(480),
+                cache_read_tokens: Some(900),
+                cache_write_tokens: None,
+            }
+        );
+    }
+
+    /// `usageMetadata` grows across chunks, but a late one need not repeat
+    /// what an earlier one said. Reading each field at face value lets a
+    /// chunk carrying only the thought count overwrite the prompt count with
+    /// zero, leaving the session's totals reading low — the one direction a
+    /// cost figure must not be wrong in.
+    #[tokio::test]
+    async fn a_later_partial_usage_chunk_does_not_zero_what_was_already_reported() {
+        let body = [
+            sse(json!({
+                "candidates": [{ "content": { "parts": [{ "text": "hi" }] } }],
+                "usageMetadata": {
+                    "promptTokenCount": 1200,
+                    "candidatesTokenCount": 30,
+                    "cachedContentTokenCount": 900,
+                },
+            })),
+            sse(json!({
+                "candidates": [{ "content": { "parts": [] }, "finishReason": "STOP" }],
+                "usageMetadata": { "thoughtsTokenCount": 480 },
+            })),
+        ]
+        .concat();
+        let seen = events(&[&body]).await;
+        let usage = reported_usage(&seen);
+        assert_eq!(usage.input_tokens, 1200, "the prompt count was overwritten");
+        assert_eq!(usage.cache_read_tokens, Some(900));
+        assert_eq!(usage.reasoning_tokens, Some(480));
+    }
+
+    /// The mirror of the case above, and the one the carry-forward originally
+    /// missed: a later chunk that repeats the candidate count without
+    /// repeating the thought count. `output_tokens` is recomputed from the
+    /// two, so a thought count that fell back to zero there took reasoning out
+    /// of the total while `reasoning_tokens` kept it — a `Usage` contradicting
+    /// itself, with more reasoning in it than output supposedly containing the
+    /// reasoning.
+    #[tokio::test]
+    async fn a_repeated_candidate_count_does_not_drop_reasoning_out_of_the_total() {
+        let body = [
+            sse(json!({
+                "candidates": [{ "content": { "parts": [{ "text": "hi" }] } }],
+                "usageMetadata": {
+                    "promptTokenCount": 1200,
+                    "candidatesTokenCount": 30,
+                    "thoughtsTokenCount": 480,
+                },
+            })),
+            sse(json!({
+                "candidates": [{ "content": { "parts": [] }, "finishReason": "STOP" }],
+                "usageMetadata": { "promptTokenCount": 1200, "candidatesTokenCount": 30 },
+            })),
+        ]
+        .concat();
+        let usage = reported_usage(&events(&[&body]).await);
+        assert_eq!(usage.reasoning_tokens, Some(480));
+        assert_eq!(
+            usage.output_tokens, 510,
+            "reasoning fell out of the output total"
+        );
+        assert!(
+            usage.output_tokens >= usage.reasoning_tokens.unwrap_or(0),
+            "output_tokens must contain the reasoning it is counted with"
+        );
+    }
+
+    /// Gemini sends no terminator — the server just closes after the chunk
+    /// carrying the finish reason. That reason is therefore the only
+    /// evidence the close was an ending rather than a dropped connection,
+    /// and ending quietly on the second hands the engine a fragment wearing
+    /// the shape of a finished turn.
+    #[tokio::test]
+    async fn a_stream_that_closes_without_a_finish_reason_is_an_error() {
+        let body = sse(json!({
+            "candidates": [{ "content": { "parts": [{ "text": "half an ans" }] } }],
+            "usageMetadata": { "promptTokenCount": 12 },
+        }));
+        let seen = drain(&[&body]).await;
+        assert!(
+            !seen
+                .iter()
+                .any(|e| matches!(e, Ok(StreamEvent::End { .. }) | Ok(StreamEvent::Usage(_)))),
+            "a truncated stream was closed out as a finished one: {seen:?}"
+        );
+        let Some(Err(ProviderError::Transport(message))) = seen.last() else {
+            panic!("the truncated stream ended quietly: {seen:?}");
+        };
+        assert!(message.contains("incomplete"), "{message}");
     }
 }
