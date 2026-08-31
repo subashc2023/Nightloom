@@ -108,6 +108,20 @@ pub struct ChatArgs {
     #[arg(long)]
     self_compact: bool,
 
+    /// After a compaction — /compact, or the model's own compact_context —
+    /// run a dream pass over the memory inbox when observations are pending.
+    /// Opt-in because it spends a provider turn unattended; a compaction is
+    /// the trigger the evidence supports, being the moment a conversation's
+    /// detail is already being traded away.
+    #[arg(long, conflicts_with = "no_knowledge")]
+    auto_dream: bool,
+
+    /// Which model dreams, as provider[:model] — e.g.
+    /// openrouter:deepseek/deepseek-v4-flash. Defaults to this chat's own
+    /// provider and model.
+    #[arg(long, value_name = "TARGET", requires = "auto_dream")]
+    dream_target: Option<String>,
+
     /// Drive a signed-in agent CLI instead of calling a provider API, so the
     /// turn is billed to that CLI's login — a Claude subscription rather than
     /// an API key. Claude Code then owns the loop, the tools and the history,
@@ -802,7 +816,10 @@ fn rename(session: &mut Session, name: &str) {
     println!("{DIM}named “{name}”{RESET}");
 }
 
-async fn run_turn(chat: &Chat, session: &mut Session, input: &str) -> Result<()> {
+/// Returns whether a compaction landed during the turn — the model asking
+/// through `compact_context` and the engine honouring it at the boundary —
+/// which is what `--auto-dream` keys on.
+async fn run_turn(chat: &Chat, session: &mut Session, input: &str) -> Result<bool> {
     let cancel = CancellationToken::new();
     let trigger = cancel.clone();
     let ctrl_c = tokio::spawn(async move {
@@ -813,8 +830,12 @@ async fn run_turn(chat: &Chat, session: &mut Session, input: &str) -> Result<()>
 
     let mut stdout = io::stdout();
     let mut in_thinking = false;
+    let mut compacted = false;
     let result = chat
         .run_turn(session, input, &cancel, &mut |event| {
+            if matches!(event, TurnEvent::Compacted { .. }) {
+                compacted = true;
+            }
             // Rendering failures (closed stdout) aren't worth aborting over.
             let _ = render(&mut stdout, &mut in_thinking, event);
         })
@@ -829,11 +850,12 @@ async fn run_turn(chat: &Chat, session: &mut Session, input: &str) -> Result<()>
     if outcome.interrupted {
         println!("{DIM}interrupted{RESET}");
     }
-    Ok(())
+    Ok(compacted)
 }
 
-/// Compact the session (Ctrl-C cancellable), reporting the outcome.
-async fn run_compact(chat: &Chat, session: &mut Session) -> Result<()> {
+/// Compact the session (Ctrl-C cancellable), reporting the outcome. Returns
+/// whether the compaction actually landed, for `--auto-dream`.
+async fn run_compact(chat: &Chat, session: &mut Session) -> Result<bool> {
     let cancel = CancellationToken::new();
     let trigger = cancel.clone();
     let ctrl_c = tokio::spawn(async move {
@@ -848,14 +870,80 @@ async fn run_compact(chat: &Chat, session: &mut Session) -> Result<()> {
     let outcome = result?;
     if outcome.interrupted {
         println!("{DIM}compaction cancelled; session unchanged{RESET}");
-        return Ok(());
+        return Ok(false);
     }
     println!(
         "{DIM}compacted — earlier turns replaced by a summary ({} chars):{RESET}",
         outcome.summary.chars().count()
     );
     println!("{DIM}{}{RESET}", outcome.summary);
-    Ok(())
+    Ok(true)
+}
+
+/// The dream pass `--auto-dream` runs after a compaction landed.
+///
+/// The check is here rather than at the call sites: nothing pending means
+/// nothing printed and nothing spent, so a compaction with an empty inbox
+/// costs no extra output. Failures are reported and swallowed — a REPL that
+/// died because an unattended consolidation hit a provider error would be
+/// losing the conversation over the housekeeping.
+async fn auto_dream(args: &ChatArgs) {
+    if !args.auto_dream {
+        return;
+    }
+    let Some(config) = project::config_dir() else {
+        return;
+    };
+    if nightloom_service::observe::pending_count_in(&config) == 0 {
+        return;
+    }
+    let spec = match dream_spec(args) {
+        Ok(spec) => spec,
+        Err(e) => {
+            eprintln!("{DIM}auto-dream skipped: {e:#}{RESET}");
+            return;
+        }
+    };
+    println!(
+        "{DIM}auto-dream: consolidating the memory inbox ({}{}){RESET}",
+        spec.provider,
+        spec.model
+            .as_deref()
+            .map(|m| format!(":{m}"))
+            .unwrap_or_default()
+    );
+    if let Err(e) = crate::dream::consolidate(spec).await {
+        eprintln!("{DIM}auto-dream failed: {e:#}{RESET}");
+    }
+}
+
+/// Resolve `--dream-target` (provider[:model]) into a spec, defaulting to
+/// the chat's own provider and model.
+fn dream_spec(args: &ChatArgs) -> Result<crate::dream::DreamSpec> {
+    let (provider, model) = match args.dream_target.as_deref() {
+        None => (args.provider, args.model.clone()),
+        Some(target) => {
+            let (provider, model) = match target.split_once(':') {
+                Some((p, m)) => (p, Some(m.to_string())),
+                None => (target, None),
+            };
+            let kind = provider.parse().map_err(|e: String| {
+                anyhow::anyhow!("--dream-target {target}: {e} (expected provider[:model])")
+            })?;
+            (kind, model)
+        }
+    };
+    Ok(crate::dream::DreamSpec {
+        provider,
+        model,
+        // The base URL belongs to the chat's provider; carrying it onto a
+        // different one would aim the dream at the wrong host.
+        base_url: (provider == args.provider)
+            .then(|| args.base_url.clone())
+            .flatten(),
+        thinking: None,
+        max_tokens: 8192,
+    })
 }
 
 pub(crate) fn prompt_line() -> Result<Option<String>> {
@@ -909,12 +997,21 @@ pub async fn run(args: ChatArgs) -> Result<()> {
     {
         eprintln!("nightloom: {line}");
     }
+    // A mistyped --dream-target is an argument error, and finding that out
+    // at the first compaction — possibly hours in, possibly unattended — is
+    // the wrong moment.
+    if args.auto_dream {
+        dream_spec(&args)?;
+    }
     let mcp_tools = connect_mcp(&args).await;
     let mut chat = build_chat(&args, &mcp_tools)?;
     let mut session = open_session(&args)?;
 
     if let Some(prompt) = args.once.clone() {
-        run_turn(&chat, &mut session, &prompt).await?;
+        let compacted = run_turn(&chat, &mut session, &prompt).await?;
+        if compacted {
+            auto_dream(&args).await;
+        }
         return Ok(());
     }
     // After the one-shot path, deliberately. `--once` is a single answer to a
@@ -980,6 +1077,21 @@ pub async fn run(args: ChatArgs) -> Result<()> {
             }
         }
     }
+    // Named at startup like the vault and the search chain: an unattended
+    // pass that spends money should not be a surprise when it fires.
+    // Validated on entry, so the spec resolves here.
+    if args.auto_dream
+        && let Ok(spec) = dream_spec(&args)
+    {
+        println!(
+            "{DIM}auto-dream: on — a compaction consolidates the inbox via {}{}{RESET}",
+            spec.provider,
+            spec.model
+                .as_deref()
+                .map(|m| format!(":{m}"))
+                .unwrap_or_default()
+        );
+    }
     if args.tools && !args.no_web {
         // Said out loud because the failure is otherwise invisible: a model
         // with no `web_search` does not report that it has none, it simply
@@ -1032,8 +1144,10 @@ pub async fn run(args: ChatArgs) -> Result<()> {
                 continue;
             }
             "/compact" => {
-                if let Err(e) = run_compact(&chat, &mut session).await {
-                    eprintln!("error: {e:#}");
+                match run_compact(&chat, &mut session).await {
+                    Ok(true) => auto_dream(&args).await,
+                    Ok(false) => {}
+                    Err(e) => eprintln!("error: {e:#}"),
                 }
                 continue;
             }
@@ -1072,14 +1186,21 @@ pub async fn run(args: ChatArgs) -> Result<()> {
         }
         println!();
         let was_named = session.title().is_some();
-        if let Err(e) = run_turn(&chat, &mut session, &line).await {
-            eprintln!("\nerror: {e:#}");
-        }
+        let compacted = match run_turn(&chat, &mut session, &line).await {
+            Ok(compacted) => compacted,
+            Err(e) => {
+                eprintln!("\nerror: {e:#}");
+                false
+            }
+        };
         // Said once, when it happens: the name is what `nightloom sessions`
         // will list this conversation under, and a feature that spends a
         // provider call should say that it did.
         if !was_named && let Some(title) = session.title() {
             println!("{DIM}named “{title}”{RESET}");
+        }
+        if compacted {
+            auto_dream(&args).await;
         }
     }
 

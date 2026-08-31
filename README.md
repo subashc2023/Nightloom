@@ -266,6 +266,10 @@ memory.
 ```sh
 nightloom dream --dry-run   # what's pending; spends nothing
 nightloom dream             # consolidate the inbox into the vault
+
+# or let a compaction trigger it — the moment a conversation's detail is
+# already being traded for a summary
+nightloom --auto-dream --dream-target openrouter:deepseek/deepseek-v4-flash
 ```
 
 The dream is the only writer of consolidated notes: it files each durable
@@ -275,9 +279,12 @@ back for conclusions no single observation states. If the vault is a git
 repository it commits before and after, so `git log -p` is the audit trail
 and revert is free. The raw log is never pruned, a failed pass consumes
 nothing, and fetched content is never promoted past attribution — that is
-the poisoning defense. Deliberately manual: an unattended pass spends real
-money, so the CLI just tells you at startup how many observations are
-waiting.
+the poisoning defense. An unattended pass spends real money, so nothing
+fires by default — the CLI names the backlog at startup and the desktop
+badges its Dream button. Opting in (`--auto-dream`, or Settings → Knowledge
+in the app) runs a pass after each compaction, and a dream-model override
+lets a cheap model do it: in a six-model bench, DeepSeek v4 flash held
+every consolidation rule at about $0.002 a pass.
 
 ### Importing from claude.ai
 

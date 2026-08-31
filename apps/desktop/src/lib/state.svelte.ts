@@ -64,6 +64,46 @@ function saveLastProject(id: string | null): void {
   }
 }
 
+/**
+ * How the dream runs: whether a compaction triggers one, and on which model.
+ * A UI preference like the last connection — the backend holds no opinion.
+ */
+const DREAM_PREFS_KEY = "nightloom.dream";
+
+export interface DreamPrefs {
+  /** Dream automatically after a compaction, when the inbox has entries. */
+  auto: boolean;
+  /** Provider that dreams; "" means whatever the rail is connected to. */
+  provider: string;
+  /** Model that dreams; "" means the provider's default. */
+  model: string;
+}
+
+function loadDreamPrefs(): DreamPrefs {
+  try {
+    const raw = localStorage.getItem(DREAM_PREFS_KEY);
+    if (raw) {
+      const p = JSON.parse(raw) as Partial<DreamPrefs>;
+      return {
+        auto: !!p.auto,
+        provider: typeof p.provider === "string" ? p.provider : "",
+        model: typeof p.model === "string" ? p.model : "",
+      };
+    }
+  } catch {
+    // A malformed preference costs the preference, not the feature.
+  }
+  return { auto: false, provider: "", model: "" };
+}
+
+export function saveDreamPrefs(): void {
+  try {
+    localStorage.setItem(DREAM_PREFS_KEY, JSON.stringify(app.dreamPrefs));
+  } catch {
+    // best-effort
+  }
+}
+
 export interface ToolCallView {
   id: string;
   name: string;
@@ -212,10 +252,19 @@ export const app = $state({
   dreaming: false,
   /** The dream's most recent tool call, for the running button's tooltip. */
   dreamActivity: "",
+  /** Auto-dream and the dream model, Settings → Knowledge. */
+  dreamPrefs: loadDreamPrefs(),
   toasts: [] as { id: number; text: string }[],
 });
 
 let initialized = false;
+
+/**
+ * A compaction landed during the in-flight turn (the model asked, the engine
+ * honoured it at the boundary). Consumed by `send` once the transcript has
+ * re-synced, which is where the auto-dream fires from.
+ */
+let compactedThisTurn = false;
 
 /**
  * A click in the macOS menu bar (`mac_menu` in `main.rs`), which is where
@@ -362,19 +411,31 @@ export async function refreshDreamStatus(): Promise<void> {
 export async function runDream(): Promise<void> {
   if (app.dreaming) return;
   const d = app.draft;
-  if (d.engine === "claude-code") {
-    addToast("dreaming runs on a provider API — pick a provider in the rail first");
+  const prefs = app.dreamPrefs;
+  // A dream model set in Settings wins over the rail — one knob answers
+  // "which model dreams" for the button and the auto-trigger alike, and it
+  // is also what lets the agent engine dream at all, having no provider of
+  // its own to lend.
+  let target: { provider: string; model?: string; baseUrl?: string; thinking?: string };
+  if (prefs.provider) {
+    target = { provider: prefs.provider, model: prefs.model.trim() || undefined };
+  } else if (d.engine === "claude-code") {
+    addToast(
+      "dreaming runs on a provider API — set a dream model in Settings → Knowledge, or pick a provider in the rail",
+    );
     return;
-  }
-  app.dreaming = true;
-  app.dreamActivity = "";
-  try {
-    const r = await api.dream({
+  } else {
+    target = {
       provider: d.provider,
       model: d.model || undefined,
       baseUrl: d.baseUrl.trim() || undefined,
       thinking: thinkingString(d),
-    });
+    };
+  }
+  app.dreaming = true;
+  app.dreamActivity = "";
+  try {
+    const r = await api.dream(target);
     addToast(
       r.interrupted
         ? "dream interrupted — nothing consumed; the same batch is offered next time"
@@ -392,6 +453,21 @@ export async function runDream(): Promise<void> {
   // The pass writes notes and consumes the inbox; both surfaces follow.
   await refreshNotes();
   await refreshDreamStatus();
+}
+
+/**
+ * The auto-dream trigger: a compaction just landed, which is the moment the
+ * evidence supports — the conversation's detail is already being traded for
+ * a summary, so a background consolidation interrupts nothing the user was
+ * still watching. Opt-in (Settings → Knowledge) because it spends a
+ * provider turn unattended; an empty inbox spends nothing and says nothing.
+ */
+async function maybeAutoDream(): Promise<void> {
+  if (!app.dreamPrefs.auto || app.dreaming) return;
+  await refreshDreamStatus();
+  if (app.dreamPending === 0) return;
+  addToast("auto-dream: consolidating the memory inbox");
+  await runDream();
 }
 
 /** Interrupt the in-flight dream. Nothing is consumed; the batch returns. */
@@ -906,6 +982,7 @@ export async function compactSession(): Promise<void> {
     } else {
       addToast("session compacted");
       app.events = await api.transcript();
+      void maybeAutoDream();
     }
   } catch (e) {
     app.error = String(e);
@@ -991,6 +1068,10 @@ export async function send(
     void refreshNotes();
     // And it may have remembered something; the Dream badge follows.
     void refreshDreamStatus();
+    if (compactedThisTurn) {
+      compactedThisTurn = false;
+      void maybeAutoDream();
+    }
   }
 }
 
@@ -1101,6 +1182,9 @@ function applyTurnEvent(ev: TurnEvent): void {
     // re-sync and renders there; this only makes the moment visible, matching
     // what the manual compact button reports.
     addToast("context compacted by the model");
+    // Noted here, acted on when `send` settles: a dream that started while
+    // the turn was still re-syncing would race the transcript for nothing.
+    compactedThisTurn = true;
     if (app.live) {
       closeThinking(app.live.segments);
       app.live.segments.push({

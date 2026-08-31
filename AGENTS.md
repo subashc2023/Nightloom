@@ -129,8 +129,10 @@ The event log is the source of truth. The provider message list
   (`dream.json`) is a byte offset that advances only on an uninterrupted
   pass. Don't add a consolidation step to the write path, don't let the
   dream delete notes (supersession is strikethrough-with-date), and don't
-  auto-schedule it — it spends money unattended. The design and the
-  research behind it: `.agents/dreaming.md`.
+  schedule it behind the user's back — it spends money unattended, so the
+  one automation is opt-in and compaction-triggered (`--auto-dream`, or the
+  desktop's Settings → Knowledge toggle), never a wall clock. The design,
+  the research, and the dream-model bench: `.agents/dreaming.md`.
 - **Turn semantics live in two files** and usually change together:
   `service/turn.rs` and `core/session.rs`. A shell that seems to need its own
   loop logic is a sign something belongs in `turn.rs`.

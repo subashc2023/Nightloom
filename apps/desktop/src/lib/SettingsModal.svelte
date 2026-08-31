@@ -5,6 +5,7 @@
     fetchModels,
     refreshProviders,
     refreshSearchBackends,
+    saveDreamPrefs,
     setPrefs,
     useKnowledgeDir,
   } from "./state.svelte";
@@ -340,6 +341,49 @@
           >
             Reset to default
           </button>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-title">Dreaming</div>
+        <p class="note small">
+          A dream pass consolidates the memory inbox into the vault — the
+          Dream button in the Notes panel runs one by hand. Switched on here,
+          one also runs after a compaction: the moment a conversation's detail
+          is already being traded for a summary, and the trigger the
+          consolidation evidence points at. It runs unattended and spends real
+          money, so it is off until you say otherwise.
+        </p>
+        <label class="dream-auto">
+          <input
+            type="checkbox"
+            bind:checked={app.dreamPrefs.auto}
+            onchange={saveDreamPrefs}
+          />
+          <span>Dream automatically after a compaction</span>
+        </label>
+        <!-- The pass reads no chat context, so it does not need the chat's
+             model — a cheap one does this job well, and an automatic pass is
+             exactly where cost compounds. -->
+        <p class="note small">
+          Which model dreams. Leave on the rail's connection to dream with
+          whatever the chat runs on; picking a provider here also lets the
+          Claude Code engine dream, which has no provider of its own to lend.
+        </p>
+        <div class="key-form">
+          <select bind:value={app.dreamPrefs.provider} onchange={saveDreamPrefs}>
+            <option value="">the rail's connection</option>
+            {#each app.providers as p (p.kind)}
+              <option value={p.kind}>{providerLabel(p.kind)}</option>
+            {/each}
+          </select>
+          <input
+            type="text"
+            placeholder="model — blank for the provider's default"
+            disabled={!app.dreamPrefs.provider}
+            bind:value={app.dreamPrefs.model}
+            onchange={saveDreamPrefs}
+          />
         </div>
       </section>
     </div>
@@ -728,6 +772,23 @@
   .add {
     display: flex;
     gap: 0.4rem;
+  }
+  .dream-auto {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-size: 0.78rem;
+    color: var(--text);
+    cursor: pointer;
+    margin-bottom: 0.6rem;
+  }
+  .key-form select {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.35rem 0.5rem;
+    font-size: 0.78rem;
   }
   input[type="password"],
   input[type="text"] {

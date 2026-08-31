@@ -40,7 +40,67 @@ pub struct DreamArgs {
     dry_run: bool,
 }
 
+/// Everything a dream pass needs to know about which model runs it.
+///
+/// The `dream` subcommand and the REPL's `--auto-dream` both build one of
+/// these and hand it to [`consolidate`], so the two paths cannot drift into
+/// preparing the pass differently.
+#[derive(Clone)]
+pub struct DreamSpec {
+    pub provider: ProviderKind,
+    pub model: Option<String>,
+    pub base_url: Option<String>,
+    pub thinking: Option<Thinking>,
+    pub max_tokens: u32,
+}
+
 pub async fn run(args: DreamArgs) -> Result<()> {
+    let Some(config) = project::config_dir() else {
+        bail!("no user config directory — there is nowhere for an observation log to live");
+    };
+    if args.dry_run {
+        let backlog = observe::backlog_in(&config);
+        if backlog.pending.is_empty() {
+            println!("nothing to dream about — no unconsolidated observations.");
+        } else {
+            println!(
+                "{} observation{} awaiting consolidation:",
+                backlog.pending.len(),
+                if backlog.pending.len() == 1 { "" } else { "s" }
+            );
+            for p in &backlog.pending {
+                let source = p.obs.source.as_deref().unwrap_or("—");
+                println!(
+                    "{DIM}  {} · {source} · {}:{RESET} {}",
+                    p.obs.at.format("%Y-%m-%d %H:%M"),
+                    p.obs.kind.as_str(),
+                    p.obs.text
+                );
+            }
+        }
+        if backlog.unreadable > 0 {
+            println!(
+                "{DIM}({} line{} this build could not read were skipped){RESET}",
+                backlog.unreadable,
+                if backlog.unreadable == 1 { "" } else { "s" }
+            );
+        }
+        return Ok(());
+    }
+    consolidate(DreamSpec {
+        provider: args.provider,
+        model: args.model,
+        base_url: args.base_url,
+        thinking: args.thinking,
+        max_tokens: args.max_tokens,
+    })
+    .await
+}
+
+/// One consolidation pass: connect the spec's provider, run the dream, and
+/// report on stdout. Quietly says so and spends nothing when the inbox is
+/// empty.
+pub async fn consolidate(spec: DreamSpec) -> Result<()> {
     let Some(config) = project::config_dir() else {
         bail!("no user config directory — there is nowhere for an observation log to live");
     };
@@ -56,23 +116,6 @@ pub async fn run(args: DreamArgs) -> Result<()> {
         }
         return Ok(());
     }
-    if args.dry_run {
-        println!(
-            "{} observation{} awaiting consolidation:",
-            backlog.pending.len(),
-            if backlog.pending.len() == 1 { "" } else { "s" }
-        );
-        for p in &backlog.pending {
-            let source = p.obs.source.as_deref().unwrap_or("—");
-            println!(
-                "{DIM}  {} · {source} · {}:{RESET} {}",
-                p.obs.at.format("%Y-%m-%d %H:%M"),
-                p.obs.kind.as_str(),
-                p.obs.text
-            );
-        }
-        return Ok(());
-    }
 
     let Some(vault) = knowledge::vault_dir() else {
         bail!("no user config directory — there is no vault to consolidate into");
@@ -84,18 +127,18 @@ pub async fn run(args: DreamArgs) -> Result<()> {
         .with_context(|| format!("cannot create the vault at {}", vault.display()))?;
 
     let (provider, model) = nightloom_service::connect(
-        args.provider,
-        args.model.clone(),
-        credentials::provider_key(args.provider),
-        args.base_url.clone(),
+        spec.provider,
+        spec.model.clone(),
+        credentials::provider_key(spec.provider),
+        spec.base_url.clone(),
         None,
     )
-    .with_context(|| format!("cannot build provider {}", args.provider))?;
+    .with_context(|| format!("cannot build provider {}", spec.provider))?;
     let mut chat = Chat::new(provider, model);
-    chat.thinking = args.thinking.clone().unwrap_or(Thinking::Default);
-    chat.max_tokens = args.max_tokens;
-    chat.context_limit = nightloom_service::context_limit(args.provider, &chat.model);
-    chat.price = nightloom_service::price(args.provider, &chat.model);
+    chat.thinking = spec.thinking.clone().unwrap_or(Thinking::Default);
+    chat.max_tokens = spec.max_tokens;
+    chat.context_limit = nightloom_service::context_limit(spec.provider, &chat.model);
+    chat.price = nightloom_service::price(spec.provider, &chat.model);
     dream::prepare(&mut chat, &vault);
 
     println!(

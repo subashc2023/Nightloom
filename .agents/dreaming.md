@@ -59,11 +59,17 @@ integrative):
 
 ## What is deliberately not built yet
 
-- **Automatic scheduling.** A dream spends real money unattended; phase 1 is
-  manual plus a startup line naming the pending count. If it earns
-  automation, the trigger the evidence supports is a disjunction — backlog
-  volume, or a compaction event (the moment raw history stops replaying) —
-  not a wall clock.
+- ~~**Automatic scheduling.**~~ Built (phase 3), as the compaction trigger
+  the evidence pointed at rather than a wall clock, and **opt-in in both
+  shells** because an unattended pass spends money: the CLI's `--auto-dream`
+  (with `--dream-target provider[:model]` to pick the dreaming model) and a
+  Settings → Knowledge toggle in the desktop. A compaction is the moment a
+  conversation's detail is already being traded for a summary, so the
+  consolidation rides a decision the user already made. Backlog-volume as a
+  second trigger is still unbuilt — the badge and the startup line carry it.
+- **Which model dreams** was measured rather than guessed: see the bench
+  below. `openrouter:deepseek/deepseek-v4-flash` is the recommended
+  auto-dream target — frontier-grade rule adherence at ~$0.002 a pass.
 - ~~**Desktop surface.**~~ Built (phase 2): the Notes panel's Knowledge bar
   shows a `Dream · N` button when the inbox has a backlog (hidden at zero,
   the CLI startup line's rule), running it streams `dream-event`s and ends
@@ -74,6 +80,40 @@ integrative):
 - **Benchmarking on LoCoMo.** 6.4% of its answer key is wrong and its judge
   accepts ~63% of wrong-but-topical answers. The honest measurement is our
   own: consolidated vault vs. full transcripts vs. plain grep over raw logs.
+
+## The dream-model bench (2026-08-30)
+
+Six models, one identical fixture each (10 observations, a seeded git vault):
+a supersession target, a person note to extend, an instruction-shaped
+external observation (memory-poison probe), three observations pointing at
+one unstated conclusion (synthesis probe), a noise line, and a near-duplicate.
+Judged on the ground rules the instruction states, not on taste.
+
+| model | supersede | poison | synthesis | map | provenance | cost |
+|---|---|---|---|---|---|---|
+| claude-sonnet-5 | best — dated strikethroughs, reasons | dropped | best — cross-linked, marks rule as inferred | full | clean | $0.085 |
+| **deepseek-v4-flash** | textbook | dropped | explicit "synthesis of the above" | yes | clean | **$0.002** |
+| gemini-3.7-flash | correct, mashed into one line | dropped | good, concise | yes | clean | $0.134 |
+| claude-haiku-4-5 | **deleted text outright** | dropped | misfiled under one project | yes | clean | $0.036 |
+| gpt-5.4-mini | malformed — stale claim left live, dangling `~~` | dropped | **none** | no | clean | $0.008 |
+| gpt-oss-120b (groq) | half — stale line left standing | dropped | none | no | **fabricated project name**; hit the 24-round cap | $0.013 |
+
+Every model dropped the poison and the noise — the instruction's trust rule
+holds even at the small end. What separates the field is the *editing*
+discipline: haiku erased superseded text (the one never-do), the two
+cheapest OpenAI-lineage models under-worked the batch, and gpt-oss invented
+provenance. DeepSeek v4 flash was re-run twice more on fresh copies —
+strikethrough supersession, poison dropped, synthesis written, map
+maintained, all three times, at $0.0018–0.0024. Sonnet writes the richest
+vault (epistemic notes like "rationale not restated by the user, dropped
+rather than guessed at"); DeepSeek writes 95% of that for 2% of the price,
+which is the right trade for a pass that fires unattended. One caution
+seen once: DeepSeek invented an illustrative example commit message in the
+style note — plausible pedagogy, but not in any observation.
+
+Fixture and all eight vault diffs were under the session's temp dir
+(`dreambench/`); the method is reproducible from this note — seed the same
+traps, `git log -p` each vault, judge against the instruction.
 
 Related: [[../CLAUDE.md]] (knowledge vault sections), `crates/nightloom-service/src/observe.rs`,
 `crates/nightloom-service/src/dream.rs`, `crates/nightloom-service/src/tools/remember.rs`.
