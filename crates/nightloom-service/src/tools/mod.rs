@@ -73,6 +73,38 @@ pub(crate) async fn interruptible<T>(
         out = f => Ok(out),
     }
 }
+/// Run a tool's synchronous filesystem work off the async runtime.
+///
+/// Every built-in read is `std::fs` inside an `async fn`, which is a claim the
+/// executor takes at face value and the code does not honour: the future never
+/// awaits, so it runs start to finish on its first poll and holds a worker
+/// thread for the whole walk.
+///
+/// That cost two things. The engine batches adjacent `ReadOnly` calls and
+/// polls them together, so three reads the model asked for at once ran one
+/// after another anyway — real machinery over work that could not overlap,
+/// passing its tests only because the scripted tools in them await. And a
+/// `grep` over a large tree stalled every other task that happened to share
+/// its thread, streaming included.
+///
+/// The token is handed to the closure rather than raced against it, so the
+/// per-entry cancellation checks inside these walks keep working exactly as
+/// they did. The engine still waits for the call — a blocking read is not
+/// abandonable, which is what [`interruptible`] is for and this is not.
+pub(crate) async fn blocking<T, F>(f: F) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+    T: Send + 'static,
+{
+    match tokio::task::spawn_blocking(f).await {
+        Ok(out) => out,
+        // The closure panicked, or the runtime is going down. Neither is
+        // something to retry, and the model gets told rather than left with a
+        // call that produced nothing.
+        Err(e) => Err(format!("the file system task did not finish: {e}")),
+    }
+}
+
 use serde_json::{Value, json};
 use std::path::PathBuf;
 

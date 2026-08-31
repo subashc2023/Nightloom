@@ -1,6 +1,6 @@
 //! Reading, writing, and editing files inside the workspace root.
 
-use super::{Root, path_arg, str_arg, truncated};
+use super::{Root, blocking, path_arg, str_arg, truncated};
 use nightloom_core::ToolDef;
 use nightloom_core::tool::{CancellationToken, Effect, Tool};
 use serde_json::{Value, json};
@@ -70,10 +70,16 @@ impl Tool for ReadFile {
         let arg = path_arg(&input)?;
         let path = self.root.resolve(&arg)?;
         let shown = self.root.show(&path);
-        let bytes = fs::read(&path).map_err(|e| format!("cannot read {shown}: {e}"))?;
-        let text = String::from_utf8(bytes)
-            .map_err(|_| format!("{shown} is not valid UTF-8; it looks like a binary file"))?;
-        Ok(truncated(text))
+        // The read itself goes to the blocking pool. See `blocking`: a batch
+        // of these is what the engine's adjacent-read overlap exists for, and
+        // sync I/O in an async fn is what stopped it from being an overlap.
+        blocking(move || {
+            let bytes = fs::read(&path).map_err(|e| format!("cannot read {shown}: {e}"))?;
+            let text = String::from_utf8(bytes)
+                .map_err(|_| format!("{shown} is not valid UTF-8; it looks like a binary file"))?;
+            Ok(truncated(text))
+        })
+        .await
     }
 }
 
@@ -281,21 +287,24 @@ impl Tool for ListDir {
         let arg = input["path"].as_str().unwrap_or(".").to_string();
         let path = self.root.resolve(&arg)?;
         let shown = self.root.show(&path);
-        let entries = fs::read_dir(&path).map_err(|e| format!("cannot list {shown}: {e}"))?;
-        let mut lines = Vec::new();
-        for entry in entries {
-            let entry = entry.map_err(|e| format!("cannot list {shown}: {e}"))?;
-            let mut name = entry.file_name().to_string_lossy().into_owned();
-            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                name.push('/');
+        blocking(move || {
+            let entries = fs::read_dir(&path).map_err(|e| format!("cannot list {shown}: {e}"))?;
+            let mut lines = Vec::new();
+            for entry in entries {
+                let entry = entry.map_err(|e| format!("cannot list {shown}: {e}"))?;
+                let mut name = entry.file_name().to_string_lossy().into_owned();
+                if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                    name.push('/');
+                }
+                lines.push(name);
             }
-            lines.push(name);
-        }
-        lines.sort();
-        if lines.is_empty() {
-            return Ok(format!("{shown} is empty"));
-        }
-        Ok(truncated(lines.join("\n")))
+            lines.sort();
+            if lines.is_empty() {
+                return Ok(format!("{shown} is empty"));
+            }
+            Ok(truncated(lines.join("\n")))
+        })
+        .await
     }
 }
 
@@ -312,6 +321,38 @@ mod tests {
             EditFile::new(root.clone()),
             ListDir::new(root),
         )
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_read_gives_the_runtime_back_while_it_waits_on_the_disk() {
+        // The engine batches adjacent `ReadOnly` calls and polls them
+        // together, so a read that never awaits runs to completion on its
+        // first poll and the batch is serial however it was classified —
+        // machinery whose own tests passed because the tools in them were
+        // mocks that slept. On a single-threaded runtime a queued task can
+        // only run if this call yields the thread, which is the property that
+        // makes the overlap real; it is also what keeps a walk of a large
+        // tree from stalling the stream being rendered beside it.
+        let dir = test_dir("files-yields");
+        fs::write(dir.join("note.txt"), "hello").unwrap();
+        let (read, ..) = tools(&dir);
+
+        let ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = std::sync::Arc::clone(&ran);
+        tokio::spawn(async move {
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        let out = read
+            .call(json!({ "path": "note.txt" }), &CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(out, "hello");
+        assert!(
+            ran.load(std::sync::atomic::Ordering::SeqCst),
+            "the read held the runtime thread for its whole duration"
+        );
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[tokio::test]

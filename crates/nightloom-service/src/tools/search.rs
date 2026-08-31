@@ -7,7 +7,7 @@
 //! matcher. `globset` is a matcher over paths we produce ourselves, so both
 //! tools see exactly the same tree with exactly the same glob semantics.
 
-use super::{INTERRUPTED, Root, VAULT_ALIAS};
+use super::{INTERRUPTED, Root, VAULT_ALIAS, blocking};
 use globset::{GlobBuilder, GlobMatcher};
 use nightloom_core::ToolDef;
 use nightloom_core::tool::{CancellationToken, Effect, Tool};
@@ -246,35 +246,44 @@ impl Tool for Glob {
         // resolves against the workspace and finds nothing.
         // A synchronous walk, so the check is a flag read rather than a
         // select: cheap enough per entry to be invisible, and the only thing
-        // between Ctrl-C and the end of a walk over a large tree.
-        let mut hits: Vec<String> = Vec::new();
-        for path in walk_files(&base) {
-            if cancel.is_cancelled() {
-                return Err(INTERRUPTED.to_string());
+        // between Ctrl-C and the end of a walk over a large tree. The walk
+        // runs on the blocking pool rather than on a runtime worker — see
+        // `blocking` — which is what lets a round of reads actually overlap
+        // and keeps a large tree from stalling the stream being rendered.
+        let root = self.root.clone();
+        let cancel = cancel.clone();
+        let pattern = pattern.to_string();
+        blocking(move || {
+            let mut hits: Vec<String> = Vec::new();
+            for path in walk_files(&base) {
+                if cancel.is_cancelled() {
+                    return Err(INTERRUPTED.to_string());
+                }
+                let shown = root.show(&path);
+                if hit(&matcher, &relative(&base, &path), &shown) {
+                    hits.push(shown);
+                }
             }
-            let shown = self.root.show(&path);
-            if hit(&matcher, &relative(&base, &path), &shown) {
-                hits.push(shown);
-            }
-        }
-        hits.sort();
+            hits.sort();
 
-        if hits.is_empty() {
-            return Ok(format!(
-                "no files match \"{pattern}\" under {}{}",
-                self.root.show(&base),
-                vault_note(&self.root, &base)
-            ));
-        }
-        let total = hits.len();
-        hits.truncate(MAX_PATHS);
-        let mut out = hits.join("\n");
-        if total > MAX_PATHS {
-            out.push_str(&format!(
-                "\n… {total} files matched; showing the first {MAX_PATHS}. Narrow the pattern."
-            ));
-        }
-        Ok(out)
+            if hits.is_empty() {
+                return Ok(format!(
+                    "no files match \"{pattern}\" under {}{}",
+                    root.show(&base),
+                    vault_note(&root, &base)
+                ));
+            }
+            let total = hits.len();
+            hits.truncate(MAX_PATHS);
+            let mut out = hits.join("\n");
+            if total > MAX_PATHS {
+                out.push_str(&format!(
+                    "\n… {total} files matched; showing the first {MAX_PATHS}. Narrow the pattern."
+                ));
+            }
+            Ok(out)
+        })
+        .await
     }
 }
 
@@ -364,113 +373,123 @@ impl Tool for Grep {
         };
         let target = self.root.resolve(input["path"].as_str().unwrap_or("."))?;
 
-        // A single file target is searched directly; the walk's base is then
-        // its parent so relative paths still read sensibly.
-        let (base, files): (PathBuf, Vec<PathBuf>) = if target.is_file() {
-            let parent = target.parent().unwrap_or(&target).to_path_buf();
-            (parent, vec![target.clone()])
-        } else {
-            (target.clone(), walk_files(&target).collect())
-        };
-
-        let mut paths: Vec<String> = Vec::new();
-        let mut counts: Vec<(String, usize)> = Vec::new();
-        let mut lines: Vec<String> = Vec::new();
-        let mut truncated_lines = false;
-
-        let mut files = files;
-        files.sort();
-        for file in files {
-            // Per file rather than per line: a regex over one file is quick,
-            // and a tree of them is what makes a `grep` worth interrupting.
-            if cancel.is_cancelled() {
-                return Err(INTERRUPTED.to_string());
-            }
-            // The `glob` filter takes either the base-relative path or the
-            // one the output names, since the model has only ever been shown
-            // the second. See `hit`.
-            let shown = self.root.show(&file);
-            if let Some(filter) = &filter
-                && !hit(filter, &relative(&base, &file), &shown)
-            {
-                continue;
-            }
-            if std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0) > GREP_MAX_FILE_BYTES {
-                continue;
-            }
-            // Binary / non-UTF-8 files are skipped rather than erroring: a
-            // tree always has some, and failing the whole search over one is
-            // useless behaviour.
-            let Ok(text) = std::fs::read_to_string(&file) else {
-                continue;
+        // Walking and reading are both blocking, and this is the tool most
+        // likely to be given a large tree — the one call where holding a
+        // runtime worker for its whole duration is something a user can feel.
+        // See `blocking`; the token still reaches the per-file check below.
+        let root = self.root.clone();
+        let cancel = cancel.clone();
+        let pattern = pattern.to_string();
+        blocking(move || {
+            // A single file target is searched directly; the walk's base is then
+            // its parent so relative paths still read sensibly.
+            let (base, files): (PathBuf, Vec<PathBuf>) = if target.is_file() {
+                let parent = target.parent().unwrap_or(&target).to_path_buf();
+                (parent, vec![target.clone()])
+            } else {
+                (target.clone(), walk_files(&target).collect())
             };
 
-            let mut count = 0usize;
-            for (n, line) in text.lines().enumerate() {
-                if !regex.is_match(line) {
+            let mut paths: Vec<String> = Vec::new();
+            let mut counts: Vec<(String, usize)> = Vec::new();
+            let mut lines: Vec<String> = Vec::new();
+            let mut truncated_lines = false;
+
+            let mut files = files;
+            files.sort();
+            for file in files {
+                // Per file rather than per line: a regex over one file is quick,
+                // and a tree of them is what makes a `grep` worth interrupting.
+                if cancel.is_cancelled() {
+                    return Err(INTERRUPTED.to_string());
+                }
+                // The `glob` filter takes either the base-relative path or the
+                // one the output names, since the model has only ever been shown
+                // the second. See `hit`.
+                let shown = root.show(&file);
+                if let Some(filter) = &filter
+                    && !hit(filter, &relative(&base, &file), &shown)
+                {
                     continue;
                 }
-                count += 1;
-                if matches!(mode, Mode::Content) {
-                    if lines.len() < MAX_MATCH_LINES {
-                        lines.push(format!("{shown}:{}:{}", n + 1, clip(line)));
-                    } else {
-                        truncated_lines = true;
+                if std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0) > GREP_MAX_FILE_BYTES {
+                    continue;
+                }
+                // Binary / non-UTF-8 files are skipped rather than erroring: a
+                // tree always has some, and failing the whole search over one is
+                // useless behaviour.
+                let Ok(text) = std::fs::read_to_string(&file) else {
+                    continue;
+                };
+
+                let mut count = 0usize;
+                for (n, line) in text.lines().enumerate() {
+                    if !regex.is_match(line) {
+                        continue;
+                    }
+                    count += 1;
+                    if matches!(mode, Mode::Content) {
+                        if lines.len() < MAX_MATCH_LINES {
+                            lines.push(format!("{shown}:{}:{}", n + 1, clip(line)));
+                        } else {
+                            truncated_lines = true;
+                        }
                     }
                 }
-            }
-            if count > 0 {
-                paths.push(shown.clone());
-                counts.push((shown, count));
-            }
-        }
-
-        if paths.is_empty() {
-            return Ok(format!(
-                "no matches for \"{pattern}\" under {}{}",
-                self.root.show(&target),
-                vault_note(&self.root, &target)
-            ));
-        }
-
-        Ok(match mode {
-            Mode::Files => {
-                let total = paths.len();
-                paths.truncate(MAX_PATHS);
-                let mut out = paths.join("\n");
-                if total > MAX_PATHS {
-                    out.push_str(&format!(
-                        "\n… {total} files matched; showing the first {MAX_PATHS}."
-                    ));
+                if count > 0 {
+                    paths.push(shown.clone());
+                    counts.push((shown, count));
                 }
-                out
             }
-            Mode::Count => {
-                let total = counts.len();
-                counts.truncate(MAX_PATHS);
-                let mut out = counts
-                    .iter()
-                    .map(|(p, c)| format!("{p}:{c}"))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                if total > MAX_PATHS {
-                    out.push_str(&format!(
-                        "\n… {total} files matched; showing the first {MAX_PATHS}."
-                    ));
+
+            if paths.is_empty() {
+                return Ok(format!(
+                    "no matches for \"{pattern}\" under {}{}",
+                    root.show(&target),
+                    vault_note(&root, &target)
+                ));
+            }
+
+            Ok(match mode {
+                Mode::Files => {
+                    let total = paths.len();
+                    paths.truncate(MAX_PATHS);
+                    let mut out = paths.join("\n");
+                    if total > MAX_PATHS {
+                        out.push_str(&format!(
+                            "\n… {total} files matched; showing the first {MAX_PATHS}."
+                        ));
+                    }
+                    out
                 }
-                out
-            }
-            Mode::Content => {
-                let mut out = lines.join("\n");
-                if truncated_lines {
-                    out.push_str(&format!(
-                        "\n… more than {MAX_MATCH_LINES} matching lines; narrow the pattern or \
+                Mode::Count => {
+                    let total = counts.len();
+                    counts.truncate(MAX_PATHS);
+                    let mut out = counts
+                        .iter()
+                        .map(|(p, c)| format!("{p}:{c}"))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    if total > MAX_PATHS {
+                        out.push_str(&format!(
+                            "\n… {total} files matched; showing the first {MAX_PATHS}."
+                        ));
+                    }
+                    out
+                }
+                Mode::Content => {
+                    let mut out = lines.join("\n");
+                    if truncated_lines {
+                        out.push_str(&format!(
+                            "\n… more than {MAX_MATCH_LINES} matching lines; narrow the pattern or \
                          the path."
-                    ));
+                        ));
+                    }
+                    out
                 }
-                out
-            }
+            })
         })
+        .await
     }
 }
 
