@@ -12,9 +12,16 @@ call.
 
 **Effect classification is part of adding a tool**, and a test pins the whole
 table: `ReadOnly` for `read_file` / `list_dir` / `glob` / `grep` /
-`current_time`; `Session` for `todo_write` / `compact_context`; `Mutating` (the
-default) for `write_file` / `edit_file` / `bash`. The test guards the reverse
-risk — a tool quietly talked *down* to `ReadOnly`.
+`current_time` and for `review`, which is read-only because its sub-chat is
+stripped to read-only tools; `Session` for `todo_write` / `compact_context` and
+for `remember`, a durable write that is still `Session` because the inbox is
+quarantine and the dream pass is the gate; `Mutating` (the default) for
+`write_file` / `edit_file` / `bash`, for `task`, which can reach anything its
+own tool set allows, and for `web_fetch` / `web_search`, where a request the
+model composed leaves the machine. The test guards the reverse risk — a tool
+quietly talked *down* to `ReadOnly`. `task`, `review` and the two web tools are
+argued in their own sections below; `remember` is argued in
+[service-data.md](service-data.md).
 
 **Tool descriptions are prompt engineering, not documentation.** They say *when*
 to reach for a tool and what to prefer (edit over rewrite, `grep`/`glob` over

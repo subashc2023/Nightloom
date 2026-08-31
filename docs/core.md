@@ -7,8 +7,8 @@ Canonical types only; no HTTP, no vendors, no UI. `message.rs` holds `Message` /
 
 `stream_chat(ChatRequest) -> EventStream`. All streaming normalizes into
 `StreamEvent` (`Start` / `TextDelta` / `ThinkingDelta` / `ThinkingSignature` /
-`RedactedThinking` / `ToolUse` / `Usage` / `End`) — **vendor delta shapes must
-never leak past the adapter boundary**.
+`RedactedThinking` / `ReasoningRef` / `ToolUse` / `Usage` / `End`) — **vendor
+delta shapes must never leak past the adapter boundary**.
 
 `StreamEvent::ToolUse` carries a *complete* call: adapters buffer partial
 argument fragments internally and emit one event per call. `ThinkingSignature`
@@ -101,12 +101,18 @@ replay.
 
 A system prompt is an ordered `Vec<Segment>` (`SystemPrompt`), not a string. Each
 `Segment` carries a `SegmentKind` (Identity / Environment / ProjectInstructions /
-ProjectNotes / UserMemory / Custom), a name, its text, and a `cache_anchor` flag.
+ProjectNotes / Knowledge / UserMemory / Custom), a name, its text, and a
+`cache_anchor` flag. `Knowledge` is the index of the user's knowledge vault —
+about *them* rather than about this folder, which is what keeps it apart from
+`ProjectNotes`; both reach the model as an index and never as content.
 
 Two renderings, guaranteed byte-identical because `push` normalizes text on the
 way in: `render_flat()` for vendors that take one system string, and per-segment
-blocks for Anthropic, where `cache_anchors(4)` says which blocks get
-`cache_control` (4 is the per-request breakpoint limit).
+blocks for Anthropic, where `cache_anchors(max)` says which blocks get
+`cache_control` — keeping the *last* `max`, since a late breakpoint covers the
+longest prefix. The Anthropic adapter passes `SYSTEM_ANCHOR_BUDGET = 3`, not the
+vendor's four: the fourth is reserved for the rolling conversation anchor. See
+[providers.md](providers.md) for why.
 
 **The prompt is assembled once per `Chat` and never mutated per turn** — caching
 keys on an exact prefix match, so anything time-varying belongs in the sidecar.
