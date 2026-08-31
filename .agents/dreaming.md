@@ -185,5 +185,5 @@ The corpus, runner and all 72 answer files were under the session's temp
 dir (`membench/`); reproducible from this note — same traps, same three
 conditions, grade against a written key, never a model judge.
 
-Related: [[../CLAUDE.md]] (knowledge vault sections), `crates/nightloom-service/src/observe.rs`,
+Related: `docs/service-data.md` (the vault and this memory system), `crates/nightloom-service/src/observe.rs`,
 `crates/nightloom-service/src/dream.rs`, `crates/nightloom-service/src/tools/remember.rs`.

@@ -4,12 +4,15 @@ Nightloom is a model-agnostic LLM harness in Rust: a provider-neutral chat core
 with two shells over it — a CLI REPL and a Tauri desktop app. Cargo workspace,
 edition 2024.
 
-`CLAUDE.md` beside this file is the long-form reference: every non-obvious
-decision in the codebase with the argument that produced it. It is ~126 KB and
-deliberately **not** loaded into your context — this file is. Read it with
-`read_file` when you need the *why* behind something, and prefer it over
-inferring intent from the code, because most of what looks arbitrary here was
-measured.
+`docs/` is the long-form reference: every non-obvious decision in the codebase
+with the argument that produced it, one file per area (`core`, `providers`,
+`service-engine`, `service-prompt`, `service-tools`, `service-data`,
+`service-agent`, `mcp`, `evals`, `cli`, `desktop`, `desktop-ui`, `commands`,
+`conventions`). It is far too large to load and deliberately **not** in your
+context — this file is. Read the one you need with `read_file` when you want the
+*why* behind something, and prefer it over inferring intent from the code,
+because most of what looks arbitrary here was measured. `CLAUDE.md` is the index
+over it.
 
 ## Commands
 

@@ -395,8 +395,9 @@ the turn loop against scripted providers. CI runs the same commands on Linux
 and Windows. `probe` and `eval` are deliberately not in CI: both spend money
 against a real model.
 
-`CLAUDE.md` is the long-form architecture document — why each boundary is
-where it is, and what went wrong before it moved there.
+`docs/` is the long-form architecture reference — why each boundary is
+where it is, and what went wrong before it moved there — one file per area,
+indexed by `CLAUDE.md`. `AGENTS.md` is the short orientation over both.
 
 ## License
 
