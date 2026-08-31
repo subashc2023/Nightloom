@@ -109,9 +109,12 @@ pub struct DreamOutcome {
     pub consolidated: usize,
     /// Observations left for the next run (the batch budget, not an error).
     pub remaining: usize,
-    /// Log lines this build could not read. Skipped, and their bytes are
-    /// consumed with the batch — a line that will never parse should not
-    /// hold the watermark forever.
+    /// Log lines this build could not read, counted across the whole backlog
+    /// rather than the batch. Never fatal: a line that will never parse must
+    /// not hold the watermark forever, so one lying *before* the batch's last
+    /// taken observation has its bytes consumed along with it and is gone.
+    /// One lying past that offset is only reported — it stays in the backlog
+    /// and is counted again next run, until a batch reaches beyond it.
     pub unreadable: usize,
     /// The pass was cancelled; nothing was consumed.
     pub interrupted: bool,
@@ -130,7 +133,18 @@ pub struct DreamOutcome {
 pub enum GitNote {
     NotARepo,
     Clean,
-    Committed { hash: String },
+    Committed {
+        hash: String,
+        /// How many paths were dirty when the snapshot ran.
+        ///
+        /// On the snapshot *after* a pass this is the dream's own work, which
+        /// is the point of it. On the one *before*, it is the user's — edits
+        /// they had not committed, swept into a commit they did not ask for.
+        /// Committing them is deliberate and is what makes the rollback total:
+        /// a note the dream is about to rewrite loses any uncommitted change
+        /// to it otherwise. Being counted is what keeps it from being silent.
+        paths: usize,
+    },
     Failed(String),
 }
 
@@ -296,6 +310,9 @@ fn snapshot(vault: &Path, message: &str) -> GitNote {
     if status.stdout.is_empty() {
         return GitNote::Clean;
     }
+    // Counted before the commit, because after it there is nothing to count.
+    // A porcelain line is one path.
+    let paths = String::from_utf8_lossy(&status.stdout).lines().count();
     for args in [&["add", "-A"][..], &["commit", "-m", message][..]] {
         match run(args) {
             Err(e) => return GitNote::Failed(format!("git did not run: {e}")),
@@ -308,9 +325,11 @@ fn snapshot(vault: &Path, message: &str) -> GitNote {
     match run(&["rev-parse", "--short", "HEAD"]) {
         Ok(out) if out.status.success() => GitNote::Committed {
             hash: String::from_utf8_lossy(&out.stdout).trim().to_string(),
+            paths,
         },
         _ => GitNote::Committed {
             hash: String::new(),
+            paths,
         },
     }
 }

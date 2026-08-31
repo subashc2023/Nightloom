@@ -277,3 +277,49 @@ fn write_report(dir: &Path, reports: &[TaskReport]) -> Result<()> {
     println!("{DIM}report: {}{RESET}", path.display());
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// This parser is `probe.rs`'s minus the `:tools` segment, and only that
+    /// one is tested there. The shared half is the part with a trap in it —
+    /// a model id may contain a colon — so it is worth pinning on both.
+    #[test]
+    fn parses_a_plain_target() {
+        let t = parse_target("anthropic:claude-sonnet-5").unwrap();
+        assert_eq!(t.kind, ProviderKind::Anthropic);
+        assert_eq!(t.model.as_deref(), Some("claude-sonnet-5"));
+        assert_eq!(t.thinking, Thinking::Default);
+        assert_eq!(t.label, "anthropic:claude-sonnet-5");
+    }
+
+    #[test]
+    fn a_trailing_thinking_spec_is_read_as_one() {
+        let t = parse_target("groq:openai/gpt-oss-120b:effort=low").unwrap();
+        assert_eq!(t.model.as_deref(), Some("openai/gpt-oss-120b"));
+        assert_eq!(t.thinking, Thinking::Effort("low".into()));
+    }
+
+    /// Ollama names models `llama3:8b`. Only a trailing segment that parses
+    /// as a thinking spec is treated as one, so the colon in a model id is
+    /// not mistaken for a separator — which would silently run the eval
+    /// against `llama3` and report it under the name of a model that never
+    /// answered.
+    #[test]
+    fn a_colon_in_a_model_id_is_not_a_separator() {
+        let t = parse_target("openai-chat:llama3:8b").unwrap();
+        assert_eq!(t.kind, ProviderKind::OpenaiChat);
+        assert_eq!(t.model.as_deref(), Some("llama3:8b"));
+        assert_eq!(t.thinking, Thinking::Default);
+    }
+
+    #[test]
+    fn a_target_without_a_provider_says_what_the_shape_is() {
+        let err = match parse_target("claude-sonnet-5") {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("a target with no provider was accepted"),
+        };
+        assert!(err.contains("provider:model"), "got: {err}");
+    }
+}

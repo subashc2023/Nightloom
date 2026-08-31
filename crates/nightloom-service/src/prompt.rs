@@ -588,8 +588,14 @@ pub fn knowledge_segment(knowledge: &KnowledgeContext) -> Segment {
             .sum();
 
         // Round-robin, so a folder late in the alphabet is not starved by one
-        // early in it. A refused line is skipped rather than ending the walk,
-        // since a shorter entry after it may still fit.
+        // early in it. A refused line does not end the walk, but it does not
+        // advance its folder's cursor either: the same entry is offered again
+        // next pass and the folder makes no further progress, while the other
+        // folders carry on until every one of them is stuck. Wanted both ways
+        // — the budget is spent by the time anything is refused, so scanning
+        // ahead for a shorter note would buy a line or two at the cost of
+        // listing a folder out of recency order, which is the one ordering
+        // that makes a truncated listing worth reading.
         let mut shown = vec![0usize; folders.len()];
         let mut total_shown = 0usize;
         loop {

@@ -70,12 +70,23 @@ const FIND_FACT: Task = Task {
     ],
     check: |o| {
         let answer = o.answer;
+        // The decommissioned file is the trap: same phrase, wrong array. Its
+        // value is checked *first*, and a reply carrying both numbers fails
+        // rather than passing on the substring it happens to also contain. The
+        // task asks for one number; an answer that offers two has not picked
+        // the right file, which is the whole thing being measured.
+        if answer.contains("3.1") {
+            return Err(if answer.contains("48.6") {
+                format!(
+                    "gave both the live and the decommissioned value: {}",
+                    one_line(answer)
+                )
+            } else {
+                "answered from notes/decommissioned/west-old.md".into()
+            });
+        }
         if answer.contains("48.6") {
             return Ok(());
-        }
-        // The decommissioned file is the trap: same phrase, wrong array.
-        if answer.contains("3.1") {
-            return Err("answered from notes/decommissioned/west-old.md".into());
         }
         Err(format!("expected 48.6, got: {}", one_line(answer)))
     },
@@ -539,6 +550,18 @@ mod tests {
         // Right phrase, wrong file — the trap the fixture exists to set.
         let err = verdict(&FIND_FACT, &dir, "3.1").unwrap_err();
         assert!(err.contains("decommissioned"), "{err}");
+
+        // A reply that hedges with both numbers used to pass on the substring
+        // it happened to also contain, scoring a model that never picked
+        // between the two files as though it had. The task asks for one
+        // number, and choosing is the thing being measured.
+        let err = verdict(
+            &FIND_FACT,
+            &dir,
+            "The west array is 48.6, though a decommissioned note says 3.1.",
+        )
+        .unwrap_err();
+        assert!(err.contains("both"), "{err}");
         std::fs::remove_dir_all(&dir).ok();
     }
 

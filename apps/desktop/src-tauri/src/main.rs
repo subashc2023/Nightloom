@@ -2002,12 +2002,23 @@ fn dream_git_line(
     {
         return format!("pre-dream git snapshot failed: {e}");
     }
+    // What the pre-dream snapshot committed was the user's own uncommitted
+    // work â€” necessary, so that reverting the dream does not take an edit of
+    // theirs with it, and worth saying rather than leaving to be found in
+    // `git log`.
+    let swept = match before {
+        GitNote::Committed { paths, .. } if *paths > 0 => format!(
+            "; {paths} uncommitted vault file{} committed first, so this pass reverts on its own",
+            if *paths == 1 { " was" } else { "s were" }
+        ),
+        _ => String::new(),
+    };
     match after {
         GitNote::NotARepo => {
             "the vault is not a git repository, so there is no rollback for this pass".into()
         }
-        GitNote::Committed { hash } if hash.is_empty() => "vault committed".into(),
-        GitNote::Committed { hash } => format!("vault committed ({hash})"),
+        GitNote::Committed { hash, .. } if hash.is_empty() => format!("vault committed{swept}"),
+        GitNote::Committed { hash, .. } => format!("vault committed ({hash}){swept}"),
         GitNote::Clean => "vault unchanged".into(),
         GitNote::Failed(e) => format!("git snapshot failed: {e}"),
     }

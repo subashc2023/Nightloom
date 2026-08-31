@@ -220,15 +220,28 @@ fn print_git(before: &GitNote, after: &GitNote) {
     {
         println!("{DIM}pre-dream git snapshot failed: {e}{RESET}");
     }
+    // The pre-dream commit is the user's own uncommitted work, if they had
+    // any: it has to be committed for the rollback to be total, since a note
+    // the dream rewrites would otherwise lose the edit. Saying so is the
+    // difference between a safeguard and a surprise in `git log`.
+    if let GitNote::Committed { paths, .. } = before
+        && *paths > 0
+    {
+        println!(
+            "{DIM}committed {paths} uncommitted vault file{} before the pass, so this dream \
+             can be reverted on its own{RESET}",
+            if *paths == 1 { "" } else { "s" }
+        );
+    }
     match after {
         GitNote::NotARepo => println!(
             "{DIM}the vault is not a git repository — no rollback for this pass; `git init` it \
              to get one{RESET}"
         ),
-        GitNote::Committed { hash } if hash.is_empty() => {
+        GitNote::Committed { hash, .. } if hash.is_empty() => {
             println!("{DIM}vault committed{RESET}");
         }
-        GitNote::Committed { hash } => println!(
+        GitNote::Committed { hash, .. } => println!(
             "{DIM}vault committed ({hash}) — `git log -p` in the vault is the audit trail{RESET}"
         ),
         GitNote::Clean => println!("{DIM}vault unchanged{RESET}"),

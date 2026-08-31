@@ -278,7 +278,7 @@ impl Registry {
             }
             existing.last_opened = now;
             let out = existing.clone();
-            self.save();
+            self.save()?;
             return Ok(out);
         }
         let name = name
@@ -328,7 +328,7 @@ impl Registry {
                 .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
         }
         self.projects.push(project.clone());
-        self.save();
+        self.save()?;
         Ok(project)
     }
 
@@ -344,7 +344,7 @@ impl Registry {
             .ok_or_else(|| format!("no project {id}"))?;
         project.name = name.to_string();
         let out = project.clone();
-        self.save();
+        self.save()?;
         Ok(out)
     }
 
@@ -360,7 +360,7 @@ impl Registry {
         if self.projects.len() == before {
             return Err(format!("no project {id}"));
         }
-        self.save();
+        self.save()?;
         Ok(())
     }
 
@@ -368,26 +368,41 @@ impl Registry {
     pub fn touch(&mut self, id: &str) {
         if let Some(p) = self.projects.iter_mut().find(|p| p.id == id) {
             p.last_opened = Utc::now();
-            self.save();
+            // Ordering only: see `save`. A picker that lists projects in a
+            // stale order is not worth failing an open over.
+            let _ = self.save();
         }
     }
 
-    /// Best-effort persist. A registry that cannot be written still works for
-    /// this run, and failing "open project" because the config dir is
-    /// read-only would be the wrong trade.
-    fn save(&self) {
-        let Some(path) = &self.path else { return };
+    /// Write the registry, saying whether it landed.
+    ///
+    /// Two kinds of caller, and the difference is whether the user asked for
+    /// the change. Ordering metadata — [`Registry::touch`] — is cosmetic, and
+    /// failing "open project" because the config dir is read-only would be the
+    /// wrong trade; that one still ignores the result. But a rename or a forget
+    /// is a change the user made and watched succeed, and reporting success for
+    /// one that reverts at the next start is the kind of quiet wrong this
+    /// codebase spends its effort avoiding elsewhere.
+    fn save(&self) -> Result<(), String> {
+        let Some(path) = &self.path else {
+            // No path is an in-memory registry, which is not a failure.
+            return Ok(());
+        };
         let file = RegistryFile {
             version: schema_version(),
             projects: self.projects.clone(),
         };
-        let Ok(json) = serde_json::to_string_pretty(&file) else {
-            return;
-        };
+        let json = serde_json::to_string_pretty(&file)
+            .map_err(|e| format!("cannot serialize the project registry: {e}"))?;
         if let Some(parent) = path.parent() {
             let _ = fs::create_dir_all(parent);
         }
-        let _ = fs::write(path, json);
+        fs::write(path, json).map_err(|e| {
+            format!(
+                "the change was made for this run but not saved — cannot write {}: {e}",
+                path.display()
+            )
+        })
     }
 }
 
