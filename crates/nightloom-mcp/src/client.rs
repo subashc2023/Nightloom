@@ -56,9 +56,17 @@ enum Wire {
     Http(crate::http::HttpWire),
 }
 
+/// The write half of a pipe, shared with the reader task.
+///
+/// Shared because a stdio session is genuinely bidirectional: the server may
+/// call *us*, and a request is owed a reply on the same pipe by whichever task
+/// noticed it. The mutex is what keeps two writers from interleaving halves of
+/// two lines.
+type SharedWriter = Arc<tokio::sync::Mutex<Box<dyn AsyncWrite + Send + Unpin>>>;
+
 /// A server on the other end of a pipe, usually a child process.
 struct StreamWire {
-    writer: tokio::sync::Mutex<Box<dyn AsyncWrite + Send + Unpin>>,
+    writer: SharedWriter,
     pending: Pending,
     stderr: Arc<Mutex<String>>,
     /// Kept alive for the life of the client: dropping the handle would
@@ -134,12 +142,18 @@ impl Client {
     ) -> Self {
         let pending: Pending = Arc::default();
         let stderr = stderr.unwrap_or_default();
-        spawn_reader(reader, Arc::clone(&pending), Arc::clone(&stderr));
+        let writer: SharedWriter = Arc::new(tokio::sync::Mutex::new(Box::new(writer)));
+        spawn_reader(
+            reader,
+            Arc::clone(&pending),
+            Arc::clone(&stderr),
+            Arc::clone(&writer),
+        );
         Self {
             name: name.to_string(),
             next_id: AtomicU64::new(1),
             wire: Wire::Stream(StreamWire {
-                writer: tokio::sync::Mutex::new(Box::new(writer)),
+                writer,
                 pending,
                 stderr,
                 _child: child,
@@ -452,6 +466,7 @@ fn spawn_reader(
     reader: impl AsyncRead + Send + Unpin + 'static,
     pending: Pending,
     stderr: Arc<Mutex<String>>,
+    writer: SharedWriter,
 ) {
     tokio::spawn(async move {
         let mut lines = BufReader::new(reader).lines();
@@ -464,11 +479,44 @@ fn spawn_reader(
                 // reason to tear down every other in-flight call.
                 continue;
             };
-            // A message with both an id and a method is the server calling
-            // *us*. We declared no capabilities, so there is nothing it can
-            // legitimately ask for — but it is still owed a reply, since a
-            // server blocking on one would deadlock the session.
-            if msg.get("method").is_some() {
+            // A message with a method is the server talking to *us* rather
+            // than answering. With an id it is a request and is owed a reply,
+            // whatever we think of it: a server that blocks on one would hang
+            // the session, and `ping` is the case that matters — the spec has
+            // it answerable by every client regardless of declared
+            // capabilities, so a server using it as a keepalive concludes from
+            // silence that we are gone.
+            if let Some(method) = msg.get("method").and_then(Value::as_str) {
+                // No id means a notification, which is owed nothing.
+                if let Some(id) = msg.get("id").filter(|v| !v.is_null()) {
+                    let reply = match method {
+                        "ping" => json!({ "jsonrpc": "2.0", "id": id, "result": {} }),
+                        // Anything else: we declared no capabilities, so this
+                        // is a request we genuinely cannot serve. Saying so in
+                        // the protocol's own words unblocks the server and
+                        // tells it why, where a dropped request leaves it
+                        // waiting out its own timeout.
+                        _ => json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "error": {
+                                "code": -32601,
+                                "message": format!(
+                                    "{method}: this client declares no capabilities"
+                                ),
+                            },
+                        }),
+                    };
+                    if let Ok(mut line) = serde_json::to_string(&reply) {
+                        line.push('\n');
+                        let mut w = writer.lock().await;
+                        // A write that fails means the pipe is going; the read
+                        // loop's own EOF is what handles that, and it is about
+                        // to reach it.
+                        let _ = w.write_all(line.as_bytes()).await;
+                        let _ = w.flush().await;
+                    }
+                }
                 continue;
             }
             let Some(id) = msg["id"].as_u64() else {
@@ -631,6 +679,77 @@ mod tests {
             .unwrap_err();
         // Without the EOF sweep this would sit out the full request timeout.
         assert!(matches!(err, McpError::Closed(_)), "{err}");
+    }
+
+    /// A server that calls the client mid-request and will not answer until it
+    /// gets a reply. `wants` is the method it sends; it returns the client's
+    /// reply to it alongside the tool result, so a test can assert on both.
+    async fn server_that_calls_back(wants: &'static str) -> (Client, Value) {
+        let (client_side, mut server_side) = tokio::io::duplex(8192);
+        let (cr, cw) = tokio::io::split(client_side);
+        let (seen_tx, seen_rx) = oneshot::channel();
+        tokio::spawn(async move {
+            let (sr, mut sw) = tokio::io::split(&mut server_side);
+            let mut lines = BufReader::new(sr).lines();
+            let Ok(Some(line)) = lines.next_line().await else {
+                return;
+            };
+            let call: Value = serde_json::from_str(&line).unwrap();
+            let call_id = call["id"].clone();
+            // A string id on purpose: JSON-RPC allows one, and a reply that
+            // renumbered it would answer a request the server never made.
+            let ask = json!({ "jsonrpc": "2.0", "id": "ka-1", "method": wants });
+            let mut out = serde_json::to_string(&ask).unwrap();
+            out.push('\n');
+            sw.write_all(out.as_bytes()).await.unwrap();
+
+            // The answer to the tool call is held until the callback is
+            // answered, the way a keepalive that has stopped hearing back
+            // stops serving.
+            let Ok(Some(reply)) = lines.next_line().await else {
+                return;
+            };
+            let _ = seen_tx.send(serde_json::from_str::<Value>(&reply).unwrap());
+            let done = json!({
+                "jsonrpc": "2.0",
+                "id": call_id,
+                "result": { "content": [{ "type": "text", "text": "served" }] },
+            });
+            let mut out = serde_json::to_string(&done).unwrap();
+            out.push('\n');
+            let _ = sw.write_all(out.as_bytes()).await;
+            // Held open so the client's own EOF sweep is not what ends the
+            // call, which would pass this test for the wrong reason.
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        });
+        let client = Client::from_streams("test", cr, cw, None, None);
+        let out = client
+            .call_tool("look", json!({}), &CancellationToken::new())
+            .await
+            .expect("the server answered once the callback was");
+        assert_eq!(out.text, "served");
+        (client, seen_rx.await.expect("a reply was written"))
+    }
+
+    #[tokio::test]
+    async fn a_server_ping_is_answered_rather_than_dropped() {
+        // MCP has every client answer `ping` whatever it declared, so a server
+        // using it as a keepalive reads silence as a client that has gone
+        // away. Dropping it here stalled the session instead.
+        let (_c, reply) = server_that_calls_back("ping").await;
+        assert_eq!(reply["id"], json!("ka-1"));
+        assert!(reply.get("error").is_none(), "{reply}");
+        assert!(reply.get("result").is_some(), "{reply}");
+    }
+
+    #[tokio::test]
+    async fn a_request_this_client_cannot_serve_is_refused_not_ignored() {
+        // No capabilities were declared, so this is a request we genuinely
+        // cannot answer — but a request is owed a reply either way, and a
+        // server left waiting on one waits out its own timeout.
+        let (_c, reply) = server_that_calls_back("roots/list").await;
+        assert_eq!(reply["id"], json!("ka-1"));
+        assert_eq!(reply["error"]["code"], json!(-32601));
     }
 
     /// A server that has taken the request and is still thinking about it is

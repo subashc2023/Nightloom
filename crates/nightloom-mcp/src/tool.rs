@@ -180,10 +180,30 @@ fn exposed_name(server: &str, tool: &str) -> String {
         // Truncate the *front*, keeping the tool's own name intact: the tail
         // is what tells the model what the tool does, and two tools from the
         // same over-long server name would otherwise collide.
-        let keep = name.len() - MAX_NAME;
-        name = name[keep..].to_string();
+        //
+        // But the front is also the half that made the name unique, so cutting
+        // it blind reintroduces the collision one step out: two servers whose
+        // names differ only before the cut hand the model one name for two
+        // tools. A digest of the whole name goes back in the space the cut
+        // freed, which keeps the tail readable and the name distinct.
+        let tag = digest(&name);
+        let keep = name.len() - (MAX_NAME - tag.len() - 1);
+        name = format!("{tag}_{}", &name[keep..]);
     }
     name
+}
+
+/// Six hex characters of FNV-1a, enough to separate names that a truncation
+/// would otherwise merge. Not a security property — nothing here is defending
+/// against a server that *wants* a collision, only against two long names
+/// happening to end alike.
+fn digest(s: &str) -> String {
+    let mut h: u32 = 0x811c_9dc5;
+    for b in s.as_bytes() {
+        h ^= u32::from(*b);
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    format!("{:06x}", h & 0x00ff_ffff)
 }
 
 #[cfg(test)]
@@ -206,6 +226,25 @@ mod tests {
         let name = exposed_name(&"s".repeat(80), "search");
         assert_eq!(name.len(), MAX_NAME);
         assert!(name.ends_with("__search"), "{name}");
+    }
+
+    #[test]
+    fn two_over_long_server_names_do_not_truncate_onto_one_name() {
+        // The prefix exists so the model can tell two servers' `search` apart.
+        // Cutting the front to fit put that back the way it was: these two
+        // names differ only in a character the truncation removes, and used to
+        // arrive at the model as one tool offered twice.
+        let a = exposed_name(&format!("{}-alpha-tools", "long".repeat(15)), "search");
+        let b = exposed_name(&format!("{}-bravo-tools", "long".repeat(15)), "search");
+        assert_ne!(a, b, "two servers, one exposed name");
+        assert_eq!(a.len(), MAX_NAME);
+        assert!(a.ends_with("__search"), "{a}");
+        // Same server, same tool, same name — a name that moved between runs
+        // would invalidate the prompt cache and rename a tool mid-session.
+        assert_eq!(
+            a,
+            exposed_name(&format!("{}-alpha-tools", "long".repeat(15)), "search")
+        );
     }
 
     #[test]
