@@ -1410,8 +1410,13 @@ export function sessionCost(): { usd: number; complete: boolean } | null {
   return any ? { usd, complete } : null;
 }
 
-/** Mirrors `Price::cost` on the backend: three disjoint input slices. */
-function roundCost(u: Usage, p: Price): number {
+/**
+ * Mirrors `Price::cost` on the backend: three disjoint input slices.
+ *
+ * Exported only so the suite can pin it against its Rust counterpart; nothing
+ * outside this module calls it.
+ */
+export function roundCost(u: Usage, p: Price): number {
   const read = u.cache_read_tokens ?? 0;
   const write = u.cache_write_tokens ?? 0;
   const fresh = Math.max(0, u.input_tokens - read - write);

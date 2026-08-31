@@ -238,7 +238,6 @@ export interface ProjectInfo {
  */
 export type NoteScope = "project" | "knowledge";
 
-/** Where the knowledge base is and what is in it. */
 /** What one dream did, flattened for a toast. `git` arrives as a finished
  *  sentence — the frontend has nothing to add to it. */
 export interface DreamReport {
@@ -249,6 +248,7 @@ export interface DreamReport {
   cost_usd: number | null;
 }
 
+/** Where the knowledge base is and what is in it. */
 export interface KnowledgeInfo {
   dir: string;
   /** How the model addresses it (`@kb`), so the UI shows the same string the
@@ -482,14 +482,14 @@ export type SessionEvent =
   // reads it off `SessionSummary.title` instead — but part of the union so a
   // reader of the log sees every kind of line that can be in one.
   | { event: "title"; text: string; at: string }
-  // Content markers, not deletions: the listed events keep their place in the
-  // conversation and project a stand-in instead of their payload. The log
-  // still holds the content, so the transcript renders these turns in full and
-  // only the context panel cares.
   // Which of an external agent's sessions this log mirrors. Metadata about
   // where the conversation is kept rather than a turn in it, so the
   // transcript skips it; latest wins, like a title.
   | { event: "agent_session"; agent: string; id: string; at: string }
+  // Content markers, not deletions: the listed events keep their place in the
+  // conversation and project a stand-in instead of their payload. The log
+  // still holds the content, so the transcript renders these turns in full and
+  // only the context panel cares.
   | { event: "elide"; targets: number[]; at: string }
   | { event: "unelide"; targets: number[]; at: string }
   | { event: "compaction"; summary: string; at: string }

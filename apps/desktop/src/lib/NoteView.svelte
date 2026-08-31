@@ -9,7 +9,14 @@
     showNote,
   } from "./state.svelte";
   import { renderMarkdown } from "./markdown";
-  import { hrefTarget, parseLinks, renderNote, resolveNote } from "./links";
+  import {
+    hrefTarget,
+    linkTitle,
+    parseLinks,
+    renderNote,
+    resolveLink,
+  } from "./links";
+  import type { NoteResolution } from "./links";
   import type { NoteScope } from "./types";
 
   /**
@@ -36,12 +43,16 @@
    * Links out of the note as it currently reads — from the buffer rather than
    * from the backend's graph, so a link typed a moment ago is already listed.
    * Only for the vault: the docspace has no link convention.
+   *
+   * Carries the whole resolution rather than a note-or-null, because the chip
+   * has three states to draw and collapsing ambiguity into "missing" is what
+   * offered to create a third copy of a note that already existed twice.
    */
   const outbound = $derived.by(() => {
     if (!isVault) return [];
     return parseLinks(text).map((l) => ({
       target: l.target,
-      note: resolveNote(l.target, app.vault),
+      found: resolveLink(l.target, app.vault),
     }));
   });
 
@@ -118,7 +129,9 @@
    * produced by the markdown renderer and there is nothing to bind to. A
    * target that resolves to nothing *creates* the note — writing `[[thing]]`
    * before it exists is how a note gets planned, so the click is the natural
-   * moment to start it.
+   * moment to start it. An *ambiguous* one does not: the note it names already
+   * exists more than once, and a third copy is the one outcome that makes the
+   * vault worse.
    */
   async function onPreviewClick(e: MouseEvent) {
     const anchor = (e.target as HTMLElement | null)?.closest("a");
@@ -129,13 +142,30 @@
   }
 
   async function follow(target: string) {
-    const found = resolveNote(target, app.vault);
-    if (found) {
-      showNote("knowledge", found.name);
+    const found = resolveLink(target, app.vault);
+    if (found.kind === "note") {
+      showNote("knowledge", found.note.name);
+      return;
+    }
+    // Nowhere to go and nothing to create: name the candidates and leave the
+    // choice to the writer, who is the only one who knows which was meant.
+    if (found.kind === "ambiguous") {
+      addToast(linkTitle(target, found));
       return;
     }
     const name = /\.[a-z0-9]+$/i.test(target) ? target : `${target}.md`;
     if (await saveNote("knowledge", name, "")) showNote("knowledge", name);
+  }
+
+  /**
+   * What an outbound chip's hover says. Only the missing case differs from the
+   * preview's wording, because only this chip acts on it: clicking it writes
+   * the note. The other two, ambiguity included, read the same everywhere.
+   */
+  function chipTitle(target: string, found: NoteResolution): string {
+    return found.kind === "missing"
+      ? `${target} — click to create`
+      : linkTitle(target, found);
   }
 
   function onkeydown(e: KeyboardEvent) {
@@ -215,9 +245,10 @@
           {#each outbound as l (l.target)}
             <button
               class="chip"
-              class:broken={!l.note}
-              title={l.note ? l.note.name : `${l.target} — click to create`}
-              onclick={() => void follow(l.target)}>{l.target}</button
+              class:broken={l.found.kind !== "note"}
+              title={chipTitle(l.target, l.found)}
+              onclick={() => void follow(l.target)}
+              >{l.target}{l.found.kind === "ambiguous" ? " ⚠" : ""}</button
             >
           {/each}
         </div>

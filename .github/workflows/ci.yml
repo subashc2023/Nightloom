@@ -1,5 +1,6 @@
-# Everything here is what `cargo test`, `cargo clippy`, `cargo fmt` and
-# `npm run check` already do locally. The point of running them here is that
+# Everything here is what `cargo test`, `cargo clippy`, `cargo fmt`,
+# `npm run check` and `npm run test:run` already do locally. The point of
+# running them here is that
 # nothing in this workspace talks to a provider from a test — adapters assert
 # on the request body they build and the turn engine runs against scripted
 # providers — so the whole suite is hermetic and there is no reason for a push
@@ -77,6 +78,15 @@ jobs:
         working-directory: apps/desktop
       - name: svelte-check
         run: npm run check
+        working-directory: apps/desktop
+      # The frontend's own unit tests. They matter more than their count
+      # suggests: four of the functions they cover — `liveFlags`,
+      # `currentTodos`, `roundCost`, `resolveLink` — are hand-written mirrors
+      # of Rust the frontend cannot call, and nothing but these tests notices
+      # when the two sides drift apart. `resolveLink` had drifted in three
+      # ways before they existed.
+      - name: vitest
+        run: npm run test:run
         working-directory: apps/desktop
       - name: build frontend
         run: npm run build

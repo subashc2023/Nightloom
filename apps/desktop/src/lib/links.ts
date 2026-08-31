@@ -30,37 +30,109 @@ export interface ParsedLink {
   alias: string | null;
 }
 
-/** Everything before a `#heading`, which is not part of the note's name. */
+/**
+ * Everything before a `#heading`, which is not part of the note's name.
+ *
+ * Mirrors `Link::note_target`, guard included: a target that is *only* an
+ * anchor is kept whole, because it is what the user typed and the UI shows it.
+ * Resolution normalizes separately and more harshly — see `normalizeTarget`.
+ */
 export function noteTarget(target: string): string {
   const cut = target.indexOf("#");
   return cut > 0 ? target.slice(0, cut) : target;
 }
 
 /**
- * The note a target names, or null.
+ * A target reduced to the path it names — `knowledge::normalize_target`.
  *
- * Obsidian's rule, mirroring `knowledge::resolve_link`: a full relative path
- * if it matches, otherwise a unique basename anywhere in the vault, with the
- * extension optional on both. A basename shared by two notes resolves to
- * nothing rather than to the first — picking one silently would make a link
- * mean different things as the vault grows.
+ * Deliberately *not* `noteTarget`: the resolver's `#` split is unguarded, so
+ * `[[#todo]]` normalizes to nothing and is missing even in a vault that holds
+ * a note called `#todo.md`. The `./` strip takes every repetition, as
+ * `trim_start_matches` does, not the first.
  */
-export function resolveNote(target: string, notes: Note[]): Note | null {
-  const wanted = noteTarget(target)
-    .replace(/\\/g, "/")
+function normalizeTarget(target: string): string {
+  const t = target.replace(/\\/g, "/");
+  const cut = t.indexOf("#");
+  return (cut < 0 ? t : t.slice(0, cut))
     .trim()
-    .replace(/^\.\//, "")
+    .replace(/^(?:\.\/)+/, "")
     .replace(/^\/+|\/+$/g, "");
-  if (!wanted) return null;
-  const lower = wanted.toLowerCase();
-  const exact = notes.find(
-    (n) => n.name.toLowerCase() === lower || n.name.toLowerCase() === `${lower}.md`,
-  );
-  if (exact) return exact;
+}
 
-  const base = lower.split("/").pop() ?? lower;
-  const matches = notes.filter((n) => stem(n.name).toLowerCase() === base);
-  return matches.length === 1 ? matches[0] : null;
+/**
+ * ASCII case folding — `str::eq_ignore_ascii_case`, which is what the backend
+ * compares names with. `toLowerCase()` folds the whole of Unicode, which would
+ * resolve `[[café]]` to `CAFÉ.md` in this editor and nowhere else.
+ */
+function fold(text: string): string {
+  return text.replace(/[A-Z]/g, (c) => c.toLowerCase());
+}
+
+/**
+ * What a target turned out to name — `knowledge::Resolution`, carrying notes
+ * where the backend carries indexes into its own list.
+ *
+ * Ambiguity is a state of its own rather than a flavour of missing, because
+ * the two want opposite things said to the user: one note has to be written,
+ * or one of several has to be named.
+ */
+export type NoteResolution =
+  | { kind: "note"; note: Note }
+  | { kind: "ambiguous"; notes: Note[] }
+  | { kind: "missing" };
+
+/**
+ * Resolve a target against the vault, mirroring `knowledge::resolve_link`.
+ *
+ * Obsidian's rule: a full relative path if it matches, otherwise a unique
+ * basename anywhere in the vault, with the extension optional on both. A
+ * basename shared by two notes is reported rather than picked — choosing one
+ * silently would make a link mean different things as the vault grows.
+ */
+export function resolveLink(target: string, notes: Note[]): NoteResolution {
+  const wanted = fold(normalizeTarget(target));
+  if (!wanted) return { kind: "missing" };
+  const withMd = `${wanted}.md`;
+  const exact = notes.find(
+    (n) => fold(n.name) === wanted || fold(n.name) === withMd,
+  );
+  if (exact) return { kind: "note", note: exact };
+
+  const base = wanted.split("/").pop() ?? wanted;
+  const matches = notes.filter((n) => fold(stem(n.name)) === base);
+  if (matches.length === 1) return { kind: "note", note: matches[0] };
+  return matches.length === 0
+    ? { kind: "missing" }
+    : { kind: "ambiguous", notes: matches };
+}
+
+/** The one note a target names, or null when it names none or several. */
+export function resolveNote(target: string, notes: Note[]): Note | null {
+  const found = resolveLink(target, notes);
+  return found.kind === "note" ? found.note : null;
+}
+
+/**
+ * What a link's hover says about where it points.
+ *
+ * One function rather than a sentence per surface, because a link is offered in
+ * three places — the rendered preview, the outbound strip, the graph — and a
+ * vault where each of them describes ambiguity differently is one where the
+ * reader has to work out that they are the same condition. Ambiguity gets its
+ * own sentence: "no such note yet" would be a lie the user cannot act on, since
+ * the note exists twice and the fix is to say which one, not to write it.
+ */
+export function linkTitle(target: string, found: NoteResolution): string {
+  switch (found.kind) {
+    case "note":
+      return found.note.name;
+    case "ambiguous":
+      return `${target} — more than one note has that name (${found.notes
+        .map((n) => n.name)
+        .join(", ")}); link one by its path`;
+    default:
+      return `${target} — no such note yet`;
+  }
 }
 
 /** `rust/async.md` -> `async` */
@@ -131,13 +203,13 @@ const wikilink: TokenizerAndRendererExtension = {
   },
   renderer(token) {
     const target = (token as unknown as { target: string }).target;
-    const found = resolveNote(target, vault);
+    const found = resolveLink(target, vault);
     const label = escapeHtml(token.text);
     // A broken link is styled, not hidden or dropped: writing `[[thing]]`
     // before the note exists is how a note gets planned, so this is a state
     // to show rather than an error.
-    const cls = found ? "wikilink" : "wikilink broken";
-    const title = found ? found.name : `${target} — no such note yet`;
+    const cls = found.kind === "note" ? "wikilink" : "wikilink broken";
+    const title = linkTitle(target, found);
     return `<a class="${cls}" href="${linkHref(target)}" title="${escapeHtml(title)}">${label}</a>`;
   },
 };
