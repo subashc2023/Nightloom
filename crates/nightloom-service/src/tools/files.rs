@@ -237,6 +237,34 @@ impl Tool for EditFile {
             ));
         }
 
+        // Refusing is recoverable and the write is not: this comes back as a
+        // tool result the model can act on, where a spread rename is a silent
+        // corruption reported as success. See [`names_swallowing`].
+        let swallowed = if replace_all {
+            names_swallowing(&text, &old)
+        } else {
+            Vec::new()
+        };
+        if let Some(first) = swallowed.first() {
+            let (some, them) = match swallowed.len() {
+                1 => ("a longer name", "it"),
+                _ => ("longer names", "them"),
+            };
+            let list = match swallowed.len() {
+                1 => first.clone(),
+                n if n <= 3 => swallowed.join(", "),
+                n => format!("{}, and {} more", swallowed[..3].join(", "), n - 3),
+            };
+            return Err(format!(
+                "old_string {old:?} also occurs inside {some} in {shown}: {list}. replace_all \
+                 matches substrings rather than whole words, so this edit would rewrite {them} \
+                 too and report success. Extend old_string with the characters that bound the \
+                 name you mean — the bracket, the space, the `def ` in front of it — so the \
+                 match cannot reach {them}. If you do mean to change {them} as well, give each \
+                 one its own edit_file call."
+            ));
+        }
+
         let edited = if replace_all {
             text.replace(&old, &new)
         } else {
@@ -249,6 +277,62 @@ impl Tool for EditFile {
             "Edited {shown}: replaced {changed} occurrence{plural}."
         ))
     }
+}
+
+fn is_ident(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// The longer names a `replace_all` of `needle` would reach inside.
+///
+/// `replace_all` replaces a literal substring rather than a word, so renaming a
+/// bare symbol rewrites every longer name containing it: `fetch_rows` to
+/// `load_rows` turns a neighbouring `fetch_rows_v1` into `load_rows_v1`, writes
+/// the file and reports success. It is the one place the uniqueness contract
+/// above is deliberately waived, and so the one place a name can spread.
+///
+/// Worth knowing before deciding this is over-careful: across 59
+/// `rename-across-files` attempts on five models, the flag was reached for five
+/// times and **every one** passed a bare identifier. None happened to land on
+/// the file holding the neighbour, which is where the calls fell rather than a
+/// judgement any of them made.
+///
+/// Only a needle that begins or ends in an identifier character can be
+/// swallowed. One already bounded by punctuation says where it stops, so
+/// `fetch_rows(` and `= 1;` never trip this — which is also the way out of it.
+fn names_swallowing(hay: &str, needle: &str) -> Vec<String> {
+    let grows_left = needle.chars().next().is_some_and(is_ident);
+    let grows_right = needle.chars().last().is_some_and(is_ident);
+    let mut found: Vec<String> = Vec::new();
+    if !grows_left && !grows_right {
+        return found;
+    }
+    for (at, _) in hay.match_indices(needle) {
+        let end = at + needle.len();
+        let mut start = at;
+        if grows_left {
+            for (i, c) in hay[..at].char_indices().rev() {
+                if !is_ident(c) {
+                    break;
+                }
+                start = i;
+            }
+        }
+        let mut stop = end;
+        if grows_right {
+            for (i, c) in hay[end..].char_indices() {
+                if !is_ident(c) {
+                    break;
+                }
+                stop = end + i + c.len_utf8();
+            }
+        }
+        let whole = &hay[start..stop];
+        if (start, stop) != (at, end) && !found.iter().any(|n| n == whole) {
+            found.push(whole.to_string());
+        }
+    }
+    found
 }
 
 pub struct ListDir {
@@ -515,6 +599,78 @@ mod tests {
             "new new new\n"
         );
         fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The rename the eval suite traps, run as the models actually issue it.
+    #[tokio::test]
+    async fn replace_all_will_not_reach_inside_a_longer_name() {
+        let dir = test_dir("files-edit-swallow");
+        let (_, _, edit, _) = tools(&dir);
+        let before =
+            "def fetch_rows(q):\n    return run(q)\n\ndef fetch_rows_v1(q):\n    return None\n";
+        fs::write(dir.join("db.py"), before).unwrap();
+        let err = edit
+            .call(
+                json!({
+                    "path": "db.py",
+                    "old_string": "fetch_rows",
+                    "new_string": "load_rows",
+                    "replace_all": true
+                }),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        // The name it would have broken is in the message, so the model is
+        // told which neighbour it nearly renamed rather than only that it
+        // failed.
+        assert!(err.contains("fetch_rows_v1"), "{err}");
+        assert!(err.contains("own edit_file call"), "{err}");
+        // Refused means refused: not a byte of it was written.
+        assert_eq!(fs::read_to_string(dir.join("db.py")).unwrap(), before);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// And the way out the error describes has to work, or the guard is a wall.
+    #[tokio::test]
+    async fn a_bounded_anchor_renames_every_call_and_leaves_the_neighbour() {
+        let dir = test_dir("files-edit-bounded");
+        let (_, _, edit, _) = tools(&dir);
+        fs::write(
+            dir.join("db.py"),
+            "def fetch_rows(q):\n    return len(fetch_rows('all'))\n\ndef fetch_rows_v1(q):\n    return None\n",
+        )
+        .unwrap();
+        let out = edit
+            .call(
+                json!({
+                    "path": "db.py",
+                    "old_string": "fetch_rows(",
+                    "new_string": "load_rows(",
+                    "replace_all": true
+                }),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(out, "Edited db.py: replaced 2 occurrences.");
+        let after = fs::read_to_string(dir.join("db.py")).unwrap();
+        assert!(after.contains("def load_rows(q):"), "{after}");
+        assert!(after.contains("len(load_rows('all'))"), "{after}");
+        assert!(after.contains("def fetch_rows_v1(q):"), "{after}");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A needle punctuation already bounds cannot be swallowed, so the guard
+    /// has nothing to say about the ordinary edit.
+    #[test]
+    fn a_punctuated_needle_never_trips_the_guard() {
+        assert!(names_swallowing("x = 1;\ny = 1;\n", "= 1;").is_empty());
+        assert!(names_swallowing("a(b); a(b);\n", "a(b)").is_empty());
+        assert_eq!(
+            names_swallowing("read read_all unread\n", "read"),
+            ["read_all", "unread"]
+        );
     }
 
     #[tokio::test]

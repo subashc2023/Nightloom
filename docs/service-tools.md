@@ -30,6 +30,32 @@ comes back as an `is_error` tool result it must act on, so `edit_file`'s
 ambiguity error tells it to extend `old_string` rather than retry blind. A test
 asserts no description carries stray wrapping whitespace.
 
+**`replace_all` refuses to reach inside a longer name**, and the measurement is
+the argument. `replace_all` waives the uniqueness contract on purpose, and it
+replaces a literal substring rather than a word — so renaming a bare
+`fetch_rows` to `load_rows` rewrites a neighbouring `fetch_rows_v1` into
+`load_rows_v1`, writes the file, and reports success. The eval suite's
+`rename-across-files` trap is exactly that neighbour, and across 59 attempts on
+five models the flag was reached for five times with **a bare identifier every
+one of them**; none landed on the file holding the decoy, which is where the
+calls fell rather than a judgement any model made. Two of the five came from one
+`gpt-oss-120b` attempt.
+
+So `edit_file` now refuses that call and names the neighbour it would have
+broken. The description was fixed first and is not enough on its own: it is
+advice, and the two models that actually sprang the trap (`deepseek-v4-flash`
+and `gemini-3.1-flash-lite`, once each in ten) did it by reading the file and
+hand-writing the rename, which no description reaches and this guard does not
+catch either.
+
+Only a needle that begins or ends in an identifier character can be swallowed,
+so `fetch_rows(` and `= 1;` never trip it — and that is also the way out, which
+the error says: bound the name, or give each longer name its own call. The cost
+is real and accepted: a deliberate substring rename across a family of names
+(`Color` → `Colour` over `ColorPicker`) now takes one call per name. That is the
+trade — the refusal is recoverable and comes back as text the model can act on,
+where the spread rename is a silent corruption that reports success.
+
 ## `tools/root.rs` — path confinement
 
 Every path-taking tool resolves its argument against a `Root` and refuses

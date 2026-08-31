@@ -382,7 +382,7 @@ Strict dependency direction: `nightloom-core` ← {`nightloom-providers`,
 ## Development
 
 ```sh
-cargo test --workspace          # ~535 tests, no network
+cargo test --workspace          # ~538 tests, no network
 cargo clippy --workspace
 cargo fmt
 npm run check --prefix apps/desktop
