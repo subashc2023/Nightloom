@@ -26,6 +26,9 @@ import type {
   ImageInput,
   KnowledgeInfo,
   McpServerInfo,
+  MorningPage,
+  NightshiftChange,
+  NightshiftRow,
   ReviewerInfo,
   Note,
   NoteScope,
@@ -186,7 +189,7 @@ export const app = $state({
    * floating over it — reading, writing and navigating notes is work, not a
    * dialog.
    */
-  view: "chat" as "chat" | "note" | "graph",
+  view: "chat" as "chat" | "note" | "graph" | "nightshift",
   /**
    * The note open in the centre pane, when `view` is "note".
    *
@@ -255,6 +258,21 @@ export const app = $state({
   /** Auto-dream and the dream model, Settings → Knowledge. */
   dreamPrefs: loadDreamPrefs(),
   toasts: [] as { id: number; text: string }[],
+  /**
+   * The Nightshift surface: every registered project's detection row, which
+   * one is selected, which tab is showing, and the selected project's newest
+   * morning page. `rows` mirrors the backend registry the same way
+   * `app.projects` does — re-read after anything that could have changed it,
+   * never mutated locally except to splice in a fresher row.
+   */
+  nightshift: {
+    rows: [] as NightshiftRow[],
+    selected: null as string | null,
+    tab: "review" as "start" | "review",
+    morning: null as MorningPage | null,
+    loading: false,
+    error: null as string | null,
+  },
 });
 
 let initialized = false;
@@ -312,6 +330,15 @@ export async function init(): Promise<void> {
     app.pendingApprovals.push(e.payload),
   );
   await listen<string>("menu", (e) => runMenuCommand(e.payload));
+  // Only the watched project (selectNightshiftProject calls nightshiftWatch)
+  // emits this, and only that project's row and morning page are worth
+  // re-reading — a change event for anything else could not reach here.
+  await listen<NightshiftChange>("nightshift-change", (e) => {
+    if (e.payload.project_id === app.nightshift.selected) {
+      void refreshNightshiftRow(e.payload.project_id);
+      void loadNightshiftMorning();
+    }
+  });
   // A folder coming back is something that happens outside this window, so
   // nothing in here would otherwise notice it. Re-reading on focus is what
   // makes the missing-folder warning's "until it comes back" a promise the UI
@@ -852,6 +879,117 @@ export async function useEngine(engine: Engine): Promise<void> {
   app.connection = null;
   app.agentTurn = null;
   await applyDraft();
+}
+
+// ---- nightshift ----
+
+export function showNightshift(): void {
+  app.view = "nightshift";
+  app.openNote = null;
+  void refreshNightshift();
+}
+
+export function closeNightshift(): void {
+  app.view = "chat";
+}
+
+/**
+ * Re-read every project's Nightshift row. Picks a selection when there is
+ * none yet — the currently open project if it is enabled, else the first
+ * enabled row — so opening the surface for the first time lands somewhere
+ * useful instead of on an empty Review pane.
+ */
+export async function refreshNightshift(): Promise<void> {
+  app.nightshift.loading = true;
+  app.nightshift.error = null;
+  try {
+    app.nightshift.rows = await api.nightshiftProjects();
+  } catch (e) {
+    app.nightshift.error = String(e);
+    addToast(String(e));
+    return;
+  } finally {
+    app.nightshift.loading = false;
+  }
+  if (app.nightshift.selected === null) {
+    const openId = app.project?.id;
+    const openRow = app.nightshift.rows.find(
+      (r) => r.id === openId && r.nightshift !== null,
+    );
+    const firstEnabled = app.nightshift.rows.find((r) => r.nightshift !== null);
+    const pick = openRow ?? firstEnabled;
+    if (pick) await selectNightshiftProject(pick.id);
+  }
+}
+
+/** Re-read one row in place — what a `nightshift-change` event triggers. */
+async function refreshNightshiftRow(id: string): Promise<void> {
+  try {
+    const fresh = await api.nightshiftProject(id);
+    const i = app.nightshift.rows.findIndex((r) => r.id === id);
+    if (i >= 0) app.nightshift.rows[i] = fresh;
+    else app.nightshift.rows.push(fresh);
+  } catch {
+    // The row it replaces is left as-is; a live watch failing quietly here
+    // is better than a toast on every filesystem hiccup.
+  }
+}
+
+export async function selectNightshiftProject(id: string): Promise<void> {
+  const prev = app.nightshift.selected;
+  if (prev && prev !== id) {
+    try {
+      await api.nightshiftUnwatch(prev);
+    } catch {
+      // Best-effort: an unwatch failing leaves an extra watch running, not a
+      // broken UI.
+    }
+  }
+  app.nightshift.selected = id;
+  try {
+    await api.nightshiftWatch(id);
+  } catch (e) {
+    addToast(String(e));
+  }
+  await loadNightshiftMorning();
+}
+
+/** The selected project's newest morning page, or null when it has none. */
+export async function loadNightshiftMorning(): Promise<void> {
+  const id = app.nightshift.selected;
+  const row = app.nightshift.rows.find((r) => r.id === id);
+  if (!id || !row?.nightshift) {
+    app.nightshift.morning = null;
+    return;
+  }
+  try {
+    app.nightshift.morning = await api.nightshiftMorning(id);
+  } catch (e) {
+    app.nightshift.morning = null;
+    addToast(String(e));
+  }
+}
+
+/**
+ * **Enable Nightshift** on a project: scaffold `<workspace>/nightshift/` and
+ * select it. The scaffold's notes are its caveats (a missing git repo, a
+ * runner that is not installed) — surfaced as toasts since there is nowhere
+ * in the list for them to live once the row replaces itself.
+ */
+export async function enableNightshift(id: string): Promise<void> {
+  let row: NightshiftRow;
+  let notes: string[];
+  try {
+    [row, notes] = await api.nightshiftEnable(id);
+  } catch (e) {
+    addToast(String(e));
+    return;
+  }
+  const i = app.nightshift.rows.findIndex((r) => r.id === id);
+  if (i >= 0) app.nightshift.rows[i] = row;
+  else app.nightshift.rows.push(row);
+  for (const note of notes) addToast(note);
+  await selectNightshiftProject(id);
 }
 
 // ---- saved system prompts ----

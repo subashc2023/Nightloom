@@ -12,6 +12,7 @@
   import NoteView from "./lib/NoteView.svelte";
   import GraphView from "./lib/GraphView.svelte";
   import Welcome from "./lib/Welcome.svelte";
+  import NightshiftSurface from "./lib/NightshiftSurface.svelte";
 
   onMount(() => {
     void init();
@@ -44,6 +45,8 @@
           <NoteView />
         {:else if app.view === "graph"}
           <GraphView />
+        {:else if app.view === "nightshift"}
+          <NightshiftSurface />
         {:else if blank}
           <Welcome />
         {:else}

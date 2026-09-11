@@ -7,6 +7,7 @@
     newSession,
     openSession,
     refreshSessions,
+    showNightshift,
   } from "./state.svelte";
   import * as api from "./api";
   import type { SessionHit } from "./types";
@@ -103,6 +104,19 @@
   function shortPath(path: string): string {
     return path.length <= 34 ? path : `…${path.slice(-33)}`;
   }
+
+  /**
+   * Open blockers summed across every enabled project, not just the one
+   * open — the badge is a signal to go look, and a blocker on a project
+   * that is not the current one is exactly the kind of thing a per-project
+   * count would hide.
+   */
+  const nightshiftBlockers = $derived(
+    app.nightshift.rows.reduce(
+      (sum, r) => sum + (r.nightshift?.open_blockers ?? 0),
+      0,
+    ),
+  );
 </script>
 
 <aside class="sidebar">
@@ -140,6 +154,16 @@
       <ProjectMenu close={() => (menu = false)} />
     {/if}
   </div>
+
+  <button
+    class="nightshift-btn"
+    class:active={app.view === "nightshift"}
+    onclick={() => showNightshift()}
+  >
+    Nightshift
+    {#if nightshiftBlockers > 0}<span class="count">{nightshiftBlockers}</span
+      >{/if}
+  </button>
 
   <div class="tabs" role="tablist">
     <button
@@ -390,6 +414,36 @@
     color: var(--dim);
     font-variant-numeric: tabular-nums;
     opacity: 0.8;
+  }
+  .nightshift-btn {
+    margin: 0 0.5rem 0.6rem;
+    padding: 0.45rem 0.65rem;
+    background: transparent;
+    color: var(--accent);
+    border: 1px solid var(--border);
+    border-left: 2px solid var(--accent);
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    font-family: inherit;
+    text-align: left;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+  .nightshift-btn:hover {
+    border-color: var(--accent);
+  }
+  .nightshift-btn.active {
+    background: #1b1830;
+  }
+  .nightshift-btn .count {
+    background: var(--accent);
+    color: var(--bg);
+    border-radius: 999px;
+    padding: 0 0.4rem;
+    font-size: 0.62rem;
+    opacity: 1;
   }
   .new-chat {
     margin: 0 0.75rem 0.6rem;
