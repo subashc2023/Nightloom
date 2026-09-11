@@ -72,6 +72,12 @@ pub struct Config {
     /// Passes an item gets before the shift moves on (§12.3).
     #[serde(default = "default_max_passes")]
     pub max_passes: u32,
+    /// The directory holding `bin/nightshift.sh` — the one runner install
+    /// (§3, blocker 024). Absent means this root's own `bin/`, which is what
+    /// the nightshift repo has. A project enabled from the GUI gets a path,
+    /// never a copy of `bin/`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runner: Option<String>,
     /// Keys this build does not know, carried so a rewrite drops nothing.
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -99,6 +105,7 @@ impl Default for Config {
             workspace: default_workspace(),
             allowed_tools: Vec::new(),
             max_passes: default_max_passes(),
+            runner: None,
             extra: serde_json::Map::new(),
         }
     }
@@ -152,6 +159,12 @@ impl ContractRoot {
     pub fn join(&self, rel: impl AsRef<Path>) -> PathBuf {
         self.root.join(rel)
     }
+
+    /// Where the runner lives: `runner` from `nightshift.json`, else this
+    /// root. The script itself is [`launch::RUNNER`] under it.
+    pub fn runner_root(&self) -> PathBuf {
+        launch::runner_root(&self.root, &self.config)
+    }
 }
 
 /// The detection rule, both sides (§2 as amended by §12.1):
@@ -185,7 +198,18 @@ pub struct Enabled {
 /// template, an empty `backlog/order.json` and the empty directories the
 /// runner expects. Refuses if detection already passes, since two contract
 /// roots in one workspace is a question with no answer.
-pub fn enable(workspace: &Path, name: &str, kind: &str) -> Result<Enabled, String> {
+///
+/// `runner` is the one runner install the new root will point at (§3,
+/// blocker 024); `None` writes no key, and the root then has no runner
+/// until someone puts `bin/` in it. A path that holds no
+/// `bin/nightshift.sh` is still written — the user may install it later —
+/// but the notes say so.
+pub fn enable(
+    workspace: &Path,
+    name: &str,
+    kind: &str,
+    runner: Option<&Path>,
+) -> Result<Enabled, String> {
     if !workspace.is_dir() {
         return Err(format!(
             "{} is not a directory; open a project with a folder first",
@@ -211,6 +235,7 @@ pub fn enable(workspace: &Path, name: &str, kind: &str) -> Result<Enabled, Strin
     let config = Config {
         name: name.to_string(),
         kind: kind.to_string(),
+        runner: runner.map(|r| r.to_string_lossy().into_owned()),
         ..Config::default()
     };
     write_json_atomic(&root.join(CONFIG_FILE), &config)?;
@@ -226,10 +251,18 @@ pub fn enable(workspace: &Path, name: &str, kind: &str) -> Result<Enabled, Strin
             root.display()
         ));
     }
-    notes.push(format!(
-        "The runner itself (bin/nightshift.sh and its tools) is not installed by this step; copy or link it into {} before launching a shift.",
-        root.display()
-    ));
+    match runner {
+        None => notes.push(format!(
+            "No runner path was given, so nightshift.json names none; put the runner's path under `runner` in {} (or install bin/ there) before launching a shift.",
+            root.join(CONFIG_FILE).display()
+        )),
+        Some(r) if !r.join(launch::RUNNER).is_file() => notes.push(format!(
+            "nightshift.json points at {} for the runner, but there is no {} there yet.",
+            r.display(),
+            launch::RUNNER
+        )),
+        Some(_) => {}
+    }
     Ok(Enabled {
         root: ContractRoot::at(root, true),
         notes,
@@ -461,7 +494,7 @@ mod tests {
         let ws = std::env::temp_dir().join(format!("nightloom-enable-{}", std::process::id()));
         let _ = fs::remove_dir_all(&ws);
         fs::create_dir_all(&ws).unwrap();
-        let made = enable(&ws, "Demo", "build").unwrap();
+        let made = enable(&ws, "Demo", "build", None).unwrap();
         assert!(made.root.nested);
         assert_eq!(made.root.config.kind, "build");
         assert_eq!(made.root.config.name, "Demo");
@@ -479,11 +512,47 @@ mod tests {
         assert_eq!(order, serde_json::json!({ "order": [] }));
         // The file shiftctl would read back parses to the same config.
         assert_eq!(detect(&ws).unwrap().config, made.root.config);
-        // The runner is not part of the scaffold, and enable says so.
-        assert!(made.notes.iter().any(|n| n.contains("bin/nightshift.sh")));
-        let err = enable(&ws, "Demo", "build").unwrap_err();
+        // No runner path: the config names none, and enable says so.
+        assert_eq!(made.root.config.runner, None);
+        assert!(made.notes.iter().any(|n| n.contains("`runner`")));
+        assert!(
+            !fs::read_to_string(made.root.join(CONFIG_FILE))
+                .unwrap()
+                .contains("runner")
+        );
+        let err = enable(&ws, "Demo", "build", None).unwrap_err();
         assert!(err.contains("already enabled"), "{err}");
-        assert!(enable(&ws.join("missing"), "x", "research").is_err());
+        assert!(enable(&ws.join("missing"), "x", "research", None).is_err());
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn enable_writes_the_runner_path_and_notes_a_missing_script() {
+        let ws =
+            std::env::temp_dir().join(format!("nightloom-enable-runner-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&ws);
+        let install = ws.join("install");
+        fs::create_dir_all(ws.join("project")).unwrap();
+        fs::create_dir_all(install.join("bin")).unwrap();
+        // The install exists but has no script yet: written, and said.
+        let made = enable(&ws.join("project"), "Demo", "research", Some(&install)).unwrap();
+        assert_eq!(
+            made.root.config.runner.as_deref(),
+            Some(install.to_string_lossy().as_ref())
+        );
+        assert_eq!(made.root.runner_root(), install);
+        assert!(!launch::runner_present(&made.root.root, &made.root.config));
+        assert!(
+            made.notes
+                .iter()
+                .any(|n| n.contains("no bin/nightshift.sh"))
+        );
+        // The key round-trips through the file shiftctl reads.
+        let back = detect(&ws.join("project")).unwrap();
+        assert_eq!(back.config.runner, made.root.config.runner);
+        // Once the script is there, the same config finds it.
+        fs::write(install.join(launch::RUNNER), "#!/bin/bash\n").unwrap();
+        assert!(launch::runner_present(&back.root, &back.config));
         let _ = fs::remove_dir_all(&ws);
     }
 
@@ -492,7 +561,7 @@ mod tests {
         let ws = std::env::temp_dir().join(format!("nightloom-enable-kind-{}", std::process::id()));
         let _ = fs::remove_dir_all(&ws);
         fs::create_dir_all(&ws).unwrap();
-        assert!(enable(&ws, "x", "experiment").is_err());
+        assert!(enable(&ws, "x", "experiment", None).is_err());
         assert!(!ws.join(NESTED_DIR).exists());
         let _ = fs::remove_dir_all(&ws);
     }

@@ -374,8 +374,18 @@ export function nightshiftProject(projectId: string): Promise<NightshiftRow> {
 export function nightshiftEnable(
   projectId: string,
   kind?: string,
+  runner?: string,
 ): Promise<[NightshiftRow, string[]]> {
-  return invoke("nightshift_enable", { projectId, kind });
+  return invoke("nightshift_enable", { projectId, kind, runner });
+}
+
+/**
+ * The one runner install a registered project shows — the nightshift repo
+ * itself when it is a project here — or null. What the Enable form starts
+ * with.
+ */
+export function nightshiftDefaultRunner(): Promise<string | null> {
+  return invoke("nightshift_default_runner");
 }
 
 export function nightshiftItems(projectId: string): Promise<ItemList> {

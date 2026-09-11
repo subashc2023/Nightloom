@@ -272,6 +272,9 @@ export const app = $state({
     morning: null as MorningPage | null,
     loading: false,
     error: null as string | null,
+    /** The runner install the Enable form is prefilled with; null when no
+     *  registered project shows one. Read once per refresh. */
+    defaultRunner: null as string | null,
   },
 });
 
@@ -904,6 +907,7 @@ export async function refreshNightshift(): Promise<void> {
   app.nightshift.error = null;
   try {
     app.nightshift.rows = await api.nightshiftProjects();
+    app.nightshift.defaultRunner = await api.nightshiftDefaultRunner();
   } catch (e) {
     app.nightshift.error = String(e);
     addToast(String(e));
@@ -976,11 +980,14 @@ export async function loadNightshiftMorning(): Promise<void> {
  * runner that is not installed) — surfaced as toasts since there is nowhere
  * in the list for them to live once the row replaces itself.
  */
-export async function enableNightshift(id: string): Promise<void> {
+export async function enableNightshift(
+  id: string,
+  runner?: string,
+): Promise<void> {
   let row: NightshiftRow;
   let notes: string[];
   try {
-    [row, notes] = await api.nightshiftEnable(id);
+    [row, notes] = await api.nightshiftEnable(id, undefined, runner);
   } catch (e) {
     addToast(String(e));
     return;

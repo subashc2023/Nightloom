@@ -27,8 +27,29 @@
   function rowHints(info: NightshiftInfo): string {
     const h: string[] = [];
     if (!info.git) h.push("no git repo");
-    if (!info.runner_present) h.push("runner not installed");
+    if (!info.runner_present) h.push(`no runner at ${info.runner}`);
     return h.join(" · ");
+  }
+
+  /**
+   * The Enable form: which row it is open on and the runner path typed into
+   * it. Prefilled with the one install a registered project shows (the
+   * nightshift repo, when it is a project here); an empty path enables with
+   * no `runner` key. Item 038 / blocker 024: one install, named by path.
+   */
+  let enabling = $state<string | null>(null);
+  let runnerPath = $state("");
+
+  function openEnable(id: string): void {
+    enabling = id;
+    runnerPath = app.nightshift.defaultRunner ?? "";
+  }
+
+  async function confirmEnable(): Promise<void> {
+    const id = enabling;
+    if (!id) return;
+    enabling = null;
+    await enableNightshift(id, runnerPath.trim() || undefined);
   }
 </script>
 
@@ -107,24 +128,57 @@
           <div class="section-head">Other projects</div>
           <ul class="rows">
             {#each otherRows as row (row.id)}
-              <li class="other-row">
-                <span class="row-name">
-                  {row.name}
-                  {#if !row.exists}<span class="missing">folder missing</span
-                    >{/if}
+              <li class="other-row" class:enabling={enabling === row.id}>
+                <span class="other-top">
+                  <span class="row-name">
+                    {row.name}
+                    {#if !row.exists}<span class="missing">folder missing</span
+                      >{/if}
+                  </span>
+                  {#if enabling !== row.id}
+                    <button
+                      class="enable"
+                      disabled={!row.exists || row.workspace === null}
+                      title={!row.exists
+                        ? "folder missing"
+                        : row.workspace === null
+                          ? "This project has no folder"
+                          : undefined}
+                      onclick={() => openEnable(row.id)}
+                    >
+                      Enable Nightshift
+                    </button>
+                  {/if}
                 </span>
-                <button
-                  class="enable"
-                  disabled={!row.exists || row.workspace === null}
-                  title={!row.exists
-                    ? "folder missing"
-                    : row.workspace === null
-                      ? "This project has no folder"
-                      : undefined}
-                  onclick={() => void enableNightshift(row.id)}
-                >
-                  Enable Nightshift
-                </button>
+                {#if enabling === row.id}
+                  <form
+                    class="enable-form"
+                    onsubmit={(e) => {
+                      e.preventDefault();
+                      void confirmEnable();
+                    }}
+                  >
+                    <label class="enable-label" for="ns-runner-{row.id}">
+                      Runner — the folder holding bin/nightshift.sh
+                    </label>
+                    <input
+                      id="ns-runner-{row.id}"
+                      class="enable-input"
+                      type="text"
+                      bind:value={runnerPath}
+                      placeholder="leave empty to set it later in nightshift.json"
+                      spellcheck="false"
+                    />
+                    <span class="enable-actions">
+                      <button class="enable" type="submit">Enable</button>
+                      <button
+                        class="link"
+                        type="button"
+                        onclick={() => (enabling = null)}>Cancel</button
+                      >
+                    </span>
+                  </form>
+                {/if}
               </li>
             {/each}
           </ul>
@@ -314,13 +368,51 @@
   }
   .other-row {
     display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    padding: 0.35rem 0.4rem;
+  }
+  .other-row.enabling {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  .other-top {
+    display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 0.4rem;
-    padding: 0.35rem 0.4rem;
   }
   .other-row .row-name {
     font-size: 0.8rem;
+  }
+  .enable-form {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+  .enable-label {
+    font-size: 0.66rem;
+    color: var(--dim);
+  }
+  .enable-input {
+    width: 100%;
+    box-sizing: border-box;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-family: inherit;
+    font-size: 0.7rem;
+    padding: 0.3rem 0.4rem;
+  }
+  .enable-input:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  .enable-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
   }
   .enable {
     background: transparent;

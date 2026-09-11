@@ -660,6 +660,10 @@ export interface NightshiftInfo {
   lock: Lock | null;
   /** A shift is running, or the platform cannot say it is not. */
   live: boolean;
+  /** Where the runner is looked for: `runner` from `nightshift.json`, else
+   *  the contract root itself (§3, blocker 024). */
+  runner: string;
+  /** `bin/nightshift.sh` exists under `runner`. */
   runner_present: boolean;
   git: boolean;
   items: number;
@@ -681,6 +685,9 @@ export interface Config {
   allowed_tools: string[];
   /** Passes an item gets before the shift moves on (§12.3). */
   max_passes: number;
+  /** The directory holding `bin/nightshift.sh` — the one runner install
+   *  (§3, blocker 024). Absent means this root's own `bin/`. */
+  runner?: string;
 }
 
 /** `state/run.lock`, and whether that pid is still running (§10). */

@@ -13,9 +13,10 @@
 //! a lock file as live: the cost of being wrong that way is a refused edit,
 //! the other way is a corrupted shift.
 
+use super::Config;
 use serde::Serialize;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// What `state/run.lock` says, and whether that pid is still running.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -93,31 +94,50 @@ pub fn pid_alive(_pid: u32) -> Option<bool> {
     None
 }
 
-/// The runner script, relative to the root.
+/// The runner script, relative to the runner root.
 pub const RUNNER: &str = "bin/nightshift.sh";
 
-/// Whether the root carries a runner to launch.
-pub fn runner_present(root: &Path) -> bool {
-    root.join(RUNNER).is_file()
+/// The directory holding `bin/`: `runner` from `nightshift.json` when set
+/// (§3, blocker 024: one install, named by path), else the contract root
+/// itself. A relative `runner` is taken from the contract root.
+pub fn runner_root(root: &Path, config: &Config) -> PathBuf {
+    match config.runner.as_deref() {
+        Some(r) if !r.trim().is_empty() => root.join(r),
+        _ => root.to_path_buf(),
+    }
 }
 
-/// Launch a shift: `caffeinate -dis bash bin/nightshift.sh --plan <plan>`,
-/// detached from this process (its own process group, no inherited stdio)
-/// so closing Nightloom does not end the night. Returns the pid of the
-/// `caffeinate` wrapper; the runner writes its own pid into the lock.
+/// The absolute path of the script to run.
+pub fn runner_script(root: &Path, config: &Config) -> PathBuf {
+    runner_root(root, config).join(RUNNER)
+}
+
+/// Whether there is a runner to launch for this root.
+pub fn runner_present(root: &Path, config: &Config) -> bool {
+    runner_script(root, config).is_file()
+}
+
+/// Launch a shift: `caffeinate -dis bash <runner>/bin/nightshift.sh --plan
+/// <plan>` with the contract root as the working directory — that is how
+/// the script tells the contract root from its own install (§3). Detached
+/// from this process (its own process group, no inherited stdio) so closing
+/// Nightloom does not end the night. Returns the pid of the `caffeinate`
+/// wrapper; the runner writes its own pid into the lock.
 ///
 /// Refused when the lock says a shift is live, when the plan is not inside
-/// this root, and when the root has no runner.
+/// this root, and when the runner script is not where `nightshift.json`
+/// says it is.
 #[cfg(target_os = "macos")]
-pub fn launch(root: &Path, plan_rel: &str) -> Result<u32, String> {
+pub fn launch(root: &Path, config: &Config, plan_rel: &str) -> Result<u32, String> {
     use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
 
     ensure_not_live(root)?;
-    if !runner_present(root) {
+    let script = runner_script(root, config);
+    if !script.is_file() {
         return Err(format!(
-            "{} has no {RUNNER}; install the runner there before launching",
-            root.display()
+            "no runner at {}; set `runner` in nightshift.json to the directory holding {RUNNER}, or install it there",
+            script.display()
         ));
     }
     let plan = super::confined(root, plan_rel)?;
@@ -143,7 +163,11 @@ pub fn launch(root: &Path, plan_rel: &str) -> Result<u32, String> {
         }
     }
     let child = Command::new("caffeinate")
-        .args(["-dis", "bash", RUNNER, "--plan", plan_rel])
+        .arg("-dis")
+        .arg("bash")
+        .arg(&script)
+        .arg("--plan")
+        .arg(plan_rel)
         .current_dir(root)
         .env("PATH", path)
         .stdin(Stdio::null())
@@ -156,7 +180,7 @@ pub fn launch(root: &Path, plan_rel: &str) -> Result<u32, String> {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn launch(_root: &Path, _plan_rel: &str) -> Result<u32, String> {
+pub fn launch(_root: &Path, _config: &Config, _plan_rel: &str) -> Result<u32, String> {
     Err("launching a shift is only supported on macOS (the launch line needs caffeinate); start it from a terminal there".into())
 }
 
@@ -224,9 +248,49 @@ mod tests {
     #[test]
     fn launching_without_a_runner_or_off_macos_is_refused_before_anything_runs() {
         let ws = scratch();
-        assert!(!runner_present(&ws));
-        let err = launch(&ws, "shifts/x/plan.json").unwrap_err();
+        let config = Config::default();
+        assert!(!runner_present(&ws, &config));
+        let err = launch(&ws, &config, "shifts/x/plan.json").unwrap_err();
         assert!(err.contains("macOS") || err.contains(RUNNER), "{err}");
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn the_runner_is_looked_for_where_the_config_says() {
+        let ws = scratch();
+        // No key: the root's own bin/.
+        let own = Config::default();
+        assert_eq!(runner_root(&ws, &own), ws);
+        assert_eq!(runner_script(&ws, &own), ws.join(RUNNER));
+        // An absolute key wins over the root.
+        let install = ws.join("elsewhere");
+        fs::create_dir_all(install.join("bin")).unwrap();
+        let pointed = Config {
+            runner: Some(install.to_string_lossy().into_owned()),
+            ..Config::default()
+        };
+        assert_eq!(runner_root(&ws, &pointed), install);
+        assert!(!runner_present(&ws, &pointed));
+        fs::write(install.join(RUNNER), "#!/bin/bash\n").unwrap();
+        assert!(runner_present(&ws, &pointed));
+        assert!(!runner_present(&ws, &own));
+        // A relative key is taken from the root; an empty one means none.
+        let relative = Config {
+            runner: Some("elsewhere".into()),
+            ..Config::default()
+        };
+        assert!(runner_present(&ws, &relative));
+        let empty = Config {
+            runner: Some("  ".into()),
+            ..Config::default()
+        };
+        assert_eq!(runner_root(&ws, &empty), ws);
+        // The refusal names the path it looked at.
+        let err = launch(&ws, &own, "shifts/x/plan.json").unwrap_err();
+        assert!(
+            err.contains("macOS") || err.contains(&ws.join(RUNNER).display().to_string()),
+            "{err}"
+        );
         let _ = fs::remove_dir_all(&ws);
     }
 }

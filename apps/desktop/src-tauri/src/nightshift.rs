@@ -49,6 +49,10 @@ pub struct NightshiftInfo {
     /// A shift is running, or the platform cannot say it is not. Every
     /// editing control locks on this.
     pub live: bool,
+    /// Where the runner is looked for: `runner` from `nightshift.json`,
+    /// else the contract root itself (§3, blocker 024).
+    pub runner: String,
+    /// `bin/nightshift.sh` exists under `runner`.
     pub runner_present: bool,
     pub git: bool,
     pub items: usize,
@@ -68,7 +72,8 @@ impl NightshiftInfo {
             config_error: root.config_error.clone(),
             live: lock.as_ref().is_some_and(|l| l.blocks_writes()),
             lock,
-            runner_present: launch::runner_present(&root.root),
+            runner: root.runner_root().to_string_lossy().into_owned(),
+            runner_present: launch::runner_present(&root.root, &root.config),
             git: git::is_repo(&root.root),
             items: items::item_files(&root.root).len(),
             open_blockers: bl.iter().filter(|b| b.status == "open").count(),
@@ -161,20 +166,67 @@ pub async fn nightshift_project(
     .await
 }
 
+/// The one runner install this machine has, if a registered project shows
+/// it: the first project (registry order) whose contract root carries its
+/// own `bin/nightshift.sh` — the nightshift repo itself — else the first
+/// whose `nightshift.json` points at a `runner` that exists. What the
+/// Enable form is prefilled with; the user can type another path.
+#[tauri::command]
+pub async fn nightshift_default_runner(
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    let projects = state.workspaces.lock().await.registry.projects();
+    blocking(move || -> Result<_, String> {
+        let roots: Vec<ContractRoot> = projects
+            .iter()
+            .filter_map(|p| p.workspace.as_deref().and_then(nightshift::detect))
+            .collect();
+        Ok(default_runner(&roots))
+    })
+    .await
+}
+
+/// The rule behind [`nightshift_default_runner`], over already-detected roots.
+fn default_runner(roots: &[ContractRoot]) -> Option<String> {
+    let own = roots
+        .iter()
+        .find(|r| r.root.join(launch::RUNNER).is_file())
+        .map(|r| r.root.clone());
+    own.or_else(|| {
+        roots
+            .iter()
+            .filter(|r| r.config.runner.is_some())
+            .map(|r| r.runner_root())
+            .find(|d| d.join(launch::RUNNER).is_file())
+    })
+    .map(|d| d.to_string_lossy().into_owned())
+}
+
 /// **Enable Nightshift** on a project: scaffold `<workspace>/nightshift/`.
-/// `kind` defaults to `research`. Returns the row and the scaffold's notes
-/// (what it could not do — `git init` without git, and that the runner is
-/// not part of the scaffold).
+/// `kind` defaults to `research`; `runner` is the install the new root
+/// points at (§3, blocker 024) — an empty or missing one writes no key.
+/// Returns the row and the scaffold's notes (what it could not do — `git
+/// init` without git, a runner path with no script under it).
 #[tauri::command]
 pub async fn nightshift_enable(
     state: State<'_, AppState>,
     project_id: String,
     kind: Option<String>,
+    runner: Option<String>,
 ) -> Result<(NightshiftRow, Vec<String>), String> {
     let (name, workspace) = workspace_of(&state, &project_id).await?;
+    let runner = runner
+        .map(|r| r.trim().to_string())
+        .filter(|r| !r.is_empty())
+        .map(PathBuf::from);
     let notes = blocking(move || {
-        nightshift::enable(&workspace, &name, kind.as_deref().unwrap_or("research"))
-            .map(|e| e.notes)
+        nightshift::enable(
+            &workspace,
+            &name,
+            kind.as_deref().unwrap_or("research"),
+            runner.as_deref(),
+        )
+        .map(|e| e.notes)
     })
     .await?;
     Ok((nightshift_project(state, project_id).await?, notes))
@@ -343,7 +395,7 @@ pub async fn nightshift_launch(
     plan_path: String,
 ) -> Result<u32, String> {
     let root = root_of(&state, &project_id).await?;
-    blocking(move || launch::launch(&root.root, &plan_path)).await
+    blocking(move || launch::launch(&root.root, &root.config, &plan_path)).await
 }
 
 // ---- mornings, notes, streams ----
@@ -576,4 +628,52 @@ pub fn nightshift_unwatch(watches: State<'_, Watches>, project_id: String) -> Re
         .map_err(|_| "watch table poisoned".to_string())?
         .remove(&project_id);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn root_at(dir: &std::path::Path, runner: Option<&str>) -> ContractRoot {
+        fs::create_dir_all(dir).unwrap();
+        let mut config = serde_json::json!({ "version": 2, "kind": "research", "name": "t" });
+        if let Some(r) = runner {
+            config["runner"] = serde_json::Value::String(r.to_string());
+        }
+        fs::write(dir.join(nightshift::CONFIG_FILE), config.to_string()).unwrap();
+        nightshift::detect(dir).unwrap()
+    }
+
+    #[test]
+    fn the_default_runner_is_a_root_with_its_own_script_else_a_pointed_at_one() {
+        let ws =
+            std::env::temp_dir().join(format!("nightloom-default-runner-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&ws);
+        let install = ws.join("install");
+        fs::create_dir_all(install.join("bin")).unwrap();
+        fs::write(install.join(launch::RUNNER), "#!/bin/bash\n").unwrap();
+        // Nothing registered carries or names a runner: none.
+        let bare = root_at(&ws.join("bare"), None);
+        assert_eq!(default_runner(std::slice::from_ref(&bare)), None);
+        // A root pointing at an existing install: that install.
+        let pointed = root_at(&ws.join("pointed"), Some(&install.to_string_lossy()));
+        assert_eq!(
+            default_runner(&[bare.clone(), pointed.clone()]).as_deref(),
+            Some(install.to_string_lossy().as_ref())
+        );
+        // A pointer at nothing does not count.
+        let dangling = root_at(
+            &ws.join("dangling"),
+            Some(&ws.join("nowhere").to_string_lossy()),
+        );
+        assert_eq!(default_runner(std::slice::from_ref(&dangling)), None);
+        // A root that IS the install wins over a pointer, whatever the order.
+        let own = root_at(&install, None);
+        assert_eq!(
+            default_runner(&[pointed, dangling, own]).as_deref(),
+            Some(install.to_string_lossy().as_ref())
+        );
+        let _ = fs::remove_dir_all(&ws);
+    }
 }

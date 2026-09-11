@@ -2448,6 +2448,7 @@ fn main() {
             nightshift::nightshift_projects,
             nightshift::nightshift_project,
             nightshift::nightshift_enable,
+            nightshift::nightshift_default_runner,
             nightshift::nightshift_items,
             nightshift::nightshift_item,
             nightshift::nightshift_set_order,
