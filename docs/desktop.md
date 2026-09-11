@@ -207,6 +207,45 @@ consulted before the environment, which matters more here than for providers
 because a GUI process started from a shortcut usually inherits no environment at
 all.
 
+## Keychain prompts on macOS, and the dev-build signature
+
+**Symptom (2026-09-11):** every `cargo tauri dev` rebuild made macOS ask for
+the login password once per stored key — five to fifteen dialogs — and
+"Always Allow" never held. **Cause:** a plain dev build is ad-hoc,
+linker-signed, and its code identity is a per-build hash
+(`Identifier=nightloom_desktop-<hash>`, designated requirement `cdhash
+H"…"`). The keychain stores "Always Allow" against the requesting app's code
+identity, so each rebuild is, to the keychain, a new application. Measured
+with user interaction disabled (`SecKeychainSetUserInteractionAllowed(false)`,
+which turns a would-be dialog into `errSecAuthFailed`): an item created by one
+ad-hoc build is refused to the next; an item created by a build signed with a
+developer certificate and a fixed identifier is readable by every later build
+signed the same way, and still refused to an ad-hoc one.
+
+**Fix:** `.cargo/config.toml` sets a `runner` for the two `*-apple-darwin`
+targets — `scripts/macos-sign-and-run.sh` — so `cargo run` (which is what
+`tauri dev` executes) signs `nightloom-desktop` with the first "Apple
+Development" identity in the keychain and the identifier
+`app.nightloom.desktop` before starting it. The designated requirement is then
+`identifier "app.nightloom.desktop" and anchor apple generic and certificate
+leaf[subject.CN] = "<identity>" …`, the same for every build, so one "Always
+Allow" per key holds for good. The script skips a binary that already carries
+that signature, leaves every other binary (the CLI, test executables) alone
+unless `NIGHTLOOM_SIGN_ALL=1`, and never fails a run: no identity means an
+ad-hoc run and a line on stderr saying the keychain will ask again.
+`scripts/macos-build-signed.sh` does the same for `cargo tauri build` through
+Tauri's `APPLE_SIGNING_IDENTITY`, so the installed `Nightloom.app` shares the
+grant. Linux and Windows never see the runner table. The first launch after
+this change asks once more per key — the old grants name the old hashes — and
+that round is the last.
+
+Not done on purpose: consolidating the per-key items into one keychain entry
+(would cut that final round to one click, but changes the stored format and
+needs a migration that itself reads every item), and creating items with an
+"any application" ACL (`security add-generic-password -A`'s mode — no dialogs
+ever, at the cost of any process as the user reading the keys silently).
+Both are decisions for the owner, not a build script.
+
 ## Rewind, context, cost, todos
 
 **Rewind**: the `rewind` command returns the resulting transcript rather than an

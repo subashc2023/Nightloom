@@ -31,6 +31,8 @@ cargo run -p nightloom-cli -- eval              # agentic task suite
 
 npm install --prefix apps/desktop        # once
 cargo tauri dev                          # desktop, from the repo root
+#   (macOS: .cargo/config.toml routes the run through scripts/macos-sign-and-run.sh,
+#    which signs the binary so keychain "Always Allow" survives rebuilds — docs/desktop.md)
 npm run check --prefix apps/desktop      # svelte-check
 ```
 
