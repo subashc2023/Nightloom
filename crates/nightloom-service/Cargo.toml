@@ -22,6 +22,9 @@ walkdir.workspace = true
 uuid.workspace = true
 reqwest.workspace = true
 zip = { version = "8", default-features = false, features = ["deflate"] }
+# The Nightshift watcher: one OS subscription per open contract root, so the
+# GUI learns of a runner's status write without polling.
+notify = "8"
 keyring = { workspace = true, optional = true }
 
 [features]

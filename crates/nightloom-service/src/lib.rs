@@ -13,6 +13,7 @@ pub mod credentials;
 pub mod dream;
 pub mod import;
 pub mod knowledge;
+pub mod nightshift;
 pub mod observe;
 pub mod project;
 pub mod prompt;

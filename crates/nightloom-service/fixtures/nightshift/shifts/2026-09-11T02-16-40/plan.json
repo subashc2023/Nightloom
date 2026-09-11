@@ -1,0 +1,151 @@
+{
+  "shift_id": "2026-09-11T02-16-40",
+  "created": "2026-09-11T02:16:46",
+  "source": "manual",
+  "kind": "research",
+  "items": [
+    {
+      "id": "017",
+      "selected": true
+    },
+    {
+      "id": "001",
+      "selected": true
+    },
+    {
+      "id": "002",
+      "selected": false
+    },
+    {
+      "id": "005",
+      "selected": false
+    },
+    {
+      "id": "006",
+      "selected": false
+    },
+    {
+      "id": "007",
+      "selected": false
+    },
+    {
+      "id": "008",
+      "selected": false
+    },
+    {
+      "id": "010",
+      "selected": false
+    },
+    {
+      "id": "012",
+      "selected": false
+    },
+    {
+      "id": "013",
+      "selected": false
+    },
+    {
+      "id": "014",
+      "selected": false
+    },
+    {
+      "id": "015",
+      "selected": true
+    },
+    {
+      "id": "016",
+      "selected": true
+    },
+    {
+      "id": "018",
+      "selected": false
+    },
+    {
+      "id": "019",
+      "selected": false
+    },
+    {
+      "id": "020",
+      "selected": false
+    },
+    {
+      "id": "021",
+      "selected": false
+    },
+    {
+      "id": "022",
+      "selected": true
+    },
+    {
+      "id": "023",
+      "selected": true
+    },
+    {
+      "id": "024",
+      "selected": false
+    },
+    {
+      "id": "025",
+      "selected": false
+    },
+    {
+      "id": "026",
+      "selected": false
+    },
+    {
+      "id": "027",
+      "selected": false
+    },
+    {
+      "id": "028",
+      "selected": false
+    },
+    {
+      "id": "029",
+      "selected": false
+    },
+    {
+      "id": "030",
+      "selected": false
+    },
+    {
+      "id": "032",
+      "selected": false
+    },
+    {
+      "id": "033",
+      "selected": false
+    },
+    {
+      "id": "034",
+      "selected": false
+    },
+    {
+      "id": "000",
+      "selected": false
+    },
+    {
+      "id": "003",
+      "selected": false
+    },
+    {
+      "id": "004",
+      "selected": false
+    },
+    {
+      "id": "009",
+      "selected": false
+    },
+    {
+      "id": "011",
+      "selected": false
+    },
+    {
+      "id": "035",
+      "selected": false
+    }
+  ],
+  "until": null,
+  "max_units": 1,
+  "budget_usd": 75.0
+}

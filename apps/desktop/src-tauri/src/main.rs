@@ -28,6 +28,9 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio_util::sync::CancellationToken;
 
+/// Nightshift: the unattended runner's file contract, as commands.
+mod nightshift;
+
 struct AppState {
     chat: tokio::sync::Mutex<Option<Chat>>,
     /// The Claude Code agent, when the rail is on that engine instead.
@@ -2387,6 +2390,8 @@ fn main() {
                 dreaming: tokio::sync::Mutex::new(()),
                 dream_cancel: Arc::new(std::sync::Mutex::new(CancellationToken::new())),
             });
+            // The Nightshift file watches, beside `AppState` rather than in it.
+            app.manage(nightshift::Watches::default());
             // Last, and that ordering is load-bearing rather than tidiness:
             // the webview starts loading the moment the window exists and its
             // first paint calls straight into `providers` and `list_sessions`,
@@ -2440,6 +2445,33 @@ fn main() {
             dream,
             cancel_dream,
             reveal,
+            nightshift::nightshift_projects,
+            nightshift::nightshift_project,
+            nightshift::nightshift_enable,
+            nightshift::nightshift_items,
+            nightshift::nightshift_item,
+            nightshift::nightshift_set_order,
+            nightshift::nightshift_blockers,
+            nightshift::nightshift_answer_blocker,
+            nightshift::nightshift_shifts,
+            nightshift::nightshift_shift,
+            nightshift::nightshift_shift_log,
+            nightshift::nightshift_synth_plan,
+            nightshift::nightshift_write_plan,
+            nightshift::nightshift_launch,
+            nightshift::nightshift_mornings,
+            nightshift::nightshift_morning,
+            nightshift::nightshift_notes,
+            nightshift::nightshift_read_file,
+            nightshift::nightshift_stream,
+            nightshift::nightshift_schedule,
+            nightshift::nightshift_set_schedule,
+            nightshift::nightshift_diff,
+            nightshift::nightshift_shift_diff,
+            nightshift::nightshift_revert_preview,
+            nightshift::nightshift_revert,
+            nightshift::nightshift_watch,
+            nightshift::nightshift_unwatch,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Nightloom");

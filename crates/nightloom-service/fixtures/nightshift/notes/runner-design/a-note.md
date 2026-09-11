@@ -1,0 +1,3 @@
+# A note
+
+Fixture note.
