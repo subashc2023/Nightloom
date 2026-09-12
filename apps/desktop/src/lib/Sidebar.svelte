@@ -10,10 +10,10 @@
     openSession,
     refreshNightshift,
     refreshSessions,
-    selectNightshiftProject,
     showNightshift,
   } from "./state.svelte";
   import * as api from "./api";
+  import { untrack } from "svelte";
   import type { NightshiftInfo, NightshiftRow, SessionHit } from "./types";
   import { relativeTime } from "./time";
   import { sameMorning } from "./nightshift";
@@ -118,20 +118,18 @@
    * that is not the current one is exactly the kind of thing a per-project
    * count would hide.
    */
-  const nightshiftBlockers = $derived(
-    app.nightshift.rows.reduce(
-      (sum, r) => sum + (r.nightshift?.open_blockers ?? 0),
-      0,
-    ),
+  /** The open project's Nightshift row, once the rows are read. */
+  const openRow = $derived(
+    app.project ? (app.nightshift.rows.find((r) => r.id === app.project?.id) ?? null) : null,
   );
-  /** A morning page this window has not opened, on any enabled project. */
-  const nightshiftNewPage = $derived(
-    app.nightshift.rows.some((r) => {
-      const newest = r.nightshift?.newest_morning;
-      if (!newest) return false;
-      return !(app.nightshift.read[r.id] ?? []).some((n) => sameMorning(n, newest));
-    }),
-  );
+  const nightshiftBlockers = $derived(openRow?.nightshift?.open_blockers ?? 0);
+  /** A morning page this window has not opened, on the open project. */
+  const nightshiftNewPage = $derived.by(() => {
+    const r = openRow;
+    const newest = r?.nightshift?.newest_morning;
+    if (!r || !newest) return false;
+    return !(app.nightshift.read[r.id] ?? []).some((n) => sameMorning(n, newest));
+  });
 
   // The three modes. Chats and Notes leave the Nightshift screens if they
   // were showing; Nightshift opens them.
@@ -144,20 +142,11 @@
     app.leftTab = "notes";
   }
 
-  // ---- Nightshift mode: the project list and the Enable form (screen 3.1),
-  // moved here from the surface so the list lives where lists live.
+  // ---- Nightshift mode: the open project's card (round 2, point 12). The
+  // page shows the project in the top-left chip — there is no second list
+  // and no second selection — so this mode shows that one project: its row
+  // when it has a contract, the Enable form when it has none.
 
-  /** Projects Nightshift detection accepted — the list's top section. */
-  const enabledRows = $derived(
-    app.nightshift.rows.filter(
-      (r): r is NightshiftRow & { nightshift: NightshiftInfo } =>
-        r.nightshift !== null,
-    ),
-  );
-  /** Everything else — candidates for **Enable Nightshift**. */
-  const otherRows = $derived(
-    app.nightshift.rows.filter((r) => r.nightshift === null),
-  );
 
   /** The two conditions worth a dim warning under a row, joined into one line. */
   function rowHints(info: NightshiftInfo): string {
@@ -196,6 +185,22 @@
     await enableNightshift(id, runnerPath.trim() || undefined);
   }
 
+  // The Enable form opens on the open project as soon as its row says it
+  // has no contract — the card is the form; nothing to click first. The
+  // default runner arrives after the rows do, so a form opened on an empty
+  // default is filled in when it lands (and never refilled over a value the
+  // user typed or cleared: `runnerPath` is read untracked).
+  $effect(() => {
+    const r = openRow;
+    const d = app.nightshift.defaultRunner;
+    if (!r || r.nightshift || r.disabled || !r.exists || r.workspace === null) return;
+    if (enabling !== r.id) {
+      openEnable(r.id);
+    } else if (d && !untrack(() => runnerPath).trim()) {
+      runnerPath = d;
+    }
+  });
+
   /**
    * Disable, behind the warning (item 037). The dialog is opened on a row;
    * confirming renames the config through the backend and re-reads the
@@ -218,7 +223,6 @@
     }
     disableBusy = false;
     disabling = null;
-    if (app.nightshift.selected === row.id) app.nightshift.selected = null;
     await refreshNightshift();
     addToast(`Nightshift disabled on ${row.name}; the files stay`);
   }
@@ -419,112 +423,83 @@
     <NotesPanel />
   {:else}
     <div class="ns-scroll">
-      {#if app.nightshift.rows.length === 0}
-        <p class="hint">No projects yet — open a folder as a project first.</p>
+      {#if !app.project}
+        <p class="hint">Open a project to use Nightshift — the page shows the project in the top-left chip.</p>
+        <div class="ns-card open-card">
+          <button class="ns-btn small" onclick={() => void addProject()}>New project…</button>
+        </div>
+      {:else if !openRow}
+        <p class="hint">{app.nightshift.loading ? "Reading the project…" : `${app.project.name} is not in the project list yet.`}</p>
       {:else}
-        <div class="ns-side-h">Projects with a contract</div>
-        {#if enabledRows.length === 0}
-          <p class="hint">No project has Nightshift enabled yet.</p>
+        <div class="ns-side-h">This project</div>
+        {#if openRow.nightshift}
+          <div class="ns-list">
+            <div class="ns-row on open-card">
+              <span class="t ns-top">
+                <span class="ns-name">{openRow.name}</span>
+                {#if openRow.nightshift.live}
+                  <span class="ns-pill live" title="A shift is running; editing is locked">live</span>
+                {/if}
+              </span>
+              <span class="m">{rowMeta(openRow.nightshift)}</span>
+              {#if openRow.nightshift.config_error}
+                <span class="row-error">{openRow.nightshift.config_error}</span>
+              {/if}
+              {#if rowHints(openRow.nightshift)}
+                <span class="row-hint">{rowHints(openRow.nightshift)}</span>
+              {/if}
+              <button
+                type="button"
+                class="disable-link always"
+                title="Disable Nightshift on this project (behind a warning)"
+                onclick={() => (disabling = openRow)}
+              >Disable…</button>
+            </div>
+          </div>
         {:else}
           <div class="ns-list">
-            {#each enabledRows as row (row.id)}
-              <button
-                class="ns-row"
-                class:on={row.id === app.nightshift.selected && app.view === "nightshift"}
-                onclick={() => { if (app.view !== "nightshift") showNightshift(); void selectNightshiftProject(row.id); }}
-              >
-                <span class="t ns-top">
-                  <span class="ns-name">{row.name}</span>
-                  {#if row.nightshift.live}
-                    <span class="ns-pill live" title="A shift is running; editing is locked">live</span>
-                  {/if}
+            <div class="other-row enabling open-card">
+              <span class="other-top">
+                <span class="ns-name">
+                  {openRow.name}
+                  {#if !openRow.exists}<span class="missing">folder missing</span>{/if}
                 </span>
-                <span class="m">{rowMeta(row.nightshift)}</span>
-                <span
-                  class="disable-link"
-                  role="button"
-                  tabindex="0"
-                  title="Disable Nightshift on this project (behind a warning)"
-                  onclick={(e) => { e.stopPropagation(); disabling = row; }}
-                  onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); disabling = row; } }}
-                >Disable…</span>
-                {#if row.nightshift.config_error}
-                  <span class="row-error">{row.nightshift.config_error}</span>
-                {/if}
-                {#if rowHints(row.nightshift)}
-                  <span class="row-hint">{rowHints(row.nightshift)}</span>
-                {/if}
-              </button>
-            {/each}
-          </div>
-        {/if}
-
-        {#if otherRows.length > 0}
-          <div class="ns-side-h">Other projects</div>
-          <div class="ns-list">
-            {#each otherRows as row (row.id)}
-              <div class="other-row" class:enabling={enabling === row.id}>
-                <span class="other-top">
-                  <span class="ns-name">
-                    {row.name}
-                    {#if !row.exists}<span class="missing">folder missing</span>{/if}
+              </span>
+              {#if openRow.disabled}
+                <span class="row-hint">Nightshift is disabled here · {openRow.disabled}</span>
+                <span class="enable-actions">
+                  <button class="ns-btn small" disabled={!openRow.exists} onclick={() => void enableNightshift(openRow.id)}>Enable again</button>
+                </span>
+              {:else if openRow.workspace === null}
+                <span class="row-hint">This project has no folder; Nightshift needs one.</span>
+              {:else if !openRow.exists}
+                <span class="row-hint">The folder is missing; put it back to enable Nightshift.</span>
+              {:else}
+                <span class="row-hint">Nightshift is not enabled on this project.</span>
+                <form
+                  class="enable-form"
+                  onsubmit={(e) => {
+                    e.preventDefault();
+                    void confirmEnable();
+                  }}
+                >
+                  <label class="enable-label" for="ns-runner-{openRow.id}">
+                    Runner — the folder holding bin/nightshift.sh
+                  </label>
+                  <input
+                    id="ns-runner-{openRow.id}"
+                    class="ns-fld enable-input"
+                    type="text"
+                    bind:value={runnerPath}
+                    placeholder="leave empty to set it later in nightshift.json"
+                    spellcheck="false"
+                  />
+                  <span class="enable-actions">
+                    <button class="ns-btn small" type="submit">Enable Nightshift on this project</button>
                   </span>
-                  {#if row.disabled}
-                    <button
-                      class="enable-link"
-                      disabled={!row.exists}
-                      title={!row.exists
-                        ? "folder missing"
-                        : `Restore the disabled Nightshift root at ${row.disabled}`}
-                      onclick={() => void enableNightshift(row.id)}
-                    >
-                      Enable again
-                    </button>
-                  {:else if enabling !== row.id}
-                    <button
-                      class="enable-link"
-                      disabled={!row.exists || row.workspace === null}
-                      title={!row.exists
-                        ? "folder missing"
-                        : row.workspace === null
-                          ? "This project has no folder"
-                          : undefined}
-                      onclick={() => openEnable(row.id)}
-                    >
-                      Enable…
-                    </button>
-                  {/if}
-                </span>
-                {#if row.disabled}
-                  <span class="row-hint">disabled · {row.disabled}</span>
-                {/if}
-                {#if enabling === row.id}
-                  <form
-                    class="enable-form"
-                    onsubmit={(e) => {
-                      e.preventDefault();
-                      void confirmEnable();
-                    }}
-                  >
-                    <label class="enable-label" for="ns-runner-{row.id}">
-                      Runner — the folder holding bin/nightshift.sh
-                    </label>
-                    <input
-                      id="ns-runner-{row.id}"
-                      class="ns-fld enable-input"
-                      type="text"
-                      bind:value={runnerPath}
-                      placeholder="leave empty to set it later in nightshift.json"
-                      spellcheck="false"
-                    />
-                    <span class="enable-actions">
-                      <button class="ns-btn small" type="submit">Enable</button>
-                      <button class="link" type="button" onclick={() => (enabling = null)}>Cancel</button>
-                    </span>
-                  </form>
-                {/if}
-              </div>
-            {/each}
+                </form>
+              {/if}
+            </div>
           </div>
         {/if}
       {/if}
@@ -726,8 +701,22 @@
     cursor: pointer;
   }
   .ns-row:hover .disable-link,
-  .disable-link:focus-visible {
+  .disable-link:focus-visible,
+  .disable-link.always {
     opacity: 1;
+  }
+  .disable-link.always {
+    background: none;
+    border: none;
+    font: inherit;
+    font-size: 11px;
+  }
+  .open-card {
+    cursor: default;
+  }
+  .ns-card.open-card {
+    margin: 0 10px;
+    padding: 10px;
   }
   .disable-link:hover {
     color: var(--failed);
@@ -759,24 +748,6 @@
     align-items: center;
     justify-content: space-between;
     gap: 0.4rem;
-  }
-  .enable-link {
-    background: none;
-    border: none;
-    padding: 0;
-    font: inherit;
-    font-size: 11.5px;
-    color: var(--accent);
-    cursor: pointer;
-    flex-shrink: 0;
-  }
-  .enable-link:hover:not(:disabled) {
-    color: var(--accent-ink);
-    text-decoration: underline;
-  }
-  .enable-link:disabled {
-    opacity: 0.5;
-    cursor: default;
   }
   .enable-form {
     display: flex;

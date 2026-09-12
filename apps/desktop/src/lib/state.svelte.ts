@@ -627,6 +627,8 @@ export async function refreshProjects(): Promise<void> {
     const fresh = app.projects.find((p) => p.id === open.id);
     if (fresh) app.project = fresh;
   }
+  // The Nightshift page follows the open project (round 2, point 12).
+  void syncNightshiftProject();
 }
 
 /**
@@ -799,7 +801,10 @@ export async function useProject(id: string | null): Promise<void> {
   app.activeSessionId = null;
   app.events = [];
   app.error = null;
-  app.view = "chat";
+  // Switching projects from the Nightshift page stays on it — the page
+  // follows the open project (round 2, point 12); everywhere else it is a
+  // navigation to the new project's chat.
+  if (app.view !== "nightshift") app.view = "chat";
   app.openNote = null;
   await applyDraft();
   await refreshProjects();
@@ -1118,10 +1123,12 @@ export function closeNightshift(): void {
 }
 
 /**
- * Re-read every project's Nightshift row. Picks a selection when there is
- * none yet — the currently open project if it is enabled, else the first
- * enabled row — so opening the surface for the first time lands somewhere
- * useful instead of on an empty Review pane.
+ * Re-read every project's Nightshift row, then point the surface at the
+ * open project. There is no separate Nightshift selection any more: the
+ * page shows the project in the top-left chip (Swaraag's round-2 point 12
+ * — two project lists with two selections was the confusing part), so this
+ * always re-selects `app.project`, which re-watches its root and re-reads
+ * the Review screens.
  */
 export async function refreshNightshift(): Promise<void> {
   app.nightshift.loading = true;
@@ -1136,15 +1143,19 @@ export async function refreshNightshift(): Promise<void> {
   } finally {
     app.nightshift.loading = false;
   }
-  if (app.nightshift.selected === null) {
-    const openId = app.project?.id;
-    const openRow = app.nightshift.rows.find(
-      (r) => r.id === openId && r.nightshift !== null,
-    );
-    const firstEnabled = app.nightshift.rows.find((r) => r.nightshift !== null);
-    const pick = openRow ?? firstEnabled;
-    if (pick) await selectNightshiftProject(pick.id);
-  }
+  await selectNightshiftProject(app.project?.id ?? null);
+}
+
+/**
+ * Keep the Nightshift surface on the open project. Called wherever
+ * `app.project` can change (`refreshProjects` runs after every open, create
+ * and import); a no-op when nothing moved, so the frequent refreshes cost
+ * nothing.
+ */
+export async function syncNightshiftProject(): Promise<void> {
+  const id = app.project?.id ?? null;
+  if (id === app.nightshift.selected) return;
+  await selectNightshiftProject(id);
 }
 
 /** Re-read one row in place — what a `nightshift-change` event triggers. */
@@ -1160,7 +1171,13 @@ async function refreshNightshiftRow(id: string): Promise<void> {
   }
 }
 
-export async function selectNightshiftProject(id: string): Promise<void> {
+/**
+ * Point the surface at a project — the open one, in practice (see
+ * `syncNightshiftProject`) — or at nothing. Unwatches the previous root,
+ * drops everything read for it, watches the new one when it has a contract,
+ * and re-reads the Review screens.
+ */
+export async function selectNightshiftProject(id: string | null): Promise<void> {
   const prev = app.nightshift.selected;
   if (prev && prev !== id) {
     try {
@@ -1190,10 +1207,15 @@ export async function selectNightshiftProject(id: string): Promise<void> {
     app.nightshift.usage = null;
   }
   app.nightshift.selected = id;
-  try {
-    await api.nightshiftWatch(id);
-  } catch (e) {
-    addToast(String(e));
+  // Only a root can be watched; a project without a contract (the Enable
+  // card) has nothing to subscribe to, and asking would toast an error.
+  const row = app.nightshift.rows.find((r) => r.id === id);
+  if (id && row?.nightshift) {
+    try {
+      await api.nightshiftWatch(id);
+    } catch (e) {
+      addToast(String(e));
+    }
   }
   await loadNightshiftReview();
 }

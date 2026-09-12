@@ -96,7 +96,7 @@
 
     {#if !app.project}
       <button class="primary" onclick={() => void addProject()}>
-        Choose a folder…
+        New project…
       </button>
     {/if}
 
@@ -127,7 +127,7 @@
         {/each}
         {#if app.project}
           <button class="recent-row quiet" onclick={() => void addProject()}>
-            <span class="recent-name">Choose another folder…</span>
+            <span class="recent-name">New project…</span>
           </button>
         {/if}
       </div>
