@@ -31,8 +31,11 @@ import type {
   Morning,
   MorningPage,
   NightshiftChange,
+  NightshiftLaunched,
   NightshiftRow,
+  NightshiftUsage,
   NoteEntry,
+  PendingLaunch,
   Plan,
   RevertPreview,
   ShiftSummary,
@@ -468,6 +471,13 @@ export const app = $state({
     planPath: null as string | null,
     /** Set for the span of `writeAndLaunch`'s write-then-launch round trip. */
     launching: false,
+    /** The launch the backend is holding for the selected project, or null.
+     *  Read on entry (`loadPendingLaunch`), set by `scheduleLaunch`, cleared
+     *  by `cancelLaunch` and by the `nightshift-launched` event. */
+    pending: null as PendingLaunch | null,
+    /** The runner's usage probe, for the Start field's reset time; null
+     *  until read, and when the probe cannot answer. */
+    usage: null as NightshiftUsage | null,
   },
 });
 
@@ -534,6 +544,22 @@ export async function init(): Promise<void> {
       void refreshNightshiftRow(e.payload.project_id);
       void refreshNightshiftReview(e.payload.paths);
     }
+  });
+  // A held launch fired (the Start field's timer): the same toast and the
+  // same follow-up as the button, or the reason it could not.
+  await listen<NightshiftLaunched>("nightshift-launched", (e) => {
+    const { project_id, shift_id, pid, error } = e.payload;
+    if (project_id === app.nightshift.selected) app.nightshift.pending = null;
+    if (error) {
+      addToast(`Scheduled launch failed: ${error}`);
+      return;
+    }
+    addToast(`Launched shift ${shift_id} — pid ${pid}`);
+    if (project_id !== app.nightshift.selected) return;
+    void (async () => {
+      await Promise.all([refreshNightshiftRow(project_id), loadNightshiftReview()]);
+      if (shift_id) await selectShift(shift_id);
+    })();
   });
   // A folder coming back is something that happens outside this window, so
   // nothing in here would otherwise notice it. Re-reading on focus is what
@@ -1160,6 +1186,8 @@ export async function selectNightshiftProject(id: string): Promise<void> {
     app.nightshift.selectedItem = null;
     app.nightshift.planDraft = null;
     app.nightshift.planPath = null;
+    app.nightshift.pending = null;
+    app.nightshift.usage = null;
   }
   app.nightshift.selected = id;
   try {
@@ -1472,6 +1500,72 @@ export async function writeAndLaunch(): Promise<void> {
   } finally {
     app.nightshift.launching = false;
   }
+}
+
+/**
+ * Hold the draft and launch it at `fireAtMs` (the Start field's "when usage
+ * resets" and "at a time"). The backend keeps the timer; the app shows it as
+ * `app.nightshift.pending` and, in the state chip, "launches at …". Nothing
+ * is written until it fires.
+ */
+export async function scheduleLaunch(fireAtMs: number): Promise<void> {
+  const id = app.nightshift.selected;
+  const plan = app.nightshift.planDraft;
+  if (!id || !plan) return;
+  app.nightshift.launching = true;
+  try {
+    app.nightshift.pending = await api.nightshiftScheduleLaunch(id, plan, fireAtMs);
+    addToast(`Shift held — launches ${clockOf(fireAtMs)}`);
+  } catch (e) {
+    addToast(String(e));
+  } finally {
+    app.nightshift.launching = false;
+  }
+}
+
+export async function cancelLaunch(): Promise<void> {
+  const id = app.nightshift.selected;
+  if (!id) return;
+  try {
+    await api.nightshiftCancelLaunch(id);
+    app.nightshift.pending = null;
+    addToast("Scheduled launch cancelled");
+  } catch (e) {
+    addToast(String(e));
+  }
+}
+
+/** What the backend is holding for the selected project, if anything. */
+export async function loadPendingLaunch(): Promise<void> {
+  const id = app.nightshift.selected;
+  if (!id) return;
+  try {
+    app.nightshift.pending = await api.nightshiftPendingLaunch(id);
+  } catch {
+    // An older backend without the command: no pending launch to show.
+    app.nightshift.pending = null;
+  }
+}
+
+/** The runner's usage probe, for the Start field. A probe that cannot
+ *  answer leaves `usage` null and the field says so. */
+export async function loadUsage(): Promise<void> {
+  const id = app.nightshift.selected;
+  if (!id) return;
+  try {
+    app.nightshift.usage = await api.nightshiftUsage(id);
+  } catch {
+    app.nightshift.usage = null;
+  }
+}
+
+/** `at 05:10` or `at 05:10 tomorrow`, local time, for toasts and the chip. */
+export function clockOf(ms: number, now: Date = new Date()): string {
+  const d = new Date(ms);
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const sameDay = d.toDateString() === now.toDateString();
+  return `at ${hh}:${mm}${sameDay ? "" : " tomorrow"}`;
 }
 
 /** Re-read the flat file listing under `notes/` — what the Notes screen's

@@ -2392,6 +2392,7 @@ fn main() {
             });
             // The Nightshift file watches, beside `AppState` rather than in it.
             app.manage(nightshift::Watches::default());
+            app.manage(nightshift::PendingLaunches::default());
             // Last, and that ordering is load-bearing rather than tidiness:
             // the webview starts loading the moment the window exists and its
             // first paint calls straight into `providers` and `list_sessions`,
@@ -2461,6 +2462,10 @@ fn main() {
             nightshift::nightshift_synth_plan,
             nightshift::nightshift_write_plan,
             nightshift::nightshift_launch,
+            nightshift::nightshift_schedule_launch,
+            nightshift::nightshift_cancel_launch,
+            nightshift::nightshift_pending_launch,
+            nightshift::nightshift_usage,
             nightshift::nightshift_mornings,
             nightshift::nightshift_morning,
             nightshift::nightshift_notes,

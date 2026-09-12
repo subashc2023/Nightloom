@@ -5,7 +5,7 @@
    * header's Review row and the Start tab row (they were two copies that had
    * to be flipped together).
    */
-  import { app, latestShift } from "./state.svelte";
+  import { app, cancelLaunch, clockOf, latestShift } from "./state.svelte";
   import { pillClass, shiftWord } from "./nightshift";
   import { relativeTime } from "./time";
   import Icon from "./Icon.svelte";
@@ -21,6 +21,8 @@
    * long ago it ended. The raw exit code lives in the tooltip; Swaraag read
    * "exit 0" as noise (2026-09-11 review).
    */
+  const pending = $derived(app.nightshift.pending);
+
   const state = $derived.by(() => {
     if (info?.live) {
       const id = latest?.live ? latest.id : (info.latest_shift ?? "");
@@ -43,6 +45,16 @@
 <span class="ns-chip" title={state.tip}>
   <Icon name="moon" />
   <span class="ns-pill {pillClass(state.word)}"><span class="dot"></span>{state.text}</span>
+  {#if pending && !info?.live}
+    <!-- A held launch (the Start field's timer), beside the last shift's
+         word: the app is holding a plan and will launch it. In memory only —
+         the tooltip says so. -->
+    <span
+      class="ns-pill open held"
+      title="the app is holding this plan and launches it {clockOf(pending.fire_at_ms)} — as long as Nightloom stays open"
+    ><span class="dot"></span>launches {clockOf(pending.fire_at_ms)}</span>
+    <button type="button" class="cancel" title="Cancel the held launch" onclick={() => void cancelLaunch()}>cancel</button>
+  {/if}
 </span>
 
 <style>
@@ -50,5 +62,22 @@
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  .held {
+    margin-left: 6px;
+  }
+  .cancel {
+    background: none;
+    border: none;
+    padding: 0 2px;
+    margin-left: 4px;
+    font: inherit;
+    font-size: 11.5px;
+    color: var(--dim);
+    cursor: pointer;
+  }
+  .cancel:hover {
+    color: var(--failed);
+    text-decoration: underline;
   }
 </style>

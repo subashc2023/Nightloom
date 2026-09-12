@@ -12,7 +12,19 @@
    * locally. Nothing is written until Launch (`writeAndLaunch`), which
    * writes `plan.json` once and then launches the runner on it.
    */
-  import { app, paneWidth, reorderItems, setPaneWidth, synthPlan, writeAndLaunch } from "./state.svelte";
+  import {
+    app,
+    cancelLaunch,
+    clockOf,
+    loadPendingLaunch,
+    loadUsage,
+    paneWidth,
+    reorderItems,
+    scheduleLaunch,
+    setPaneWidth,
+    synthPlan,
+    writeAndLaunch,
+  } from "./state.svelte";
   import { untrack } from "svelte";
   import { clockLabel, parseClockTime, untilFromTime } from "./nightshift";
   import BacklogList from "./BacklogList.svelte";
@@ -36,7 +48,11 @@
   // re-seed the draft and drop the edits.
   $effect(() => {
     void app.nightshift.selected;
-    untrack(() => void synthPlan());
+    untrack(() => {
+      void synthPlan();
+      void loadPendingLaunch();
+      void loadUsage();
+    });
   });
 
   const selectedIds = $derived(new Set((plan?.items ?? []).filter((i) => i.selected).map((i) => i.id)));
@@ -94,6 +110,46 @@
   // takes either. Calling `.trim()` on the number is what kept the draft's
   // bounds at "unbounded" whatever was typed (found 2026-09-12 driving the
   // first launch from the app).
+  // Start: now, when the 5h usage window resets (the runner's own probe
+  // says when; two minutes after, so the gate reads the new window), or at
+  // a typed time — the same lenient parsing as Until, next occurrence. The
+  // app holds the timer (SHIFT-CONTRACT §7's v1 rule); a held launch shows
+  // in the state chip and here, with Cancel. Swaraag's round-2 point 10.
+  type StartMode = "now" | "reset" | "at";
+  let startMode = $state<StartMode>("now");
+  let startTime = $state("");
+  const RESET_MARGIN_MS = 2 * 60 * 1000;
+  const resetAtMs = $derived.by(() => {
+    const iso = app.nightshift.usage?.five_hour_resets_at;
+    if (!iso) return null;
+    const t = Date.parse(iso);
+    return Number.isFinite(t) ? t + RESET_MARGIN_MS : null;
+  });
+  const resetIsPast = $derived(resetAtMs != null && resetAtMs <= Date.now());
+  const startAtMs = $derived.by(() => {
+    if (startMode === "reset") return resetAtMs;
+    if (startMode === "at") {
+      const iso = startTime.trim() ? untilFromTime(startTime) : null;
+      return iso ? Date.parse(iso) : null;
+    }
+    return null;
+  });
+  const startLabel = $derived.by(() => {
+    if (startMode === "now") return "Launch tonight";
+    return startAtMs != null ? `Launch ${clockOf(startAtMs)}` : "Launch at…";
+  });
+  const canLaunch = $derived(
+    !locked && !app.nightshift.launching && selectedCount > 0 && (startMode === "now" || startAtMs != null),
+  );
+  function launch(): void {
+    if (startMode === "now") void writeAndLaunch();
+    else if (startAtMs != null) void scheduleLaunch(startAtMs);
+  }
+  function pickStart(mode: StartMode): void {
+    startMode = mode;
+    if (mode === "reset") void loadUsage();
+  }
+
   function numOrNull(v: string | number | null | undefined): number | null {
     if (v == null || String(v).trim() === "") return null;
     const n = Number(v);
@@ -148,6 +204,36 @@
       </div>
 
       <div class="fields">
+        <div class="field" role="radiogroup" aria-label="Start">
+          <span class="ns-k">Start</span>
+          <span class="presets">
+            <button type="button" role="radio" aria-checked={startMode === "now"} class="ns-chip preset" class:on={startMode === "now"} onclick={() => pickStart("now")}>now</button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={startMode === "reset"}
+              class="ns-chip preset"
+              class:on={startMode === "reset"}
+              disabled={resetAtMs == null || resetIsPast}
+              title={resetAtMs == null ? "the usage probe has no reset time" : resetIsPast ? "the window has already reset" : `usage resets ${clockOf(resetAtMs - RESET_MARGIN_MS)}; launches two minutes after`}
+              onclick={() => pickStart("reset")}
+            >when usage resets{#if resetAtMs != null && !resetIsPast} · {clockOf(resetAtMs - RESET_MARGIN_MS).replace(/^at /, "")}{/if}</button>
+            <button type="button" role="radio" aria-checked={startMode === "at"} class="ns-chip preset" class:on={startMode === "at"} onclick={() => pickStart("at")}>at a time</button>
+          </span>
+          {#if startMode === "at"}
+            <input
+              class="ns-fld"
+              type="text"
+              aria-label="Start time"
+              placeholder="e.g. 5:10am, 23:30"
+              bind:value={startTime}
+            />
+          {/if}
+          <span class="hint-sm">
+            {#if startMode === "now"}launches when you press the button{:else if startMode === "reset"}{#if resetAtMs != null}5h usage {app.nightshift.usage?.five_hour ?? "?"}% · launches {clockOf(resetAtMs)}{:else}the usage probe has no reset time{/if}{:else if startAtMs != null}launches {clockOf(startAtMs)}{:else}not a time yet{/if}
+          </span>
+        </div>
+
         <!-- A div, not a label: the preset buttons inside a label would
              inherit the whole label as their accessible name. -->
         <div class="field">
@@ -192,15 +278,22 @@
       <div class="usage-note">usage: see the Runs page</div>
 
       <div class="launch-col">
-        <button
-          class="ns-btn accent launch"
-          disabled={locked || app.nightshift.launching || selectedCount === 0}
-          onclick={() => void writeAndLaunch()}
-        >
-          <Icon name="play" />{app.nightshift.launching ? "Launching…" : "Launch tonight"}
+        {#if app.nightshift.pending}
+          <div class="ns-card held">
+            <span class="ns-pill open"><span class="dot"></span>held</span>
+            <span class="held-text">launches {clockOf(app.nightshift.pending.fire_at_ms)} · {app.nightshift.pending.items} item{app.nightshift.pending.items === 1 ? "" : "s"}</span>
+            <button type="button" class="ns-btn small ghost" onclick={() => void cancelLaunch()}>Cancel</button>
+          </div>
+        {/if}
+        <button class="ns-btn accent launch" disabled={!canLaunch} onclick={launch}>
+          <Icon name="play" />{app.nightshift.launching ? "Launching…" : startLabel}
         </button>
         <div class="hint-sm center">
-          writes <span class="ns-mono">shifts/…/plan.json</span> once, then launches the runner
+          {#if startMode === "now"}
+            writes <span class="ns-mono">shifts/…/plan.json</span> once, then launches the runner
+          {:else}
+            the app holds the plan and writes it when the time comes — keep Nightloom open{#if app.nightshift.pending}; a new launch replaces the held one{/if}
+          {/if}
         </div>
       </div>
     {/if}
@@ -318,5 +411,21 @@
     justify-content: center;
     padding: 10px;
     font-size: 14px;
+  }
+  .held {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    font-size: 12.5px;
+  }
+  .held-text {
+    flex: 1;
+    min-width: 0;
+    color: var(--ink2);
+  }
+  .preset:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
 </style>

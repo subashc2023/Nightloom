@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { app, currentTodos, liveFlags, roundCost } from "./state.svelte";
+import { app, clockOf, currentTodos, liveFlags, roundCost } from "./state.svelte";
 import type { Price, SessionEvent, TodoItem, Usage } from "./types";
 
 // These three functions are hand-written copies of backend logic —
@@ -264,5 +264,15 @@ describe("roundCost", () => {
       nulled,
     );
     expect(cost).toBeCloseTo(10, 10);
+  });
+});
+
+describe("clockOf — the Start field's and the chip's time", () => {
+  it("is the local clock time, with 'tomorrow' when the day differs", () => {
+    const now = new Date(2026, 8, 12, 0, 40); // 2026-09-12 00:40 local
+    const later = new Date(2026, 8, 12, 5, 12).getTime();
+    expect(clockOf(later, now)).toBe("at 05:12");
+    const next = new Date(2026, 8, 13, 0, 5).getTime();
+    expect(clockOf(next, now)).toBe("at 00:05 tomorrow");
   });
 });

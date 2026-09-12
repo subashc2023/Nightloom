@@ -4,9 +4,11 @@
 //! registry, runs the contract's detection on its workspace and hands the
 //! service the contract root. Nothing here parses a file or decides what a
 //! field means: a Nightshift screen is a projection of the files, the
-//! projection lives in Rust, and Svelte renders it. The one piece of state
-//! is [`Watches`], the file subscriptions that turn a runner's status write
-//! into a `nightshift-change` window event.
+//! projection lives in Rust, and Svelte renders it. The state is two
+//! tables: [`Watches`], the file subscriptions that turn a runner's status
+//! write into a `nightshift-change` window event, and [`PendingLaunches`],
+//! the one-off timers the Plan screen's Start field arms (§7's v1 rule: the
+//! scheduler lives in the app while it is open).
 //!
 //! Separate from `main.rs` because that file is already the whole of the
 //! app's command surface; `main.rs` includes this module, manages
@@ -21,7 +23,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 /// A registered project as the Nightshift list shows it: the ones that
 /// pass detection carry their contract root; the ones that do not are the
@@ -624,6 +626,242 @@ fn head_at_start(root: &ContractRoot, shift_id: &str) -> Result<String, String> 
         .ok_or_else(|| format!("shift {shift_id} has no status.json with head_at_start"))
 }
 
+// ---- a pending launch: the app holds the timer (SHIFT-CONTRACT §7, v1) ----
+
+/// One scheduled one-off launch per project: the plan as the form left it
+/// and the moment to write and launch it. **In memory only** — §7's v1 rule
+/// is that the scheduler lives in the app while it is open, and Swaraag
+/// keeps it open; an app restart drops the timer and the chip that showed
+/// it says so in its tooltip. Managed by `main.rs` beside [`Watches`].
+pub struct PendingLaunch {
+    pub plan: Plan,
+    /// Unix epoch milliseconds — what the form computed, what the chip shows.
+    pub fire_at_ms: u64,
+    task: tauri::async_runtime::JoinHandle<()>,
+}
+
+#[derive(Default)]
+pub struct PendingLaunches(std::sync::Mutex<HashMap<String, PendingLaunch>>);
+
+/// What the frontend sees of a pending launch.
+#[derive(Serialize, Clone)]
+pub struct PendingView {
+    pub fire_at_ms: u64,
+    /// The draft's id — re-minted when the timer fires (see [`prepare_timed_plan`]).
+    pub shift_id: String,
+    pub items: usize,
+}
+
+/// The payload of a `nightshift-launched` window event: the timer fired.
+#[derive(Serialize, Clone)]
+pub struct Launched {
+    pub project_id: String,
+    pub shift_id: Option<String>,
+    pub pid: Option<u32>,
+    pub error: Option<String>,
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// The plan a timer writes: the draft with its id **re-minted** to the
+/// moment of launch — the draft's id is the moment the Plan screen was
+/// opened, and a shift that starts at 05:10 must not be called `00-29` —
+/// and `scheduled_for` recorded beside `created`. Refuses a live root the
+/// way the button does, via `write_plan`.
+pub fn prepare_timed_plan(
+    root: &std::path::Path,
+    draft: &Plan,
+    fire_at_ms: u64,
+) -> Result<(String, String), String> {
+    let mut plan = draft.clone();
+    plan.shift_id = shifts::next_shift_id();
+    plan.created = String::new();
+    plan.extra.insert(
+        "scheduled_for".into(),
+        serde_json::Value::String(iso_of_ms(fire_at_ms)),
+    );
+    let path = shifts::write_plan(root, &plan)?;
+    Ok((plan.shift_id, path))
+}
+
+/// `2026-09-12T05:10:00Z` from epoch milliseconds, without a date crate.
+fn iso_of_ms(ms: u64) -> String {
+    let secs = ms / 1000;
+    let days = secs / 86_400;
+    let rem = secs % 86_400;
+    // Civil-from-days (Howard Hinnant's algorithm), proleptic Gregorian.
+    let z = days as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        rem / 3600,
+        (rem % 3600) / 60,
+        rem % 60
+    )
+}
+
+fn drop_pending(app: &AppHandle, project_id: &str) {
+    if let Some(p) = app
+        .state::<PendingLaunches>()
+        .0
+        .lock()
+        .ok()
+        .and_then(|mut m| m.remove(project_id))
+    {
+        p.task.abort();
+    }
+}
+
+/// Hold a plan and launch it at `fire_at_ms` — write `plan.json` then start
+/// the runner, exactly what the button does, then tell the window with
+/// `nightshift-launched`. Replaces a pending launch on the same project.
+/// Refused while a shift is live and when the moment is already past.
+#[tauri::command]
+pub async fn nightshift_schedule_launch(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    pending: State<'_, PendingLaunches>,
+    project_id: String,
+    plan: Plan,
+    fire_at_ms: u64,
+) -> Result<PendingView, String> {
+    let root = root_of(&state, &project_id).await?;
+    launch::ensure_not_live(&root.root)?;
+    let now = now_ms();
+    if fire_at_ms <= now {
+        return Err("that moment has passed; pick a later time or launch now".into());
+    }
+    if plan.items.iter().filter(|i| i.selected).count() == 0 {
+        return Err("no items selected".into());
+    }
+    drop_pending(&app, &project_id);
+    let view = PendingView {
+        fire_at_ms,
+        shift_id: plan.shift_id.clone(),
+        items: plan.items.iter().filter(|i| i.selected).count(),
+    };
+    let handle = app.clone();
+    let id = project_id.clone();
+    let draft = plan.clone();
+    let task = tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(fire_at_ms.saturating_sub(now_ms()))).await;
+        let r = blocking({
+            let root = root.clone();
+            let draft = draft.clone();
+            move || -> Result<(String, u32), String> {
+                let (shift_id, path) = prepare_timed_plan(&root.root, &draft, fire_at_ms)?;
+                let pid = launch::launch(&root.root, &root.config, &path)?;
+                Ok((shift_id, pid))
+            }
+        })
+        .await;
+        let payload = match r {
+            Ok((shift_id, pid)) => Launched {
+                project_id: id.clone(),
+                shift_id: Some(shift_id),
+                pid: Some(pid),
+                error: None,
+            },
+            Err(e) => Launched {
+                project_id: id.clone(),
+                shift_id: None,
+                pid: None,
+                error: Some(e),
+            },
+        };
+        // The entry goes before the event, so a listener re-reading the
+        // pending launch on the event sees none.
+        if let Ok(mut m) = handle.state::<PendingLaunches>().0.lock() {
+            m.remove(&id);
+        }
+        let _ = handle.emit("nightshift-launched", payload);
+    });
+    pending
+        .0
+        .lock()
+        .map_err(|_| "pending table poisoned".to_string())?
+        .insert(
+            project_id,
+            PendingLaunch {
+                plan,
+                fire_at_ms,
+                task,
+            },
+        );
+    Ok(view)
+}
+
+#[tauri::command]
+pub fn nightshift_cancel_launch(app: AppHandle, project_id: String) -> Result<(), String> {
+    drop_pending(&app, &project_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn nightshift_pending_launch(
+    pending: State<'_, PendingLaunches>,
+    project_id: String,
+) -> Result<Option<PendingView>, String> {
+    Ok(pending
+        .0
+        .lock()
+        .map_err(|_| "pending table poisoned".to_string())?
+        .get(&project_id)
+        .map(|p| PendingView {
+            fire_at_ms: p.fire_at_ms,
+            shift_id: p.plan.shift_id.clone(),
+            items: p.plan.items.iter().filter(|i| i.selected).count(),
+        }))
+}
+
+/// The usage reading the runner's gate uses — `python3 bin/usagectl.py
+/// --json` in the runner root, one probe for both — as its JSON. The Plan
+/// screen's "when usage resets" needs `five_hour_resets_at`. An error is a
+/// string: the script missing, python missing, or unparseable output.
+#[tauri::command]
+pub async fn nightshift_usage(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<serde_json::Value, String> {
+    let root = root_of(&state, &project_id).await?;
+    blocking(move || -> Result<serde_json::Value, String> {
+        let runner = launch::runner_root(&root.root, &root.config);
+        let script = runner.join("bin").join("usagectl.py");
+        if !script.is_file() {
+            return Err(format!("no usage probe at {}", script.display()));
+        }
+        let out = std::process::Command::new("python3")
+            .arg(&script)
+            .arg("--json")
+            .current_dir(&runner)
+            .output()
+            .map_err(|e| format!("could not run usagectl.py: {e}"))?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        // usagectl prints warnings before the JSON; the object starts at `{`.
+        let json = text.find('{').map(|i| &text[i..]).unwrap_or("");
+        serde_json::from_str(json).map_err(|e| {
+            format!(
+                "usagectl.py --json did not parse: {e}: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            )
+        })
+    })
+    .await
+}
+
 // ---- watching ----
 
 /// The live file subscriptions, one per project id. Managed by `main.rs`
@@ -696,6 +934,52 @@ mod tests {
         }
         fs::write(dir.join(nightshift::CONFIG_FILE), config.to_string()).unwrap();
         nightshift::detect(dir).unwrap()
+    }
+
+    #[test]
+    fn iso_of_ms_is_utc_civil_time() {
+        assert_eq!(iso_of_ms(0), "1970-01-01T00:00:00Z");
+        // 2026-09-12T12:10:00Z — the 5h window's reset the night this was written.
+        assert_eq!(iso_of_ms(1_789_215_000_000), "2026-09-12T12:10:00Z");
+        // A leap day.
+        assert_eq!(iso_of_ms(1_709_164_800_000), "2024-02-29T00:00:00Z");
+    }
+
+    #[test]
+    fn a_timed_plan_is_re_minted_stamped_and_refused_while_live() {
+        let ws = std::env::temp_dir().join(format!("nightloom-timed-plan-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&ws);
+        let root = root_at(&ws, None);
+        let draft: Plan = serde_json::from_value(serde_json::json!({
+            "shift_id": "2026-09-12T00-29-06",
+            "created": "2026-09-12T00:29:06",
+            "items": [{"id": "017", "selected": true}],
+            "max_units": 1
+        }))
+        .unwrap();
+        let (shift_id, path) = prepare_timed_plan(&root.root, &draft, 1_789_215_000_000).unwrap();
+        // The id is the moment of launch, not the moment the screen was opened.
+        assert_ne!(shift_id, "2026-09-12T00-29-06");
+        assert_eq!(path, format!("shifts/{shift_id}/plan.json"));
+        let on_disk = shifts::read_plan(&root.root, &shift_id).unwrap();
+        assert_eq!(on_disk.extra["scheduled_for"], "2026-09-12T12:10:00Z");
+        assert!(
+            !on_disk.created.is_empty(),
+            "write_plan stamps created afresh"
+        );
+        assert_eq!(on_disk.max_units, Some(1));
+        assert_eq!(on_disk.items.len(), 1);
+        // A live lock (this test's own pid) refuses the write, so a shift
+        // already running when a timer fires yields an error, not a second runner.
+        fs::create_dir_all(root.root.join("state")).unwrap();
+        fs::write(
+            root.root.join("state/run.lock"),
+            std::process::id().to_string(),
+        )
+        .unwrap();
+        let err = prepare_timed_plan(&root.root, &draft, 1_789_215_000_000).unwrap_err();
+        assert!(err.contains("live"), "{err}");
+        let _ = fs::remove_dir_all(&ws);
     }
 
     #[test]

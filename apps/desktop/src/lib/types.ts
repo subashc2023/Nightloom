@@ -921,6 +921,39 @@ export interface RevertPreview {
   dirty: boolean;
 }
 
+/** A one-off launch the app is holding for a project (the Plan screen's
+ *  Start field: when the usage window resets, or at a time). In memory in
+ *  the backend only; gone with the app. */
+export interface PendingLaunch {
+  /** Unix epoch milliseconds. */
+  fire_at_ms: number;
+  /** The draft's id — re-minted to the launch moment when the timer fires. */
+  shift_id: string;
+  /** Selected items. */
+  items: number;
+}
+
+/** The payload of a `nightshift-launched` window event: a held launch fired. */
+export interface NightshiftLaunched {
+  project_id: string;
+  shift_id: string | null;
+  pid: number | null;
+  error: string | null;
+}
+
+/** `bin/usagectl.py --json` as the runner's gate reads it. Percentages are
+ *  null when the probe has no reading. */
+export interface NightshiftUsage {
+  five_hour: number | null;
+  seven_day: number | null;
+  age_seconds: number | null;
+  stale: boolean;
+  /** ISO 8601 with offset, e.g. `2026-09-12T12:10:00.408607+00:00`. */
+  five_hour_resets_at: string | null;
+  source: string;
+  severity: string | null;
+}
+
 /** The payload of a `nightshift-change` window event. */
 export interface NightshiftChange {
   project_id: string;

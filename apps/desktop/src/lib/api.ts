@@ -23,6 +23,8 @@ import type {
   NoteScope,
   NightshiftRow,
   Plan,
+  PendingLaunch,
+  NightshiftUsage,
   ProjectInfo,
   ProviderInfo,
   RevertPreview,
@@ -498,6 +500,36 @@ export function nightshiftLaunch(
   planPath: string,
 ): Promise<number> {
   return invoke("nightshift_launch", { projectId, planPath });
+}
+
+/**
+ * Hold a plan and launch it at `fireAtMs` (epoch milliseconds): the backend
+ * writes `plan.json` — with the id re-minted to the launch moment — and
+ * starts the runner, then emits `nightshift-launched`. Replaces a pending
+ * launch on the same project; refused while a shift is live.
+ */
+export function nightshiftScheduleLaunch(
+  projectId: string,
+  plan: Plan,
+  fireAtMs: number,
+): Promise<PendingLaunch> {
+  return invoke("nightshift_schedule_launch", { projectId, plan, fireAtMs });
+}
+
+export function nightshiftCancelLaunch(projectId: string): Promise<null> {
+  return invoke("nightshift_cancel_launch", { projectId });
+}
+
+export function nightshiftPendingLaunch(
+  projectId: string,
+): Promise<PendingLaunch | null> {
+  return invoke("nightshift_pending_launch", { projectId });
+}
+
+/** The runner's own usage probe (`bin/usagectl.py --json`), for the Start
+ *  field's "when usage resets". Rejects when the probe is missing or unreadable. */
+export function nightshiftUsage(projectId: string): Promise<NightshiftUsage> {
+  return invoke("nightshift_usage", { projectId });
 }
 
 export function nightshiftMornings(projectId: string): Promise<Morning[]> {
