@@ -7,7 +7,6 @@
    * `diff.ts` pairs it.
    */
   import { diffTotals, parseDiff } from "./diff";
-  import Icon from "./Icon.svelte";
 
   let {
     text,
@@ -35,18 +34,6 @@
 </script>
 
 <div class="diffview">
-  <div class="head">
-    <span class="ns-chip"><Icon name="cols" />side by side</span>
-    <span class="spacer"></span>
-    {#if files.length > 0}
-      <span class="ns-mono totals">
-        <span class="plus">+{totals.added}</span>
-        <span class="minus">−{totals.removed}</span>
-        · {totals.files} file{totals.files === 1 ? "" : "s"}
-      </span>
-    {/if}
-  </div>
-
   {#if loading}
     <p class="empty">Reading the diff…</p>
   {:else if error}
@@ -54,18 +41,28 @@
   {:else if files.length === 0}
     <p class="empty">{text.trim() ? "Nothing git could show as a diff." : "No changes."}</p>
   {:else}
-    <div class="filestrip">
-      {#each files as f, i (f.path + i)}
-        <button class="file" class:on={i === selected} onclick={() => (selected = i)}>
-          {f.path}
-          <span class="pm">
-            {#if f.binary}binary{:else}
-              <span class="plus">+{f.added}</span>
-              {#if f.removed > 0}<span class="minus">−{f.removed}</span>{/if}
-            {/if}
-          </span>
-        </button>
-      {/each}
+    <!-- The files as tabs: an underline strip, the open file lit, the
+         totals pinned at the right end. (Was a row of plain text that read
+         as prose — 2026-09-11 review.) -->
+    <div class="filestrip" role="tablist" aria-label="Changed files">
+      <div class="files">
+        {#each files as f, i (f.path + i)}
+          <button role="tab" aria-selected={i === selected} class="file" class:on={i === selected} onclick={() => (selected = i)} title={f.path}>
+            <span class="name">{f.path}</span>
+            <span class="pm">
+              {#if f.binary}binary{:else}
+                <span class="plus">+{f.added}</span>
+                {#if f.removed > 0}<span class="minus">−{f.removed}</span>{/if}
+              {/if}
+            </span>
+          </button>
+        {/each}
+      </div>
+      <span class="ns-mono totals">
+        <span class="plus">+{totals.added}</span>
+        <span class="minus">−{totals.removed}</span>
+        · {totals.files} file{totals.files === 1 ? "" : "s"}
+      </span>
     </div>
     {#if file}
       <div class="cols">
@@ -109,23 +106,12 @@
     flex: 1;
     overflow: hidden;
   }
-  .head {
-    padding: 8px 12px;
-    border-bottom: 1px solid var(--line);
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    flex: none;
-  }
-  .head .ns-chip {
-    font-size: 11px;
-  }
-  .spacer {
-    flex: 1;
-  }
   .totals {
     font-size: 11px;
     color: var(--dim);
+    flex: none;
+    padding: 0 12px 0 16px;
+    white-space: nowrap;
   }
   .plus {
     color: var(--done);
@@ -147,32 +133,48 @@
   }
   .filestrip {
     display: flex;
-    gap: 4px;
-    padding: 6px 10px;
-    border-bottom: 1px solid var(--line);
-    overflow-x: auto;
+    align-items: stretch;
+    border-bottom: 1px solid var(--line2);
+    background: var(--well);
     flex: none;
+  }
+  .files {
+    display: flex;
+    gap: 0;
+    overflow-x: auto;
+    flex: 1;
+    min-width: 0;
+    scrollbar-width: thin;
   }
   .file {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    padding: 3px 9px;
-    border-radius: 6px;
+    gap: 7px;
+    padding: 8px 12px;
     border: none;
+    border-right: 1px solid var(--line);
+    border-bottom: 2px solid transparent;
     background: transparent;
     font-family: var(--mono);
     font-size: 11px;
-    color: var(--ink2);
+    color: var(--dim);
     white-space: nowrap;
     cursor: pointer;
+    max-width: 320px;
+  }
+  .file .name {
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .file:hover {
-    background: var(--well);
+    color: var(--ink2);
+    background: color-mix(in srgb, var(--sheet) 60%, transparent);
   }
   .file.on {
-    background: var(--well);
+    background: var(--sheet);
     color: var(--ink);
+    border-bottom-color: var(--accent);
+    cursor: default;
   }
   .pm {
     display: inline-flex;

@@ -45,6 +45,27 @@
   let listWidth = $state(paneWidth("runs.list", 290));
   let listOpen = $state(true);
   let drawerOpen = $state(true);
+  // The docked terminal's height, dragged by the handle on its top edge and
+  // kept with the other pane sizes.
+  let termH = $state(paneWidth("runs.term", 180));
+  function termDown(e: PointerEvent): void {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const startY = e.clientY;
+    const startH = termH;
+    const target = e.currentTarget as HTMLElement;
+    target.setPointerCapture(e.pointerId);
+    const move = (ev: PointerEvent) => {
+      termH = Math.min(600, Math.max(80, startH + (startY - ev.clientY)));
+    };
+    const up = () => {
+      target.removeEventListener("pointermove", move);
+      target.removeEventListener("pointerup", up);
+      setPaneWidth("runs.term", termH);
+    };
+    target.addEventListener("pointermove", move);
+    target.addEventListener("pointerup", up);
+  }
   let revert = $state<{ id: string; preview: RevertPreview } | null>(null);
   let reverting = $state(false);
 
@@ -161,14 +182,46 @@
   const logLines = $derived(app.nightshift.log.split("\n"));
 </script>
 
-<div class="runs" style:grid-template-columns={listOpen ? `${listWidth}px 7px minmax(0,1fr)` : "34px minmax(0,1fr)"}>
+<div class="runs" style:grid-template-columns={listOpen ? `minmax(0,1fr) 7px ${listWidth}px` : "minmax(0,1fr) 34px"}>
+  <div class="main">
+    {#if !shift}
+      <p class="hint pad">Select a shift.</p>
+    {:else}
+      <div class="pane">
+      {@render body()}
+      </div>
+      <div class="term" class:closed={!drawerOpen} style:height={drawerOpen ? `${termH}px` : "auto"}>
+        {#if drawerOpen}
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div class="term-grip" role="separator" aria-orientation="horizontal" aria-label="Terminal height" onpointerdown={termDown}></div>
+        {/if}
+        <div class="term-h">
+          <Icon name="term" />
+          <span class="dot" class:live={shift.live} class:failed={word === "failed"}></span>
+          <span>run.log{shift.live ? " · following" : ""} · {kib(shift.log_bytes)}</span>
+          <span class="spacer"></span>
+          <button class="fold" title={drawerOpen ? "Collapse the log" : "Show the log"} onclick={() => (drawerOpen = !drawerOpen)}>
+            <Icon name={drawerOpen ? "chev" : "chevl"} />
+          </button>
+        </div>
+        {#if drawerOpen}
+          <div class="log" bind:this={logEl}>
+            {#each logLines as line, i (i)}<div class="line">{line}</div>{/each}
+            {#if shift.live}<span class="cur"></span>{/if}
+          </div>
+        {/if}
+      </div>
+    {/if}
+  </div>
+
   {#if listOpen}
+    <Grip width={listWidth} min={220} max={480} edge="right" onchange={(w) => { listWidth = w; setPaneWidth("runs.list", w); }} />
     <div class="list-col">
       <div class="ns-side-h row">
         Shifts · <span class="ns-mono dir">shifts/</span>
         <span class="spacer"></span>
         <button class="fold" title="Collapse the shift list" onclick={() => (listOpen = false)}>
-          <Icon name="chevl" />
+          <Icon name="chevr" />
         </button>
       </div>
       {#if shifts.length === 0}
@@ -188,19 +241,17 @@
         </div>
       {/if}
     </div>
-    <Grip width={listWidth} min={220} max={480} edge="left" onchange={(w) => { listWidth = w; setPaneWidth("runs.list", w); }} />
   {:else}
     <div class="list-col folded">
       <button class="fold" title="Show the shift list" onclick={() => (listOpen = true)}>
-        <Icon name="chevr" />
+        <Icon name="chevl" />
       </button>
     </div>
   {/if}
+</div>
 
-  <div class="main">
-    {#if !shift}
-      <p class="hint pad">Select a shift.</p>
-    {:else}
+{#snippet body()}
+  {#if shift}
       <div class="head">
         <h1 class="ns-mono">{shift.id}</h1>
         <span class="ns-pill {pillClass(word)}">
@@ -296,24 +347,32 @@
       <div class="changes">
         <div class="ns-sect">
           <span class="ns-k">Changes</span>
-          <span class="sub">scrolls; the page does not</span>
+          <span class="sub">one unit, or the whole shift</span>
         </div>
         <div class="ns-card changes-card">
-          <div class="tabs">
-            {#if diff?.kind === "unit"}
-              <button class="tab on">
-                {diffUnit ? `Unit ${diffUnit.n}` : "Commit"} · {short(diff.key)}
-              </button>
-            {/if}
-            {#if status?.head_at_start}
-              <button
-                class="tab"
-                class:on={diff?.kind === "shift"}
-                onclick={() => void showDiff("shift", shift.id)}
-              >
-                Whole shift · {short(status.head_at_start)}..HEAD
-              </button>
-            {/if}
+          <!-- One segmented control: the whole shift, then each unit that
+               landed a commit. The selected segment is the one filled in;
+               the range or commit is the dim suffix, not the label. -->
+          <div class="segrow">
+            <div class="switch" role="tablist" aria-label="Which changes">
+              {#if status?.head_at_start}
+                <button role="tab" aria-selected={diff?.kind === "shift"} class:on={diff?.kind === "shift"} onclick={() => void showDiff("shift", shift.id)}>
+                  Whole shift <span class="sfx ns-mono">{short(status.head_at_start)}..HEAD</span>
+                </button>
+              {/if}
+              {#each status?.units ?? [] as u (u.n)}
+                {#if u.commit}
+                  <button role="tab" aria-selected={diff?.kind === "unit" && diff.key === u.commit} class:on={diff?.kind === "unit" && diff.key === u.commit} onclick={() => void showDiff("unit", u.commit!)}>
+                    Unit {u.n} <span class="sfx ns-mono">{short(u.commit)}</span>
+                  </button>
+                {/if}
+              {/each}
+              {#if diff?.kind === "unit" && !(status?.units ?? []).some((u) => u.commit === diff.key)}
+                <button role="tab" aria-selected="true" class="on">
+                  {diffUnit ? `Unit ${diffUnit.n} cont.` : "Commit"} <span class="sfx ns-mono">{short(diff.key)}</span>
+                </button>
+              {/if}
+            </div>
           </div>
           {#if diff}
             <DiffView
@@ -331,26 +390,8 @@
         </div>
       </div>
 
-      <div class="term" class:closed={!drawerOpen}>
-        <div class="term-h">
-          <Icon name="term" />
-          <span class="dot" class:live={shift.live} class:failed={word === "failed"}></span>
-          <span>run.log{shift.live ? " · following" : ""} · {kib(shift.log_bytes)}</span>
-          <span class="spacer"></span>
-          <button class="fold" title={drawerOpen ? "Collapse the log" : "Show the log"} onclick={() => (drawerOpen = !drawerOpen)}>
-            <Icon name={drawerOpen ? "chev" : "chevl"} />
-          </button>
-        </div>
-        {#if drawerOpen}
-          <div class="log" bind:this={logEl}>
-            {#each logLines as line, i (i)}<div class="line">{line}</div>{/each}
-            {#if shift.live}<span class="cur"></span>{/if}
-          </div>
-        {/if}
-      </div>
-    {/if}
-  </div>
-</div>
+  {/if}
+{/snippet}
 
 {#if revert}
   <RevertDialog shiftId={revert.id} preview={revert.preview} onclose={() => (revert = null)} />
@@ -365,7 +406,7 @@
     position: relative;
   }
   .list-col {
-    border-right: 1px solid var(--line);
+    border-left: 1px solid var(--line);
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -439,17 +480,23 @@
   .main {
     overflow: hidden;
     min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  /* Everything above the terminal scrolls as one; the terminal is docked
+     under it at its own height (2026-09-11 review). */
+  .pane {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
     display: grid;
     /* One column that can shrink below its content: an implicit `auto`
        track takes the widest child's minimum and overflows the pane. */
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto auto auto minmax(260px, 1fr) auto;
+    grid-template-rows: auto auto auto minmax(440px, 1fr);
     gap: 16px;
-    min-height: 0;
-    padding: 22px 28px 0;
-    /* At 900px tall everything fits and only the Changes card scrolls; on
-       a shorter window the pane scrolls rather than crushing the diff. */
-    overflow-y: auto;
+    padding: 22px 28px 18px;
   }
   .head {
     display: flex;
@@ -540,41 +587,67 @@
     flex-direction: column;
     overflow: hidden;
   }
-  .tabs {
-    display: flex;
-    gap: 2px;
-    padding: 8px 12px 0;
+  .segrow {
+    padding: 10px 12px 8px;
+    border-bottom: 1px solid var(--line);
   }
-  .tab {
-    padding: 6px 12px;
+  .switch {
+    display: flex;
+    width: max-content;
+    max-width: 100%;
+    border: 1px solid var(--line2);
+    border-radius: 8px;
+    padding: 2px;
+    background: var(--well);
+    flex-wrap: wrap;
+    gap: 2px;
+  }
+  .switch button {
+    padding: 4px 10px;
     border-radius: 6px;
     border: none;
     background: transparent;
     color: var(--ink2);
-    font-size: 13px;
+    font-size: 12.5px;
     font-family: var(--sans);
     cursor: pointer;
+    white-space: nowrap;
   }
-  .tab:hover {
-    background: var(--well);
-  }
-  .tab.on {
-    background: var(--well);
+  .switch button:hover {
     color: var(--ink);
-    box-shadow: 0 0 0 1px var(--line2);
+  }
+  .switch button.on {
+    background: var(--accent);
+    color: var(--paper);
+    cursor: default;
+  }
+  .switch .sfx {
+    font-size: 11px;
+    opacity: 0.75;
+    margin-left: 4px;
   }
 
   .term {
-    margin: 0 -28px;
+    position: relative;
+    flex: none;
     background: var(--term);
     border-top: 1px solid var(--line2);
     display: flex;
     flex-direction: column;
     min-height: 0;
-    height: 160px;
   }
-  .term.closed {
-    height: auto;
+  .term-grip {
+    position: absolute;
+    top: -4px;
+    left: 0;
+    right: 0;
+    height: 9px;
+    cursor: row-resize;
+    touch-action: none;
+    z-index: 2;
+  }
+  .term-grip:hover {
+    background: linear-gradient(to bottom, transparent 3px, var(--accent) 3px, var(--accent) 5px, transparent 5px);
   }
   .term-h {
     display: flex;

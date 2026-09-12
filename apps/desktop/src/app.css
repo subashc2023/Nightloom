@@ -541,6 +541,11 @@ button {
   cursor: pointer;
   width: 100%;
 }
+/* Every other row a shade darker (2026-09-11 review: lists should read as
+   rows). Hover and selection still win. */
+.ns-list .ns-row:nth-child(even) {
+  background: color-mix(in srgb, var(--sheet) 55%, transparent);
+}
 .ns-list .ns-row:hover {
   background: var(--well);
 }
@@ -594,6 +599,9 @@ table.ns-grid td {
 }
 table.ns-grid tr:last-child td {
   border-bottom: none;
+}
+table.ns-grid tbody tr:nth-child(even) td {
+  background: color-mix(in srgb, var(--sheet) 55%, transparent);
 }
 
 input.ns-fld,
