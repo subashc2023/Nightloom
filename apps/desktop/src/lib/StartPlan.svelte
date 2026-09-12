@@ -13,7 +13,7 @@
    */
   import { app, paneWidth, reorderItems, setPaneWidth, synthPlan, writeAndLaunch } from "./state.svelte";
   import { untrack } from "svelte";
-  import { untilFromTime } from "./nightshift";
+  import { clockLabel, parseClockTime, untilFromTime } from "./nightshift";
   import BacklogList from "./BacklogList.svelte";
   import Grip from "./Grip.svelte";
   import Icon from "./Icon.svelte";
@@ -86,10 +86,19 @@
     budgetText = p?.budget_usd != null ? String(p.budget_usd) : "";
   });
 
+  // Until is typed (`7am`, `10:30`, `noon`) or picked from the presets; the
+  // draft takes the next occurrence of that time. A typed value that is not
+  // a time leaves the draft unbounded and the hint says so.
+  const UNTIL_PRESETS = ["6am", "7am", "9am", "noon"];
+  const untilParsed = $derived(untilTime.trim() ? parseClockTime(untilTime) : null);
   function onUntilChange(): void {
     const p = app.nightshift.planDraft;
     if (!p) return;
-    p.until = untilTime ? untilFromTime(untilTime) : null;
+    p.until = untilTime.trim() ? untilFromTime(untilTime) : null;
+  }
+  function pickUntil(preset: string): void {
+    untilTime = untilTime.trim().toLowerCase() === preset ? "" : preset;
+    onUntilChange();
   }
 
   function numOrNull(v: string): number | null {
@@ -158,11 +167,28 @@
           </div>
         </label>
 
-        <label class="field">
+        <!-- A div, not a label: the preset buttons inside a label would
+             inherit the whole label as their accessible name. -->
+        <div class="field">
           <span class="ns-k">Until</span>
-          <input class="ns-fld" type="time" bind:value={untilTime} onchange={onUntilChange} />
-          <span class="hint-sm">{untilTime ? `stops at ${untilTime} tomorrow` : "no time limit"}</span>
-        </label>
+          <input
+            class="ns-fld"
+            type="text"
+            aria-label="Until"
+            placeholder="no time limit — e.g. 7am, 10:30"
+            bind:value={untilTime}
+            oninput={onUntilChange}
+            onchange={onUntilChange}
+          />
+          <span class="presets">
+            {#each UNTIL_PRESETS as pr (pr)}
+              <button type="button" class="ns-chip preset" class:on={untilTime.trim().toLowerCase() === pr} onclick={() => pickUntil(pr)}>{pr}</button>
+            {/each}
+          </span>
+          <span class="hint-sm">
+            {#if !untilTime.trim()}no time limit{:else if untilParsed && plan.until}stops at {clockLabel(untilParsed)} · {plan.until.slice(0, 10)}{:else}not a time yet{/if}
+          </span>
+        </div>
 
         <label class="field">
           <span class="ns-k">Max units</span>
@@ -265,6 +291,25 @@
   .hint-sm {
     font-size: 11.5px;
     color: var(--dim);
+  }
+  .presets {
+    display: flex;
+    gap: 5px;
+    flex-wrap: wrap;
+  }
+  .preset {
+    cursor: pointer;
+    padding: 2px 9px;
+    font-size: 11.5px;
+    font-family: var(--sans);
+  }
+  .preset:hover {
+    border-color: var(--accent);
+  }
+  .preset.on {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent-ink);
   }
   .hint-sm.center {
     text-align: center;

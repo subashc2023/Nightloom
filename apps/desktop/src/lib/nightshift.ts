@@ -308,12 +308,50 @@ export function itemStatusPill(status: string): string {
  * (`HH:MM`); "" (or anything else unparseable) means no bound. `now` is
  * injectable for tests.
  */
-export function untilFromTime(time: string, now: Date = new Date()): string | null {
-  const m = /^(\d{2}):(\d{2})$/.exec(time);
+/**
+ * A clock time typed by a person: `7am`, `7 am`, `7:30pm`, `07:30`, `0930`,
+ * `930`, `19`, `noon`, `midnight`. Returns hours and minutes, or null when
+ * it is not a time. Lenient on purpose: the segmented `<input type=time>`
+ * was the clunky thing (2026-09-11 review).
+ */
+export function parseClockTime(text: string): { hh: number; mm: number } | null {
+  const t = text.trim().toLowerCase().replace(/\s+/g, "");
+  if (!t) return null;
+  if (t === "noon") return { hh: 12, mm: 0 };
+  if (t === "midnight") return { hh: 0, mm: 0 };
+  const m = /^(\d{1,2})(?::?(\d{2}))?(am|pm|a|p)?$/.exec(t);
   if (!m) return null;
-  const hh = Number(m[1]);
-  const mm = Number(m[2]);
-  const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, hh, mm, 0);
+  let hh = Number(m[1]);
+  const mm = m[2] != null ? Number(m[2]) : 0;
+  const ap = m[3]?.[0];
+  if (mm > 59) return null;
+  if (ap) {
+    if (hh < 1 || hh > 12) return null;
+    if (ap === "a" && hh === 12) hh = 0;
+    if (ap === "p" && hh !== 12) hh += 12;
+  } else if (hh > 23) {
+    return null;
+  }
+  return { hh, mm };
+}
+
+/** `HH:MM` for a parsed time, the shape the summary shows. */
+export function clockLabel(t: { hh: number; mm: number }): string {
+  const h12 = t.hh % 12 === 0 ? 12 : t.hh % 12;
+  return `${h12}${t.mm ? ":" + String(t.mm).padStart(2, "0") : ""}${t.hh < 12 ? "am" : "pm"}`;
+}
+
+/**
+ * The plan's `until` for a typed time: the NEXT occurrence of that clock
+ * time — later today if it is still ahead, else tomorrow. (Was "always
+ * tomorrow", a flagged guess; a plan made at 22:00 for 23:30 meant the day
+ * after.) Accepts `HH:MM` or anything `parseClockTime` reads.
+ */
+export function untilFromTime(time: string, now: Date = new Date()): string | null {
+  const t = parseClockTime(time);
+  if (!t) return null;
+  const d = new Date(now.getFullYear(), now.getMonth(), now.getDate(), t.hh, t.mm, 0);
+  if (d.getTime() <= now.getTime()) d.setDate(d.getDate() + 1);
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:00`;
 }

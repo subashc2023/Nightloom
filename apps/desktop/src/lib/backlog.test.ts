@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { itemStatusPill, orderedBacklog, untilFromTime } from "./nightshift";
+import { clockLabel, itemStatusPill, orderedBacklog, parseClockTime, untilFromTime } from "./nightshift";
 import type { Item } from "./types";
 
 function item(id: string, status = "todo"): Item {
@@ -71,5 +71,40 @@ describe("untilFromTime", () => {
   it("returns null for an empty or unparseable time", () => {
     expect(untilFromTime("", new Date())).toBeNull();
     expect(untilFromTime("not-a-time", new Date())).toBeNull();
+  });
+
+  it("takes later today when the time is still ahead", () => {
+    const now = new Date(2026, 8, 11, 22, 0, 0);
+    expect(untilFromTime("23:30", now)).toBe("2026-09-11T23:30:00");
+    expect(untilFromTime("22:00", now)).toBe("2026-09-12T22:00:00"); // not ahead: tomorrow
+  });
+
+  it("reads typed times", () => {
+    const now = new Date(2026, 8, 11, 23, 0, 0);
+    expect(untilFromTime("7am", now)).toBe("2026-09-12T07:00:00");
+    expect(untilFromTime("7:30 pm", now)).toBe("2026-09-12T19:30:00");
+    expect(untilFromTime("0930", now)).toBe("2026-09-12T09:30:00");
+  });
+});
+
+describe("parseClockTime", () => {
+  it("reads the common spellings", () => {
+    expect(parseClockTime("7am")).toEqual({ hh: 7, mm: 0 });
+    expect(parseClockTime("12am")).toEqual({ hh: 0, mm: 0 });
+    expect(parseClockTime("12pm")).toEqual({ hh: 12, mm: 0 });
+    expect(parseClockTime("7:30pm")).toEqual({ hh: 19, mm: 30 });
+    expect(parseClockTime("930")).toEqual({ hh: 9, mm: 30 });
+    expect(parseClockTime("19")).toEqual({ hh: 19, mm: 0 });
+    expect(parseClockTime("noon")).toEqual({ hh: 12, mm: 0 });
+  });
+  it("rejects what is not a time", () => {
+    expect(parseClockTime("25")).toBeNull();
+    expect(parseClockTime("13pm")).toBeNull();
+    expect(parseClockTime("9:75")).toBeNull();
+    expect(parseClockTime("soon")).toBeNull();
+  });
+  it("labels", () => {
+    expect(clockLabel({ hh: 0, mm: 0 })).toBe("12am");
+    expect(clockLabel({ hh: 19, mm: 30 })).toBe("7:30pm");
   });
 });
