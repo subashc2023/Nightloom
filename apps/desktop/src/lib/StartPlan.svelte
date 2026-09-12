@@ -89,8 +89,13 @@
     onUntilChange();
   }
 
-  function numOrNull(v: string): number | null {
-    if (v.trim() === "") return null;
+  // `bind:value` on a number input hands back a number (or null when the
+  // field is emptied), not the string the mirror was seeded with — so this
+  // takes either. Calling `.trim()` on the number is what kept the draft's
+  // bounds at "unbounded" whatever was typed (found 2026-09-12 driving the
+  // first launch from the app).
+  function numOrNull(v: string | number | null | undefined): number | null {
+    if (v == null || String(v).trim() === "") return null;
     const n = Number(v);
     return Number.isFinite(n) ? n : null;
   }

@@ -1463,6 +1463,10 @@ export async function writeAndLaunch(): Promise<void> {
     const pid = await api.nightshiftLaunch(id, path);
     addToast(`Launched shift ${plan.shift_id} — pid ${pid}`);
     await Promise.all([refreshNightshiftRow(id), loadNightshiftReview()]);
+    // Runs keeps whichever shift was last looked at; the one just launched
+    // is the one worth following (first launch from the app, 2026-09-12:
+    // Runs opened on yesterday's shift while tonight's ran).
+    await selectShift(plan.shift_id);
   } catch (e) {
     addToast(String(e));
   } finally {
