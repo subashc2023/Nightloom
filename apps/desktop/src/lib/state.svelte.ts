@@ -25,6 +25,7 @@ import type {
   BlockerList,
   DocumentInput,
   ImageInput,
+  ItemList,
   KnowledgeInfo,
   McpServerInfo,
   Morning,
@@ -32,6 +33,7 @@ import type {
   NightshiftChange,
   NightshiftRow,
   NoteEntry,
+  Plan,
   RevertPreview,
   ShiftSummary,
   ReviewerInfo,
@@ -453,6 +455,19 @@ export const app = $state({
     noteText: null as string | null,
     /** Morning pages opened in this window, by project id. */
     read: loadReadPages(),
+    /** Which Start screen is showing. */
+    startTab: "backlog" as "backlog" | "plan",
+    /** `backlog/*` as `nightshift_items` lists it. */
+    items: null as ItemList | null,
+    /** The item shown in the Backlog screen's main column. */
+    selectedItem: null as string | null,
+    /** The in-progress plan the Plan screen edits locally; written only on
+     *  Launch. */
+    planDraft: null as Plan | null,
+    /** `shifts/<id>/plan.json`'s path once `writeAndLaunch` has written it. */
+    planPath: null as string | null,
+    /** Set for the span of `writeAndLaunch`'s write-then-launch round trip. */
+    launching: false,
   },
 });
 
@@ -1141,6 +1156,10 @@ export async function selectNightshiftProject(id: string): Promise<void> {
     app.nightshift.notes = [];
     app.nightshift.selectedNote = null;
     app.nightshift.noteText = null;
+    app.nightshift.items = null;
+    app.nightshift.selectedItem = null;
+    app.nightshift.planDraft = null;
+    app.nightshift.planPath = null;
   }
   app.nightshift.selected = id;
   try {
@@ -1166,6 +1185,7 @@ export async function loadNightshiftReview(): Promise<void> {
     app.nightshift.shifts = [];
     app.nightshift.blockers = null;
     app.nightshift.notes = [];
+    app.nightshift.items = null;
     return;
   }
   await Promise.all([
@@ -1174,6 +1194,7 @@ export async function loadNightshiftReview(): Promise<void> {
     loadShifts(),
     loadBlockers(),
     loadNotes(),
+    loadItems(),
   ]);
 }
 
@@ -1190,6 +1211,7 @@ async function refreshNightshiftReview(paths: string[]): Promise<void> {
   if (touches("shifts/")) jobs.push(loadShifts().then(() => loadShiftLog()));
   if (touches("blockers/")) jobs.push(loadBlockers());
   if (touches("notes/")) jobs.push(loadNotes());
+  if (touches("backlog/")) jobs.push(loadItems());
   await Promise.all(jobs);
 }
 
@@ -1336,6 +1358,87 @@ export async function loadBlockers(): Promise<void> {
 
 export function selectBlocker(id: string): void {
   app.nightshift.selectedBlocker = id;
+}
+
+// ---- Start: backlog and plan (3.6, 3.7) ----
+
+/** Re-read `backlog/*` and `order.json` — what both Start screens list. */
+export async function loadItems(): Promise<void> {
+  const id = app.nightshift.selected;
+  if (!id) return;
+  try {
+    app.nightshift.items = await api.nightshiftItems(id);
+  } catch (e) {
+    addToast(String(e));
+    return;
+  }
+  const list = app.nightshift.items.items;
+  const still = list.some((i) => i.id === app.nightshift.selectedItem);
+  if (!still) app.nightshift.selectedItem = list[0]?.id ?? null;
+}
+
+/** Select an item for the Backlog screen's main column. */
+export function selectItem(id: string): void {
+  app.nightshift.selectedItem = id;
+}
+
+/**
+ * Rewrite `backlog/order.json` to `order`, then re-read the backlog so the
+ * rows and their position numbers reflect it. Refused by the backend while a
+ * shift is live — callers disable the drag in that case rather than relying
+ * on this to fail quietly.
+ */
+export async function reorderItems(order: string[]): Promise<void> {
+  const id = app.nightshift.selected;
+  if (!id) return;
+  try {
+    await api.nightshiftSetOrder(id, order);
+  } catch (e) {
+    addToast(String(e));
+    return;
+  }
+  await loadItems();
+}
+
+/**
+ * A fresh plan the way `shiftctl plan synth` would write it, seeded from the
+ * project's current backlog and order — for the Plan screen to start
+ * editing locally. Writes nothing; every subsequent edit (selection,
+ * reorder, kind, bounds) mutates `planDraft` in place until Launch.
+ */
+export async function synthPlan(): Promise<void> {
+  const id = app.nightshift.selected;
+  const row = app.nightshift.rows.find((r) => r.id === id);
+  if (!id || !row?.nightshift) return;
+  try {
+    app.nightshift.planDraft = await api.nightshiftSynthPlan(id);
+  } catch (e) {
+    addToast(String(e));
+  }
+}
+
+/**
+ * Launch tonight: write `planDraft` to `shifts/<id>/plan.json`, then launch
+ * the runner on it. Both are refused in cases the backend's error already
+ * names (a live shift, a plan that already exists, a non-macOS host) — those
+ * surface as toasts rather than being predicted here.
+ */
+export async function writeAndLaunch(): Promise<void> {
+  const id = app.nightshift.selected;
+  const plan = app.nightshift.planDraft;
+  if (!id || !plan) return;
+  app.nightshift.launching = true;
+  try {
+    const path = await api.nightshiftWritePlan(id, plan);
+    app.nightshift.planPath = path;
+    const pid = await api.nightshiftLaunch(id, path);
+    addToast(`Launched shift ${plan.shift_id} — pid ${pid}`);
+    await Promise.all([refreshNightshiftRow(id), loadNightshiftReview()]);
+  } catch (e) {
+    addToast(String(e));
+  } finally {
+    app.nightshift.launching = false;
+  }
 }
 
 /** Re-read the flat file listing under `notes/` — what the Notes screen's

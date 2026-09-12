@@ -3,7 +3,7 @@
  * what a field means — the Rust projection did that — only how a value reads
  * on screen.
  */
-import type { NoteEntry, ShiftSummary } from "./types";
+import type { Item, NoteEntry, ShiftSummary } from "./types";
 
 /** `HH:MM` of an RFC 3339 timestamp, in local time; "" when absent. */
 export function hhmm(iso: string | null | undefined): string {
@@ -248,4 +248,72 @@ export function notesTree(entries: NoteEntry[]): NoteNode[] {
   sortChildren(root);
 
   return root.children;
+}
+
+/** One row of the Start screens' backlog list. */
+export interface BacklogRow {
+  item: Item;
+  /** 1-based position in `order`; null for an unlisted item. */
+  order: number | null;
+  unlisted: boolean;
+}
+
+/**
+ * The backlog the way the Start screens show it (3.6, 3.7): items named in
+ * `order` first, in that order, then any item `order` does not name —
+ * unlisted, appended in the order `items` lists them. An id in `order` with
+ * no matching item (a stale `order.json` entry) is silently skipped; the
+ * caller sees that mismatch in `ItemList.errors` instead of here. Pure — no
+ * component state — so the merge is unit-testable without a project.
+ */
+export function orderedBacklog(items: Item[], order: string[]): BacklogRow[] {
+  const byId = new Map(items.map((i) => [i.id, i]));
+  const seen = new Set<string>();
+  const rows: BacklogRow[] = [];
+  order.forEach((id, idx) => {
+    const item = byId.get(id);
+    if (!item) return;
+    seen.add(id);
+    rows.push({ item, order: idx + 1, unlisted: false });
+  });
+  for (const item of items) {
+    if (!seen.has(item.id)) rows.push({ item, order: null, unlisted: true });
+  }
+  return rows;
+}
+
+/**
+ * The pill class for an item's `status` (`todo | in-progress | done | killed
+ * | deferred`, or "" when unset) — distinct from `pillClass` above, whose
+ * words are shift/blocker vocabulary, not the backlog's.
+ */
+export function itemStatusPill(status: string): string {
+  switch (status) {
+    case "done":
+      return "done";
+    case "in-progress":
+      return "live";
+    case "killed":
+      return "failed";
+    default:
+      return "grey";
+  }
+}
+
+/**
+ * `until` for the plan form: the contract's `until` is a full local
+ * timestamp, `YYYY-MM-DDTHH:MM:SS` (SHIFT-CONTRACT.md §6's `plan.json`
+ * example), but the form only asks for a time of day — the mock-up's field
+ * always reads "10:00 tomorrow". `time` is an `<input type=time>` value
+ * (`HH:MM`); "" (or anything else unparseable) means no bound. `now` is
+ * injectable for tests.
+ */
+export function untilFromTime(time: string, now: Date = new Date()): string | null {
+  const m = /^(\d{2}):(\d{2})$/.exec(time);
+  if (!m) return null;
+  const hh = Number(m[1]);
+  const mm = Number(m[2]);
+  const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, hh, mm, 0);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:00`;
 }
