@@ -12,6 +12,7 @@
    * writes `plan.json` once and then launches the runner on it.
    */
   import { app, paneWidth, reorderItems, setPaneWidth, synthPlan, writeAndLaunch } from "./state.svelte";
+  import { untrack } from "svelte";
   import { untilFromTime } from "./nightshift";
   import BacklogList from "./BacklogList.svelte";
   import Grip from "./Grip.svelte";
@@ -27,10 +28,14 @@
   const locked = $derived(info?.live ?? false);
   const plan = $derived(app.nightshift.planDraft);
 
-  // Re-seed the draft on entry and whenever the selected project changes.
+  // Re-seed the draft on entry and whenever the selected project changes —
+  // and only then. `synthPlan` reads `rows` before its first await, so
+  // without `untrack` every `nightshift-change` row refresh (the usage probe
+  // rewrites `state/` every ~30s; a live runner writes `run.log`) would
+  // re-seed the draft and drop the edits.
   $effect(() => {
     void app.nightshift.selected;
-    void synthPlan();
+    untrack(() => void synthPlan());
   });
 
   const selectedIds = $derived(new Set((plan?.items ?? []).filter((i) => i.selected).map((i) => i.id)));
