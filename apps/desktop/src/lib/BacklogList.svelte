@@ -70,27 +70,54 @@
   let width = $state(0);
   const NARROW = 420;
 
+  /**
+   * While a row is dragged, the row under the pointer opens a gap on the
+   * side the pointer is on (top half: above it; bottom half: below), so the
+   * list shows where the drop will land — the static space moving around
+   * Swaraag asked for (2026-09-11 review). The gap is a margin with a
+   * transition; the dragged row is dimmed in place.
+   */
+  let over = $state<{ id: string; before: boolean } | null>(null);
+
   function dragStart(id: string, e: DragEvent) {
     dragId = id;
+    over = null;
     if (e.dataTransfer) {
       e.dataTransfer.effectAllowed = "move";
       e.dataTransfer.setData("text/plain", id);
     }
   }
-  function dragOver(e: DragEvent) {
-    if (dragId) e.preventDefault();
+  function dragOver(id: string, e: DragEvent) {
+    if (!dragId) return;
+    e.preventDefault();
+    if (id === dragId) {
+      over = null;
+      return;
+    }
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const before = e.clientY < r.top + r.height / 2;
+    if (!over || over.id !== id || over.before !== before) over = { id, before };
   }
-  function drop(targetId: string, e: DragEvent) {
+  function dragEnd() {
+    dragId = null;
+    over = null;
+  }
+  function listLeave(e: DragEvent) {
+    // Leaving the list altogether (not moving between its rows) closes the gap.
+    const to = e.relatedTarget as Node | null;
+    if (!to || !(e.currentTarget as HTMLElement).contains(to)) over = null;
+  }
+  function drop(e: DragEvent) {
     e.preventDefault();
     const source = dragId;
+    const target = over;
     dragId = null;
-    if (!source || source === targetId) return;
-    const ids = idsInOrder();
-    const from = ids.indexOf(source);
-    const to = ids.indexOf(targetId);
-    if (from < 0 || to < 0) return;
-    ids.splice(from, 1);
-    ids.splice(to, 0, source);
+    over = null;
+    if (!source || !target || source === target.id) return;
+    const ids = idsInOrder().filter((x) => x !== source);
+    const at = ids.indexOf(target.id);
+    if (at < 0) return;
+    ids.splice(at + (target.before ? 0 : 1), 0, source);
     onReorder(ids);
   }
 </script>
@@ -100,17 +127,21 @@
 {:else if visible.length === 0}
   <p class="hint">No items match "{filterText}".</p>
 {:else}
-  <div class="rows" class:narrow={width > 0 && width < NARROW} bind:clientWidth={width}>
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="rows" class:narrow={width > 0 && width < NARROW} bind:clientWidth={width} ondragleave={listLeave} ondrop={drop} ondragover={(e) => { if (dragId) e.preventDefault(); }}>
     {#each visible as row (row.item.id)}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
         class="row"
         class:on={row.item.id === selectedId}
         class:unlisted={row.unlisted}
+        class:dragging={row.item.id === dragId}
+        class:gap-before={over?.id === row.item.id && over.before}
+        class:gap-after={over?.id === row.item.id && !over.before}
         draggable={canReorder}
         ondragstart={(e) => dragStart(row.item.id, e)}
-        ondragover={dragOver}
-        ondrop={(e) => drop(row.item.id, e)}
+        ondragover={(e) => dragOver(row.item.id, e)}
+        ondragend={dragEnd}
       >
         {#if selectable}
           <input
@@ -178,6 +209,35 @@
   }
   .row:hover {
     background: var(--well);
+  }
+  .row {
+    transition: margin 130ms ease, opacity 130ms ease;
+  }
+  .row.dragging {
+    opacity: 0.35;
+  }
+  .row.gap-before {
+    margin-top: 38px;
+  }
+  .row.gap-after {
+    margin-bottom: 38px;
+  }
+  /* The gap draws the landing line. */
+  .row.gap-before::before,
+  .row.gap-after::after {
+    content: "";
+    position: absolute;
+    left: 8px;
+    right: 8px;
+    height: 2px;
+    border-radius: 1px;
+    background: var(--accent);
+  }
+  .row.gap-before::before {
+    top: -20px;
+  }
+  .row.gap-after::after {
+    bottom: -20px;
   }
   .row.on {
     background: var(--sheet);
