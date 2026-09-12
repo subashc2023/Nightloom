@@ -3,17 +3,22 @@
     app,
     addProject,
     addToast,
+    closeNightshift,
     deleteSession,
+    enableNightshift,
     newSession,
     openSession,
     refreshSessions,
+    selectNightshiftProject,
     showNightshift,
   } from "./state.svelte";
   import * as api from "./api";
-  import type { SessionHit } from "./types";
+  import type { NightshiftInfo, NightshiftRow, SessionHit } from "./types";
   import { relativeTime } from "./time";
+  import { sameMorning } from "./nightshift";
   import NotesPanel from "./NotesPanel.svelte";
   import ProjectMenu from "./ProjectMenu.svelte";
+  import Icon from "./Icon.svelte";
 
   // Two-click delete: the first click arms the button, the second deletes.
   let confirming = $state<string | null>(null);
@@ -117,6 +122,77 @@
       0,
     ),
   );
+  /** A morning page this window has not opened, on any enabled project. */
+  const nightshiftNewPage = $derived(
+    app.nightshift.rows.some((r) => {
+      const newest = r.nightshift?.newest_morning;
+      if (!newest) return false;
+      return !(app.nightshift.read[r.id] ?? []).some((n) => sameMorning(n, newest));
+    }),
+  );
+
+  // The three modes. Chats and Notes leave the Nightshift screens if they
+  // were showing; Nightshift opens them.
+  function goChats() {
+    if (app.view === "nightshift") closeNightshift();
+    app.leftTab = "chats";
+  }
+  function goNotes() {
+    if (app.view === "nightshift") app.view = "chat";
+    app.leftTab = "notes";
+  }
+
+  // ---- Nightshift mode: the project list and the Enable form (screen 3.1),
+  // moved here from the surface so the list lives where lists live.
+
+  /** Projects Nightshift detection accepted — the list's top section. */
+  const enabledRows = $derived(
+    app.nightshift.rows.filter(
+      (r): r is NightshiftRow & { nightshift: NightshiftInfo } =>
+        r.nightshift !== null,
+    ),
+  );
+  /** Everything else — candidates for **Enable Nightshift**. */
+  const otherRows = $derived(
+    app.nightshift.rows.filter((r) => r.nightshift === null),
+  );
+
+  /** The two conditions worth a dim warning under a row, joined into one line. */
+  function rowHints(info: NightshiftInfo): string {
+    const h: string[] = [];
+    if (!info.git) h.push("no git repo");
+    if (!info.runner_present) h.push(`no runner at ${info.runner}`);
+    return h.join(" · ");
+  }
+
+  /** `38 items · 3 open · 2026-09-11` */
+  function rowMeta(info: NightshiftInfo): string {
+    const page = info.newest_morning
+      ? info.newest_morning.replace(/\.md$/, "")
+      : "no page yet";
+    return `${info.items} items · ${info.open_blockers} open · ${page}`;
+  }
+
+  /**
+   * The Enable form: which row it is open on and the runner path typed into
+   * it. Prefilled with the one install a registered project shows (the
+   * nightshift repo, when it is a project here); an empty path enables with
+   * no `runner` key. Item 038 / blocker 024: one install, named by path.
+   */
+  let enabling = $state<string | null>(null);
+  let runnerPath = $state("");
+
+  function openEnable(id: string): void {
+    enabling = id;
+    runnerPath = app.nightshift.defaultRunner ?? "";
+  }
+
+  async function confirmEnable(): Promise<void> {
+    const id = enabling;
+    if (!id) return;
+    enabling = null;
+    await enableNightshift(id, runnerPath.trim() || undefined);
+  }
 </script>
 
 <aside class="sidebar">
@@ -131,7 +207,7 @@
     >
       <span class="chip-main">
         <span class="chip-name">{app.project?.name ?? "No project"}</span>
-        <span class="caret">⌄</span>
+        <span class="caret"><Icon name="chev" /></span>
       </span>
       <span class="chip-path">
         {#if !app.project}
@@ -155,37 +231,39 @@
     {/if}
   </div>
 
-  <button
-    class="nightshift-btn"
-    class:active={app.view === "nightshift"}
-    onclick={() => showNightshift()}
-  >
-    Nightshift
-    {#if nightshiftBlockers > 0}<span class="count">{nightshiftBlockers}</span
-      >{/if}
-  </button>
-
-  <div class="tabs" role="tablist">
+  <nav class="nav" aria-label="Mode">
     <button
-      role="tab"
-      aria-selected={app.leftTab === "chats"}
-      class:active={app.leftTab === "chats"}
-      onclick={() => (app.leftTab = "chats")}
+      aria-current={app.leftTab === "chats" ? "page" : undefined}
+      class:on={app.leftTab === "chats"}
+      onclick={goChats}
     >
-      Chats
-      {#if app.sessions.length > 0}<span class="count">{app.sessions.length}</span
-        >{/if}
+      <Icon name="chat" size={16} />
+      <span>Chats</span>
+      {#if app.sessions.length > 0}<span class="count">{app.sessions.length}</span>{/if}
     </button>
     <button
-      role="tab"
-      aria-selected={app.leftTab === "notes"}
-      class:active={app.leftTab === "notes"}
-      onclick={() => (app.leftTab = "notes")}
+      aria-current={app.leftTab === "notes" ? "page" : undefined}
+      class:on={app.leftTab === "notes"}
+      onclick={goNotes}
     >
-      Notes
+      <Icon name="note" size={16} />
+      <span>Notes</span>
       {#if app.notes.length > 0}<span class="count">{app.notes.length}</span>{/if}
     </button>
-  </div>
+    <button
+      aria-current={app.leftTab === "nightshift" ? "page" : undefined}
+      class:on={app.leftTab === "nightshift"}
+      onclick={() => showNightshift()}
+    >
+      <Icon name="moon" size={16} />
+      <span>Nightshift</span>
+      {#if nightshiftBlockers > 0 || nightshiftNewPage}
+        <span class="badge">
+          {#if nightshiftBlockers > 0}{nightshiftBlockers}{/if}{#if nightshiftBlockers > 0 && nightshiftNewPage} · {/if}{#if nightshiftNewPage}new page{/if}
+        </span>
+      {/if}
+    </button>
+  </nav>
 
   {#if app.leftTab === "chats"}
     <button class="new-chat" onclick={() => void newSession()} disabled={app.busy}>
@@ -304,55 +382,165 @@
         {/each}
       </div>
     {/if}
-  {:else}
+  {:else if app.leftTab === "notes"}
     <NotesPanel />
+  {:else}
+    <div class="ns-scroll">
+      {#if app.nightshift.rows.length === 0}
+        <p class="hint">No projects yet — open a folder as a project first.</p>
+      {:else}
+        <div class="ns-side-h">Projects with a contract</div>
+        {#if enabledRows.length === 0}
+          <p class="hint">No project has Nightshift enabled yet.</p>
+        {:else}
+          <div class="ns-list">
+            {#each enabledRows as row (row.id)}
+              <button
+                class="ns-row"
+                class:on={row.id === app.nightshift.selected && app.view === "nightshift"}
+                onclick={() => { if (app.view !== "nightshift") showNightshift(); void selectNightshiftProject(row.id); }}
+              >
+                <span class="t ns-top">
+                  <span class="ns-name">{row.name}</span>
+                  {#if row.nightshift.live}
+                    <span class="ns-pill live" title="A shift is running; editing is locked">live</span>
+                  {/if}
+                </span>
+                <span class="m">{rowMeta(row.nightshift)}</span>
+                {#if row.nightshift.config_error}
+                  <span class="row-error">{row.nightshift.config_error}</span>
+                {/if}
+                {#if rowHints(row.nightshift)}
+                  <span class="row-hint">{rowHints(row.nightshift)}</span>
+                {/if}
+              </button>
+            {/each}
+          </div>
+        {/if}
+
+        {#if otherRows.length > 0}
+          <div class="ns-side-h">Other projects</div>
+          <div class="ns-list">
+            {#each otherRows as row (row.id)}
+              <div class="other-row" class:enabling={enabling === row.id}>
+                <span class="other-top">
+                  <span class="ns-name">
+                    {row.name}
+                    {#if !row.exists}<span class="missing">folder missing</span>{/if}
+                  </span>
+                  {#if enabling !== row.id}
+                    <button
+                      class="enable-link"
+                      disabled={!row.exists || row.workspace === null}
+                      title={!row.exists
+                        ? "folder missing"
+                        : row.workspace === null
+                          ? "This project has no folder"
+                          : undefined}
+                      onclick={() => openEnable(row.id)}
+                    >
+                      Enable…
+                    </button>
+                  {/if}
+                </span>
+                {#if enabling === row.id}
+                  <form
+                    class="enable-form"
+                    onsubmit={(e) => {
+                      e.preventDefault();
+                      void confirmEnable();
+                    }}
+                  >
+                    <label class="enable-label" for="ns-runner-{row.id}">
+                      Runner — the folder holding bin/nightshift.sh
+                    </label>
+                    <input
+                      id="ns-runner-{row.id}"
+                      class="ns-fld enable-input"
+                      type="text"
+                      bind:value={runnerPath}
+                      placeholder="leave empty to set it later in nightshift.json"
+                      spellcheck="false"
+                    />
+                    <span class="enable-actions">
+                      <button class="ns-btn small" type="submit">Enable</button>
+                      <button class="link" type="button" onclick={() => (enabling = null)}>Cancel</button>
+                    </span>
+                  </form>
+                {/if}
+              </div>
+            {/each}
+          </div>
+        {/if}
+      {/if}
+    </div>
   {/if}
+
+  <div class="side-foot">
+    <button class="foot-btn" onclick={() => (app.showSettings = true)}>
+      <Icon name="gear" />
+      <span>Settings</span>
+      <span class="spacer"></span>
+      <span class="kbd">⌘,</span>
+    </button>
+  </div>
+
 </aside>
 
 <style>
   .sidebar {
-    background: var(--panel);
-    border-right: 1px solid var(--border);
+    position: relative;
+    background: var(--paper);
+    border-right: 1px solid var(--line);
     display: flex;
     flex-direction: column;
     min-height: 0;
     overflow: hidden;
+    font-family: var(--sans);
   }
-  /* The wordmark that used to head this column lives in the title bar now,
-     directly above and in the same panel colour, so the project chip is what
-     the sidebar starts with. */
+  /* The project block is the same 82px as the Nightshift top bar, with the
+     name centred, so the sidebar's name and the page title share one
+     baseline and one rule across the window (mock-up revision 2d). */
   .project {
     position: relative;
-    padding: 0.75rem 0.5rem 0.6rem;
+    height: 82px;
+    flex: none;
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
   }
   .chip {
     width: 100%;
     display: flex;
     flex-direction: column;
     align-items: stretch;
-    gap: 1px;
-    background: #1b1830;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 0.4rem 0.55rem;
+    gap: 2px;
+    background: transparent;
+    border: none;
+    padding: 0 18px;
     cursor: pointer;
-    color: var(--text);
+    color: var(--ink);
     text-align: left;
     font-family: inherit;
   }
-  .chip:hover {
-    border-color: var(--accent);
+  .chip:hover .chip-name {
+    color: var(--accent-ink);
   }
   .chip.unfiled {
     background: transparent;
   }
   .chip-main {
     display: flex;
-    align-items: baseline;
+    align-items: center;
+    justify-content: space-between;
     gap: 0.4rem;
   }
   .chip-name {
-    font-size: 0.88rem;
+    font-family: var(--serif);
+    font-size: 22px;
+    font-weight: 500;
+    letter-spacing: -0.01em;
     flex: 1;
     min-width: 0;
     white-space: nowrap;
@@ -361,13 +549,14 @@
   }
   .caret {
     color: var(--dim);
-    font-size: 0.8rem;
     flex-shrink: 0;
+    display: inline-flex;
   }
   .chip-path {
-    font-size: 0.68rem;
+    font-size: 11px;
+    letter-spacing: 0.06em;
     color: var(--dim);
-    font-family: var(--mono);
+    margin-top: 4px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -381,69 +570,171 @@
     border: none;
     cursor: default;
   }
-  .tabs {
+  /* The three modes, as rows. */
+  .nav {
+    padding: 10px 10px;
     display: flex;
-    flex-shrink: 0;
-    border-bottom: 1px solid var(--border);
-    margin-bottom: 0.6rem;
+    flex-direction: column;
+    gap: 2px;
+    flex: none;
   }
-  .tabs button {
-    flex: 1;
-    background: transparent;
-    border: none;
-    border-bottom: 2px solid transparent;
-    color: var(--dim);
-    font-family: inherit;
-    font-size: 0.75rem;
-    padding: 0.4rem;
-    cursor: pointer;
+  .nav button {
     display: flex;
     align-items: center;
-    justify-content: center;
-    gap: 0.3rem;
-  }
-  .tabs button:hover {
-    color: var(--text);
-  }
-  .tabs button.active {
-    color: var(--text);
-    border-bottom-color: var(--accent);
-  }
-  .count {
-    font-size: 0.64rem;
-    color: var(--dim);
-    font-variant-numeric: tabular-nums;
-    opacity: 0.8;
-  }
-  .nightshift-btn {
-    margin: 0 0.5rem 0.6rem;
-    padding: 0.45rem 0.65rem;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    border: none;
     background: transparent;
-    color: var(--accent);
-    border: 1px solid var(--border);
-    border-left: 2px solid var(--accent);
-    border-radius: 8px;
-    cursor: pointer;
-    font-size: 0.85rem;
+    color: var(--ink2);
+    font-size: 14px;
     font-family: inherit;
     text-align: left;
+    cursor: pointer;
+  }
+  .nav button:hover {
+    background: var(--well);
+  }
+  .nav button.on {
+    background: var(--sheet);
+    color: var(--ink);
+    box-shadow: 0 0 0 1px var(--line2);
+  }
+  .count {
+    margin-left: auto;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--dim);
+    font-variant-numeric: tabular-nums;
+  }
+  .badge {
+    margin-left: auto;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--paper);
+    background: var(--accent);
+    border-radius: 999px;
+    padding: 1px 7px;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+
+  /* Nightshift mode: the project list. */
+  .ns-scroll {
+    overflow-y: auto;
+    min-height: 0;
+    flex: 1;
+    padding-bottom: 10px;
+  }
+  .ns-top {
     display: flex;
     align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+  }
+  .ns-name {
+    font-size: 13.5px;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .row-error {
+    font-size: 11.5px;
+    color: var(--failed);
+  }
+  .row-hint {
+    font-size: 11.5px;
+    color: var(--dim);
+    opacity: 0.85;
+  }
+  .missing {
+    color: var(--failed);
+    font-size: 11px;
+    margin-left: 0.35rem;
+  }
+  .other-row {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px 10px;
+    border-radius: 6px;
+  }
+  .other-row.enabling {
+    background: var(--sheet);
+    box-shadow: 0 0 0 1px var(--line2);
+  }
+  .other-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
     gap: 0.4rem;
   }
-  .nightshift-btn:hover {
-    border-color: var(--accent);
+  .enable-link {
+    background: none;
+    border: none;
+    padding: 0;
+    font: inherit;
+    font-size: 11.5px;
+    color: var(--accent);
+    cursor: pointer;
+    flex-shrink: 0;
   }
-  .nightshift-btn.active {
-    background: #1b1830;
+  .enable-link:hover:not(:disabled) {
+    color: var(--accent-ink);
+    text-decoration: underline;
   }
-  .nightshift-btn .count {
-    background: var(--accent);
-    color: var(--bg);
-    border-radius: 999px;
-    padding: 0 0.4rem;
-    font-size: 0.62rem;
-    opacity: 1;
+  .enable-link:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .enable-form {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .enable-label {
+    font-size: 11px;
+    color: var(--dim);
+  }
+  .enable-input {
+    font-size: 12px;
+    padding: 5px 8px;
+  }
+  .enable-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+  }
+
+  .side-foot {
+    margin-top: auto;
+    border-top: 1px solid var(--line);
+    flex: none;
+  }
+  .foot-btn {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 18px;
+    background: transparent;
+    border: none;
+    color: var(--dim);
+    font-size: 12.5px;
+    font-family: inherit;
+    cursor: pointer;
+    text-align: left;
+  }
+  .foot-btn:hover {
+    color: var(--ink);
+  }
+  .spacer {
+    flex: 1;
+  }
+  .kbd {
+    font-family: var(--mono);
+    font-size: 11px;
   }
   .new-chat {
     margin: 0 0.75rem 0.6rem;
@@ -495,10 +786,11 @@
     border-radius: 8px;
   }
   .session-item:hover {
-    background: #1b1830;
+    background: var(--well);
   }
   .session-item.active {
-    background: #211d38;
+    background: var(--sheet);
+    box-shadow: 0 0 0 1px var(--line2);
   }
   .session-row {
     flex: 1;

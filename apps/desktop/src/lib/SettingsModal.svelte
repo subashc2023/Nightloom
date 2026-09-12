@@ -6,8 +6,10 @@
     refreshProviders,
     refreshSearchBackends,
     saveDreamPrefs,
+    setPalette,
     setPrefs,
     useKnowledgeDir,
+    PALETTES,
   } from "./state.svelte";
   import * as api from "./api";
   import {
@@ -285,13 +287,54 @@
       <span class="dot" class:ok={!!app.knowledge}></span>
       <span class="nav-label">Knowledge base</span>
     </button>
+    <div class="nav-title search-title">Appearance</div>
+    <button
+      class="nav-item"
+      class:active={selected === "appearance"}
+      onclick={() => select("appearance")}
+    >
+      <span class="dot ok"></span>
+      <span class="nav-label">Palette</span>
+    </button>
     <div class="nav-spacer"></div>
     <button class="close" onclick={() => (app.showSettings = false)}>
       Close
     </button>
   </nav>
 
-  {#if selected === "knowledge"}
+  {#if selected === "appearance"}
+    <div class="pane">
+      <div class="pane-head">
+        <span class="pane-title">Palette</span>
+        <span class="slug">{app.palette}</span>
+      </div>
+      <p class="note">
+        Four dark palettes. Surfaces and the accent change; the colours that
+        mean something — done, partial, failed, live, added, removed — are the
+        same in all four. Applies at once, everywhere, and is remembered.
+      </p>
+      <div class="swatches" role="radiogroup" aria-label="Palette">
+        {#each PALETTES as p (p.id)}
+          <button
+            class="swatch"
+            class:on={app.palette === p.id}
+            role="radio"
+            aria-checked={app.palette === p.id}
+            data-palette={p.id}
+            onclick={() => setPalette(p.id)}
+          >
+            <span class="swatch-paper">
+              <span class="swatch-sheet">
+                <span class="swatch-title">Aa</span>
+                <span class="swatch-accent"></span>
+              </span>
+            </span>
+            <span class="swatch-name"><b>{p.id}</b> {p.name}</span>
+          </button>
+        {/each}
+      </div>
+    </div>
+  {:else if selected === "knowledge"}
     <div class="pane">
       <div class="pane-head">
         <span class="pane-title">Knowledge base</span>
@@ -668,10 +711,78 @@
     cursor: pointer;
   }
   .nav-item:hover {
-    background: #1b1830;
+    background: var(--well);
   }
   .nav-item.active {
-    background: #221e3a;
+    background: var(--well);
+    box-shadow: 0 0 0 1px var(--line2);
+  }
+
+  /* The palette swatches. Each button carries its own `data-palette`, so
+     the token blocks in app.css colour the preview the way they would colour
+     the app — the swatch is the palette, not a picture of it. */
+  .swatches {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.7rem;
+  }
+  .swatch {
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+    padding: 0.5rem;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    cursor: pointer;
+    text-align: left;
+    color: var(--text);
+    font: inherit;
+  }
+  .swatch:hover {
+    border-color: var(--dim);
+  }
+  .swatch.on {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent);
+  }
+  .swatch-paper {
+    display: block;
+    height: 84px;
+    border-radius: 6px;
+    background: var(--paper);
+    border: 1px solid var(--line);
+    padding: 12px;
+  }
+  .swatch-sheet {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 100%;
+    border-radius: 5px;
+    background: var(--sheet);
+    border: 1px solid var(--line2);
+    padding: 0 14px;
+  }
+  .swatch-title {
+    font-family: var(--serif);
+    font-size: 26px;
+    color: var(--ink);
+  }
+  .swatch-accent {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+  .swatch-name {
+    font-size: 0.8rem;
+    color: var(--dim);
+  }
+  .swatch-name b {
+    color: var(--text);
+    font-weight: 600;
+    margin-right: 0.3rem;
   }
   .nav-item.muted .nav-label {
     color: var(--dim);

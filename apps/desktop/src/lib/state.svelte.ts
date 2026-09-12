@@ -22,13 +22,17 @@ import type {
   AgentTurnResult,
   ApprovalDecision,
   ApprovalRequest,
+  BlockerList,
   DocumentInput,
   ImageInput,
   KnowledgeInfo,
   McpServerInfo,
+  Morning,
   MorningPage,
   NightshiftChange,
   NightshiftRow,
+  RevertPreview,
+  ShiftSummary,
   ReviewerInfo,
   Note,
   NoteScope,
@@ -105,6 +109,152 @@ export function saveDreamPrefs(): void {
   } catch {
     // best-effort
   }
+}
+
+/**
+ * The colour palette — one of the four dark candidates in `app.css`. "A"
+ * (charcoal & amber) is the default and needs no attribute; the others are
+ * applied as `data-palette` on the root element so the token blocks in
+ * `app.css` select themselves.
+ */
+export type Palette = "A" | "B" | "C" | "D";
+export const PALETTES: { id: Palette; name: string }[] = [
+  { id: "A", name: "Charcoal & amber" },
+  { id: "B", name: "Slate & copper" },
+  { id: "C", name: "Graphite & teal" },
+  { id: "D", name: "Espresso & gold" },
+];
+const PALETTE_KEY = "nightloom.palette";
+
+function loadPalette(): Palette {
+  try {
+    const raw = localStorage.getItem(PALETTE_KEY);
+    if (raw === "B" || raw === "C" || raw === "D") return raw;
+  } catch {
+    // A malformed preference costs the preference, not the feature.
+  }
+  return "A";
+}
+
+/** Stamp the palette on the document. Safe where there is no document. */
+export function applyPalette(p: Palette): void {
+  if (typeof document === "undefined") return;
+  if (p === "A") delete document.documentElement.dataset.palette;
+  else document.documentElement.dataset.palette = p;
+}
+
+export function setPalette(p: Palette): void {
+  app.palette = p;
+  applyPalette(p);
+  try {
+    localStorage.setItem(PALETTE_KEY, p);
+  } catch {
+    // best-effort
+  }
+}
+
+/**
+ * Where the panes sit: the sidebar's width and whether it is collapsed, and
+ * the width of every resizable pane on the Nightshift screens, keyed by
+ * screen and side (`morning.aside`, `runs.list`, …). A UI preference; a
+ * lost one costs a drag, not data.
+ */
+export interface Layout {
+  sidebarWidth: number;
+  sidebarCollapsed: boolean;
+  panes: Record<string, number>;
+}
+const LAYOUT_KEY = "nightloom.layout";
+export const SIDEBAR_MIN = 200;
+export const SIDEBAR_MAX = 440;
+
+function loadLayout(): Layout {
+  try {
+    const raw = localStorage.getItem(LAYOUT_KEY);
+    if (raw) {
+      const p = JSON.parse(raw) as Partial<Layout>;
+      const w = typeof p.sidebarWidth === "number" ? p.sidebarWidth : 260;
+      return {
+        sidebarWidth: Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, w)),
+        sidebarCollapsed: !!p.sidebarCollapsed,
+        panes:
+          p.panes && typeof p.panes === "object"
+            ? Object.fromEntries(
+                Object.entries(p.panes).filter(
+                  ([, v]) => typeof v === "number" && Number.isFinite(v),
+                ),
+              )
+            : {},
+      };
+    }
+  } catch {
+    // A malformed preference costs the preference, not the feature.
+  }
+  return { sidebarWidth: 260, sidebarCollapsed: false, panes: {} };
+}
+
+function saveLayout(): void {
+  try {
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify(app.layout));
+  } catch {
+    // best-effort
+  }
+}
+
+export function toggleSidebar(): void {
+  app.layout.sidebarCollapsed = !app.layout.sidebarCollapsed;
+  saveLayout();
+}
+
+export function setSidebarWidth(px: number): void {
+  app.layout.sidebarWidth = Math.round(
+    Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, px)),
+  );
+  saveLayout();
+}
+
+/** A pane's saved width, or the screen's default. */
+export function paneWidth(key: string, fallback: number): number {
+  return app.layout.panes[key] ?? fallback;
+}
+
+export function setPaneWidth(key: string, px: number): void {
+  app.layout.panes[key] = Math.round(px);
+  saveLayout();
+}
+
+/**
+ * Morning pages the user has opened, per project. The contract has no
+ * notion of a read page — the runner writes them and nothing reads them
+ * back — so "unread" is a fact about this window, kept here.
+ */
+const READ_KEY = "nightloom.nightshift.read";
+
+function loadReadPages(): Record<string, string[]> {
+  try {
+    const raw = localStorage.getItem(READ_KEY);
+    if (raw) {
+      const p = JSON.parse(raw) as Record<string, unknown>;
+      const out: Record<string, string[]> = {};
+      for (const [k, v] of Object.entries(p)) {
+        if (Array.isArray(v)) out[k] = v.filter((x) => typeof x === "string");
+      }
+      return out;
+    }
+  } catch {
+    // best-effort
+  }
+  return {};
+}
+
+/** The diff on show under Runs: one unit's commit, or the whole shift. */
+export interface NightshiftDiff {
+  kind: "unit" | "shift";
+  /** The commit sha, or the shift id. */
+  key: string;
+  text: string;
+  loading: boolean;
+  error: string | null;
 }
 
 export interface ToolCallView {
@@ -198,8 +348,8 @@ export const app = $state({
    * showing.
    */
   openNote: null as { scope: NoteScope; name: string } | null,
-  /** Which half of the left sidebar is showing. */
-  leftTab: "chats" as "chats" | "notes",
+  /** Which mode the left sidebar is in: its list follows. */
+  leftTab: "chats" as "chats" | "notes" | "nightshift",
   /** The rail's connection settings; any change re-connects via applyDraft(). */
   draft: defaultDraft(),
   connection: null as Connection | null,
@@ -257,6 +407,10 @@ export const app = $state({
   dreamActivity: "",
   /** Auto-dream and the dream model, Settings → Knowledge. */
   dreamPrefs: loadDreamPrefs(),
+  /** The colour palette, Settings → Appearance. */
+  palette: loadPalette() as Palette,
+  /** Sidebar width and collapse, pane widths on the Nightshift screens. */
+  layout: loadLayout(),
   toasts: [] as { id: number; text: string }[],
   /**
    * The Nightshift surface: every registered project's detection row, which
@@ -275,6 +429,20 @@ export const app = $state({
     /** The runner install the Enable form is prefilled with; null when no
      *  registered project shows one. Read once per refresh. */
     defaultRunner: null as string | null,
+    /** Which Review screen is showing. */
+    reviewTab: "morning" as "morning" | "runs" | "blockers",
+    /** Every page under `mornings/`, newest first as the backend lists them. */
+    mornings: [] as Morning[],
+    /** Every `shifts/<id>/`, as the backend lists them. */
+    shifts: [] as ShiftSummary[],
+    selectedShift: null as string | null,
+    /** The tail of the selected shift's `run.log`. */
+    log: "",
+    diff: null as NightshiftDiff | null,
+    blockers: null as BlockerList | null,
+    selectedBlocker: null as string | null,
+    /** Morning pages opened in this window, by project id. */
+    read: loadReadPages(),
   },
 });
 
@@ -339,7 +507,7 @@ export async function init(): Promise<void> {
   await listen<NightshiftChange>("nightshift-change", (e) => {
     if (e.payload.project_id === app.nightshift.selected) {
       void refreshNightshiftRow(e.payload.project_id);
-      void loadNightshiftMorning();
+      void refreshNightshiftReview(e.payload.paths);
     }
   });
   // A folder coming back is something that happens outside this window, so
@@ -888,12 +1056,14 @@ export async function useEngine(engine: Engine): Promise<void> {
 
 export function showNightshift(): void {
   app.view = "nightshift";
+  app.leftTab = "nightshift";
   app.openNote = null;
   void refreshNightshift();
 }
 
 export function closeNightshift(): void {
   app.view = "chat";
+  if (app.leftTab === "nightshift") app.leftTab = "chats";
 }
 
 /**
@@ -949,13 +1119,252 @@ export async function selectNightshiftProject(id: string): Promise<void> {
       // broken UI.
     }
   }
+  if (prev !== id) {
+    // Everything below is about the previous project.
+    app.nightshift.mornings = [];
+    app.nightshift.shifts = [];
+    app.nightshift.selectedShift = null;
+    app.nightshift.log = "";
+    app.nightshift.diff = null;
+    app.nightshift.blockers = null;
+    app.nightshift.selectedBlocker = null;
+  }
   app.nightshift.selected = id;
   try {
     await api.nightshiftWatch(id);
   } catch (e) {
     addToast(String(e));
   }
-  await loadNightshiftMorning();
+  await loadNightshiftReview();
+}
+
+/**
+ * Everything the Review screens show for the selected project: the newest
+ * morning page and the list of pages, the shifts, the blockers. Read in one
+ * go rather than per tab so the tab counts in the header are right before a
+ * tab is opened.
+ */
+export async function loadNightshiftReview(): Promise<void> {
+  const id = app.nightshift.selected;
+  const row = app.nightshift.rows.find((r) => r.id === id);
+  if (!id || !row?.nightshift) {
+    app.nightshift.morning = null;
+    app.nightshift.mornings = [];
+    app.nightshift.shifts = [];
+    app.nightshift.blockers = null;
+    return;
+  }
+  await Promise.all([
+    loadNightshiftMorning(),
+    loadMornings(),
+    loadShifts(),
+    loadBlockers(),
+  ]);
+}
+
+/**
+ * What a change event re-reads. The runner writes `status.json` many times a
+ * shift and `run.log` continuously, so only the lists the paths touch are
+ * re-read; the morning page always is, since the newest one is what the
+ * header's "new" pill hangs on.
+ */
+async function refreshNightshiftReview(paths: string[]): Promise<void> {
+  const touches = (prefix: string) => paths.some((p) => p.startsWith(prefix));
+  const jobs: Promise<void>[] = [loadNightshiftMorning()];
+  if (touches("mornings/")) jobs.push(loadMornings());
+  if (touches("shifts/")) jobs.push(loadShifts().then(() => loadShiftLog()));
+  if (touches("blockers/")) jobs.push(loadBlockers());
+  await Promise.all(jobs);
+}
+
+export async function loadMornings(): Promise<void> {
+  const id = app.nightshift.selected;
+  if (!id) return;
+  try {
+    app.nightshift.mornings = await api.nightshiftMornings(id);
+  } catch (e) {
+    addToast(String(e));
+  }
+}
+
+/** Open a page by name, or the newest with `null`. Opening marks it read. */
+export async function openMorning(name: string | null): Promise<void> {
+  const id = app.nightshift.selected;
+  if (!id) return;
+  try {
+    app.nightshift.morning = await api.nightshiftMorning(id, name ?? undefined);
+  } catch (e) {
+    addToast(String(e));
+    return;
+  }
+  if (app.nightshift.morning) markMorningRead(app.nightshift.morning.name);
+}
+
+export function morningIsRead(projectId: string, name: string): boolean {
+  return (app.nightshift.read[projectId] ?? []).includes(name);
+}
+
+export function markMorningRead(name: string): void {
+  const id = app.nightshift.selected;
+  if (!id) return;
+  const list = app.nightshift.read[id] ?? [];
+  if (list.includes(name)) return;
+  app.nightshift.read[id] = [...list, name];
+  try {
+    localStorage.setItem(READ_KEY, JSON.stringify(app.nightshift.read));
+  } catch {
+    // best-effort
+  }
+}
+
+export async function loadShifts(): Promise<void> {
+  const id = app.nightshift.selected;
+  if (!id) return;
+  try {
+    const shifts = await api.nightshiftShifts(id);
+    // Newest first: ids are timestamps, so the string order is the time order.
+    shifts.sort((a, b) => (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
+    app.nightshift.shifts = shifts;
+  } catch (e) {
+    addToast(String(e));
+    return;
+  }
+  const still = app.nightshift.shifts.some(
+    (s) => s.id === app.nightshift.selectedShift,
+  );
+  if (!still) {
+    app.nightshift.selectedShift = app.nightshift.shifts[0]?.id ?? null;
+    app.nightshift.diff = null;
+    await loadShiftLog();
+  }
+}
+
+/** The newest shift's status — what the header's state chip reads. */
+export function latestShift(): ShiftSummary | null {
+  return app.nightshift.shifts[0] ?? null;
+}
+
+export async function selectShift(id: string | null): Promise<void> {
+  if (app.nightshift.selectedShift === id) return;
+  app.nightshift.selectedShift = id;
+  app.nightshift.diff = null;
+  await loadShiftLog();
+}
+
+export async function loadShiftLog(): Promise<void> {
+  const id = app.nightshift.selected;
+  const shift = app.nightshift.selectedShift;
+  if (!id || !shift) {
+    app.nightshift.log = "";
+    return;
+  }
+  try {
+    app.nightshift.log = await api.nightshiftShiftLog(id, shift);
+  } catch (e) {
+    app.nightshift.log = `(could not read run.log: ${String(e)})`;
+  }
+}
+
+/** Show one unit's commit, or the whole shift's `head_at_start..HEAD`. */
+export async function showDiff(
+  kind: "unit" | "shift",
+  key: string,
+): Promise<void> {
+  const id = app.nightshift.selected;
+  if (!id) return;
+  const cur = app.nightshift.diff;
+  if (cur && cur.kind === kind && cur.key === key && !cur.error) return;
+  app.nightshift.diff = { kind, key, text: "", loading: true, error: null };
+  try {
+    const text =
+      kind === "unit"
+        ? await api.nightshiftDiff(id, key)
+        : await api.nightshiftShiftDiff(id, key);
+    // Still the one asked for? A slow read for a diff nobody is looking at
+    // any more must not overwrite the one they are.
+    const now = app.nightshift.diff;
+    if (now && now.kind === kind && now.key === key) {
+      app.nightshift.diff = { kind, key, text, loading: false, error: null };
+    }
+  } catch (e) {
+    const now = app.nightshift.diff;
+    if (now && now.kind === kind && now.key === key) {
+      app.nightshift.diff = {
+        kind,
+        key,
+        text: "",
+        loading: false,
+        error: String(e),
+      };
+    }
+  }
+}
+
+export async function loadBlockers(): Promise<void> {
+  const id = app.nightshift.selected;
+  if (!id) return;
+  try {
+    app.nightshift.blockers = await api.nightshiftBlockers(id);
+  } catch (e) {
+    addToast(String(e));
+    return;
+  }
+  const list = app.nightshift.blockers.blockers;
+  const still = list.some((b) => b.id === app.nightshift.selectedBlocker);
+  if (!still) {
+    // Open first, as the list is shown.
+    const first = list.find((b) => b.status === "open") ?? list[0];
+    app.nightshift.selectedBlocker = first?.id ?? null;
+  }
+}
+
+export function selectBlocker(id: string): void {
+  app.nightshift.selectedBlocker = id;
+}
+
+/** Write `## Answer` and flip the blocker to `answered`; re-read the list. */
+export async function answerBlocker(id: string, answer: string): Promise<boolean> {
+  const project = app.nightshift.selected;
+  if (!project) return false;
+  try {
+    await api.nightshiftAnswerBlocker(project, id, answer);
+  } catch (e) {
+    addToast(String(e));
+    return false;
+  }
+  await loadBlockers();
+  return true;
+}
+
+export async function revertPreview(
+  shiftId: string,
+): Promise<RevertPreview | null> {
+  const project = app.nightshift.selected;
+  if (!project) return null;
+  try {
+    return await api.nightshiftRevertPreview(project, shiftId);
+  } catch (e) {
+    addToast(String(e));
+    return null;
+  }
+}
+
+/** The confirmed revert. The caller has shown the preview and been told yes. */
+export async function revertShift(
+  shiftId: string,
+): Promise<RevertPreview | null> {
+  const project = app.nightshift.selected;
+  if (!project) return null;
+  try {
+    const done = await api.nightshiftRevert(project, shiftId, true);
+    addToast(`Reverted to ${done.target.slice(0, 7)} — ${done.commits} commits discarded`);
+    await Promise.all([loadShifts(), refreshNightshiftRow(project)]);
+    app.nightshift.diff = null;
+    return done;
+  } catch (e) {
+    addToast(String(e));
+    return null;
+  }
 }
 
 /** The selected project's newest morning page, or null when it has none. */

@@ -1,6 +1,14 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { app, init } from "./lib/state.svelte";
+  import {
+    app,
+    init,
+    setSidebarWidth,
+    toggleSidebar,
+    SIDEBAR_MAX,
+    SIDEBAR_MIN,
+  } from "./lib/state.svelte";
+  import Grip from "./lib/Grip.svelte";
   import Sidebar from "./lib/Sidebar.svelte";
   import TitleBar from "./lib/TitleBar.svelte";
   import TopBar from "./lib/TopBar.svelte";
@@ -13,6 +21,7 @@
   import GraphView from "./lib/GraphView.svelte";
   import Welcome from "./lib/Welcome.svelte";
   import NightshiftSurface from "./lib/NightshiftSurface.svelte";
+  import Icon from "./lib/Icon.svelte";
 
   onMount(() => {
     void init();
@@ -34,12 +43,54 @@
   system frame off there has to be somewhere to grab at the top of the screen
   wherever the pointer is, including over the sidebar and the rail.
 -->
+<svelte:window
+  onkeydown={(e) => {
+    // ⌘\ (Ctrl+\ elsewhere) collapses and reopens the sidebar.
+    if ((e.metaKey || e.ctrlKey) && e.key === "\\") {
+      e.preventDefault();
+      toggleSidebar();
+    }
+  }}
+/>
+
 <div class="shell">
   <TitleBar />
-  <div class="app">
+  <div
+    class="app"
+    class:nightshift={app.view === "nightshift"}
+    class:collapsed={app.layout.sidebarCollapsed}
+    style:grid-template-columns="{app.layout.sidebarCollapsed ? 0 : app.layout.sidebarWidth}px 1fr {app.view === 'nightshift' ? 0 : 240}px"
+  >
     <Sidebar />
+    {#if app.layout.sidebarCollapsed}
+      <button class="side-expand" title="Show sidebar (⌘\)" onclick={() => toggleSidebar()}>
+        <Icon name="chevr" size={12} />
+      </button>
+    {:else}
+      <!-- The sidebar's collapse button and resize grip sit on its edge,
+           drawn here because the sidebar clips its own overflow. -->
+      <button
+        class="side-toggle"
+        style:left="{app.layout.sidebarWidth - 11}px"
+        title="Collapse sidebar (⌘\)"
+        onclick={() => toggleSidebar()}
+      >
+        <Icon name="chevl" size={12} />
+      </button>
+      <div class="side-grip" style:left="{app.layout.sidebarWidth - 4}px">
+        <Grip
+          width={app.layout.sidebarWidth}
+          min={SIDEBAR_MIN}
+          max={SIDEBAR_MAX}
+          edge="left"
+          onchange={(w) => setSidebarWidth(w)}
+        />
+      </div>
+    {/if}
     <div class="main">
-      <TopBar />
+      {#if app.view !== "nightshift"}
+        <TopBar />
+      {/if}
       <div class="content">
         {#if app.view === "note"}
           <NoteView />
@@ -64,7 +115,9 @@
         <Composer />
       {/if}
     </div>
-    <RightRail />
+    {#if app.view !== "nightshift"}
+      <RightRail />
+    {/if}
     {#if app.showSettings}
       <div class="settings-overlay"><SettingsModal /></div>
     {/if}
@@ -84,10 +137,76 @@
   .app {
     position: relative;
     display: grid;
-    grid-template-columns: 260px 1fr 240px;
+    /* The columns are set inline: the sidebar's width is a preference and
+       it collapses to nothing; the rail is folded away on the Nightshift
+       screens, whose header carries what it would have shown. */
     flex: 1;
     min-height: 0;
     overflow: hidden;
+  }
+  /* The round button that brings a collapsed sidebar back — where its
+     collapse button sat, on the sidebar's edge. */
+  .side-expand {
+    position: absolute;
+    left: 10px;
+    top: 30px;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    border: 1px solid var(--line2);
+    background: var(--sheet);
+    color: var(--dim);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    cursor: pointer;
+    z-index: 6;
+  }
+  .side-expand:hover {
+    color: var(--ink);
+    border-color: var(--dim);
+  }
+  .side-toggle {
+    position: absolute;
+    top: 30px;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    border: 1px solid var(--line2);
+    background: var(--sheet);
+    color: var(--dim);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    cursor: pointer;
+    z-index: 6;
+  }
+  .side-toggle:hover {
+    color: var(--ink);
+    border-color: var(--dim);
+  }
+  .side-grip {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    display: flex;
+    z-index: 5;
+  }
+  .side-grip :global(.grip) {
+    height: 100%;
+  }
+  .side-grip :global(.grip::after) {
+    height: 100%;
+    background: transparent;
+  }
+  .side-grip :global(.grip:hover::after),
+  .side-grip :global(.grip.dragging::after) {
+    background: var(--accent);
+  }
+  .app.collapsed :global(header.topbar) {
+    padding-left: 44px;
   }
   .main {
     display: flex;
