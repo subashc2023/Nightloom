@@ -648,6 +648,9 @@ export interface NightshiftRow {
   workspace: string | null;
   exists: boolean;
   nightshift: NightshiftInfo | null;
+  /** The folder holding a `nightshift.json.disabled` — a root Disable turned
+   *  off, which Enable restores rather than scaffolds (item 037). */
+  disabled: string | null;
 }
 
 /** What detection found for a project, plus the counts a row needs. */

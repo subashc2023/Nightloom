@@ -35,6 +35,10 @@ pub struct NightshiftRow {
     pub workspace: Option<String>,
     pub exists: bool,
     pub nightshift: Option<NightshiftInfo>,
+    /// The directory holding a `nightshift.json.disabled` — a root that
+    /// **Disable Nightshift** turned off and Enable would restore rather
+    /// than scaffold (item 037). `null` when there is none.
+    pub disabled: Option<String>,
 }
 
 /// What detection found, plus the counts a row is worth reading for.
@@ -128,6 +132,11 @@ pub async fn nightshift_projects(state: State<'_, AppState>) -> Result<Vec<Night
                     .as_deref()
                     .and_then(nightshift::detect)
                     .map(|r| NightshiftInfo::of(&r)),
+                disabled: p
+                    .workspace
+                    .as_deref()
+                    .and_then(nightshift::detect_disabled)
+                    .map(|d| d.to_string_lossy().into_owned()),
             })
             .collect())
     })
@@ -161,6 +170,11 @@ pub async fn nightshift_project(
                 .as_deref()
                 .and_then(nightshift::detect)
                 .map(|r| NightshiftInfo::of(&r)),
+            disabled: p
+                .workspace
+                .as_deref()
+                .and_then(nightshift::detect_disabled)
+                .map(|d| d.to_string_lossy().into_owned()),
         })
     })
     .await
@@ -230,6 +244,21 @@ pub async fn nightshift_enable(
     })
     .await?;
     Ok((nightshift_project(state, project_id).await?, notes))
+}
+
+/// **Disable Nightshift** on a project (item 037): rename `nightshift.json`
+/// to `nightshift.json.disabled`, so detection fails and the project drops
+/// out of the list. Deletes nothing; refused while a shift is live. The
+/// caller has shown the warning and the user has said yes. Returns the
+/// fresh row, which now carries `disabled`.
+#[tauri::command]
+pub async fn nightshift_disable(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<NightshiftRow, String> {
+    let (_, workspace) = workspace_of(&state, &project_id).await?;
+    blocking(move || nightshift::disable(&workspace)).await?;
+    nightshift_project(state, project_id).await
 }
 
 // ---- backlog ----

@@ -44,6 +44,9 @@ pub use shifts::{Plan, ShiftSummary, Status};
 
 /// The identity file at the top of a contract root.
 pub const CONFIG_FILE: &str = "nightshift.json";
+/// What [`disable`] renames `nightshift.json` to. Detection stops passing,
+/// nothing else changes, and [`enable`] renames it back (item 037).
+pub const DISABLED_FILE: &str = "nightshift.json.disabled";
 /// The directory a build project keeps its contract root in (§12.1).
 pub const NESTED_DIR: &str = "nightshift";
 /// The only contract version this build knows. The runner refuses a version
@@ -182,6 +185,51 @@ pub fn detect(workspace: &Path) -> Option<ContractRoot> {
     None
 }
 
+/// A root that was disabled, if the workspace holds one: the directory
+/// carrying `nightshift.json.disabled`, nested first like [`detect`]. What
+/// the list shows an "Enable again" on instead of a scaffold.
+pub fn detect_disabled(workspace: &Path) -> Option<PathBuf> {
+    let nested = workspace.join(NESTED_DIR);
+    if nested.join(DISABLED_FILE).is_file() {
+        return Some(nested);
+    }
+    if workspace.join(DISABLED_FILE).is_file() {
+        return Some(workspace.to_path_buf());
+    }
+    None
+}
+
+/// **Disable Nightshift** on a project (item 037): rename `nightshift.json`
+/// to `nightshift.json.disabled` so detection fails. Every other file —
+/// backlog, notes, shifts, the git history — stays exactly where it is;
+/// the contract's rule is supersede, never delete. Refused while a shift is
+/// live, like every other write. Returns the root that was disabled.
+pub fn disable(workspace: &Path) -> Result<PathBuf, String> {
+    let root = detect(workspace).ok_or_else(|| {
+        format!(
+            "Nightshift is not enabled in {}; nothing to disable",
+            workspace.display()
+        )
+    })?;
+    launch::ensure_not_live(&root.root)?;
+    let from = root.root.join(CONFIG_FILE);
+    let to = root.root.join(DISABLED_FILE);
+    if to.exists() {
+        return Err(format!(
+            "{} already exists; remove or rename it before disabling again",
+            to.display()
+        ));
+    }
+    fs::rename(&from, &to).map_err(|e| {
+        format!(
+            "could not rename {} to {}: {e}",
+            from.display(),
+            to.display()
+        )
+    })?;
+    Ok(root.root)
+}
+
 /// What [`enable`] made, and anything it could not.
 #[derive(Debug, Clone, Serialize)]
 pub struct Enabled {
@@ -204,6 +252,11 @@ pub struct Enabled {
 /// until someone puts `bin/` in it. A path that holds no
 /// `bin/nightshift.sh` is still written — the user may install it later —
 /// but the notes say so.
+///
+/// A workspace holding a root that [`disable`] turned off is **restored**
+/// rather than scaffolded: the disabled file is renamed back and `kind` and
+/// `runner` are ignored, since the config it carries is the one the project
+/// had. The notes say which happened.
 pub fn enable(
     workspace: &Path,
     name: &str,
@@ -221,6 +274,25 @@ pub fn enable(
             "Nightshift is already enabled here (contract root {})",
             existing.root.display()
         ));
+    }
+    if let Some(dir) = detect_disabled(workspace) {
+        let from = dir.join(DISABLED_FILE);
+        let to = dir.join(CONFIG_FILE);
+        fs::rename(&from, &to).map_err(|e| {
+            format!(
+                "could not rename {} back to {}: {e}",
+                from.display(),
+                to.display()
+            )
+        })?;
+        let nested = dir != workspace;
+        return Ok(Enabled {
+            root: ContractRoot::at(dir.clone(), nested),
+            notes: vec![format!(
+                "Restored the Nightshift root at {} as it was; the kind and runner it already names were kept.",
+                dir.display()
+            )],
+        });
     }
     if kind != "research" && kind != "build" {
         return Err(format!("kind must be research or build, not {kind:?}"));
@@ -523,6 +595,49 @@ mod tests {
         let err = enable(&ws, "Demo", "build", None).unwrap_err();
         assert!(err.contains("already enabled"), "{err}");
         assert!(enable(&ws.join("missing"), "x", "research", None).is_err());
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn disable_renames_the_config_and_enable_restores_it_unchanged() {
+        let ws = scratch();
+        let before = fs::read_to_string(ws.join(CONFIG_FILE)).unwrap();
+        let root = disable(&ws).unwrap();
+        assert_eq!(root, ws);
+        assert!(detect(&ws).is_none(), "detection must fail once disabled");
+        assert_eq!(detect_disabled(&ws).as_deref(), Some(ws.as_path()));
+        assert!(ws.join(DISABLED_FILE).is_file());
+        assert!(!ws.join(CONFIG_FILE).exists());
+        // Nothing else moved.
+        assert!(ws.join("backlog").is_dir());
+        assert!(ws.join("blockers").is_dir());
+        // Disabling twice is a named refusal, not a second rename.
+        let err = disable(&ws).unwrap_err();
+        assert!(err.contains("not enabled"), "{err}");
+        // Enable restores rather than scaffolds, whatever kind is asked for.
+        let made = enable(&ws, "Other name", "build", None).unwrap();
+        assert!(!made.root.nested);
+        assert_eq!(made.root.config.kind, "research");
+        assert_eq!(made.root.config.name, "Value generalization");
+        assert!(made.notes.iter().any(|n| n.contains("Restored")));
+        assert_eq!(fs::read_to_string(ws.join(CONFIG_FILE)).unwrap(), before);
+        assert!(detect_disabled(&ws).is_none());
+        assert!(
+            !ws.join(NESTED_DIR).exists(),
+            "no scaffold beside a restore"
+        );
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn disable_is_refused_while_a_shift_is_live() {
+        let ws = scratch();
+        fs::create_dir_all(ws.join("state")).unwrap();
+        // This process is alive, so a lock naming it blocks writes.
+        fs::write(ws.join("state/run.lock"), std::process::id().to_string()).unwrap();
+        let err = disable(&ws).unwrap_err();
+        assert!(err.contains("live") || err.contains("run.lock"), "{err}");
+        assert!(ws.join(CONFIG_FILE).is_file(), "nothing renamed");
         let _ = fs::remove_dir_all(&ws);
     }
 

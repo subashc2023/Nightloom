@@ -191,11 +191,13 @@
     position: absolute;
     top: 0;
     bottom: 0;
+    width: 7px;
     display: flex;
     z-index: 5;
   }
   .side-grip :global(.grip) {
     height: 100%;
+    margin: 0;
   }
   .side-grip :global(.grip::after) {
     height: 100%;

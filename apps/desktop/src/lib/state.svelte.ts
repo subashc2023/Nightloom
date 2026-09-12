@@ -31,6 +31,7 @@ import type {
   MorningPage,
   NightshiftChange,
   NightshiftRow,
+  NoteEntry,
   RevertPreview,
   ShiftSummary,
   ReviewerInfo,
@@ -430,7 +431,7 @@ export const app = $state({
      *  registered project shows one. Read once per refresh. */
     defaultRunner: null as string | null,
     /** Which Review screen is showing. */
-    reviewTab: "morning" as "morning" | "runs" | "blockers",
+    reviewTab: "morning" as "morning" | "runs" | "blockers" | "notes",
     /** Every page under `mornings/`, newest first as the backend lists them. */
     mornings: [] as Morning[],
     /** Every `shifts/<id>/`, as the backend lists them. */
@@ -441,6 +442,15 @@ export const app = $state({
     diff: null as NightshiftDiff | null,
     blockers: null as BlockerList | null,
     selectedBlocker: null as string | null,
+    /** The flat listing `nightshift_notes` returns; folded into a tree by
+     *  `notesTree` for the Notes screen. */
+    notes: [] as NoteEntry[],
+    /** Root-relative path of the file open in the Notes screen's main
+     *  column; not necessarily one of `notes` above (a cross-link can open
+     *  any file under the contract root, e.g. `mornings/<name>`). */
+    selectedNote: null as string | null,
+    /** The open note's text, or null while it is loading. */
+    noteText: null as string | null,
     /** Morning pages opened in this window, by project id. */
     read: loadReadPages(),
   },
@@ -1128,6 +1138,9 @@ export async function selectNightshiftProject(id: string): Promise<void> {
     app.nightshift.diff = null;
     app.nightshift.blockers = null;
     app.nightshift.selectedBlocker = null;
+    app.nightshift.notes = [];
+    app.nightshift.selectedNote = null;
+    app.nightshift.noteText = null;
   }
   app.nightshift.selected = id;
   try {
@@ -1152,6 +1165,7 @@ export async function loadNightshiftReview(): Promise<void> {
     app.nightshift.mornings = [];
     app.nightshift.shifts = [];
     app.nightshift.blockers = null;
+    app.nightshift.notes = [];
     return;
   }
   await Promise.all([
@@ -1159,6 +1173,7 @@ export async function loadNightshiftReview(): Promise<void> {
     loadMornings(),
     loadShifts(),
     loadBlockers(),
+    loadNotes(),
   ]);
 }
 
@@ -1174,6 +1189,7 @@ async function refreshNightshiftReview(paths: string[]): Promise<void> {
   if (touches("mornings/")) jobs.push(loadMornings());
   if (touches("shifts/")) jobs.push(loadShifts().then(() => loadShiftLog()));
   if (touches("blockers/")) jobs.push(loadBlockers());
+  if (touches("notes/")) jobs.push(loadNotes());
   await Promise.all(jobs);
 }
 
@@ -1320,6 +1336,43 @@ export async function loadBlockers(): Promise<void> {
 
 export function selectBlocker(id: string): void {
   app.nightshift.selectedBlocker = id;
+}
+
+/** Re-read the flat file listing under `notes/` — what the Notes screen's
+ *  tree is built from. */
+export async function loadNotes(): Promise<void> {
+  const id = app.nightshift.selected;
+  if (!id) return;
+  try {
+    app.nightshift.notes = await api.nightshiftNotes(id);
+  } catch (e) {
+    addToast(String(e));
+  }
+}
+
+/**
+ * Open a file by root-relative path in the Notes screen's main column. Not
+ * limited to paths under `notes/` — `nightshift_read_file` reads anything
+ * under the contract root, which is how "Open in Notes" on the Morning
+ * screen can open `mornings/<name>` even though that file is not in the
+ * `notes` tree.
+ */
+export async function openNote(path: string): Promise<void> {
+  const id = app.nightshift.selected;
+  if (!id) return;
+  app.nightshift.selectedNote = path;
+  app.nightshift.noteText = null;
+  try {
+    const text = await api.nightshiftReadFile(id, path);
+    // Still the one asked for? A slow read for a note no longer selected
+    // must not overwrite the current one.
+    if (app.nightshift.selectedNote === path) app.nightshift.noteText = text;
+  } catch (e) {
+    if (app.nightshift.selectedNote === path) {
+      app.nightshift.noteText = null;
+      addToast(String(e));
+    }
+  }
 }
 
 /** Write `## Answer` and flip the blocker to `answered`; re-read the list. */

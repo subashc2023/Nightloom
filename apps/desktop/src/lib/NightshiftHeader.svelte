@@ -27,6 +27,7 @@
     return !read.some((n) => sameMorning(n, info.newest_morning));
   });
   const latest = $derived(latestShift());
+  const noteFileCount = $derived(app.nightshift.notes.filter((n) => !n.is_dir).length);
 
   /** idle · last shift … · exit … — or live, with the running shift. */
   const state = $derived.by(() => {
@@ -110,6 +111,14 @@
     >
       Blockers
       {#if openBlockers > 0}<span class="n">{openBlockers} open</span>{/if}
+    </button>
+    <button
+      class="tab"
+      class:on={app.nightshift.reviewTab === "notes"}
+      onclick={() => (app.nightshift.reviewTab = "notes")}
+    >
+      Notes
+      {#if noteFileCount > 0}<span class="n">{noteFileCount}</span>{/if}
     </button>
     <span class="spacer"></span>
     <span class="state">
@@ -204,6 +213,7 @@
     background: var(--sheet);
   }
   .tab {
+    white-space: nowrap;
     padding: 9px 12px 8px;
     color: var(--dim);
     font-size: 13.5px;
@@ -226,6 +236,7 @@
   }
   .n {
     font-family: var(--mono);
+    white-space: nowrap;
     font-size: 10.5px;
     color: var(--dim);
     background: var(--well);
@@ -238,5 +249,12 @@
   }
   .state {
     padding-bottom: 8px;
+    min-width: 0;
+    display: flex;
+  }
+  .state .ns-chip {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 </style>

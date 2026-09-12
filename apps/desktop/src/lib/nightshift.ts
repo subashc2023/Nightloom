@@ -3,7 +3,7 @@
  * what a field means — the Rust projection did that — only how a value reads
  * on screen.
  */
-import type { ShiftSummary } from "./types";
+import type { NoteEntry, ShiftSummary } from "./types";
 
 /** `HH:MM` of an RFC 3339 timestamp, in local time; "" when absent. */
 export function hhmm(iso: string | null | undefined): string {
@@ -165,4 +165,87 @@ export function plain(md: string): string {
     .replace(/\*([^*]+)\*/g, "$1")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+/** One entry in the tree the Notes screen's left column draws. */
+export interface NoteNode {
+  name: string;
+  /** Root-relative with forward slashes, same shape as `NoteEntry.path`. */
+  path: string;
+  is_dir: boolean;
+  size: number;
+  modified: string;
+  children: NoteNode[];
+}
+
+/**
+ * The flat `NoteEntry[]` `nightshift_notes` returns, folded into a tree for
+ * the Notes screen's left column. Ancestor directories are synthesized when
+ * the backend's listing does not name them explicitly (size 0, modified "");
+ * an entry that does name a directory fills in its real size/modified
+ * instead, in whichever order the entries arrive. Pure — no component state,
+ * no fetch — so the tree shape can be unit-tested without a project.
+ * Directories sort before files at each level, both alphabetically.
+ */
+export function notesTree(entries: NoteEntry[]): NoteNode[] {
+  const root: NoteNode = {
+    name: "",
+    path: "",
+    is_dir: true,
+    size: 0,
+    modified: "",
+    children: [],
+  };
+  const byPath = new Map<string, NoteNode>([["", root]]);
+
+  function ensureDir(path: string): NoteNode {
+    const existing = byPath.get(path);
+    if (existing) return existing;
+    const idx = path.lastIndexOf("/");
+    const parentPath = idx === -1 ? "" : path.slice(0, idx);
+    const name = idx === -1 ? path : path.slice(idx + 1);
+    const parent = ensureDir(parentPath);
+    const node: NoteNode = { name, path, is_dir: true, size: 0, modified: "", children: [] };
+    parent.children.push(node);
+    byPath.set(path, node);
+    return node;
+  }
+
+  for (const e of entries) {
+    if (e.is_dir) {
+      const node = ensureDir(e.path);
+      node.size = e.size;
+      node.modified = e.modified;
+    } else {
+      const idx = e.path.lastIndexOf("/");
+      const parentPath = idx === -1 ? "" : e.path.slice(0, idx);
+      const parent = ensureDir(parentPath);
+      // A file entry read twice (should not happen) overwrites in place.
+      const already = parent.children.find((c) => c.path === e.path);
+      if (already) {
+        already.size = e.size;
+        already.modified = e.modified;
+      } else {
+        parent.children.push({
+          name: e.name,
+          path: e.path,
+          is_dir: false,
+          size: e.size,
+          modified: e.modified,
+          children: [],
+        });
+      }
+    }
+  }
+
+  const sortChildren = (n: NoteNode) => {
+    n.children.sort((a, b) => {
+      if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+    for (const c of n.children) if (c.is_dir) sortChildren(c);
+  };
+  sortChildren(root);
+
+  return root.children;
 }

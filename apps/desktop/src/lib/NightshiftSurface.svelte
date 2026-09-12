@@ -10,6 +10,7 @@
   import ReviewMorning from "./ReviewMorning.svelte";
   import ReviewRuns from "./ReviewRuns.svelte";
   import ReviewBlockers from "./ReviewBlockers.svelte";
+  import ReviewNotes from "./ReviewNotes.svelte";
 
   const selectedRow = $derived(
     app.nightshift.rows.find((r) => r.id === app.nightshift.selected) ?? null,
@@ -35,6 +36,8 @@
       <ReviewMorning />
     {:else if app.nightshift.reviewTab === "runs"}
       <ReviewRuns />
+    {:else if app.nightshift.reviewTab === "notes"}
+      <ReviewNotes />
     {:else}
       <ReviewBlockers />
     {/if}

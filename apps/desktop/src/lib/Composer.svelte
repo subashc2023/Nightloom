@@ -17,7 +17,89 @@
   // children; count enters against leaves instead.
   let dragDepth = $state(0);
 
-  const MAX_HEIGHT = 200; // ~8 rows
+  /**
+   * How tall the box may grow before it scrolls inside itself (item 039 in
+   * the nightshift repo). Unset, it is 40% of the column, so the transcript
+   * keeps the other 60% however long the draft; the handle on the top edge
+   * sets it by hand, and the setting is kept per machine. The floating
+   * composer on the new-chat page has no transcript to balance against and
+   * keeps a fixed cap.
+   */
+  const FLOATING_MAX = 200; // ~8 rows
+  const CAP_FRACTION = 0.4;
+  const CAP_MIN = 72;
+  const CAP_KEY = "nightloom.composer.max";
+
+  function loadCap(): number | null {
+    try {
+      const raw = localStorage.getItem(CAP_KEY);
+      const n = raw === null ? NaN : Number(raw);
+      return Number.isFinite(n) && n >= CAP_MIN ? n : null;
+    } catch {
+      return null;
+    }
+  }
+  function saveCap(n: number | null): void {
+    try {
+      if (n === null) localStorage.removeItem(CAP_KEY);
+      else localStorage.setItem(CAP_KEY, String(Math.round(n)));
+    } catch {
+      // best-effort
+    }
+  }
+
+  /** The cap set by hand, or null for the 40% rule. */
+  let capPx = $state<number | null>(loadCap());
+  let dragging = $state(false);
+
+  /** The column the composer shares with the transcript. */
+  function columnHeight(): number {
+    const col = ta?.closest(".main") as HTMLElement | null;
+    return col?.clientHeight ?? window.innerHeight;
+  }
+
+  function maxHeight(): number {
+    if (floating) return FLOATING_MAX;
+    const auto = Math.round(columnHeight() * CAP_FRACTION);
+    return Math.max(CAP_MIN, capPx ?? auto);
+  }
+
+  /**
+   * The handle. Dragging up raises the cap and the box grows into it as far
+   * as the draft needs; dragging down lowers it and the box scrolls sooner.
+   * Double-click returns to the 40% rule.
+   */
+  function handleDown(e: PointerEvent) {
+    if (e.button !== 0 || !ta) return;
+    e.preventDefault();
+    const startY = e.clientY;
+    const startCap = maxHeight();
+    const limit = Math.round(columnHeight() * 0.85);
+    const target = e.currentTarget as HTMLElement;
+    target.setPointerCapture(e.pointerId);
+    dragging = true;
+    const move = (ev: PointerEvent) => {
+      const next = Math.min(limit, Math.max(CAP_MIN, startCap + (startY - ev.clientY)));
+      capPx = next;
+      autogrow();
+    };
+    const up = () => {
+      dragging = false;
+      saveCap(capPx);
+      target.removeEventListener("pointermove", move);
+      target.removeEventListener("pointerup", up);
+      target.removeEventListener("pointercancel", up);
+    };
+    target.addEventListener("pointermove", move);
+    target.addEventListener("pointerup", up);
+    target.addEventListener("pointercancel", up);
+  }
+
+  function handleReset() {
+    capPx = null;
+    saveCap(null);
+    autogrow();
+  }
 
   // The four image types every provider we speak to accepts.
   const IMAGES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
@@ -38,9 +120,18 @@
 
   function autogrow() {
     if (!ta) return;
+    const max = maxHeight();
+    ta.style.maxHeight = max + "px";
     ta.style.height = "auto";
-    ta.style.height = Math.min(ta.scrollHeight, MAX_HEIGHT) + "px";
+    ta.style.height = Math.min(ta.scrollHeight, max) + "px";
   }
+
+  // A resized window moves the 40% line.
+  $effect(() => {
+    const onresize = () => autogrow();
+    window.addEventListener("resize", onresize);
+    return () => window.removeEventListener("resize", onresize);
+  });
 
   function onkeydown(e: KeyboardEvent) {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -185,6 +276,19 @@
   {ondragleave}
   {ondrop}
 >
+  {#if !floating}
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="handle"
+      class:dragging
+      role="separator"
+      aria-orientation="horizontal"
+      aria-label="Composer height"
+      title={capPx === null ? "Drag to set how tall the message box may grow (double-click: automatic, 40% of the column)" : `Message box may grow to ${capPx}px — double-click for automatic`}
+      onpointerdown={handleDown}
+      ondblclick={handleReset}
+    ></div>
+  {/if}
   {#if attachments.length > 0}
     <div class="attachments">
       {#each attachments as a (a.id)}
@@ -241,9 +345,36 @@
 
 <style>
   .composer {
+    position: relative;
     background: var(--panel);
     border-top: 1px solid var(--border);
     padding: 0.75rem 1rem;
+  }
+  /* The drag handle sits on the top edge, over the border. */
+  .handle {
+    position: absolute;
+    top: -4px;
+    left: 0;
+    right: 0;
+    height: 9px;
+    cursor: row-resize;
+    touch-action: none;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 2;
+  }
+  .handle::after {
+    content: "";
+    width: 36px;
+    height: 3px;
+    border-radius: 2px;
+    background: var(--line2);
+    transition: background 0.12s;
+  }
+  .handle:hover::after,
+  .handle.dragging::after {
+    background: var(--accent);
   }
   .composer.floating {
     background: transparent;
@@ -349,7 +480,6 @@
     font-family: inherit;
     line-height: 1.45;
     resize: none;
-    max-height: 200px;
     overflow-y: auto;
   }
   textarea:focus {

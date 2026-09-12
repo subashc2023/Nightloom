@@ -380,6 +380,15 @@ export function nightshiftEnable(
 }
 
 /**
+ * **Disable Nightshift** on a project: rename `nightshift.json` to
+ * `nightshift.json.disabled`. Deletes nothing; refused while a shift is
+ * live. Only after the warning has been shown and confirmed.
+ */
+export function nightshiftDisable(projectId: string): Promise<NightshiftRow> {
+  return invoke("nightshift_disable", { projectId });
+}
+
+/**
  * The one runner install a registered project shows — the nightshift repo
  * itself when it is a project here — or null. What the Enable form starts
  * with.

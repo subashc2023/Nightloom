@@ -8,6 +8,7 @@
     enableNightshift,
     newSession,
     openSession,
+    refreshNightshift,
     refreshSessions,
     selectNightshiftProject,
     showNightshift,
@@ -19,6 +20,7 @@
   import NotesPanel from "./NotesPanel.svelte";
   import ProjectMenu from "./ProjectMenu.svelte";
   import Icon from "./Icon.svelte";
+  import DisableDialog from "./DisableDialog.svelte";
 
   // Two-click delete: the first click arms the button, the second deletes.
   let confirming = $state<string | null>(null);
@@ -192,6 +194,33 @@
     if (!id) return;
     enabling = null;
     await enableNightshift(id, runnerPath.trim() || undefined);
+  }
+
+  /**
+   * Disable, behind the warning (item 037). The dialog is opened on a row;
+   * confirming renames the config through the backend and re-reads the
+   * list, which the project then leaves. If it was the selected project the
+   * selection is dropped so the refresh picks another.
+   */
+  let disabling = $state<NightshiftRow | null>(null);
+  let disableBusy = $state(false);
+
+  async function confirmDisable(): Promise<void> {
+    const row = disabling;
+    if (!row) return;
+    disableBusy = true;
+    try {
+      await api.nightshiftDisable(row.id);
+    } catch (e) {
+      addToast(String(e));
+      disableBusy = false;
+      return;
+    }
+    disableBusy = false;
+    disabling = null;
+    if (app.nightshift.selected === row.id) app.nightshift.selected = null;
+    await refreshNightshift();
+    addToast(`Nightshift disabled on ${row.name}; the files stay`);
   }
 </script>
 
@@ -407,6 +436,14 @@
                   {/if}
                 </span>
                 <span class="m">{rowMeta(row.nightshift)}</span>
+                <span
+                  class="disable-link"
+                  role="button"
+                  tabindex="0"
+                  title="Disable Nightshift on this project (behind a warning)"
+                  onclick={(e) => { e.stopPropagation(); disabling = row; }}
+                  onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); disabling = row; } }}
+                >Disable…</span>
                 {#if row.nightshift.config_error}
                   <span class="row-error">{row.nightshift.config_error}</span>
                 {/if}
@@ -428,7 +465,18 @@
                     {row.name}
                     {#if !row.exists}<span class="missing">folder missing</span>{/if}
                   </span>
-                  {#if enabling !== row.id}
+                  {#if row.disabled}
+                    <button
+                      class="enable-link"
+                      disabled={!row.exists}
+                      title={!row.exists
+                        ? "folder missing"
+                        : `Restore the disabled Nightshift root at ${row.disabled}`}
+                      onclick={() => void enableNightshift(row.id)}
+                    >
+                      Enable again
+                    </button>
+                  {:else if enabling !== row.id}
                     <button
                       class="enable-link"
                       disabled={!row.exists || row.workspace === null}
@@ -443,6 +491,9 @@
                     </button>
                   {/if}
                 </span>
+                {#if row.disabled}
+                  <span class="row-hint">disabled · {row.disabled}</span>
+                {/if}
                 {#if enabling === row.id}
                   <form
                     class="enable-form"
@@ -474,6 +525,15 @@
         {/if}
       {/if}
     </div>
+  {/if}
+
+  {#if disabling}
+    <DisableDialog
+      row={disabling}
+      busy={disableBusy}
+      onconfirm={() => void confirmDisable()}
+      onclose={() => (disabling = null)}
+    />
   {/if}
 
   <div class="side-foot">
@@ -642,6 +702,24 @@
   .row-error {
     font-size: 11.5px;
     color: var(--failed);
+  }
+  /* Shown on hover only: a destructive-looking link on every row would read
+     as an invitation. */
+  .disable-link {
+    font-size: 11px;
+    color: var(--dim);
+    align-self: flex-end;
+    opacity: 0;
+    transition: opacity 0.12s;
+    cursor: pointer;
+  }
+  .ns-row:hover .disable-link,
+  .disable-link:focus-visible {
+    opacity: 1;
+  }
+  .disable-link:hover {
+    color: var(--failed);
+    text-decoration: underline;
   }
   .row-hint {
     font-size: 11.5px;

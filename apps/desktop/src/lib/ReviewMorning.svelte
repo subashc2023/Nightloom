@@ -11,6 +11,7 @@
     markMorningRead,
     morningIsRead,
     openMorning,
+    openNote,
     selectBlocker,
     paneWidth,
     setPaneWidth,
@@ -74,6 +75,18 @@
     app.nightshift.reviewTab = "blockers";
   }
 
+  /**
+   * The page lives at `mornings/<name>` under the contract root. The Notes
+   * screen's tree only lists `notes/`, so this file won't be highlighted
+   * there — `nightshift_read_file` reads any file under the root regardless,
+   * so opening it still shows the text.
+   */
+  function openInNotes() {
+    if (!page) return;
+    app.nightshift.reviewTab = "notes";
+    void openNote(`mornings/${page.name}`);
+  }
+
   /** `#021` in a blockers section links to that blocker. */
   function blockerIdsIn(md: string): string[] {
     return Array.from(md.matchAll(/#(\d{3})\b/g), (m) => m[1]);
@@ -113,6 +126,7 @@
           <span class="ns-pill grey">read{#if entry?.modified} · written {hhmm(entry.modified)}{/if}</span>
         {/if}
         <span class="spacer"></span>
+        <button class="ns-btn ghost small" onclick={openInNotes}>Open in Notes</button>
         {#if unread}
           <button class="ns-btn ghost small" onclick={() => markMorningRead(page.name)}>Mark read</button>
         {/if}
