@@ -117,7 +117,7 @@
   </div>
 
   <button class="wide" onclick={() => void pick()} disabled={app.busy}>
-    Choose a folder…
+    New project…
   </button>
   {#if app.project}
     <button class="wide quiet" onclick={() => void choose(null)} disabled={app.busy}>

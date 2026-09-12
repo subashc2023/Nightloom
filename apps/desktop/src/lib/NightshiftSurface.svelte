@@ -1,9 +1,9 @@
 <script lang="ts">
   /**
    * The Nightshift surface: the header, then Start or one of the three
-   * Review screens. The project list with Enable lives in the sidebar's
-   * Nightshift mode (`Sidebar.svelte`), where a list belongs; this is the
-   * centre only.
+   * Review screens, for the open project (round 2, point 12: one project
+   * open at a time). The Enable card lives in the sidebar's Nightshift mode
+   * (`Sidebar.svelte`); this is the centre only.
    */
   import { app } from "./state.svelte";
   import NightshiftHeader from "./NightshiftHeader.svelte";
@@ -29,12 +29,12 @@
     <p class="hint err">{app.nightshift.error}</p>
   {:else if !selectedRow}
     <p class="hint">
-      {app.nightshift.rows.length === 0
-        ? "No projects yet — open a folder as a project first."
-        : "Select a project in the sidebar, or enable Nightshift on one."}
+      {app.project
+        ? `${app.project.name} is not in the project list yet.`
+        : "Open a project to use Nightshift — the page shows the project in the top-left chip. New project… is in that menu."}
     </p>
   {:else if !selectedRow.nightshift}
-    <p class="hint">{selectedRow.name} does not have Nightshift enabled.</p>
+    <p class="hint">{selectedRow.name} does not have Nightshift enabled — the sidebar's Nightshift mode has the Enable card.</p>
   {:else if app.nightshift.tab === "review"}
     {#if app.nightshift.reviewTab === "morning"}
       <ReviewMorning />
