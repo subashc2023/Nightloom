@@ -65,6 +65,10 @@
   }
 
   let dragId = $state<string | null>(null);
+  // The list's own width: under `NARROW` the kind chip is dropped so the
+  // status pill stays whole and the title keeps its room.
+  let width = $state(0);
+  const NARROW = 420;
 
   function dragStart(id: string, e: DragEvent) {
     dragId = id;
@@ -96,7 +100,7 @@
 {:else if visible.length === 0}
   <p class="hint">No items match "{filterText}".</p>
 {:else}
-  <div class="rows">
+  <div class="rows" class:narrow={width > 0 && width < NARROW} bind:clientWidth={width}>
     {#each visible as row (row.item.id)}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
@@ -151,12 +155,26 @@
     gap: 1px;
     padding: 0 10px 10px;
   }
+  /* A narrow list (the Plan screen's column, a squeezed Backlog) drops the
+     kind chip — it is in the item's detail — so the status stays whole and
+     the title keeps its room. */
+  .rows.narrow .ns-chip.small {
+    display: none;
+  }
+  .rows.narrow .row :global(.ns-pill) {
+    flex: none;
+  }
   .row {
+    position: relative;
     display: flex;
     align-items: center;
     gap: 10px;
     padding: 7px 8px;
     border-radius: 6px;
+  }
+  /* Every other row a shade darker, so a long list reads as rows. */
+  .row:nth-child(even) {
+    background: color-mix(in srgb, var(--sheet) 55%, transparent);
   }
   .row:hover {
     background: var(--well);
@@ -180,9 +198,12 @@
     color: var(--dim);
     font-size: 12px;
   }
+  /* The title never collapses to nothing: it keeps at least a third of the
+     row (a blank, unclickable row was the bug), and the chips give way
+     first — they truncate rather than push the title out. */
   .titlebtn {
-    flex: 1;
-    min-width: 0;
+    flex: 1 1 40%;
+    min-width: 96px;
     text-align: left;
     background: none;
     border: none;
@@ -197,13 +218,36 @@
   .ns-chip.small {
     padding: 2px 8px;
     font-size: 11px;
-    flex: none;
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: inline-block;
   }
+  .row :global(.ns-pill) {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: inline-block;
+    white-space: nowrap;
+  }
+  /* Floats over the row's right edge on hover, on the row's own background,
+     so at rest it reserves no width. */
   .reorder {
+    position: absolute;
+    right: 6px;
+    top: 50%;
+    transform: translateY(-50%);
     display: flex;
     align-items: center;
     gap: 2px;
-    flex: none;
+    padding-left: 10px;
+    background: linear-gradient(to right, transparent, var(--well) 22%);
+    border-radius: 6px;
+  }
+  .row.on .reorder {
+    background: linear-gradient(to right, transparent, var(--sheet) 22%);
   }
   .handle {
     color: var(--dim);
@@ -214,11 +258,13 @@
   /* The move controls appear on hover; at rest the title has the width. */
   .reorder {
     opacity: 0;
+    pointer-events: none;
     transition: opacity 0.12s;
   }
   .row:hover .reorder,
   .reorder:focus-within {
     opacity: 1;
+    pointer-events: auto;
   }
   input[type="checkbox"] {
     flex: none;
