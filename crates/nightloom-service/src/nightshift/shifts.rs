@@ -26,7 +26,8 @@ pub struct Plan {
     /// `manual` or `schedule:<schedule-id>`.
     #[serde(default = "manual")]
     pub source: String,
-    /// `research | build` (§13.1); absent in plans written before round 5.
+    /// Written under §13.1 (round 5); struck by §13.1a (2026-09-11 night): a
+    /// shift has no kind. Kept so older plans still parse; never written.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
     #[serde(default)]
@@ -56,23 +57,22 @@ impl Plan {
     }
 
     /// What `shiftctl plan synth` would write: every item in global order,
-    /// selected when it is `todo` or `in-progress` and of the plan's kind.
-    /// The GUI's plan form starts from this and the user edits it.
+    /// selected when it is `todo` or `in-progress` — whatever its kind
+    /// (§13.1a: a shift has no kind; each pass follows its item's). The
+    /// GUI's plan form starts from this and the user edits it.
     pub fn synthesise(
         root: &Path,
         config: &Config,
         shift_id: &str,
-        kind: Option<&str>,
         max_units: Option<u32>,
         until: Option<String>,
         budget_usd: Option<f64>,
     ) -> Plan {
-        let kind = kind.unwrap_or(&config.kind).to_string();
         let (items, _) = items::list_items(root, config);
         let items = items
             .into_iter()
             .map(|it| PlanItem {
-                selected: (it.status == "todo" || it.status == "in-progress") && it.kind == kind,
+                selected: it.status == "todo" || it.status == "in-progress",
                 id: it.id,
             })
             .collect();
@@ -80,7 +80,7 @@ impl Plan {
             shift_id: shift_id.to_string(),
             created: now(),
             source: manual(),
-            kind: Some(kind),
+            kind: None,
             items,
             until,
             max_units,
@@ -460,24 +460,23 @@ mod tests {
         )
         .unwrap();
         let id = "2026-09-12T01-00-00";
-        let plan = Plan::synthesise(&ws, &config, id, None, Some(2), None, Some(50.0));
-        assert_eq!(plan.kind.as_deref(), Some("research"));
+        let plan = Plan::synthesise(&ws, &config, id, Some(2), None, Some(50.0));
+        assert!(plan.kind.is_none(), "a shift has no kind (§13.1a)");
         let sel: Vec<(String, bool)> = plan
             .items
             .iter()
             .map(|i| (i.id.clone(), i.selected))
             .collect();
+        // 017 (research, in-progress) and 002 (build, todo) are both
+        // selected; 003 is done.
         assert_eq!(
             sel,
             vec![
                 ("017".into(), true),
-                ("002".into(), false),
+                ("002".into(), true),
                 ("003".into(), false)
             ]
         );
-        let build = Plan::synthesise(&ws, &config, id, Some("build"), None, None, None);
-        assert!(build.items.iter().any(|i| i.id == "002" && i.selected));
-        assert!(!build.items.iter().any(|i| i.id == "017" && i.selected));
 
         let rel = write_plan(&ws, &plan).unwrap();
         assert_eq!(rel, format!("shifts/{id}/plan.json"));

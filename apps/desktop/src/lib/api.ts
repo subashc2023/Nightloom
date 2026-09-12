@@ -455,14 +455,12 @@ export function nightshiftShiftLog(
  */
 export function nightshiftSynthPlan(
   projectId: string,
-  kind?: string,
   maxUnits?: number,
   until?: string,
   budgetUsd?: number,
 ): Promise<Plan> {
   return invoke("nightshift_synth_plan", {
     projectId,
-    kind,
     maxUnits,
     until,
     budgetUsd,

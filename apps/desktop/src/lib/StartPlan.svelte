@@ -1,9 +1,10 @@
 <script lang="ts">
   /**
    * Start → Plan a shift (3.7): the backlog with a checkbox per item on the
-   * left (same order, same drag reorder as 3.6, via `BacklogList`); kind,
-   * until, max units and budget on the right, a summary of the plan as it
-   * stands, and Launch.
+   * left (same order, same drag reorder as 3.6, via `BacklogList`); until,
+   * max units and budget on the right, a summary of the plan as it stands,
+   * and Launch. A shift has no kind (SHIFT-CONTRACT §13.1a): each pass
+   * follows its item's.
    *
    * `synthPlan()` seeds `planDraft` fresh — with a new shift id — every time
    * this screen is entered or the selected project changes; every edit
@@ -57,19 +58,6 @@
     const next = newOrder.filter((id) => byId.has(id)).map((id) => byId.get(id)!);
     for (const entry of p.items) if (!newOrder.includes(entry.id)) next.push(entry);
     p.items = next;
-  }
-
-  const projectKind = $derived(info?.config.kind ?? "research");
-  const otherKind = $derived(projectKind === "research" ? "build" : "research");
-  // A synthesized plan carries the project's kind already (shifts.rs writes
-  // it), so "default" means absent OR equal to the project's; "other" is the
-  // one explicit choice a plan can make.
-  const kindMode = $derived(plan?.kind == null || plan.kind === projectKind ? "default" : "other");
-
-  function setKindMode(mode: "default" | "other"): void {
-    const p = app.nightshift.planDraft;
-    if (!p) return;
-    p.kind = mode === "default" ? projectKind : otherKind;
   }
 
   // Local text mirrors of the draft's bound fields — reset whenever a fresh
@@ -155,18 +143,6 @@
       </div>
 
       <div class="fields">
-        <label class="field">
-          <span class="ns-k">Kind</span>
-          <div class="seg" role="tablist" aria-label="Shift kind">
-            <button role="tab" aria-selected={kindMode === "default"} class:on={kindMode === "default"} onclick={() => setKindMode("default")}>
-              project default ({projectKind})
-            </button>
-            <button role="tab" aria-selected={kindMode === "other"} class:on={kindMode === "other"} onclick={() => setKindMode("other")}>
-              {otherKind}
-            </button>
-          </div>
-        </label>
-
         <!-- A div, not a label: the preset buttons inside a label would
              inherit the whole label as their accessible name. -->
         <div class="field">
@@ -204,7 +180,6 @@
       <div class="ns-card summary">
         <div class="ns-k">Plan</div>
         <div class="line">{selectedCount} of {items.length} items selected</div>
-        <div class="line">{plan.kind ?? projectKind}{plan.kind == null ? " (project default)" : ""}</div>
         <div class="line">until {plan.until ?? "unbounded"}</div>
         <div class="line">max {plan.max_units ?? "unbounded"} units · budget {plan.budget_usd != null ? `$${plan.budget_usd}` : "unbounded"}</div>
       </div>
@@ -313,29 +288,6 @@
   }
   .hint-sm.center {
     text-align: center;
-  }
-  .seg {
-    display: inline-flex;
-    border: 1px solid var(--line2);
-    border-radius: 8px;
-    padding: 2px;
-    background: var(--well);
-    flex-wrap: wrap;
-  }
-  .seg button {
-    padding: 5px 10px;
-    border-radius: 6px;
-    border: none;
-    background: transparent;
-    color: var(--ink2);
-    font-size: 12.5px;
-    font-family: var(--sans);
-    cursor: pointer;
-    white-space: nowrap;
-  }
-  .seg button.on {
-    background: var(--accent);
-    color: var(--paper);
   }
   .summary {
     padding: 12px 14px;

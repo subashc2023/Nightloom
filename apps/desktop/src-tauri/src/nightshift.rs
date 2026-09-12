@@ -382,7 +382,6 @@ pub async fn nightshift_shift_log(
 pub async fn nightshift_synth_plan(
     state: State<'_, AppState>,
     project_id: String,
-    kind: Option<String>,
     max_units: Option<u32>,
     until: Option<String>,
     budget_usd: Option<f64>,
@@ -393,7 +392,6 @@ pub async fn nightshift_synth_plan(
             &root.root,
             &root.config,
             &shifts::next_shift_id(),
-            kind.as_deref(),
             max_units,
             until,
             budget_usd,
