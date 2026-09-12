@@ -1382,6 +1382,35 @@ export function selectItem(id: string): void {
   app.nightshift.selectedItem = id;
 }
 
+/** Scaffold a new item, re-read the backlog, select it. Returns the id. */
+export async function newItem(title: string, kind: string): Promise<string | null> {
+  const id = app.nightshift.selected;
+  if (!id) return null;
+  try {
+    const created = await api.nightshiftNewItem(id, title, kind);
+    await loadItems();
+    app.nightshift.selectedItem = created;
+    return created;
+  } catch (e) {
+    addToast(String(e));
+    return null;
+  }
+}
+
+/** Save an item's edited text, then re-read the backlog. */
+export async function saveItem(itemId: string, text: string): Promise<boolean> {
+  const id = app.nightshift.selected;
+  if (!id) return false;
+  try {
+    await api.nightshiftWriteItem(id, itemId, text);
+    await loadItems();
+    return true;
+  } catch (e) {
+    addToast(String(e));
+    return false;
+  }
+}
+
 /**
  * Rewrite `backlog/order.json` to `order`, then re-read the backlog so the
  * rows and their position numbers reflect it. Refused by the backend while a

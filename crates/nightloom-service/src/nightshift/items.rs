@@ -120,6 +120,81 @@ pub fn save_order(root: &Path, order: &[String]) -> Result<Vec<String>, String> 
     Ok(load_order(root))
 }
 
+/// A new backlog item: `backlog/<id>-<slug>.md` with the frontmatter and the
+/// section headings the contract names (§4), appended to `order.json`.
+/// The id is one past the highest existing. `kind` is `research` or
+/// `build`; the body is left for the person (or, later, the interview
+/// agent — item 005). Refused while a shift is live.
+pub fn new_item(root: &Path, title: &str, kind: &str) -> Result<String, String> {
+    launch::ensure_not_live(root)?;
+    let title = title.trim();
+    if title.is_empty() {
+        return Err("an item needs a title".into());
+    }
+    if kind != "research" && kind != "build" {
+        return Err(format!("kind must be research or build, not {kind}"));
+    }
+    // One past the highest id anywhere — files or `order.json` entries.
+    // shiftctl looks at files only; an id that is listed but has no file
+    // would put the new item in that slot's position, so both count here.
+    let files = item_files(root);
+    let next = files
+        .keys()
+        .chain(load_order(root).iter())
+        .filter_map(|k| k.parse::<u32>().ok())
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let id = format!("{next:03}");
+    let slug: String = title
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect::<String>()
+        .split('-')
+        .filter(|p| !p.is_empty())
+        .take(8)
+        .collect::<Vec<_>>()
+        .join("-");
+    let slug = if slug.is_empty() {
+        "item".to_string()
+    } else {
+        slug
+    };
+    let dir = root.join("backlog");
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(format!("{id}-{slug}.md"));
+    let today = chrono_date();
+    let quoted = title.replace('"', "\\\"");
+    let text = format!(
+        "---\nid: \"{id}\"\ntitle: \"{quoted}\"\nkind: {kind}\nstatus: todo\ncreated: {today}\nsource: manual\nmax_passes: 3\n---\n\n## What Swaraag said\n\n\n## What the agent inferred\n\n\n## Definition of done\n\n\n## Pointers\n\n\n## Not to do\n\n\n## Progress\n"
+    );
+    super::write_atomic(&path, &text)?;
+    let mut order = load_order(root);
+    if !order.contains(&id) {
+        order.push(id.clone());
+        save_order(root, &order)?;
+    }
+    Ok(id)
+}
+
+/// Replace an item's whole text — the GUI's Edit. The file is the one the
+/// id names; the text is taken as typed (an item is prose with a
+/// frontmatter, not a form). Refused while a shift is live.
+pub fn write_item(root: &Path, id: &str, text: &str) -> Result<(), String> {
+    launch::ensure_not_live(root)?;
+    let files = item_files(root);
+    let path = files
+        .get(id)
+        .ok_or_else(|| format!("no backlog item with id {id}"))?;
+    super::write_atomic(path, text)
+}
+
+/// Today as `YYYY-MM-DD`, local time — the `created` field's shape.
+fn chrono_date() -> String {
+    chrono::Local::now().format("%Y-%m-%d").to_string()
+}
+
 /// Global order, then any item not listed, ascending by id — shiftctl's
 /// `ordered_items`.
 pub fn ordered_ids(root: &Path) -> Vec<String> {
@@ -298,6 +373,45 @@ mod tests {
         assert!(item.progress[0].contains("shift 2026-09-11T02-16-40"));
         assert!(item.progress[0].contains("commit "));
         assert_eq!(item.fields.get("id").map(String::as_str), Some("017"));
+    }
+
+    #[test]
+    fn new_item_scaffolds_and_appends_to_order_and_write_item_replaces() {
+        let ws = scratch();
+        fs::write(
+            ws.join("backlog/002-b.md"),
+            "---\nid: 002\ntitle: b\nkind: build\nstatus: todo\n---\n",
+        )
+        .unwrap();
+        let top = load_order(&ws)
+            .iter()
+            .chain(item_files(&ws).keys())
+            .filter_map(|k| k.parse::<u32>().ok())
+            .max()
+            .unwrap();
+        let id = new_item(&ws, "Idea intake: an interview", "build").unwrap();
+        assert_eq!(id, format!("{:03}", top + 1));
+        let files = item_files(&ws);
+        let path = files.get(&id).expect("file named by id");
+        assert!(
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(&format!("{id}-idea-intake-an-interview"))
+        );
+        let text = fs::read_to_string(path).unwrap();
+        assert!(text.starts_with(&format!(
+            "---\nid: \"{id}\"\ntitle: \"Idea intake: an interview\"\nkind: build\nstatus: todo\n"
+        )));
+        assert!(text.contains("## Definition of done"));
+        assert!(text.ends_with("## Progress\n"));
+        assert_eq!(load_order(&ws).last(), Some(&id));
+        assert!(new_item(&ws, "  ", "build").is_err());
+        assert!(new_item(&ws, "x", "other").is_err());
+
+        write_item(&ws, &id, "---\nid: \"x\"\ntitle: \"renamed\"\n---\n").unwrap();
+        assert!(fs::read_to_string(path).unwrap().contains("renamed"));
+        assert!(write_item(&ws, "999", "x").is_err());
     }
 
     #[test]

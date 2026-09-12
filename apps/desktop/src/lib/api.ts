@@ -413,6 +413,16 @@ export function nightshiftSetOrder(
   return invoke("nightshift_set_order", { projectId, order });
 }
 
+/** Scaffold a backlog item; returns the new id. */
+export function nightshiftNewItem(projectId: string, title: string, kind: string): Promise<string> {
+  return invoke("nightshift_new_item", { projectId, title, kind });
+}
+
+/** Replace an item's whole text (the Edit screen's Save). */
+export function nightshiftWriteItem(projectId: string, id: string, text: string): Promise<null> {
+  return invoke("nightshift_write_item", { projectId, id, text });
+}
+
 export function nightshiftBlockers(projectId: string): Promise<BlockerList> {
   return invoke("nightshift_blockers", { projectId });
 }

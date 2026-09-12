@@ -309,6 +309,32 @@ pub async fn nightshift_set_order(
     blocking(move || items::save_order(&root.root, &order)).await
 }
 
+/// Scaffold a new backlog item and append it to the order; returns its id.
+/// Refused while a shift is live.
+#[tauri::command]
+pub async fn nightshift_new_item(
+    state: State<'_, AppState>,
+    project_id: String,
+    title: String,
+    kind: String,
+) -> Result<String, String> {
+    let root = root_of(&state, &project_id).await?;
+    blocking(move || items::new_item(&root.root, &title, &kind)).await
+}
+
+/// Replace a backlog item's text — the Edit screen's Save. Refused while a
+/// shift is live.
+#[tauri::command]
+pub async fn nightshift_write_item(
+    state: State<'_, AppState>,
+    project_id: String,
+    id: String,
+    text: String,
+) -> Result<(), String> {
+    let root = root_of(&state, &project_id).await?;
+    blocking(move || items::write_item(&root.root, &id, &text)).await
+}
+
 // ---- blockers ----
 
 #[derive(Serialize)]
