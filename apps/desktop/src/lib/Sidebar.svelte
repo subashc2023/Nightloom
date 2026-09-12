@@ -286,9 +286,13 @@
     >
       <Icon name="moon" size={16} />
       <span>Nightshift</span>
+      <!-- Two signals, two pills: open blockers (amber, a count) and an
+           unread morning page (blue). Glued into one they read as "3 new
+           pages" (2026-09-11 review). -->
       {#if nightshiftBlockers > 0 || nightshiftNewPage}
-        <span class="badge">
-          {#if nightshiftBlockers > 0}{nightshiftBlockers}{/if}{#if nightshiftBlockers > 0 && nightshiftNewPage} · {/if}{#if nightshiftNewPage}new page{/if}
+        <span class="badges">
+          {#if nightshiftBlockers > 0}<span class="badge" title="{nightshiftBlockers} open blocker(s)">{nightshiftBlockers} open</span>{/if}
+          {#if nightshiftNewPage}<span class="badge page" title="An unread morning page">new page</span>{/if}
         </span>
       {/if}
     </button>
@@ -667,8 +671,12 @@
     color: var(--dim);
     font-variant-numeric: tabular-nums;
   }
-  .badge {
+  .badges {
     margin-left: auto;
+    display: flex;
+    gap: 4px;
+  }
+  .badge {
     font-family: var(--mono);
     font-size: 11px;
     color: var(--paper);
@@ -677,6 +685,10 @@
     padding: 1px 7px;
     font-weight: 500;
     white-space: nowrap;
+  }
+  .badge.page {
+    color: var(--paper);
+    background: var(--live);
   }
 
   /* Nightshift mode: the project list. */

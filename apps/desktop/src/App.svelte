@@ -114,11 +114,16 @@
         <Composer />
       {/if}
     </div>
+    <!-- A click on the overlay itself — outside the modal — closes it. The
+         handler checks the target so clicks inside the modal that bubble up
+         are left alone. -->
     {#if app.showSettings}
-      <div class="settings-overlay"><SettingsModal /></div>
+      <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+      <div class="settings-overlay" onmousedown={(e) => { if (e.target === e.currentTarget) app.showSettings = false; }}><SettingsModal /></div>
     {/if}
     {#if app.showPrompts}
-      <div class="settings-overlay"><PromptLibrary /></div>
+      <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+      <div class="settings-overlay" onmousedown={(e) => { if (e.target === e.currentTarget) app.showPrompts = false; }}><PromptLibrary /></div>
     {/if}
   </div>
 </div>

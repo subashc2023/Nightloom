@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { relativeTime } from "./time";
   import { tick } from "svelte";
   import { app, denialReason, liveFlags, rewindTo } from "./state.svelte";
   import type { Segment } from "./state.svelte";
@@ -39,19 +40,6 @@
    * indistinguishable from a delete.
    */
   type Item = Body & { index: number; superseded: boolean };
-
-  /** "10h ago" for a key label; the full time is in the title. */
-  function ago(iso: string): string {
-    const t = Date.parse(iso);
-    if (!Number.isFinite(t)) return "";
-    const s = Math.max(0, Math.round((Date.now() - t) / 1000));
-    if (s < 60) return "just now";
-    const m = Math.round(s / 60);
-    if (m < 60) return `${m}m ago`;
-    const h = Math.round(m / 60);
-    if (h < 48) return `${h}h ago`;
-    return `${Math.round(h / 24)}d ago`;
-  }
 
   // Project SessionEvents into renderable items. tool_result events are
   // consumed by lookup against tool_use blocks and never rendered standalone.
@@ -192,7 +180,7 @@
                 Rewind to here
               </button>
             {/if}
-            <span class="ns-k">You · {ago(item.at)}</span>
+            <span class="ns-k">You · {relativeTime(item.at)}</span>
           </div>
           <div class="user-bubble">
             {#if item.images.length > 0}
