@@ -5,7 +5,7 @@
    * Nightshift mode (`Sidebar.svelte`), where a list belongs; this is the
    * centre only.
    */
-  import { app, latestShift } from "./state.svelte";
+  import { app } from "./state.svelte";
   import NightshiftHeader from "./NightshiftHeader.svelte";
   import ReviewMorning from "./ReviewMorning.svelte";
   import ReviewRuns from "./ReviewRuns.svelte";
@@ -13,39 +13,12 @@
   import ReviewNotes from "./ReviewNotes.svelte";
   import StartBacklog from "./StartBacklog.svelte";
   import StartPlan from "./StartPlan.svelte";
-  import Icon from "./Icon.svelte";
+  import NightshiftStateChip from "./NightshiftStateChip.svelte";
 
   const selectedRow = $derived(
     app.nightshift.rows.find((r) => r.id === app.nightshift.selected) ?? null,
   );
 
-  // Duplicated from NightshiftHeader's `state` derivation rather than
-  // imported — the header stays as it is (screen 3.2-3.5's contract); this
-  // is the same idle/live chip for the Start tab bar's own second row.
-  // Keep it identical if you flip one; a `NightshiftStateChip` component is
-  // the alternative if they diverge.
-  const info = $derived(selectedRow?.nightshift ?? null);
-  const latest = $derived(latestShift());
-  const startState = $derived.by(() => {
-    if (info?.live) {
-      const id = latest?.live ? latest.id : (info.latest_shift ?? "");
-      return { dot: "live", text: id ? `live · shift ${id}` : "live" };
-    }
-    if (!latest) {
-      return {
-        dot: "unknown",
-        text: info?.latest_shift ? `idle · last shift ${info.latest_shift}` : "idle · no shifts yet",
-      };
-    }
-    const exit = latest.status?.exit;
-    const dot = latest.interrupted ? "failed" : exit != null && exit !== 0 ? "failed" : exit === 0 ? "" : "unknown";
-    const tail = latest.interrupted
-      ? " · interrupted"
-      : exit != null
-        ? ` · exit ${exit}`
-        : "";
-    return { dot, text: `idle · last shift ${latest.id}${tail}` };
-  });
 </script>
 
 <div class="nightshift">
@@ -91,11 +64,7 @@
         </button>
         <span class="spacer"></span>
         <span class="state">
-          <span class="ns-chip">
-            <Icon name="moon" />
-            <span class="dot {startState.dot}"></span>
-            {startState.text}
-          </span>
+          <NightshiftStateChip />
         </span>
       </div>
       {#if app.nightshift.startTab === "backlog"}
@@ -127,10 +96,6 @@
   }
   .hint.err {
     color: var(--failed);
-  }
-  .hint.dim {
-    padding-top: 0;
-    font-size: 12.5px;
   }
   .start {
     display: flex;
@@ -174,10 +139,5 @@
     padding-bottom: 8px;
     min-width: 0;
     display: flex;
-  }
-  .state .ns-chip {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
 </style>
