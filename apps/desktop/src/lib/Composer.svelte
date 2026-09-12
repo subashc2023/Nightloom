@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icon from "./Icon.svelte";
   import { app, addToast, send, cancelTurn } from "./state.svelte";
   import type { Attachment } from "./types";
 
@@ -239,6 +240,15 @@
     void accept(files);
   }
 
+  // The Attach button: a hidden picker feeding the same `accept` the paste
+  // and drop paths use. Same media types the drop accepts.
+  let picker = $state<HTMLInputElement | null>(null);
+  function onpick(): void {
+    const files = Array.from(picker?.files ?? []);
+    if (picker) picker.value = "";
+    if (files.length > 0) void accept(files);
+  }
+
   function remove(id: number) {
     const i = attachments.findIndex((a) => a.id === id);
     if (i >= 0) attachments.splice(i, 1);
@@ -311,7 +321,7 @@
       {/each}
     </div>
   {/if}
-  <div class="row">
+  <div class="card">
     <textarea
       bind:this={ta}
       bind:value={text}
@@ -322,19 +332,32 @@
       {onpaste}
       {onkeydown}
     ></textarea>
-    {#if app.busy}
-      <button class="action stop" onclick={() => void cancelTurn()}>
-        Stop
+    <div class="row">
+      <input
+        bind:this={picker}
+        type="file"
+        accept="image/*,application/pdf"
+        multiple
+        hidden
+        onchange={onpick}
+      />
+      <button class="ns-btn ghost small" disabled={!app.connection} onclick={() => picker?.click()}>
+        <Icon name="plus" />Attach
       </button>
-    {:else}
-      <button
-        class="action"
-        onclick={() => void submit()}
-        disabled={!app.connection || (!text.trim() && attachments.length === 0)}
-      >
-        Send
-      </button>
-    {/if}
+      <span class="ns-chip mono keys">↵ to send · ⇧↵ newline</span>
+      <span class="spacer"></span>
+      {#if app.busy}
+        <button class="ns-btn danger small" onclick={() => void cancelTurn()}>Stop</button>
+      {:else}
+        <button
+          class="ns-btn accent send"
+          onclick={() => void submit()}
+          disabled={!app.connection || (!text.trim() && attachments.length === 0)}
+        >
+          Send
+        </button>
+      {/if}
+    </div>
   </div>
   {#if !app.connection}
     <div class="hint">connect a provider to start</div>
@@ -346,9 +369,8 @@
 <style>
   .composer {
     position: relative;
-    background: var(--panel);
-    border-top: 1px solid var(--border);
-    padding: 0.75rem 1rem;
+    background: var(--paper);
+    padding: 12px 20px 22px;
   }
   /* The drag handle sits on the top edge, over the border. */
   .handle {
@@ -382,24 +404,22 @@
     padding: 0;
     width: 100%;
   }
-  .composer.dropping {
-    background: #8b7cf60f;
+  .composer.dropping .card {
+    border-color: var(--accent);
   }
   .composer.floating.dropping {
     background: transparent;
   }
-  .composer.floating .row,
+  .composer.floating .card,
   .composer.floating .attachments,
   .composer.floating .hint {
     max-width: none;
   }
   .composer.floating textarea {
-    background: var(--panel);
-    padding: 0.7rem 0.9rem;
-    font-size: 0.95rem;
+    font-size: 15.5px;
   }
   .attachments {
-    max-width: 46rem;
+    max-width: 760px;
     margin: 0 auto 0.5rem;
     display: flex;
     flex-wrap: wrap;
@@ -459,61 +479,63 @@
     cursor: pointer;
   }
   .remove:hover {
-    color: var(--error);
-    border-color: rgba(246, 109, 124, 0.4);
+    color: var(--failed);
+    border-color: var(--failed);
   }
-  .row {
-    max-width: 46rem;
+  /* The mock-up's composer card: the text on top, the toolbar under it. */
+  .card {
+    max-width: 760px;
     margin: 0 auto;
     display: flex;
-    align-items: flex-end;
-    gap: 0.6rem;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px 14px;
+    background: var(--sheet);
+    border: 1px solid var(--line2);
+    border-radius: 10px;
+    transition: border-color 0.12s;
+  }
+  .card:focus-within {
+    border-color: var(--accent);
+  }
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .spacer {
+    flex: 1;
+  }
+  .keys {
+    font-size: 11px;
+    padding: 2px 8px;
   }
   textarea {
-    flex: 1;
-    background: var(--bg);
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 0.55rem 0.75rem;
-    font-size: 0.92rem;
+    width: 100%;
+    background: transparent;
+    color: var(--ink);
+    border: none;
+    padding: 2px 0;
+    font-size: 15px;
     font-family: inherit;
-    line-height: 1.45;
+    line-height: 1.5;
     resize: none;
     overflow-y: auto;
   }
+  textarea::placeholder {
+    color: var(--dim);
+  }
   textarea:focus {
     outline: none;
-    border-color: var(--accent);
   }
   textarea:disabled {
     opacity: 0.5;
   }
-  .action {
-    background: var(--accent);
-    color: #0d0d14;
-    border: none;
-    border-radius: 10px;
-    padding: 0.55rem 1rem;
-    font-size: 0.88rem;
-    font-weight: 600;
-    cursor: pointer;
-    flex-shrink: 0;
-  }
-  .action:hover:not(:disabled) {
-    filter: brightness(1.1);
-  }
-  .action:disabled {
-    opacity: 0.45;
-    cursor: default;
-  }
-  .action.stop {
-    background: transparent;
-    color: var(--error);
-    border: 1px solid rgba(246, 109, 124, 0.4);
+  .send {
+    padding: 6px 16px;
   }
   .hint {
-    max-width: 46rem;
+    max-width: 760px;
     margin: 0.4rem auto 0;
     color: var(--dim);
     font-size: 0.75rem;

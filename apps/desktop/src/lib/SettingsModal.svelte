@@ -801,7 +801,7 @@
     opacity: 0.5;
   }
   .dot.ok {
-    background: #6fdc8c;
+    background: var(--done);
     opacity: 1;
   }
   .nav-spacer {
@@ -1049,11 +1049,11 @@
   .cart.on {
     color: var(--text);
     border-color: var(--accent);
-    background: rgba(139, 124, 246, 0.18);
+    background: var(--accent-soft);
   }
   .cart.on:hover {
     border-color: var(--accent);
-    background: rgba(139, 124, 246, 0.28);
+    background: var(--accent-soft);
   }
   .cart:focus-visible,
   .fold:focus-visible {

@@ -564,7 +564,7 @@
     flex-shrink: 0;
   }
   .dot.ok {
-    background: #6fdc8c;
+    background: var(--done);
   }
   .dot.off {
     background: var(--dim);
@@ -674,7 +674,7 @@
       background 0.15s ease;
   }
   .sw input:checked {
-    background: rgba(139, 124, 246, 0.35);
+    background: var(--accent);
   }
   .sw input:checked::after {
     transform: translateX(11px);

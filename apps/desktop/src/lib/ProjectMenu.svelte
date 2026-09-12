@@ -167,7 +167,7 @@
     border-radius: 6px;
   }
   .row:hover {
-    background: #1b1830;
+    background: var(--well);
   }
   .row.active {
     background: #211d38;

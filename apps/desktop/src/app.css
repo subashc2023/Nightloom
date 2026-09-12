@@ -50,6 +50,9 @@
   --border: var(--line);
   --text: var(--ink);
   --error: var(--failed);
+  /* `--muted` was used by the chat top bar, transcript and composer but never
+     defined (2026-09-11 chat restyle); it is the dim ink. */
+  --muted: var(--dim);
 
   /* The window's own title bar, drawn in the webview because the system frame
      is off on Windows and Linux. 34px against Windows' own 32 — it carries a

@@ -12,7 +12,6 @@
   import Sidebar from "./lib/Sidebar.svelte";
   import TitleBar from "./lib/TitleBar.svelte";
   import TopBar from "./lib/TopBar.svelte";
-  import RightRail from "./lib/RightRail.svelte";
   import SettingsModal from "./lib/SettingsModal.svelte";
   import PromptLibrary from "./lib/PromptLibrary.svelte";
   import Transcript from "./lib/Transcript.svelte";
@@ -59,7 +58,7 @@
     class="app"
     class:nightshift={app.view === "nightshift"}
     class:collapsed={app.layout.sidebarCollapsed}
-    style:grid-template-columns="{app.layout.sidebarCollapsed ? 0 : app.layout.sidebarWidth}px 1fr {app.view === 'nightshift' ? 0 : 240}px"
+    style:grid-template-columns="{app.layout.sidebarCollapsed ? 0 : app.layout.sidebarWidth}px minmax(0, 1fr)"
   >
     <Sidebar />
     {#if app.layout.sidebarCollapsed}
@@ -115,9 +114,6 @@
         <Composer />
       {/if}
     </div>
-    {#if app.view !== "nightshift"}
-      <RightRail />
-    {/if}
     {#if app.showSettings}
       <div class="settings-overlay"><SettingsModal /></div>
     {/if}
@@ -138,8 +134,8 @@
     position: relative;
     display: grid;
     /* The columns are set inline: the sidebar's width is a preference and
-       it collapses to nothing; the rail is folded away on the Nightshift
-       screens, whose header carries what it would have shown. */
+       it collapses to nothing. The right rail is no longer a column — it
+       opens as a popover from the chat top bar's model chip (2026-09-11). */
     flex: 1;
     min-height: 0;
     overflow: hidden;

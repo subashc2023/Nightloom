@@ -174,7 +174,7 @@
     background: rgba(255, 255, 255, 0.04);
   }
   .nav-item.active {
-    background: rgba(139, 124, 246, 0.14);
+    background: var(--accent-soft);
   }
   .nav-label {
     overflow: hidden;
@@ -276,7 +276,7 @@
     color: var(--accent) !important;
   }
   .primary:hover:not(:disabled) {
-    background: #8b7cf614;
+    background: var(--accent-soft);
   }
   .danger:hover:not(:disabled) {
     border-color: var(--error) !important;

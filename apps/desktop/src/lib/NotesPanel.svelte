@@ -419,7 +419,7 @@
     border-radius: 8px;
   }
   .item:hover {
-    background: #1b1830;
+    background: var(--well);
   }
   .item.active {
     background: #211d38;

@@ -222,7 +222,7 @@
     cursor: pointer;
   }
   .primary:hover {
-    background: #8b7cf614;
+    background: var(--accent-soft);
   }
 
   /* One row: a label that is also the folder link, then the notes. */
@@ -248,7 +248,7 @@
   }
   .note {
     max-width: 100%;
-    background: #1b1830;
+    background: var(--well);
     border: 1px solid var(--border);
     border-radius: 7px;
     padding: 0.22rem 0.5rem;
@@ -299,7 +299,7 @@
     max-width: 100%;
   }
   .recent-row:hover {
-    background: #1b1830;
+    background: var(--well);
   }
   .recent-row:disabled {
     opacity: 0.5;
