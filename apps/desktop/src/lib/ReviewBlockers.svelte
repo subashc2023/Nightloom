@@ -29,7 +29,6 @@
   );
 
   let listWidth = $state(paneWidth("blockers.list", 320));
-  let asideWidth = $state(paneWidth("blockers.aside", 300));
 
   let answer = $state("");
   let busy = $state(false);
@@ -83,7 +82,7 @@
   });
 </script>
 
-<div class="blockers" style:grid-template-columns="{listWidth}px 7px minmax(0,1fr) 7px {asideWidth}px">
+<div class="blockers" style:grid-template-columns="{listWidth}px 7px minmax(0,1fr)">
   <div class="list-col">
     {#if list.length === 0 && errors.length === 0}
       <p class="hint">No blockers — nothing under blockers/.</p>
@@ -134,6 +133,10 @@
     {#if !blocker}
       <p class="hint">Select a blocker.</p>
     {:else}
+      <!-- The blocker as a thread (2026-09-11 review): the question, the
+           unit's own guess as its message, then the answer. The metadata the
+           old right column held — the blocker file, the flags or constants
+           the guess names, the follow-up item — is one row under the head. -->
       <div class="head">
         <span class="ns-mono id">#{blocker.id}</span>
         <span class="ns-pill {pillClass(blocker.status)}"><span class="dot"></span>{blocker.status}</span>
@@ -143,91 +146,73 @@
           {#if blocker.item} · item <span class="ns-mono">{blocker.item}</span>{/if}
         </span>
       </div>
-      <div class="ns-prose question">{@html renderMarkdown(blocker.question)}</div>
+      <div class="metarow">
+        <span class="ns-chip mono" title="The blocker file">{blocker.file}</span>
+        {#each places as p (p)}
+          {@const path = pathOf(p)}
+          {#if path}
+            <button class="ns-chip mono place" title="Where the guess lives — open the file as it is now" onclick={() => void openFile(path)}>{p}<Icon name="ext" /></button>
+          {:else}
+            <span class="ns-chip mono" title="Where the guess lives">{p}</span>
+          {/if}
+        {/each}
+        {#if followUpLine}
+          <span class="ns-chip" title="The follow-up item made from the answer">{followUpLine}</span>
+        {:else if blocker.status === "open"}
+          <span class="hint-sm">follow-up item: made by the next shift once answered</span>
+        {/if}
+      </div>
 
-      {#if blocker.guess}
-        <div class="ns-card guess">
-          <div class="ns-k">What the unit would have done, and why</div>
-          <div class="ns-prose small">{@html renderMarkdown(blocker.guess)}</div>
+      <div class="thread">
+        <div class="msg unit">
+          <span class="ns-k">the unit · question</span>
+          <div class="ns-prose question">{@html renderMarkdown(blocker.question)}</div>
         </div>
-      {/if}
-
-      {#if blocker.blocks}
-        <div>
-          <div class="ns-k mb">What it blocks</div>
-          <div class="ns-prose small dim">{@html renderMarkdown(blocker.blocks)}</div>
-        </div>
-      {/if}
+        {#if blocker.guess}
+          <div class="msg unit">
+            <span class="ns-k">the unit · what it would have done, and why</span>
+            <div class="bubble"><div class="ns-prose small">{@html renderMarkdown(blocker.guess)}</div></div>
+          </div>
+        {/if}
+        {#if blocker.blocks}
+          <div class="msg unit">
+            <span class="ns-k">what it blocks</span>
+            <div class="ns-prose small dim">{@html renderMarkdown(blocker.blocks)}</div>
+          </div>
+        {/if}
+        {#if blocker.status !== "open"}
+          <div class="msg you">
+            <span class="ns-k">you · answer{#if answered === blocker.id} · written{/if}</span>
+            {#if blocker.answer}
+              <div class="bubble you"><div class="ns-prose small">{@html renderMarkdown(blocker.answer)}</div></div>
+            {:else}
+              <p class="hint nopad">No answer text recorded.</p>
+            {/if}
+          </div>
+        {/if}
+      </div>
 
       {#if blocker.status === "open"}
-        <div class="answer">
-          <div class="ns-k">Your answer</div>
+        <div class="composer">
           <textarea
             class="ns-fld"
             bind:value={answer}
-            placeholder="One word usually does. This becomes the blocker's ## Answer and flips it to answered; the next shift turns it into a follow-up item at the head of the order."
+            rows="2"
+            placeholder="Your answer — one word usually does. It becomes the blocker's ## Answer; the next shift turns it into a follow-up item at the head of the order."
           ></textarea>
           <div class="actions">
+            <button class="ns-btn ghost small" disabled={!blocker.guess || busy} onclick={() => (answer = blocker!.guess)}>
+              Use the unit's guess
+            </button>
+            <span class="spacer"></span>
             <button class="ns-btn accent" disabled={!answer.trim() || busy} onclick={() => void submit()}>
               <Icon name="check" />{busy ? "Writing…" : "Answer"}
             </button>
-            <button class="ns-btn" disabled={!blocker.guess || busy} onclick={() => (answer = blocker!.guess)}>
-              Use the unit's guess
-            </button>
           </div>
-        </div>
-      {:else}
-        <div class="answer">
-          <div class="ns-k">Answer{#if answered === blocker.id} · written{/if}</div>
-          {#if blocker.answer}
-            <div class="ns-prose small">{@html renderMarkdown(blocker.answer)}</div>
-          {:else}
-            <p class="hint nopad">No answer text recorded.</p>
-          {/if}
         </div>
       {/if}
     {/if}
   </div>
-  <Grip width={asideWidth} min={220} max={480} edge="right" onchange={(w) => { asideWidth = w; setPaneWidth("blockers.aside", w); }} />
-
-  <aside class="aside">
-    {#if blocker}
-      <div>
-        <div class="ns-k mb">Where the guess lives</div>
-        {#if places.length === 0}
-          <div class="ns-card note-card dim-text">Not named — a research blocker; a build blocker names the flag or constant.</div>
-        {:else}
-          <div class="places">
-            {#each places as p (p)}
-              {@const path = pathOf(p)}
-              <div class="ns-card place">
-                <span class="ns-mono path">{p}</span>
-                {#if path}
-                  <button class="ns-btn small" onclick={() => void openFile(path)}>Open</button>
-                {/if}
-              </div>
-            {/each}
-          </div>
-          <div class="note">A build blocker names the flag or constant; Open reads the file as it is now.</div>
-        {/if}
-      </div>
-      <div>
-        <div class="ns-k mb">Follow-up</div>
-        <div class="ns-card note-card dim-text">
-          {#if followUpLine}
-            {followUpLine}
-          {:else if blocker.status === "open"}
-            None yet — created by the next shift's preflight once this is answered, at the head of <span class="ns-mono">order.json</span>.
-          {:else}
-            None recorded.
-          {/if}
-        </div>
-      </div>
-      <div class="file">
-        file: <span class="ns-mono">{blocker.file}</span>
-      </div>
-    {/if}
-  </aside>
 </div>
 
 {#if file}
@@ -321,12 +306,93 @@
   }
 
   .main {
-    overflow-y: auto;
-    padding: 26px 36px;
+    overflow: hidden;
     display: flex;
     flex-direction: column;
-    gap: 18px;
     min-height: 0;
+    min-width: 0;
+  }
+  .main > .head,
+  .main > .metarow {
+    padding: 0 36px;
+  }
+  .main > .head {
+    padding-top: 24px;
+  }
+  .metarow {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+    margin-top: 10px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--line);
+  }
+  .metarow .ns-chip {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .place {
+    cursor: pointer;
+  }
+  .place:hover {
+    border-color: var(--accent);
+    color: var(--ink);
+  }
+  .hint-sm {
+    font-size: 11.5px;
+    color: var(--dim);
+  }
+  /* The thread scrolls; the composer under it does not. */
+  .thread {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 20px 36px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+    max-width: 820px;
+  }
+  .msg {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .msg.you {
+    align-items: flex-end;
+    text-align: left;
+  }
+  .bubble {
+    background: var(--sheet);
+    border: 1px solid var(--line2);
+    border-radius: 10px 10px 10px 2px;
+    padding: 12px 16px;
+    max-width: 640px;
+  }
+  .bubble.you {
+    border-radius: 10px 10px 2px 10px;
+    background: var(--accent-soft);
+    border-color: var(--accent);
+  }
+  .composer {
+    flex: none;
+    border-top: 1px solid var(--line);
+    background: var(--sheet);
+    padding: 12px 36px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .composer textarea {
+    resize: vertical;
+    min-height: 56px;
+    max-height: 40vh;
+    font-size: 14px;
+  }
+  .spacer {
+    flex: 1;
   }
   .head {
     display: flex;
@@ -342,12 +408,6 @@
     font-size: 19px;
     line-height: 1.45;
   }
-  .guess {
-    padding: 14px 16px;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
   .ns-prose.small {
     font-size: 15px;
   }
@@ -357,67 +417,10 @@
   .mb {
     margin-bottom: 6px;
   }
-  .answer {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    margin-top: auto;
-  }
   .actions {
     display: flex;
     gap: 8px;
     align-items: center;
-  }
-
-  .aside {
-    border-left: 1px solid var(--line);
-    background: var(--sheet);
-    padding: 26px 22px;
-    display: flex;
-    flex-direction: column;
-    gap: 20px;
-    font-size: 13px;
-    overflow-y: auto;
-    min-height: 0;
-  }
-  .places {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-  .place {
-    padding: 8px 10px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    background: var(--paper);
-  }
-  .place .path {
-    font-size: 12px;
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .note-card {
-    padding: 10px 12px;
-    background: var(--paper);
-  }
-  .dim-text {
-    color: var(--dim);
-    line-height: 1.45;
-  }
-  .note {
-    color: var(--dim);
-    font-size: 12px;
-    margin-top: 6px;
-  }
-  .file {
-    margin-top: auto;
-    color: var(--dim);
-    font-size: 12px;
-    overflow-wrap: anywhere;
   }
 
   .scrim {
@@ -446,9 +449,6 @@
     padding: 10px 14px;
     border-bottom: 1px solid var(--line);
     font-size: 12.5px;
-  }
-  .spacer {
-    flex: 1;
   }
   .viewer-body {
     margin: 0;
