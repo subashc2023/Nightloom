@@ -28,6 +28,7 @@
 pub mod blockers;
 pub mod frontmatter;
 pub mod git;
+pub mod interview;
 pub mod items;
 pub mod launch;
 pub mod mornings;

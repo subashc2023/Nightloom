@@ -34,6 +34,8 @@ import type {
   NightshiftLaunched,
   NightshiftRow,
   NightshiftUsage,
+  InterviewEvent,
+  InterviewMessage,
   NoteEntry,
   PendingLaunch,
   Plan,
@@ -478,6 +480,17 @@ export const app = $state({
     /** The runner's usage probe, for the Start field's reset time; null
      *  until read, and when the probe cannot answer. */
     usage: null as NightshiftUsage | null,
+    /** The intake interview (item 005) for the selected project: null when
+     *  none; `streaming` is the reply in flight; `busy` while a turn runs. */
+    interview: null as {
+      messages: InterviewMessage[];
+      streaming: string;
+      busy: boolean;
+      model: string | null;
+      /** The last answer the API refused (a false positive of its safeguards
+       *  classifier happens on ordinary text); offered back for a rephrase. */
+      lastRefused?: string;
+    } | null,
   },
 });
 
@@ -560,6 +573,18 @@ export async function init(): Promise<void> {
       await Promise.all([refreshNightshiftRow(project_id), loadNightshiftReview()]);
       if (shift_id) await selectShift(shift_id);
     })();
+  });
+  // The interviewer's reply, a delta at a time; `done` lands the text.
+  await listen<InterviewEvent>("nightshift-interview", (e) => {
+    const { project_id, kind, text } = e.payload;
+    if (project_id !== app.nightshift.selected) return;
+    const iv = app.nightshift.interview;
+    if (!iv) return;
+    if (kind === "delta") iv.streaming += text;
+    else if (kind === "done") {
+      iv.streaming = "";
+      iv.messages.push({ role: "assistant", text });
+    } else iv.streaming = "";
   });
   // A folder coming back is something that happens outside this window, so
   // nothing in here would otherwise notice it. Re-reading on focus is what
@@ -1220,6 +1245,7 @@ export async function selectNightshiftProject(id: string | null): Promise<void> 
     app.nightshift.planPath = null;
     app.nightshift.pending = null;
     app.nightshift.usage = null;
+    app.nightshift.interview = null;
   }
   app.nightshift.selected = id;
   // Only a root can be watched; a project without a contract (the Enable
@@ -1483,6 +1509,103 @@ export async function newItem(title: string, kind: string): Promise<string | nul
     return created;
   } catch (e) {
     addToast(String(e));
+    return null;
+  }
+}
+
+// ---- the intake interview (item 005) ----
+
+/** Begin an interview with the idea; the interviewer's first questions
+ *  stream in. Replaces one in progress. */
+export async function startInterview(idea: string): Promise<boolean> {
+  const id = app.nightshift.selected;
+  if (!id) return false;
+  app.nightshift.interview = {
+    messages: [{ role: "user", text: idea }],
+    streaming: "",
+    busy: true,
+    model: null,
+  };
+  try {
+    const view = await api.nightshiftInterviewStart(id, idea);
+    if (app.nightshift.interview) {
+      app.nightshift.interview.messages = view.messages;
+      app.nightshift.interview.model = view.model;
+    }
+    return true;
+  } catch (e) {
+    addToast(String(e));
+    if (app.nightshift.interview) app.nightshift.interview.messages = [{ role: "user", text: idea }];
+    return false;
+  } finally {
+    if (app.nightshift.interview) app.nightshift.interview.busy = false;
+  }
+}
+
+export async function sendInterview(text: string): Promise<void> {
+  const id = app.nightshift.selected;
+  const iv = app.nightshift.interview;
+  if (!id || !iv || iv.busy) return;
+  iv.messages.push({ role: "user", text });
+  iv.busy = true;
+  try {
+    const view = await api.nightshiftInterviewSend(id, text);
+    iv.messages = view.messages;
+    iv.model = view.model;
+  } catch (e) {
+    // The backend dropped the refused turn; the pane matches, and the text
+    // goes back so a rephrase does not start from nothing.
+    iv.messages = iv.messages.filter((m, i) => !(i === iv.messages.length - 1 && m.role === "user" && m.text === text));
+    iv.lastRefused = text;
+    addToast(String(e));
+  } finally {
+    iv.busy = false;
+  }
+}
+
+/** What the backend holds, for a Backlog screen that comes back mid-interview. */
+export async function loadInterview(): Promise<void> {
+  const id = app.nightshift.selected;
+  if (!id) return;
+  try {
+    const view = await api.nightshiftInterviewState(id);
+    app.nightshift.interview = view
+      ? { messages: view.messages, streaming: "", busy: false, model: view.model }
+      : null;
+  } catch {
+    // An older backend without the command: no interview to show.
+    app.nightshift.interview = null;
+  }
+}
+
+export async function cancelInterview(): Promise<void> {
+  const id = app.nightshift.selected;
+  if (!id) return;
+  try {
+    await api.nightshiftInterviewCancel(id);
+  } catch (e) {
+    addToast(String(e));
+  }
+  app.nightshift.interview = null;
+}
+
+/** Close the interview: the item is written with the transcript beside it,
+ *  the backlog re-read, the new item selected. Returns its id. */
+export async function writeInterviewItem(): Promise<string | null> {
+  const id = app.nightshift.selected;
+  const iv = app.nightshift.interview;
+  if (!id || !iv || iv.busy) return null;
+  iv.busy = true;
+  try {
+    const written = await api.nightshiftInterviewWrite(id);
+    app.nightshift.interview = null;
+    await loadItems();
+    app.nightshift.selectedItem = written.id;
+    addToast(`Item ${written.id} written — ${written.title}`);
+    return written.id;
+  } catch (e) {
+    addToast(String(e));
+    iv.busy = false;
     return null;
   }
 }

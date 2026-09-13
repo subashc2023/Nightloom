@@ -1098,3 +1098,303 @@ mod tests {
         let _ = fs::remove_dir_all(&ws);
     }
 }
+
+// ---- the intake interview (item 005) ---------------------------------------
+//
+// One interview per project, in memory, on the Claude Code engine — the
+// subscription path the units run on. The pure part (prompt, the final
+// answer's shape, the files) is `nightloom_service::nightshift::interview`;
+// this is the conversation: a session the engine resumes turn by turn, the
+// transcript, and the stream of deltas the window renders.
+
+use nightloom_service::agent::{AgentSpec, ClaudeCodeAgent};
+use nightloom_service::nightshift::interview;
+use nightloom_service::TurnEvent;
+use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
+
+pub struct Interview {
+    agent: ClaudeCodeAgent,
+    /// `(role, text)` — `user` / `assistant`, in order.
+    messages: Vec<(String, String)>,
+    /// One token for the interview's life: cancel ends the reply that is
+    /// streaming and the interview with it (start replaces, cancel forgets).
+    cancel: CancellationToken,
+}
+
+/// The handle and its token side by side, so cancel never needs the
+/// interview's own lock — which a streaming reply holds for the whole turn.
+type Entry = (Arc<tokio::sync::Mutex<Interview>>, CancellationToken);
+
+#[derive(Default)]
+pub struct Interviews(std::sync::Mutex<HashMap<String, Entry>>);
+
+/// What the window sees of an interview.
+#[derive(Serialize, Clone)]
+pub struct InterviewView {
+    pub messages: Vec<InterviewMessage>,
+    pub model: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+pub struct InterviewMessage {
+    pub role: String,
+    pub text: String,
+}
+
+/// One `nightshift-interview` window event: a delta of the interviewer's
+/// reply, or the turn's end.
+#[derive(Serialize, Clone)]
+pub struct InterviewEvent {
+    pub project_id: String,
+    /// `delta` | `done` | `error`
+    pub kind: String,
+    pub text: String,
+}
+
+fn interview_of(
+    app: &AppHandle,
+    project_id: &str,
+) -> Result<Arc<tokio::sync::Mutex<Interview>>, String> {
+    app.state::<Interviews>()
+        .0
+        .lock()
+        .map_err(|_| "interview table poisoned".to_string())?
+        .get(project_id)
+        .map(|(iv, _)| iv.clone())
+        .ok_or_else(|| "no interview in progress; start one".to_string())
+}
+
+fn view_of(iv: &Interview) -> InterviewView {
+    InterviewView {
+        messages: iv
+            .messages
+            .iter()
+            .map(|(role, text)| InterviewMessage {
+                role: role.clone(),
+                text: text.clone(),
+            })
+            .collect(),
+        model: iv.agent.resolved_model().map(String::from),
+    }
+}
+
+/// Run one turn: stream the reply as deltas, record both sides. The
+/// interview's own lock is held for the turn — a second send while one
+/// streams waits its turn rather than interleaving two replies.
+async fn interview_turn(
+    app: &AppHandle,
+    project_id: &str,
+    iv: &Arc<tokio::sync::Mutex<Interview>>,
+    text: &str,
+) -> Result<String, String> {
+    let mut g = iv.lock().await;
+    g.messages.push(("user".into(), text.to_string()));
+    let cancel = g.cancel.clone();
+    let mut streamed = String::new();
+    let pid = project_id.to_string();
+    let handle = app.clone();
+    let mut on_event = |e: TurnEvent| {
+        if let TurnEvent::TextDelta { text } = e {
+            streamed.push_str(&text);
+            let _ = handle.emit(
+                "nightshift-interview",
+                InterviewEvent {
+                    project_id: pid.clone(),
+                    kind: "delta".into(),
+                    text,
+                },
+            );
+        }
+    };
+    let result = g.agent.run_turn(text, &cancel, &mut on_event).await;
+    let reply = match result {
+        Ok(outcome) => {
+            if outcome.is_error {
+                // The session stays where it was: a turn the API refused
+                // (the safeguards classifier does this to ordinary text)
+                // opened no conversation worth continuing, and adopting
+                // its id would orphan the one that has the questions.
+                let msg = if outcome.text.is_empty() {
+                    outcome.notices.join("; ")
+                } else {
+                    outcome.text.clone()
+                };
+                let _ = app.emit(
+                    "nightshift-interview",
+                    InterviewEvent {
+                        project_id: pid.clone(),
+                        kind: "error".into(),
+                        text: msg.clone(),
+                    },
+                );
+                // Neither side of a refused turn is kept: the session did
+                // not see it, so the transcript must not claim it did.
+                g.messages.pop();
+                return Err(msg);
+            }
+            // Adopt the session so the next turn continues it — without
+            // this every turn is a fresh conversation (found on the first
+            // real interview, 2026-09-13: "I don't have our earlier
+            // exchange in this session").
+            g.agent.follow_on(&outcome);
+            if outcome.text.is_empty() {
+                streamed
+            } else {
+                outcome.text
+            }
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            let _ = app.emit(
+                "nightshift-interview",
+                InterviewEvent {
+                    project_id: pid.clone(),
+                    kind: "error".into(),
+                    text: msg.clone(),
+                },
+            );
+            g.messages.pop();
+            return Err(msg);
+        }
+    };
+    g.messages.push(("assistant".into(), reply.clone()));
+    let _ = app.emit(
+        "nightshift-interview",
+        InterviewEvent {
+            project_id: pid,
+            kind: "done".into(),
+            text: reply.clone(),
+        },
+    );
+    Ok(reply)
+}
+
+/// Begin an interview with the idea as the first message. Replaces one in
+/// progress on the same project. `model` is a CLI alias (`opus`) or an id;
+/// the default is the runner's own work model.
+#[tauri::command]
+pub async fn nightshift_interview_start(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    project_id: String,
+    idea: String,
+    model: Option<String>,
+) -> Result<InterviewView, String> {
+    if idea.trim().is_empty() {
+        return Err("describe the idea first".into());
+    }
+    let root = root_of(&state, &project_id).await?;
+    let mut spec = AgentSpec::new(&root.root);
+    spec.model = Some(model.unwrap_or_else(|| "opus".into()));
+    // No tools: the interviewer talks, it does not read or edit the tree.
+    spec.tools = Some(vec![]);
+    spec.system_prompt = Some(interview::prompt(&root.root));
+    spec.safe_mode = true;
+    let cancel = CancellationToken::new();
+    let iv = Arc::new(tokio::sync::Mutex::new(Interview {
+        agent: ClaudeCodeAgent::new(spec),
+        messages: Vec::new(),
+        cancel: cancel.clone(),
+    }));
+    {
+        let interviews = app.state::<Interviews>();
+        let mut table = interviews
+            .0
+            .lock()
+            .map_err(|_| "interview table poisoned".to_string())?;
+        if let Some((_, old)) = table.insert(project_id.clone(), (iv.clone(), cancel)) {
+            old.cancel();
+        }
+    }
+    interview_turn(&app, &project_id, &iv, &idea).await?;
+    let g = iv.lock().await;
+    Ok(view_of(&g))
+}
+
+/// Swaraag's answer; the interviewer's next questions come back as deltas
+/// then `done`.
+#[tauri::command]
+pub async fn nightshift_interview_send(
+    app: AppHandle,
+    project_id: String,
+    text: String,
+) -> Result<InterviewView, String> {
+    if text.trim().is_empty() {
+        return Err("nothing to send".into());
+    }
+    let iv = interview_of(&app, &project_id)?;
+    interview_turn(&app, &project_id, &iv, &text).await?;
+    let g = iv.lock().await;
+    Ok(view_of(&g))
+}
+
+/// The interview as it stands, for a screen that comes back to it.
+#[tauri::command]
+pub async fn nightshift_interview_state(
+    app: AppHandle,
+    project_id: String,
+) -> Result<Option<InterviewView>, String> {
+    let iv = {
+        let interviews = app.state::<Interviews>();
+        let table = interviews
+            .0
+            .lock()
+            .map_err(|_| "interview table poisoned".to_string())?;
+        table.get(&project_id).map(|(iv, _)| iv.clone())
+    };
+    let Some(iv) = iv else {
+        return Ok(None);
+    };
+    let g = iv.lock().await;
+    Ok(Some(view_of(&g)))
+}
+
+/// Stop the reply that is streaming (if any) and forget the interview.
+#[tauri::command]
+pub fn nightshift_interview_cancel(app: AppHandle, project_id: String) -> Result<(), String> {
+    let removed = app
+        .state::<Interviews>()
+        .0
+        .lock()
+        .map_err(|_| "interview table poisoned".to_string())?
+        .remove(&project_id);
+    if let Some((_, cancel)) = removed {
+        cancel.cancel();
+    }
+    Ok(())
+}
+
+#[derive(Serialize, Clone)]
+pub struct InterviewWritten {
+    pub id: String,
+    pub title: String,
+    pub kind: String,
+}
+
+/// Close the interview: ask for the item, write it as `backlog/<id>-<slug>.md`
+/// with the transcript beside it, and forget the conversation. Refused while
+/// a shift is live (through `new_item`). The written file is shown for
+/// editing by the caller — nothing here is final.
+#[tauri::command]
+pub async fn nightshift_interview_write(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<InterviewWritten, String> {
+    let root = root_of(&state, &project_id).await?;
+    launch::ensure_not_live(&root.root)?;
+    let iv = interview_of(&app, &project_id)?;
+    let reply = interview_turn(&app, &project_id, &iv, interview::WRITE_INSTRUCTION).await?;
+    let draft = interview::parse_item(&reply);
+    let messages = iv.lock().await.messages.clone();
+    let title = draft.title.clone();
+    let kind = draft.kind.clone();
+    let id = blocking({
+        let root = root.root.clone();
+        move || interview::create_item(&root, &draft, &messages)
+    })
+    .await?;
+    let _ = nightshift_interview_cancel(app.clone(), project_id);
+    Ok(InterviewWritten { id, title, kind })
+}

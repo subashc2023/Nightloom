@@ -2399,6 +2399,7 @@ fn main() {
             // The Nightshift file watches, beside `AppState` rather than in it.
             app.manage(nightshift::Watches::default());
             app.manage(nightshift::PendingLaunches::default());
+            app.manage(nightshift::Interviews::default());
             // Last, and that ordering is load-bearing rather than tidiness:
             // the webview starts loading the moment the window exists and its
             // first paint calls straight into `providers` and `list_sessions`,
@@ -2472,6 +2473,11 @@ fn main() {
             nightshift::nightshift_cancel_launch,
             nightshift::nightshift_pending_launch,
             nightshift::nightshift_usage,
+            nightshift::nightshift_interview_start,
+            nightshift::nightshift_interview_send,
+            nightshift::nightshift_interview_state,
+            nightshift::nightshift_interview_cancel,
+            nightshift::nightshift_interview_write,
             nightshift::nightshift_mornings,
             nightshift::nightshift_morning,
             nightshift::nightshift_notes,

@@ -126,6 +126,18 @@ pub fn save_order(root: &Path, order: &[String]) -> Result<Vec<String>, String> 
 /// `build`; the body is left for the person (or, later, the interview
 /// agent — item 005). Refused while a shift is live.
 pub fn new_item(root: &Path, title: &str, kind: &str) -> Result<String, String> {
+    new_item_with_body(
+        root,
+        title,
+        kind,
+        "## What Swaraag said\n\n\n## What the agent inferred\n\n\n## Definition of done\n\n\n## Pointers\n\n\n## Not to do\n\n\n",
+    )
+}
+
+/// The scaffold above with a written body — the interview's exit
+/// (`interview.rs`). `body` is everything between the frontmatter and
+/// `## Progress`, which the runner owns and is always appended last.
+pub fn new_item_with_body(root: &Path, title: &str, kind: &str, body: &str) -> Result<String, String> {
     launch::ensure_not_live(root)?;
     let title = title.trim();
     if title.is_empty() {
@@ -166,8 +178,9 @@ pub fn new_item(root: &Path, title: &str, kind: &str) -> Result<String, String> 
     let path = dir.join(format!("{id}-{slug}.md"));
     let today = chrono_date();
     let quoted = title.replace('"', "\\\"");
+    let body = body.trim_end();
     let text = format!(
-        "---\nid: \"{id}\"\ntitle: \"{quoted}\"\nkind: {kind}\nstatus: todo\ncreated: {today}\nsource: manual\nmax_passes: 3\n---\n\n## What Swaraag said\n\n\n## What the agent inferred\n\n\n## Definition of done\n\n\n## Pointers\n\n\n## Not to do\n\n\n## Progress\n"
+        "---\nid: \"{id}\"\ntitle: \"{quoted}\"\nkind: {kind}\nstatus: todo\ncreated: {today}\nsource: manual\nmax_passes: 3\n---\n\n{body}\n\n\n## Progress\n"
     );
     super::write_atomic(&path, &text)?;
     let mut order = load_order(root);

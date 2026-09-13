@@ -963,3 +963,25 @@ export interface NightshiftChange {
   /** Root-relative paths that changed, deduplicated. */
   paths: string[];
 }
+
+/** The intake interview (item 005): the conversation as the backend holds
+ *  it — one per project, in memory. */
+export interface InterviewMessage {
+  role: "user" | "assistant";
+  text: string;
+}
+export interface InterviewView {
+  messages: InterviewMessage[];
+  model: string | null;
+}
+/** A `nightshift-interview` window event. */
+export interface InterviewEvent {
+  project_id: string;
+  kind: "delta" | "done" | "error";
+  text: string;
+}
+export interface InterviewWritten {
+  id: string;
+  title: string;
+  kind: string;
+}

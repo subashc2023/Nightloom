@@ -25,6 +25,8 @@ import type {
   Plan,
   PendingLaunch,
   NightshiftUsage,
+  InterviewView,
+  InterviewWritten,
   ProjectInfo,
   ProviderInfo,
   RevertPreview,
@@ -530,6 +532,22 @@ export function nightshiftPendingLaunch(
  *  field's "when usage resets". Rejects when the probe is missing or unreadable. */
 export function nightshiftUsage(projectId: string): Promise<NightshiftUsage> {
   return invoke("nightshift_usage", { projectId });
+}
+
+export function nightshiftInterviewStart(projectId: string, idea: string, model?: string): Promise<InterviewView> {
+  return invoke("nightshift_interview_start", { projectId, idea, model: model ?? null });
+}
+export function nightshiftInterviewSend(projectId: string, text: string): Promise<InterviewView> {
+  return invoke("nightshift_interview_send", { projectId, text });
+}
+export function nightshiftInterviewState(projectId: string): Promise<InterviewView | null> {
+  return invoke("nightshift_interview_state", { projectId });
+}
+export function nightshiftInterviewCancel(projectId: string): Promise<null> {
+  return invoke("nightshift_interview_cancel", { projectId });
+}
+export function nightshiftInterviewWrite(projectId: string): Promise<InterviewWritten> {
+  return invoke("nightshift_interview_write", { projectId });
 }
 
 export function nightshiftMornings(projectId: string): Promise<Morning[]> {

@@ -5,7 +5,21 @@
    * on the right — frontmatter facts, preface, each `## ` section, and the
    * Progress lines the runner appended.
    */
-  import { app, newItem, paneWidth, reorderItems, saveItem, selectItem, setPaneWidth } from "./state.svelte";
+  import {
+    app,
+    cancelInterview,
+    loadInterview,
+    newItem,
+    paneWidth,
+    reorderItems,
+    saveItem,
+    selectItem,
+    sendInterview,
+    setPaneWidth,
+    startInterview,
+    writeInterviewItem,
+  } from "./state.svelte";
+  import { untrack } from "svelte";
   import * as api from "./api";
   import { renderMarkdown } from "./markdown";
   import { itemStatusPill } from "./nightshift";
@@ -24,9 +38,58 @@
   const locked = $derived(row?.nightshift?.live ?? false);
   const selected = $derived(items.find((i) => i.id === app.nightshift.selectedItem) ?? null);
 
-  // New item: a title and a kind, inline above the list. The body is left
-  // for the editor — the interview that would fill it is item 005, not yet
-  // built.
+  // New item is the intake interview (item 005): the idea in his words, the
+  // interviewer's idea-level questions, his answers, then "Write the item".
+  // The title-and-kind form below stays as "skip the interview".
+  let interviewing = $state(false);
+  let ideaText = $state("");
+  let replyText = $state("");
+  const interview = $derived(app.nightshift.interview);
+  // The backend holds the interview; a screen that comes back mid-way
+  // re-reads it and reopens the pane.
+  $effect(() => {
+    void app.nightshift.selected;
+    untrack(() => {
+      void loadInterview().then(() => {
+        if (app.nightshift.interview) interviewing = true;
+      });
+    });
+  });
+  async function beginInterview(): Promise<void> {
+    if (!ideaText.trim()) return;
+    const ok = await startInterview(ideaText.trim());
+    if (ok) ideaText = "";
+  }
+  async function answer(): Promise<void> {
+    const t = replyText.trim();
+    if (!t || !interview || interview.busy) return;
+    replyText = "";
+    await sendInterview(t);
+  }
+  async function finishInterview(): Promise<void> {
+    const id = await writeInterviewItem();
+    if (id) {
+      interviewing = false;
+      editing = true;
+      void startEdit();
+    }
+  }
+  async function dropInterview(): Promise<void> {
+    await cancelInterview();
+    interviewing = false;
+    ideaText = "";
+    replyText = "";
+  }
+  // The transcript follows the reply as it streams.
+  let transcriptEl = $state<HTMLDivElement | null>(null);
+  $effect(() => {
+    void interview?.streaming;
+    void interview?.messages.length;
+    if (transcriptEl) transcriptEl.scrollTop = transcriptEl.scrollHeight;
+  });
+
+  // Skip the interview: a title and a kind, inline above the list; the
+  // body is left for the editor.
   let creating = $state(false);
   let newTitle = $state("");
   let newKind = $state<"research" | "build">("research");
@@ -83,7 +146,7 @@
     {/if}
     <div class="filter-row">
       <input class="ns-fld" placeholder="filter…" bind:value={filterText} aria-label="Filter the backlog" />
-      <button class="ns-btn small" disabled={locked} title="Scaffold a new backlog item" onclick={() => (creating = !creating)}>
+      <button class="ns-btn small" disabled={locked} title="Describe an idea; the interviewer asks what only you can answer, then writes the item" onclick={() => { interviewing = !interviewing; creating = false; }}>
         <Icon name="plus" />New
       </button>
     </div>
@@ -125,7 +188,58 @@
   <Grip width={listWidth} min={240} max={520} edge="left" onchange={(w) => { listWidth = w; setPaneWidth("start.list", w); }} />
 
   <div class="main">
-    {#if !selected}
+    {#if interviewing}
+      <div class="head">
+        <span class="ns-k">New item — the interview</span>
+        {#if interview?.model}<span class="ns-chip">{interview.model}</span>{/if}
+        <span class="spacer"></span>
+        <button class="ns-btn small ghost" disabled={interview?.busy} onclick={() => void dropInterview()}>Cancel</button>
+        {#if !interview}
+          <button class="ns-btn small ghost" title="A title and a kind, no interview" onclick={() => { interviewing = false; creating = true; }}>skip the interview</button>
+        {:else}
+          <button class="ns-btn small accent" disabled={interview.busy || locked || interview.messages.length < 2} title="The interviewer writes backlog/NNN-slug.md; the transcript is saved beside it" onclick={() => void finishInterview()}>
+            {interview.busy ? "Working…" : "Write the item"}
+          </button>
+        {/if}
+      </div>
+      {#if !interview}
+        <div class="edit-hint">
+          Describe the idea in your own words — what it is, why, what done looks like. The interviewer asks only what it cannot guess: the idea, not the implementation. What you say and what it infers stay separate in the file.
+        </div>
+        <textarea class="ns-fld editor idea" bind:value={ideaText} placeholder="The idea…" aria-label="The idea" spellcheck="true"
+          onkeydown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void beginInterview(); }}></textarea>
+        <div class="new-row">
+          <span class="hint">⌘↵ to start</span>
+          <span class="spacer"></span>
+          <button class="ns-btn small accent" disabled={!ideaText.trim() || locked} onclick={() => void beginInterview()}>Start the interview</button>
+        </div>
+      {:else}
+        <div class="transcript" bind:this={transcriptEl}>
+          {#each interview.messages as m, i (i)}
+            <div class="turn {m.role}">
+              <div class="ns-k who">{m.role === "user" ? "you" : "interviewer"}</div>
+              <div class="ns-prose">{@html renderMarkdown(m.text)}</div>
+            </div>
+          {/each}
+          {#if interview.streaming}
+            <div class="turn assistant">
+              <div class="ns-k who">interviewer</div>
+              <div class="ns-prose">{@html renderMarkdown(interview.streaming)}</div>
+            </div>
+          {:else if interview.busy}
+            <div class="turn assistant"><div class="ns-k who">interviewer</div><div class="hint">thinking…</div></div>
+          {/if}
+        </div>
+        {#if interview.lastRefused}
+          <div class="hint">The API refused that message (its safeguards classifier does this to ordinary text). <button class="linkish" onclick={() => { replyText = interview?.lastRefused ?? ""; if (interview) interview.lastRefused = undefined; }}>Put it back to rephrase</button></div>
+        {/if}
+        <div class="composer">
+          <textarea class="ns-fld reply" bind:value={replyText} placeholder="Answer… (↵ to send, ⇧↵ newline)" aria-label="Your answer" disabled={interview.busy}
+            onkeydown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void answer(); } }}></textarea>
+          <button class="ns-btn small" disabled={!replyText.trim() || interview.busy} onclick={() => void answer()}>Send</button>
+        </div>
+      {/if}
+    {:else if !selected}
       <p class="hint">Select an item.</p>
     {:else}
       <div class="head">
@@ -286,6 +400,50 @@
     display: flex;
     align-items: center;
     gap: 10px;
+  }
+  .idea {
+    min-height: 160px;
+  }
+  .transcript {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 4px 2px;
+  }
+  .turn {
+    padding: 10px 14px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: var(--sheet);
+  }
+  .turn.user {
+    background: var(--paper);
+  }
+  .turn .who {
+    margin-bottom: 6px;
+  }
+  .linkish {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--accent-ink);
+    cursor: pointer;
+    font: inherit;
+    text-decoration: underline;
+  }
+  .composer {
+    display: flex;
+    gap: 8px;
+    align-items: flex-end;
+  }
+  .composer .reply {
+    flex: 1;
+    min-height: 44px;
+    max-height: 160px;
+    resize: vertical;
   }
   .title {
     margin: 0;
