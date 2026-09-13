@@ -495,6 +495,10 @@ export const app = $state({
      *  read an item, a note, the Plan) does not lose it: whether the drawer
      *  is open, the idea not yet sent, the reply being typed. */
     interviewDraft: { open: false, idea: "", reply: "" } as { open: boolean; idea: string; reply: string },
+    /** Unsaved item edits by id — kept when the selection moves, offered
+     *  back ("Continue editing") when it returns, dropped only by Save,
+     *  Discard or Delete. Work is never lost to a click (2026-09-13). */
+    editDrafts: {} as Record<string, string>,
   },
 });
 
@@ -1251,6 +1255,7 @@ export async function selectNightshiftProject(id: string | null): Promise<void> 
     app.nightshift.usage = null;
     app.nightshift.interview = null;
     app.nightshift.interviewDraft = { open: false, idea: "", reply: "" };
+    app.nightshift.editDrafts = {};
   }
   app.nightshift.selected = id;
   // Only a root can be watched; a project without a contract (the Enable
@@ -1615,12 +1620,30 @@ export async function writeInterviewItem(): Promise<string | null> {
   }
 }
 
+/** Delete an item — to backlog/trash/, never unlinked — then re-read. */
+export async function deleteItem(id: string): Promise<string | null> {
+  const proj = app.nightshift.selected;
+  if (!proj) return null;
+  try {
+    const went = await api.nightshiftDeleteItem(proj, id);
+    delete app.nightshift.editDrafts[id];
+    await loadItems();
+    if (app.nightshift.selectedItem === id) app.nightshift.selectedItem = null;
+    addToast(`Item ${id} moved to ${went}`);
+    return went;
+  } catch (e) {
+    addToast(String(e));
+    return null;
+  }
+}
+
 /** Save an item's edited text, then re-read the backlog. */
 export async function saveItem(itemId: string, text: string): Promise<boolean> {
   const id = app.nightshift.selected;
   if (!id) return false;
   try {
     await api.nightshiftWriteItem(id, itemId, text);
+    delete app.nightshift.editDrafts[itemId];
     await loadItems();
     return true;
   } catch (e) {

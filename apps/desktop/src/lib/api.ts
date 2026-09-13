@@ -422,6 +422,11 @@ export function nightshiftNewItem(projectId: string, title: string, kind: string
   return invoke("nightshift_new_item", { projectId, title, kind });
 }
 
+/** Move an item to backlog/trash/ and drop it from the order; returns where it went. */
+export function nightshiftDeleteItem(projectId: string, id: string): Promise<string> {
+  return invoke("nightshift_delete_item", { projectId, id });
+}
+
 /** Replace an item's whole text (the Edit screen's Save). */
 export function nightshiftWriteItem(projectId: string, id: string, text: string): Promise<null> {
   return invoke("nightshift_write_item", { projectId, id, text });

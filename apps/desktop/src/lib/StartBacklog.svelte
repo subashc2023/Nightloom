@@ -8,6 +8,7 @@
   import {
     app,
     cancelInterview,
+    deleteItem,
     loadInterview,
     newItem,
     paneWidth,
@@ -24,6 +25,7 @@
   import { renderMarkdown } from "./markdown";
   import { itemStatusPill } from "./nightshift";
   import BacklogList from "./BacklogList.svelte";
+  import ConfirmDialog from "./ConfirmDialog.svelte";
   import Grip from "./Grip.svelte";
   import Icon from "./Icon.svelte";
 
@@ -122,16 +124,35 @@
   let editing = $state(false);
   let editText = $state("");
   let editBusy = $state(false);
-  async function startEdit(): Promise<void> {
+  /** The file as read, to tell a real edit from an untouched one. */
+  let editOriginal = $state("");
+  const editDirty = $derived(editing && editText !== editOriginal);
+  // Unsaved edits are kept per item in app state (`editDrafts`): every
+  // keystroke lands there, switching items leaves the draft where it is,
+  // and coming back offers it ("Continue editing"). Save, Discard and
+  // Delete are the only things that drop one.
+  const draftFor = $derived(selected ? (app.nightshift.editDrafts[selected.id] ?? null) : null);
+  $effect(() => {
+    if (!editing || !selected) return;
+    if (editText !== editOriginal) app.nightshift.editDrafts[selected.id] = editText;
+    else delete app.nightshift.editDrafts[selected.id];
+  });
+  async function startEdit(resume = false): Promise<void> {
     const proj = app.nightshift.selected;
     if (!proj || !selected) return;
-    editText = "";
-    editing = true;
+    // The draft is read before any state moves: the tracking effect above
+    // writes `editText` back into the drafts, so blanking the box first
+    // would overwrite the very draft being resumed.
+    const draft = resume ? app.nightshift.editDrafts[selected.id] : undefined;
+    let original: string;
     try {
-      editText = await api.nightshiftReadFile(proj, `backlog/${selected.file}`);
+      original = await api.nightshiftReadFile(proj, `backlog/${selected.file}`);
     } catch (e) {
-      editText = `(could not read ${selected.file}: ${String(e)})`;
+      original = `(could not read ${selected.file}: ${String(e)})`;
     }
+    editOriginal = original;
+    editText = draft ?? original;
+    editing = true;
   }
   async function save(): Promise<void> {
     if (!selected || editBusy) return;
@@ -140,11 +161,36 @@
     editBusy = false;
     if (ok) editing = false;
   }
-  // Switching items leaves any edit.
+  // Cancel keeps a changed draft unless Discard is chosen explicitly.
+  let confirmDiscard = $state(false);
+  function cancelEdit(): void {
+    if (editDirty) {
+      confirmDiscard = true;
+      return;
+    }
+    editing = false;
+  }
+  function discardEdit(): void {
+    if (selected) delete app.nightshift.editDrafts[selected.id];
+    confirmDiscard = false;
+    editing = false;
+  }
+  // Switching items leaves the editor; the draft stays in app state.
   $effect(() => {
     void app.nightshift.selectedItem;
     editing = false;
   });
+
+  // Delete: to backlog/trash/, behind a dialog; never unlinked.
+  let confirmDelete = $state(false);
+  let deleteBusy = $state(false);
+  async function doDelete(): Promise<void> {
+    if (!selected || deleteBusy) return;
+    deleteBusy = true;
+    const went = await deleteItem(selected.id);
+    deleteBusy = false;
+    if (went) confirmDelete = false;
+  }
 </script>
 
 <div class="backlog" style:grid-template-columns="{listWidth}px 7px minmax(0,1fr)">
@@ -208,22 +254,34 @@
         <span class="ns-chip">{selected.kind}</span>
         <span class="spacer"></span>
         {#if editing}
-          <button class="ns-btn small ghost" disabled={editBusy} onclick={() => (editing = false)}>Cancel</button>
-          <button class="ns-btn small accent" disabled={editBusy} onclick={() => void save()}>{editBusy ? "Saving…" : "Save"}</button>
+          {#if editDirty}<span class="ns-pill open"><span class="dot"></span>unsaved</span>{/if}
+          <button class="ns-btn small ghost" disabled={editBusy} onclick={cancelEdit}>Cancel</button>
+          <button class="ns-btn small accent" disabled={editBusy || !editDirty} onclick={() => void save()}>{editBusy ? "Saving…" : "Save"}</button>
         {:else}
           {#if draft.open}
             <button class="ns-btn small ghost" title="Put this item's path into the interview box" onclick={mention}>Mention</button>
           {/if}
+          <button class="ns-btn small ghost" disabled={locked} title="Move the item's file to backlog/trash/ (nothing is unlinked)" onclick={() => (confirmDelete = true)}>
+            Delete
+          </button>
           <button class="ns-btn small" disabled={locked} title="Edit the item's file as text" onclick={() => void startEdit()}>
             Edit
           </button>
         {/if}
       </div>
+      {#if !editing && draftFor != null}
+        <div class="draft-banner">
+          <span class="ns-pill open"><span class="dot"></span>unsaved edits from earlier</span>
+          <span class="spacer"></span>
+          <button class="ns-btn small accent" disabled={locked} onclick={() => void startEdit(true)}>Continue editing</button>
+          <button class="ns-btn small ghost" onclick={() => (confirmDiscard = true)}>Discard</button>
+        </div>
+      {/if}
       {#if editing}
         <div class="edit-hint">
           <span class="ns-mono">{selected.file}</span> — the whole file. Frontmatter and the sections are yours; leave <span class="ns-mono">## Progress</span> to the runner.
         </div>
-        <textarea class="ns-fld editor" bind:value={editText} spellcheck="false"></textarea>
+        <textarea class="ns-fld editor" bind:value={editText} aria-label="Item file" spellcheck="false"></textarea>
       {:else}
       <div class="ns-prose title"><h1>{selected.title}</h1></div>
       <div class="facts">
@@ -313,6 +371,32 @@
   {/if}
 </div>
 </div>
+
+{#if confirmDelete && selected}
+  <ConfirmDialog
+    title="Delete item {selected.id}?"
+    lead={selected.title}
+    facts={[
+      ["goes to", `backlog/trash/${selected.file} — moved, not unlinked; a mistaken delete is a mv back`],
+      ["also", "its interview transcript, if it has one; and its place in the order"],
+      ["stays", "every note, blocker and shift that mentions it"],
+    ]}
+    confirmLabel="Delete to trash"
+    busyLabel="Deleting…"
+    busy={deleteBusy}
+    onconfirm={() => void doDelete()}
+    onclose={() => (confirmDelete = false)}
+  />
+{/if}
+{#if confirmDiscard && selected}
+  <ConfirmDialog
+    title="Discard the unsaved edits to {selected.id}?"
+    lead="The file on disk stays as it was; only the text typed since is dropped."
+    confirmLabel="Discard edits"
+    onconfirm={discardEdit}
+    onclose={() => (confirmDiscard = false)}
+  />
+{/if}
 
 <style>
   .new-item {
@@ -421,6 +505,15 @@
     display: flex;
     align-items: center;
     gap: 10px;
+  }
+  .draft-banner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--sheet);
   }
   .main.docked {
     padding: 0;

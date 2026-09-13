@@ -227,8 +227,8 @@
       {#if plan}
         <span>{selectedCount} of {items.length} selected</span>
         <span class="spacer"></span>
-        <button class="ns-btn small ghost" disabled={locked || selectedCount === items.length} title="Select every item" onclick={() => selectAll(true)}>All</button>
-        <button class="ns-btn small ghost" disabled={locked || selectedCount === 0} title="Deselect every item" onclick={() => selectAll(false)}>None</button>
+        <button class="ns-btn small" disabled={locked || selectedCount === items.length} title="Select every item" onclick={() => selectAll(true)}>All</button>
+        <button class="ns-btn small" disabled={locked || selectedCount === 0} title="Deselect every item" onclick={() => selectAll(false)}>None</button>
       {/if}
     </div>
     <div class="scroll">

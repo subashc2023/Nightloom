@@ -2489,6 +2489,7 @@ fn main() {
             nightshift::nightshift_shift_diff,
             nightshift::nightshift_new_item,
             nightshift::nightshift_write_item,
+            nightshift::nightshift_delete_item,
             nightshift::nightshift_revert_preview,
             nightshift::nightshift_revert,
             nightshift::nightshift_watch,

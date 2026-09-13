@@ -203,6 +203,40 @@ pub fn write_item(root: &Path, id: &str, text: &str) -> Result<(), String> {
     super::write_atomic(path, text)
 }
 
+/// Delete an item the reversible way: the file moves to `backlog/trash/`
+/// (its interview transcript too, when there is one) and the id leaves
+/// `order.json`. Nothing is unlinked — Swaraag's rule is that no UI action
+/// may lose work — so a mistaken delete is a `mv` back. Refused while a
+/// shift is live. Returns where the file went.
+pub fn delete_item(root: &Path, id: &str) -> Result<String, String> {
+    launch::ensure_not_live(root)?;
+    let files = item_files(root);
+    let path = files
+        .get(id)
+        .ok_or_else(|| format!("no backlog item with id {id}"))?;
+    let trash = root.join("backlog").join("trash");
+    fs::create_dir_all(&trash).map_err(|e| e.to_string())?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| "item file has no name".to_string())?
+        .to_owned();
+    let dest = trash.join(&name);
+    if dest.exists() {
+        return Err(format!(
+            "backlog/trash/{} already exists; move it aside first",
+            name.to_string_lossy()
+        ));
+    }
+    fs::rename(path, &dest).map_err(|e| format!("could not move {}: {e}", path.display()))?;
+    let transcript = root.join("backlog").join("interviews").join(format!("{id}.md"));
+    if transcript.is_file() {
+        let _ = fs::rename(&transcript, trash.join(format!("{id}.interview.md")));
+    }
+    let order: Vec<String> = load_order(root).into_iter().filter(|o| o != id).collect();
+    save_order(root, &order)?;
+    Ok(format!("backlog/trash/{}", name.to_string_lossy()))
+}
+
 /// Today as `YYYY-MM-DD`, local time — the `created` field's shape.
 fn chrono_date() -> String {
     chrono::Local::now().format("%Y-%m-%d").to_string()
@@ -449,6 +483,23 @@ mod tests {
         assert_eq!(items[1].kind, "research", "kind defaults from the project");
         assert_eq!(items[1].max_passes, 3);
         assert_eq!(next_item_id(&ws), "018");
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn delete_moves_to_trash_and_leaves_the_order() {
+        let ws = scratch();
+        let id = new_item(&ws, "Gone soon", "build").unwrap();
+        assert!(load_order(&ws).contains(&id));
+        fs::create_dir_all(ws.join("backlog/interviews")).unwrap();
+        fs::write(ws.join(format!("backlog/interviews/{id}.md")), "t\n").unwrap();
+        let went = delete_item(&ws, &id).unwrap();
+        assert!(went.starts_with("backlog/trash/"), "{went}");
+        assert!(ws.join(&went).is_file());
+        assert!(ws.join(format!("backlog/trash/{id}.interview.md")).is_file());
+        assert!(!item_files(&ws).contains_key(&id));
+        assert!(!load_order(&ws).contains(&id));
+        assert!(delete_item(&ws, &id).is_err());
         let _ = fs::remove_dir_all(&ws);
     }
 

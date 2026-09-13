@@ -347,6 +347,18 @@ pub async fn nightshift_write_item(
     blocking(move || items::write_item(&root.root, &id, &text)).await
 }
 
+/// Move a backlog item to `backlog/trash/` and drop it from the order — the
+/// Backlog screen's Delete, behind its dialog. Refused while a shift is live.
+#[tauri::command]
+pub async fn nightshift_delete_item(
+    state: State<'_, AppState>,
+    project_id: String,
+    id: String,
+) -> Result<String, String> {
+    let root = root_of(&state, &project_id).await?;
+    blocking(move || items::delete_item(&root.root, &id)).await
+}
+
 // ---- blockers ----
 
 #[derive(Serialize)]
