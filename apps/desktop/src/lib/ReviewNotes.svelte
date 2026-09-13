@@ -36,12 +36,18 @@
   /** Which directories are expanded, by path. Reset when the project changes;
    *  seeded with the top-level dirs the first time notes for it arrive. */
   let openDirs = $state<Set<string>>(new Set());
+  // Seeded once per project: keying the seed on `openDirs.size === 0` made
+  // closing the last open folder re-open every top-level one (review F11).
+  let seededFor = $state<string | null>(null);
   $effect(() => {
     void app.nightshift.selected;
     openDirs = new Set();
+    seededFor = null;
   });
   $effect(() => {
-    if (openDirs.size === 0 && baseTree.length > 0) {
+    const id = app.nightshift.selected;
+    if (id && seededFor !== id && baseTree.length > 0) {
+      seededFor = id;
       openDirs = new Set(baseTree.filter((n) => n.is_dir).map((n) => n.path));
     }
   });

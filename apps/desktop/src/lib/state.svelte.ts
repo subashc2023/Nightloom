@@ -1155,8 +1155,21 @@ export async function refreshNightshift(): Promise<void> {
 export async function syncNightshiftProject(): Promise<void> {
   const id = app.project?.id ?? null;
   if (id === app.nightshift.selected) return;
+  // A project registered a moment ago (New project…, the importer) is not in
+  // `rows` yet, and selecting an unknown id dead-ends on "not in the project
+  // list yet" until the nav button re-reads the rows (review F8). Re-read
+  // them here instead; refreshNightshift re-selects the open project itself.
+  if (id && !app.nightshift.rows.some((r) => r.id === id)) {
+    await refreshNightshift();
+    return;
+  }
   await selectNightshiftProject(id);
 }
+
+/** Bumped by every selectNightshiftProject; a call that finds itself
+ *  superseded after its awaits stops rather than overwriting the newer one
+ *  (review F9: two switches inside one unwatch round trip). */
+let selectSeq = 0;
 
 /** Re-read one row in place — what a `nightshift-change` event triggers. */
 async function refreshNightshiftRow(id: string): Promise<void> {
@@ -1178,6 +1191,7 @@ async function refreshNightshiftRow(id: string): Promise<void> {
  * and re-reads the Review screens.
  */
 export async function selectNightshiftProject(id: string | null): Promise<void> {
+  const seq = ++selectSeq;
   const prev = app.nightshift.selected;
   if (prev && prev !== id) {
     try {
@@ -1187,6 +1201,7 @@ export async function selectNightshiftProject(id: string | null): Promise<void> 
       // broken UI.
     }
   }
+  if (seq !== selectSeq) return;
   if (prev !== id) {
     // Everything below is about the previous project.
     app.nightshift.mornings = [];
@@ -1217,6 +1232,7 @@ export async function selectNightshiftProject(id: string | null): Promise<void> 
       addToast(String(e));
     }
   }
+  if (seq !== selectSeq) return;
   await loadNightshiftReview();
 }
 
@@ -1245,6 +1261,10 @@ export async function loadNightshiftReview(): Promise<void> {
     loadBlockers(),
     loadNotes(),
     loadItems(),
+    // The backend holds a timer across project switches and webview
+    // reloads; the chip must show it wherever the surface lands, not only
+    // once the Plan screen mounts (review F3).
+    loadPendingLaunch(),
   ]);
 }
 
@@ -1258,11 +1278,31 @@ async function refreshNightshiftReview(paths: string[]): Promise<void> {
   const touches = (prefix: string) => paths.some((p) => p.startsWith(prefix));
   const jobs: Promise<void>[] = [loadNightshiftMorning()];
   if (touches("mornings/")) jobs.push(loadMornings());
-  if (touches("shifts/")) jobs.push(loadShifts().then(() => loadShiftLog()));
+  if (touches("shifts/")) jobs.push(loadShifts().then(() => loadShiftLog()).then(refreshLiveDiff));
   if (touches("blockers/")) jobs.push(loadBlockers());
   if (touches("notes/")) jobs.push(loadNotes());
   if (touches("backlog/")) jobs.push(loadItems());
   await Promise.all(jobs);
+}
+
+/**
+ * Runs → Changes for a live shift is `head_at_start..HEAD`, which grows with
+ * every unit commit; showDiff reads it once and skips a repeat request for
+ * the same key, so a running shift's diff went stale (review F10). Re-read
+ * it when the shift list changes and the shown diff is a live shift's.
+ */
+let liveDiffCommits = "";
+async function refreshLiveDiff(): Promise<void> {
+  const d = app.nightshift.diff;
+  if (!d || d.kind !== "shift" || d.loading) return;
+  const shift = app.nightshift.shifts.find((s) => s.id === d.key);
+  if (!shift?.live) return;
+  // `shifts/` changes on every run.log line; only a landed unit moves HEAD.
+  const commits = (shift.status?.units ?? []).map((u) => u.commit ?? "").join(",");
+  if (commits === liveDiffCommits) return;
+  liveDiffCommits = commits;
+  app.nightshift.diff = null;
+  await showDiff("shift", d.key);
 }
 
 export async function loadMornings(): Promise<void> {

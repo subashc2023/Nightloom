@@ -84,10 +84,15 @@
   let budgetText = $state("");
   $effect(() => {
     void plan?.shift_id;
-    const p = app.nightshift.planDraft;
-    untilTime = "";
-    maxUnitsText = p?.max_units != null ? String(p.max_units) : "";
-    budgetText = p?.budget_usd != null ? String(p.budget_usd) : "";
+    // `untrack`: the reads of max_units / budget_usd below must not become
+    // dependencies, or every Max-units edit re-runs this and blanks the Until
+    // box while the draft keeps its `until` (review F1, 2026-09-12).
+    untrack(() => {
+      const p = app.nightshift.planDraft;
+      untilTime = "";
+      maxUnitsText = p?.max_units != null ? String(p.max_units) : "";
+      budgetText = p?.budget_usd != null ? String(p.budget_usd) : "";
+    });
   });
 
   // Until is typed (`7am`, `10:30`, `noon`) or picked from the presets; the
@@ -98,7 +103,8 @@
   function onUntilChange(): void {
     const p = app.nightshift.planDraft;
     if (!p) return;
-    p.until = untilTime.trim() ? untilFromTime(untilTime) : null;
+    const from = startAtMs != null ? new Date(startAtMs) : new Date();
+    p.until = untilTime.trim() ? untilFromTime(untilTime, from) : null;
   }
   function pickUntil(preset: string): void {
     untilTime = untilTime.trim().toLowerCase() === preset ? "" : preset;
@@ -125,21 +131,44 @@
     const t = Date.parse(iso);
     return Number.isFinite(t) ? t + RESET_MARGIN_MS : null;
   });
-  const resetIsPast = $derived(resetAtMs != null && resetAtMs <= Date.now());
+  // `Date.now()` is not reactive; a 30 s tick keeps "already past" honest
+  // while the screen sits open across the moment (review F12).
+  let nowMs = $state(Date.now());
+  $effect(() => {
+    const t = setInterval(() => (nowMs = Date.now()), 30_000);
+    return () => clearInterval(t);
+  });
+  const resetIsPast = $derived(resetAtMs != null && resetAtMs <= nowMs);
+  const usageStale = $derived(app.nightshift.usage?.stale === true);
   const startAtMs = $derived.by(() => {
-    if (startMode === "reset") return resetAtMs;
+    if (startMode === "reset") return resetIsPast ? null : resetAtMs;
     if (startMode === "at") {
-      const iso = startTime.trim() ? untilFromTime(startTime) : null;
+      const iso = startTime.trim() ? untilFromTime(startTime, new Date(nowMs)) : null;
       return iso ? Date.parse(iso) : null;
     }
     return null;
   });
+  // Until is the next occurrence AFTER the start, not after now: a held
+  // launch for 11pm with "until 7am" typed at 6am meant tomorrow's 7am, not
+  // today's, sixteen hours before the launch (review F7). Re-derived from
+  // the typed text whenever the start moves.
+  $effect(() => {
+    void startAtMs;
+    untrack(() => onUntilChange());
+  });
+  const untilBeforeStart = $derived(
+    plan?.until != null && startAtMs != null && Date.parse(plan.until) <= startAtMs,
+  );
   const startLabel = $derived.by(() => {
     if (startMode === "now") return "Launch tonight";
     return startAtMs != null ? `Launch ${clockOf(startAtMs)}` : "Launch at…";
   });
   const canLaunch = $derived(
-    !locked && !app.nightshift.launching && selectedCount > 0 && (startMode === "now" || startAtMs != null),
+    !locked &&
+      !app.nightshift.launching &&
+      selectedCount > 0 &&
+      (startMode === "now" || startAtMs != null) &&
+      !untilBeforeStart,
   );
   function launch(): void {
     if (startMode === "now") void writeAndLaunch();
@@ -230,7 +259,7 @@
             />
           {/if}
           <span class="hint-sm">
-            {#if startMode === "now"}launches when you press the button{:else if startMode === "reset"}{#if resetAtMs != null}5h usage {app.nightshift.usage?.five_hour ?? "?"}% · launches {clockOf(resetAtMs)}{:else}the usage probe has no reset time{/if}{:else if startAtMs != null}launches {clockOf(startAtMs)}{:else}not a time yet{/if}
+            {#if startMode === "now"}launches when you press the button{:else if startMode === "reset"}{#if resetAtMs != null && !resetIsPast}5h usage {app.nightshift.usage?.five_hour ?? "?"}% · launches {clockOf(resetAtMs)}{#if usageStale} · from a stale usage sample{/if}{:else if resetIsPast}the window has already reset{#if usageStale} (stale sample){/if} — pick a time, or launch now{:else}the usage probe has no reset time{/if}{:else if startAtMs != null}launches {clockOf(startAtMs)}{:else}not a time yet{/if}
           </span>
         </div>
 
@@ -253,7 +282,7 @@
             {/each}
           </span>
           <span class="hint-sm">
-            {#if !untilTime.trim()}no time limit{:else if untilParsed && plan.until}stops at {clockLabel(untilParsed)} · {plan.until.slice(0, 10)}{:else}not a time yet{/if}
+            {#if !untilTime.trim()}no time limit{:else if untilBeforeStart && plan.until}until {plan.until.slice(0, 16).replace("T", " ")} is before the start — pick a later time{:else if untilParsed && plan.until}stops at {clockLabel(untilParsed)} · {plan.until.slice(0, 10)}{:else}not a time yet{/if}
           </span>
         </div>
 

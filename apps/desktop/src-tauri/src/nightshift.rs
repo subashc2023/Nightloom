@@ -260,9 +260,14 @@ pub async fn nightshift_enable(
 /// fresh row, which now carries `disabled`.
 #[tauri::command]
 pub async fn nightshift_disable(
+    app: AppHandle,
     state: State<'_, AppState>,
     project_id: String,
 ) -> Result<NightshiftRow, String> {
+    // A held launch on this project would otherwise fire on the disabled
+    // root — and the runner, finding no nightshift.json in its cwd, falls
+    // back to its own install root (review F4, 2026-09-12).
+    drop_pending(&app, &project_id)?;
     let (_, workspace) = workspace_of(&state, &project_id).await?;
     blocking(move || nightshift::disable(&workspace)).await?;
     nightshift_project(state, project_id).await
@@ -643,7 +648,31 @@ pub struct PendingLaunch {
     /// Unix epoch milliseconds — what the form computed, what the chip shows.
     pub fire_at_ms: u64,
     task: tauri::async_runtime::JoinHandle<()>,
+    /// `caffeinate -i` for as long as the launch is held: the point of the
+    /// field is to fire with nobody at the keyboard, and idle sleep would
+    /// otherwise stop the clock the timer runs on (review F2, 2026-09-12).
+    /// Killed when the entry leaves the table — fire, cancel, replace.
+    awake: Option<std::process::Child>,
 }
+
+impl Drop for PendingLaunch {
+    fn drop(&mut self) {
+        if let Some(mut c) = self.awake.take() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+    }
+}
+
+/// How far past `fire_at_ms` a timer may wake and still launch. Past this
+/// the Mac was asleep (or the app was frozen) across the moment, and a shift
+/// that starts hours late — while Swaraag is at the desk — is worse than a
+/// toast saying it was missed.
+const MISSED_GRACE_MS: u64 = 10 * 60 * 1000;
+/// The timer sleeps in slices and re-reads the wall clock each time, because
+/// tokio's timer runs on a monotonic clock that macOS does not advance during
+/// system sleep: one long sleep would fire late by however long the Mac slept.
+const TIMER_SLICE_MS: u64 = 30 * 1000;
 
 #[derive(Default)]
 pub struct PendingLaunches(std::sync::Mutex<HashMap<String, PendingLaunch>>);
@@ -718,16 +747,19 @@ fn iso_of_ms(ms: u64) -> String {
     )
 }
 
-fn drop_pending(app: &AppHandle, project_id: &str) {
-    if let Some(p) = app
+/// Remove and abort a project's held launch, if any. A poisoned table is an
+/// error: cancel must never report success while the timer still runs.
+pub fn drop_pending(app: &AppHandle, project_id: &str) -> Result<(), String> {
+    let removed = app
         .state::<PendingLaunches>()
         .0
         .lock()
-        .ok()
-        .and_then(|mut m| m.remove(project_id))
-    {
+        .map_err(|_| "pending table poisoned".to_string())?
+        .remove(project_id);
+    if let Some(p) = removed {
         p.task.abort();
     }
+    Ok(())
 }
 
 /// Hold a plan and launch it at `fire_at_ms` — write `plan.json` then start
@@ -752,7 +784,7 @@ pub async fn nightshift_schedule_launch(
     if plan.items.iter().filter(|i| i.selected).count() == 0 {
         return Err("no items selected".into());
     }
-    drop_pending(&app, &project_id);
+    drop_pending(&app, &project_id)?;
     let view = PendingView {
         fire_at_ms,
         shift_id: plan.shift_id.clone(),
@@ -761,18 +793,45 @@ pub async fn nightshift_schedule_launch(
     let handle = app.clone();
     let id = project_id.clone();
     let draft = plan.clone();
+    // The table is locked across the spawn and the insert, so the task's own
+    // removal (after the sleep) cannot run before its entry exists — an
+    // imminent moment would otherwise leave a phantom "held" entry.
+    let mut table = pending
+        .0
+        .lock()
+        .map_err(|_| "pending table poisoned".to_string())?;
     let task = tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(fire_at_ms.saturating_sub(now_ms()))).await;
-        let r = blocking({
-            let root = root.clone();
-            let draft = draft.clone();
-            move || -> Result<(String, u32), String> {
-                let (shift_id, path) = prepare_timed_plan(&root.root, &draft, fire_at_ms)?;
-                let pid = launch::launch(&root.root, &root.config, &path)?;
-                Ok((shift_id, pid))
+        loop {
+            let now = now_ms();
+            if now >= fire_at_ms {
+                break;
             }
-        })
-        .await;
+            tokio::time::sleep(Duration::from_millis(
+                (fire_at_ms - now).min(TIMER_SLICE_MS),
+            ))
+            .await;
+        }
+        let woke = now_ms();
+        let r = if woke > fire_at_ms + MISSED_GRACE_MS {
+            Err(format!(
+                "missed: the launch was for {} and it is {} — the Mac was asleep across it (or the app frozen); launch now if you still want it",
+                clock_of_ms(fire_at_ms),
+                clock_of_ms(woke)
+            ))
+        } else if !root.root.join("nightshift.json").is_file() {
+            Err("Nightshift was disabled on this project after the launch was held; nothing launched".into())
+        } else {
+            blocking({
+                let root = root.clone();
+                let draft = draft.clone();
+                move || -> Result<(String, u32), String> {
+                    let (shift_id, path) = prepare_timed_plan(&root.root, &draft, fire_at_ms)?;
+                    let pid = launch::launch(&root.root, &root.config, &path)?;
+                    Ok((shift_id, pid))
+                }
+            })
+            .await
+        };
         let payload = match r {
             Ok((shift_id, pid)) => Launched {
                 project_id: id.clone(),
@@ -794,25 +853,45 @@ pub async fn nightshift_schedule_launch(
         }
         let _ = handle.emit("nightshift-launched", payload);
     });
-    pending
-        .0
-        .lock()
-        .map_err(|_| "pending table poisoned".to_string())?
-        .insert(
-            project_id,
-            PendingLaunch {
-                plan,
-                fire_at_ms,
-                task,
-            },
-        );
+    let awake = std::process::Command::new("caffeinate")
+        .arg("-i")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok();
+    table.insert(
+        project_id,
+        PendingLaunch {
+            plan,
+            fire_at_ms,
+            task,
+            awake,
+        },
+    );
+    drop(table);
     Ok(view)
+}
+
+/// `05:10` local from epoch milliseconds, for the missed-launch message.
+fn clock_of_ms(ms: u64) -> String {
+    use std::process::Command;
+    // Local time without a date crate: `date -r <secs> +%H:%M`, the way the
+    // rest of this file shells out for git and caffeinate.
+    Command::new("date")
+        .arg("-r")
+        .arg((ms / 1000).to_string())
+        .arg("+%H:%M")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|| iso_of_ms(ms))
 }
 
 #[tauri::command]
 pub fn nightshift_cancel_launch(app: AppHandle, project_id: String) -> Result<(), String> {
-    drop_pending(&app, &project_id);
-    Ok(())
+    drop_pending(&app, &project_id)
 }
 
 #[tauri::command]

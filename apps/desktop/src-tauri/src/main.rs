@@ -1742,7 +1742,13 @@ async fn rename_project(
 /// Remove a project from the list. **Forgets, never deletes** — the folder,
 /// its notes and its chats are all still on disk, and the UI says so.
 #[tauri::command]
-async fn forget_project(state: State<'_, AppState>, id: String) -> Result<(), String> {
+async fn forget_project(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    // A held Nightshift launch must not outlive the project (review F4).
+    nightshift::drop_pending(&app, &id)?;
     let closed = {
         let mut guard = state.workspaces.lock().await;
         guard.registry.forget(&id)?;

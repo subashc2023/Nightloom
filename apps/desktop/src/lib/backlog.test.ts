@@ -79,6 +79,13 @@ describe("untilFromTime", () => {
     expect(untilFromTime("22:00", now)).toBe("2026-09-12T22:00:00"); // not ahead: tomorrow
   });
 
+  it("is the next occurrence after the START when a launch is held (review F7)", () => {
+    // Typed at 06:00 for a launch held until 23:00 the same day: "7am" is
+    // tomorrow's, sixteen hours after the launch -- not today's, before it.
+    const start = new Date(2026, 8, 13, 23, 0, 0);
+    expect(untilFromTime("7am", start)).toBe("2026-09-14T07:00:00");
+  });
+
   it("reads typed times", () => {
     const now = new Date(2026, 8, 11, 23, 0, 0);
     expect(untilFromTime("7am", now)).toBe("2026-09-12T07:00:00");
