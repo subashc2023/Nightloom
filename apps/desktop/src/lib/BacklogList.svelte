@@ -25,6 +25,7 @@
     selectedIds = new Set<string>(),
     onToggle,
     filterText = "",
+    grouped = false,
   }: {
     items: Item[];
     order: string[];
@@ -36,14 +37,28 @@
     selectedIds?: Set<string>;
     onToggle?: (id: string) => void;
     filterText?: string;
+    /** Plan a shift: two sections — the selected items first, in the order
+     *  the shift will run them (that is what drag and the arrows reorder),
+     *  then the rest. `order` is then the plan's own order, not order.json's. */
+    grouped?: boolean;
   } = $props();
 
   const rows = $derived(orderedBacklog(items, order));
+  // Grouped: the selected rows keep their relative order and are numbered
+  // 1..N within the section; the rest follow. `idsInOrder` yields the same
+  // sequence, so a reorder among the selected never disturbs the others.
+  const groupedRows = $derived.by(() => {
+    if (!grouped) return rows;
+    const sel = rows.filter((r) => selectedIds.has(r.item.id)).map((r, i) => ({ ...r, order: i + 1 }));
+    const rest = rows.filter((r) => !selectedIds.has(r.item.id)).map((r) => ({ ...r, order: null }));
+    return [...sel, ...rest];
+  });
+  const selectedCount = $derived(grouped ? rows.filter((r) => selectedIds.has(r.item.id)).length : 0);
   const filtering = $derived(filterText.trim().length > 0);
   const visible = $derived.by(() => {
     const q = filterText.trim().toLowerCase();
-    if (!q) return rows;
-    return rows.filter(
+    if (!q) return groupedRows;
+    return groupedRows.filter(
       (r) => r.item.id.toLowerCase().includes(q) || r.item.title.toLowerCase().includes(q),
     );
   });
@@ -52,7 +67,11 @@
   const canReorder = $derived(!locked && !filtering);
 
   function idsInOrder(): string[] {
-    return rows.map((r) => r.item.id);
+    return groupedRows.map((r) => r.item.id);
+  }
+  /** Grouped: only a selected row moves, and only within its section. */
+  function movable(id: string): boolean {
+    return canReorder && (!grouped || selectedIds.has(id));
   }
 
   function move(id: string, dir: -1 | 1) {
@@ -60,6 +79,7 @@
     const i = ids.indexOf(id);
     const j = i + dir;
     if (i < 0 || j < 0 || j >= ids.length) return;
+    if (grouped && (j >= selectedCount || i >= selectedCount)) return;
     [ids[i], ids[j]] = [ids[j], ids[i]];
     onReorder(ids);
   }
@@ -89,6 +109,10 @@
   }
   function dragOver(id: string, e: DragEvent) {
     if (!dragId) return;
+    if (grouped && !selectedIds.has(id)) {
+      over = null;
+      return;
+    }
     e.preventDefault();
     if (id === dragId) {
       over = null;
@@ -129,7 +153,13 @@
 {:else}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="rows" class:narrow={width > 0 && width < NARROW} bind:clientWidth={width} ondragleave={listLeave} ondrop={drop} ondragover={(e) => { if (dragId) e.preventDefault(); }}>
-    {#each visible as row (row.item.id)}
+    {#each visible as row, i (row.item.id)}
+      {#if grouped && !filtering && i === 0}
+        <div class="section ns-k">{selectedCount > 0 ? `Selected · ${selectedCount} — in the order the shift runs them` : "Nothing selected"}</div>
+      {/if}
+      {#if grouped && !filtering && i === selectedCount && i > 0}
+        <div class="section ns-k rest">Not selected</div>
+      {/if}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
         class="row"
@@ -138,7 +168,7 @@
         class:dragging={row.item.id === dragId}
         class:gap-before={over?.id === row.item.id && over.before}
         class:gap-after={over?.id === row.item.id && !over.before}
-        draggable={canReorder}
+        draggable={movable(row.item.id)}
         ondragstart={(e) => dragStart(row.item.id, e)}
         ondragover={(e) => dragOver(row.item.id, e)}
         ondragend={dragEnd}
@@ -151,7 +181,7 @@
             onclick={() => onToggle?.(row.item.id)}
           />
         {/if}
-        <span class="ns-mono ord">{row.order ?? "—"}</span>
+        <span class="ns-mono ord">{row.order ?? (grouped ? "·" : "—")}</span>
         <span class="ns-mono id">{row.item.id}</span>
         <button
           class="titlebtn"
@@ -161,7 +191,7 @@
         </button>
         <span class="ns-chip small">{row.item.kind}</span>
         <span class="ns-pill {itemStatusPill(row.item.status)}">{row.item.status || "todo"}</span>
-        {#if canReorder}
+        {#if movable(row.item.id)}
           <span class="reorder">
             <button class="ns-btn small ghost" title="Move up" aria-label="Move {row.item.title} up" onclick={() => move(row.item.id, -1)}>&uarr;</button>
             <button class="ns-btn small ghost" title="Move down" aria-label="Move {row.item.title} down" onclick={() => move(row.item.id, 1)}>&darr;</button>
@@ -245,6 +275,14 @@
   }
   .row.unlisted {
     opacity: 0.7;
+  }
+  .section {
+    padding: 10px 8px 4px;
+    color: var(--dim);
+  }
+  .section.rest {
+    margin-top: 8px;
+    border-top: 1px solid var(--line);
   }
   .ord {
     width: 22px;

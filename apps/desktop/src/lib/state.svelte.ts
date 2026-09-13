@@ -491,6 +491,10 @@ export const app = $state({
        *  classifier happens on ordinary text); offered back for a rephrase. */
       lastRefused?: string;
     } | null,
+    /** The interview drawer's draft, kept here so switching screens (to
+     *  read an item, a note, the Plan) does not lose it: whether the drawer
+     *  is open, the idea not yet sent, the reply being typed. */
+    interviewDraft: { open: false, idea: "", reply: "" } as { open: boolean; idea: string; reply: string },
   },
 });
 
@@ -1246,6 +1250,7 @@ export async function selectNightshiftProject(id: string | null): Promise<void> 
     app.nightshift.pending = null;
     app.nightshift.usage = null;
     app.nightshift.interview = null;
+    app.nightshift.interviewDraft = { open: false, idea: "", reply: "" };
   }
   app.nightshift.selected = id;
   // Only a root can be watched; a project without a contract (the Enable

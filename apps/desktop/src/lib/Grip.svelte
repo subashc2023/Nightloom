@@ -10,12 +10,17 @@
     min = 160,
     max = 720,
     edge = "left",
+    axis = "x",
     onchange,
   }: {
     width: number;
     min?: number;
     max?: number;
+    /** `x`: `edge` is left/right of the grip. `y`: the grip lies flat and
+     *  `edge` reads as top/bottom — `left` is the pane above it, `right` the
+     *  pane below (the Backlog screen's interview dock). */
     edge?: "left" | "right";
+    axis?: "x" | "y";
     onchange: (px: number) => void;
   } = $props();
 
@@ -24,13 +29,13 @@
   function down(e: PointerEvent) {
     if (e.button !== 0) return;
     e.preventDefault();
-    const startX = e.clientX;
+    const startX = axis === "x" ? e.clientX : e.clientY;
     const startW = width;
     const target = e.currentTarget as HTMLElement;
     target.setPointerCapture(e.pointerId);
     dragging = true;
     const move = (ev: PointerEvent) => {
-      const dx = ev.clientX - startX;
+      const dx = (axis === "x" ? ev.clientX : ev.clientY) - startX;
       const raw = edge === "left" ? startW + dx : startW - dx;
       onchange(Math.min(max, Math.max(min, raw)));
     };
@@ -50,8 +55,9 @@
 <div
   class="grip"
   class:dragging
+  class:flat={axis === "y"}
   role="separator"
-  aria-orientation="vertical"
+  aria-orientation={axis === "x" ? "vertical" : "horizontal"}
   aria-valuenow={width}
   aria-valuemin={min}
   aria-valuemax={max}
@@ -83,5 +89,15 @@
   .grip:hover::after,
   .grip.dragging::after {
     background: var(--accent);
+  }
+  .grip.flat {
+    width: auto;
+    height: 7px;
+    margin: -3px 0;
+    cursor: row-resize;
+  }
+  .grip.flat::after {
+    width: 36px;
+    height: 3px;
   }
 </style>

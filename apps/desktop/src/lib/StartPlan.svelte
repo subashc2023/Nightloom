@@ -19,7 +19,6 @@
     loadPendingLaunch,
     loadUsage,
     paneWidth,
-    reorderItems,
     scheduleLaunch,
     setPaneWidth,
     synthPlan,
@@ -35,7 +34,6 @@
 
   const itemList = $derived(app.nightshift.items);
   const items = $derived(itemList?.items ?? []);
-  const order = $derived(itemList?.order ?? []);
   const row = $derived(app.nightshift.rows.find((r) => r.id === app.nightshift.selected) ?? null);
   const info = $derived(row?.nightshift ?? null);
   const locked = $derived(info?.live ?? false);
@@ -58,16 +56,40 @@
   const selectedIds = $derived(new Set((plan?.items ?? []).filter((i) => i.selected).map((i) => i.id)));
   const selectedCount = $derived(selectedIds.size);
 
+  // The plan's own order — what the runner walks. The list shows the
+  // selected items first in this order (its grouped mode); ticking an item
+  // sends it to the end of that section, so "what runs, in what order" is
+  // always the top of the list.
+  const planOrder = $derived((plan?.items ?? []).map((i) => i.id));
   function toggle(id: string): void {
     const p = app.nightshift.planDraft;
     if (!p) return;
-    const entry = p.items.find((i) => i.id === id);
-    if (entry) entry.selected = !entry.selected;
-    else p.items.push({ id, selected: true });
+    const at = p.items.findIndex((i) => i.id === id);
+    if (at < 0) {
+      p.items.push({ id, selected: true });
+      return;
+    }
+    const entry = p.items[at];
+    if (entry.selected) {
+      entry.selected = false;
+      return;
+    }
+    // Selecting: move it after the last selected item.
+    p.items.splice(at, 1);
+    let last = -1;
+    p.items.forEach((i, idx) => { if (i.selected) last = idx; });
+    p.items.splice(last + 1, 0, { ...entry, selected: true });
+  }
+  function selectAll(on: boolean): void {
+    const p = app.nightshift.planDraft;
+    if (!p) return;
+    for (const entry of p.items) entry.selected = on;
   }
 
+  // Reordering on this screen changes the PLAN's order only (2026-09-13,
+  // Swaraag's ask for a selected-first list). The global backlog order is
+  // the Backlog screen's, and `reorderItems` is no longer called from here.
   function onReorder(newOrder: string[]): void {
-    void reorderItems(newOrder);
     const p = app.nightshift.planDraft;
     if (!p) return;
     const byId = new Map(p.items.map((i) => [i.id, i]));
@@ -203,16 +225,20 @@
     {/if}
     <div class="summary-line">
       {#if plan}
-        {selectedCount} of {items.length} selected
+        <span>{selectedCount} of {items.length} selected</span>
+        <span class="spacer"></span>
+        <button class="ns-btn small ghost" disabled={locked || selectedCount === items.length} title="Select every item" onclick={() => selectAll(true)}>All</button>
+        <button class="ns-btn small ghost" disabled={locked || selectedCount === 0} title="Deselect every item" onclick={() => selectAll(false)}>None</button>
       {/if}
     </div>
     <div class="scroll">
       <BacklogList
         {items}
-        {order}
+        order={planOrder}
         {locked}
         onReorder={onReorder}
         selectable={true}
+        grouped={true}
         {selectedIds}
         onToggle={toggle}
       />
@@ -350,10 +376,16 @@
     padding: 12px 20px 0;
   }
   .summary-line {
-    padding: 12px 20px 4px;
+    padding: 8px 14px 4px 20px;
     font-size: 12.5px;
     color: var(--dim);
     min-height: 1.4em;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .summary-line .spacer {
+    flex: 1;
   }
   .scroll {
     overflow-y: auto;
