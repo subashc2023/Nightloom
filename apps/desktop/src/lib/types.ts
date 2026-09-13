@@ -669,6 +669,9 @@ export interface NightshiftInfo {
   /** `bin/nightshift.sh` exists under `runner`. */
   runner_present: boolean;
   git: boolean;
+  /** Files the runner's `git add -A` would sweep into a `WIP:` commit at
+   *  launch; `null` when the root is not a repo or git cannot say. */
+  dirty: number | null;
   items: number;
   open_blockers: number;
   newest_morning: string | null;

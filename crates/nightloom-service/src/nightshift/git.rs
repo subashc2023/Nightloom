@@ -36,6 +36,17 @@ pub fn is_repo(root: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// How many files `git add -A` would sweep: every line of
+/// `git status --porcelain`, untracked files counted one each. The runner's
+/// preflight commits a dirty contract root as `WIP:` before the first unit
+/// and each unit's commit stages everything (decided 2026-09-12: keep the
+/// sweep, warn on the Plan screen). `None` when git cannot say.
+pub fn dirty_count(root: &Path) -> Option<usize> {
+    run(root, &["status", "--porcelain", "--untracked-files=all"])
+        .ok()
+        .map(|s| s.lines().filter(|l| !l.is_empty()).count())
+}
+
 /// `git init` for a fresh contract root. Refuses to re-initialise.
 pub fn init(root: &Path) -> Result<(), String> {
     if is_repo(root) {
@@ -228,6 +239,26 @@ mod tests {
         assert_eq!(done.commits, 1);
         assert_eq!(head(&dir).unwrap(), first);
         assert_eq!(fs::read_to_string(dir.join("a.md")).unwrap(), "one\n");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dirty_count_counts_what_add_all_would_sweep() {
+        let Some((dir, _, _)) = repo() else {
+            return;
+        };
+        assert_eq!(dirty_count(&dir), Some(0));
+        fs::write(dir.join("a.md"), "one\nthree\n").unwrap();
+        fs::create_dir_all(dir.join("notes")).unwrap();
+        fs::write(dir.join("notes/x.md"), "x\n").unwrap();
+        fs::write(dir.join("notes/y.md"), "y\n").unwrap();
+        // One modified file plus two untracked files, each counted, not the dir.
+        assert_eq!(dirty_count(&dir), Some(3));
+        let not_a_repo = std::env::temp_dir().join(format!("nightloom-git-none-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&not_a_repo);
+        fs::create_dir_all(&not_a_repo).unwrap();
+        assert_eq!(dirty_count(&not_a_repo), None);
+        let _ = fs::remove_dir_all(&not_a_repo);
         let _ = fs::remove_dir_all(&dir);
     }
 

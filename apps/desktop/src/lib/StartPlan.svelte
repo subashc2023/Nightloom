@@ -273,6 +273,11 @@
         <div class="line">{selectedCount} of {items.length} items selected</div>
         <div class="line">until {plan.until ?? "unbounded"}</div>
         <div class="line">max {plan.max_units ?? "unbounded"} units · budget {plan.budget_usd != null ? `$${plan.budget_usd}` : "unbounded"}</div>
+        {#if info?.dirty}
+          <div class="line dirty" title="The runner's preflight commits a dirty contract root as WIP before the first unit, and each unit's commit stages everything — a session editing the same tree during the shift has its half-work committed under the runner's name.">
+            {info.dirty} uncommitted file{info.dirty === 1 ? "" : "s"} in the contract root will be committed as WIP when the shift starts
+          </div>
+        {/if}
       </div>
 
       <div class="usage-note">usage: see the Runs page</div>
@@ -396,6 +401,9 @@
   }
   .line {
     color: var(--ink2);
+  }
+  .line.dirty {
+    color: var(--partial);
   }
   .usage-note {
     font-size: 12px;

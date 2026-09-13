@@ -61,6 +61,10 @@ pub struct NightshiftInfo {
     /// `bin/nightshift.sh` exists under `runner`.
     pub runner_present: bool,
     pub git: bool,
+    /// Files the runner's `git add -A` would sweep into a `WIP:` commit at
+    /// launch (`git status --porcelain`, untracked counted one each); `null`
+    /// when the root is not a repo or git cannot say.
+    pub dirty: Option<usize>,
     pub items: usize,
     pub open_blockers: usize,
     pub newest_morning: Option<String>,
@@ -81,6 +85,7 @@ impl NightshiftInfo {
             runner: root.runner_root().to_string_lossy().into_owned(),
             runner_present: launch::runner_present(&root.root, &root.config),
             git: git::is_repo(&root.root),
+            dirty: git::dirty_count(&root.root),
             items: items::item_files(&root.root).len(),
             open_blockers: bl.iter().filter(|b| b.status == "open").count(),
             newest_morning: mornings::newest_morning(&root.root).map(|m| m.name),
