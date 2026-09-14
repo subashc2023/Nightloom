@@ -1,6 +1,14 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { app, clockOf, currentTodos, liveFlags, roundCost } from "./state.svelte";
-import type { Price, SessionEvent, TodoItem, Usage } from "./types";
+import {
+  app,
+  clockOf,
+  currentTodos,
+  liveFlags,
+  promptLayersOff,
+  roundCost,
+  sameLayers,
+} from "./state.svelte";
+import type { Price, PromptLayer, SessionEvent, TodoItem, Usage } from "./types";
 
 // These three functions are hand-written copies of backend logic —
 // `Session::live_flags`, `Session::todos` and `Price::cost`. Nothing links the
@@ -172,6 +180,56 @@ describe("currentTodos", () => {
     // not go on clearing a list that is live again.
     app.events = [todos("first"), compaction(), rewind(1)];
     expect(currentTodos().map((t) => t.content)).toEqual(["first"]);
+  });
+});
+
+function layers(...off: PromptLayer[]): SessionEvent {
+  return { event: "prompt_layers", off, at: AT };
+}
+
+// A copy of `Session::prompt_layers_off`, on the same terms as the todos:
+// the popover's switches project this, and the backend builds the prompt
+// from its own, so a disagreement is a switch that lies.
+describe("promptLayersOff", () => {
+  it("is every layer on until the chat says otherwise", () => {
+    expect(promptLayersOff([user("one"), assistant("first")])).toEqual([]);
+  });
+
+  it("takes the latest set rather than the first", () => {
+    const events = [layers("project_notes"), user("one"), layers("identity", "knowledge")];
+    expect(promptLayersOff(events)).toEqual(["identity", "knowledge"]);
+  });
+
+  it("outlives a compaction, unlike the task list", () => {
+    // The chat is the same chat after a summary; a blind test does not stop
+    // being blind because its history was condensed.
+    const events = [layers("project_instructions"), user("one"), assistant("first"), compaction()];
+    expect(promptLayersOff(events)).toEqual(["project_instructions"]);
+  });
+
+  it("reverts to the earlier set when the newer one is rewound away", () => {
+    const events = [
+      layers("user_memory"),
+      user("one"),
+      assistant("first"),
+      layers("environment"),
+      user("two"),
+      assistant("second"),
+      // Back to before the first turn: the second set was recorded after
+      // it, so it goes with it, and the model knows what it knew then.
+      rewind(1),
+    ];
+    expect(promptLayersOff(events)).toEqual(["user_memory"]);
+  });
+});
+
+describe("sameLayers", () => {
+  it("compares as sets, in the order the backend normalizes to", () => {
+    expect(sameLayers(["knowledge", "identity"], ["identity", "knowledge"])).toBe(true);
+    expect(sameLayers(["identity", "identity"], ["identity"])).toBe(true);
+    expect(sameLayers([], [])).toBe(true);
+    expect(sameLayers(["identity"], [])).toBe(false);
+    expect(sameLayers(["identity"], ["environment"])).toBe(false);
   });
 });
 

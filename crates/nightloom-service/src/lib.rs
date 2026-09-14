@@ -14,6 +14,7 @@ pub mod credentials;
 pub mod dream;
 pub mod import;
 pub mod knowledge;
+pub mod mcp_server;
 pub mod nightshift;
 pub mod observe;
 pub mod project;
@@ -44,7 +45,9 @@ pub mod mcp {
 }
 pub use knowledge::{LinkGraph, vault_dir};
 pub use project::{Note, Project, Registry};
-pub use prompt::{KnowledgeContext, ProjectContext, PromptConfig, agent_preamble, assemble};
+pub use prompt::{
+    KnowledgeContext, ProjectContext, PromptConfig, agent_preamble, agent_prompt, assemble,
+};
 pub use sidecar::{SidecarContext, SidecarPart};
 pub use turn::{Chat, CompactOutcome, TurnEvent, TurnInput, TurnOutcome};
 

@@ -6,6 +6,7 @@
     init,
     runMenuCommand,
     setSidebarWidth,
+    syncPromptLayers,
     toggleSidebar,
     SIDEBAR_MAX,
     SIDEBAR_MIN,
@@ -28,6 +29,20 @@
 
   onMount(() => {
     void init();
+  });
+
+  /**
+   * The engine is built once per rail change and a chat's switched-off
+   * prompt layers live in its log, so opening a different chat can leave
+   * the wire carrying the last chat's prompt. Re-checked whenever the open
+   * chat changes, and again when a turn or a connect ends, since the sync
+   * itself stands aside while either is in flight (`syncPromptLayers`).
+   */
+  $effect(() => {
+    void app.activeSessionId;
+    void app.connecting;
+    void app.busy;
+    void syncPromptLayers();
   });
 
   /**

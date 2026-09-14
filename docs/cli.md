@@ -146,6 +146,16 @@ the REPL.
 **`probe.rs`** is the matrix runner (`--target
 provider:model:thinking-spec[:tools]`).
 
+**`mcp_serve.rs`** is `nightloom mcp-serve [--project <id>]`: Nightloom's own
+tools — `search_chats`, `read_chat`, `remember`, `fetch_page` — as an MCP server
+on stdin and stdout, for `claude -p --mcp-config` on the Claude Code engine.
+Hidden from `--help`, because nothing about it is for a person: run by hand it
+prints nothing and waits for JSON-RPC. The config dir and the two streams are
+all it supplies; the tools, the framing and the errors are
+`nightloom_service::mcp_server` ([mcp.md](mcp.md), *The server*). The desktop
+binary carries the same server as `--mcp-serve`, which is the one the app
+actually launches, since the CLI is usually not on PATH.
+
 ## `agent.rs` — the `--agent claude-code` REPL
 
 It maps the flags the chat REPL already takes onto an `AgentSpec` (`--model`,

@@ -133,6 +133,35 @@ impl Default for PromptConfig {
     }
 }
 
+impl PromptConfig {
+    /// This config with the given layers switched off — a chat's own
+    /// exclusions, laid over whatever the shell's switches said.
+    ///
+    /// Each kind maps onto the field that already gates it: the four bools
+    /// go false, `model`, `project` and `knowledge` go `None`. A layer that
+    /// is off here cannot be assembled by any caller, which is the property
+    /// the blind test wants — not "hidden from the view" but never read from
+    /// disk at all. Two kinds have no field and are left to their owners:
+    /// [`SegmentKind::EngineNote`] is the bridge's own switch
+    /// ([`agent_prompt`]'s third argument), and [`SegmentKind::Custom`] is
+    /// the shell's text, chosen by the shell's own control.
+    pub fn without(mut self, off: &[SegmentKind]) -> Self {
+        for kind in off {
+            match kind {
+                SegmentKind::Identity => self.identity = false,
+                SegmentKind::Environment => self.environment = false,
+                SegmentKind::UserMemory => self.user_memory = false,
+                SegmentKind::ModelInstructions => self.model = None,
+                SegmentKind::ProjectInstructions => self.project_instructions = false,
+                SegmentKind::ProjectNotes => self.project = None,
+                SegmentKind::Knowledge => self.knowledge = None,
+                _ => {}
+            }
+        }
+        self
+    }
+}
+
 /// What the prompt needs to know about the enclosing project.
 #[derive(Debug, Clone)]
 pub struct ProjectContext {
@@ -221,6 +250,17 @@ fn anchor_last(prompt: SystemPrompt) -> SystemPrompt {
 /// The preamble as one string for the Claude Code engine, with the library
 /// prompt as its trailer — what `--append-system-prompt` carries.
 ///
+/// [`agent_prompt`] rendered flat, and nothing else: the segments are the
+/// one source and this is a rendering of them, so a view that itemizes the
+/// segments and the flag that carries the string cannot differ by a byte.
+/// `None` when there is nothing at all to send, so the caller can omit the
+/// flag rather than pass `""`.
+pub fn agent_preamble(config: &PromptConfig, library: Option<&str>) -> Option<String> {
+    agent_prompt(config, library, true).render_flat()
+}
+
+/// The Claude Code bridge as segments: what [`agent_preamble`] renders.
+///
 /// The same layers [`assemble`] builds for the API engine, minus two:
 /// `identity` and `environment` are forced off whatever the config says,
 /// because Claude Code has an identity of its own and knows its cwd, and a
@@ -237,41 +277,55 @@ fn anchor_last(prompt: SystemPrompt) -> SystemPrompt {
 /// engine: Claude Code brings its own tools, and they take real paths. The
 /// segments are not rewritten per engine — they are one text, cached and
 /// tested once — so a short **engine note** follows them saying how the names
-/// map. It is emitted only when there is a preamble for it to explain, and it
-/// spells out the vault only when there is one.
+/// map. It is emitted only when there is a preamble for it to explain and
+/// `engine_note` has not switched it off, and it spells out the vault only
+/// when there is one. The switch is a parameter rather than a
+/// [`PromptConfig`] field because the note exists on this engine alone, and
+/// a field every API-engine caller had to fill in with a meaningless value
+/// would be the shape that invites it to be filled in wrong.
 ///
-/// The library prompt goes last, joined by a blank line and outside the
-/// `SystemPrompt`, so it stays a recognisable trailer rather than a segment
-/// among segments, and so position keeps the same meaning as on the API
-/// engine's ladder: what the shell passed wins. `None` when there is nothing
-/// at all to send, so the caller can omit the flag rather than pass `""`.
-pub fn agent_preamble(config: &PromptConfig, library: Option<&str>) -> Option<String> {
-    let mut prompt = assemble(&PromptConfig {
+/// The library prompt goes last as a [`SegmentKind::Custom`] segment, so it
+/// takes the same trim-on-push and blank-line join as everything else and
+/// position keeps the meaning it has on the API engine's ladder: what the
+/// shell passed wins. No segment carries a cache anchor: the CLI decides
+/// its own caching, and a flag claiming where a cached prefix ends would be
+/// a claim about a request Nightloom does not make.
+pub fn agent_prompt(
+    config: &PromptConfig,
+    library: Option<&str>,
+    engine_note: bool,
+) -> SystemPrompt {
+    let assembled = assemble(&PromptConfig {
         identity: false,
         environment: false,
         custom: None,
         ..config.clone()
     });
-    if !prompt.is_empty() {
+    let mut prompt = SystemPrompt::new();
+    for seg in assembled.segments() {
+        prompt.push(Segment {
+            cache_anchor: false,
+            ..seg.clone()
+        });
+    }
+    if engine_note && !prompt.is_empty() {
         prompt.push(engine_note_segment(config.knowledge.as_ref()));
     }
-    let library = library.map(str::trim).filter(|t| !t.is_empty());
-    match (prompt.render_flat(), library) {
-        (Some(preamble), Some(library)) => Some(format!("{preamble}\n\n{library}")),
-        (Some(preamble), None) => Some(preamble),
-        (None, Some(library)) => Some(library.to_string()),
-        (None, None) => None,
+    if let Some(library) = library {
+        prompt.push(Segment::new(SegmentKind::Custom, "custom", library));
     }
+    prompt
 }
 
 /// How the names in the preamble read on Claude Code — see
 /// [`agent_preamble`] for why this is a note after the segments rather than
 /// a second wording of them.
 ///
-/// A [`SegmentKind::Custom`] segment rather than a bare string, so it goes
-/// through the same trim-on-push and blank-line join as everything else and
-/// the rendered text cannot differ by a byte from what a `SystemPrompt` would
-/// have produced. Only `Read`, `Write` and `Edit` are named: the CLI's default
+/// A [`Segment`] rather than a bare string, so it goes through the same
+/// trim-on-push and blank-line join as everything else and the rendered text
+/// cannot differ by a byte from what a `SystemPrompt` would have produced;
+/// its own [`SegmentKind::EngineNote`] so a chat can switch it off by kind
+/// like any other layer. Only `Read`, `Write` and `Edit` are named: the CLI's default
 /// tool set on macOS and Linux leaves out `Glob` and `Grep` (`external`, the
 /// CLI reference for `--tools`), and promising a tool the model may not have
 /// is the substituted-tool failure `safe_mode` documents.
@@ -293,8 +347,12 @@ fn engine_note_segment(knowledge: Option<&KnowledgeContext>) -> Segment {
              vault is a record of what was believed when, not only of what is believed now."
         ));
     }
+    text.push_str(
+        " For a whole page use fetch_page, not WebFetch; to find or quote another chat use \
+         search_chats / read_chat; to leave something for memory use remember.",
+    );
     text.push_str("\n</engine-note>");
-    Segment::new(SegmentKind::Custom, "engine-note", text)
+    Segment::new(SegmentKind::EngineNote, "engine-note", text)
 }
 
 pub fn identity_segment() -> Segment {
@@ -1484,6 +1542,135 @@ the body text",
         );
         assert_eq!(agent_preamble(&bare(dir.clone()), Some("   ")), None);
         assert_eq!(agent_preamble(&bare(dir.clone()), None), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A chat's exclusions, applied through `without`, drop exactly the
+    /// named layers and nothing beside them — and drop them at assembly,
+    /// so the file is never read rather than read and hidden.
+    #[test]
+    fn layers_switched_off_are_omitted_and_nothing_else_is() {
+        let dir = temp_dir("layers-off");
+        std::fs::write(dir.join("AGENTS.md"), "a project rule").unwrap();
+        let notes = dir.join(".agents");
+        crate::project::write_note(&notes, "one.md", "# The one note\nbody").unwrap();
+        let vault = dir.join("vault");
+        std::fs::create_dir_all(&vault).unwrap();
+        let config = PromptConfig {
+            identity: true,
+            environment: true,
+            project_instructions: true,
+            project: Some(ProjectContext {
+                name: "layers".into(),
+                notes_dir: notes.clone(),
+            }),
+            knowledge: Some(KnowledgeContext { dir: vault.clone() }),
+            custom: Some("typed".into()),
+            ..bare(dir.clone())
+        };
+        let kinds = |p: &SystemPrompt| p.segments().iter().map(|s| s.kind).collect::<Vec<_>>();
+
+        let all = assemble(&config);
+        assert_eq!(
+            kinds(&all),
+            vec![
+                SegmentKind::Identity,
+                SegmentKind::Environment,
+                SegmentKind::ProjectInstructions,
+                SegmentKind::ProjectNotes,
+                SegmentKind::Knowledge,
+                SegmentKind::Custom,
+            ]
+        );
+
+        let off = [SegmentKind::ProjectInstructions, SegmentKind::ProjectNotes];
+        let some = assemble(&config.clone().without(&off));
+        assert_eq!(
+            kinds(&some),
+            vec![
+                SegmentKind::Identity,
+                SegmentKind::Environment,
+                SegmentKind::Knowledge,
+                SegmentKind::Custom,
+            ]
+        );
+        let text = some.render_flat().unwrap();
+        assert!(!text.contains("a project rule"), "{text}");
+        assert!(!text.contains("one.md"), "{text}");
+        assert!(text.contains("typed"), "{text}");
+
+        // `Custom` is not a layer: naming it changes nothing.
+        let custom = assemble(&config.clone().without(&[SegmentKind::Custom]));
+        assert_eq!(kinds(&custom), kinds(&all));
+
+        // Everything off leaves the shell's text and the anchor on it.
+        let none = assemble(&config.clone().without(&SegmentKind::LAYERS));
+        assert_eq!(kinds(&none), vec![SegmentKind::Custom]);
+        assert_eq!(none.cache_anchors(4), vec![0]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The bridge takes the same exclusions, plus its own: the engine note
+    /// is a layer there and nowhere else. And the flag is the segments
+    /// rendered, so what a view itemizes and what the CLI receives cannot
+    /// differ by a byte.
+    #[test]
+    fn the_agent_bridge_honours_layers_off_and_renders_what_it_itemizes() {
+        let dir = temp_dir("agent-layers-off");
+        std::fs::write(dir.join("AGENTS.md"), "a project rule").unwrap();
+        let notes = dir.join(".agents");
+        crate::project::write_note(&notes, "one.md", "# The one note\nbody").unwrap();
+        let config = PromptConfig {
+            project_instructions: true,
+            project: Some(ProjectContext {
+                name: "bridge".into(),
+                notes_dir: notes.clone(),
+            }),
+            ..bare(dir.clone())
+        };
+        let kinds = |p: &SystemPrompt| p.segments().iter().map(|s| s.kind).collect::<Vec<_>>();
+
+        let full = agent_prompt(&config, Some("Be terse."), true);
+        assert_eq!(
+            kinds(&full),
+            vec![
+                SegmentKind::ProjectInstructions,
+                SegmentKind::ProjectNotes,
+                SegmentKind::EngineNote,
+                SegmentKind::Custom,
+            ]
+        );
+        // No anchors on this engine: the CLI does its own caching.
+        assert!(full.segments().iter().all(|s| !s.cache_anchor));
+        assert_eq!(
+            full.render_flat(),
+            agent_preamble(&config, Some("Be terse.")),
+            "the flag is the segments rendered, nothing else"
+        );
+
+        let off = [SegmentKind::ProjectNotes, SegmentKind::EngineNote];
+        let engine_note = !off.contains(&SegmentKind::EngineNote);
+        let some = agent_prompt(
+            &config.clone().without(&off),
+            Some("Be terse."),
+            engine_note,
+        );
+        assert_eq!(
+            kinds(&some),
+            vec![SegmentKind::ProjectInstructions, SegmentKind::Custom]
+        );
+        let text = some.render_flat().unwrap();
+        assert!(text.contains("a project rule"), "{text}");
+        assert!(!text.contains("one.md"), "{text}");
+        assert!(!text.contains("<engine-note>"), "{text}");
+        assert!(text.ends_with("\n\nBe terse."), "{text}");
+
+        // The note switched off on its own leaves the rest intact.
+        let no_note = agent_prompt(&config, None, false);
+        assert_eq!(
+            kinds(&no_note),
+            vec![SegmentKind::ProjectInstructions, SegmentKind::ProjectNotes]
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

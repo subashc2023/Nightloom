@@ -183,13 +183,42 @@ is the check to repeat when touching it.
 - **`TaskPanel.svelte`** — the model's task list, badged with the open count.
 - ~~**`ContextPanel.svelte`** — the `WireView`; see [desktop.md](desktop.md).~~
   **`ContextPanel.svelte`** is its own popover now, opened from the top bar's
-  context gauge (which reads *Context* before any usage) or ⌘⇧C. On Claude Code
+  context gauge (which reads *Context* before any usage) or ⌘⇧C. ~~On Claude Code
   it explains rather than vanishes: the panel itemises the request Nightloom
   is about to send, and that engine's CLI assembles its own — Nightloom appends
   its preamble to it (2026-09-14), but the request is the CLI's and there is
-  nothing to take apart. The *gauge* still counts, from the usage the CLI
-  reports per turn. One popover is open at a time (`app.showRail` /
-  `app.showContext`).
+  nothing to take apart.~~ **Superseded later on 2026-09-14 (nightshift backlog
+  048):** the panel shows on both engines. Its System section is the whole
+  prompt: one row per layer in ladder order (identity, environment, user
+  memory, model instructions, project instructions — one sub-row per
+  `AGENTS.md` on the walk — notes index, vault index, and on Claude Code the
+  engine note), each row unfolding to the segment's **full text**
+  (`WireSegment.text`), and *Show as sent* rendering the exact string the
+  backend sends (`WireView.system_text`) with a Copy button. The library prompt
+  is listed last without a switch — it has the rail's dropdown. On Claude Code
+  `context_view` returns the bridged segments with no messages, and the
+  Conversation section says the CLI holds the history; the *gauge* still
+  counts, from the usage the CLI reports per turn.
+
+  **Each layer row has a switch** that turns the layer off *for this chat*:
+  the row is struck through while off, so a blind test is visible while it
+  runs, and the layer is absent from *as sent*. A flip records
+  `SessionEvent::PromptLayers` in the chat's log (`set_prompt_layers`, which
+  creates the log if the first send has not) and reconnects the way a rail knob
+  does, so `connect` / `connect_agent` read the set back; the switches
+  themselves project the log (`promptLayersOff` in `state.svelte.ts`, a copy of
+  `Session::prompt_layers_off` on the same terms as the todos). Reopening the
+  chat keeps them, and opening a different chat reconnects if its set differs
+  from the one the engine was built with (`syncPromptLayers`, run from an effect
+  in `App.svelte`; `prompt_layers` returns both sets). Identity and environment
+  have no row on Claude Code — they are the CLI's own — and that engine's rows
+  carry the caveat that a resumed chat on CLI ≥ 2.1.265 keeps its recorded
+  prompt until the next compaction. With the rail's Preamble switch off the
+  per-chat switches are disabled: nothing is left to remove. **Deliberately not
+  built:** rewriting a layer's text for one chat — the store editors and the
+  library prompt are where text is edited; see
+  [service-prompt.md](service-prompt.md). One popover is open at a time
+  (`app.showRail` / `app.showContext`).
 
 The thinking dropdown is capability-aware via `catalog.ts::thinkingSupport(kind,
 model)` — Claude 5 → adaptive effort, Claude ≤4.5 → budget, OpenAI → effort incl.

@@ -550,6 +550,12 @@ export type SessionEvent =
   // where the conversation is kept rather than a turn in it, so the
   // transcript skips it; latest wins, like a title.
   | { event: "agent_session"; agent: string; id: string; at: string }
+  // Which system-prompt layers this chat has switched off, as `SegmentKind`
+  // names (`project_instructions`, `project_notes`, …). Latest wins, like a
+  // title; absent or empty means all on. Not a turn: the backend reads it at
+  // connect time and assembles the prompt without those layers, and the
+  // transcript skips it. See `promptLayersOff` in state.svelte.ts.
+  | { event: "prompt_layers"; off: PromptLayer[]; at: string }
   // Content markers, not deletions: the listed events keep their place in the
   // conversation and project a stand-in instead of their payload. The log
   // still holds the content, so the transcript renders these turns in full and
@@ -657,6 +663,9 @@ export interface WireSegment {
   name: string;
   preview: string;
   truncated: boolean;
+  /** The whole segment — the system prompt is the item a reader came to
+   *  read, unlike a tool result, which carries a preview only. */
+  text: string;
   size: Size;
   /** Where the cached prefix is claimed to end. */
   cache_anchor: boolean;
@@ -665,10 +674,38 @@ export interface WireSegment {
 /** The request the backend would send right now, itemized. */
 export interface WireView {
   system: WireSegment[];
+  /** The system prompt as one string, rendered by the backend with the same
+   *  join the adapters use — "as sent", not a re-join done here. Null when
+   *  there is no system prompt. */
+  system_text: string | null;
   messages: WireMessage[];
   /** Over system and messages both — the figure to compare to the limit. */
   totals: ContextTotals;
   context_limit: number | null;
+}
+
+/**
+ * A system-prompt layer a chat can switch off, by the backend's
+ * `SegmentKind` name. `custom` is a kind but not a layer: the library prompt
+ * has its own dropdown. `engine_note` exists on the Claude Code engine only.
+ */
+export type PromptLayer =
+  | "identity"
+  | "environment"
+  | "user_memory"
+  | "model_instructions"
+  | "project_instructions"
+  | "project_notes"
+  | "knowledge"
+  | "engine_note";
+
+/**
+ * The open chat's switched-off layers beside the set the live engine was
+ * built with; the two differ exactly when a reconnect is due.
+ */
+export interface PromptLayersInfo {
+  off: PromptLayer[];
+  built: PromptLayer[];
 }
 
 /** What `editContext` changed: both projections, plus how many items moved. */

@@ -29,6 +29,8 @@ import type {
   InterviewView,
   InterviewWritten,
   ProjectInfo,
+  PromptLayer,
+  PromptLayersInfo,
   Proposal,
   ProposalEntry,
   ProposalScope,
@@ -121,10 +123,15 @@ export function connectAgent(args: AgentConnectArgs): Promise<ConnectResult> {
 /**
  * Run one turn on the agent engine. Streams the same `turn-event`s the
  * provider path does, which is what lets the transcript render both without
- * knowing which produced a turn.
+ * knowing which produced a turn. Attachments take the same shape `send`
+ * takes; the backend hands them to the CLI on stdin rather than argv.
  */
-export function sendAgent(text: string): Promise<AgentTurnResult> {
-  return invoke("send_agent", { text });
+export function sendAgent(
+  text: string,
+  images?: ImageInput[],
+  documents?: DocumentInput[],
+): Promise<AgentTurnResult> {
+  return invoke("send_agent", { text, images, documents });
 }
 
 /** The search backends, with which has a key and which one answers. */
@@ -218,6 +225,21 @@ export function editContext(
   remove: boolean,
 ): Promise<ContextEdit> {
   return invoke("edit_context", { targets, remove });
+}
+
+/** The open chat's switched-off prompt layers, and what the engine was built with. */
+export function promptLayers(): Promise<PromptLayersInfo> {
+  return invoke("prompt_layers");
+}
+
+/**
+ * Record which prompt layers the open chat excludes. Resolves with the new
+ * transcript — the event lands in the log — and changes nothing on the wire
+ * until the caller reconnects, which `setPromptLayers` in state.svelte.ts
+ * does.
+ */
+export function setPromptLayers(off: PromptLayer[]): Promise<SessionEvent[]> {
+  return invoke("set_prompt_layers", { off });
 }
 
 // ---- projects ----

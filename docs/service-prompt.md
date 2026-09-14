@@ -176,6 +176,32 @@ superseded config block, a section headed *what is not written down here*), and
 a first paragraph would have surfaced the setup and hidden the correction on
 exactly the notes where being wrong costs most.
 
+### Layers off per chat (`PromptConfig::without`, 2026-09-14)
+
+A chat can switch any of the eight layers off for itself — `SegmentKind::LAYERS`:
+identity, environment, user memory, model instructions, project instructions,
+the notes index, the vault index, and on Claude Code the engine note — and the
+exclusion is recorded in its log as `SessionEvent::PromptLayers` (see
+[core.md](core.md)). `PromptConfig::without(&off)` lays the set over whatever the
+shell's switches said: the four bools go false, `model` / `project` / `knowledge`
+go `None`. So a layer that is off is **never read from disk**, not read and
+hidden — the property a blind test wants. The engine note has no field here and
+is `agent_prompt`'s own third argument; `Custom` is not a layer, because the
+shell's text has the shell's own control (the desktop's library dropdown,
+`--system`), and a second switch over it would leave two disagreeing.
+
+The desktop reads the set at `connect` / `connect_agent` from the open chat's
+log and reconnects when a switch flips, exactly as a rail knob does; subagents
+and reviewers are built from the same spec and inherit it, so a blind test stays
+blind one level down. The rail's Preamble switch is the outer gate: off there is
+off for every chat, and the per-chat switches have nothing left to remove.
+
+**Not built, on purpose: per-chat *rewriting* of a layer's text.** An edited
+copy of the project's instructions that one chat sees is a fork no later chat
+knows about. Editing text is what the store editors (instructions, memory,
+notes, vault) and the per-chat library prompt are for; a layer here is on or
+off, and the text it carries is the one every chat carries.
+
 ### Both index layers are off in `nightloom-evals`
 
 For the docspace that stopped being optional once the walk reached the root: one

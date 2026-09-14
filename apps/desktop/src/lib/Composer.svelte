@@ -115,6 +115,14 @@
   // base64 inflates by 4/3, and the caps apply to the encoded payload.
   const MAX_IMAGE_BASE64 = 10 * 1024 * 1024;
   const MAX_DOCUMENT_BASE64 = 32 * 1024 * 1024;
+  // Lower on the Claude Code engine, and not because the CLI refuses: it
+  // accepts the whole document on stdin and then, somewhere between it and
+  // the model, drops one over ~23 MiB encoded — exit 0, no error line, and
+  // a reply that asks which document you meant. Measured on 2.1.263: 22.7 MiB
+  // reached the model, 24.0 MiB did not. 20 MiB leaves a margin under the
+  // last size that worked, and a named refusal here is the only place that
+  // failure can be made loud. Images near their own cap went through.
+  const MAX_AGENT_DOCUMENT_BASE64 = 20 * 1024 * 1024;
   const encodedLimit = (n: number) => Math.floor((n / 4) * 3);
 
   let attachSeq = 0;
@@ -168,15 +176,18 @@
     return null;
   }
 
+  // The cap for one attachment on the engine the rail is on right now.
+  // Checked at attach rather than at send because that is when the file is
+  // in hand and the toast can name it; a chip that would fail later is a
+  // promise the send would have to break.
+  function capFor(kind: "image" | "document"): number {
+    if (kind === "image") return MAX_IMAGE_BASE64;
+    return app.connection?.engine === "claude-code"
+      ? MAX_AGENT_DOCUMENT_BASE64
+      : MAX_DOCUMENT_BASE64;
+  }
+
   async function accept(files: Iterable<File>): Promise<void> {
-    // Refused here rather than at send: Claude Code takes a prompt on argv
-    // and reads no attachments from us, and a chip sitting in the composer
-    // is a promise the send would have to break. Named, like every other
-    // refusal in here, so it does not read as a drop that silently failed.
-    if (app.connection?.engine === "claude-code") {
-      addToast("Claude Code takes text only — attachments are not sent on this engine");
-      return;
-    }
     for (const file of files) {
       const kind = kindOf(file.type);
       if (!kind) {
@@ -185,10 +196,14 @@
         );
         continue;
       }
-      const cap = kind === "image" ? MAX_IMAGE_BASE64 : MAX_DOCUMENT_BASE64;
+      const cap = capFor(kind);
       if (file.size > encodedLimit(cap)) {
+        // Named engine when the cap is the engine's, so a file that was
+        // fine on the API path yesterday reads as a different limit and
+        // not a broken one.
+        const where = cap === MAX_AGENT_DOCUMENT_BASE64 ? " on Claude Code" : "";
         addToast(
-          `${describe(file)} is too large — the limit is ${cap / 1024 / 1024} MB once base64-encoded (about ${Math.round(encodedLimit(cap) / 1024 / 1024)} MB of file)`,
+          `${describe(file)} is too large — the limit${where} is ${cap / 1024 / 1024} MB once base64-encoded (about ${Math.round(encodedLimit(cap) / 1024 / 1024)} MB of file)`,
         );
         continue;
       }

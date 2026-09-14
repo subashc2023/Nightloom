@@ -49,6 +49,7 @@ import type {
   NoteScope,
   Price,
   ProjectInfo,
+  PromptLayer,
   ProposalEntry,
   ProposalScope,
   ProviderInfo,
@@ -2597,15 +2598,7 @@ export async function send(
 ): Promise<void> {
   if (!app.connection || app.busy) return;
   if (app.connection.engine === "claude-code") {
-    // Claude Code takes a prompt on argv and reads no attachments from us.
-    // Refusing loudly rather than sending the caption alone: a question
-    // about an image the model never received gets a confident answer about
-    // nothing, which is the failure mode worth spending a toast on.
-    if (images.length > 0 || documents.length > 0) {
-      addToast("Claude Code takes text only — attachments are not sent on this engine");
-      return;
-    }
-    return sendAgent(text);
+    return sendAgent(text, images, documents);
   }
   app.error = null;
   app.events.push({
@@ -2671,14 +2664,30 @@ export async function send(
  * and a bill — and that the window's own approval prompts never fire, since
  * the gate belongs to whoever owns the loop.
  */
-async function sendAgent(text: string): Promise<void> {
+async function sendAgent(
+  text: string,
+  images: ImageInput[] = [],
+  documents: DocumentInput[] = [],
+): Promise<void> {
   app.error = null;
-  app.events.push({ event: "user_message", text, at: new Date().toISOString() });
+  app.events.push({
+    event: "user_message",
+    text,
+    // Same omission as `send`: the backend logs no key for an empty list,
+    // and the optimistic entry should project as the re-synced one will.
+    ...(images.length > 0 ? { images } : {}),
+    ...(documents.length > 0 ? { documents } : {}),
+    at: new Date().toISOString(),
+  });
   app.live = { segments: [] };
   app.liveUsage = null;
   app.busy = true;
   try {
-    const res = await api.sendAgent(text);
+    const res = await api.sendAgent(
+      text,
+      images.length > 0 ? images : undefined,
+      documents.length > 0 ? documents : undefined,
+    );
     app.agentTurn = res;
     // The CLI resolves an alias to a real model id, which is the first
     // moment a context window can be looked up at all: `sonnet` is in no
@@ -2886,6 +2895,88 @@ export function currentTodos(): TodoItem[] {
     if (e.event === "compaction") return [];
   }
   return [];
+}
+
+/**
+ * The prompt layers the open chat has switched off, projected from the log
+ * the way `Session::prompt_layers_off()` projects it in the core: the latest
+ * live `prompt_layers` event wins, a compaction leaves it alone (the chat is
+ * the same chat), and none means every layer is on.
+ */
+export function promptLayersOff(events: SessionEvent[]): PromptLayer[] {
+  const live = liveFlags(events);
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (!live[i]) continue;
+    const e = events[i];
+    if (e.event === "prompt_layers") return e.off;
+  }
+  return [];
+}
+
+/** The same set, as the backend normalizes it: ladder order, no repeats. */
+const LAYER_ORDER: PromptLayer[] = [
+  "identity",
+  "environment",
+  "user_memory",
+  "model_instructions",
+  "project_instructions",
+  "project_notes",
+  "knowledge",
+  "engine_note",
+];
+
+/** Whether two layer sets are the same set, whatever order they came in. */
+export function sameLayers(a: PromptLayer[], b: PromptLayer[]): boolean {
+  const key = (xs: PromptLayer[]) =>
+    LAYER_ORDER.filter((l) => xs.includes(l)).join(",");
+  return key(a) === key(b);
+}
+
+/**
+ * Switch one prompt layer off or on for the open chat.
+ *
+ * Two steps, in the order that keeps the log ahead of the wire: the event
+ * is recorded first (creating the chat's log if the first send has not yet),
+ * then the engine reconnects exactly as a rail knob would, and `connect` /
+ * `connect_agent` read the new set back off the log. The transcript comes
+ * back from the same call the way it does from `rewind`, so the popover's
+ * switches — which project the log — flip when the log does and not before.
+ */
+export async function setPromptLayer(layer: PromptLayer, on: boolean): Promise<void> {
+  if (app.busy || app.connecting) return;
+  const current = promptLayersOff(app.events);
+  const off = on ? current.filter((l) => l !== layer) : [...current, layer];
+  if (sameLayers(off, current)) return;
+  try {
+    app.events = await api.setPromptLayers(off);
+    // A chat whose log was just created by this call: pick up its id the way
+    // `send` does, so the sidebar and the next open agree on which chat this is.
+    const first = app.events[0];
+    if (first && first.event === "session_created") app.activeSessionId = first.id;
+    app.error = null;
+  } catch (e) {
+    addToast(String(e));
+    return;
+  }
+  await applyDraft();
+  void refreshSessions();
+}
+
+/**
+ * Reconnect if the open chat's layer set is not the one the engine was built
+ * with — which is the case after opening another chat, or a new one, since
+ * the engine is built once per rail change and not per chat. Cheap when the
+ * two agree, which is every other time it runs; a no-op while a turn or a
+ * connect is in flight, and the caller's effect re-runs it when either ends.
+ */
+export async function syncPromptLayers(): Promise<void> {
+  if (!app.connection || app.busy || app.connecting) return;
+  try {
+    const { off, built } = await api.promptLayers();
+    if (!sameLayers(off, built)) await applyDraft();
+  } catch {
+    // Best-effort: the next rail change reconnects with the right set anyway.
+  }
 }
 
 /**

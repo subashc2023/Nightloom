@@ -8,7 +8,8 @@
 
 use nightloom_core::Tool;
 use nightloom_core::{
-    DocumentInput, ImageInput, ProviderError, Session, SessionEvent, Thinking, WireView,
+    DocumentInput, ImageInput, ProviderError, SegmentKind, Session, SessionEvent, SystemPrompt,
+    Thinking, WireView,
 };
 use nightloom_service::approval::{Approver, AutoApprove, Decision, PendingCall};
 use nightloom_service::credentials::{self, KeySource};
@@ -89,6 +90,34 @@ struct AppState {
     /// from it because a dream is not a turn: stopping the chat must not
     /// stop the dream, and stopping the dream must not stop the chat.
     dream_cancel: Arc<std::sync::Mutex<CancellationToken>>,
+    /// What the live connection's system prompt was built from, written by
+    /// `connect` and `connect_agent` and read by `context_view` and
+    /// `prompt_layers`. See [`PromptBuilt`] for why it is a field of its own.
+    prompt: tokio::sync::Mutex<PromptBuilt>,
+}
+
+/// The prompt as the live engine was given it.
+///
+/// The provider engine keeps its segments on the `Chat`, so `context_view`
+/// can itemize them from there. The agent engine keeps only the flat string
+/// it passed to `--append-system-prompt`, and re-splitting that into layers
+/// would be a second parser for a string this process rendered a moment ago.
+/// So the segments are kept here as they were rendered, and the view shows
+/// those — the same segments the flag carries, by construction rather than
+/// by parsing.
+///
+/// `off` is here for the same reason: a chat's switched-off layers are read
+/// from its log at connect time, and the question "does the live engine
+/// match the chat now open" needs the set it was actually built with, not
+/// the set the log holds now — the two differ exactly after another chat is
+/// opened, which is when the UI has to reconnect.
+#[derive(Default)]
+struct PromptBuilt {
+    /// The layers switched off in the chat the connection was built for.
+    off: Vec<SegmentKind>,
+    /// On the Claude Code engine, the bridged segments; `None` on the
+    /// provider engine.
+    agent: Option<SystemPrompt>,
 }
 
 /// The registry, plus the project currently open.
@@ -561,6 +590,13 @@ struct ChatSpec {
     /// reviewer, for the reason `knowledge` is: a second vendor's critic has
     /// no business in the user's transcripts.
     chats: Option<ChatDirs>,
+    /// The prompt layers this chat has switched off, read from its log
+    /// (`Session::prompt_layers_off`) at connect time. Laid over the rail's
+    /// switches rather than replacing them: the rail says what every chat
+    /// gets, the log says what this one does not. Subagents and reviewers
+    /// inherit it with the rest of the spec, so a blind test stays blind
+    /// one level down.
+    layers_off: Vec<SegmentKind>,
 }
 
 impl ChatSpec {
@@ -611,7 +647,7 @@ fn build_chat(
     let mut chat = Chat::new(provider, model);
     // The textarea's text is the `custom` layer, appended after whatever the
     // preamble discovered; with the preamble off it is the whole prompt.
-    chat.system = nightloom_service::prompt::assemble(&PromptConfig {
+    let config = PromptConfig {
         identity: spec.preamble,
         environment: spec.preamble,
         project_instructions: spec.preamble,
@@ -630,7 +666,10 @@ fn build_chat(
             .flatten(),
         cwd: spec.workspace.clone(),
         custom: spec.system.clone(),
-    });
+    };
+    // The chat's own exclusions last, over the rail's switches: what this
+    // chat has turned off stays off whatever the rail says.
+    chat.system = nightloom_service::prompt::assemble(&config.without(&spec.layers_off));
     chat.thinking = spec.thinking.clone();
     // Gives the sidecar's context gauge a denominator; `None` for a model we
     // have no verified window for, which the gauge handles by reporting raw
@@ -879,6 +918,7 @@ async fn connect(
             notes_dir: p.notes_dir(),
         }),
         chats: Some(chats),
+        layers_off: layers_off(&state).await,
     };
     let mcp = ensure_mcp(&state, &spec.workspace, spec.tools).await;
     let mcp_tools = state
@@ -941,7 +981,24 @@ async fn connect(
     // itself is not cheap enough to rebuild casually, but the agent is a
     // spec and a process that has already exited.
     *state.agent.lock().await = None;
+    *state.prompt.lock().await = PromptBuilt {
+        off: spec.layers_off,
+        agent: None,
+    };
     Ok(info)
+}
+
+/// The open chat's switched-off layers, or none when no chat is open yet —
+/// a fresh chat starts with every layer on, and its log is created lazily
+/// by the first send.
+async fn layers_off(state: &AppState) -> Vec<SegmentKind> {
+    state
+        .session
+        .lock()
+        .await
+        .as_ref()
+        .map(|s| s.prompt_layers_off().to_vec())
+        .unwrap_or_default()
 }
 
 /// The default binary, matching the CLI's `--agent-binary`.
@@ -1034,7 +1091,12 @@ async fn connect_agent(
     // headless, can only decline (nightshift blocker 050; `AgentSpec::add_dirs`
     // says what the grant covers).
     spec.add_dirs = knowledge.iter().cloned().collect();
-    spec.append_system_prompt = nightloom_service::agent_preamble(
+    // Built as segments and rendered from them, so the Context popover can
+    // show the same segments the flag carries rather than a re-parse of the
+    // string (see `PromptBuilt`). The chat's own exclusions apply here as on
+    // the other engine, plus the one layer that exists only here.
+    let off = layers_off(&state).await;
+    let prompt = nightloom_service::agent_prompt(
         &PromptConfig {
             identity: false,
             environment: false,
@@ -1057,9 +1119,12 @@ async fn connect_agent(
             knowledge: knowledge.map(|dir| KnowledgeContext { dir }),
             cwd: workspace.clone(),
             custom: None,
-        },
+        }
+        .without(&off),
         system.as_deref(),
+        !off.contains(&SegmentKind::EngineNote),
     );
+    spec.append_system_prompt = prompt.render_flat();
     if tools {
         // Headless has no way to ask, so the window's approval prompt does
         // not run here: it gates calls the engine is about to run, and this
@@ -1070,6 +1135,32 @@ async fn connect_agent(
         // is `bypassPermissions`.
         spec.permission_mode =
             Some(AgentSpec::headless_permission_mode(approval.unwrap_or(true)).into());
+        // Nightloom's own tools on this engine — search_chats, read_chat,
+        // remember, fetch_page — served by the binary the app is running as
+        // (`--mcp-serve` at the top of `main`), because the CLI is not on
+        // PATH on most machines that have the app. Inside `if tools` on
+        // purpose: `--tools ""` does not disable MCP tools, and a connection
+        // that asked for none should not get four. Under safe mode the CLI's
+        // `--strict-mcp-config` makes this the only server, which is the
+        // point (nightshift backlog 046).
+        if let Ok(exe) = std::env::current_exe() {
+            let mut args = vec!["--mcp-serve".to_string()];
+            if let Some(p) = &active {
+                args.push("--project".into());
+                args.push(p.id.clone());
+            }
+            spec.mcp_config = Some(
+                serde_json::json!({
+                    "mcpServers": {
+                        nightloom_service::mcp_server::SERVER_NAME: {
+                            "command": exe.to_string_lossy(),
+                            "args": args,
+                        }
+                    }
+                })
+                .to_string(),
+            );
+        }
     } else {
         spec.tools = Some(Vec::new());
     }
@@ -1127,6 +1218,10 @@ async fn connect_agent(
     };
     *state.agent.lock().await = Some(ClaudeCodeAgent::new(spec));
     *state.chat.lock().await = None;
+    *state.prompt.lock().await = PromptBuilt {
+        off,
+        agent: Some(prompt),
+    };
     Ok(info)
 }
 
@@ -1382,11 +1477,20 @@ struct AgentTurn {
 /// replayable if the rail is later switched back to a provider. What the log
 /// is *not* is the thing the next turn replays: that is the agent's own
 /// session, resumed by the id recorded alongside.
+///
+/// `images` and `documents` are the same base64 payloads `send` takes, and
+/// they land in the log the same way — the user event carries them verbatim,
+/// so a chat that started on this engine projects onto a provider request
+/// with its attachments intact if the rail is switched. How they reach the
+/// CLI is the agent's business (`ClaudeCodeAgent::run_turn`: a stdin line
+/// rather than argv, for that one turn).
 #[tauri::command]
 async fn send_agent(
     app: AppHandle,
     state: State<'_, AppState>,
     text: String,
+    images: Option<Vec<ImageInput>>,
+    documents: Option<Vec<DocumentInput>>,
 ) -> Result<AgentTurn, String> {
     let mut agent_guard = state.agent.lock().await;
     let agent = agent_guard
@@ -1403,7 +1507,16 @@ async fn send_agent(
     // records into the same log through `Recorder`, so it can seal it the same
     // way, and this window has no stderr for the notice to go to either.
     let sealed_before = session.write_failure().is_some();
-    session.record_user(&text);
+    let input = TurnInput {
+        text,
+        images: images.unwrap_or_default(),
+        documents: documents.unwrap_or_default(),
+    };
+    session.record_user_with_attachments(
+        input.text.clone(),
+        input.images.clone(),
+        input.documents.clone(),
+    );
 
     let cancel = CancellationToken::new();
     *state.cancel.lock().unwrap() = cancel.clone();
@@ -1431,7 +1544,7 @@ async fn send_agent(
         let _ = app.emit("turn-event", &e);
         recorder.push(&e);
     };
-    let result = agent.run_turn(&text, &cancel, &mut on_event).await;
+    let result = agent.run_turn(input, &cancel, &mut on_event).await;
 
     match result {
         Ok(outcome) => {
@@ -1540,9 +1653,26 @@ struct ContextEdit {
 /// preamble and the sidecar live on the `Chat` and only the `Session` knows
 /// the conversation. Taking them in the same order `compact` does (chat,
 /// then session) so the two can never deadlock against each other.
+///
+/// On the Claude Code engine the view is the bridged preamble alone, with
+/// no messages: the CLI holds the conversation and assembles its own
+/// request, so there is no history of ours to itemize — but the layers
+/// Nightloom appends are ours, and "what does this chat know at the start"
+/// deserves the same answer on both engines. It used to refuse here; that
+/// was the right call while the popover could only rank items to remove,
+/// and the wrong one once it shows what was sent. No limit either: the
+/// CLI's window is reported per turn, not known at connect.
 #[tauri::command]
 async fn context_view(state: State<'_, AppState>) -> Result<WireView, String> {
-    not_in_agent_mode(&state, "itemize the context").await?;
+    if state.agent.lock().await.is_some() {
+        let built = state.prompt.lock().await;
+        return Ok(WireView::assemble(
+            built.agent.as_ref(),
+            &Session::new(),
+            None,
+            None,
+        ));
+    }
     let chat_guard = state.chat.lock().await;
     let chat = chat_guard
         .as_ref()
@@ -1590,6 +1720,51 @@ async fn edit_context(
         events: session.events().to_vec(),
         changed,
     })
+}
+
+/// The chat's switched-off layers, and the set the live engine was built
+/// with. The UI reconnects when the two differ — after opening another chat,
+/// or a new one — so the prompt on the wire is always the open chat's.
+#[derive(Serialize)]
+struct PromptLayersInfo {
+    off: Vec<SegmentKind>,
+    built: Vec<SegmentKind>,
+}
+
+#[tauri::command]
+async fn prompt_layers(state: State<'_, AppState>) -> Result<PromptLayersInfo, String> {
+    let off = layers_off(&state).await;
+    let built = state.prompt.lock().await.off.clone();
+    Ok(PromptLayersInfo { off, built })
+}
+
+/// Record which prompt layers this chat excludes, returning the transcript.
+///
+/// The log is the only thing written here: the live engine still carries
+/// the prompt it was built with, and the UI reconnects after this returns —
+/// the same path a rail knob takes — so `connect` / `connect_agent` read the
+/// new set back the one way they read it. A session is created if the chat
+/// has none yet, as `send` would create one: the exclusion is a fact about
+/// the chat, and a chat has to exist to have it.
+///
+/// Allowed on the Claude Code engine, unlike a rewind or an elision: those
+/// change what the *log* projects, which that engine never reads, while
+/// this changes what the next connect appends to the CLI's prompt, which it
+/// does read — after the next compaction on a resumed session (see
+/// `docs/service-agent.md`), and the popover says so there.
+#[tauri::command]
+async fn set_prompt_layers(
+    state: State<'_, AppState>,
+    off: Vec<SegmentKind>,
+) -> Result<Vec<SessionEvent>, String> {
+    let log_dir = state.log_dir().await;
+    let mut session_guard = state.session.lock().await;
+    if session_guard.is_none() {
+        *session_guard = Some(Session::with_log(&log_dir).map_err(|e| e.to_string())?);
+    }
+    let session = session_guard.as_mut().expect("session ensured above");
+    session.record_prompt_layers(off);
+    Ok(session.events().to_vec())
 }
 
 /// Delete a session log the reversible way: it moves to `<logs>/trash/`
@@ -2841,6 +3016,23 @@ fn mac_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
 }
 
 fn main() {
+    // `nightloom-desktop --mcp-serve [--project <id>]`: this binary as an
+    // MCP server on stdio, for the Claude Code engine. The app's `connect_agent`
+    // hands `claude -p` a `--mcp-config` naming `current_exe()` with these
+    // arguments, because this is the one binary the app can always find —
+    // the CLI is not on PATH on most machines that have the app. Handled
+    // before Tauri builds anything: a server that opened a window, or that
+    // Tauri parsed the flag of, would be neither. The server runs on a
+    // runtime of its own and returns at EOF, which is how the CLI ends it.
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    if argv.first().map(String::as_str) == Some("--mcp-serve") {
+        if let Err(e) = nightloom_service::mcp_server::run_blocking(&argv[1..]) {
+            eprintln!("nightloom-desktop --mcp-serve: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
 
@@ -2895,6 +3087,7 @@ fn main() {
                 mcp: tokio::sync::Mutex::new(None),
                 dreaming: tokio::sync::Mutex::new(()),
                 dream_cancel: Arc::new(std::sync::Mutex::new(CancellationToken::new())),
+                prompt: tokio::sync::Mutex::new(PromptBuilt::default()),
             });
             // The Nightshift file watches, beside `AppState` rather than in it.
             app.manage(nightshift::Watches::default());
@@ -2931,6 +3124,8 @@ fn main() {
             rewind,
             context_view,
             edit_context,
+            prompt_layers,
+            set_prompt_layers,
             delete_session,
             approve_call,
             pick_folder,

@@ -171,7 +171,6 @@
     app.showRail = false;
     app.showContext = !app.showContext;
   }
-  const agentEngine = $derived(app.connection?.engine === "claude-code");
 </script>
 
 <header class="topbar">
@@ -285,28 +284,11 @@
         <span class="ns-k">Context</span>
         <span class="sub">what the next request carries</span>
       </div>
-      {#if agentEngine}
-        <!-- Said rather than hidden: the tab used to vanish on this engine.
-             The gauge above still counts — the CLI reports each turn's
-             usage — but there is no request of ours to take apart. -->
-        <div class="ctx-note">
-          <p>
-            On Claude Code there is no list to show. Nightloom itemises the
-            request <em>it</em> is about to send — preamble, history, tool
-            results — and on this engine the CLI assembles its own from a
-            history it keeps. Nightloom appends its preamble to that prompt
-            (your AGENTS.md, the project's, the notes and knowledge base
-            indexes — the Preamble switch in the rail), but the request is
-            the CLI's, so there is nothing here to take apart or remove.
-          </p>
-          <p>
-            The gauge in the bar still works: it is the usage the CLI reports
-            after each turn, against the window it names.
-          </p>
-        </div>
-      {:else}
-        <ContextPanel />
-      {/if}
+      <!-- One panel on both engines (2026-09-14). On Claude Code it lists
+           the layers Nightloom appends to the CLI's own prompt, and says in
+           the conversation section that the history is the CLI's — the
+           explanatory note that used to stand in for the panel here. -->
+      <ContextPanel />
     </div>
   {/if}
 </header>
@@ -464,15 +446,6 @@
   .ctx-head .sub {
     font-size: 11px;
     color: var(--dim);
-  }
-  .ctx-note {
-    padding: 4px 14px 14px;
-    font-size: 12px;
-    line-height: 1.45;
-    color: var(--ink2);
-  }
-  .ctx-note p {
-    margin: 0 0 8px;
   }
   .popover.ctx :global(.panel) {
     flex: 1;

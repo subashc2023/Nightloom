@@ -6,6 +6,7 @@ mod eval;
 mod import;
 mod keys;
 mod knowledge;
+mod mcp_serve;
 mod probe;
 mod sessions;
 
@@ -48,6 +49,11 @@ enum Command {
     Dream(dream::DreamArgs),
     /// Read the session logs since their watermarks into the memory inbox
     Capture(capture::CaptureArgs),
+    /// Serve search_chats, read_chat, remember and fetch_page over MCP on
+    /// stdio, for `claude -p --mcp-config`. Hidden: nothing to see if run
+    /// by hand (see `mcp_serve.rs`).
+    #[command(hide = true)]
+    McpServe(mcp_serve::McpServeArgs),
 }
 
 #[tokio::main]
@@ -62,6 +68,7 @@ async fn main() -> Result<()> {
         Some(Command::Knowledge(args)) => knowledge::run(args),
         Some(Command::Dream(args)) => dream::run(args).await,
         Some(Command::Capture(args)) => capture::run(args).await,
+        Some(Command::McpServe(args)) => mcp_serve::run(args).await,
         // `--agent` swaps the engine, not the provider: Claude Code owns
         // the loop and the tools, and Nightloom renders what it streams.
         None if cli.chat.agent.is_some() => agent::run(cli.chat).await,
