@@ -1817,7 +1817,28 @@ enum NoteScope {
     Project,
     /// The user's vault — about them, and available with no project at all.
     Knowledge,
+    /// `<workspace>/AGENTS.md` — the project's standing instructions, read
+    /// whole into every chat's preamble. One fixed file, never a listing:
+    /// the scope exists so the same editor reaches it, not so the workspace
+    /// root reads as a notes folder.
+    Instructions,
+    /// `~/.nightloom/AGENTS.md` — user memory, how the model should behave
+    /// everywhere. Same shape as `Instructions`: one file, no listing.
+    Memory,
 }
+
+impl NoteScope {
+    /// The scopes that name one fixed file rather than a folder of notes.
+    /// Listing them is meaningless and deleting them is a loss the
+    /// never-lose-work rule forbids: the reversible form is emptying the
+    /// text, which `save_note` already does.
+    fn is_fixed_file(self) -> bool {
+        matches!(self, Self::Instructions | Self::Memory)
+    }
+}
+
+/// The one file the fixed-file scopes name.
+const AGENTS_MD: &str = "AGENTS.md";
 
 impl Default for NoteScope {
     /// What a frontend that predates the vault meant by every note call.
@@ -1842,7 +1863,24 @@ async fn scope_dir(state: &AppState, scope: NoteScope) -> Result<PathBuf, String
             .ok_or_else(|| "no project is open, so there is no shared notes folder".to_string()),
         NoteScope::Knowledge => nightloom_service::knowledge::vault_dir()
             .ok_or_else(|| "no user config directory to keep a knowledge base in".to_string()),
+        NoteScope::Instructions => state
+            .active()
+            .await
+            .map(|p| p.workspace_dir())
+            .ok_or_else(|| "no project is open, so there are no project instructions".to_string()),
+        NoteScope::Memory => project::config_dir()
+            .ok_or_else(|| "no user config directory to keep user memory in".to_string()),
     }
+}
+
+/// The fixed-file scopes accept exactly one name. Anything else is a caller
+/// bug, and answering it with a file in the workspace root would turn the
+/// instructions scope into a second, unindexed docspace.
+fn check_fixed_name(scope: NoteScope, name: &str) -> Result<(), String> {
+    if scope.is_fixed_file() && name.trim() != AGENTS_MD {
+        return Err(format!("{scope:?} names only {AGENTS_MD}, not {name}"));
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1850,9 +1888,11 @@ async fn list_notes(
     state: State<'_, AppState>,
     scope: Option<NoteScope>,
 ) -> Result<Vec<Note>, String> {
-    Ok(project::list_notes(
-        &scope_dir(&state, scope.unwrap_or_default()).await?,
-    ))
+    let scope = scope.unwrap_or_default();
+    if scope.is_fixed_file() {
+        return Err(format!("{scope:?} is one file, not a folder to list"));
+    }
+    Ok(project::list_notes(&scope_dir(&state, scope).await?))
 }
 
 #[tauri::command]
@@ -1861,7 +1901,15 @@ async fn read_note(
     scope: Option<NoteScope>,
     name: String,
 ) -> Result<String, String> {
-    project::read_note(&scope_dir(&state, scope.unwrap_or_default()).await?, &name)
+    let scope = scope.unwrap_or_default();
+    check_fixed_name(scope, &name)?;
+    let dir = scope_dir(&state, scope).await?;
+    // A fixed file that does not exist yet is an empty one, not an error:
+    // the editor opens on it so the user can write the first line.
+    if scope.is_fixed_file() && !dir.join(AGENTS_MD).is_file() {
+        return Ok(String::new());
+    }
+    project::read_note(&dir, &name)
 }
 
 /// Write a note. Also how a new one is created — there is no separate
@@ -1873,11 +1921,9 @@ async fn save_note(
     name: String,
     content: String,
 ) -> Result<Note, String> {
-    project::write_note(
-        &scope_dir(&state, scope.unwrap_or_default()).await?,
-        &name,
-        &content,
-    )
+    let scope = scope.unwrap_or_default();
+    check_fixed_name(scope, &name)?;
+    project::write_note(&scope_dir(&state, scope).await?, &name, &content)
 }
 
 #[tauri::command]
@@ -1886,7 +1932,11 @@ async fn delete_note(
     scope: Option<NoteScope>,
     name: String,
 ) -> Result<(), String> {
-    project::delete_note(&scope_dir(&state, scope.unwrap_or_default()).await?, &name)
+    let scope = scope.unwrap_or_default();
+    if scope.is_fixed_file() {
+        return Err(format!("{AGENTS_MD} is not deleted from here — empty it instead"));
+    }
+    project::delete_note(&scope_dir(&state, scope).await?, &name)
 }
 
 // ---- the knowledge vault -----------------------------------------------

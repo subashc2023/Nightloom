@@ -12,6 +12,7 @@
   } from "./state.svelte";
   import type { Note, NoteScope } from "./types";
   import { relativeTime } from "./time";
+  import * as api from "./api";
 
   /**
    * Two stores, one panel.
@@ -34,12 +35,46 @@
   let confirming = $state<string | null>(null);
   /** Sections start open; collapsing is per-session and deliberately not
    *  persisted — it is a glance, not a preference. */
-  let collapsed = $state<Record<NoteScope, boolean>>({
+  let collapsed = $state<Record<"project" | "knowledge", boolean>>({
     project: false,
     knowledge: false,
   });
 
-  function begin(scope: NoteScope) {
+  /**
+   * The always-loaded file at the head of each section — `AGENTS.md` in the
+   * workspace (instructions) and in `~/.nightloom` (memory). Read whole into
+   * every chat's preamble, so unlike the notes below it there is no index to
+   * show; the row carries its size, or "empty" when the file does not exist
+   * yet. Re-read whenever the lists refresh, which `saveNote` does after a
+   * save and the turn loop does after every turn.
+   */
+  const AGENTS_MD = "AGENTS.md";
+  let fixed = $state<Record<"instructions" | "memory", number | null>>({
+    instructions: null,
+    memory: null,
+  });
+  $effect(() => {
+    // Dependencies the effect should re-run on, read up front.
+    const projectId = app.project?.id ?? null;
+    void app.notes;
+    void app.vault;
+    void (async () => {
+      fixed.instructions = projectId
+        ? await api.readNote("instructions", AGENTS_MD).then(
+            (t) => t.length,
+            () => null,
+          )
+        : null;
+      fixed.memory = app.knowledge
+        ? await api.readNote("memory", AGENTS_MD).then(
+            (t) => t.length,
+            () => null,
+          )
+        : null;
+    })();
+  });
+
+  function begin(scope: "project" | "knowledge") {
     creating = scope;
     draftName = "";
     collapsed[scope] = false;
@@ -86,6 +121,25 @@
   }
 </script>
 
+{#snippet pinned(scope: "instructions" | "memory", label: string, hint: string)}
+  <!-- No delete button: the never-lose-work rule, and the backend refuses
+       it anyway — emptying the text is the reversible form. -->
+  <div class="item pinned" class:active={isOpen(scope, AGENTS_MD)}>
+    <button class="row" onclick={() => showNote(scope, AGENTS_MD)} title={hint}>
+      <span class="name">{label}</span>
+      <span class="summary">{hint}</span>
+      <span class="meta">
+        {AGENTS_MD} ·
+        {fixed[scope] === null
+          ? "empty"
+          : fixed[scope] === 0
+            ? "empty"
+            : size(fixed[scope] ?? 0)}
+      </span>
+    </button>
+  </div>
+{/snippet}
+
 {#snippet list(scope: NoteScope, notes: Note[])}
   <div class="list">
     {#each notes as n (n.name)}
@@ -113,7 +167,7 @@
   </div>
 {/snippet}
 
-{#snippet newRow(scope: NoteScope)}
+{#snippet newRow(scope: "project" | "knowledge")}
   <div class="bar">
     {#if creating === scope}
       <!-- svelte-ignore a11y_autofocus -->
@@ -197,6 +251,11 @@
           >
         </div>
       {:else}
+        {@render pinned(
+          "instructions",
+          "Instructions",
+          "Standing instructions for this project — read whole into every chat",
+        )}
         {@render newRow("project")}
         {#if app.notes.length === 0}
           <p class="hint">
@@ -232,6 +291,11 @@
           a knowledge base.
         </p>
       {:else}
+        {@render pinned(
+          "memory",
+          "Memory",
+          "How you want the model to behave, everywhere — read whole into every chat",
+        )}
         {@render newRow("knowledge")}
         {#if app.vault.length === 0}
           <p class="hint">
@@ -423,6 +487,14 @@
   }
   .item.active {
     background: #211d38;
+  }
+  /* The always-loaded file sits above the list, in the list's own gutter,
+     with a hairline under it so it reads as the head of the section rather
+     than the first note. */
+  .item.pinned {
+    margin: 0 0.5rem 0.35rem;
+    border-bottom: 1px solid var(--line);
+    border-radius: 8px 8px 0 0;
   }
   .row {
     flex: 1;

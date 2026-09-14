@@ -236,7 +236,13 @@ export interface ProjectInfo {
  * project is open. `knowledge` is the user's own vault — about them, the same
  * one in every project, and available with no project at all.
  */
-export type NoteScope = "project" | "knowledge";
+/**
+ * `project` and `knowledge` are folders of notes; `instructions`
+ * (`<workspace>/AGENTS.md`) and `memory` (`~/.nightloom/AGENTS.md`) each
+ * name one fixed file — the always-loaded half of the two stores, reached
+ * through the same editor. Neither lists, neither deletes.
+ */
+export type NoteScope = "project" | "knowledge" | "instructions" | "memory";
 
 /** What one dream did, flattened for a toast. `git` arrives as a finished
  *  sentence — the frontend has nothing to add to it. */

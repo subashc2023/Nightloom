@@ -1169,6 +1169,14 @@ export async function saveNote(
   }
   await refreshNotes();
   await refreshProjects();
+  // The two always-loaded files are read once, when the connection's
+  // preamble is assembled — so a saved edit would otherwise sit unread until
+  // the next connect. Re-connect the live connection, the same rule as
+  // editing the active prompt-library entry. Nothing is done when there is
+  // no connection to refresh.
+  if ((scope === "instructions" || scope === "memory") && app.connection) {
+    await applyDraft();
+  }
   return true;
 }
 

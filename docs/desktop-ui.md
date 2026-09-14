@@ -297,7 +297,25 @@ until the vault existed that chat had no notes of any kind.
 
 The four note commands take a `scope` (`project` | `knowledge`) instead of
 gaining four siblings, since the operations are identical and only the directory
-differs. An unrecognized value is an error rather than a default, because a typo
+differs.
+
+**Since 2026-09-14 the scope also names the two always-loaded files:**
+`instructions` is `<workspace>/AGENTS.md` and `memory` is
+`~/.nightloom/AGENTS.md` — the halves of each store that the preamble reads
+*whole* rather than indexing (see [service-prompt.md](service-prompt.md)).
+They had no editor: the project menu said where `AGENTS.md` lived and the
+user memory file was reachable from nowhere in the app. Each section of the
+Notes panel now leads with a pinned row (*Instructions* over the project
+notes, *Memory* over the vault) that opens the same `NoteView`. The scopes
+are one fixed file each: `list_notes` refuses them, `read_note` answers an
+absent file with empty text rather than an error (the editor opens on it so
+the first line can be written), and `delete_note` refuses them — emptying the
+text is the reversible form, per the never-lose-work rule. Saving either
+re-connects the live connection (`saveNote` → `applyDraft`), the rule the
+prompt library already follows for its active entry, because the preamble is
+assembled once at connect and an edit would otherwise sit unread until the
+next chat. The editor's footer says so and says *whole*, where the notes'
+footer says *name and first line*. An unrecognized value is an error rather than a default, because a typo
 that quietly wrote a personal note into somebody's repository is exactly the
 failure the split exists to prevent.
 

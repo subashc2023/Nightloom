@@ -9,7 +9,7 @@ Where things live, and which of them Nightloom owns.
 ~/.nightloom/projects/<id>/sessions/   the chats
 ~/.nightloom/unfiled/sessions/         desktop chats with no project open
 ~/.nightloom/projects.json             the registry
-~/.nightloom/AGENTS.md                 user memory   (how I want you to behave)
+~/.nightloom/AGENTS.md                 user memory   (how I want you to behave; edited in the app since 2026-09-14, Notes → Memory)
 ~/.nightloom/knowledge/                the vault     (what I know)
 ~/.nightloom/knowledge.json            where the vault is, when moved
 ~/.nightloom/observations.jsonl        the memory inbox (append-only, never pruned)

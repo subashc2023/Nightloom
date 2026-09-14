@@ -186,7 +186,7 @@
   <header>
     <button class="back" onclick={closeNote}>← Chat</button>
     <span class="scope" class:vault={isVault}>
-      {isVault ? "knowledge" : "project"}
+      {open?.scope ?? "project"}
     </span>
     <span class="title">{open?.name ?? "no note"}</span>
     {#if dirty}<span class="dirty" title="Unsaved changes">●</span>{/if}
@@ -224,8 +224,12 @@
       {/if}
     </div>
   {:else}
+    <!-- Named, so the field has an accessible name when it is empty (an
+         unnamed empty textarea is invisible to assistive tech and to the
+         driving tools alike — the prompt library's fields had the same fix). -->
     <textarea
       class="pane"
+      aria-label="Note text"
       bind:value={text}
       spellcheck="false"
       placeholder={isVault
@@ -267,7 +271,17 @@
   {/if}
 
   <footer>
-    {#if isVault}
+    {#if open?.scope === "instructions"}
+      Standing instructions for <strong>{app.project?.name ?? "this project"}</strong
+      >. Read <em>whole</em> into every chat's system prompt — keep it short and
+      specific; anything that is only sometimes relevant belongs in a note
+      below, which the model reads on demand. Saving re-connects the open chat.
+    {:else if open?.scope === "memory"}
+      How you want the model to behave, in every project and in chats with no
+      project. Read <em>whole</em> into every chat's system prompt — keep it
+      short; facts and decisions worth keeping belong in the knowledge base,
+      which the model reads on demand. Saving re-connects the open chat.
+    {:else if isVault}
       Yours, across every project — the model sees this file's name and first
       line in its system prompt and reads the rest with the file tools, at
       <code>@kb/{open?.name ?? ""}</code>.
