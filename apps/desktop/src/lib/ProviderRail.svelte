@@ -1,13 +1,39 @@
 <script lang="ts">
-  import { app, applyDraft, useEngine, usable, usePrompt } from "./state.svelte";
+  import {
+    app,
+    applyDraft,
+    loadContextLimits,
+    useEngine,
+    usable,
+    usePrompt,
+  } from "./state.svelte";
   import {
     AGENT_MODELS,
+    MODEL_KEYS,
+    aliasOf,
+    formatWindow,
     isProviderVisible,
+    modelForAlias,
     modelsFor,
     providerLabel,
     sanitizeThinking,
     thinkingSupport,
   } from "./catalog";
+  import Hint from "./Hint.svelte";
+  import Icon from "./Icon.svelte";
+  import Kbd from "./Kbd.svelte";
+  import { isMac } from "./platform";
+
+  /**
+   * The Model pane of the popover, redesigned 2026-09-13 (nightshift
+   * surface-redesign-2026-09-13, canvas rows 3 and 6; blocker 031). The
+   * knobs are the ones the rail always had — every handler below predates
+   * the redesign — laid out so the two questions Swaraag asked answer
+   * themselves: the engine is two cards that each say who is billed, and
+   * every switch carries a `?` with the sentence that used to be its
+   * tooltip. Provider is a row of pills, Model a radio list with each id's
+   * ⌘⇧ key and context window, Thinking a segmented control.
+   */
 
   const agentMode = $derived(app.draft.engine === "claude-code");
   const agent = $derived(app.connection?.agent ?? null);
@@ -62,6 +88,59 @@
     apply();
   }
 
+  function pickProvider(kind: string) {
+    if (kind === app.draft.provider) return;
+    app.draft.provider = kind;
+    onProviderChange();
+  }
+  function pickModel(m: string) {
+    if (m === app.draft.model) return;
+    app.draft.model = m;
+    onModelChange();
+  }
+  function pickThinking(v: string) {
+    if (v === app.draft.thinkingMode) return;
+    app.draft.thinkingMode = v;
+    apply();
+  }
+
+  // The radio list past six rows gets a filter; the list itself is what
+  // Settings switched on, in the picker's order.
+  let modelFilter = $state("");
+  const shownModels = $derived.by(() => {
+    const q = modelFilter.trim().toLowerCase();
+    return q ? models.filter((m) => m.toLowerCase().includes(q)) : models;
+  });
+  // Context windows for the rows, from the backend's table; blank when unknown.
+  $effect(() => {
+    if (!agentMode) void loadContextLimits(app.draft.provider, models);
+  });
+  const windows = $derived(app.contextLimits[app.draft.provider] ?? {});
+
+  const mod = isMac ? "⌘" : "Ctrl+";
+  const shift = isMac ? "⇧" : "Shift+";
+  /**
+   * The ⌘⇧ cap for a row — only on the *first* id in the list carrying the
+   * alias, because that is the one the key switches to (`modelForAlias`);
+   * a second `sonnet` row wearing the same cap would promise a key it does
+   * not have.
+   */
+  function keyFor(id: string): string | null {
+    const alias = aliasOf(id);
+    if (!alias || modelForAlias(models, alias) !== id) return null;
+    const k = MODEL_KEYS.find((m) => m.alias === alias);
+    return k ? `${mod}${shift}${k.key}` : null;
+  }
+  /** `effort: low` → `low`, `budget…` → `budget`: the segment is short. */
+  function seg(label: string): string {
+    return label.replace(/^effort:\s*/, "").replace(/…$/, "");
+  }
+  /** Short names for the pills; the full label is the tooltip. */
+  const PILL: Record<string, string> = {
+    "openai-chat": "Local",
+    gemini: "Gemini",
+  };
+
   /**
    * The chat is running a system prompt that is not in the library — either
    * typed before the library existed, or one whose saved entry was deleted.
@@ -73,8 +152,8 @@
       !app.prompts.some((p) => p.id === app.draft.promptId),
   );
 
-  // The long-form explanations live on the control they explain, not beside
-  // it: the rail is 240px wide, and a paragraph per knob is most of the panel.
+  // The long-form explanations live on the control they explain — as the
+  // `?` beside each one now, where they used to be tooltips.
   const workspaceTitle = $derived(
     app.project
       ? `Set by the project ${app.project.name}. A project is its folder — leave the project to point the tools elsewhere.`
@@ -82,25 +161,52 @@
         ? `${app.connection.workspace}\n\nThe file tools refuse paths outside this folder. bash is not confined.`
         : "The folder the file tools are rooted at. Defaults to where the app was launched.",
   );
+
+  const hasReach = $derived(
+    !agentMode &&
+      !!app.connection &&
+      (app.connection.mcp.length > 0 || app.draft.web || app.draft.tools),
+  );
 </script>
 
 <div class="rail">
-  <div class="engines" role="group" aria-label="Engine">
+  <!-- The engine as two cards, each saying who pays and who runs the loop:
+       the answer to "what's the difference between Provider and Claude
+       Code", on the control itself. -->
+  <div class="eng" role="radiogroup" aria-label="Engine">
     <button
+      class="ecard"
       class:on={!agentMode}
+      role="radio"
+      aria-checked={!agentMode}
       disabled={locked}
       onclick={() => void useEngine("provider")}
-      title="An API key and Nightloom's own loop: tools, approval gate, sidecar and context editing."
     >
-      Provider
+      <span class="radio"></span>
+      <span class="ebody">
+        <span class="et">
+          Provider
+          <span class="ns-pill grey"><Icon name="key" size={11} />your API key</span>
+        </span>
+        <span class="ed">Your key, per token. Nightloom's loop and tools.</span>
+      </span>
     </button>
     <button
+      class="ecard"
       class:on={agentMode}
+      role="radio"
+      aria-checked={agentMode}
       disabled={locked}
       onclick={() => void useEngine("claude-code")}
-      title="Drive the signed-in Claude Code CLI, so turns are billed to your Claude subscription instead of an API key. It owns the loop, the tools and the history."
     >
-      Claude Code
+      <span class="radio"></span>
+      <span class="ebody">
+        <span class="et">
+          Claude Code
+          <span class="ns-pill grey"><Icon name="term" size={11} />your subscription</span>
+        </span>
+        <span class="ed">The signed-in CLI on your plan. Its own loop and tools.</span>
+      </span>
     </button>
   </div>
 
@@ -118,7 +224,22 @@
   </div>
 
   {#if agentMode}
-    <div class="group">
+    {#if agent}
+      <div class="ncard" class:warn={!agent.subscription}>
+        {#if agent.subscription}
+          Billed to your Claude subscription — <code>ANTHROPIC_API_KEY</code> is
+          withheld from the CLI.
+        {:else}
+          An API key in the environment will be used, and the API billed.
+        {/if}
+        {#if agent.resume}
+          Continuing Claude Code session <code>{agent.resume.slice(0, 8)}</code>.
+        {/if}
+      </div>
+    {/if}
+
+    <section class="sect">
+      <div class="sect-h"><span class="ns-k">Connection</span></div>
       <div class="row">
         <span class="lbl">Binary</span>
         <input
@@ -127,12 +248,15 @@
           onchange={apply}
           placeholder="claude"
           disabled={locked}
-          title={agent?.version
-            ? `${agent.binary} — ${agent.version}`
-            : "The Claude Code CLI to run. Left empty, `claude` is looked for on PATH and then in the usual install locations (~/.local/bin, /opt/homebrew/bin, /usr/local/bin). Give an absolute path if it lives somewhere else."}
+          title={agent?.version ? `${agent.binary} — ${agent.version}` : ""}
+        />
+        <Hint
+          text="The Claude Code CLI to run. Left empty, `claude` is looked for on PATH and then in the usual install locations (~/.local/bin, /opt/homebrew/bin, /usr/local/bin). Give an absolute path if it lives somewhere else."
         />
       </div>
-
+      {#if agent?.version}
+        <p class="note indent">found: <code>{agent.binary}</code> — {agent.version}</p>
+      {/if}
       <div class="row">
         <span class="lbl">Model</span>
         <input
@@ -142,329 +266,363 @@
           onchange={apply}
           placeholder="default"
           disabled={locked}
-          title="An alias (fable, opus, sonnet, haiku) or a full model id. The CLI resolves it; the snapshot it picked is shown above once a turn has run."
         />
         <datalist id="agent-models">
           {#each AGENT_MODELS.filter(Boolean) as m (m)}
             <option value={m}></option>
           {/each}
         </datalist>
+        <Hint
+          text="An alias (fable, opus, sonnet, haiku) or a full model id. The CLI resolves it; the snapshot it picked is shown above once a turn has run. ⌘⇧S / O / F / H set the alias from anywhere."
+        />
       </div>
-
-      {#if agent}
-        <p class="note" class:warn={!agent.subscription}>
-          {#if agent.subscription}
-            Billed to your Claude subscription — <code>ANTHROPIC_API_KEY</code> is
-            withheld from the CLI.
-          {:else}
-            An API key in the environment will be used, and the API billed.
-          {/if}
-        </p>
-        {#if agent.resume}
-          <p class="note">
-            Continuing Claude Code session <code>{agent.resume.slice(0, 8)}</code>.
-          </p>
-        {/if}
-      {/if}
-    </div>
+    </section>
   {:else}
-  <div class="group">
-    <div class="row">
-      <span class="lbl">Provider</span>
-      <select bind:value={app.draft.provider} onchange={onProviderChange} disabled={locked}>
+    <section class="sect">
+      <div class="sect-h"><span class="ns-k">Provider</span></div>
+      <div class="pv" role="radiogroup" aria-label="Provider">
         {#each providers as p (p.kind)}
-          <option value={p.kind} disabled={!usable(p)}>
-            {providerLabel(p.kind)}{usable(p) ? "" : " — no key"}
-          </option>
+          <button
+            class="p"
+            class:on={p.kind === app.draft.provider}
+            class:dis={!usable(p)}
+            role="radio"
+            aria-checked={p.kind === app.draft.provider}
+            disabled={locked || !usable(p)}
+            title={usable(p) ? providerLabel(p.kind) : `${providerLabel(p.kind)} — no key; add one in Settings`}
+            onclick={() => pickProvider(p.kind)}
+          >
+            <span class="d" class:no={!usable(p)}></span>
+            {PILL[p.kind] ?? providerLabel(p.kind)}
+          </button>
         {/each}
-      </select>
-    </div>
+      </div>
+    </section>
 
-    <div class="row">
-      <span class="lbl">Model</span>
+    <section class="sect">
+      <div class="sect-h">
+        <span class="ns-k">Model</span>
+        <span class="sub">{models.length} in the picker · Settings picks which</span>
+      </div>
       {#if models.length > 0}
-        <select
-          bind:value={app.draft.model}
-          onchange={onModelChange}
-          disabled={locked}
-          title={app.draft.model}
-        >
-          {#each models as m (m)}
-            <option value={m}>{m}</option>
+        <div class="ml" role="radiogroup" aria-label="Model">
+          {#if models.length > 6}
+            <input
+              class="mfilter"
+              type="text"
+              bind:value={modelFilter}
+              placeholder="filter…"
+              disabled={locked}
+            />
+          {/if}
+          {#each shownModels as m (m)}
+            {@const cap = keyFor(m)}
+            <button
+              class="r"
+              class:on={m === app.draft.model}
+              role="radio"
+              aria-checked={m === app.draft.model}
+              disabled={locked}
+              title={m}
+              onclick={() => pickModel(m)}
+            >
+              <span class="rad"></span>
+              <span class="id">{m}</span>
+              {#if cap}<Kbd keys={cap} />{/if}
+              <span class="cx">{formatWindow(windows[m])}</span>
+            </button>
+          {:else}
+            <div class="more">nothing matches</div>
           {/each}
-        </select>
+          <div class="more">
+            <span>{mod}{shift}letter switches anywhere</span>
+          </div>
+        </div>
       {:else}
-        <input
-          type="text"
-          bind:value={app.draft.model}
-          onchange={onModelChange}
-          placeholder="model id"
-          disabled={locked}
-        />
+        <div class="row">
+          <span class="lbl">Model</span>
+          <input
+            type="text"
+            bind:value={app.draft.model}
+            onchange={onModelChange}
+            placeholder="model id"
+            disabled={locked}
+          />
+          <Hint text="Nothing is switched on for this provider yet. Type a model id, or turn ids on in Settings." />
+        </div>
       {/if}
-    </div>
 
-    {#if app.draft.provider === "openai-chat"}
-      <div class="row">
-        <span class="lbl">Base URL</span>
-        <input
-          type="text"
-          bind:value={app.draft.baseUrl}
-          onchange={apply}
-          placeholder="localhost:11434/v1"
-          disabled={locked}
-        />
+      {#if app.draft.provider === "openai-chat"}
+        <div class="row">
+          <span class="lbl">Base URL</span>
+          <input
+            type="text"
+            bind:value={app.draft.baseUrl}
+            onchange={apply}
+            placeholder="localhost:11434/v1"
+            disabled={locked}
+          />
+          <Hint text="The server speaking the OpenAI chat/completions format — a local runtime (Ollama, LM Studio, llama.cpp, vLLM) or a custom host." />
+        </div>
+      {/if}
+    </section>
+
+    <section class="sect">
+      <div class="sect-h">
+        <span class="ns-k">Thinking</span>
+        <Hint text={thinking.note} side="right" />
       </div>
-    {/if}
-
-    <div class="row">
-      <span class="lbl">Thinking</span>
-      <select
-        bind:value={app.draft.thinkingMode}
-        onchange={apply}
-        disabled={locked}
-        title={thinking.note}
-      >
+      <div class="segs" role="radiogroup" aria-label="Thinking">
         {#each thinking.choices as c (c.value)}
-          <option value={c.value}>{c.label}</option>
+          <button
+            class:on={c.value === app.draft.thinkingMode}
+            role="radio"
+            aria-checked={c.value === app.draft.thinkingMode}
+            disabled={locked}
+            title={c.label}
+            onclick={() => pickThinking(c.value)}
+          >
+            {seg(c.label)}
+          </button>
         {/each}
-      </select>
-    </div>
-
-    {#if app.draft.thinkingMode === "budget"}
-      <div class="row">
-        <span class="lbl">Budget</span>
-        <input
-          type="number"
-          bind:value={app.draft.budget}
-          onchange={apply}
-          min="1"
-          step="1024"
-          disabled={locked}
-        />
       </div>
-    {/if}
-  </div>
+      {#if app.draft.thinkingMode === "budget"}
+        <div class="row">
+          <span class="lbl">Budget</span>
+          <input
+            type="number"
+            bind:value={app.draft.budget}
+            onchange={apply}
+            min="1"
+            step="1024"
+            disabled={locked}
+          />
+          <Hint text="Thinking tokens per turn, below the model's max output tokens." />
+        </div>
+      {/if}
+    </section>
   {/if}
 
-  <div class="group">
-    <label
-      class="sw"
-      title={agentMode
-        ? "Claude Code's own tools — Read, Edit, Bash and the rest. Off runs it with none."
-        : "read_file, edit_file, bash, grep and the rest — rooted at the folder below."}
-    >
-      <span>Tools</span>
-      <input type="checkbox" bind:checked={app.draft.tools} onchange={apply} disabled={locked} />
+  <section class="sect">
+    <div class="sect-h"><span class="ns-k">Behaviour</span></div>
+    <label class="swq">
+      <span class="t">Tools</span>
+      <Hint
+        text={agentMode
+          ? "Claude Code's own tools — Read, Edit, Bash and the rest. Off runs it with none."
+          : "read_file, edit_file, bash, grep and the rest — rooted at the workspace folder below."}
+      />
+      <input type="checkbox" class="sw" bind:checked={app.draft.tools} onchange={apply} disabled={locked} />
     </label>
 
     {#if app.draft.tools}
-      <label
-        class="sw"
-        title={agentMode
-          ? "Claude Code runs its own permission checks in `dontAsk` mode: anything not already permitted is refused. Off is `bypassPermissions`."
-          : "Calls that change files or run commands wait for you in the transcript. Reads and task-list writes never ask."}
-      >
-        <span>{agentMode ? "Restrict permissions" : "Ask before writing"}</span>
+      <label class="swq sub">
+        <span class="t">{agentMode ? "Restrict permissions" : "Ask before writing"}</span>
+        <Hint
+          text={agentMode
+            ? "Claude Code runs its own permission checks in `dontAsk` mode: anything not already permitted is refused. Off is `bypassPermissions`."
+            : "Calls that change files or run commands wait for you in the transcript. Reads and task-list writes never ask."}
+        />
         <input
           type="checkbox"
+          class="sw"
           bind:checked={app.draft.approval}
           onchange={apply}
           disabled={locked}
         />
       </label>
       {#if !app.draft.approval}
-        <p class="warn">Every call runs unasked, including <code>bash</code>.</p>
+        <p class="warn sub-note">Every call runs unasked, including <code>bash</code>.</p>
       {/if}
       {#if agentMode}
         <!-- Said rather than implied: the switch above is the familiar one
              and the gate behind it is not. Nightloom's approval prompt gates
              calls its own engine is about to run, and this engine runs its
              own — headless, with nobody to ask. -->
-        <p class="note">
+        <p class="note sub-note">
           Claude Code decides these itself. Nightloom's approval prompt does not
-          run on this engine.
+          run on this engine, and neither do rewind, compaction, the Context tab
+          or attachments.
         </p>
       {/if}
 
       {#if !agentMode}
-      <label
-        class="sw"
-        title="web_fetch reads a URL, web_search finds one. Both leave this machine, and both ask first."
-      >
-        <span>Web access</span>
-        <input type="checkbox" bind:checked={app.draft.web} onchange={apply} disabled={locked} />
-      </label>
+        <label class="swq sub">
+          <span class="t">Web access</span>
+          <Hint text="web_fetch reads a URL, web_search finds one. Both leave this machine, and both ask first." />
+          <input type="checkbox" class="sw" bind:checked={app.draft.web} onchange={apply} disabled={locked} />
+        </label>
 
-      <label
-        class="sw"
-        title="Offers compact_context, so the model can ask for its own history to be summarised at the end of a turn. Off means only you compact, from the button above the transcript."
-      >
-        <span>Self-compaction</span>
-        <input
-          type="checkbox"
-          bind:checked={app.draft.selfCompact}
-          onchange={apply}
-          disabled={locked}
-        />
-      </label>
+        <label class="swq sub">
+          <span class="t">Self-compaction</span>
+          <Hint text="Offers compact_context, so the model can ask for its own history to be summarised at the end of a turn. Off means only you compact, from the button above the transcript." />
+          <input
+            type="checkbox"
+            class="sw"
+            bind:checked={app.draft.selfCompact}
+            onchange={apply}
+            disabled={locked}
+          />
+        </label>
 
-      <!-- On screen rather than implied by the tools switch, because it is a
-           change in *reach*: tools alone has always meant "may write inside
-           this folder", and the knowledge base is a second directory outside
-           it. -->
-      <label
-        class="sw"
-        title="Gives the model your knowledge base as @kb — an index of it in the system prompt, and read, write and search over it with the file tools. Off keeps the model inside the workspace."
-      >
-        <span>Knowledge base</span>
-        <input
-          type="checkbox"
-          bind:checked={app.draft.knowledge}
-          onchange={apply}
-          disabled={locked}
-        />
-      </label>
-      {#if app.draft.knowledge && app.connection?.knowledge}
-        <p class="note">
-          Reads and writes <code>{app.connection.knowledge.dir}</code>, outside
-          the workspace.
-        </p>
-      {/if}
+        <!-- On screen rather than implied by the tools switch, because it is a
+             change in *reach*: tools alone has always meant "may write inside
+             this folder", and the knowledge base is a second directory outside
+             it. -->
+        <label class="swq sub">
+          <span class="t">Knowledge base</span>
+          <Hint text="Gives the model your knowledge base as @kb — an index of it in the system prompt, and read, write and search over it with the file tools. Off keeps the model inside the workspace." />
+          <input
+            type="checkbox"
+            class="sw"
+            bind:checked={app.draft.knowledge}
+            onchange={apply}
+            disabled={locked}
+          />
+        </label>
+        {#if app.draft.knowledge && app.connection?.knowledge}
+          <p class="note sub-note">
+            Reads and writes <code>{app.connection.knowledge.dir}</code>, outside
+            the workspace.
+          </p>
+        {/if}
       {/if}
     {/if}
 
     {#if agentMode}
-      <label
-        class="sw"
-        title="Run without the host's CLAUDE.md, hooks, plugins and MCP servers. This is --safe-mode and not --bare: bare mode never reads OAuth credentials, so it would put the turn back on an API key."
-      >
-        <span>Safe mode</span>
+      <label class="swq">
+        <span class="t">Safe mode</span>
+        <Hint text="Run without the host's CLAUDE.md, hooks, plugins and MCP servers. This is --safe-mode and not --bare: bare mode never reads OAuth credentials, so it would put the turn back on an API key." />
         <input
           type="checkbox"
+          class="sw"
           bind:checked={app.draft.agentSafeMode}
           onchange={apply}
           disabled={locked}
         />
       </label>
     {:else}
-      <label class="sw" title="Identity, environment, AGENTS.md instructions and the notes index.">
-        <span>Preamble</span>
+      <label class="swq">
+        <span class="t">Preamble</span>
+        <Hint text="Identity, environment, AGENTS.md instructions and the notes index." />
         <input
           type="checkbox"
+          class="sw"
           bind:checked={app.draft.preamble}
           onchange={apply}
           disabled={locked}
         />
       </label>
 
-      <label class="sw" title="Clock, context gauge and task list, appended to each turn.">
-        <span>Per-turn status</span>
+      <label class="swq">
+        <span class="t">Per-turn status</span>
+        <Hint text="Clock, context gauge and task list, appended to each turn." />
         <input
           type="checkbox"
+          class="sw"
           bind:checked={app.draft.sidecar}
           onchange={apply}
           disabled={locked}
         />
       </label>
     {/if}
-  </div>
+  </section>
 
   {#if app.draft.tools}
-    <div class="group">
+    <section class="sect">
+      <div class="sect-h">
+        <span class="ns-k">Workspace</span>
+        {#if app.project}<span class="sub">set by the project</span>{/if}
+      </div>
       <div class="row">
         <span class="lbl">Folder</span>
-        <input
-          class="path"
-          class:tail={!!app.project}
-          type="text"
-          value={app.project
-            ? (app.project.root ?? app.connection?.workspace ?? "")
-            : app.draft.workspace}
-          oninput={(e) => {
-            if (!app.project) app.draft.workspace = e.currentTarget.value;
-          }}
-          onchange={apply}
-          placeholder="launch folder"
-          title={workspaceTitle}
-          disabled={locked || !!app.project}
-          readonly={!!app.project}
-        />
+        <span class="fld-wrap">
+          {#if app.project}<span class="lock"><Icon name="lock" size={12} /></span>{/if}
+          <input
+            class="path"
+            class:tail={!!app.project}
+            class:locked={!!app.project}
+            type="text"
+            value={app.project
+              ? (app.project.root ?? app.connection?.workspace ?? "")
+              : app.draft.workspace}
+            oninput={(e) => {
+              if (!app.project) app.draft.workspace = e.currentTarget.value;
+            }}
+            onchange={apply}
+            placeholder="launch folder"
+            title={workspaceTitle}
+            disabled={locked || !!app.project}
+            readonly={!!app.project}
+          />
+        </span>
+        <Hint text={workspaceTitle} />
       </div>
 
-      {#if !agentMode && app.connection && app.connection.mcp.length > 0}
-        <div class="row mcp-row">
-          <span class="lbl">MCP</span>
-          <div class="mcp">
-            {#each app.connection.mcp as server (server.name)}
-              <span
-                class="chip"
-                class:failed={server.error !== null}
-                title={server.error ??
-                  `${server.tools} tool${server.tools === 1 ? "" : "s"} — MCP tools always ask before running.`}
-              >
-                {server.name}
-                <b>{server.error ? "✕" : server.tools}</b>
-              </span>
-            {/each}
-          </div>
-        </div>
-      {/if}
-
-      {#if !agentMode && app.connection && app.draft.web}
-        <div class="row mcp-row">
-          <span class="lbl">Web</span>
-          <div class="mcp">
-            <span
-              class="chip"
-              title="Read a URL. It cannot run JavaScript, so a page built in the browser comes back empty."
-            >
-              web_fetch
-            </span>
-            {#if app.connection.search}
-              <!-- The whole chain, arrowed. A query goes to one of them, but
-                   which one depends on whether the ones before it answered,
-                   so all of them can see a query and all of them are named. -->
-              <span
-                class="chip"
-                title="Queries are sent to {app.connection.search}, in that order — the next one only if the one before it cannot answer."
-              >
-                web_search
-              </span>
-            {:else}
-              <span class="none">no search key — add one in Settings</span>
-            {/if}
-          </div>
-        </div>
-      {/if}
-
-      {#if !agentMode && app.connection && app.draft.tools}
-        <div class="row mcp-row">
-          <span class="lbl">Review</span>
-          <div class="mcp">
-            {#if app.connection.reviewers.length > 0}
-              {#each app.connection.reviewers as reviewer (reviewer.name)}
+      {#if hasReach}
+        <div class="row reach-row">
+          <span class="lbl">Reach</span>
+          <div class="chips">
+            {#if app.connection && app.connection.mcp.length > 0}
+              {#each app.connection.mcp as server (server.name)}
                 <span
                   class="chip"
-                  title="{reviewer.model} — a second opinion on a document. It reads the file and this workspace, never this conversation."
+                  class:failed={server.error !== null}
+                  title={server.error ??
+                    `${server.tools} tool${server.tools === 1 ? "" : "s"} — MCP tools always ask before running.`}
                 >
-                  {reviewer.name}
+                  {server.name}
+                  <b>{server.error ? "✕" : server.tools}</b>
                 </span>
               {/each}
-            {:else}
-              <span class="none"
-                >no second provider — add another API key in Settings</span
+            {/if}
+            {#if app.connection && app.draft.web}
+              <span
+                class="chip"
+                title="Read a URL. It cannot run JavaScript, so a page built in the browser comes back empty."
               >
+                web_fetch
+              </span>
+              {#if app.connection.search}
+                <!-- The whole chain, arrowed. A query goes to one of them, but
+                     which one depends on whether the ones before it answered,
+                     so all of them can see a query and all of them are named. -->
+                <span
+                  class="chip"
+                  title="Queries are sent to {app.connection.search}, in that order — the next one only if the one before it cannot answer."
+                >
+                  web_search <b>{app.connection.search}</b>
+                </span>
+              {:else}
+                <span class="none">no search key — add one in Settings</span>
+              {/if}
+            {/if}
+            {#if app.connection && app.draft.tools}
+              {#if app.connection.reviewers.length > 0}
+                {#each app.connection.reviewers as reviewer (reviewer.name)}
+                  <span
+                    class="chip"
+                    title="{reviewer.model} — a second opinion on a document. It reads the file and this workspace, never this conversation."
+                  >
+                    review <b>{reviewer.name}</b>
+                  </span>
+                {/each}
+              {:else}
+                <span class="none">review: needs a second provider's key</span>
+              {/if}
             {/if}
           </div>
         </div>
       {/if}
-    </div>
+    </section>
   {/if}
 
-  <div class="group">
+  <section class="sect">
+    <div class="sect-h">
+      <span class="ns-k">System prompt</span>
+      {#if agentMode}<span class="sub">appended to Claude Code's own</span>{/if}
+    </div>
     <div class="row">
-      <span class="lbl">System</span>
       <select
         value={app.draft.promptId ?? (custom ? "__custom" : "")}
         onchange={(e) => {
@@ -489,25 +647,27 @@
       <button
         class="icon"
         title="Saved system prompts"
-        onclick={() => (app.showPrompts = true)}>✎</button
+        aria-label="Saved system prompts"
+        onclick={() => (app.showPrompts = true)}><Icon name="pencil" size={13} /></button
       >
     </div>
-  </div>
+  </section>
 
   {#if agentMode && app.agentTurn}
-    <div class="group">
+    <section class="sect">
+      <div class="sect-h"><span class="ns-k">Last turn</span></div>
       {#if plan}
         <p class="note">plan: {plan}</p>
       {/if}
       {#if app.agentTurn.cost_usd != null}
         <p
-          class="note dim"
+          class="note"
           title="What the same turn would have cost on the API. Under a subscription it is not charged — which is the only reading of this number that is true."
         >
-          last turn ≈ ${app.agentTurn.cost_usd.toFixed(4)} on the API — not charged
+          ≈ ${app.agentTurn.cost_usd.toFixed(4)} on the API — <span class="ok">not charged</span>
         </p>
       {/if}
-    </div>
+    </section>
   {/if}
 
   {#if app.connectError}
@@ -516,7 +676,9 @@
 
   <div class="spacer"></div>
   <button class="manage" onclick={() => (app.showSettings = true)}>
-    Providers &amp; models…
+    <Icon name="gear" size={13} />
+    Providers, keys &amp; models…
+    <Kbd keys="{mod}," />
   </button>
 </div>
 
@@ -526,18 +688,100 @@
   .rail {
     display: flex;
     flex-direction: column;
-    padding: 0.6rem 0.7rem 0.7rem;
+    gap: 12px;
+    padding: 10px 12px 12px;
     overflow-y: auto;
     min-height: 0;
     flex: 1;
+    scrollbar-width: thin;
   }
+
+  /* The engine cards. */
+  .eng {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .ecard {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    padding: 9px 10px;
+    border: 1px solid var(--line2);
+    border-radius: 8px;
+    background: var(--paper);
+    color: var(--ink);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .ecard.on {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+  .ecard:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+  .ecard:focus-visible {
+    outline: 1px solid var(--accent);
+    outline-offset: 1px;
+  }
+  .radio {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    border: 1.5px solid var(--line2);
+    flex: none;
+    margin-top: 2px;
+    position: relative;
+  }
+  .ecard.on .radio {
+    border-color: var(--accent);
+  }
+  .ecard.on .radio::after {
+    content: "";
+    position: absolute;
+    inset: 2.5px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+  .ebody {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    flex: 1;
+  }
+  .et {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 500;
+  }
+  .et .ns-pill {
+    margin-left: auto;
+    font-size: 10px;
+    padding: 0 6px;
+  }
+  .ed {
+    font-size: 11.5px;
+    line-height: 1.35;
+    color: var(--dim);
+  }
+  .ecard.on .ed {
+    color: var(--ink2);
+  }
+
   .status {
     display: flex;
     align-items: center;
-    gap: 0.35rem;
-    font-size: 0.72rem;
+    gap: 6px;
+    font-size: 11.5px;
+    font-family: var(--mono);
+    color: var(--dim);
     min-height: 1.2rem;
-    padding-bottom: 0.6rem;
     overflow: hidden;
   }
   .conn {
@@ -545,13 +789,13 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     flex-shrink: 0;
+    color: var(--ink2);
   }
   .conn.model {
     color: var(--dim);
     flex-shrink: 1;
   }
   .sep {
-    color: var(--dim);
     opacity: 0.5;
   }
   .dim {
@@ -579,43 +823,96 @@
     }
   }
 
-  /* Hairline-separated bands, so the rail scans as four short blocks
-     rather than one long column of labelled boxes. */
-  .group {
+  /* The blue fact card of the agent engine; red when the key is the API's. */
+  .ncard {
+    padding: 7px 9px;
+    border-radius: 6px;
+    background: var(--live-soft);
+    color: var(--live);
+    font-size: 11.5px;
+    line-height: 1.4;
+  }
+  .ncard.warn {
+    background: var(--failed-soft);
+    color: var(--failed);
+  }
+  .ncard code {
+    font-family: var(--mono);
+    font-size: 10.5px;
+  }
+
+  /* Sections: a small uppercase label with a rule running to the edge. */
+  .sect {
     display: flex;
     flex-direction: column;
-    gap: 0.3rem;
-    padding: 0.55rem 0;
-    border-top: 1px solid var(--border);
+    gap: 6px;
   }
+  .sect-h {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding-bottom: 2px;
+  }
+  .sect-h::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--line);
+  }
+  .sect-h .sub {
+    font-size: 11px;
+    color: var(--dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
   .row {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: 8px;
   }
   .lbl {
-    font-size: 0.68rem;
+    font-size: 11.5px;
     color: var(--dim);
-    width: 3.9rem;
+    width: 56px;
     flex-shrink: 0;
   }
   select,
   input[type="text"],
   input[type="number"] {
-    background: var(--bg);
-    color: var(--text);
-    border: 1px solid var(--border);
+    background: var(--paper);
+    color: var(--ink);
+    border: 1px solid var(--line2);
     border-radius: 6px;
-    padding: 0.25rem 0.35rem;
-    font-size: 0.76rem;
+    padding: 5px 8px;
+    font-size: 12.5px;
     font-family: inherit;
     width: 100%;
     min-width: 0;
   }
+  .fld-wrap {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+    display: flex;
+  }
+  .lock {
+    position: absolute;
+    left: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--dim);
+    display: inline-flex;
+    pointer-events: none;
+  }
   .path {
     font-family: var(--mono);
-    font-size: 0.68rem;
+    font-size: 11.5px;
     text-overflow: ellipsis;
+  }
+  .path.locked {
+    padding-left: 26px;
   }
   /* rtl keeps the tail of a long path visible — the leaf folder is the part
      worth reading, and it is the part ltr clips. Only on the read-only
@@ -633,21 +930,195 @@
   input:disabled {
     opacity: 0.55;
   }
-  option:disabled {
-    color: var(--dim);
+  .note.indent {
+    padding-left: 64px;
   }
 
-  /* Pill switches: the label reads as a statement, the pill as its state. */
-  .sw {
+  /* Provider pills: the dot is the key. */
+  .pv {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+  }
+  .pv .p {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 9px;
+    border: 1px solid var(--line2);
+    border-radius: 999px;
+    font: inherit;
+    font-size: 12px;
+    color: var(--ink2);
+    background: var(--paper);
+    cursor: pointer;
+  }
+  .pv .p .d {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--done);
+  }
+  .pv .p .d.no {
+    background: var(--line2);
+  }
+  .pv .p.on {
+    border-color: var(--accent);
+    color: var(--ink);
+    background: var(--accent-soft);
+  }
+  .pv .p.dis {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .pv .p:disabled:not(.dis) {
+    cursor: default;
+  }
+  .pv .p:hover:not(:disabled) {
+    border-color: var(--dim);
+  }
+
+  /* The model list: radio rows. */
+  .ml {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--line2);
+    border-radius: 8px;
+    background: var(--paper);
+    overflow: hidden;
+  }
+  .mfilter {
+    border: none !important;
+    border-bottom: 1px solid var(--line) !important;
+    border-radius: 0 !important;
+    background: transparent !important;
+  }
+  .ml .r {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 0.5rem;
-    font-size: 0.78rem;
+    gap: 8px;
+    padding: 7px 10px;
+    border: none;
+    border-top: 1px solid var(--line);
+    background: transparent;
+    color: var(--ink2);
+    font: inherit;
+    font-size: 12.5px;
+    text-align: left;
     cursor: pointer;
-    padding: 0.1rem 0;
+    width: 100%;
   }
-  .sw input {
+  .ml .r:first-child {
+    border-top: none;
+  }
+  .ml .r:hover:not(:disabled) {
+    color: var(--ink);
+  }
+  .ml .r:disabled {
+    cursor: default;
+  }
+  .ml .r .rad {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    border: 1.5px solid var(--line2);
+    flex: none;
+    position: relative;
+  }
+  .ml .r.on {
+    background: var(--accent-soft);
+    color: var(--ink);
+  }
+  .ml .r.on .rad {
+    border-color: var(--accent);
+  }
+  .ml .r.on .rad::after {
+    content: "";
+    position: absolute;
+    inset: 2px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+  .ml .r .id {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .ml .r .cx {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--dim);
+    min-width: 30px;
+    text-align: right;
+  }
+  .ml .more {
+    padding: 6px 10px;
+    font-size: 11px;
+    color: var(--dim);
+    border-top: 1px solid var(--line);
+    display: flex;
+    justify-content: flex-end;
+  }
+
+  /* Thinking as a segmented control. */
+  .segs {
+    display: flex;
+    gap: 2px;
+    padding: 2px;
+    border: 1px solid var(--line2);
+    border-radius: 8px;
+    background: var(--paper);
+  }
+  .segs button {
+    flex: 1;
+    padding: 4px 4px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--dim);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .segs button:hover:not(:disabled) {
+    color: var(--ink);
+  }
+  .segs button.on {
+    background: var(--accent);
+    color: var(--paper);
+    font-weight: 500;
+  }
+  .segs button:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+
+  /* Switch rows: the label, its `?`, the pill. */
+  .swq {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 0;
+    cursor: pointer;
+  }
+  .swq .t {
+    font-size: 12.5px;
+    color: var(--ink);
+    flex: 1;
+  }
+  .swq.sub,
+  .sub-note {
+    margin-left: 2px;
+    padding-left: 12px;
+    border-left: 2px solid var(--line);
+  }
+  .sw {
     appearance: none;
     -webkit-appearance: none;
     margin: 0;
@@ -655,12 +1126,12 @@
     height: 15px;
     flex-shrink: 0;
     border-radius: 999px;
-    background: var(--border);
+    background: var(--line2);
     position: relative;
     cursor: pointer;
     transition: background 0.15s ease;
   }
-  .sw input::after {
+  .sw::after {
     content: "";
     position: absolute;
     top: 2px;
@@ -673,125 +1144,90 @@
       transform 0.15s ease,
       background 0.15s ease;
   }
-  .sw input:checked {
+  .sw:checked {
     background: var(--accent);
   }
-  .sw input:checked::after {
+  .sw:checked::after {
     transform: translateX(11px);
     background: var(--accent);
+    box-shadow: inset 0 0 0 2px var(--paper);
   }
-  .sw input:disabled {
+  .sw:disabled {
     opacity: 0.5;
     cursor: default;
   }
 
   .warn {
     margin: 0;
-    font-size: 0.68rem;
-    line-height: 1.3;
+    font-size: 11px;
+    line-height: 1.35;
     color: var(--error);
     opacity: 0.85;
   }
   .warn code {
     font-family: var(--mono);
-    font-size: 0.64rem;
+    font-size: 10.5px;
   }
-
   /* A statement of fact about the connection, where .warn is a caution. */
   .note {
     margin: 0;
-    font-size: 0.68rem;
+    font-size: 11px;
     line-height: 1.35;
     color: var(--dim);
   }
-  .note.dim {
-    opacity: 0.75;
-  }
-  .note.warn {
-    color: var(--error);
+  .note .ok {
+    color: var(--done);
   }
   /* `anywhere` rather than `break-word`: a Windows path has no space and no
      hyphen to break at, so without it the longest run sets the rail's width
      and the whole column grows a horizontal scrollbar. */
   .note code {
     font-family: var(--mono);
-    font-size: 0.64rem;
+    font-size: 10.5px;
     overflow-wrap: anywhere;
-  }
-
-  /* Two buttons reading as one control, so the choice looks like a mode and
-     not like two things you could have both of. */
-  .engines {
-    display: flex;
-    gap: 1px;
-    padding: 0 0 0.55rem;
-  }
-  .engines button {
-    flex: 1;
-    padding: 0.28rem 0.3rem;
-    font-size: 0.68rem;
-    font-family: inherit;
-    color: var(--dim);
-    background: var(--panel-alt, rgba(127, 127, 127, 0.08));
-    border: 1px solid var(--border);
-    cursor: pointer;
-  }
-  .engines button:first-child {
-    border-radius: 3px 0 0 3px;
-  }
-  .engines button:last-child {
-    border-radius: 0 3px 3px 0;
-  }
-  .engines button.on {
-    color: var(--fg);
-    background: var(--bg);
-    border-color: var(--accent);
-  }
-  .engines button:disabled {
-    cursor: default;
-    opacity: 0.6;
   }
 
   .icon {
     background: transparent;
-    border: 1px solid var(--border);
+    border: 1px solid var(--line2);
     border-radius: 6px;
     color: var(--dim);
-    font-family: inherit;
-    font-size: 0.75rem;
-    line-height: 1;
-    padding: 0.3rem 0.4rem;
+    padding: 6px 8px;
     cursor: pointer;
     flex-shrink: 0;
+    display: inline-flex;
   }
   .icon:hover {
     color: var(--accent);
     border-color: var(--accent);
   }
 
-  .mcp-row {
+  .reach-row {
     align-items: flex-start;
   }
+  .reach-row .lbl {
+    padding-top: 2px;
+  }
   .none {
-    font-size: 0.68rem;
+    font-size: 11px;
     color: var(--dim);
   }
-  .mcp {
+  .chips {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.25rem;
+    gap: 4px;
     min-width: 0;
   }
   .chip {
     display: inline-flex;
     align-items: baseline;
-    gap: 0.25rem;
-    font-size: 0.68rem;
-    color: var(--dim);
-    background: var(--bg);
-    border: 1px solid var(--border);
+    gap: 4px;
+    font-size: 11px;
+    color: var(--ink2);
+    background: var(--paper);
+    border: 1px solid var(--line2);
     border-radius: 999px;
-    padding: 0.05rem 0.4rem;
+    padding: 1px 8px;
     max-width: 100%;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -799,8 +1235,9 @@
   }
   .chip b {
     font-weight: 600;
-    color: var(--text);
-    font-variant-numeric: tabular-nums;
+    color: var(--ink);
+    font-family: var(--mono);
+    font-size: 10.5px;
   }
   .chip.failed,
   .chip.failed b {
@@ -817,24 +1254,27 @@
     font-size: 0.72rem;
     white-space: pre-wrap;
     word-break: break-word;
-    margin-top: 0.5rem;
   }
   .spacer {
     flex: 1;
-    min-height: 0.5rem;
+    min-height: 0.25rem;
   }
   .manage {
-    background: transparent;
-    color: var(--dim);
-    border: 1px solid var(--border);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 7px 14px;
     border-radius: 6px;
-    padding: 0.35rem 0.5rem;
-    font-size: 0.74rem;
+    border: 1px solid var(--line2);
+    background: var(--sheet);
+    color: var(--ink);
+    font: inherit;
+    font-size: 13px;
     cursor: pointer;
-    text-align: left;
+    flex: none;
   }
   .manage:hover {
-    color: var(--accent);
-    border-color: var(--accent);
+    border-color: var(--dim);
   }
 </style>

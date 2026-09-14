@@ -132,21 +132,21 @@
 
   const openTasks = $derived(currentTodos().filter((t) => t.status !== "completed").length);
 
-  // The popover: opened from the model chip, closed by Escape, by a click
-  // outside it, or by the chip again.
-  let railOpen = $state(false);
+  // The popover: opened from the model chip (or ⌘M, or the ⌘K palette —
+  // which is why the flag is app state, `app.showRail`), closed by Escape,
+  // by a click outside it, or by the chip again.
   let popEl = $state<HTMLElement | null>(null);
   let chipEl = $state<HTMLElement | null>(null);
   function onDocClick(e: MouseEvent): void {
     const t = e.target as Node;
     if (popEl?.contains(t) || chipEl?.contains(t)) return;
-    railOpen = false;
+    app.showRail = false;
   }
   function onKey(e: KeyboardEvent): void {
-    if (e.key === "Escape") railOpen = false;
+    if (e.key === "Escape") app.showRail = false;
   }
   $effect(() => {
-    if (!railOpen) return;
+    if (!app.showRail) return;
     document.addEventListener("mousedown", onDocClick, true);
     document.addEventListener("keydown", onKey);
     return () => {
@@ -169,11 +169,11 @@
   <div class="right">
     <button
       class="ns-chip model"
-      class:open={railOpen}
+      class:open={app.showRail}
       bind:this={chipEl}
-      title="Model, tasks and context — click to open"
-      aria-expanded={railOpen}
-      onclick={() => (railOpen = !railOpen)}
+      title="Model, tasks and context — click to open (⌘M)"
+      aria-expanded={app.showRail}
+      onclick={() => (app.showRail = !app.showRail)}
     >
       <span class="dot" class:unknown={!app.connection}></span>
       {#if app.connection}
@@ -243,7 +243,7 @@
     {/if}
   </div>
 
-  {#if railOpen}
+  {#if app.showRail}
     <div class="popover" bind:this={popEl}>
       <RightRail />
     </div>
@@ -361,8 +361,11 @@
     position: absolute;
     top: calc(100% - 1px);
     right: 20px;
-    width: 300px;
-    height: min(560px, calc(100vh - var(--titlebar-h) - 80px));
+    /* 340 × 780 since the 2026-09-13 redesign (was 300 × 560): the Model
+       pane became cards, pills and a radio list, which want the width, and
+       the height shows the Provider pane's first four sections unscrolled. */
+    width: 340px;
+    height: min(780px, calc(100vh - var(--titlebar-h) - 80px));
     display: flex;
     flex-direction: column;
     background: var(--sheet);
