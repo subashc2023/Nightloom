@@ -235,3 +235,52 @@ impl RawUsage {
         }
     }
 }
+
+/// The one line Nightloom writes *to* the CLI, when a turn has attachments.
+///
+/// Everything above reads the stream; this is the only shape that goes the
+/// other way. With `--input-format stream-json` the CLI takes its user turn
+/// on stdin as a `user` line carrying a Messages-API message, and that
+/// message's `content` may be the block list rather than a string — which is
+/// how an image or a PDF reaches the model at all, since argv carries text and
+/// nothing else. The shape is the one the Agent SDK sends on its own behalf
+/// (`external`, the SDK "Streaming Input" page shows exactly this `image`
+/// block and lists image uploads as a streaming-mode-only capability), and
+/// it was verified live on 2.1.263: a `document` block is accepted the same
+/// way, and both survive a `--resume` of a session whose earlier turns went
+/// on argv (`agent-attachments-report-2026-09-14.md` in the nightshift
+/// repo).
+///
+/// Caption first, then images, then documents — the log's own order, and
+/// the order the provider adapters build a user message in, so what the
+/// agent saw and what the transcript replays are the same message. A caption
+/// of nothing is still sent as a text block: the CLI has no "attachment
+/// only" turn, and an empty string is what the composer sends for one.
+///
+/// `parent_tool_use_id` is `null` for a top-level turn. The SDK writes the
+/// field on every user line it sends, so it is written here too rather than
+/// left for the CLI to default — whether it would is not something that was
+/// checked, and matching the SDK's shape exactly costs one key.
+pub(super) fn user_line(input: &crate::TurnInput) -> String {
+    let mut content = vec![serde_json::json!({ "type": "text", "text": input.text })];
+    content.extend(input.images.iter().map(|img| {
+        serde_json::json!({
+            "type": "image",
+            "source": { "type": "base64", "media_type": img.media_type, "data": img.data },
+        })
+    }));
+    content.extend(input.documents.iter().map(|doc| {
+        serde_json::json!({
+            "type": "document",
+            "source": { "type": "base64", "media_type": doc.media_type, "data": doc.data },
+            "title": doc.name,
+        })
+    }));
+    let line = serde_json::json!({
+        "type": "user",
+        "message": { "role": "user", "content": content },
+        "parent_tool_use_id": Value::Null,
+    });
+    // NDJSON: the newline is the frame, and the CLI waits for it.
+    format!("{line}\n")
+}

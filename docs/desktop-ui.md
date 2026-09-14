@@ -119,13 +119,32 @@ rather than `<chat> — Nightloom`, for the same reason.
 And **`mac_menu` is not decoration**: Tauri installs a default menu on macOS when
 an app sets none, and replacing it is where the trap is — a webview on that
 platform takes ⌘C and ⌘V *from the menu*, so a custom menu without an Edit
-submenu silently breaks copy and paste in every text box the app has. The four
-custom items (Settings ⌘,, New Chat ⌘N, Open Folder as Project… ⌘O, Import from
-claude.ai…) are **forwarded to the webview** as a `menu` event carrying the item's
-id, and `runMenuCommand` in `state.svelte.ts` acts on it: each one is a frontend
-flow — a modal, a file dialog, a re-connect — and the backend has no way to run
-half of one. Nothing is reachable *only* from the menu, so no other platform is
-missing a capability.
+submenu silently breaks copy and paste in every text box the app has. The
+custom items (four at first — Settings ⌘,, New Chat ⌘N, Open Folder as Project…
+⌘O, Import from claude.ai… — and, since the 2026-09-13 chat-surface redesign, View → ~~Model, Tasks
+& Context ⌘M~~ Model & Tasks ⌘M and Context ⌘⇧C (the Context tab left the popover
+for its own button under the top bar's gauge, review round 1 the same evening),
+Command Palette… ⌘K, Switch Project… ⌘P, Switch Engine ⌘E, and a
+Model menu with Sonnet ⌘⇧S, Opus ⌘⇧O, Fable ⌘⇧F, Haiku ⌘⇧H — **the Claude
+Code engine's aliases only, since 2026-09-14**) are **forwarded to
+the webview** as a `menu` event carrying the item's id, and `runMenuCommand` in
+`state.svelte.ts` acts on it: each one is a frontend flow — a modal, a file
+dialog, a re-connect — and the backend has no way to run half of one. Nothing is
+reachable *only* from the menu, so no other platform is missing a capability: on
+Windows and Linux `App.svelte` binds the same chords itself (guarded off on macOS
+so nothing fires twice). ~~A model key switches the picker to the first id carrying
+the alias; a provider with no such id gets a toast and no change.~~ **2026-09-14,
+his second look — "anthropic shouldn't be special":** on the API engine the
+picker's models are **⌘⇧1…9** in the popover's order, every provider alike
+(`pickerModels` / `switchModelAt`, bound in `App.svelte` on every platform), and
+the four letters decline there with a toast; on Claude Code the letters set the
+CLI's alias as before. Shift means model on both engines. ~~⌘⇧1…9~~
+⌘1…9 (bare ⌘ since his second look: "anthropic shouldn't be special") is the
+n-th provider pill, bound in `App.svelte` on every platform — it is not a menu
+item (the pills are dynamic), so macOS cannot double-fire it; matched on
+`e.code` so a layout cannot move it. It works from anywhere in the window, the
+popover open or not. ⇧ in a key cap is Shift, never caps lock (⇪); the cap's
+tooltip spells the chord out.
 
 The menu is registered `#[cfg(target_os = "macos")]` and only there, because on
 Windows and Linux a menu is drawn *inside* the window under a caption bar this
@@ -140,14 +159,66 @@ is the check to repeat when touching it.
 
 ## The right-hand rail
 
-`RightRail.svelte` with three tabs:
+`RightRail.svelte` with ~~three~~ two tabs (Context moved out, review round 1
+2026-09-13 — see below):
 
-- **`ProviderRail.svelte`** — provider/model dropdowns and seven switches: tools,
-  ask-before-writing, web access and self-compaction (the last three shown only
-  with tools on), knowledge, preamble, and per-turn status. It re-connects on
-  every change and auto-connects at launch to the last-used draft.
+- **`ProviderRail.svelte`** — the engine as two radio cards (who is billed, who
+  runs the loop), provider pills, a model radio list (each id's ⌘⇧ key and
+  context window), thinking as a segmented control, and seven switches each with
+  a `?` carrying its explanation: tools, ask-before-writing, web access and
+  self-compaction (the last three shown only with tools on), knowledge, preamble,
+  and per-turn status. It re-connects on every change and auto-connects at
+  launch to the last-used draft. (Redesigned 2026-09-13; the dropdowns it
+  replaced were the same knobs.) The preamble switch shows on both engines
+  since 2026-09-14, with an engine-aware hint: on Claude Code it gates what
+  `connect_agent` appends to the CLI's own prompt.
+  On Claude Code the model is a row of alias pills (default · fable · opus ·
+  sonnet · haiku, each with its key) plus *other…* for a typed id, and the
+  Binary field sits at the foot under **CLI** — set once, read never. The
+  *Providers, keys & models…* button closes the popover as Settings opens, and
+  the system-prompt pencil closes it, opens the library, and reopens it
+  scrolled to the dropdown when the library closes (`app.promptsFrom`,
+  `app.railScrollTo`). The library's edit lives in `app.promptDraft`, so no
+  way out of the modal loses typed text.
 - **`TaskPanel.svelte`** — the model's task list, badged with the open count.
-- **`ContextPanel.svelte`** — the `WireView`; see [desktop.md](desktop.md).
+- ~~**`ContextPanel.svelte`** — the `WireView`; see [desktop.md](desktop.md).~~
+  **`ContextPanel.svelte`** is its own popover now, opened from the top bar's
+  context gauge (which reads *Context* before any usage) or ⌘⇧C. ~~On Claude Code
+  it explains rather than vanishes: the panel itemises the request Nightloom
+  is about to send, and that engine's CLI assembles its own — Nightloom appends
+  its preamble to it (2026-09-14), but the request is the CLI's and there is
+  nothing to take apart.~~ **Superseded later on 2026-09-14 (nightshift backlog
+  048):** the panel shows on both engines. Its System section is the whole
+  prompt: one row per layer in ladder order (identity, environment, user
+  memory, model instructions, project instructions — one sub-row per
+  `AGENTS.md` on the walk — notes index, vault index, and on Claude Code the
+  engine note), each row unfolding to the segment's **full text**
+  (`WireSegment.text`), and *Show as sent* rendering the exact string the
+  backend sends (`WireView.system_text`) with a Copy button. The library prompt
+  is listed last without a switch — it has the rail's dropdown. On Claude Code
+  `context_view` returns the bridged segments with no messages, and the
+  Conversation section says the CLI holds the history; the *gauge* still
+  counts, from the usage the CLI reports per turn.
+
+  **Each layer row has a switch** that turns the layer off *for this chat*:
+  the row is struck through while off, so a blind test is visible while it
+  runs, and the layer is absent from *as sent*. A flip records
+  `SessionEvent::PromptLayers` in the chat's log (`set_prompt_layers`, which
+  creates the log if the first send has not) and reconnects the way a rail knob
+  does, so `connect` / `connect_agent` read the set back; the switches
+  themselves project the log (`promptLayersOff` in `state.svelte.ts`, a copy of
+  `Session::prompt_layers_off` on the same terms as the todos). Reopening the
+  chat keeps them, and opening a different chat reconnects if its set differs
+  from the one the engine was built with (`syncPromptLayers`, run from an effect
+  in `App.svelte`; `prompt_layers` returns both sets). Identity and environment
+  have no row on Claude Code — they are the CLI's own — and that engine's rows
+  carry the caveat that a resumed chat on CLI ≥ 2.1.265 keeps its recorded
+  prompt until the next compaction. With the rail's Preamble switch off the
+  per-chat switches are disabled: nothing is left to remove. **Deliberately not
+  built:** rewriting a layer's text for one chat — the store editors and the
+  library prompt are where text is edited; see
+  [service-prompt.md](service-prompt.md). One popover is open at a time
+  (`app.showRail` / `app.showContext`).
 
 The thinking dropdown is capability-aware via `catalog.ts::thinkingSupport(kind,
 model)` — Claude 5 → adaptive effort, Claude ≤4.5 → budget, OpenAI → effort incl.
@@ -164,7 +235,9 @@ folder" — and the rail names the directory under it.
 
 `SettingsModal.svelte` is a sidebar-nav modal (provider list left, one pane at a
 time) managing per-provider API keys, rail visibility, the model picker, web
-search keys, and the vault's folder.
+search keys, the vault's folder, and — since 2026-09-14 — the per-model
+instruction files (the *Model instructions* row; the files themselves are
+described under Notes below).
 
 API keys entered in-app live in the OS credential store (`keyring` crate, service
 "nightloom", user = provider label; `openai-chat` falls back to `openai`'s stored
@@ -200,18 +273,21 @@ joins it the moment it is switched on. Read before the fetched list, turning one
 chip on moved its whole family (which sorts by its first member's index) to the
 top of the list under the user's cursor.
 
-It is **cartouches, not a checkbox column**, and two shaping passes
-(`catalog.ts::groupModels`) are what make a fetched list readable: a vendor's
-`/v1/models` is a few hundred ids in its own order, and most of that length is the
-same handful of models wearing different release dates.
+~~It is **cartouches, not a checkbox column**~~ — **since 2026-09-13 it is rows**
+(checkbox · id · `default` pill · "n dated releases" · context window) under a
+strip of every id that is on, in `modelsFor`'s order, which is the popover's own
+(Swaraag's pick, nightshift blocker 033). Two shaping passes
+(`catalog.ts::groupModels`) are what make a fetched list readable either way: a
+vendor's `/v1/models` is a few hundred ids in its own order, and most of that
+length is the same handful of models wearing different release dates.
 
 **Folding** collapses `-20250219` / `-2025-02-19` / `-latest` / `-001` variants
-onto one chip, whose id is always a string the vendor actually listed — untagged
+onto one row, whose id is always a string the vendor actually listed — untagged
 if there is one, else `-latest`, else the newest snapshot — since a synthesized
-base is a 404 the user finds out about a turn later. A `+n` badge opens the group
-to pin a specific snapshot, and one already pinned stays visible unasked, or it
-would be a model in the rail's dropdown with no switch anywhere to turn it back
-off.
+base is a 404 the user finds out about a turn later. A "n dated releases" toggle
+(the `+n` badge before the redesign) opens the group to pin a specific snapshot,
+and one already pinned stays visible unasked, or it would be a model in the
+popover's list with no switch anywhere to turn it back off.
 
 **Grouping** is a trie over `-`-separated tokens (a vendor path being one token),
 which finds real families where a character-wise common prefix would not — `gpt-5`
@@ -256,9 +332,105 @@ until the vault existed that chat had no notes of any kind.
 
 The four note commands take a `scope` (`project` | `knowledge`) instead of
 gaining four siblings, since the operations are identical and only the directory
-differs. An unrecognized value is an error rather than a default, because a typo
+differs.
+
+**Since 2026-09-14 the scope also names the two always-loaded files:**
+`instructions` is `<workspace>/AGENTS.md` and `memory` is
+`~/.nightloom/AGENTS.md` — the halves of each store that the preamble reads
+*whole* rather than indexing (see [service-prompt.md](service-prompt.md)).
+They had no editor: the project menu said where `AGENTS.md` lived and the
+user memory file was reachable from nowhere in the app. Each section of the
+Notes panel now leads with a pinned row (*Instructions* over the project
+notes, *Memory* over the vault) that opens the same `NoteView`. The scopes
+are one fixed file each: `list_notes` refuses them, `read_note` answers an
+absent file with empty text rather than an error (the editor opens on it so
+the first line can be written), and `delete_note` refuses them — emptying the
+text is the reversible form, per the never-lose-work rule. Saving either
+re-connects the live connection (`saveNote` → `applyDraft`), the rule the
+prompt library already follows for its active entry, because the preamble is
+assembled once at connect and an edit would otherwise sit unread until the
+next chat. The editor's footer says so and says *whole*, where the notes'
+footer says *name and first line*.
+
+**Drafts (same day, his review):** typing into a note, leaving it and coming
+back found the edit gone — the editor reloaded the file. Unsaved text now
+lives in `app.noteDrafts`, keyed `scope:name`, for the life of the app (the
+never-lose-work rule); reopening a note with a draft shows the draft over the
+saved baseline, marked *● draft*, with **Revert** (back to the last saved
+text) beside **Save**. The mirror into `noteDrafts` is keyed to the note
+*whose text is in the buffer* (`bufferKey`, set by `load` after the read),
+not to the selection: the selection changes a tick before the buffer does,
+and the first version wrote the previous note's unsaved text as a draft under
+the next note's name. An unrecognized value is an error rather than a default, because a typo
 that quietly wrote a personal note into somebody's repository is exactly the
 failure the split exists to prevent.
+
+**A fifth scope, `models` (2026-09-14, nightshift backlog 044):**
+`~/.nightloom/models/`, one file per model id, read whole into the preamble of
+a chat on that model and no other (see [service-prompt.md](service-prompt.md)).
+A folder like the two stores — it lists and deletes — but its names are ids:
+`<id>.md`, with a `/` in the id written `__` (`modelInstructionFile` in
+`catalog.ts`, the same rule as the backend's). `read_note` answers a missing
+file with empty text, as for the fixed files, so the editor opens on a model
+that has none yet; saving re-connects like `instructions` and `memory`, and an
+empty file is treated as absent. It is not in the Notes panel. It is reached
+from two places: the **Model instructions** row in Settings (under Knowledge),
+which lists every file with its id and size and has *+ Add for `<current
+model>`* — the rail's model, or on the Claude Code engine its alias — and the
+pencil under the model list in the popover. Both close the surface they are on
+and open `NoteView`; Save and the back button bring it back (`closeNote` reads
+`app.noteFrom`; the popover scrolls to its model list, Settings reopens on the
+row), the round trip the prompt library makes for the popover.
+
+**The Dream button (Knowledge bar, `Dream · N`, hidden at zero)** runs the
+consolidation pass over the observation inbox (the mechanics are in
+[service-data.md](service-data.md) under *Scheduling*). Since 2026-09-14 the
+pass files per project — an observation recorded in a registered project lands
+in that project's `.agents/memory/`, the rest in the vault — and the button's
+shape is unchanged; only the toast shows the split: *dream: consolidated 5
+observations — 3 into Lanternfish, 2 into the vault — Lanternfish's .agents
+committed (a1b2c3d); vault unchanged*. `DreamReport.filed` carries the split in
+turn order, projects first and the vault last, and `git` is one clause per
+folder. The Project section's listing picks the new memory notes up on the
+same `refreshNotes` as everything else.
+
+**The Capture button (Knowledge bar, `Capture · N`, always visible)** runs the
+pass that fills the inbox the Dream button drains: it reads every chat log
+since its watermark — each project's and the unfiled ones — and extracts
+observations on the dream's connection (the Settings model, else the rail's;
+`passTarget` in `state.svelte.ts` is the one place both buttons ask). N is the
+number of logs with something new (`capture_status`, a directory scan after
+every turn), not the inbox count, which is why the button does not hide at
+zero the way Dream's does: the chat open right now is always one of them. It
+shares the dream's one-at-a-time lock and its Stop, and the toast reads
+*capture: captured 4 observations from 3 chats — 3 from Lanternfish, 1
+unfiled; 2 waiting for more turns*. With the Settings toggle on, the
+after-compaction trigger runs a capture first and then the dream. The
+mechanics are in [service-data.md](service-data.md) under *Capture*.
+
+**Proposed changes to the two fixed files (2026-09-14, memory-writer 6c).**
+The dream may *propose* a replacement for `Instructions` or `Memory` — never
+write either; the mechanics and the guarantee are in
+[service-data.md](service-data.md) under *Proposals*. Its toast ends *— and
+proposed a change to Lanternfish's instructions — review it under Notes*, and
+the pinned row grows a `1 proposed` badge (`app.proposals`, re-listed with the
+notes after every turn and every dream; `list_proposals` / `read_proposal` /
+`dismiss_proposal` / `mark_applied`, scope `instructions` or `memory`). The
+badge — and a ⌘K row, *Review proposed instructions*, while any exist — opens
+`NoteView` on the file in **proposal mode** (`app.proposalReview`): the
+model's *why* above a side-by-side diff of the saved text against the
+proposal (`unifiedDiff` in `diff.ts`, a small line LCS rendered through the
+same `DiffView` the Nightshift screens use; no dependency), and three ways
+out. *Load into editor* makes the proposed text the buffer — a **draft**, by
+the same `noteDrafts` rule as typed text (`mirrorDraft`, the effect's body
+extracted so the rule is testable): `● draft` shows, Revert restores the
+saved text and forgets the proposal (`unstageProposal`), Save writes the file
+through the ordinary `saveNote` and only afterwards records the proposal as
+applied with a hash of what was saved (`app.stagedProposal` → `mark_applied`).
+*Dismiss* confirms first (`ConfirmDialog` — the badge goes with it, and the
+never-lose-work rule says a click must not lose something unread), then moves
+the file under `proposals/dismissed/`. *Keep for later* closes; the badge
+stays. Nothing in any of it writes `AGENTS.md` except the user's Save.
 
 `app.openNote` carries its scope for the same reason — the two stores can each
 hold a `plan.md`, and a bare name would make saving depend on which sidebar tab
@@ -282,6 +454,11 @@ survived and the thing between them has not — and gets inline-code exclusion f
 free, since marked consumes the source left to right and a `` `[[x]]` `` is
 claimed whole by the built-in codespan tokenizer before this extension is asked
 about the brackets inside it.
+
+`tilde.ts` replaces marked's `del` tokenizer on both instances so strikethrough
+needs `~~two~~` tildes: GFM lets a single pair strike, and a research reply
+that says "~70%" and "(~10-20%" in one paragraph had everything between the
+two struck, silently (2026-09-14, seen live). A lone `~` is a character.
 
 It renders to an `<a href="#kb:…">`: **a fragment, not a custom scheme**, because
 DOMPurify strips every scheme outside its allow-list and a `nlnote:` href would
@@ -320,10 +497,16 @@ quadtree.
 
 ## The composer and the welcome page
 
-`Welcome.svelte` is the new-chat page: with an empty transcript the centre pane
-shows the project, what the next chat inherits from the docspace, recent projects
-to switch to, a folder picker — and the composer floating in the middle rather
-than docked at the bottom. `Composer.svelte` takes a `floating` prop for that
+`Welcome.svelte` is the new-chat page: with an empty transcript (no message
+event — a session re-opened from the sidebar carries `session_created`, which
+used to tip it into an empty `Transcript`; review round 1, 2026-09-13) the
+centre pane shows the project, ~~what the next chat inherits from the docspace, recent projects
+to switch to, a folder picker~~ — since 2026-09-13 the project's notes orbiting the
+composer on an inner ring and the knowledge base's on an outer one (hover pauses a
+note and previews it, click opens it), one count line, and a strip of the stable
+keys at the foot; the project list moved to ⌘P (`Palette.svelte`, also the ⌘K
+command palette) — and the composer floating in the middle rather than docked at
+the bottom. `Composer.svelte` takes a `floating` prop for that
 instead of being duplicated: a second composer would be a second place to fix a
 paste bug. The switch is on `app.events.length === 0 && !app.live`, and
 `app.live` is in the test so the pane flips on the first send rather than on the

@@ -9,13 +9,17 @@
 
 pub mod agent;
 pub mod approval;
+pub mod capture;
 pub mod credentials;
 pub mod dream;
 pub mod import;
 pub mod knowledge;
+pub mod mcp_server;
+pub mod nightshift;
 pub mod observe;
 pub mod project;
 pub mod prompt;
+pub mod proposal;
 pub mod sidecar;
 pub mod store;
 pub mod tools;
@@ -41,7 +45,9 @@ pub mod mcp {
 }
 pub use knowledge::{LinkGraph, vault_dir};
 pub use project::{Note, Project, Registry};
-pub use prompt::{KnowledgeContext, ProjectContext, PromptConfig, assemble};
+pub use prompt::{
+    KnowledgeContext, ProjectContext, PromptConfig, agent_preamble, agent_prompt, assemble,
+};
 pub use sidecar::{SidecarContext, SidecarPart};
 pub use turn::{Chat, CompactOutcome, TurnEvent, TurnInput, TurnOutcome};
 

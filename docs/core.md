@@ -101,8 +101,13 @@ replay.
 
 A system prompt is an ordered `Vec<Segment>` (`SystemPrompt`), not a string. Each
 `Segment` carries a `SegmentKind` (Identity / Environment / ProjectInstructions /
-ProjectNotes / Knowledge / UserMemory / Custom), a name, its text, and a
-`cache_anchor` flag. `Knowledge` is the index of the user's knowledge vault —
+ProjectNotes / Knowledge / UserMemory / ModelInstructions / EngineNote / Custom),
+a name, its text, and a `cache_anchor` flag. `EngineNote` (2026-09-14) is the
+Claude Code bridge's gloss on the names in the layers above it — its own kind
+rather than a `Custom` segment named "engine-note", because a chat switches
+layers off *by kind* and the note is one a user may drop while the library
+prompt, which is `Custom`, is not. `SegmentKind::LAYERS` is the eight kinds a
+chat can switch off, in ladder order. `Knowledge` is the index of the user's knowledge vault —
 about *them* rather than about this folder, which is what keeps it apart from
 `ProjectNotes`; both reach the model as an index and never as content.
 
@@ -286,6 +291,27 @@ A rename is an ordinary append — the old name stays in the log and the project
 takes the latest — which is what makes both shells' rename five lines rather than
 a mutation path of its own.
 
+### Prompt layers per chat (`SessionEvent::PromptLayers { off }`, `Session::prompt_layers_off()`)
+
+Which system-prompt layers this chat has switched off, as a list of
+`SegmentKind`s (2026-09-14, nightshift backlog 048). Latest wins like a title;
+empty, or no event at all, means every layer is on. `record_prompt_layers`
+normalizes the set to ladder order without repeats and is a no-op when the set
+is unchanged, so a shell that re-sends the current set on every reconnect does
+not fill the log with it.
+
+A log event rather than a field on the shell's connection, because the
+exclusion is a fact about the *chat*: a blind test that must not see the
+project's instructions is still that test when the chat is reopened tomorrow or
+the rail switches engines under it, and the log is where facts about the chat
+live. Kinds rather than names, because a layer is switched off as a category —
+every `AGENTS.md` on the walk, not one of them — and a name is a path that
+changes with the workspace. Not part of the message projection: the shell reads
+it at connect time and assembles the prompt without those layers
+(`PromptConfig::without`), so nothing replays it as a turn. A `Compaction`
+leaves it alone, a `Rewind` past it restores the earlier set — the same two
+rules as a title, for the same reasons.
+
 ## Attachments
 
 ### Images (`ContentBlock::Image { media_type, data }`, `ImageInput`)
@@ -369,6 +395,13 @@ logged.
 `messages_sourced` **is** the projection and `messages_with_sidecar` is it with
 the tags dropped — one implementation rather than two, since a view that itemized
 a different list from the one the engine sends would be worse than no view.
+
+A `WireSegment` carries its **whole text** where a `WireBlock` carries a
+preview, and the asymmetry is deliberate (2026-09-14): a tool result is the item
+a reader pages past, the system prompt is the item they came to read, and every
+layer is capped at assembly so the sum is tens of kilobytes at the outside.
+`WireView::system_text` is `render_flat()` of the same prompt — "as sent",
+rendered by the one join rule rather than re-joined by a shell.
 
 Sizes are **estimates and say so**: there is no tokenizer here (every vendor
 tokenizes differently, and only one offers a counting endpoint), so `Size.tokens`

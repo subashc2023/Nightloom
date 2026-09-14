@@ -40,15 +40,13 @@ fn spec(args: &ChatArgs) -> Result<AgentSpec> {
     if !args.tools {
         spec.tools = Some(Vec::new());
     } else {
-        // Headless has no way to ask, so the two honest settings are "deny
-        // anything not already permitted" and "run everything". Nightloom's
-        // own gate is a live prompt and has no equivalent here; saying so is
-        // better than implying the familiar one is running.
-        spec.permission_mode = Some(if args.no_approval {
-            "bypassPermissions".into()
-        } else {
-            "dontAsk".into()
-        });
+        // Headless has no way to ask, so Nightloom's own gate — a live
+        // prompt — has no equivalent here. The same mapping the desktop
+        // uses: `auto` lets the CLI's classifier decide and denies what it
+        // cannot approve, `bypassPermissions` runs everything (nightshift
+        // blocker 045; the helper's doc says why it is no longer `dontAsk`).
+        spec.permission_mode =
+            Some(AgentSpec::headless_permission_mode(!args.no_approval).into());
     }
     Ok(spec)
 }

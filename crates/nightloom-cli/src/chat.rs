@@ -222,6 +222,10 @@ fn build_chat(args: &ChatArgs, mcp_tools: &[Arc<dyn Tool>]) -> Result<Chat> {
         knowledge: (on && args.tools)
             .then(|| vault.clone().map(|dir| KnowledgeContext { dir }))
             .flatten(),
+        // The model's own file, by the id the chat is actually running on
+        // rather than what was typed: `connect` fills in the provider's
+        // default when `--model` is absent.
+        model: on.then(|| chat.model.clone()),
         cwd: cwd.clone(),
         custom: args.system.clone(),
     });
@@ -418,6 +422,7 @@ fn prompt_summary(system: &SystemPrompt) -> Option<String> {
             SegmentKind::Identity => parts.push("identity".into()),
             SegmentKind::Environment => parts.push("environment".into()),
             SegmentKind::UserMemory => parts.push("user memory".into()),
+            SegmentKind::ModelInstructions => parts.push("model instructions".into()),
             SegmentKind::ProjectInstructions => {
                 // Collapse the walk's files into one count, in place.
                 project += 1;

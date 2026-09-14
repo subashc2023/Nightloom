@@ -11,6 +11,11 @@ use std::fs;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
+/// The ranked index the `search_chats` tool searches through, kept beside
+/// the logs on the listing cache's terms. A submodule because it reads the
+/// same events through the same fold, and the two must not disagree.
+pub mod index;
+
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
     #[error("cannot read {}: {source}", path.display())]
@@ -80,10 +85,13 @@ fn skip_deleted<T>(result: Result<T, StoreError>) -> Result<Option<T>, StoreErro
 }
 
 /// One session log, as the directory scan already described it.
-struct Log {
-    path: PathBuf,
-    len: u64,
-    modified: DateTime<Utc>,
+///
+/// `pub(crate)` with [`log_files`] since the capture pass, which needs the
+/// same size-and-mtime listing to find logs with bytes past a watermark.
+pub(crate) struct Log {
+    pub(crate) path: PathBuf,
+    pub(crate) len: u64,
+    pub(crate) modified: DateTime<Utc>,
 }
 
 /// Every session log in the dir, with the size and mtime that came back with
@@ -96,7 +104,7 @@ struct Log {
 /// was measured at 34 ms of the 40 ms a warm listing took — more than
 /// everything else in [`list`] put together. On Unix it costs what it always
 /// did.
-fn log_files(log_dir: &Path) -> Result<Vec<Log>, StoreError> {
+pub(crate) fn log_files(log_dir: &Path) -> Result<Vec<Log>, StoreError> {
     let entries = fs::read_dir(log_dir).map_err(io_err(log_dir))?;
     let mut logs = Vec::new();
     for entry in entries {
@@ -366,14 +374,17 @@ fn peek_at(event: &SessionEvent) -> Option<Peek> {
     }
 }
 
-/// Full scan of one log: the summary *and* every event, for the one caller
-/// that has to look inside the conversation.
+/// Full scan of one log: the summary *and* every event, for the callers that
+/// have to look inside the conversation — `search` here, and the `read_chat`
+/// tool, which hands the model a window of one.
 ///
 /// Not cached, and not cacheable by [`Listing`]: `search` needs the text of
-/// every message, which is the part a summary throws away. What would help it
-/// is a full-text index, which is a much larger thing than this — and search
-/// is something a user asks for, where listing happens on its own.
-fn scan(
+/// every message, which is the part a summary throws away. What helps the
+/// *tool* is [`index::ChatIndex`], which keeps the counts and not the text —
+/// so it ranks, and a scan of each chat it returns still makes the excerpt.
+/// The sidebar's search stays a scan: it is something a user asks for, where
+/// listing happens on its own.
+pub(crate) fn scan(
     path: &Path,
     modified: DateTime<Utc>,
 ) -> Result<(SessionSummary, Vec<SessionEvent>), StoreError> {
@@ -549,24 +560,34 @@ pub fn search(log_dir: &Path, query: &str) -> Result<Vec<SessionMatch>, StoreErr
 }
 
 /// Something a search can look through, tagged with who said it.
-struct Said<'a> {
-    who: &'static str,
+///
+/// `pub(crate)` because the `search_chats` / `read_chat` tools apply exactly
+/// this filter — it is the definition of "the conversation", and two readers
+/// of the same log must not be able to disagree about what a tool result is.
+pub(crate) struct Said<'a> {
+    /// As a listing row says it: `you`, `model`, or `name`. A tool that
+    /// speaks to the model rather than to the user relabels the first two.
+    pub(crate) who: &'static str,
     /// False only for the session's name, which is shown beside the excerpt
     /// rather than in it.
-    conversation: bool,
-    text: std::borrow::Cow<'a, str>,
+    pub(crate) conversation: bool,
+    pub(crate) text: std::borrow::Cow<'a, str>,
+    /// When it was said. Unused by `search`, which dates the whole chat by
+    /// its file; `read_chat` dates each message so a quotation can carry one.
+    pub(crate) at: DateTime<Utc>,
 }
 
 /// The searchable text of one event, or `None` for the events that are not
 /// conversation.
-fn said(event: &SessionEvent) -> Option<Said<'_>> {
+pub(crate) fn said(event: &SessionEvent) -> Option<Said<'_>> {
     match event {
-        SessionEvent::UserMessage { text, .. } => Some(Said {
+        SessionEvent::UserMessage { text, at, .. } => Some(Said {
             who: "you",
             conversation: true,
             text: text.into(),
+            at: *at,
         }),
-        SessionEvent::AssistantMessage { blocks, .. } => Some(Said {
+        SessionEvent::AssistantMessage { blocks, at, .. } => Some(Said {
             who: "model",
             conversation: true,
             // Text blocks only: thinking is not what the conversation said,
@@ -580,13 +601,15 @@ fn said(event: &SessionEvent) -> Option<Said<'_>> {
                 .collect::<Vec<_>>()
                 .join(" ")
                 .into(),
+            at: *at,
         }),
         // Findable by its name as well as by what was said in it, since the
         // name is the thing most likely to be remembered.
-        SessionEvent::Title { text, .. } => Some(Said {
+        SessionEvent::Title { text, at, .. } => Some(Said {
             who: "name",
             conversation: false,
             text: text.into(),
+            at: *at,
         }),
         _ => None,
     }
@@ -600,7 +623,7 @@ fn said(event: &SessionEvent) -> Option<Said<'_>> {
 /// change a string's length, so the offset does not point where the caller
 /// thinks in the original. Walking the original keeps every index usable for
 /// slicing it.
-fn find_fold(text: &str, needle: &str) -> Option<usize> {
+pub(crate) fn find_fold(text: &str, needle: &str) -> Option<usize> {
     if needle.is_empty() {
         return None;
     }
@@ -618,7 +641,7 @@ fn find_fold(text: &str, needle: &str) -> Option<usize> {
 /// useless: a match three thousand characters in would not appear in the
 /// excerpt at all, and a result that does not show why it matched reads as a
 /// false positive.
-fn excerpt_around(text: &str, at: usize, width: usize) -> String {
+pub(crate) fn excerpt_around(text: &str, at: usize, width: usize) -> String {
     let start = text[..at]
         .char_indices()
         .rev()
@@ -638,7 +661,7 @@ fn excerpt_around(text: &str, at: usize, width: usize) -> String {
 
 /// Characters of context before a hit; twice that after it, since what
 /// follows a phrase usually says more about it than what precedes it.
-const EXCERPT_WIDTH: usize = 40;
+pub(crate) const EXCERPT_WIDTH: usize = 40;
 
 /// Resolve a session ID or unique ID prefix to its log file.
 pub fn find_by_prefix(log_dir: &Path, prefix: &str) -> Result<PathBuf, StoreError> {

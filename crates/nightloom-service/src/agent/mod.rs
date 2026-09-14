@@ -36,11 +36,11 @@ pub use protocol::RateLimitInfo;
 pub use record::Recorder;
 pub use translate::{AgentOutcome, Translator};
 
-use crate::TurnEvent;
+use crate::{TurnEvent, TurnInput};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
@@ -125,6 +125,7 @@ pub struct AgentSpec {
     /// which for `-p` is manual on every plan — and a manual prompt in a
     /// non-interactive process is a denial, so a caller that wants tools to
     /// actually run has to say which mode it means.
+    /// [`AgentSpec::headless_permission_mode`] is the shells' answer.
     pub permission_mode: Option<String>,
     /// Replaces the CLI's system prompt entirely.
     pub system_prompt: Option<String>,
@@ -177,6 +178,22 @@ pub struct AgentSpec {
     /// every turn, which is the exact cost this module exists to avoid, and
     /// nothing in the output says it happened.
     pub use_subscription: bool,
+    /// Directories outside the workspace the CLI may read without asking,
+    /// each sent as `--add-dir`. The vault is the case: the preamble names
+    /// it by its real path, and a path the CLI treats as outside its working
+    /// directories is one it routes to approval — which, headless, is the
+    /// classifier, and a call it declines simply does not run (`external`,
+    /// the permissions reference: files in additional directories "become
+    /// readable without prompts, and file editing permissions follow the
+    /// current permission mode"). Without this the index is a list of files
+    /// the model can see and not open (nightshift blocker 050).
+    pub add_dirs: Vec<PathBuf>,
+    /// An MCP config for the CLI to load, as the inline JSON string
+    /// `--mcp-config` accepts (`external`, the CLI reference: "JSON files
+    /// or strings"). Nightloom's own server goes here — see `mcp_server`.
+    /// Under `safe_mode` the CLI also gets `--strict-mcp-config`, so this
+    /// becomes the *only* server, which is what safe mode wants.
+    pub mcp_config: Option<String>,
     /// Passed through verbatim, last, so a caller can reach a flag this
     /// struct has not grown a field for.
     pub extra_args: Vec<String>,
@@ -197,19 +214,69 @@ impl AgentSpec {
             resume: None,
             max_budget_usd: None,
             use_subscription: true,
+            add_dirs: Vec::new(),
+            mcp_config: None,
             extra_args: Vec::new(),
         }
     }
 
-    /// The argument vector for one turn.
+    /// What the approval switch means on a headless run: `auto` when it is
+    /// on, `bypassPermissions` when it is off.
+    ///
+    /// Neither is Nightloom's own gate, which is a live prompt with nobody
+    /// to answer it here. `auto` is the CLI's classifier deciding each call
+    /// — the mode a Pro or Max terminal session already starts in — and on a
+    /// `-p` run it **denies rather than waits** when it cannot approve: the
+    /// docs say a non-interactive run "has no prompt to fall back to", so
+    /// "the action doesn't run and Claude keeps working" (`external`,
+    /// code.claude.com/docs/en/permission-modes, 2026-09-14). Where auto
+    /// mode is unavailable to the session, the CLI starts in manual instead,
+    /// which headless is a denial too; nothing here can hang.
+    ///
+    /// `dontAsk` was the previous answer, and with the empty allowlist a
+    /// fresh install has it refused every write, command and fetch — a chat
+    /// on which nothing but reads ran. Blocker 045 in the nightshift repo
+    /// records the switch and the reasoning.
+    pub fn headless_permission_mode(approval: bool) -> &'static str {
+        if approval {
+            "auto"
+        } else {
+            "bypassPermissions"
+        }
+    }
+
+    /// The argument vector for one text-only turn, prompt on argv.
     ///
     /// Split out from spawning so it can be asserted on directly — the same
     /// shape the provider adapters are tested in, where the unit under test
     /// is the request that would have gone out rather than the reply.
     fn args(&self, prompt: &str) -> Vec<String> {
-        let mut a: Vec<String> = vec![
-            "-p".into(),
-            prompt.into(),
+        self.argv(Some(prompt))
+    }
+
+    /// The argument vector for one turn whose user message arrives on
+    /// stdin as a `stream-json` line — the shape a turn with attachments
+    /// takes, since argv carries text and nothing else.
+    fn stdin_args(&self) -> Vec<String> {
+        self.argv(None)
+    }
+
+    /// Both shapes differ in the first two arguments only. A prompt goes on
+    /// argv as `-p <prompt>`; without one `-p` stands alone and
+    /// `--input-format stream-json` says the message is coming on stdin.
+    /// The rest is identical, which is the property that keeps the resume
+    /// path and every flag test valid for the stdin shape without a second
+    /// copy of each.
+    fn argv(&self, prompt: Option<&str>) -> Vec<String> {
+        let mut a: Vec<String> = vec!["-p".into()];
+        match prompt {
+            Some(p) => a.push(p.into()),
+            None => {
+                a.push("--input-format".into());
+                a.push("stream-json".into());
+            }
+        }
+        a.extend([
             "--output-format".into(),
             "stream-json".into(),
             // Required by the CLI alongside stream-json, and the reason
@@ -217,7 +284,7 @@ impl AgentSpec {
             // the end of the turn.
             "--verbose".into(),
             "--include-partial-messages".into(),
-        ];
+        ]);
         if let Some(m) = &self.model {
             a.push("--model".into());
             a.push(m.clone());
@@ -261,6 +328,14 @@ impl AgentSpec {
         if let Some(budget) = self.max_budget_usd {
             a.push("--max-budget-usd".into());
             a.push(budget.to_string());
+        }
+        for dir in &self.add_dirs {
+            a.push("--add-dir".into());
+            a.push(dir.to_string_lossy().into_owned());
+        }
+        if let Some(cfg) = &self.mcp_config {
+            a.push("--mcp-config".into());
+            a.push(cfg.clone());
         }
         a.extend(self.extra_args.iter().cloned());
         a
@@ -325,6 +400,16 @@ impl ClaudeCodeAgent {
 
     /// Run one turn to completion, streaming events as they arrive.
     ///
+    /// A bare `&str` converts, so a text-only call reads as it always did;
+    /// attachments are the case that has to say so, and they change how the
+    /// turn is handed over. Text alone goes on argv as `-p`, the shape every
+    /// flag test asserts on. Images or documents cannot — argv is text — so
+    /// that turn is written to the CLI's stdin as one `stream-json` user
+    /// line instead ([`protocol::user_line`]), which is how the Agent SDK
+    /// sends an image and was verified live on 2.1.263, `--resume` included.
+    /// Keeping argv for the common case means the attachment path is the
+    /// only thing that changed when it was added.
+    ///
     /// Cancellation kills the process tree rather than dropping the future.
     /// The reasoning is `tools::shell`'s: the CLI spawns its own children —
     /// it *is* a process supervisor — and a killed parent leaves them
@@ -333,17 +418,23 @@ impl ClaudeCodeAgent {
     /// transcript the tool results belong to is Claude Code's own.
     pub async fn run_turn(
         &self,
-        prompt: &str,
+        input: impl Into<TurnInput>,
         cancel: &CancellationToken,
         on_event: &mut (dyn FnMut(TurnEvent) + Send),
     ) -> Result<AgentOutcome, AgentError> {
+        let input = input.into();
+        let attached = !input.images.is_empty() || !input.documents.is_empty();
         let mut cmd = Command::new(resolve_binary(&self.spec.binary));
-        cmd.args(self.spec.args(prompt))
-            .current_dir(&self.spec.workspace)
-            // Null rather than inherited: with a terminal on the other end
-            // the CLI waits three seconds for piped input that is never
-            // coming, on every turn.
-            .stdin(Stdio::null())
+        if attached {
+            cmd.args(self.spec.stdin_args()).stdin(Stdio::piped());
+        } else {
+            cmd.args(self.spec.args(&input.text))
+                // Null rather than inherited: with a terminal on the other
+                // end the CLI waits three seconds for piped input that is
+                // never coming, on every turn.
+                .stdin(Stdio::null());
+        }
+        cmd.current_dir(&self.spec.workspace)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
@@ -361,6 +452,25 @@ impl ClaudeCodeAgent {
             binary: self.spec.binary.clone(),
             source,
         })?;
+
+        // Written from its own task and then closed. A PDF near the cap is
+        // tens of megabytes of base64, far past what a pipe buffers, and the
+        // CLI only drains stdin as it parses — so a write awaited here, in
+        // front of the stdout loop, could sit forever against a child that
+        // is itself blocked writing a line nobody is reading yet. Dropping
+        // the handle is the EOF that tells the CLI the turn's input is
+        // complete; without it the process stays open waiting for a second
+        // message.
+        if attached && let Some(mut stdin) = child.stdin.take() {
+            let line = protocol::user_line(&input);
+            tokio::spawn(async move {
+                // A child that exits before reading — a bad flag, a failed
+                // login — closes the pipe first, and the write error says no
+                // more than the exit status and stderr tail already will.
+                let _ = stdin.write_all(line.as_bytes()).await;
+                let _ = stdin.shutdown().await;
+            });
+        }
 
         let stdout = child.stdout.take().expect("stdout piped");
         let mut stderr = child.stderr.take().expect("stderr piped");
@@ -651,7 +761,137 @@ mod tests {
         }
     }
 
+    /// Approval on is `auto`, not `dontAsk`: the classifier decides, and a
+    /// headless run it cannot approve is denied rather than left waiting.
+    /// Off is still the CLI's "run everything".
+    #[test]
+    fn approval_on_is_auto_mode_and_off_is_bypass() {
+        let mut s = spec();
+        s.permission_mode = Some(AgentSpec::headless_permission_mode(true).into());
+        let a = s.args("hi");
+        let i = a.iter().position(|x| x == "--permission-mode").unwrap();
+        assert_eq!(a[i + 1], "auto");
+        assert!(!a.iter().any(|x| x == "dontAsk"), "{a:?}");
+
+        s.permission_mode = Some(AgentSpec::headless_permission_mode(false).into());
+        let a = s.args("hi");
+        let i = a.iter().position(|x| x == "--permission-mode").unwrap();
+        assert_eq!(a[i + 1], "bypassPermissions");
+    }
+
     /// Caller-supplied arguments go last so they can override.
+    #[test]
+    fn add_dirs_become_add_dir_flags() {
+        let mut s = AgentSpec::new(PathBuf::from("/w"));
+        s.add_dirs = vec![PathBuf::from("/vault"), PathBuf::from("/other")];
+        let a = s.args("hi");
+        let joined = a.join(" ");
+        assert!(joined.contains("--add-dir /vault --add-dir /other"), "{a:?}");
+        // The CLI's own flags come first; a directory grant is never the
+        // thing that pushes `-p` off the front.
+        assert_eq!(a[0], "-p");
+    }
+
+    /// A turn with attachments drops the prompt from argv and says where
+    /// it is coming from instead. The first argument is still `-p`: the
+    /// stdin shape is print mode too, not an interactive session that
+    /// happens to be fed a pipe.
+    #[test]
+    fn stdin_args_replace_the_prompt_with_the_input_format() {
+        let a = spec().stdin_args();
+        assert_eq!(&a[..3], ["-p", "--input-format", "stream-json"]);
+        assert!(!a.iter().any(|x| x == "hi"));
+        for flag in [
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--include-partial-messages",
+        ] {
+            assert!(a.iter().any(|x| x == flag), "missing {flag} in {a:?}");
+        }
+    }
+
+    /// Everything after the prompt is the same vector either way — the
+    /// resume id, the model, the tool set, the directory grants. One
+    /// tail, not two, is what makes every flag test above hold for the
+    /// stdin shape without being written twice.
+    #[test]
+    fn the_stdin_shape_carries_every_flag_the_argv_shape_does() {
+        let mut s = spec();
+        s.model = Some("opus".into());
+        s.tools = Some(vec![]);
+        s.resume = Some("sess-9".into());
+        s.safe_mode = true;
+        s.add_dirs = vec![PathBuf::from("/vault")];
+        s.extra_args = vec!["--x".into()];
+        let argv = s.args("hi");
+        let stdin = s.stdin_args();
+        // `-p hi` versus `-p --input-format stream-json`, then identical.
+        assert_eq!(argv[2..], stdin[3..]);
+    }
+
+    /// The stdin line is the Agent SDK's user message: a `user` line whose
+    /// Messages-API `content` is the block list, caption first, images
+    /// before documents, every source base64. Asserted on the parsed JSON,
+    /// since the CLI reads the frame and not the spelling.
+    #[test]
+    fn the_stdin_line_is_one_user_message_with_the_blocks_in_log_order() {
+        let input = TurnInput {
+            text: "what colour".into(),
+            images: vec![nightloom_core::ImageInput {
+                media_type: "image/png".into(),
+                data: "AAAA".into(),
+            }],
+            documents: vec![nightloom_core::DocumentInput {
+                media_type: "application/pdf".into(),
+                name: "notes.pdf".into(),
+                data: "BBBB".into(),
+            }],
+        };
+        let line = protocol::user_line(&input);
+        assert!(line.ends_with('\n'), "NDJSON needs the frame");
+        assert_eq!(line.matches('\n').count(), 1, "one line, not several");
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(v["type"], "user");
+        assert_eq!(v["message"]["role"], "user");
+        assert!(v["parent_tool_use_id"].is_null());
+        let content = v["message"]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 3);
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "what colour");
+        assert_eq!(content[1]["type"], "image");
+        assert_eq!(content[1]["source"]["type"], "base64");
+        assert_eq!(content[1]["source"]["media_type"], "image/png");
+        assert_eq!(content[1]["source"]["data"], "AAAA");
+        assert_eq!(content[2]["type"], "document");
+        assert_eq!(content[2]["source"]["media_type"], "application/pdf");
+        assert_eq!(content[2]["source"]["data"], "BBBB");
+        assert_eq!(content[2]["title"], "notes.pdf");
+    }
+
+    /// A text-only turn is untouched by all of this: `-p <prompt>`, no
+    /// `--input-format`. That is the shape every caller outside the desktop
+    /// still uses, and the one the resume path was tested on.
+    #[test]
+    fn a_text_only_turn_never_asks_for_stdin_input() {
+        let a = spec().args("hi");
+        assert!(!a.iter().any(|x| x == "--input-format"), "{a:?}");
+        assert_eq!(&a[..2], ["-p", "hi"]);
+    }
+
+    #[test]
+    fn mcp_config_is_passed_inline_and_survives_safe_mode() {
+        let mut s = AgentSpec::new(PathBuf::from("/w"));
+        s.mcp_config = Some(r#"{"mcpServers":{"nightloom":{}}}"#.into());
+        let a = s.args("hi");
+        let i = a.iter().position(|x| x == "--mcp-config").expect("flag");
+        assert_eq!(a[i + 1], r#"{"mcpServers":{"nightloom":{}}}"#);
+        s.safe_mode = true;
+        let a = s.args("hi");
+        assert!(a.iter().any(|x| x == "--strict-mcp-config"), "{a:?}");
+        assert!(a.iter().any(|x| x == "--mcp-config"), "{a:?}");
+    }
+
     #[test]
     fn extra_args_are_appended() {
         let mut s = spec();

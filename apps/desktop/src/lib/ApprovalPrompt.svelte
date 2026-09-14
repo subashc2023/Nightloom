@@ -190,7 +190,7 @@
   }
   .btn.allow {
     background: var(--accent);
-    color: #0d0d14;
+    color: var(--paper);
     border-color: var(--accent);
     font-weight: 600;
   }

@@ -2,25 +2,51 @@
   import {
     app,
     applyDraft,
+    currentModelId,
     fetchModels,
+    openModelInstructions,
     refreshProviders,
     refreshSearchBackends,
     saveDreamPrefs,
+    setPalette,
     setPrefs,
     useKnowledgeDir,
+    loadContextLimits,
+    PALETTES,
   } from "./state.svelte";
   import * as api from "./api";
   import {
     CURATED,
     PROVIDER_NOTES,
+    formatWindow,
     groupModels,
+    modelInstructionFile,
+    modelOfInstructionFile,
+    modelsFor,
     providerLabel,
     type ModelEntry,
     type ModelSection,
   } from "./catalog";
-  import type { SearchBackendInfo } from "./types";
+  import type { Note, ProviderInfo, SearchBackendInfo } from "./types";
+  import Icon from "./Icon.svelte";
 
-  let selected = $state(app.draft.provider || app.providers[0]?.kind || "");
+  /**
+   * Redesigned 2026-09-13 (nightshift surface-redesign-2026-09-13, canvas
+   * rows 4 and 6; blockers 032–034): the nav carries each row's key state,
+   * the pane header carries the picker switch and the ×, the API key card
+   * leads only until a key exists and then folds to one line at the foot,
+   * and the model picker is rows — checkbox · id · default · dated releases
+   * · context window — under a strip of everything that is on, in the
+   * picker's order. `candidates`, `modelOn`, `toggleModel`, `setSection` and
+   * `showFolded` are untouched: the order rule and the pin rule live there.
+   */
+
+  // Opens on the pane a round trip asked for — back from a model's
+  // instruction file — else on the rail's provider.
+  let selected = $state(
+    app.settingsOpenOn ?? (app.draft.provider || app.providers[0]?.kind || ""),
+  );
+  app.settingsOpenOn = null;
   let keyDraft = $state("");
   let keyBusy = $state(false);
   let keyError = $state<string | null>(null);
@@ -28,6 +54,8 @@
   let addDraft = $state("");
   /** Fold groups the user has opened, keyed by the canonical id they fold into. */
   let expanded = $state<Record<string, boolean>>({});
+  /** The demoted key row's Replace… — shows the card again at the foot. */
+  let replacing = $state(false);
 
   // One selection across both nav groups, with search backends namespaced so
   // a backend and a provider can never collide on a bare name.
@@ -96,12 +124,86 @@
     if (provider?.available) void fetchModels(selected);
   });
 
+  /**
+   * The per-model instruction files (nightshift backlog 044): every
+   * `~/.nightloom/models/*.md`, read when the modal opens for the nav's
+   * count and again whenever the pane is shown, since the editor may have
+   * added or emptied one in between. Listed by id rather than file name —
+   * the `__` in the name is the `/` of a router id.
+   */
+  let modelFiles = $state<Note[]>([]);
+  async function refreshModelFiles() {
+    try {
+      modelFiles = await api.listNotes("models");
+    } catch {
+      modelFiles = [];
+    }
+  }
+  void refreshModelFiles();
+  $effect(() => {
+    if (selected === "models") void refreshModelFiles();
+  });
+  /** The model the "+ add" control names: the rail's, by the same rule the
+   *  popover's pencil uses. */
+  const addModel = $derived(currentModelId());
+  /** Whether the current model already has a file — then "+ add" is "edit". */
+  const addExists = $derived(
+    !!addModel && modelFiles.some((f) => f.name === modelInstructionFile(addModel)),
+  );
+  function size(bytes: number): string {
+    if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${bytes} B`;
+  }
+
   function select(kind: string) {
     selected = kind;
     keyDraft = "";
     keyError = null;
     filter = "";
     addDraft = "";
+    replacing = false;
+  }
+
+  /** Which of the key card's states a provider is in. */
+  function keyState(p: ProviderInfo): "stored" | "env" | "local" | "none" {
+    if (p.key_source === "stored") return "stored";
+    if (p.key_source === "env") return "env";
+    return p.kind === "openai-chat" ? "local" : "none";
+  }
+  /** The nav's mono state for a provider row. */
+  function navState(p: ProviderInfo): { cls: string; text: string } {
+    switch (keyState(p)) {
+      case "stored":
+        return { cls: "ok", text: "key" };
+      case "env":
+        return { cls: "env", text: "env" };
+      case "local":
+        return { cls: "", text: "local" };
+      default:
+        return { cls: "", text: "no key" };
+    }
+  }
+
+  /**
+   * The strip at the top of the Models card: every id that is on, in the
+   * order the popover lists them — `modelsFor` is the popover's own list, so
+   * the two can never disagree.
+   */
+  const pickerOrder = $derived(
+    provider ? modelsFor(provider.kind, app.prefs, provider.default_model) : [],
+  );
+  const total = $derived(sections.reduce((n, s) => n + s.entries.length, 0));
+
+  // Context windows for the rows and their snapshots; blank when unknown.
+  $effect(() => {
+    if (!provider) return;
+    const ids = sections.flatMap((s) => s.entries.flatMap((e) => [e.id, ...e.folded]));
+    void loadContextLimits(provider.kind, ids);
+  });
+  const windows = $derived(provider ? (app.contextLimits[provider.kind] ?? {}) : {});
+
+  function close() {
+    app.showSettings = false;
   }
 
   /**
@@ -251,51 +353,201 @@
 
 <svelte:window {onkeydown} />
 
+<!-- The API key card, in its six states (board 3c): no key, typing, stored,
+     from the environment, local (no key needed), save failed. One snippet
+     for providers and search backends alike; `env` names the variable when
+     the backend told us it (search backends do, providers do not). -->
+{#snippet keyCard(
+  state: "stored" | "env" | "local" | "none",
+  label: string,
+  env: string | null,
+  save: () => void,
+  clear: (() => void) | null,
+  extra: string,
+  cancel: (() => void) | null,
+)}
+  <section class="card keycard">
+    <div class="ch">
+      <span class="t"><Icon name="key" size={13} /> API key</span>
+    </div>
+    <div class="kstate">
+      {#if state === "stored"}
+        <span class="ns-pill done"><span class="dot"></span>stored in the keychain</span>
+        <span class="dim small">
+          Kept in the OS credential store. Nightloom never shows it again — paste a
+          new one to replace it.{extra}
+        </span>
+      {:else if state === "env"}
+        <span class="ns-pill live"><span class="dot"></span>from {env ?? "the environment"}</span>
+        <span class="dim small">Read from the environment at launch. A key saved here wins over it.{extra}</span>
+      {:else if state === "local"}
+        <span class="ns-pill grey">no key needed</span>
+        <span class="dim small">
+          Local servers don't need one. Set the base URL in the model popover; a
+          key pasted here is sent as a bearer token.
+        </span>
+      {:else}
+        <span class="ns-pill grey">no key</span>
+        <span class="dim small">
+          Paste a {label} API key to use it. Stored in the OS credential store,
+          never in a file.
+        </span>
+      {/if}
+    </div>
+    <form
+      class="kf"
+      onsubmit={(e) => {
+        e.preventDefault();
+        save();
+      }}
+    >
+      <!-- svelte-ignore a11y_autofocus -->
+      <input
+        type="password"
+        bind:value={keyDraft}
+        placeholder={state === "stored"
+          ? "paste a new key to replace it…"
+          : state === "env"
+            ? "paste a key to store one instead…"
+            : state === "local"
+              ? "paste an API key (optional)…"
+              : "paste API key…"}
+        autocomplete="off"
+        autofocus={state === "none"}
+        disabled={keyBusy}
+        aria-label="API key"
+      />
+      <button type="submit" class="ns-btn accent" disabled={keyBusy || !keyDraft.trim()}>
+        Save key
+      </button>
+      {#if state === "stored" && clear}
+        <button type="button" class="ns-btn ghost" onclick={clear} disabled={keyBusy}>
+          <Icon name="trash" size={13} />
+          Remove
+        </button>
+      {/if}
+      {#if cancel}
+        <button type="button" class="ns-btn ghost" onclick={cancel} disabled={keyBusy}>
+          Cancel
+        </button>
+      {/if}
+    </form>
+    {#if keyError}
+      <div class="error">{keyError}</div>
+    {/if}
+  </section>
+{/snippet}
+
 <div class="modal">
   <nav class="nav">
+    <div class="nav-h">Settings</div>
     <div class="nav-title">Providers</div>
     {#each app.providers as p (p.kind)}
+      {@const st = navState(p)}
       <button
         class="nav-item"
         class:active={p.kind === selected}
         class:muted={!railVisible(p.kind)}
         onclick={() => select(p.kind)}
       >
-        <span class="dot" class:ok={p.available}></span>
         <span class="nav-label">{providerLabel(p.kind)}</span>
+        <span class="st">
+          {#if !railVisible(p.kind)}<span class="eye" title="Hidden from the model picker"><Icon name="eye-off" size={12} /></span>{/if}
+          <span class="dot {st.cls}"></span>{st.text}
+        </span>
       </button>
     {/each}
-    <div class="nav-title search-title">Web search</div>
+    <div class="nav-title">Web search</div>
     {#each app.searchBackends as b (b.name)}
       <button
         class="nav-item"
         class:active={"search:" + b.name === selected}
         onclick={() => select("search:" + b.name)}
       >
-        <span class="dot" class:ok={b.key_source !== null}></span>
         <span class="nav-label">{b.label}</span>
+        <span class="st">
+          <span class="dot" class:ok={b.key_source === "stored"} class:env={b.key_source === "env"}></span>
+          {b.key_source === "stored" ? "key" : b.key_source === "env" ? "env" : "no key"}
+        </span>
       </button>
     {/each}
-    <div class="nav-title search-title">Knowledge</div>
+    <div class="nav-title">Knowledge</div>
     <button
       class="nav-item"
       class:active={selected === "knowledge"}
       onclick={() => select("knowledge")}
     >
-      <span class="dot" class:ok={!!app.knowledge}></span>
       <span class="nav-label">Knowledge base</span>
+      <span class="st">
+        <span class="dot" class:ok={!!app.knowledge}></span>
+        {app.knowledge ? `${app.knowledge.notes} note${app.knowledge.notes === 1 ? "" : "s"}` : "none"}
+      </span>
+    </button>
+    <button
+      class="nav-item"
+      class:active={selected === "models"}
+      onclick={() => select("models")}
+    >
+      <span class="nav-label">Model instructions</span>
+      <span class="st">
+        <span class="dot" class:ok={modelFiles.length > 0}></span>
+        {modelFiles.length === 0 ? "none" : `${modelFiles.length} model${modelFiles.length === 1 ? "" : "s"}`}
+      </span>
+    </button>
+    <div class="nav-title">Appearance</div>
+    <button
+      class="nav-item"
+      class:active={selected === "appearance"}
+      onclick={() => select("appearance")}
+    >
+      <span class="nav-label">Palette</span>
+      <span class="st">{app.palette}</span>
     </button>
     <div class="nav-spacer"></div>
-    <button class="close" onclick={() => (app.showSettings = false)}>
-      Close
-    </button>
+    <div class="nav-foot">Esc or click outside to close</div>
   </nav>
 
-  {#if selected === "knowledge"}
+  {#if selected === "appearance"}
     <div class="pane">
       <div class="pane-head">
-        <span class="pane-title">Knowledge base</span>
+        <h2 class="pane-title">Palette</h2>
+        <span class="slug">{app.palette}</span>
+        <span class="spacer"></span>
+        <button class="close" title="Close" aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+      </div>
+      <p class="note">
+        Four dark palettes. Surfaces and the accent change; the colours that
+        mean something — done, partial, failed, live, added, removed — are the
+        same in all four. Applies at once, everywhere, and is remembered.
+      </p>
+      <div class="swatches" role="radiogroup" aria-label="Palette">
+        {#each PALETTES as p (p.id)}
+          <button
+            class="swatch"
+            class:on={app.palette === p.id}
+            role="radio"
+            aria-checked={app.palette === p.id}
+            data-palette={p.id}
+            onclick={() => setPalette(p.id)}
+          >
+            <span class="swatch-paper">
+              <span class="swatch-sheet">
+                <span class="swatch-title">Aa</span>
+                <span class="swatch-accent"></span>
+              </span>
+            </span>
+            <span class="swatch-name"><b>{p.id}</b> {p.name}</span>
+          </button>
+        {/each}
+      </div>
+    </div>
+  {:else if selected === "knowledge"}
+    <div class="pane">
+      <div class="pane-head">
+        <h2 class="pane-title">Knowledge base</h2>
         <span class="slug">{app.knowledge?.alias ?? "@kb"}</span>
+        <span class="spacer"></span>
+        <button class="close" title="Close" aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
       </div>
       <p class="note">
         Your own notes, kept across every project and available in every
@@ -306,8 +558,8 @@
         with <code>[[name]]</code>.
       </p>
 
-      <section class="section">
-        <div class="section-title">Folder</div>
+      <section class="card">
+        <div class="ch"><span class="t">Folder</span></div>
         <div class="key-status">
           {#if !app.knowledge}
             No user config directory on this machine, so there is nowhere to
@@ -331,11 +583,12 @@
           Nothing is moved or copied: the old folder and the new one are both
           left exactly as they are.
         </p>
-        <div class="key-form">
-          <button disabled={!app.knowledge} onclick={() => void pickKnowledge()}
+        <div class="kf">
+          <button class="ns-btn" disabled={!app.knowledge} onclick={() => void pickKnowledge()}
             >Choose folder…</button
           >
           <button
+            class="ns-btn ghost"
             disabled={!app.knowledge || app.knowledge.is_default}
             onclick={() => void useKnowledgeDir(null)}
           >
@@ -344,15 +597,17 @@
         </div>
       </section>
 
-      <section class="section">
-        <div class="section-title">Dreaming</div>
+      <section class="card">
+        <div class="ch"><span class="t">Dreaming</span></div>
         <p class="note small">
           A dream pass consolidates the memory inbox into the vault — the
           Dream button in the Notes panel runs one by hand. Switched on here,
           one also runs after a compaction: the moment a conversation's detail
           is already being traded for a summary, and the trigger the
-          consolidation evidence points at. It runs unattended and spends real
-          money, so it is off until you say otherwise.
+          consolidation evidence points at. A capture pass runs first, reading
+          the chats since the last one into the inbox, on the same model. Both
+          run unattended and spend real money, so it is off until you say
+          otherwise.
         </p>
         <label class="dream-auto">
           <input
@@ -370,7 +625,7 @@
           whatever the chat runs on; picking a provider here also lets the
           Claude Code engine dream, which has no provider of its own to lend.
         </p>
-        <div class="key-form">
+        <div class="kf">
           <select bind:value={app.dreamPrefs.provider} onchange={saveDreamPrefs}>
             <option value="">the rail's connection</option>
             {#each app.providers as p (p.kind)}
@@ -387,11 +642,65 @@
         </div>
       </section>
     </div>
+  {:else if selected === "models"}
+    <div class="pane">
+      <div class="pane-head">
+        <h2 class="pane-title">Model instructions</h2>
+        <span class="slug">~/.nightloom/models</span>
+        <span class="spacer"></span>
+        <button class="close" title="Close" aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+      </div>
+      <p class="note">
+        A file per model, read whole into the system prompt of a chat on that
+        model and no other — after your memory, before the project's
+        instructions. For how you want one model in particular to talk; what
+        you want of every model belongs in Memory. Named after the model id,
+        so a chat on <code>claude-opus-5</code> reads
+        <code>claude-opus-5.md</code>. On the Claude Code engine the name is
+        the alias the picker sends (<code>opus</code>, <code>sonnet</code>).
+        An empty file is the same as none.
+      </p>
+
+      <section class="card">
+        <div class="ch"><span class="t">Files</span></div>
+        {#if modelFiles.length === 0}
+          <div class="key-status">No model has its own instructions yet.</div>
+        {:else}
+          <div class="mfiles">
+            {#each modelFiles as f (f.name)}
+              <button
+                class="mfile"
+                title={`Edit ${f.name}`}
+                onclick={() => openModelInstructions(modelOfInstructionFile(f.name), "settings")}
+              >
+                <span class="mid">{modelOfInstructionFile(f.name)}</span>
+                <span class="msz">{size(f.bytes)}</span>
+                <Icon name="pencil" size={12} />
+              </button>
+            {/each}
+          </div>
+        {/if}
+        <div class="kf">
+          <button
+            class="ns-btn"
+            disabled={!addModel}
+            title={addModel
+              ? `Opens the editor on ${modelInstructionFile(addModel)}`
+              : "Pick a model in the popover first"}
+            onclick={() => addModel && openModelInstructions(addModel, "settings")}
+          >
+            {addExists ? "Edit for" : "+ Add for"} {addModel ?? "the current model"}
+          </button>
+        </div>
+      </section>
+    </div>
   {:else if searchSel}
     <div class="pane">
       <div class="pane-head">
-        <span class="pane-title">{searchSel.label}</span>
+        <h2 class="pane-title">{searchSel.label}</h2>
         <span class="slug">{searchSel.env_key}</span>
+        <span class="spacer"></span>
+        <button class="close" title="Close" aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
       </div>
       <p class="note">
         A key here turns on <code>web_search</code>. Every backend with a key is
@@ -401,201 +710,181 @@
         query is never sent to more than one of them.
         <code>web_fetch</code> needs no key and is always available.
       </p>
-
-      <section class="section">
-        <div class="section-title">API key</div>
-        <div class="key-status">
-          {#if searchSel.key_source === "stored"}
-            Using a key stored in the OS credential store.{chainNote(searchSel)}
-          {:else if searchSel.key_source === "env"}
-            Using a key from {searchSel.env_key}.{chainNote(searchSel)}
-          {:else}
-            No key set.
-          {/if}
-        </div>
-        <form
-          class="key-form"
-          onsubmit={(e) => {
-            e.preventDefault();
-            void saveSearchKey();
-          }}
-        >
-          <input
-            type="password"
-            bind:value={keyDraft}
-            placeholder="paste API key…"
-            autocomplete="off"
-            disabled={keyBusy}
-          />
-          <button type="submit" disabled={keyBusy || !keyDraft.trim()}>
-            save
-          </button>
-          {#if searchSel.key_source === "stored"}
-            <button
-              type="button"
-              onclick={() => void saveSearchKey(true)}
-              disabled={keyBusy}
-            >
-              clear
-            </button>
-          {/if}
-        </form>
-        {#if keyError}
-          <div class="error">{keyError}</div>
-        {/if}
-      </section>
+      {@render keyCard(
+        searchSel.key_source === "stored" ? "stored" : searchSel.key_source === "env" ? "env" : "none",
+        searchSel.label,
+        searchSel.env_key,
+        () => void saveSearchKey(),
+        () => void saveSearchKey(true),
+        chainNote(searchSel),
+        null,
+      )}
     </div>
   {:else if provider}
+    {@const state = keyState(provider)}
+    {@const keyFirst = provider.key_source === null}
     <div class="pane">
       <div class="pane-head">
-        <span class="pane-title">{providerLabel(provider.kind)}</span>
+        <h2 class="pane-title">{providerLabel(provider.kind)}</h2>
         <span class="slug">{provider.kind}</span>
+        <span class="spacer"></span>
+        <label class="sw2" title="Off hides this provider from the popover's pills. The one in use stays listed.">
+          <input
+            type="checkbox"
+            class="sw"
+            checked={railVisible(provider.kind)}
+            onchange={() => toggleRail(provider.kind)}
+          />
+          Show in the model picker
+        </label>
+        <button class="close" title="Close" aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
       </div>
       {#if PROVIDER_NOTES[provider.kind]}
         <p class="note">{PROVIDER_NOTES[provider.kind]}</p>
       {/if}
 
-      <div class="carts">
-        <button
-          class="cart"
-          class:on={railVisible(provider.kind)}
-          aria-pressed={railVisible(provider.kind)}
-          onclick={() => toggleRail(provider.kind)}
-        >
-          show in the connection rail
-        </button>
-      </div>
+      <!-- The key card leads while there is no key — it is the first thing
+           to do with a provider — and once one exists it folds to a line at
+           the foot (blocker 032). -->
+      {#if keyFirst}
+        {@render keyCard(state, providerLabel(provider.kind), null, () => void saveKey(), null, "", null)}
+      {/if}
 
-      <section class="section">
-        <div class="section-title">API key</div>
-        <div class="key-status">
-          {#if provider.key_source === "stored"}
-            Using a key stored in the OS credential store.
-          {:else if provider.key_source === "env"}
-            Using a key from an environment variable.
-          {:else if provider.kind === "openai-chat"}
-            No key set — local servers don't need one.
-          {:else}
-            No key set.
-          {/if}
-        </div>
-        <form
-          class="key-form"
-          onsubmit={(e) => {
-            e.preventDefault();
-            void saveKey();
-          }}
-        >
-          <input
-            type="password"
-            bind:value={keyDraft}
-            placeholder="paste API key…"
-            autocomplete="off"
-            disabled={keyBusy}
-          />
-          <button type="submit" disabled={keyBusy || !keyDraft.trim()}>
-            save
-          </button>
-          {#if provider.key_source === "stored"}
-            <button type="button" onclick={() => void clearKey()} disabled={keyBusy}>
-              clear
-            </button>
-          {/if}
-        </form>
-        {#if keyError}
-          <div class="error">{keyError}</div>
-        {/if}
-      </section>
-
-      <section class="section models-section">
-        <div class="section-title">
-          <span>Models</span>
+      <section class="card models">
+        <div class="ch">
+          <span class="t">Models</span>
+          <span class="ns-pill open">{onCount} of {total} in the picker</span>
+          <span class="spacer"></span>
+          <span class="filter-wrap">
+            <Icon name="search" size={13} />
+            <input
+              class="filter"
+              type="text"
+              bind:value={filter}
+              placeholder="filter…"
+              aria-label="Filter models"
+            />
+          </span>
           <button
-            class="refresh"
+            class="ns-btn"
             onclick={() => void fetchModels(selected, true)}
             disabled={fetchState?.loading || !provider.available}
             title={provider.available
               ? "Query the provider's API for its model list"
               : "Needs an API key"}
           >
-            {fetchState?.loading ? "fetching…" : "refresh from API"}
+            <Icon name="refresh" size={13} />
+            {fetchState?.loading ? "fetching…" : "Refresh from API"}
           </button>
         </div>
         {#if provider.kind === "openai-chat"}
           <div class="hint">
-            Fetches from the base URL set in the rail
+            Fetches from the base URL set in the model popover
             {app.draft.baseUrl.trim() ? `(${app.draft.baseUrl.trim()})` : "(not set)"}.
           </div>
         {/if}
         {#if fetchState?.error}
           <div class="error">{fetchState.error}</div>
         {/if}
-        {#if candidates.length > 8 || filter}
-          <input
-            class="filter"
-            type="text"
-            bind:value={filter}
-            placeholder="filter models…"
-          />
+
+        <!-- Every id that is on, in the popover's order, so the selection is
+             readable without scrolling the list (his 16:50 addendum). -->
+        <div class="strip">
+          <span class="ns-k">In the picker</span>
+          {#each pickerOrder as m (m)}
+            <button
+              class="cart on"
+              title="Click to drop {m} from the picker"
+              onclick={() => toggleModel(provider.kind, m)}
+            >
+              <Icon name="check" size={11} />{m}
+            </button>
+          {:else}
+            <span class="dim small">nothing yet — tick a row below</span>
+          {/each}
+          {#if pickerOrder.length > 0}
+            <span class="dim small strip-note">in this order · click to drop</span>
+          {/if}
+        </div>
+        {#if !provider.available}
+          <div class="hint">
+            Add a key and the live list is fetched. Until then, the curated
+            {(CURATED[provider.kind] ?? []).length}.
+          </div>
         {/if}
-        <div class="model-list">
+
+        <div class="mrows">
           {#each sections as s, i (s.name + "#" + i)}
-            <div class="family">
-              <div class="family-head" class:bare={!s.name}>
-                <span class="family-name">{s.name}</span>
-                <span class="family-rule"></span>
+            <div class="famh" class:bare={!s.name}>
+              {#if s.name}<span class="ns-k">{s.name}</span>{/if}
+              <span class="rule"></span>
+              <span class="bulk">
                 <button
-                  class="bulk"
-                  onclick={() => setSection(provider.kind, s, !sectionAllOn(provider.kind, s))}
+                  class:on={sectionAllOn(provider.kind, s)}
+                  onclick={() => setSection(provider.kind, s, true)}>all</button
                 >
-                  {sectionAllOn(provider.kind, s) ? "none" : "all"}
-                </button>
-              </div>
-              <div class="carts">
-                {#each s.entries as e (e.id)}
-                  <span class="cart-group">
-                    <button
-                      class="cart"
-                      class:on={modelOn(provider.kind, e.id)}
-                      class:joined={e.folded.length > 0}
-                      aria-pressed={modelOn(provider.kind, e.id)}
-                      onclick={() => toggleModel(provider.kind, e.id)}
-                    >
-                      {e.id}
-                    </button>
-                    {#if e.folded.length}
-                      <button
-                        class="fold"
-                        class:open={showFolded(provider.kind, e)}
-                        aria-expanded={showFolded(provider.kind, e)}
-                        onclick={() => (expanded[e.id] = !expanded[e.id])}
-                        title={`${e.folded.length} dated release${e.folded.length > 1 ? "s" : ""} folded into this one`}
-                      >
-                        +{e.folded.length}
-                      </button>
-                    {/if}
-                  </span>
-                  {#if showFolded(provider.kind, e)}
-                    {#each e.folded as f (f)}
-                      <button
-                        class="cart snap"
-                        class:on={modelOn(provider.kind, f)}
-                        aria-pressed={modelOn(provider.kind, f)}
-                        onclick={() => toggleModel(provider.kind, f)}
-                      >
-                        {f}
-                      </button>
-                    {/each}
-                  {/if}
-                {/each}
-              </div>
+                ·
+                <button onclick={() => setSection(provider.kind, s, false)}>none</button>
+              </span>
             </div>
+            {#each s.entries as e (e.id)}
+              {@const on = modelOn(provider.kind, e.id)}
+              <div class="mr" class:on>
+                <button
+                  class="cb"
+                  class:on
+                  role="checkbox"
+                  aria-checked={on}
+                  aria-label="{e.id} in the picker"
+                  onclick={() => toggleModel(provider.kind, e.id)}
+                >
+                  {#if on}<Icon name="check" size={11} />{/if}
+                </button>
+                <span class="id" title={e.id}>{e.id}</span>
+                {#if e.id === provider.default_model}
+                  <span class="ns-pill open dflt">default</span>
+                {/if}
+                {#if e.folded.length}
+                  <button
+                    class="rel"
+                    class:open={showFolded(provider.kind, e)}
+                    aria-expanded={showFolded(provider.kind, e)}
+                    onclick={() => (expanded[e.id] = !expanded[e.id])}
+                    title={`${e.folded.length} dated release${e.folded.length > 1 ? "s" : ""} folded into this one`}
+                  >
+                    <Icon name={showFolded(provider.kind, e) ? "chev" : "chevr"} size={12} />
+                    {e.folded.length} dated release{e.folded.length > 1 ? "s" : ""}
+                  </button>
+                {/if}
+                <span class="cx">{formatWindow(windows[e.id])}</span>
+              </div>
+              {#if showFolded(provider.kind, e)}
+                {#each e.folded as f (f)}
+                  {@const fon = modelOn(provider.kind, f)}
+                  <div class="mr snap" class:on={fon}>
+                    <button
+                      class="cb"
+                      class:on={fon}
+                      role="checkbox"
+                      aria-checked={fon}
+                      aria-label="{f} in the picker"
+                      onclick={() => toggleModel(provider.kind, f)}
+                    >
+                      {#if fon}<Icon name="check" size={11} />{/if}
+                    </button>
+                    <span class="id" title={f}>{f}</span>
+                    <span class="cx">{formatWindow(windows[f])}</span>
+                  </div>
+                {/each}
+              {/if}
+            {/each}
           {:else}
             <div class="hint">
               No models listed yet — fetch from the API or add one below.
             </div>
           {/each}
         </div>
+
         <form
           class="add"
           onsubmit={(e) => {
@@ -603,22 +892,54 @@
             addCustom();
           }}
         >
-          <input type="text" bind:value={addDraft} placeholder="add model id…" />
-          <button type="submit" disabled={!addDraft.trim()}>add</button>
+          <input type="text" bind:value={addDraft} placeholder="add a model id…" aria-label="Model id to add" />
+          <button type="submit" class="ns-btn" disabled={!addDraft.trim()}>
+            <Icon name="plus" size={13} />
+            Add
+          </button>
+          <span class="dim small">Checked = in the popover's list. A dated release you pin stays visible.</span>
         </form>
-        <div class="hint">
-          {onCount} of {sections.reduce((n, s) => n + s.entries.length, 0)} in the
-          rail's dropdown.
-        </div>
       </section>
+
+      {#if !keyFirst}
+        {#if replacing}
+          {@render keyCard(
+            state,
+            providerLabel(provider.kind),
+            null,
+            () => void saveKey(),
+            () => void clearKey(),
+            "",
+            () => (replacing = false),
+          )}
+        {:else}
+          <div class="keyrow">
+            <Icon name="key" size={13} />
+            {#if state === "stored"}
+              <span class="ns-pill done"><span class="dot"></span>API key stored in the keychain</span>
+            {:else}
+              <span class="ns-pill live"><span class="dot"></span>API key from the environment</span>
+            {/if}
+            <span class="lk">
+              <button class="ns-link" onclick={() => (replacing = true)}>
+                {state === "stored" ? "Replace…" : "Store one instead…"}
+              </button>
+              {#if state === "stored"}
+                <button class="ns-link danger" onclick={() => void clearKey()} disabled={keyBusy}>Remove</button>
+              {/if}
+            </span>
+            {#if keyError}<span class="error inline">{keyError}</span>{/if}
+          </div>
+        {/if}
+      {/if}
     </div>
   {/if}
 </div>
 
 <style>
   .modal {
-    background: var(--panel);
-    border: 1px solid var(--border);
+    background: var(--sheet);
+    border: 1px solid var(--line2);
     border-radius: 12px;
     /* Sized off the window rather than pinned to it: the model list is the
        one pane that is always longer than the space given to it, so a fixed
@@ -630,48 +951,53 @@
     height: clamp(24rem, 82vh, 54rem);
     max-height: calc(100vh - 3rem);
     display: grid;
-    grid-template-columns: 11rem 1fr;
+    grid-template-columns: 13.5rem 1fr;
     overflow: hidden;
     box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
   }
   .nav {
-    border-right: 1px solid var(--border);
+    border-right: 1px solid var(--line);
     background: rgba(0, 0, 0, 0.18);
     display: flex;
     flex-direction: column;
-    padding: 0.75rem 0.55rem;
+    padding: 16px 10px;
     gap: 2px;
     overflow-y: auto;
   }
-  .search-title {
-    margin-top: 14px;
+  .nav-h {
+    font-family: var(--serif);
+    font-size: 20px;
+    font-weight: 500;
+    padding: 0 10px 6px;
+    color: var(--ink);
   }
-
   .nav-title {
-    font-size: 0.72rem;
-    color: var(--dim);
+    padding: 12px 10px 4px;
+    font-size: 11px;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
-    letter-spacing: 0.06em;
-    padding: 0 0.45rem 0.5rem;
+    color: var(--dim);
   }
   .nav-item {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: 8px;
     background: transparent;
     border: none;
-    color: var(--text);
-    font-size: 0.82rem;
+    color: var(--ink);
+    font: inherit;
+    font-size: 13px;
     text-align: left;
-    padding: 0.4rem 0.45rem;
+    padding: 7px 10px;
     border-radius: 8px;
     cursor: pointer;
   }
   .nav-item:hover {
-    background: #1b1830;
+    background: var(--well);
   }
   .nav-item.active {
-    background: #221e3a;
+    background: var(--well);
+    box-shadow: 0 0 0 1px var(--line2);
   }
   .nav-item.muted .nav-label {
     color: var(--dim);
@@ -680,6 +1006,21 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    min-width: 0;
+  }
+  .st {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--dim);
+    flex: none;
+  }
+  .eye {
+    display: inline-flex;
+    color: var(--dim);
   }
   .dot {
     width: 7px;
@@ -690,312 +1031,578 @@
     opacity: 0.5;
   }
   .dot.ok {
-    background: #6fdc8c;
+    background: var(--done);
+    opacity: 1;
+  }
+  .dot.env {
+    background: var(--live);
     opacity: 1;
   }
   .nav-spacer {
     flex: 1;
   }
-  .close {
-    background: transparent;
-    border: 1px solid var(--border);
+  .nav-foot {
+    font-size: 11px;
     color: var(--dim);
-    border-radius: 8px;
-    padding: 0.35rem 0.5rem;
-    font-size: 0.78rem;
-    cursor: pointer;
+    padding: 0 10px;
   }
-  .close:hover {
-    color: var(--text);
-    border-color: var(--accent);
-  }
+
   .pane {
-    padding: 0.9rem 1.1rem;
+    padding: 20px 24px;
     overflow-y: auto;
     display: flex;
     flex-direction: column;
-    gap: 0.7rem;
+    gap: 14px;
     min-height: 0;
   }
   .pane-head {
     display: flex;
-    align-items: baseline;
-    gap: 0.6rem;
+    align-items: center;
+    gap: 12px;
+    flex: none;
   }
   .pane-title {
-    font-size: 1rem;
-    font-weight: 600;
+    margin: 0;
+    font-family: var(--serif);
+    font-size: 26px;
+    font-weight: 500;
+    letter-spacing: -0.01em;
   }
   .slug {
     font-family: var(--mono);
-    font-size: 0.72rem;
+    font-size: 12px;
     color: var(--dim);
   }
+  .spacer {
+    flex: 1;
+  }
+  .close {
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    border: 1px solid var(--line);
+    background: transparent;
+    color: var(--dim);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    cursor: pointer;
+    flex: none;
+  }
+  .close:hover {
+    color: var(--ink);
+    border-color: var(--dim);
+  }
+  .sw2 {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12.5px;
+    color: var(--ink2);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .sw {
+    appearance: none;
+    -webkit-appearance: none;
+    margin: 0;
+    width: 26px;
+    height: 15px;
+    flex-shrink: 0;
+    border-radius: 999px;
+    background: var(--line2);
+    position: relative;
+    cursor: pointer;
+    transition: background 0.15s ease;
+  }
+  .sw::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    background: var(--dim);
+    transition:
+      transform 0.15s ease,
+      background 0.15s ease;
+  }
+  .sw:checked {
+    background: var(--accent);
+  }
+  .sw:checked::after {
+    transform: translateX(11px);
+    background: var(--accent);
+    box-shadow: inset 0 0 0 2px var(--paper);
+  }
+
   .note {
     color: var(--dim);
-    font-size: 0.78rem;
+    font-size: 13px;
     margin: 0;
     line-height: 1.45;
   }
-  .section {
-    border: 1px solid var(--border);
+  .note.small {
+    font-size: 12px;
+  }
+  .note code {
+    font-family: var(--mono);
+    font-size: 0.92em;
+  }
+  .dim {
+    color: var(--dim);
+  }
+  .small {
+    font-size: 12px;
+  }
+
+  /* Cards: the key card, the models card, the knowledge cards. */
+  .card {
+    background: var(--paper);
+    border: 1px solid var(--line);
     border-radius: 10px;
-    padding: 0.6rem 0.75rem;
+    padding: 14px 16px;
     display: flex;
     flex-direction: column;
-    gap: 0.45rem;
+    gap: 12px;
+    flex: none;
   }
-  .section-title {
-    font-size: 0.75rem;
-    color: var(--dim);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
+  .card .ch {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .card .ch .t {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+  }
+  .kstate {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .kf,
+  .add {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .kf input[type="password"] {
+    flex: 1;
+    min-width: 12rem;
   }
   .key-status {
-    font-size: 0.78rem;
-  }
-  .note.small {
-    font-size: 0.74rem;
+    font-size: 13px;
   }
   /* Wraps rather than ellipsizes: a folder you cannot read the end of is one
      you cannot check you picked correctly. */
   .path {
     font-family: var(--mono);
-    font-size: 0.76rem;
-    color: var(--text);
+    font-size: 12.5px;
+    color: var(--ink);
     overflow-wrap: anywhere;
   }
-  .key-form,
-  .add {
+  /* The model-instruction files, one row each: id, size, pencil. */
+  .mfiles {
     display: flex;
-    gap: 0.4rem;
+    flex-direction: column;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .mfile {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 10px;
+    border: none;
+    border-top: 1px solid var(--line);
+    background: transparent;
+    color: var(--ink2);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    width: 100%;
+  }
+  .mfile:first-child {
+    border-top: none;
+  }
+  .mfile:hover {
+    color: var(--accent);
+  }
+  .mfile .mid {
+    flex: 1;
+    font-family: var(--mono);
+    font-size: 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .mfile .msz {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--dim);
   }
   .dream-auto {
     display: flex;
     align-items: center;
     gap: 0.45rem;
-    font-size: 0.78rem;
-    color: var(--text);
+    font-size: 13px;
+    color: var(--ink);
     cursor: pointer;
-    margin-bottom: 0.6rem;
   }
-  .key-form select {
-    background: var(--bg);
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 0.35rem 0.5rem;
-    font-size: 0.78rem;
-  }
+  select,
   input[type="password"],
   input[type="text"] {
-    flex: 1;
-    background: var(--bg);
-    color: var(--text);
-    border: 1px solid var(--border);
+    background: var(--paper);
+    color: var(--ink);
+    border: 1px solid var(--line2);
     border-radius: 6px;
-    padding: 0.35rem 0.5rem;
-    font-size: 0.78rem;
+    padding: 7px 10px;
+    font-size: 13px;
     font-family: var(--mono);
     min-width: 0;
   }
-  input:focus {
+  select {
+    font-family: var(--sans);
+  }
+  .kf input[type="text"] {
+    flex: 1;
+  }
+  input:focus,
+  select:focus {
     outline: none;
     border-color: var(--accent);
   }
-  .key-form button,
-  .add button,
-  .refresh {
-    background: transparent;
-    color: var(--dim);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 0.3rem 0.6rem;
-    font-size: 0.74rem;
-    cursor: pointer;
-    white-space: nowrap;
+  input:disabled {
+    opacity: 0.55;
   }
-  .key-form button:hover:not(:disabled),
-  .add button:hover:not(:disabled),
-  .refresh:hover:not(:disabled) {
-    color: var(--accent);
-    border-color: var(--accent);
-  }
-  .key-form button:disabled,
-  .add button:disabled,
-  .refresh:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
-  .refresh {
-    text-transform: none;
-    letter-spacing: normal;
-  }
-  .models-section {
-    /* Takes whatever the pane has left, so the extra height a larger window
-       gives the modal lands on the list rather than on empty space below it. */
+
+  /* The models card takes what the pane has left, and its rows scroll under
+     the header, the strip and above the add-row. */
+  .card.models {
     flex: 1 1 auto;
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
+    min-height: 14rem;
+    gap: 10px;
+    overflow: hidden;
+  }
+  .filter-wrap {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    flex: 0 1 200px;
+    min-width: 110px;
+  }
+  .filter-wrap :global(.ns-ico) {
+    position: absolute;
+    left: 9px;
+    color: var(--dim);
+    pointer-events: none;
   }
   .filter {
-    flex: none;
+    width: 100%;
+    padding: 5px 9px 5px 28px !important;
+    font-size: 12.5px !important;
+    font-family: var(--sans) !important;
   }
-  .model-list {
-    display: flex;
-    flex-direction: column;
-    gap: 0.6rem;
-    overflow-y: auto;
-    /* The scroller, so the filter above it and the add-model form below it
-       stay put while the list moves. `min-height` rather than a fixed height:
-       on a very short window it gives way and the pane scrolls instead. */
-    flex: 1 1 auto;
-    min-height: 6rem;
-  }
-  .family {
-    display: flex;
-    flex-direction: column;
-    gap: 0.35rem;
-  }
-  .family-head {
+  .strip {
     display: flex;
     align-items: center;
-    gap: 0.45rem;
+    gap: 6px;
+    flex-wrap: wrap;
+    padding: 8px 10px;
+    border: 1px dashed var(--line2);
+    border-radius: 8px;
+    flex: none;
   }
-  .family-name {
+  .strip .ns-k {
+    margin-right: 4px;
+  }
+  .strip-note {
+    margin-left: auto;
+  }
+  .cart {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 10px;
+    border: 1px solid var(--line2);
+    border-radius: 999px;
     font-family: var(--mono);
-    font-size: 0.7rem;
+    font-size: 11.5px;
     color: var(--dim);
-    letter-spacing: 0.02em;
-    white-space: nowrap;
+    background: var(--sheet);
+    cursor: pointer;
   }
-  .family-name:empty {
-    display: none;
+  .cart.on {
+    background: var(--accent-soft);
+    color: var(--accent-ink);
+    border-color: color-mix(in srgb, var(--accent) 45%, transparent);
   }
-  .family-rule {
+  .cart.on:hover {
+    color: var(--failed);
+    border-color: var(--failed);
+  }
+
+  .mrows {
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    flex: 1 1 auto;
+    min-height: 6rem;
+    scrollbar-width: thin;
+  }
+  .famh {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 10px 4px;
+  }
+  .famh:first-child {
+    padding-top: 2px;
+  }
+  .famh .rule {
     flex: 1;
     height: 1px;
-    background: var(--border);
+    background: var(--line);
   }
-  .family-head.bare .family-rule {
+  .famh.bare .rule {
     background: transparent;
   }
   .bulk {
-    background: transparent;
-    border: none;
+    font-size: 11px;
     color: var(--dim);
-    font-size: 0.68rem;
-    padding: 0 0.15rem;
+    display: inline-flex;
+    gap: 4px;
+    align-items: center;
+  }
+  .bulk button {
+    background: none;
+    border: none;
+    padding: 0;
+    font: inherit;
+    color: var(--dim);
     cursor: pointer;
-    opacity: 0;
-    transition: opacity 0.1s;
   }
-  .family:hover .bulk,
-  .bulk:focus-visible {
-    opacity: 1;
-  }
-  .bulk:hover {
+  .bulk button:hover,
+  .bulk button.on {
     color: var(--accent);
   }
-
-  /* Cartouches: the chip *is* the switch, so its state has to read off the
-     chip itself — border, fill and text weight together, since colour alone
-     would leave the two states a shade apart on a dim list. */
-  .carts {
+  .mr {
     display: flex;
-    flex-wrap: wrap;
-    gap: 0.3rem;
+    align-items: center;
+    gap: 12px;
+    padding: 7px 10px;
+    border-radius: 6px;
+    font-size: 13px;
+    flex: none;
   }
-  .cart-group {
+  .mr:nth-child(even) {
+    background: color-mix(in srgb, var(--sheet) 55%, transparent);
+  }
+  .cb {
+    width: 15px;
+    height: 15px;
+    padding: 0;
+    border: 1.5px solid var(--line2);
+    border-radius: 4px;
+    background: var(--paper);
+    color: var(--paper);
     display: inline-flex;
-    align-items: stretch;
-  }
-  .cart {
-    font-family: var(--mono);
-    font-size: 0.72rem;
-    line-height: 1.1;
-    padding: 0.28rem 0.6rem;
-    border-radius: 999px;
-    border: 1px solid var(--border);
-    background: transparent;
-    color: var(--dim);
+    align-items: center;
+    justify-content: center;
+    flex: none;
     cursor: pointer;
-    white-space: nowrap;
-    transition:
-      color 0.1s,
-      border-color 0.1s,
-      background 0.1s;
   }
-  .cart:hover {
-    color: var(--text);
-    border-color: var(--dim);
-  }
-  .cart.on {
-    color: var(--text);
+  .cb.on {
+    background: var(--accent);
     border-color: var(--accent);
-    background: rgba(139, 124, 246, 0.18);
   }
-  .cart.on:hover {
-    border-color: var(--accent);
-    background: rgba(139, 124, 246, 0.28);
+  .cb :global(.ns-ico) {
+    stroke-width: 2.2;
   }
-  .cart:focus-visible,
-  .fold:focus-visible {
+  .cb:focus-visible {
     outline: 1px solid var(--accent);
     outline-offset: 1px;
   }
-  .cart.joined {
-    border-top-right-radius: 0;
-    border-bottom-right-radius: 0;
-    border-right: none;
-    padding-right: 0.45rem;
-  }
-  .fold {
+  .mr .id {
     font-family: var(--mono);
-    font-size: 0.66rem;
-    padding: 0 0.45rem;
-    border: 1px solid var(--border);
-    border-left: 1px solid var(--border);
-    border-radius: 0 999px 999px 0;
-    background: transparent;
+    font-size: 12px;
+    color: var(--ink2);
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .mr.on .id {
+    color: var(--ink);
+  }
+  .dflt {
+    font-size: 10px;
+    padding: 0 6px;
+  }
+  .rel {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: none;
+    border: none;
+    padding: 0;
+    font: inherit;
+    font-size: 11px;
     color: var(--dim);
     cursor: pointer;
+    white-space: nowrap;
   }
-  .fold:hover,
-  .fold.open {
+  .rel:hover,
+  .rel.open {
     color: var(--accent);
-    border-color: var(--accent);
   }
-  /* A pinned snapshot is a chip like any other, one step quieter so the id it
-     was folded into still reads as the family's default. */
-  .cart.snap {
-    font-size: 0.68rem;
-    padding: 0.24rem 0.5rem;
-    border-style: dashed;
-    opacity: 0.85;
+  .cx {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--dim);
+    width: 44px;
+    text-align: right;
+    flex: none;
   }
-  .cart.snap.on {
-    border-style: solid;
-    opacity: 1;
+  .mr.snap {
+    margin-left: 16px;
+    padding-left: 34px;
+    border-left: 2px solid var(--line);
+    border-radius: 0;
   }
+  .mr.snap .id {
+    font-size: 11.5px;
+  }
+  .add {
+    padding-top: 10px;
+    border-top: 1px solid var(--line);
+    flex: none;
+  }
+  .add input {
+    flex: 0 1 320px;
+  }
+
+  /* The demoted key row, once a key exists (blocker 032). */
+  .keyrow {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--paper);
+    font-size: 12.5px;
+    color: var(--ink2);
+    flex: none;
+    flex-wrap: wrap;
+  }
+  .keyrow .lk {
+    display: flex;
+    gap: 14px;
+    margin-left: auto;
+  }
+  .ns-link.danger {
+    color: var(--failed);
+  }
+  .ns-link:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+
   .hint {
     color: var(--dim);
-    font-size: 0.72rem;
+    font-size: 12px;
     line-height: 1.4;
   }
   .error {
     color: var(--error);
-    background: rgba(246, 109, 124, 0.08);
+    background: var(--failed-soft);
     border: 1px solid rgba(246, 109, 124, 0.3);
     border-radius: 8px;
-    padding: 0.4rem 0.55rem;
-    font-size: 0.74rem;
+    padding: 6px 10px;
+    font-size: 12px;
     white-space: pre-wrap;
     word-break: break-word;
+  }
+  .error.inline {
+    flex-basis: 100%;
+  }
+
+  /* The palette swatches. Each button carries its own `data-palette`, so
+     the token blocks in app.css colour the preview the way they would colour
+     the app — the swatch is the palette, not a picture of it. */
+  .swatches {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.7rem;
+  }
+  .swatch {
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+    padding: 0.5rem;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    cursor: pointer;
+    text-align: left;
+    color: var(--text);
+    font: inherit;
+  }
+  .swatch:hover {
+    border-color: var(--dim);
+  }
+  .swatch.on {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent);
+  }
+  .swatch-paper {
+    display: block;
+    height: 84px;
+    border-radius: 6px;
+    background: var(--paper);
+    border: 1px solid var(--line);
+    padding: 12px;
+  }
+  .swatch-sheet {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 100%;
+    border-radius: 5px;
+    background: var(--sheet);
+    border: 1px solid var(--line2);
+    padding: 0 14px;
+  }
+  .swatch-title {
+    font-family: var(--serif);
+    font-size: 26px;
+    color: var(--ink);
+  }
+  .swatch-accent {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+  .swatch-name {
+    font-size: 0.8rem;
+    color: var(--dim);
+  }
+  .swatch-name b {
+    color: var(--text);
+    font-weight: 600;
+    margin-right: 0.3rem;
   }
 </style>

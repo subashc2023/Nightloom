@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icon from "./Icon.svelte";
   import { app, addToast, send, cancelTurn } from "./state.svelte";
   import type { Attachment } from "./types";
 
@@ -17,7 +18,89 @@
   // children; count enters against leaves instead.
   let dragDepth = $state(0);
 
-  const MAX_HEIGHT = 200; // ~8 rows
+  /**
+   * How tall the box may grow before it scrolls inside itself (item 039 in
+   * the nightshift repo). Unset, it is 40% of the column, so the transcript
+   * keeps the other 60% however long the draft; the handle on the top edge
+   * sets it by hand, and the setting is kept per machine. The floating
+   * composer on the new-chat page has no transcript to balance against and
+   * keeps a fixed cap.
+   */
+  const FLOATING_MAX = 200; // ~8 rows
+  const CAP_FRACTION = 0.4;
+  const CAP_MIN = 72;
+  const CAP_KEY = "nightloom.composer.max";
+
+  function loadCap(): number | null {
+    try {
+      const raw = localStorage.getItem(CAP_KEY);
+      const n = raw === null ? NaN : Number(raw);
+      return Number.isFinite(n) && n >= CAP_MIN ? n : null;
+    } catch {
+      return null;
+    }
+  }
+  function saveCap(n: number | null): void {
+    try {
+      if (n === null) localStorage.removeItem(CAP_KEY);
+      else localStorage.setItem(CAP_KEY, String(Math.round(n)));
+    } catch {
+      // best-effort
+    }
+  }
+
+  /** The cap set by hand, or null for the 40% rule. */
+  let capPx = $state<number | null>(loadCap());
+  let dragging = $state(false);
+
+  /** The column the composer shares with the transcript. */
+  function columnHeight(): number {
+    const col = ta?.closest(".main") as HTMLElement | null;
+    return col?.clientHeight ?? window.innerHeight;
+  }
+
+  function maxHeight(): number {
+    if (floating) return FLOATING_MAX;
+    const auto = Math.round(columnHeight() * CAP_FRACTION);
+    return Math.max(CAP_MIN, capPx ?? auto);
+  }
+
+  /**
+   * The handle. Dragging up raises the cap and the box grows into it as far
+   * as the draft needs; dragging down lowers it and the box scrolls sooner.
+   * Double-click returns to the 40% rule.
+   */
+  function handleDown(e: PointerEvent) {
+    if (e.button !== 0 || !ta) return;
+    e.preventDefault();
+    const startY = e.clientY;
+    const startCap = maxHeight();
+    const limit = Math.round(columnHeight() * 0.85);
+    const target = e.currentTarget as HTMLElement;
+    target.setPointerCapture(e.pointerId);
+    dragging = true;
+    const move = (ev: PointerEvent) => {
+      const next = Math.min(limit, Math.max(CAP_MIN, startCap + (startY - ev.clientY)));
+      capPx = next;
+      autogrow();
+    };
+    const up = () => {
+      dragging = false;
+      saveCap(capPx);
+      target.removeEventListener("pointermove", move);
+      target.removeEventListener("pointerup", up);
+      target.removeEventListener("pointercancel", up);
+    };
+    target.addEventListener("pointermove", move);
+    target.addEventListener("pointerup", up);
+    target.addEventListener("pointercancel", up);
+  }
+
+  function handleReset() {
+    capPx = null;
+    saveCap(null);
+    autogrow();
+  }
 
   // The four image types every provider we speak to accepts.
   const IMAGES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
@@ -32,15 +115,32 @@
   // base64 inflates by 4/3, and the caps apply to the encoded payload.
   const MAX_IMAGE_BASE64 = 10 * 1024 * 1024;
   const MAX_DOCUMENT_BASE64 = 32 * 1024 * 1024;
+  // Lower on the Claude Code engine, and not because the CLI refuses: it
+  // accepts the whole document on stdin and then, somewhere between it and
+  // the model, drops one over ~23 MiB encoded — exit 0, no error line, and
+  // a reply that asks which document you meant. Measured on 2.1.263: 22.7 MiB
+  // reached the model, 24.0 MiB did not. 20 MiB leaves a margin under the
+  // last size that worked, and a named refusal here is the only place that
+  // failure can be made loud. Images near their own cap went through.
+  const MAX_AGENT_DOCUMENT_BASE64 = 20 * 1024 * 1024;
   const encodedLimit = (n: number) => Math.floor((n / 4) * 3);
 
   let attachSeq = 0;
 
   function autogrow() {
     if (!ta) return;
+    const max = maxHeight();
+    ta.style.maxHeight = max + "px";
     ta.style.height = "auto";
-    ta.style.height = Math.min(ta.scrollHeight, MAX_HEIGHT) + "px";
+    ta.style.height = Math.min(ta.scrollHeight, max) + "px";
   }
+
+  // A resized window moves the 40% line.
+  $effect(() => {
+    const onresize = () => autogrow();
+    window.addEventListener("resize", onresize);
+    return () => window.removeEventListener("resize", onresize);
+  });
 
   function onkeydown(e: KeyboardEvent) {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -76,15 +176,18 @@
     return null;
   }
 
+  // The cap for one attachment on the engine the rail is on right now.
+  // Checked at attach rather than at send because that is when the file is
+  // in hand and the toast can name it; a chip that would fail later is a
+  // promise the send would have to break.
+  function capFor(kind: "image" | "document"): number {
+    if (kind === "image") return MAX_IMAGE_BASE64;
+    return app.connection?.engine === "claude-code"
+      ? MAX_AGENT_DOCUMENT_BASE64
+      : MAX_DOCUMENT_BASE64;
+  }
+
   async function accept(files: Iterable<File>): Promise<void> {
-    // Refused here rather than at send: Claude Code takes a prompt on argv
-    // and reads no attachments from us, and a chip sitting in the composer
-    // is a promise the send would have to break. Named, like every other
-    // refusal in here, so it does not read as a drop that silently failed.
-    if (app.connection?.engine === "claude-code") {
-      addToast("Claude Code takes text only — attachments are not sent on this engine");
-      return;
-    }
     for (const file of files) {
       const kind = kindOf(file.type);
       if (!kind) {
@@ -93,10 +196,14 @@
         );
         continue;
       }
-      const cap = kind === "image" ? MAX_IMAGE_BASE64 : MAX_DOCUMENT_BASE64;
+      const cap = capFor(kind);
       if (file.size > encodedLimit(cap)) {
+        // Named engine when the cap is the engine's, so a file that was
+        // fine on the API path yesterday reads as a different limit and
+        // not a broken one.
+        const where = cap === MAX_AGENT_DOCUMENT_BASE64 ? " on Claude Code" : "";
         addToast(
-          `${describe(file)} is too large — the limit is ${cap / 1024 / 1024} MB once base64-encoded (about ${Math.round(encodedLimit(cap) / 1024 / 1024)} MB of file)`,
+          `${describe(file)} is too large — the limit${where} is ${cap / 1024 / 1024} MB once base64-encoded (about ${Math.round(encodedLimit(cap) / 1024 / 1024)} MB of file)`,
         );
         continue;
       }
@@ -148,6 +255,15 @@
     void accept(files);
   }
 
+  // The Attach button: a hidden picker feeding the same `accept` the paste
+  // and drop paths use. Same media types the drop accepts.
+  let picker = $state<HTMLInputElement | null>(null);
+  function onpick(): void {
+    const files = Array.from(picker?.files ?? []);
+    if (picker) picker.value = "";
+    if (files.length > 0) void accept(files);
+  }
+
   function remove(id: number) {
     const i = attachments.findIndex((a) => a.id === id);
     if (i >= 0) attachments.splice(i, 1);
@@ -185,6 +301,19 @@
   {ondragleave}
   {ondrop}
 >
+  {#if !floating}
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="handle"
+      class:dragging
+      role="separator"
+      aria-orientation="horizontal"
+      aria-label="Composer height"
+      title={capPx === null ? "Drag to set how tall the message box may grow (double-click: automatic, 40% of the column)" : `Message box may grow to ${capPx}px — double-click for automatic`}
+      onpointerdown={handleDown}
+      ondblclick={handleReset}
+    ></div>
+  {/if}
   {#if attachments.length > 0}
     <div class="attachments">
       {#each attachments as a (a.id)}
@@ -207,7 +336,7 @@
       {/each}
     </div>
   {/if}
-  <div class="row">
+  <div class="card">
     <textarea
       bind:this={ta}
       bind:value={text}
@@ -218,19 +347,32 @@
       {onpaste}
       {onkeydown}
     ></textarea>
-    {#if app.busy}
-      <button class="action stop" onclick={() => void cancelTurn()}>
-        Stop
+    <div class="row">
+      <input
+        bind:this={picker}
+        type="file"
+        accept="image/*,application/pdf"
+        multiple
+        hidden
+        onchange={onpick}
+      />
+      <button class="ns-btn ghost small" disabled={!app.connection} onclick={() => picker?.click()}>
+        <Icon name="plus" />Attach
       </button>
-    {:else}
-      <button
-        class="action"
-        onclick={() => void submit()}
-        disabled={!app.connection || (!text.trim() && attachments.length === 0)}
-      >
-        Send
-      </button>
-    {/if}
+      <span class="ns-chip mono keys">↵ to send · ⇧↵ newline</span>
+      <span class="spacer"></span>
+      {#if app.busy}
+        <button class="ns-btn danger small" onclick={() => void cancelTurn()}>Stop</button>
+      {:else}
+        <button
+          class="ns-btn accent send"
+          onclick={() => void submit()}
+          disabled={!app.connection || (!text.trim() && attachments.length === 0)}
+        >
+          Send
+        </button>
+      {/if}
+    </div>
   </div>
   {#if !app.connection}
     <div class="hint">connect a provider to start</div>
@@ -241,9 +383,35 @@
 
 <style>
   .composer {
-    background: var(--panel);
-    border-top: 1px solid var(--border);
-    padding: 0.75rem 1rem;
+    position: relative;
+    background: var(--paper);
+    padding: 12px 20px 22px;
+  }
+  /* The drag handle sits on the top edge, over the border. */
+  .handle {
+    position: absolute;
+    top: -4px;
+    left: 0;
+    right: 0;
+    height: 9px;
+    cursor: row-resize;
+    touch-action: none;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 2;
+  }
+  .handle::after {
+    content: "";
+    width: 36px;
+    height: 3px;
+    border-radius: 2px;
+    background: var(--line2);
+    transition: background 0.12s;
+  }
+  .handle:hover::after,
+  .handle.dragging::after {
+    background: var(--accent);
   }
   .composer.floating {
     background: transparent;
@@ -251,24 +419,22 @@
     padding: 0;
     width: 100%;
   }
-  .composer.dropping {
-    background: #8b7cf60f;
+  .composer.dropping .card {
+    border-color: var(--accent);
   }
   .composer.floating.dropping {
     background: transparent;
   }
-  .composer.floating .row,
+  .composer.floating .card,
   .composer.floating .attachments,
   .composer.floating .hint {
     max-width: none;
   }
   .composer.floating textarea {
-    background: var(--panel);
-    padding: 0.7rem 0.9rem;
-    font-size: 0.95rem;
+    font-size: 15.5px;
   }
   .attachments {
-    max-width: 46rem;
+    max-width: 760px;
     margin: 0 auto 0.5rem;
     display: flex;
     flex-wrap: wrap;
@@ -328,62 +494,63 @@
     cursor: pointer;
   }
   .remove:hover {
-    color: var(--error);
-    border-color: rgba(246, 109, 124, 0.4);
+    color: var(--failed);
+    border-color: var(--failed);
   }
-  .row {
-    max-width: 46rem;
+  /* The mock-up's composer card: the text on top, the toolbar under it. */
+  .card {
+    max-width: 760px;
     margin: 0 auto;
     display: flex;
-    align-items: flex-end;
-    gap: 0.6rem;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px 14px;
+    background: var(--sheet);
+    border: 1px solid var(--line2);
+    border-radius: 10px;
+    transition: border-color 0.12s;
+  }
+  .card:focus-within {
+    border-color: var(--accent);
+  }
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .spacer {
+    flex: 1;
+  }
+  .keys {
+    font-size: 11px;
+    padding: 2px 8px;
   }
   textarea {
-    flex: 1;
-    background: var(--bg);
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 0.55rem 0.75rem;
-    font-size: 0.92rem;
+    width: 100%;
+    background: transparent;
+    color: var(--ink);
+    border: none;
+    padding: 2px 0;
+    font-size: 15px;
     font-family: inherit;
-    line-height: 1.45;
+    line-height: 1.5;
     resize: none;
-    max-height: 200px;
     overflow-y: auto;
+  }
+  textarea::placeholder {
+    color: var(--dim);
   }
   textarea:focus {
     outline: none;
-    border-color: var(--accent);
   }
   textarea:disabled {
     opacity: 0.5;
   }
-  .action {
-    background: var(--accent);
-    color: #0d0d14;
-    border: none;
-    border-radius: 10px;
-    padding: 0.55rem 1rem;
-    font-size: 0.88rem;
-    font-weight: 600;
-    cursor: pointer;
-    flex-shrink: 0;
-  }
-  .action:hover:not(:disabled) {
-    filter: brightness(1.1);
-  }
-  .action:disabled {
-    opacity: 0.45;
-    cursor: default;
-  }
-  .action.stop {
-    background: transparent;
-    color: var(--error);
-    border: 1px solid rgba(246, 109, 124, 0.4);
+  .send {
+    padding: 6px 16px;
   }
   .hint {
-    max-width: 46rem;
+    max-width: 760px;
     margin: 0.4rem auto 0;
     color: var(--dim);
     font-size: 0.75rem;

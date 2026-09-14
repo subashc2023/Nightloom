@@ -1,9 +1,11 @@
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { math } from "./math";
+import { tilde } from "./tilde";
 import "katex/dist/katex.min.css";
 
 marked.use(math);
+marked.use(tilde);
 
 /**
  * KaTeX wraps its glyphs in a copy of the formula as MathML, which is what a

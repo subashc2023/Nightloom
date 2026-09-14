@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { relativeTime } from "./time";
   import { tick } from "svelte";
   import { app, denialReason, liveFlags, rewindTo } from "./state.svelte";
   import type { Segment } from "./state.svelte";
@@ -15,6 +16,8 @@
     model: string;
     usage: Usage;
     stop_reason: string | null;
+    /** Recorded when the exchange ran; absent means unpriced, not free. */
+    cost?: number;
   }
 
   type Body =
@@ -23,6 +26,7 @@
         text: string;
         images: ImageInput[];
         documents: DocumentInput[];
+        at: string;
       }
     | { kind: "assistant"; segs: Segment[]; footer: AssistantFooter }
     | { kind: "compaction"; summary: string };
@@ -71,6 +75,7 @@
           text: e.text,
           images: e.images ?? [],
           documents: e.documents ?? [],
+          at: e.at,
         });
       } else if (e.event === "assistant_message") {
         const segs: Segment[] = [];
@@ -111,6 +116,7 @@
             model: e.model,
             usage: e.usage,
             stop_reason: e.stop_reason,
+            cost: e.cost,
           },
         });
       } else if (e.event === "compaction") {
@@ -160,19 +166,22 @@
   <div class="inner">
     {#each items as item, i (i)}
       {#if item.kind === "user"}
-        <div class="user-row" class:superseded={item.superseded}>
-          <!-- Not offered on the agent engine: the history the next turn
-               replays is Claude Code's, so cutting this log would change what
-               the window shows and nothing about the conversation. -->
-          {#if !item.superseded && !app.busy && app.connection?.engine !== "claude-code"}
-            <button
-              class="rewind"
-              title="Rewind to here: this turn and everything after it stop counting. Files written by tools are not reverted."
-              onclick={() => void rewindTo(item.index)}
-            >
-              rewind
-            </button>
-          {/if}
+        <div class="user-turn" class:superseded={item.superseded}>
+          <div class="user-key">
+            <!-- Not offered on the agent engine: the history the next turn
+                 replays is Claude Code's, so cutting this log would change what
+                 the window shows and nothing about the conversation. -->
+            {#if !item.superseded && !app.busy && app.connection?.engine !== "claude-code"}
+              <button
+                class="rewind"
+                title="Rewind to here: this turn and everything after it stop counting. Files written by tools are not reverted."
+                onclick={() => void rewindTo(item.index)}
+              >
+                Rewind to here
+              </button>
+            {/if}
+            <span class="ns-k">You · {relativeTime(item.at)}</span>
+          </div>
           <div class="user-bubble">
             {#if item.images.length > 0}
               <div class="user-images">
@@ -230,20 +239,25 @@
     flex: 1;
     min-height: 0;
     overflow-y: auto;
-    padding: 1.25rem 1rem;
+    padding: 28px 20px 20px;
   }
   .inner {
-    max-width: 46rem;
+    max-width: 760px;
     margin: 0 auto;
     display: flex;
     flex-direction: column;
-    gap: 1.25rem;
+    gap: 26px;
   }
-  .user-row {
+  .user-turn {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 6px;
+  }
+  .user-key {
     display: flex;
     align-items: center;
-    justify-content: flex-end;
-    gap: 0.4rem;
+    gap: 10px;
   }
   /* Dropped by a rewind: still shown, because the log still holds it and a
      hidden turn would make a rewind look like a delete. */
@@ -254,29 +268,31 @@
   .rewind {
     opacity: 0;
     background: none;
-    border: 1px solid var(--border);
+    border: 1px solid var(--line2);
     border-radius: 6px;
-    color: var(--muted);
-    font-size: 0.68rem;
-    padding: 0.1rem 0.4rem;
+    color: var(--dim);
+    font-family: var(--sans);
+    font-size: 11.5px;
+    padding: 2px 8px;
     cursor: pointer;
     transition: opacity 0.12s;
   }
-  .user-row:hover .rewind,
+  .user-turn:hover .rewind,
   .rewind:focus-visible {
     opacity: 1;
   }
   .rewind:hover {
-    color: var(--text);
-    border-color: var(--muted);
+    color: var(--ink);
+    border-color: var(--accent);
   }
   .user-bubble {
-    background: #8b7cf61a;
-    border: 1px solid rgba(139, 124, 246, 0.25);
-    border-radius: 12px;
-    padding: 0.55rem 0.85rem;
-    max-width: 85%;
-    font-size: 0.92rem;
+    background: var(--sheet);
+    border: 1px solid var(--line2);
+    border-radius: 10px 10px 2px 10px;
+    padding: 12px 16px;
+    max-width: 560px;
+    font-size: 15px;
+    line-height: 1.5;
   }
   /* pre-wrap sits on the text, not the bubble: with it on the bubble the
      markup's own newlines around the image strip would render as blank lines. */
@@ -355,9 +371,9 @@
     word-break: break-word;
   }
   .error-banner {
-    color: var(--error);
-    background: rgba(246, 109, 124, 0.08);
-    border: 1px solid rgba(246, 109, 124, 0.3);
+    color: var(--failed);
+    background: var(--failed-soft);
+    border: 1px solid var(--failed);
     border-radius: 8px;
     padding: 0.5rem 0.75rem;
     font-size: 0.82rem;

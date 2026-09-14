@@ -4,9 +4,25 @@
     cacheHitRate,
     compactSession,
     contextUsed,
+    currentTodos,
     liveFlags,
     sessionCost,
   } from "./state.svelte";
+  import RightRail from "./RightRail.svelte";
+  import ContextPanel from "./ContextPanel.svelte";
+
+  /**
+   * The chat top bar in the redesign (item 036, the mock-up's Chat artboard):
+   * the session's name and short id on the left; on the right the model chip,
+   * the context chip, the cache chip, the cost chip and Compact. The model
+   * chip opens a popover that *is* the old right rail (Model · Tasks ·
+   * Context), so nothing the rail did is lost — it just no longer takes a
+   * 240px column on every screen.
+   */
+
+  const session = $derived(app.sessions.find((s) => s.id === app.activeSessionId) ?? null);
+  const title = $derived(session ? (session.title ?? session.first_user ?? "new chat") : "");
+  const crumb = $derived(app.activeSessionId ? app.activeSessionId.slice(0, 8) : "");
 
   /**
    * Context gauge. The denominator comes from the backend's limits table and
@@ -44,9 +60,52 @@
 
   const cached = $derived(cacheHitRate());
 
+  /**
+   * When the prompt cache expires. The API reports no TTL; what is known is
+   * that the Anthropic adapter requests `cache_control: ephemeral` with no
+   * `ttl`, which is the 5-minute cache, and that a hit refreshes it. So the
+   * expiry is *inferred* as the newest live exchange's `at` + 5 minutes,
+   * only when that exchange wrote or read cache, and only on the direct
+   * Anthropic provider — on the Claude Code engine the cache is Claude
+   * Code's own and its TTL depends on the plan, which nothing here can read.
+   */
+  const CACHE_TTL_MS = 5 * 60 * 1000;
+  const cacheExpiry = $derived.by((): number | null => {
+    if (!app.connection || app.connection.engine === "claude-code") return null;
+    if (app.connection.provider !== "anthropic") return null;
+    const live = liveFlags(app.events);
+    for (let i = app.events.length - 1; i >= 0; i--) {
+      if (!live[i]) continue;
+      const e = app.events[i];
+      if (e.event !== "assistant_message") continue;
+      const u = e.usage;
+      const touched = (u.cache_read_tokens ?? 0) + (u.cache_write_tokens ?? 0) > 0;
+      if (!touched) return null;
+      const at = Date.parse(e.at);
+      return Number.isFinite(at) ? at + CACHE_TTL_MS : null;
+    }
+    return null;
+  });
+
+  // A one-second clock, running only while there is an expiry to count down.
+  let now = $state(Date.now());
+  $effect(() => {
+    if (cacheExpiry == null) return;
+    now = Date.now();
+    const id = setInterval(() => (now = Date.now()), 1000);
+    return () => clearInterval(id);
+  });
+  const cacheLeft = $derived.by(() => {
+    if (cacheExpiry == null) return null;
+    const ms = cacheExpiry - now;
+    if (ms <= 0) return "expired";
+    const s = Math.ceil(ms / 1000);
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")} left`;
+  });
+
   function tokens(n: number): string {
-    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
-    if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+    if (n >= 1_000_000) return `${parseFloat((n / 1_000_000).toFixed(2))}M`;
+    if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
     return String(n);
   }
 
@@ -67,131 +126,268 @@
     if (!app.connection) return "";
     const parts: string[] = [];
     if (app.connection.engine === "claude-code") parts.push("subscription");
-    if (app.connection.thinking !== "default") {
-      parts.push(app.connection.thinking);
-    }
+    parts.push(`thinking ${app.connection.thinking}`);
     if (app.connection.tools) parts.push("tools");
     return parts.join(" · ");
   });
+
+  const openTasks = $derived(currentTodos().filter((t) => t.status !== "completed").length);
+
+  // The popovers: the model one opens from the model chip (or ⌘M, or the
+  // ⌘K palette — which is why the flags are app state), the context one
+  // from the gauge chip (or ⌘⇧C). Each closes on Escape, on a click
+  // outside it, or on its chip again; opening one closes the other.
+  let popEl = $state<HTMLElement | null>(null);
+  let chipEl = $state<HTMLElement | null>(null);
+  let ctxPopEl = $state<HTMLElement | null>(null);
+  let ctxChipEl = $state<HTMLElement | null>(null);
+  function onDocClick(e: MouseEvent): void {
+    const t = e.target as Node;
+    if (popEl?.contains(t) || chipEl?.contains(t)) return;
+    if (ctxPopEl?.contains(t) || ctxChipEl?.contains(t)) return;
+    app.showRail = false;
+    app.showContext = false;
+  }
+  function onKey(e: KeyboardEvent): void {
+    if (e.key === "Escape") {
+      app.showRail = false;
+      app.showContext = false;
+    }
+  }
+  $effect(() => {
+    if (!app.showRail && !app.showContext) return;
+    document.addEventListener("mousedown", onDocClick, true);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDocClick, true);
+      document.removeEventListener("keydown", onKey);
+    };
+  });
+  function toggleRail() {
+    app.showContext = false;
+    app.showRail = !app.showRail;
+  }
+  function toggleContext() {
+    app.showRail = false;
+    app.showContext = !app.showContext;
+  }
 </script>
 
 <header class="topbar">
-  <div class="status">
-    {#if app.connection}
-      <span>{app.connection.provider} : {app.connection.model}</span>
-      {#if annotation}
-        <span class="annotation">{annotation}</span>
-      {/if}
-    {:else}
-      <span class="annotation">not connected</span>
+  <div class="left">
+    {#if title}
+      <span class="title" {title}>{title}</span>
+    {/if}
+    {#if crumb}
+      <span class="crumb ns-mono">{crumb}</span>
     {/if}
   </div>
-  {#if gauge}
-    <div
-      class="gauge {level}"
-      title={gauge.limit
-        ? `${gauge.used.toLocaleString()} of ${gauge.limit.toLocaleString()} context tokens`
-        : `${gauge.used.toLocaleString()} context tokens — window size unknown for this model`}
+
+  <div class="right">
+    <button
+      class="ns-chip model"
+      class:open={app.showRail}
+      bind:this={chipEl}
+      title="Model and tasks — click to open (⌘M)"
+      aria-expanded={app.showRail}
+      onclick={toggleRail}
     >
-      {#if gauge.ratio != null}
-        <div class="bar"><div class="fill" style:width="{gauge.ratio * 100}%"></div></div>
+      <span class="dot" class:unknown={!app.connection}></span>
+      {#if app.connection}
+        <span class="model-name">{app.connection.provider} · {app.connection.model}</span>
+        {#if annotation}<span class="annotation">· {annotation}</span>{/if}
+      {:else}
+        <span class="annotation">not connected</span>
       {/if}
-      <span class="figure">
-        {tokens(gauge.used)}{#if gauge.limit}<span class="of"> / {tokens(gauge.limit)}</span
-          ><span class="pct"> · {Math.round((gauge.ratio ?? 0) * 100)}%</span>{:else}
-          <span class="of"> tokens</span>
-        {/if}
-      </span>
-    </div>
-  {/if}
+      {#if openTasks > 0}<span class="badge" title="{openTasks} open tasks">{openTasks}</span>{/if}
+    </button>
 
-  {#if spend}
-    <div
-      class="spend"
-      class:partial={!spend.complete}
-      title={spend.complete
-        ? "Session cost so far, summed from each exchange at the price in force when it ran"
-        : "At least this much: some exchanges ran on a model with no verified price"}
-    >
-      {spend.complete ? "" : "≥"}{spend.text}{#if cached != null}<span class="cache"
-          title="Share of the last request's prompt served from cache">
-          · {Math.round(cached * 100)}% cached</span
-        >{/if}
-    </div>
-  {/if}
-
-  <!--
-    Compaction and nothing else. The settings gear used to sit beside it and
-    moved up into the window's title bar, where it belongs: this bar describes
-    the conversation — which model, how full its window is, what it has cost —
-    and settings are about the app.
-  -->
-  {#if canCompact}
-    <div class="actions">
+    <!-- The context gauge is the Context button (review round 1,
+         2026-09-13): it opens the itemised request in its own popover, where
+         the rail's third tab used to be. Before any usage it reads "Context". -->
+    {#if app.connection}
       <button
-        class="compact"
+        class="ns-chip mono gauge {level}"
+        class:open={app.showContext}
+        bind:this={ctxChipEl}
+        aria-expanded={app.showContext}
+        title={gauge
+          ? gauge.limit
+            ? `${gauge.used.toLocaleString()} of ${gauge.limit.toLocaleString()} context tokens — click to itemise (⌘⇧C)`
+            : `${gauge.used.toLocaleString()} context tokens — window size unknown for this model — click to itemise (⌘⇧C)`
+          : "What the next request carries — click to open (⌘⇧C)"}
+        onclick={toggleContext}
+      >
+        {#if gauge}
+          {#if gauge.ratio != null}
+            <div class="bar"><div class="fill" style:width="{gauge.ratio * 100}%"></div></div>
+          {/if}
+          <span class="figure">
+            {tokens(gauge.used)}{#if gauge.limit}<span class="of">of {tokens(gauge.limit)}</span><span class="pct">· {Math.round((gauge.ratio ?? 0) * 100)}%</span>{:else}<span class="of">tokens</span>{/if}
+          </span>
+        {:else}
+          <span class="figure sans">Context</span>
+        {/if}
+      </button>
+    {/if}
+
+    {#if cached != null}
+      <div
+        class="ns-chip mono cache"
+        class:expired={cacheLeft === "expired"}
+        title={cacheLeft != null
+          ? "Share of the last request's prompt served from cache. The countdown is inferred, not reported: the adapter requests the 5-minute ephemeral cache and every request refreshes it, so it expires 5 minutes after the last exchange."
+          : "Share of the last request's prompt served from cache"}
+      >
+        {Math.round(cached * 100)}% cached{#if cacheLeft != null}<span class="of">· {cacheLeft}</span>{/if}
+      </div>
+    {/if}
+
+    {#if spend}
+      <div
+        class="ns-chip mono spend"
+        class:partial={!spend.complete}
+        title={spend.complete
+          ? "Session cost so far, summed from each exchange at the price in force when it ran"
+          : "At least this much: some exchanges ran on a model with no verified price"}
+      >
+        {spend.complete ? "" : "≥"}{spend.text}
+      </div>
+    {/if}
+
+    <!--
+      Compaction and nothing else. The settings gear used to sit beside it and
+      moved up into the window's title bar, where it belongs: this bar describes
+      the conversation — which model, how full its window is, what it has cost —
+      and settings are about the app.
+    -->
+    {#if canCompact}
+      <button
+        class="ns-btn ghost small"
         title="Replace earlier turns with a model-written summary"
         onclick={() => void compactSession()}
         disabled={app.busy}
       >
         {app.busy ? "…" : "Compact"}
       </button>
+    {/if}
+  </div>
+
+  {#if app.showRail}
+    <div class="popover" bind:this={popEl}>
+      <RightRail />
+    </div>
+  {/if}
+  {#if app.showContext}
+    <div class="popover ctx" bind:this={ctxPopEl}>
+      <div class="ctx-head">
+        <span class="ns-k">Context</span>
+        <span class="sub">what the next request carries</span>
+      </div>
+      <!-- One panel on both engines (2026-09-14). On Claude Code it lists
+           the layers Nightloom appends to the CLI's own prompt, and says in
+           the conversation section that the history is the CLI's — the
+           explanatory note that used to stand in for the panel here. -->
+      <ContextPanel />
     </div>
   {/if}
 </header>
 
 <style>
   .topbar {
+    position: relative;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    background: var(--panel);
-    border-bottom: 1px solid var(--border);
-    padding: 0.4rem 0.75rem;
-    min-height: 2.4rem;
+    gap: 12px;
+    background: var(--paper);
+    border-bottom: 1px solid var(--line);
+    padding: 0 20px;
+    min-height: 52px;
   }
-  .spend {
-    font-size: 0.72rem;
-    color: var(--muted);
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-    margin-left: 0.6rem;
-  }
-  .spend.partial {
-    font-style: italic;
-  }
-  .cache {
-    opacity: 0.75;
-  }
-  .status {
+  .left {
     display: flex;
     align-items: baseline;
-    gap: 0.6rem;
-    font-size: 0.85rem;
+    gap: 10px;
     min-width: 0;
     overflow: hidden;
     white-space: nowrap;
   }
-  .annotation {
-    color: var(--dim);
-    font-size: 0.78rem;
+  .title {
+    font-family: var(--serif);
+    font-size: 18px;
+    color: var(--ink);
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
-  .gauge {
+  .crumb {
+    font-size: 11.5px;
+    color: var(--dim);
+  }
+  .right {
     display: flex;
     align-items: center;
-    gap: 0.45rem;
-    font-size: 0.72rem;
-    color: var(--dim);
+    gap: 8px;
     flex-shrink: 0;
-    margin-left: auto;
-    padding-right: 0.6rem;
+  }
+
+  .model {
+    cursor: pointer;
+    font-family: var(--sans);
+    max-width: 380px;
+  }
+  .model.open,
+  .model:hover {
+    border-color: var(--accent);
+    color: var(--ink);
+  }
+  .model-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .annotation {
+    color: var(--dim);
+  }
+  .badge {
+    background: var(--accent);
+    color: var(--paper);
+    border-radius: 999px;
+    font-size: 10px;
+    line-height: 1;
+    padding: 2px 5px;
     font-variant-numeric: tabular-nums;
   }
+
+  .gauge,
+  .cache,
+  .spend {
+    font-variant-numeric: tabular-nums;
+    color: var(--ink2);
+  }
+  .gauge {
+    cursor: pointer;
+  }
+  .gauge.open,
+  .gauge:hover {
+    border-color: var(--accent);
+    color: var(--ink);
+  }
+  .figure.sans {
+    font-family: var(--sans);
+  }
+  .figure {
+    display: inline-flex;
+    gap: 5px;
+  }
+  .of,
+  .pct {
+    color: var(--dim);
+  }
   .bar {
-    width: 64px;
+    width: 56px;
     height: 4px;
     border-radius: 2px;
-    background: var(--border);
+    background: var(--line2);
     overflow: hidden;
   }
   .fill {
@@ -200,39 +396,67 @@
     transition: width 120ms linear;
   }
   .gauge.warm .fill {
-    background: #e0b341;
+    background: var(--partial);
   }
   .gauge.hot {
-    color: var(--error);
+    color: var(--failed);
   }
   .gauge.hot .fill {
-    background: var(--error);
+    background: var(--failed);
   }
-  .of,
-  .pct {
+  .cache.expired {
     color: var(--dim);
   }
-  .actions {
+  .spend.partial {
+    font-style: italic;
+  }
+
+  .popover {
+    position: absolute;
+    top: calc(100% - 1px);
+    right: 20px;
+    /* 340 × 780 since the 2026-09-13 redesign (was 300 × 560): the Model
+       pane became cards, pills and a radio list, which want the width, and
+       the height shows the Provider pane's first four sections unscrolled. */
+    width: 340px;
+    height: min(780px, calc(100vh - var(--titlebar-h) - 80px));
     display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    flex-shrink: 0;
+    flex-direction: column;
+    background: var(--sheet);
+    border: 1px solid var(--line2);
+    border-radius: 10px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+    overflow: hidden;
+    z-index: 30;
   }
-  .compact {
-    background: transparent;
-    border: 1px solid var(--border);
+  /* The context popover: the same card, its own head, and the panel that
+     was the rail's third tab. Shorter than the model popover — a list, not
+     four sections. */
+  .popover.ctx {
+    height: auto;
+    max-height: min(620px, calc(100vh - var(--titlebar-h) - 80px));
+  }
+  .ctx-head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 12px 14px 6px;
+    flex: none;
+  }
+  .ctx-head .sub {
+    font-size: 11px;
     color: var(--dim);
-    font-size: 0.75rem;
-    padding: 0.25rem 0.55rem;
-    border-radius: 6px;
-    cursor: pointer;
   }
-  .compact:hover:not(:disabled) {
-    color: var(--accent);
-    border-color: var(--accent);
+  .popover.ctx :global(.panel) {
+    flex: 1;
+    min-height: 0;
   }
-  .compact:disabled {
-    opacity: 0.5;
-    cursor: default;
+  /* The rail draws its own left border and panel background for the column it
+     used to be; inside the popover the card is the frame. */
+  .popover :global(.rail) {
+    border-left: none;
+    background: transparent;
+    flex: 1;
+    min-height: 0;
   }
 </style>

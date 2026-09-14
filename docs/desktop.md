@@ -8,7 +8,7 @@ Crate `nightloom-desktop`: a Tauri 2 shell over `nightloom-service` with a Svelt
 `src-tauri/src/main.rs` exposes `providers` / `set_api_key` / `clear_api_key` /
 `list_models` / `connect` / `list_sessions` / `new_session` / `open_session` /
 `transcript` / `send` / `cancel` / `compact` / `rewind` / `context_view` /
-`edit_context` / `delete_session` / `approve_call` / `pick_folder` /
+`edit_context` / `prompt_layers` / `set_prompt_layers` / `delete_session` / `approve_call` / `pick_folder` /
 `list_projects` / `active_project` / `create_project` / `open_project` /
 `close_project` / `rename_project` / `forget_project` / `list_notes` /
 `read_note` / `save_note` / `delete_note` (each taking a `scope`) /
@@ -19,14 +19,21 @@ State is managed: `Chat` + the active `Session` in tokio mutexes, plus a
 swap-per-turn `CancellationToken`. `send` forwards `TurnEvent`s as `turn-event`
 window events and retry stalls as `turn-notice`.
 
-`delete_session` drops the active session's open log handle before removing the
-file — required on Windows.
+`delete_session` drops the active session's open log handle before ~~removing the
+file~~ moving it to `<logs>/trash/` (review round 1, 2026-09-13: a delete in the
+UI is reversible; the listing never descends into subdirectories, so the row is
+gone and the log is not) — dropping the handle first is required on Windows.
 
 `connect` is a thin wrapper over `build_chat(app, policy, spec)`, and `ChatSpec`
 keeps everything the UI asked for. That exists so a subagent is built from the
 same description as the window's own chat instead of a half-copied subset, which
 is how the two would otherwise drift into different tools or a different
-workspace.
+workspace. It also carries `chats: ChatDirs` — the sidebar's log directory plus
+every registered project's and the unfiled one, named — for the `search_chats` /
+`read_chat` tools, taken at connect time so a project added later is reachable
+after the next reconnect. `Option`, and `None` for a reviewer, for the reason
+`knowledge` is cleared there: a second vendor's critic has no business in the
+user's transcripts.
 
 `connect` takes an explicit `workspace`: it roots the file tools **and** is where
 the preamble looks for project instructions and the git branch. A GUI process's
@@ -83,23 +90,39 @@ describes.
 
 It is a command of its own rather than a `provider` value on `connect`, because
 almost none of that call's arguments mean anything here (no base URL, no thinking
-mode, no preamble or sidecar, no MCP, no reviewers), and an entry point whose
-arguments are mostly inert is the shape that invites a knob to be silently
-ignored.
+mode, no sidecar, no MCP, no reviewers), and an entry point whose arguments are
+mostly inert is the shape that invites a knob to be silently ignored. The
+preamble is the one layer that crosses (2026-09-14): it goes in
+`--append-system-prompt` ahead of the library prompt, without identity or
+environment — see [service-agent.md](service-agent.md#what---append-system-prompt-carries).
 
 Three things follow, each stated in the UI rather than left to be discovered:
 
 - **Nightloom's approval gate does not run.** It gates calls its own engine is
   about to execute, and this engine executes its own, so the switch maps to the
-  CLI's `dontAsk` / `bypassPermissions` and the rail says which.
-- **Rewind, compaction and the context panel are withheld.** They change what the
+  CLI's ~~`dontAsk`~~ `auto` / `bypassPermissions` and the rail says which.
+  (`auto` since 2026-09-14, nightshift blocker 045: the CLI's classifier
+  decides each call and, headless, denies what it cannot approve rather than
+  waiting; `dontAsk` with a fresh install's empty allowlist refused every
+  write, command and fetch.)
+- **Rewind, compaction and ~~the context panel~~ context edits are withheld.** They change what the
   *log* projects onto the next request, and here nothing projects, so each would
   alter what the window shows and nothing about the conversation.
   `not_in_agent_mode` is the backstop under the hidden controls, since the two
-  have to agree and only one of them is checkable.
-- **Attachments are refused at the composer**, not at send, because Claude Code
-  takes a prompt on argv: a chip sitting in the box is a promise the send would
-  have to break.
+  have to agree and only one of them is checkable. `context_view` stopped
+  refusing on 2026-09-14: it returns the bridged segments the flag carries
+  (kept as built, `PromptBuilt`, rather than re-parsed from the string) with no
+  messages, since the layers Nightloom appends are ours to show even though the
+  history is not. `set_prompt_layers` is allowed too — it changes what the next
+  connect appends, which this engine does read.
+- **Attachments attach as on the API engine** (since 2026-09-14). They reach the
+  CLI on stdin as one `stream-json` user line rather than on argv — see
+  [service-agent.md](service-agent.md) §"How attachments reach the engine" — and
+  the log records them the same way on both engines. One cap differs: a PDF over
+  20 MiB encoded is refused at attach on this engine (32 MiB on the API path),
+  because past ~23 MiB the CLI drops the document silently and the model answers
+  as if none was sent; the toast names the engine so the lower limit reads as a
+  different limit, not a broken one.
 
 `connect_agent` probes `--version`, so a missing binary fails at connect with
 something the rail can show rather than as a process error on the user's first
@@ -185,6 +208,15 @@ The rail lists each server with its tool count, and a server that failed to star
 is shown as unavailable rather than hidden — its tools are simply missing
 otherwise, and a model told nothing will confidently explain why it cannot help.
 
+The binary is also an MCP *server*: `nightloom-desktop --mcp-serve [--project
+<id>]`, checked at the top of `main` before Tauri builds anything, runs
+`nightloom_service::mcp_server` on stdin and stdout and exits at EOF — no
+window, no app state. It exists so the Claude Code engine can be handed
+Nightloom's `search_chats`, `read_chat`, `remember` and `fetch_page` through
+`--mcp-config`, naming `current_exe()` as the command: the one binary the app
+can always find, where the CLI is usually not on PATH. What the server does and
+how a call is judged is in [mcp.md](mcp.md), *The server*.
+
 Reviewers for the `review` tool come from `tools::bench` — the same table the CLI
 uses — built from the window's own `ChatSpec` with the kind and model swapped in
 and `base_url` cleared, since it belonged to the provider being replaced. A key
@@ -207,6 +239,45 @@ consulted before the environment, which matters more here than for providers
 because a GUI process started from a shortcut usually inherits no environment at
 all.
 
+## Keychain prompts on macOS, and the dev-build signature
+
+**Symptom (2026-09-11):** every `cargo tauri dev` rebuild made macOS ask for
+the login password once per stored key — five to fifteen dialogs — and
+"Always Allow" never held. **Cause:** a plain dev build is ad-hoc,
+linker-signed, and its code identity is a per-build hash
+(`Identifier=nightloom_desktop-<hash>`, designated requirement `cdhash
+H"…"`). The keychain stores "Always Allow" against the requesting app's code
+identity, so each rebuild is, to the keychain, a new application. Measured
+with user interaction disabled (`SecKeychainSetUserInteractionAllowed(false)`,
+which turns a would-be dialog into `errSecAuthFailed`): an item created by one
+ad-hoc build is refused to the next; an item created by a build signed with a
+developer certificate and a fixed identifier is readable by every later build
+signed the same way, and still refused to an ad-hoc one.
+
+**Fix:** `.cargo/config.toml` sets a `runner` for the two `*-apple-darwin`
+targets — `scripts/macos-sign-and-run.sh` — so `cargo run` (which is what
+`tauri dev` executes) signs `nightloom-desktop` with the first "Apple
+Development" identity in the keychain and the identifier
+`app.nightloom.desktop` before starting it. The designated requirement is then
+`identifier "app.nightloom.desktop" and anchor apple generic and certificate
+leaf[subject.CN] = "<identity>" …`, the same for every build, so one "Always
+Allow" per key holds for good. The script skips a binary that already carries
+that signature, leaves every other binary (the CLI, test executables) alone
+unless `NIGHTLOOM_SIGN_ALL=1`, and never fails a run: no identity means an
+ad-hoc run and a line on stderr saying the keychain will ask again.
+`scripts/macos-build-signed.sh` does the same for `cargo tauri build` through
+Tauri's `APPLE_SIGNING_IDENTITY`, so the installed `Nightloom.app` shares the
+grant. Linux and Windows never see the runner table. The first launch after
+this change asks once more per key — the old grants name the old hashes — and
+that round is the last.
+
+Not done on purpose: consolidating the per-key items into one keychain entry
+(would cut that final round to one click, but changes the stored format and
+needs a migration that itself reads every item), and creating items with an
+"any application" ACL (`security add-generic-password -A`'s mode — no dialogs
+ever, at the cost of any process as the user reading the keys silently).
+Both are decisions for the owner, not a build script.
+
 ## Rewind, context, cost, todos
 
 **Rewind**: the `rewind` command returns the resulting transcript rather than an
@@ -227,6 +298,16 @@ log — the preamble and sidecar live on the `Chat`, the conversation on the
 deadlock. With no session yet it views an empty one rather than erroring:
 sessions are created lazily by `send`, so that is the ordinary state at launch,
 and an empty session still has a preamble worth showing.
+
+`set_prompt_layers` records the chat's switched-off layers
+(`SessionEvent::PromptLayers`) and returns the transcript; it writes the log and
+nothing else, since the UI reconnects afterwards the way a rail knob does and
+`connect` / `connect_agent` read the set back off the open session
+(`layers_off`). It creates the session if the chat has none yet, as `send`
+would: the exclusion is a fact about the chat, and a chat has to exist to have
+it. `prompt_layers` returns the open chat's set beside the one the live engine
+was built with (`PromptBuilt.off`), which is how the UI knows a reconnect is due
+after opening another chat.
 
 `edit_context` returns the new view **and** the new transcript, for the same
 reason `rewind` returns a transcript: an elision changes every projection off the

@@ -70,7 +70,7 @@ When tools are available, use them to check rather than guessing, and say plainl
 /// picked up here without being asked to duplicate it under a second name —
 /// the same reasoning that makes `mcp.json` use the `mcpServers` key
 /// everybody else uses.
-const INSTRUCTION_FILE: &str = "AGENTS.md";
+pub(crate) const INSTRUCTION_FILE: &str = "AGENTS.md";
 
 /// Per-file ceiling. A runaway instruction file should cost tokens, not the
 /// whole context window.
@@ -88,6 +88,16 @@ pub struct PromptConfig {
     pub project_instructions: bool,
     /// Include the user's own `~/.nightloom/AGENTS.md`.
     pub user_memory: bool,
+    /// The model this chat runs on, for its own instruction file at
+    /// `~/.nightloom/models/<id>.md`.
+    ///
+    /// The id and not a switch, because the layer has nothing to say without
+    /// one: which file to read *is* the setting. `None` — an eval, or a shell
+    /// that has not resolved a model yet — reads no file, and a model with no
+    /// file emits nothing, so the common case costs one `stat`. Gated on the
+    /// same preamble switch as user memory by every caller, since it is the
+    /// same kind of standing text.
+    pub model: Option<String>,
     /// The project this chat belongs to, if any: its name and the shared
     /// notes directory to index.
     ///
@@ -114,11 +124,41 @@ impl Default for PromptConfig {
             environment: true,
             project_instructions: true,
             user_memory: true,
+            model: None,
             project: None,
             knowledge: None,
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             custom: None,
         }
+    }
+}
+
+impl PromptConfig {
+    /// This config with the given layers switched off — a chat's own
+    /// exclusions, laid over whatever the shell's switches said.
+    ///
+    /// Each kind maps onto the field that already gates it: the four bools
+    /// go false, `model`, `project` and `knowledge` go `None`. A layer that
+    /// is off here cannot be assembled by any caller, which is the property
+    /// the blind test wants — not "hidden from the view" but never read from
+    /// disk at all. Two kinds have no field and are left to their owners:
+    /// [`SegmentKind::EngineNote`] is the bridge's own switch
+    /// ([`agent_prompt`]'s third argument), and [`SegmentKind::Custom`] is
+    /// the shell's text, chosen by the shell's own control.
+    pub fn without(mut self, off: &[SegmentKind]) -> Self {
+        for kind in off {
+            match kind {
+                SegmentKind::Identity => self.identity = false,
+                SegmentKind::Environment => self.environment = false,
+                SegmentKind::UserMemory => self.user_memory = false,
+                SegmentKind::ModelInstructions => self.model = None,
+                SegmentKind::ProjectInstructions => self.project_instructions = false,
+                SegmentKind::ProjectNotes => self.project = None,
+                SegmentKind::Knowledge => self.knowledge = None,
+                _ => {}
+            }
+        }
+        self
     }
 }
 
@@ -141,12 +181,14 @@ pub struct KnowledgeContext {
     pub dir: PathBuf,
 }
 
-/// Assemble in fixed order: identity, environment, user memory, project
-/// instructions, custom.
+/// Assemble in fixed order: identity, environment, user memory, model
+/// instructions, project instructions, custom.
 ///
 /// The order is a precedence ladder — later segments are read as refining
 /// earlier ones — so the user's standing preferences sit under the project's
-/// rules, and whatever the shell passed in wins over both.
+/// rules, and whatever the shell passed in wins over both. The model's own
+/// file sits between the two: it refines what the user asks of every model,
+/// and the project's rules still refine it.
 pub fn assemble(config: &PromptConfig) -> SystemPrompt {
     let mut prompt = SystemPrompt::new();
 
@@ -158,6 +200,13 @@ pub fn assemble(config: &PromptConfig) -> SystemPrompt {
     }
     if config.user_memory
         && let Some(seg) = user_memory_segment()
+    {
+        prompt.push(seg);
+    }
+    if let Some(seg) = config
+        .model
+        .as_deref()
+        .and_then(model_instructions_segment)
     {
         prompt.push(seg);
     }
@@ -196,6 +245,114 @@ fn anchor_last(prompt: SystemPrompt) -> SystemPrompt {
     }
     out.push(last.anchored());
     out
+}
+
+/// The preamble as one string for the Claude Code engine, with the library
+/// prompt as its trailer — what `--append-system-prompt` carries.
+///
+/// [`agent_prompt`] rendered flat, and nothing else: the segments are the
+/// one source and this is a rendering of them, so a view that itemizes the
+/// segments and the flag that carries the string cannot differ by a byte.
+/// `None` when there is nothing at all to send, so the caller can omit the
+/// flag rather than pass `""`.
+pub fn agent_preamble(config: &PromptConfig, library: Option<&str>) -> Option<String> {
+    agent_prompt(config, library, true).render_flat()
+}
+
+/// The Claude Code bridge as segments: what [`agent_preamble`] renders.
+///
+/// The same layers [`assemble`] builds for the API engine, minus two:
+/// `identity` and `environment` are forced off whatever the config says,
+/// because Claude Code has an identity of its own and knows its cwd, and a
+/// second copy of either would contradict the first rather than refine it.
+/// Everything that is *ours to know* — the user's standing instructions, the
+/// model's own file, the `AGENTS.md` walk, the notes index and the vault
+/// index — goes across, so a chat on this engine starts knowing what a chat
+/// on the other one does. The model's file is looked up by whatever
+/// `config.model` holds, which on this engine is the alias the rail sent
+/// (see [`model_instructions_segment`]).
+///
+/// Those segments name Nightloom's tools (`read_file`, `write_file`,
+/// `edit_file`) and the vault by its `@kb/` alias, and neither exists on this
+/// engine: Claude Code brings its own tools, and they take real paths. The
+/// segments are not rewritten per engine — they are one text, cached and
+/// tested once — so a short **engine note** follows them saying how the names
+/// map. It is emitted only when there is a preamble for it to explain and
+/// `engine_note` has not switched it off, and it spells out the vault only
+/// when there is one. The switch is a parameter rather than a
+/// [`PromptConfig`] field because the note exists on this engine alone, and
+/// a field every API-engine caller had to fill in with a meaningless value
+/// would be the shape that invites it to be filled in wrong.
+///
+/// The library prompt goes last as a [`SegmentKind::Custom`] segment, so it
+/// takes the same trim-on-push and blank-line join as everything else and
+/// position keeps the meaning it has on the API engine's ladder: what the
+/// shell passed wins. No segment carries a cache anchor: the CLI decides
+/// its own caching, and a flag claiming where a cached prefix ends would be
+/// a claim about a request Nightloom does not make.
+pub fn agent_prompt(
+    config: &PromptConfig,
+    library: Option<&str>,
+    engine_note: bool,
+) -> SystemPrompt {
+    let assembled = assemble(&PromptConfig {
+        identity: false,
+        environment: false,
+        custom: None,
+        ..config.clone()
+    });
+    let mut prompt = SystemPrompt::new();
+    for seg in assembled.segments() {
+        prompt.push(Segment {
+            cache_anchor: false,
+            ..seg.clone()
+        });
+    }
+    if engine_note && !prompt.is_empty() {
+        prompt.push(engine_note_segment(config.knowledge.as_ref()));
+    }
+    if let Some(library) = library {
+        prompt.push(Segment::new(SegmentKind::Custom, "custom", library));
+    }
+    prompt
+}
+
+/// How the names in the preamble read on Claude Code — see
+/// [`agent_preamble`] for why this is a note after the segments rather than
+/// a second wording of them.
+///
+/// A [`Segment`] rather than a bare string, so it goes through the same
+/// trim-on-push and blank-line join as everything else and the rendered text
+/// cannot differ by a byte from what a `SystemPrompt` would have produced;
+/// its own [`SegmentKind::EngineNote`] so a chat can switch it off by kind
+/// like any other layer. Only `Read`, `Write` and `Edit` are named: the CLI's default
+/// tool set on macOS and Linux leaves out `Glob` and `Grep` (`external`, the
+/// CLI reference for `--tools`), and promising a tool the model may not have
+/// is the substituted-tool failure `safe_mode` documents.
+fn engine_note_segment(knowledge: Option<&KnowledgeContext>) -> Segment {
+    let mut text = String::from(
+        "<engine-note>\n\
+         On this engine the file tools are Claude Code's own: read a note with Read, write \
+         or revise one with Write or Edit. Where the sections above say read_file, \
+         write_file or edit_file, they mean those.",
+    );
+    if let Some(knowledge) = knowledge {
+        let alias = crate::tools::VAULT_ALIAS;
+        let dir = knowledge.dir.display();
+        text.push_str(&format!(
+            " {alias} stands for the vault directory {dir}, so {alias}/<name> means the file \
+             {dir}/<name>; [[name]] means {alias}/<name>.md. That directory is granted to you. \
+             When you change a vault note, amend it: strike a superseded claim through with \
+             the date and put the new one beside it, and never rewrite a note whole — the \
+             vault is a record of what was believed when, not only of what is believed now."
+        ));
+    }
+    text.push_str(
+        " For a whole page use fetch_page, not WebFetch; to find or quote another chat use \
+         search_chats / read_chat; to leave something for memory use remember.",
+    );
+    text.push_str("\n</engine-note>");
+    Segment::new(SegmentKind::EngineNote, "engine-note", text)
 }
 
 pub fn identity_segment() -> Segment {
@@ -345,6 +502,61 @@ pub fn user_memory_segment() -> Option<Segment> {
 /// file in a "nothing found" message rather than leaving the user guessing.
 pub fn user_instruction_path() -> Option<PathBuf> {
     Some(crate::project::config_dir()?.join(INSTRUCTION_FILE))
+}
+
+/// The folder under the config dir holding one instruction file per model.
+const MODELS_DIR: &str = "models";
+
+/// The model's own standing instructions, from `~/.nightloom/models/<id>.md`.
+///
+/// Between user memory and the project's rules in the ladder, because it is
+/// about the user and not the folder — the same argument that puts memory
+/// first — but narrower than memory: it is what they want of *this* model
+/// and no other. The file is read whole under the same cap as `AGENTS.md`,
+/// and named in the tag so the Context view says which model's it is. A
+/// missing or empty file is the normal state and emits nothing, so a model
+/// with no file costs no prompt at all; emptying the file is how the layer
+/// is switched off, which the desktop's editor relies on.
+///
+/// The id is looked up exactly as the shell sent it and nowhere else. On
+/// the Claude Code engine that is the alias (`opus`, `sonnet`) rather than
+/// the dated id the CLI resolves it to, which arrives on the first turn —
+/// after the prompt is built once for the session. So on that engine the
+/// file is named after the alias. [`model_instruction_path`] is the one
+/// place that mapping lives, so a later pass that wants to try the resolved
+/// id as well has one function to extend.
+pub fn model_instructions_segment(model: &str) -> Option<Segment> {
+    let model = model.trim();
+    if model.is_empty() {
+        return None;
+    }
+    let content = read_capped(&model_instruction_path(model)?)?;
+    Some(Segment::new(
+        SegmentKind::ModelInstructions,
+        "model-instructions",
+        format!("<model-instructions model=\"{model}\">\n{content}\n</model-instructions>"),
+    ))
+}
+
+/// Where [`model_instructions_segment`] reads a model's file from — the one
+/// lookup, exposed so a shell can list the folder and name the file it will
+/// create.
+pub fn model_instruction_path(model: &str) -> Option<PathBuf> {
+    Some(model_instructions_dir()?.join(model_instruction_file(model)))
+}
+
+/// `~/.nightloom/models/`, exposed for the same reason as
+/// [`user_instruction_path`].
+pub fn model_instructions_dir() -> Option<PathBuf> {
+    Some(crate::project::config_dir()?.join(MODELS_DIR))
+}
+
+/// The file name a model id gets: the id itself plus `.md`, with `/` — which
+/// ids on the hosted routers carry (`deepseek/deepseek-v4-flash`) — written
+/// as `__`, so the id stays one file in one folder rather than a folder with
+/// a file in it. Nothing else is rewritten: a `:` is a legal file name here.
+pub fn model_instruction_file(model: &str) -> String {
+    format!("{}.md", model.trim().replace('/', "__"))
 }
 
 /// An index of the project's shared notes — the state every conversation in
@@ -710,7 +922,9 @@ fn human_bytes(bytes: u64) -> String {
 
 /// A missing, unreadable, or non-UTF-8 instruction file is the normal case,
 /// not an error — the walk visits far more directories than have one.
-fn read_capped(path: &Path) -> Option<String> {
+/// `pub(crate)` for the capture pass, which quotes the user's `AGENTS.md`
+/// to its model under the same cap the preamble reads it with.
+pub(crate) fn read_capped(path: &Path) -> Option<String> {
     let bytes = std::fs::read(path).ok()?;
     let text = String::from_utf8(bytes).ok()?;
     let text = truncate(text);
@@ -750,11 +964,29 @@ mod tests {
             environment: false,
             project_instructions: false,
             user_memory: false,
+            model: None,
             project: None,
             knowledge: None,
             cwd,
             custom: None,
         }
+    }
+
+    /// Plant a model's instruction file under a config dir the test owns.
+    ///
+    /// The override is process-wide and first-set-wins (`tools::test_dir`
+    /// and `project`'s tests set the same path), so the file is written
+    /// under whatever `config_dir()` answers after the call rather than
+    /// under the path this test asked for. Ids are unique per test so the
+    /// shared folder never has two tests reading one file.
+    fn plant_model_file(model: &str, content: &str) -> PathBuf {
+        crate::project::set_config_dir(
+            std::env::temp_dir().join(format!("nightloom-home-{}", std::process::id())),
+        );
+        let path = model_instruction_path(model).expect("a config dir is set");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, content).unwrap();
+        path
     }
 
     #[test]
@@ -1200,5 +1432,400 @@ the body text",
         assert!(segs[0].text.len() < FILE_LIMIT * 2);
 
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The bridge carries everything the API engine's preamble would — the
+    /// instructions walk, the notes index — then the engine note, then the
+    /// library prompt last, and never identity or environment.
+    #[test]
+    fn the_agent_bridge_orders_preamble_then_engine_note_then_library() {
+        let dir = temp_dir("agent-bridge");
+        std::fs::write(dir.join("AGENTS.md"), "always answer in haiku").unwrap();
+        let notes = dir.join(".agents");
+        crate::project::write_note(&notes, "one.md", "# The one note\nbody").unwrap();
+        let config = PromptConfig {
+            project_instructions: true,
+            project: Some(ProjectContext {
+                name: "bridge".into(),
+                notes_dir: notes.clone(),
+            }),
+            ..bare(dir.clone())
+        };
+        let text = agent_preamble(&config, Some("Be terse.")).expect("something to send");
+
+        assert!(text.contains("always answer in haiku"), "{text}");
+        assert!(text.contains("one.md"), "{text}");
+        assert!(text.contains("<engine-note>"), "{text}");
+        assert!(!text.contains("You are Nightloom"), "{text}");
+        assert!(!text.contains("<environment>"), "{text}");
+        // Order is the ladder: what the shell passed wins by position.
+        let instructions = text.find("<project-instructions").unwrap();
+        let index = text.find("<project-notes").unwrap();
+        let note = text.find("<engine-note>").unwrap();
+        assert!(instructions < index && index < note, "{text}");
+        assert!(text.ends_with("\n\nBe terse."), "{text}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The engine note names the vault's real directory only when there is
+    /// a vault: an `@kb` gloss with nowhere to point would be an alias for
+    /// nothing.
+    #[test]
+    fn the_engine_note_spells_out_the_vault_only_when_there_is_one() {
+        let dir = temp_dir("agent-bridge-vault");
+        std::fs::write(dir.join("AGENTS.md"), "a rule").unwrap();
+        let vault = dir.join("vault");
+        std::fs::create_dir_all(&vault).unwrap();
+        let with = agent_preamble(
+            &PromptConfig {
+                project_instructions: true,
+                knowledge: Some(KnowledgeContext { dir: vault.clone() }),
+                ..bare(dir.clone())
+            },
+            None,
+        )
+        .unwrap();
+        let alias = crate::tools::VAULT_ALIAS;
+        assert!(
+            with.contains(&format!(
+                "{alias}/<name> means the file {}/<name>",
+                vault.display()
+            )),
+            "{with}"
+        );
+        assert!(
+            with.contains(&format!("[[name]] means {alias}/<name>.md")),
+            "{with}"
+        );
+
+        let without = agent_preamble(
+            &PromptConfig {
+                project_instructions: true,
+                ..bare(dir.clone())
+            },
+            None,
+        )
+        .unwrap();
+        assert!(without.contains("<engine-note>"), "{without}");
+        assert!(!without.contains(alias), "{without}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// No project, no vault, no instructions on the walk: the user's own
+    /// `AGENTS.md` is the only layer left, and the note follows it — or, when
+    /// that is absent too, the library prompt goes alone and there is no note
+    /// for it, since there is nothing above it to gloss.
+    #[test]
+    fn the_agent_bridge_with_only_user_memory_or_nothing() {
+        let dir = temp_dir("agent-bridge-empty");
+        let text = agent_preamble(
+            &PromptConfig {
+                user_memory: true,
+                ..bare(dir.clone())
+            },
+            Some("Be terse."),
+        )
+        .unwrap();
+        // Whether the machine running the tests has a `~/.nightloom/AGENTS.md`
+        // is not the test's to decide, so both outcomes are asserted exactly.
+        if user_memory_segment().is_some() {
+            assert!(text.starts_with("<user-instructions>"), "{text}");
+            assert!(text.contains("<engine-note>"), "{text}");
+            assert!(text.ends_with("\n\nBe terse."), "{text}");
+        } else {
+            assert_eq!(text, "Be terse.");
+        }
+
+        assert_eq!(
+            agent_preamble(&bare(dir.clone()), Some("Be terse.")).as_deref(),
+            Some("Be terse.")
+        );
+        assert_eq!(agent_preamble(&bare(dir.clone()), Some("   ")), None);
+        assert_eq!(agent_preamble(&bare(dir.clone()), None), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A chat's exclusions, applied through `without`, drop exactly the
+    /// named layers and nothing beside them — and drop them at assembly,
+    /// so the file is never read rather than read and hidden.
+    #[test]
+    fn layers_switched_off_are_omitted_and_nothing_else_is() {
+        let dir = temp_dir("layers-off");
+        std::fs::write(dir.join("AGENTS.md"), "a project rule").unwrap();
+        let notes = dir.join(".agents");
+        crate::project::write_note(&notes, "one.md", "# The one note\nbody").unwrap();
+        let vault = dir.join("vault");
+        std::fs::create_dir_all(&vault).unwrap();
+        let config = PromptConfig {
+            identity: true,
+            environment: true,
+            project_instructions: true,
+            project: Some(ProjectContext {
+                name: "layers".into(),
+                notes_dir: notes.clone(),
+            }),
+            knowledge: Some(KnowledgeContext { dir: vault.clone() }),
+            custom: Some("typed".into()),
+            ..bare(dir.clone())
+        };
+        let kinds = |p: &SystemPrompt| p.segments().iter().map(|s| s.kind).collect::<Vec<_>>();
+
+        let all = assemble(&config);
+        assert_eq!(
+            kinds(&all),
+            vec![
+                SegmentKind::Identity,
+                SegmentKind::Environment,
+                SegmentKind::ProjectInstructions,
+                SegmentKind::ProjectNotes,
+                SegmentKind::Knowledge,
+                SegmentKind::Custom,
+            ]
+        );
+
+        let off = [SegmentKind::ProjectInstructions, SegmentKind::ProjectNotes];
+        let some = assemble(&config.clone().without(&off));
+        assert_eq!(
+            kinds(&some),
+            vec![
+                SegmentKind::Identity,
+                SegmentKind::Environment,
+                SegmentKind::Knowledge,
+                SegmentKind::Custom,
+            ]
+        );
+        let text = some.render_flat().unwrap();
+        assert!(!text.contains("a project rule"), "{text}");
+        assert!(!text.contains("one.md"), "{text}");
+        assert!(text.contains("typed"), "{text}");
+
+        // `Custom` is not a layer: naming it changes nothing.
+        let custom = assemble(&config.clone().without(&[SegmentKind::Custom]));
+        assert_eq!(kinds(&custom), kinds(&all));
+
+        // Everything off leaves the shell's text and the anchor on it.
+        let none = assemble(&config.clone().without(&SegmentKind::LAYERS));
+        assert_eq!(kinds(&none), vec![SegmentKind::Custom]);
+        assert_eq!(none.cache_anchors(4), vec![0]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The bridge takes the same exclusions, plus its own: the engine note
+    /// is a layer there and nowhere else. And the flag is the segments
+    /// rendered, so what a view itemizes and what the CLI receives cannot
+    /// differ by a byte.
+    #[test]
+    fn the_agent_bridge_honours_layers_off_and_renders_what_it_itemizes() {
+        let dir = temp_dir("agent-layers-off");
+        std::fs::write(dir.join("AGENTS.md"), "a project rule").unwrap();
+        let notes = dir.join(".agents");
+        crate::project::write_note(&notes, "one.md", "# The one note\nbody").unwrap();
+        let config = PromptConfig {
+            project_instructions: true,
+            project: Some(ProjectContext {
+                name: "bridge".into(),
+                notes_dir: notes.clone(),
+            }),
+            ..bare(dir.clone())
+        };
+        let kinds = |p: &SystemPrompt| p.segments().iter().map(|s| s.kind).collect::<Vec<_>>();
+
+        let full = agent_prompt(&config, Some("Be terse."), true);
+        assert_eq!(
+            kinds(&full),
+            vec![
+                SegmentKind::ProjectInstructions,
+                SegmentKind::ProjectNotes,
+                SegmentKind::EngineNote,
+                SegmentKind::Custom,
+            ]
+        );
+        // No anchors on this engine: the CLI does its own caching.
+        assert!(full.segments().iter().all(|s| !s.cache_anchor));
+        assert_eq!(
+            full.render_flat(),
+            agent_preamble(&config, Some("Be terse.")),
+            "the flag is the segments rendered, nothing else"
+        );
+
+        let off = [SegmentKind::ProjectNotes, SegmentKind::EngineNote];
+        let engine_note = !off.contains(&SegmentKind::EngineNote);
+        let some = agent_prompt(
+            &config.clone().without(&off),
+            Some("Be terse."),
+            engine_note,
+        );
+        assert_eq!(
+            kinds(&some),
+            vec![SegmentKind::ProjectInstructions, SegmentKind::Custom]
+        );
+        let text = some.render_flat().unwrap();
+        assert!(text.contains("a project rule"), "{text}");
+        assert!(!text.contains("one.md"), "{text}");
+        assert!(!text.contains("<engine-note>"), "{text}");
+        assert!(text.ends_with("\n\nBe terse."), "{text}");
+
+        // The note switched off on its own leaves the rest intact.
+        let no_note = agent_prompt(&config, None, false);
+        assert_eq!(
+            kinds(&no_note),
+            vec![SegmentKind::ProjectInstructions, SegmentKind::ProjectNotes]
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Identity and environment are refused whatever the caller asked for:
+    /// on this engine both would contradict the host's own.
+    #[test]
+    fn the_agent_bridge_never_sends_identity_or_environment() {
+        let dir = temp_dir("agent-bridge-identity");
+        let text = agent_preamble(
+            &PromptConfig {
+                identity: true,
+                environment: true,
+                ..bare(dir.clone())
+            },
+            Some("Be terse."),
+        )
+        .unwrap();
+        assert_eq!(text, "Be terse.");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The file reaches the prompt for the model it is named after and no
+    /// other — the whole reason the layer exists beside user memory.
+    #[test]
+    fn model_instructions_reach_only_the_named_model() {
+        let dir = temp_dir("model-file");
+        let path = plant_model_file("test-model-a", "never open with a summary");
+
+        let with = assemble(&PromptConfig {
+            model: Some("test-model-a".into()),
+            ..bare(dir.clone())
+        });
+        let segs = with.segments();
+        assert_eq!(segs.len(), 1, "{segs:?}");
+        assert_eq!(segs[0].kind, SegmentKind::ModelInstructions);
+        assert_eq!(segs[0].name, "model-instructions");
+        assert!(
+            segs[0]
+                .text
+                .starts_with("<model-instructions model=\"test-model-a\">"),
+            "{}",
+            segs[0].text
+        );
+        assert!(segs[0].text.contains("never open with a summary"));
+
+        let other = assemble(&PromptConfig {
+            model: Some("test-model-b-without-a-file".into()),
+            ..bare(dir.clone())
+        });
+        assert!(other.is_empty(), "{:?}", other.segments());
+        assert!(assemble(&bare(dir.clone())).is_empty());
+
+        std::fs::remove_file(path).ok();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Emptying the file is how the layer is switched off from the editor,
+    /// so an empty (or whitespace) file must read as no file at all.
+    #[test]
+    fn an_empty_model_file_is_absent() {
+        let dir = temp_dir("model-empty");
+        let path = plant_model_file("test-model-empty", "  \n\t\n");
+        let prompt = assemble(&PromptConfig {
+            model: Some("test-model-empty".into()),
+            ..bare(dir.clone())
+        });
+        assert!(prompt.is_empty(), "{:?}", prompt.segments());
+        std::fs::remove_file(path).ok();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// After user memory, before the project's rules: the ladder reads each
+    /// layer as refining the one above it, and the model's file is narrower
+    /// than memory and broader than any one folder.
+    #[test]
+    fn model_instructions_sit_between_memory_and_project_instructions() {
+        let dir = temp_dir("model-order");
+        std::fs::write(dir.join("AGENTS.md"), "the project's rule").unwrap();
+        let path = plant_model_file("test-model-order", "the model's rule");
+        let prompt = assemble(&PromptConfig {
+            user_memory: true,
+            project_instructions: true,
+            model: Some("test-model-order".into()),
+            custom: Some("the shell's rule".into()),
+            ..bare(dir.clone())
+        });
+        let kinds: Vec<SegmentKind> = prompt.segments().iter().map(|s| s.kind).collect();
+        let at = |k: SegmentKind| kinds.iter().position(|x| *x == k);
+        let model = at(SegmentKind::ModelInstructions).expect("the model layer is present");
+        let project = at(SegmentKind::ProjectInstructions).expect("the walk found AGENTS.md");
+        assert!(model < project, "{kinds:?}");
+        assert!(model < at(SegmentKind::Custom).unwrap(), "{kinds:?}");
+        // Whether the machine has a `~/.nightloom/AGENTS.md` is not the
+        // test's to decide; when it does, memory comes first.
+        if let Some(memory) = at(SegmentKind::UserMemory) {
+            assert!(memory < model, "{kinds:?}");
+        }
+        std::fs::remove_file(path).ok();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A router id like `deepseek/deepseek-v4-flash` is one file, not a
+    /// folder holding one; a `:` is left alone.
+    #[test]
+    fn a_model_id_with_a_slash_is_one_file() {
+        assert_eq!(
+            model_instruction_file("deepseek/deepseek-v4-flash"),
+            "deepseek__deepseek-v4-flash.md"
+        );
+        assert_eq!(
+            model_instruction_file("openrouter:deepseek/deepseek-v4-flash"),
+            "openrouter:deepseek__deepseek-v4-flash.md"
+        );
+        assert_eq!(model_instruction_file(" claude-opus-5 "), "claude-opus-5.md");
+        let path = model_instruction_path("a/b").expect("a config dir");
+        assert!(path.ends_with(Path::new("models").join("a__b.md")), "{path:?}");
+
+        // And the mapped name is the one the segment reads.
+        let dir = temp_dir("model-slash");
+        let file = plant_model_file("test-vendor/test-model-slash", "slash rule");
+        assert!(file.ends_with("test-vendor__test-model-slash.md"), "{file:?}");
+        let prompt = assemble(&PromptConfig {
+            model: Some("test-vendor/test-model-slash".into()),
+            ..bare(dir.clone())
+        });
+        assert_eq!(prompt.segments().len(), 1);
+        assert!(prompt.segments()[0].text.contains("slash rule"));
+        std::fs::remove_file(file).ok();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The bridge carries the model's file like every other layer that is
+    /// ours to know, looked up by the alias the rail sent.
+    #[test]
+    fn the_agent_bridge_carries_model_instructions() {
+        let dir = temp_dir("model-bridge");
+        let path = plant_model_file("test-alias-bridge", "bridge rule");
+        let text = agent_preamble(
+            &PromptConfig {
+                model: Some("test-alias-bridge".into()),
+                ..bare(dir.clone())
+            },
+            Some("Be terse."),
+        )
+        .expect("something to send");
+        assert!(
+            text.contains("<model-instructions model=\"test-alias-bridge\">"),
+            "{text}"
+        );
+        assert!(text.contains("bridge rule"), "{text}");
+        let model = text.find("<model-instructions").unwrap();
+        let note = text.find("<engine-note>").unwrap();
+        assert!(model < note, "{text}");
+        assert!(text.ends_with("\n\nBe terse."), "{text}");
+        std::fs::remove_file(path).ok();
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

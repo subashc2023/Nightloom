@@ -59,12 +59,21 @@ pub fn run(args: ImportArgs) -> Result<()> {
     let mut registry = Registry::load();
     let report = import::import(&export, &opts, &mut registry).map_err(|e| anyhow!(e))?;
     if report.projects.is_empty() {
-        println!("nothing to import");
+        // The user memory and the vault are written whether or not any
+        // project was, so an export of memory alone is not "nothing".
+        if report.touched_memory() {
+            print_memory(&report);
+        } else {
+            println!("nothing to import");
+        }
         if !export.conversations.is_empty() {
             println!(
                 "{DIM}{} conversation(s) carry no project link; --unfiled imports them{RESET}",
                 export.conversations.len()
             );
+        }
+        for warning in &report.warnings {
+            println!("{DIM}! {warning}{RESET}");
         }
         return Ok(());
     }
@@ -107,6 +116,11 @@ pub fn run(args: ImportArgs) -> Result<()> {
         );
     }
 
+    if report.touched_memory() {
+        println!();
+        print_memory(&report);
+    }
+
     println!();
     println!("{}", report.summary());
     if report.unfiled > 0 {
@@ -120,6 +134,37 @@ pub fn run(args: ImportArgs) -> Result<()> {
         println!("{DIM}! {warning}{RESET}");
     }
     Ok(())
+}
+
+/// What the export's memory did, and which projects still owe a short version.
+///
+/// The condensing list is the one thing here that asks for work: an oversized
+/// summary went into `AGENTS.md` as a pointer, and until someone writes the
+/// short version the project's chats start without the memory claude.ai gave
+/// them. So it is printed with the size, project by project, rather than
+/// folded into the one-line summary.
+fn print_memory(report: &import::ImportReport) {
+    let mut counts = vec![format!("{} file(s) written", report.memory_written)];
+    if report.memory_left_alone > 0 {
+        counts.push(format!("{} left alone", report.memory_left_alone));
+    }
+    if report.memory_inlined > 0 {
+        counts.push(format!(
+            "{} project summar(ies) added to AGENTS.md",
+            report.memory_inlined
+        ));
+    }
+    println!("memories: {}", counts.join(", "));
+    if !report.needs_condensing.is_empty() {
+        println!(
+            "  {DIM}over {} characters, so AGENTS.md points at .agents/memory/summary.md — \
+             a condensed version belongs there:{RESET}",
+            import::MEMORY_INLINE_LIMIT
+        );
+        for (name, chars) in &report.needs_condensing {
+            println!("  {DIM}{chars:>7}  {name}{RESET}");
+        }
+    }
 }
 
 fn list(export: &Export) -> Result<()> {
@@ -160,6 +205,18 @@ fn list(export: &Export) -> Result<()> {
         filed,
         export.conversations.len() - filed
     );
+    if !export.memories.is_empty() {
+        println!(
+            "memories: {} file(s), {} project summar(ies){}",
+            export.memories.memory_files.len(),
+            export.memories.project_memories.len(),
+            if export.memories.conversations_memory.trim().is_empty() {
+                ""
+            } else {
+                ", and a summary of you"
+            }
+        );
+    }
     // `--list` never reaches the import, so the observation it would make
     // about a link that is not in the archive has to be made again here —
     // this is the command someone runs *before* deciding, and "0 filed" on

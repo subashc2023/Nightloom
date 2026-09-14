@@ -3,6 +3,9 @@ import type {
   AgentConnectArgs,
   AgentTurnResult,
   ApprovalDecision,
+  Blocker,
+  BlockerList,
+  CaptureReport,
   CompactResult,
   ConnectArgs,
   ConnectResult,
@@ -10,13 +13,32 @@ import type {
   DreamReport,
   ImageInput,
   ImportSummary,
+  Item,
+  ItemList,
   KnowledgeInfo,
   LinkGraph,
+  Morning,
+  MorningPage,
   Note,
+  NoteEntry,
   NoteScope,
+  NightshiftRow,
+  Plan,
+  PendingLaunch,
+  NightshiftUsage,
+  InterviewView,
+  InterviewWritten,
   ProjectInfo,
+  PromptLayer,
+  PromptLayersInfo,
+  Proposal,
+  ProposalEntry,
+  ProposalScope,
   ProviderInfo,
+  RevertPreview,
+  Schedules,
   SearchBackendInfo,
+  ShiftSummary,
   ContextEdit,
   SessionEvent,
   SessionMeta,
@@ -46,6 +68,14 @@ export function listModels(
   baseUrl?: string,
 ): Promise<string[]> {
   return invoke("list_models", { provider, baseUrl });
+}
+
+/** Context windows for `models` on `provider`, null where the table is silent. */
+export function contextLimits(
+  provider: string,
+  models: string[],
+): Promise<(number | null)[]> {
+  return invoke("context_limits", { provider, models });
 }
 
 /** Rewind to the turn at log index `to`; resolves with the new transcript. */
@@ -86,16 +116,22 @@ export function connectAgent(args: AgentConnectArgs): Promise<ConnectResult> {
     safeMode: args.safeMode,
     budget: args.budget,
     system: args.system,
+    preamble: args.preamble,
   });
 }
 
 /**
  * Run one turn on the agent engine. Streams the same `turn-event`s the
  * provider path does, which is what lets the transcript render both without
- * knowing which produced a turn.
+ * knowing which produced a turn. Attachments take the same shape `send`
+ * takes; the backend hands them to the CLI on stdin rather than argv.
  */
-export function sendAgent(text: string): Promise<AgentTurnResult> {
-  return invoke("send_agent", { text });
+export function sendAgent(
+  text: string,
+  images?: ImageInput[],
+  documents?: DocumentInput[],
+): Promise<AgentTurnResult> {
+  return invoke("send_agent", { text, images, documents });
 }
 
 /** The search backends, with which has a key and which one answers. */
@@ -189,6 +225,21 @@ export function editContext(
   remove: boolean,
 ): Promise<ContextEdit> {
   return invoke("edit_context", { targets, remove });
+}
+
+/** The open chat's switched-off prompt layers, and what the engine was built with. */
+export function promptLayers(): Promise<PromptLayersInfo> {
+  return invoke("prompt_layers");
+}
+
+/**
+ * Record which prompt layers the open chat excludes. Resolves with the new
+ * transcript — the event lands in the log — and changes nothing on the wire
+ * until the caller reconnects, which `setPromptLayers` in state.svelte.ts
+ * does.
+ */
+export function setPromptLayers(off: PromptLayer[]): Promise<SessionEvent[]> {
+  return invoke("set_prompt_layers", { off });
 }
 
 // ---- projects ----
@@ -286,9 +337,40 @@ export function deleteNote(scope: NoteScope, name: string): Promise<null> {
   return invoke("delete_note", { scope, name });
 }
 
+// ---- proposals: the dream's suggested edits to the two fixed files ----
+//
+// Listed, read, dismissed, marked applied — never written to the file from
+// here. Applying is the editor's ordinary `saveNote` of a draft; `markApplied`
+// only records afterwards what was saved.
+
+/** Pending proposals for a fixed file, newest first. */
+export function listProposals(scope: ProposalScope): Promise<ProposalEntry[]> {
+  return invoke("list_proposals", { scope });
+}
+
+export function readProposal(scope: ProposalScope, id: string): Promise<Proposal> {
+  return invoke("read_proposal", { scope, id });
+}
+
+/** Move a proposal aside as turned down; it is kept under `dismissed/`. */
+export function dismissProposal(scope: ProposalScope, id: string): Promise<null> {
+  return invoke("dismiss_proposal", { scope, id });
+}
+
+/** Record that the draft made from a proposal was saved, with the saved text. */
+export function markApplied(scope: ProposalScope, id: string, text: string): Promise<null> {
+  return invoke("mark_applied", { scope, id, text });
+}
+
 /** Show a folder in the OS file manager; defaults to the docspace. */
 export function reveal(path?: string): Promise<null> {
   return invoke("reveal", { path });
+}
+
+/** Where the per-model instruction files live (`~/.nightloom/models`);
+ *  null on a machine with no user config directory. */
+export function modelInstructionsDir(): Promise<string | null> {
+  return invoke("model_instructions_dir");
 }
 
 // ---- the knowledge base ----
@@ -340,4 +422,332 @@ export function dream(args: {
 /** Interrupt the in-flight dream; nothing is consumed. */
 export function cancelDream(): Promise<null> {
   return invoke("cancel_dream");
+}
+
+/** Session logs with bytes past their capture watermark. */
+export function captureStatus(): Promise<number> {
+  return invoke("capture_status");
+}
+
+/**
+ * Run one capture pass over the session logs. Streams `capture-event`s (the
+ * `TurnEvent` shape, on its own channel) while it works, and resolves with
+ * what the pass did.
+ */
+export function capture(args: {
+  provider: string;
+  model?: string;
+  baseUrl?: string;
+  thinking?: string;
+}): Promise<CaptureReport> {
+  return invoke("capture", {
+    provider: args.provider,
+    model: args.model,
+    baseUrl: args.baseUrl,
+    thinking: args.thinking,
+  });
+}
+
+/** Interrupt the in-flight capture; the chat it stopped in is re-read next time. */
+export function cancelCapture(): Promise<null> {
+  return invoke("cancel_capture");
+}
+
+// ---- Nightshift ----
+
+/** Every registered project with whether it is a Nightshift project. */
+export function nightshiftProjects(): Promise<NightshiftRow[]> {
+  return invoke("nightshift_projects");
+}
+
+/** One row, fresh — what the surface re-reads on a change event. */
+export function nightshiftProject(projectId: string): Promise<NightshiftRow> {
+  return invoke("nightshift_project", { projectId });
+}
+
+/**
+ * **Enable Nightshift** on a project: scaffold `<workspace>/nightshift/`.
+ * `kind` defaults to `research`. Resolves with the row and the scaffold's
+ * notes (what it could not do).
+ */
+export function nightshiftEnable(
+  projectId: string,
+  kind?: string,
+  runner?: string,
+): Promise<[NightshiftRow, string[]]> {
+  return invoke("nightshift_enable", { projectId, kind, runner });
+}
+
+/**
+ * **Disable Nightshift** on a project: rename `nightshift.json` to
+ * `nightshift.json.disabled`. Deletes nothing; refused while a shift is
+ * live. Only after the warning has been shown and confirmed.
+ */
+export function nightshiftDisable(projectId: string): Promise<NightshiftRow> {
+  return invoke("nightshift_disable", { projectId });
+}
+
+/**
+ * The one runner install a registered project shows — the nightshift repo
+ * itself when it is a project here — or null. What the Enable form starts
+ * with.
+ */
+export function nightshiftDefaultRunner(): Promise<string | null> {
+  return invoke("nightshift_default_runner");
+}
+
+export function nightshiftItems(projectId: string): Promise<ItemList> {
+  return invoke("nightshift_items", { projectId });
+}
+
+export function nightshiftItem(projectId: string, id: string): Promise<Item> {
+  return invoke("nightshift_item", { projectId, id });
+}
+
+/** Rewrite `backlog/order.json`. Refused while a shift is live. */
+export function nightshiftSetOrder(
+  projectId: string,
+  order: string[],
+): Promise<string[]> {
+  return invoke("nightshift_set_order", { projectId, order });
+}
+
+/** Scaffold a backlog item; returns the new id. */
+export function nightshiftNewItem(projectId: string, title: string, kind: string): Promise<string> {
+  return invoke("nightshift_new_item", { projectId, title, kind });
+}
+
+/** Move an item to backlog/trash/ and drop it from the order; returns where it went. */
+export function nightshiftDeleteItem(projectId: string, id: string): Promise<string> {
+  return invoke("nightshift_delete_item", { projectId, id });
+}
+
+/** Replace an item's whole text (the Edit screen's Save). */
+export function nightshiftWriteItem(projectId: string, id: string, text: string): Promise<null> {
+  return invoke("nightshift_write_item", { projectId, id, text });
+}
+
+export function nightshiftBlockers(projectId: string): Promise<BlockerList> {
+  return invoke("nightshift_blockers", { projectId });
+}
+
+/**
+ * Write `## Answer` and flip `status` to `answered` — the two edits the
+ * contract gives the GUI. Refused while a shift is live.
+ */
+export function nightshiftAnswerBlocker(
+  projectId: string,
+  id: string,
+  answer: string,
+): Promise<Blocker> {
+  return invoke("nightshift_answer_blocker", { projectId, id, answer });
+}
+
+export function nightshiftShifts(projectId: string): Promise<ShiftSummary[]> {
+  return invoke("nightshift_shifts", { projectId });
+}
+
+export function nightshiftShift(
+  projectId: string,
+  shiftId: string,
+): Promise<ShiftSummary> {
+  return invoke("nightshift_shift", { projectId, shiftId });
+}
+
+/** The last `maxBytes` of a shift's `run.log` (default 64 KiB). */
+export function nightshiftShiftLog(
+  projectId: string,
+  shiftId: string,
+  maxBytes?: number,
+): Promise<string> {
+  return invoke("nightshift_shift_log", { projectId, shiftId, maxBytes });
+}
+
+/**
+ * A plan the way `shiftctl plan synth` would write it, with a fresh shift
+ * id, for the plan form to start from. Writes nothing.
+ */
+export function nightshiftSynthPlan(
+  projectId: string,
+  maxUnits?: number,
+  until?: string,
+  budgetUsd?: number,
+): Promise<Plan> {
+  return invoke("nightshift_synth_plan", {
+    projectId,
+    maxUnits,
+    until,
+    budgetUsd,
+  });
+}
+
+/**
+ * Write `shifts/<id>/plan.json`. Resolves with its root-relative path — the
+ * argument `nightshiftLaunch` takes. Refused while a shift is live and when
+ * the plan exists.
+ */
+export function nightshiftWritePlan(
+  projectId: string,
+  plan: Plan,
+): Promise<string> {
+  return invoke("nightshift_write_plan", { projectId, plan });
+}
+
+/**
+ * Launch the runner on a written plan, detached. macOS only; elsewhere it
+ * rejects saying so. Resolves with the wrapper pid.
+ */
+export function nightshiftLaunch(
+  projectId: string,
+  planPath: string,
+): Promise<number> {
+  return invoke("nightshift_launch", { projectId, planPath });
+}
+
+/**
+ * Hold a plan and launch it at `fireAtMs` (epoch milliseconds): the backend
+ * writes `plan.json` — with the id re-minted to the launch moment — and
+ * starts the runner, then emits `nightshift-launched`. Replaces a pending
+ * launch on the same project; refused while a shift is live.
+ */
+export function nightshiftScheduleLaunch(
+  projectId: string,
+  plan: Plan,
+  fireAtMs: number,
+): Promise<PendingLaunch> {
+  return invoke("nightshift_schedule_launch", { projectId, plan, fireAtMs });
+}
+
+export function nightshiftCancelLaunch(projectId: string): Promise<null> {
+  return invoke("nightshift_cancel_launch", { projectId });
+}
+
+export function nightshiftPendingLaunch(
+  projectId: string,
+): Promise<PendingLaunch | null> {
+  return invoke("nightshift_pending_launch", { projectId });
+}
+
+/** The runner's own usage probe (`bin/usagectl.py --json`), for the Start
+ *  field's "when usage resets". Rejects when the probe is missing or unreadable. */
+export function nightshiftUsage(projectId: string): Promise<NightshiftUsage> {
+  return invoke("nightshift_usage", { projectId });
+}
+
+export function nightshiftInterviewStart(projectId: string, idea: string, model?: string): Promise<InterviewView> {
+  return invoke("nightshift_interview_start", { projectId, idea, model: model ?? null });
+}
+export function nightshiftInterviewSend(projectId: string, text: string): Promise<InterviewView> {
+  return invoke("nightshift_interview_send", { projectId, text });
+}
+export function nightshiftInterviewState(projectId: string): Promise<InterviewView | null> {
+  return invoke("nightshift_interview_state", { projectId });
+}
+export function nightshiftInterviewCancel(projectId: string): Promise<null> {
+  return invoke("nightshift_interview_cancel", { projectId });
+}
+export function nightshiftInterviewWrite(projectId: string): Promise<InterviewWritten> {
+  return invoke("nightshift_interview_write", { projectId });
+}
+
+export function nightshiftMornings(projectId: string): Promise<Morning[]> {
+  return invoke("nightshift_mornings", { projectId });
+}
+
+/**
+ * A morning page by name, or the newest when `name` is omitted. `null` for a
+ * project with no page yet — an ordinary state, not an error.
+ */
+export function nightshiftMorning(
+  projectId: string,
+  name?: string,
+): Promise<MorningPage | null> {
+  return invoke("nightshift_morning", { projectId, name });
+}
+
+export function nightshiftNotes(projectId: string): Promise<NoteEntry[]> {
+  return invoke("nightshift_notes", { projectId });
+}
+
+/** Any text file inside the contract root by relative path. */
+export function nightshiftReadFile(
+  projectId: string,
+  path: string,
+): Promise<string> {
+  return invoke("nightshift_read_file", { projectId, path });
+}
+
+/**
+ * The last `limit` rows (default 200) of a jsonl stream, by `stream` =
+ * `spend` | `adherence` | `limits`.
+ */
+export function nightshiftStream(
+  projectId: string,
+  stream: string,
+  limit?: number,
+): Promise<unknown[]> {
+  return invoke("nightshift_stream", { projectId, stream, limit });
+}
+
+export function nightshiftSchedule(projectId: string): Promise<Schedules> {
+  return invoke("nightshift_schedule", { projectId });
+}
+
+export function nightshiftSetSchedule(
+  projectId: string,
+  schedules: Schedules,
+): Promise<Schedules> {
+  return invoke("nightshift_set_schedule", { projectId, schedules });
+}
+
+/** What one unit changed: the diff of its commit. */
+export function nightshiftDiff(
+  projectId: string,
+  sha: string,
+): Promise<string> {
+  return invoke("nightshift_diff", { projectId, sha });
+}
+
+/** What a whole shift changed: `head_at_start..HEAD` from its `status.json`. */
+export function nightshiftShiftDiff(
+  projectId: string,
+  shiftId: string,
+): Promise<string> {
+  return invoke("nightshift_shift_diff", { projectId, shiftId });
+}
+
+/**
+ * The diff a revert of this shift would discard, and whether the tree is
+ * clean enough to do it. Shown before `nightshiftRevert` is offered.
+ */
+export function nightshiftRevertPreview(
+  projectId: string,
+  shiftId: string,
+): Promise<RevertPreview> {
+  return invoke("nightshift_revert_preview", { projectId, shiftId });
+}
+
+/**
+ * `git reset --hard <head_at_start>`. Only with `confirm`; the caller has
+ * shown the preview and the user has said yes. Never automatic.
+ */
+export function nightshiftRevert(
+  projectId: string,
+  shiftId: string,
+  confirm: boolean,
+): Promise<RevertPreview> {
+  return invoke("nightshift_revert", { projectId, shiftId, confirm });
+}
+
+/**
+ * Watch a project's contract root; a change emits a `nightshift-change`
+ * window event (`NightshiftChange`). Replaces an existing watch on the same
+ * project.
+ */
+export function nightshiftWatch(projectId: string): Promise<null> {
+  return invoke("nightshift_watch", { projectId });
+}
+
+export function nightshiftUnwatch(projectId: string): Promise<null> {
+  return invoke("nightshift_unwatch", { projectId });
 }

@@ -4,16 +4,19 @@
 name: `files.rs` (`read_file` / `write_file` / `edit_file` / `list_dir`),
 `search.rs` (`glob` / `grep`), `shell.rs` (`bash`), `todo.rs` (`todo_write`),
 `compact.rs` (`compact_context`), `task.rs` (`task`), `review.rs` (`review`),
-`web.rs` (`web_fetch` / `web_search`), `remember.rs` (`remember`), and
-`current_time` inline in `mod.rs`. `builtin_in(root)` is the whole set in one
-call.
+`web.rs` (`web_fetch` / `web_search`), `remember.rs` (`remember`), `chats.rs`
+(`search_chats` / `read_chat`), and `current_time` inline in `mod.rs`.
+`builtin_in(root)` is the whole set in one call; `remember` and the two chat
+tools are added by the shells, which know where the inbox and the logs are.
 
 ## Classification and descriptions
 
 **Effect classification is part of adding a tool**, and a test pins the whole
 table: `ReadOnly` for `read_file` / `list_dir` / `glob` / `grep` /
-`current_time` and for `review`, which is read-only because its sub-chat is
-stripped to read-only tools; `Session` for `todo_write` / `compact_context` and
+`current_time`, for `search_chats` / `read_chat` (a read of the user's own logs
+on this machine, which no `Root` confines — the row is what makes widening what
+they return deliberate), and for `review`, which is read-only because its
+sub-chat is stripped to read-only tools; `Session` for `todo_write` / `compact_context` and
 for `remember`, a durable write that is still `Session` because the inbox is
 quarantine and the dream pass is the gate; `Mutating` (the default) for
 `write_file` / `edit_file` / `bash`, for `task`, which can reach anything its
@@ -350,6 +353,87 @@ rephrase until the round limit.
 
 Keys are `TAVILY_API_KEY` / `BRAVE_API_KEY` / `EXA_API_KEY`, or the desktop's
 credential store.
+
+## Other chats (`tools/chats.rs`)
+
+`search_chats` and `read_chat` are cross-chat retrieval as a tool call: a
+ranked search over what the user's other chats said, plus a window onto one
+log. No embeddings, no automatic injection — a lookup is a tool call the user
+sees in the transcript, and the description tells the model to cite the chat by
+title and date when it uses what it found. Passages reaching the model on their
+own is a separate item (blocker 052).
+
+**Ranked, through an index.** `search_chats` ranks by BM25 through
+`store::index::ChatIndex`, the `.index.json` kept beside each directory's logs
+on the listing cache's terms ([service-data.md](service-data.md), "The chat
+index"): the query's words, whole and lowercased with one plural ending folded,
+scored by how rare each is across the directory and how often the chat says it,
+the title's words counting three times, long chats discounted. A chat that says
+none of the words is not returned. Each call brings the index up to date first
+— a stat per log, a re-tokenise of the ones that grew from where their record
+stopped, a rebuild of the file if it is missing or malformed — so nothing else
+has to keep it. A query with no word in it (a lone symbol, a single letter) goes
+to `store::search`, the sidebar's substring scan, newest first, which is what
+the first version did for everything; the header says so. In `all` scope each
+directory is ranked by its own index and the lists are merged by score as they
+are, a known unfairness between a small project and a large one.
+
+~~The cheap version: `store::search`, which already answers "which chat was
+that" for the sidebar, put in the model's hands. No index.~~ — the first
+version, 2026-09-14, superseded the same day by the index above once it was
+measured (below).
+
+**Neither ever returns a tool result.** Both go through the same `store::said`
+filter as the sidebar search — user messages, assistant text blocks, titles —
+so thinking and tool output are invisible to them. `search` makes the
+false-positive argument (a tool result is whatever file a chat read); the tools
+add a confinement one: another chat's tool results are file contents, and a
+window onto them would be a second `read_file` that no `Root` roots.
+
+**Scope.** `search_chats` takes `scope: project` (default; the directory the
+sidebar lists — the open project's, or the unfiled chats') or `all` (every
+registered project plus the unfiled chats, each hit tagged with its project's
+name). `read_chat` takes no scope: an id is already unambiguous, so it is
+resolved in every directory the tools can see, and a prefix that matches in two
+is refused the way one that matches two logs in one directory is. The shell
+passes both as a `ChatDirs { active, all: Vec<ChatDir { name, dir }> }`, taken
+at connect time like the rest of `ChatSpec`. An empty search names its scope,
+for the reason `grep`'s does.
+
+**Shape.** A search returns one line per chat, best first, at most `limit`
+(default 10, clamped to 25): short id · title · date last active · score ·
+excerpt around the first of the query's words the chat says, the sidebar's
+`you:`/`model:` relabelled `user:`/`assistant:` for a reader who is the model.
+The score is the BM25 number to one decimal, there so the model can see a clear
+winner from a flat field. The index keeps counts and not positions, so the
+excerpt comes from one scan of each returned chat; when no word is found as
+text (the ranking matched on the title, which the line already shows) the
+chat's opening stands in. The substring fallback keeps the first version's line
+(matching messages instead of a score, newest first). `read_chat`
+returns a header naming the chat's title and date, then a `max_chars` window
+(default 6000, clamped to 20000) centred on the first message containing
+`query`, or the start of the conversation without one; each message is prefixed
+with its speaker and timestamp, and a window that opens mid-message repeats
+that message's prefix marked *continued*.
+
+**What was measured** (release build, 2026-09-14, the three `#[ignore]`d tests
+in `chats.rs`). The first version, `store::search` on every call: over 933
+logs (55 MB) **~330 ms** warm, ~510 ms first run; over 32 logs **~30 ms**; in a
+debug build — which `cargo tauri dev` is — **~6 s**. Over ten hand-picked
+questions on a 32-chat project, newest-first put the expected chat in the top
+five for eight, three of them by title alone; the two misses were topics many
+chats mention in passing, where a substring has no way to prefer the chat that
+was *about* it. The index, same corpus and the same ten query strings: **all
+ten in the top five, eight at rank 1** (was three), the two misses at ranks 2
+and 1. The index's own cost is in [service-data.md](service-data.md) — a cold
+build over 933 logs ~1.1–1.6 s once, then ~90 ms per call to find nothing
+changed, plus one scan per returned chat for its excerpt. The full table with
+both rankings side by side is
+`nightshift-code/notes/runner-design/chat-index-report-2026-09-14.md`.
+
+**The chat asking can find itself.** Its log is in the active directory and the
+tools are built before a session exists, so a hit in the current chat costs a
+row rather than a wrong answer and is left alone in this version.
 
 ## Killing a shell is not killing the command (`tools/shell.rs`)
 

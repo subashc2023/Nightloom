@@ -21,6 +21,7 @@
 //! proves it: there is no root for the network, so they are gated by their
 //! `Effect` instead — see [`web`].
 
+mod chats;
 mod compact;
 mod files;
 mod remember;
@@ -32,6 +33,7 @@ mod task;
 mod todo;
 mod web;
 
+pub use chats::{ChatDir, ChatDirs, ReadChat, SearchChats};
 pub use compact::{CompactContext, CompactSignal};
 pub use remember::Remember;
 pub use review::{Review, Reviewer, ReviewerSpec, bench};
@@ -269,6 +271,16 @@ mod tests {
         // dream pass is the gate) lives on the impl, and this pin is what
         // makes revisiting it deliberate.
         tools.push(Box::new(Remember::new(std::env::temp_dir(), None)));
+        // Shell-added too. `ReadOnly` for a read of the user's own logs on
+        // this machine — but it is a read of *other conversations*, which
+        // no `Root` confines, so the row is here to make widening what they
+        // return (tool results, say) a deliberate act.
+        let dirs = ChatDirs {
+            active: std::env::temp_dir(),
+            all: Vec::new(),
+        };
+        tools.push(Box::new(SearchChats::new(dirs.clone())));
+        tools.push(Box::new(ReadChat::new(dirs)));
         let classified: Vec<(String, Effect)> =
             tools.iter().map(|t| (t.def().name, t.effect())).collect();
         assert_eq!(
@@ -287,6 +299,8 @@ mod tests {
                 ("web_fetch", Effect::Mutating),
                 ("web_search", Effect::Mutating),
                 ("remember", Effect::Session),
+                ("search_chats", Effect::ReadOnly),
+                ("read_chat", Effect::ReadOnly),
             ]
             .map(|(name, effect)| (name.to_string(), effect))
         );
@@ -317,6 +331,12 @@ mod tests {
             Root::new("."),
             std::sync::Arc::new(TurnHandle::default()),
         )));
+        let dirs = ChatDirs {
+            active: std::env::temp_dir(),
+            all: Vec::new(),
+        };
+        tools.push(Box::new(SearchChats::new(dirs.clone())));
+        tools.push(Box::new(ReadChat::new(dirs)));
         for tool in tools {
             let def = tool.def();
             let d = &def.description;

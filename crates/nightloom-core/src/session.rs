@@ -1,5 +1,6 @@
 use crate::context::{BlockSource, estimate_tokens};
 use crate::message::{ContentBlock, DocumentInput, ImageInput, Message, Role};
+use crate::prompt::SegmentKind;
 use crate::provider::Usage;
 use crate::todo::TodoItem;
 use chrono::{DateTime, Utc};
@@ -163,6 +164,28 @@ pub enum SessionEvent {
         agent: String,
         /// The agent's own session id — what it takes to resume.
         id: String,
+        at: DateTime<Utc>,
+    },
+    /// Which system-prompt layers this chat has switched off. The latest one
+    /// wins, the way a [`Title`] does; an empty set is "all on", which is
+    /// also what a log with no such event means.
+    ///
+    /// A log event rather than a field on the shell's connection, because
+    /// the exclusion is a fact *about the chat* — a blind test that must not
+    /// see the project's instructions is still that test when the chat is
+    /// reopened tomorrow, or when the rail switches engines under it — and
+    /// the log is where facts about the chat live. The shell reads it back
+    /// at connect time and builds the prompt without those layers; it is
+    /// not part of the message projection, since the prompt is assembled
+    /// from it rather than replayed as a turn.
+    ///
+    /// Kinds, not names: a layer is switched off as a category (every
+    /// `AGENTS.md` on the walk, not one of them), and a name is a path that
+    /// changes when the workspace does.
+    ///
+    /// [`Title`]: SessionEvent::Title
+    PromptLayers {
+        off: Vec<SegmentKind>,
         at: DateTime<Utc>,
     },
     /// The listed events keep their place in the conversation but stop
@@ -862,6 +885,29 @@ impl Session {
         });
     }
 
+    /// Note which prompt layers this chat now excludes.
+    ///
+    /// Normalized — ladder order, duplicates dropped — so two ways of saying
+    /// the same set compare equal, and a no-op when the set is unchanged,
+    /// for the reason [`record_agent_session`](Self::record_agent_session)
+    /// is: a shell that re-sends the current set on every reconnect must
+    /// not fill the log with it.
+    pub fn record_prompt_layers(&mut self, off: impl IntoIterator<Item = SegmentKind>) {
+        let wanted: Vec<SegmentKind> = off.into_iter().collect();
+        let off: Vec<SegmentKind> = SegmentKind::LAYERS
+            .iter()
+            .copied()
+            .filter(|k| wanted.contains(k))
+            .collect();
+        if self.prompt_layers_off() == off.as_slice() {
+            return;
+        }
+        self.record(SessionEvent::PromptLayers {
+            off,
+            at: Utc::now(),
+        });
+    }
+
     pub fn record_todos(&mut self, todos: Vec<TodoItem>) {
         self.record(SessionEvent::TodoState {
             todos,
@@ -1165,6 +1211,25 @@ impl Session {
                 SessionEvent::AgentSession { agent, id, .. } => Some((agent.as_str(), id.as_str())),
                 _ => None,
             })
+    }
+
+    /// Projection: the prompt layers this chat has switched off — the most
+    /// recent live [`SessionEvent::PromptLayers`], or none.
+    ///
+    /// Read off the live events like a [`title`](Self::title), and for the
+    /// same reasons on both counts: a compaction does not make the chat a
+    /// different chat, so its exclusions still hold; a rewind past the event
+    /// restores whatever set was current before it, which is the honest
+    /// answer to "what did the model know at that turn".
+    pub fn prompt_layers_off(&self) -> &[SegmentKind] {
+        self.live_events()
+            .into_iter()
+            .rev()
+            .find_map(|(_, e)| match e {
+                SessionEvent::PromptLayers { off, .. } => Some(off.as_slice()),
+                _ => None,
+            })
+            .unwrap_or(&[])
     }
 
     /// Projection: what this session has cost so far.
@@ -2663,5 +2728,84 @@ mod tests {
         // A different agent's identical id is a different handle.
         s.record_agent_session("codex", "abc");
         assert_eq!(s.agent_session(), Some(("codex", "abc")));
+    }
+
+    /// The exclusion is a fact about the chat, so it has to come back from
+    /// the log — and as kinds, so a build that reads it can act on it
+    /// without parsing names.
+    #[test]
+    fn prompt_layers_round_trip_through_jsonl() {
+        let dir = std::env::temp_dir().join(format!("nightloom-test-{}", uuid::Uuid::new_v4()));
+        let mut s = Session::with_log(&dir).unwrap();
+        assert!(
+            s.prompt_layers_off().is_empty(),
+            "a fresh chat has every layer on"
+        );
+        s.record_prompt_layers([SegmentKind::ProjectNotes, SegmentKind::ProjectInstructions]);
+        let path = s.log_path().unwrap().to_path_buf();
+        drop(s);
+
+        let loaded = Session::load(&path).unwrap();
+        assert!(loaded.load_report().is_clean());
+        // Ladder order, whatever order they were given in.
+        assert_eq!(
+            loaded.prompt_layers_off(),
+            &[SegmentKind::ProjectInstructions, SegmentKind::ProjectNotes]
+        );
+        // Metadata, not a turn.
+        assert!(loaded.messages().is_empty());
+        // On the wire as the kinds' snake_case names, which is what a shell
+        // sends back.
+        let line = std::fs::read_to_string(&path).unwrap();
+        assert!(line.contains(r#""event":"prompt_layers""#), "{line}");
+        assert!(
+            line.contains(r#""off":["project_instructions","project_notes"]"#),
+            "{line}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn prompt_layers_take_the_latest_set_and_are_not_recorded_unchanged() {
+        let mut s = Session::new();
+        s.record_prompt_layers([SegmentKind::Identity]);
+        s.record_prompt_layers([SegmentKind::Identity, SegmentKind::Identity]);
+        assert_eq!(s.prompt_layers_off(), &[SegmentKind::Identity]);
+        assert_eq!(
+            s.events()
+                .iter()
+                .filter(|e| matches!(e, SessionEvent::PromptLayers { .. }))
+                .count(),
+            1
+        );
+        // Back to all on is a set of its own and is recorded.
+        s.record_prompt_layers([]);
+        assert!(s.prompt_layers_off().is_empty());
+        assert_eq!(
+            s.events()
+                .iter()
+                .filter(|e| matches!(e, SessionEvent::PromptLayers { .. }))
+                .count(),
+            2
+        );
+        // Outlives a compaction, like a title: the chat is the same chat.
+        s.record_prompt_layers([SegmentKind::Knowledge]);
+        s.record_compaction("a summary");
+        assert_eq!(s.prompt_layers_off(), &[SegmentKind::Knowledge]);
+    }
+
+    /// A rewind past the event restores the set that was current before it,
+    /// which is what the model knew at the turn being returned to.
+    #[test]
+    fn a_rewind_past_prompt_layers_restores_the_earlier_set() {
+        let mut s = Session::new();
+        s.record_prompt_layers([SegmentKind::UserMemory]);
+        let first = exchange(&mut s, "one", "first");
+        s.record_prompt_layers([SegmentKind::Environment]);
+        exchange(&mut s, "two", "second");
+        assert_eq!(s.prompt_layers_off(), &[SegmentKind::Environment]);
+
+        s.rewind(first).unwrap();
+        assert_eq!(s.prompt_layers_off(), &[SegmentKind::UserMemory]);
     }
 }

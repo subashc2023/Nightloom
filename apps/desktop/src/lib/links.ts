@@ -2,6 +2,7 @@ import { Marked } from "marked";
 import type { MarkedExtension, TokenizerAndRendererExtension } from "marked";
 import DOMPurify from "dompurify";
 import { math } from "./math";
+import { tilde } from "./tilde";
 import type { Note } from "./types";
 
 /**
@@ -232,6 +233,7 @@ const wikilinks: MarkedExtension = { extensions: [wikilink] };
  */
 const noteMarked = new Marked();
 noteMarked.use(math);
+noteMarked.use(tilde);
 noteMarked.use(wikilinks);
 
 /** Render a note to sanitized HTML, with wikilinks resolved against `notes`. */

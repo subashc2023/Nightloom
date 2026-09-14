@@ -128,6 +128,9 @@ fn build_chat(
         // per-workspace, so the developer's own notes would reach every eval
         // on that machine and none on any other.
         knowledge: None,
+        // Off for the same reason as user memory: a file the developer wrote
+        // for this model on this machine is not part of the fixture.
+        model: None,
         cwd: workspace.to_path_buf(),
         custom: None,
     });

@@ -8,14 +8,15 @@
 
 use nightloom_core::Tool;
 use nightloom_core::{
-    DocumentInput, ImageInput, ProviderError, Session, SessionEvent, Thinking, WireView,
+    DocumentInput, ImageInput, ProviderError, SegmentKind, Session, SessionEvent, SystemPrompt,
+    Thinking, WireView,
 };
 use nightloom_service::approval::{Approver, AutoApprove, Decision, PendingCall};
 use nightloom_service::credentials::{self, KeySource};
 use nightloom_service::import;
 use nightloom_service::project::{self, Note, Project, Registry};
 use nightloom_service::store::{self, SessionMatch, SessionSummary};
-use nightloom_service::tools::{Reviewer, Root, SearchBackend};
+use nightloom_service::tools::{ChatDir, ChatDirs, Reviewer, Root, SearchBackend};
 use nightloom_service::{
     AgentSpec, Chat, ClaudeCodeAgent, CompactOutcome, KnowledgeContext, Price, ProjectContext,
     PromptConfig, ProviderKind, Recorder, TurnEvent, TurnInput, TurnOutcome, resolve_binary,
@@ -27,6 +28,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio_util::sync::CancellationToken;
+
+/// Nightshift: the unattended runner's file contract, as commands.
+mod nightshift;
 
 struct AppState {
     chat: tokio::sync::Mutex<Option<Chat>>,
@@ -86,6 +90,34 @@ struct AppState {
     /// from it because a dream is not a turn: stopping the chat must not
     /// stop the dream, and stopping the dream must not stop the chat.
     dream_cancel: Arc<std::sync::Mutex<CancellationToken>>,
+    /// What the live connection's system prompt was built from, written by
+    /// `connect` and `connect_agent` and read by `context_view` and
+    /// `prompt_layers`. See [`PromptBuilt`] for why it is a field of its own.
+    prompt: tokio::sync::Mutex<PromptBuilt>,
+}
+
+/// The prompt as the live engine was given it.
+///
+/// The provider engine keeps its segments on the `Chat`, so `context_view`
+/// can itemize them from there. The agent engine keeps only the flat string
+/// it passed to `--append-system-prompt`, and re-splitting that into layers
+/// would be a second parser for a string this process rendered a moment ago.
+/// So the segments are kept here as they were rendered, and the view shows
+/// those — the same segments the flag carries, by construction rather than
+/// by parsing.
+///
+/// `off` is here for the same reason: a chat's switched-off layers are read
+/// from its log at connect time, and the question "does the live engine
+/// match the chat now open" needs the set it was actually built with, not
+/// the set the log holds now — the two differ exactly after another chat is
+/// opened, which is when the UI has to reconnect.
+#[derive(Default)]
+struct PromptBuilt {
+    /// The layers switched off in the chat the connection was built for.
+    off: Vec<SegmentKind>,
+    /// On the Claude Code engine, the bridged segments; `None` on the
+    /// provider engine.
+    agent: Option<SystemPrompt>,
 }
 
 /// The registry, plus the project currently open.
@@ -326,7 +358,7 @@ struct AgentInfo {
     /// API instead — which is the whole failure this engine exists to avoid,
     /// and it is invisible in the transcript, so the rail says it out loud.
     subscription: bool,
-    /// `dontAsk` or `bypassPermissions`, or `None` when tools are off.
+    /// `auto` or `bypassPermissions`, or `None` when tools are off.
     ///
     /// Nightloom's own approval gate does not apply on this engine: the loop
     /// is Claude Code's and the prompt would have nobody to ask, headless.
@@ -456,6 +488,19 @@ async fn list_models(provider: String, base_url: Option<String>) -> Result<Vec<S
         .map_err(|e| e.to_string())
 }
 
+/// Context windows for a batch of model ids on one provider, from the static
+/// limits table — `None` where the table does not know the model. The model
+/// popover and the Settings picker print these beside each id (chat-surface
+/// redesign, 2026-09-13); one round trip per list rather than one per row.
+#[tauri::command]
+fn context_limits(provider: String, models: Vec<String>) -> Result<Vec<Option<u64>>, String> {
+    let kind: ProviderKind = provider.parse()?;
+    Ok(models
+        .iter()
+        .map(|m| nightloom_service::context_limit(kind, m))
+        .collect())
+}
+
 /// Start the workspace's MCP servers, or hand back the ones already running.
 ///
 /// Returns empty when tools are off, which also drops the connections: a
@@ -537,6 +582,21 @@ struct ChatSpec {
     /// the same in every project and in an unfiled chat, which is the case it
     /// exists for.
     knowledge: Option<PathBuf>,
+    /// Where the other chats are, for `search_chats` / `read_chat`: the
+    /// directory the sidebar lists, and every project's beside it. Taken at
+    /// connect time like the rest of the spec, so a project added later is
+    /// reachable after the next reconnect and not before — the rail
+    /// reconnects on every knob change, which is often enough. `None` for a
+    /// reviewer, for the reason `knowledge` is: a second vendor's critic has
+    /// no business in the user's transcripts.
+    chats: Option<ChatDirs>,
+    /// The prompt layers this chat has switched off, read from its log
+    /// (`Session::prompt_layers_off`) at connect time. Laid over the rail's
+    /// switches rather than replacing them: the rail says what every chat
+    /// gets, the log says what this one does not. Subagents and reviewers
+    /// inherit it with the rest of the spec, so a blind test stays blind
+    /// one level down.
+    layers_off: Vec<SegmentKind>,
 }
 
 impl ChatSpec {
@@ -587,11 +647,16 @@ fn build_chat(
     let mut chat = Chat::new(provider, model);
     // The textarea's text is the `custom` layer, appended after whatever the
     // preamble discovered; with the preamble off it is the whole prompt.
-    chat.system = nightloom_service::prompt::assemble(&PromptConfig {
+    let config = PromptConfig {
         identity: spec.preamble,
         environment: spec.preamble,
         project_instructions: spec.preamble,
         user_memory: spec.preamble,
+        // The id the chat is actually on — `connect` fills in the provider's
+        // default when the rail sent none — for its own file under
+        // `~/.nightloom/models/`. Gated like user memory: it is the same
+        // kind of standing text, about the user rather than the folder.
+        model: spec.preamble.then(|| chat.model.clone()),
         // Gated on the preamble like every other discovered layer: `--bare`
         // and its desktop equivalent mean "nothing but what I typed".
         project: spec.preamble.then(|| spec.project.clone()).flatten(),
@@ -601,7 +666,10 @@ fn build_chat(
             .flatten(),
         cwd: spec.workspace.clone(),
         custom: spec.system.clone(),
-    });
+    };
+    // The chat's own exclusions last, over the rail's switches: what this
+    // chat has turned off stays off whatever the rail says.
+    chat.system = nightloom_service::prompt::assemble(&config.without(&spec.layers_off));
     chat.thinking = spec.thinking.clone();
     // Gives the sidecar's context gauge a denominator; `None` for a model we
     // have no verified window for, which the gauge handles by reporting raw
@@ -655,6 +723,21 @@ fn build_chat(
             chat.tools
                 .push(Box::new(nightloom_service::tools::Remember::new(
                     config, source,
+                )));
+        }
+        // The other chats, on `tools` alone and not on the knowledge switch:
+        // chats are not the vault. They are the user's own transcripts on
+        // this machine, read-only, and the thing a user most often wants a
+        // model to look up is what they told it last week. Subagents inherit
+        // them with the rest of the set; reviewers do not (see `reviewers`).
+        if let Some(chats) = &spec.chats {
+            chat.tools
+                .push(Box::new(nightloom_service::tools::SearchChats::new(
+                    chats.clone(),
+                )));
+            chat.tools
+                .push(Box::new(nightloom_service::tools::ReadChat::new(
+                    chats.clone(),
                 )));
         }
         // Subagents are built from this same spec, so they inherit the
@@ -715,6 +798,8 @@ fn reviewers(
         // has no reason to want it, and "no reason to" is the wrong guarantee
         // when not handing it over at all is available.
         spec.knowledge = None;
+        // The same argument, and the transcripts are at least as personal.
+        spec.chats = None;
         let (app, policy, mcp) = (app.clone(), policy.clone(), mcp_tools.to_vec());
         Reviewer::new(
             candidate.name,
@@ -778,6 +863,33 @@ async fn connect(
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
     };
 
+    // Every project's chats plus the unfiled ones, named as the picker names
+    // them, with the sidebar's directory as the default scope. The registry
+    // is cloned out under its own lock and the guard dropped, per the lock
+    // discipline on `workspaces`.
+    let chats = {
+        let mut all: Vec<ChatDir> = state
+            .workspaces
+            .lock()
+            .await
+            .registry
+            .projects()
+            .iter()
+            .map(|p| ChatDir {
+                name: p.name.clone(),
+                dir: p.session_dir(),
+            })
+            .collect();
+        all.push(ChatDir {
+            name: "Unfiled chats".into(),
+            dir: state.default_log_dir.clone(),
+        });
+        ChatDirs {
+            active: state.log_dir().await,
+            all,
+        }
+    };
+
     let spec = ChatSpec {
         kind,
         model,
@@ -805,6 +917,8 @@ async fn connect(
             name: p.name.clone(),
             notes_dir: p.notes_dir(),
         }),
+        chats: Some(chats),
+        layers_off: layers_off(&state).await,
     };
     let mcp = ensure_mcp(&state, &spec.workspace, spec.tools).await;
     let mcp_tools = state
@@ -867,7 +981,24 @@ async fn connect(
     // itself is not cheap enough to rebuild casually, but the agent is a
     // spec and a process that has already exited.
     *state.agent.lock().await = None;
+    *state.prompt.lock().await = PromptBuilt {
+        off: spec.layers_off,
+        agent: None,
+    };
     Ok(info)
+}
+
+/// The open chat's switched-off layers, or none when no chat is open yet —
+/// a fresh chat starts with every layer on, and its log is created lazily
+/// by the first send.
+async fn layers_off(state: &AppState) -> Vec<SegmentKind> {
+    state
+        .session
+        .lock()
+        .await
+        .as_ref()
+        .map(|s| s.prompt_layers_off().to_vec())
+        .unwrap_or_default()
 }
 
 /// The default binary, matching the CLI's `--agent-binary`.
@@ -897,10 +1028,18 @@ async fn not_in_agent_mode(state: &AppState, what: &str) -> Result<(), String> {
 ///
 /// Deliberately a command of its own rather than a `provider` value on
 /// [`connect`]. Almost none of that call's arguments mean anything here — no
-/// base URL, no thinking mode, no preamble or sidecar, no MCP list, no
-/// reviewers — because Claude Code assembles its own prompt and runs its own
-/// loop. A shared entry point would be one whose arguments are mostly inert,
-/// which is the shape that invites a knob to be silently ignored.
+/// base URL, no thinking mode, no sidecar, no MCP list, no reviewers —
+/// because Claude Code assembles its own prompt and runs its own loop. A
+/// shared entry point would be one whose arguments are mostly inert, which
+/// is the shape that invites a knob to be silently ignored.
+///
+/// The preamble is the one layer that crosses. It used to be withheld on the
+/// same reasoning, and the result was a chat that started knowing nothing a
+/// chat on the other engine knows — not the user's standing instructions,
+/// not the project's `AGENTS.md`, not which notes exist. Claude Code owns
+/// the identity and the environment; the rest is ours to know and goes in
+/// `--append-system-prompt` ahead of the library prompt
+/// ([`nightloom_service::agent_preamble`]).
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 async fn connect_agent(
@@ -913,6 +1052,7 @@ async fn connect_agent(
     safe_mode: Option<bool>,
     budget: Option<f64>,
     system: Option<String>,
+    preamble: Option<bool>,
 ) -> Result<ConnectedInfo, String> {
     // Same rule as `connect`: an open project wins over the rail's saved
     // folder, or a chat filed under a project would be running somewhere
@@ -936,19 +1076,91 @@ async fn connect_agent(
         .filter(|m| !m.is_empty());
     spec.max_budget_usd = budget.filter(|b| *b > 0.0);
     spec.safe_mode = safe_mode.unwrap_or(false);
-    spec.append_system_prompt = system
-        .map(|t| t.trim().to_string())
-        .filter(|t| !t.is_empty());
+    // Same vault call and the same project context `connect` builds, and
+    // gated on the same switch: off means "nothing but what I typed" on
+    // both engines. The library prompt is the trailer rather than the
+    // config's `custom` layer, so it stays recognisable as what the shell
+    // passed and still wins by position.
+    let preamble = preamble.unwrap_or(true);
+    let knowledge = preamble
+        .then(nightloom_service::knowledge::vault_dir)
+        .flatten();
+    // The vault sits outside every workspace, and the preamble is about to
+    // name it by its real path; granting the directory is what makes that
+    // path one the CLI will open rather than route to a classifier that,
+    // headless, can only decline (nightshift blocker 050; `AgentSpec::add_dirs`
+    // says what the grant covers).
+    spec.add_dirs = knowledge.iter().cloned().collect();
+    // Built as segments and rendered from them, so the Context popover can
+    // show the same segments the flag carries rather than a re-parse of the
+    // string (see `PromptBuilt`). The chat's own exclusions apply here as on
+    // the other engine, plus the one layer that exists only here.
+    let off = layers_off(&state).await;
+    let prompt = nightloom_service::agent_prompt(
+        &PromptConfig {
+            identity: false,
+            environment: false,
+            project_instructions: preamble,
+            user_memory: preamble,
+            // By the alias the rail sent (`opus`, `sonnet`), not the dated id
+            // the CLI resolves it to: that arrives with the first turn, after
+            // this prompt is built once for the session. So on this engine
+            // the file is named after the alias, and a chat on the CLI's
+            // default model (no alias) reads none.
+            model: preamble.then(|| spec.model.clone()).flatten(),
+            project: preamble
+                .then(|| {
+                    active.as_ref().map(|p| ProjectContext {
+                        name: p.name.clone(),
+                        notes_dir: p.notes_dir(),
+                    })
+                })
+                .flatten(),
+            knowledge: knowledge.map(|dir| KnowledgeContext { dir }),
+            cwd: workspace.clone(),
+            custom: None,
+        }
+        .without(&off),
+        system.as_deref(),
+        !off.contains(&SegmentKind::EngineNote),
+    );
+    spec.append_system_prompt = prompt.render_flat();
     if tools {
-        // Headless has no way to ask, so the two honest settings are "deny
-        // anything not already permitted" and "run everything". The window's
-        // approval prompt is not one of them: it gates calls the engine is
-        // about to run, and this engine runs its own.
-        spec.permission_mode = Some(if approval.unwrap_or(true) {
-            "dontAsk".into()
-        } else {
-            "bypassPermissions".into()
-        });
+        // Headless has no way to ask, so the window's approval prompt does
+        // not run here: it gates calls the engine is about to run, and this
+        // engine runs its own. On means the CLI's `auto` — its classifier
+        // decides, and a call it cannot approve is denied rather than left
+        // waiting for an answer nobody can give (see the helper's doc, and
+        // nightshift blocker 045 for why this is no longer `dontAsk`). Off
+        // is `bypassPermissions`.
+        spec.permission_mode =
+            Some(AgentSpec::headless_permission_mode(approval.unwrap_or(true)).into());
+        // Nightloom's own tools on this engine — search_chats, read_chat,
+        // remember, fetch_page — served by the binary the app is running as
+        // (`--mcp-serve` at the top of `main`), because the CLI is not on
+        // PATH on most machines that have the app. Inside `if tools` on
+        // purpose: `--tools ""` does not disable MCP tools, and a connection
+        // that asked for none should not get four. Under safe mode the CLI's
+        // `--strict-mcp-config` makes this the only server, which is the
+        // point (nightshift backlog 046).
+        if let Ok(exe) = std::env::current_exe() {
+            let mut args = vec!["--mcp-serve".to_string()];
+            if let Some(p) = &active {
+                args.push("--project".into());
+                args.push(p.id.clone());
+            }
+            spec.mcp_config = Some(
+                serde_json::json!({
+                    "mcpServers": {
+                        nightloom_service::mcp_server::SERVER_NAME: {
+                            "command": exe.to_string_lossy(),
+                            "args": args,
+                        }
+                    }
+                })
+                .to_string(),
+            );
+        }
     } else {
         spec.tools = Some(Vec::new());
     }
@@ -988,10 +1200,11 @@ async fn connect_agent(
         workspace: workspace.to_string_lossy().into_owned(),
         project: active.as_ref().map(ProjectInfo::of),
         search: None,
-        // Claude Code owns its own tools and its own file access, so nothing
-        // here roots them and the vault is not on the request. Said as `None`
-        // rather than echoed hopefully: the rail would otherwise chip a folder
-        // this engine never reads.
+        // The vault's index is on the request now, with its real directory
+        // in the engine note — but this field is the folder Nightloom's file
+        // tools are rooted at, and nothing here roots any: Claude Code owns
+        // its own file access. Said as `None` rather than echoed, so the
+        // rail's chip keeps meaning what it says.
         knowledge: None,
         engine: AGENT.into(),
         agent: Some(AgentInfo {
@@ -1005,6 +1218,10 @@ async fn connect_agent(
     };
     *state.agent.lock().await = Some(ClaudeCodeAgent::new(spec));
     *state.chat.lock().await = None;
+    *state.prompt.lock().await = PromptBuilt {
+        off,
+        agent: Some(prompt),
+    };
     Ok(info)
 }
 
@@ -1260,11 +1477,20 @@ struct AgentTurn {
 /// replayable if the rail is later switched back to a provider. What the log
 /// is *not* is the thing the next turn replays: that is the agent's own
 /// session, resumed by the id recorded alongside.
+///
+/// `images` and `documents` are the same base64 payloads `send` takes, and
+/// they land in the log the same way — the user event carries them verbatim,
+/// so a chat that started on this engine projects onto a provider request
+/// with its attachments intact if the rail is switched. How they reach the
+/// CLI is the agent's business (`ClaudeCodeAgent::run_turn`: a stdin line
+/// rather than argv, for that one turn).
 #[tauri::command]
 async fn send_agent(
     app: AppHandle,
     state: State<'_, AppState>,
     text: String,
+    images: Option<Vec<ImageInput>>,
+    documents: Option<Vec<DocumentInput>>,
 ) -> Result<AgentTurn, String> {
     let mut agent_guard = state.agent.lock().await;
     let agent = agent_guard
@@ -1281,7 +1507,16 @@ async fn send_agent(
     // records into the same log through `Recorder`, so it can seal it the same
     // way, and this window has no stderr for the notice to go to either.
     let sealed_before = session.write_failure().is_some();
-    session.record_user(&text);
+    let input = TurnInput {
+        text,
+        images: images.unwrap_or_default(),
+        documents: documents.unwrap_or_default(),
+    };
+    session.record_user_with_attachments(
+        input.text.clone(),
+        input.images.clone(),
+        input.documents.clone(),
+    );
 
     let cancel = CancellationToken::new();
     *state.cancel.lock().unwrap() = cancel.clone();
@@ -1309,7 +1544,7 @@ async fn send_agent(
         let _ = app.emit("turn-event", &e);
         recorder.push(&e);
     };
-    let result = agent.run_turn(&text, &cancel, &mut on_event).await;
+    let result = agent.run_turn(input, &cancel, &mut on_event).await;
 
     match result {
         Ok(outcome) => {
@@ -1418,9 +1653,26 @@ struct ContextEdit {
 /// preamble and the sidecar live on the `Chat` and only the `Session` knows
 /// the conversation. Taking them in the same order `compact` does (chat,
 /// then session) so the two can never deadlock against each other.
+///
+/// On the Claude Code engine the view is the bridged preamble alone, with
+/// no messages: the CLI holds the conversation and assembles its own
+/// request, so there is no history of ours to itemize — but the layers
+/// Nightloom appends are ours, and "what does this chat know at the start"
+/// deserves the same answer on both engines. It used to refuse here; that
+/// was the right call while the popover could only rank items to remove,
+/// and the wrong one once it shows what was sent. No limit either: the
+/// CLI's window is reported per turn, not known at connect.
 #[tauri::command]
 async fn context_view(state: State<'_, AppState>) -> Result<WireView, String> {
-    not_in_agent_mode(&state, "itemize the context").await?;
+    if state.agent.lock().await.is_some() {
+        let built = state.prompt.lock().await;
+        return Ok(WireView::assemble(
+            built.agent.as_ref(),
+            &Session::new(),
+            None,
+            None,
+        ));
+    }
     let chat_guard = state.chat.lock().await;
     let chat = chat_guard
         .as_ref()
@@ -1470,11 +1722,62 @@ async fn edit_context(
     })
 }
 
-/// Delete a session log. If it is the active session, the open log handle is
-/// dropped first (the next send starts a fresh session).
+/// The chat's switched-off layers, and the set the live engine was built
+/// with. The UI reconnects when the two differ — after opening another chat,
+/// or a new one — so the prompt on the wire is always the open chat's.
+#[derive(Serialize)]
+struct PromptLayersInfo {
+    off: Vec<SegmentKind>,
+    built: Vec<SegmentKind>,
+}
+
+#[tauri::command]
+async fn prompt_layers(state: State<'_, AppState>) -> Result<PromptLayersInfo, String> {
+    let off = layers_off(&state).await;
+    let built = state.prompt.lock().await.off.clone();
+    Ok(PromptLayersInfo { off, built })
+}
+
+/// Record which prompt layers this chat excludes, returning the transcript.
+///
+/// The log is the only thing written here: the live engine still carries
+/// the prompt it was built with, and the UI reconnects after this returns —
+/// the same path a rail knob takes — so `connect` / `connect_agent` read the
+/// new set back the one way they read it. A session is created if the chat
+/// has none yet, as `send` would create one: the exclusion is a fact about
+/// the chat, and a chat has to exist to have it.
+///
+/// Allowed on the Claude Code engine, unlike a rewind or an elision: those
+/// change what the *log* projects, which that engine never reads, while
+/// this changes what the next connect appends to the CLI's prompt, which it
+/// does read — after the next compaction on a resumed session (see
+/// `docs/service-agent.md`), and the popover says so there.
+#[tauri::command]
+async fn set_prompt_layers(
+    state: State<'_, AppState>,
+    off: Vec<SegmentKind>,
+) -> Result<Vec<SessionEvent>, String> {
+    let log_dir = state.log_dir().await;
+    let mut session_guard = state.session.lock().await;
+    if session_guard.is_none() {
+        *session_guard = Some(Session::with_log(&log_dir).map_err(|e| e.to_string())?);
+    }
+    let session = session_guard.as_mut().expect("session ensured above");
+    session.record_prompt_layers(off);
+    Ok(session.events().to_vec())
+}
+
+/// Delete a session log the reversible way: it moves to `<logs>/trash/`
+/// rather than being unlinked (review round 1, 2026-09-13 — the rule that
+/// no click in the UI may lose work for good; `backlog/trash/` is the same
+/// shape). The listing never descends into subdirectories, so a trashed log
+/// is out of the sidebar at once and still on disk. If it is the active
+/// session, the open log handle is dropped first (the next send starts a
+/// fresh session).
 #[tauri::command]
 async fn delete_session(state: State<'_, AppState>, id: String) -> Result<String, String> {
-    let path = store::find_by_prefix(&state.log_dir().await, &id).map_err(|e| e.to_string())?;
+    let log_dir = state.log_dir().await;
+    let path = store::find_by_prefix(&log_dir, &id).map_err(|e| e.to_string())?;
     let full_id = path
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
@@ -1490,7 +1793,21 @@ async fn delete_session(state: State<'_, AppState>, id: String) -> Result<String
     if was_active {
         adopt_agent_session(&state, None).await;
     }
-    std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+    let trash = log_dir.join("trash");
+    std::fs::create_dir_all(&trash).map_err(|e| e.to_string())?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| "session log has no file name".to_string())?;
+    let mut dest = trash.join(name);
+    // A second deletion of a re-imported chat with the same id keeps both.
+    if dest.exists() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        dest = trash.join(format!("{full_id}.{stamp}.jsonl"));
+    }
+    std::fs::rename(&path, &dest).map_err(|e| e.to_string())?;
     Ok(full_id)
 }
 
@@ -1576,6 +1893,9 @@ struct ImportSummary {
     unreadable: usize,
     summary: String,
     warnings: Vec<String>,
+    /// Projects whose memory summary was too long for `AGENTS.md`, with the
+    /// size: their `AGENTS.md` points at the full text and owes a short one.
+    needs_condensing: Vec<(String, usize)>,
 }
 
 /// Choose the claude.ai export archive.
@@ -1662,6 +1982,7 @@ async fn import_claude(
         unfiled: report.unfiled,
         unreadable: report.unreadable,
         warnings: report.warnings.clone(),
+        needs_condensing: report.needs_condensing.clone(),
     })
 }
 
@@ -1739,7 +2060,13 @@ async fn rename_project(
 /// Remove a project from the list. **Forgets, never deletes** — the folder,
 /// its notes and its chats are all still on disk, and the UI says so.
 #[tauri::command]
-async fn forget_project(state: State<'_, AppState>, id: String) -> Result<(), String> {
+async fn forget_project(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    // A held Nightshift launch must not outlive the project (review F4).
+    nightshift::drop_pending(&app, &id)?;
     let closed = {
         let mut guard = state.workspaces.lock().await;
         guard.registry.forget(&id)?;
@@ -1775,7 +2102,37 @@ enum NoteScope {
     Project,
     /// The user's vault — about them, and available with no project at all.
     Knowledge,
+    /// `<workspace>/AGENTS.md` — the project's standing instructions, read
+    /// whole into every chat's preamble. One fixed file, never a listing:
+    /// the scope exists so the same editor reaches it, not so the workspace
+    /// root reads as a notes folder.
+    Instructions,
+    /// `~/.nightloom/AGENTS.md` — user memory, how the model should behave
+    /// everywhere. Same shape as `Instructions`: one file, no listing.
+    Memory,
+    /// `~/.nightloom/models/` — one file per model id, read whole into the
+    /// preamble of a chat on that model and no other (nightshift backlog
+    /// 044). A folder like the two stores, so it lists and deletes, but its
+    /// names are model ids and not titles: `<id>.md`, with a `/` in the id
+    /// written `__` (`prompt::model_instruction_file` is the one place that
+    /// rule lives). Reads answer a missing file with empty text, as the
+    /// fixed-file scopes do, so the editor can open on a model that has no
+    /// file yet.
+    Models,
 }
+
+impl NoteScope {
+    /// The scopes that name one fixed file rather than a folder of notes.
+    /// Listing them is meaningless and deleting them is a loss the
+    /// never-lose-work rule forbids: the reversible form is emptying the
+    /// text, which `save_note` already does.
+    fn is_fixed_file(self) -> bool {
+        matches!(self, Self::Instructions | Self::Memory)
+    }
+}
+
+/// The one file the fixed-file scopes name.
+const AGENTS_MD: &str = "AGENTS.md";
 
 impl Default for NoteScope {
     /// What a frontend that predates the vault meant by every note call.
@@ -1800,7 +2157,26 @@ async fn scope_dir(state: &AppState, scope: NoteScope) -> Result<PathBuf, String
             .ok_or_else(|| "no project is open, so there is no shared notes folder".to_string()),
         NoteScope::Knowledge => nightloom_service::knowledge::vault_dir()
             .ok_or_else(|| "no user config directory to keep a knowledge base in".to_string()),
+        NoteScope::Instructions => state
+            .active()
+            .await
+            .map(|p| p.workspace_dir())
+            .ok_or_else(|| "no project is open, so there are no project instructions".to_string()),
+        NoteScope::Memory => project::config_dir()
+            .ok_or_else(|| "no user config directory to keep user memory in".to_string()),
+        NoteScope::Models => nightloom_service::prompt::model_instructions_dir()
+            .ok_or_else(|| "no user config directory to keep model instructions in".to_string()),
     }
+}
+
+/// The fixed-file scopes accept exactly one name. Anything else is a caller
+/// bug, and answering it with a file in the workspace root would turn the
+/// instructions scope into a second, unindexed docspace.
+fn check_fixed_name(scope: NoteScope, name: &str) -> Result<(), String> {
+    if scope.is_fixed_file() && name.trim() != AGENTS_MD {
+        return Err(format!("{scope:?} names only {AGENTS_MD}, not {name}"));
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1808,9 +2184,11 @@ async fn list_notes(
     state: State<'_, AppState>,
     scope: Option<NoteScope>,
 ) -> Result<Vec<Note>, String> {
-    Ok(project::list_notes(
-        &scope_dir(&state, scope.unwrap_or_default()).await?,
-    ))
+    let scope = scope.unwrap_or_default();
+    if scope.is_fixed_file() {
+        return Err(format!("{scope:?} is one file, not a folder to list"));
+    }
+    Ok(project::list_notes(&scope_dir(&state, scope).await?))
 }
 
 #[tauri::command]
@@ -1819,7 +2197,20 @@ async fn read_note(
     scope: Option<NoteScope>,
     name: String,
 ) -> Result<String, String> {
-    project::read_note(&scope_dir(&state, scope.unwrap_or_default()).await?, &name)
+    let scope = scope.unwrap_or_default();
+    check_fixed_name(scope, &name)?;
+    let dir = scope_dir(&state, scope).await?;
+    // A fixed file that does not exist yet is an empty one, not an error:
+    // the editor opens on it so the user can write the first line. A model's
+    // file is the same case — "+ add for this model" opens the editor on a
+    // name nothing has written yet.
+    if scope.is_fixed_file() && !dir.join(AGENTS_MD).is_file() {
+        return Ok(String::new());
+    }
+    if scope == NoteScope::Models && !dir.join(name.trim()).is_file() {
+        return Ok(String::new());
+    }
+    project::read_note(&dir, &name)
 }
 
 /// Write a note. Also how a new one is created — there is no separate
@@ -1831,11 +2222,9 @@ async fn save_note(
     name: String,
     content: String,
 ) -> Result<Note, String> {
-    project::write_note(
-        &scope_dir(&state, scope.unwrap_or_default()).await?,
-        &name,
-        &content,
-    )
+    let scope = scope.unwrap_or_default();
+    check_fixed_name(scope, &name)?;
+    project::write_note(&scope_dir(&state, scope).await?, &name, &content)
 }
 
 #[tauri::command]
@@ -1844,7 +2233,82 @@ async fn delete_note(
     scope: Option<NoteScope>,
     name: String,
 ) -> Result<(), String> {
-    project::delete_note(&scope_dir(&state, scope.unwrap_or_default()).await?, &name)
+    let scope = scope.unwrap_or_default();
+    if scope.is_fixed_file() {
+        return Err(format!("{AGENTS_MD} is not deleted from here — empty it instead"));
+    }
+    project::delete_note(&scope_dir(&state, scope).await?, &name)
+}
+
+// ---- proposals: the dream's suggested edits to the fixed files ------------
+
+/// The store a fixed-file scope's proposals sit beside: the active project's
+/// directory under `~/.nightloom/projects/` for `instructions`, the config
+/// dir for `memory`. Only those two scopes have proposals — the dream may
+/// suggest a change to an always-loaded file and to nothing else — so any
+/// other scope is a caller bug and says so.
+async fn proposal_store(state: &AppState, scope: NoteScope) -> Result<PathBuf, String> {
+    match scope {
+        NoteScope::Instructions => state
+            .active()
+            .await
+            .map(|p| p.store_dir())
+            .ok_or_else(|| "no project is open, so there are no proposals for its instructions".to_string()),
+        NoteScope::Memory => project::config_dir()
+            .ok_or_else(|| "no user config directory to keep proposals in".to_string()),
+        other => Err(format!("{other:?} has no proposals — only instructions and memory do")),
+    }
+}
+
+/// Pending proposals for a fixed file, newest first — the badge on the
+/// pinned row, and the one the review opens on. Cheap (a directory of small
+/// files), so the frontend asks whenever it re-lists the notes.
+#[tauri::command]
+async fn list_proposals(
+    state: State<'_, AppState>,
+    scope: NoteScope,
+) -> Result<Vec<nightloom_service::proposal::Entry>, String> {
+    let store = proposal_store(&state, scope).await?;
+    blocking(move || Ok::<_, String>(nightloom_service::proposal::list_in(&store))).await
+}
+
+#[tauri::command]
+async fn read_proposal(
+    state: State<'_, AppState>,
+    scope: NoteScope,
+    id: String,
+) -> Result<nightloom_service::proposal::Proposal, String> {
+    let store = proposal_store(&state, scope).await?;
+    blocking(move || nightloom_service::proposal::read(&store, &id)).await
+}
+
+/// Move a proposal aside as turned down. The frontend confirms first — a
+/// dismissed proposal leaves the badge, which is the closest thing here to
+/// losing work — and the file is kept under `proposals/dismissed/`.
+#[tauri::command]
+async fn dismiss_proposal(
+    state: State<'_, AppState>,
+    scope: NoteScope,
+    id: String,
+) -> Result<(), String> {
+    let store = proposal_store(&state, scope).await?;
+    blocking(move || nightloom_service::proposal::dismiss(&store, &id).map(|_| ())).await
+}
+
+/// Record that a proposal was applied: called by the frontend *after* its
+/// ordinary `save_note` of the draft succeeded, with the text it saved. The
+/// proposal moves under `proposals/applied/` carrying a hash of that text.
+/// Nothing here writes the fixed file — the save that did was the user's,
+/// through the editor, which is the design.
+#[tauri::command]
+async fn mark_applied(
+    state: State<'_, AppState>,
+    scope: NoteScope,
+    id: String,
+    text: String,
+) -> Result<(), String> {
+    let store = proposal_store(&state, scope).await?;
+    blocking(move || nightloom_service::proposal::applied(&store, &id, &text).map(|_| ())).await
 }
 
 // ---- the knowledge vault -----------------------------------------------
@@ -1894,6 +2358,13 @@ async fn knowledge_info() -> Result<Option<KnowledgeInfo>, String> {
     Ok(KnowledgeInfo::current())
 }
 
+/// Where the per-model instruction files live, so the editor's Folder button
+/// can show it; `None` on a machine with no user config directory.
+#[tauri::command]
+fn model_instructions_dir() -> Option<String> {
+    nightloom_service::prompt::model_instructions_dir().map(|d| d.display().to_string())
+}
+
 /// Point the vault at a folder, or back at the default with `None`.
 ///
 /// **Moves nothing.** Both directories are left exactly as they are, which is
@@ -1940,14 +2411,32 @@ async fn dream_status() -> Result<usize, String> {
 }
 
 /// What one dream did, flattened for the UI. `git` is a finished sentence
-/// rather than an enum, because the frontend has nothing to add to it.
+/// rather than an enum, because the frontend has nothing to add to it; with
+/// the project layer it is one clause per folder the pass touched, joined.
+/// `filed` is the split by target in the order the turns ran, projects
+/// first and the vault last, for the toast's "N into Lanternfish, M into
+/// the vault".
 #[derive(Serialize)]
 struct DreamReport {
     consolidated: usize,
+    filed: Vec<FiledReport>,
     remaining: usize,
     interrupted: bool,
     git: String,
+    /// "proposed a change to Lanternfish's instructions …", the service's
+    /// own sentence (`dream::proposed_line`), or `None` when no turn
+    /// proposed — a finished clause like `git`, for the same reason.
+    proposed: Option<String>,
     cost_usd: Option<f64>,
+}
+
+/// One target's count. `project` is `None` for the vault.
+#[derive(Serialize)]
+struct FiledReport {
+    project: Option<String>,
+    consolidated: usize,
+    /// The turn proposed a change to the target's always-loaded file.
+    proposed: bool,
 }
 
 /// Run one consolidation pass over the observation log.
@@ -1993,7 +2482,8 @@ async fn dream(
     chat.thinking = thinking;
     chat.context_limit = nightloom_service::context_limit(kind, &chat.model);
     chat.price = nightloom_service::price(kind, &chat.model);
-    nightloom_service::dream::prepare(&mut chat, &vault);
+    // The pass prepares the chat itself, once per target (the vault, each
+    // project's memory folder), so there is no `prepare` here any more.
 
     let cancel = CancellationToken::new();
     *state.dream_cancel.lock().unwrap() = cancel.clone();
@@ -2001,24 +2491,47 @@ async fn dream(
     let mut on_event = move |event: TurnEvent| {
         let _ = emitter.emit("dream-event", &event);
     };
-    let outcome = nightloom_service::dream::run(&chat, &vault, &config, &cancel, &mut on_event)
+    let outcome = nightloom_service::dream::run(&mut chat, &vault, &config, &cancel, &mut on_event)
         .await?
         // Checked non-empty by the UI before offering the button; a race
-        // with a CLI dream is the only way here, and "nothing left" is its
-        // honest report.
+        // with a CLI dream is the only way here, and "nothing left" is
+        // its honest report.
         .ok_or_else(|| "nothing left to consolidate".to_string())?;
     Ok(DreamReport {
         consolidated: outcome.consolidated,
+        filed: outcome
+            .filed
+            .iter()
+            .map(|f| FiledReport {
+                project: f.project.clone(),
+                consolidated: f.consolidated,
+                proposed: f.proposed,
+            })
+            .collect(),
         remaining: outcome.remaining,
         interrupted: outcome.interrupted,
-        git: dream_git_line(&outcome.git_before, &outcome.git_after),
+        proposed: nightloom_service::dream::proposed_line(&outcome.filed),
+        git: outcome
+            .filed
+            .iter()
+            .map(|f| {
+                let what = match &f.project {
+                    Some(name) => format!("{name}'s .agents"),
+                    None => "vault".to_string(),
+                };
+                dream_git_line(&what, &f.git_before, &f.git_after)
+            })
+            .collect::<Vec<_>>()
+            .join("; "),
         cost_usd: outcome.cost_usd,
     })
 }
 
-/// One sentence about rollback — the CLI's `print_git`, phrased for a toast.
-/// Both snapshots ran on the same folder, so `after` carries the story.
+/// One clause about rollback for one folder — the CLI's `print_git`,
+/// phrased for a toast. `what` names the folder (the vault, or a project's
+/// `.agents`); both snapshots ran on it, so `after` carries the story.
 fn dream_git_line(
+    what: &str,
     before: &nightloom_service::dream::GitNote,
     after: &nightloom_service::dream::GitNote,
 ) -> String {
@@ -2026,7 +2539,7 @@ fn dream_git_line(
     if let GitNote::Failed(e) = before
         && !matches!(after, GitNote::Failed(_))
     {
-        return format!("pre-dream git snapshot failed: {e}");
+        return format!("pre-dream git snapshot of {what} failed: {e}");
     }
     // What the pre-dream snapshot committed was the user's own uncommitted
     // work — necessary, so that reverting the dream does not take an edit of
@@ -2034,19 +2547,20 @@ fn dream_git_line(
     // `git log`.
     let swept = match before {
         GitNote::Committed { paths, .. } if *paths > 0 => format!(
-            "; {paths} uncommitted vault file{} committed first, so this pass reverts on its own",
+            ", {paths} uncommitted {what} file{} committed first so this pass reverts on its own",
             if *paths == 1 { " was" } else { "s were" }
         ),
         _ => String::new(),
     };
     match after {
+        GitNote::Untouched => format!("{what} untouched"),
         GitNote::NotARepo => {
-            "the vault is not a git repository, so there is no rollback for this pass".into()
+            format!("{what} is not in a git repository, so there is no rollback for it")
         }
-        GitNote::Committed { hash, .. } if hash.is_empty() => format!("vault committed{swept}"),
-        GitNote::Committed { hash, .. } => format!("vault committed ({hash}){swept}"),
-        GitNote::Clean => "vault unchanged".into(),
-        GitNote::Failed(e) => format!("git snapshot failed: {e}"),
+        GitNote::Committed { hash, .. } if hash.is_empty() => format!("{what} committed{swept}"),
+        GitNote::Committed { hash, .. } => format!("{what} committed ({hash}){swept}"),
+        GitNote::Clean => format!("{what} unchanged"),
+        GitNote::Failed(e) => format!("git snapshot of {what} failed: {e}"),
     }
 }
 
@@ -2056,6 +2570,121 @@ fn dream_git_line(
 /// user is reading.
 #[tauri::command]
 fn cancel_dream(state: State<'_, AppState>) {
+    state.dream_cancel.lock().unwrap().cancel();
+}
+
+// ---- the capture pass ------------------------------------------------------
+
+/// How many session logs have bytes past their capture watermark — the
+/// count on the Capture button. Directory scans only, no log opened, no
+/// locks, so the UI can ask after every turn. The button is always shown:
+/// the inbox count says nothing about what the logs hold, and the chat
+/// open right now is always one of the unread.
+#[tauri::command]
+async fn capture_status() -> Result<usize, String> {
+    let Some(config) = project::config_dir() else {
+        return Ok(0);
+    };
+    blocking(move || Ok::<_, String>(nightloom_service::capture::pending_count_in(&config))).await
+}
+
+/// What one capture did, flattened for the toast. `per_project` is the
+/// split by source in the order the dirs were walked, "unfiled" for the
+/// chats with no project.
+#[derive(Serialize)]
+struct CaptureReport {
+    observations: usize,
+    logs_read: usize,
+    skipped: usize,
+    deferred: usize,
+    remaining: usize,
+    per_project: Vec<CapturedReport>,
+    interrupted: bool,
+    cost_usd: Option<f64>,
+}
+
+#[derive(Serialize)]
+struct CapturedReport {
+    project: String,
+    observations: usize,
+}
+
+/// Run one capture pass over the session logs.
+///
+/// The dream's twin: its own job with its own system prompt and no tools
+/// (see `service::capture::prepare`), connected from the arguments rather
+/// than the window's `Chat`, and working the same whichever engine the
+/// window is on. It shares the dream's `dreaming` mutex rather than
+/// having its own, because the two are one pipeline — capture fills the
+/// inbox the dream drains — and a dream started while a capture is
+/// appending would read half of what the capture wrote. The refusal is
+/// the same sentence a second dream gets. Progress streams as
+/// `capture-event`s on their own channel.
+#[tauri::command]
+async fn capture(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    provider: String,
+    model: Option<String>,
+    base_url: Option<String>,
+    thinking: Option<String>,
+) -> Result<CaptureReport, String> {
+    let Some(config) = project::config_dir() else {
+        return Err("no user config directory — there are no session logs to read".into());
+    };
+    let Ok(_running) = state.dreaming.try_lock() else {
+        return Err("a dream or a capture is already running".into());
+    };
+
+    let kind: ProviderKind = provider.parse()?;
+    let thinking = match thinking {
+        Some(s) => s.parse::<Thinking>()?,
+        None => Thinking::Default,
+    };
+    let (provider, model) =
+        nightloom_service::connect(kind, model, credentials::provider_key(kind), base_url, None)
+            .map_err(|e| e.to_string())?;
+    let mut chat = Chat::new(provider, model);
+    chat.thinking = thinking;
+    chat.context_limit = nightloom_service::context_limit(kind, &chat.model);
+    chat.price = nightloom_service::price(kind, &chat.model);
+
+    // The same token the dream swaps in: the two never run at once (the
+    // mutex above), so one Stop reaches whichever is running.
+    let cancel = CancellationToken::new();
+    *state.dream_cancel.lock().unwrap() = cancel.clone();
+    let emitter = app.clone();
+    let mut on_event = move |event: TurnEvent| {
+        let _ = emitter.emit("capture-event", &event);
+    };
+    let outcome =
+        nightloom_service::capture::run(&mut chat, &config, false, &cancel, &mut on_event)
+            .await?
+            .ok_or_else(|| "nothing left to capture".to_string())?;
+    Ok(CaptureReport {
+        observations: outcome.observations,
+        logs_read: outcome.logs_read,
+        skipped: outcome.skipped,
+        deferred: outcome.deferred,
+        remaining: outcome.remaining,
+        per_project: outcome
+            .per_project
+            .iter()
+            .map(|(project, observations)| CapturedReport {
+                project: project.clone(),
+                observations: *observations,
+            })
+            .collect(),
+        interrupted: outcome.interrupted,
+        cost_usd: outcome.cost_usd,
+    })
+}
+
+/// Interrupt the in-flight capture, if any. The same token as the dream's
+/// (they never overlap); a command of its own so the frontend's name says
+/// what it stops.
+#[tauri::command]
+fn cancel_capture(state: State<'_, AppState>) {
     state.dream_cancel.lock().unwrap().cancel();
 }
 
@@ -2247,8 +2876,9 @@ fn build_window(app: &tauri::App) -> tauri::Result<()> {
 /// and ⌘V from the menu, so an app that replaces the default menu without it
 /// silently breaks copy and paste in every text box it has.
 ///
-/// The four custom items are *forwarded to the webview* rather than performed
-/// here (see [`mac_menu_event`]). Each one is a frontend flow — a modal, a
+/// The custom items (the original four, and the redesign's eight since
+/// 2026-09-13) are *forwarded to the webview* rather than performed here (see
+/// [`mac_menu_event`]). Each one is a frontend flow — a modal, a
 /// file dialog, a re-connect — and the backend has no way to run half of one.
 #[cfg(target_os = "macos")]
 fn mac_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
@@ -2273,6 +2903,40 @@ fn mac_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
         .accelerator("CmdOrCtrl+O")
         .build(app)?;
     let import = MenuItemBuilder::with_id("import_claude", "Import from claude.ai…").build(app)?;
+
+    // The chat-surface redesign's set (nightshift blocker 035, 2026-09-13):
+    // the popover, the two palettes, the engine toggle, and one key per core
+    // model. Forwarded like the four above; `runMenuCommand` acts on each.
+    // ⌘⇧S is free in this app — there is no Save As.
+    // Context left the popover for its own button under the top bar's
+    // gauge (review round 1, 2026-09-13), with ⌘⇧C to open it from anywhere.
+    let model = MenuItemBuilder::with_id("model", "Model && Tasks")
+        .accelerator("CmdOrCtrl+M")
+        .build(app)?;
+    let context = MenuItemBuilder::with_id("context", "Context")
+        .accelerator("CmdOrCtrl+Shift+C")
+        .build(app)?;
+    let commands = MenuItemBuilder::with_id("commands", "Command Palette…")
+        .accelerator("CmdOrCtrl+K")
+        .build(app)?;
+    let projects = MenuItemBuilder::with_id("projects", "Switch Project…")
+        .accelerator("CmdOrCtrl+P")
+        .build(app)?;
+    let engine = MenuItemBuilder::with_id("engine", "Switch Engine (Provider ⇄ Claude Code)")
+        .accelerator("CmdOrCtrl+E")
+        .build(app)?;
+    let sonnet = MenuItemBuilder::with_id("model_sonnet", "Sonnet (Claude Code)")
+        .accelerator("CmdOrCtrl+Shift+S")
+        .build(app)?;
+    let opus = MenuItemBuilder::with_id("model_opus", "Opus (Claude Code)")
+        .accelerator("CmdOrCtrl+Shift+O")
+        .build(app)?;
+    let fable = MenuItemBuilder::with_id("model_fable", "Fable (Claude Code)")
+        .accelerator("CmdOrCtrl+Shift+F")
+        .build(app)?;
+    let haiku = MenuItemBuilder::with_id("model_haiku", "Haiku (Claude Code)")
+        .accelerator("CmdOrCtrl+Shift+H")
+        .build(app)?;
 
     let app_menu = SubmenuBuilder::new(app, pkg.name.clone())
         .about(Some(about))
@@ -2307,7 +2971,27 @@ fn mac_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
         .select_all()
         .build()?;
 
-    let view = SubmenuBuilder::new(app, "View").fullscreen().build()?;
+    let view = SubmenuBuilder::new(app, "View")
+        .item(&model)
+        .item(&context)
+        .item(&commands)
+        .item(&projects)
+        .separator()
+        .item(&engine)
+        .separator()
+        .fullscreen()
+        .build()?;
+
+    // One key per core model, switching the picker in place from any screen.
+    // The letters are the Claude Code engine's aliases (2026-09-14); on the
+    // API engine the picker's models are ⌘⇧1…9, bound in App.svelte since the
+    // list is dynamic, and these four items decline with a toast saying so.
+    let model_menu = SubmenuBuilder::new(app, "Model")
+        .item(&sonnet)
+        .item(&opus)
+        .item(&fable)
+        .item(&haiku)
+        .build()?;
 
     let window = SubmenuBuilder::new(app, "Window")
         .minimize()
@@ -2317,7 +3001,7 @@ fn mac_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
         .build()?;
 
     MenuBuilder::new(app)
-        .items(&[&app_menu, &file, &edit, &view, &window])
+        .items(&[&app_menu, &file, &edit, &view, &model_menu, &window])
         .build()
 }
 
@@ -2332,6 +3016,23 @@ fn mac_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
 }
 
 fn main() {
+    // `nightloom-desktop --mcp-serve [--project <id>]`: this binary as an
+    // MCP server on stdio, for the Claude Code engine. The app's `connect_agent`
+    // hands `claude -p` a `--mcp-config` naming `current_exe()` with these
+    // arguments, because this is the one binary the app can always find —
+    // the CLI is not on PATH on most machines that have the app. Handled
+    // before Tauri builds anything: a server that opened a window, or that
+    // Tauri parsed the flag of, would be neither. The server runs on a
+    // runtime of its own and returns at EOF, which is how the CLI ends it.
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    if argv.first().map(String::as_str) == Some("--mcp-serve") {
+        if let Err(e) = nightloom_service::mcp_server::run_blocking(&argv[1..]) {
+            eprintln!("nightloom-desktop --mcp-serve: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
 
@@ -2386,7 +3087,12 @@ fn main() {
                 mcp: tokio::sync::Mutex::new(None),
                 dreaming: tokio::sync::Mutex::new(()),
                 dream_cancel: Arc::new(std::sync::Mutex::new(CancellationToken::new())),
+                prompt: tokio::sync::Mutex::new(PromptBuilt::default()),
             });
+            // The Nightshift file watches, beside `AppState` rather than in it.
+            app.manage(nightshift::Watches::default());
+            app.manage(nightshift::PendingLaunches::default());
+            app.manage(nightshift::Interviews::default());
             // Last, and that ordering is load-bearing rather than tidiness:
             // the webview starts loading the moment the window exists and its
             // first paint calls straight into `providers` and `list_sessions`,
@@ -2402,6 +3108,7 @@ fn main() {
             search_backends,
             set_search_key,
             list_models,
+            context_limits,
             connect,
             connect_agent,
             list_sessions,
@@ -2417,6 +3124,8 @@ fn main() {
             rewind,
             context_view,
             edit_context,
+            prompt_layers,
+            set_prompt_layers,
             delete_session,
             approve_call,
             pick_folder,
@@ -2433,13 +3142,62 @@ fn main() {
             read_note,
             save_note,
             delete_note,
+            list_proposals,
+            read_proposal,
+            dismiss_proposal,
+            mark_applied,
             knowledge_info,
+            model_instructions_dir,
             set_knowledge_dir,
             knowledge_graph,
             dream_status,
             dream,
             cancel_dream,
+            capture_status,
+            capture,
+            cancel_capture,
             reveal,
+            nightshift::nightshift_projects,
+            nightshift::nightshift_project,
+            nightshift::nightshift_enable,
+            nightshift::nightshift_disable,
+            nightshift::nightshift_default_runner,
+            nightshift::nightshift_items,
+            nightshift::nightshift_item,
+            nightshift::nightshift_set_order,
+            nightshift::nightshift_blockers,
+            nightshift::nightshift_answer_blocker,
+            nightshift::nightshift_shifts,
+            nightshift::nightshift_shift,
+            nightshift::nightshift_shift_log,
+            nightshift::nightshift_synth_plan,
+            nightshift::nightshift_write_plan,
+            nightshift::nightshift_launch,
+            nightshift::nightshift_schedule_launch,
+            nightshift::nightshift_cancel_launch,
+            nightshift::nightshift_pending_launch,
+            nightshift::nightshift_usage,
+            nightshift::nightshift_interview_start,
+            nightshift::nightshift_interview_send,
+            nightshift::nightshift_interview_state,
+            nightshift::nightshift_interview_cancel,
+            nightshift::nightshift_interview_write,
+            nightshift::nightshift_mornings,
+            nightshift::nightshift_morning,
+            nightshift::nightshift_notes,
+            nightshift::nightshift_read_file,
+            nightshift::nightshift_stream,
+            nightshift::nightshift_schedule,
+            nightshift::nightshift_set_schedule,
+            nightshift::nightshift_diff,
+            nightshift::nightshift_shift_diff,
+            nightshift::nightshift_new_item,
+            nightshift::nightshift_write_item,
+            nightshift::nightshift_delete_item,
+            nightshift::nightshift_revert_preview,
+            nightshift::nightshift_revert,
+            nightshift::nightshift_watch,
+            nightshift::nightshift_unwatch,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Nightloom");

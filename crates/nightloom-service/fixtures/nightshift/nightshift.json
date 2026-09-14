@@ -1,0 +1,8 @@
+{
+  "version": 2,
+  "kind": "research",
+  "name": "Value generalization",
+  "workspace": ".",
+  "allowed_tools": [],
+  "max_passes": 3
+}

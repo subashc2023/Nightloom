@@ -49,7 +49,8 @@ export interface ConnectArgs {
  * A separate shape from `ConnectArgs` rather than a provider value on it,
  * because almost none of that call's fields mean anything here — Claude Code
  * assembles its own prompt and runs its own loop, so a base URL, a thinking
- * mode, a preamble and a sidecar all have nobody to talk to.
+ * mode and a sidecar all have nobody to talk to. The preamble is the one
+ * layer that crosses: it goes in `--append-system-prompt` ahead of `system`.
  */
 export interface AgentConnectArgs {
   /** The CLI to run. Defaults to `claude` on PATH. */
@@ -59,9 +60,11 @@ export interface AgentConnectArgs {
   workspace?: string;
   tools: boolean;
   /**
-   * Maps to the CLI's permission mode: on means `dontAsk`, off means
-   * `bypassPermissions`. Nightloom's own approval prompt does not run on this
-   * engine — the gate belongs to whoever owns the loop, and that is not us.
+   * Maps to the CLI's permission mode: on means `auto` (its classifier
+   * decides, and denies what it cannot approve rather than waiting), off
+   * means `bypassPermissions`. Nightloom's own approval prompt does not run
+   * on this engine — the gate belongs to whoever owns the loop, and that is
+   * not us.
    */
   approval: boolean;
   /**
@@ -72,8 +75,13 @@ export interface AgentConnectArgs {
   safeMode: boolean;
   /** Stop the turn if the CLI's own cost estimate passes this. */
   budget?: number;
-  /** Appended to Claude Code's system prompt. */
+  /** Appended to Claude Code's system prompt, after the preamble. */
   system?: string;
+  /**
+   * Send Nightloom's preamble — the user's AGENTS.md, the walk, the notes
+   * and vault indexes — ahead of `system`. Same default as `connect`: on.
+   */
+  preamble?: boolean;
 }
 
 /** The agent engine as the rail shows it; see the Rust `AgentInfo`. */
@@ -90,7 +98,7 @@ export interface AgentInfo {
   version: string | null;
   /** The API key is withheld, so the turn goes to the plan. */
   subscription: boolean;
-  /** "dontAsk" | "bypassPermissions", or null when tools are off. */
+  /** "auto" | "bypassPermissions", or null when tools are off. */
   permission_mode: string | null;
   safe_mode: boolean;
   /** The agent session this chat continues, when it has one. */
@@ -236,15 +244,71 @@ export interface ProjectInfo {
  * project is open. `knowledge` is the user's own vault — about them, the same
  * one in every project, and available with no project at all.
  */
-export type NoteScope = "project" | "knowledge";
+/**
+ * `project` and `knowledge` are folders of notes; `instructions`
+ * (`<workspace>/AGENTS.md`) and `memory` (`~/.nightloom/AGENTS.md`) each
+ * name one fixed file — the always-loaded half of the two stores, reached
+ * through the same editor. Neither lists, neither deletes.
+ *
+ * `models` is `~/.nightloom/models/`: one file per model id, read whole into
+ * the preamble of a chat on that model and no other. A folder, so it lists
+ * and deletes, but its names are ids rather than titles — see
+ * `modelInstructionFile` in catalog.ts. A missing file reads as empty text,
+ * like the fixed files, so the editor can open on a model that has none yet.
+ */
+export type NoteScope = "project" | "knowledge" | "instructions" | "memory" | "models";
 
 /** What one dream did, flattened for a toast. `git` arrives as a finished
- *  sentence — the frontend has nothing to add to it. */
+ *  sentence — one clause per folder the pass touched — because the frontend
+ *  has nothing to add to it. `filed` is the split by target in the order the
+ *  turns ran, projects first and the vault last. */
 export interface DreamReport {
   consolidated: number;
+  filed: { project: string | null; consolidated: number; proposed: boolean }[];
   remaining: number;
   interrupted: boolean;
   git: string;
+  /** "proposed a change to Lanternfish's instructions …" — the backend's
+   *  own clause, null when no turn proposed. */
+  proposed: string | null;
+  cost_usd: number | null;
+}
+
+/** The two scopes the dream may propose a change to: the fixed files. */
+export type ProposalScope = "instructions" | "memory";
+
+/** A proposed replacement for an always-loaded file, written by the dream
+ *  beside the store and never applied by it: the user loads it into the
+ *  editor as a draft and saves, or dismisses it. */
+export interface Proposal {
+  v: number;
+  at: string;
+  target: { kind: "project"; id: string; name: string } | { kind: "user" };
+  /** One paragraph: what changed and which observations asked for it. */
+  why: string;
+  /** The full replacement text. */
+  text: string;
+  from_dream: boolean;
+}
+
+/** A pending proposal as the backend lists it: the handle every other call
+ *  takes, and the content. */
+export interface ProposalEntry {
+  id: string;
+  proposal: Proposal;
+}
+
+/** What one capture pass did, flattened for a toast. `per_project` is the
+ *  split by source in the order the session dirs were walked, "unfiled" for
+ *  the chats with no project. */
+export interface CaptureReport {
+  observations: number;
+  logs_read: number;
+  skipped: number;
+  deferred: number;
+  remaining: number;
+  per_project: { project: string; observations: number }[];
+  interrupted: boolean;
   cost_usd: number | null;
 }
 
@@ -486,6 +550,12 @@ export type SessionEvent =
   // where the conversation is kept rather than a turn in it, so the
   // transcript skips it; latest wins, like a title.
   | { event: "agent_session"; agent: string; id: string; at: string }
+  // Which system-prompt layers this chat has switched off, as `SegmentKind`
+  // names (`project_instructions`, `project_notes`, …). Latest wins, like a
+  // title; absent or empty means all on. Not a turn: the backend reads it at
+  // connect time and assembles the prompt without those layers, and the
+  // transcript skips it. See `promptLayersOff` in state.svelte.ts.
+  | { event: "prompt_layers"; off: PromptLayer[]; at: string }
   // Content markers, not deletions: the listed events keep their place in the
   // conversation and project a stand-in instead of their payload. The log
   // still holds the content, so the transcript renders these turns in full and
@@ -593,6 +663,9 @@ export interface WireSegment {
   name: string;
   preview: string;
   truncated: boolean;
+  /** The whole segment — the system prompt is the item a reader came to
+   *  read, unlike a tool result, which carries a preview only. */
+  text: string;
   size: Size;
   /** Where the cached prefix is claimed to end. */
   cache_anchor: boolean;
@@ -601,10 +674,38 @@ export interface WireSegment {
 /** The request the backend would send right now, itemized. */
 export interface WireView {
   system: WireSegment[];
+  /** The system prompt as one string, rendered by the backend with the same
+   *  join the adapters use — "as sent", not a re-join done here. Null when
+   *  there is no system prompt. */
+  system_text: string | null;
   messages: WireMessage[];
   /** Over system and messages both — the figure to compare to the limit. */
   totals: ContextTotals;
   context_limit: number | null;
+}
+
+/**
+ * A system-prompt layer a chat can switch off, by the backend's
+ * `SegmentKind` name. `custom` is a kind but not a layer: the library prompt
+ * has its own dropdown. `engine_note` exists on the Claude Code engine only.
+ */
+export type PromptLayer =
+  | "identity"
+  | "environment"
+  | "user_memory"
+  | "model_instructions"
+  | "project_instructions"
+  | "project_notes"
+  | "knowledge"
+  | "engine_note";
+
+/**
+ * The open chat's switched-off layers beside the set the live engine was
+ * built with; the two differ exactly when a reconnect is due.
+ */
+export interface PromptLayersInfo {
+  off: PromptLayer[];
+  built: PromptLayer[];
 }
 
 /** What `editContext` changed: both projections, plus how many items moved. */
@@ -631,4 +732,359 @@ export type ImportSummary = {
   unreadable: number;
   summary: string;
   warnings: string[];
+  /** Projects whose claude.ai memory was too long for AGENTS.md, with the size. */
+  needs_condensing: [string, number][];
 };
+
+// ---- Nightshift ----
+//
+// Mirrors of the serde shapes in `crates/nightloom-service/src/nightshift/`
+// and the `#[tauri::command]` return types in `apps/desktop/src-tauri/src/
+// nightshift.rs`. See SHIFT-CONTRACT.md in the nightshift repo for what each
+// file means; the section references below point at it.
+
+/** A registered project as the Nightshift list shows it. */
+export interface NightshiftRow {
+  id: string;
+  name: string;
+  /** The Nightloom workspace, or null for a project about no folder. */
+  workspace: string | null;
+  exists: boolean;
+  nightshift: NightshiftInfo | null;
+  /** The folder holding a `nightshift.json.disabled` — a root Disable turned
+   *  off, which Enable restores rather than scaffolds (item 037). */
+  disabled: string | null;
+}
+
+/** What detection found for a project, plus the counts a row needs. */
+export interface NightshiftInfo {
+  contract_root: string;
+  nested: boolean;
+  config: Config;
+  config_error: string | null;
+  /** `state/run.lock`, when present. */
+  lock: Lock | null;
+  /** A shift is running, or the platform cannot say it is not. */
+  live: boolean;
+  /** Where the runner is looked for: `runner` from `nightshift.json`, else
+   *  the contract root itself (§3, blocker 024). */
+  runner: string;
+  /** `bin/nightshift.sh` exists under `runner`. */
+  runner_present: boolean;
+  git: boolean;
+  /** Files the runner's `git add -A` would sweep into a `WIP:` commit at
+   *  launch; `null` when the root is not a repo or git cannot say. */
+  dirty: number | null;
+  items: number;
+  open_blockers: number;
+  newest_morning: string | null;
+  latest_shift: string | null;
+}
+
+/** `nightshift.json` — see SHIFT-CONTRACT.md §3, amended by §12.2. */
+export interface Config {
+  version: number;
+  /** `research` or `build`; the default for items and shifts (§13.1). */
+  kind: string;
+  name: string;
+  /** Where build units edit code, relative to the contract root. `"."`
+   *  means none (§12.1). */
+  workspace: string;
+  /** The permission allowlist a unit runs under (§12.2). */
+  allowed_tools: string[];
+  /** Passes an item gets before the shift moves on (§12.3). */
+  max_passes: number;
+  /** The directory holding `bin/nightshift.sh` — the one runner install
+   *  (§3, blocker 024). Absent means this root's own `bin/`. */
+  runner?: string;
+}
+
+/** `state/run.lock`, and whether that pid is still running (§10). */
+export interface Lock {
+  /** The pid in the file, or null when the file exists but holds none. */
+  pid: number | null;
+  /** true running, false dead (a stale lock), null when this platform
+   *  cannot say. */
+  alive: boolean | null;
+}
+
+/** One `## ` section of an item or blocker body. */
+export interface Section {
+  /** The heading text after `## `, verbatim. */
+  title: string;
+  /** The lines under it up to the next `## `, trimmed. */
+  text: string;
+}
+
+/** A backlog item — `backlog/<id>-<slug>.md` (§4). */
+export interface Item {
+  id: string;
+  /** `backlog/<file>`. */
+  file: string;
+  path: string;
+  title: string;
+  /** Resolved: the item's own `kind`, else the project's. */
+  kind: string;
+  /** `todo | in-progress | done | killed | deferred`; empty when unset. */
+  status: string;
+  created: string;
+  /** `interview | manual | migrated | followup:<blocker>`. */
+  source: string;
+  /** Resolved: the item's own `max_passes`, else the project's. */
+  max_passes: number;
+  /** `model:` when the item names one (§12.4). */
+  model: string | null;
+  /** Every frontmatter field, last value wins. */
+  fields: Record<string, string>;
+  /** Body text before the first `## ` heading. */
+  preface: string;
+  sections: Section[];
+  /** The bullet lines under `## Progress`, one per pass the runner recorded. */
+  progress: string[];
+  /** Where this item sits in `order.json`, or null when unlisted. */
+  order: number | null;
+}
+
+export interface ItemList {
+  items: Item[];
+  order: string[];
+  /** Files that did not read, by message. Shown, not dropped. */
+  errors: string[];
+}
+
+/** A blocker — `blockers/<id>-<slug>.md` (§5). */
+export interface Blocker {
+  id: string;
+  file: string;
+  path: string;
+  /** `open | answered | withdrawn | applied`. */
+  status: string;
+  raised: string;
+  /** The shift that raised it; empty for one raised by a human, or
+   *  migrated from before the contract. */
+  shift: string;
+  item: string;
+  /** The follow-up item the runner created from the answer (§13.6). */
+  follow_up: string | null;
+  question: string;
+  /** `## What I would have done, and why`. */
+  guess: string;
+  /** `## What it blocks`. */
+  blocks: string;
+  answer: string;
+  /** `## Where the guess lives` — build blockers name the path(s) (§13.3). */
+  where_guess_lives: string;
+  fields: Record<string, string>;
+  sections: Section[];
+}
+
+export interface BlockerList {
+  blockers: Blocker[];
+  errors: string[];
+}
+
+/** One entry of a plan's item list. */
+export interface PlanItem {
+  id: string;
+  selected: boolean;
+}
+
+/** `shifts/<id>/plan.json` (§6). `until`, `max_units` and `budget_usd` are
+ *  null when the plan does not bound that axis. */
+export interface Plan {
+  shift_id: string;
+  created: string;
+  /** `manual` or `schedule:<schedule-id>`. */
+  source: string;
+  /** `research | build` (§13.1); absent in plans written before round 5. */
+  kind: string | null;
+  items: PlanItem[];
+  until: string | null;
+  max_units: number | null;
+  budget_usd: number | null;
+}
+
+/** One `units[]` entry of `status.json`. */
+export interface UnitStatus {
+  n: number;
+  item_id: string | null;
+  pass: number | null;
+  started: string | null;
+  ended: string | null;
+  /** `done | partial | failed | wip`, null while running (§13.2). */
+  outcome: string | null;
+  commit: string | null;
+  cost_usd: number | null;
+  turns: number | null;
+  continuation_commit: string | null;
+  /** The pass ended in a landing pass (§13.5). */
+  landing: boolean;
+}
+
+/** `status.json` (§6, amended by §13.5). */
+export interface Status {
+  shift_id: string;
+  pid: number | null;
+  /** `preflight | gate | unit | landing | continuation | checkpoint |
+   *  review | page | sleeping | done | failed`. */
+  phase: string;
+  phase_started: string | null;
+  started: string | null;
+  updated: string | null;
+  head_at_start: string | null;
+  /** Repo-relative path of the plan. */
+  plan: string | null;
+  unit_index: number;
+  item_id: string | null;
+  pass: number | null;
+  units: UnitStatus[];
+  /** The usage snapshot as the runner wrote it; passed through unshaped
+   *  since its keys have moved before. */
+  usage: unknown;
+  next_wake: string | null;
+  /** The morning page, once written. */
+  page: string | null;
+  /** The review note, once written, repo-relative. */
+  review: string | null;
+  /** The exit code once finished; null while running or interrupted. */
+  exit: number | null;
+}
+
+/** What the Runs page lists — one `shifts/<id>/` directory (§6). */
+export interface ShiftSummary {
+  id: string;
+  dir: string;
+  plan: Plan | null;
+  status: Status | null;
+  /** A file that exists but did not parse — shown, not swallowed. */
+  plan_error: string | null;
+  status_error: string | null;
+  /** `exit` is null and the pid is alive. */
+  live: boolean;
+  /** `exit` is null and the pid is dead: the exit trap committed WIP and
+   *  the next shift redoes the pass (§6). */
+  interrupted: boolean;
+  /** `exit` is null and this platform cannot ask about the pid. */
+  unknown: boolean;
+  log_bytes: number;
+}
+
+/** A morning page by name, or the newest when `name` was omitted. */
+export interface MorningPage {
+  name: string;
+  text: string;
+}
+
+/** One file under `mornings/`. */
+export interface Morning {
+  /** The file name, `2026-09-11.md` or `LATEST.md`. */
+  name: string;
+  path: string;
+  size: number;
+  /** RFC 3339, or empty when the OS does not say. */
+  modified: string;
+}
+
+/** One entry of the `notes/` tree. */
+export interface NoteEntry {
+  /** Root-relative with forward slashes, `notes/runner-design/x.md`. */
+  path: string;
+  name: string;
+  is_dir: boolean;
+  size: number;
+  modified: string;
+}
+
+/** One entry of `schedule.json` (§7). */
+export interface Schedule {
+  id: string;
+  enabled: boolean;
+  days: string[];
+  start: string;
+  until: string | null;
+  max_units: number | null;
+  budget_usd: number | null;
+  /** `"global-order"` or a list of ids; kept as `unknown` since the two
+   *  shapes share nothing. */
+  items: unknown;
+}
+
+export interface Schedules {
+  schedules: Schedule[];
+}
+
+/** What a revert would discard, or did discard, of one shift. */
+export interface RevertPreview {
+  /** The commit the shift started from. */
+  target: string;
+  head: string;
+  /** Commits between the two — what would be discarded. */
+  commits: number;
+  /** `git diff <target>..HEAD`: the work a revert throws away. */
+  diff: string;
+  stat: string;
+  /** Uncommitted changes in the tree. A revert refuses while true. */
+  dirty: boolean;
+}
+
+/** A one-off launch the app is holding for a project (the Plan screen's
+ *  Start field: when the usage window resets, or at a time). In memory in
+ *  the backend only; gone with the app. */
+export interface PendingLaunch {
+  /** Unix epoch milliseconds. */
+  fire_at_ms: number;
+  /** The draft's id — re-minted to the launch moment when the timer fires. */
+  shift_id: string;
+  /** Selected items. */
+  items: number;
+}
+
+/** The payload of a `nightshift-launched` window event: a held launch fired. */
+export interface NightshiftLaunched {
+  project_id: string;
+  shift_id: string | null;
+  pid: number | null;
+  error: string | null;
+}
+
+/** `bin/usagectl.py --json` as the runner's gate reads it. Percentages are
+ *  null when the probe has no reading. */
+export interface NightshiftUsage {
+  five_hour: number | null;
+  seven_day: number | null;
+  age_seconds: number | null;
+  stale: boolean;
+  /** ISO 8601 with offset, e.g. `2026-09-12T12:10:00.408607+00:00`. */
+  five_hour_resets_at: string | null;
+  source: string;
+  severity: string | null;
+}
+
+/** The payload of a `nightshift-change` window event. */
+export interface NightshiftChange {
+  project_id: string;
+  /** Root-relative paths that changed, deduplicated. */
+  paths: string[];
+}
+
+/** The intake interview (item 005): the conversation as the backend holds
+ *  it — one per project, in memory. */
+export interface InterviewMessage {
+  role: "user" | "assistant";
+  text: string;
+}
+export interface InterviewView {
+  messages: InterviewMessage[];
+  model: string | null;
+}
+/** A `nightshift-interview` window event. */
+export interface InterviewEvent {
+  project_id: string;
+  kind: "delta" | "done" | "error";
+  text: string;
+}
+export interface InterviewWritten {
+  id: string;
+  title: string;
+  kind: string;
+}

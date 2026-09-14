@@ -9,6 +9,33 @@
     model: string;
     usage: Usage;
     stop_reason: string | null;
+    cost?: number;
+  }
+
+  /** The turn's text segments, for Copy — thinking and tool traffic are not
+   *  what anyone means by "copy the reply". */
+  function textOf(): string {
+    return segs
+      .filter((s) => s.kind === "text")
+      .map((s) => s.text)
+      .join("\n\n");
+  }
+  let copied = $state(false);
+  async function copy(): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(textOf());
+      copied = true;
+      setTimeout(() => (copied = false), 1200);
+    } catch {
+      // The webview refused the clipboard; nothing to show but the button.
+    }
+  }
+  function fmtTokens(u: Usage): string {
+    return `${(u.input_tokens + u.output_tokens).toLocaleString()} tokens`;
+  }
+  function fmtCost(c: number | undefined): string {
+    if (c == null) return "";
+    return c > 0 && c < 0.01 ? ` · $${c.toFixed(4)}` : ` · $${c.toFixed(2)}`;
   }
 
   let {
@@ -40,6 +67,9 @@
 </script>
 
 <div class="assistant">
+  {#if footer}
+    <span class="ns-k">{footer.model}</span>
+  {/if}
   {#each segs as seg, i}
     {#if seg.kind === "thinking"}
       <div>
@@ -83,10 +113,11 @@
   {/each}
   {#if footer && !streaming}
     <div class="footer">
-      {footer.model} · {footer.usage.input_tokens} in / {footer.usage
-        .output_tokens} out tokens{footer.stop_reason
-        ? ` · ${footer.stop_reason}`
-        : ""}
+      <button class="ns-btn ghost small" onclick={() => void copy()}>{copied ? "Copied" : "Copy"}</button>
+      <span
+        class="meta"
+        title="{footer.usage.input_tokens.toLocaleString()} in / {footer.usage.output_tokens.toLocaleString()} out{footer.stop_reason ? ` · ${footer.stop_reason}` : ''}"
+      >{fmtTokens(footer.usage)}{fmtCost(footer.cost)}</span>
     </div>
   {/if}
 </div>
@@ -97,6 +128,17 @@
     flex-direction: column;
     gap: 0.5rem;
     width: 100%;
+    max-width: 640px;
+  }
+  .assistant :global(.markdown) {
+    /* Plex Sans, the interface face, since 2026-09-14: the editorial serif
+       read as academic to him ("looks like Times New Roman almost"), and of
+       the seven faces compared side by side he chose the one the chrome
+       already uses. A per-user choice is nightshift backlog 051. */
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.55;
+    color: var(--ink);
   }
   .pill {
     display: inline-block;
@@ -164,8 +206,8 @@
     margin: 0;
   }
   .denied-tag {
-    color: var(--error);
-    border: 1px solid rgba(246, 109, 124, 0.4);
+    color: var(--failed);
+    border: 1px solid var(--failed);
     border-radius: 999px;
     padding: 0 0.45rem;
     font-size: 0.68rem;
@@ -177,17 +219,23 @@
     word-break: break-word;
   }
   .tool-result.error {
-    color: var(--error);
-    background: rgba(246, 109, 124, 0.06);
-    border-color: rgba(246, 109, 124, 0.3);
+    color: var(--failed);
+    background: var(--failed-soft);
+    border-color: var(--failed);
   }
   .notice {
     color: var(--dim);
     font-size: 0.78rem;
   }
   .footer {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 2px;
+  }
+  .meta {
+    font-family: var(--mono);
+    font-size: 11px;
     color: var(--dim);
-    font-size: 0.72rem;
-    margin-top: 0.1rem;
   }
 </style>

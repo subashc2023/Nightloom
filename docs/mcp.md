@@ -116,3 +116,52 @@ A server that fails to start costs one line and takes nothing else down:
 `connect_all` returns a `ServerReport` per server. Failing a whole connection
 because one of five servers is misconfigured would make MCP too brittle to leave
 switched on.
+
+## The server — `nightloom_service::mcp_server`
+
+The mirror image, and it lives in the service crate rather than here because
+what it serves is the service's tools: `search_chats`, `read_chat`, `remember`
+and `fetch_page` (the API engine's `web_fetch` under a name that says what it
+is for). It exists for the Claude Code engine, which owns its own loop and tool
+set and so cannot be handed a `Vec<Box<dyn Tool>>` the way `Chat` is; passed to
+`claude -p` as `--mcp-config`, the four reach the model there as
+`mcp__nightloom__search_chats` and so on. The server is a subcommand of both
+binaries — `nightloom mcp-serve [--project <id>]` and `nightloom-desktop
+--mcp-serve [--project <id>]` — so the desktop can name `current_exe()` in the
+config it hands over and never has to find a CLI that is usually not on PATH.
+
+The wire is the one the client above speaks: newline-delimited JSON-RPC 2.0 on
+stdio, `initialize` (capabilities `tools`, an `instructions` string saying which
+tool to reach for), `tools/list` (each `ToolDef` as `name` / `description` /
+`inputSchema`), `tools/call`, `ping`. The client's message types are not reused
+because it has none — it works in `serde_json::Value`s, and so does this. Each
+request is answered on its own task with one writer under a mutex, so a
+`fetch_page` on a slow origin does not stall a `search_chats` beside it.
+
+Two distinctions the client draws from its side are kept on this one. A tool
+that **ran and failed** comes back as a result with `isError: true` and the
+tool's message as its text, which the model reads and reacts to; a JSON-RPC
+error is for a request the server could not serve at all — an unknown tool is
+invalid params (`-32602`), an unknown method is method-not-found (`-32601`).
+And a line that is not JSON costs a line on stderr, never the session, the same
+rule the client's reader applies to a server.
+
+`--project <id>` names the open project: its session directory is the default
+search scope and its name is what `remember` stamps as `source`; without it,
+the unfiled chats and no source. An id the registry does not know is an error
+at startup rather than a fall-through — a server quietly searching the wrong
+chats is the failure nobody would notice. The `ChatDirs` is built as the
+desktop's `connect` builds it, every project's sessions plus the unfiled ones,
+from the config dir the registry lives under (`capture::session_dirs`).
+
+**There is no approval layer.** On the API engine each of these calls goes
+through `approval`; here the CLI's own permission system judges an
+`mcp__nightloom__*` call like any other, and a gate of ours in front of theirs
+would prompt twice — or, headless, deny once. A standing grant goes in
+`~/.claude/settings.json`, under `permissions.allow`, as `"mcp__nightloom__*"`
+(the way `mcp__openalex__*` already is on this machine), or per tool. Of the
+four, `search_chats` and `read_chat` are read-only: the user's own logs, on
+this machine, and nothing changes. `remember` appends one line to the memory
+inbox — `Effect::Session` on the API engine, and the argument in `remember.rs`
+for why that write needs no gate holds here too. `fetch_page` leaves the
+machine and is the one to think about before allowlisting.

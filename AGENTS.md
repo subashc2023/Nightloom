@@ -18,7 +18,11 @@ over it.
 
 ```sh
 cargo build                      # build workspace
-cargo test                       # all tests (538 at last count)
+cargo test                       # all tests (592 at last count)
+#   macOS: `credentials::tests::a_missing_store_reads_as_no_key_rather_than_a_panic`
+#   reads the login keychain from the UNSIGNED test binary, so it raises a keychain
+#   prompt that hangs the run until someone answers it. Unattended (a subagent, a
+#   night), run `cargo test -- --skip a_missing_store_reads_as_no_key` instead.
 cargo test -p nightloom-core     # one crate
 cargo clippy --workspace         # must be clean
 cargo fmt
@@ -31,6 +35,8 @@ cargo run -p nightloom-cli -- eval              # agentic task suite
 
 npm install --prefix apps/desktop        # once
 cargo tauri dev                          # desktop, from the repo root
+#   (macOS: .cargo/config.toml routes the run through scripts/macos-sign-and-run.sh,
+#    which signs the binary so keychain "Always Allow" survives rebuilds — docs/desktop.md)
 npm run check --prefix apps/desktop      # svelte-check
 ```
 

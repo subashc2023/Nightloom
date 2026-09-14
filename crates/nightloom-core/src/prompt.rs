@@ -42,8 +42,39 @@ pub enum SegmentKind {
     Knowledge,
     /// User-level standing preferences, from the config dir.
     UserMemory,
+    /// Standing instructions for the one model this chat runs on, from the
+    /// config dir's `models/` folder. Separate from
+    /// [`SegmentKind::UserMemory`] because that layer is read by every
+    /// model and this one is not: it exists for the preference that is
+    /// about *how one model talks*, which does not belong in a file every
+    /// other model also reads.
+    ModelInstructions,
+    /// The short gloss the Claude Code bridge appends after the layers above,
+    /// saying how their names (`read_file`, `@kb/`) read on an engine that
+    /// has its own tools. Its own kind rather than a [`SegmentKind::Custom`]
+    /// segment named "engine-note", because a shell that lets a chat switch
+    /// layers off addresses them by kind, and the note is a layer a user may
+    /// reasonably drop — the library prompt, which *is* `Custom`, is not.
+    EngineNote,
     /// Anything a shell supplies directly (`--system`, the desktop textarea).
     Custom,
+}
+
+impl SegmentKind {
+    /// Every kind a chat may switch off, in ladder order — the set a shell
+    /// offers as switches. Excludes [`SegmentKind::Custom`]: the shell's own
+    /// text is chosen by the shell's own control (a dropdown, a flag), not by
+    /// a layer switch, and offering it twice would leave the two disagreeing.
+    pub const LAYERS: [SegmentKind; 8] = [
+        SegmentKind::Identity,
+        SegmentKind::Environment,
+        SegmentKind::UserMemory,
+        SegmentKind::ModelInstructions,
+        SegmentKind::ProjectInstructions,
+        SegmentKind::ProjectNotes,
+        SegmentKind::Knowledge,
+        SegmentKind::EngineNote,
+    ];
 }
 
 /// One addressable piece of the system prompt.
