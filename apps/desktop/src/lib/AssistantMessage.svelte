@@ -131,7 +131,11 @@
     max-width: 640px;
   }
   .assistant :global(.markdown) {
-    font-family: var(--serif);
+    /* Plex Sans, the interface face, since 2026-09-14: the editorial serif
+       read as academic to him ("looks like Times New Roman almost"), and of
+       the seven faces compared side by side he chose the one the chrome
+       already uses. A per-user choice is nightshift backlog 051. */
+    font-family: var(--sans);
     font-size: 16px;
     line-height: 1.55;
     color: var(--ink);
