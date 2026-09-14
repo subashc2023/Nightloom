@@ -2159,14 +2159,26 @@ async fn dream_status() -> Result<usize, String> {
 }
 
 /// What one dream did, flattened for the UI. `git` is a finished sentence
-/// rather than an enum, because the frontend has nothing to add to it.
+/// rather than an enum, because the frontend has nothing to add to it; with
+/// the project layer it is one clause per folder the pass touched, joined.
+/// `filed` is the split by target in the order the turns ran, projects
+/// first and the vault last, for the toast's "N into Lanternfish, M into
+/// the vault".
 #[derive(Serialize)]
 struct DreamReport {
     consolidated: usize,
+    filed: Vec<FiledReport>,
     remaining: usize,
     interrupted: bool,
     git: String,
     cost_usd: Option<f64>,
+}
+
+/// One target's count. `project` is `None` for the vault.
+#[derive(Serialize)]
+struct FiledReport {
+    project: Option<String>,
+    consolidated: usize,
 }
 
 /// Run one consolidation pass over the observation log.
@@ -2212,7 +2224,8 @@ async fn dream(
     chat.thinking = thinking;
     chat.context_limit = nightloom_service::context_limit(kind, &chat.model);
     chat.price = nightloom_service::price(kind, &chat.model);
-    nightloom_service::dream::prepare(&mut chat, &vault);
+    // The pass prepares the chat itself, once per target (the vault, each
+    // project's memory folder), so there is no `prepare` here any more.
 
     let cancel = CancellationToken::new();
     *state.dream_cancel.lock().unwrap() = cancel.clone();
@@ -2220,24 +2233,45 @@ async fn dream(
     let mut on_event = move |event: TurnEvent| {
         let _ = emitter.emit("dream-event", &event);
     };
-    let outcome = nightloom_service::dream::run(&chat, &vault, &config, &cancel, &mut on_event)
+    let outcome = nightloom_service::dream::run(&mut chat, &vault, &config, &cancel, &mut on_event)
         .await?
         // Checked non-empty by the UI before offering the button; a race
-        // with a CLI dream is the only way here, and "nothing left" is its
-        // honest report.
+        // with a CLI dream is the only way here, and "nothing left" is
+        // its honest report.
         .ok_or_else(|| "nothing left to consolidate".to_string())?;
     Ok(DreamReport {
         consolidated: outcome.consolidated,
+        filed: outcome
+            .filed
+            .iter()
+            .map(|f| FiledReport {
+                project: f.project.clone(),
+                consolidated: f.consolidated,
+            })
+            .collect(),
         remaining: outcome.remaining,
         interrupted: outcome.interrupted,
-        git: dream_git_line(&outcome.git_before, &outcome.git_after),
+        git: outcome
+            .filed
+            .iter()
+            .map(|f| {
+                let what = match &f.project {
+                    Some(name) => format!("{name}'s .agents"),
+                    None => "vault".to_string(),
+                };
+                dream_git_line(&what, &f.git_before, &f.git_after)
+            })
+            .collect::<Vec<_>>()
+            .join("; "),
         cost_usd: outcome.cost_usd,
     })
 }
 
-/// One sentence about rollback — the CLI's `print_git`, phrased for a toast.
-/// Both snapshots ran on the same folder, so `after` carries the story.
+/// One clause about rollback for one folder — the CLI's `print_git`,
+/// phrased for a toast. `what` names the folder (the vault, or a project's
+/// `.agents`); both snapshots ran on it, so `after` carries the story.
 fn dream_git_line(
+    what: &str,
     before: &nightloom_service::dream::GitNote,
     after: &nightloom_service::dream::GitNote,
 ) -> String {
@@ -2245,7 +2279,7 @@ fn dream_git_line(
     if let GitNote::Failed(e) = before
         && !matches!(after, GitNote::Failed(_))
     {
-        return format!("pre-dream git snapshot failed: {e}");
+        return format!("pre-dream git snapshot of {what} failed: {e}");
     }
     // What the pre-dream snapshot committed was the user's own uncommitted
     // work — necessary, so that reverting the dream does not take an edit of
@@ -2253,19 +2287,20 @@ fn dream_git_line(
     // `git log`.
     let swept = match before {
         GitNote::Committed { paths, .. } if *paths > 0 => format!(
-            "; {paths} uncommitted vault file{} committed first, so this pass reverts on its own",
+            ", {paths} uncommitted {what} file{} committed first so this pass reverts on its own",
             if *paths == 1 { " was" } else { "s were" }
         ),
         _ => String::new(),
     };
     match after {
+        GitNote::Untouched => format!("{what} untouched"),
         GitNote::NotARepo => {
-            "the vault is not a git repository, so there is no rollback for this pass".into()
+            format!("{what} is not in a git repository, so there is no rollback for it")
         }
-        GitNote::Committed { hash, .. } if hash.is_empty() => format!("vault committed{swept}"),
-        GitNote::Committed { hash, .. } => format!("vault committed ({hash}){swept}"),
-        GitNote::Clean => "vault unchanged".into(),
-        GitNote::Failed(e) => format!("git snapshot failed: {e}"),
+        GitNote::Committed { hash, .. } if hash.is_empty() => format!("{what} committed{swept}"),
+        GitNote::Committed { hash, .. } => format!("{what} committed ({hash}){swept}"),
+        GitNote::Clean => format!("{what} unchanged"),
+        GitNote::Failed(e) => format!("git snapshot of {what} failed: {e}"),
     }
 }
 

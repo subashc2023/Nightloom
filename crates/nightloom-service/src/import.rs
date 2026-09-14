@@ -98,7 +98,7 @@ use serde::{Deserialize, Deserializer};
 
 use nightloom_core::{ContentBlock, Session, SessionEvent, Usage};
 
-use crate::project::{AGENTS_DIR, Registry, read_note, write_note};
+use crate::project::{AGENTS_DIR, MEMORY_DIR, Registry, read_note, write_note};
 use crate::tools::Root;
 
 /// Bytes of one flattened tool *result* kept in the transcript.
@@ -135,8 +135,9 @@ pub const MEMORY_INLINE_LIMIT: usize = 4000;
 /// The heading a project's memory is appended under in `AGENTS.md`, and what
 /// a second run looks for to know it has already been appended.
 const MEMORY_HEADING: &str = "## Memory (imported from claude.ai";
-/// Where a project's memory files land, under the docspace.
-const MEMORY_DIR: &str = "memory";
+// Where a project's memory files land, under the docspace, is
+// `project::MEMORY_DIR` — the folder the dream also files into, so the two
+// writers cannot drift apart.
 /// The full project memory, kept on demand beside the other memory files.
 const MEMORY_SUMMARY: &str = "summary.md";
 

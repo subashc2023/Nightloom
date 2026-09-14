@@ -106,7 +106,12 @@ opens the app.
 `--dry-run` to print the pending batch and spend nothing): connect a provider,
 wire Ctrl-C, render through `chat::render`, report. Everything that decides what
 a dream may touch lives in `service::dream`, where the enforcement sits next to
-the decision.
+the decision — including, since 2026-09-14, the split of the batch by project:
+observations recorded in a registered project go to
+`<workspace>/.agents/memory/`, the rest to the vault, one turn each. The report
+line reads *consolidated 5 observations — 3 into Lanternfish, 2 into the vault*,
+followed by one rollback line per folder (a workspace is committed only if it is
+a repository, and only its `.agents/`).
 
 A startup line names the pending observation count when there is one — the nudge
 that makes dreaming periodic without making it automatic, since an unattended

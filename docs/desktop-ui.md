@@ -353,6 +353,18 @@ and open `NoteView`; Save and the back button bring it back (`closeNote` reads
 `app.noteFrom`; the popover scrolls to its model list, Settings reopens on the
 row), the round trip the prompt library makes for the popover.
 
+**The Dream button (Knowledge bar, `Dream · N`, hidden at zero)** runs the
+consolidation pass over the observation inbox (the mechanics are in
+[service-data.md](service-data.md) under *Scheduling*). Since 2026-09-14 the
+pass files per project — an observation recorded in a registered project lands
+in that project's `.agents/memory/`, the rest in the vault — and the button's
+shape is unchanged; only the toast shows the split: *dream: consolidated 5
+observations — 3 into Lanternfish, 2 into the vault — Lanternfish's .agents
+committed (a1b2c3d); vault unchanged*. `DreamReport.filed` carries the split in
+turn order, projects first and the vault last, and `git` is one clause per
+folder. The Project section's listing picks the new memory notes up on the
+same `refreshNotes` as everything else.
+
 `app.openNote` carries its scope for the same reason — the two stores can each
 hold a `plan.md`, and a bare name would make saving depend on which sidebar tab
 happened to be showing. The load effect is guarded on that pair changing rather

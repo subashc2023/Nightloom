@@ -65,6 +65,13 @@ pub const AGENTS_DIR: &str = ".agents";
 /// The docspace's name *before* it became `.agents` inside the workspace.
 /// Read by [`migrate`] and written by nothing.
 pub const NOTES_DIR: &str = "notes";
+/// The project's memory folder inside the docspace: `<workspace>/.agents/memory`.
+///
+/// Two writers land here and have to agree on the name: the claude.ai
+/// import puts a project's memory files under it, and the dream files the
+/// observations recorded while working in the project into it. The vault
+/// keeps what is true across projects; this keeps what is true of one.
+pub const MEMORY_DIR: &str = "memory";
 /// Subdirectory of a project's store standing in for a workspace when the
 /// project has no folder.
 pub const WORKSPACE_DIR: &str = "workspace";
@@ -151,6 +158,16 @@ impl Project {
         self.workspace_dir().join(AGENTS_DIR)
     }
 
+    /// The project's memory folder: `<workspace>/.agents/memory`.
+    ///
+    /// A folder inside the docspace rather than beside it, so the preamble's
+    /// index and `grep` reach a consolidated note the same way they reach a
+    /// hand-written one, and a repository that carries the docspace carries
+    /// the project's memory with it.
+    pub fn memory_dir(&self) -> PathBuf {
+        self.notes_dir().join(MEMORY_DIR)
+    }
+
     /// Where this project's chats are logged.
     ///
     /// A *sibling* of the workspace and never inside it, for two reasons that
@@ -214,6 +231,13 @@ impl Registry {
                 projects: Vec::new(),
             },
         }
+    }
+
+    /// Load the registry kept under a given config dir — what a job handed
+    /// its config dir explicitly (the dream, a test on a temp dir) calls
+    /// instead of [`Registry::load`], which asks the environment.
+    pub fn load_in(config: &Path) -> Self {
+        Self::load_from(config.join(REGISTRY_FILE))
     }
 
     pub fn load_from(path: impl Into<PathBuf>) -> Self {
@@ -286,6 +310,39 @@ impl Registry {
             .filter(|n| !n.is_empty())
             .unwrap_or_else(|| default_name(&root));
         self.create(name, Some(root), None)
+    }
+
+    /// The project an observation's `source` names, if one is registered.
+    ///
+    /// `remember` stamps an observation with the project's name when a
+    /// project is open and with the workspace's folder name when none is
+    /// (the CLI always sends the folder name — it has no open project). So
+    /// the match is by name first, exact and then case-insensitive, and by
+    /// the workspace's folder name last, so a terminal chat in a registered
+    /// folder files into that project rather than into the vault. First
+    /// match wins in registry order; two projects with one name is a state
+    /// the registry permits and this does not try to disambiguate.
+    pub fn find_by_name(&self, source: &str) -> Option<&Project> {
+        let source = source.trim();
+        if source.is_empty() {
+            return None;
+        }
+        self.projects
+            .iter()
+            .find(|p| p.name == source)
+            .or_else(|| {
+                self.projects
+                    .iter()
+                    .find(|p| p.name.eq_ignore_ascii_case(source))
+            })
+            .or_else(|| {
+                self.projects.iter().find(|p| {
+                    p.workspace
+                        .as_deref()
+                        .and_then(Path::file_name)
+                        .is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(source))
+                })
+            })
     }
 
     /// The project imported from a given source, if one was.

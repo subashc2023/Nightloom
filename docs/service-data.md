@@ -188,6 +188,44 @@ Three properties are the module:
 hands it the unconsolidated batch as read-only evidence, and instructs it to
 file, connect, supersede and abstract.
 
+**Two layers, one pass (2026-09-14, nightshift memory-writer 6a).** An
+observation carries the project it was recorded in (`source`: the project's
+name, or the workspace's folder name when no project is open — the CLI always
+sends the folder name). What is true of one project belongs with that project,
+not in the vault every chat reads, so `run` groups the batch by source: an
+observation whose source names a registered project
+(`Registry::find_by_name` — exact name, then case-insensitive, then the
+workspace's folder name) is consolidated into that project's memory folder,
+`<workspace>/.agents/memory/` (`Project::memory_dir`, the folder the claude.ai
+import already writes — one `project::MEMORY_DIR` for both writers), and the
+rest into the vault. One provider turn per target, projects in order of first
+appearance and the vault last, each its own session with `prepare` run on the
+chat per target (the shells no longer prepare it themselves), and
+`BATCH_BUDGET` is per turn. The batch stays a *prefix* of the backlog because
+the watermark is one byte offset: the walk stops at the first observation whose
+group is full, even when another group has room. The watermark advances only
+when every turn completed; an interruption in the second turn leaves the whole
+batch pending, and the project turn that finished dedupes against what it wrote
+when the batch is offered again.
+
+A project's turn is told whose memory it is filing and that cross-project facts
+— about the user, how they work — belong in the vault; **it is also told to
+file them there anyway and name them in its summary.** There is no mechanism
+to hand an observation from a project's turn to the vault's (a `defer_to_vault`
+tool was considered and refused): the pass files what it is given, and a fact
+under the wrong roof is corrected by a later dream's supersede rule, whereas a
+fact bounced between turns is one nobody filed.
+
+Git per target: the vault as before; a workspace only if it is itself a
+repository, and then **`.agents/` alone** — `git add`/`commit`/`status` take the
+pathspec, so the user's uncommitted source is never swept into a dream's
+commit, and something else they had staged stays in their index. `GitNote`
+gained `Untouched` for a folder the pass never reached. `DreamOutcome.filed`
+carries the split (project name or `None` for the vault, count, both
+snapshots) in turn order; the CLI line and the desktop toast read
+"consolidated 3 into Lanternfish, 2 into the vault", with one rollback clause
+per folder.
+
 **Sessions append and read; the dream is the only writer of consolidated
 notes** — Letta's sleep-time inversion, and the one choke point where "should
 this be believed" gets asked.
@@ -213,8 +251,8 @@ folder the user owns.
 files-and-search tools only (no `bash`, no web — egress from an unattended job
 over personal notes — no `task` / `review` / `todo_write`), filtered from
 `builtin_in` by *keep-list* so a future built-in is absent until someone decides
-it belongs; no sidecar; `approver: None`, because the job is unattended by
-construction and the gate is the git diff.
+it belongs, rooted at the target's folder; no sidecar; `approver: None`, because
+the job is unattended by construction and the gate is the git diff.
 
 The watermark (`dream.json`, a **byte offset** so the log never needs rewriting
 to record progress) advances only when the turn completes uninterrupted — a
@@ -233,7 +271,8 @@ surface the backlog as the nudge: the CLI startup line names the pending count,
 and the desktop's Notes panel shows a `Dream · N` button in the Knowledge bar
 (hidden at zero; `dream_status` / `dream` / `cancel_dream` commands; progress as
 `dream-event`s on their own channel so a running chat and a running dream cannot
-interleave; outcome as a toast carrying the git line; one dream at a time via
+interleave; outcome as a toast carrying the split by target and the git line
+per folder; one dream at a time via
 `try_lock`, the second click getting a sentence rather than a queued bill; and
 the dream's cancel token **separate** from the turn's, since stopping the chat
 must not stop the dream and vice versa).

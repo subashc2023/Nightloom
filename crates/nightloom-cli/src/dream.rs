@@ -1,10 +1,12 @@
-//! `nightloom dream` — consolidate the observation log into the vault.
+//! `nightloom dream` — consolidate the observation log into the vault and
+//! the projects' memory folders.
 //!
 //! The shell's half is thin on purpose: connect a provider, wire Ctrl-C,
 //! render the stream, and report. Everything that decides what a dream may
-//! touch — the vault-rooted tool set, the system prompt, the ground rules,
-//! the git snapshots, the watermark — lives in `nightloom_service::dream`,
-//! where the enforcement sits next to the decisions.
+//! touch — the per-target tool set and system prompt, the ground rules, the
+//! split of the batch by project, the git snapshots, the watermark — lives
+//! in `nightloom_service::dream`, where the enforcement sits next to the
+//! decisions; the pass prepares the chat itself, once per target.
 
 use crate::{DIM, RESET, chat};
 use anyhow::{Context, Result, bail};
@@ -139,10 +141,9 @@ pub async fn consolidate(spec: DreamSpec) -> Result<()> {
     chat.max_tokens = spec.max_tokens;
     chat.context_limit = nightloom_service::context_limit(spec.provider, &chat.model);
     chat.price = nightloom_service::price(spec.provider, &chat.model);
-    dream::prepare(&mut chat, &vault);
 
     println!(
-        "dreaming over {} observation{} — {}:{} into {}",
+        "dreaming over {} observation{} — {}:{} into {} and the projects' memory folders",
         backlog.pending.len(),
         if backlog.pending.len() == 1 { "" } else { "s" },
         chat.provider.name(),
@@ -159,7 +160,7 @@ pub async fn consolidate(spec: DreamSpec) -> Result<()> {
     });
     let mut stdout = io::stdout();
     let mut in_thinking = false;
-    let result = dream::run(&chat, &vault, &config, &cancel, &mut |event| {
+    let result = dream::run(&mut chat, &vault, &config, &cancel, &mut |event| {
         let _ = chat::render(&mut stdout, &mut in_thinking, event);
     })
     .await;
@@ -183,9 +184,10 @@ pub async fn consolidate(spec: DreamSpec) -> Result<()> {
         println!("{DIM}interrupted — nothing consumed; the same batch is offered next run{RESET}");
     } else {
         println!(
-            "{DIM}consolidated {} observation{}{}{RESET}",
+            "{DIM}consolidated {} observation{} — {}{}{RESET}",
             outcome.consolidated,
             if outcome.consolidated == 1 { "" } else { "s" },
+            split_line(&outcome.filed),
             match outcome.remaining {
                 0 => String::new(),
                 n => format!("; {n} left for the next run — run `nightloom dream` again"),
@@ -199,7 +201,15 @@ pub async fn consolidate(spec: DreamSpec) -> Result<()> {
             if outcome.unreadable == 1 { "" } else { "s" }
         );
     }
-    print_git(&outcome.git_before, &outcome.git_after);
+    // One rollback line per folder the pass touched: each project's
+    // workspace, then the vault, in the order the turns ran.
+    for filed in &outcome.filed {
+        let what = match &filed.project {
+            Some(name) => format!("{name}'s .agents"),
+            None => "vault".to_string(),
+        };
+        print_git(&what, &filed.git_before, &filed.git_after);
+    }
     let mut spend = format!(
         "{} in, {} out",
         outcome.usage.input_tokens, outcome.usage.output_tokens
@@ -211,14 +221,28 @@ pub async fn consolidate(spec: DreamSpec) -> Result<()> {
     Ok(())
 }
 
+/// "3 into Lanternfish, 2 into the vault" — the split by target, in the
+/// order the turns ran.
+fn split_line(filed: &[dream::Filed]) -> String {
+    filed
+        .iter()
+        .map(|f| match &f.project {
+            Some(name) => format!("{} into {name}", f.consolidated),
+            None => format!("{} into the vault", f.consolidated),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// One line about rollback, because that is what the snapshots are for.
-/// Both snapshots ran on the same folder, so `after` carries the story;
-/// `before` only matters when it failed and `after` did not.
-fn print_git(before: &GitNote, after: &GitNote) {
+/// Both snapshots ran on the same folder — `what` names it: the vault, or a
+/// project's `.agents` — so `after` carries the story; `before` only matters
+/// when it failed and `after` did not.
+fn print_git(what: &str, before: &GitNote, after: &GitNote) {
     if let GitNote::Failed(e) = before
         && !matches!(after, GitNote::Failed(_))
     {
-        println!("{DIM}pre-dream git snapshot failed: {e}{RESET}");
+        println!("{DIM}pre-dream git snapshot of {what} failed: {e}{RESET}");
     }
     // The pre-dream commit is the user's own uncommitted work, if they had
     // any: it has to be committed for the rollback to be total, since a note
@@ -228,23 +252,24 @@ fn print_git(before: &GitNote, after: &GitNote) {
         && *paths > 0
     {
         println!(
-            "{DIM}committed {paths} uncommitted vault file{} before the pass, so this dream \
+            "{DIM}committed {paths} uncommitted {what} file{} before the pass, so this dream \
              can be reverted on its own{RESET}",
             if *paths == 1 { "" } else { "s" }
         );
     }
     match after {
+        GitNote::Untouched => println!("{DIM}{what} untouched{RESET}"),
         GitNote::NotARepo => println!(
-            "{DIM}the vault is not a git repository — no rollback for this pass; `git init` it \
+            "{DIM}{what} is not in a git repository — no rollback for this pass; `git init` \
              to get one{RESET}"
         ),
         GitNote::Committed { hash, .. } if hash.is_empty() => {
-            println!("{DIM}vault committed{RESET}");
+            println!("{DIM}{what} committed{RESET}");
         }
         GitNote::Committed { hash, .. } => println!(
-            "{DIM}vault committed ({hash}) — `git log -p` in the vault is the audit trail{RESET}"
+            "{DIM}{what} committed ({hash}) — `git log -p` there is the audit trail{RESET}"
         ),
-        GitNote::Clean => println!("{DIM}vault unchanged{RESET}"),
-        GitNote::Failed(e) => println!("{DIM}git snapshot failed: {e}{RESET}"),
+        GitNote::Clean => println!("{DIM}{what} unchanged{RESET}"),
+        GitNote::Failed(e) => println!("{DIM}git snapshot of {what} failed: {e}{RESET}"),
     }
 }

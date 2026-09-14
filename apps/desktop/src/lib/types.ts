@@ -259,9 +259,12 @@ export interface ProjectInfo {
 export type NoteScope = "project" | "knowledge" | "instructions" | "memory" | "models";
 
 /** What one dream did, flattened for a toast. `git` arrives as a finished
- *  sentence — the frontend has nothing to add to it. */
+ *  sentence — one clause per folder the pass touched — because the frontend
+ *  has nothing to add to it. `filed` is the split by target in the order the
+ *  turns ran, projects first and the vault last. */
 export interface DreamReport {
   consolidated: number;
+  filed: { project: string | null; consolidated: number }[];
   remaining: number;
   interrupted: boolean;
   git: string;

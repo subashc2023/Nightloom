@@ -962,10 +962,16 @@ export async function runDream(): Promise<void> {
   app.dreamActivity = "";
   try {
     const r = await api.dream(target);
+    // "3 into Lanternfish, 2 into the vault": the split by target, which is
+    // how the user learns a project's memory folder exists at all.
+    const split = r.filed
+      .map((f) => `${f.consolidated} into ${f.project ?? "the vault"}`)
+      .join(", ");
     addToast(
       r.interrupted
         ? "dream interrupted — nothing consumed; the same batch is offered next time"
         : `dream: consolidated ${r.consolidated} observation${r.consolidated === 1 ? "" : "s"}` +
+            (split ? ` — ${split}` : "") +
             (r.remaining > 0 ? `, ${r.remaining} left for the next run` : "") +
             ` — ${r.git}` +
             (r.cost_usd != null ? ` ($${r.cost_usd.toFixed(4)})` : ""),
