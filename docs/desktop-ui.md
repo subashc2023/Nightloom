@@ -119,13 +119,18 @@ rather than `<chat> — Nightloom`, for the same reason.
 And **`mac_menu` is not decoration**: Tauri installs a default menu on macOS when
 an app sets none, and replacing it is where the trap is — a webview on that
 platform takes ⌘C and ⌘V *from the menu*, so a custom menu without an Edit
-submenu silently breaks copy and paste in every text box the app has. The four
-custom items (Settings ⌘,, New Chat ⌘N, Open Folder as Project… ⌘O, Import from
-claude.ai…) are **forwarded to the webview** as a `menu` event carrying the item's
-id, and `runMenuCommand` in `state.svelte.ts` acts on it: each one is a frontend
-flow — a modal, a file dialog, a re-connect — and the backend has no way to run
-half of one. Nothing is reachable *only* from the menu, so no other platform is
-missing a capability.
+submenu silently breaks copy and paste in every text box the app has. The
+custom items (four at first — Settings ⌘,, New Chat ⌘N, Open Folder as Project…
+⌘O, Import from claude.ai… — and, since the 2026-09-13 chat-surface redesign, View → Model, Tasks
+& Context ⌘M, Command Palette… ⌘K, Switch Project… ⌘P, Switch Engine ⌘E, and a
+Model menu with Sonnet ⌘⇧S, Opus ⌘⇧O, Fable ⌘⇧F, Haiku ⌘⇧H) are **forwarded to
+the webview** as a `menu` event carrying the item's id, and `runMenuCommand` in
+`state.svelte.ts` acts on it: each one is a frontend flow — a modal, a file
+dialog, a re-connect — and the backend has no way to run half of one. Nothing is
+reachable *only* from the menu, so no other platform is missing a capability: on
+Windows and Linux `App.svelte` binds the same chords itself (guarded off on macOS
+so nothing fires twice). A model key switches the picker to the first id carrying
+the alias; a provider with no such id gets a toast and no change.
 
 The menu is registered `#[cfg(target_os = "macos")]` and only there, because on
 Windows and Linux a menu is drawn *inside* the window under a caption bar this
@@ -142,10 +147,14 @@ is the check to repeat when touching it.
 
 `RightRail.svelte` with three tabs:
 
-- **`ProviderRail.svelte`** — provider/model dropdowns and seven switches: tools,
-  ask-before-writing, web access and self-compaction (the last three shown only
-  with tools on), knowledge, preamble, and per-turn status. It re-connects on
-  every change and auto-connects at launch to the last-used draft.
+- **`ProviderRail.svelte`** — the engine as two radio cards (who is billed, who
+  runs the loop), provider pills, a model radio list (each id's ⌘⇧ key and
+  context window), thinking as a segmented control, and seven switches each with
+  a `?` carrying its explanation: tools, ask-before-writing, web access and
+  self-compaction (the last three shown only with tools on), knowledge, preamble,
+  and per-turn status. It re-connects on every change and auto-connects at
+  launch to the last-used draft. (Redesigned 2026-09-13; the dropdowns it
+  replaced were the same knobs.)
 - **`TaskPanel.svelte`** — the model's task list, badged with the open count.
 - **`ContextPanel.svelte`** — the `WireView`; see [desktop.md](desktop.md).
 
@@ -200,18 +209,21 @@ joins it the moment it is switched on. Read before the fetched list, turning one
 chip on moved its whole family (which sorts by its first member's index) to the
 top of the list under the user's cursor.
 
-It is **cartouches, not a checkbox column**, and two shaping passes
-(`catalog.ts::groupModels`) are what make a fetched list readable: a vendor's
-`/v1/models` is a few hundred ids in its own order, and most of that length is the
-same handful of models wearing different release dates.
+~~It is **cartouches, not a checkbox column**~~ — **since 2026-09-13 it is rows**
+(checkbox · id · `default` pill · "n dated releases" · context window) under a
+strip of every id that is on, in `modelsFor`'s order, which is the popover's own
+(Swaraag's pick, nightshift blocker 033). Two shaping passes
+(`catalog.ts::groupModels`) are what make a fetched list readable either way: a
+vendor's `/v1/models` is a few hundred ids in its own order, and most of that
+length is the same handful of models wearing different release dates.
 
 **Folding** collapses `-20250219` / `-2025-02-19` / `-latest` / `-001` variants
-onto one chip, whose id is always a string the vendor actually listed — untagged
+onto one row, whose id is always a string the vendor actually listed — untagged
 if there is one, else `-latest`, else the newest snapshot — since a synthesized
-base is a 404 the user finds out about a turn later. A `+n` badge opens the group
-to pin a specific snapshot, and one already pinned stays visible unasked, or it
-would be a model in the rail's dropdown with no switch anywhere to turn it back
-off.
+base is a 404 the user finds out about a turn later. A "n dated releases" toggle
+(the `+n` badge before the redesign) opens the group to pin a specific snapshot,
+and one already pinned stays visible unasked, or it would be a model in the
+popover's list with no switch anywhere to turn it back off.
 
 **Grouping** is a trie over `-`-separated tokens (a vendor path being one token),
 which finds real families where a character-wise common prefix would not — `gpt-5`
@@ -321,9 +333,13 @@ quadtree.
 ## The composer and the welcome page
 
 `Welcome.svelte` is the new-chat page: with an empty transcript the centre pane
-shows the project, what the next chat inherits from the docspace, recent projects
-to switch to, a folder picker — and the composer floating in the middle rather
-than docked at the bottom. `Composer.svelte` takes a `floating` prop for that
+shows the project, ~~what the next chat inherits from the docspace, recent projects
+to switch to, a folder picker~~ — since 2026-09-13 the project's notes orbiting the
+composer on an inner ring and the knowledge base's on an outer one (hover pauses a
+note and previews it, click opens it), one count line, and a strip of the stable
+keys at the foot; the project list moved to ⌘P (`Palette.svelte`, also the ⌘K
+command palette) — and the composer floating in the middle rather than docked at
+the bottom. `Composer.svelte` takes a `floating` prop for that
 instead of being duplicated: a second composer would be a second place to fix a
 paste bug. The switch is on `app.events.length === 0 && !app.live`, and
 `app.live` is in the test so the pane flips on the first send rather than on the

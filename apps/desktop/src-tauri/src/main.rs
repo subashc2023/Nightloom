@@ -2269,8 +2269,9 @@ fn build_window(app: &tauri::App) -> tauri::Result<()> {
 /// and ⌘V from the menu, so an app that replaces the default menu without it
 /// silently breaks copy and paste in every text box it has.
 ///
-/// The four custom items are *forwarded to the webview* rather than performed
-/// here (see [`mac_menu_event`]). Each one is a frontend flow — a modal, a
+/// The custom items (the original four, and the redesign's eight since
+/// 2026-09-13) are *forwarded to the webview* rather than performed here (see
+/// [`mac_menu_event`]). Each one is a frontend flow — a modal, a
 /// file dialog, a re-connect — and the backend has no way to run half of one.
 #[cfg(target_os = "macos")]
 fn mac_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
@@ -2295,6 +2296,35 @@ fn mac_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
         .accelerator("CmdOrCtrl+O")
         .build(app)?;
     let import = MenuItemBuilder::with_id("import_claude", "Import from claude.ai…").build(app)?;
+
+    // The chat-surface redesign's set (nightshift blocker 035, 2026-09-13):
+    // the popover, the two palettes, the engine toggle, and one key per core
+    // model. Forwarded like the four above; `runMenuCommand` acts on each.
+    // ⌘⇧S is free in this app — there is no Save As.
+    let model = MenuItemBuilder::with_id("model", "Model, Tasks && Context")
+        .accelerator("CmdOrCtrl+M")
+        .build(app)?;
+    let commands = MenuItemBuilder::with_id("commands", "Command Palette…")
+        .accelerator("CmdOrCtrl+K")
+        .build(app)?;
+    let projects = MenuItemBuilder::with_id("projects", "Switch Project…")
+        .accelerator("CmdOrCtrl+P")
+        .build(app)?;
+    let engine = MenuItemBuilder::with_id("engine", "Switch Engine (Provider ⇄ Claude Code)")
+        .accelerator("CmdOrCtrl+E")
+        .build(app)?;
+    let sonnet = MenuItemBuilder::with_id("model_sonnet", "Sonnet")
+        .accelerator("CmdOrCtrl+Shift+S")
+        .build(app)?;
+    let opus = MenuItemBuilder::with_id("model_opus", "Opus")
+        .accelerator("CmdOrCtrl+Shift+O")
+        .build(app)?;
+    let fable = MenuItemBuilder::with_id("model_fable", "Fable")
+        .accelerator("CmdOrCtrl+Shift+F")
+        .build(app)?;
+    let haiku = MenuItemBuilder::with_id("model_haiku", "Haiku")
+        .accelerator("CmdOrCtrl+Shift+H")
+        .build(app)?;
 
     let app_menu = SubmenuBuilder::new(app, pkg.name.clone())
         .about(Some(about))
@@ -2329,7 +2359,23 @@ fn mac_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
         .select_all()
         .build()?;
 
-    let view = SubmenuBuilder::new(app, "View").fullscreen().build()?;
+    let view = SubmenuBuilder::new(app, "View")
+        .item(&model)
+        .item(&commands)
+        .item(&projects)
+        .separator()
+        .item(&engine)
+        .separator()
+        .fullscreen()
+        .build()?;
+
+    // One key per core model, switching the picker in place from any screen.
+    let model_menu = SubmenuBuilder::new(app, "Model")
+        .item(&sonnet)
+        .item(&opus)
+        .item(&fable)
+        .item(&haiku)
+        .build()?;
 
     let window = SubmenuBuilder::new(app, "Window")
         .minimize()
@@ -2339,7 +2385,7 @@ fn mac_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
         .build()?;
 
     MenuBuilder::new(app)
-        .items(&[&app_menu, &file, &edit, &view, &window])
+        .items(&[&app_menu, &file, &edit, &view, &model_menu, &window])
         .build()
 }
 
