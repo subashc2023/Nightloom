@@ -264,11 +264,38 @@ export type NoteScope = "project" | "knowledge" | "instructions" | "memory" | "m
  *  turns ran, projects first and the vault last. */
 export interface DreamReport {
   consolidated: number;
-  filed: { project: string | null; consolidated: number }[];
+  filed: { project: string | null; consolidated: number; proposed: boolean }[];
   remaining: number;
   interrupted: boolean;
   git: string;
+  /** "proposed a change to Lanternfish's instructions …" — the backend's
+   *  own clause, null when no turn proposed. */
+  proposed: string | null;
   cost_usd: number | null;
+}
+
+/** The two scopes the dream may propose a change to: the fixed files. */
+export type ProposalScope = "instructions" | "memory";
+
+/** A proposed replacement for an always-loaded file, written by the dream
+ *  beside the store and never applied by it: the user loads it into the
+ *  editor as a draft and saves, or dismisses it. */
+export interface Proposal {
+  v: number;
+  at: string;
+  target: { kind: "project"; id: string; name: string } | { kind: "user" };
+  /** One paragraph: what changed and which observations asked for it. */
+  why: string;
+  /** The full replacement text. */
+  text: string;
+  from_dream: boolean;
+}
+
+/** A pending proposal as the backend lists it: the handle every other call
+ *  takes, and the content. */
+export interface ProposalEntry {
+  id: string;
+  proposal: Proposal;
 }
 
 /** What one capture pass did, flattened for a toast. `per_project` is the

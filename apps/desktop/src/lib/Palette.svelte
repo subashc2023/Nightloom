@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { app, pickerModels, providerPills, runMenuCommand, switchModelAt, usable, useProject } from "./state.svelte";
+  import { app, pickerModels, providerPills, reviewProposal, runMenuCommand, switchModelAt, usable, useProject } from "./state.svelte";
   import { MODEL_KEYS, providerLabel } from "./catalog";
   import type { IconName } from "./icons";
   import Icon from "./Icon.svelte";
@@ -213,6 +213,32 @@
         run: () => go(() => runMenuCommand("import_claude")),
         disabled: app.busy,
       },
+      // The dream's pending proposal for an always-loaded file, when there
+      // is one — the project's first, since that is the more specific of
+      // the two (memory-writer 6c, 2026-09-14).
+      ...(app.proposals.instructions.length + app.proposals.memory.length > 0
+        ? [
+            {
+              id: "proposals",
+              label: "Review proposed instructions",
+              meta: [
+                app.proposals.instructions.length > 0
+                  ? `${app.proposals.instructions.length} for ${app.project?.name ?? "the project"}`
+                  : "",
+                app.proposals.memory.length > 0 ? `${app.proposals.memory.length} for your memory` : "",
+              ]
+                .filter(Boolean)
+                .join(", "),
+              icon: "pencil" as IconName,
+              key: "",
+              group: "Go",
+              run: () =>
+                go(() =>
+                  reviewProposal(app.proposals.instructions.length > 0 ? "instructions" : "memory"),
+                ),
+            },
+          ]
+        : []),
       {
         id: "settings",
         label: "Settings",

@@ -18,6 +18,7 @@ pub mod nightshift;
 pub mod observe;
 pub mod project;
 pub mod prompt;
+pub mod proposal;
 pub mod sidecar;
 pub mod store;
 pub mod tools;

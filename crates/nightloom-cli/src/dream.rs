@@ -194,6 +194,12 @@ pub async fn consolidate(spec: DreamSpec) -> Result<()> {
             }
         );
     }
+    // A proposed change to an always-loaded file is never applied here:
+    // the app shows it as a diff, and the user decides. The line says so
+    // rather than leaving the file to be found in `proposals/`.
+    if let Some(line) = dream::proposed_line(&outcome.filed) {
+        println!("{DIM}{line} in the app{RESET}");
+    }
     if outcome.unreadable > 0 {
         println!(
             "{DIM}{} log line{} this build could not read were skipped{RESET}",

@@ -49,6 +49,8 @@ import type {
   NoteScope,
   Price,
   ProjectInfo,
+  ProposalEntry,
+  ProposalScope,
   ProviderInfo,
   SearchBackendInfo,
   SessionEvent,
@@ -458,6 +460,27 @@ export const app = $state({
    * file's content — and cleared on save and on revert.
    */
   noteDrafts: {} as Record<string, string>,
+  /**
+   * The dream's pending proposals for the two always-loaded files, per
+   * scope, newest first — the badge on each pinned row. Re-listed with the
+   * notes after every turn and every dream. The pass never writes either
+   * file: a proposal is applied only by loading it into the editor as a
+   * draft and saving (`stageProposal`, then the ordinary `saveNote`).
+   */
+  proposals: { instructions: [], memory: [] } as Record<ProposalScope, ProposalEntry[]>,
+  /**
+   * The proposal `NoteView` is showing as a diff, when it is showing one
+   * rather than the editor. Cleared by every way out: loading it into the
+   * editor, dismissing it, keeping it for later, opening another note.
+   */
+  proposalReview: null as null | { scope: ProposalScope; entry: ProposalEntry },
+  /**
+   * The proposal whose text is in the buffer as a draft, so a Save of that
+   * draft can record it as applied (`mark_applied`) and a Revert can
+   * forget it. Keyed like `noteDrafts`; null when the buffer holds no
+   * proposal.
+   */
+  stagedProposal: null as null | { key: string; scope: ProposalScope; id: string },
   /** Live model lists fetched from provider APIs, per provider kind. */
   modelLists: {} as Record<string, string[]>,
   /** Fetch status per provider kind (settings modal UI). */
@@ -915,6 +938,20 @@ export async function refreshNotes(): Promise<void> {
   } catch {
     app.vault = [];
   }
+  await refreshProposals();
+}
+
+/**
+ * Re-list the dream's pending proposals for both fixed files. With the
+ * notes rather than on its own timer: a dream that proposed has just
+ * refreshed the notes, and the badge should appear on the same tick as the
+ * memory notes it filed.
+ */
+export async function refreshProposals(): Promise<void> {
+  app.proposals.instructions = app.project
+    ? await api.listProposals("instructions").catch(() => [])
+    : [];
+  app.proposals.memory = app.knowledge ? await api.listProposals("memory").catch(() => []) : [];
 }
 
 /** Where the vault is. Read on launch and after Settings repoints it. */
@@ -1052,6 +1089,9 @@ export async function runDream(): Promise<void> {
             (split ? ` — ${split}` : "") +
             (r.remaining > 0 ? `, ${r.remaining} left for the next run` : "") +
             ` — ${r.git}` +
+            // "… and proposed a change to Lanternfish's instructions": the
+            // one thing a dream leaves that is not yet in effect.
+            (r.proposed ? ` — and ${r.proposed}` : "") +
             (r.cost_usd != null ? ` ($${r.cost_usd.toFixed(4)})` : ""),
     );
   } catch (e) {
@@ -1261,6 +1301,9 @@ export async function revealFolder(path?: string): Promise<void> {
 export function showNote(scope: NoteScope, name: string): void {
   app.openNote = { scope, name };
   app.view = "note";
+  // Opening a note is the editor, not the review; `reviewProposal` sets
+  // the review back after calling this.
+  app.proposalReview = null;
   // So the list highlighting the open note is the list on screen — this is
   // also reachable from the welcome page and from the graph, where the
   // sidebar may be on Chats.
@@ -1276,6 +1319,7 @@ export function showGraph(): void {
 export function closeNote(): void {
   app.view = "chat";
   app.openNote = null;
+  app.proposalReview = null;
   // Back to whoever opened it. One function for every way out — Save,
   // ← Chat — so no route can strand `noteFrom`.
   if (app.noteFrom === "rail") {
@@ -1328,6 +1372,19 @@ export async function saveNote(
     addToast(String(e));
     return false;
   }
+  // The draft that was saved came from a proposal: record it as applied,
+  // with the text that was actually saved. After the save and never
+  // instead of it — the file was written by the editor's own path above,
+  // which is the whole design of proposals.
+  const staged = app.stagedProposal;
+  if (staged && staged.key === `${scope}:${name}`) {
+    app.stagedProposal = null;
+    try {
+      await api.markApplied(staged.scope, staged.id, content);
+    } catch (e) {
+      addToast(`saved, but could not file the proposal as applied: ${String(e)}`);
+    }
+  }
   await refreshNotes();
   await refreshProjects();
   // The always-loaded files are read once, when the connection's preamble
@@ -1357,6 +1414,72 @@ export async function deleteNote(scope: NoteScope, name: string): Promise<void> 
   if (app.openNote?.scope === scope && app.openNote.name === name) closeNote();
   await refreshNotes();
   await refreshProjects();
+}
+
+// ---- proposals: the dream's suggested edits to the fixed files ----
+
+/** The one file each proposal scope names. */
+const AGENTS_MD = "AGENTS.md";
+
+/**
+ * Open `NoteView` on a fixed file in proposal mode: the newest pending
+ * proposal for that scope as a diff against the file, with Load into
+ * editor, Dismiss and Keep for later. Nothing happens to the file or the
+ * buffer until Load is pressed.
+ */
+export function reviewProposal(scope: ProposalScope, id?: string): void {
+  const list = app.proposals[scope];
+  const entry = (id ? list.find((e) => e.id === id) : undefined) ?? list[0];
+  if (!entry) return;
+  showNote(scope, AGENTS_MD);
+  app.proposalReview = { scope, entry };
+}
+
+/**
+ * The draft-mirror rule the editor applies on every keystroke: the buffer
+ * is a draft while it differs from the saved text, and no draft once it
+ * matches again — so a Revert (buffer back to saved) leaves nothing behind.
+ * A function rather than an effect body so the rule can be tested: it is
+ * what makes a loaded proposal a draft and not a save.
+ */
+export function mirrorDraft(key: string, text: string, saved: string): void {
+  if (text !== saved) app.noteDrafts[key] = text;
+  else delete app.noteDrafts[key];
+}
+
+/**
+ * Put a proposal's text in the editor as a draft. The file is untouched:
+ * `noteDrafts` is where unsaved text lives, the ● draft marker and Revert
+ * follow from it, and the only way the text reaches the file is the same
+ * Save any edit takes — which, seeing `stagedProposal`, records the
+ * proposal as applied afterwards.
+ */
+export function stageProposal(scope: ProposalScope, entry: ProposalEntry, saved: string): void {
+  const key = `${scope}:${AGENTS_MD}`;
+  mirrorDraft(key, entry.proposal.text, saved);
+  app.stagedProposal = { key, scope, id: entry.id };
+  app.proposalReview = null;
+}
+
+/** The buffer went back to the saved text: the proposal is no longer what
+ *  a Save would apply. The proposal itself stays pending. */
+export function unstageProposal(key: string): void {
+  if (app.stagedProposal?.key === key) app.stagedProposal = null;
+}
+
+/** Turn a proposal down. Confirmed by the caller first; the backend moves
+ *  the file aside rather than deleting it. */
+export async function dismissProposal(scope: ProposalScope, id: string): Promise<boolean> {
+  try {
+    await api.dismissProposal(scope, id);
+  } catch (e) {
+    addToast(String(e));
+    return false;
+  }
+  if (app.proposalReview?.entry.id === id) app.proposalReview = null;
+  unstageProposal(`${scope}:${AGENTS_MD}`);
+  await refreshProposals();
+  return true;
 }
 
 /** A provider the backend can actually construct a client for right now. */

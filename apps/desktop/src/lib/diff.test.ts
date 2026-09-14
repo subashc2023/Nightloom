@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { diffTotals, pairLines, parseDiff } from "./diff";
+import { diffTotals, lineDiff, pairLines, parseDiff, unifiedDiff } from "./diff";
 
 const SAMPLE = `diff --git a/notes/a.md b/notes/a.md
 index 1111111..2222222 100644
@@ -76,5 +76,62 @@ describe("parseDiff", () => {
   it("returns nothing for empty input and does not throw on junk", () => {
     expect(parseDiff("")).toEqual([]);
     expect(parseDiff("not a diff\nat all")).toEqual([]);
+  });
+});
+
+// The proposal review's own diff: two texts in hand, no git. Three small
+// cases pin the alignment, and the unified form is checked through the same
+// parser the view uses, so what the review shows is what the parser reads.
+describe("lineDiff / unifiedDiff", () => {
+  it("treats identical texts as all context and renders no diff", () => {
+    const text = "# Me\n\nBe terse.\n";
+    expect(lineDiff(text, text).map((l) => l.kind)).toEqual(["ctx", "ctx", "ctx"]);
+    expect(unifiedDiff(text, text, "AGENTS.md")).toBe("");
+  });
+
+  it("aligns an insertion and a replacement around the unchanged lines", () => {
+    const old = "one\ntwo\nthree\n";
+    const inserted = lineDiff(old, "one\ntwo\ntwo-and-a-half\nthree\n");
+    expect(inserted).toEqual([
+      { kind: "ctx", text: "one" },
+      { kind: "ctx", text: "two" },
+      { kind: "add", text: "two-and-a-half" },
+      { kind: "ctx", text: "three" },
+    ]);
+    const replaced = lineDiff(old, "one\nTWO\nthree\n");
+    expect(replaced.map((l) => `${l.kind}:${l.text}`)).toEqual([
+      "ctx:one",
+      "del:two",
+      "add:TWO",
+      "ctx:three",
+    ]);
+    // A whole-file replacement and an empty side still come out as lines.
+    expect(lineDiff("", "new\n")).toEqual([{ kind: "add", text: "new" }]);
+    expect(lineDiff("gone\n", "").map((l) => l.kind)).toEqual(["del"]);
+  });
+
+  it("renders hunks with context that parseDiff reads back with the right counts", () => {
+    const old = Array.from({ length: 12 }, (_, i) => `line ${i + 1}`).join("\n") + "\n";
+    const next = old.replace("line 2\n", "LINE 2\n").replace("line 11\n", "line 11\nline 11b\n");
+    const text = unifiedDiff(old, next, "AGENTS.md");
+    const files = parseDiff(text);
+    expect(files).toHaveLength(1);
+    expect(files[0].path).toBe("AGENTS.md");
+    expect(files[0].oldPath).toBe("AGENTS.md");
+    expect(files[0].added).toBe(2);
+    expect(files[0].removed).toBe(1);
+    // Two changes nine lines apart, three lines of context each: two hunks.
+    expect(files[0].hunks).toHaveLength(2);
+    expect(files[0].hunks[0].header).toBe("@@ -1,5 +1,5 @@");
+    expect(files[0].hunks[1].header).toBe("@@ -9,4 +9,5 @@");
+    // The second hunk's rows carry the right line numbers on both sides.
+    const rows = files[0].hunks[1].rows;
+    expect(rows[0].left.no).toBe(9);
+    expect(rows[0].right.no).toBe(9);
+    const added = rows.find((r) => r.right.kind === "add");
+    expect(added?.right.text).toBe("line 11b");
+    expect(added?.right.no).toBe(12);
+    // A new file: no old side.
+    expect(parseDiff(unifiedDiff(null, "first\n", "AGENTS.md"))[0].oldPath).toBeNull();
   });
 });

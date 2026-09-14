@@ -4,11 +4,18 @@
     app,
     addToast,
     closeNote,
+    dismissProposal,
+    mirrorDraft,
     revealFolder,
     saveNote,
     showNote,
+    stageProposal,
+    unstageProposal,
   } from "./state.svelte";
   import { renderMarkdown } from "./markdown";
+  import { unifiedDiff } from "./diff";
+  import DiffView from "./DiffView.svelte";
+  import ConfirmDialog from "./ConfirmDialog.svelte";
   import {
     hrefTarget,
     linkTitle,
@@ -39,6 +46,26 @@
   const dirty = $derived(text !== saved);
   const open = $derived(app.openNote);
   const isVault = $derived(open?.scope === "knowledge");
+  /**
+   * Proposal mode: the dream suggested a replacement for this fixed file,
+   * and the pane shows it as a diff against the saved text instead of the
+   * editor. Only while the review is for the open scope — `showNote` clears
+   * it on the way to any other note. The buffer is untouched until *Load
+   * into editor*, which makes the proposed text a draft and nothing more.
+   */
+  const reviewing = $derived(
+    app.proposalReview && open && app.proposalReview.scope === open.scope
+      ? app.proposalReview
+      : null,
+  );
+  const proposalDiff = $derived(
+    reviewing
+      ? unifiedDiff(saved === "" ? null : saved, reviewing.entry.proposal.text, open?.name ?? "AGENTS.md")
+      : "",
+  );
+  /** Dismiss asks first: the badge goes with it, and a click must not lose
+   *  something the user has not read (the never-lose-work rule). */
+  let confirmDismiss = $state(false);
   /** A model's own instruction file: named after the id, read whole. */
   const isModel = $derived(open?.scope === "models");
   const modelId = $derived(isModel && open ? modelOfInstructionFile(open.name) : "");
@@ -59,8 +86,7 @@
   $effect(() => {
     const key = bufferKey;
     if (!key) return;
-    if (text !== saved) app.noteDrafts[key] = text;
-    else delete app.noteDrafts[key];
+    mirrorDraft(key, text, saved);
   });
 
   /**
@@ -167,10 +193,37 @@
     }
   }
 
-  /** Drop the draft: the buffer goes back to the last saved text. */
+  /** Drop the draft: the buffer goes back to the last saved text. A
+   *  proposal that was loaded is no longer what a Save would apply. */
   function revert() {
     if (!dirty) return;
     text = saved;
+    if (bufferKey) unstageProposal(bufferKey);
+  }
+
+  /**
+   * Load the proposal into the buffer as a draft. `stageProposal` writes
+   * the draft entry and remembers which proposal it was; the buffer takes
+   * the same text so ● draft, Revert and Save behave exactly as for typed
+   * text. The file is not written here or anywhere but Save.
+   */
+  function loadProposal() {
+    const r = reviewing;
+    if (!r || !open) return;
+    if (r.entry.proposal.text === saved) {
+      addToast("The proposal matches the file as saved — nothing to load");
+      app.proposalReview = null;
+      return;
+    }
+    stageProposal(r.scope, r.entry, saved);
+    text = r.entry.proposal.text;
+  }
+
+  async function confirmDismissal() {
+    const r = reviewing;
+    confirmDismiss = false;
+    if (!r) return;
+    if (await dismissProposal(r.scope, r.entry.id)) addToast("Proposal dismissed — kept under proposals/dismissed");
   }
 
   /**
@@ -242,6 +295,7 @@
       {open?.scope ?? "project"}
     </span>
     <span class="title">{open?.name ?? "no note"}</span>
+    {#if reviewing}<span class="proposed" title="The dream proposed a replacement; nothing is applied until you load it and save">proposed change</span>{/if}
     {#if dirty}<span class="dirty" title="Unsaved changes — kept as a draft until you save or revert">● draft</span>{/if}
     <span class="spacer"></span>
     {#if dirty}
@@ -255,7 +309,7 @@
       class="ghost"
       class:on={preview}
       onclick={() => (preview = !preview)}
-      disabled={!open}
+      disabled={!open || !!reviewing}
     >
       {preview ? "Edit" : "Preview"}
     </button>
@@ -273,6 +327,37 @@
     <p class="err">{error}</p>
   {:else if loading}
     <p class="err quiet">Reading…</p>
+  {:else if reviewing}
+    <!-- The proposal: why, the diff, three ways out. The editor and its
+         buffer are behind this, untouched, until Load into editor. -->
+    <div class="review">
+      <div class="why">
+        <span class="label">why</span>
+        <p>{reviewing.entry.proposal.why}</p>
+        <span class="when">
+          proposed by the dream · {new Date(reviewing.entry.proposal.at).toLocaleString()}
+          {#if app.proposals[reviewing.scope].length > 1}
+            · {app.proposals[reviewing.scope].length - 1} older pending
+          {/if}
+        </span>
+      </div>
+      <DiffView text={proposalDiff} leftLabel="as saved" rightLabel="proposed" />
+      <div class="actions">
+        <button
+          class="load"
+          title="Put the proposed text in the editor as a draft — Revert drops it, Save applies it"
+          onclick={loadProposal}>Load into editor</button
+        >
+        <button
+          class="ghost revert"
+          title="Turn the proposal down — it is moved aside, not deleted"
+          onclick={() => (confirmDismiss = true)}>Dismiss</button
+        >
+        <button class="ghost" title="Close for now; the badge stays" onclick={closeNote}
+          >Keep for later</button
+        >
+      </div>
+    </div>
   {:else if preview}
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -362,6 +447,17 @@
   </footer>
 </div>
 
+{#if confirmDismiss && reviewing}
+  <ConfirmDialog
+    title="Dismiss this proposal?"
+    lead="The proposed text is moved to proposals/dismissed and the badge goes; the file is not touched either way."
+    facts={[["for", reviewing.scope === "memory" ? "your memory" : `${app.project?.name ?? "this project"}'s instructions`]]}
+    confirmLabel="Dismiss"
+    onconfirm={() => void confirmDismissal()}
+    onclose={() => (confirmDismiss = false)}
+  />
+{/if}
+
 <style>
   .note {
     flex: 1;
@@ -418,6 +514,65 @@
     color: var(--accent);
     font-size: 0.7rem;
     letter-spacing: 0.02em;
+  }
+  /* The review's marker, in the scope chip's shape so the header reads
+     "instructions · AGENTS.md · proposed change". */
+  .proposed {
+    font-size: 0.62rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    border-radius: 5px;
+    padding: 0.1rem 0.35rem;
+    flex-shrink: 0;
+  }
+  .review {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+  }
+  .why {
+    flex-shrink: 0;
+    padding: 0.7rem 1.2rem 0.6rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+  .why p {
+    margin: 0;
+    font-size: 0.82rem;
+    line-height: 1.5;
+    color: var(--text);
+  }
+  .why .when {
+    font-size: 0.68rem;
+    color: var(--dim);
+  }
+  .actions {
+    flex-shrink: 0;
+    display: flex;
+    gap: 0.5rem;
+    padding: 0.55rem 1.2rem;
+    border-top: 1px solid var(--border);
+    background: var(--panel);
+  }
+  .load {
+    background: transparent;
+    border: 1px solid var(--accent);
+    border-radius: 7px;
+    color: var(--accent);
+    font-family: inherit;
+    font-size: 0.76rem;
+    padding: 0.25rem 0.55rem;
+    cursor: pointer;
+  }
+  .load:hover {
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
   }
   .spacer {
     flex: 1;

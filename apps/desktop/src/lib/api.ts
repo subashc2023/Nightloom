@@ -29,6 +29,9 @@ import type {
   InterviewView,
   InterviewWritten,
   ProjectInfo,
+  Proposal,
+  ProposalEntry,
+  ProposalScope,
   ProviderInfo,
   RevertPreview,
   Schedules,
@@ -310,6 +313,31 @@ export function saveNote(scope: NoteScope, name: string, content: string): Promi
 
 export function deleteNote(scope: NoteScope, name: string): Promise<null> {
   return invoke("delete_note", { scope, name });
+}
+
+// ---- proposals: the dream's suggested edits to the two fixed files ----
+//
+// Listed, read, dismissed, marked applied — never written to the file from
+// here. Applying is the editor's ordinary `saveNote` of a draft; `markApplied`
+// only records afterwards what was saved.
+
+/** Pending proposals for a fixed file, newest first. */
+export function listProposals(scope: ProposalScope): Promise<ProposalEntry[]> {
+  return invoke("list_proposals", { scope });
+}
+
+export function readProposal(scope: ProposalScope, id: string): Promise<Proposal> {
+  return invoke("read_proposal", { scope, id });
+}
+
+/** Move a proposal aside as turned down; it is kept under `dismissed/`. */
+export function dismissProposal(scope: ProposalScope, id: string): Promise<null> {
+  return invoke("dismiss_proposal", { scope, id });
+}
+
+/** Record that the draft made from a proposal was saved, with the saved text. */
+export function markApplied(scope: ProposalScope, id: string, text: string): Promise<null> {
+  return invoke("mark_applied", { scope, id, text });
 }
 
 /** Show a folder in the OS file manager; defaults to the docspace. */

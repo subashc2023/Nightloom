@@ -36,9 +36,127 @@ export interface DiffFile {
   hunks: DiffHunk[];
 }
 
-interface RawLine {
+export interface RawLine {
   kind: "ctx" | "del" | "add";
   text: string;
+}
+
+/**
+ * Two texts to one line sequence — the classic longest-common-subsequence
+ * diff, small enough to live here rather than pull a dependency for. Made
+ * for the proposal review (an `AGENTS.md` of a few thousand characters
+ * against its proposed replacement), where nothing runs `git` and the two
+ * texts are in hand. Quadratic in lines, which at that size is nothing; past
+ * a million cells it gives up on alignment and shows the whole old text
+ * removed and the whole new one added, which is still a correct diff and
+ * still readable.
+ */
+export function lineDiff(oldText: string, newText: string): RawLine[] {
+  const a = splitLines(oldText);
+  const b = splitLines(newText);
+  if (a.length * b.length > 1_000_000) {
+    return [
+      ...a.map((text): RawLine => ({ kind: "del", text })),
+      ...b.map((text): RawLine => ({ kind: "add", text })),
+    ];
+  }
+  // lcs[i][j] = length of the LCS of a[i..] and b[j..].
+  const n = a.length;
+  const m = b.length;
+  const lcs: Uint32Array[] = [];
+  for (let i = 0; i <= n; i++) lcs.push(new Uint32Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      lcs[i][j] =
+        a[i] === b[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+    }
+  }
+  const out: RawLine[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) {
+      out.push({ kind: "ctx", text: a[i] });
+      i++;
+      j++;
+    } else if (lcs[i + 1][j] >= lcs[i][j + 1]) {
+      out.push({ kind: "del", text: a[i++] });
+    } else {
+      out.push({ kind: "add", text: b[j++] });
+    }
+  }
+  while (i < n) out.push({ kind: "del", text: a[i++] });
+  while (j < m) out.push({ kind: "add", text: b[j++] });
+  return out;
+}
+
+/** Lines without their terminators; an empty text is no lines, not one. */
+function splitLines(text: string): string[] {
+  if (text === "") return [];
+  const lines = text.split("\n");
+  if (lines[lines.length - 1] === "") lines.pop();
+  return lines.map((l) => (l.endsWith("\r") ? l.slice(0, -1) : l));
+}
+
+/**
+ * Render two texts as the unified diff `parseDiff` reads, so `DiffView`
+ * shows them the way it shows a `git diff` — file strip, +/−, hunks with
+ * three lines of context. Identical texts give an empty string, which the
+ * view reads as "No changes."; a missing old text (`null`) is a new file.
+ */
+export function unifiedDiff(
+  oldText: string | null,
+  newText: string,
+  path: string,
+  context = 3,
+): string {
+  const lines = lineDiff(oldText ?? "", newText);
+  if (lines.every((l) => l.kind === "ctx")) return "";
+  // Hunks: each run of changes, widened by `context` lines each side, and
+  // runs whose widened ranges touch merged into one.
+  const ranges: [number, number][] = [];
+  let k = 0;
+  while (k < lines.length) {
+    if (lines[k].kind === "ctx") {
+      k++;
+      continue;
+    }
+    let end = k;
+    while (end < lines.length && lines[end].kind !== "ctx") end++;
+    const start = Math.max(0, k - context);
+    const stop = Math.min(lines.length, end + context);
+    const last = ranges[ranges.length - 1];
+    if (last && start <= last[1]) last[1] = stop;
+    else ranges.push([start, stop]);
+    k = end;
+  }
+  const out: string[] = [
+    `diff --git a/${path} b/${path}`,
+    oldText === null ? "--- /dev/null" : `--- a/${path}`,
+    `+++ b/${path}`,
+  ];
+  // Line numbers on each side at the start of each range.
+  let oldNo = 1;
+  let newNo = 1;
+  let at = 0;
+  for (const [start, stop] of ranges) {
+    for (; at < start; at++) {
+      if (lines[at].kind !== "add") oldNo++;
+      if (lines[at].kind !== "del") newNo++;
+    }
+    const slice = lines.slice(start, stop);
+    const oldLen = slice.filter((l) => l.kind !== "add").length;
+    const newLen = slice.filter((l) => l.kind !== "del").length;
+    out.push(`@@ -${oldLen === 0 ? 0 : oldNo},${oldLen} +${newLen === 0 ? 0 : newNo},${newLen} @@`);
+    for (const l of slice) {
+      out.push((l.kind === "add" ? "+" : l.kind === "del" ? "-" : " ") + l.text);
+    }
+    for (; at < stop; at++) {
+      if (lines[at].kind !== "add") oldNo++;
+      if (lines[at].kind !== "del") newNo++;
+    }
+  }
+  return out.join("\n") + "\n";
 }
 
 const PAD: DiffCell = { no: null, text: "", kind: "pad" };

@@ -2059,6 +2059,77 @@ async fn delete_note(
     project::delete_note(&scope_dir(&state, scope).await?, &name)
 }
 
+// ---- proposals: the dream's suggested edits to the fixed files ------------
+
+/// The store a fixed-file scope's proposals sit beside: the active project's
+/// directory under `~/.nightloom/projects/` for `instructions`, the config
+/// dir for `memory`. Only those two scopes have proposals — the dream may
+/// suggest a change to an always-loaded file and to nothing else — so any
+/// other scope is a caller bug and says so.
+async fn proposal_store(state: &AppState, scope: NoteScope) -> Result<PathBuf, String> {
+    match scope {
+        NoteScope::Instructions => state
+            .active()
+            .await
+            .map(|p| p.store_dir())
+            .ok_or_else(|| "no project is open, so there are no proposals for its instructions".to_string()),
+        NoteScope::Memory => project::config_dir()
+            .ok_or_else(|| "no user config directory to keep proposals in".to_string()),
+        other => Err(format!("{other:?} has no proposals — only instructions and memory do")),
+    }
+}
+
+/// Pending proposals for a fixed file, newest first — the badge on the
+/// pinned row, and the one the review opens on. Cheap (a directory of small
+/// files), so the frontend asks whenever it re-lists the notes.
+#[tauri::command]
+async fn list_proposals(
+    state: State<'_, AppState>,
+    scope: NoteScope,
+) -> Result<Vec<nightloom_service::proposal::Entry>, String> {
+    let store = proposal_store(&state, scope).await?;
+    blocking(move || Ok::<_, String>(nightloom_service::proposal::list_in(&store))).await
+}
+
+#[tauri::command]
+async fn read_proposal(
+    state: State<'_, AppState>,
+    scope: NoteScope,
+    id: String,
+) -> Result<nightloom_service::proposal::Proposal, String> {
+    let store = proposal_store(&state, scope).await?;
+    blocking(move || nightloom_service::proposal::read(&store, &id)).await
+}
+
+/// Move a proposal aside as turned down. The frontend confirms first — a
+/// dismissed proposal leaves the badge, which is the closest thing here to
+/// losing work — and the file is kept under `proposals/dismissed/`.
+#[tauri::command]
+async fn dismiss_proposal(
+    state: State<'_, AppState>,
+    scope: NoteScope,
+    id: String,
+) -> Result<(), String> {
+    let store = proposal_store(&state, scope).await?;
+    blocking(move || nightloom_service::proposal::dismiss(&store, &id).map(|_| ())).await
+}
+
+/// Record that a proposal was applied: called by the frontend *after* its
+/// ordinary `save_note` of the draft succeeded, with the text it saved. The
+/// proposal moves under `proposals/applied/` carrying a hash of that text.
+/// Nothing here writes the fixed file — the save that did was the user's,
+/// through the editor, which is the design.
+#[tauri::command]
+async fn mark_applied(
+    state: State<'_, AppState>,
+    scope: NoteScope,
+    id: String,
+    text: String,
+) -> Result<(), String> {
+    let store = proposal_store(&state, scope).await?;
+    blocking(move || nightloom_service::proposal::applied(&store, &id, &text).map(|_| ())).await
+}
+
 // ---- the knowledge vault -----------------------------------------------
 
 /// Where the vault is and what is in it.
@@ -2171,6 +2242,10 @@ struct DreamReport {
     remaining: usize,
     interrupted: bool,
     git: String,
+    /// "proposed a change to Lanternfish's instructions …", the service's
+    /// own sentence (`dream::proposed_line`), or `None` when no turn
+    /// proposed — a finished clause like `git`, for the same reason.
+    proposed: Option<String>,
     cost_usd: Option<f64>,
 }
 
@@ -2179,6 +2254,8 @@ struct DreamReport {
 struct FiledReport {
     project: Option<String>,
     consolidated: usize,
+    /// The turn proposed a change to the target's always-loaded file.
+    proposed: bool,
 }
 
 /// Run one consolidation pass over the observation log.
@@ -2247,10 +2324,12 @@ async fn dream(
             .map(|f| FiledReport {
                 project: f.project.clone(),
                 consolidated: f.consolidated,
+                proposed: f.proposed,
             })
             .collect(),
         remaining: outcome.remaining,
         interrupted: outcome.interrupted,
+        proposed: nightloom_service::dream::proposed_line(&outcome.filed),
         git: outcome
             .filed
             .iter()
@@ -2862,6 +2941,10 @@ fn main() {
             read_note,
             save_note,
             delete_note,
+            list_proposals,
+            read_proposal,
+            dismiss_proposal,
+            mark_applied,
             knowledge_info,
             model_instructions_dir,
             set_knowledge_dir,

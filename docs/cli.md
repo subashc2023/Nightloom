@@ -111,7 +111,14 @@ observations recorded in a registered project go to
 `<workspace>/.agents/memory/`, the rest to the vault, one turn each. The report
 line reads *consolidated 5 observations — 3 into Lanternfish, 2 into the vault*,
 followed by one rollback line per folder (a workspace is committed only if it is
-a repository, and only its `.agents/`).
+a repository, and only its `.agents/`). Since 2026-09-14 a turn may also
+*propose* a replacement for the target's always-loaded file — the project's
+`AGENTS.md`, or `~/.nightloom/AGENTS.md` for the vault — and the CLI then
+prints *proposed a change to Lanternfish's instructions — review it under
+Notes in the app* (`dream::proposed_line`, the same clause the desktop toast
+uses). The file is never written by the pass: the proposal sits under the
+store's `proposals/` and is applied only through the desktop editor, as a
+draft the user saves (see [service-data.md](service-data.md), *Proposals*).
 
 **`capture.rs`** is the pass that fills the inbox the dream drains (`nightloom
 capture`, `--dry-run` to print the would-be observations and append nothing —

@@ -4,6 +4,7 @@
     addProject,
     deleteNote,
     revealFolder,
+    reviewProposal,
     runCapture,
     runDream,
     saveNote,
@@ -125,7 +126,10 @@
 
 {#snippet pinned(scope: "instructions" | "memory", label: string, hint: string)}
   <!-- No delete button: the never-lose-work rule, and the backend refuses
-       it anyway — emptying the text is the reversible form. -->
+       it anyway — emptying the text is the reversible form. The badge is
+       the dream's pending proposal for the file (a sibling of the row, not
+       inside it — a button in a button is not HTML); it opens the same
+       editor in proposal mode, and nothing is applied until Load and Save. -->
   <div class="item pinned" class:active={isOpen(scope, AGENTS_MD)}>
     <button class="row" onclick={() => showNote(scope, AGENTS_MD)} title={hint}>
       <span class="name">{label}</span>
@@ -139,6 +143,15 @@
             : size(fixed[scope] ?? 0)}
       </span>
     </button>
+    {#if app.proposals[scope].length > 0}
+      <button
+        class="proposed"
+        title="The dream proposed a change to this file — review it as a diff"
+        aria-label="Review the proposed change to {label}"
+        onclick={() => reviewProposal(scope)}
+        >{app.proposals[scope].length} proposed</button
+      >
+    {/if}
   </div>
 {/snippet}
 
@@ -553,6 +566,25 @@
     font-size: 0.68rem;
     color: var(--dim);
     opacity: 0.75;
+  }
+  /* "1 proposed" beside the pinned row: the accent, since it is the one
+     thing in the panel waiting on the user. */
+  .proposed {
+    align-self: center;
+    flex-shrink: 0;
+    margin-right: 0.4rem;
+    background: transparent;
+    border: 1px solid var(--accent);
+    border-radius: 999px;
+    color: var(--accent);
+    font-family: inherit;
+    font-size: 0.66rem;
+    padding: 0.1rem 0.5rem;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .proposed:hover {
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
   }
   .delete {
     background: transparent;

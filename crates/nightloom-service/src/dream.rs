@@ -45,6 +45,20 @@
 //! model notices in a project's batch is named in its summary and filed
 //! there anyway.
 //!
+//! **The always-loaded files are proposed to, never written (2026-09-14).**
+//! Each target has one file the preamble reads *whole* into every
+//! conversation — a project's `AGENTS.md`, the user's
+//! `~/.nightloom/AGENTS.md` for the vault — and it is the one file the pass
+//! cannot reach: the tools are rooted at the memory folder or the vault,
+//! neither of which contains it. Instead the turn is shown the file's
+//! current text and given `propose_instructions` ([`crate::proposal`]),
+//! which writes a proposal beside the store; the app shows it as a diff and
+//! the user loads it into the editor as a draft, or dismisses it. A note
+//! filed wrong is read on demand and corrected later; a line in this file
+//! shapes every turn from the next chat on, so its gate is the user, not
+//! git. The test `agents_md_is_byte_identical_after_a_dream_that_proposes`
+//! pins it.
+//!
 //! The tool set is files and search only: no `bash` (a consolidation pass
 //! needs no shell), no web (egress from an unattended job over personal
 //! notes, on the same argument `review` refuses its critics the network),
@@ -62,6 +76,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::observe::{self, Observation};
 use crate::project::{AGENTS_DIR, Project, Registry};
+use crate::prompt::{INSTRUCTION_FILE, read_capped};
+use crate::proposal::{ProposalSlot, ProposalTarget, ProposeInstructions};
 use crate::tools::{self, Root};
 use crate::turn::{Chat, TurnEvent};
 
@@ -85,15 +101,45 @@ pub enum Target {
     Vault(PathBuf),
     /// One project's memory, `<workspace>/.agents/memory`: what is true of
     /// it alone. The workspace is kept because the snapshot runs there —
-    /// the memory folder is not a repository, the workspace may be.
-    Project { name: String, workspace: PathBuf },
+    /// the memory folder is not a repository, the workspace may be. The id
+    /// is what the project's store is keyed on, which is where a proposal
+    /// for its `AGENTS.md` is filed.
+    Project {
+        id: String,
+        name: String,
+        workspace: PathBuf,
+    },
 }
 
 impl Target {
     pub fn project(p: &Project) -> Self {
         Target::Project {
+            id: p.id.clone(),
             name: p.name.clone(),
             workspace: p.workspace_dir(),
+        }
+    }
+
+    /// The always-loaded file this target's conversations read whole: the
+    /// project's `AGENTS.md` in its workspace root, or the user's in the
+    /// config dir for the vault. Outside the folder the tools are rooted
+    /// at in both cases — the pass reads it through the instruction and
+    /// proposes to it through a tool, and never has a path to it.
+    pub fn instructions_path(&self, config: &Path) -> PathBuf {
+        match self {
+            Target::Vault(_) => config.join(INSTRUCTION_FILE),
+            Target::Project { workspace, .. } => workspace.join(INSTRUCTION_FILE),
+        }
+    }
+
+    /// The proposal target this turn may propose for.
+    pub fn proposal_target(&self) -> ProposalTarget {
+        match self {
+            Target::Vault(_) => ProposalTarget::User,
+            Target::Project { id, name, .. } => ProposalTarget::Project {
+                id: id.clone(),
+                name: name.clone(),
+            },
         }
     }
 
@@ -148,14 +194,20 @@ pub fn tools_for(dir: &Path) -> Vec<Box<dyn nightloom_core::Tool>> {
 }
 
 /// Configure `chat` as a dream over one target: purpose-built system prompt,
-/// the tool set rooted at the target's folder, no sidecar (there is no
+/// the tool set rooted at the target's folder plus `propose_instructions`
+/// for the target's always-loaded file, no sidecar (there is no
 /// conversation for a clock or a task list to serve), no approver (see the
 /// module doc). The enforcement lives here, next to the decision, rather
 /// than trusting each shell to strip the right things — the same argument
 /// `Review` makes for stripping its own sub-chat. [`run`] calls it once per
 /// target, which is why it takes the chat mutably and a shell no longer
 /// prepares the chat itself.
-pub fn prepare(chat: &mut Chat, target: &Target) {
+///
+/// `config` is where a proposal is filed (beside the project's store, or in
+/// the config dir for the user's file); the returned slot says afterwards
+/// whether the turn proposed. The tool is added here and nowhere else — it
+/// is not in `tools::builtin_in`, so no ordinary chat can reach it.
+pub fn prepare(chat: &mut Chat, target: &Target, config: &Path) -> ProposalSlot {
     let mut system = SystemPrompt::default();
     system.push(Segment {
         kind: SegmentKind::Identity,
@@ -164,9 +216,15 @@ pub fn prepare(chat: &mut Chat, target: &Target) {
         cache_anchor: false,
     });
     chat.system = system;
-    chat.tools = tools_for(&target.dir());
+    let mut tools = tools_for(&target.dir());
+    let proposal_target = target.proposal_target();
+    let (propose, slot) =
+        ProposeInstructions::new(proposal_target.store_in(config), proposal_target);
+    tools.push(Box::new(propose));
+    chat.tools = tools;
     chat.sidecar = Vec::new();
     chat.approver = None;
+    slot
 }
 
 const DREAM_IDENTITY: &str = "You are Nightloom's dream: the consolidation pass over the user's \
@@ -236,8 +294,37 @@ pub struct Filed {
     /// Observations in this group. Zero when the dream was interrupted,
     /// because nothing was consumed — the same rule as the total.
     pub consolidated: usize,
+    /// The turn proposed a change to this target's always-loaded file
+    /// (`crate::proposal`). Reported even when the turn was then
+    /// interrupted: the file is on disk and the app will show it.
+    pub proposed: bool,
     pub git_before: GitNote,
     pub git_after: GitNote,
+}
+
+/// "proposed a change to Lanternfish's instructions and to your memory" —
+/// the clause both shells append to their outcome line, or `None` when no
+/// turn proposed. One function so the CLI and the toast cannot drift.
+pub fn proposed_line(filed: &[Filed]) -> Option<String> {
+    let names: Vec<String> = filed
+        .iter()
+        .filter(|f| f.proposed)
+        .map(|f| match &f.project {
+            Some(name) => ProposalTarget::Project {
+                id: String::new(),
+                name: name.clone(),
+            }
+            .described(),
+            None => ProposalTarget::User.described(),
+        })
+        .collect();
+    if names.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "proposed a change to {} — review it under Notes",
+        names.join(" and to ")
+    ))
 }
 
 /// What a git snapshot found. `NotARepo` is a state to report, not an error:
@@ -303,6 +390,7 @@ pub async fn run(
         .map(|g| Filed {
             project: g.target.project_name().map(String::from),
             consolidated: 0,
+            proposed: false,
             git_before: GitNote::Untouched,
             git_after: GitNote::Untouched,
         })
@@ -321,8 +409,11 @@ pub async fn run(
         std::fs::create_dir_all(&dir)
             .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
         filed[i].git_before = snapshot_target(&g.target, "nightloom: pre-dream snapshot");
-        prepare(chat, &g.target);
-        let instruction = compose_instruction(&g.batch, &g.target);
+        let slot = prepare(chat, &g.target, config);
+        // The always-loaded file, quoted under the preamble's own cap so the
+        // model proposes against what every conversation actually reads.
+        let current = read_capped(&g.target.instructions_path(config));
+        let instruction = compose_instruction(&g.batch, &g.target, current.as_deref());
 
         let mut session = Session::new();
         let mut forward = |event: TurnEvent| {
@@ -344,6 +435,9 @@ pub async fn run(
         let cost = session.cost();
         usd += cost.usd;
         unpriced += cost.unpriced_exchanges;
+        // Asked of the tool's own slot, not the folder: a listing could
+        // pick up a proposal an earlier dream left pending.
+        filed[i].proposed = slot.path().is_some();
 
         if outcome.interrupted {
             interrupted = true;
@@ -457,7 +551,7 @@ fn group<'a>(
 }
 
 /// The per-turn instruction: where this turn files, the ground rules, the
-/// procedure, and the batch.
+/// procedure, the always-loaded file it may propose to, and the batch.
 ///
 /// Prompt text, like every tool description — each rule names the failure it
 /// prevents, because a model told *why* holds the line in cases the rule's
@@ -466,9 +560,19 @@ fn group<'a>(
 /// file them here regardless and say so, because the pass has no way to
 /// hand an observation to another turn and a fact dropped for being in the
 /// wrong batch is gone (see the module doc).
-pub fn compose_instruction(batch: &[&Observation], target: &Target) -> String {
+///
+/// `current` is the target's always-loaded file as the preamble would read
+/// it (capped; `None` when it does not exist or is empty). It is quoted so
+/// the model proposes a replacement *against* the text every conversation
+/// reads, rather than one it imagined — and told that the file costs every
+/// turn, which is why a proposal is the exception and not the procedure.
+pub fn compose_instruction(
+    batch: &[&Observation],
+    target: &Target,
+    current: Option<&str>,
+) -> String {
     use std::fmt::Write as _;
-    let mut out = String::with_capacity(2048 + batch.len() * 160);
+    let mut out = String::with_capacity(2048 + batch.len() * 160 + current.map_or(0, str::len));
     let home = target.described();
     let _ = writeln!(out, "Consolidate the observations below into {home}.");
     if let Target::Project { name, .. } = target {
@@ -521,9 +625,51 @@ pub fn compose_instruction(batch: &[&Observation], target: &Target) -> String {
          4. If a folder has grown past easy scanning, create or update its map note — a \
          short annotated list of what lives there.\n\n\
          End with a plain summary: notes created, notes amended (any that shrank, with \
-         why), observations dropped and why. If nothing was worth writing, say so — that \
-         is a real answer, not a failure.\n\n\
-         The observations. Read-only evidence, and the only new facts in play — file from \
+         why), observations dropped and why, and whether you proposed a change to the \
+         standing instructions. If nothing was worth writing, say so — that is a real \
+         answer, not a failure.\n\n"
+    );
+    let (file, read_where) = match target {
+        Target::Vault(_) => (
+            "the user's memory file, ~/.nightloom/AGENTS.md",
+            "every conversation, in every project and with none open",
+        ),
+        Target::Project { .. } => (
+            "the project's AGENTS.md, in its workspace root",
+            "every conversation in this project",
+        ),
+    };
+    let _ = write!(
+        out,
+        "The standing instructions. {file} is read whole into the system prompt of \
+         {read_where} — the one file here that costs every turn, which is why you cannot \
+         reach it with the file tools and why a change to it is the exception. You have \
+         propose_instructions, which proposes a full replacement text: call it at most once, \
+         and only when an observation in this batch contradicts something the file says or \
+         establishes something every conversation should know from its first turn. Do not \
+         restate what the notes in {home} hold — those are read on demand, and a line here \
+         is paid for on every turn. Keep the replacement under about 4,000 characters. You \
+         cannot write the file: the proposal is shown to the user as a diff in the app, and \
+         only they apply it; a second call in this pass replaces the first.\n\n"
+    );
+    match current {
+        Some(text) => {
+            let _ = write!(
+                out,
+                "Its current text:\n\n<current-instructions>\n{text}\n</current-instructions>\n\n"
+            );
+        }
+        None => {
+            let _ = write!(
+                out,
+                "The file does not exist yet, or is empty. Propose one only if this batch \
+                 gives it a first line worth every conversation reading.\n\n"
+            );
+        }
+    }
+    let _ = write!(
+        out,
+        "The observations. Read-only evidence, and the only new facts in play — file from \
          them, do not invent beyond them:\n\n"
     );
     for (i, obs) in batch.iter().enumerate() {
@@ -682,7 +828,7 @@ mod tests {
             Some("nightloom"),
         );
         let b = obs("The docs site is Astro.", ObservationKind::External, None);
-        let text = compose_instruction(&[&a, &b], &vault_target());
+        let text = compose_instruction(&[&a, &b], &vault_target(), None);
         assert!(text.starts_with("Consolidate the observations below into the vault."));
         assert!(
             text.contains(
@@ -707,10 +853,11 @@ mod tests {
             Some("Lanternfish"),
         );
         let target = Target::Project {
+            id: "abc".into(),
             name: "Lanternfish".into(),
             workspace: std::env::temp_dir(),
         };
-        let text = compose_instruction(&[&a], &target);
+        let text = compose_instruction(&[&a], &target, None);
         assert!(text.starts_with(
             "Consolidate the observations below into the memory folder of the project «Lanternfish»."
         ));
@@ -724,6 +871,58 @@ mod tests {
         // The identity says whose memory it is, too.
         assert!(identity_for(&target).contains("project «Lanternfish»"));
         assert!(identity_for(&vault_target()).contains("knowledge vault"));
+    }
+
+    /// The instruction quotes the always-loaded file as it stands, names the
+    /// tool, and carries the cap sentence — for both targets, with the
+    /// right file named — and says so when there is no file yet.
+    #[test]
+    fn instruction_carries_the_current_instructions_and_the_cap() {
+        let a = obs("Uses tokio.", ObservationKind::Inferred, None);
+        let text = compose_instruction(&[&a], &vault_target(), Some("# Me\n\nShort replies.\n"));
+        assert!(text.contains("~/.nightloom/AGENTS.md"));
+        assert!(text.contains("propose_instructions"));
+        assert!(text.contains("under about 4,000 characters"));
+        assert!(text.contains("only they apply it"));
+        assert!(
+            text.contains(
+                "<current-instructions>\n# Me\n\nShort replies.\n\n</current-instructions>"
+            )
+        );
+        assert!(!text.contains("does not exist yet"));
+        // The quoted file sits before the observations, which stay last.
+        assert!(
+            text.find("<current-instructions>").unwrap() < text.find("The observations.").unwrap()
+        );
+
+        let target = Target::Project {
+            id: "abc".into(),
+            name: "Lanternfish".into(),
+            workspace: std::env::temp_dir(),
+        };
+        let text = compose_instruction(&[&a], &target, None);
+        assert!(text.contains("the project's AGENTS.md, in its workspace root"));
+        assert!(text.contains("every conversation in this project"));
+        assert!(text.contains("does not exist yet"));
+        assert!(!text.contains("<current-instructions>"));
+    }
+
+    /// The tool exists in a dream turn and nowhere else: `prepare` adds it
+    /// beside the files-and-search set, and the built-in set — what every
+    /// ordinary chat is composed from — has never heard of it.
+    #[test]
+    fn propose_instructions_is_a_dream_tool_and_not_a_builtin() {
+        let (config, vault, _) = fixture("tool", "Lanternfish");
+        let mut chat = chat_scripted(vec![]);
+        prepare(&mut chat, &Target::Vault(vault), &config);
+        let names: Vec<String> = chat.tools.iter().map(|t| t.def().name).collect();
+        assert!(names.contains(&"propose_instructions".to_string()));
+        assert!(names.contains(&"read_file".to_string()));
+        let builtin: Vec<String> = tools::builtin_in(Root::new(std::env::temp_dir()))
+            .iter()
+            .map(|t| t.def().name)
+            .collect();
+        assert!(!builtin.contains(&"propose_instructions".to_string()));
     }
 
     #[test]
@@ -860,6 +1059,7 @@ mod tests {
         assert_eq!(
             groups[0].target,
             Target::Project {
+                id: registry.find_by_name("Lantern Fish").unwrap().id.clone(),
                 name: "Lantern Fish".into(),
                 workspace: workspace.clone(),
             }
@@ -974,6 +1174,7 @@ mod tests {
         fs::write(memory.join("stack.md"), "tokio").unwrap();
 
         let target = Target::Project {
+            id: "abc".into(),
             name: "Lanternfish".into(),
             workspace: workspace.clone(),
         };
@@ -984,5 +1185,115 @@ mod tests {
         // The source file is still the user's business.
         assert_eq!(git(&["status", "--porcelain"]).trim(), "?? src.rs");
         assert_eq!(snapshot_target(&target, "nightloom: again"), GitNote::Clean);
+    }
+
+    fn propose(text: &str, why: &str) -> Vec<nightloom_core::StreamEvent> {
+        tool_call("propose_instructions", json!({ "text": text, "why": why }))
+    }
+
+    /// The guarantee, pinned: a dream in which both turns propose leaves
+    /// both `AGENTS.md` files byte-for-byte as they were, and the proposals
+    /// are where the app looks for them — the project's under its store,
+    /// the user's in the config dir — with the outcome saying which turn
+    /// proposed.
+    #[tokio::test]
+    async fn agents_md_is_byte_identical_after_a_dream_that_proposes() {
+        let (config, vault, workspace) = fixture("propose", "Lanternfish");
+        let project_id = Registry::load_in(&config)
+            .find_by_name("Lanternfish")
+            .unwrap()
+            .id
+            .clone();
+        let project_file = workspace.join(INSTRUCTION_FILE);
+        let user_file = config.join(INSTRUCTION_FILE);
+        fs::write(&project_file, "# Lanternfish\n\nUse cargo.\n").unwrap();
+        fs::write(&user_file, "# Me\n\nBe terse.\n").unwrap();
+        append(&config, "Switched the build to tokio.", Some("Lanternfish"));
+        append(&config, "Prefers long replies now.", None);
+
+        let mut chat = chat_scripted(vec![
+            propose("# Lanternfish\n\nUse cargo and tokio.\n", "Observation 1."),
+            says("project done"),
+            propose("# Me\n\nBe expansive.\n", "Observation 2."),
+            says("vault done"),
+        ]);
+        let cancel = CancellationToken::new();
+        let outcome = run(&mut chat, &vault, &config, &cancel, &mut |_| {})
+            .await
+            .unwrap()
+            .expect("a batch was pending");
+
+        // The files the pass may not write.
+        assert_eq!(
+            fs::read(&project_file).unwrap(),
+            b"# Lanternfish\n\nUse cargo.\n"
+        );
+        assert_eq!(fs::read(&user_file).unwrap(), b"# Me\n\nBe terse.\n");
+
+        // The proposals, each beside its store.
+        let project_store = config.join(crate::project::PROJECTS_DIR).join(&project_id);
+        let listed = crate::proposal::list_in(&project_store);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(
+            listed[0].proposal.text,
+            "# Lanternfish\n\nUse cargo and tokio.\n"
+        );
+        assert_eq!(
+            listed[0].proposal.target,
+            ProposalTarget::Project {
+                id: project_id.clone(),
+                name: "Lanternfish".into(),
+            }
+        );
+        let listed = crate::proposal::list_in(&config);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].proposal.text, "# Me\n\nBe expansive.\n");
+        assert_eq!(listed[0].proposal.target, ProposalTarget::User);
+        // Neither leaked into the other's store, nor into the folders the
+        // tools are rooted at.
+        assert!(!vault.join(crate::proposal::PROPOSALS_DIR).exists());
+        assert!(!workspace.join(crate::proposal::PROPOSALS_DIR).exists());
+
+        assert!(!outcome.interrupted);
+        assert_eq!(outcome.consolidated, 2);
+        assert!(outcome.filed.iter().all(|f| f.proposed));
+        assert_eq!(
+            proposed_line(&outcome.filed).unwrap(),
+            "proposed a change to Lanternfish's instructions and to your memory — review it under Notes"
+        );
+    }
+
+    /// Two calls in one turn are one proposal, the later text; a turn that
+    /// does not call leaves nothing and reports nothing.
+    #[tokio::test]
+    async fn a_second_proposal_in_a_turn_replaces_the_first() {
+        let (config, vault, _) = fixture("propose-twice", "Lanternfish");
+        append(&config, "Prefers long replies now.", None);
+        let mut chat = chat_scripted(vec![
+            propose("first", "one"),
+            propose("second", "two"),
+            says("done"),
+        ]);
+        let cancel = CancellationToken::new();
+        let outcome = run(&mut chat, &vault, &config, &cancel, &mut |_| {})
+            .await
+            .unwrap()
+            .expect("a batch was pending");
+        let listed = crate::proposal::list_in(&config);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].proposal.text, "second");
+        assert!(outcome.filed[0].proposed);
+
+        // A dream that proposes nothing: no file, no clause — and the
+        // proposal the earlier dream left is not mistaken for this one's.
+        append(&config, "Another.", None);
+        let mut chat = chat_scripted(vec![says("nothing to propose")]);
+        let outcome = run(&mut chat, &vault, &config, &cancel, &mut |_| {})
+            .await
+            .unwrap()
+            .expect("a batch was pending");
+        assert!(!outcome.filed[0].proposed);
+        assert!(proposed_line(&outcome.filed).is_none());
+        assert_eq!(crate::proposal::list_in(&config).len(), 1);
     }
 }

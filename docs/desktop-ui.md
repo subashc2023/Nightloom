@@ -379,6 +379,30 @@ unfiled; 2 waiting for more turns*. With the Settings toggle on, the
 after-compaction trigger runs a capture first and then the dream. The
 mechanics are in [service-data.md](service-data.md) under *Capture*.
 
+**Proposed changes to the two fixed files (2026-09-14, memory-writer 6c).**
+The dream may *propose* a replacement for `Instructions` or `Memory` — never
+write either; the mechanics and the guarantee are in
+[service-data.md](service-data.md) under *Proposals*. Its toast ends *— and
+proposed a change to Lanternfish's instructions — review it under Notes*, and
+the pinned row grows a `1 proposed` badge (`app.proposals`, re-listed with the
+notes after every turn and every dream; `list_proposals` / `read_proposal` /
+`dismiss_proposal` / `mark_applied`, scope `instructions` or `memory`). The
+badge — and a ⌘K row, *Review proposed instructions*, while any exist — opens
+`NoteView` on the file in **proposal mode** (`app.proposalReview`): the
+model's *why* above a side-by-side diff of the saved text against the
+proposal (`unifiedDiff` in `diff.ts`, a small line LCS rendered through the
+same `DiffView` the Nightshift screens use; no dependency), and three ways
+out. *Load into editor* makes the proposed text the buffer — a **draft**, by
+the same `noteDrafts` rule as typed text (`mirrorDraft`, the effect's body
+extracted so the rule is testable): `● draft` shows, Revert restores the
+saved text and forgets the proposal (`unstageProposal`), Save writes the file
+through the ordinary `saveNote` and only afterwards records the proposal as
+applied with a hash of what was saved (`app.stagedProposal` → `mark_applied`).
+*Dismiss* confirms first (`ConfirmDialog` — the badge goes with it, and the
+never-lose-work rule says a click must not lose something unread), then moves
+the file under `proposals/dismissed/`. *Keep for later* closes; the badge
+stays. Nothing in any of it writes `AGENTS.md` except the user's Save.
+
 `app.openNote` carries its scope for the same reason — the two stores can each
 hold a `plan.md`, and a bare name would make saving depend on which sidebar tab
 happened to be showing. The load effect is guarded on that pair changing rather

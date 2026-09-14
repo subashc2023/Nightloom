@@ -15,6 +15,8 @@ Where things live, and which of them Nightloom owns.
 ~/.nightloom/observations.jsonl        the memory inbox (append-only, never pruned)
 ~/.nightloom/capture.json              how far the capture pass has read each chat log
 ~/.nightloom/dream.json                how far the dream has read into the inbox
+~/.nightloom/proposals/                the dream's proposed edits to user memory (pending; dismissed/ and applied/ beneath)
+~/.nightloom/projects/<id>/proposals/  the same for that project's AGENTS.md
 ```
 
 **Config in the folder, data in the home** — equivalently, *about the code /
@@ -334,6 +336,53 @@ Batching is the point, not a convenience: the abstraction step ("do several
 observations across sessions point at one conclusion none of them states?") only
 exists across sessions, and per-session consolidation is fast writing wearing
 consolidation's name.
+
+### Proposals — the always-loaded files are proposed to, never written
+
+`proposal.rs` (2026-09-14, nightshift memory-writer 6c; blocker 046's answer).
+Each target has one file the preamble reads *whole* into every conversation —
+a project's `<workspace>/AGENTS.md`, the user's `~/.nightloom/AGENTS.md` for the
+vault — and it is the one file the dream may not touch. A note filed wrong is
+read on demand and corrected by the next pass; a line in this file shapes every
+turn from the next chat on, so its gate is the user, not git. The tools are
+rooted at the memory folder or the vault, neither of which contains the file,
+so the pass has no path to it; the test
+`agents_md_is_byte_identical_after_a_dream_that_proposes` pins the bytes.
+
+What the pass gets instead: the instruction quotes the file's current text
+under the preamble's own 32 KiB cap (`<current-instructions>`, or a sentence
+saying there is no file yet), says the file costs every turn, and gives the
+turn one tool, **`propose_instructions`** (`{ text: full replacement, why: one
+paragraph }`), added by `dream::prepare` and by nothing else — it is not in
+`tools::builtin_in`, so no ordinary chat can reach it. The instruction and the
+tool description say: call it at most once, only when an observation
+contradicts or extends the file, never to restate what the on-demand notes
+hold, keep it under about 4,000 characters (the hard stop is the 32 KiB cap,
+refused with a sentence). A second call in a turn replaces the first. Both
+targets may propose: the project turn for the project's file, the vault turn
+for the user's.
+
+A proposal is one JSON file, `<store>/proposals/<stamp>.json` — the store is
+`~/.nightloom/projects/<id>/` for a project and `~/.nightloom/` for the user,
+built from the config dir the dream was handed so a job files beside the
+registry it read; the stamp is RFC 3339 with `-` for `:`, since a colon is not
+a Windows filename. `Proposal { v, at, target: project{id,name} | user, why,
+text, from_dream }`; `list_in` (newest first, unparseable files skipped, the
+record folders not walked), `read`, `dismiss` (moves under
+`proposals/dismissed/`, stamped) and `applied` (moves under
+`proposals/applied/` with `fnv1a64:` of the text the user *saved*, which the
+draft let them edit first). **Moved, never deleted:** what the pass suggested
+and what the user did with it is information, the supersede-don't-erase
+argument again. `DreamOutcome.filed[i].proposed` says which turns proposed;
+`dream::proposed_line` is the one clause both shells print ("proposed a change
+to Lanternfish's instructions and to your memory — review it under Notes"), so
+the CLI and the toast cannot drift.
+
+Applying is the desktop's job and goes through the editor: the pinned row
+shows `1 proposed`, the review shows `why` and a diff, and *Load into editor*
+puts the text in the buffer as a **draft** — `● draft`, Revert restores the
+file, Save writes it by the ordinary `save_note` and only then calls
+`mark_applied`. The CLI prints the clause and nothing more.
 
 ### Scheduling
 
