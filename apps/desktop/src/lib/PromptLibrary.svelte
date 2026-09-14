@@ -1,65 +1,92 @@
 <script lang="ts">
-  import { app, deletePrompt, storePrompt, usePrompt } from "./state.svelte";
+  import { app, closePrompts, deletePrompt, storePrompt, usePrompt } from "./state.svelte";
+  import ConfirmDialog from "./ConfirmDialog.svelte";
 
-  /** The entry being edited; null is an unsaved new one. */
-  let selected = $state<string | null>(app.draft.promptId);
-  let name = $state("");
-  let text = $state("");
+  /**
+   * The edit lives in `app.promptDraft`, not here (review round 1,
+   * 2026-09-13; memory never-lose-work): the modal closes by Esc, by a
+   * click on the scrim and by the popover's handoff, and a draft held in
+   * this component would go with it. Reopening finds the draft where it
+   * was — the entry it was for, its name, its text.
+   */
+  function isDirty(x: { selected: string | null; name: string; text: string }): boolean {
+    const e = app.prompts.find((p) => p.id === x.selected);
+    return e ? e.name !== x.name.trim() || e.text !== x.text : x.text.length > 0;
+  }
+  // A clean leftover is re-seeded from the chat's current prompt; a dirty
+  // one is the work being offered back, and opens as it was left.
+  if (!app.promptDraft || !isDirty(app.promptDraft)) {
+    const p = app.prompts.find((x) => x.id === app.draft.promptId);
+    app.promptDraft = {
+      selected: p?.id ?? null,
+      name: p?.name ?? "",
+      text: p?.text ?? "",
+    };
+  }
+  const d = $derived(app.promptDraft!);
+  const selected = $derived(d.selected);
 
   const entry = $derived(app.prompts.find((p) => p.id === selected) ?? null);
   const dirty = $derived(
-    entry ? entry.name !== name.trim() || entry.text !== text : text.length > 0,
+    entry ? entry.name !== d.name.trim() || entry.text !== d.text : d.text.length > 0,
   );
 
-  // Guarded on the selection, not on state generally: the fields are bound
-  // to `name`/`text`, so an unguarded effect would overwrite what is being
-  // typed on the user's own keystroke.
-  let loadedFor = $state<string | null | undefined>(undefined);
-  $effect(() => {
-    if (loadedFor === selected) return;
-    loadedFor = selected;
-    const p = app.prompts.find((x) => x.id === selected);
-    name = p?.name ?? "";
-    text = p?.text ?? "";
-  });
+  /** One parked dirty draft, the one left by the last switch away. */
+  let parked = $state<null | { selected: string | null; name: string; text: string }>(null);
 
+  /** Switch the pane to `id`, or to a blank new entry. A dirty draft is
+   *  parked rather than overwritten and comes back the moment its entry is
+   *  picked again. */
   function pick(id: string | null) {
-    selected = id;
+    if (id === selected) return;
+    if (dirty) parked = { ...d };
+    if (parked && parked.selected === id) {
+      app.promptDraft = parked;
+      parked = null;
+      return;
+    }
+    const p = app.prompts.find((x) => x.id === id);
+    app.promptDraft = { selected: id, name: p?.name ?? "", text: p?.text ?? "" };
   }
 
   /** Start a new entry, optionally seeded with the chat's one-off prompt. */
   function blank(seed = "") {
-    selected = null;
-    loadedFor = null;
-    name = "";
-    text = seed;
+    pick(null);
+    if (seed) app.promptDraft = { selected: null, name: "", text: seed };
   }
 
   function save(): string {
-    const id = storePrompt(name, text, selected);
-    selected = id;
-    loadedFor = id;
+    const id = storePrompt(d.name, d.text, selected);
+    app.promptDraft = { selected: id, name: d.name.trim() || "Untitled", text: d.text };
     // Editing the prompt the chat is connected with takes effect now —
     // otherwise the library would disagree with what is on the wire.
     if (app.draft.promptId === id) void usePrompt(id);
     return id;
   }
 
+  /** Save, put it on the chat, and hand back to whoever opened the library. */
   function useIt() {
     void usePrompt(save());
-    app.showPrompts = false;
+    close();
   }
 
+  let confirmDelete = $state(false);
   function remove() {
     if (!selected) return;
     deletePrompt(selected);
-    blank();
+    confirmDelete = false;
+    app.promptDraft = { selected: null, name: "", text: "" };
   }
 
-  const close = () => (app.showPrompts = false);
+  /**
+   * Close, and reopen the popover if that is where the pencil was clicked:
+   * the point of the round trip is to see the chosen prompt in its dropdown.
+   * The draft stays in app state whichever way this is reached.
+   */
+  const close = closePrompts;
 
   function onkeydown(e: KeyboardEvent) {
-    if (e.key === "Escape") close();
+    if (e.key === "Escape" && !confirmDelete) close();
   }
 
   /** The chat is running a prompt that is not in the library. */
@@ -96,36 +123,57 @@
         + From this chat
       </button>
     {/if}
-    <button class="close" onclick={close}>Close</button>
+    <button class="close" onclick={close}>{app.promptsFrom === "rail" ? "Back to model" : "Close"}</button>
   </nav>
 
   <div class="pane">
     <input
       class="name"
       type="text"
-      bind:value={name}
+      value={d.name}
+      oninput={(e) => (d.name = e.currentTarget.value)}
       placeholder="Name"
+      aria-label="Prompt name"
       spellcheck="false"
     />
     <textarea
-      bind:value={text}
+      value={d.text}
+      oninput={(e) => (d.text = e.currentTarget.value)}
       placeholder="System prompt — layered after the built-in preamble, before the conversation."
+      aria-label="Prompt text"
       spellcheck="false"
     ></textarea>
     <div class="foot">
-      <button class="primary" disabled={!text.trim()} onclick={useIt}>
-        Use in this chat
+      <button
+        class="primary"
+        disabled={!d.text.trim()}
+        title="Save this entry and make it the chat's system prompt"
+        onclick={useIt}
+      >
+        Save &amp; use in this chat
       </button>
-      <button disabled={!text.trim() || !dirty} onclick={() => save()}>
-        Save{dirty && (entry || text.trim()) ? " •" : ""}
+      <button disabled={!d.text.trim() || !dirty} onclick={() => save()}>
+        Save{dirty && (entry || d.text.trim()) ? " •" : ""}
       </button>
+      {#if dirty}<span class="draft" title="Unsaved — kept if you close">draft</span>{/if}
       <div class="spacer"></div>
       {#if entry}
-        <button class="danger" onclick={remove}>Delete</button>
+        <button class="danger" onclick={() => (confirmDelete = true)}>Delete</button>
       {/if}
     </div>
   </div>
 </div>
+
+{#if confirmDelete && entry}
+  <ConfirmDialog
+    title="Delete this prompt?"
+    lead="It leaves the library. A chat already running it keeps its text."
+    facts={[["name", entry.name], ["length", `${entry.text.length} characters`]]}
+    confirmLabel="Delete"
+    onconfirm={remove}
+    onclose={() => (confirmDelete = false)}
+  />
+{/if}
 
 <style>
   .modal {
@@ -284,5 +332,12 @@
   }
   .spacer {
     flex: 1;
+  }
+  .draft {
+    font-size: 0.7rem;
+    color: var(--dim);
+    border: 1px dashed var(--border);
+    border-radius: 999px;
+    padding: 0.1rem 0.45rem;
   }
 </style>

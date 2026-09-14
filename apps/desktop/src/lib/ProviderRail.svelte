@@ -3,6 +3,7 @@
     app,
     applyDraft,
     loadContextLimits,
+    providerPills,
     useEngine,
     usable,
     usePrompt,
@@ -12,7 +13,6 @@
     MODEL_KEYS,
     aliasOf,
     formatWindow,
-    isProviderVisible,
     modelForAlias,
     modelsFor,
     providerLabel,
@@ -53,12 +53,9 @@
     return `${window} window ${status}${p.isUsingOverage ? ", on overage" : ""}`;
   });
 
-  // The current selection stays listed even if settings later hide it.
-  const providers = $derived(
-    app.providers.filter(
-      (p) => isProviderVisible(p.kind, app.prefs) || p.kind === app.draft.provider,
-    ),
-  );
+  // The current selection stays listed even if settings later hide it. The
+  // same list `switchProvider` counts, so pill n and ⌘⇧n agree.
+  const providers = $derived(providerPills());
   const selected = $derived(app.providers.find((p) => p.kind === app.draft.provider));
   const models = $derived.by(() => {
     const list = modelsFor(app.draft.provider, app.prefs, selected?.default_model ?? null);
@@ -130,6 +127,45 @@
     if (!alias || modelForAlias(models, alias) !== id) return null;
     const k = MODEL_KEYS.find((m) => m.alias === alias);
     return k ? `${mod}${shift}${k.key}` : null;
+  }
+  /**
+   * The Claude Code model as pills (review round 1, 2026-09-13): the CLI's
+   * aliases, each with its ⌘⇧ key, and *other…* for a full id typed into
+   * the field the pills replaced. The field stays for anything the pills
+   * do not name, so nothing the old box accepted is refused.
+   */
+  const AGENT_PILLS = AGENT_MODELS.filter(Boolean);
+  let agentOther = $state(false);
+  const agentIsAlias = $derived(AGENT_PILLS.includes(app.draft.agentModel.trim()));
+  const showAgentField = $derived(agentOther || (!agentIsAlias && app.draft.agentModel.trim() !== ""));
+  function pickAgentModel(alias: string) {
+    agentOther = false;
+    if (alias === app.draft.agentModel) return;
+    app.draft.agentModel = alias;
+    apply();
+  }
+  function agentKey(alias: string): string | null {
+    const k = MODEL_KEYS.find((m) => m.alias === alias);
+    return k ? `${mod}${shift}${k.key}` : null;
+  }
+  // Back from the library: land on the dropdown that now names the prompt.
+  let promptSect = $state<HTMLElement | null>(null);
+  $effect(() => {
+    if (app.railScrollTo === "prompt" && promptSect) {
+      promptSect.scrollIntoView({ block: "center" });
+      app.railScrollTo = null;
+    }
+  });
+  /** Settings takes the popover's place rather than stacking on it. */
+  function openSettings() {
+    app.showRail = false;
+    app.showSettings = true;
+  }
+  /** The library opens in the popover's place and hands back to it on close. */
+  function openPrompts() {
+    app.showRail = false;
+    app.promptsFrom = "rail";
+    app.showPrompts = true;
   }
   /** `effort: low` → `low`, `budget…` → `budget`: the segment is short. */
   function seg(label: string): string {
@@ -239,49 +275,73 @@
     {/if}
 
     <section class="sect">
-      <div class="sect-h"><span class="ns-k">Connection</span></div>
-      <div class="row">
-        <span class="lbl">Binary</span>
-        <input
-          type="text"
-          bind:value={app.draft.agentBinary}
-          onchange={apply}
-          placeholder="claude"
-          disabled={locked}
-          title={agent?.version ? `${agent.binary} — ${agent.version}` : ""}
-        />
-        <Hint
-          text="The Claude Code CLI to run. Left empty, `claude` is looked for on PATH and then in the usual install locations (~/.local/bin, /opt/homebrew/bin, /usr/local/bin). Give an absolute path if it lives somewhere else."
-        />
+      <div class="sect-h">
+        <span class="ns-k">Model</span>
+        <span class="sub">the CLI resolves the alias</span>
       </div>
-      {#if agent?.version}
-        <p class="note indent">found: <code>{agent.binary}</code> — {agent.version}</p>
+      <div class="pv" role="radiogroup" aria-label="Model">
+        <button
+          class="p"
+          class:on={app.draft.agentModel.trim() === "" && !agentOther}
+          role="radio"
+          aria-checked={app.draft.agentModel.trim() === "" && !agentOther}
+          disabled={locked}
+          title="Whatever the CLI defaults to"
+          onclick={() => pickAgentModel("")}
+        >
+          default
+        </button>
+        {#each AGENT_PILLS as a (a)}
+          {@const cap = agentKey(a)}
+          <button
+            class="p"
+            class:on={app.draft.agentModel.trim() === a && !agentOther}
+            role="radio"
+            aria-checked={app.draft.agentModel.trim() === a && !agentOther}
+            disabled={locked}
+            title={cap ? `${a} — ${cap}` : a}
+            onclick={() => pickAgentModel(a)}
+          >
+            {a}
+            {#if cap}<Kbd keys={cap} />{/if}
+          </button>
+        {/each}
+        <button
+          class="p"
+          class:on={showAgentField}
+          role="radio"
+          aria-checked={showAgentField}
+          disabled={locked}
+          title="A full model id, typed"
+          onclick={() => (agentOther = true)}
+        >
+          other…
+        </button>
+      </div>
+      {#if showAgentField}
+        <div class="row">
+          <span class="lbl">Id</span>
+          <input
+            type="text"
+            bind:value={app.draft.agentModel}
+            onchange={apply}
+            placeholder="claude-opus-5"
+            disabled={locked}
+          />
+          <Hint
+            text="A full model id the CLI accepts. The snapshot it picked is shown in the status line once a turn has run. ⌘⇧S / O / F / H (Command + Shift + the letter) set an alias from anywhere."
+          />
+        </div>
       {/if}
-      <div class="row">
-        <span class="lbl">Model</span>
-        <input
-          type="text"
-          list="agent-models"
-          bind:value={app.draft.agentModel}
-          onchange={apply}
-          placeholder="default"
-          disabled={locked}
-        />
-        <datalist id="agent-models">
-          {#each AGENT_MODELS.filter(Boolean) as m (m)}
-            <option value={m}></option>
-          {/each}
-        </datalist>
-        <Hint
-          text="An alias (fable, opus, sonnet, haiku) or a full model id. The CLI resolves it; the snapshot it picked is shown above once a turn has run. ⌘⇧S / O / F / H set the alias from anywhere."
-        />
-      </div>
+      {#if app.agentTurn?.model}
+        <p class="note">last turn ran <code>{app.agentTurn.model}</code></p>
+      {/if}
     </section>
   {:else}
     <section class="sect">
       <div class="sect-h"><span class="ns-k">Provider</span></div>
       <div class="pv" role="radiogroup" aria-label="Provider">
-        {#each providers as p (p.kind)}
+        {#each providers as p, i (p.kind)}
           <button
             class="p"
             class:on={p.kind === app.draft.provider}
@@ -289,14 +349,18 @@
             role="radio"
             aria-checked={p.kind === app.draft.provider}
             disabled={locked || !usable(p)}
-            title={usable(p) ? providerLabel(p.kind) : `${providerLabel(p.kind)} — no key; add one in Settings`}
+            title={usable(p)
+              ? `${providerLabel(p.kind)}${i < 9 ? ` — ${mod}${shift}${i + 1}` : ""}`
+              : `${providerLabel(p.kind)} — no key; add one in Settings`}
             onclick={() => pickProvider(p.kind)}
           >
             <span class="d" class:no={!usable(p)}></span>
             {PILL[p.kind] ?? providerLabel(p.kind)}
+            {#if i < 9}<Kbd keys={String(i + 1)} dim={!usable(p)} />{/if}
           </button>
         {/each}
       </div>
+      <div class="more bare"><span>{mod}{shift}number switches anywhere</span></div>
     </section>
 
     <section class="sect">
@@ -335,7 +399,7 @@
             <div class="more">nothing matches</div>
           {/each}
           <div class="more">
-            <span>{mod}{shift}letter switches anywhere</span>
+            <span>{mod}{shift}letter (Command + Shift) switches anywhere</span>
           </div>
         </div>
       {:else}
@@ -617,7 +681,7 @@
     </section>
   {/if}
 
-  <section class="sect">
+  <section class="sect" bind:this={promptSect}>
     <div class="sect-h">
       <span class="ns-k">System prompt</span>
       {#if agentMode}<span class="sub">appended to Claude Code's own</span>{/if}
@@ -648,10 +712,35 @@
         class="icon"
         title="Saved system prompts"
         aria-label="Saved system prompts"
-        onclick={() => (app.showPrompts = true)}><Icon name="pencil" size={13} /></button
+        onclick={openPrompts}><Icon name="pencil" size={13} /></button
       >
     </div>
   </section>
+
+  {#if agentMode}
+    <!-- The binary at the foot, not the head (review round 1, 2026-09-13):
+         it is set once and read never, and the pane used to open on it. -->
+    <section class="sect">
+      <div class="sect-h"><span class="ns-k">CLI</span></div>
+      <div class="row">
+        <span class="lbl">Binary</span>
+        <input
+          type="text"
+          bind:value={app.draft.agentBinary}
+          onchange={apply}
+          placeholder="claude"
+          disabled={locked}
+          title={agent?.version ? `${agent.binary} — ${agent.version}` : ""}
+        />
+        <Hint
+          text="The Claude Code CLI to run. Left empty, `claude` is looked for on PATH and then in the usual install locations (~/.local/bin, /opt/homebrew/bin, /usr/local/bin). Give an absolute path if it lives somewhere else."
+        />
+      </div>
+      {#if agent?.version}
+        <p class="note indent">found: <code>{agent.binary}</code> — {agent.version}</p>
+      {/if}
+    </section>
+  {/if}
 
   {#if agentMode && app.agentTurn}
     <section class="sect">
@@ -675,7 +764,7 @@
   {/if}
 
   <div class="spacer"></div>
-  <button class="manage" onclick={() => (app.showSettings = true)}>
+  <button class="manage" onclick={openSettings}>
     <Icon name="gear" size={13} />
     Providers, keys &amp; models…
     <Kbd keys="{mod}," />
@@ -976,6 +1065,23 @@
   }
   .pv .p:hover:not(:disabled) {
     border-color: var(--dim);
+  }
+  /* The key cap inside a pill: smaller than the list's, no bottom lip. */
+  .pv .p :global(.kbd) {
+    height: 15px;
+    min-width: 15px;
+    padding: 0 3px;
+    font-size: 9.5px;
+    border-bottom-width: 1px;
+    margin-left: 1px;
+  }
+  .more.bare {
+    padding: 0 2px;
+    border-top: none;
+    display: flex;
+    justify-content: flex-end;
+    font-size: 11px;
+    color: var(--dim);
   }
 
   /* The model list: radio rows. */
