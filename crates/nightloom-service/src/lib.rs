@@ -9,6 +9,7 @@
 
 pub mod agent;
 pub mod approval;
+pub mod capture;
 pub mod credentials;
 pub mod dream;
 pub mod import;

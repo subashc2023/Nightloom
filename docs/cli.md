@@ -113,6 +113,20 @@ line reads *consolidated 5 observations — 3 into Lanternfish, 2 into the vault
 followed by one rollback line per folder (a workspace is committed only if it is
 a repository, and only its `.agents/`).
 
+**`capture.rs`** is the pass that fills the inbox the dream drains (`nightloom
+capture`, `--dry-run` to print the would-be observations and append nothing —
+the provider is still called): it reads every session log since its watermark
+(each registered project's chats and the unfiled ones), folds the new
+conversation text — never a tool result — into excerpts, and asks the model
+for observations one per line, `kind | text`. The same provider flags as
+`dream`; the same thin shell — connect, Ctrl-C, render, report. The report
+line reads *captured 4 observations from 3 chats (1 line skipped) — 3 from
+Lanternfish, 1 unfiled*, then how many chats are waiting for more turns and
+how many the turn cap left for the next run. Everything that decides what is
+read and when a log's watermark moves lives in `service::capture`; the
+mechanics are in [service-data.md](service-data.md) under *Capture*.
+`--auto-dream` is unchanged and runs the dream alone.
+
 A startup line names the pending observation count when there is one — the nudge
 that makes dreaming periodic without making it automatic, since an unattended
 pass spends real money. `--auto-dream` is the opt-in automation: a compaction

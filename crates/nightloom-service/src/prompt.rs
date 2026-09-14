@@ -70,7 +70,7 @@ When tools are available, use them to check rather than guessing, and say plainl
 /// picked up here without being asked to duplicate it under a second name —
 /// the same reasoning that makes `mcp.json` use the `mcpServers` key
 /// everybody else uses.
-const INSTRUCTION_FILE: &str = "AGENTS.md";
+pub(crate) const INSTRUCTION_FILE: &str = "AGENTS.md";
 
 /// Per-file ceiling. A runaway instruction file should cost tokens, not the
 /// whole context window.
@@ -861,7 +861,9 @@ fn human_bytes(bytes: u64) -> String {
 
 /// A missing, unreadable, or non-UTF-8 instruction file is the normal case,
 /// not an error — the walk visits far more directories than have one.
-fn read_capped(path: &Path) -> Option<String> {
+/// `pub(crate)` for the capture pass, which quotes the user's `AGENTS.md`
+/// to its model under the same cap the preamble reads it with.
+pub(crate) fn read_capped(path: &Path) -> Option<String> {
     let bytes = std::fs::read(path).ok()?;
     let text = String::from_utf8(bytes).ok()?;
     let text = truncate(text);

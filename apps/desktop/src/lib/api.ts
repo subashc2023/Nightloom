@@ -5,6 +5,7 @@ import type {
   ApprovalDecision,
   Blocker,
   BlockerList,
+  CaptureReport,
   CompactResult,
   ConnectArgs,
   ConnectResult,
@@ -371,6 +372,35 @@ export function dream(args: {
 /** Interrupt the in-flight dream; nothing is consumed. */
 export function cancelDream(): Promise<null> {
   return invoke("cancel_dream");
+}
+
+/** Session logs with bytes past their capture watermark. */
+export function captureStatus(): Promise<number> {
+  return invoke("capture_status");
+}
+
+/**
+ * Run one capture pass over the session logs. Streams `capture-event`s (the
+ * `TurnEvent` shape, on its own channel) while it works, and resolves with
+ * what the pass did.
+ */
+export function capture(args: {
+  provider: string;
+  model?: string;
+  baseUrl?: string;
+  thinking?: string;
+}): Promise<CaptureReport> {
+  return invoke("capture", {
+    provider: args.provider,
+    model: args.model,
+    baseUrl: args.baseUrl,
+    thinking: args.thinking,
+  });
+}
+
+/** Interrupt the in-flight capture; the chat it stopped in is re-read next time. */
+export function cancelCapture(): Promise<null> {
+  return invoke("cancel_capture");
 }
 
 // ---- Nightshift ----

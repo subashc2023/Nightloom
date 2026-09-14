@@ -2313,6 +2313,121 @@ fn cancel_dream(state: State<'_, AppState>) {
     state.dream_cancel.lock().unwrap().cancel();
 }
 
+// ---- the capture pass ------------------------------------------------------
+
+/// How many session logs have bytes past their capture watermark — the
+/// count on the Capture button. Directory scans only, no log opened, no
+/// locks, so the UI can ask after every turn. The button is always shown:
+/// the inbox count says nothing about what the logs hold, and the chat
+/// open right now is always one of the unread.
+#[tauri::command]
+async fn capture_status() -> Result<usize, String> {
+    let Some(config) = project::config_dir() else {
+        return Ok(0);
+    };
+    blocking(move || Ok::<_, String>(nightloom_service::capture::pending_count_in(&config))).await
+}
+
+/// What one capture did, flattened for the toast. `per_project` is the
+/// split by source in the order the dirs were walked, "unfiled" for the
+/// chats with no project.
+#[derive(Serialize)]
+struct CaptureReport {
+    observations: usize,
+    logs_read: usize,
+    skipped: usize,
+    deferred: usize,
+    remaining: usize,
+    per_project: Vec<CapturedReport>,
+    interrupted: bool,
+    cost_usd: Option<f64>,
+}
+
+#[derive(Serialize)]
+struct CapturedReport {
+    project: String,
+    observations: usize,
+}
+
+/// Run one capture pass over the session logs.
+///
+/// The dream's twin: its own job with its own system prompt and no tools
+/// (see `service::capture::prepare`), connected from the arguments rather
+/// than the window's `Chat`, and working the same whichever engine the
+/// window is on. It shares the dream's `dreaming` mutex rather than
+/// having its own, because the two are one pipeline — capture fills the
+/// inbox the dream drains — and a dream started while a capture is
+/// appending would read half of what the capture wrote. The refusal is
+/// the same sentence a second dream gets. Progress streams as
+/// `capture-event`s on their own channel.
+#[tauri::command]
+async fn capture(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    provider: String,
+    model: Option<String>,
+    base_url: Option<String>,
+    thinking: Option<String>,
+) -> Result<CaptureReport, String> {
+    let Some(config) = project::config_dir() else {
+        return Err("no user config directory — there are no session logs to read".into());
+    };
+    let Ok(_running) = state.dreaming.try_lock() else {
+        return Err("a dream or a capture is already running".into());
+    };
+
+    let kind: ProviderKind = provider.parse()?;
+    let thinking = match thinking {
+        Some(s) => s.parse::<Thinking>()?,
+        None => Thinking::Default,
+    };
+    let (provider, model) =
+        nightloom_service::connect(kind, model, credentials::provider_key(kind), base_url, None)
+            .map_err(|e| e.to_string())?;
+    let mut chat = Chat::new(provider, model);
+    chat.thinking = thinking;
+    chat.context_limit = nightloom_service::context_limit(kind, &chat.model);
+    chat.price = nightloom_service::price(kind, &chat.model);
+
+    // The same token the dream swaps in: the two never run at once (the
+    // mutex above), so one Stop reaches whichever is running.
+    let cancel = CancellationToken::new();
+    *state.dream_cancel.lock().unwrap() = cancel.clone();
+    let emitter = app.clone();
+    let mut on_event = move |event: TurnEvent| {
+        let _ = emitter.emit("capture-event", &event);
+    };
+    let outcome =
+        nightloom_service::capture::run(&mut chat, &config, false, &cancel, &mut on_event)
+            .await?
+            .ok_or_else(|| "nothing left to capture".to_string())?;
+    Ok(CaptureReport {
+        observations: outcome.observations,
+        logs_read: outcome.logs_read,
+        skipped: outcome.skipped,
+        deferred: outcome.deferred,
+        remaining: outcome.remaining,
+        per_project: outcome
+            .per_project
+            .iter()
+            .map(|(project, observations)| CapturedReport {
+                project: project.clone(),
+                observations: *observations,
+            })
+            .collect(),
+        interrupted: outcome.interrupted,
+        cost_usd: outcome.cost_usd,
+    })
+}
+
+/// Interrupt the in-flight capture, if any. The same token as the dream's
+/// (they never overlap); a command of its own so the frontend's name says
+/// what it stops.
+#[tauri::command]
+fn cancel_capture(state: State<'_, AppState>) {
+    state.dream_cancel.lock().unwrap().cancel();
+}
+
 /// Show a folder in the OS file manager.
 ///
 /// The docspace is a real directory and its whole appeal is that it is: the
@@ -2754,6 +2869,9 @@ fn main() {
             dream_status,
             dream,
             cancel_dream,
+            capture_status,
+            capture,
+            cancel_capture,
             reveal,
             nightshift::nightshift_projects,
             nightshift::nightshift_project,

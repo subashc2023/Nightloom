@@ -80,10 +80,13 @@ fn skip_deleted<T>(result: Result<T, StoreError>) -> Result<Option<T>, StoreErro
 }
 
 /// One session log, as the directory scan already described it.
-struct Log {
-    path: PathBuf,
-    len: u64,
-    modified: DateTime<Utc>,
+///
+/// `pub(crate)` with [`log_files`] since the capture pass, which needs the
+/// same size-and-mtime listing to find logs with bytes past a watermark.
+pub(crate) struct Log {
+    pub(crate) path: PathBuf,
+    pub(crate) len: u64,
+    pub(crate) modified: DateTime<Utc>,
 }
 
 /// Every session log in the dir, with the size and mtime that came back with
@@ -96,7 +99,7 @@ struct Log {
 /// was measured at 34 ms of the 40 ms a warm listing took — more than
 /// everything else in [`list`] put together. On Unix it costs what it always
 /// did.
-fn log_files(log_dir: &Path) -> Result<Vec<Log>, StoreError> {
+pub(crate) fn log_files(log_dir: &Path) -> Result<Vec<Log>, StoreError> {
     let entries = fs::read_dir(log_dir).map_err(io_err(log_dir))?;
     let mut logs = Vec::new();
     for entry in entries {

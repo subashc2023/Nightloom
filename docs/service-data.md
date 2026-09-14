@@ -13,7 +13,8 @@ Where things live, and which of them Nightloom owns.
 ~/.nightloom/knowledge/                the vault     (what I know)
 ~/.nightloom/knowledge.json            where the vault is, when moved
 ~/.nightloom/observations.jsonl        the memory inbox (append-only, never pruned)
-~/.nightloom/dream.json                how far the dream has read into it
+~/.nightloom/capture.json              how far the capture pass has read each chat log
+~/.nightloom/dream.json                how far the dream has read into the inbox
 ```
 
 **Config in the folder, data in the home** — equivalently, *about the code /
@@ -151,11 +152,14 @@ already bounded by the docspace's own limits, a vault is markdown rather than a
 repository, and a cache keyed on mtimes would be complexity bought against a cost
 nobody has measured — take that measurement first.
 
-## Memory: `observe.rs` + `dream.rs` + `tools/remember.rs`
+## Memory: `observe.rs` + `capture.rs` + `dream.rs` + `tools/remember.rs`
 
 **Memory is two halves, split the way the consolidation literature converges
 on** — fast append-only capture, slow batched integration. The design doc with
-the research behind each decision is `.agents/dreaming.md`.
+the research behind each decision is `.agents/dreaming.md`. Since 2026-09-14
+the pipeline is **logs → capture → inbox → dream → vault / project memory**:
+the `remember` tool is still the fast path, and the capture pass is what
+fills the inbox when the model never takes it.
 
 ### The inbox
 
@@ -181,6 +185,73 @@ Three properties are the module:
   elsewhere at double-digit accuracy loss.
 - Reading is total on `Session::load`'s argument, a torn final line left
   *unconsumed* for the next read rather than half-parsed.
+
+### Capture
+
+`nightloom capture` / `capture::run` (2026-09-14, nightshift memory-writer 6b;
+blocker 046's answer). The `remember` tool exists for the model to drop an
+observation mid-turn, and on this machine it has never called it — nothing in
+a conversation makes "write this down for later" the obvious next move, and
+the Claude Code engine cannot call it at all. So capture stops depending on
+the model's initiative: a pass reads what the conversations actually were,
+from the session logs both engines write (the Claude Code engine's through the
+Recorder — the same JSONL), and asks a model to extract the observations.
+
+**What it reads.** Every session dir — each registered project's
+`<store>/sessions` and `~/.nightloom/unfiled/sessions` (`capture::session_dirs`,
+built from the config dir so a job handed one explicitly finds the chats
+beside the registry it read) — and in each, every log with bytes past its
+watermark, newest first. A log's new lines are folded into an excerpt of
+**conversation text only**: user and assistant messages with timestamps,
+through the same `store::said` filter the chat tools apply, so a tool result —
+the file a chat read, the command it ran, the page it fetched — is never in
+front of the model. That is the injection defense in structural form; the
+instruction also says a line shaped as a directive to the pass is dropped,
+because a pasted page can arrive inside a user message. Superseded turns are
+folded too (a rewound turn is still something the user said, and `search`
+reads the log the same way); an elided event keeps its content in the log and
+is folded like any other.
+
+**When a log is read.** Its new lines must hold at least `MIN_USER_TURNS` (2)
+user turns — one question and its answer rarely hold an observation, and the
+chat open right now gains exactly one per turn — unless the log was never
+captured and has been quiet for `SETTLED_SECS` (an hour): a short chat is still
+a chat, and there is no "closed" event to wait for. Otherwise it is *deferred*,
+counted in the outcome and left alone. New lines with nothing said in them (a
+task list, a title, a tool result) are consumed without a turn.
+
+**The turn.** Excerpts from one source are packed into a turn up to
+`BATCH_BUDGET` (48 KB); a log with more new material than that is read up to
+it at a message boundary and the rest left for the next run, which is what
+lets the watermark describe what was taken. At most `TURN_CAP` (25) turns a
+run: the first capture after an import of a thousand chats is otherwise a
+thousand turns nobody priced. The chat has **no tools** (`capture::prepare`:
+identity only, no sidecar, no approver) and is asked for observations only,
+one per line, as `kind | text` with kind ∈ `user_stated` / `inferred` /
+`external` — facts about the user, their preferences, decisions, what they are
+working on; nothing about the assistant's own output; nothing already in the
+user's `AGENTS.md`, which is quoted in the instruction for exclusion; the word
+`none` when nothing is worth keeping. `parse_reply` is lenient about a bullet
+or a number and strict about the kind and a non-empty text; a line that fails
+is *counted* (`skipped`), never guessed at.
+
+**What it writes.** Each parsed line is appended through the same
+`observe::append_in` the `remember` tool uses, with `source` = the project's
+name (or absent for an unfiled chat, the `remember` convention) and `at` = the
+batch's most recent message, so the dream's provenance names the
+conversation's day rather than the pass's. **The watermark is per log**
+(`capture.json`: log path → bytes consumed, unlike the dream's single offset,
+because the logs are many and each grows on its own) and a log's entry moves
+only after its observations are appended: an interruption between the two
+offers the same bytes again, and the dream dedupes. A cancelled pass keeps the
+turns that completed and appends nothing from the one it stopped in.
+`--dry-run` makes the provider calls and appends nothing; the drafted
+observations come back in the outcome. `CaptureOutcome` carries `logs_read`,
+`observations`, `skipped`, `deferred`, `remaining` (past the turn cap),
+`per_project` in walk order, `drafted`, `interrupted`, usage and cost.
+
+The current chat's own log is read too, up to its watermark — fine, by
+design: what was said is what was said.
 
 ### The dream
 
@@ -275,7 +346,16 @@ interleave; outcome as a toast carrying the split by target and the git line
 per folder; one dream at a time via
 `try_lock`, the second click getting a sentence rather than a queued bill; and
 the dream's cancel token **separate** from the turn's, since stopping the chat
-must not stop the dream and vice versa).
+must not stop the dream and vice versa). Beside it, since 2026-09-14, a
+`Capture · N` button that is **always visible** — N is the number of logs with
+bytes past their capture watermark (`capture_status`, directory scans only),
+which the inbox count says nothing about — running `capture` on the dream's
+connection (the Settings model, else the rail's), sharing the dream's
+one-at-a-time lock because the two are one pipeline and a dream started
+mid-capture would read half an inbox, and the same cancel token
+(`cancel_capture`) since they never overlap; progress as `capture-event`s;
+outcome as a toast, *capture: captured 4 observations from 3 chats — 3 from
+Lanternfish, 1 unfiled*.
 
 **Automation is opt-in, and the trigger is a compaction, not a wall clock** — the
 moment a conversation's detail is already being traded for a summary, so the
@@ -288,7 +368,11 @@ hours in and unattended, is the wrong moment. The desktop's toggle is in Setting
 (`nightloom.dream`) consulted by both the Dream button and the trigger — one knob
 answers "which model dreams", and it is also what lets the agent engine dream at
 all, having no provider of its own to lend. Both shells stay silent and spend
-nothing when the inbox is empty.
+nothing when the inbox is empty. The desktop's trigger runs **capture first,
+then the dream**, on the same model: without the capture the inbox it would
+consolidate is empty on a machine where the model never calls `remember`. The
+CLI's `--auto-dream` is unchanged and runs the dream alone; `nightloom capture`
+is a separate command there.
 
 The desktop's `remember` rides the rail's knowledge switch and is absent from
 reviewers, whose spec already clears `knowledge`. The two chat tools

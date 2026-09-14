@@ -604,8 +604,10 @@
           Dream button in the Notes panel runs one by hand. Switched on here,
           one also runs after a compaction: the moment a conversation's detail
           is already being traded for a summary, and the trigger the
-          consolidation evidence points at. It runs unattended and spends real
-          money, so it is off until you say otherwise.
+          consolidation evidence points at. A capture pass runs first, reading
+          the chats since the last one into the inbox, on the same model. Both
+          run unattended and spend real money, so it is off until you say
+          otherwise.
         </p>
         <label class="dream-auto">
           <input

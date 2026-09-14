@@ -4,10 +4,12 @@
     addProject,
     deleteNote,
     revealFolder,
+    runCapture,
     runDream,
     saveNote,
     showGraph,
     showNote,
+    stopCapture,
     stopDream,
   } from "./state.svelte";
   import type { Note, NoteScope } from "./types";
@@ -185,6 +187,24 @@
     {:else}
       <button class="add" onclick={() => begin(scope)}>New note</button>
       {#if scope === "knowledge"}
+        <!-- The Capture button is always there, unlike Dream's: the inbox
+             count says nothing about what the chats hold, and the count on
+             it — logs with something new since the last read — is never
+             zero for long, since the chat open right now is one. -->
+        {#if app.capturing}
+          <button
+            class="dream running"
+            title="reading the chats…"
+            onclick={() => void stopCapture()}>capturing… ✕</button
+          >
+        {:else}
+          <button
+            class="dream"
+            title="Read the chats since the last capture into the memory inbox"
+            disabled={app.dreaming}
+            onclick={() => void runCapture()}>Capture · {app.capturePending}</button
+          >
+        {/if}
         <!-- The Dream button renders only with a backlog, the same rule as
              the CLI's startup line: an inbox with nothing in it needs no
              chrome, and a backlog the user cannot see is one that never
@@ -438,6 +458,10 @@
   .dream.running {
     color: var(--dim);
     font-style: italic;
+  }
+  .dream:disabled {
+    color: var(--dim);
+    cursor: default;
   }
   .folder {
     background: transparent;

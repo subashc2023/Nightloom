@@ -365,6 +365,20 @@ turn order, projects first and the vault last, and `git` is one clause per
 folder. The Project section's listing picks the new memory notes up on the
 same `refreshNotes` as everything else.
 
+**The Capture button (Knowledge bar, `Capture · N`, always visible)** runs the
+pass that fills the inbox the Dream button drains: it reads every chat log
+since its watermark — each project's and the unfiled ones — and extracts
+observations on the dream's connection (the Settings model, else the rail's;
+`passTarget` in `state.svelte.ts` is the one place both buttons ask). N is the
+number of logs with something new (`capture_status`, a directory scan after
+every turn), not the inbox count, which is why the button does not hide at
+zero the way Dream's does: the chat open right now is always one of them. It
+shares the dream's one-at-a-time lock and its Stop, and the toast reads
+*capture: captured 4 observations from 3 chats — 3 from Lanternfish, 1
+unfiled; 2 waiting for more turns*. With the Settings toggle on, the
+after-compaction trigger runs a capture first and then the dream. The
+mechanics are in [service-data.md](service-data.md) under *Capture*.
+
 `app.openNote` carries its scope for the same reason — the two stores can each
 hold a `plan.md`, and a bare name would make saving depend on which sidebar tab
 happened to be showing. The load effect is guarded on that pair changing rather

@@ -480,6 +480,11 @@ export const app = $state({
   dreamActivity: "",
   /** Auto-dream and the dream model, Settings → Knowledge. */
   dreamPrefs: loadDreamPrefs(),
+  /** Session logs with something new since the last capture — the count on
+   *  the Capture button. Always shown: the chat open right now is one. */
+  capturePending: 0,
+  /** A capture is running; the button becomes its progress line. */
+  capturing: false,
   /** The colour palette, Settings → Appearance. */
   palette: loadPalette() as Palette,
   /** Sidebar width and collapse, pane widths on the Nightshift screens. */
@@ -770,6 +775,10 @@ export async function init(): Promise<void> {
   await listen<TurnEvent>("dream-event", (e) => {
     if (e.payload.type === "tool_call") app.dreamActivity = e.payload.name;
   });
+  // The capture pass has no tools and its reply is parsed on the backend;
+  // nothing in its stream is for the panel. Listened to so the channel is
+  // drained rather than for anything it carries.
+  await listen<TurnEvent>("capture-event", () => {});
   await listen<ApprovalRequest>("tool-approval", (e) =>
     app.pendingApprovals.push(e.payload),
   );
@@ -849,6 +858,7 @@ export async function init(): Promise<void> {
   await refreshKnowledge();
   await refreshNotes();
   await refreshDreamStatus();
+  await refreshCaptureStatus();
   await autoConnect();
 }
 
@@ -926,6 +936,94 @@ export async function refreshDreamStatus(): Promise<void> {
   }
 }
 
+/** Re-count the session logs with something new. Directory scans only. */
+export async function refreshCaptureStatus(): Promise<void> {
+  try {
+    app.capturePending = await api.captureStatus();
+  } catch {
+    // No config dir reads as zero on the backend; anything else is not
+    // worth a toast for a count.
+  }
+}
+
+/**
+ * Which connection a background pass runs on: the dream model set in
+ * Settings, or the rail's. One knob answers "which model dreams" for the
+ * button and the auto-trigger alike — and the capture pass uses the same
+ * one, being the front half of the same pipeline — and it is also what lets
+ * the agent engine run either pass at all, having no provider of its own to
+ * lend. `null` with a toast when there is nothing to run on.
+ */
+function passTarget(
+  what: string,
+): { provider: string; model?: string; baseUrl?: string; thinking?: string } | null {
+  const d = app.draft;
+  const prefs = app.dreamPrefs;
+  if (prefs.provider) {
+    return { provider: prefs.provider, model: prefs.model.trim() || undefined };
+  }
+  if (d.engine === "claude-code") {
+    addToast(
+      `${what} runs on a provider API — set a dream model in Settings → Knowledge, or pick a provider in the rail`,
+    );
+    return null;
+  }
+  return {
+    provider: d.provider,
+    model: d.model || undefined,
+    baseUrl: d.baseUrl.trim() || undefined,
+    thinking: thinkingString(d),
+  };
+}
+
+/**
+ * Run one capture pass with the dream's connection: read every session log
+ * since its watermark and extract observations into the inbox. Its own job
+ * on the backend, sharing the dream's one-at-a-time lock, since the two are
+ * one pipeline.
+ */
+export async function runCapture(): Promise<void> {
+  if (app.capturing || app.dreaming) return;
+  const target = passTarget("capturing");
+  if (!target) return;
+  app.capturing = true;
+  try {
+    const r = await api.capture(target);
+    // "3 from Lanternfish, 1 unfiled": the split by source.
+    const split = r.per_project
+      .map((p) =>
+        p.project === "unfiled" ? `${p.observations} unfiled` : `${p.observations} from ${p.project}`,
+      )
+      .join(", ");
+    addToast(
+      (r.interrupted ? "capture interrupted — " : "capture: ") +
+        `captured ${r.observations} observation${r.observations === 1 ? "" : "s"}` +
+        ` from ${r.logs_read} chat${r.logs_read === 1 ? "" : "s"}` +
+        (r.skipped > 0 ? ` (${r.skipped} line${r.skipped === 1 ? "" : "s"} skipped)` : "") +
+        (split ? ` — ${split}` : "") +
+        (r.deferred > 0 ? `; ${r.deferred} waiting for more turns` : "") +
+        (r.remaining > 0 ? `; ${r.remaining} left for the next run` : "") +
+        (r.cost_usd != null ? ` ($${r.cost_usd.toFixed(4)})` : ""),
+    );
+  } catch (e) {
+    addToast(`capture failed: ${String(e)}`);
+  } finally {
+    app.capturing = false;
+  }
+  // The pass fills the inbox and moves the watermarks; both counts follow.
+  await refreshCaptureStatus();
+  await refreshDreamStatus();
+}
+
+/** Interrupt the in-flight capture. The chat it stopped in is re-read next time. */
+export async function stopCapture(): Promise<void> {
+  try {
+    await api.cancelCapture();
+  } catch (e) {
+    addToast(String(e));
+  }
+}
+
 /**
  * Run one dream with the rail's current provider settings.
  *
@@ -935,29 +1033,9 @@ export async function refreshDreamStatus(): Promise<void> {
  * no provider to lend it, which gets a sentence instead of a guess.
  */
 export async function runDream(): Promise<void> {
-  if (app.dreaming) return;
-  const d = app.draft;
-  const prefs = app.dreamPrefs;
-  // A dream model set in Settings wins over the rail — one knob answers
-  // "which model dreams" for the button and the auto-trigger alike, and it
-  // is also what lets the agent engine dream at all, having no provider of
-  // its own to lend.
-  let target: { provider: string; model?: string; baseUrl?: string; thinking?: string };
-  if (prefs.provider) {
-    target = { provider: prefs.provider, model: prefs.model.trim() || undefined };
-  } else if (d.engine === "claude-code") {
-    addToast(
-      "dreaming runs on a provider API — set a dream model in Settings → Knowledge, or pick a provider in the rail",
-    );
-    return;
-  } else {
-    target = {
-      provider: d.provider,
-      model: d.model || undefined,
-      baseUrl: d.baseUrl.trim() || undefined,
-      thinking: thinkingString(d),
-    };
-  }
+  if (app.dreaming || app.capturing) return;
+  const target = passTarget("dreaming");
+  if (!target) return;
   app.dreaming = true;
   app.dreamActivity = "";
   try {
@@ -993,9 +1071,19 @@ export async function runDream(): Promise<void> {
  * a summary, so a background consolidation interrupts nothing the user was
  * still watching. Opt-in (Settings → Knowledge) because it spends a
  * provider turn unattended; an empty inbox spends nothing and says nothing.
+ *
+ * Capture runs first, since 2026-09-14: the inbox only fills when a pass
+ * reads the logs, so a dream without one would consolidate an inbox that is
+ * empty on this machine. The compacted chat is among the logs read — up to
+ * its watermark, which is fine.
  */
 async function maybeAutoDream(): Promise<void> {
-  if (!app.dreamPrefs.auto || app.dreaming) return;
+  if (!app.dreamPrefs.auto || app.dreaming || app.capturing) return;
+  await refreshCaptureStatus();
+  if (app.capturePending > 0) {
+    addToast("auto-dream: reading the chats into the memory inbox");
+    await runCapture();
+  }
   await refreshDreamStatus();
   if (app.dreamPending === 0) return;
   addToast("auto-dream: consolidating the memory inbox");
@@ -2439,8 +2527,10 @@ export async function send(
     // The turn may have written to the docspace, and the sidebar showing a
     // note the model just left is the visible half of "shared knowledge".
     void refreshNotes();
-    // And it may have remembered something; the Dream badge follows.
+    // And it may have remembered something; the Dream badge follows. The
+    // turn was logged, so the Capture count follows too.
     void refreshDreamStatus();
+    void refreshCaptureStatus();
     if (compactedThisTurn) {
       compactedThisTurn = false;
       void maybeAutoDream();

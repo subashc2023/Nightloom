@@ -271,6 +271,20 @@ export interface DreamReport {
   cost_usd: number | null;
 }
 
+/** What one capture pass did, flattened for a toast. `per_project` is the
+ *  split by source in the order the session dirs were walked, "unfiled" for
+ *  the chats with no project. */
+export interface CaptureReport {
+  observations: number;
+  logs_read: number;
+  skipped: number;
+  deferred: number;
+  remaining: number;
+  per_project: { project: string; observations: number }[];
+  interrupted: boolean;
+  cost_usd: number | null;
+}
+
 /** Where the knowledge base is and what is in it. */
 export interface KnowledgeInfo {
   dir: string;
