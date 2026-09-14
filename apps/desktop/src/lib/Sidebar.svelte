@@ -14,24 +14,27 @@
   } from "./state.svelte";
   import * as api from "./api";
   import { untrack } from "svelte";
-  import type { NightshiftInfo, NightshiftRow, SessionHit } from "./types";
+  import type { NightshiftInfo, NightshiftRow, SessionHit, SessionMeta } from "./types";
   import { relativeTime } from "./time";
   import { sameMorning } from "./nightshift";
   import NotesPanel from "./NotesPanel.svelte";
   import ProjectMenu from "./ProjectMenu.svelte";
   import Icon from "./Icon.svelte";
   import DisableDialog from "./DisableDialog.svelte";
+  import ConfirmDialog from "./ConfirmDialog.svelte";
 
-  // Two-click delete: the first click arms the button, the second deletes.
-  let confirming = $state<string | null>(null);
+  // Delete confirms in a dialog and moves the log to a trash folder
+  // (review round 1, 2026-09-13; memory never-lose-work). It replaced a ×
+  // that turned into "sure?" on the first click — arming a button in place
+  // is the pattern he called clunky, and it gave the row no way to say what
+  // was about to happen to what.
+  let deleting = $state<SessionMeta | null>(null);
   let menu = $state(false);
 
-  function onDelete(id: string) {
-    if (confirming !== id) {
-      confirming = id;
-      return;
-    }
-    confirming = null;
+  function confirmDelete() {
+    if (!deleting) return;
+    const id = deleting.id;
+    deleting = null;
     void deleteSession(id);
   }
 
@@ -404,16 +407,12 @@
             {/if}
             <button
               class="delete"
-              class:confirming={confirming === s.id}
-              title={confirming === s.id
-                ? "Click again to delete"
-                : "Delete session"}
-              aria-label="Delete session"
-              onclick={() => onDelete(s.id)}
-              onmouseleave={() => confirming === s.id && (confirming = null)}
+              title="Delete chat…"
+              aria-label="Delete chat"
+              onclick={() => (deleting = s)}
               disabled={app.busy}
             >
-              {confirming === s.id ? "sure?" : "×"}
+              <Icon name="trash" size={13} />
             </button>
           </div>
         {/each}
@@ -504,6 +503,21 @@
         {/if}
       {/if}
     </div>
+  {/if}
+
+  {#if deleting}
+    <ConfirmDialog
+      title="Delete this chat?"
+      lead="It moves to the trash folder beside the other logs, out of the list but still on disk."
+      facts={[
+        ["chat", deleting.title ?? deleting.first_user ?? "empty session"],
+        ["id", deleting.id.slice(0, 8)],
+        ["last used", relativeTime(deleting.modified)],
+      ]}
+      confirmLabel="Move to trash"
+      onconfirm={confirmDelete}
+      onclose={() => (deleting = null)}
+    />
   {/if}
 
   {#if disabling}
@@ -876,22 +890,20 @@
     background: transparent;
     border: none;
     color: var(--dim);
-    font-size: 0.85rem;
-    padding: 0 0.5rem;
+    padding: 0 0.4rem;
     cursor: pointer;
     border-radius: 8px;
     flex-shrink: 0;
-    visibility: hidden;
+    display: inline-flex;
+    align-items: center;
+    opacity: 0;
   }
-  .session-item:hover .delete {
-    visibility: visible;
+  .session-item:hover .delete,
+  .delete:focus-visible {
+    opacity: 1;
   }
-  .delete:hover,
-  .delete.confirming {
+  .delete:hover {
     color: var(--error);
-  }
-  .delete.confirming {
-    font-size: 0.72rem;
   }
   .delete:disabled {
     opacity: 0.5;

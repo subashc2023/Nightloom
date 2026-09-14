@@ -19,8 +19,10 @@ State is managed: `Chat` + the active `Session` in tokio mutexes, plus a
 swap-per-turn `CancellationToken`. `send` forwards `TurnEvent`s as `turn-event`
 window events and retry stalls as `turn-notice`.
 
-`delete_session` drops the active session's open log handle before removing the
-file — required on Windows.
+`delete_session` drops the active session's open log handle before ~~removing the
+file~~ moving it to `<logs>/trash/` (review round 1, 2026-09-13: a delete in the
+UI is reversible; the listing never descends into subdirectories, so the row is
+gone and the log is not) — dropping the handle first is required on Windows.
 
 `connect` is a thin wrapper over `build_chat(app, policy, spec)`, and `ChatSpec`
 keeps everything the UI asked for. That exists so a subagent is built from the
