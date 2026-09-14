@@ -1,13 +1,19 @@
 //! `search_chats` and `read_chat`: what the model can find in the user's
 //! other conversations.
 //!
-//! The cheap version of cross-chat retrieval, deliberately. `store::search`
-//! already answers "which chat was that" for the sidebar, and these two tools
-//! put the same question — and a window onto the answer — in the model's
-//! hands. No index, no embeddings, no automatic injection: a lookup is a tool
-//! call the user can see in the transcript, and the description tells the
-//! model to name the chat and its date when it uses what it found. The
-//! indexed version, if it comes, is a separate piece of work.
+//! Cross-chat retrieval as a tool call, deliberately: a lookup the user can
+//! see in the transcript, and the description tells the model to name the
+//! chat and its date when it uses what it found. No embeddings and no
+//! automatic injection — a passage from another chat reaching the model on
+//! its own is a separate piece of work (blocker 052).
+//!
+//! `search_chats` ranks through [`store::index::ChatIndex`], a BM25 index
+//! kept beside each directory's logs, and falls back to the sidebar's
+//! substring scan only for a query the index cannot count. The first version
+//! had no index and returned chats newest first; measured on ten questions
+//! over one project it missed twice, both times a topic a dozen chats
+//! mention in passing, and ranking is what those needed. `read_chat` is as
+//! it was.
 //!
 //! Both read **the conversation only** — user messages, assistant text and
 //! titles — through the same [`store::said`] filter the sidebar search uses,
@@ -30,6 +36,7 @@ use nightloom_core::tool::{CancellationToken, Effect, Tool};
 use serde_json::{Value, json};
 
 use super::blocking;
+use crate::store::index::{self, ChatIndex};
 use crate::store::{self, SessionMatch, StoreError};
 
 /// Where the chats live, for the two tools to look through.
@@ -87,8 +94,8 @@ impl ChatDirs {
     }
 }
 
-/// Newest first by default and at most this many: a result is prompt text,
-/// and twenty-five excerpts is already a page the model has to read.
+/// Best first, and at most this many: a result is prompt text, and
+/// twenty-five excerpts is already a page the model has to read.
 const DEFAULT_LIMIT: usize = 10;
 const MAX_LIMIT: usize = 25;
 const DEFAULT_WINDOW: usize = 6000;
@@ -97,17 +104,19 @@ const MAX_WINDOW: usize = 20000;
 /// name is what the model will cite.
 const TITLE_WIDTH: usize = 80;
 
-const SEARCH_DESC: &str = "Find which of the user's other chats mention something. Reach for it \
+const SEARCH_DESC: &str = "Find which of the user's other chats are about something. Reach for it \
      when the user refers to an earlier conversation, a decision they made before, or something \
      they say they already discussed with you, and before answering from memory about their past \
-     work. Case-insensitive substring match over what was said in each chat — user messages, \
-     assistant replies and the chat's title — never over tool results, so a word that only \
-     appeared in a file a chat read will not find it. Use a short, distinctive phrase rather \
-     than a sentence: a phrase that is not in the chat word for word finds nothing. Returns one \
-     line per chat, newest first: short id, title, date last active, how many messages matched, \
-     and an excerpt around the first match. Then call read_chat with the id to read around the \
-     passage. scope is the open project's chats by default; all searches every project and the \
-     unfiled chats. When you use something you found, cite the chat by its title and date.";
+     work. Ranks chats by how much they say the query's words (case-insensitive, whole words, \
+     the chat's title counting extra) over what was said in each chat — user messages, \
+     assistant replies and the title — never over tool results, so a word that only appeared \
+     in a file a chat read will not find it. Use a few distinctive words rather than a sentence: \
+     every word you add that the chat did not say dilutes the ranking, and word order does not \
+     matter. Returns one line per chat, best first: short id, title, date last active, score, \
+     and an excerpt around the first of your words it says. Then call read_chat with the id to \
+     read around the passage. scope is the open project's chats by default; all searches every \
+     project and the unfiled chats. When you use something you found, cite the chat by its \
+     title and date.";
 
 const READ_DESC: &str = "Read part of one of the user's other chats, found with search_chats. \
      session is the short id from a result line. With query, returns a window of the \
@@ -158,7 +167,7 @@ impl Tool for SearchChats {
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "A short distinctive phrase to look for; substring match, case-insensitive."
+                        "description": "A few distinctive words the chat would have said; case-insensitive, any order."
                     },
                     "scope": {
                         "type": "string",
@@ -167,7 +176,7 @@ impl Tool for SearchChats {
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "How many chats to return, newest first. Default 10, at most 25."
+                        "description": "How many chats to return, best first. Default 10, at most 25."
                     }
                 },
                 "required": ["query"]
@@ -176,9 +185,11 @@ impl Tool for SearchChats {
     }
 
     /// `_cancel`, on the terms `blocking` sets out: a walk over the logs is
-    /// not abandonable. The largest corpus this was measured on (933 chats,
-    /// 55 MB) searches in ~330 ms warm in a release build — and ~6 s in a
-    /// debug one, which is what `cargo tauri dev` runs.
+    /// not abandonable. The cost is the index's freshness check — a stat of
+    /// every log and a read of the ones that grew — plus one full scan per
+    /// returned chat for its excerpt; the numbers are in `chat-index-report`
+    /// beside the spec. The first build of a directory's index reads every
+    /// log once, the way the substring scan used to on every call.
     async fn call(&self, input: Value, _cancel: &CancellationToken) -> Result<String, String> {
         let query = input["query"]
             .as_str()
@@ -213,60 +224,197 @@ enum Scope {
     All,
 }
 
-/// One hit, with the directory it came from when that is worth saying.
-struct Hit {
-    found: SessionMatch,
-    /// `None` in project scope, where every hit is from the same place.
-    project: Option<String>,
+/// The directories a scope covers, each with the name a hit from it carries
+/// — `None` in project scope, where every hit is from the same place — and
+/// what to call the scope in the header.
+fn covered(dirs: &ChatDirs, scope: Scope) -> (Vec<(&Path, Option<String>)>, String) {
+    match scope {
+        Scope::Project => (
+            vec![(dirs.active.as_path(), None)],
+            format!("the chats of {}", dirs.active_name()),
+        ),
+        Scope::All => (
+            dirs.all
+                .iter()
+                .map(|d| (d.dir.as_path(), Some(d.name.clone())))
+                .collect(),
+            "every project's chats and the unfiled ones".to_string(),
+        ),
+    }
+}
+
+/// An empty result names its scope, for the reason `grep`'s does: "no
+/// chats" reads as an answer about everything the user ever said, and in
+/// the default scope it is an answer about one project.
+fn nothing(where_: &str, query: &str, scope: Scope) -> String {
+    format!(
+        "no chats in {where_} mention {query:?}. Try different or fewer words{}.",
+        if scope == Scope::Project {
+            ", or scope: all to search every project"
+        } else {
+            ""
+        }
+    )
 }
 
 /// The whole `search_chats` answer, as text the model reads.
+///
+/// Ranked through each directory's [`ChatIndex`], which is brought up to
+/// date on the way. A query the index has no term for — a lone symbol, a
+/// single letter, an emoji — cannot be ranked and goes to the substring
+/// scan instead, newest first, which is what the tool did before it had an
+/// index; the header says which happened.
 fn search(dirs: &ChatDirs, query: &str, scope: Scope, limit: usize) -> Result<String, String> {
+    let (covered, where_) = covered(dirs, scope);
+    let words = index::tokenize(query);
+    if words.is_empty() {
+        return substring(&covered, &where_, query, scope, limit);
+    }
+
     let mut hits = Vec::new();
-    let where_ = match scope {
-        Scope::Project => {
-            for found in store::search(&dirs.active, query).map_err(|e| e.to_string())? {
-                hits.push(Hit {
-                    found,
-                    project: None,
-                });
-            }
-            format!("the chats of {}", dirs.active_name())
+    let mut total = 0;
+    for (dir, project) in &covered {
+        let index = ChatIndex::load_or_build(dir).map_err(|e| e.to_string())?;
+        let (ranked, found) = index.rank(query, limit);
+        total += found;
+        for r in ranked {
+            hits.push(Hit {
+                id: r.log.id(&r.path),
+                title: r.log.label(&r.path, TITLE_WIDTH),
+                modified: r.log.modified(),
+                path: r.path,
+                score: r.score,
+                project: project.clone(),
+            });
         }
-        Scope::All => {
-            for d in &dirs.all {
-                for found in store::search(&d.dir, query).map_err(|e| e.to_string())? {
-                    hits.push(Hit {
-                        found,
-                        project: Some(d.name.clone()),
-                    });
-                }
-            }
-            "every project's chats and the unfiled ones".to_string()
+    }
+    // Across directories the scores are merged as they are. Each index has
+    // its own idea of how rare a word is, so a hit from a small project can
+    // outscore one from a large one for the same words — a known unfairness
+    // in `all` scope, and the alternative is a second ranking pass over
+    // every directory's statistics that nothing has asked for yet.
+    hits.sort_by(|a, b| {
+        b.score
+            .total_cmp(&a.score)
+            .then_with(|| b.modified.cmp(&a.modified))
+    });
+    hits.truncate(limit);
+
+    if hits.is_empty() {
+        return Ok(nothing(&where_, query, scope));
+    }
+    let shown = hits.len();
+    let mut out = format!(
+        "{total} chat{} in {where_} mention {query:?}{}, best first. Lines are: id · title · \
+         last active · score · excerpt. Call read_chat with an id to read around a passage.\n",
+        if total == 1 { "" } else { "s" },
+        if shown < total {
+            format!("; the best {shown}")
+        } else {
+            String::new()
+        },
+    );
+    for hit in &hits {
+        // Gone between the ranking and the read: a row that is going away,
+        // as in `store::list`, not a failed search.
+        let Some(excerpt) = excerpt(&hit.path, hit.modified, &words) else {
+            continue;
+        };
+        out.push_str(&format!(
+            "{} · {}{} · {} · {:.1} · {}\n",
+            short_id(&hit.id),
+            hit.project
+                .as_deref()
+                .map(|p| format!("[{p}] "))
+                .unwrap_or_default(),
+            if hit.title.is_empty() {
+                "(untitled)"
+            } else {
+                &hit.title
+            },
+            hit.modified.format("%Y-%m-%d"),
+            hit.score,
+            excerpt,
+        ));
+    }
+    Ok(out)
+}
+
+/// One ranked chat, owned, so the index it came out of can be dropped.
+struct Hit {
+    id: String,
+    title: String,
+    modified: DateTime<Utc>,
+    path: PathBuf,
+    score: f64,
+    project: Option<String>,
+}
+
+/// Text around the first of the query's words a chat says, prefixed with
+/// who said it — the first version's excerpt, made from one scan of the
+/// chat the index chose. The index keeps counts and not positions, so this
+/// is the read that shows *why* a chat ranked. When no word is found as a
+/// substring — the ranking matched on the title alone, which the line
+/// already shows — the chat's opening stands in, so the row still says
+/// what the chat is. `None` for a log that could not be read.
+fn excerpt(path: &Path, modified: DateTime<Utc>, words: &[String]) -> Option<String> {
+    let (_, events) = store::scan(path, modified).ok()?;
+    let mut opening = None;
+    for said in events.iter().filter_map(store::said) {
+        if !said.conversation || said.text.trim().is_empty() {
+            continue;
         }
-    };
+        if let Some(at) = words
+            .iter()
+            .filter_map(|w| store::find_fold(&said.text, w))
+            .min()
+        {
+            return Some(relabel(&format!(
+                "{}: {}",
+                said.who,
+                store::excerpt_around(&said.text, at, store::EXCERPT_WIDTH)
+            )));
+        }
+        opening.get_or_insert_with(|| {
+            relabel(&format!(
+                "{}: {}",
+                said.who,
+                store::excerpt_around(&said.text, 0, store::EXCERPT_WIDTH)
+            ))
+        });
+    }
+    Some(opening.unwrap_or_default())
+}
+
+/// The substring scan, for a query with no word in it. Newest first and a
+/// count of matching messages per chat: the first version's answer, kept
+/// because a symbol is still something a chat can be remembered by.
+fn substring(
+    covered: &[(&Path, Option<String>)],
+    where_: &str,
+    query: &str,
+    scope: Scope,
+    limit: usize,
+) -> Result<String, String> {
+    let mut hits: Vec<(SessionMatch, Option<String>)> = Vec::new();
+    for (dir, project) in covered {
+        for found in store::search(dir, query).map_err(|e| e.to_string())? {
+            hits.push((found, project.clone()));
+        }
+    }
     // Each directory came back newest first; across several they have to be
     // merged, and the sort is stable so ties keep their order.
-    hits.sort_by_key(|h| std::cmp::Reverse(h.found.summary.modified));
+    hits.sort_by_key(|(m, _)| std::cmp::Reverse(m.summary.modified));
 
-    // An empty result names its scope, for the reason `grep`'s does: "no
-    // chats" reads as an answer about everything the user ever said, and in
-    // the default scope it is an answer about one project.
     if hits.is_empty() {
-        return Ok(format!(
-            "no chats in {where_} mention {query:?}. Try a shorter or different phrase{}.",
-            if scope == Scope::Project {
-                ", or scope: all to search every project"
-            } else {
-                ""
-            }
-        ));
+        return Ok(nothing(where_, query, scope));
     }
     let total = hits.len();
     let shown = total.min(limit);
     let mut out = format!(
-        "{total} chat{} in {where_} mention {query:?}{}. Lines are: id · title · last active · \
-         matching messages · excerpt. Call read_chat with an id to read around a passage.\n",
+        "{total} chat{} in {where_} mention {query:?}{} — matched as text, since it has no \
+         word to rank by; newest first. Lines are: id · title · last active · matching \
+         messages · excerpt. Call read_chat with an id to read around a passage.\n",
         if total == 1 { "" } else { "s" },
         if shown < total {
             format!("; the newest {shown}")
@@ -274,8 +422,8 @@ fn search(dirs: &ChatDirs, query: &str, scope: Scope, limit: usize) -> Result<St
             String::new()
         },
     );
-    for hit in hits.iter().take(shown) {
-        let s = &hit.found.summary;
+    for (found, project) in hits.iter().take(shown) {
+        let s = &found.summary;
         let title = match s.label(TITLE_WIDTH) {
             t if t.is_empty() => "(untitled)".to_string(),
             t => t,
@@ -283,14 +431,14 @@ fn search(dirs: &ChatDirs, query: &str, scope: Scope, limit: usize) -> Result<St
         out.push_str(&format!(
             "{} · {}{} · {} · {} · {}\n",
             short_id(&s.id),
-            hit.project
+            project
                 .as_deref()
                 .map(|p| format!("[{p}] "))
                 .unwrap_or_default(),
             title,
             s.modified.format("%Y-%m-%d"),
-            hit.found.hits,
-            relabel(&hit.found.excerpt),
+            found.hits,
+            relabel(&found.excerpt),
         ));
     }
     Ok(out)
@@ -599,8 +747,11 @@ mod tests {
         tool.call(input, &CancellationToken::new()).await
     }
 
+    /// Ranked, not newest first: the older chat that says the word on both
+    /// sides outranks the newer one that says it once, and the line carries
+    /// title, date, score and an excerpt addressed to a model.
     #[tokio::test]
-    async fn search_finds_the_right_chat_newest_first_with_an_excerpt() {
+    async fn search_ranks_the_chat_that_says_it_most_first_with_an_excerpt() {
         let (dirs, _) = dirs_for("chats-search");
         let old = logged(
             &dirs.active,
@@ -612,7 +763,7 @@ mod tests {
         age(&dirs.active, &old, Duration::from_secs(3600));
         let new = logged(
             &dirs.active,
-            "Also rewinding",
+            "Also going back",
             "rewind again, please",
             "Done.",
             "",
@@ -626,20 +777,38 @@ mod tests {
             out.starts_with("2 chats in the chats of Active mention"),
             "{out}"
         );
+        assert!(out.contains("best first"), "{out}");
         let lines: Vec<&str> = out.lines().skip(1).collect();
         assert_eq!(lines.len(), 2, "{out}");
-        assert!(lines[0].starts_with(&short_id(&new)), "{out}");
-        assert!(lines[1].starts_with(&short_id(&old)), "{out}");
-        // Title, date, hit count and an excerpt addressed to a model.
-        assert!(lines[0].contains("Also rewinding"), "{out}");
+        assert!(lines[0].starts_with(&short_id(&old)), "{out}");
+        assert!(lines[1].starts_with(&short_id(&new)), "{out}");
+        assert!(lines[0].contains("Rewinding"), "{out}");
         assert!(
-            lines[0].contains(&Utc::now().format("%Y-%m-%d").to_string()),
+            lines[1].contains(&Utc::now().format("%Y-%m-%d").to_string()),
             "{out}"
         );
-        // Both sides said it and so does the name: the count is per message
-        // that matched, title included, as `store::search` counts it.
-        assert!(lines[1].contains(" · 3 · "), "{out}");
-        assert!(lines[1].contains("user: how do I rewind"), "{out}");
+        assert!(lines[0].contains("user: how do I rewind"), "{out}");
+        // The score is a number the model can compare across lines.
+        let score = |line: &str| -> f64 { line.split(" · ").nth(3).unwrap().parse().unwrap() };
+        assert!(score(lines[0]) > score(lines[1]), "{out}");
+
+        // A word in the name outranks the same word once in a body: the
+        // title is the most compressed statement of what a chat was about.
+        let named = logged(&dirs.active, "Kestrels", "a question", "a reply", "");
+        logged(&dirs.active, "Birds", "kestrels are birds", "they are", "");
+        let out = call(
+            &SearchChats::new(dirs.clone()),
+            json!({"query": "kestrels"}),
+        )
+        .await
+        .unwrap();
+        assert!(out.starts_with("2 chats"), "{out}");
+        assert!(
+            out.lines().nth(1).unwrap().starts_with(&short_id(&named)),
+            "{out}"
+        );
+        // Nothing in the body says it, so the excerpt is the chat's opening.
+        assert!(out.contains("user: a question"), "{out}");
 
         let out = call(
             &SearchChats::new(dirs.clone()),
@@ -648,7 +817,30 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(out.lines().count(), 2, "limit: {out}");
-        assert!(out.contains("the newest 1"), "{out}");
+        assert!(out.contains("the best 1"), "{out}");
+        assert!(
+            dirs.active.join(index::INDEX_FILE).is_file(),
+            "no index written"
+        );
+    }
+
+    /// A query the index has no word for is matched as text, newest first,
+    /// as the first version did, and the header says so.
+    #[tokio::test]
+    async fn a_query_with_no_word_falls_back_to_the_substring_scan() {
+        let (dirs, _) = dirs_for("chats-fallback");
+        let old = logged(&dirs.active, "Arrows", "a → b", "yes", "");
+        age(&dirs.active, &old, Duration::from_secs(3600));
+        let new = logged(&dirs.active, "More arrows", "b → c", "yes", "");
+        let out = call(&SearchChats::new(dirs), json!({"query": "→"}))
+            .await
+            .unwrap();
+        assert!(out.contains("matched as text"), "{out}");
+        assert!(out.contains("newest first"), "{out}");
+        let lines: Vec<&str> = out.lines().skip(1).collect();
+        assert!(lines[0].starts_with(&short_id(&new)), "{out}");
+        assert!(lines[1].starts_with(&short_id(&old)), "{out}");
+        assert!(lines[0].contains(" · 1 · "), "{out}");
     }
 
     #[tokio::test]
@@ -832,8 +1024,54 @@ mod tests {
         }
     }
 
-    /// The ten questions from the spec, through `search`'s exact logic, with
-    /// the rank of every chat so the expected one can be found in it.
+    /// The index over the two real corpora: a cold build (the file removed
+    /// first — it is derived data and comes straight back), a warm load with
+    /// nothing changed, one ranking, and the file's size.
+    #[test]
+    #[ignore]
+    fn index_timings_over_the_real_corpora() {
+        for (name, id) in [
+            ("Unfiled chats", "c84a6276-0d2c-4394-bbe4-f0dbc196a3bb"),
+            (
+                "Value Generalization",
+                "513c3418-df79-48f9-976d-cdae760ee6cc",
+            ),
+        ] {
+            let Some(dir) = real(id) else {
+                println!("{name}: not on this machine");
+                continue;
+            };
+            let logs = store::count(&dir);
+            fs::remove_file(dir.join(index::INDEX_FILE)).ok();
+            let t = std::time::Instant::now();
+            let built = ChatIndex::load_or_build(&dir).unwrap();
+            let cold = t.elapsed().as_millis();
+            let mut warm = Vec::new();
+            for _ in 0..3 {
+                let t = std::time::Instant::now();
+                ChatIndex::load_or_build(&dir).unwrap();
+                warm.push(t.elapsed().as_millis());
+            }
+            let mut ranks = Vec::new();
+            for query in ["moral uncertainty", "resume", "experimental design"] {
+                let t = std::time::Instant::now();
+                let (_, total) = built.rank(query, MAX_LIMIT);
+                ranks.push((query, total, t.elapsed().as_micros()));
+            }
+            let size = fs::metadata(dir.join(index::INDEX_FILE))
+                .map(|m| m.len())
+                .unwrap_or(0);
+            println!(
+                "{name} ({logs} logs, {} indexed): cold build {cold} ms; warm load {warm:?} ms; \
+                 rank {ranks:?} (query, chats matched, µs); file {size} bytes",
+                built.len()
+            );
+        }
+    }
+
+    /// The ten questions from the spec, with the same query strings the
+    /// first version's measurement used, through the index — rank, title
+    /// and score only, since the titles are what the report may quote.
     #[test]
     #[ignore]
     fn ten_questions_over_value_generalization() {
@@ -841,13 +1079,7 @@ mod tests {
             println!("Value Generalization: not on this machine");
             return;
         };
-        let dirs = ChatDirs {
-            active: dir.clone(),
-            all: vec![ChatDir {
-                name: "Value Generalization".into(),
-                dir,
-            }],
-        };
+        let index = ChatIndex::load_or_build(&dir).unwrap();
         for query in [
             "legal neg",
             "rational choice",
@@ -860,11 +1092,16 @@ mod tests {
             "moral uncertainty",
             "resume",
         ] {
-            println!("=== {query:?}");
-            println!(
-                "{}",
-                search(&dirs, query, Scope::Project, MAX_LIMIT).unwrap()
-            );
+            let (hits, total) = index.rank(query, MAX_LIMIT);
+            println!("=== {query:?}: {total} chats");
+            for (i, h) in hits.iter().enumerate() {
+                println!(
+                    "{:>2}. {:.2}  {}",
+                    i + 1,
+                    h.score,
+                    h.log.label(&h.path, TITLE_WIDTH)
+                );
+            }
         }
     }
 }

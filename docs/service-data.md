@@ -706,10 +706,11 @@ Every *other* error still propagates: quietly returning a short list is the
 silent-truncation bug, not the fix for it.
 
 `search` is not cached and not cacheable this way: it needs the text a summary
-throws away. What would help it is a full-text index, which is a much larger
-thing — and search is something a user asks for, where listing happens on its
-own. Both now read bytes rather than `read_to_string`, so one byte that is not
-UTF-8 costs that line instead of returning an empty picker.
+throws away. ~~What would help it is a full-text index, which is a much larger
+thing~~ — the `search_chats` tool now has one (next section); the sidebar's
+`search` stays a scan, since it is something a user asks for, where listing
+happens on its own. Both read bytes rather than `read_to_string`, so one byte
+that is not UTF-8 costs that line instead of returning an empty picker.
 
 `scan`, `said`, `find_fold` and `excerpt_around` are `pub(crate)` for the
 `search_chats` / `read_chat` tools (`tools/chats.rs`), which apply exactly this
@@ -718,6 +719,42 @@ what a chat said, and two readers of one log must not be able to disagree about
 what a tool result is. `Said` carries the event's timestamp for `read_chat`,
 which dates each message so a quotation can carry one; `search` ignores it and
 dates the whole chat by its file.
+
+### The chat index is kept on the listing's terms (`store/index.rs`)
+
+`ChatIndex`, an `.index.json` beside the logs next to `.listing.json`, is what
+the `search_chats` tool ranks through: per log, how many times each word is
+said (`tf`), how many words the chat holds, and the listing fields; per
+directory, how many logs say each word (`df`), the count and the mean length.
+That is everything BM25 — the ranking function every full-text engine defaults
+to — needs, and nothing more: **counts, not positions**, so the index ranks and
+a scan of each returned chat still makes the excerpt. Words are lowercased runs
+of alphanumeric characters, two or more long, with one plural ending folded
+(`competitors` and `competitor` are one word — Harman's S-stemmer, three rules,
+applied to the query too); the title's words count three times. It is built
+from `said`, the same "conversation only" filter as everything else here, so a
+word that only ever appeared in a tool result is not in it, and a test pins
+that.
+
+It is **derived data on exactly the listing's terms**, and the argument is the
+same one: every record is re-validated against its log's size and mtime on
+each load, a log that grew is tokenised from the byte offset the record stopped
+at (a rename takes the old name's words back out first), a log that is gone
+drops out, and a file that is missing, malformed or from another `version` is
+rebuilt from the logs. The file is rewritten only when something changed,
+through a process-named temp file and a rename. Beside the logs rather than in
+the config dir (blocker 051), so a project moved with its folder keeps its
+index and a deleted directory takes it along.
+
+Measured 2026-09-14 (`index_timings_over_the_real_corpora`, `#[ignore]`d),
+release build: a cold build over 933 logs / 55 MB takes **1.1–1.6 s** and
+writes a **14 MB** file; a warm load with nothing changed — a stat per log and
+one parse of that file — **~90 ms**; one ranking under 0.3 ms. Over 32 logs:
+~100 ms cold, ~9 ms warm, 1.3 MB. In a debug build the warm load is ~490 ms
+over 933 logs, which is what `cargo tauri dev` will show. The warm cost is the
+JSON parse of the whole file; if it comes to matter, the two remedies are an
+in-memory copy per directory revalidated by stat, or a smaller on-disk shape —
+neither built.
 
 ## `lib.rs::connect`
 

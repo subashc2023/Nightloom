@@ -11,6 +11,11 @@ use std::fs;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
+/// The ranked index the `search_chats` tool searches through, kept beside
+/// the logs on the listing cache's terms. A submodule because it reads the
+/// same events through the same fold, and the two must not disagree.
+pub mod index;
+
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
     #[error("cannot read {}: {source}", path.display())]
@@ -374,9 +379,11 @@ fn peek_at(event: &SessionEvent) -> Option<Peek> {
 /// tool, which hands the model a window of one.
 ///
 /// Not cached, and not cacheable by [`Listing`]: `search` needs the text of
-/// every message, which is the part a summary throws away. What would help it
-/// is a full-text index, which is a much larger thing than this — and search
-/// is something a user asks for, where listing happens on its own.
+/// every message, which is the part a summary throws away. What helps the
+/// *tool* is [`index::ChatIndex`], which keeps the counts and not the text —
+/// so it ranks, and a scan of each chat it returns still makes the excerpt.
+/// The sidebar's search stays a scan: it is something a user asks for, where
+/// listing happens on its own.
 pub(crate) fn scan(
     path: &Path,
     modified: DateTime<Utc>,

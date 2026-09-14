@@ -356,13 +356,32 @@ credential store.
 
 ## Other chats (`tools/chats.rs`)
 
-`search_chats` and `read_chat` are the cheap version of cross-chat retrieval:
-`store::search`, which already answers "which chat was that" for the sidebar,
-put in the model's hands, plus a window onto one log. No index, no embeddings,
-no automatic injection — a lookup is a tool call the user sees in the
-transcript, and the description tells the model to cite the chat by title and
-date when it uses what it found. The indexed, claude.ai-like version is a
-separate item.
+`search_chats` and `read_chat` are cross-chat retrieval as a tool call: a
+ranked search over what the user's other chats said, plus a window onto one
+log. No embeddings, no automatic injection — a lookup is a tool call the user
+sees in the transcript, and the description tells the model to cite the chat by
+title and date when it uses what it found. Passages reaching the model on their
+own is a separate item (blocker 052).
+
+**Ranked, through an index.** `search_chats` ranks by BM25 through
+`store::index::ChatIndex`, the `.index.json` kept beside each directory's logs
+on the listing cache's terms ([service-data.md](service-data.md), "The chat
+index"): the query's words, whole and lowercased with one plural ending folded,
+scored by how rare each is across the directory and how often the chat says it,
+the title's words counting three times, long chats discounted. A chat that says
+none of the words is not returned. Each call brings the index up to date first
+— a stat per log, a re-tokenise of the ones that grew from where their record
+stopped, a rebuild of the file if it is missing or malformed — so nothing else
+has to keep it. A query with no word in it (a lone symbol, a single letter) goes
+to `store::search`, the sidebar's substring scan, newest first, which is what
+the first version did for everything; the header says so. In `all` scope each
+directory is ranked by its own index and the lists are merged by score as they
+are, a known unfairness between a small project and a large one.
+
+~~The cheap version: `store::search`, which already answers "which chat was
+that" for the sidebar, put in the model's hands. No index.~~ — the first
+version, 2026-09-14, superseded the same day by the index above once it was
+measured (below).
 
 **Neither ever returns a tool result.** Both go through the same `store::said`
 filter as the sidebar search — user messages, assistant text blocks, titles —
@@ -381,26 +400,36 @@ passes both as a `ChatDirs { active, all: Vec<ChatDir { name, dir }> }`, taken
 at connect time like the rest of `ChatSpec`. An empty search names its scope,
 for the reason `grep`'s does.
 
-**Shape.** A search returns one line per chat, newest first, at most `limit`
-(default 10, clamped to 25): short id · title · date last active · matching
-messages · excerpt around the first match, the sidebar's `you:`/`model:`
-relabelled `user:`/`assistant:` for a reader who is the model. `read_chat`
+**Shape.** A search returns one line per chat, best first, at most `limit`
+(default 10, clamped to 25): short id · title · date last active · score ·
+excerpt around the first of the query's words the chat says, the sidebar's
+`you:`/`model:` relabelled `user:`/`assistant:` for a reader who is the model.
+The score is the BM25 number to one decimal, there so the model can see a clear
+winner from a flat field. The index keeps counts and not positions, so the
+excerpt comes from one scan of each returned chat; when no word is found as
+text (the ranking matched on the title, which the line already shows) the
+chat's opening stands in. The substring fallback keeps the first version's line
+(matching messages instead of a score, newest first). `read_chat`
 returns a header naming the chat's title and date, then a `max_chars` window
 (default 6000, clamped to 20000) centred on the first message containing
 `query`, or the start of the conversation without one; each message is prefixed
 with its speaker and timestamp, and a window that opens mid-message repeats
 that message's prefix marked *continued*.
 
-**Two things measured** (release build, 2026-09-14, `latency_over_the_real_corpora`
-and `ten_questions_over_value_generalization`, both `#[ignore]`d): `store::search`
-over 933 logs (55 MB) takes **~330 ms** warm and ~510 ms on the first run; over
-32 logs, **~30 ms**. In a debug build — which `cargo tauri dev` is — the same
-search takes **~6 s**, which is the number a developer will see. Over ten
-hand-picked questions on a 32-chat project, the expected chat was in the top five
-for eight, newest-first; three of the eight were found by their title alone. The
-two misses were topics many chats mention in passing, where the substring has no
-way to prefer the chat that was *about* it — that gap is what an index would
-close.
+**What was measured** (release build, 2026-09-14, the three `#[ignore]`d tests
+in `chats.rs`). The first version, `store::search` on every call: over 933
+logs (55 MB) **~330 ms** warm, ~510 ms first run; over 32 logs **~30 ms**; in a
+debug build — which `cargo tauri dev` is — **~6 s**. Over ten hand-picked
+questions on a 32-chat project, newest-first put the expected chat in the top
+five for eight, three of them by title alone; the two misses were topics many
+chats mention in passing, where a substring has no way to prefer the chat that
+was *about* it. The index, same corpus and the same ten query strings: **all
+ten in the top five, eight at rank 1** (was three), the two misses at ranks 2
+and 1. The index's own cost is in [service-data.md](service-data.md) — a cold
+build over 933 logs ~1.1–1.6 s once, then ~90 ms per call to find nothing
+changed, plus one scan per returned chat for its excerpt. The full table with
+both rankings side by side is
+`nightshift-code/notes/runner-design/chat-index-report-2026-09-14.md`.
 
 **The chat asking can find itself.** Its log is in the active directory and the
 tools are built before a session exists, so a hit in the current chat costs a
