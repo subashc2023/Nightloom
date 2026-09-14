@@ -1,12 +1,12 @@
 import { listen } from "@tauri-apps/api/event";
 import * as api from "./api";
+import { isMac } from "./platform";
 import {
   defaultDraft,
   isProviderVisible,
   loadLastConnection,
   loadPrefs,
   loadPrompts,
-  modelForAlias,
   modelsFor,
   providerLabel,
   newPromptId,
@@ -617,8 +617,10 @@ export function runMenuCommand(id: string): void {
       void switchModel(id.slice(6));
       break;
     default:
-      // ⌘1…9: the n-th provider pill (review round 1, 2026-09-13).
+      // ⌘1…9: the n-th provider pill; ⌘⇧1…9: the n-th model in the picker
+      // (review round 1, 2026-09-13/14).
       if (id.startsWith("provider_")) void switchProvider(Number(id.slice(9)));
+      else if (/^model_[1-9]$/.test(id)) void switchModelAt(Number(id.slice(6)));
   }
 }
 
@@ -662,42 +664,61 @@ export async function toggleEngine(): Promise<void> {
 }
 
 /**
- * What ⌘⇧<letter> would switch the current picker to, or null when the
- * provider's list has no id carrying the alias. On the Claude Code engine
- * the alias itself is the answer: the CLI resolves it.
+ * The model list the popover draws for the current provider — what Settings
+ * switched on, in the picker's order, with the draft's own model kept at the
+ * head if Settings has since hidden it. `switchModelAt` counts the same
+ * list, so the ⌘⇧-digit on a row is the digit that picks it.
  */
-export function modelForKey(alias: string): string | null {
-  if (app.draft.engine === "claude-code") return alias;
+export function pickerModels(): string[] {
   const sel = app.providers.find((p) => p.kind === app.draft.provider);
-  return modelForAlias(
-    modelsFor(app.draft.provider, app.prefs, sel?.default_model ?? null),
-    alias,
-  );
+  const list = modelsFor(app.draft.provider, app.prefs, sel?.default_model ?? null);
+  if (app.draft.model && !list.includes(app.draft.model)) list.unshift(app.draft.model);
+  return list;
 }
 
 /**
- * Switch the model in place by alias — the ⌘⇧S / O / F / H keys. When the
- * picker has no such model the key does nothing and says so, rather than
- * guessing at a neighbour: a switch that landed on a model you did not name
- * is worse than one that declined (blocker 035's default).
+ * What ⌘⇧<letter> switches to. The letters are the Claude Code engine's
+ * (2026-09-14, his second look: the CLI takes an alias, so `sonnet` *is* the
+ * answer there); on the API engine models are numbered, so the letters name
+ * nothing and this is null.
+ */
+export function modelForKey(alias: string): string | null {
+  return app.draft.engine === "claude-code" ? alias : null;
+}
+
+/**
+ * ⌘⇧S / O / F / H — the Claude Code engine's aliases. On the API engine the
+ * key declines with the hint that models are numbered there: the four
+ * letters were Anthropic-only, and he asked that no provider be special
+ * (nightshift blockers 035, 044).
  */
 export async function switchModel(alias: string): Promise<void> {
   if (app.busy || app.connecting) return;
-  const target = modelForKey(alias);
-  if (!target) {
-    addToast(`No ${alias} model in ${providerLabel(app.draft.provider)}'s picker`);
+  if (app.draft.engine !== "claude-code") {
+    addToast(`On the API engine models are ${keyMod()}${keyShift()}1–9; the letters are Claude Code's`);
     return;
   }
-  if (app.draft.engine === "claude-code") {
-    if (app.draft.agentModel === target) return;
-    app.draft.agentModel = target;
-  } else {
-    if (app.draft.model === target) return;
-    app.draft.model = target;
-    sanitizeThinking(app.draft);
-  }
+  if (app.draft.agentModel === alias) return;
+  app.draft.agentModel = alias;
   await applyDraft();
 }
+
+/** ⌘⇧1…9: the n-th model of the picker, on the API engine. */
+export async function switchModelAt(n: number): Promise<void> {
+  if (app.busy || app.connecting || app.draft.engine === "claude-code") return;
+  const target = pickerModels()[n - 1];
+  if (!target) {
+    addToast(`${providerLabel(app.draft.provider)}'s picker has no model ${n}`);
+    return;
+  }
+  if (app.draft.model === target) return;
+  app.draft.model = target;
+  sanitizeThinking(app.draft);
+  await applyDraft();
+}
+
+const keyMod = () => (isMac ? "⌘" : "Ctrl+");
+const keyShift = () => (isMac ? "⇧" : "Shift+");
 
 /**
  * Fill `app.contextLimits[kind]` for `models`, asking only about ids not

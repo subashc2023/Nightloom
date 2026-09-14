@@ -79,8 +79,11 @@
     // shouldn't be special" — the alias letters need Shift, the providers
     // do not. Matched on the physical key so a layout cannot move it.
     const primary = isMac ? e.metaKey : e.ctrlKey;
-    if (primary && !e.shiftKey && /^Digit[1-9]$/.test(e.code)) {
-      runMenuCommand(`provider_${e.code.slice(5)}`);
+    if (primary && /^Digit[1-9]$/.test(e.code)) {
+      // ⌘⇧digit is the n-th model of the picker, every provider alike
+      // (2026-09-14); Shift means model on both engines — letters on
+      // Claude Code, numbers on the API.
+      runMenuCommand(`${e.shiftKey ? "model" : "provider"}_${e.code.slice(5)}`);
       return true;
     }
     if (isMac || !e.ctrlKey) return false;

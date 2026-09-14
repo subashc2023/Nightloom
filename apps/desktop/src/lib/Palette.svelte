@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { app, modelForKey, providerPills, runMenuCommand, usable, useProject } from "./state.svelte";
+  import { app, pickerModels, providerPills, runMenuCommand, switchModelAt, usable, useProject } from "./state.svelte";
   import { MODEL_KEYS, providerLabel } from "./catalog";
   import type { IconName } from "./icons";
   import Icon from "./Icon.svelte";
@@ -96,23 +96,36 @@
 
   const commandRows = $derived.by((): Row[] => {
     const agent = app.draft.engine === "claude-code";
-    const rows: Row[] = MODEL_KEYS.map((k) => {
-      const target = modelForKey(k.alias);
-      const current = target !== null && (agent ? app.draft.agentModel === target : app.draft.model === target);
-      return {
-        id: `model:${k.alias}`,
-        label: `Switch to ${k.alias}`,
-        meta: target
-          ? `${target}${current ? " · current" : ""}`
-          : `not in ${providerLabel(app.draft.provider)}'s picker`,
-        icon: current ? "check" : "chevr",
-        key: `${mod}${shift}${k.key}`,
-        group: "Model",
-        run: () => go(() => runMenuCommand(`model_${k.alias}`)),
-        disabled: !target,
-        current,
-      };
-    });
+    // Claude Code: the CLI's aliases on their letters. The API engine: the
+    // picker's models on ⌘⇧1…9, every provider alike (2026-09-14).
+    const rows: Row[] = agent
+      ? MODEL_KEYS.map((k) => {
+          const current = app.draft.agentModel === k.alias;
+          return {
+            id: `model:${k.alias}`,
+            label: `Switch to ${k.alias}`,
+            meta: current ? "current" : "the CLI resolves it",
+            icon: current ? "check" : "chevr",
+            key: `${mod}${shift}${k.key}`,
+            group: "Model",
+            run: () => go(() => runMenuCommand(`model_${k.alias}`)),
+            current,
+          };
+        })
+      : pickerModels().map((m, i) => {
+          const current = app.draft.model === m;
+          return {
+            id: `model:${m}`,
+            label: `Switch to ${m}`,
+            meta: current ? "current" : providerLabel(app.draft.provider),
+            icon: current ? "check" : "chevr",
+            key: i < 9 ? `${mod}${shift}${i + 1}` : "",
+            group: "Model",
+            run: () => go(() => (i < 9 ? runMenuCommand(`model_${i + 1}`) : void switchModelAt(i + 1))),
+            disabled: app.busy || app.connecting,
+            current,
+          };
+        });
     rows.push({
       id: "engine",
       label: "Engine: Provider ⇄ Claude Code",

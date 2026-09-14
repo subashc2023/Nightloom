@@ -3,7 +3,7 @@
     app,
     addProject,
     importFromClaude,
-    modelForKey,
+    pickerModels,
     revealFolder,
     runMenuCommand,
     showNote,
@@ -163,18 +163,27 @@
   // The key strip. Each cap is a button too, so the mouse loses nothing.
   const mod = isMac ? "⌘" : "Ctrl+";
   const shift = isMac ? "⇧" : "Shift+";
-  const modelKeys = $derived(
-    MODEL_KEYS.map((k) => {
-      const target = modelForKey(k.alias);
-      return {
-        ...k,
-        target,
-        title: target
-          ? `Switch to ${target}`
-          : `No ${k.alias} model in ${providerLabel(app.draft.provider)}'s picker — add one in Settings`,
-      };
-    }),
-  );
+  // Claude Code: the CLI's four aliases on their letters. The API engine:
+  // the picker's models on ⌘⇧1…9 (2026-09-14) — the first five here, the
+  // rest in the popover, so a long picker cannot push the strip off the foot.
+  const modelKeys = $derived.by(() => {
+    if (agentMode) {
+      return MODEL_KEYS.map((k) => ({
+        id: `model_${k.alias}`,
+        label: k.alias,
+        key: `${mod}${shift}${k.key}`,
+        title: `Switch to ${k.alias}`,
+      }));
+    }
+    return pickerModels()
+      .slice(0, 5)
+      .map((m, i) => ({
+        id: `model_${i + 1}`,
+        label: m,
+        key: `${mod}${shift}${i + 1}`,
+        title: `Switch to ${m} (${providerLabel(app.draft.provider)})`,
+      }));
+  });
 </script>
 
 <div class="welcome" bind:this={stage} bind:clientWidth={w} bind:clientHeight={h}>
@@ -301,14 +310,9 @@
       <Kbd keys="{mod}M" />model
     </button>
     <span class="ksep">|</span>
-    {#each modelKeys as k (k.alias)}
-      <button
-        class="kk"
-        class:dim={!k.target}
-        title={k.title}
-        onclick={() => runMenuCommand(`model_${k.alias}`)}
-      >
-        <Kbd keys="{mod}{shift}{k.key}" dim={!k.target} />{k.alias}
+    {#each modelKeys as k (k.id)}
+      <button class="kk" title={k.title} onclick={() => runMenuCommand(k.id)}>
+        <Kbd keys={k.key} />{k.label}
       </button>
     {/each}
     <span class="ksep">|</span>
@@ -612,9 +616,6 @@
   .kk:focus-visible {
     outline: 1px solid var(--accent);
     outline-offset: 1px;
-  }
-  .kk.dim {
-    opacity: 0.55;
   }
   .ksep {
     opacity: 0.4;

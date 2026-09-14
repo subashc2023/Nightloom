@@ -2338,16 +2338,16 @@ fn mac_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     let engine = MenuItemBuilder::with_id("engine", "Switch Engine (Provider ⇄ Claude Code)")
         .accelerator("CmdOrCtrl+E")
         .build(app)?;
-    let sonnet = MenuItemBuilder::with_id("model_sonnet", "Sonnet")
+    let sonnet = MenuItemBuilder::with_id("model_sonnet", "Sonnet (Claude Code)")
         .accelerator("CmdOrCtrl+Shift+S")
         .build(app)?;
-    let opus = MenuItemBuilder::with_id("model_opus", "Opus")
+    let opus = MenuItemBuilder::with_id("model_opus", "Opus (Claude Code)")
         .accelerator("CmdOrCtrl+Shift+O")
         .build(app)?;
-    let fable = MenuItemBuilder::with_id("model_fable", "Fable")
+    let fable = MenuItemBuilder::with_id("model_fable", "Fable (Claude Code)")
         .accelerator("CmdOrCtrl+Shift+F")
         .build(app)?;
-    let haiku = MenuItemBuilder::with_id("model_haiku", "Haiku")
+    let haiku = MenuItemBuilder::with_id("model_haiku", "Haiku (Claude Code)")
         .accelerator("CmdOrCtrl+Shift+H")
         .build(app)?;
 
@@ -2396,6 +2396,9 @@ fn mac_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
         .build()?;
 
     // One key per core model, switching the picker in place from any screen.
+    // The letters are the Claude Code engine's aliases (2026-09-14); on the
+    // API engine the picker's models are ⌘⇧1…9, bound in App.svelte since the
+    // list is dynamic, and these four items decline with a toast saying so.
     let model_menu = SubmenuBuilder::new(app, "Model")
         .item(&sonnet)
         .item(&opus)

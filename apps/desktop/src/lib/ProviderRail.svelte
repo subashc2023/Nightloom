@@ -3,6 +3,7 @@
     app,
     applyDraft,
     loadContextLimits,
+    pickerModels,
     providerPills,
     useEngine,
     usable,
@@ -11,9 +12,7 @@
   import {
     AGENT_MODELS,
     MODEL_KEYS,
-    aliasOf,
     formatWindow,
-    modelForAlias,
     modelsFor,
     providerLabel,
     sanitizeThinking,
@@ -56,14 +55,8 @@
   // The current selection stays listed even if settings later hide it. The
   // same list `switchProvider` counts, so pill n and ⌘⇧n agree.
   const providers = $derived(providerPills());
-  const selected = $derived(app.providers.find((p) => p.kind === app.draft.provider));
-  const models = $derived.by(() => {
-    const list = modelsFor(app.draft.provider, app.prefs, selected?.default_model ?? null);
-    if (app.draft.model && !list.includes(app.draft.model)) {
-      list.unshift(app.draft.model);
-    }
-    return list;
-  });
+  // The same list `switchModelAt` counts, so row n's cap is ⌘⇧n.
+  const models = $derived(pickerModels());
   const locked = $derived(app.busy || app.connecting);
   const thinking = $derived(thinkingSupport(app.draft.provider, app.draft.model));
 
@@ -117,16 +110,14 @@
   const mod = isMac ? "⌘" : "Ctrl+";
   const shift = isMac ? "⇧" : "Shift+";
   /**
-   * The ⌘⇧ cap for a row — only on the *first* id in the list carrying the
-   * alias, because that is the one the key switches to (`modelForAlias`);
-   * a second `sonnet` row wearing the same cap would promise a key it does
-   * not have.
+   * The ⌘⇧ cap for a row: its number in the picker (2026-09-14, his second
+   * look — "anthropic shouldn't be special": every provider's models are
+   * numbered the same way; the letters are Claude Code's). Numbered in the
+   * unfiltered list, so typing in the filter does not renumber the rows.
    */
   function keyFor(id: string): string | null {
-    const alias = aliasOf(id);
-    if (!alias || modelForAlias(models, alias) !== id) return null;
-    const k = MODEL_KEYS.find((m) => m.alias === alias);
-    return k ? `${mod}${shift}${k.key}` : null;
+    const i = models.indexOf(id);
+    return i >= 0 && i < 9 ? `${mod}${shift}${i + 1}` : null;
   }
   /**
    * The Claude Code model as pills (review round 1, 2026-09-13): the CLI's
@@ -399,7 +390,7 @@
             <div class="more">nothing matches</div>
           {/each}
           <div class="more">
-            <span>{mod}{shift}letter (Command + Shift) switches anywhere</span>
+            <span>{mod}{shift}number switches anywhere</span>
           </div>
         </div>
       {:else}

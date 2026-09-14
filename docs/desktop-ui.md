@@ -125,14 +125,20 @@ custom items (four at first — Settings ⌘,, New Chat ⌘N, Open Folder as Pro
 & Context ⌘M~~ Model & Tasks ⌘M and Context ⌘⇧C (the Context tab left the popover
 for its own button under the top bar's gauge, review round 1 the same evening),
 Command Palette… ⌘K, Switch Project… ⌘P, Switch Engine ⌘E, and a
-Model menu with Sonnet ⌘⇧S, Opus ⌘⇧O, Fable ⌘⇧F, Haiku ⌘⇧H) are **forwarded to
+Model menu with Sonnet ⌘⇧S, Opus ⌘⇧O, Fable ⌘⇧F, Haiku ⌘⇧H — **the Claude
+Code engine's aliases only, since 2026-09-14**) are **forwarded to
 the webview** as a `menu` event carrying the item's id, and `runMenuCommand` in
 `state.svelte.ts` acts on it: each one is a frontend flow — a modal, a file
 dialog, a re-connect — and the backend has no way to run half of one. Nothing is
 reachable *only* from the menu, so no other platform is missing a capability: on
 Windows and Linux `App.svelte` binds the same chords itself (guarded off on macOS
-so nothing fires twice). A model key switches the picker to the first id carrying
-the alias; a provider with no such id gets a toast and no change. ~~⌘⇧1…9~~
+so nothing fires twice). ~~A model key switches the picker to the first id carrying
+the alias; a provider with no such id gets a toast and no change.~~ **2026-09-14,
+his second look — "anthropic shouldn't be special":** on the API engine the
+picker's models are **⌘⇧1…9** in the popover's order, every provider alike
+(`pickerModels` / `switchModelAt`, bound in `App.svelte` on every platform), and
+the four letters decline there with a toast; on Claude Code the letters set the
+CLI's alias as before. Shift means model on both engines. ~~⌘⇧1…9~~
 ⌘1…9 (bare ⌘ since his second look: "anthropic shouldn't be special") is the
 n-th provider pill, bound in `App.svelte` on every platform — it is not a menu
 item (the pills are dynamic), so macOS cannot double-fire it; matched on
