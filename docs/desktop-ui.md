@@ -426,6 +426,11 @@ free, since marked consumes the source left to right and a `` `[[x]]` `` is
 claimed whole by the built-in codespan tokenizer before this extension is asked
 about the brackets inside it.
 
+`tilde.ts` replaces marked's `del` tokenizer on both instances so strikethrough
+needs `~~two~~` tildes: GFM lets a single pair strike, and a research reply
+that says "~70%" and "(~10-20%" in one paragraph had everything between the
+two struck, silently (2026-09-14, seen live). A lone `~` is a character.
+
 It renders to an `<a href="#kb:…">`: **a fragment, not a custom scheme**, because
 DOMPurify strips every scheme outside its allow-list and a `nlnote:` href would
 arrive as a dead anchor indistinguishable from a real one. It uses its own
