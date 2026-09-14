@@ -3,11 +3,13 @@
   import {
     app,
     init,
+    runMenuCommand,
     setSidebarWidth,
     toggleSidebar,
     SIDEBAR_MAX,
     SIDEBAR_MIN,
   } from "./lib/state.svelte";
+  import { isMac } from "./lib/platform";
   import Grip from "./lib/Grip.svelte";
   import Sidebar from "./lib/Sidebar.svelte";
   import TitleBar from "./lib/TitleBar.svelte";
@@ -19,6 +21,7 @@
   import NoteView from "./lib/NoteView.svelte";
   import GraphView from "./lib/GraphView.svelte";
   import Welcome from "./lib/Welcome.svelte";
+  import Palette from "./lib/Palette.svelte";
   import NightshiftSurface from "./lib/NightshiftSurface.svelte";
   import Icon from "./lib/Icon.svelte";
 
@@ -34,6 +37,33 @@
    * on the first send rather than on the re-sync a whole turn later.
    */
   const blank = $derived(app.events.length === 0 && !app.live);
+
+  /**
+   * The redesign's shortcuts (nightshift blocker 035) on Windows and Linux,
+   * where there is no menu bar to carry accelerators. On macOS the same keys
+   * arrive as `menu` events from `mac_menu`, and binding them here as well
+   * would fire each command twice — so this table is off there.
+   */
+  const KEYS: Record<string, string> = {
+    k: "commands",
+    p: "projects",
+    m: "model",
+    e: "engine",
+  };
+  const SHIFT_KEYS: Record<string, string> = {
+    s: "model_sonnet",
+    o: "model_opus",
+    f: "model_fable",
+    h: "model_haiku",
+  };
+  function onShortcut(e: KeyboardEvent): boolean {
+    if (isMac || !e.ctrlKey || e.altKey) return false;
+    const k = e.key.toLowerCase();
+    const id = e.shiftKey ? SHIFT_KEYS[k] : KEYS[k];
+    if (!id) return false;
+    runMenuCommand(id);
+    return true;
+  }
 </script>
 
 <!--
@@ -48,7 +78,9 @@
     if ((e.metaKey || e.ctrlKey) && e.key === "\\") {
       e.preventDefault();
       toggleSidebar();
+      return;
     }
+    if (onShortcut(e)) e.preventDefault();
   }}
 />
 
@@ -121,6 +153,7 @@
       <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
       <div class="settings-overlay" onmousedown={(e) => { if (e.target === e.currentTarget) app.showSettings = false; }}><SettingsModal /></div>
     {/if}
+    <Palette />
     {#if app.showPrompts}
       <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
       <div class="settings-overlay" onmousedown={(e) => { if (e.target === e.currentTarget) app.showPrompts = false; }}><PromptLibrary /></div>

@@ -6,7 +6,9 @@ import {
   loadLastConnection,
   loadPrefs,
   loadPrompts,
+  modelForAlias,
   modelsFor,
+  providerLabel,
   newPromptId,
   sanitizeThinking,
   saveLastConnection,
@@ -389,6 +391,24 @@ export const app = $state({
   error: null as string | null,
   /** Settings modal (providers: API keys, model visibility). */
   showSettings: false,
+  /**
+   * The model popover under the top bar's chip (Model · Tasks · Context).
+   * App state rather than the bar's own, so ⌘M and the ⌘K palette can open
+   * it from anywhere (chat-surface redesign, 2026-09-13).
+   */
+  showRail: false,
+  /**
+   * The keyboard overlays: ⌘P's project switcher and ⌘K's command palette.
+   * One slot, because two palettes open at once would both be listening for
+   * the same keys.
+   */
+  overlay: null as null | "projects" | "commands",
+  /**
+   * Context windows from the backend's limits table, per provider then
+   * model id; null where the table is silent. Read once per list and kept:
+   * the table is static, so a second look-up can only answer the same.
+   */
+  contextLimits: {} as Record<string, Record<string, number | null>>,
   /** The user's saved system prompts, newest-written first. */
   prompts: loadPrompts() as SavedPrompt[],
   /** Prompt library modal; a string is the id it opens on. */
@@ -525,7 +545,7 @@ let compactedThisTurn = false;
  * closed the pane when it happened to be open would be answering a question
  * nobody asked.
  */
-function runMenuCommand(id: string): void {
+export function runMenuCommand(id: string): void {
   switch (id) {
     case "settings":
       app.showSettings = true;
@@ -539,6 +559,90 @@ function runMenuCommand(id: string): void {
     case "import_claude":
       void importFromClaude();
       break;
+    // The redesign's set (nightshift blocker 035, built as drawn). The
+    // popover and the overlays *toggle*, unlike Settings: each is a thing
+    // you glance at and dismiss, and the key that opened it is the natural
+    // way back.
+    case "model":
+      app.overlay = null;
+      app.showRail = !app.showRail;
+      break;
+    case "commands":
+      app.overlay = app.overlay === "commands" ? null : "commands";
+      break;
+    case "projects":
+      app.overlay = app.overlay === "projects" ? null : "projects";
+      break;
+    case "engine":
+      void toggleEngine();
+      break;
+    case "model_sonnet":
+    case "model_opus":
+    case "model_fable":
+    case "model_haiku":
+      void switchModel(id.slice(6));
+      break;
+  }
+}
+
+/** The other engine. */
+export async function toggleEngine(): Promise<void> {
+  await useEngine(app.draft.engine === "claude-code" ? "provider" : "claude-code");
+}
+
+/**
+ * What ⌘⇧<letter> would switch the current picker to, or null when the
+ * provider's list has no id carrying the alias. On the Claude Code engine
+ * the alias itself is the answer: the CLI resolves it.
+ */
+export function modelForKey(alias: string): string | null {
+  if (app.draft.engine === "claude-code") return alias;
+  const sel = app.providers.find((p) => p.kind === app.draft.provider);
+  return modelForAlias(
+    modelsFor(app.draft.provider, app.prefs, sel?.default_model ?? null),
+    alias,
+  );
+}
+
+/**
+ * Switch the model in place by alias — the ⌘⇧S / O / F / H keys. When the
+ * picker has no such model the key does nothing and says so, rather than
+ * guessing at a neighbour: a switch that landed on a model you did not name
+ * is worse than one that declined (blocker 035's default).
+ */
+export async function switchModel(alias: string): Promise<void> {
+  if (app.busy || app.connecting) return;
+  const target = modelForKey(alias);
+  if (!target) {
+    addToast(`No ${alias} model in ${providerLabel(app.draft.provider)}'s picker`);
+    return;
+  }
+  if (app.draft.engine === "claude-code") {
+    if (app.draft.agentModel === target) return;
+    app.draft.agentModel = target;
+  } else {
+    if (app.draft.model === target) return;
+    app.draft.model = target;
+    sanitizeThinking(app.draft);
+  }
+  await applyDraft();
+}
+
+/**
+ * Fill `app.contextLimits[kind]` for `models`, asking only about ids not
+ * already answered. Best-effort like every other look-up the rail makes: a
+ * failure leaves the column blank, which is also what "unknown" looks like.
+ */
+export async function loadContextLimits(kind: string, models: string[]): Promise<void> {
+  if (!kind) return;
+  const known = (app.contextLimits[kind] ??= {});
+  const missing = models.filter((m) => !(m in known));
+  if (missing.length === 0) return;
+  try {
+    const limits = await api.contextLimits(kind, missing);
+    missing.forEach((m, i) => (app.contextLimits[kind][m] = limits[i] ?? null));
+  } catch {
+    // leave them unanswered; the next look asks again
   }
 }
 

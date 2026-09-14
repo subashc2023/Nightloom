@@ -64,6 +64,14 @@ export function listModels(
   return invoke("list_models", { provider, baseUrl });
 }
 
+/** Context windows for `models` on `provider`, null where the table is silent. */
+export function contextLimits(
+  provider: string,
+  models: string[],
+): Promise<(number | null)[]> {
+  return invoke("context_limits", { provider, models });
+}
+
 /** Rewind to the turn at log index `to`; resolves with the new transcript. */
 export function rewind(to: number): Promise<SessionEvent[]> {
   return invoke("rewind", { to });

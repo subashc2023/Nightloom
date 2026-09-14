@@ -459,6 +459,19 @@ async fn list_models(provider: String, base_url: Option<String>) -> Result<Vec<S
         .map_err(|e| e.to_string())
 }
 
+/// Context windows for a batch of model ids on one provider, from the static
+/// limits table — `None` where the table does not know the model. The model
+/// popover and the Settings picker print these beside each id (chat-surface
+/// redesign, 2026-09-13); one round trip per list rather than one per row.
+#[tauri::command]
+fn context_limits(provider: String, models: Vec<String>) -> Result<Vec<Option<u64>>, String> {
+    let kind: ProviderKind = provider.parse()?;
+    Ok(models
+        .iter()
+        .map(|m| nightloom_service::context_limit(kind, m))
+        .collect())
+}
+
 /// Start the workspace's MCP servers, or hand back the ones already running.
 ///
 /// Returns empty when tools are off, which also drops the connections: a
@@ -2415,6 +2428,7 @@ fn main() {
             search_backends,
             set_search_key,
             list_models,
+            context_limits,
             connect,
             connect_agent,
             list_sessions,

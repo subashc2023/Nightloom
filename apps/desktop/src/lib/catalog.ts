@@ -87,6 +87,39 @@ export type Engine = "provider" | "claude-code";
  */
 export const AGENT_MODELS = ["", "fable", "opus", "sonnet", "haiku"];
 
+/**
+ * The four core models and the key each switches to, on any screen (⌘⇧ +
+ * the letter; nightshift blocker 035, 2026-09-13). The aliases are the CLI's,
+ * and on the provider engine a key picks the first id in the picker's list
+ * that *contains* the alias — `claude-sonnet-5` on Anthropic,
+ * `anthropic/claude-sonnet-5` on OpenRouter. A provider with no such id
+ * makes the key do nothing, and the ⌘K row says so.
+ */
+export const MODEL_KEYS: { alias: string; key: string }[] = [
+  { alias: "sonnet", key: "S" },
+  { alias: "opus", key: "O" },
+  { alias: "fable", key: "F" },
+  { alias: "haiku", key: "H" },
+];
+
+/** The alias a model id carries, or null; the popover prints its key cap. */
+export function aliasOf(id: string): string | null {
+  const lower = id.toLowerCase();
+  return MODEL_KEYS.find((k) => lower.includes(k.alias))?.alias ?? null;
+}
+
+/** The first id in `models` that carries `alias`, or null. */
+export function modelForAlias(models: string[], alias: string): string | null {
+  return models.find((m) => m.toLowerCase().includes(alias)) ?? null;
+}
+
+/** `200000` → `200k`, `1048576` → `1M`; the context window beside a model id. */
+export function formatWindow(n: number | null | undefined): string {
+  if (n == null) return "";
+  if (n >= 1_000_000) return `${parseFloat((n / 1_000_000).toFixed(1))}M`;
+  return `${Math.round(n / 1_000)}k`;
+}
+
 export interface ConnectionDraft {
   /** Which engine the rail is on. Absent on drafts saved before it existed,
    *  which read as "provider" — the only engine there was. */
