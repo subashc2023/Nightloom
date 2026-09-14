@@ -637,6 +637,8 @@ export type ImportSummary = {
   unreadable: number;
   summary: string;
   warnings: string[];
+  /** Projects whose claude.ai memory was too long for AGENTS.md, with the size. */
+  needs_condensing: [string, number][];
 };
 
 // ---- Nightshift ----

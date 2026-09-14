@@ -418,6 +418,34 @@ default. `Option` fields are left alone, null being already what they are for, a
 id has no session filename and no idempotency key and genuinely cannot be
 imported.
 
+### The memory export maps onto the two note stores
+
+Current archives also carry `memories/<account uuid>.json`: one summary of the
+user across every conversation, one summary per project, and the memory files
+claude.ai keeps behind both (`/profile.md`, `/projects/<uuid>/overview.md`, …).
+Nothing new is stored for it either. The user summary is the user memory
+(`~/.nightloom/AGENTS.md`), the global files go to the vault at their own paths,
+a project's files go under its docspace at `.agents/memory/`, and the project
+summary goes there whole as `summary.md` **and** under a dated `## Memory
+(imported from claude.ai …)` heading appended to the project's `AGENTS.md`.
+Every destination follows the docspace's never-overwrite rule, and the heading
+is the append's idempotency check — a second run finds it and adds nothing.
+
+One decision is new. A project summary over **4,000 characters** is not inlined:
+`AGENTS.md` is loaded on every turn of every chat in the project, the export's
+summaries run to 13k, and what hurts is growth with nothing capping it. The
+section then points at the full text in `summary.md` and the report lists the
+project as needing a condensed version — on every run until the pointer is
+replaced, since a nag that stops after one report is one that gets missed. The
+import does not write the condensed version itself: which 4,000 characters of a
+project's memory matter is a judgement, not a truncation.
+
+The file is read a field at a time for the same reason the arrays are read an
+element at a time: a null or a wrong type in one project's summary costs that
+summary, not the profile and the seventy files beside it. A path in
+`memory_files` is resolved through `Root` before anything is written, the
+export being a zip that arrived by email.
+
 ## `store.rs` — session-log discovery
 
 `list` → `SessionSummary`, `find_by_prefix`, `latest`, plus `search` and `delete`

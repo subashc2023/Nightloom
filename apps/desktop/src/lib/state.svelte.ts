@@ -1099,6 +1099,13 @@ export async function importFromClaude(): Promise<void> {
     const result = await api.importClaude(archive, true);
     await refreshProjects();
     addToast(`Imported ${result.summary}`);
+    // The memory summaries that were too long for AGENTS.md: their file
+    // points at the full text and someone owes a short version. Named, so
+    // the toast says which projects rather than only how many.
+    if (result.needs_condensing.length > 0) {
+      const names = result.needs_condensing.map(([name]) => name).join(", ");
+      addToast(`Memory to condense in AGENTS.md: ${names}`);
+    }
     for (const warning of result.warnings.slice(0, 3)) addToast(warning);
   } catch (e) {
     addToast(String(e));

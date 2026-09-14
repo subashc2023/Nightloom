@@ -1612,6 +1612,9 @@ struct ImportSummary {
     unreadable: usize,
     summary: String,
     warnings: Vec<String>,
+    /// Projects whose memory summary was too long for `AGENTS.md`, with the
+    /// size: their `AGENTS.md` points at the full text and owes a short one.
+    needs_condensing: Vec<(String, usize)>,
 }
 
 /// Choose the claude.ai export archive.
@@ -1698,6 +1701,7 @@ async fn import_claude(
         unfiled: report.unfiled,
         unreadable: report.unreadable,
         warnings: report.warnings.clone(),
+        needs_condensing: report.needs_condensing.clone(),
     })
 }
 
