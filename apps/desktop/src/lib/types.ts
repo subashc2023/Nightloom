@@ -49,7 +49,8 @@ export interface ConnectArgs {
  * A separate shape from `ConnectArgs` rather than a provider value on it,
  * because almost none of that call's fields mean anything here — Claude Code
  * assembles its own prompt and runs its own loop, so a base URL, a thinking
- * mode, a preamble and a sidecar all have nobody to talk to.
+ * mode and a sidecar all have nobody to talk to. The preamble is the one
+ * layer that crosses: it goes in `--append-system-prompt` ahead of `system`.
  */
 export interface AgentConnectArgs {
   /** The CLI to run. Defaults to `claude` on PATH. */
@@ -59,9 +60,11 @@ export interface AgentConnectArgs {
   workspace?: string;
   tools: boolean;
   /**
-   * Maps to the CLI's permission mode: on means `dontAsk`, off means
-   * `bypassPermissions`. Nightloom's own approval prompt does not run on this
-   * engine — the gate belongs to whoever owns the loop, and that is not us.
+   * Maps to the CLI's permission mode: on means `auto` (its classifier
+   * decides, and denies what it cannot approve rather than waiting), off
+   * means `bypassPermissions`. Nightloom's own approval prompt does not run
+   * on this engine — the gate belongs to whoever owns the loop, and that is
+   * not us.
    */
   approval: boolean;
   /**
@@ -72,8 +75,13 @@ export interface AgentConnectArgs {
   safeMode: boolean;
   /** Stop the turn if the CLI's own cost estimate passes this. */
   budget?: number;
-  /** Appended to Claude Code's system prompt. */
+  /** Appended to Claude Code's system prompt, after the preamble. */
   system?: string;
+  /**
+   * Send Nightloom's preamble — the user's AGENTS.md, the walk, the notes
+   * and vault indexes — ahead of `system`. Same default as `connect`: on.
+   */
+  preamble?: boolean;
 }
 
 /** The agent engine as the rail shows it; see the Rust `AgentInfo`. */
@@ -90,7 +98,7 @@ export interface AgentInfo {
   version: string | null;
   /** The API key is withheld, so the turn goes to the plan. */
   subscription: boolean;
-  /** "dontAsk" | "bypassPermissions", or null when tools are off. */
+  /** "auto" | "bypassPermissions", or null when tools are off. */
   permission_mode: string | null;
   safe_mode: boolean;
   /** The agent session this chat continues, when it has one. */

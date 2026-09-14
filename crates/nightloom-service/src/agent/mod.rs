@@ -125,6 +125,7 @@ pub struct AgentSpec {
     /// which for `-p` is manual on every plan — and a manual prompt in a
     /// non-interactive process is a denial, so a caller that wants tools to
     /// actually run has to say which mode it means.
+    /// [`AgentSpec::headless_permission_mode`] is the shells' answer.
     pub permission_mode: Option<String>,
     /// Replaces the CLI's system prompt entirely.
     pub system_prompt: Option<String>,
@@ -198,6 +199,31 @@ impl AgentSpec {
             max_budget_usd: None,
             use_subscription: true,
             extra_args: Vec::new(),
+        }
+    }
+
+    /// What the approval switch means on a headless run: `auto` when it is
+    /// on, `bypassPermissions` when it is off.
+    ///
+    /// Neither is Nightloom's own gate, which is a live prompt with nobody
+    /// to answer it here. `auto` is the CLI's classifier deciding each call
+    /// — the mode a Pro or Max terminal session already starts in — and on a
+    /// `-p` run it **denies rather than waits** when it cannot approve: the
+    /// docs say a non-interactive run "has no prompt to fall back to", so
+    /// "the action doesn't run and Claude keeps working" (`external`,
+    /// code.claude.com/docs/en/permission-modes, 2026-09-14). Where auto
+    /// mode is unavailable to the session, the CLI starts in manual instead,
+    /// which headless is a denial too; nothing here can hang.
+    ///
+    /// `dontAsk` was the previous answer, and with the empty allowlist a
+    /// fresh install has it refused every write, command and fetch — a chat
+    /// on which nothing but reads ran. Blocker 045 in the nightshift repo
+    /// records the switch and the reasoning.
+    pub fn headless_permission_mode(approval: bool) -> &'static str {
+        if approval {
+            "auto"
+        } else {
+            "bypassPermissions"
         }
     }
 
@@ -649,6 +675,24 @@ mod tests {
         ] {
             assert!(a.iter().any(|x| x == flag), "missing {flag}");
         }
+    }
+
+    /// Approval on is `auto`, not `dontAsk`: the classifier decides, and a
+    /// headless run it cannot approve is denied rather than left waiting.
+    /// Off is still the CLI's "run everything".
+    #[test]
+    fn approval_on_is_auto_mode_and_off_is_bypass() {
+        let mut s = spec();
+        s.permission_mode = Some(AgentSpec::headless_permission_mode(true).into());
+        let a = s.args("hi");
+        let i = a.iter().position(|x| x == "--permission-mode").unwrap();
+        assert_eq!(a[i + 1], "auto");
+        assert!(!a.iter().any(|x| x == "dontAsk"), "{a:?}");
+
+        s.permission_mode = Some(AgentSpec::headless_permission_mode(false).into());
+        let a = s.args("hi");
+        let i = a.iter().position(|x| x == "--permission-mode").unwrap();
+        assert_eq!(a[i + 1], "bypassPermissions");
     }
 
     /// Caller-supplied arguments go last so they can override.

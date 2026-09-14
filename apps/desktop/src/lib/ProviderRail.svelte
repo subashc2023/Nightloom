@@ -475,7 +475,7 @@
         <span class="t">{agentMode ? "Restrict permissions" : "Ask before writing"}</span>
         <Hint
           text={agentMode
-            ? "Claude Code runs its own permission checks in `dontAsk` mode: anything not already permitted is refused. Off is `bypassPermissions`."
+            ? "Claude Code runs its own permission checks in `auto` mode: its classifier decides each call, and one it cannot approve is refused rather than left waiting. Off is `bypassPermissions`."
             : "Calls that change files or run commands wait for you in the transcript. Reads and task-list writes never ask."}
         />
         <input
@@ -556,19 +556,29 @@
           disabled={locked}
         />
       </label>
-    {:else}
-      <label class="swq">
-        <span class="t">Preamble</span>
-        <Hint text="Identity, environment, AGENTS.md instructions and the notes index." />
-        <input
-          type="checkbox"
-          class="sw"
-          bind:checked={app.draft.preamble}
-          onchange={apply}
-          disabled={locked}
-        />
-      </label>
+    {/if}
 
+    <!-- Shown on both engines (2026-09-14): the preamble crosses to Claude
+         Code now, appended ahead of the system prompt below, so the switch
+         that gates it has to be reachable there too. Identity and
+         environment stay behind on that engine — the CLI has its own. -->
+    <label class="swq">
+      <span class="t">Preamble</span>
+      <Hint
+        text={agentMode
+          ? "Your AGENTS.md, the project's, the notes index and the knowledge base index, appended to Claude Code's own system prompt. Off sends only the system prompt below."
+          : "Identity, environment, AGENTS.md instructions and the notes index."}
+      />
+      <input
+        type="checkbox"
+        class="sw"
+        bind:checked={app.draft.preamble}
+        onchange={apply}
+        disabled={locked}
+      />
+    </label>
+
+    {#if !agentMode}
       <label class="swq">
         <span class="t">Per-turn status</span>
         <Hint text="Clock, context gauge and task list, appended to each turn." />

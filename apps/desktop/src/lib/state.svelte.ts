@@ -1298,7 +1298,7 @@ export async function applyDraft(): Promise<void> {
  *
  * Its own function rather than a branch inside `applyDraft` because almost
  * nothing in that call survives the crossing: no thinking mode, no base URL,
- * no preamble or sidecar, no MCP or reviewers. What it shares is the shape —
+ * no sidecar, no MCP or reviewers. What it shares is the shape —
  * one connect per rail change, the backend's answer read back rather than the
  * draft echoed — and that is what `Connection` is.
  */
@@ -1316,6 +1316,7 @@ async function applyAgentDraft(): Promise<void> {
       safeMode: d.agentSafeMode,
       budget: d.agentBudget > 0 ? d.agentBudget : undefined,
       system: d.system.trim() || undefined,
+      preamble: d.preamble,
     });
     app.connection = {
       provider: res.provider,

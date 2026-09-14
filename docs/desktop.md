@@ -85,15 +85,21 @@ describes.
 
 It is a command of its own rather than a `provider` value on `connect`, because
 almost none of that call's arguments mean anything here (no base URL, no thinking
-mode, no preamble or sidecar, no MCP, no reviewers), and an entry point whose
-arguments are mostly inert is the shape that invites a knob to be silently
-ignored.
+mode, no sidecar, no MCP, no reviewers), and an entry point whose arguments are
+mostly inert is the shape that invites a knob to be silently ignored. The
+preamble is the one layer that crosses (2026-09-14): it goes in
+`--append-system-prompt` ahead of the library prompt, without identity or
+environment — see [service-agent.md](service-agent.md#what---append-system-prompt-carries).
 
 Three things follow, each stated in the UI rather than left to be discovered:
 
 - **Nightloom's approval gate does not run.** It gates calls its own engine is
   about to execute, and this engine executes its own, so the switch maps to the
-  CLI's `dontAsk` / `bypassPermissions` and the rail says which.
+  CLI's ~~`dontAsk`~~ `auto` / `bypassPermissions` and the rail says which.
+  (`auto` since 2026-09-14, nightshift blocker 045: the CLI's classifier
+  decides each call and, headless, denies what it cannot approve rather than
+  waiting; `dontAsk` with a fresh install's empty allowlist refused every
+  write, command and fetch.)
 - **Rewind, compaction and the context panel are withheld.** They change what the
   *log* projects onto the next request, and here nothing projects, so each would
   alter what the window shows and nothing about the conversation.

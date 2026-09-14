@@ -42,7 +42,7 @@ pub mod mcp {
 }
 pub use knowledge::{LinkGraph, vault_dir};
 pub use project::{Note, Project, Registry};
-pub use prompt::{KnowledgeContext, ProjectContext, PromptConfig, assemble};
+pub use prompt::{KnowledgeContext, ProjectContext, PromptConfig, agent_preamble, assemble};
 pub use sidecar::{SidecarContext, SidecarPart};
 pub use turn::{Chat, CompactOutcome, TurnEvent, TurnInput, TurnOutcome};
 

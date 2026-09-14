@@ -198,6 +198,79 @@ fn anchor_last(prompt: SystemPrompt) -> SystemPrompt {
     out
 }
 
+/// The preamble as one string for the Claude Code engine, with the library
+/// prompt as its trailer — what `--append-system-prompt` carries.
+///
+/// The same layers [`assemble`] builds for the API engine, minus two:
+/// `identity` and `environment` are forced off whatever the config says,
+/// because Claude Code has an identity of its own and knows its cwd, and a
+/// second copy of either would contradict the first rather than refine it.
+/// Everything that is *ours to know* — the user's standing instructions, the
+/// `AGENTS.md` walk, the notes index and the vault index — goes across, so a
+/// chat on this engine starts knowing what a chat on the other one does.
+///
+/// Those segments name Nightloom's tools (`read_file`, `write_file`,
+/// `edit_file`) and the vault by its `@kb/` alias, and neither exists on this
+/// engine: Claude Code brings its own tools, and they take real paths. The
+/// segments are not rewritten per engine — they are one text, cached and
+/// tested once — so a short **engine note** follows them saying how the names
+/// map. It is emitted only when there is a preamble for it to explain, and it
+/// spells out the vault only when there is one.
+///
+/// The library prompt goes last, joined by a blank line and outside the
+/// `SystemPrompt`, so it stays a recognisable trailer rather than a segment
+/// among segments, and so position keeps the same meaning as on the API
+/// engine's ladder: what the shell passed wins. `None` when there is nothing
+/// at all to send, so the caller can omit the flag rather than pass `""`.
+pub fn agent_preamble(config: &PromptConfig, library: Option<&str>) -> Option<String> {
+    let mut prompt = assemble(&PromptConfig {
+        identity: false,
+        environment: false,
+        custom: None,
+        ..config.clone()
+    });
+    if !prompt.is_empty() {
+        prompt.push(engine_note_segment(config.knowledge.as_ref()));
+    }
+    let library = library.map(str::trim).filter(|t| !t.is_empty());
+    match (prompt.render_flat(), library) {
+        (Some(preamble), Some(library)) => Some(format!("{preamble}\n\n{library}")),
+        (Some(preamble), None) => Some(preamble),
+        (None, Some(library)) => Some(library.to_string()),
+        (None, None) => None,
+    }
+}
+
+/// How the names in the preamble read on Claude Code — see
+/// [`agent_preamble`] for why this is a note after the segments rather than
+/// a second wording of them.
+///
+/// A [`SegmentKind::Custom`] segment rather than a bare string, so it goes
+/// through the same trim-on-push and blank-line join as everything else and
+/// the rendered text cannot differ by a byte from what a `SystemPrompt` would
+/// have produced. Only `Read`, `Write` and `Edit` are named: the CLI's default
+/// tool set on macOS and Linux leaves out `Glob` and `Grep` (`external`, the
+/// CLI reference for `--tools`), and promising a tool the model may not have
+/// is the substituted-tool failure `safe_mode` documents.
+fn engine_note_segment(knowledge: Option<&KnowledgeContext>) -> Segment {
+    let mut text = String::from(
+        "<engine-note>\n\
+         On this engine the file tools are Claude Code's own: read a note with Read, write \
+         or revise one with Write or Edit. Where the sections above say read_file, \
+         write_file or edit_file, they mean those.",
+    );
+    if let Some(knowledge) = knowledge {
+        let alias = crate::tools::VAULT_ALIAS;
+        let dir = knowledge.dir.display();
+        text.push_str(&format!(
+            " {alias} stands for the vault directory {dir}, so {alias}/<name> means the file \
+             {dir}/<name>; [[name]] means {alias}/<name>.md."
+        ));
+    }
+    text.push_str("\n</engine-note>");
+    Segment::new(SegmentKind::Custom, "engine-note", text)
+}
+
 pub fn identity_segment() -> Segment {
     Segment::new(SegmentKind::Identity, "identity", DEFAULT_IDENTITY)
 }
@@ -1200,5 +1273,134 @@ the body text",
         assert!(segs[0].text.len() < FILE_LIMIT * 2);
 
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The bridge carries everything the API engine's preamble would — the
+    /// instructions walk, the notes index — then the engine note, then the
+    /// library prompt last, and never identity or environment.
+    #[test]
+    fn the_agent_bridge_orders_preamble_then_engine_note_then_library() {
+        let dir = temp_dir("agent-bridge");
+        std::fs::write(dir.join("AGENTS.md"), "always answer in haiku").unwrap();
+        let notes = dir.join(".agents");
+        crate::project::write_note(&notes, "one.md", "# The one note\nbody").unwrap();
+        let config = PromptConfig {
+            project_instructions: true,
+            project: Some(ProjectContext {
+                name: "bridge".into(),
+                notes_dir: notes.clone(),
+            }),
+            ..bare(dir.clone())
+        };
+        let text = agent_preamble(&config, Some("Be terse.")).expect("something to send");
+
+        assert!(text.contains("always answer in haiku"), "{text}");
+        assert!(text.contains("one.md"), "{text}");
+        assert!(text.contains("<engine-note>"), "{text}");
+        assert!(!text.contains("You are Nightloom"), "{text}");
+        assert!(!text.contains("<environment>"), "{text}");
+        // Order is the ladder: what the shell passed wins by position.
+        let instructions = text.find("<project-instructions").unwrap();
+        let index = text.find("<project-notes").unwrap();
+        let note = text.find("<engine-note>").unwrap();
+        assert!(instructions < index && index < note, "{text}");
+        assert!(text.ends_with("\n\nBe terse."), "{text}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The engine note names the vault's real directory only when there is
+    /// a vault: an `@kb` gloss with nowhere to point would be an alias for
+    /// nothing.
+    #[test]
+    fn the_engine_note_spells_out_the_vault_only_when_there_is_one() {
+        let dir = temp_dir("agent-bridge-vault");
+        std::fs::write(dir.join("AGENTS.md"), "a rule").unwrap();
+        let vault = dir.join("vault");
+        std::fs::create_dir_all(&vault).unwrap();
+        let with = agent_preamble(
+            &PromptConfig {
+                project_instructions: true,
+                knowledge: Some(KnowledgeContext { dir: vault.clone() }),
+                ..bare(dir.clone())
+            },
+            None,
+        )
+        .unwrap();
+        let alias = crate::tools::VAULT_ALIAS;
+        assert!(
+            with.contains(&format!(
+                "{alias}/<name> means the file {}/<name>",
+                vault.display()
+            )),
+            "{with}"
+        );
+        assert!(
+            with.contains(&format!("[[name]] means {alias}/<name>.md")),
+            "{with}"
+        );
+
+        let without = agent_preamble(
+            &PromptConfig {
+                project_instructions: true,
+                ..bare(dir.clone())
+            },
+            None,
+        )
+        .unwrap();
+        assert!(without.contains("<engine-note>"), "{without}");
+        assert!(!without.contains(alias), "{without}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// No project, no vault, no instructions on the walk: the user's own
+    /// `AGENTS.md` is the only layer left, and the note follows it — or, when
+    /// that is absent too, the library prompt goes alone and there is no note
+    /// for it, since there is nothing above it to gloss.
+    #[test]
+    fn the_agent_bridge_with_only_user_memory_or_nothing() {
+        let dir = temp_dir("agent-bridge-empty");
+        let text = agent_preamble(
+            &PromptConfig {
+                user_memory: true,
+                ..bare(dir.clone())
+            },
+            Some("Be terse."),
+        )
+        .unwrap();
+        // Whether the machine running the tests has a `~/.nightloom/AGENTS.md`
+        // is not the test's to decide, so both outcomes are asserted exactly.
+        if user_memory_segment().is_some() {
+            assert!(text.starts_with("<user-instructions>"), "{text}");
+            assert!(text.contains("<engine-note>"), "{text}");
+            assert!(text.ends_with("\n\nBe terse."), "{text}");
+        } else {
+            assert_eq!(text, "Be terse.");
+        }
+
+        assert_eq!(
+            agent_preamble(&bare(dir.clone()), Some("Be terse.")).as_deref(),
+            Some("Be terse.")
+        );
+        assert_eq!(agent_preamble(&bare(dir.clone()), Some("   ")), None);
+        assert_eq!(agent_preamble(&bare(dir.clone()), None), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Identity and environment are refused whatever the caller asked for:
+    /// on this engine both would contradict the host's own.
+    #[test]
+    fn the_agent_bridge_never_sends_identity_or_environment() {
+        let dir = temp_dir("agent-bridge-identity");
+        let text = agent_preamble(
+            &PromptConfig {
+                identity: true,
+                environment: true,
+                ..bare(dir.clone())
+            },
+            Some("Be terse."),
+        )
+        .unwrap();
+        assert_eq!(text, "Be terse.");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

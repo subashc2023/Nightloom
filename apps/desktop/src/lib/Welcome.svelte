@@ -28,10 +28,12 @@
    */
 
   /**
-   * On the Claude Code engine the notes are still on disk and its tools can
+   * ~~On the Claude Code engine the notes are still on disk and its tools can
    * read them — but nothing indexes them into its prompt, because it
    * assembles its own. So the count line says how many there are, not that a
-   * new chat starts knowing them, which on this engine it does not.
+   * new chat starts knowing them, which on this engine it does not.~~
+   * Since 2026-09-14 the indexes cross to that engine too (the preamble
+   * bridge in `connect_agent`), so the count line reads the same on both.
    */
   const agentMode = $derived(app.connection?.engine === "claude-code");
 
@@ -155,8 +157,8 @@
     const parts: string[] = [];
     const n = app.project ? app.notes.length : 0;
     const k = app.vault.length;
-    if (n > 0) parts.push(agentMode ? `${n} note${n === 1 ? "" : "s"} in the project` : `${n} project note${n === 1 ? "" : "s"}`);
-    if (k > 0) parts.push(agentMode ? `${k} in your knowledge base` : `${k} from your knowledge base`);
+    if (n > 0) parts.push(`${n} project note${n === 1 ? "" : "s"}`);
+    if (k > 0) parts.push(`${k} from your knowledge base`);
     return parts;
   });
 

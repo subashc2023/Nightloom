@@ -127,8 +127,9 @@ It maps the flags the chat REPL already takes onto an `AgentSpec` (`--model`,
 through `chat::render` unchanged — which is the point: the terminal cannot tell
 which engine produced a turn. `--agent-binary` and `--agent-budget` are its own.
 
-Headless has no way to ask, so `--tools` maps to `--permission-mode dontAsk` and
-`--no-approval` to `bypassPermissions`, and the startup lines say that
+Headless has no way to ask, so `--tools` maps to `--permission-mode auto` (the
+CLI's classifier decides; what it cannot approve is denied, never left waiting —
+~~`dontAsk`~~ until 2026-09-14) and `--no-approval` to `bypassPermissions`, and the startup lines say that
 Nightloom's approval prompt does not apply here rather than letting the familiar
 flag imply the familiar gate.
 

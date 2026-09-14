@@ -329,7 +329,7 @@ struct AgentInfo {
     /// API instead — which is the whole failure this engine exists to avoid,
     /// and it is invisible in the transcript, so the rail says it out loud.
     subscription: bool,
-    /// `dontAsk` or `bypassPermissions`, or `None` when tools are off.
+    /// `auto` or `bypassPermissions`, or `None` when tools are off.
     ///
     /// Nightloom's own approval gate does not apply on this engine: the loop
     /// is Claude Code's and the prompt would have nobody to ask, headless.
@@ -913,10 +913,18 @@ async fn not_in_agent_mode(state: &AppState, what: &str) -> Result<(), String> {
 ///
 /// Deliberately a command of its own rather than a `provider` value on
 /// [`connect`]. Almost none of that call's arguments mean anything here — no
-/// base URL, no thinking mode, no preamble or sidecar, no MCP list, no
-/// reviewers — because Claude Code assembles its own prompt and runs its own
-/// loop. A shared entry point would be one whose arguments are mostly inert,
-/// which is the shape that invites a knob to be silently ignored.
+/// base URL, no thinking mode, no sidecar, no MCP list, no reviewers —
+/// because Claude Code assembles its own prompt and runs its own loop. A
+/// shared entry point would be one whose arguments are mostly inert, which
+/// is the shape that invites a knob to be silently ignored.
+///
+/// The preamble is the one layer that crosses. It used to be withheld on the
+/// same reasoning, and the result was a chat that started knowing nothing a
+/// chat on the other engine knows — not the user's standing instructions,
+/// not the project's `AGENTS.md`, not which notes exist. Claude Code owns
+/// the identity and the environment; the rest is ours to know and goes in
+/// `--append-system-prompt` ahead of the library prompt
+/// ([`nightloom_service::agent_preamble`]).
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 async fn connect_agent(
@@ -929,6 +937,7 @@ async fn connect_agent(
     safe_mode: Option<bool>,
     budget: Option<f64>,
     system: Option<String>,
+    preamble: Option<bool>,
 ) -> Result<ConnectedInfo, String> {
     // Same rule as `connect`: an open project wins over the rail's saved
     // folder, or a chat filed under a project would be running somewhere
@@ -952,19 +961,45 @@ async fn connect_agent(
         .filter(|m| !m.is_empty());
     spec.max_budget_usd = budget.filter(|b| *b > 0.0);
     spec.safe_mode = safe_mode.unwrap_or(false);
-    spec.append_system_prompt = system
-        .map(|t| t.trim().to_string())
-        .filter(|t| !t.is_empty());
+    // Same vault call and the same project context `connect` builds, and
+    // gated on the same switch: off means "nothing but what I typed" on
+    // both engines. The library prompt is the trailer rather than the
+    // config's `custom` layer, so it stays recognisable as what the shell
+    // passed and still wins by position.
+    let preamble = preamble.unwrap_or(true);
+    let knowledge = preamble
+        .then(nightloom_service::knowledge::vault_dir)
+        .flatten();
+    spec.append_system_prompt = nightloom_service::agent_preamble(
+        &PromptConfig {
+            identity: false,
+            environment: false,
+            project_instructions: preamble,
+            user_memory: preamble,
+            project: preamble
+                .then(|| {
+                    active.as_ref().map(|p| ProjectContext {
+                        name: p.name.clone(),
+                        notes_dir: p.notes_dir(),
+                    })
+                })
+                .flatten(),
+            knowledge: knowledge.map(|dir| KnowledgeContext { dir }),
+            cwd: workspace.clone(),
+            custom: None,
+        },
+        system.as_deref(),
+    );
     if tools {
-        // Headless has no way to ask, so the two honest settings are "deny
-        // anything not already permitted" and "run everything". The window's
-        // approval prompt is not one of them: it gates calls the engine is
-        // about to run, and this engine runs its own.
-        spec.permission_mode = Some(if approval.unwrap_or(true) {
-            "dontAsk".into()
-        } else {
-            "bypassPermissions".into()
-        });
+        // Headless has no way to ask, so the window's approval prompt does
+        // not run here: it gates calls the engine is about to run, and this
+        // engine runs its own. On means the CLI's `auto` — its classifier
+        // decides, and a call it cannot approve is denied rather than left
+        // waiting for an answer nobody can give (see the helper's doc, and
+        // nightshift blocker 045 for why this is no longer `dontAsk`). Off
+        // is `bypassPermissions`.
+        spec.permission_mode =
+            Some(AgentSpec::headless_permission_mode(approval.unwrap_or(true)).into());
     } else {
         spec.tools = Some(Vec::new());
     }
@@ -1004,10 +1039,11 @@ async fn connect_agent(
         workspace: workspace.to_string_lossy().into_owned(),
         project: active.as_ref().map(ProjectInfo::of),
         search: None,
-        // Claude Code owns its own tools and its own file access, so nothing
-        // here roots them and the vault is not on the request. Said as `None`
-        // rather than echoed hopefully: the rail would otherwise chip a folder
-        // this engine never reads.
+        // The vault's index is on the request now, with its real directory
+        // in the engine note — but this field is the folder Nightloom's file
+        // tools are rooted at, and nothing here roots any: Claude Code owns
+        // its own file access. Said as `None` rather than echoed, so the
+        // rail's chip keeps meaning what it says.
         knowledge: None,
         engine: AGENT.into(),
         agent: Some(AgentInfo {

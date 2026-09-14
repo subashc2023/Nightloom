@@ -294,8 +294,10 @@
             On Claude Code there is no list to show. Nightloom itemises the
             request <em>it</em> is about to send — preamble, history, tool
             results — and on this engine the CLI assembles its own from a
-            history it keeps, so there is nothing here to take apart or
-            remove.
+            history it keeps. Nightloom appends its preamble to that prompt
+            (your AGENTS.md, the project's, the notes and knowledge base
+            indexes — the Preamble switch in the rail), but the request is
+            the CLI's, so there is nothing here to take apart or remove.
           </p>
           <p>
             The gauge in the bar still works: it is the usage the CLI reports

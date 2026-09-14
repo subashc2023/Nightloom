@@ -169,7 +169,9 @@ is the check to repeat when touching it.
   self-compaction (the last three shown only with tools on), knowledge, preamble,
   and per-turn status. It re-connects on every change and auto-connects at
   launch to the last-used draft. (Redesigned 2026-09-13; the dropdowns it
-  replaced were the same knobs.)
+  replaced were the same knobs.) The preamble switch shows on both engines
+  since 2026-09-14, with an engine-aware hint: on Claude Code it gates what
+  `connect_agent` appends to the CLI's own prompt.
   On Claude Code the model is a row of alias pills (default · fable · opus ·
   sonnet · haiku, each with its key) plus *other…* for a typed id, and the
   Binary field sits at the foot under **CLI** — set once, read never. The
@@ -183,9 +185,11 @@ is the check to repeat when touching it.
   **`ContextPanel.svelte`** is its own popover now, opened from the top bar's
   context gauge (which reads *Context* before any usage) or ⌘⇧C. On Claude Code
   it explains rather than vanishes: the panel itemises the request Nightloom
-  is about to send, and that engine's CLI assembles its own — the *gauge* still
-  counts, from the usage the CLI reports per turn. One popover is open at a
-  time (`app.showRail` / `app.showContext`).
+  is about to send, and that engine's CLI assembles its own — Nightloom appends
+  its preamble to it (2026-09-14), but the request is the CLI's and there is
+  nothing to take apart. The *gauge* still counts, from the usage the CLI
+  reports per turn. One popover is open at a time (`app.showRail` /
+  `app.showContext`).
 
 The thinking dropdown is capability-aware via `catalog.ts::thinkingSupport(kind,
 model)` — Claude 5 → adaptive effort, Claude ≤4.5 → budget, OpenAI → effort incl.

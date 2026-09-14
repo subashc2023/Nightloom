@@ -110,6 +110,7 @@ export function connectAgent(args: AgentConnectArgs): Promise<ConnectResult> {
     safeMode: args.safeMode,
     budget: args.budget,
     system: args.system,
+    preamble: args.preamble,
   });
 }
 

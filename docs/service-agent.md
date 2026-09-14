@@ -94,6 +94,51 @@ A "not found" names every place it looked, and the desktop reports the
 rather than the name it was asked for — the two differ exactly when the fallback
 did something.
 
+## What `--append-system-prompt` carries
+
+Three parts, in this order, joined by blank lines (`prompt::agent_preamble`,
+2026-09-14):
+
+1. **Nightloom's preamble**, minus identity and environment. The same layers
+   `assemble` builds for the API engine — the user's `~/.nightloom/AGENTS.md`,
+   every `AGENTS.md` on the walk to the workspace, the project's notes index,
+   the vault's index — but never `DEFAULT_IDENTITY` or the `<environment>`
+   block: Claude Code has an identity of its own and knows its cwd, and a
+   second copy of either would contradict the first rather than refine it.
+   Before this the engine got none of it, so a chat there started knowing
+   nothing a chat on the other engine knows.
+2. **An engine note.** Those segments name Nightloom's tools (`read_file`,
+   `write_file`, `edit_file`) and the vault by its `@kb/` alias, and neither
+   exists here. Rather than a second wording of every segment per engine, one
+   short `<engine-note>` follows them: the file tools are `Read`, `Write` and
+   `Edit`, and `@kb` stands for the vault's real directory, so `@kb/<name>` is
+   `<vault>/<name>` and `[[name]]` is `@kb/<name>.md`. Emitted only when there
+   is a preamble to gloss, and names the vault only when there is one.
+3. **The library prompt** (the rail's system-prompt dropdown), last, so it wins
+   by position the way the `custom` layer does on the API engine's ladder.
+
+The flag is omitted altogether when all three are empty. The desktop's rail
+gates the first two on its Preamble switch, on by default and now shown on both
+engines; the CLI (`nightloom-cli/src/agent.rs`) still sends only `--system`.
+
+**A changed preamble does not necessarily reach a resumed session.** The docs
+say (`external`, code.claude.com/docs/en/cli-reference, "System prompt flags in
+resumed conversations", 2026-09-14) that Claude Code "builds the system prompt
+once, on a conversation's first request ... and records it in the session", that
+"every later request uses that recorded prompt, including after you return to
+the conversation with `--resume`", and that different flag text "takes effect
+once the conversation is compacted or when you start a new conversation" —
+unless `--system-prompt-snapshot off` is passed. They add that before v2.1.265
+"passing any of the system prompt flags also turned recording off". Measured on
+CLI 2.1.263: a resumed session asked what its system prompt said answered with
+the *new* text (recording off, as the docs say for that version), and the same
+experiment with `--system-prompt-snapshot on` on both launches answered with the
+*first* text. So on the CLI this was built against, a note written mid-chat is
+in the index of the next turn; on 2.1.265 or later it is in the index of the
+next *conversation*, which is the same rule the API engine already lives by
+(the index is assembled once per `Chat`). Nothing here passes
+`--system-prompt-snapshot`; see the report for the option.
+
 ## Translation
 
 A pure function of the byte stream, tested against verbatim captured lines — the
