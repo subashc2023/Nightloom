@@ -315,7 +315,18 @@ re-connects the live connection (`saveNote` → `applyDraft`), the rule the
 prompt library already follows for its active entry, because the preamble is
 assembled once at connect and an edit would otherwise sit unread until the
 next chat. The editor's footer says so and says *whole*, where the notes'
-footer says *name and first line*. An unrecognized value is an error rather than a default, because a typo
+footer says *name and first line*.
+
+**Drafts (same day, his review):** typing into a note, leaving it and coming
+back found the edit gone — the editor reloaded the file. Unsaved text now
+lives in `app.noteDrafts`, keyed `scope:name`, for the life of the app (the
+never-lose-work rule); reopening a note with a draft shows the draft over the
+saved baseline, marked *● draft*, with **Revert** (back to the last saved
+text) beside **Save**. The mirror into `noteDrafts` is keyed to the note
+*whose text is in the buffer* (`bufferKey`, set by `load` after the read),
+not to the selection: the selection changes a tick before the buffer does,
+and the first version wrote the previous note's unsaved text as a draft under
+the next note's name. An unrecognized value is an error rather than a default, because a typo
 that quietly wrote a personal note into somebody's repository is exactly the
 failure the split exists to prevent.
 

@@ -437,6 +437,14 @@ export const app = $state({
    * being edited, null for a new one.
    */
   promptDraft: null as null | { selected: string | null; name: string; text: string },
+  /**
+   * Unsaved note text, keyed `scope:name`, kept for the life of the app (the
+   * never-lose-work rule): leaving a note and coming back finds the edit
+   * still there, marked as a draft, with Revert to drop it and Save to keep
+   * it. Not persisted to disk — a draft the user has not saved is not the
+   * file's content — and cleared on save and on revert.
+   */
+  noteDrafts: {} as Record<string, string>,
   /** Live model lists fetched from provider APIs, per provider kind. */
   modelLists: {} as Record<string, string[]>,
   /** Fetch status per provider kind (settings modal UI). */

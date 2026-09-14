@@ -38,6 +38,26 @@
   const dirty = $derived(text !== saved);
   const open = $derived(app.openNote);
   const isVault = $derived(open?.scope === "knowledge");
+  /**
+   * The note whose text is in the buffer — set by `load` only once that
+   * note's content is in `text` and `saved`, and cleared while a load is in
+   * flight. Deliberately *not* derived from `open`: the selection changes a
+   * tick before the buffer does, and an effect keyed on it wrote the
+   * previous note's unsaved text as a draft under the next note's name.
+   */
+  let bufferKey = $state<string | null>(null);
+
+  /**
+   * Mirror the buffer into `app.noteDrafts` while it differs from the saved
+   * text, and drop the entry once it matches again — so an edit typed and
+   * then undone leaves no draft behind.
+   */
+  $effect(() => {
+    const key = bufferKey;
+    if (!key) return;
+    if (text !== saved) app.noteDrafts[key] = text;
+    else delete app.noteDrafts[key];
+  });
 
   /**
    * Links out of the note as it currently reads — from the buffer rather than
@@ -75,6 +95,7 @@
   });
 
   async function load(target: { scope: NoteScope; name: string } | null) {
+    bufferKey = null;
     text = "";
     saved = "";
     error = null;
@@ -83,8 +104,13 @@
     loading = true;
     try {
       const content = await api.readNote(target.scope, target.name);
-      text = content;
+      const key = `${target.scope}:${target.name}`;
       saved = content;
+      // A draft left on this note takes the buffer; the file stays the
+      // saved baseline, so the ● and the Revert button say what differs.
+      const draft = app.noteDrafts[key];
+      text = draft !== undefined && draft !== content ? draft : content;
+      bufferKey = key;
     } catch (e) {
       error = String(e);
     } finally {
@@ -120,6 +146,12 @@
       addToast(`Saved ${target.name}`);
       if (target.scope === "knowledge") void loadBacklinks(target.name);
     }
+  }
+
+  /** Drop the draft: the buffer goes back to the last saved text. */
+  function revert() {
+    if (!dirty) return;
+    text = saved;
   }
 
   /**
@@ -189,8 +221,15 @@
       {open?.scope ?? "project"}
     </span>
     <span class="title">{open?.name ?? "no note"}</span>
-    {#if dirty}<span class="dirty" title="Unsaved changes">●</span>{/if}
+    {#if dirty}<span class="dirty" title="Unsaved changes — kept as a draft until you save or revert">● draft</span>{/if}
     <span class="spacer"></span>
+    {#if dirty}
+      <button
+        class="ghost"
+        title="Discard the draft and go back to the last saved version"
+        onclick={revert}>Revert</button
+      >
+    {/if}
     <button
       class="ghost"
       class:on={preview}
@@ -347,7 +386,8 @@
   }
   .dirty {
     color: var(--accent);
-    font-size: 0.6rem;
+    font-size: 0.7rem;
+    letter-spacing: 0.02em;
   }
   .spacer {
     flex: 1;
