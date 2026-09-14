@@ -225,7 +225,7 @@
     <span class="spacer"></span>
     {#if dirty}
       <button
-        class="ghost"
+        class="ghost revert"
         title="Discard the draft and go back to the last saved version"
         onclick={revert}>Revert</button
       >
@@ -412,6 +412,16 @@
   .ghost.on {
     color: var(--accent);
     border-color: var(--accent);
+  }
+  /* Revert discards typing: a red outline says so without a dialog (his
+     call, 2026-09-14 — the draft is the safety net, not a confirmation). */
+  .ghost.revert {
+    color: var(--failed);
+    border-color: #7a3d3f;
+  }
+  .ghost.revert:hover:not(:disabled) {
+    color: var(--failed);
+    border-color: var(--failed);
   }
   .ghost:disabled,
   .save:disabled {
