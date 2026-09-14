@@ -287,7 +287,10 @@ fn engine_note_segment(knowledge: Option<&KnowledgeContext>) -> Segment {
         let dir = knowledge.dir.display();
         text.push_str(&format!(
             " {alias} stands for the vault directory {dir}, so {alias}/<name> means the file \
-             {dir}/<name>; [[name]] means {alias}/<name>.md."
+             {dir}/<name>; [[name]] means {alias}/<name>.md. That directory is granted to you. \
+             When you change a vault note, amend it: strike a superseded claim through with \
+             the date and put the new one beside it, and never rewrite a note whole — the \
+             vault is a record of what was believed when, not only of what is believed now."
         ));
     }
     text.push_str("\n</engine-note>");

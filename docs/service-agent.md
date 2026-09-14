@@ -113,7 +113,19 @@ Three parts, in this order, joined by blank lines (`prompt::agent_preamble`,
    short `<engine-note>` follows them: the file tools are `Read`, `Write` and
    `Edit`, and `@kb` stands for the vault's real directory, so `@kb/<name>` is
    `<vault>/<name>` and `[[name]]` is `@kb/<name>.md`. Emitted only when there
-   is a preamble to gloss, and names the vault only when there is one.
+   is a preamble to gloss, and names the vault only when there is one. When it
+   does, the note also asks for the dream's discipline — amend, strike through
+   with a date, never rewrite a note whole — because a chat is not given the
+   dream's instruction and the vault is git-snapshotted only by dreams.
+
+   Naming the vault is not enough to make it readable: the CLI routes a path
+   outside its working directories to approval, and headless that is the
+   classifier, whose refusal simply does not run. So the same vault directory
+   goes on the command line as `--add-dir` (`AgentSpec::add_dirs`), which the
+   permissions reference says makes its files "readable without prompts" with
+   edits following the permission mode (`external`, fetched 2026-09-14). The
+   grant rides the knowledge switch with the index: off, and neither the index
+   nor the directory is sent.
 3. **The library prompt** (the rail's system-prompt dropdown), last, so it wins
    by position the way the `custom` layer does on the API engine's ladder.
 

@@ -178,6 +178,16 @@ pub struct AgentSpec {
     /// every turn, which is the exact cost this module exists to avoid, and
     /// nothing in the output says it happened.
     pub use_subscription: bool,
+    /// Directories outside the workspace the CLI may read without asking,
+    /// each sent as `--add-dir`. The vault is the case: the preamble names
+    /// it by its real path, and a path the CLI treats as outside its working
+    /// directories is one it routes to approval — which, headless, is the
+    /// classifier, and a call it declines simply does not run (`external`,
+    /// the permissions reference: files in additional directories "become
+    /// readable without prompts, and file editing permissions follow the
+    /// current permission mode"). Without this the index is a list of files
+    /// the model can see and not open (nightshift blocker 050).
+    pub add_dirs: Vec<PathBuf>,
     /// Passed through verbatim, last, so a caller can reach a flag this
     /// struct has not grown a field for.
     pub extra_args: Vec<String>,
@@ -198,6 +208,7 @@ impl AgentSpec {
             resume: None,
             max_budget_usd: None,
             use_subscription: true,
+            add_dirs: Vec::new(),
             extra_args: Vec::new(),
         }
     }
@@ -287,6 +298,10 @@ impl AgentSpec {
         if let Some(budget) = self.max_budget_usd {
             a.push("--max-budget-usd".into());
             a.push(budget.to_string());
+        }
+        for dir in &self.add_dirs {
+            a.push("--add-dir".into());
+            a.push(dir.to_string_lossy().into_owned());
         }
         a.extend(self.extra_args.iter().cloned());
         a
@@ -696,6 +711,18 @@ mod tests {
     }
 
     /// Caller-supplied arguments go last so they can override.
+    #[test]
+    fn add_dirs_become_add_dir_flags() {
+        let mut s = AgentSpec::new(PathBuf::from("/w"));
+        s.add_dirs = vec![PathBuf::from("/vault"), PathBuf::from("/other")];
+        let a = s.args("hi");
+        let joined = a.join(" ");
+        assert!(joined.contains("--add-dir /vault --add-dir /other"), "{a:?}");
+        // The CLI's own flags come first; a directory grant is never the
+        // thing that pushes `-p` off the front.
+        assert_eq!(a[0], "-p");
+    }
+
     #[test]
     fn extra_args_are_appended() {
         let mut s = spec();

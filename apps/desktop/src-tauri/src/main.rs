@@ -1028,6 +1028,12 @@ async fn connect_agent(
     let knowledge = preamble
         .then(nightloom_service::knowledge::vault_dir)
         .flatten();
+    // The vault sits outside every workspace, and the preamble is about to
+    // name it by its real path; granting the directory is what makes that
+    // path one the CLI will open rather than route to a classifier that,
+    // headless, can only decline (nightshift blocker 050; `AgentSpec::add_dirs`
+    // says what the grant covers).
+    spec.add_dirs = knowledge.iter().cloned().collect();
     spec.append_system_prompt = nightloom_service::agent_preamble(
         &PromptConfig {
             identity: false,
