@@ -249,8 +249,14 @@ export interface ProjectInfo {
  * (`<workspace>/AGENTS.md`) and `memory` (`~/.nightloom/AGENTS.md`) each
  * name one fixed file — the always-loaded half of the two stores, reached
  * through the same editor. Neither lists, neither deletes.
+ *
+ * `models` is `~/.nightloom/models/`: one file per model id, read whole into
+ * the preamble of a chat on that model and no other. A folder, so it lists
+ * and deletes, but its names are ids rather than titles — see
+ * `modelInstructionFile` in catalog.ts. A missing file reads as empty text,
+ * like the fixed files, so the editor can open on a model that has none yet.
  */
-export type NoteScope = "project" | "knowledge" | "instructions" | "memory";
+export type NoteScope = "project" | "knowledge" | "instructions" | "memory" | "models";
 
 /** What one dream did, flattened for a toast. `git` arrives as a finished
  *  sentence — the frontend has nothing to add to it. */

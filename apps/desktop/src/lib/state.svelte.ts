@@ -7,6 +7,7 @@ import {
   loadLastConnection,
   loadPrefs,
   loadPrompts,
+  modelInstructionFile,
   modelsFor,
   providerLabel,
   newPromptId,
@@ -428,8 +429,20 @@ export const app = $state({
    */
   promptsFrom: null as null | "rail",
   /** The popover scrolls to this section when it next opens, then clears
-   *  it — so the round trip through the library lands on the dropdown. */
-  railScrollTo: null as null | "prompt",
+   *  it — so the round trip through the library lands on the dropdown, and
+   *  the one through a model's instruction file lands on the model list. */
+  railScrollTo: null as null | "prompt" | "model",
+  /**
+   * Who opened the note editor on a model's instruction file — the popover's
+   * pencil or the Settings row — so closing it (Save, ← Chat) brings that
+   * surface back, the same round trip the prompt library makes for the
+   * popover (nightshift blocker 042). Null for a note opened from the
+   * sidebar, which goes back to the chat as it always did.
+   */
+  noteFrom: null as null | "rail" | "settings",
+  /** Which pane Settings opens on next time, then clears; the round trip
+   *  back from a model's file lands on the Model instructions row. */
+  settingsOpenOn: null as null | "models",
   /**
    * The library's unsaved edit, kept here rather than in the component so
    * that no way out of the modal loses typed text (memory never-lose-work):
@@ -1169,6 +1182,45 @@ export function showGraph(): void {
 export function closeNote(): void {
   app.view = "chat";
   app.openNote = null;
+  // Back to whoever opened it. One function for every way out — Save,
+  // ← Chat — so no route can strand `noteFrom`.
+  if (app.noteFrom === "rail") {
+    app.railScrollTo = "model";
+    app.showRail = true;
+  } else if (app.noteFrom === "settings") {
+    app.settingsOpenOn = "models";
+    app.showSettings = true;
+  }
+  app.noteFrom = null;
+}
+
+/**
+ * The model a chat is (or would be) on, for its instruction file: the id
+ * the rail sends, or the one the connection resolved when the rail sent
+ * none. On the Claude Code engine it is the alias — the file is named after
+ * what the rail sends, since the CLI's resolved id arrives with the first
+ * turn, after the prompt is built — and null on the CLI's own default,
+ * which has no name to file under.
+ */
+export function currentModelId(): string | null {
+  const d = app.draft;
+  if (d.engine === "claude-code") return d.agentModel.trim() || null;
+  return d.model.trim() || app.connection?.model || null;
+}
+
+/**
+ * Open the editor on a model's instruction file, in place of the popover or
+ * Settings; `closeNote` brings that surface back. The sidebar tab is left
+ * where it was: the file is not in the Notes list, so switching to it would
+ * show a list with nothing highlighted.
+ */
+export function openModelInstructions(model: string, from: "rail" | "settings"): void {
+  const tab = app.leftTab;
+  app.showRail = false;
+  app.showSettings = false;
+  app.noteFrom = from;
+  showNote("models", modelInstructionFile(model));
+  app.leftTab = tab;
 }
 
 export async function saveNote(
@@ -1184,12 +1236,18 @@ export async function saveNote(
   }
   await refreshNotes();
   await refreshProjects();
-  // The two always-loaded files are read once, when the connection's
-  // preamble is assembled — so a saved edit would otherwise sit unread until
-  // the next connect. Re-connect the live connection, the same rule as
-  // editing the active prompt-library entry. Nothing is done when there is
-  // no connection to refresh.
-  if ((scope === "instructions" || scope === "memory") && app.connection) {
+  // The always-loaded files are read once, when the connection's preamble
+  // is assembled — so a saved edit would otherwise sit unread until the
+  // next connect. Re-connect the live connection, the same rule as editing
+  // the active prompt-library entry. Nothing is done when there is no
+  // connection to refresh. A model's file is one of them: saved for the
+  // model the chat is on it takes effect now, and for another model the
+  // re-connect is a no-op on the prompt, which is cheaper than working out
+  // which it was.
+  if (
+    (scope === "instructions" || scope === "memory" || scope === "models") &&
+    app.connection
+  ) {
     await applyDraft();
   }
   return true;

@@ -252,7 +252,10 @@ all, having no provider of its own to lend. Both shells stay silent and spend
 nothing when the inbox is empty.
 
 The desktop's `remember` rides the rail's knowledge switch and is absent from
-reviewers, whose spec already clears `knowledge`.
+reviewers, whose spec already clears `knowledge`. The two chat tools
+(`search_chats` / `read_chat`, [service-tools.md](service-tools.md)) ride
+`tools` alone — chats are not the vault — and reviewers and subagents inherit
+them with the rest of the set.
 
 ### Two things that were measured, not guessed
 
@@ -535,6 +538,14 @@ throws away. What would help it is a full-text index, which is a much larger
 thing — and search is something a user asks for, where listing happens on its
 own. Both now read bytes rather than `read_to_string`, so one byte that is not
 UTF-8 costs that line instead of returning an empty picker.
+
+`scan`, `said`, `find_fold` and `excerpt_around` are `pub(crate)` for the
+`search_chats` / `read_chat` tools (`tools/chats.rs`), which apply exactly this
+"conversation only" filter to what they hand the model: it is the definition of
+what a chat said, and two readers of one log must not be able to disagree about
+what a tool result is. `Said` carries the event's timestamp for `read_chat`,
+which dates each message so a quotation can carry one; `search` ignores it and
+dates the whole chat by its file.
 
 ## `lib.rs::connect`
 

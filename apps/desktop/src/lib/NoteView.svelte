@@ -17,6 +17,7 @@
     resolveLink,
   } from "./links";
   import type { NoteResolution } from "./links";
+  import { modelOfInstructionFile } from "./catalog";
   import type { NoteScope } from "./types";
 
   /**
@@ -38,6 +39,9 @@
   const dirty = $derived(text !== saved);
   const open = $derived(app.openNote);
   const isVault = $derived(open?.scope === "knowledge");
+  /** A model's own instruction file: named after the id, read whole. */
+  const isModel = $derived(open?.scope === "models");
+  const modelId = $derived(isModel && open ? modelOfInstructionFile(open.name) : "");
   /**
    * The note whose text is in the buffer — set by `load` only once that
    * note's content is in `text` and `saved`, and cleared while a load is in
@@ -145,6 +149,21 @@
       saved = pending;
       addToast(`Saved ${target.name}`);
       if (target.scope === "knowledge") void loadBacklinks(target.name);
+      // Opened from the popover or Settings: Save is the way back, as it is
+      // for the prompt library (nightshift blocker 042), so the surface that
+      // opened the file is what shows the result.
+      if (app.noteFrom) closeNote();
+    }
+  }
+
+  /** The folder this note is in. The models folder is not in app state —
+   *  nothing else needs it — so it is asked for when the button is pressed. */
+  async function showFolder() {
+    if (!isModel) return revealFolder(folder);
+    try {
+      await revealFolder((await api.modelInstructionsDir()) ?? undefined);
+    } catch (e) {
+      addToast(String(e));
     }
   }
 
@@ -216,7 +235,9 @@
 
 <div class="note">
   <header>
-    <button class="back" onclick={closeNote}>← Chat</button>
+    <button class="back" onclick={closeNote}>
+      {app.noteFrom === "rail" ? "← Model" : app.noteFrom === "settings" ? "← Settings" : "← Chat"}
+    </button>
     <span class="scope" class:vault={isVault}>
       {open?.scope ?? "project"}
     </span>
@@ -241,7 +262,7 @@
     <button
       class="ghost"
       title="Show the folder"
-      onclick={() => void revealFolder(folder)}>Folder</button
+      onclick={() => void showFolder()}>Folder</button
     >
     <button class="save" onclick={() => void commit()} disabled={!dirty}>
       Save
@@ -273,7 +294,9 @@
       spellcheck="false"
       placeholder={isVault
         ? "Yours, and readable from every project. Link another note with [[name]]."
-        : "Anything here is read by every chat in this project."}
+        : isModel
+          ? `How you want ${modelId} in particular to behave. Empty means no file.`
+          : "Anything here is read by every chat in this project."}
     ></textarea>
   {/if}
 
@@ -320,6 +343,13 @@
       project. Read <em>whole</em> into every chat's system prompt — keep it
       short; facts and decisions worth keeping belong in the knowledge base,
       which the model reads on demand. Saving re-connects the open chat.
+    {:else if isModel}
+      Instructions for <strong>{modelId}</strong> and no other model, in every
+      project. Read <em>whole</em> into the system prompt of a chat on that
+      model, after your memory and before the project's instructions — for
+      what you want of this model in particular; what applies to every model
+      belongs in Memory. An empty file is the same as none. Saving re-connects
+      the open chat.
     {:else if isVault}
       Yours, across every project — the model sees this file's name and first
       line in its system prompt and reads the rest with the file tools, at

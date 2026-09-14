@@ -113,6 +113,24 @@ export function modelForAlias(models: string[], alias: string): string | null {
   return models.find((m) => m.toLowerCase().includes(alias)) ?? null;
 }
 
+/**
+ * The file a model's own instructions live in, under `~/.nightloom/models/`:
+ * the id plus `.md`, with a `/` — which router ids carry
+ * (`deepseek/deepseek-v4-flash`) — written `__`, so the id is one file in
+ * one folder. A `:` is left alone. The same rule as the backend's
+ * `prompt::model_instruction_file`, spelled here as well because the picker
+ * needs the name synchronously to say which file its pencil opens.
+ */
+export function modelInstructionFile(id: string): string {
+  return `${id.trim().replace(/\//g, "__")}.md`;
+}
+
+/** The inverse, for listing the folder: `deepseek__deepseek-v4-flash.md` →
+ *  `deepseek/deepseek-v4-flash`. A name without `.md` is shown as it is. */
+export function modelOfInstructionFile(name: string): string {
+  return name.replace(/\.md$/, "").replace(/__/g, "/");
+}
+
 /** `200000` → `200k`, `1048576` → `1M`; the context window beside a model id. */
 export function formatWindow(n: number | null | undefined): string {
   if (n == null) return "";

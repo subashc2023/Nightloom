@@ -2,7 +2,9 @@
   import {
     app,
     applyDraft,
+    currentModelId,
     fetchModels,
+    openModelInstructions,
     refreshProviders,
     refreshSearchBackends,
     saveDreamPrefs,
@@ -18,12 +20,14 @@
     PROVIDER_NOTES,
     formatWindow,
     groupModels,
+    modelInstructionFile,
+    modelOfInstructionFile,
     modelsFor,
     providerLabel,
     type ModelEntry,
     type ModelSection,
   } from "./catalog";
-  import type { ProviderInfo, SearchBackendInfo } from "./types";
+  import type { Note, ProviderInfo, SearchBackendInfo } from "./types";
   import Icon from "./Icon.svelte";
 
   /**
@@ -37,7 +41,12 @@
    * `showFolded` are untouched: the order rule and the pin rule live there.
    */
 
-  let selected = $state(app.draft.provider || app.providers[0]?.kind || "");
+  // Opens on the pane a round trip asked for — back from a model's
+  // instruction file — else on the rail's provider.
+  let selected = $state(
+    app.settingsOpenOn ?? (app.draft.provider || app.providers[0]?.kind || ""),
+  );
+  app.settingsOpenOn = null;
   let keyDraft = $state("");
   let keyBusy = $state(false);
   let keyError = $state<string | null>(null);
@@ -114,6 +123,37 @@
   $effect(() => {
     if (provider?.available) void fetchModels(selected);
   });
+
+  /**
+   * The per-model instruction files (nightshift backlog 044): every
+   * `~/.nightloom/models/*.md`, read when the modal opens for the nav's
+   * count and again whenever the pane is shown, since the editor may have
+   * added or emptied one in between. Listed by id rather than file name —
+   * the `__` in the name is the `/` of a router id.
+   */
+  let modelFiles = $state<Note[]>([]);
+  async function refreshModelFiles() {
+    try {
+      modelFiles = await api.listNotes("models");
+    } catch {
+      modelFiles = [];
+    }
+  }
+  void refreshModelFiles();
+  $effect(() => {
+    if (selected === "models") void refreshModelFiles();
+  });
+  /** The model the "+ add" control names: the rail's, by the same rule the
+   *  popover's pencil uses. */
+  const addModel = $derived(currentModelId());
+  /** Whether the current model already has a file — then "+ add" is "edit". */
+  const addExists = $derived(
+    !!addModel && modelFiles.some((f) => f.name === modelInstructionFile(addModel)),
+  );
+  function size(bytes: number): string {
+    if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${bytes} B`;
+  }
 
   function select(kind: string) {
     selected = kind;
@@ -443,6 +483,17 @@
         {app.knowledge ? `${app.knowledge.notes} note${app.knowledge.notes === 1 ? "" : "s"}` : "none"}
       </span>
     </button>
+    <button
+      class="nav-item"
+      class:active={selected === "models"}
+      onclick={() => select("models")}
+    >
+      <span class="nav-label">Model instructions</span>
+      <span class="st">
+        <span class="dot" class:ok={modelFiles.length > 0}></span>
+        {modelFiles.length === 0 ? "none" : `${modelFiles.length} model${modelFiles.length === 1 ? "" : "s"}`}
+      </span>
+    </button>
     <div class="nav-title">Appearance</div>
     <button
       class="nav-item"
@@ -586,6 +637,58 @@
             bind:value={app.dreamPrefs.model}
             onchange={saveDreamPrefs}
           />
+        </div>
+      </section>
+    </div>
+  {:else if selected === "models"}
+    <div class="pane">
+      <div class="pane-head">
+        <h2 class="pane-title">Model instructions</h2>
+        <span class="slug">~/.nightloom/models</span>
+        <span class="spacer"></span>
+        <button class="close" title="Close" aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+      </div>
+      <p class="note">
+        A file per model, read whole into the system prompt of a chat on that
+        model and no other — after your memory, before the project's
+        instructions. For how you want one model in particular to talk; what
+        you want of every model belongs in Memory. Named after the model id,
+        so a chat on <code>claude-opus-5</code> reads
+        <code>claude-opus-5.md</code>. On the Claude Code engine the name is
+        the alias the picker sends (<code>opus</code>, <code>sonnet</code>).
+        An empty file is the same as none.
+      </p>
+
+      <section class="card">
+        <div class="ch"><span class="t">Files</span></div>
+        {#if modelFiles.length === 0}
+          <div class="key-status">No model has its own instructions yet.</div>
+        {:else}
+          <div class="mfiles">
+            {#each modelFiles as f (f.name)}
+              <button
+                class="mfile"
+                title={`Edit ${f.name}`}
+                onclick={() => openModelInstructions(modelOfInstructionFile(f.name), "settings")}
+              >
+                <span class="mid">{modelOfInstructionFile(f.name)}</span>
+                <span class="msz">{size(f.bytes)}</span>
+                <Icon name="pencil" size={12} />
+              </button>
+            {/each}
+          </div>
+        {/if}
+        <div class="kf">
+          <button
+            class="ns-btn"
+            disabled={!addModel}
+            title={addModel
+              ? `Opens the editor on ${modelInstructionFile(addModel)}`
+              : "Pick a model in the popover first"}
+            onclick={() => addModel && openModelInstructions(addModel, "settings")}
+          >
+            {addExists ? "Edit for" : "+ Add for"} {addModel ?? "the current model"}
+          </button>
         </div>
       </section>
     </div>
@@ -1105,6 +1208,47 @@
     font-size: 12.5px;
     color: var(--ink);
     overflow-wrap: anywhere;
+  }
+  /* The model-instruction files, one row each: id, size, pencil. */
+  .mfiles {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .mfile {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 10px;
+    border: none;
+    border-top: 1px solid var(--line);
+    background: transparent;
+    color: var(--ink2);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    width: 100%;
+  }
+  .mfile:first-child {
+    border-top: none;
+  }
+  .mfile:hover {
+    color: var(--accent);
+  }
+  .mfile .mid {
+    flex: 1;
+    font-family: var(--mono);
+    font-size: 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .mfile .msz {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--dim);
   }
   .dream-auto {
     display: flex;

@@ -316,6 +316,12 @@ export function reveal(path?: string): Promise<null> {
   return invoke("reveal", { path });
 }
 
+/** Where the per-model instruction files live (`~/.nightloom/models`);
+ *  null on a machine with no user config directory. */
+export function modelInstructionsDir(): Promise<string | null> {
+  return invoke("model_instructions_dir");
+}
+
 // ---- the knowledge base ----
 
 /** Where the vault is; null on a machine with no user config directory. */

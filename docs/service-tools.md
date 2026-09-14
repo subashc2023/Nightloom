@@ -4,16 +4,19 @@
 name: `files.rs` (`read_file` / `write_file` / `edit_file` / `list_dir`),
 `search.rs` (`glob` / `grep`), `shell.rs` (`bash`), `todo.rs` (`todo_write`),
 `compact.rs` (`compact_context`), `task.rs` (`task`), `review.rs` (`review`),
-`web.rs` (`web_fetch` / `web_search`), `remember.rs` (`remember`), and
-`current_time` inline in `mod.rs`. `builtin_in(root)` is the whole set in one
-call.
+`web.rs` (`web_fetch` / `web_search`), `remember.rs` (`remember`), `chats.rs`
+(`search_chats` / `read_chat`), and `current_time` inline in `mod.rs`.
+`builtin_in(root)` is the whole set in one call; `remember` and the two chat
+tools are added by the shells, which know where the inbox and the logs are.
 
 ## Classification and descriptions
 
 **Effect classification is part of adding a tool**, and a test pins the whole
 table: `ReadOnly` for `read_file` / `list_dir` / `glob` / `grep` /
-`current_time` and for `review`, which is read-only because its sub-chat is
-stripped to read-only tools; `Session` for `todo_write` / `compact_context` and
+`current_time`, for `search_chats` / `read_chat` (a read of the user's own logs
+on this machine, which no `Root` confines — the row is what makes widening what
+they return deliberate), and for `review`, which is read-only because its
+sub-chat is stripped to read-only tools; `Session` for `todo_write` / `compact_context` and
 for `remember`, a durable write that is still `Session` because the inbox is
 quarantine and the dream pass is the gate; `Mutating` (the default) for
 `write_file` / `edit_file` / `bash`, for `task`, which can reach anything its
@@ -350,6 +353,58 @@ rephrase until the round limit.
 
 Keys are `TAVILY_API_KEY` / `BRAVE_API_KEY` / `EXA_API_KEY`, or the desktop's
 credential store.
+
+## Other chats (`tools/chats.rs`)
+
+`search_chats` and `read_chat` are the cheap version of cross-chat retrieval:
+`store::search`, which already answers "which chat was that" for the sidebar,
+put in the model's hands, plus a window onto one log. No index, no embeddings,
+no automatic injection — a lookup is a tool call the user sees in the
+transcript, and the description tells the model to cite the chat by title and
+date when it uses what it found. The indexed, claude.ai-like version is a
+separate item.
+
+**Neither ever returns a tool result.** Both go through the same `store::said`
+filter as the sidebar search — user messages, assistant text blocks, titles —
+so thinking and tool output are invisible to them. `search` makes the
+false-positive argument (a tool result is whatever file a chat read); the tools
+add a confinement one: another chat's tool results are file contents, and a
+window onto them would be a second `read_file` that no `Root` roots.
+
+**Scope.** `search_chats` takes `scope: project` (default; the directory the
+sidebar lists — the open project's, or the unfiled chats') or `all` (every
+registered project plus the unfiled chats, each hit tagged with its project's
+name). `read_chat` takes no scope: an id is already unambiguous, so it is
+resolved in every directory the tools can see, and a prefix that matches in two
+is refused the way one that matches two logs in one directory is. The shell
+passes both as a `ChatDirs { active, all: Vec<ChatDir { name, dir }> }`, taken
+at connect time like the rest of `ChatSpec`. An empty search names its scope,
+for the reason `grep`'s does.
+
+**Shape.** A search returns one line per chat, newest first, at most `limit`
+(default 10, clamped to 25): short id · title · date last active · matching
+messages · excerpt around the first match, the sidebar's `you:`/`model:`
+relabelled `user:`/`assistant:` for a reader who is the model. `read_chat`
+returns a header naming the chat's title and date, then a `max_chars` window
+(default 6000, clamped to 20000) centred on the first message containing
+`query`, or the start of the conversation without one; each message is prefixed
+with its speaker and timestamp, and a window that opens mid-message repeats
+that message's prefix marked *continued*.
+
+**Two things measured** (release build, 2026-09-14, `latency_over_the_real_corpora`
+and `ten_questions_over_value_generalization`, both `#[ignore]`d): `store::search`
+over 933 logs (55 MB) takes **~330 ms** warm and ~510 ms on the first run; over
+32 logs, **~30 ms**. In a debug build — which `cargo tauri dev` is — the same
+search takes **~6 s**, which is the number a developer will see. Over ten
+hand-picked questions on a 32-chat project, the expected chat was in the top five
+for eight, newest-first; three of the eight were found by their title alone. The
+two misses were topics many chats mention in passing, where the substring has no
+way to prefer the chat that was *about* it — that gap is what an index would
+close.
+
+**The chat asking can find itself.** Its log is in the active directory and the
+tools are built before a session exists, so a hit in the current chat costs a
+row rather than a wrong answer and is left alone in this version.
 
 ## Killing a shell is not killing the command (`tools/shell.rs`)
 

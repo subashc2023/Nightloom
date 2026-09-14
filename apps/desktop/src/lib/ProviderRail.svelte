@@ -2,7 +2,9 @@
   import {
     app,
     applyDraft,
+    currentModelId,
     loadContextLimits,
+    openModelInstructions,
     pickerModels,
     providerPills,
     useEngine,
@@ -140,13 +142,25 @@
     return k ? `${mod}${shift}${k.key}` : null;
   }
   // Back from the library: land on the dropdown that now names the prompt.
+  // Back from a model's instruction file: land on the model list, whose
+  // pencil opened it.
   let promptSect = $state<HTMLElement | null>(null);
+  let modelSect = $state<HTMLElement | null>(null);
   $effect(() => {
     if (app.railScrollTo === "prompt" && promptSect) {
       promptSect.scrollIntoView({ block: "center" });
       app.railScrollTo = null;
+    } else if (app.railScrollTo === "model" && modelSect) {
+      modelSect.scrollIntoView({ block: "center" });
+      app.railScrollTo = null;
     }
   });
+  /**
+   * The model whose instruction file the pencil opens (nightshift backlog
+   * 044): the selected id, or on the Claude Code engine the selected alias
+   * — null on that engine's *default*, which names nothing to file under.
+   */
+  const instructModel = $derived(currentModelId());
   /** Settings takes the popover's place rather than stacking on it. */
   function openSettings() {
     app.showRail = false;
@@ -195,6 +209,34 @@
       (app.connection.mcp.length > 0 || app.draft.web || app.draft.tools),
   );
 </script>
+
+<!-- The pencil beside the selected model (nightshift backlog 044): opens
+     the editor on `~/.nightloom/models/<id>.md`, the file read into the
+     preamble of a chat on this model and no other. Under the list rather
+     than inside a row, because the rows are buttons and a button cannot
+     hold one. The popover closes and comes back on Save, the same round
+     trip as the system-prompt pencil. On the Claude Code engine the file
+     is named after the alias, and *default* names nothing. -->
+{#snippet instructionsRow()}
+  <div class="row mi">
+    <span class="lbl">Instructions</span>
+    {#if instructModel}
+      <span class="mi-id" title={instructModel}>{instructModel}</span>
+      <button
+        class="icon"
+        title={`Instructions for ${instructModel} only — ~/.nightloom/models/`}
+        aria-label={`Instructions for ${instructModel}`}
+        disabled={locked}
+        onclick={() => openModelInstructions(instructModel!, "rail")}><Icon name="pencil" size={13} /></button
+      >
+    {:else}
+      <span class="mi-id dim">pick a model to give it its own</span>
+    {/if}
+    <Hint
+      text="A file this model alone reads, on top of your memory and under the project's instructions — for how you want this one to talk. Settings lists every model that has one."
+    />
+  </div>
+{/snippet}
 
 <div class="rail">
   <!-- The engine as two cards, each saying who pays and who runs the loop:
@@ -265,7 +307,7 @@
       </div>
     {/if}
 
-    <section class="sect">
+    <section class="sect" bind:this={modelSect}>
       <div class="sect-h">
         <span class="ns-k">Model</span>
         <span class="sub">the CLI resolves the alias</span>
@@ -327,6 +369,7 @@
       {#if app.agentTurn?.model}
         <p class="note">last turn ran <code>{app.agentTurn.model}</code></p>
       {/if}
+      {@render instructionsRow()}
     </section>
   {:else}
     <section class="sect">
@@ -354,7 +397,7 @@
       <div class="more bare"><span>{mod}number switches anywhere</span></div>
     </section>
 
-    <section class="sect">
+    <section class="sect" bind:this={modelSect}>
       <div class="sect-h">
         <span class="ns-k">Model</span>
         <span class="sub">{models.length} in the picker · Settings picks which</span>
@@ -406,6 +449,8 @@
           <Hint text="Nothing is switched on for this provider yet. Type a model id, or turn ids on in Settings." />
         </div>
       {/if}
+
+      {@render instructionsRow()}
 
       {#if app.draft.provider === "openai-chat"}
         <div class="row">
@@ -1168,6 +1213,20 @@
     border-top: 1px solid var(--line);
     display: flex;
     justify-content: flex-end;
+  }
+  /* The instructions row under the list: the id the pencil opens a file for. */
+  .mi .mi-id {
+    flex: 1;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--ink2);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .mi .mi-id.dim {
+    font-family: inherit;
+    color: var(--dim);
   }
 
   /* Thinking as a segmented control. */

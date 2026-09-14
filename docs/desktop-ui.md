@@ -206,7 +206,9 @@ folder" — and the rail names the directory under it.
 
 `SettingsModal.svelte` is a sidebar-nav modal (provider list left, one pane at a
 time) managing per-provider API keys, rail visibility, the model picker, web
-search keys, and the vault's folder.
+search keys, the vault's folder, and — since 2026-09-14 — the per-model
+instruction files (the *Model instructions* row; the files themselves are
+described under Notes below).
 
 API keys entered in-app live in the OS credential store (`keyring` crate, service
 "nightloom", user = provider label; `openai-chat` falls back to `openai`'s stored
@@ -333,6 +335,23 @@ and the first version wrote the previous note's unsaved text as a draft under
 the next note's name. An unrecognized value is an error rather than a default, because a typo
 that quietly wrote a personal note into somebody's repository is exactly the
 failure the split exists to prevent.
+
+**A fifth scope, `models` (2026-09-14, nightshift backlog 044):**
+`~/.nightloom/models/`, one file per model id, read whole into the preamble of
+a chat on that model and no other (see [service-prompt.md](service-prompt.md)).
+A folder like the two stores — it lists and deletes — but its names are ids:
+`<id>.md`, with a `/` in the id written `__` (`modelInstructionFile` in
+`catalog.ts`, the same rule as the backend's). `read_note` answers a missing
+file with empty text, as for the fixed files, so the editor opens on a model
+that has none yet; saving re-connects like `instructions` and `memory`, and an
+empty file is treated as absent. It is not in the Notes panel. It is reached
+from two places: the **Model instructions** row in Settings (under Knowledge),
+which lists every file with its id and size and has *+ Add for `<current
+model>`* — the rail's model, or on the Claude Code engine its alias — and the
+pencil under the model list in the popover. Both close the surface they are on
+and open `NoteView`; Save and the back button bring it back (`closeNote` reads
+`app.noteFrom`; the popover scrolls to its model list, Settings reopens on the
+row), the round trip the prompt library makes for the popover.
 
 `app.openNote` carries its scope for the same reason — the two stores can each
 hold a `plan.md`, and a bare name would make saving depend on which sidebar tab

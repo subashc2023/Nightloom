@@ -42,6 +42,13 @@ pub enum SegmentKind {
     Knowledge,
     /// User-level standing preferences, from the config dir.
     UserMemory,
+    /// Standing instructions for the one model this chat runs on, from the
+    /// config dir's `models/` folder. Separate from
+    /// [`SegmentKind::UserMemory`] because that layer is read by every
+    /// model and this one is not: it exists for the preference that is
+    /// about *how one model talks*, which does not belong in a file every
+    /// other model also reads.
+    ModelInstructions,
     /// Anything a shell supplies directly (`--system`, the desktop textarea).
     Custom,
 }

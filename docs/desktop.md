@@ -28,7 +28,12 @@ gone and the log is not) — dropping the handle first is required on Windows.
 keeps everything the UI asked for. That exists so a subagent is built from the
 same description as the window's own chat instead of a half-copied subset, which
 is how the two would otherwise drift into different tools or a different
-workspace.
+workspace. It also carries `chats: ChatDirs` — the sidebar's log directory plus
+every registered project's and the unfiled one, named — for the `search_chats` /
+`read_chat` tools, taken at connect time so a project added later is reachable
+after the next reconnect. `Option`, and `None` for a reviewer, for the reason
+`knowledge` is cleared there: a second vendor's critic has no business in the
+user's transcripts.
 
 `connect` takes an explicit `workspace`: it roots the file tools **and** is where
 the preamble looks for project instructions and the git branch. A GUI process's

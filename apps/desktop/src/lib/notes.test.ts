@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { modelInstructionFile, modelOfInstructionFile } from "./catalog";
 import { notesTree } from "./nightshift";
-import type { NoteEntry } from "./types";
+import type { NoteEntry, NoteScope } from "./types";
 
 function entry(path: string, is_dir: boolean, size = 0, modified = ""): NoteEntry {
   const idx = path.lastIndexOf("/");
@@ -48,5 +49,27 @@ describe("notesTree", () => {
 
   it("returns an empty tree for no entries", () => {
     expect(notesTree([])).toEqual([]);
+  });
+});
+
+describe("the models note scope", () => {
+  it("names a model's file after its id, with a slash written as __", () => {
+    expect(modelInstructionFile("claude-opus-5")).toBe("claude-opus-5.md");
+    expect(modelInstructionFile("deepseek/deepseek-v4-flash")).toBe(
+      "deepseek__deepseek-v4-flash.md",
+    );
+    // A `:` is a legal file name and is kept; whitespace is not part of an id.
+    expect(modelInstructionFile(" openrouter:a/b ")).toBe("openrouter:a__b.md");
+    expect(modelOfInstructionFile("deepseek__deepseek-v4-flash.md")).toBe(
+      "deepseek/deepseek-v4-flash",
+    );
+    expect(modelOfInstructionFile(modelInstructionFile("x/y/z"))).toBe("x/y/z");
+  });
+
+  it("is one of the scopes a note call accepts", () => {
+    // The union is what the backend's `NoteScope` deserializes; a value
+    // missing here cannot be sent, and one missing there is an error.
+    const scopes: NoteScope[] = ["project", "knowledge", "instructions", "memory", "models"];
+    expect(scopes).toContain("models");
   });
 });

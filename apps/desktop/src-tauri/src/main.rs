@@ -15,7 +15,7 @@ use nightloom_service::credentials::{self, KeySource};
 use nightloom_service::import;
 use nightloom_service::project::{self, Note, Project, Registry};
 use nightloom_service::store::{self, SessionMatch, SessionSummary};
-use nightloom_service::tools::{Reviewer, Root, SearchBackend};
+use nightloom_service::tools::{ChatDir, ChatDirs, Reviewer, Root, SearchBackend};
 use nightloom_service::{
     AgentSpec, Chat, ClaudeCodeAgent, CompactOutcome, KnowledgeContext, Price, ProjectContext,
     PromptConfig, ProviderKind, Recorder, TurnEvent, TurnInput, TurnOutcome, resolve_binary,
@@ -553,6 +553,14 @@ struct ChatSpec {
     /// the same in every project and in an unfiled chat, which is the case it
     /// exists for.
     knowledge: Option<PathBuf>,
+    /// Where the other chats are, for `search_chats` / `read_chat`: the
+    /// directory the sidebar lists, and every project's beside it. Taken at
+    /// connect time like the rest of the spec, so a project added later is
+    /// reachable after the next reconnect and not before — the rail
+    /// reconnects on every knob change, which is often enough. `None` for a
+    /// reviewer, for the reason `knowledge` is: a second vendor's critic has
+    /// no business in the user's transcripts.
+    chats: Option<ChatDirs>,
 }
 
 impl ChatSpec {
@@ -608,6 +616,11 @@ fn build_chat(
         environment: spec.preamble,
         project_instructions: spec.preamble,
         user_memory: spec.preamble,
+        // The id the chat is actually on — `connect` fills in the provider's
+        // default when the rail sent none — for its own file under
+        // `~/.nightloom/models/`. Gated like user memory: it is the same
+        // kind of standing text, about the user rather than the folder.
+        model: spec.preamble.then(|| chat.model.clone()),
         // Gated on the preamble like every other discovered layer: `--bare`
         // and its desktop equivalent mean "nothing but what I typed".
         project: spec.preamble.then(|| spec.project.clone()).flatten(),
@@ -673,6 +686,21 @@ fn build_chat(
                     config, source,
                 )));
         }
+        // The other chats, on `tools` alone and not on the knowledge switch:
+        // chats are not the vault. They are the user's own transcripts on
+        // this machine, read-only, and the thing a user most often wants a
+        // model to look up is what they told it last week. Subagents inherit
+        // them with the rest of the set; reviewers do not (see `reviewers`).
+        if let Some(chats) = &spec.chats {
+            chat.tools
+                .push(Box::new(nightloom_service::tools::SearchChats::new(
+                    chats.clone(),
+                )));
+            chat.tools
+                .push(Box::new(nightloom_service::tools::ReadChat::new(
+                    chats.clone(),
+                )));
+        }
         // Subagents are built from this same spec, so they inherit the
         // workspace and the tool set. The engine strips their own `task` tool
         // and replaces their approver, so this cannot recurse or route around
@@ -731,6 +759,8 @@ fn reviewers(
         // has no reason to want it, and "no reason to" is the wrong guarantee
         // when not handing it over at all is available.
         spec.knowledge = None;
+        // The same argument, and the transcripts are at least as personal.
+        spec.chats = None;
         let (app, policy, mcp) = (app.clone(), policy.clone(), mcp_tools.to_vec());
         Reviewer::new(
             candidate.name,
@@ -794,6 +824,33 @@ async fn connect(
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
     };
 
+    // Every project's chats plus the unfiled ones, named as the picker names
+    // them, with the sidebar's directory as the default scope. The registry
+    // is cloned out under its own lock and the guard dropped, per the lock
+    // discipline on `workspaces`.
+    let chats = {
+        let mut all: Vec<ChatDir> = state
+            .workspaces
+            .lock()
+            .await
+            .registry
+            .projects()
+            .iter()
+            .map(|p| ChatDir {
+                name: p.name.clone(),
+                dir: p.session_dir(),
+            })
+            .collect();
+        all.push(ChatDir {
+            name: "Unfiled chats".into(),
+            dir: state.default_log_dir.clone(),
+        });
+        ChatDirs {
+            active: state.log_dir().await,
+            all,
+        }
+    };
+
     let spec = ChatSpec {
         kind,
         model,
@@ -821,6 +878,7 @@ async fn connect(
             name: p.name.clone(),
             notes_dir: p.notes_dir(),
         }),
+        chats: Some(chats),
     };
     let mcp = ensure_mcp(&state, &spec.workspace, spec.tools).await;
     let mcp_tools = state
@@ -976,6 +1034,12 @@ async fn connect_agent(
             environment: false,
             project_instructions: preamble,
             user_memory: preamble,
+            // By the alias the rail sent (`opus`, `sonnet`), not the dated id
+            // the CLI resolves it to: that arrives with the first turn, after
+            // this prompt is built once for the session. So on this engine
+            // the file is named after the alias, and a chat on the CLI's
+            // default model (no alias) reads none.
+            model: preamble.then(|| spec.model.clone()).flatten(),
             project: preamble
                 .then(|| {
                     active.as_ref().map(|p| ProjectContext {
@@ -1865,6 +1929,15 @@ enum NoteScope {
     /// `~/.nightloom/AGENTS.md` — user memory, how the model should behave
     /// everywhere. Same shape as `Instructions`: one file, no listing.
     Memory,
+    /// `~/.nightloom/models/` — one file per model id, read whole into the
+    /// preamble of a chat on that model and no other (nightshift backlog
+    /// 044). A folder like the two stores, so it lists and deletes, but its
+    /// names are model ids and not titles: `<id>.md`, with a `/` in the id
+    /// written `__` (`prompt::model_instruction_file` is the one place that
+    /// rule lives). Reads answer a missing file with empty text, as the
+    /// fixed-file scopes do, so the editor can open on a model that has no
+    /// file yet.
+    Models,
 }
 
 impl NoteScope {
@@ -1910,6 +1983,8 @@ async fn scope_dir(state: &AppState, scope: NoteScope) -> Result<PathBuf, String
             .ok_or_else(|| "no project is open, so there are no project instructions".to_string()),
         NoteScope::Memory => project::config_dir()
             .ok_or_else(|| "no user config directory to keep user memory in".to_string()),
+        NoteScope::Models => nightloom_service::prompt::model_instructions_dir()
+            .ok_or_else(|| "no user config directory to keep model instructions in".to_string()),
     }
 }
 
@@ -1945,8 +2020,13 @@ async fn read_note(
     check_fixed_name(scope, &name)?;
     let dir = scope_dir(&state, scope).await?;
     // A fixed file that does not exist yet is an empty one, not an error:
-    // the editor opens on it so the user can write the first line.
+    // the editor opens on it so the user can write the first line. A model's
+    // file is the same case — "+ add for this model" opens the editor on a
+    // name nothing has written yet.
     if scope.is_fixed_file() && !dir.join(AGENTS_MD).is_file() {
+        return Ok(String::new());
+    }
+    if scope == NoteScope::Models && !dir.join(name.trim()).is_file() {
         return Ok(String::new());
     }
     project::read_note(&dir, &name)
@@ -2024,6 +2104,13 @@ impl KnowledgeInfo {
 #[tauri::command]
 async fn knowledge_info() -> Result<Option<KnowledgeInfo>, String> {
     Ok(KnowledgeInfo::current())
+}
+
+/// Where the per-model instruction files live, so the editor's Folder button
+/// can show it; `None` on a machine with no user config directory.
+#[tauri::command]
+fn model_instructions_dir() -> Option<String> {
+    nightloom_service::prompt::model_instructions_dir().map(|d| d.display().to_string())
 }
 
 /// Point the vault at a folder, or back at the default with `None`.
@@ -2626,6 +2713,7 @@ fn main() {
             save_note,
             delete_note,
             knowledge_info,
+            model_instructions_dir,
             set_knowledge_dir,
             knowledge_graph,
             dream_status,

@@ -8,8 +8,9 @@ than failing loudly.
 
 ## `prompt.rs` — the static preamble
 
-`assemble(&PromptConfig)` layers identity → environment → user memory → project
-instructions → custom, anchoring a single cache breakpoint at the end.
+`assemble(&PromptConfig)` layers identity → environment → user memory → model
+instructions → project instructions → custom, anchoring a single cache
+breakpoint at the end.
 
 ### Environment
 
@@ -34,6 +35,31 @@ about the *user* rather than a location on disk.
 One filename, not a house-branded one beside it, for the reason `mcp.json` uses
 the `mcpServers` key: a project that already wrote an `AGENTS.md` is picked up
 without being asked to duplicate it.
+
+### Instructions per model: `~/.nightloom/models/<id>.md` (2026-09-14)
+
+A fifth layer, `SegmentKind::ModelInstructions`, between user memory and the
+walk: a file one model reads and no other (nightshift backlog 044 — the
+complaint was a way one model talks, which does not belong in a file every
+model reads). `PromptConfig.model` names the model; `assemble` reads
+`models/<id>.md` under the config dir, whole, under the same 32 KiB cap, and
+emits `<model-instructions model="<id>">…</model-instructions>` only when the
+file exists and is not blank — an empty file is how the layer is switched off
+from the editor. The file is named after the id exactly, with `/` written `__`
+(`deepseek/deepseek-v4-flash` → `deepseek__deepseek-v4-flash.md`; a `:` is
+kept); `model_instruction_file` is the one place that rule lives, and
+`model_instruction_path` the one lookup. Global, not per project: it is about
+the model, not the folder.
+
+Both engines. The desktop's `connect` passes the id the chat actually runs on
+(`connect` fills in the provider's default when the rail sent none); the CLI
+does the same. On the Claude Code engine `agent_preamble` carries it like every
+other layer, looked up by **what the rail sends — the alias** (`opus`,
+`sonnet`), because the dated id the CLI resolves it to arrives with the first
+turn, after the prompt has been built once for the session. So a file for that
+engine is `opus.md`, not `claude-opus-5.md`; resolving the alias is a later
+pass, and the lookup helper is where it would go. Off in the evals with the
+other discovered layers, for the same reason.
 
 The walk deliberately does **not** stop at the git root. That assumes the only
 applicable instructions are ones committed to this project, which is wrong in
