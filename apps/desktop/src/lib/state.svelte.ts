@@ -398,6 +398,12 @@ export const app = $state({
    */
   showRail: false,
   /**
+   * The context popover under the top bar's gauge chip — the Context tab
+   * of the rail, given its own button (review round 1, 2026-09-13). Its
+   * own flag rather than a tab in `showRail` so ⌘⇧C can open it alone.
+   */
+  showContext: false,
+  /**
    * The keyboard overlays: ⌘P's project switcher and ⌘K's command palette.
    * One slot, because two palettes open at once would both be listening for
    * the same keys.
@@ -413,6 +419,24 @@ export const app = $state({
   prompts: loadPrompts() as SavedPrompt[],
   /** Prompt library modal; a string is the id it opens on. */
   showPrompts: false,
+  /**
+   * Who opened the library. `"rail"` when the popover's pencil did, so
+   * closing the library — by Save & use, Close, Esc or a click outside —
+   * brings the popover back with the chosen prompt in its dropdown
+   * (review round 1, 2026-09-13: the library used to open *behind* the
+   * popover).
+   */
+  promptsFrom: null as null | "rail",
+  /** The popover scrolls to this section when it next opens, then clears
+   *  it — so the round trip through the library lands on the dropdown. */
+  railScrollTo: null as null | "prompt",
+  /**
+   * The library's unsaved edit, kept here rather than in the component so
+   * that no way out of the modal loses typed text (memory never-lose-work):
+   * reopening the library offers the draft back. `selected` is the entry
+   * being edited, null for a new one.
+   */
+  promptDraft: null as null | { selected: string | null; name: string; text: string },
   /** Live model lists fetched from provider APIs, per provider kind. */
   modelLists: {} as Record<string, string[]>,
   /** Fetch status per provider kind (settings modal UI). */
@@ -548,6 +572,10 @@ let compactedThisTurn = false;
 export function runMenuCommand(id: string): void {
   switch (id) {
     case "settings":
+      // Settings takes the popover's place rather than stacking on it
+      // (review round 1, 2026-09-13).
+      app.showRail = false;
+      app.showContext = false;
       app.showSettings = true;
       break;
     case "new_chat":
@@ -565,7 +593,13 @@ export function runMenuCommand(id: string): void {
     // way back.
     case "model":
       app.overlay = null;
+      app.showContext = false;
       app.showRail = !app.showRail;
+      break;
+    case "context":
+      app.overlay = null;
+      app.showRail = false;
+      app.showContext = !app.showContext;
       break;
     case "commands":
       app.overlay = app.overlay === "commands" ? null : "commands";
@@ -582,7 +616,44 @@ export function runMenuCommand(id: string): void {
     case "model_haiku":
       void switchModel(id.slice(6));
       break;
+    default:
+      // ⌘⇧1…9: the n-th provider pill (review round 1, 2026-09-13).
+      if (id.startsWith("provider_")) void switchProvider(Number(id.slice(9)));
   }
+}
+
+/**
+ * The provider pills in the popover's order — visible ones, plus the one
+ * selected even if Settings has since hidden it — so a key cap printed on
+ * a pill and the key that switches to it count the same list.
+ */
+export function providerPills(): ProviderInfo[] {
+  return app.providers.filter(
+    (p) => isProviderVisible(p.kind, app.prefs) || p.kind === app.draft.provider,
+  );
+}
+
+/**
+ * Switch to the n-th provider pill (1-based), taking its default model the
+ * way a click on the pill does. A keyless provider is declined with a
+ * toast, as its pill is disabled; on the Claude Code engine the keys do
+ * nothing, since there is no provider to pick.
+ */
+export async function switchProvider(n: number): Promise<void> {
+  if (app.busy || app.connecting || app.draft.engine === "claude-code") return;
+  const p = providerPills()[n - 1];
+  if (!p) return;
+  if (!usable(p)) {
+    addToast(`${providerLabel(p.kind)} has no key — add one in Settings`);
+    return;
+  }
+  if (p.kind === app.draft.provider) return;
+  app.draft.provider = p.kind;
+  const list = modelsFor(p.kind, app.prefs, p.default_model ?? null);
+  app.draft.model =
+    p.default_model && list.includes(p.default_model) ? p.default_model : (list[0] ?? "");
+  sanitizeThinking(app.draft);
+  if (app.draft.model) await applyDraft();
 }
 
 /** The other engine. */
@@ -2009,6 +2080,20 @@ export async function enableNightshift(
 }
 
 // ---- saved system prompts ----
+
+/**
+ * Close the library by any route — its Close, Esc, the scrim, Save & use —
+ * and reopen the popover when the popover's pencil opened it. One function
+ * so a click outside cannot strand `promptsFrom`.
+ */
+export function closePrompts(): void {
+  app.showPrompts = false;
+  if (app.promptsFrom === "rail") {
+    app.railScrollTo = "prompt";
+    app.showRail = true;
+  }
+  app.promptsFrom = null;
+}
 
 /**
  * Put a saved prompt on the draft and re-connect. `null` clears it.

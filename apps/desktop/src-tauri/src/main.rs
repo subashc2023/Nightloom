@@ -1486,11 +1486,17 @@ async fn edit_context(
     })
 }
 
-/// Delete a session log. If it is the active session, the open log handle is
-/// dropped first (the next send starts a fresh session).
+/// Delete a session log the reversible way: it moves to `<logs>/trash/`
+/// rather than being unlinked (review round 1, 2026-09-13 — the rule that
+/// no click in the UI may lose work for good; `backlog/trash/` is the same
+/// shape). The listing never descends into subdirectories, so a trashed log
+/// is out of the sidebar at once and still on disk. If it is the active
+/// session, the open log handle is dropped first (the next send starts a
+/// fresh session).
 #[tauri::command]
 async fn delete_session(state: State<'_, AppState>, id: String) -> Result<String, String> {
-    let path = store::find_by_prefix(&state.log_dir().await, &id).map_err(|e| e.to_string())?;
+    let log_dir = state.log_dir().await;
+    let path = store::find_by_prefix(&log_dir, &id).map_err(|e| e.to_string())?;
     let full_id = path
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
@@ -1506,7 +1512,21 @@ async fn delete_session(state: State<'_, AppState>, id: String) -> Result<String
     if was_active {
         adopt_agent_session(&state, None).await;
     }
-    std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+    let trash = log_dir.join("trash");
+    std::fs::create_dir_all(&trash).map_err(|e| e.to_string())?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| "session log has no file name".to_string())?;
+    let mut dest = trash.join(name);
+    // A second deletion of a re-imported chat with the same id keeps both.
+    if dest.exists() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        dest = trash.join(format!("{full_id}.{stamp}.jsonl"));
+    }
+    std::fs::rename(&path, &dest).map_err(|e| e.to_string())?;
     Ok(full_id)
 }
 
@@ -2301,8 +2321,13 @@ fn mac_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     // the popover, the two palettes, the engine toggle, and one key per core
     // model. Forwarded like the four above; `runMenuCommand` acts on each.
     // ⌘⇧S is free in this app — there is no Save As.
-    let model = MenuItemBuilder::with_id("model", "Model, Tasks && Context")
+    // Context left the popover for its own button under the top bar's
+    // gauge (review round 1, 2026-09-13), with ⌘⇧C to open it from anywhere.
+    let model = MenuItemBuilder::with_id("model", "Model && Tasks")
         .accelerator("CmdOrCtrl+M")
+        .build(app)?;
+    let context = MenuItemBuilder::with_id("context", "Context")
+        .accelerator("CmdOrCtrl+Shift+C")
         .build(app)?;
     let commands = MenuItemBuilder::with_id("commands", "Command Palette…")
         .accelerator("CmdOrCtrl+K")
@@ -2361,6 +2386,7 @@ fn mac_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
 
     let view = SubmenuBuilder::new(app, "View")
         .item(&model)
+        .item(&context)
         .item(&commands)
         .item(&projects)
         .separator()

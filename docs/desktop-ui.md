@@ -121,8 +121,10 @@ an app sets none, and replacing it is where the trap is — a webview on that
 platform takes ⌘C and ⌘V *from the menu*, so a custom menu without an Edit
 submenu silently breaks copy and paste in every text box the app has. The
 custom items (four at first — Settings ⌘,, New Chat ⌘N, Open Folder as Project…
-⌘O, Import from claude.ai… — and, since the 2026-09-13 chat-surface redesign, View → Model, Tasks
-& Context ⌘M, Command Palette… ⌘K, Switch Project… ⌘P, Switch Engine ⌘E, and a
+⌘O, Import from claude.ai… — and, since the 2026-09-13 chat-surface redesign, View → ~~Model, Tasks
+& Context ⌘M~~ Model & Tasks ⌘M and Context ⌘⇧C (the Context tab left the popover
+for its own button under the top bar's gauge, review round 1 the same evening),
+Command Palette… ⌘K, Switch Project… ⌘P, Switch Engine ⌘E, and a
 Model menu with Sonnet ⌘⇧S, Opus ⌘⇧O, Fable ⌘⇧F, Haiku ⌘⇧H) are **forwarded to
 the webview** as a `menu` event carrying the item's id, and `runMenuCommand` in
 `state.svelte.ts` acts on it: each one is a frontend flow — a modal, a file
@@ -130,7 +132,11 @@ dialog, a re-connect — and the backend has no way to run half of one. Nothing 
 reachable *only* from the menu, so no other platform is missing a capability: on
 Windows and Linux `App.svelte` binds the same chords itself (guarded off on macOS
 so nothing fires twice). A model key switches the picker to the first id carrying
-the alias; a provider with no such id gets a toast and no change.
+the alias; a provider with no such id gets a toast and no change. ⌘⇧1…9 is the
+n-th provider pill, bound in `App.svelte` on every platform — it is not a menu
+item (the pills are dynamic), so macOS cannot double-fire it; matched on
+`e.code`, since with Shift held `e.key` is the shifted glyph. ⇧ in a key cap is
+Shift, never caps lock (⇪); the cap's tooltip spells the chord out.
 
 The menu is registered `#[cfg(target_os = "macos")]` and only there, because on
 Windows and Linux a menu is drawn *inside* the window under a caption bar this
@@ -145,7 +151,8 @@ is the check to repeat when touching it.
 
 ## The right-hand rail
 
-`RightRail.svelte` with three tabs:
+`RightRail.svelte` with ~~three~~ two tabs (Context moved out, review round 1
+2026-09-13 — see below):
 
 - **`ProviderRail.svelte`** — the engine as two radio cards (who is billed, who
   runs the loop), provider pills, a model radio list (each id's ⌘⇧ key and
@@ -155,8 +162,22 @@ is the check to repeat when touching it.
   and per-turn status. It re-connects on every change and auto-connects at
   launch to the last-used draft. (Redesigned 2026-09-13; the dropdowns it
   replaced were the same knobs.)
+  On Claude Code the model is a row of alias pills (default · fable · opus ·
+  sonnet · haiku, each with its key) plus *other…* for a typed id, and the
+  Binary field sits at the foot under **CLI** — set once, read never. The
+  *Providers, keys & models…* button closes the popover as Settings opens, and
+  the system-prompt pencil closes it, opens the library, and reopens it
+  scrolled to the dropdown when the library closes (`app.promptsFrom`,
+  `app.railScrollTo`). The library's edit lives in `app.promptDraft`, so no
+  way out of the modal loses typed text.
 - **`TaskPanel.svelte`** — the model's task list, badged with the open count.
-- **`ContextPanel.svelte`** — the `WireView`; see [desktop.md](desktop.md).
+- ~~**`ContextPanel.svelte`** — the `WireView`; see [desktop.md](desktop.md).~~
+  **`ContextPanel.svelte`** is its own popover now, opened from the top bar's
+  context gauge (which reads *Context* before any usage) or ⌘⇧C. On Claude Code
+  it explains rather than vanishes: the panel itemises the request Nightloom
+  is about to send, and that engine's CLI assembles its own — the *gauge* still
+  counts, from the usage the CLI reports per turn. One popover is open at a
+  time (`app.showRail` / `app.showContext`).
 
 The thinking dropdown is capability-aware via `catalog.ts::thinkingSupport(kind,
 model)` — Claude 5 → adaptive effort, Claude ≤4.5 → budget, OpenAI → effort incl.
@@ -332,8 +353,10 @@ quadtree.
 
 ## The composer and the welcome page
 
-`Welcome.svelte` is the new-chat page: with an empty transcript the centre pane
-shows the project, ~~what the next chat inherits from the docspace, recent projects
+`Welcome.svelte` is the new-chat page: with an empty transcript (no message
+event — a session re-opened from the sidebar carries `session_created`, which
+used to tip it into an empty `Transcript`; review round 1, 2026-09-13) the
+centre pane shows the project, ~~what the next chat inherits from the docspace, recent projects
 to switch to, a folder picker~~ — since 2026-09-13 the project's notes orbiting the
 composer on an inner ring and the knowledge base's on an outer one (hover pauses a
 note and previews it, click opens it), one count line, and a strip of the stable

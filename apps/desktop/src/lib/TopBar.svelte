@@ -9,6 +9,7 @@
     sessionCost,
   } from "./state.svelte";
   import RightRail from "./RightRail.svelte";
+  import ContextPanel from "./ContextPanel.svelte";
 
   /**
    * The chat top bar in the redesign (item 036, the mock-up's Chat artboard):
@@ -132,21 +133,29 @@
 
   const openTasks = $derived(currentTodos().filter((t) => t.status !== "completed").length);
 
-  // The popover: opened from the model chip (or ⌘M, or the ⌘K palette —
-  // which is why the flag is app state, `app.showRail`), closed by Escape,
-  // by a click outside it, or by the chip again.
+  // The popovers: the model one opens from the model chip (or ⌘M, or the
+  // ⌘K palette — which is why the flags are app state), the context one
+  // from the gauge chip (or ⌘⇧C). Each closes on Escape, on a click
+  // outside it, or on its chip again; opening one closes the other.
   let popEl = $state<HTMLElement | null>(null);
   let chipEl = $state<HTMLElement | null>(null);
+  let ctxPopEl = $state<HTMLElement | null>(null);
+  let ctxChipEl = $state<HTMLElement | null>(null);
   function onDocClick(e: MouseEvent): void {
     const t = e.target as Node;
     if (popEl?.contains(t) || chipEl?.contains(t)) return;
+    if (ctxPopEl?.contains(t) || ctxChipEl?.contains(t)) return;
     app.showRail = false;
+    app.showContext = false;
   }
   function onKey(e: KeyboardEvent): void {
-    if (e.key === "Escape") app.showRail = false;
+    if (e.key === "Escape") {
+      app.showRail = false;
+      app.showContext = false;
+    }
   }
   $effect(() => {
-    if (!app.showRail) return;
+    if (!app.showRail && !app.showContext) return;
     document.addEventListener("mousedown", onDocClick, true);
     document.addEventListener("keydown", onKey);
     return () => {
@@ -154,6 +163,15 @@
       document.removeEventListener("keydown", onKey);
     };
   });
+  function toggleRail() {
+    app.showContext = false;
+    app.showRail = !app.showRail;
+  }
+  function toggleContext() {
+    app.showRail = false;
+    app.showContext = !app.showContext;
+  }
+  const agentEngine = $derived(app.connection?.engine === "claude-code");
 </script>
 
 <header class="topbar">
@@ -171,9 +189,9 @@
       class="ns-chip model"
       class:open={app.showRail}
       bind:this={chipEl}
-      title="Model, tasks and context — click to open (⌘M)"
+      title="Model and tasks — click to open (⌘M)"
       aria-expanded={app.showRail}
-      onclick={() => (app.showRail = !app.showRail)}
+      onclick={toggleRail}
     >
       <span class="dot" class:unknown={!app.connection}></span>
       {#if app.connection}
@@ -185,20 +203,33 @@
       {#if openTasks > 0}<span class="badge" title="{openTasks} open tasks">{openTasks}</span>{/if}
     </button>
 
-    {#if gauge}
-      <div
+    <!-- The context gauge is the Context button (review round 1,
+         2026-09-13): it opens the itemised request in its own popover, where
+         the rail's third tab used to be. Before any usage it reads "Context". -->
+    {#if app.connection}
+      <button
         class="ns-chip mono gauge {level}"
-        title={gauge.limit
-          ? `${gauge.used.toLocaleString()} of ${gauge.limit.toLocaleString()} context tokens`
-          : `${gauge.used.toLocaleString()} context tokens — window size unknown for this model`}
+        class:open={app.showContext}
+        bind:this={ctxChipEl}
+        aria-expanded={app.showContext}
+        title={gauge
+          ? gauge.limit
+            ? `${gauge.used.toLocaleString()} of ${gauge.limit.toLocaleString()} context tokens — click to itemise (⌘⇧C)`
+            : `${gauge.used.toLocaleString()} context tokens — window size unknown for this model — click to itemise (⌘⇧C)`
+          : "What the next request carries — click to open (⌘⇧C)"}
+        onclick={toggleContext}
       >
-        {#if gauge.ratio != null}
-          <div class="bar"><div class="fill" style:width="{gauge.ratio * 100}%"></div></div>
+        {#if gauge}
+          {#if gauge.ratio != null}
+            <div class="bar"><div class="fill" style:width="{gauge.ratio * 100}%"></div></div>
+          {/if}
+          <span class="figure">
+            {tokens(gauge.used)}{#if gauge.limit}<span class="of">of {tokens(gauge.limit)}</span><span class="pct">· {Math.round((gauge.ratio ?? 0) * 100)}%</span>{:else}<span class="of">tokens</span>{/if}
+          </span>
+        {:else}
+          <span class="figure sans">Context</span>
         {/if}
-        <span class="figure">
-          {tokens(gauge.used)}{#if gauge.limit}<span class="of">of {tokens(gauge.limit)}</span><span class="pct">· {Math.round((gauge.ratio ?? 0) * 100)}%</span>{:else}<span class="of">tokens</span>{/if}
-        </span>
-      </div>
+      </button>
     {/if}
 
     {#if cached != null}
@@ -246,6 +277,34 @@
   {#if app.showRail}
     <div class="popover" bind:this={popEl}>
       <RightRail />
+    </div>
+  {/if}
+  {#if app.showContext}
+    <div class="popover ctx" bind:this={ctxPopEl}>
+      <div class="ctx-head">
+        <span class="ns-k">Context</span>
+        <span class="sub">what the next request carries</span>
+      </div>
+      {#if agentEngine}
+        <!-- Said rather than hidden: the tab used to vanish on this engine.
+             The gauge above still counts — the CLI reports each turn's
+             usage — but there is no request of ours to take apart. -->
+        <div class="ctx-note">
+          <p>
+            On Claude Code there is no list to show. Nightloom itemises the
+            request <em>it</em> is about to send — preamble, history, tool
+            results — and on this engine the CLI assembles its own from a
+            history it keeps, so there is nothing here to take apart or
+            remove.
+          </p>
+          <p>
+            The gauge in the bar still works: it is the usage the CLI reports
+            after each turn, against the window it names.
+          </p>
+        </div>
+      {:else}
+        <ContextPanel />
+      {/if}
     </div>
   {/if}
 </header>
@@ -321,6 +380,17 @@
     font-variant-numeric: tabular-nums;
     color: var(--ink2);
   }
+  .gauge {
+    cursor: pointer;
+  }
+  .gauge.open,
+  .gauge:hover {
+    border-color: var(--accent);
+    color: var(--ink);
+  }
+  .figure.sans {
+    font-family: var(--sans);
+  }
   .figure {
     display: inline-flex;
     gap: 5px;
@@ -374,6 +444,37 @@
     box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
     overflow: hidden;
     z-index: 30;
+  }
+  /* The context popover: the same card, its own head, and the panel that
+     was the rail's third tab. Shorter than the model popover — a list, not
+     four sections. */
+  .popover.ctx {
+    height: auto;
+    max-height: min(620px, calc(100vh - var(--titlebar-h) - 80px));
+  }
+  .ctx-head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 12px 14px 6px;
+    flex: none;
+  }
+  .ctx-head .sub {
+    font-size: 11px;
+    color: var(--dim);
+  }
+  .ctx-note {
+    padding: 4px 14px 14px;
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--ink2);
+  }
+  .ctx-note p {
+    margin: 0 0 8px;
+  }
+  .popover.ctx :global(.panel) {
+    flex: 1;
+    min-height: 0;
   }
   /* The rail draws its own left border and panel background for the column it
      used to be; inside the popover the card is the frame. */

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { app, modelForKey, runMenuCommand, useProject } from "./state.svelte";
+  import { app, modelForKey, providerPills, runMenuCommand, usable, useProject } from "./state.svelte";
   import { MODEL_KEYS, providerLabel } from "./catalog";
   import type { IconName } from "./icons";
   import Icon from "./Icon.svelte";
@@ -113,25 +113,53 @@
         current,
       };
     });
+    rows.push({
+      id: "engine",
+      label: "Engine: Provider ⇄ Claude Code",
+      meta: agent ? "on Claude Code — back to an API key" : "on an API key — to your subscription",
+      icon: "term",
+      key: `${mod}E`,
+      group: "Model",
+      run: () => go(() => runMenuCommand("engine")),
+      disabled: app.busy || app.connecting,
+    });
+    // The provider pills, in the popover's order, on ⌘⇧1…9 (review round
+    // 1, 2026-09-13). Not on the Claude Code engine, which has no provider.
+    if (!agent) {
+      providerPills().forEach((p, i) => {
+        const current = p.kind === app.draft.provider;
+        rows.push({
+          id: `provider:${p.kind}`,
+          label: `Switch to ${providerLabel(p.kind)}`,
+          meta: current ? "current" : usable(p) ? "" : "no key — add one in Settings",
+          icon: current ? "check" : "key",
+          key: i < 9 ? `${mod}${shift}${i + 1}` : "",
+          group: "Provider",
+          run: () => go(() => runMenuCommand(`provider_${i + 1}`)),
+          disabled: !usable(p) || app.busy || app.connecting,
+          current,
+        });
+      });
+    }
     rows.push(
       {
         id: "model",
-        label: "Model, tasks & context",
+        label: "Model & tasks",
         meta: "the popover",
         icon: "gear",
         key: `${mod}M`,
-        group: "Model",
+        group: "Panels",
         run: () => go(() => runMenuCommand("model")),
       },
       {
-        id: "engine",
-        label: "Engine: Provider ⇄ Claude Code",
-        meta: agent ? "on Claude Code — back to an API key" : "on an API key — to your subscription",
-        icon: "term",
-        key: `${mod}E`,
-        group: "Model",
-        run: () => go(() => runMenuCommand("engine")),
-        disabled: app.busy || app.connecting,
+        id: "context",
+        label: "Context",
+        meta: agent ? "the CLI keeps its own — the gauge still counts" : "what the next request carries",
+        icon: "cols",
+        key: `${mod}${shift}C`,
+        group: "Panels",
+        run: () => go(() => runMenuCommand("context")),
+        disabled: !app.connection,
       },
       {
         id: "projects",

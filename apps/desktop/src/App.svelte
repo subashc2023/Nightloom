@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import {
     app,
+    closePrompts,
     init,
     runMenuCommand,
     setSidebarWidth,
@@ -35,8 +36,22 @@
    * questions that actually start a chat belong — which folder, and what do
    * you want. `app.live` is checked as well as the log so the switch happens
    * on the first send rather than on the re-sync a whole turn later.
+   *
+   * "Nothing in it" means no message, not no event (review round 1,
+   * 2026-09-13): a session re-opened from the sidebar carries its
+   * `session_created` line, and on the old test that one line turned the
+   * Welcome page into an empty transcript. New chat and the empty session it
+   * made now show the same page.
    */
-  const blank = $derived(app.events.length === 0 && !app.live);
+  const blank = $derived(
+    !app.live &&
+      !app.events.some(
+        (e) =>
+          e.event === "user_message" ||
+          e.event === "assistant_message" ||
+          e.event === "compaction",
+      ),
+  );
 
   /**
    * The redesign's shortcuts (nightshift blocker 035) on Windows and Linux,
@@ -57,7 +72,16 @@
     h: "model_haiku",
   };
   function onShortcut(e: KeyboardEvent): boolean {
-    if (isMac || !e.ctrlKey || e.altKey) return false;
+    if (e.altKey) return false;
+    // ⌘⇧1…9 (Ctrl+Shift elsewhere) is the n-th provider pill, on every
+    // platform: it is not a menu item, so macOS cannot double-fire it.
+    // Matched on the physical key — with Shift held, `e.key` is `!`.
+    const primary = isMac ? e.metaKey : e.ctrlKey;
+    if (primary && e.shiftKey && /^Digit[1-9]$/.test(e.code)) {
+      runMenuCommand(`provider_${e.code.slice(5)}`);
+      return true;
+    }
+    if (isMac || !e.ctrlKey) return false;
     const k = e.key.toLowerCase();
     const id = e.shiftKey ? SHIFT_KEYS[k] : KEYS[k];
     if (!id) return false;
@@ -156,7 +180,7 @@
     <Palette />
     {#if app.showPrompts}
       <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
-      <div class="settings-overlay" onmousedown={(e) => { if (e.target === e.currentTarget) app.showPrompts = false; }}><PromptLibrary /></div>
+      <div class="settings-overlay" onmousedown={(e) => { if (e.target === e.currentTarget) closePrompts(); }}><PromptLibrary /></div>
     {/if}
   </div>
 </div>
