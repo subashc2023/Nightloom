@@ -132,11 +132,13 @@ dialog, a re-connect — and the backend has no way to run half of one. Nothing 
 reachable *only* from the menu, so no other platform is missing a capability: on
 Windows and Linux `App.svelte` binds the same chords itself (guarded off on macOS
 so nothing fires twice). A model key switches the picker to the first id carrying
-the alias; a provider with no such id gets a toast and no change. ⌘⇧1…9 is the
+the alias; a provider with no such id gets a toast and no change. ~~⌘⇧1…9~~
+⌘1…9 (bare ⌘ since his second look: "anthropic shouldn't be special") is the
 n-th provider pill, bound in `App.svelte` on every platform — it is not a menu
 item (the pills are dynamic), so macOS cannot double-fire it; matched on
-`e.code`, since with Shift held `e.key` is the shifted glyph. ⇧ in a key cap is
-Shift, never caps lock (⇪); the cap's tooltip spells the chord out.
+`e.code` so a layout cannot move it. It works from anywhere in the window, the
+popover open or not. ⇧ in a key cap is Shift, never caps lock (⇪); the cap's
+tooltip spells the chord out.
 
 The menu is registered `#[cfg(target_os = "macos")]` and only there, because on
 Windows and Linux a menu is drawn *inside* the window under a caption bar this

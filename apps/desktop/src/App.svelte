@@ -73,11 +73,13 @@
   };
   function onShortcut(e: KeyboardEvent): boolean {
     if (e.altKey) return false;
-    // ⌘⇧1…9 (Ctrl+Shift elsewhere) is the n-th provider pill, on every
+    // ⌘1…9 (Ctrl+1…9 elsewhere) is the n-th provider pill, on every
     // platform: it is not a menu item, so macOS cannot double-fire it.
-    // Matched on the physical key — with Shift held, `e.key` is `!`.
+    // Bare ⌘, not ⌘⇧, since his second look (2026-09-13): "anthropic
+    // shouldn't be special" — the alias letters need Shift, the providers
+    // do not. Matched on the physical key so a layout cannot move it.
     const primary = isMac ? e.metaKey : e.ctrlKey;
-    if (primary && e.shiftKey && /^Digit[1-9]$/.test(e.code)) {
+    if (primary && !e.shiftKey && /^Digit[1-9]$/.test(e.code)) {
       runMenuCommand(`provider_${e.code.slice(5)}`);
       return true;
     }

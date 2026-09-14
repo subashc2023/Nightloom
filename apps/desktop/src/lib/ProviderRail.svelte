@@ -350,7 +350,7 @@
             aria-checked={p.kind === app.draft.provider}
             disabled={locked || !usable(p)}
             title={usable(p)
-              ? `${providerLabel(p.kind)}${i < 9 ? ` — ${mod}${shift}${i + 1}` : ""}`
+              ? `${providerLabel(p.kind)}${i < 9 ? ` — ${mod}${i + 1}` : ""}`
               : `${providerLabel(p.kind)} — no key; add one in Settings`}
             onclick={() => pickProvider(p.kind)}
           >
@@ -360,7 +360,7 @@
           </button>
         {/each}
       </div>
-      <div class="more bare"><span>{mod}{shift}number switches anywhere</span></div>
+      <div class="more bare"><span>{mod}number switches anywhere</span></div>
     </section>
 
     <section class="sect">

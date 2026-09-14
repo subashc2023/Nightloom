@@ -617,7 +617,7 @@ export function runMenuCommand(id: string): void {
       void switchModel(id.slice(6));
       break;
     default:
-      // ⌘⇧1…9: the n-th provider pill (review round 1, 2026-09-13).
+      // ⌘1…9: the n-th provider pill (review round 1, 2026-09-13).
       if (id.startsWith("provider_")) void switchProvider(Number(id.slice(9)));
   }
 }
@@ -625,7 +625,7 @@ export function runMenuCommand(id: string): void {
 /**
  * The provider pills in the popover's order — visible ones, plus the one
  * selected even if Settings has since hidden it — so a key cap printed on
- * a pill and the key that switches to it count the same list.
+ * a pill and the ⌘-digit that switches to it count the same list.
  */
 export function providerPills(): ProviderInfo[] {
   return app.providers.filter(

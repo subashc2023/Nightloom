@@ -123,7 +123,7 @@
       run: () => go(() => runMenuCommand("engine")),
       disabled: app.busy || app.connecting,
     });
-    // The provider pills, in the popover's order, on ⌘⇧1…9 (review round
+    // The provider pills, in the popover's order, on ⌘1…9 (review round
     // 1, 2026-09-13). Not on the Claude Code engine, which has no provider.
     if (!agent) {
       providerPills().forEach((p, i) => {
@@ -133,7 +133,7 @@
           label: `Switch to ${providerLabel(p.kind)}`,
           meta: current ? "current" : usable(p) ? "" : "no key — add one in Settings",
           icon: current ? "check" : "key",
-          key: i < 9 ? `${mod}${shift}${i + 1}` : "",
+          key: i < 9 ? `${mod}${i + 1}` : "",
           group: "Provider",
           run: () => go(() => runMenuCommand(`provider_${i + 1}`)),
           disabled: !usable(p) || app.busy || app.connecting,
