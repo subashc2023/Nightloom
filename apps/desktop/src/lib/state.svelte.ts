@@ -3346,6 +3346,74 @@ export async function rewindTo(to: number): Promise<void> {
 }
 
 /**
+ * Edit and save (nightshift backlog 062): the turn at `index` says `text`
+ * from here on, in this chat. The transcript re-syncs from the log, which
+ * now carries the marker; on Claude Code the backend has also rewritten
+ * the CLI's history by copy, or refused with a notice and recorded
+ * nothing. Refused mid-turn on `rewindTo`'s reasoning.
+ */
+export async function saveEdit(index: number, text: string): Promise<boolean> {
+  if (app.busy) return false;
+  try {
+    const res = await api.editMessage(index, text, "save");
+    app.events = res.events;
+    app.error = null;
+    return true;
+  } catch (e) {
+    addToast(String(e));
+    return false;
+  }
+}
+
+/**
+ * Edit and send: fork this chat before the user turn at `index`, open the
+ * fork, and send `text` as its next turn — with the original turn's
+ * attachments, since the words changed and the file did not. The parent
+ * stays in the list, untouched; the fork's row says where it came from.
+ * The fork is opened before the send so that, should the send fail, the
+ * user is looking at the fork with the text still in the composer's
+ * history rather than at a parent that quietly grew a sibling.
+ */
+export async function sendEdit(
+  index: number,
+  text: string,
+  images: ImageInput[] = [],
+  documents: DocumentInput[] = [],
+): Promise<boolean> {
+  if (app.busy) return false;
+  try {
+    const res = await api.editMessage(index, text, "send");
+    app.events = res.events;
+    app.activeSessionId = res.session;
+    app.error = null;
+    app.agentTurn = null;
+  } catch (e) {
+    addToast(String(e));
+    return false;
+  }
+  void refreshSessions();
+  await send(text, images, documents);
+  return true;
+}
+
+/**
+ * Remove the turn at `index` from the context. A marker, asked about
+ * nothing: the transcript shows the placeholder greyed with the original
+ * a click away, and the context panel's Restore (or backlog 064's undo)
+ * brings it back.
+ */
+export async function removeTurn(index: number): Promise<void> {
+  if (app.busy) return;
+  try {
+    const res = await api.removeMessage(index);
+    app.events = res.events;
+    app.error = null;
+  } catch (e) {
+    addToast(String(e));
+  }
+}
+
+/**
  * Tokens the next request will carry as its prefix: the newest round's
  * input plus output. Deliberately not the running total, which counts the
  * prefix once per round and would race past the window while the real

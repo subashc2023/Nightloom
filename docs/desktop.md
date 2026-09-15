@@ -288,6 +288,26 @@ cutting the log out from under a reply being recorded — but the control is hid
 while busy, because a queued rewind that fires after the next turn lands would be
 a surprise.
 
+**Edit, remove, fork** (`edit_message { index, text, mode: "save" | "send" }`,
+`remove_message { index }`, `fork_session { upto }`, 2026-09-15, nightshift
+backlog 062): each returns the transcript and the id of the chat now open
+(`MessageEdit`), on `rewind`'s contract. `save` records an `Edit` marker;
+`send` is `fork_session` — the parent forked before the turn
+(`Session::fork_from`), the fork made the open session, and the UI then
+sends the text as its next turn; `remove_message` is the context panel's
+`Elide`, reached from the transcript. On the Claude Code engine all three,
+and `rewind`, first copy the CLI's session file with the change made under
+a new id (`edit_on_cli`, over `agent::cli_session`; `CliChange` says whether
+there was a copy to resume, nothing to change, or nothing left), then record
+the marker, then record the copy's id as the chat's `AgentSession` and
+`set_resume` it — the copy first, so a refusal (an unmeasured CLI version, a
+turn the CLI never saw) leaves the log as it was. `not_in_agent_mode` is
+lifted for exactly these four; `compact` and `edit_context` keep it. A turn
+is addressed on the CLI side by how many live user turns follow it
+(`turns_after`) and by its projected text (`cli_target`), never by its log
+index. The desktop test drives the same sequence against a synthesised
+CLI file and checks the original is byte-identical afterwards.
+
 **Context** (`ContextPanel.svelte`, the rail's third tab): the `WireView`, one
 row per block, each with its estimated size, a share-of-total bar and a
 remove/restore button where the source event allows it.
@@ -346,7 +366,9 @@ same figure reaches the model through the sidecar.
 (mirrors `Session::live_flags`; it returns flags over the whole array rather than
 a filtered list, because superseded turns are still rendered), `currentTodos`,
 and the ticker. `links.ts::resolveNote` is a fourth, mirroring
-`knowledge::resolve_link`.
+`knowledge::resolve_link`. Since 2026-09-15 three more, in `edit.ts`:
+`editTexts`, `elideFlags` and `isEditable`, mirroring `Session::edit_texts`,
+`elide_flags` and `is_editable`.
 
 ## Importing from claude.ai
 

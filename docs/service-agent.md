@@ -196,6 +196,95 @@ The log is written as usual for incognito (marked on line 1) and not at all
 for ephemeral ([service-data.md](service-data.md)); the `Recorder` writes into
 whichever `Session` it is given and does not know the difference.
 
+## Editing the CLI's history, by copy (`agent/cli_session.rs`, 2026-09-15)
+
+His question (nightshift backlog 062): "Can't you just edit the history and
+then start a new Claude Code session instead of resume whenever the chat
+history is edited?" Yes, and that is what this module does. The CLI keeps a
+conversation as `~/.claude/projects/<cwd with every non-alphanumeric byte as
+'-'>/<session id>.jsonl` — one JSON object per line; `user` / `assistant` /
+`attachment` **nodes** chained by `uuid` → `parentUuid`, an assistant reply
+being several nodes (one per content block) sharing a `message.id`; and
+bookkeeping lines with no uuid (`queue-operation`, `file-history-snapshot`,
+`atis-latch`, `last-prompt` naming the leaf, `mode`). `--resume <id>`
+continues from the tree's leaf. `CliSession::parse` reads it; `rewrite`,
+`remove` and `truncate` return an edited copy; `write_copy` writes the copy
+**beside the original under a fresh uuid**, every `sessionId` swapped, with
+`create_new`, and returns the id the desktop records as the chat's
+`AgentSession` and `set_resume`s. **The original is never opened for
+writing and never deleted**; the persisted tool outputs it names by absolute
+path stay readable from the copy. Lines the edit does not touch go out as
+they came in, bar the id; touched lines are re-serialized.
+
+**Measured, CLI 2.1.263, all on his account (`inferred`; the full table is in
+the nightshift repo's `edit-messages-report-2026-09-15.md`).** A Haiku
+session of two turns (PELICAN, then OTTER), copied three ways and each copy
+resumed with "list every message so far":
+
+| copy | resumed? | cache read / write | the model's history |
+|---|---|---|---|
+| **truncate** before the second user node (it and every descendant dropped, with the `last-prompt` / `file-history-snapshot` naming them and the `queue-operation` pair before it) | yes | 7017 / 247 | first turn only — this is **rewind** and **edit-and-send** |
+| **drop outright** (the node alone gone, its child re-parented) | yes | 7017 / 334 | the orphaned "OK" merged as a second assistant message |
+| **placeholder** (the node's text replaced) | yes | 7017 / 341 | the placeholder in place of the turn |
+
+So the CLI accepts all three, and the prompt cache reads the unchanged
+prefix in every case. Then, with the **built module** doing the rewrite:
+a one-turn session on `opus` and one on `sonnet` (PELICAN), each copied
+with the user node's text changed to WALRUS and resumed with "what is the
+code word?" — **both answered WALRUS**, no error, cache read 3126 / write
+976 on Opus and 8480 / 1075 on Sonnet. Fable was not run: the item records
+that on Fable 5.1 the API checks edited history against preserved thinking
+blocks and returns 400 for accounts created on or after 2026-08-31 (his is
+older); if a model refuses, the turn's error is what the UI shows, and
+nothing in the log is lost.
+
+What each edit does to the copy, and why:
+
+- **Edit and save** (`rewrite`): the target's text replaced. A user prompt
+  keeps its attachment blocks; an assistant reply keeps its thinking nodes
+  (signed as they are — measured to resume under a changed user turn; an
+  edited *assistant* turn's thinking was not measured separately) and its
+  first text node takes the text, any further text node going.
+- **Remove** (`remove`): a user prompt, or an assistant reply that calls no
+  tool, is **dropped outright** with its children re-parented — the spec
+  asked which of the two measured shapes to prefer, and dropping is the one
+  taken, since a placeholder is a turn the model still reads. A reply
+  *with* a tool call cannot be dropped (its results would answer nothing),
+  so it keeps its `tool_use` nodes, loses its thinking, and says the same
+  marker sentence the API engine's elision projects (`REMOVED_MARKER`).
+- **Rewind** and **edit and send** (`truncate`): the copy cut before the
+  user prompt, as measured. A cut that leaves no turn at all — at the
+  oldest prompt, or before the CLI session began — writes no copy: the
+  desktop starts the next turn with no `--resume` instead, and the chat
+  records the id that turn opens.
+
+**Addressing a turn.** Nightloom's log and the CLI's file share their
+*tail*, not their head — a chat may hold turns from before it came to this
+engine, and the CLI holds only the turns since — so a target is counted
+**from the newest user prompt** (`Target::User { from_last, text }`) and
+checked by text before anything is changed; an assistant reply is found
+within its turn by its text. A mismatch is a refusal that changes nothing
+("that turn reads differently in Claude Code's history than in this chat's
+log"), and a turn the CLI never saw says so. Subagent transcripts live in
+`<session id>/subagents/` and are not in the file; the main chain is the
+leaf's ancestry, which is what makes the count stable across branches.
+
+**The version pin.** The format is undocumented and the CLI's to change, so
+`MEASURED_VERSION = "2.1.263"` is written down and a file whose first node
+carries another *major* version — or lacks `uuid` / `parentUuid` / `type`,
+or has a line that is not JSON — is refused with the sentence the UI shows
+whole: "this Claude Code version keeps sessions in a shape Nightloom does
+not know; the edit was not applied". A minor step is not a refusal. When
+the CLI moves the shape, the fixture in the module's tests (synthesised
+from the node types and fields — never a copy of a real file, which carries
+the user's instructions files, e-mail and system prompt in its `attachment`
+nodes) is where the new shape gets measured.
+
+**What this is not.** Not the ephemeral chat's `<earlier-turns>` replay,
+which flattens the CLI's tool calls to text: an edited copy keeps the real
+assistant turns and tool calls, which is why it caches. And nothing here
+touches auth — the line below still binds.
+
 ## What `--append-system-prompt` carries
 
 Three parts, in this order, joined by blank lines (`prompt::agent_prompt`

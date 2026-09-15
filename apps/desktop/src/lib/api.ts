@@ -45,6 +45,7 @@ import type {
   SearchBackendInfo,
   ShiftSummary,
   ContextEdit,
+  MessageEdit,
   SessionEvent,
   SessionMeta,
   SessionHit,
@@ -236,6 +237,31 @@ export function editContext(
   remove: boolean,
 ): Promise<ContextEdit> {
   return invoke("edit_context", { targets, remove });
+}
+
+/**
+ * Reword the turn at `index` (nightshift backlog 062). `save` records an
+ * `edit` marker on this chat; `send` forks the chat before the turn and
+ * makes the fork the open chat, after which the caller sends the text as
+ * an ordinary turn. On Claude Code both also rewrite the CLI's history by
+ * copy, and a refusal there is the error, with nothing recorded.
+ */
+export function editMessage(
+  index: number,
+  text: string,
+  mode: "save" | "send",
+): Promise<MessageEdit> {
+  return invoke("edit_message", { index, text, mode });
+}
+
+/** Remove the turn at `index` from the context: the `elide` marker, from the transcript. */
+export function removeMessage(index: number): Promise<MessageEdit> {
+  return invoke("remove_message", { index });
+}
+
+/** Fork the open chat before the user turn at `upto`; the fork becomes the open chat. */
+export function forkSession(upto: number): Promise<MessageEdit> {
+  return invoke("fork_session", { upto });
 }
 
 /** The open chat's switched-off prompt layers, and what the engine was built with. */

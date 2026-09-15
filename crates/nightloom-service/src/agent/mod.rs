@@ -28,6 +28,7 @@
 //!
 //! [`Provider`]: nightloom_core::Provider
 
+pub mod cli_session;
 mod protocol;
 mod record;
 mod translate;

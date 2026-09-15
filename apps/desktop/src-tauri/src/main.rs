@@ -11,6 +11,7 @@ use nightloom_core::{
     DocumentInput, ImageInput, ProviderError, SegmentKind, Session, SessionEvent, SystemPrompt,
     Thinking, WireView,
 };
+use nightloom_service::agent::cli_session::{self, CliSession, Target};
 use nightloom_service::approval::{Approver, AutoApprove, Decision, PendingCall};
 use nightloom_service::credentials::{self, KeySource};
 use nightloom_service::import;
@@ -1161,6 +1162,15 @@ const AGENT_BINARY: &str = "claude";
 /// was. A control that appears to work and does nothing is worse than one
 /// that is not offered, so the UI hides these and this is the backstop under
 /// that — the two have to agree, and only one of them is checkable.
+///
+/// **Lifted for `rewind`, `edit_message`, `remove_message` and
+/// `fork_session` on 2026-09-15 (nightshift backlog 062).** Those four now
+/// change Claude Code's history too: they copy the CLI's session file with
+/// the change made, under a new id, and point the next turn at the copy
+/// (`edit_on_cli`). `compact` and `edit_context` keep the guard — a
+/// compaction is the CLI's own business inside its history, and the
+/// context panel's elision is the same marker `remove_message` records,
+/// reached from a view that on this engine itemizes the preamble alone.
 async fn not_in_agent_mode(state: &AppState, what: &str) -> Result<(), String> {
     if state.agent.lock().await.is_some() {
         return Err(format!(
@@ -1824,15 +1834,324 @@ async fn compact(state: State<'_, AppState>) -> Result<CompactOutcome, String> {
 /// session lock for the whole turn, so this waits rather than cutting the log
 /// out from under a reply being recorded. It would still be a surprising
 /// thing to have queued, which is why the UI hides the control while busy.
+///
+/// On the Claude Code engine (since 2026-09-15) the CLI's session file is
+/// copied truncated before the turn and the copy resumed — see
+/// [`edit_on_cli`]; the log gets its `Rewind` marker either way.
 #[tauri::command]
 async fn rewind(state: State<'_, AppState>, to: usize) -> Result<Vec<SessionEvent>, String> {
-    not_in_agent_mode(&state, "rewind").await?;
+    let mut agent_guard = state.agent.lock().await;
     let mut session_guard = state.session.lock().await;
     let session = session_guard
         .as_mut()
         .ok_or_else(|| "no active session".to_string())?;
+    let workspace = agent_guard.as_ref().map(|a| a.spec().workspace.clone());
+    let from_last = turns_after(session, to)?;
+    let change = match &workspace {
+        Some(cwd) => edit_on_cli(session, cwd, |cli| cli.truncate(from_last))?,
+        None => CliChange::Untouched,
+    };
     session.rewind(to)?;
+    change.adopt(session, agent_guard.as_mut());
     Ok(session.events().to_vec())
+}
+
+/// What an edit did to Claude Code's history, for the log and the agent
+/// to follow.
+enum CliChange {
+    /// No CLI session behind this chat; the marker is the whole edit.
+    Untouched,
+    /// A copy under this id; the next turn resumes it.
+    Resume(String),
+    /// The cut left the CLI no turn to resume; the next turn starts a
+    /// conversation of its own, and the chat records it when it lands.
+    Fresh,
+}
+
+impl CliChange {
+    /// Record the new handle on `session` and point the agent at it.
+    /// `Fresh` records nothing — an id is written after the turn that
+    /// opened it, as `send_agent` does — and lets the agent go of the old.
+    fn adopt(self, session: &mut Session, agent: Option<&mut ClaudeCodeAgent>) {
+        match self {
+            CliChange::Untouched => {}
+            CliChange::Resume(id) => {
+                session.record_agent_session(AGENT, &id);
+                if let Some(agent) = agent {
+                    agent.set_resume(Some(id));
+                }
+            }
+            CliChange::Fresh => {
+                if let Some(agent) = agent {
+                    agent.set_resume(None);
+                }
+            }
+        }
+    }
+}
+
+/// How many live user turns follow event `index` — the "from the newest"
+/// count [`Target`] addresses a CLI node by. For an assistant reply it is
+/// counted from the user turn that produced it.
+fn turns_after(session: &Session, index: usize) -> Result<usize, String> {
+    let live = session.live_events();
+    let turn = live
+        .iter()
+        .rposition(|(i, e)| *i <= index && matches!(e, SessionEvent::UserMessage { .. }))
+        .ok_or_else(|| format!("event {index} is not part of a turn"))?;
+    Ok(live[turn + 1..]
+        .iter()
+        .filter(|(_, e)| matches!(e, SessionEvent::UserMessage { .. }))
+        .count())
+}
+
+/// The CLI node that stands for event `index`, addressed from the newest
+/// turn and by the text the log projects for it now — the check that
+/// keeps an edit from landing on the wrong node when the two histories
+/// have drifted (a chat that ran on the other engine first, a turn the
+/// CLI never saw).
+fn cli_target(session: &Session, index: usize) -> Result<Target, String> {
+    let from_last = turns_after(session, index)?;
+    let edited = session.edit_texts();
+    match session.events().get(index) {
+        Some(SessionEvent::UserMessage { text, .. }) => Ok(Target::User {
+            from_last,
+            text: edited[index].unwrap_or(text).to_string(),
+        }),
+        Some(SessionEvent::AssistantMessage { blocks, .. }) => Ok(Target::Assistant {
+            from_last,
+            text: match edited[index] {
+                Some(t) => t.to_string(),
+                None => blocks
+                    .iter()
+                    .filter_map(|b| match b {
+                        nightloom_core::ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<String>(),
+            },
+        }),
+        Some(_) => Err(format!(
+            "event {index} is not a user message or an assistant reply"
+        )),
+        None => Err(format!("no event at {index}")),
+    }
+}
+
+/// Change Claude Code's history to match an edit to the log, by copy.
+///
+/// The log this session is a record of has a CLI session behind it
+/// (`SessionEvent::AgentSession`); `change` is applied to a parse of that
+/// file and the result written beside it under a fresh id, which comes
+/// back as [`CliChange::Resume`] for the caller to record and resume. The
+/// original file is never opened for writing. `Untouched` when there is
+/// no CLI session to change — an ephemeral chat, whose turns the shell
+/// replays itself, or a chat that has not yet run a turn on this engine
+/// — so the marker alone is the edit, as on the other engine; `Fresh`
+/// when `change` cut every turn the CLI had.
+///
+/// Refusals are the module's own sentences, shown as notices: a file
+/// written by a CLI whose shape this build was not measured against, a
+/// turn the CLI's history does not have, a file that is not where it
+/// should be.
+fn edit_on_cli(
+    session: &Session,
+    workspace: &Path,
+    change: impl FnOnce(&CliSession) -> Result<Option<CliSession>, cli_session::CliSessionError>,
+) -> Result<CliChange, String> {
+    let Some(id) = session
+        .agent_session()
+        .filter(|(agent, _)| *agent == AGENT)
+        .map(|(_, id)| id.to_string())
+    else {
+        return Ok(CliChange::Untouched);
+    };
+    let projects = cli_session::projects_dir()
+        .ok_or_else(|| "no home directory, so no ~/.claude/projects to look in".to_string())?;
+    edit_cli_file(&projects, workspace, &id, change)
+}
+
+/// The pure half of [`edit_on_cli`]: the projects root is a parameter so a
+/// test can point it at a directory of its own.
+fn edit_cli_file(
+    projects: &Path,
+    workspace: &Path,
+    id: &str,
+    change: impl FnOnce(&CliSession) -> Result<Option<CliSession>, cli_session::CliSessionError>,
+) -> Result<CliChange, String> {
+    let path = cli_session::find(projects, workspace, id).map_err(|e| e.to_string())?;
+    let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let parsed = CliSession::parse(&text).map_err(|e| e.to_string())?;
+    match change(&parsed).map_err(|e| e.to_string())? {
+        Some(edited) => cli_session::write_copy(&path, &edited)
+            .map(CliChange::Resume)
+            .map_err(|e| e.to_string()),
+        None => Ok(CliChange::Fresh),
+    }
+}
+
+/// What an edit to a turn changed: the transcript, and the id of the chat
+/// now open — the same one, or the fork.
+#[derive(Serialize)]
+struct MessageEdit {
+    events: Vec<SessionEvent>,
+    /// The open chat's id after the edit. Differs from the one before
+    /// exactly when a fork was made (`mode: "send"`, `fork_session`), and
+    /// the UI then sends the edited text as that chat's next turn.
+    session: String,
+    /// Whether a fork was made.
+    forked: bool,
+}
+
+/// Reword the turn at `index` (nightshift backlog 062, 2026-09-15).
+///
+/// `mode: "save"` is his "edit and save": an `Edit` marker on this log,
+/// so the next turn goes out with the new text and everything else in
+/// place — the original stays in the log, greyed, for the transcript to
+/// unfold. `mode: "send"` is "edit and send": a fork of this chat cut
+/// before the turn ([`Session::fork_from`]), which becomes the open chat;
+/// the UI then sends the new text as its first turn, so this command
+/// records nothing of the text itself. A fork cuts at a user message, so
+/// `send` on an assistant reply is refused; `save` takes either.
+///
+/// On the Claude Code engine both also rewrite the CLI's history by copy
+/// ([`edit_on_cli`]) — the target's text replaced for `save`, the file
+/// cut before the turn for `send` — and the copy's id is recorded on
+/// whichever log the next turn resumes from. The CLI copy is made
+/// *before* the marker: a refusal there leaves the log as it was, rather
+/// than a log that says one thing and a history that says another.
+#[tauri::command]
+async fn edit_message(
+    state: State<'_, AppState>,
+    index: usize,
+    text: String,
+    mode: String,
+) -> Result<MessageEdit, String> {
+    match mode.as_str() {
+        "save" => {
+            let mut agent_guard = state.agent.lock().await;
+            let mut session_guard = state.session.lock().await;
+            let session = session_guard
+                .as_mut()
+                .ok_or_else(|| "no active session".to_string())?;
+            if text.trim().is_empty() {
+                return Err("an edit cannot be empty; remove the turn instead".into());
+            }
+            if !session.is_editable(index) {
+                return Err(
+                    "only user messages and assistant replies without tool calls can be edited; a turn with a tool call can be removed instead".into(),
+                );
+            }
+            let workspace = agent_guard.as_ref().map(|a| a.spec().workspace.clone());
+            let change = match &workspace {
+                Some(cwd) => {
+                    let target = cli_target(session, index)?;
+                    let new_text = text.clone();
+                    edit_on_cli(session, cwd, move |cli| {
+                        cli.rewrite(&target, &new_text).map(Some)
+                    })?
+                }
+                None => CliChange::Untouched,
+            };
+            session.edit(index, text)?;
+            change.adopt(session, agent_guard.as_mut());
+            Ok(MessageEdit {
+                events: session.events().to_vec(),
+                session: session.id.clone(),
+                forked: false,
+            })
+        }
+        "send" => fork_session(state, index).await,
+        other => Err(format!(
+            "unknown edit mode {other:?}; use \"save\" or \"send\""
+        )),
+    }
+}
+
+/// Remove the turn at `index` from the context — the `Elide` marker the
+/// context panel records, offered on the transcript (nightshift backlog
+/// 062). Asks nothing: it is a marker, the transcript shows the
+/// placeholder greyed with the original a click away, and backlog 064
+/// will undo it. On the Claude Code engine the CLI's copy drops a text
+/// turn outright and marks a turn with tool calls ([`CliSession::remove`]).
+#[tauri::command]
+async fn remove_message(state: State<'_, AppState>, index: usize) -> Result<MessageEdit, String> {
+    let mut agent_guard = state.agent.lock().await;
+    let mut session_guard = state.session.lock().await;
+    let session = session_guard
+        .as_mut()
+        .ok_or_else(|| "no active session".to_string())?;
+    if !matches!(
+        session.events().get(index),
+        Some(SessionEvent::UserMessage { .. } | SessionEvent::AssistantMessage { .. })
+    ) {
+        return Err(format!(
+            "event {index} is not a turn; the context panel removes tool results"
+        ));
+    }
+    let workspace = agent_guard.as_ref().map(|a| a.spec().workspace.clone());
+    let change = match &workspace {
+        Some(cwd) => {
+            let target = cli_target(session, index)?;
+            edit_on_cli(session, cwd, move |cli| cli.remove(&target).map(Some))?
+        }
+        None => CliChange::Untouched,
+    };
+    session.elide([index])?;
+    change.adopt(session, agent_guard.as_mut());
+    Ok(MessageEdit {
+        events: session.events().to_vec(),
+        session: session.id.clone(),
+        forked: false,
+    })
+}
+
+/// Fork the open chat before the user turn at `upto` and make the fork
+/// the open chat (nightshift backlog 062). The parent stays in the list,
+/// untouched; the fork's creation line names it (`forked_from`), and the
+/// sidebar shows the lineage. On the Claude Code engine the CLI's file is
+/// copied cut before that turn and the copy's id recorded on the fork,
+/// so its next turn resumes a history that ends where the fork does.
+///
+/// The fork's own log is written in the same directory as the parent's;
+/// an ephemeral parent forks to another chat with no log.
+#[tauri::command]
+async fn fork_session(state: State<'_, AppState>, upto: usize) -> Result<MessageEdit, String> {
+    let mut agent_guard = state.agent.lock().await;
+    let log_dir = state.log_dir().await;
+    let mut session_guard = state.session.lock().await;
+    let parent = session_guard
+        .as_ref()
+        .ok_or_else(|| "no active session".to_string())?;
+    let workspace = agent_guard.as_ref().map(|a| a.spec().workspace.clone());
+    let from_last = turns_after(parent, upto)?;
+    // The CLI copy first, so a refusal makes no fork.
+    let change = match &workspace {
+        Some(cwd) => edit_on_cli(parent, cwd, |cli| cli.truncate(from_last))?,
+        None => CliChange::Untouched,
+    };
+    let mut fork = parent
+        .fork_from(&log_dir, upto)
+        .map_err(|e| e.to_string())?;
+    match change {
+        // The fork carries no handle of the parent's, so anything but a
+        // copy to resume means the fork's first turn opens a CLI
+        // conversation of its own.
+        CliChange::Untouched | CliChange::Fresh => {
+            if let Some(agent) = agent_guard.as_mut() {
+                agent.set_resume(None);
+            }
+        }
+        resume => resume.adopt(&mut fork, agent_guard.as_mut()),
+    }
+    let events = fork.events().to_vec();
+    let id = fork.id.clone();
+    *session_guard = Some(fork);
+    Ok(MessageEdit {
+        events,
+        session: id,
+        forked: true,
+    })
 }
 
 /// What removing items changed: the new view, plus the transcript, because
@@ -3562,6 +3881,9 @@ fn main() {
             cancel,
             compact,
             rewind,
+            edit_message,
+            remove_message,
+            fork_session,
             context_view,
             edit_context,
             prompt_layers,
@@ -3742,5 +4064,148 @@ mod tests {
         );
         // No session and nothing pending is an ordinary chat, as before.
         assert_eq!(mode_of(None, ChatMode::Normal), ChatMode::Normal);
+    }
+
+    // ---- Edits on the Claude Code engine (nightshift backlog 062) ----
+
+    /// A CLI session file in the measured shape with dummy content — never
+    /// a real one (those carry his instructions files and e-mail). One
+    /// turn: "first" answered "one".
+    fn cli_fixture(sid: &str) -> String {
+        let node = |uuid: &str, parent: Option<&str>, kind: &str, extra: serde_json::Value| {
+            let mut o = serde_json::json!({
+                "parentUuid": parent, "isSidechain": false, "type": kind, "uuid": uuid,
+                "timestamp": "t", "userType": "external", "cwd": "/private/tmp/x",
+                "sessionId": sid, "version": cli_session::MEASURED_VERSION, "gitBranch": "main"
+            });
+            for (k, v) in extra.as_object().unwrap() {
+                o[k] = v.clone();
+            }
+            o.to_string()
+        };
+        [
+            node("u1", None, "user", serde_json::json!({"message": {"role": "user", "content": "first"}})),
+            node("s1", Some("u1"), "assistant", serde_json::json!({"message": {"id": "msg_1", "role": "assistant", "content": [{"type": "text", "text": "one"}]}})),
+            serde_json::json!({"type": "last-prompt", "lastPrompt": "first", "leafUuid": "s1", "sessionId": sid}).to_string(),
+        ]
+        .join("\n")
+            + "\n"
+    }
+
+    /// The sequence `edit_message("save")` runs on this engine, minus the
+    /// Tauri `State`: the CLI file is copied with the new text under a new
+    /// id, the log gets its marker and the new handle, and the original
+    /// file is byte-identical afterwards. Then the sequence `rewind` runs.
+    #[test]
+    fn an_edit_on_claude_code_records_a_new_agent_session_and_leaves_the_old_file_alone() {
+        let dir = empty_log_dir("cli-edit");
+        let projects = dir.join("projects");
+        let cwd = Path::new("/private/tmp/x");
+        let folder = projects.join(cli_session::project_folder(cwd));
+        std::fs::create_dir_all(&folder).unwrap();
+        let sid = "aaaaaaaa-0000-0000-0000-000000000001";
+        let original = folder.join(format!("{sid}.jsonl"));
+        std::fs::write(&original, cli_fixture(sid)).unwrap();
+        let before = std::fs::read(&original).unwrap();
+
+        let mut session = Session::with_log(&dir).unwrap();
+        session.record_user("first");
+        session.record_assistant(
+            "claude-haiku-4-5",
+            vec![nightloom_core::ContentBlock::Text { text: "one".into() }],
+            Some("end_turn".into()),
+            nightloom_core::Usage::default(),
+        );
+        session.record_agent_session(AGENT, sid);
+
+        // edit_message("save") on the user turn.
+        let target = cli_target(&session, 1).unwrap();
+        assert_eq!(
+            target,
+            Target::User {
+                from_last: 0,
+                text: "first".into()
+            }
+        );
+        let CliChange::Resume(new_id) = edit_cli_file(&projects, cwd, sid, |cli| {
+            cli.rewrite(&target, "first, edited").map(Some)
+        })
+        .unwrap() else {
+            panic!("a rewrite is a copy");
+        };
+        session.edit(1, "first, edited").unwrap();
+        session.record_agent_session(AGENT, &new_id);
+
+        assert_ne!(new_id, sid);
+        assert_eq!(session.agent_session(), Some((AGENT, new_id.as_str())));
+        assert_eq!(session.messages()[0].text(), "first, edited");
+        assert_eq!(
+            std::fs::read(&original).unwrap(),
+            before,
+            "the original changed"
+        );
+        let copy = std::fs::read_to_string(folder.join(format!("{new_id}.jsonl"))).unwrap();
+        assert!(copy.contains("first, edited"));
+        assert!(!copy.contains(sid));
+        assert_eq!(files_in(&folder).len(), 2);
+
+        // The assistant reply is addressed by the turn it answers and its text.
+        assert_eq!(
+            cli_target(&session, 2).unwrap(),
+            Target::Assistant {
+                from_last: 0,
+                text: "one".into()
+            }
+        );
+
+        // rewind(1): a cut before the only turn leaves the CLI nothing to
+        // resume, so no copy is written and the agent lets go of the id.
+        let from_last = turns_after(&session, 1).unwrap();
+        assert!(matches!(
+            edit_cli_file(&projects, cwd, &new_id, |cli| cli.truncate(from_last)).unwrap(),
+            CliChange::Fresh
+        ));
+        assert_eq!(std::fs::read(&original).unwrap(), before);
+        assert_eq!(
+            files_in(&folder).len(),
+            2,
+            "no copy for a cut that leaves nothing"
+        );
+
+        // A chat with no CLI session behind it edits by marker alone.
+        let mut plain = Session::new();
+        plain.record_user("q");
+        assert!(matches!(
+            edit_on_cli(&plain, cwd, |cli| cli.truncate(0)).unwrap(),
+            CliChange::Untouched
+        ));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `turns_after` counts live user turns past the one an event belongs
+    /// to, which is the address a CLI node is found by.
+    #[test]
+    fn turns_after_counts_from_the_newest_live_turn() {
+        let mut s = Session::new();
+        s.record_user("a"); // 1
+        s.record_assistant("m", vec![], None, nightloom_core::Usage::default()); // 2
+        s.record_user("b"); // 3
+        s.record_user("c"); // 4
+        assert_eq!(turns_after(&s, 1).unwrap(), 2);
+        assert_eq!(
+            turns_after(&s, 2).unwrap(),
+            2,
+            "the reply belongs to turn a"
+        );
+        assert_eq!(turns_after(&s, 3).unwrap(), 1);
+        assert_eq!(turns_after(&s, 4).unwrap(), 0);
+        assert!(turns_after(&s, 0).is_err(), "the creation line is no turn");
+        s.rewind(4).unwrap();
+        assert_eq!(
+            turns_after(&s, 1).unwrap(),
+            1,
+            "a rewound turn no longer counts"
+        );
     }
 }

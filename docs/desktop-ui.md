@@ -822,6 +822,60 @@ chain, and a chat reopened already cold is a state, not a crossing. `cacheState`
 and `cacheClause` ("the cache is warm for 41 min" / "the cache is cold") are
 exported for the edit controls (backlog 062).
 
+### Editing past turns (nightshift backlog 062, 2026-09-15)
+
+Hover a user or assistant turn in the transcript and three controls appear
+where Rewind alone used to: **Rewind to here** (user turns), **Edit** (a user
+turn, or an assistant reply that calls no tool), **Remove** (either). They
+are offered on **both engines** now — on Claude Code they used to be hidden,
+because nothing projected; each of them now rewrites the CLI's history by
+copy and the next turn resumes the copy ([service-agent.md](service-agent.md)
+"Editing the CLI's history, by copy"), which the controls' title says.
+
+**Edit** opens the turn's text in place, in a textarea in the message's own
+face and width, with one line from the cache timer above the buttons —
+"cache warm · 41 min — this re-writes the history after this turn" or "cache
+cold — edit freely" (`editLine` in `src/lib/edit.ts`, read once when the
+editor opens: it is advice about the edit being typed, not a clock) — and
+the buttons:
+
+- **Send** (user turns only): his "edit and send" — a fork of the chat cut
+  before this turn, opened as the chat, and the text sent as its next turn
+  with the original turn's attachments (the words changed, the file did
+  not). The parent stays in the list, untouched; the fork's sidebar row
+  carries "from <parent's name>" in its meta line (`forkLine`), or "from a
+  deleted chat" when the parent is gone. On the API engine the fork's log
+  projects the copied prefix as today; on Claude Code the CLI's file is
+  copied cut before the turn.
+- **Save**: his "edit and save" — the turn reworded in this chat, from here
+  on, by an `edit` marker on the log; the turn shows an `edited` mark and
+  "the original" unfolds under it, greyed. Live only when the text changed
+  and is not blank (`editButtons`); blank is what Remove is for.
+- **Cancel**, and Escape. Enter is a newline in the editor — an edit is
+  usually to a long paste — ⌘/Ctrl-Enter saves, ⌘/Ctrl-Shift-Enter sends.
+  One turn is open at a time (`editReduce`); a turn starting to stream
+  closes it.
+
+**Remove** asks nothing: it is the same `elide` marker the context panel
+records, and the transcript now draws a removed turn as its placeholder
+("removed from the context — still in the log"), greyed, with "what was
+removed" a click away; an assistant reply keeps its tool-call chips. It is
+restorable from the context panel on the API engine, and by backlog 064's
+undo once that exists; on Claude Code the context panel itemizes the
+preamble alone, so until 064 a removal there stands. A reply with a tool
+call has Remove and no Edit, on the core's argument
+([core.md](core.md) "Edit").
+
+The transcript's projections for all this — `editTexts`, `elideFlags`,
+`isEditable` in `edit.ts` — mirror `Session::edit_texts`, `elide_flags` and
+`is_editable` exactly, and join `liveFlags` in the list of frontend
+projections that must stay in step with the backend
+([desktop.md](desktop.md)): the transcript is drawn from these and the
+request from the core's, and a disagreement would be a user reading a
+conversation the model is not having. Every one of the three commands
+returns the transcript, and `send`/`fork` the fork's id, so the UI re-syncs
+from the log rather than patching its own copy — `rewind`'s contract.
+
 ### Attachments
 
 `Composer.svelte` takes images and PDFs by paste and drop, reads them to base64

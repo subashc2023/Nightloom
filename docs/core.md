@@ -161,6 +161,10 @@ Append-only event log (`SessionEvent`), persisted as JSONL. **The event log is
 the source of truth**; the provider message list (`Session::messages()`) and any
 UI rendering are projections of it.
 
+Four markers supersede without mutating — `Rewind`, `Compaction`, `Elide` /
+`Unelide`, and since 2026-09-15 `Edit` — and one line can name a lineage
+(`SessionCreated.forked_from`); all under "Markers over mutations" below.
+
 Tool results are recorded as individual `SessionEvent::ToolResult` events; the
 projection coalesces consecutive ones into the single user message providers
 expect. `SessionEvent::Compaction { summary }` supersedes everything before it —
@@ -293,6 +297,52 @@ What it does **not** do is refund the cache: changing bytes mid-conversation
 invalidates every cached prefix past that point, so the next turn pays full price
 for the remainder. Usually a good trade against a 40k-token tool result, but a
 cost, and both shells say so at the moment of removing.
+
+### Edit (`SessionEvent::Edit { target, text }`, `Session::edit`, `is_editable`, `edit_texts()`, 2026-09-15)
+
+His "edit and save" (nightshift backlog 062): the turn at `target` says
+`text` from here on, in this chat. A **marker on exactly `Elide`'s terms** —
+the original stays in the log for a UI to unfold, the latest live marker on
+an index wins, and a rewind that supersedes the marker puts the original
+back on the wire — and content replacement only, never structural: a user
+message keeps its attachments, an assistant reply keeps its thinking (signed
+as it is; the API ignores earlier turns' thinking and was measured to accept
+a reply whose text changed under a kept thinking block), and the first text
+block takes the new text with any further text block going. `is_editable`
+refuses a reply that carries a `tool_use` — the call was made *because of*
+the text beside it, and a history where the reasoning changed and the call
+did not is one no provider was asked to accept — and refuses a tool result
+outright; removal (`Elide`) is the answer for both, since it swaps content
+and keeps structure. Blank text is refused (an empty text block is rejected
+on the wire; removal is what "say nothing here" means), and so is a target
+currently elided: elision outranks the edit in the projection, so editing
+under the marker would record something invisible.
+
+Costs what an elision costs: the cached prefix past the target is gone on
+the next request. The desktop says so beside the editor, from the cache
+timer.
+
+### Forks (`Session::fork_from(dir, upto)`, `SessionEvent::SessionCreated.forked_from`, `ForkedFrom`, 2026-09-15)
+
+His "edit and send": a new log that begins as this one did, up to and not
+including event `upto`, whose creation line carries `forked_from: {session,
+index}` — the parent's id and the parent's own numbering of the first event
+the fork does not have. On the creation line and not an event of its own
+for the reason the mode is: decided at birth, never changed, and a listing
+wants it before it reads a second byte. Absent on every log that is not a
+fork, so nothing else changes shape.
+
+The fork carries the parent's **live events only, renumbered**: rewound
+turns are not part of the conversation the fork continues, and the markers
+that address by index — `Elide`, `Unelide`, `Edit` — are re-aimed at the
+copied positions, or dropped when everything they named is past the cut.
+Not copied: the `Title` (the fork is named from what it becomes; the
+listing's "from" line carries the lineage), and any `AgentSession` handle
+(the agent history it names runs past the cut; the shell that forks on that
+engine records the fork's own). `upto` must be a live user message, on
+`rewind`'s argument. The mode is inherited — an incognito fork is incognito,
+and an ephemeral parent forks to another chat with no log. The parent is
+never touched: it keeps the turn being replaced and everything after it.
 
 ## Recorded, never re-derived
 

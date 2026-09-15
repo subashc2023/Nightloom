@@ -684,6 +684,14 @@ export being a zip that arrived by email.
 (by id or prefix). `SessionSummary::label` is title-or-opening-message, so two
 shells listing the same directory cannot disagree about what a chat is called.
 
+A fork (`Session::fork_from`, [core.md](core.md) "Forks") lists as a chat of
+its own with `SessionSummary::forked_from` — the parent's id and the cut,
+read off the creation line like the mode, through the cache too
+(`LISTING_VERSION` 3) — so a picker can say "from <parent>"; the parent's
+name is the parent's row's business, and a parent since deleted is said,
+not hidden. Its `user_turns` count the copied turns, since they are the
+fork's conversation too.
+
 `search` is case-insensitive substring over **the conversation only** — user
 messages, assistant text and the title, never tool results. A tool result is
 whatever a file happened to contain, so including them returns every session that

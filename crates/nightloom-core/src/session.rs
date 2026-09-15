@@ -97,6 +97,20 @@ impl ChatMode {
     }
 }
 
+/// Where a forked chat came from: the parent's id and the position in the
+/// parent's log the fork was cut at (2026-09-15, nightshift backlog 062).
+///
+/// On the creation line rather than an event of its own, for the reason
+/// [`ChatMode`] is: it is decided at birth and never changes, and a
+/// listing wants it before it reads a second byte. `index` is the parent's
+/// own numbering — the first event the fork does *not* carry — so a reader
+/// with both logs open can find the cut without diffing them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForkedFrom {
+    pub session: String,
+    pub index: usize,
+}
+
 /// One entry in a session's append-only event log.
 ///
 /// The log is the source of truth; the message list sent to a provider and
@@ -115,6 +129,11 @@ pub enum SessionEvent {
         /// and not on an event of its own.
         #[serde(default, skip_serializing_if = "ChatMode::is_normal")]
         mode: ChatMode,
+        /// The chat this one was forked from, when it was
+        /// ([`Session::fork_from`]). Absent on every log that is not a
+        /// fork, like `mode` on a normal one, so nothing else changes shape.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        forked_from: Option<ForkedFrom>,
     },
     UserMessage {
         text: String,
@@ -332,6 +351,31 @@ pub enum SessionEvent {
     /// and the log has held the content the whole time.
     Unelide {
         targets: Vec<usize>,
+        at: DateTime<Utc>,
+    },
+    /// The event at `target` says `text` from here on: the projection
+    /// carries the new text in place of the old, and the log keeps both
+    /// (2026-09-15, nightshift backlog 062 — his "edit and save").
+    ///
+    /// A marker rather than a rewrite, on exactly [`SessionEvent::Elide`]'s
+    /// terms: the original stays on disk for a UI to unfold, the latest
+    /// live marker on an index wins, and a rewind that supersedes this
+    /// event puts the original back on the wire. It is content
+    /// replacement and never structural: a user message keeps its
+    /// attachments and an assistant reply keeps its thinking, and the
+    /// target is refused outright when it carries a `tool_use` or is a
+    /// tool result ([`Session::is_editable`]), because a call whose text
+    /// changed under it is a history nobody measured and a result is not
+    /// the user's to reword.
+    ///
+    /// Elision outranks it in the projection: a removed turn stays removed
+    /// however it was edited before, and editing a removed turn is refused
+    /// rather than quietly restoring it.
+    Edit {
+        /// Index into the event log. Always live, and always an event
+        /// [`Session::is_editable`] accepts.
+        target: usize,
+        text: String,
         at: DateTime<Utc>,
     },
     /// A log entry this build cannot read: an event written by a newer
@@ -594,6 +638,46 @@ fn elide_assistant(blocks: &[ContentBlock], index: usize) -> Vec<SourcedBlock> {
     out
 }
 
+/// An edited assistant message: its text blocks become one block of the
+/// new text, at the position of the first; everything else stays verbatim.
+///
+/// Thinking is kept, signature and all, because it was signed as it is and
+/// a reply's text changing does not change what the model thought first;
+/// the API ignores earlier turns' thinking anyway. There is never a
+/// `ToolUse` here — [`Session::is_editable`] refuses a reply that has one —
+/// so the only blocks besides text are reasoning, and reasoning keeps its
+/// place. A reply with no text block at all gets the new text appended,
+/// so an edit can never produce an empty message.
+fn edit_assistant(blocks: &[ContentBlock], text: &str, index: usize) -> Vec<SourcedBlock> {
+    let mut out: Vec<SourcedBlock> = Vec::new();
+    let mut placed = false;
+    for b in blocks {
+        match b {
+            ContentBlock::Text { .. } => {
+                if !placed {
+                    out.push(SourcedBlock::event(
+                        ContentBlock::Text {
+                            text: text.to_string(),
+                        },
+                        index,
+                    ));
+                    placed = true;
+                }
+            }
+            other => out.push(SourcedBlock::event(other.clone(), index)),
+        }
+    }
+    if !placed {
+        out.push(SourcedBlock::event(
+            ContentBlock::Text {
+                text: text.to_string(),
+            },
+            index,
+        ));
+    }
+    out
+}
+
 fn n_plural(n: usize) -> &'static str {
     if n == 1 { "" } else { "s" }
 }
@@ -766,6 +850,18 @@ impl Session {
     /// The one constructor behind the four above: record the creation
     /// event and nothing else.
     fn create(id: String, at: DateTime<Utc>, log: Option<JsonlLog>, mode: ChatMode) -> Self {
+        Self::create_from(id, at, log, mode, None)
+    }
+
+    /// [`create`](Self::create) with the fork line filled in, which only
+    /// [`fork_from`](Self::fork_from) has a reason to do.
+    fn create_from(
+        id: String,
+        at: DateTime<Utc>,
+        log: Option<JsonlLog>,
+        mode: ChatMode,
+        forked_from: Option<ForkedFrom>,
+    ) -> Self {
         let mut s = Self {
             id: id.clone(),
             events: Vec::new(),
@@ -773,8 +869,129 @@ impl Session {
             load_report: LoadReport::default(),
             write_failure: None,
         };
-        s.record(SessionEvent::SessionCreated { id, at, mode });
+        s.record(SessionEvent::SessionCreated {
+            id,
+            at,
+            mode,
+            forked_from,
+        });
         s
+    }
+
+    /// A new session that begins as this one did, up to and not including
+    /// event `upto` (2026-09-15, nightshift backlog 062 — his "edit and
+    /// send"): the parent's *live* events before the cut, copied into a
+    /// fresh log whose creation line names the parent and the cut
+    /// ([`ForkedFrom`]). The parent is not touched, which is the whole
+    /// point — it keeps the turn being replaced and everything after it,
+    /// and the fork is where the replacement goes.
+    ///
+    /// Live events only, and the copy renumbers them. Rewound turns are
+    /// not part of the conversation the fork continues, so carrying them
+    /// would carry text the model was not going to see; and the markers
+    /// that address by index — `Elide`, `Unelide`, `Edit` — are re-aimed
+    /// at the copied positions, dropped when everything they named is past
+    /// the cut. The parent's `AgentSession` handles are not copied: the
+    /// agent's history they name runs past the cut, and the shell that
+    /// forks on that engine records the fork's own handle. Neither is the
+    /// `Title` — the fork is named from what it becomes, and the listing's
+    /// "from" line carries the lineage.
+    ///
+    /// `upto` must be a live user message, on [`Session::rewind`]'s
+    /// argument: it is the one position where the preceding exchange is
+    /// always complete. The mode is inherited — a fork of an incognito
+    /// chat is incognito, and a fork of an ephemeral chat is another log
+    /// that does not exist.
+    pub fn fork_from(&self, dir: impl AsRef<Path>, upto: usize) -> io::Result<Self> {
+        let live = self.live_flags();
+        match self.events.get(upto) {
+            Some(SessionEvent::UserMessage { .. }) if live[upto] => {}
+            Some(SessionEvent::UserMessage { .. }) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("event {upto} was already rewound away"),
+                ));
+            }
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "event {upto} is not a user message; a fork cuts at the start of a turn"
+                    ),
+                ));
+            }
+        }
+        let mode = self.mode();
+        let id = uuid::Uuid::new_v4().to_string();
+        let log = match mode {
+            ChatMode::Ephemeral => None,
+            _ => Some(JsonlLog::create(dir.as_ref().join(format!("{id}.jsonl")))?),
+        };
+        let mut fork = Self::create_from(
+            id,
+            Utc::now(),
+            log,
+            mode,
+            Some(ForkedFrom {
+                session: self.id.clone(),
+                index: upto,
+            }),
+        );
+        // Old index → new index, for the markers that carry one.
+        let mut renumber: BTreeMap<usize, usize> = BTreeMap::new();
+        for (i, e) in self.events.iter().enumerate().take(upto) {
+            if !live[i] {
+                continue;
+            }
+            let copied = match e {
+                SessionEvent::SessionCreated { .. }
+                | SessionEvent::AgentSession { .. }
+                | SessionEvent::Title { .. }
+                | SessionEvent::Rewind { .. }
+                | SessionEvent::Unknown => continue,
+                SessionEvent::Elide { targets, at } => {
+                    let targets: Vec<usize> = targets
+                        .iter()
+                        .filter_map(|t| renumber.get(t).copied())
+                        .collect();
+                    if targets.is_empty() {
+                        continue;
+                    }
+                    SessionEvent::Elide { targets, at: *at }
+                }
+                SessionEvent::Unelide { targets, at } => {
+                    let targets: Vec<usize> = targets
+                        .iter()
+                        .filter_map(|t| renumber.get(t).copied())
+                        .collect();
+                    if targets.is_empty() {
+                        continue;
+                    }
+                    SessionEvent::Unelide { targets, at: *at }
+                }
+                SessionEvent::Edit { target, text, at } => match renumber.get(target) {
+                    Some(target) => SessionEvent::Edit {
+                        target: *target,
+                        text: text.clone(),
+                        at: *at,
+                    },
+                    None => continue,
+                },
+                other => other.clone(),
+            };
+            renumber.insert(i, fork.events.len());
+            fork.record(copied);
+        }
+        Ok(fork)
+    }
+
+    /// Where this chat was forked from, if it was — read off the creation
+    /// line like [`mode`](Self::mode), and for the same reason.
+    pub fn forked_from(&self) -> Option<&ForkedFrom> {
+        self.events.iter().find_map(|e| match e {
+            SessionEvent::SessionCreated { forked_from, .. } => forked_from.as_ref(),
+            _ => None,
+        })
     }
 
     /// The same log under an id and a creation time the *caller* supplies.
@@ -1364,6 +1581,88 @@ impl Session {
         Ok(n)
     }
 
+    /// What each event says now: the text of the latest live
+    /// [`SessionEvent::Edit`] aimed at it, or `None` where it says what it
+    /// always said.
+    ///
+    /// Live markers only, like [`elide_flags`](Self::elide_flags) and for
+    /// the same reason: a rewind past an edit restores the original for
+    /// free.
+    pub fn edit_texts(&self) -> Vec<Option<&str>> {
+        let live = self.live_flags();
+        let mut texts = vec![None; self.events.len()];
+        for (i, e) in self.events.iter().enumerate() {
+            if !live[i] {
+                continue;
+            }
+            if let SessionEvent::Edit { target, text, .. } = e
+                && let Some(slot) = texts.get_mut(*target)
+            {
+                *slot = Some(text.as_str());
+            }
+        }
+        texts
+    }
+
+    /// Whether the event at `index` is one whose text the user may reword:
+    /// a user message, or an assistant reply that calls no tool.
+    ///
+    /// A reply with a `tool_use` in it is refused, not trimmed around: the
+    /// call was made *because of* the text beside it, and a history where
+    /// the reasoning changed and the call did not is one no provider was
+    /// asked to accept. A tool result is not the user's to reword at all.
+    /// Removal is the answer for both — [`is_elidable`](Self::is_elidable)
+    /// keeps the structure and swaps the content, which is the only safe
+    /// thing to do to a call.
+    pub fn is_editable(&self, index: usize) -> bool {
+        match self.events.get(index) {
+            Some(SessionEvent::UserMessage { .. }) => true,
+            Some(SessionEvent::AssistantMessage { blocks, .. }) => !blocks
+                .iter()
+                .any(|b| matches!(b, ContentBlock::ToolUse { .. })),
+            _ => false,
+        }
+    }
+
+    /// Record that `target` says `text` from here on.
+    ///
+    /// Nothing is deleted and no cost is refunded, on [`elide`](Self::elide)'s
+    /// terms; what changes is the next request, and every cached prefix
+    /// past the target with it. Blank text is refused — an empty text
+    /// block is rejected on the wire, and "say nothing here" is what
+    /// removal is for. A target that is currently removed is refused too,
+    /// rather than edited underneath the marker: restore it first.
+    pub fn edit(&mut self, target: usize, text: impl Into<String>) -> Result<(), String> {
+        let text = text.into();
+        if text.trim().is_empty() {
+            return Err("an edit cannot be empty; remove the turn instead".into());
+        }
+        let live = self.live_flags();
+        match self.events.get(target) {
+            None => return Err(format!("no event at {target}")),
+            Some(_) if !self.is_editable(target) => {
+                return Err(format!(
+                    "event {target} cannot be edited; only user messages and assistant replies without tool calls can, and a turn with a tool call can be removed instead"
+                ));
+            }
+            Some(_) => {}
+        }
+        if !live[target] {
+            return Err(format!("event {target} was already rewound away"));
+        }
+        if self.elide_flags()[target] {
+            return Err(format!(
+                "event {target} is removed from the context; restore it before editing it"
+            ));
+        }
+        self.record(SessionEvent::Edit {
+            target,
+            text,
+            at: Utc::now(),
+        });
+        Ok(())
+    }
+
     /// The current task list: the most recent `TodoState`, or empty. A
     /// compaction clears it — the summary supersedes the plan that produced
     /// it, and a stale list would outlive the work it described.
@@ -1562,6 +1861,7 @@ impl Session {
 
     fn project_sourced(&self) -> Vec<SourcedMessage> {
         let elided = self.elide_flags();
+        let edited = self.edit_texts();
         let mut messages: Vec<SourcedMessage> = Vec::new();
         for (i, e) in self.live_events() {
             match e {
@@ -1571,6 +1871,10 @@ impl Session {
                     documents,
                     ..
                 } => {
+                    // The edited text stands in for the original everywhere
+                    // below, size estimate included: the marker describes
+                    // what the wire would have carried.
+                    let text = edited[i].unwrap_or(text.as_str());
                     let content = if elided[i] {
                         vec![SourcedBlock::event(
                             ContentBlock::Text {
@@ -1612,7 +1916,9 @@ impl Session {
                         // real turn.
                         if !text.is_empty() || content.is_empty() {
                             content.push(SourcedBlock::event(
-                                ContentBlock::Text { text: text.clone() },
+                                ContentBlock::Text {
+                                    text: text.to_string(),
+                                },
                                 i,
                             ));
                         }
@@ -1626,6 +1932,8 @@ impl Session {
                 SessionEvent::AssistantMessage { blocks, .. } => {
                     let content = if elided[i] {
                         elide_assistant(blocks, i)
+                    } else if let Some(text) = edited[i] {
+                        edit_assistant(blocks, text, i)
                     } else {
                         blocks
                             .iter()
@@ -3378,5 +3686,235 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    // ---- Edit markers and forks (nightshift backlog 062, 2026-09-15) ----
+
+    /// Two plain exchanges: user (1), reply (2), user (3), reply (4).
+    fn two_exchanges() -> Session {
+        let mut s = Session::new();
+        s.record_user("paste of a long essay");
+        s.record_assistant(
+            "test-model",
+            vec![
+                ContentBlock::Thinking {
+                    text: "reading it".into(),
+                    signature: Some("sig".into()),
+                },
+                ContentBlock::Text {
+                    text: "three suggestions".into(),
+                },
+            ],
+            Some("end_turn".into()),
+            Usage::default(),
+        );
+        s.record_user("apply the second");
+        s.record_assistant(
+            "test-model",
+            vec![ContentBlock::Text {
+                text: "done".into(),
+            }],
+            Some("end_turn".into()),
+            Usage::default(),
+        );
+        s
+    }
+
+    /// An edit projects the new text, keeps the original in the log, and
+    /// the latest live marker wins; a rewind past it restores the original.
+    #[test]
+    fn an_edit_projects_the_new_text_and_keeps_the_old() {
+        let mut s = two_exchanges();
+        s.edit(1, "the essay, shorter").unwrap();
+        assert_eq!(s.messages()[0].text(), "the essay, shorter");
+        assert!(matches!(
+            &s.events()[1],
+            SessionEvent::UserMessage { text, .. } if text == "paste of a long essay"
+        ));
+        assert_eq!(s.edit_texts()[1], Some("the essay, shorter"));
+
+        // The assistant reply: text swapped, thinking kept verbatim.
+        s.edit(2, "two suggestions").unwrap();
+        let reply = &s.messages()[1];
+        assert_eq!(reply.content.len(), 2);
+        assert!(matches!(
+            &reply.content[0],
+            ContentBlock::Thinking { text, signature: Some(sig) } if text == "reading it" && sig == "sig"
+        ));
+        assert_eq!(reply.text(), "two suggestions");
+
+        // Twice: the later one wins.
+        s.edit(1, "the essay, shortest").unwrap();
+        assert_eq!(s.messages()[0].text(), "the essay, shortest");
+
+        // The marker round-trips.
+        let line = serde_json::to_string(s.events().last().unwrap()).unwrap();
+        assert!(line.contains(r#""event":"edit""#), "{line}");
+        assert!(line.contains(r#""target":1"#), "{line}");
+        let again: SessionEvent = serde_json::from_str(&line).unwrap();
+        assert!(matches!(again, SessionEvent::Edit { target: 1, .. }));
+
+        // A rewind to the second turn supersedes every marker recorded
+        // after it — all three — so the originals are back.
+        s.rewind(3).unwrap();
+        assert_eq!(s.messages()[0].text(), "paste of a long essay");
+        assert_eq!(s.messages()[1].text(), "three suggestions");
+        assert!(s.edit_texts().iter().all(Option::is_none));
+    }
+
+    /// Refusals: a tool call, a tool result, a rewound turn, a removed
+    /// turn, blank text. Elision outranks an edit in the projection.
+    #[test]
+    fn edits_refuse_tool_turns_and_removed_turns() {
+        let mut s = tool_round_session();
+        assert!(!s.is_editable(2), "a reply with a tool call");
+        assert!(!s.is_editable(3), "a tool result");
+        assert!(s.is_editable(1) && s.is_editable(4));
+        let err = s.edit(2, "different reasoning").unwrap_err();
+        assert!(err.contains("removed instead"), "{err}");
+        assert!(s.edit(3, "a result").is_err());
+        assert!(s.edit(1, "   ").unwrap_err().contains("cannot be empty"));
+        assert!(s.edit(99, "x").is_err());
+
+        // Removed: refused, and an earlier edit does not show through.
+        s.edit(4, "it says y").unwrap();
+        s.elide([4]).unwrap();
+        assert!(s.edit(4, "again").unwrap_err().contains("restore it"));
+        assert!(s.messages()[3].text().contains("removed from the context"));
+        s.unelide([4]).unwrap();
+        assert_eq!(s.messages()[3].text(), "it says y");
+
+        // Rewound away.
+        s.rewind(1).unwrap();
+        assert!(s.edit(1, "x").unwrap_err().contains("rewound"));
+    }
+
+    /// A fork carries the parent's live events before the cut, renumbered,
+    /// with the markers re-aimed; the creation line names the parent; the
+    /// parent is untouched.
+    #[test]
+    fn a_fork_copies_live_events_only_and_names_its_parent() {
+        let dir = std::env::temp_dir().join(format!("nightloom-fork-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut parent = Session::with_log(&dir).unwrap();
+        // 1 user, 2 reply, 3 user, 4 reply, 5 rewind(3), 6 user, 7 reply,
+        // 8 edit(1), 9 elide(2), 10 title, 11 agent session, 12 user.
+        parent.record_user("first");
+        parent.record_assistant(
+            "m",
+            vec![ContentBlock::Text {
+                text: "reply one".into(),
+            }],
+            None,
+            Usage::default(),
+        );
+        parent.record_user("a wrong turn");
+        parent.record_assistant(
+            "m",
+            vec![ContentBlock::Text {
+                text: "reply to it".into(),
+            }],
+            None,
+            Usage::default(),
+        );
+        parent.rewind(3).unwrap();
+        parent.record_user("second");
+        parent.record_assistant(
+            "m",
+            vec![ContentBlock::Text {
+                text: "reply two".into(),
+            }],
+            None,
+            Usage::default(),
+        );
+        parent.edit(1, "first, edited").unwrap();
+        parent.elide([2]).unwrap();
+        parent.record_title("The parent");
+        parent.record_agent_session("claude-code", "cli-1");
+        parent.record_user("third, to be replaced");
+        let parent_bytes = std::fs::read(parent.log_path().unwrap()).unwrap();
+        assert_eq!(parent.events().len(), 13);
+
+        let fork = parent.fork_from(&dir, 12).unwrap();
+        assert_ne!(fork.id, parent.id);
+        assert_eq!(
+            fork.forked_from(),
+            Some(&ForkedFrom {
+                session: parent.id.clone(),
+                index: 12
+            })
+        );
+        assert_eq!(fork.mode(), ChatMode::Normal);
+        // creation, user, reply, user, reply, edit, elide — no rewind, no
+        // rewound turn, no title, no agent handle, nothing from the cut on.
+        assert_eq!(fork.events().len(), 7);
+        assert!(fork.title().is_none());
+        assert!(fork.agent_session().is_none());
+        assert!(matches!(
+            &fork.events()[5],
+            SessionEvent::Edit { target: 1, .. }
+        ));
+        assert!(
+            matches!(&fork.events()[6], SessionEvent::Elide { targets, .. } if targets == &[2])
+        );
+        let msgs = fork.messages();
+        assert_eq!(msgs.len(), 4);
+        assert_eq!(msgs[0].text(), "first, edited");
+        assert!(msgs[1].text().contains("removed from the context"));
+        assert_eq!(msgs[2].text(), "second");
+        assert_eq!(msgs[3].text(), "reply two");
+
+        // On disk: the first line carries the fork, the parent is byte-identical.
+        let text = std::fs::read_to_string(fork.log_path().unwrap()).unwrap();
+        let first: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+        assert_eq!(first["forked_from"]["session"], parent.id);
+        assert_eq!(first["forked_from"]["index"], 12);
+        assert_eq!(
+            std::fs::read(parent.log_path().unwrap()).unwrap(),
+            parent_bytes
+        );
+        let reloaded = Session::load(fork.log_path().unwrap()).unwrap();
+        assert_eq!(reloaded.forked_from().map(|f| f.index), Some(12));
+
+        // The cut must be a live user message.
+        assert!(parent.fork_from(&dir, 2).is_err(), "a reply");
+        assert!(parent.fork_from(&dir, 3).is_err(), "rewound away");
+        assert!(parent.fork_from(&dir, 99).is_err());
+        // A creation line written without a fork is unchanged in shape.
+        let plain = serde_json::to_string(&parent.events()[0]).unwrap();
+        assert!(!plain.contains("forked_from"), "{plain}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A fork inherits the mode: incognito stays incognito on disk, and an
+    /// ephemeral parent forks to another session with no log.
+    #[test]
+    fn a_fork_inherits_the_mode() {
+        let dir =
+            std::env::temp_dir().join(format!("nightloom-fork-mode-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut parent = Session::incognito(&dir).unwrap();
+        parent.record_user("q");
+        let fork = parent.fork_from(&dir, 1).unwrap();
+        assert_eq!(fork.mode(), ChatMode::Incognito);
+        assert!(fork.log_path().is_some());
+
+        let mut eph = Session::ephemeral();
+        eph.record_user("q");
+        let fork = eph.fork_from(&dir, 1).unwrap();
+        assert_eq!(fork.mode(), ChatMode::Ephemeral);
+        assert!(fork.log_path().is_none());
+        assert_eq!(
+            fork.forked_from().map(|f| f.session.as_str()),
+            Some(eph.id.as_str())
+        );
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            2,
+            "parent and the incognito fork only"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

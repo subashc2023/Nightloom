@@ -530,6 +530,17 @@ export interface SessionMeta {
   /** Absent for a normal chat; `incognito` marks the row. An ephemeral chat
    *  has no log and is never in a listing. */
   mode?: ChatMode;
+  /** The chat this one was forked from, when it was (nightshift backlog
+   *  062): the parent's id and the position in the parent's log the fork
+   *  was cut at. The row shows "from <parent>"; see `forkLine` in edit.ts. */
+  forked_from?: ForkedFrom;
+}
+
+/** Where a fork came from — the parent's id and the cut, as the creation
+ *  line carries them. */
+export interface ForkedFrom {
+  session: string;
+  index: number;
 }
 
 /** A session that matched a search. Flattened on the Rust side, so it is a
@@ -618,7 +629,7 @@ export type ContentBlock =
     };
 
 export type SessionEvent =
-  | { event: "session_created"; id: string; at: string; mode?: ChatMode }
+  | { event: "session_created"; id: string; at: string; mode?: ChatMode; forked_from?: ForkedFrom }
   // `images` and `documents` are absent, not empty, on messages logged
   // without any — including every message logged before attachments existed.
   | {
@@ -678,10 +689,17 @@ export type SessionEvent =
   | { event: "prompt_layers"; off: PromptLayer[]; edits?: PromptLayerEdits; at: string }
   // Content markers, not deletions: the listed events keep their place in the
   // conversation and project a stand-in instead of their payload. The log
-  // still holds the content, so the transcript renders these turns in full and
-  // only the context panel cares.
+  // still holds the content. ~~The transcript renders these turns in full
+  // and only the context panel cares~~ — since 2026-09-15 (backlog 062) the
+  // transcript draws a removed turn as its placeholder, greyed, with the
+  // original a click away (`elideFlags` in edit.ts).
   | { event: "elide"; targets: number[]; at: string }
   | { event: "unelide"; targets: number[]; at: string }
+  // The event at `target` says `text` from here on (nightshift backlog
+  // 062): a marker like `elide`, the original kept in the log for the
+  // transcript to unfold. The latest live one on an index wins; a rewind
+  // past it restores the original. See `editTexts` in edit.ts.
+  | { event: "edit"; target: number; text: string; at: string }
   | { event: "compaction"; summary: string; at: string }
   // A log entry the backend could not read: an event from a newer build, or a
   // line the disk damaged. It holds its index so that `rewind` and `elide`,
@@ -851,6 +869,18 @@ export interface PromptLayersInfo {
 }
 
 /** What `editContext` changed: both projections, plus how many items moved. */
+/**
+ * What `edit_message`, `remove_message` and `fork_session` return: the
+ * transcript of the chat now open and its id. `forked` says a fork was
+ * made — the id is then the fork's, and the caller sends the edited text
+ * as its next turn.
+ */
+export interface MessageEdit {
+  events: SessionEvent[];
+  session: string;
+  forked: boolean;
+}
+
 export interface ContextEdit {
   view: WireView;
   events: SessionEvent[];

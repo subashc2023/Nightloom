@@ -1,8 +1,27 @@
 <script lang="ts">
   import { relativeTime } from "./time";
   import { tick } from "svelte";
-  import { app, denialReason, liveFlags, rewindTo } from "./state.svelte";
+  import {
+    app,
+    denialReason,
+    liveFlags,
+    removeTurn,
+    rewindTo,
+    saveEdit,
+    sendEdit,
+  } from "./state.svelte";
   import type { Segment } from "./state.svelte";
+  import {
+    REMOVED_PLACEHOLDER,
+    editButtons,
+    editLine,
+    editReduce,
+    editTexts,
+    elideFlags,
+    isEditable,
+    type EditState,
+  } from "./edit";
+  import { cacheState } from "./cache";
   import type {
     ApprovalRequest,
     DocumentInput,
@@ -39,8 +58,20 @@
    * dropped. Superseded turns stay on screen, dimmed: the log keeps them so
    * you can see what you undid, and hiding them would make a rewind
    * indistinguishable from a delete.
+   *
+   * `original` is the text before an edit, when there was one, for the
+   * `edited` mark to unfold; `removed` marks a turn an `elide` hides, drawn
+   * as its placeholder, greyed, with the original a click away; `editable`
+   * is whether Edit is offered at all (a reply with a tool call is
+   * remove-only). All three come from `edit.ts`, which mirrors the core.
    */
-  type Item = Body & { index: number; superseded: boolean };
+  type Item = Body & {
+    index: number;
+    superseded: boolean;
+    original: string | null;
+    removed: boolean;
+    editable: boolean;
+  };
 
   // Project SessionEvents into renderable items. tool_result events are
   // consumed by lookup against tool_use blocks and never rendered standalone.
@@ -64,32 +95,60 @@
     }
     const out: Item[] = [];
     const live = liveFlags(app.events);
+    const edited = editTexts(app.events);
+    const removed = elideFlags(app.events);
     let index = -1;
-    const push = (body: Body) =>
-      out.push({ ...body, index, superseded: !live[index] });
+    const push = (body: Body, original: string | null = null) =>
+      out.push({
+        ...body,
+        index,
+        superseded: !live[index],
+        original,
+        removed: removed[index],
+        editable: isEditable(app.events, index),
+      });
     for (const e of app.events) {
       index++;
       if (e.event === "user_message") {
         // Sessions logged before attachments existed carry neither key.
-        push({
-          kind: "user",
-          text: e.text,
-          images: e.images ?? [],
-          documents: e.documents ?? [],
-          at: e.at,
-        });
+        const text = edited[index];
+        push(
+          {
+            kind: "user",
+            text: removed[index] ? REMOVED_PLACEHOLDER : (text ?? e.text),
+            images: removed[index] ? [] : (e.images ?? []),
+            documents: removed[index] ? [] : (e.documents ?? []),
+            at: e.at,
+          },
+          removed[index] ? (text ?? e.text) : text != null ? e.text : null,
+        );
       } else if (e.event === "assistant_message") {
         const segs: Segment[] = [];
+        // An edit stands in for the reply's text — the first text block
+        // takes it and any further text block goes, as the core projects
+        // it; a removal stands in for the text and the thinking, and
+        // keeps the calls, as the core's elision does.
+        const newText = removed[index] ? REMOVED_PLACEHOLDER : edited[index];
+        let placed = false;
+        const said: string[] = [];
         for (const b of e.blocks) {
           switch (b.type) {
             case "thinking":
+              if (removed[index]) break;
               segs.push({ kind: "thinking", text: b.text, done: true });
               break;
             case "redacted_thinking":
+              if (removed[index]) break;
               segs.push({ kind: "redacted" });
               break;
             case "text":
-              segs.push({ kind: "text", text: b.text });
+              said.push(b.text);
+              if (newText != null) {
+                if (!placed) segs.push({ kind: "text", text: newText });
+                placed = true;
+              } else {
+                segs.push({ kind: "text", text: b.text });
+              }
               break;
             case "tool_use": {
               const result = results.get(b.id) ?? null;
@@ -110,16 +169,20 @@
               break;
           }
         }
-        push({
-          kind: "assistant",
-          segs,
-          footer: {
-            model: e.model,
-            usage: e.usage,
-            stop_reason: e.stop_reason,
-            cost: e.cost,
+        if (newText != null && !placed) segs.unshift({ kind: "text", text: newText });
+        push(
+          {
+            kind: "assistant",
+            segs,
+            footer: {
+              model: e.model,
+              usage: e.usage,
+              stop_reason: e.stop_reason,
+              cost: e.cost,
+            },
           },
-        });
+          newText != null ? said.join("") : null,
+        );
       } else if (e.event === "compaction") {
         push({ kind: "compaction", summary: e.summary });
       }
@@ -140,6 +203,67 @@
       if (seg.kind === "tool") shown.add(seg.call.id);
     }
     return app.pendingApprovals.filter((r) => !shown.has(r.id));
+  });
+
+  // The in-place editor (nightshift backlog 062): one turn open at a time,
+  // its draft, and the cache line as it read when the editor opened — a
+  // fixed reading rather than a ticking one, since the sentence is advice
+  // about the edit being typed, not a clock.
+  let editing = $state<EditState>(null);
+  let editCacheLine = $state("");
+  let editorEl = $state<HTMLTextAreaElement | null>(null);
+  const onClaudeCode = $derived(app.connection?.engine === "claude-code");
+  const controlsTitle = $derived(
+    onClaudeCode
+      ? "The next turn resumes a rewritten copy of Claude Code's history; the original session file is kept."
+      : "",
+  );
+
+  function beginEdit(item: Item) {
+    const text = item.kind === "user" ? item.text : item.kind === "assistant" ? textOf(item.segs) : "";
+    editing = editReduce(editing, { type: "begin", index: item.index, text });
+    editCacheLine = editLine(cacheState(app.events, Date.now()));
+    void tick().then(() => {
+      editorEl?.focus();
+      autogrow();
+    });
+  }
+  function textOf(segs: Segment[]): string {
+    return segs
+      .filter((s) => s.kind === "text")
+      .map((s) => s.text)
+      .join("");
+  }
+  function autogrow() {
+    if (!editorEl) return;
+    editorEl.style.height = "auto";
+    editorEl.style.height = `${Math.min(editorEl.scrollHeight, 420)}px`;
+  }
+  async function commitSave() {
+    if (!editing || !editButtons(editing).save) return;
+    if (await saveEdit(editing.index, editing.draft)) editing = editReduce(editing, { type: "done" });
+  }
+  async function commitSend(item: Item) {
+    if (!editing || !editButtons(editing).send || item.kind !== "user") return;
+    const { index, draft } = editing;
+    editing = editReduce(editing, { type: "done" });
+    await sendEdit(index, draft, item.images, item.documents);
+  }
+  function editorKeys(e: KeyboardEvent, item: Item) {
+    // Enter is a newline here — an edit is usually to a long paste — and
+    // the modifier sends or saves: ⌘/Ctrl-Enter saves in place, ⌘/Ctrl-
+    // Shift-Enter sends into a fork, Escape cancels.
+    if (e.key === "Escape") {
+      e.preventDefault();
+      editing = editReduce(editing, { type: "cancel" });
+    } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      if (e.shiftKey) void commitSend(item);
+      else void commitSave();
+    }
+  }
+  $effect(() => {
+    if (app.busy) editing = editReduce(editing, { type: "busy" });
   });
 
   let viewport = $state<HTMLDivElement | null>(null);
@@ -220,46 +344,115 @@
   <div class="inner">
     {#each items as item, i (i)}
       {#if item.kind === "user"}
-        <div class="user-turn" class:superseded={item.superseded}>
+        <div class="user-turn" class:superseded={item.superseded} class:removed={item.removed}>
           <div class="user-key">
-            <!-- Not offered on the agent engine: the history the next turn
-                 replays is Claude Code's, so cutting this log would change what
-                 the window shows and nothing about the conversation. -->
-            {#if !item.superseded && !app.busy && app.connection?.engine !== "claude-code"}
-              <button
-                class="rewind"
-                title="Rewind to here: this turn and everything after it stop counting. Files written by tools are not reverted."
-                onclick={() => void rewindTo(item.index)}
-              >
-                Rewind to here
-              </button>
+            <!-- Offered on both engines since 2026-09-15 (backlog 062): on
+                 Claude Code each of these rewrites the CLI's history by copy
+                 and the next turn resumes the copy — the title says so. -->
+            {#if !item.superseded && !app.busy && editing?.index !== item.index}
+              <span class="turn-tools" title={controlsTitle}>
+                {#if !item.removed}
+                  <button
+                    class="tool-btn"
+                    title="Rewind to here: this turn and everything after it stop counting. Files written by tools are not reverted."
+                    onclick={() => void rewindTo(item.index)}
+                  >
+                    Rewind to here
+                  </button>
+                  {#if item.editable}
+                    <button
+                      class="tool-btn"
+                      title="Edit this message: Save keeps it here with the new text; Send starts a fork from here."
+                      onclick={() => beginEdit(item)}
+                    >
+                      Edit
+                    </button>
+                  {/if}
+                  <button
+                    class="tool-btn"
+                    title="Remove this message from the context. It stays in the log; the context panel restores it."
+                    onclick={() => void removeTurn(item.index)}
+                  >
+                    Remove
+                  </button>
+                {/if}
+              </span>
+            {/if}
+            {#if item.original !== null && !item.removed}
+              <span class="edited-mark" title="Edited; the original is below">edited</span>
             {/if}
             <span class="ns-k">You · {relativeTime(item.at)}</span>
           </div>
-          <div class="user-bubble">
-            {#if item.images.length > 0}
-              <div class="user-images">
-                {#each item.images as img, j (j)}
-                  <img
-                    class="user-image"
-                    src={`data:${img.media_type};base64,${img.data}`}
-                    alt="attachment"
-                  />
-                {/each}
+          {#if editing?.index === item.index}
+            <div class="editor">
+              <textarea
+                bind:this={editorEl}
+                value={editing.draft}
+                oninput={(e) => {
+                  editing = editReduce(editing, { type: "draft", text: (e.target as HTMLTextAreaElement).value });
+                  autogrow();
+                }}
+                onkeydown={(e) => editorKeys(e, item)}
+                aria-label="Edit this message"
+              ></textarea>
+              <div class="editor-line">{editCacheLine}</div>
+              <div class="editor-row">
+                <button
+                  class="ns-btn small"
+                  disabled={!editButtons(editing).send}
+                  title="Start a fork from here with this text as its next message; this chat stays as it is"
+                  onclick={() => void commitSend(item)}
+                >
+                  Send
+                </button>
+                <button
+                  class="ns-btn ghost small"
+                  disabled={!editButtons(editing).save}
+                  title="Keep this chat, with this message reworded from here on"
+                  onclick={() => void commitSave()}
+                >
+                  Save
+                </button>
+                <button
+                  class="ns-btn ghost small"
+                  onclick={() => (editing = editReduce(editing, { type: "cancel" }))}
+                >
+                  Cancel
+                </button>
               </div>
+            </div>
+          {:else}
+            <div class="user-bubble">
+              {#if item.images.length > 0}
+                <div class="user-images">
+                  {#each item.images as img, j (j)}
+                    <img
+                      class="user-image"
+                      src={`data:${img.media_type};base64,${img.data}`}
+                      alt="attachment"
+                    />
+                  {/each}
+                </div>
+              {/if}
+              {#if item.documents.length > 0}
+                <div class="user-files">
+                  {#each item.documents as doc, j (j)}
+                    <span class="user-file" title={doc.media_type}>
+                      <span class="user-file-ext">PDF</span>
+                      {doc.name}
+                    </span>
+                  {/each}
+                </div>
+              {/if}
+              {#if item.text}<div class="user-text">{item.text}</div>{/if}
+            </div>
+            {#if item.original !== null}
+              <details class="original">
+                <summary>{item.removed ? "what was removed" : "the original"}</summary>
+                <div class="original-text">{item.original}</div>
+              </details>
             {/if}
-            {#if item.documents.length > 0}
-              <div class="user-files">
-                {#each item.documents as doc, j (j)}
-                  <span class="user-file" title={doc.media_type}>
-                    <span class="user-file-ext">PDF</span>
-                    {doc.name}
-                  </span>
-                {/each}
-              </div>
-            {/if}
-            {#if item.text}<div class="user-text">{item.text}</div>{/if}
-          </div>
+          {/if}
         </div>
       {:else if item.kind === "compaction"}
         <details class="compaction" class:superseded={item.superseded}>
@@ -267,8 +460,69 @@
           <div class="compaction-body">{item.summary}</div>
         </details>
       {:else}
-        <div class:superseded={item.superseded}>
-          <AssistantMessage segs={item.segs} footer={item.footer} />
+        <div class="assistant-turn" class:superseded={item.superseded} class:removed={item.removed}>
+          {#if !item.superseded && !app.busy && !item.removed && editing?.index !== item.index}
+            <span class="turn-tools assistant-tools" title={controlsTitle}>
+              {#if item.editable}
+                <button
+                  class="tool-btn"
+                  title="Edit this reply in place; the original stays in the log"
+                  onclick={() => beginEdit(item)}
+                >
+                  Edit
+                </button>
+              {/if}
+              <button
+                class="tool-btn"
+                title="Remove this reply from the context. Its tool calls stay; it stays in the log."
+                onclick={() => void removeTurn(item.index)}
+              >
+                Remove
+              </button>
+            </span>
+          {/if}
+          {#if editing?.index === item.index}
+            <div class="editor">
+              <textarea
+                bind:this={editorEl}
+                value={editing.draft}
+                oninput={(e) => {
+                  editing = editReduce(editing, { type: "draft", text: (e.target as HTMLTextAreaElement).value });
+                  autogrow();
+                }}
+                onkeydown={(e) => editorKeys(e, item)}
+                aria-label="Edit this reply"
+              ></textarea>
+              <div class="editor-line">{editCacheLine}</div>
+              <div class="editor-row">
+                <button
+                  class="ns-btn small"
+                  disabled={!editButtons(editing).save}
+                  title="Keep this chat, with this reply reworded from here on"
+                  onclick={() => void commitSave()}
+                >
+                  Save
+                </button>
+                <button
+                  class="ns-btn ghost small"
+                  onclick={() => (editing = editReduce(editing, { type: "cancel" }))}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          {:else}
+            <AssistantMessage segs={item.segs} footer={item.footer} />
+            {#if item.original !== null}
+              <details class="original">
+                <summary>
+                  {#if !item.removed}<span class="edited-mark">edited</span>{/if}
+                  {item.removed ? "what was removed" : "the original"}
+                </summary>
+                <div class="original-text">{item.original}</div>
+              </details>
+            {/if}
+          {/if}
         </div>
       {/if}
     {/each}
@@ -332,8 +586,24 @@
     opacity: 0.38;
     filter: saturate(0.4);
   }
-  .rewind {
+  /* The hover controls on a turn — Rewind, Edit, Remove — shown on both
+     engines since 2026-09-15 (backlog 062). Hidden until hovered or
+     focused, as the Rewind button always was. */
+  .turn-tools {
+    display: inline-flex;
+    gap: 6px;
     opacity: 0;
+    transition: opacity 0.12s;
+  }
+  .user-turn:hover .turn-tools,
+  .assistant-turn:hover .turn-tools,
+  .turn-tools:focus-within {
+    opacity: 1;
+  }
+  .assistant-tools {
+    align-self: flex-start;
+  }
+  .tool-btn {
     background: none;
     border: 1px solid var(--line2);
     border-radius: 6px;
@@ -342,15 +612,88 @@
     font-size: 11.5px;
     padding: 2px 8px;
     cursor: pointer;
-    transition: opacity 0.12s;
   }
-  .user-turn:hover .rewind,
-  .rewind:focus-visible {
-    opacity: 1;
-  }
-  .rewind:hover {
+  .tool-btn:hover {
     color: var(--ink);
     border-color: var(--accent);
+  }
+  .assistant-turn {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .edited-mark {
+    font-family: var(--sans);
+    font-size: 11px;
+    color: var(--dim);
+    border: 1px solid var(--line2);
+    border-radius: 999px;
+    padding: 0 7px;
+  }
+  /* Removed from the context: the placeholder, greyed like a superseded
+     turn, with the original a click away. */
+  .removed .user-bubble,
+  .removed :global(.assistant) {
+    opacity: 0.45;
+    font-style: italic;
+  }
+  .original {
+    font-size: 0.78rem;
+    color: var(--dim);
+    max-width: 560px;
+  }
+  .original summary {
+    cursor: pointer;
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  }
+  .original-text {
+    margin-top: 0.3rem;
+    border: 1px dashed var(--border);
+    border-radius: 8px;
+    padding: 0.5rem 0.7rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+    opacity: 0.6;
+  }
+  /* The in-place editor: the message's own width and face, the cache line
+     from backlog 063 above the buttons. */
+  .editor {
+    width: 100%;
+    max-width: 560px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .assistant-turn .editor {
+    max-width: 640px;
+  }
+  .editor textarea {
+    width: 100%;
+    background: var(--sheet);
+    color: var(--ink);
+    border: 1px solid var(--accent);
+    border-radius: 10px;
+    padding: 10px 14px;
+    font-family: var(--transcript-font, var(--sans));
+    font-size: calc(var(--transcript-size, 16px) - 1px);
+    line-height: 1.5;
+    resize: none;
+    overflow-y: auto;
+    min-height: 3.2em;
+  }
+  .editor textarea:focus {
+    outline: none;
+  }
+  .editor-line {
+    font-family: var(--sans);
+    font-size: 11.5px;
+    color: var(--dim);
+  }
+  .editor-row {
+    display: flex;
+    gap: 6px;
   }
   .user-bubble {
     background: var(--sheet);

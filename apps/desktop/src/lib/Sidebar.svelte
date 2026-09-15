@@ -18,6 +18,7 @@
     showNightshift,
   } from "./state.svelte";
   import * as api from "./api";
+  import { forkLine } from "./edit";
   import { isMac } from "./platform";
   import { untrack } from "svelte";
   import type { ChatMode, NightshiftInfo, NightshiftRow, SessionHit, SessionMeta } from "./types";
@@ -414,7 +415,7 @@
                   >{s.hits}
                   {s.hits === 1 ? "mention" : "mentions"} · {relativeTime(
                     s.modified,
-                  )}</span
+                  )}{#if forkLine(s, app.sessions)} · <span class="from">{forkLine(s, app.sessions)}</span>{/if}</span
                 >
               </button>
             </div>
@@ -460,8 +461,11 @@
                 <span class="snippet"
                   >{#if s.mode === "incognito"}<span class="mark" title="Incognito: writes nothing, unread by other chats">{MODE_GLYPH.incognito}</span> {/if}{s.title ?? s.first_user ?? "empty session"}</span
                 >
+                <!-- A fork says where it came from (backlog 062): the
+                     parent's name as its own row shows it, or that the
+                     parent is gone. -->
                 <span class="meta"
-                  >{s.id.slice(0, 8)}{#if s.mode === "incognito"} · incognito{/if} · {relativeTime(s.modified)}</span
+                  >{s.id.slice(0, 8)}{#if s.mode === "incognito"} · incognito{/if} · {relativeTime(s.modified)}{#if forkLine(s, app.sessions)} · <span class="from" title="Forked from that chat; the parent is unchanged">{forkLine(s, app.sessions)}</span>{/if}</span
                 >
               </button>
               <button
@@ -1076,6 +1080,12 @@
     font-size: 0.72rem;
     color: var(--dim);
     font-family: var(--mono);
+  }
+  /* The fork's lineage, in the interface face so the parent's name reads
+     as a name and not as an id. */
+  .meta .from {
+    font-family: var(--sans);
+    font-style: italic;
   }
 
   .search {

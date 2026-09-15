@@ -156,11 +156,14 @@ sub-chat to read-only tools drops the web tools too.
 ## Structure
 
 **Anything that supersedes conversation state is a marker, not a mutation.**
-`Compaction`, `Rewind` and `Elide`/`Unelide` all leave the log append-only and
-change only what the projection reads. A fourth follows the same three rules: the
-log keeps the content, a UI can show what was hidden, and a `Rewind` that
-supersedes the marker undoes it for free (compute the flags from `live_flags()`,
-as `elide_flags()` does).
+`Compaction`, `Rewind`, `Elide`/`Unelide` and `Edit` (2026-09-15) all leave the
+log append-only and change only what the projection reads. A fifth follows the
+same three rules: the log keeps the content, a UI can show what was hidden, and
+a `Rewind` that supersedes the marker undoes it for free (compute the flags from
+`live_flags()`, as `elide_flags()` and `edit_texts()` do). The Claude Code
+engine's history is edited on the same terms by a different means — a copy of
+the CLI's session file under a new id, the original untouched
+([service-agent.md](service-agent.md) "Editing the CLI's history, by copy").
 
 **Turn semantics live in two files** and usually change together:
 `service/turn.rs` (`Chat`, the round loop, and its scripted-provider tests — by

@@ -3,7 +3,7 @@
 //! `nightloom_core::Session`.
 
 use chrono::{DateTime, Utc};
-use nightloom_core::{ChatMode, ContentBlock, SessionEvent};
+use nightloom_core::{ChatMode, ContentBlock, ForkedFrom, SessionEvent};
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
@@ -50,6 +50,12 @@ pub struct SessionSummary {
     /// an `Ephemeral` chat has no log and so is never in a listing.
     #[serde(default, skip_serializing_if = "is_normal")]
     pub mode: ChatMode,
+    /// The chat this one was forked from, when it was (2026-09-15,
+    /// nightshift backlog 062): the parent's id and the cut. A picker
+    /// shows the row with a "from <parent>" line; the parent may since
+    /// have been deleted, which the picker says rather than hides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forked_from: Option<ForkedFrom>,
 }
 
 fn is_normal(mode: &ChatMode) -> bool {
@@ -183,6 +189,8 @@ enum Peek {
         id: String,
         #[serde(default)]
         mode: ChatMode,
+        #[serde(default)]
+        forked_from: Option<ForkedFrom>,
     },
     UserMessage {
         text: String,
@@ -241,14 +249,22 @@ struct Summarizing {
     /// and absent from every cache entry written before the field existed.
     #[serde(default)]
     mode: ChatMode,
+    /// From the first line too; `None` for every chat that is not a fork.
+    #[serde(default)]
+    forked_from: Option<ForkedFrom>,
 }
 
 impl Summarizing {
     fn saw(&mut self, event: Peek) {
         match event {
-            Peek::SessionCreated { id, mode } => {
+            Peek::SessionCreated {
+                id,
+                mode,
+                forked_from,
+            } => {
                 self.id = Some(id);
                 self.mode = mode;
+                self.forked_from = forked_from;
             }
             Peek::UserMessage { text } => {
                 if self.first_user.is_none() {
@@ -280,6 +296,7 @@ impl Summarizing {
             first_user: self.first_user.clone(),
             title: self.title.clone(),
             mode: self.mode,
+            forked_from: self.forked_from.clone(),
         }
     }
 
@@ -362,8 +379,9 @@ const LISTING_FILE: &str = ".listing.json";
 /// Bumped whenever [`Summarizing`] or [`Cached`] changes shape. An older file
 /// is discarded rather than migrated: it is derived data. 2 since the mode
 /// (2026-09-15): an entry without it would read as normal for a log that is
-/// not, which is the one thing the listing must not get wrong.
-const LISTING_VERSION: u32 = 2;
+/// not, which is the one thing the listing must not get wrong. 3 since the
+/// fork line (2026-09-15, later the same day), on the same reasoning.
+const LISTING_VERSION: u32 = 3;
 
 impl Listing {
     fn read(dir: &Path) -> BTreeMap<String, Cached> {
@@ -396,9 +414,15 @@ impl Listing {
 /// has these in hand, so it folds them through [`Summarizing`] too.
 fn peek_at(event: &SessionEvent) -> Option<Peek> {
     match event {
-        SessionEvent::SessionCreated { id, mode, .. } => Some(Peek::SessionCreated {
+        SessionEvent::SessionCreated {
+            id,
+            mode,
+            forked_from,
+            ..
+        } => Some(Peek::SessionCreated {
             id: id.clone(),
             mode: *mode,
+            forked_from: forked_from.clone(),
         }),
         SessionEvent::UserMessage { text, .. } => Some(Peek::UserMessage { text: text.clone() }),
         SessionEvent::Title { text, .. } => Some(Peek::Title { text: text.clone() }),
@@ -866,6 +890,7 @@ mod tests {
             first_user: Some("can you help me rename a function\neverywhere".into()),
             title: None,
             mode: ChatMode::Normal,
+            forked_from: None,
         };
         assert_eq!(s.label(60), "can you help me rename a function everywhere");
 
@@ -918,6 +943,37 @@ mod tests {
         let found = search(&dir, "parsnips").unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].summary.mode, ChatMode::Incognito);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A fork lists as a chat of its own with its parent named, through
+    /// the cache as well as on a cold scan; an ordinary log names none.
+    #[test]
+    fn a_fork_lists_with_its_parent_named() {
+        use nightloom_core::Session;
+        let dir = std::env::temp_dir().join(format!("nightloom-store-fork-{}", uuid_like()));
+        let mut parent = Session::with_log(&dir).unwrap();
+        parent.record_user("the first question");
+        parent.record_user("the one to replace");
+        let fork = parent.fork_from(&dir, 2).unwrap();
+
+        for pass in 0..2 {
+            let listed = list(&dir).unwrap();
+            let of = |id: &str| listed.iter().find(|s| s.id == id).unwrap();
+            assert_eq!(
+                of(&fork.id).forked_from,
+                Some(ForkedFrom {
+                    session: parent.id.clone(),
+                    index: 2
+                }),
+                "pass {pass}"
+            );
+            assert_eq!(of(&parent.id).forked_from, None);
+            assert_eq!(of(&fork.id).user_turns, 1, "the copied turn only");
+        }
+        let found = search(&dir, "first question").unwrap();
+        assert_eq!(found.len(), 2, "both hold the copied turn");
+        assert!(found.iter().any(|h| h.summary.forked_from.is_some()));
         fs::remove_dir_all(&dir).ok();
     }
 
