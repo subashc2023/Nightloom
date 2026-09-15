@@ -1,7 +1,7 @@
 use crate::context::{BlockSource, estimate_tokens};
 use crate::message::{ContentBlock, DocumentInput, ImageInput, Message, Role};
 use crate::prompt::SegmentKind;
-use crate::provider::Usage;
+use crate::provider::{CacheTtl, Usage};
 use crate::todo::TodoItem;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -143,6 +143,34 @@ pub enum SessionEvent {
         /// price, which is not the same as free.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cost: Option<f64>,
+        /// When the request that produced this message was *sent* — the
+        /// origin of its prompt cache's lifetime, which the API measures
+        /// from the start of the request and not its end (2026-09-15,
+        /// nightshift backlog 063). `at` below is the end, and a turn that
+        /// ran four minutes leaves one minute on a five-minute entry, so
+        /// the end is the wrong clock for a timer. On an engine that runs
+        /// its own rounds the instant is the closest lower bound the stream
+        /// gives — never later than the real send, so the timer can run
+        /// short but not long.
+        ///
+        /// A field on this event rather than an event of its own because
+        /// the two facts it needs — the start and the usage that names the
+        /// lifetime — belong to one request, and a second event would be a
+        /// second thing a rewind has to supersede in step. Absent on every
+        /// log written before the field and skipped when unknown, so those
+        /// lines stay byte-identical.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sent_at: Option<DateTime<Utc>>,
+        /// How long the cache entry this request left lives from `sent_at`:
+        /// read from the usage breakdown when it wrote, the engine's usual
+        /// lifetime when it only read (a read refreshes the entry it hit),
+        /// and absent when the request touched no cache — see
+        /// [`Usage::cache_ttl`]. Recorded rather than re-derived because the
+        /// engine's usual lifetime is a fact about the engine that ran the
+        /// turn, and the log is the only place that still knows which one
+        /// did.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_ttl: Option<CacheTtl>,
         at: DateTime<Utc>,
     },
     /// One executed tool call. Consecutive results project into a single
@@ -962,6 +990,38 @@ impl Session {
             stop_reason,
             usage,
             cost,
+            sent_at: None,
+            cache_ttl: None,
+            at: Utc::now(),
+        });
+    }
+
+    /// [`record_assistant_priced`](Self::record_assistant_priced) with the
+    /// request's start and the cache lifetime it left behind (nightshift
+    /// backlog 063). `default_ttl` is what the engine writes with when the
+    /// usage does not say — the API adapter's `cache_control` lifetime, or
+    /// the one measured on the agent — and `None` for a host whose cache
+    /// this build cannot time. The lifetime is resolved here, once, by
+    /// [`Usage::cache_ttl`], so every engine records the same rule.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_assistant_timed(
+        &mut self,
+        model: impl Into<String>,
+        blocks: Vec<ContentBlock>,
+        stop_reason: Option<String>,
+        usage: Usage,
+        cost: Option<f64>,
+        sent_at: DateTime<Utc>,
+        default_ttl: Option<CacheTtl>,
+    ) {
+        self.record(SessionEvent::AssistantMessage {
+            model: model.into(),
+            blocks,
+            stop_reason,
+            usage,
+            cost,
+            sent_at: Some(sent_at),
+            cache_ttl: usage.cache_ttl(default_ttl),
             at: Utc::now(),
         });
     }
@@ -3193,5 +3253,130 @@ mod tests {
         };
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
         assert!(!dir.exists() || fs::read_dir(&dir).unwrap().count() == 0);
+    }
+
+    /// The cache timer's two fields (nightshift backlog 063): the lifetime
+    /// is the write's own when the breakdown names one, the engine's usual
+    /// when the request only touched the cache, and nothing when it touched
+    /// none — so a host that reports no caching records no timer rather
+    /// than a wrong one.
+    #[test]
+    fn the_cache_lifetime_is_read_from_the_write_and_falls_back_to_the_engine() {
+        let ttl_of = |usage: Usage, default: Option<CacheTtl>| {
+            let mut s = Session::new();
+            s.record_user("q");
+            let sent = Utc::now();
+            s.record_assistant_timed("m", vec![], None, usage, None, sent, default);
+            match s.events().last().unwrap() {
+                SessionEvent::AssistantMessage {
+                    sent_at, cache_ttl, ..
+                } => {
+                    assert_eq!(*sent_at, Some(sent));
+                    *cache_ttl
+                }
+                other => panic!("{other:?}"),
+            }
+        };
+        let wrote_1h = Usage {
+            cache_write_tokens: Some(8375),
+            cache_write_1h_tokens: Some(8375),
+            cache_write_5m_tokens: Some(0),
+            ..Usage::default()
+        };
+        let wrote_5m = Usage {
+            cache_write_tokens: Some(120),
+            cache_write_5m_tokens: Some(120),
+            cache_write_1h_tokens: Some(0),
+            ..Usage::default()
+        };
+        let read_only = Usage {
+            cache_read_tokens: Some(4000),
+            cache_write_tokens: Some(0),
+            cache_write_5m_tokens: Some(0),
+            cache_write_1h_tokens: Some(0),
+            ..Usage::default()
+        };
+        let wrote_unsaid = Usage {
+            cache_write_tokens: Some(120),
+            ..Usage::default()
+        };
+        let untouched = Usage {
+            input_tokens: 300,
+            cache_read_tokens: Some(0),
+            cache_write_tokens: Some(0),
+            ..Usage::default()
+        };
+        // The write names its lifetime; the engine's default does not win.
+        assert_eq!(
+            ttl_of(wrote_1h, Some(CacheTtl::FiveMinutes)),
+            Some(CacheTtl::OneHour)
+        );
+        assert_eq!(
+            ttl_of(wrote_5m, Some(CacheTtl::OneHour)),
+            Some(CacheTtl::FiveMinutes)
+        );
+        // A read refreshes the entry for the engine's usual lifetime.
+        assert_eq!(
+            ttl_of(read_only, Some(CacheTtl::OneHour)),
+            Some(CacheTtl::OneHour)
+        );
+        // An older host that reports the write but not its breakdown.
+        assert_eq!(
+            ttl_of(wrote_unsaid, Some(CacheTtl::FiveMinutes)),
+            Some(CacheTtl::FiveMinutes)
+        );
+        // No entry, no timer — with or without an engine default.
+        assert_eq!(ttl_of(untouched, Some(CacheTtl::FiveMinutes)), None);
+        assert_eq!(ttl_of(read_only, None), None);
+        assert_eq!(ttl_of(Usage::default(), None), None);
+    }
+
+    /// The fields serialize as the API's own suffixes and are skipped when
+    /// absent, so an old line loads and a line written without them today
+    /// is the line yesterday's build would have written.
+    #[test]
+    fn the_cache_fields_round_trip_and_are_absent_when_unknown() {
+        let old = r#"{"event":"assistant_message","model":"m","blocks":[],"stop_reason":null,"usage":{"input_tokens":1,"output_tokens":1},"at":"2026-01-01T00:00:00Z"}"#;
+        let event: SessionEvent = serde_json::from_str(old).unwrap();
+        assert!(matches!(
+            &event,
+            SessionEvent::AssistantMessage {
+                sent_at: None,
+                cache_ttl: None,
+                ..
+            }
+        ));
+        let back = serde_json::to_string(&event).unwrap();
+        assert!(
+            !back.contains("sent_at") && !back.contains("cache_ttl"),
+            "{back}"
+        );
+
+        let mut s = Session::new();
+        s.record_user("q");
+        s.record_assistant_timed(
+            "m",
+            vec![],
+            None,
+            Usage {
+                cache_write_1h_tokens: Some(10),
+                ..Usage::default()
+            },
+            None,
+            Utc::now(),
+            None,
+        );
+        let line = serde_json::to_string(s.events().last().unwrap()).unwrap();
+        assert!(line.contains(r#""cache_ttl":"1h""#), "{line}");
+        assert!(line.contains(r#""sent_at":""#), "{line}");
+        assert!(line.contains(r#""cache_write_1h_tokens":10"#), "{line}");
+        let again: SessionEvent = serde_json::from_str(&line).unwrap();
+        assert!(matches!(
+            again,
+            SessionEvent::AssistantMessage {
+                cache_ttl: Some(CacheTtl::OneHour),
+                ..
+            }
+        ));
     }
 }

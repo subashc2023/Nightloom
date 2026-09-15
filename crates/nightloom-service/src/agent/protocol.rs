@@ -201,12 +201,41 @@ pub(super) struct RawUsage {
     cache_read_input_tokens: Option<u64>,
     #[serde(default)]
     output_tokens_details: Option<OutputDetails>,
+    /// The write split by lifetime (nightshift backlog 063). Where the CLI
+    /// puts it depends on the line: at the top of `usage` on the
+    /// `assistant` and `result` lines and on `message_start`, but on
+    /// `message_delta` — the one line the translator reads usage from — it
+    /// is *only* inside `usage.iterations[]`, one entry per server-side
+    /// iteration of the round. Measured 2026-09-15 on 2.1.263, one turn:
+    /// `{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":7619}`,
+    /// the hour being what this engine writes with.
+    #[serde(default)]
+    cache_creation: Option<CacheCreation>,
+    #[serde(default)]
+    iterations: Vec<Iteration>,
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]
 struct OutputDetails {
     #[serde(default)]
     thinking_tokens: Option<u64>,
+}
+
+/// `usage.cache_creation`, the API's own field names.
+#[derive(Debug, Default, Clone, Deserialize)]
+struct CacheCreation {
+    #[serde(default)]
+    ephemeral_5m_input_tokens: Option<u64>,
+    #[serde(default)]
+    ephemeral_1h_input_tokens: Option<u64>,
+}
+
+/// One entry of `usage.iterations`; only the breakdown is wanted from it,
+/// since the totals beside it are already summed at the top.
+#[derive(Debug, Default, Clone, Deserialize)]
+struct Iteration {
+    #[serde(default)]
+    cache_creation: Option<CacheCreation>,
 }
 
 impl RawUsage {
@@ -223,6 +252,7 @@ impl RawUsage {
     pub fn to_usage(&self) -> Usage {
         let read = self.cache_read_input_tokens;
         let write = self.cache_creation_input_tokens;
+        let (five, hour) = self.cache_split();
         Usage {
             input_tokens: self.input_tokens + read.unwrap_or(0) + write.unwrap_or(0),
             output_tokens: self.output_tokens,
@@ -232,7 +262,35 @@ impl RawUsage {
                 .and_then(|d| d.thinking_tokens),
             cache_read_tokens: read,
             cache_write_tokens: write,
+            cache_write_5m_tokens: five,
+            cache_write_1h_tokens: hour,
         }
+    }
+
+    /// The write split by lifetime, from the top-level object when the line
+    /// carries one and otherwise summed over `iterations`; `None` on a line
+    /// with neither, which is "not reported" rather than "nothing written".
+    fn cache_split(&self) -> (Option<u64>, Option<u64>) {
+        let split = |c: &CacheCreation| (c.ephemeral_5m_input_tokens, c.ephemeral_1h_input_tokens);
+        if let Some(c) = &self.cache_creation {
+            return split(c);
+        }
+        let mut five = None;
+        let mut hour = None;
+        for c in self
+            .iterations
+            .iter()
+            .filter_map(|i| i.cache_creation.as_ref())
+        {
+            let (f, h) = split(c);
+            if let Some(f) = f {
+                *five.get_or_insert(0) += f;
+            }
+            if let Some(h) = h {
+                *hour.get_or_insert(0) += h;
+            }
+        }
+        (five, hour)
     }
 }
 

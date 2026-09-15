@@ -295,6 +295,8 @@ mod tests {
             reasoning_tokens: None,
             cache_read_tokens: read,
             cache_write_tokens: write,
+            cache_write_5m_tokens: None,
+            cache_write_1h_tokens: None,
         }
     }
 

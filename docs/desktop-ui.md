@@ -779,6 +779,49 @@ page, so a press and its release land on different elements and no `click`
 reaches the button — which is what "clicking a thinking pill mid-reply does
 nothing" was. `click` still serves the keyboard (`detail === 0`).
 
+### The prompt-cache timer (nightshift backlog 063, 2026-09-15)
+
+Beside Context in the top bar: `cache · 41 min` counting down, `cache · 1:59`
+under two minutes, `cache cold` after, nothing before the first turn that
+recorded one. It is how long the last turn's prompt cache stays warm, counted
+from when that turn's request was *sent* — the API measures the lifetime from
+the start of the request that wrote or last read the entry, so a turn that
+streamed for four minutes leaves one on a five-minute entry — for the lifetime
+the reply named in `usage.cache_creation`, or the engine's usual one when it
+only read (a read refreshes the entry): five minutes on the API engine, an
+hour on Claude Code, both measured ([service-agent.md](service-agent.md) "The
+cache lifetime is measured"). Both facts are on the log's `assistant_message`
+(`sent_at`, `cache_ttl`, [core.md](core.md)), so the countdown is projected
+from the log (`cacheState` in `src/lib/cache.ts`) and reopening a chat shows
+the one it had. The newest *live* turn is the one read: a rewound turn's entry
+is still real on the server, but the next request will not share its prefix.
+The number is floored, never rounded up, so it is always one the cache can
+still honour.
+
+What it is not. It is not a bill: until it expires an edit to the history
+re-writes the cache, after it the next turn pays for the whole history whether
+or not you edited it — on the API engine that is what makes an edit free once
+cold. On Claude Code you are on the subscription, and "free" means an edit
+costs no more usage than an unedited turn would; whether cache reads are
+discounted against the plan's limit is not documented, which the chip's title
+says. It is not the engine's: the chip reads the log and the caveat reads the
+connection, so after switching engines mid-chat it describes the *other*
+engine's entry until the first turn on the new one lands — the next request
+is a different prefix, so treat it as cold until then. And it is not the
+countdown the cached chip used to infer (five minutes from the reply's *end*,
+API engine only, superseded here): that origin was the wrong clock and the
+Claude Code engine's hour was unreadable from a shell.
+
+The clock is a chain of timeouts aligned to when the text would change
+(`nextTickMs`): once a minute, once a second under two minutes, so it wakes as
+rarely as the display allows and is never a second stale. A toast, "Prompt
+cache cold — edits to the history now cost nothing extra", fires on the tick
+that crosses to cold, once, and only for the open chat: the chain is torn down
+and rebuilt whenever the open chat's log changes, a background chat has no
+chain, and a chat reopened already cold is a state, not a crossing. `cacheState`
+and `cacheClause` ("the cache is warm for 41 min" / "the cache is cold") are
+exported for the edit controls (backlog 062).
+
 ### Attachments
 
 `Composer.svelte` takes images and PDFs by paste and drop, reads them to base64

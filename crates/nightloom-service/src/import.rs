@@ -1651,6 +1651,10 @@ fn write_conversation(dir: &Path, conv: &ExportedConversation) -> Result<Option<
                 // a recorded 0.0 would claim the conversation was free.
                 usage: Usage::default(),
                 cost: None,
+                // Nor when its request went out or what cache it left: an
+                // import is history, and any entry it had is long gone.
+                sent_at: None,
+                cache_ttl: None,
                 at,
             }),
             other => {

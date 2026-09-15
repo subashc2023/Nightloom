@@ -468,7 +468,16 @@ export interface Usage {
    *  which is not the same as a 0% hit rate. */
   cache_read_tokens?: number;
   cache_write_tokens?: number;
+  /** `cache_write_tokens` split by the lifetime it was written with
+   *  (nightshift backlog 063) — Anthropic's `cache_creation` object. Absent
+   *  where the host reports no split, and on every log before the fields. */
+  cache_write_5m_tokens?: number;
+  cache_write_1h_tokens?: number;
 }
+
+/** How long a prompt-cache entry lives from the start of the request that
+ *  wrote or last read it — the API's own suffixes, as the log spells them. */
+export type CacheTtl = "5m" | "1h";
 
 /** One MCP server, as reported by `connect`. */
 export interface McpServerInfo {
@@ -629,6 +638,12 @@ export type SessionEvent =
       // the provider that billed it is not recoverable from `model` alone.
       // Absent means unpriced, which is not free.
       cost?: number;
+      // When the request that produced this message was sent — the origin of
+      // its cache's lifetime — and how long that cache lives (nightshift
+      // backlog 063). Both absent on logs written before the fields; the
+      // lifetime also absent when the request touched no cache.
+      sent_at?: string;
+      cache_ttl?: CacheTtl;
       at: string;
     }
   // Supersedes events `to..` up to this marker. The log keeps them, so the

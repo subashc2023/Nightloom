@@ -138,6 +138,23 @@ Cache fields are `Option` because "this host does not report caching" and
 "nothing was cached" are different facts, and only the first must not render as a
 0% hit rate.
 
+`cache_write_5m_tokens` / `cache_write_1h_tokens` (2026-09-15, nightshift
+backlog 063) split `cache_write_tokens` by the lifetime the entry was written
+with — Anthropic's `usage.cache_creation` object, read at the adapter boundary
+and by the Claude Code translator. The split is what says *when the entry
+expires*; the total only says that one was written. `Usage::cache_write_ttl()`
+reads it (an hour outranks five minutes, since the API puts the longer
+breakpoint earlier in the prompt), and `Usage::cache_ttl(default)` is the rule
+every engine records by: the write's own lifetime when the split names one; the
+engine's `default` when the request only touched the cache — a read refreshes
+the entry it hit for its original lifetime, and a write with no split is a
+write at the engine's usual one; `None` when it touched none, so a host that
+reports no caching gets no timer rather than a wrong one. `CacheTtl` is the
+lifetime, serialized as the API's own `5m` / `1h`. `Provider::cache_ttl()` is
+where an adapter states its default: the Anthropic adapter says five minutes,
+because that is what its `cache_control: {type: ephemeral}` with no `ttl` gets;
+everything else inherits `None`.
+
 ## The session log (`session.rs`)
 
 Append-only event log (`SessionEvent`), persisted as JSONL. **The event log is
@@ -289,6 +306,26 @@ from today's table would restate history every time a vendor moves a rate.
 `SessionCost.unpriced_exchanges` is not a rounding detail: a session run entirely
 on an unpriced model sums to `0.0`, and rendering that as "$0.00" would claim it
 was free rather than unknown.
+
+### The request's start and its cache lifetime (`SessionEvent::AssistantMessage.sent_at` / `.cache_ttl`, `Session::record_assistant_timed`, 2026-09-15)
+
+Two optional fields on the usage-bearing event (nightshift backlog 063), both
+`#[serde(default)]` and skipped when absent, so every log before them and every
+line written without them is byte-identical to before. `sent_at` is when the
+request that produced the message went out — the origin of its prompt cache's
+lifetime, which the API measures from the *start* of the request that wrote or
+last read the entry, not its end: `at` is the end, and a round that streamed
+four minutes leaves one on a five-minute entry. `cache_ttl` is how long the
+entry lives from there, resolved once by `Usage::cache_ttl` above. Fields on
+this event rather than an event of their own because the start and the usage
+that names the lifetime belong to one request, and a second event would be a
+second thing a rewind has to supersede in step; recorded rather than re-derived
+because the engine's default lifetime is a fact about the engine that ran the
+turn, and the log is the only place that still knows which one did. The
+projection that turns them into a countdown lives in the desktop
+([desktop-ui.md](desktop-ui.md) "The prompt-cache timer"); the core records and
+never reads them. An import records neither: it is history, and any entry it
+had is long gone.
 
 ### Session titles (`SessionEvent::Title`, `Session::title()`)
 

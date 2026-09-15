@@ -92,6 +92,31 @@ exactly the turn the gauge matters. The `result` line repeats the turn's totals
 that `message_delta` already reported per round, so reading both doubles every
 figure.
 
+**The cache lifetime is measured, and the split moves between lines**
+(2026-09-15, nightshift backlog 063). One `claude -p` turn on 2.1.263 reported
+`cache_creation: {ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens:
+7619}` — **this engine writes its prompt cache with the one-hour lifetime**
+(`record::CLAUDE_CODE_CACHE_TTL`; the API adapter's own requests get five
+minutes, see [core.md](core.md) "Token accounting"). The CLI owns the request
+and the `ttl` in it, so this is a fact about the CLI at that version and
+nothing here can change it; a turn whose usage names a lifetime is believed
+over the constant. Where the CLI puts the split depends on the line: at the
+top of `usage` on the `assistant` and `result` lines and on `message_start`,
+but on `message_delta` — the one line the translator reads usage from — it is
+*only* inside `usage.iterations[]`, one entry per server-side iteration of the
+round. `RawUsage` reads the top-level object when present and otherwise sums
+the iterations; a line with neither is "not reported", not "nothing written".
+
+Each round's `AssistantMessage` records when its request was sent and the
+lifetime of the cache it left (`sent_at`, `cache_ttl`). The send time is as
+near as this side of the pipe can know it: the turn's first request goes out
+when the CLI is spawned, which is when the `Recorder` is built — build it
+immediately before `run_turn` — and every later round is sent after the last
+tool result of the round before it, so the time that result arrived is the
+bound the recorder keeps. A lower bound, never an upper one: the desktop's
+timer may run short, and short is the direction that never claims a cache the
+API has already dropped.
+
 A `rate_limit_event` appears only on an OAuth run, which makes its presence the
 one honest signal that a turn was billed to the plan. The dollar total is the
 CLI's own estimate of what the same turn *would* have cost on the API and is

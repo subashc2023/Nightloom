@@ -486,6 +486,10 @@ impl Chat {
                 }
             }
 
+            // The cache's clock starts here, at the request's start, not
+            // when the reply lands (nightshift backlog 063): a round that
+            // streams for four minutes leaves one on a five-minute entry.
+            let sent_at = chrono::Utc::now();
             let mut stream = self.provider.stream_chat(request).await?;
             let mut blocks = Vec::new();
             let mut text_buf = String::new();
@@ -592,12 +596,14 @@ impl Chat {
                 if !blocks.is_empty() {
                     let reason = if interrupted { "interrupted" } else { "error" };
                     let cost = self.price.map(|p| p.cost(&usage));
-                    session.record_assistant_priced(
+                    session.record_assistant_timed(
                         &self.model,
                         blocks,
                         Some(reason.into()),
                         usage,
                         cost,
+                        sent_at,
+                        self.provider.cache_ttl(),
                     );
                 }
                 if let Some(e) = stream_err {
@@ -623,9 +629,19 @@ impl Chat {
                 });
             }
             // Per round, not per turn: a tool loop bills each round, and the
-            // last one's usage is not the turn's total.
+            // last one's usage is not the turn's total. The cache lifetime
+            // is the adapter's when the usage does not name one, since the
+            // adapter is what asked for the cache and with what `ttl`.
             let cost = self.price.map(|p| p.cost(&usage));
-            session.record_assistant_priced(&self.model, blocks, stop_reason.clone(), usage, cost);
+            session.record_assistant_timed(
+                &self.model,
+                blocks,
+                stop_reason.clone(),
+                usage,
+                cost,
+                sent_at,
+                self.provider.cache_ttl(),
+            );
 
             if calls.is_empty() {
                 return Ok(TurnOutcome {
@@ -1048,7 +1064,7 @@ pub(crate) mod tests {
     use crate::tools::TodoWrite;
     use nightloom_core::TodoStatus;
     use nightloom_core::tool::{Effect, RESULT_LIMIT};
-    use nightloom_core::{EventStream, SessionEvent, ToolDef};
+    use nightloom_core::{CacheTtl, EventStream, SessionEvent, ToolDef};
     use serde_json::json;
     use std::sync::{Arc, Mutex};
 
@@ -1058,6 +1074,9 @@ pub(crate) mod tests {
     struct Scripted {
         scripts: Mutex<Vec<Vec<StreamEvent>>>,
         seen: Arc<Mutex<Vec<ChatRequest>>>,
+        /// What this pretend adapter caches with when a reply does not
+        /// say; `None` like any host the crate cannot vouch for.
+        cache_ttl: Option<CacheTtl>,
     }
 
     type Seen = Arc<Mutex<Vec<ChatRequest>>>;
@@ -1072,8 +1091,17 @@ pub(crate) mod tests {
             let provider = Box::new(Self {
                 scripts: Mutex::new(scripts),
                 seen: Arc::clone(&seen),
+                cache_ttl: None,
             });
             (provider, seen)
+        }
+
+        fn caching(scripts: Vec<Vec<StreamEvent>>, ttl: CacheTtl) -> Box<dyn Provider> {
+            Box::new(Self {
+                scripts: Mutex::new(scripts),
+                seen: Arc::new(Mutex::new(Vec::new())),
+                cache_ttl: Some(ttl),
+            })
         }
     }
 
@@ -1081,6 +1109,10 @@ pub(crate) mod tests {
     impl Provider for Scripted {
         fn name(&self) -> &'static str {
             "scripted"
+        }
+
+        fn cache_ttl(&self) -> Option<CacheTtl> {
+            self.cache_ttl
         }
 
         async fn stream_chat(&self, request: ChatRequest) -> Result<EventStream, ProviderError> {
@@ -2348,6 +2380,84 @@ pub(crate) mod tests {
         let total = session.cost();
         assert!(total.is_complete());
         assert!((total.usd - expected.iter().sum::<f64>()).abs() < 1e-12);
+    }
+
+    /// Every round's message says when its request went out and how long
+    /// the cache it left lives (nightshift backlog 063): the reply's own
+    /// split when it names one, the adapter's lifetime when the round only
+    /// read, nothing on a host with no lifetime to vouch for.
+    #[tokio::test]
+    async fn each_round_records_its_send_time_and_the_adapters_cache_lifetime() {
+        let round = |usage: Usage, events: Vec<StreamEvent>| {
+            let mut v = vec![StreamEvent::Usage(usage)];
+            v.extend(events);
+            v
+        };
+        let wrote_5m = Usage {
+            input_tokens: 1_000,
+            cache_write_tokens: Some(900),
+            cache_write_5m_tokens: Some(900),
+            cache_write_1h_tokens: Some(0),
+            ..Default::default()
+        };
+        let read_only = Usage {
+            input_tokens: 1_500,
+            cache_read_tokens: Some(1_400),
+            cache_write_tokens: Some(0),
+            ..Default::default()
+        };
+        let provider = Scripted::caching(
+            vec![
+                round(wrote_5m, tool_call("current_time", json!({}))),
+                round(read_only, says("half past")),
+            ],
+            CacheTtl::OneHour,
+        );
+        let mut chat = Chat::new(provider, "test-model");
+        chat.tools = crate::tools::builtin();
+        let mut session = Session::new();
+        let before = chrono::Utc::now();
+        let (out, _) = run(&chat, &mut session, "when").await;
+        assert!(out.is_ok());
+
+        let rounds: Vec<(chrono::DateTime<chrono::Utc>, Option<CacheTtl>)> = session
+            .events()
+            .iter()
+            .filter_map(|e| match e {
+                SessionEvent::AssistantMessage {
+                    sent_at, cache_ttl, ..
+                } => Some((sent_at.expect("sent_at recorded"), *cache_ttl)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rounds.len(), 2);
+        assert!(rounds[0].0 >= before && rounds[1].0 >= rounds[0].0);
+        // The reply named five minutes; the adapter's hour does not override it.
+        assert_eq!(rounds[0].1, Some(CacheTtl::FiveMinutes));
+        // A read refreshes the entry for what the adapter writes with.
+        assert_eq!(rounds[1].1, Some(CacheTtl::OneHour));
+
+        // A host with no lifetime to vouch for records the time and no timer.
+        let provider = Scripted::provider(vec![round(
+            Usage {
+                input_tokens: 10,
+                cache_read_tokens: Some(8),
+                ..Default::default()
+            },
+            says("hi"),
+        )]);
+        let chat = Chat::new(provider, "test-model");
+        let mut session = Session::new();
+        let (out, _) = run(&chat, &mut session, "hi").await;
+        assert!(out.is_ok());
+        assert!(matches!(
+            session.events().last().unwrap(),
+            SessionEvent::AssistantMessage {
+                sent_at: Some(_),
+                cache_ttl: None,
+                ..
+            }
+        ));
     }
 
     #[tokio::test]

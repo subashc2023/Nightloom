@@ -20,7 +20,8 @@ pub use context::{
 pub use message::{ContentBlock, DocumentInput, ImageInput, Message, Role, undeliverable_document};
 pub use prompt::{Segment, SegmentKind, SystemPrompt};
 pub use provider::{
-    ChatRequest, EventStream, Provider, ProviderError, StreamEvent, Thinking, ToolDef, Usage,
+    CacheTtl, ChatRequest, EventStream, Provider, ProviderError, StreamEvent, Thinking, ToolDef,
+    Usage,
 };
 pub use session::{
     ChatMode, Checkpoint, LoadReport, Session, SessionCost, SessionEvent, SourcedBlock,

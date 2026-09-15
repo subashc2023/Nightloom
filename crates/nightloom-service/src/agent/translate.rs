@@ -239,6 +239,7 @@ fn flatten(content: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nightloom_core::CacheTtl;
 
     /// Verbatim lines from `claude -p "Say exactly: hello" --tools ""
     /// --output-format stream-json --include-partial-messages --verbose`
@@ -340,6 +341,39 @@ mod tests {
         assert_eq!(usage.cache_write_tokens, Some(10));
         assert_eq!(usage.reasoning_tokens, Some(36));
         assert_eq!(outcome.usage.input_tokens, 3656);
+    }
+
+    /// Verbatim from one `claude -p` turn on 2.1.263 (2026-09-15, nightshift
+    /// backlog 063), trimmed of fields nothing here reads. On `message_delta`
+    /// the lifetime split is only inside `iterations`; on `result` it is at
+    /// the top of `usage` as well.
+    const MSG_DELTA_263: &str = r#"{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":10,"cache_creation_input_tokens":7619,"cache_read_input_tokens":12144,"output_tokens":42,"output_tokens_details":{"thinking_tokens":35},"iterations":[{"input_tokens":10,"output_tokens":42,"cache_read_input_tokens":12144,"cache_creation_input_tokens":7619,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":7619},"type":"message"}]},"context_management":{"applied_edits":[]}},"session_id":"1e5bca8c","parent_tool_use_id":null}"#;
+    const RESULT_263: &str = r#"{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"hi","session_id":"1e5bca8c","total_cost_usd":0.0022,"usage":{"input_tokens":10,"cache_creation_input_tokens":7619,"cache_read_input_tokens":12144,"output_tokens":42,"output_tokens_details":{"thinking_tokens":35},"cache_creation":{"ephemeral_1h_input_tokens":7619,"ephemeral_5m_input_tokens":0}}}"#;
+
+    /// The Claude Code engine writes its cache with the one-hour lifetime,
+    /// and the translator finds the split wherever the CLI put it.
+    #[test]
+    fn the_cache_write_lifetime_is_read_from_wherever_the_cli_puts_it() {
+        let (events, _) = drive(&[MSG_DELTA_263]);
+        let TurnEvent::Usage { usage } = &events[0] else {
+            panic!("expected Usage, got {:?}", events[0]);
+        };
+        assert_eq!(usage.cache_write_tokens, Some(7619));
+        assert_eq!(usage.cache_write_1h_tokens, Some(7619));
+        assert_eq!(usage.cache_write_5m_tokens, Some(0));
+        assert_eq!(usage.cache_write_ttl(), Some(CacheTtl::OneHour));
+
+        let (_, outcome) = drive(&[RESULT_263]);
+        assert_eq!(outcome.usage.cache_write_1h_tokens, Some(7619));
+        assert_eq!(outcome.usage.cache_write_ttl(), Some(CacheTtl::OneHour));
+
+        // The older shape has no split: unknown, not zero.
+        let (events, _) = drive(&[MSG_DELTA]);
+        let TurnEvent::Usage { usage } = &events[0] else {
+            panic!("expected Usage, got {:?}", events[0]);
+        };
+        assert_eq!(usage.cache_write_1h_tokens, None);
+        assert_eq!(usage.cache_write_ttl(), None);
     }
 
     /// The `result` line repeats the turn total. Added on top of the

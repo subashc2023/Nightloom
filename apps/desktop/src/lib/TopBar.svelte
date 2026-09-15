@@ -1,5 +1,6 @@
 <script lang="ts">
   import {
+    addToast,
     app,
     cacheHitRate,
     chatMode,
@@ -10,6 +11,7 @@
     MODE_GLYPH,
     sessionCost,
   } from "./state.svelte";
+  import { cacheLine, cacheState, nextTickMs } from "./cache";
   import RightRail from "./RightRail.svelte";
   import { toggleTranscriptPref, transcript } from "./transcriptPrefs.svelte";
   import { isMac } from "./platform";
@@ -84,46 +86,59 @@
   const cached = $derived(cacheHitRate());
 
   /**
-   * When the prompt cache expires. The API reports no TTL; what is known is
-   * that the Anthropic adapter requests `cache_control: ephemeral` with no
-   * `ttl`, which is the 5-minute cache, and that a hit refreshes it. So the
-   * expiry is *inferred* as the newest live exchange's `at` + 5 minutes,
-   * only when that exchange wrote or read cache, and only on the direct
-   * Anthropic provider — on the Claude Code engine the cache is Claude
-   * Code's own and its TTL depends on the plan, which nothing here can read.
+   * The prompt-cache timer (nightshift backlog 063, 2026-09-15): when the
+   * last turn's cache entry expires, read off the log — each turn records
+   * when its request was sent and the lifetime of the cache it left, on
+   * both engines — so reopening a chat shows the countdown it had.
+   *
+   * This supersedes the countdown the cached chip used to infer (five
+   * minutes from the reply's *end*, API engine only): the origin was the
+   * wrong clock, since the API counts from the request's start, and the
+   * Claude Code engine's hour was unreadable from here. Both are now
+   * recorded; see `cache.ts`.
+   *
+   * The clock is a chain of timeouts aligned to when the text would change
+   * — once a minute, once a second under two minutes — rather than a
+   * one-second interval, so it wakes as rarely as the display allows and
+   * still never shows a value a second stale. The toast fires on the tick
+   * that crosses to cold, and only if this chain saw the cache warm: a
+   * chat reopened already cold is a state, not a crossing, and the chain
+   * is torn down and rebuilt whenever the open chat's log changes, so a
+   * background chat has no chain and cannot toast.
    */
-  const CACHE_TTL_MS = 5 * 60 * 1000;
-  const cacheExpiry = $derived.by((): number | null => {
-    if (!app.connection || app.connection.engine === "claude-code") return null;
-    if (app.connection.provider !== "anthropic") return null;
-    const live = liveFlags(app.events);
-    for (let i = app.events.length - 1; i >= 0; i--) {
-      if (!live[i]) continue;
-      const e = app.events[i];
-      if (e.event !== "assistant_message") continue;
-      const u = e.usage;
-      const touched = (u.cache_read_tokens ?? 0) + (u.cache_write_tokens ?? 0) > 0;
-      if (!touched) return null;
-      const at = Date.parse(e.at);
-      return Number.isFinite(at) ? at + CACHE_TTL_MS : null;
-    }
-    return null;
-  });
-
-  // A one-second clock, running only while there is an expiry to count down.
   let now = $state(Date.now());
+  const cache = $derived(cacheState(app.events, now));
   $effect(() => {
-    if (cacheExpiry == null) return;
+    const warmUntil = cacheState(app.events, Date.now())?.warmUntil ?? null;
+    if (warmUntil == null) return;
     now = Date.now();
-    const id = setInterval(() => (now = Date.now()), 1000);
-    return () => clearInterval(id);
+    let id: ReturnType<typeof setTimeout> | null = null;
+    const tick = () => {
+      const t = Date.now();
+      now = t;
+      const wait = nextTickMs(warmUntil - t);
+      if (wait == null) {
+        addToast("Prompt cache cold — edits to the history now cost nothing extra");
+        return;
+      }
+      id = setTimeout(tick, wait);
+    };
+    const first = nextTickMs(warmUntil - Date.now());
+    if (first != null) id = setTimeout(tick, first);
+    return () => {
+      if (id != null) clearTimeout(id);
+    };
   });
-  const cacheLeft = $derived.by(() => {
-    if (cacheExpiry == null) return null;
-    const ms = cacheExpiry - now;
-    if (ms <= 0) return "expired";
-    const s = Math.ceil(ms / 1000);
-    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")} left`;
+  const cacheTitle = $derived.by(() => {
+    if (!cache) return "";
+    const engine = app.connection?.engine === "claude-code" ? "claude-code" : "api";
+    if (!cache.warm) {
+      return "The last turn's prompt cache has expired, so the next turn re-reads the whole history either way and editing it now costs nothing extra.";
+    }
+    const what = `Time left on the last turn's prompt cache (${cache.ttl}), counted from when its request was sent: until it expires an edit to the history re-writes the cache, and after it the next turn pays for the whole history whether or not you edited it.`;
+    return engine === "claude-code"
+      ? `${what} On this engine you are on the subscription, so "free" means an edit costs no more usage than an unedited turn would — whether cache reads are discounted against the plan's limit is not documented.`
+      : what;
   });
 
   function tokens(n: number): string {
@@ -260,6 +275,16 @@
       </button>
     {/if}
 
+    <!-- The prompt-cache timer (nightshift backlog 063), beside Context
+         because it is about the same request: how long the last turn's
+         cache stays warm, `cache cold` after, nothing before the first
+         turn that recorded one. -->
+    {#if cache}
+      <div class="ns-chip mono cache timer" class:cold={!cache.warm} title={cacheTitle}>
+        {cacheLine(cache)}
+      </div>
+    {/if}
+
     <!-- The two transcript toggles (nightshift backlog 052, 2026-09-14),
          beside Context because they are about the conversation as shown:
          every thinking block open or every one a closed pill, every tool
@@ -291,14 +316,8 @@
     </button>
 
     {#if cached != null}
-      <div
-        class="ns-chip mono cache"
-        class:expired={cacheLeft === "expired"}
-        title={cacheLeft != null
-          ? "Share of the last request's prompt served from cache. The countdown is inferred, not reported: the adapter requests the 5-minute ephemeral cache and every request refreshes it, so it expires 5 minutes after the last exchange."
-          : "Share of the last request's prompt served from cache"}
-      >
-        {Math.round(cached * 100)}% cached{#if cacheLeft != null}<span class="of">· {cacheLeft}</span>{/if}
+      <div class="ns-chip mono cache" title="Share of the last request's prompt served from cache">
+        {Math.round(cached * 100)}% cached
       </div>
     {/if}
 
@@ -462,7 +481,7 @@
   .gauge.hot .fill {
     background: var(--failed);
   }
-  .cache.expired {
+  .cache.cold {
     color: var(--dim);
   }
   /* The transcript toggles: off is the dimmed chip with its mark struck

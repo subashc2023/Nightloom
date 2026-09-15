@@ -21,9 +21,21 @@
 //!
 //! [`SessionEvent::AgentSession`]: nightloom_core::SessionEvent
 
-use nightloom_core::{ContentBlock, Role, Session, Usage};
+use chrono::{DateTime, Utc};
+use nightloom_core::{CacheTtl, ContentBlock, Role, Session, Usage};
 
 use crate::TurnEvent;
+
+/// What this engine's cache writes live for when the usage does not say.
+///
+/// Measured, not configured: one `claude -p` turn on 2.1.263 (2026-09-15)
+/// reported `cache_creation: {ephemeral_1h_input_tokens: 7619,
+/// ephemeral_5m_input_tokens: 0}`, and every turn since has said the same.
+/// The CLI owns the request and the `ttl` in it, so this is a fact about
+/// the CLI at that version and nothing here can change it; a turn whose
+/// usage names a lifetime is believed over this constant
+/// ([`Usage::cache_ttl`]).
+pub const CLAUDE_CODE_CACHE_TTL: CacheTtl = CacheTtl::OneHour;
 
 /// How much of one tool result is kept.
 ///
@@ -118,12 +130,23 @@ pub struct Recorder<'a> {
     /// Summed since the last assistant message, and written onto the one
     /// that closes the round it belongs to.
     usage: Usage,
+    /// When the round being assembled was sent, as near as this side of the
+    /// pipe can know it (nightshift backlog 063). The turn's first request
+    /// goes out when the CLI is spawned, which is when this recorder is
+    /// built; every later round is sent after the last tool result of the
+    /// round before it, so the time that result arrived is the tightest
+    /// lower bound the stream gives. A lower bound, never an upper one: the
+    /// timer built on it may run short, and short is the direction that
+    /// never claims a cache the API has already dropped.
+    sent_at: DateTime<Utc>,
     /// Whether anything at all was recorded, so an empty turn writes no
     /// empty assistant message.
     wrote: bool,
 }
 
 impl<'a> Recorder<'a> {
+    /// Build this immediately before spawning the turn: construction is
+    /// what stamps the first request's start.
     pub fn new(session: &'a mut Session, model: impl Into<String>) -> Self {
         Self {
             session,
@@ -133,6 +156,7 @@ impl<'a> Recorder<'a> {
             thinking: String::new(),
             open: Vec::new(),
             usage: Usage::default(),
+            sent_at: Utc::now(),
             wrote: false,
         }
     }
@@ -189,6 +213,9 @@ impl<'a> Recorder<'a> {
                     is_error: *is_error,
                 });
                 self.wrote = true;
+                // The next round cannot have been sent before this result
+                // was in; the last result of the round is the bound kept.
+                self.sent_at = Utc::now();
             }
             TurnEvent::Usage { usage } => self.usage.add(*usage),
             // Nothing else an agent emits reaches the log: a denial and a
@@ -249,11 +276,14 @@ impl<'a> Recorder<'a> {
             return;
         }
         let blocks = std::mem::take(&mut self.blocks);
-        self.session.record_assistant(
+        self.session.record_assistant_timed(
             self.model.clone(),
             blocks,
             stop_reason.map(String::from),
             std::mem::take(&mut self.usage),
+            None,
+            self.sent_at,
+            Some(CLAUDE_CODE_CACHE_TTL),
         );
         self.wrote = true;
     }
@@ -422,6 +452,78 @@ mod tests {
         // reported by then; the closing one carries the rest — which is what
         // makes the trailing message the live reading a gauge wants.
         assert_eq!(totals, [10, 20]);
+    }
+
+    /// Each round's message carries when its request went out and the
+    /// lifetime of the cache it left (nightshift backlog 063): the split's
+    /// own when the usage names one, this engine's measured hour when the
+    /// round only read, nothing when it touched no cache.
+    #[test]
+    fn each_round_records_its_send_time_and_cache_lifetime() {
+        let mut s = Session::new();
+        let built = Utc::now();
+        let mut r = Recorder::new(&mut s, "m");
+        r.push(&TurnEvent::TextDelta { text: "a".into() });
+        r.push(&call("t1"));
+        r.push(&TurnEvent::Usage {
+            usage: Usage {
+                input_tokens: 10,
+                cache_write_tokens: Some(10),
+                cache_write_1h_tokens: Some(10),
+                cache_write_5m_tokens: Some(0),
+                ..Usage::default()
+            },
+        });
+        r.push(&result("t1"));
+        let after_result = Utc::now();
+        r.push(&TurnEvent::TextDelta { text: "b".into() });
+        r.push(&TurnEvent::Usage {
+            usage: Usage {
+                input_tokens: 20,
+                cache_read_tokens: Some(20),
+                cache_write_tokens: Some(0),
+                ..Usage::default()
+            },
+        });
+        r.finish(Some("end_turn"));
+
+        let rounds: Vec<(DateTime<Utc>, Option<CacheTtl>)> = s
+            .events()
+            .iter()
+            .filter_map(|e| match e {
+                SessionEvent::AssistantMessage {
+                    sent_at, cache_ttl, ..
+                } => Some((sent_at.unwrap(), *cache_ttl)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rounds.len(), 2);
+        // The first request was sent when the recorder was built, before
+        // the first result; the second no earlier than that result.
+        assert!(rounds[0].0 >= built && rounds[0].0 <= after_result);
+        assert!(rounds[1].0 >= rounds[0].0 && rounds[1].0 <= Utc::now());
+        assert_eq!(rounds[0].1, Some(CacheTtl::OneHour));
+        assert_eq!(rounds[1].1, Some(CLAUDE_CODE_CACHE_TTL));
+
+        // A round that neither read nor wrote leaves nothing to time.
+        let mut s = Session::new();
+        let mut r = Recorder::new(&mut s, "m");
+        r.push(&TurnEvent::TextDelta { text: "a".into() });
+        r.push(&TurnEvent::Usage {
+            usage: Usage {
+                input_tokens: 10,
+                ..Usage::default()
+            },
+        });
+        r.finish(Some("end_turn"));
+        assert!(matches!(
+            s.events().last().unwrap(),
+            SessionEvent::AssistantMessage {
+                sent_at: Some(_),
+                cache_ttl: None,
+                ..
+            }
+        ));
     }
 
     #[test]
