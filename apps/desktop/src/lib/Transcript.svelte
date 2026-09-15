@@ -305,7 +305,10 @@
     border-radius: 10px 10px 2px 10px;
     padding: 12px 16px;
     max-width: 560px;
-    font-size: 15px;
+    /* The reply's face, one size down: the two sides of a conversation in
+       one type, with the question a little quieter than the answer. */
+    font-family: var(--transcript-font, var(--sans));
+    font-size: calc(var(--transcript-size, 16px) - 1px);
     line-height: 1.5;
   }
   /* pre-wrap sits on the text, not the bubble: with it on the bubble the

@@ -19,18 +19,50 @@ const KEY = "nightloom.transcript";
 
 export type BlockKind = "thinking" | "tool";
 
+/**
+ * The faces the transcript can be set in (nightshift backlog 051). Both are
+ * already bundled — Plex Sans is the interface face, Newsreader the serif
+ * the replies wore until 2026-09-14 — so the choice costs no bundle weight;
+ * a third face is a decision about size, not code.
+ */
+export const TRANSCRIPT_FONTS = [
+  { id: "plex", name: "IBM Plex Sans", css: "var(--sans)" },
+  { id: "newsreader", name: "Newsreader", css: "var(--serif)" },
+] as const;
+export type TranscriptFont = (typeof TRANSCRIPT_FONTS)[number]["id"];
+export const TRANSCRIPT_SIZES = [15, 16, 17] as const;
+export type TranscriptSize = (typeof TRANSCRIPT_SIZES)[number];
+
 export interface TranscriptPrefs {
   /** Every thinking block open, not just the one still streaming. */
   thinking: boolean;
   /** Every tool call as the full block, not one line each. */
   tools: boolean;
+  /** The face replies and the user's bubbles are set in. */
+  font: TranscriptFont;
+  /** The replies' body size in px; the user's bubble is one less. */
+  size: TranscriptSize;
 }
 
 /**
  * Thinking off and tools on is how the transcript read before the toggles
- * existed, so the first launch after the release changes nothing.
+ * existed, so the first launch after the release changes nothing; Plex at
+ * 16 px is his pick of 2026-09-14 and what `AssistantMessage` hard-coded
+ * until the setting existed.
  */
-export const DEFAULT_TRANSCRIPT_PREFS: TranscriptPrefs = { thinking: false, tools: true };
+export const DEFAULT_TRANSCRIPT_PREFS: TranscriptPrefs = {
+  thinking: false,
+  tools: true,
+  font: "plex",
+  size: 16,
+};
+
+function isFont(v: unknown): v is TranscriptFont {
+  return TRANSCRIPT_FONTS.some((f) => f.id === v);
+}
+function isSize(v: unknown): v is TranscriptSize {
+  return (TRANSCRIPT_SIZES as readonly number[]).includes(v as number);
+}
 
 export function loadTranscriptPrefs(storage: Pick<Storage, "getItem"> = localStorage): TranscriptPrefs {
   try {
@@ -41,6 +73,8 @@ export function loadTranscriptPrefs(storage: Pick<Storage, "getItem"> = localSto
         thinking:
           typeof p.thinking === "boolean" ? p.thinking : DEFAULT_TRANSCRIPT_PREFS.thinking,
         tools: typeof p.tools === "boolean" ? p.tools : DEFAULT_TRANSCRIPT_PREFS.tools,
+        font: isFont(p.font) ? p.font : DEFAULT_TRANSCRIPT_PREFS.font,
+        size: isSize(p.size) ? p.size : DEFAULT_TRANSCRIPT_PREFS.size,
       };
     }
   } catch {
@@ -54,7 +88,15 @@ export function saveTranscriptPrefs(
   storage: Pick<Storage, "setItem"> = localStorage,
 ): void {
   try {
-    storage.setItem(KEY, JSON.stringify({ thinking: prefs.thinking, tools: prefs.tools }));
+    storage.setItem(
+      KEY,
+      JSON.stringify({
+        thinking: prefs.thinking,
+        tools: prefs.tools,
+        font: prefs.font,
+        size: prefs.size,
+      }),
+    );
   } catch {
     // best-effort
   }
@@ -85,7 +127,7 @@ export const transcript: TranscriptView = $state({
 });
 
 /** The pref field a block kind reads. */
-function fieldOf(kind: BlockKind): keyof TranscriptPrefs {
+function fieldOf(kind: BlockKind): "thinking" | "tools" {
   return kind === "thinking" ? "thinking" : "tools";
 }
 
@@ -98,6 +140,42 @@ export function setTranscriptPref(kind: BlockKind, on: boolean): void {
 export function toggleTranscriptPref(kind: BlockKind): void {
   setTranscriptPref(kind, !transcript[fieldOf(kind)]);
 }
+
+/**
+ * The face and size reach the transcript as two custom properties on the
+ * root — `--transcript-font`, `--transcript-size` — which `AssistantMessage`
+ * and the user bubble read and nothing else does. Set on the root rather
+ * than passed down so a change in Settings is a live preview in the open
+ * transcript, which is where a font is judged (he found a sample page "too
+ * big" at the transcript's own size).
+ */
+export function applyTranscriptType(
+  prefs: Pick<TranscriptPrefs, "font" | "size"> = transcript,
+  root: { style: { setProperty(name: string, value: string): void } } | null = typeof document ===
+  "undefined"
+    ? null
+    : document.documentElement,
+): void {
+  if (!root) return;
+  const face = TRANSCRIPT_FONTS.find((f) => f.id === prefs.font) ?? TRANSCRIPT_FONTS[0];
+  root.style.setProperty("--transcript-font", face.css);
+  root.style.setProperty("--transcript-size", `${prefs.size}px`);
+}
+
+export function setTranscriptFont(font: TranscriptFont): void {
+  transcript.font = font;
+  saveTranscriptPrefs(transcript);
+  applyTranscriptType();
+}
+
+export function setTranscriptSize(size: TranscriptSize): void {
+  transcript.size = size;
+  saveTranscriptPrefs(transcript);
+  applyTranscriptType();
+}
+
+// The remembered face is on the root before the first transcript paints.
+applyTranscriptType();
 
 /** A per-block click, and the toggle revision it was made under. */
 export interface Override {

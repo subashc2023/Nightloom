@@ -17,6 +17,13 @@
   } from "./state.svelte";
   import * as api from "./api";
   import {
+    TRANSCRIPT_FONTS,
+    TRANSCRIPT_SIZES,
+    setTranscriptFont,
+    setTranscriptSize,
+    transcript,
+  } from "./transcriptPrefs.svelte";
+  import {
     CURATED,
     PROVIDER_NOTES,
     formatWindow,
@@ -562,6 +569,48 @@
           </button>
         {/each}
       </div>
+
+      <!-- The transcript's type (nightshift backlog 051). No sample card:
+           the change lands in the open transcript behind this pane, which
+           is where a face is judged — a sample at the same size read as
+           "too big" to him. -->
+      <section class="card">
+        <div class="ch"><span class="t">Transcript type</span></div>
+        <p class="note small">
+          The face and size of replies and your own messages. Applies at once
+          to the transcript behind this window and is remembered. The rest of
+          the interface stays in Plex Sans.
+        </p>
+        <div class="type-rows">
+          <div class="type-row">
+            <span class="type-label">Face</span>
+            <div class="seg" role="radiogroup" aria-label="Transcript face">
+              {#each TRANSCRIPT_FONTS as f (f.id)}
+                <button
+                  class:on={transcript.font === f.id}
+                  role="radio"
+                  aria-checked={transcript.font === f.id}
+                  style:font-family={f.css}
+                  onclick={() => setTranscriptFont(f.id)}
+                >{f.name}</button>
+              {/each}
+            </div>
+          </div>
+          <div class="type-row">
+            <span class="type-label">Size</span>
+            <div class="seg" role="radiogroup" aria-label="Transcript size">
+              {#each TRANSCRIPT_SIZES as n (n)}
+                <button
+                  class:on={transcript.size === n}
+                  role="radio"
+                  aria-checked={transcript.size === n}
+                  onclick={() => setTranscriptSize(n)}
+                >{n} px</button>
+              {/each}
+            </div>
+          </div>
+        </div>
+      </section>
     </div>
   {:else if selected === "projects"}
     <div class="pane">
@@ -1678,5 +1727,47 @@
     color: var(--text);
     font-weight: 600;
     margin-right: 0.3rem;
+  }
+  /* The transcript-type rows: label, then a segmented control in the
+     NightshiftHeader's shape; the face buttons wear their own face. */
+  .type-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .type-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .type-label {
+    width: 44px;
+    font-size: 12.5px;
+    color: var(--dim);
+  }
+  .seg {
+    display: inline-flex;
+    border: 1px solid var(--line2);
+    border-radius: 8px;
+    padding: 2px;
+    background: var(--well);
+  }
+  .seg button {
+    padding: 5px 14px;
+    border-radius: 6px;
+    border: none;
+    background: transparent;
+    color: var(--ink2);
+    font-size: 13.5px;
+    font-weight: 500;
+    font-family: var(--sans);
+    cursor: pointer;
+  }
+  .seg button:hover {
+    color: var(--ink);
+  }
+  .seg button.on {
+    background: var(--accent);
+    color: var(--paper);
   }
 </style>

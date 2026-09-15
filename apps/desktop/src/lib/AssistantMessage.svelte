@@ -205,9 +205,11 @@
     /* Plex Sans, the interface face, since 2026-09-14: the editorial serif
        read as academic to him ("looks like Times New Roman almost"), and of
        the seven faces compared side by side he chose the one the chrome
-       already uses. A per-user choice is nightshift backlog 051. */
-    font-family: var(--sans);
-    font-size: 16px;
+       already uses. The per-user choice (nightshift backlog 051) arrives as
+       two root properties set by `transcriptPrefs`; the fallbacks are his
+       defaults. */
+    font-family: var(--transcript-font, var(--sans));
+    font-size: var(--transcript-size, 16px);
     line-height: 1.55;
     color: var(--ink);
   }

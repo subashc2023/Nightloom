@@ -580,6 +580,20 @@ than as a modal, shows each argument unelided (a `bash` command has to be
 readable to be consented to), and takes initial focus on the card rather than a
 button so a stray Enter cannot grant permission.
 
+### Transcript type
+
+Settings → Appearance carries, under the palette, a *Transcript type* card
+(nightshift backlog 051, 2026-09-14): the face — IBM Plex Sans, his pick and
+the default, or Newsreader, the serif replies wore before — and the size, 15,
+16 or 17 px. Both are already bundled, so the choice costs nothing; a third
+face is a decision about bundle weight, not code. The pair lives in the same
+`localStorage["nightloom.transcript"]` as the toggles and reaches the
+transcript as two root properties, `--transcript-font` and `--transcript-size`,
+set by `applyTranscriptType` at load and on every change — read by the reply's
+markdown and by the user bubble (one px smaller) and by nothing else, so the
+chrome stays in Plex. There is no sample card: the change lands in the open
+transcript behind the pane, which is where a face is judged.
+
 ### Transcript toggles
 
 Two transcript-wide toggles in the top bar beside Context (nightshift backlog

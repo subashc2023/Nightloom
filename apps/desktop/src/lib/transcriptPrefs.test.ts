@@ -13,6 +13,9 @@ import {
   toolResultSummary,
   toolSummary,
   transcript,
+  applyTranscriptType,
+  setTranscriptFont,
+  setTranscriptSize,
 } from "./transcriptPrefs.svelte";
 import type { Override, TranscriptView } from "./transcriptPrefs.svelte";
 
@@ -22,7 +25,14 @@ import type { Override, TranscriptView } from "./transcriptPrefs.svelte";
 // rule, extracted so this file can pin it without a DOM.
 
 function view(over: Partial<TranscriptView> = {}): TranscriptView {
-  return { thinking: false, tools: true, rev: { thinking: 0, tool: 0 }, ...over };
+  return {
+    thinking: false,
+    tools: true,
+    font: "plex",
+    size: 16,
+    rev: { thinking: 0, tool: 0 },
+    ...over,
+  };
 }
 
 function call(over: Partial<ToolCallView> = {}): ToolCallView {
@@ -173,21 +183,33 @@ describe("toolSummary", () => {
 describe("prefs storage", () => {
   beforeEach(() => localStorage.clear());
 
-  it("defaults to thinking off and tools on, the pre-toggle reading", () => {
-    expect(DEFAULT_TRANSCRIPT_PREFS).toEqual({ thinking: false, tools: true });
-    expect(loadTranscriptPrefs()).toEqual({ thinking: false, tools: true });
+  // Plex at 16 px and the pre-toggle reading (thinking off, tools on):
+  // the defaults a first launch after the release must not change.
+  const defaults = { thinking: false, tools: true, font: "plex", size: 16 };
+
+  it("defaults to thinking off and tools on, Plex at 16 px", () => {
+    expect(DEFAULT_TRANSCRIPT_PREFS).toEqual(defaults);
+    expect(loadTranscriptPrefs()).toEqual(defaults);
   });
 
   it("round-trips through localStorage", () => {
-    saveTranscriptPrefs({ thinking: true, tools: false });
-    expect(loadTranscriptPrefs()).toEqual({ thinking: true, tools: false });
+    saveTranscriptPrefs({ thinking: true, tools: false, font: "newsreader", size: 17 });
+    expect(loadTranscriptPrefs()).toEqual({
+      thinking: true,
+      tools: false,
+      font: "newsreader",
+      size: 17,
+    });
   });
 
   it("survives a malformed or partial record by falling to the defaults", () => {
     localStorage.setItem("nightloom.transcript", "{not json");
-    expect(loadTranscriptPrefs()).toEqual({ thinking: false, tools: true });
-    localStorage.setItem("nightloom.transcript", JSON.stringify({ thinking: "yes", tools: false }));
-    expect(loadTranscriptPrefs()).toEqual({ thinking: false, tools: false });
+    expect(loadTranscriptPrefs()).toEqual(defaults);
+    localStorage.setItem(
+      "nightloom.transcript",
+      JSON.stringify({ thinking: "yes", tools: false, font: "comic", size: 40 }),
+    );
+    expect(loadTranscriptPrefs()).toEqual({ ...defaults, tools: false });
   });
 
   it("setting a pref saves it and bumps only its kind's revision", () => {
@@ -201,6 +223,23 @@ describe("prefs storage", () => {
     toggleTranscriptPref("tool");
     expect(transcript.tools).toBe(false);
     expect(transcript.rev.tool).toBe(revTool + 1);
-    expect(loadTranscriptPrefs()).toEqual({ thinking: true, tools: false });
+    expect(loadTranscriptPrefs()).toEqual({ ...defaults, thinking: true, tools: false });
+  });
+
+  it("the face and size land on the root as two custom properties", () => {
+    const set: Record<string, string> = {};
+    const root = { style: { setProperty: (k: string, v: string) => void (set[k] = v) } };
+    applyTranscriptType({ font: "newsreader", size: 15 }, root);
+    expect(set).toEqual({ "--transcript-font": "var(--serif)", "--transcript-size": "15px" });
+    applyTranscriptType({ font: "plex", size: 17 }, root);
+    expect(set["--transcript-font"]).toBe("var(--sans)");
+    expect(set["--transcript-size"]).toBe("17px");
+  });
+
+  it("setting the face or size is saved", () => {
+    setTranscriptFont("newsreader");
+    setTranscriptSize(17);
+    expect(loadTranscriptPrefs().font).toBe("newsreader");
+    expect(loadTranscriptPrefs().size).toBe(17);
   });
 });
