@@ -997,6 +997,13 @@ mod tests {
             "task",
             "review",
             "todo_write",
+            // The other chats' tools (2026-09-15): an incognito chat is
+            // hidden from the dream by construction — the pass reads the
+            // inbox, which only `remember` and capture fill and both skip
+            // such a chat — and this is the one other way it could reach
+            // one. The full-chat check is in `prepare`'s tool set, here.
+            "search_chats",
+            "read_chat",
         ] {
             assert!(
                 !names.contains(&forbidden.to_string()),

@@ -27,8 +27,8 @@ pub mod turn;
 pub mod usage;
 
 pub use agent::{
-    AgentError, AgentOutcome, AgentSpec, ClaudeCodeAgent, Recorder, resolve_binary,
-    searched_locations,
+    AgentError, AgentOutcome, AgentSpec, ClaudeCodeAgent, Recorder, carry_transcript,
+    resolve_binary, searched_locations,
 };
 pub use approval::{Approver, AutoApprove, Decision, PendingCall};
 pub use credentials::{CredentialError, KeySource, provider_key, search_key};

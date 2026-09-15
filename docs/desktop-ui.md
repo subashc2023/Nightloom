@@ -630,6 +630,48 @@ paste bug. The switch is on `app.events.length === 0 && !app.live`, and
 `app.live` is in the test so the pane flips on the first send rather than on the
 re-sync a whole turn later.
 
+### Incognito and ephemeral chats (nightshift backlog 059, 2026-09-15)
+
+Three kinds of chat, one control, offered wherever *New chat* is and nowhere
+else, never a modal. The mock is
+`nightshift-code/notes/runner-design/incognito-chats-mock-2026-09-15.md`.
+
+- **The sidebar's New chat is a split button**: the wide half is New chat as
+  it was; the narrow ▾ half (or a right-click on the wide half) opens the
+  project menu's popover shape under it — *New chat · Incognito · Ephemeral*,
+  one line each (`MODE_LINES` in `state.svelte.ts`: "kept, indexed,
+  remembered" / "kept and marked; writes nothing, unread by other chats" /
+  "nothing is kept; gone when you close it"), a click-away scrim.
+- **⌘K** has *New incognito chat* (⌘⇧N) and *New ephemeral chat* (no key)
+  in the Go group with the same lines as `meta`; the **Welcome strip** has
+  `⌘⇧N incognito` and a keyless `ephemeral` cap; the **macOS File menu** has
+  *New Incognito Chat* ⌘⇧N and *New Ephemeral Chat*; off macOS ⌘⇧N is in
+  `App.svelte`'s Shift table. All four go through `runMenuCommand`
+  (`new_incognito`, `new_ephemeral`) to `newSession(mode)`.
+- **The marks.** `chatMode(events)` projects the open chat's mode from its
+  `session_created` line — `newSession` now fetches the transcript back
+  rather than resetting to `[]`, so the line is there before the first send.
+  A sidebar row for an incognito chat carries `◐` before its name and the
+  word `incognito` in its meta line (`SessionMeta.mode`); the top bar shows
+  `◐ incognito` after the short id, or `◌ ephemeral — nothing is kept`; the
+  Context page's caveat line says *incognito: writes nothing, unread by other
+  chats* or the ephemeral sentence (and that on Claude Code the earlier turns
+  are replayed). An ephemeral chat is never in the list, so the top bar's
+  title for it is the fallback and the mark is what says what it is.
+- **The reconnect.** The engine is built per rail change, and an incognito
+  chat's engine has no writers (`build_chat` keeps `ReadOnly` and `Session`
+  tools and drops every `Mutating` one but the web; `connect_agent` passes
+  `--tools` read-only and starts the MCP server `--no-remember`, ephemeral
+  adding `--no-session-persistence` — [service-agent.md](service-agent.md)).
+  So `prompt_layers` reports `mode` beside `built_mode` and `syncPromptLayers`
+  reconnects when they differ, exactly as it does for the layer set: open an
+  incognito chat and the writers go; open an ordinary one after it and they
+  come back.
+- **Ephemeral leaves nothing**: no log, no listing row, no title call, no
+  CLI session; switching chats or starting a new one drops the in-memory
+  session, and there is no row to reopen it from. It does not clean up after
+  other modes — nothing is deleted on his behalf.
+
 ### New project and Open project
 
 Until 2026-09-14 *New project…* was a folder picker, which served the case it is

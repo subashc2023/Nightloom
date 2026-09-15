@@ -230,6 +230,28 @@
         run: () => go(() => runMenuCommand("new_chat")),
         disabled: app.busy,
       },
+      // The two other kinds (nightshift backlog 059, 2026-09-15), one
+      // line each, beside the ordinary one.
+      {
+        id: "new_incognito",
+        label: "New incognito chat",
+        meta: "kept and marked · writes nothing · unread by other chats",
+        icon: "chat",
+        key: `${mod}${shift}N`,
+        group: "Go",
+        run: () => go(() => runMenuCommand("new_incognito")),
+        disabled: app.busy,
+      },
+      {
+        id: "new_ephemeral",
+        label: "New ephemeral chat",
+        meta: "nothing is kept · gone when closed",
+        icon: "chat",
+        key: "",
+        group: "Go",
+        run: () => go(() => runMenuCommand("new_ephemeral")),
+        disabled: app.busy,
+      },
       {
         id: "new_project",
         label: "New project…",

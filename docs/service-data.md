@@ -268,6 +268,19 @@ observations come back in the outcome. `CaptureOutcome` carries `logs_read`,
 The current chat's own log is read too, up to its watermark — fine, by
 design: what was said is what was said.
 
+**Incognito logs are stepped over (2026-09-15).** Before a log is folded the
+walk reads its mode off the first line (`store::mode_of`, one small read —
+the watermark may be past that line) and a log whose mode is `unread_by_others`
+is skipped without a turn, counted in `CaptureOutcome.incognito`, and its
+watermark moved to the end of the file: nothing was read, nothing ever will
+be, and a log that stays "unread" forever is a pending count beside the
+Capture button that never clears. A dry run counts it and moves nothing. The
+test pins that the incognito text is in no request the scripted provider was
+sent. The dream needs no skip of its own — it reads the inbox, which only
+`remember` (absent from such a chat) and this pass (skipping it) fill, and its
+tool set has no `search_chats`/`read_chat` (`dream_tools_are_files_and_search_only`
+now pins that too).
+
 ### The dream
 
 `nightloom dream` / `dream::run` builds a chat whose *workspace is the vault*,
@@ -764,6 +777,30 @@ what a tool result is. `Said` carries the event's timestamp for `read_chat`,
 which dates each message so a quotation can carry one; `search` ignores it and
 dates the whole chat by its file.
 
+### What is and is not written, per chat mode (2026-09-15)
+
+A chat's mode (`ChatMode`, [core.md](core.md)) is on its log's first line and
+decides what the store does with it:
+
+| | normal | incognito | ephemeral |
+|---|---|---|---|
+| log on disk | yes | yes, `"mode":"incognito"` on the creation line | **none** — `Session::ephemeral()` is in memory; nothing under the sessions dir, ever |
+| listing (`store::list`, the sidebar) | yes | yes, `SessionSummary.mode` marks the row (`LISTING_VERSION` 2) | never — there is no file to list |
+| the user's own sidebar search (`store::search`) | yes | yes — it is hidden from other *chats*, not from him | — |
+| chat index (`ChatIndex`) | admitted | a record with **no terms**, outside `n`/`df`/`len` (`INDEX_VERSION` 2) | — |
+| `search_chats` / `read_chat` | yes | never returned; refused by id ([service-tools.md](service-tools.md)) | — |
+| capture | read | skipped and counted (above) | — |
+| `remember` | served | not served, on either engine | not served |
+| title call | yes | yes | never (it is in no list) |
+
+`store::mode_of(path)` reads the first line and nothing else, for the walkers
+that decide before opening a log properly; a log it cannot read is `Normal`,
+the reading every stage gave before the field existed, and the walker then
+fails or skips on its own terms. Both derived files bumped their version
+rather than migrating: a cache entry or an index record written without the
+mode would read an incognito log as normal, which is the one thing neither
+may do.
+
 ### The chat index is kept on the listing's terms (`store/index.rs`)
 
 `ChatIndex`, an `.index.json` beside the logs next to `.listing.json`, is what
@@ -779,6 +816,14 @@ applied to the query too); the title's words count three times. It is built
 from `said`, the same "conversation only" filter as everything else here, so a
 word that only ever appeared in a tool result is not in it, and a test pins
 that.
+
+**An incognito log has a record and no terms** (2026-09-15): `Indexed::saw`
+folds the creation line first and, once it says the log is unread by others,
+counts nothing that follows — so the record exists for the cache to validate
+the file against (a log with no record would be re-read on every load) and is
+outside the corpus (`admitted()` drives `recount`, `len` and `is_empty`). A
+query for a word only such a chat says finds nothing, cold, warm, or after the
+log grew; the test is `an_incognito_log_is_never_admitted`.
 
 It is **derived data on exactly the listing's terms**, and the argument is the
 same one: every record is re-validated against its log's size and mtime on

@@ -210,6 +210,23 @@ that was itself a `Rewind` or `Elide` is not being honoured, so content the user
 hid is back on the wire, and `LoadReport::summary()` is the one sentence both
 shells say about it.
 
+### The chat's mode is on its first line (`ChatMode`, 2026-09-15)
+
+`SessionEvent::SessionCreated` carries `mode: ChatMode` — `normal`, `incognito`
+or `ephemeral` — written only when not normal, so every log before the field
+and every ordinary log after is byte-identical. It is on the creation line and
+not on an event of its own because it cannot change: a chat that was ordinary
+for ten turns has already been indexed and captured, so "incognito from here"
+would be a promise nobody downstream could keep, and every reader that has to
+skip such a log reads the first line first anyway. `Session::mode()` projects
+it off the raw events (a rewind cuts at a user message and never reaches index
+0). `Session::incognito(dir)` is `with_log` marked; `Session::ephemeral()` is
+in memory and marked, distinct from `Session::new()`, which stays `normal`
+because a capture turn or a dream turn is not a chat the user asked to forget;
+`with_log_in_mode(dir, Ephemeral)` is refused as a confusion of the two. What
+each mode drops is the service's and the shells' business —
+[service-data.md](service-data.md) "What is and is not written".
+
 ## Markers over mutations
 
 Everything that supersedes conversation state leaves the log append-only and

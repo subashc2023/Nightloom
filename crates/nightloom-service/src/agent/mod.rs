@@ -33,10 +33,11 @@ mod record;
 mod translate;
 
 pub use protocol::RateLimitInfo;
-pub use record::Recorder;
+pub use record::{Recorder, carry_transcript};
 pub use translate::{AgentOutcome, Translator};
 
 use crate::{TurnEvent, TurnInput};
+use nightloom_core::ChatMode;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
@@ -226,10 +227,43 @@ pub struct AgentSpec {
     /// `--safe-mode` (see that field), and this server survives it — the
     /// only one that does.
     pub mcp_config: Option<String>,
+    /// Keep the CLI from writing its own session file, and so from ever
+    /// being able to resume this conversation: `--no-session-persistence`
+    /// (2026-09-15, an ephemeral chat). Measured on 2.1.263: a turn without
+    /// it wrote a 116 KB file under `~/.claude/projects/<cwd>/` for one word
+    /// of reply; a turn with it wrote nothing there; and `--resume` of that
+    /// session id then failed with "No conversation found". So a chat run
+    /// with this has **no continuity from the CLI's side** — the shell that
+    /// wants a second turn to know the first has to carry the conversation
+    /// itself ([`Recorder`] keeps it in memory; [`carry_transcript`] renders
+    /// it back into the prompt).
+    pub no_session_persistence: bool,
     /// Passed through verbatim, last, so a caller can reach a flag this
     /// struct has not grown a field for.
     pub extra_args: Vec<String>,
 }
+
+/// The CLI's built-in tools a chat that writes nothing may keep: the
+/// readers, and the web. A **positive** list rather than `--disallowedTools`
+/// naming the writers, because the two were measured side by side
+/// (2026-09-15, CLI 2.1.263, Haiku, the init event's `tools`):
+///
+/// | spelling | init `tools` |
+/// |---|---|
+/// | `--disallowedTools Write Edit NotebookEdit Bash` | the four gone — and `EnterWorktree`, `CronCreate`, `CronDelete`, `Task` still there |
+/// | `--tools Read Glob Grep WebFetch WebSearch` | exactly those five |
+///
+/// A deny-list is honest about the release it was written against and
+/// drifts open on the next one; a worktree and a cron job both write. The
+/// positive list is default-closed, and `--tools` is already how the rail's
+/// "tools off" is spelled (`Some(vec![])`), so this is the same field with
+/// five names in it. MCP tools are untouched by `--tools` — Nightloom's own
+/// server still reaches the model, started without `remember`.
+///
+/// The web stays. Incognito is about *his* data — nothing written here,
+/// nothing read by other chats — and a fetch writes nothing on this
+/// machine; egress has its own switch on the rail and keeps it.
+pub const READ_ONLY_TOOLS: [&str; 5] = ["Read", "Glob", "Grep", "WebFetch", "WebSearch"];
 
 impl AgentSpec {
     pub fn new(workspace: impl Into<PathBuf>) -> Self {
@@ -248,7 +282,30 @@ impl AgentSpec {
             use_subscription: true,
             add_dirs: Vec::new(),
             mcp_config: None,
+            no_session_persistence: false,
             extra_args: Vec::new(),
+        }
+    }
+
+    /// Shape the spec for a chat started in `mode`. `Normal` changes nothing.
+    /// Both other modes confine the CLI to [`READ_ONLY_TOOLS`] — unless the
+    /// caller had already asked for no tools at all, which stays no tools —
+    /// and `Ephemeral` also asks the CLI to keep no session of its own.
+    ///
+    /// One method rather than two fields the shell sets in step, so the
+    /// ladder (ephemeral is incognito and then some) is written down once.
+    pub fn apply_mode(&mut self, mode: ChatMode) {
+        if !mode.writes_nothing() {
+            return;
+        }
+        match &self.tools {
+            Some(t) if t.is_empty() => {}
+            _ => {
+                self.tools = Some(READ_ONLY_TOOLS.iter().map(|t| (*t).to_string()).collect());
+            }
+        }
+        if mode == ChatMode::Ephemeral {
+            self.no_session_persistence = true;
         }
     }
 
@@ -372,6 +429,9 @@ impl AgentSpec {
         if let Some(cfg) = &self.mcp_config {
             a.push("--mcp-config".into());
             a.push(cfg.clone());
+        }
+        if self.no_session_persistence {
+            a.push("--no-session-persistence".into());
         }
         a.extend(self.extra_args.iter().cloned());
         a
@@ -983,6 +1043,48 @@ mod tests {
     #[test]
     fn strict_mcp_config_is_not_sent_unasked() {
         assert!(!spec().args("hi").iter().any(|x| x == "--strict-mcp-config"));
+    }
+
+    /// An incognito chat confines the CLI to the measured read-only list —
+    /// `--tools` with five names, never `--disallowedTools` — and does not
+    /// ask for `--no-session-persistence`; an ephemeral one does both. The
+    /// rail's "no tools" is left alone by either.
+    #[test]
+    fn incognito_is_the_read_only_tool_list_and_ephemeral_adds_no_persistence() {
+        let mut s = spec();
+        s.apply_mode(ChatMode::Normal);
+        let a = s.args("hi");
+        assert!(!a.iter().any(|x| x == "--tools"));
+        assert!(!a.iter().any(|x| x == "--no-session-persistence"));
+
+        let mut s = spec();
+        s.apply_mode(ChatMode::Incognito);
+        let a = s.args("hi");
+        let i = a.iter().position(|x| x == "--tools").expect("--tools");
+        assert_eq!(&a[i + 1..i + 6], READ_ONLY_TOOLS);
+        for writer in ["Write", "Edit", "NotebookEdit", "Bash"] {
+            assert!(!a.iter().any(|x| x == writer), "{writer} in {a:?}");
+        }
+        assert!(!a.iter().any(|x| x == "--disallowedTools"), "{a:?}");
+        assert!(!a.iter().any(|x| x == "--no-session-persistence"), "{a:?}");
+
+        let mut s = spec();
+        s.apply_mode(ChatMode::Ephemeral);
+        let a = s.args("hi");
+        let i = a.iter().position(|x| x == "--tools").expect("--tools");
+        assert_eq!(&a[i + 1..i + 6], READ_ONLY_TOOLS);
+        assert!(a.iter().any(|x| x == "--no-session-persistence"), "{a:?}");
+        // Before the caller's own trailing arguments, like every other flag.
+        s.extra_args = vec!["--x".into()];
+        let a = s.args("hi");
+        assert_eq!(a.last().map(String::as_str), Some("--x"));
+
+        let mut s = spec();
+        s.tools = Some(vec![]);
+        s.apply_mode(ChatMode::Incognito);
+        let a = s.args("hi");
+        let i = a.iter().position(|x| x == "--tools").unwrap();
+        assert_eq!(a[i + 1], "", "no tools stays no tools");
     }
 
     /// A path the user typed is honoured as typed. Second-guessing it would

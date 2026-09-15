@@ -88,6 +88,9 @@
     o: "model_opus",
     f: "model_fable",
     h: "model_haiku",
+    // ⌘⇧N is an incognito chat (nightshift backlog 059, 2026-09-15); on
+    // macOS the File menu carries it.
+    n: "new_incognito",
   };
   function onShortcut(e: KeyboardEvent): boolean {
     if (e.altKey) return false;

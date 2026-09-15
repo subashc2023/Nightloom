@@ -1,9 +1,12 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   app,
+  chatMode,
   clockOf,
   currentTodos,
   liveFlags,
+  MODE_GLYPH,
+  MODE_LINES,
   promptLayerEdits,
   promptLayersOff,
   roundCost,
@@ -229,6 +232,44 @@ describe("promptLayersOff", () => {
       rewind(1),
     ];
     expect(promptLayersOff(events)).toEqual(["user_memory"]);
+  });
+});
+
+// The mode is the first line's, projected the way `Session::mode()` is:
+// what the top bar marks, the Context page says, and the reconnect strips
+// the engine's writers on — the three must read one source.
+describe("chatMode", () => {
+  const created = (mode?: "normal" | "incognito" | "ephemeral"): SessionEvent => ({
+    event: "session_created",
+    id: "abc",
+    at: "2026-09-15T00:00:00Z",
+    ...(mode ? { mode } : {}),
+  });
+
+  it("is normal for no chat, and for a log written before the field existed", () => {
+    expect(chatMode([])).toBe("normal");
+    expect(chatMode([created(), user("one")])).toBe("normal");
+  });
+
+  it("reads the creation line's mode", () => {
+    expect(chatMode([created("incognito"), user("one")])).toBe("incognito");
+    expect(chatMode([created("ephemeral")])).toBe("ephemeral");
+  });
+
+  it("is not something a rewind can reach", () => {
+    const events = [created("incognito"), user("one"), assistant("first"), rewind(1)];
+    expect(chatMode(events)).toBe("incognito");
+  });
+
+  it("marks the two non-normal kinds and not the ordinary one", () => {
+    expect(MODE_GLYPH.normal).toBe("");
+    expect(MODE_GLYPH.incognito).not.toBe("");
+    expect(MODE_GLYPH.ephemeral).not.toBe("");
+    expect(MODE_GLYPH.incognito).not.toBe(MODE_GLYPH.ephemeral);
+    // One line each, and each says the thing it drops.
+    expect(MODE_LINES.incognito).toMatch(/writes nothing/);
+    expect(MODE_LINES.incognito).toMatch(/unread by other chats/);
+    expect(MODE_LINES.ephemeral).toMatch(/nothing is kept/);
   });
 });
 

@@ -2,10 +2,12 @@
   import {
     app,
     cacheHitRate,
+    chatMode,
     compactSession,
     contextUsed,
     currentTodos,
     liveFlags,
+    MODE_GLYPH,
     sessionCost,
   } from "./state.svelte";
   import RightRail from "./RightRail.svelte";
@@ -24,6 +26,26 @@
   const session = $derived(app.sessions.find((s) => s.id === app.activeSessionId) ?? null);
   const title = $derived(session ? (session.title ?? session.first_user ?? "new chat") : "");
   const crumb = $derived(app.activeSessionId ? app.activeSessionId.slice(0, 8) : "");
+
+  /**
+   * The chat's mode, projected from its log (nightshift backlog 059): a
+   * glyph and the word after the short id. An ephemeral chat has no listing
+   * row, so `title` above is empty for it and this mark is what says what
+   * it is; it also says, in the same breath, that nothing is kept.
+   */
+  const mode = $derived(chatMode(app.events));
+  const modeText = $derived(
+    mode === "incognito"
+      ? "incognito"
+      : mode === "ephemeral"
+        ? "ephemeral — nothing is kept"
+        : "",
+  );
+  const modeTitle = $derived(
+    mode === "incognito"
+      ? "Incognito: kept and marked; writes nothing, unread by other chats"
+      : "Ephemeral: no log, no name, no CLI session; gone when you close it",
+  );
 
   /**
    * Context gauge. The denominator comes from the backend's limits table and
@@ -183,6 +205,11 @@
     {/if}
     {#if crumb}
       <span class="crumb ns-mono">{crumb}</span>
+    {/if}
+    {#if modeText}
+      <span class="mode {mode}" title={modeTitle}
+        ><span aria-hidden="true">{MODE_GLYPH[mode]}</span> {modeText}</span
+      >
     {/if}
   </div>
 
@@ -345,6 +372,15 @@
   .crumb {
     font-size: 11.5px;
     color: var(--dim);
+  }
+  /* The mode mark: the crumb's size, a shade brighter so it reads as a
+     state and not as an id. */
+  .mode {
+    font-size: 11.5px;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .right {
     display: flex;

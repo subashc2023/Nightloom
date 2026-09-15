@@ -329,6 +329,14 @@
     <button class="kk" onclick={() => runMenuCommand("new_chat")}>
       <Kbd keys="{mod}N" />new chat
     </button>
+    <!-- The two other kinds (nightshift backlog 059): incognito on ⌘⇧N;
+         ephemeral has no key, and the cap is still a button. -->
+    <button class="kk" onclick={() => runMenuCommand("new_incognito")} title="Kept and marked; writes nothing, unread by other chats">
+      <Kbd keys="{mod}{shift}N" />incognito
+    </button>
+    <button class="kk" onclick={() => runMenuCommand("new_ephemeral")} title="Nothing is kept; gone when you close it">
+      ephemeral
+    </button>
     <button class="kk" onclick={() => runMenuCommand("settings")}>
       <Kbd keys="{mod}," />settings
     </button>

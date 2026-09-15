@@ -449,6 +449,20 @@ both rankings side by side is
 tools are built before a session exists, so a hit in the current chat costs a
 row rather than a wrong answer and is left alone in this version.
 
+**An incognito chat is refused, both ways (2026-09-15).** Search never returns
+one: the ranked path cannot — the index holds no term for such a log
+([service-data.md](service-data.md) "The chat index") — and the substring
+fallback drops any hit whose `summary.mode` is unread by others, since the
+sidebar's scan it borrows finds the chat for the *user*, who owns it.
+`read_chat` refuses by id, short or full, before scanning the log
+(`store::mode_of` on the first line): *"that chat is incognito: it was started
+so that no other chat can read it, and this one cannot"* — a refusal that
+names no content, so a model holding the id from the user, or from a result
+line older than the mode, still gets no window. An ephemeral chat has no log
+and nothing to refuse. Both tools are served to an incognito chat itself —
+it may read the others; they may not read it. The test is
+`an_incognito_chat_is_hidden_from_search_and_refused_by_read`.
+
 ## Killing a shell is not killing the command (`tools/shell.rs`)
 
 `kill_tree`, `PUMP_GRACE`.

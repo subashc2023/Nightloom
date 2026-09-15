@@ -125,6 +125,52 @@ A "not found" names every place it looked, and the desktop reports the
 rather than the name it was asked for — the two differ exactly when the fallback
 did something.
 
+## Incognito and ephemeral chats on this engine (2026-09-15)
+
+A chat started as incognito or ephemeral (nightshift backlog 059; `ChatMode`
+in [core.md](core.md)) writes nothing, and on this engine the CLI runs its own
+tools, so the confinement is on the command line (`AgentSpec::apply_mode`):
+
+- **`--tools Read Glob Grep WebFetch WebSearch`** (`READ_ONLY_TOOLS`) — a
+  positive list, never `--disallowedTools`. Both were measured on 2.1.263 with
+  one Haiku turn each, reading the `system/init` event's `tools`:
+  `--disallowedTools Write Edit NotebookEdit Bash` did remove those four, and
+  left `EnterWorktree`, `CronCreate`, `CronDelete` and `Task` in the list — a
+  worktree and a cron job both write, and the next release can add more; the
+  `--tools` spelling left exactly the five named. A deny-list drifts open; a
+  positive list is default-closed, and `--tools` is already how the rail's
+  "tools off" is spelled. The web stays: incognito is about *his* data, a
+  fetch writes nothing on this machine, and egress keeps its own switch.
+  `--tools` does not touch MCP tools, which is right — see the next point.
+- **Nightloom's server is started with `--no-remember`** (`mcp_server::ServeArgs`),
+  so `search_chats`, `read_chat` and `fetch_page` reach the model and
+  `remember` does not; the `initialize` instructions drop the sentence about
+  it. An incognito chat may read the other chats; it is the other chats that
+  may not read it, and the two readers refuse such a chat on their own
+  ([service-tools.md](service-tools.md) "Other chats").
+- **Ephemeral adds `--no-session-persistence`** (`AgentSpec::no_session_persistence`).
+  Measured: a turn without it wrote a 116 KB session file under
+  `~/.claude/projects/<cwd>/` for one word of reply; with it, nothing; and
+  `--resume` of that session id then failed — "No conversation found with
+  session ID". So the CLI keeps nothing, **and cannot continue the
+  conversation either**, since this module continues one only by `--resume`.
+  The desktop therefore carries the conversation itself: `send_agent` renders
+  the in-memory log's earlier turns (`agent::carry_transcript`, the recorder's
+  inverse — what was said, by whom, in order, tool results left out) into an
+  `<earlier-turns>` block in front of each message from the second turn on,
+  and the block tells the model it is a replay, not a resume. What that costs:
+  no prompt cache across turns, the CLI's own tool calls from earlier turns
+  gone, the prompt growing with the chat (capped at the most recent ~200 KB).
+  An ephemeral chat is short by its nature, and the alternative — one
+  long-lived `--input-format stream-json` process per chat — changes
+  `run_turn`'s lifecycle and is a nightshift blocker rather than a guess.
+- `--add-dir` for the vault is still passed: `Read` is in the list, and the
+  grant only makes vault paths readable without a classifier prompt.
+
+The log is written as usual for incognito (marked on line 1) and not at all
+for ephemeral ([service-data.md](service-data.md)); the `Recorder` writes into
+whichever `Session` it is given and does not know the difference.
+
 ## What `--append-system-prompt` carries
 
 Three parts, in this order, joined by blank lines (`prompt::agent_prompt`

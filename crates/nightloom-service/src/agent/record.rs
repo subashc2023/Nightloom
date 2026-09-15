@@ -21,7 +21,7 @@
 //!
 //! [`SessionEvent::AgentSession`]: nightloom_core::SessionEvent
 
-use nightloom_core::{ContentBlock, Session, Usage};
+use nightloom_core::{ContentBlock, Role, Session, Usage};
 
 use crate::TurnEvent;
 
@@ -32,6 +32,69 @@ use crate::TurnEvent;
 /// whatever another process decided to return, and a log is not the place to
 /// find out it decided on forty megabytes.
 const RECORD_LIMIT: usize = 64 * 1024;
+
+/// How much replayed conversation an ephemeral turn carries, in characters
+/// of transcript, keeping the most recent. An ephemeral chat is short by
+/// its nature — "I open it up, I do the thing, I close it" — and this is a
+/// backstop under that, not a budget anyone should reach.
+const CARRY_LIMIT: usize = 200 * 1024;
+
+/// The prompt for one turn of an ephemeral chat on this engine: the
+/// conversation so far, rendered back in front of the new message.
+///
+/// The recorder's inverse, and the reason it exists is a measurement: a
+/// session run with `--no-session-persistence` cannot be `--resume`d
+/// (2.1.263 answers "No conversation found"), and this module continues a
+/// conversation *only* by resume. So a second turn would begin with a model
+/// that had never seen the first. The log is in memory anyway — the
+/// recorder wrote it there — and this renders what it holds as the chat's
+/// earlier turns: what was said, by whom, in order, with the tool results
+/// left out for the reason every other reader of a log leaves them out. It
+/// is not a resume — the CLI's own tool calls are gone with the session,
+/// and the prompt cache starts over each turn — and the block says so to
+/// the model rather than pretending.
+///
+/// The turn just being sent is `text`; `session` holds everything before
+/// it, so a caller renders this *before* recording the new user message.
+/// With nothing before it (the first turn) the text goes out untouched.
+pub fn carry_transcript(session: &Session, text: &str) -> String {
+    let mut earlier = String::new();
+    for m in session.messages() {
+        let said = m.text();
+        if said.trim().is_empty() {
+            continue;
+        }
+        let who = match m.role {
+            Role::User => "user",
+            Role::Assistant => "assistant",
+        };
+        earlier.push_str(who);
+        earlier.push_str(": ");
+        earlier.push_str(said.trim());
+        earlier.push_str("\n\n");
+    }
+    if earlier.is_empty() {
+        return text.to_string();
+    }
+    let mut cut_note = "";
+    if earlier.len() > CARRY_LIMIT {
+        let mut from = earlier.len() - CARRY_LIMIT;
+        while !earlier.is_char_boundary(from) {
+            from += 1;
+        }
+        earlier = earlier[from..].to_string();
+        cut_note = " The earliest turns were cut to fit.";
+    }
+    format!(
+        "<earlier-turns>\n\
+         This chat is ephemeral: nothing about it is kept, by Nightloom or by you, so its \
+         earlier turns are replayed here rather than resumed. Tool results from those turns \
+         are not included.{cut_note} Continue the conversation from the last message.\n\n\
+         {}\
+         </earlier-turns>\n\n{text}",
+        earlier.trim_end_matches('\n').to_string() + "\n"
+    )
+}
 
 /// Feed it the [`TurnEvent`]s of an agent turn; it writes the session log.
 ///
@@ -378,5 +441,68 @@ mod tests {
         };
         assert!(content.len() < RECORD_LIMIT + 200);
         assert!(content.contains(&format!("{} bytes", RECORD_LIMIT + 500)));
+    }
+
+    /// The first turn goes out as typed; a later one carries what was said
+    /// before it, in order, with the speakers named, the tool result left
+    /// out, and the new message last and untouched.
+    #[test]
+    fn an_ephemeral_turn_carries_the_earlier_conversation_and_never_a_tool_result() {
+        let mut s = Session::ephemeral();
+        assert_eq!(carry_transcript(&s, "first question"), "first question");
+
+        s.record_user("first question");
+        let mut r = Recorder::new(&mut s, "m");
+        r.push(&TurnEvent::TextDelta {
+            text: "let me read".into(),
+        });
+        r.push(&call("c1"));
+        r.push(&TurnEvent::ToolResult {
+            tool_use_id: "c1".into(),
+            name: "Read".into(),
+            content: "SECRET-FILE-CONTENTS".into(),
+            is_error: false,
+        });
+        r.push(&TurnEvent::TextDelta {
+            text: "the file says hello".into(),
+        });
+        r.finish(Some("end_turn"));
+
+        let out = carry_transcript(&s, "second question");
+        assert!(out.starts_with("<earlier-turns>\n"), "{out}");
+        assert!(
+            out.ends_with("</earlier-turns>\n\nsecond question"),
+            "{out}"
+        );
+        assert!(
+            out.contains("user: first question\n\nassistant: let me read"),
+            "{out}"
+        );
+        assert!(out.contains("assistant: the file says hello"), "{out}");
+        assert!(!out.contains("SECRET-FILE-CONTENTS"), "{out}");
+        assert!(out.contains("replayed here rather than resumed"), "{out}");
+        assert!(!out.contains("were cut"), "{out}");
+    }
+
+    /// Past the limit the oldest turns go and the block says so.
+    #[test]
+    fn an_oversized_carry_keeps_the_most_recent_turns() {
+        let mut s = Session::ephemeral();
+        for i in 0..40 {
+            s.record_user(format!("turn {i} {}", "x".repeat(8 * 1024)));
+            s.record_assistant(
+                "m",
+                vec![ContentBlock::Text {
+                    text: format!("reply {i}"),
+                }],
+                None,
+                Usage::default(),
+            );
+        }
+        let out = carry_transcript(&s, "now");
+        assert!(out.len() < CARRY_LIMIT + 2048, "{}", out.len());
+        assert!(out.contains("were cut to fit"));
+        assert!(out.contains("reply 39"));
+        assert!(!out.contains("reply 0\n"));
     }
 }

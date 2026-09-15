@@ -307,6 +307,8 @@ export interface CaptureReport {
   skipped: number;
   deferred: number;
   remaining: number;
+  /** Incognito chats seen and deliberately not read. */
+  incognito: number;
   per_project: { project: string; observations: number }[];
   interrupted: boolean;
   cost_usd: number | null;
@@ -496,6 +498,15 @@ export interface CompactResult {
   usage: Usage;
 }
 
+/**
+ * What a chat was started as (nightshift backlog 059, 2026-09-15). Fixed at
+ * its birth: `incognito` is kept and listed, marked, writes nothing and no
+ * other chat can read it; `ephemeral` drops all of that and the log too, so
+ * it is never listed and is gone when closed. Absent on the wire means
+ * `normal` — every log written before the field existed.
+ */
+export type ChatMode = "normal" | "incognito" | "ephemeral";
+
 export interface SessionMeta {
   id: string;
   path: string;
@@ -507,6 +518,9 @@ export interface SessionMeta {
    *  permanently null for a log written before names existed — so render
    *  `title ?? first_user`, never `title` alone. */
   title: string | null;
+  /** Absent for a normal chat; `incognito` marks the row. An ephemeral chat
+   *  has no log and is never in a listing. */
+  mode?: ChatMode;
 }
 
 /** A session that matched a search. Flattened on the Rust side, so it is a
@@ -595,7 +609,7 @@ export type ContentBlock =
     };
 
 export type SessionEvent =
-  | { event: "session_created"; id: string; at: string }
+  | { event: "session_created"; id: string; at: string; mode?: ChatMode }
   // `images` and `documents` are absent, not empty, on messages logged
   // without any — including every message logged before attachments existed.
   | {
@@ -815,6 +829,10 @@ export interface PromptLayersInfo {
   built: PromptLayer[];
   edits: PromptLayerEdits;
   built_edits: PromptLayerEdits;
+  /** The open chat's mode and the one the engine was built for — the third
+   *  pair, compared like the other two (2026-09-15). */
+  mode: ChatMode;
+  built_mode: ChatMode;
 }
 
 /** What `editContext` changed: both projections, plus how many items moved. */

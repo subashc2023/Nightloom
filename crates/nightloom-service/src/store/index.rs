@@ -40,8 +40,10 @@ use super::{Log, StoreError, Summarizing, io_err, log_files, peek_at, said, skip
 pub(crate) const INDEX_FILE: &str = ".index.json";
 
 /// Bumped whenever [`Indexed`] or the tokeniser changes. An older file is
-/// rebuilt rather than migrated: it is derived data.
-const INDEX_VERSION: u32 = 1;
+/// rebuilt rather than migrated: it is derived data. 2 since the chat mode
+/// (2026-09-15): a record written without it would count an incognito
+/// chat's words, which is the one thing the index must not do.
+const INDEX_VERSION: u32 = 2;
 
 /// How many times a word in the title counts, against once in the body. The
 /// title answered three of ten questions on its own in the substring
@@ -176,19 +178,35 @@ impl Indexed {
         }
     }
 
+    /// Whether this log is one the index must not admit. Decided by the
+    /// creation line, which is folded first, so a record for an incognito
+    /// chat exists — the cache needs something to validate the file against
+    /// — and holds no term, which is what keeps it out of every ranking.
+    fn unread(&self) -> bool {
+        self.summary.unread_by_others()
+    }
+
     fn saw(&mut self, event: &SessionEvent) {
+        // The name this record was counted under, taken before the listing
+        // fields move on: a rename has to take the old name's words out.
+        let old_title = self.summary.title.clone();
+        // The listing fields first: the creation event is what says whether
+        // anything after it may be counted at all.
+        if let Some(p) = peek_at(event) {
+            self.summary.saw(p);
+        }
+        if self.unread() {
+            return;
+        }
         if let Some(s) = said(event) {
             if s.conversation {
                 self.add(&s.text, 1);
             } else {
-                if let Some(old) = self.summary.title.clone() {
+                if let Some(old) = old_title {
                     self.remove(&old, TITLE_WEIGHT);
                 }
                 self.add(&s.text, TITLE_WEIGHT);
             }
-        }
-        if let Some(p) = peek_at(event) {
-            self.summary.saw(p);
         }
     }
 
@@ -286,21 +304,29 @@ impl ChatIndex {
         }
     }
 
-    /// The corpus statistics, from the records.
+    /// The records that are in the corpus: every log the directory holds
+    /// except the incognito ones, which have a record for the cache's sake
+    /// and are nothing to rank against.
+    fn admitted(&self) -> impl Iterator<Item = &Indexed> {
+        self.logs.values().filter(|l| !l.unread())
+    }
+
+    /// The corpus statistics, from the admitted records.
     fn recount(&mut self) {
-        self.n = self.logs.len() as u32;
-        let total: u64 = self.logs.values().map(|l| u64::from(l.len)).sum();
+        self.n = self.admitted().count() as u32;
+        let total: u64 = self.admitted().map(|l| u64::from(l.len)).sum();
         self.avg_len = if self.n == 0 {
             0.0
         } else {
             total as f64 / f64::from(self.n)
         };
-        self.df.clear();
-        for log in self.logs.values() {
+        let mut df = HashMap::new();
+        for log in self.admitted() {
             for term in log.tf.keys() {
-                *self.df.entry(term.clone()).or_default() += 1;
+                *df.entry(term.clone()).or_default() += 1;
             }
         }
+        self.df = df;
     }
 
     /// The directory's index, current as of now: read from `.index.json`,
@@ -384,13 +410,14 @@ impl ChatIndex {
         Ok(index)
     }
 
-    /// How many logs are indexed.
+    /// How many logs are indexed — the admitted ones, not the incognito
+    /// records kept beside them.
     pub fn len(&self) -> usize {
-        self.logs.len()
+        self.admitted().count()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.logs.is_empty()
+        self.len() == 0
     }
 
     /// Every chat that says at least one of the query's terms, best first,
@@ -468,11 +495,17 @@ mod tests {
     use nightloom_core::{ContentBlock, Session, Usage};
 
     fn scratch() -> PathBuf {
+        // A counter beside the clock (2026-09-15): macOS reports the time in
+        // microseconds, so two tests starting in the same tick shared a
+        // directory and one of them found the other's logs — a flake that
+        // moved between tests from run to run.
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("nightloom-index-{nanos}"));
+        let dir = std::env::temp_dir().join(format!("nightloom-index-{nanos}-{n}"));
         fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -637,6 +670,53 @@ mod tests {
         assert_eq!(r.tf["turnip"], TITLE_WEIGHT);
         assert_eq!(r.len, first.logs[&format!("{id}.jsonl")].len);
 
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// An incognito log is never admitted: its words are not counted, it is
+    /// not in `n` or `df`, and a query for the one word only it says finds
+    /// nothing — on a cold build, on a warm load, and after it grows.
+    #[test]
+    fn an_incognito_log_is_never_admitted() {
+        let dir = scratch();
+        let mut inc = Session::incognito(&dir).unwrap();
+        inc.record_user("the secret word is xylophone");
+        inc.record_assistant(
+            "m",
+            vec![ContentBlock::Text {
+                text: "xylophone noted".into(),
+            }],
+            None,
+            Usage::default(),
+        );
+        inc.record_title("Xylophone plans");
+        logged(
+            &dir,
+            "Rewinding",
+            "how do I rewind?",
+            "A rewind is a marker.",
+            "",
+        );
+
+        for pass in ["cold", "warm"] {
+            let index = ChatIndex::load_or_build(&dir).unwrap();
+            assert_eq!(index.len(), 1, "{pass}");
+            assert_eq!(index.n, 1, "{pass}");
+            assert!(!index.df.contains_key("xylophone"), "{pass}");
+            let rec = record(&index, &inc.id);
+            assert!(rec.tf.is_empty(), "{pass}: {:?}", rec.tf);
+            assert_eq!(rec.len, 0, "{pass}");
+            let (hits, total) = index.rank("xylophone", 10);
+            assert!(hits.is_empty() && total == 0, "{pass}");
+            let (hits, _) = index.rank("rewind", 10);
+            assert_eq!(hits.len(), 1, "{pass}");
+        }
+
+        // Grows from its offset, like any log, and still counts nothing.
+        inc.record_user("more about the xylophone");
+        let index = ChatIndex::load_or_build(&dir).unwrap();
+        assert!(record(&index, &inc.id).tf.is_empty());
+        assert_eq!(index.n, 1);
         fs::remove_dir_all(&dir).ok();
     }
 

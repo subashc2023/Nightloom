@@ -4,6 +4,7 @@
   import {
     app,
     addToast,
+    chatMode,
     promoteLayerText,
     promptLayerEdits,
     promptLayersOff,
@@ -239,6 +240,14 @@
   const railOff = $derived(!app.draft.preamble);
   const AGENT_CAVEAT =
     "On Claude Code a change here reaches a new chat at once; a resumed chat keeps the prompt the CLI recorded until its next compaction (CLI 2.1.265 or later).";
+  // The chat's mode, said where the layers are (nightshift backlog 059):
+  // what it reads is the cards above; what it may not do is this line.
+  const kind = $derived(chatMode(app.events));
+  const MODE_CAVEAT: Record<string, string> = {
+    incognito: "incognito: writes nothing, unread by other chats",
+    ephemeral:
+      "ephemeral: nothing is kept — no log, no name, no CLI session; on Claude Code the earlier turns are replayed into each prompt rather than resumed",
+  };
 
   async function refresh() {
     if (!app.connection) {
@@ -590,6 +599,9 @@
           </section>
         {/each}
       </div>
+      {#if kind !== "normal"}
+        <p class="note small caveat">{MODE_CAVEAT[kind]}</p>
+      {/if}
       {#if agentEngine}
         <p class="note small caveat">{AGENT_CAVEAT}</p>
       {/if}

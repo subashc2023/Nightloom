@@ -163,6 +163,13 @@ pub async fn run(args: CaptureArgs) -> Result<()> {
             }
         );
     }
+    if outcome.incognito > 0 {
+        println!(
+            "{DIM}{} incognito chat{} seen and not read{RESET}",
+            outcome.incognito,
+            if outcome.incognito == 1 { "" } else { "s" }
+        );
+    }
     if outcome.remaining > 0 {
         println!(
             "{DIM}{} chat{} left for the next run — run `nightloom capture` again{RESET}",

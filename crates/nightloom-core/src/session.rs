@@ -43,6 +43,60 @@ impl SessionCost {
     }
 }
 
+/// What a chat was started as, decided at its birth and never changed.
+///
+/// One field with three values rather than two booleans, because the two
+/// modes that are not `Normal` are a ladder and not a pair of switches:
+/// `Ephemeral` drops everything `Incognito` drops and then also the log.
+/// A shell that asks "may this chat write anything" wants
+/// [`ChatMode::writes_nothing`], not a comparison against one variant.
+///
+/// Fixed at creation on purpose. The pipeline that an incognito chat is
+/// hidden from — the chat index, the capture pass, the other chats' tools —
+/// reads every log from its first line, and a chat that was ordinary for
+/// ten turns has already been indexed and captured by then. A later event
+/// promising "incognito from here" would be a promise nobody downstream
+/// could keep; a mark on the first line is one every reader sees before it
+/// reads anything else.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatMode {
+    /// Logged, listed, indexed, captured — every chat before 2026-09-15.
+    #[default]
+    Normal,
+    /// Kept and reopenable, marked as such, but it writes nothing — no
+    /// file tools, no `remember` — and no other chat can read it: the index,
+    /// `search_chats`, `read_chat` and the capture pass all skip it.
+    Incognito,
+    /// Everything `Incognito` drops, and no log at all: the session lives in
+    /// memory and is gone when it is closed or switched away from. On an
+    /// engine that keeps its own history the shell asks it not to.
+    Ephemeral,
+}
+
+impl ChatMode {
+    /// Whether this chat may reach any writer — file tools, a shell, the
+    /// memory inbox. False for both non-normal modes, which is the question
+    /// a tool set is built from.
+    pub fn writes_nothing(self) -> bool {
+        !matches!(self, ChatMode::Normal)
+    }
+
+    /// Whether other chats may read this one. The same answer as
+    /// [`writes_nothing`](Self::writes_nothing) today, named separately
+    /// because the two are different promises and a reader of a log should
+    /// be asking the one it means.
+    pub fn unread_by_others(self) -> bool {
+        !matches!(self, ChatMode::Normal)
+    }
+
+    /// For serde: a normal chat is the absence of the field, so a log
+    /// written today with no mode is byte-identical to yesterday's.
+    fn is_normal(&self) -> bool {
+        matches!(self, ChatMode::Normal)
+    }
+}
+
 /// One entry in a session's append-only event log.
 ///
 /// The log is the source of truth; the message list sent to a provider and
@@ -55,6 +109,12 @@ pub enum SessionEvent {
     SessionCreated {
         id: String,
         at: DateTime<Utc>,
+        /// What the chat was started as. Absent from every log written
+        /// before the modes existed and from every normal log after, hence
+        /// the `default` and the skip. See [`ChatMode`] for why it is here
+        /// and not on an event of its own.
+        #[serde(default, skip_serializing_if = "ChatMode::is_normal")]
+        mode: ChatMode,
     },
     UserMessage {
         text: String,
@@ -619,32 +679,74 @@ pub struct Session {
 
 impl Session {
     /// In-memory session with no persistence.
+    ///
+    /// Its mode is [`ChatMode::Normal`], not `Ephemeral`, although nothing
+    /// here reaches a disk either: this is what a capture turn, a dream
+    /// turn and a test use, and none of those is a chat the user asked to
+    /// forget. [`Session::ephemeral`] is the one that says so.
     pub fn new() -> Self {
-        let id = uuid::Uuid::new_v4().to_string();
-        let mut s = Self {
-            id: id.clone(),
-            events: Vec::new(),
-            log: None,
-            load_report: LoadReport::default(),
-            write_failure: None,
-        };
-        s.record(SessionEvent::SessionCreated { id, at: Utc::now() });
-        s
+        Self::create(
+            uuid::Uuid::new_v4().to_string(),
+            Utc::now(),
+            None,
+            ChatMode::Normal,
+        )
+    }
+
+    /// An in-memory session that *is* the user's chat, started as
+    /// [`ChatMode::Ephemeral`]: no file is ever created for it, so closing
+    /// it or switching away is the end of it, and there is no listing entry
+    /// to reopen it from. The events still accumulate in memory — that is
+    /// what the engine projects the next turn from.
+    pub fn ephemeral() -> Self {
+        Self::create(
+            uuid::Uuid::new_v4().to_string(),
+            Utc::now(),
+            None,
+            ChatMode::Ephemeral,
+        )
     }
 
     /// Session persisted as JSONL under `dir/<session-id>.jsonl`.
     pub fn with_log(dir: impl AsRef<Path>) -> io::Result<Self> {
+        Self::with_log_in_mode(dir, ChatMode::Normal)
+    }
+
+    /// The same log, marked [`ChatMode::Incognito`] on its first line so
+    /// every reader that walks the directory can skip it before reading a
+    /// second byte. Kept and reopenable like any other log; what differs is
+    /// what the shell builds around it and who else may read it.
+    pub fn incognito(dir: impl AsRef<Path>) -> io::Result<Self> {
+        Self::with_log_in_mode(dir, ChatMode::Incognito)
+    }
+
+    /// A persisted session in the given mode. `Ephemeral` is refused: a
+    /// mode whose whole meaning is "no log" cannot be the mode of a log,
+    /// and a caller asking for one has confused the two constructors.
+    pub fn with_log_in_mode(dir: impl AsRef<Path>, mode: ChatMode) -> io::Result<Self> {
+        if mode == ChatMode::Ephemeral {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "an ephemeral session has no log; use Session::ephemeral()",
+            ));
+        }
         let id = uuid::Uuid::new_v4().to_string();
         let log = JsonlLog::create(dir.as_ref().join(format!("{id}.jsonl")))?;
+        Ok(Self::create(id, Utc::now(), Some(log), mode))
+    }
+
+    /// The one constructor behind the four above: record the creation
+    /// event and nothing else.
+    fn create(id: String, at: DateTime<Utc>, log: Option<JsonlLog>, mode: ChatMode) -> Self {
         let mut s = Self {
             id: id.clone(),
             events: Vec::new(),
-            log: Some(log),
+            log,
             load_report: LoadReport::default(),
             write_failure: None,
         };
-        s.record(SessionEvent::SessionCreated { id, at: Utc::now() });
-        Ok(s)
+        s.record(SessionEvent::SessionCreated { id, at, mode });
+        s
     }
 
     /// The same log under an id and a creation time the *caller* supplies.
@@ -684,15 +786,9 @@ impl Session {
             ));
         }
         let log = JsonlLog::create(dir.as_ref().join(format!("{id}.jsonl")))?;
-        let mut s = Self {
-            id: id.clone(),
-            events: Vec::new(),
-            log: Some(log),
-            load_report: LoadReport::default(),
-            write_failure: None,
-        };
-        s.record(SessionEvent::SessionCreated { id, at });
-        Ok(s)
+        // An import is an ordinary chat: what it was on the other side was
+        // never one of these modes.
+        Ok(Self::create(id, at, Some(log), ChatMode::Normal))
     }
 
     /// Rebuild a session from a previously written JSONL log and reopen it
@@ -1263,6 +1359,26 @@ impl Session {
                 SessionEvent::AgentSession { agent, id, .. } => Some((agent.as_str(), id.as_str())),
                 _ => None,
             })
+    }
+
+    /// What this chat was started as.
+    ///
+    /// Read off the first [`SessionEvent::SessionCreated`] in the log, and
+    /// off the raw events rather than the live ones: a rewind cuts only at a
+    /// user message, so the creation line is never superseded, and the mode
+    /// is not a thing a rewind could honestly take back anyway — a chat that
+    /// was incognito at turn one was incognito at turn one. A log that has no
+    /// creation event (damaged, or foreign) is `Normal`, which is the
+    /// reading every pipeline stage would have given it before the field
+    /// existed.
+    pub fn mode(&self) -> ChatMode {
+        self.events
+            .iter()
+            .find_map(|e| match e {
+                SessionEvent::SessionCreated { mode, .. } => Some(*mode),
+                _ => None,
+            })
+            .unwrap_or_default()
     }
 
     /// Projection: the prompt layers this chat has switched off — the most
@@ -3008,5 +3124,74 @@ mod tests {
             s.prompt_layer_edits(),
             &edits(&[(SegmentKind::UserMemory, "first")])
         );
+    }
+    /// The mark is on the first line and comes back through `load`; a normal
+    /// log's first line carries no `mode` key at all, so nothing written
+    /// before the field existed can be told from something written today.
+    #[test]
+    fn the_chat_mode_is_on_the_creation_line_and_survives_a_reload() {
+        let dir = std::env::temp_dir().join(format!("nightloom-mode-{}", uuid::Uuid::new_v4()));
+        let incognito = Session::incognito(&dir).unwrap();
+        let normal = Session::with_log(&dir).unwrap();
+        assert_eq!(incognito.mode(), ChatMode::Incognito);
+        assert_eq!(normal.mode(), ChatMode::Normal);
+
+        let first = |id: &str| {
+            let raw = fs::read_to_string(dir.join(format!("{id}.jsonl"))).unwrap();
+            raw.lines().next().unwrap().to_string()
+        };
+        assert!(first(&incognito.id).contains(r#""mode":"incognito""#));
+        assert!(!first(&normal.id).contains("mode"), "{}", first(&normal.id));
+
+        let back = Session::load(dir.join(format!("{}.jsonl", incognito.id))).unwrap();
+        assert_eq!(back.mode(), ChatMode::Incognito);
+        assert!(back.mode().writes_nothing());
+        assert!(back.mode().unread_by_others());
+        let back = Session::load(dir.join(format!("{}.jsonl", normal.id))).unwrap();
+        assert_eq!(back.mode(), ChatMode::Normal);
+        assert!(!back.mode().writes_nothing());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// An ephemeral session is marked in memory and creates nothing on
+    /// disk, however many turns it records; `Session::new()` stays normal,
+    /// since a capture turn is not a chat the user asked to forget.
+    #[test]
+    fn an_ephemeral_session_is_marked_and_leaves_no_file() {
+        let dir = std::env::temp_dir().join(format!("nightloom-eph-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let mut s = Session::ephemeral();
+        assert_eq!(s.mode(), ChatMode::Ephemeral);
+        assert!(s.mode().writes_nothing());
+        exchange(&mut s, "hello", "hi");
+        s.record_title("a name");
+        assert!(s.write_failure().is_none());
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
+        assert_eq!(s.events().len(), 4, "the turns are still in memory");
+        assert_eq!(Session::new().mode(), ChatMode::Normal);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The mode is not a thing a rewind can reach: the creation line is
+    /// index 0 and a rewind cuts at a user message.
+    #[test]
+    fn a_rewind_cannot_take_the_mode_back() {
+        let mut s = Session::ephemeral();
+        let first = exchange(&mut s, "one", "1");
+        exchange(&mut s, "two", "2");
+        s.rewind(first).unwrap();
+        assert_eq!(s.mode(), ChatMode::Ephemeral);
+    }
+
+    /// Asking for a *log* in the mode whose meaning is "no log" is a
+    /// confusion, refused rather than quietly honoured either way.
+    #[test]
+    fn a_logged_ephemeral_session_is_refused() {
+        let dir = std::env::temp_dir().join(format!("nightloom-eph-log-{}", uuid::Uuid::new_v4()));
+        let Err(err) = Session::with_log_in_mode(&dir, ChatMode::Ephemeral) else {
+            panic!("a logged ephemeral session was created");
+        };
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(!dir.exists() || fs::read_dir(&dir).unwrap().count() == 0);
     }
 }

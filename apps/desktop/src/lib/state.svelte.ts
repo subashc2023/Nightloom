@@ -27,6 +27,7 @@ import type {
   ApprovalDecision,
   ApprovalRequest,
   BlockerList,
+  ChatMode,
   DocumentInput,
   ImageInput,
   ItemList,
@@ -656,6 +657,15 @@ export function runMenuCommand(id: string): void {
     case "new_chat":
       void newSession();
       break;
+    // The two other kinds (nightshift backlog 059, 2026-09-15), offered
+    // wherever New chat is: the sidebar's split button, ⌘K, the Welcome
+    // strip, the File menu.
+    case "new_incognito":
+      void newSession("incognito");
+      break;
+    case "new_ephemeral":
+      void newSession("ephemeral");
+      break;
     case "new_project":
       showNewProject();
       break;
@@ -1090,6 +1100,7 @@ export async function runCapture(): Promise<void> {
         (r.skipped > 0 ? ` (${r.skipped} line${r.skipped === 1 ? "" : "s"} skipped)` : "") +
         (split ? ` — ${split}` : "") +
         (r.deferred > 0 ? `; ${r.deferred} waiting for more turns` : "") +
+        (r.incognito > 0 ? `; ${r.incognito} incognito, not read` : "") +
         (r.remaining > 0 ? `; ${r.remaining} left for the next run` : "") +
         (r.cost_usd != null ? ` ($${r.cost_usd.toFixed(4)})` : ""),
     );
@@ -2652,12 +2663,23 @@ export async function refreshSessions(): Promise<void> {
   }
 }
 
-export async function newSession(): Promise<void> {
+/**
+ * Start a chat. `mode` absent is an ordinary one; `incognito` and
+ * `ephemeral` are the two kinds that write nothing (see `ChatMode`).
+ *
+ * The transcript is fetched back rather than reset to `[]`, because the
+ * mode lives on the log's first line and the UI projects it from there
+ * (`chatMode`): the top bar's mark, the Context page's caveat and the
+ * reconnect that strips the engine's writers all read `app.events[0]`.
+ * A normal chat comes back as the one `session_created` line it always
+ * was, which the Welcome page already treats as blank.
+ */
+export async function newSession(mode?: ChatMode): Promise<void> {
   if (app.busy) return;
   try {
-    const { id } = await api.newSession();
+    const { id } = await api.newSession(mode);
     app.activeSessionId = id;
-    app.events = [];
+    app.events = await api.transcript();
     app.error = null;
     app.agentTurn = null;
     closeNote();
@@ -2666,6 +2688,36 @@ export async function newSession(): Promise<void> {
     app.error = String(e);
   }
 }
+
+/**
+ * What the open chat was started as, projected from the log the way
+ * `Session::mode()` projects it in the core: the first `session_created`
+ * line's `mode`, and `normal` when it carries none or there is no chat yet.
+ * A rewind cannot reach the creation line, so this never reads the live
+ * flags.
+ */
+export function chatMode(events: SessionEvent[]): ChatMode {
+  for (const e of events) {
+    if (e.event === "session_created") return e.mode ?? "normal";
+  }
+  return "normal";
+}
+
+/** One line on what a mode means, for the places that offer it. */
+export const MODE_LINES: Record<ChatMode, string> = {
+  normal: "kept, indexed, remembered",
+  incognito: "kept and marked; writes nothing, unread by other chats",
+  ephemeral: "nothing is kept; gone when you close it",
+};
+
+/** The glyph a mark carries: half-shaded for kept-but-hidden, a dotted ring
+ *  for there-and-not-there. Text, so it renders in a mono meta line and the
+ *  top bar alike. Empty for a normal chat, which is not marked. */
+export const MODE_GLYPH: Record<ChatMode, string> = {
+  normal: "",
+  incognito: "◐",
+  ephemeral: "◌",
+};
 
 export async function openSession(id: string): Promise<void> {
   if (app.busy) return;
@@ -3200,8 +3252,15 @@ export function promoteLayerText(layer: EditableLayer, text: string): boolean {
 export async function syncPromptLayers(): Promise<void> {
   if (!app.connection || app.busy || app.connecting) return;
   try {
-    const { off, built, edits, built_edits } = await api.promptLayers();
-    if (!sameLayers(off, built) || !sameEdits(edits ?? {}, built_edits ?? {})) {
+    const { off, built, edits, built_edits, mode, built_mode } = await api.promptLayers();
+    // The mode is the third pair (2026-09-15): an incognito chat's engine
+    // was built with no writers, and the ordinary chat opened after it
+    // needs them back — and the other way round.
+    if (
+      !sameLayers(off, built) ||
+      !sameEdits(edits ?? {}, built_edits ?? {}) ||
+      (mode ?? "normal") !== (built_mode ?? "normal")
+    ) {
       await applyDraft();
     }
   } catch {

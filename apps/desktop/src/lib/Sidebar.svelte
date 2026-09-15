@@ -7,6 +7,8 @@
     closeNightshift,
     deleteSession,
     enableNightshift,
+    MODE_GLYPH,
+    MODE_LINES,
     newSession,
     openSession,
     refreshNightshift,
@@ -14,8 +16,9 @@
     showNightshift,
   } from "./state.svelte";
   import * as api from "./api";
+  import { isMac } from "./platform";
   import { untrack } from "svelte";
-  import type { NightshiftInfo, NightshiftRow, SessionHit, SessionMeta } from "./types";
+  import type { ChatMode, NightshiftInfo, NightshiftRow, SessionHit, SessionMeta } from "./types";
   import { relativeTime } from "./time";
   import { sameMorning } from "./nightshift";
   import NotesPanel from "./NotesPanel.svelte";
@@ -31,6 +34,20 @@
   // was about to happen to what.
   let deleting = $state<SessionMeta | null>(null);
   let menu = $state(false);
+  // The New chat button's other half (nightshift backlog 059, 2026-09-15):
+  // the three kinds of chat, one line each, in the project menu's popover
+  // shape — never a modal.
+  let kinds = $state(false);
+  const mod = isMac ? "⌘" : "Ctrl+";
+  const KINDS: { mode: ChatMode; label: string; key: string }[] = [
+    { mode: "normal", label: "New chat", key: `${mod}N` },
+    { mode: "incognito", label: "Incognito", key: `${mod}⇧N` },
+    { mode: "ephemeral", label: "Ephemeral", key: "" },
+  ];
+  function startKind(mode: ChatMode) {
+    kinds = false;
+    void newSession(mode === "normal" ? undefined : mode);
+  }
 
   function confirmDelete() {
     if (!deleting) return;
@@ -307,9 +324,48 @@
   </nav>
 
   {#if app.leftTab === "chats"}
-    <button class="new-chat" onclick={() => void newSession()} disabled={app.busy}>
-      New chat
-    </button>
+    <!-- A split button: the wide half is New chat as it always was, the
+         narrow ▾ half offers the other two kinds. Right-clicking the wide
+         half opens the same menu, for whoever reaches for that. -->
+    <div class="new-chat-wrap">
+      <button
+        class="new-chat"
+        onclick={() => void newSession()}
+        oncontextmenu={(e) => {
+          e.preventDefault();
+          kinds = !kinds;
+        }}
+        disabled={app.busy}
+      >
+        New chat
+      </button>
+      <button
+        class="new-chat more"
+        title="Incognito or ephemeral chat"
+        aria-label="Other kinds of chat"
+        aria-expanded={kinds}
+        onclick={() => (kinds = !kinds)}
+        disabled={app.busy}
+      >
+        ▾
+      </button>
+      {#if kinds}
+        <button class="scrim" aria-label="Close" onclick={() => (kinds = false)}></button>
+        <div class="kinds" role="menu">
+          <div class="kinds-head">New chat</div>
+          {#each KINDS as k (k.mode)}
+            <button class="kind" role="menuitem" onclick={() => startKind(k.mode)}>
+              <span class="kind-glyph" aria-hidden="true">{MODE_GLYPH[k.mode] || "▢"}</span>
+              <span class="kind-text">
+                <span class="kind-name">{k.label}</span>
+                <span class="kind-line">{MODE_LINES[k.mode]}</span>
+              </span>
+              {#if k.key}<span class="kind-key">{k.key}</span>{/if}
+            </button>
+          {/each}
+        </div>
+      {/if}
+    </div>
     {#if app.sessions.length > 0 || query}
       <input
         class="search"
@@ -340,7 +396,7 @@
                 disabled={app.busy}
               >
                 <span class="snippet"
-                  >{s.title ?? s.first_user ?? "empty session"}</span
+                  >{#if s.mode === "incognito"}<span class="mark" title="Incognito: writes nothing, unread by other chats">{MODE_GLYPH.incognito}</span> {/if}{s.title ?? s.first_user ?? "empty session"}</span
                 >
                 <span class="excerpt">{s.excerpt}</span>
                 <span class="meta"
@@ -391,10 +447,10 @@
                 disabled={app.busy}
               >
                 <span class="snippet"
-                  >{s.title ?? s.first_user ?? "empty session"}</span
+                  >{#if s.mode === "incognito"}<span class="mark" title="Incognito: writes nothing, unread by other chats">{MODE_GLYPH.incognito}</span> {/if}{s.title ?? s.first_user ?? "empty session"}</span
                 >
                 <span class="meta"
-                  >{s.id.slice(0, 8)} · {relativeTime(s.modified)}</span
+                  >{s.id.slice(0, 8)}{#if s.mode === "incognito"} · incognito{/if} · {relativeTime(s.modified)}</span
                 >
               </button>
               <button
@@ -813,17 +869,98 @@
     font-family: var(--mono);
     font-size: 11px;
   }
-  .new-chat {
+  .new-chat-wrap {
+    position: relative;
+    display: flex;
     margin: 0 0.75rem 0.6rem;
+  }
+  .new-chat {
+    flex: 1;
+    min-width: 0;
     padding: 0.45rem 0.75rem;
     background: transparent;
     color: var(--text);
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: 8px 0 0 8px;
     cursor: pointer;
     font-size: 0.85rem;
     font-family: inherit;
     text-align: left;
+  }
+  .new-chat.more {
+    flex: none;
+    padding: 0.45rem 0.5rem;
+    border-left: none;
+    border-radius: 0 8px 8px 0;
+    color: var(--dim);
+  }
+  .mark {
+    color: var(--dim);
+  }
+  /* The kinds menu: the project menu's popover, under the split button. */
+  .kinds {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    right: 0;
+    z-index: 40;
+    background: var(--sheet);
+    border: 1px solid var(--line2);
+    border-radius: 10px;
+    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
+    padding: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .kinds-head {
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--dim);
+    padding: 6px 8px 4px;
+  }
+  .kind {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    color: var(--text);
+    text-align: left;
+    padding: 7px 8px;
+    cursor: pointer;
+    font: inherit;
+  }
+  .kind:hover {
+    background: var(--well);
+  }
+  .kind-glyph {
+    color: var(--dim);
+    flex: none;
+    width: 1.1em;
+  }
+  .kind-text {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .kind-name {
+    font-size: 0.85rem;
+  }
+  .kind-line {
+    font-size: 0.72rem;
+    line-height: 1.35;
+    color: var(--dim);
+  }
+  .kind-key {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--dim);
+    flex: none;
   }
   .new-chat:hover:not(:disabled) {
     border-color: var(--accent);

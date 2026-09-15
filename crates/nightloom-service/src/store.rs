@@ -3,7 +3,7 @@
 //! `nightloom_core::Session`.
 
 use chrono::{DateTime, Utc};
-use nightloom_core::{ContentBlock, SessionEvent};
+use nightloom_core::{ChatMode, ContentBlock, SessionEvent};
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
@@ -45,6 +45,15 @@ pub struct SessionSummary {
     /// and a log written before titles existed never will be — so a picker
     /// wants [`SessionSummary::label`] rather than this field on its own.
     pub title: Option<String>,
+    /// What the chat was started as (2026-09-15). `Normal` for every log
+    /// written before the modes existed. A picker marks an `Incognito` row;
+    /// an `Ephemeral` chat has no log and so is never in a listing.
+    #[serde(default, skip_serializing_if = "is_normal")]
+    pub mode: ChatMode,
+}
+
+fn is_normal(mode: &ChatMode) -> bool {
+    *mode == ChatMode::Normal
 }
 
 impl SessionSummary {
@@ -172,6 +181,8 @@ fn log_paths(log_dir: &Path) -> Result<Vec<PathBuf>, StoreError> {
 enum Peek {
     SessionCreated {
         id: String,
+        #[serde(default)]
+        mode: ChatMode,
     },
     UserMessage {
         text: String,
@@ -226,12 +237,19 @@ struct Summarizing {
     user_turns: usize,
     first_user: Option<String>,
     title: Option<String>,
+    /// From the first line; `Normal` until a creation event says otherwise,
+    /// and absent from every cache entry written before the field existed.
+    #[serde(default)]
+    mode: ChatMode,
 }
 
 impl Summarizing {
     fn saw(&mut self, event: Peek) {
         match event {
-            Peek::SessionCreated { id } => self.id = Some(id),
+            Peek::SessionCreated { id, mode } => {
+                self.id = Some(id);
+                self.mode = mode;
+            }
             Peek::UserMessage { text } => {
                 if self.first_user.is_none() {
                     self.first_user = Some(text);
@@ -261,7 +279,16 @@ impl Summarizing {
             user_turns: self.user_turns,
             first_user: self.first_user.clone(),
             title: self.title.clone(),
+            mode: self.mode,
         }
+    }
+
+    /// Whether other chats may read this log — the first thing every
+    /// walker that feeds a model asks, and a field rather than a method on
+    /// the summary because the index keeps a `Summarizing` and not a
+    /// `SessionSummary`.
+    pub(crate) fn unread_by_others(&self) -> bool {
+        self.mode.unread_by_others()
     }
 }
 
@@ -333,8 +360,10 @@ struct Listing {
 const LISTING_FILE: &str = ".listing.json";
 
 /// Bumped whenever [`Summarizing`] or [`Cached`] changes shape. An older file
-/// is discarded rather than migrated: it is derived data.
-const LISTING_VERSION: u32 = 1;
+/// is discarded rather than migrated: it is derived data. 2 since the mode
+/// (2026-09-15): an entry without it would read as normal for a log that is
+/// not, which is the one thing the listing must not get wrong.
+const LISTING_VERSION: u32 = 2;
 
 impl Listing {
     fn read(dir: &Path) -> BTreeMap<String, Cached> {
@@ -367,7 +396,10 @@ impl Listing {
 /// has these in hand, so it folds them through [`Summarizing`] too.
 fn peek_at(event: &SessionEvent) -> Option<Peek> {
     match event {
-        SessionEvent::SessionCreated { id, .. } => Some(Peek::SessionCreated { id: id.clone() }),
+        SessionEvent::SessionCreated { id, mode, .. } => Some(Peek::SessionCreated {
+            id: id.clone(),
+            mode: *mode,
+        }),
         SessionEvent::UserMessage { text, .. } => Some(Peek::UserMessage { text: text.clone() }),
         SessionEvent::Title { text, .. } => Some(Peek::Title { text: text.clone() }),
         _ => None,
@@ -400,6 +432,36 @@ pub(crate) fn scan(
         acc.saw(event);
     }
     Ok((acc.summary(path, modified), events))
+}
+
+/// What one log was started as, from its first line and nothing else.
+///
+/// For the walkers that must decide before reading a log whether a model
+/// may see it — the capture pass, the chat tools' resolver — and read it
+/// from the offset they last stopped at, which is past the first line. One
+/// `read` of a small buffer: the creation event is the first line by
+/// construction (`Session::create` records it before anything else), and
+/// it is under two hundred bytes. A log that cannot be opened, or whose
+/// first line is not a creation event, reads as `Normal`, the answer every
+/// stage gave before the field existed; the walker then fails or skips on
+/// its own terms when it opens the log properly.
+pub(crate) fn mode_of(path: &Path) -> ChatMode {
+    let Ok(mut file) = fs::File::open(path) else {
+        return ChatMode::Normal;
+    };
+    let mut head = [0u8; 512];
+    let n = file.read(&mut head).unwrap_or(0);
+    let head = String::from_utf8_lossy(&head[..n]);
+    let Some(line) = head.lines().next() else {
+        return ChatMode::Normal;
+    };
+    match serde_json::from_str::<Peek>(line) {
+        Ok(Peek::SessionCreated { mode, .. }) => mode,
+        // A creation line longer than the buffer, with the mode cut off,
+        // fails to parse here. The buffer is four times a creation line,
+        // so this is a damaged log; every reader treats one as normal.
+        _ => ChatMode::Normal,
+    }
 }
 
 /// How many session logs are in the dir, without reading any of them.
@@ -803,6 +865,7 @@ mod tests {
             user_turns: 1,
             first_user: Some("can you help me rename a function\neverywhere".into()),
             title: None,
+            mode: ChatMode::Normal,
         };
         assert_eq!(s.label(60), "can you help me rename a function everywhere");
 
@@ -817,6 +880,52 @@ mod tests {
             ..s
         };
         assert_eq!(blank.label(60), "");
+    }
+
+    /// An incognito log is listed like any other and marked; `mode_of`
+    /// answers off the first line alone, past which a walker's watermark
+    /// may already be; and the *user's* sidebar search still finds it — it
+    /// is hidden from other chats, not from him.
+    #[test]
+    fn an_incognito_log_is_listed_and_marked_and_read_off_its_first_line() {
+        use nightloom_core::Session;
+        let dir = std::env::temp_dir().join(format!("nightloom-store-mode-{}", uuid_like()));
+        let mut inc = Session::incognito(&dir).unwrap();
+        inc.record_user("a private question about parsnips");
+        let plain = logged(&dir, "an ordinary question", "an answer", "");
+
+        let listed = list(&dir).unwrap();
+        let of = |id: &str| listed.iter().find(|s| s.id == id).unwrap();
+        assert_eq!(of(&inc.id).mode, ChatMode::Incognito);
+        assert_eq!(of(&plain).mode, ChatMode::Normal);
+        // And again through the cache, which has to carry the mark too.
+        let again = list(&dir).unwrap();
+        assert_eq!(
+            again.iter().find(|s| s.id == inc.id).unwrap().mode,
+            ChatMode::Incognito
+        );
+
+        assert_eq!(
+            mode_of(&dir.join(format!("{}.jsonl", inc.id))),
+            ChatMode::Incognito
+        );
+        assert_eq!(
+            mode_of(&dir.join(format!("{plain}.jsonl"))),
+            ChatMode::Normal
+        );
+        assert_eq!(mode_of(&dir.join("missing.jsonl")), ChatMode::Normal);
+
+        let found = search(&dir, "parsnips").unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].summary.mode, ChatMode::Incognito);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    fn uuid_like() -> u128 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
     }
 
     #[test]

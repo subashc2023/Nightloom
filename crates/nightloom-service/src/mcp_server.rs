@@ -83,8 +83,23 @@ const UNFILED_NAME: &str = "Unfiled chats";
 const INSTRUCTIONS: &str = "Nightloom's tools. For a whole page use fetch_page, not WebFetch. \
      To find or quote one of the user's other chats use search_chats, then read_chat — when \
      the message points outside this chat (an earlier decision, 'as we discussed', a name you \
-     have no context for), not on every turn; recent chats rank first. To leave something for \
-     the user's long-term memory use remember.";
+     have no context for), not on every turn; recent chats rank first.";
+
+/// The last sentence of [`INSTRUCTIONS`], present only when the tool is: a
+/// server started for an incognito chat (`--no-remember`) must not tell the
+/// model to reach for a tool it does not serve.
+const REMEMBER_INSTRUCTION: &str =
+    " To leave something for the user's long-term memory use remember.";
+
+/// What `initialize` says, for the tool set it is serving.
+fn instructions_for(tools: &[Box<dyn Tool>]) -> String {
+    let remembers = tools.iter().any(|t| t.def().name == "remember");
+    if remembers {
+        format!("{INSTRUCTIONS}{REMEMBER_INSTRUCTION}")
+    } else {
+        INSTRUCTIONS.to_string()
+    }
+}
 
 /// Build the tool set for one project, or for the unfiled chats when there
 /// is none, from the config dir the registry lives under.
@@ -101,7 +116,17 @@ const INSTRUCTIONS: &str = "Nightloom's tools. For a whole page use fetch_page, 
 /// to the unfiled chats: the desktop passes the open project's id, and a
 /// server quietly searching the wrong chats is the failure that would never
 /// be noticed.
-pub fn tools_in(config: &Path, project_id: Option<&str>) -> Result<Vec<Box<dyn Tool>>, String> {
+///
+/// `remember` is left out when `remember` is false — the server for an
+/// incognito or ephemeral chat (2026-09-15), which must not be able to
+/// write to memory. The two readers and the fetch stay: an incognito chat
+/// may read everything; it is other chats that may not read it, and the
+/// readers refuse such a chat on their own (`tools/chats.rs`).
+pub fn tools_in(
+    config: &Path,
+    project_id: Option<&str>,
+    remember: bool,
+) -> Result<Vec<Box<dyn Tool>>, String> {
     let all: Vec<ChatDir> = capture::session_dirs(config)
         .into_iter()
         .map(|d| ChatDir {
@@ -126,12 +151,15 @@ pub fn tools_in(config: &Path, project_id: Option<&str>) -> Result<Vec<Box<dyn T
         None => (config.join(capture::UNFILED).join(SESSIONS_DIR), None),
     };
     let chats = ChatDirs { active, all };
-    Ok(vec![
+    let mut tools: Vec<Box<dyn Tool>> = vec![
         Box::new(SearchChats::new(chats.clone())),
         Box::new(ReadChat::new(chats)),
-        Box::new(Remember::new(config.to_path_buf(), source)),
-        Box::new(FetchPage::default()),
-    ])
+    ];
+    if remember {
+        tools.push(Box::new(Remember::new(config.to_path_buf(), source)));
+    }
+    tools.push(Box::new(FetchPage::default()));
+    Ok(tools)
 }
 
 /// `web_fetch` under the name and description this engine needs.
@@ -173,13 +201,32 @@ impl Tool for FetchPage {
 /// call it with the two ends of a `tokio::io::duplex`.
 pub async fn serve(
     config: PathBuf,
-    project_id: Option<String>,
+    args: ServeArgs,
     reader: impl AsyncRead + Send + Unpin + 'static,
     writer: impl AsyncWrite + Send + Unpin + 'static,
 ) -> Result<(), String> {
-    let tools = tools_in(&config, project_id.as_deref())?;
+    let tools = tools_in(&config, args.project.as_deref(), args.remember)?;
     serve_tools(tools, reader, writer).await;
     Ok(())
+}
+
+/// What a server is started with, from either binary's argument parsing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServeArgs {
+    /// The open project's id, or none for the unfiled chats.
+    pub project: Option<String>,
+    /// Whether `remember` is served. Off for an incognito or ephemeral
+    /// chat, which is the `--no-remember` flag.
+    pub remember: bool,
+}
+
+impl ServeArgs {
+    pub fn for_project(project: Option<String>) -> Self {
+        Self {
+            project,
+            remember: true,
+        }
+    }
 }
 
 /// The write half of the stream, shared by every request's task. The mutex
@@ -278,7 +325,7 @@ async fn handle(
                 "protocolVersion": version,
                 "capabilities": { "tools": {} },
                 "serverInfo": { "name": SERVER_NAME, "version": env!("CARGO_PKG_VERSION") },
-                "instructions": INSTRUCTIONS,
+                "instructions": instructions_for(tools),
             }))
         }
         // Answerable by every peer regardless of capabilities, and a host
@@ -332,27 +379,29 @@ async fn write_line(writer: &SharedWriter, value: &Value) {
 }
 
 /// The arguments after `mcp-serve` / `--mcp-serve`: `--project <id>` or
-/// `--project=<id>`, and nothing else. Parsed by hand rather than with clap
-/// because the desktop binary has no clap and does not want one for a flag
-/// that Tauri must never see.
-pub fn parse_args(args: &[String]) -> Result<Option<String>, String> {
-    let mut project = None;
+/// `--project=<id>`, `--no-remember` (2026-09-15), and nothing else. Parsed
+/// by hand rather than with clap because the desktop binary has no clap and
+/// does not want one for a flag that Tauri must never see.
+pub fn parse_args(args: &[String]) -> Result<ServeArgs, String> {
+    let mut out = ServeArgs::for_project(None);
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         if arg == "--project" {
             let id = it
                 .next()
                 .ok_or_else(|| "--project needs a project id".to_string())?;
-            project = Some(id.clone());
+            out.project = Some(id.clone());
         } else if let Some(id) = arg.strip_prefix("--project=") {
-            project = Some(id.to_string());
+            out.project = Some(id.to_string());
+        } else if arg == "--no-remember" {
+            out.remember = false;
         } else {
             return Err(format!(
-                "unknown argument {arg:?}; the only flag is --project <id>"
+                "unknown argument {arg:?}; the flags are --project <id> and --no-remember"
             ));
         }
     }
-    Ok(project)
+    Ok(out)
 }
 
 /// Serve on this process's stdin and stdout until they close, on a runtime
@@ -360,16 +409,11 @@ pub fn parse_args(args: &[String]) -> Result<Option<String>, String> {
 /// desktop, whose `main` is Tauri's — calls from the top of `main`; the CLI
 /// is already inside one and awaits [`serve`] directly.
 pub fn run_blocking(args: &[String]) -> Result<(), String> {
-    let project = parse_args(args)?;
+    let args = parse_args(args)?;
     let config = crate::project::config_dir()
         .ok_or_else(|| "no user config directory — there are no chats to serve".to_string())?;
     let runtime = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
-    runtime.block_on(serve(
-        config,
-        project,
-        tokio::io::stdin(),
-        tokio::io::stdout(),
-    ))
+    runtime.block_on(serve(config, args, tokio::io::stdin(), tokio::io::stdout()))
 }
 
 #[cfg(test)]
@@ -418,7 +462,9 @@ mod tests {
         let (client_side, server_side) = tokio::io::duplex(1 << 16);
         let (sr, sw) = tokio::io::split(server_side);
         tokio::spawn(async move {
-            serve(config, project, sr, sw).await.unwrap();
+            serve(config, ServeArgs::for_project(project), sr, sw)
+                .await
+                .unwrap();
         });
         tokio::io::split(client_side)
     }
@@ -579,7 +625,7 @@ mod tests {
     #[test]
     fn an_unknown_project_id_is_refused_rather_than_served_from_the_wrong_chats() {
         let (config, _) = fixture("unknown-id");
-        let Err(err) = tools_in(&config, Some("not-a-project")) else {
+        let Err(err) = tools_in(&config, Some("not-a-project"), true) else {
             panic!("an unknown id built a tool set");
         };
         assert!(err.contains("not-a-project"), "{err}");
@@ -588,16 +634,57 @@ mod tests {
     #[test]
     fn the_flag_parses_both_spellings_and_nothing_else() {
         let args = |s: &[&str]| s.iter().map(|a| a.to_string()).collect::<Vec<_>>();
-        assert_eq!(parse_args(&[]).unwrap(), None);
+        assert_eq!(parse_args(&[]).unwrap(), ServeArgs::for_project(None));
         assert_eq!(
-            parse_args(&args(&["--project", "abc"])).unwrap().as_deref(),
+            parse_args(&args(&["--project", "abc"]))
+                .unwrap()
+                .project
+                .as_deref(),
             Some("abc")
         );
         assert_eq!(
-            parse_args(&args(&["--project=abc"])).unwrap().as_deref(),
+            parse_args(&args(&["--project=abc"]))
+                .unwrap()
+                .project
+                .as_deref(),
             Some("abc")
         );
         assert!(parse_args(&args(&["--project"])).is_err());
         assert!(parse_args(&args(&["--verbose"])).is_err());
+        let parsed = parse_args(&args(&["--project", "abc", "--no-remember"])).unwrap();
+        assert_eq!(parsed.project.as_deref(), Some("abc"));
+        assert!(!parsed.remember);
+        assert!(
+            parse_args(&args(&["--no-remember"]))
+                .unwrap()
+                .project
+                .is_none()
+        );
+    }
+
+    /// `--no-remember` is a server with three tools and instructions that
+    /// never name the fourth; the default server keeps all four and the
+    /// sentence. The readers stay either way — an incognito chat may read
+    /// other chats; it is other chats that may not read it.
+    #[test]
+    fn no_remember_drops_the_tool_and_the_sentence_about_it() {
+        let (config, id) = fixture("no-remember");
+        let names = |remember: bool| {
+            tools_in(&config, Some(&id), remember)
+                .unwrap()
+                .iter()
+                .map(|t| t.def().name)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            names(true),
+            ["search_chats", "read_chat", "remember", "fetch_page"]
+        );
+        assert_eq!(names(false), ["search_chats", "read_chat", "fetch_page"]);
+        let with = instructions_for(&tools_in(&config, Some(&id), true).unwrap());
+        let without = instructions_for(&tools_in(&config, Some(&id), false).unwrap());
+        assert!(with.contains("use remember"), "{with}");
+        assert!(!without.contains("remember"), "{without}");
+        assert!(without.contains("search_chats"));
     }
 }

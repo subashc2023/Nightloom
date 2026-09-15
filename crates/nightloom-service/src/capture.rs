@@ -173,6 +173,9 @@ pub fn session_dirs(config: &Path) -> Vec<SessionDir> {
 struct Unread {
     path: PathBuf,
     from: u64,
+    /// The whole file, as the scan saw it: where an incognito log's
+    /// watermark goes without reading it.
+    len: u64,
     modified: DateTime<Utc>,
     /// No watermark yet: the pass has never read this log.
     first: bool,
@@ -201,6 +204,7 @@ fn unread_in(dir: &Path, state: &CaptureState) -> Vec<Unread> {
             (from < log.len).then_some(Unread {
                 path: log.path,
                 from,
+                len: log.len,
                 modified: log.modified,
                 first: seen.is_none(),
             })
@@ -524,6 +528,14 @@ pub struct CaptureOutcome {
     pub deferred: usize,
     /// Logs with unread bytes the turn cap did not reach. Run it again.
     pub remaining: usize,
+    /// Incognito logs stepped over without a turn (2026-09-15): the chat
+    /// was started so that nothing it said reaches memory, and this pass is
+    /// one of the two ways it could. Counted so the report can say a chat
+    /// was seen and deliberately not read, which is different from a chat
+    /// that was never there. Their watermarks move to the end of the file
+    /// — nothing was read, but nothing ever will be, and a log that stays
+    /// "unread" forever is a pending count that never clears.
+    pub incognito: usize,
     /// Observations by source, in the order the dirs were walked: the
     /// project's name, or "unfiled".
     pub per_project: Vec<(String, usize)>,
@@ -617,6 +629,17 @@ pub async fn run(
                 pass.outcome.remaining += batch.excerpts.len();
                 remaining_from(&mut pass, i, dir);
                 break 'dirs;
+            }
+            // Decided off the first line, before any fold: a mode the log
+            // was started in, not something its new lines could change.
+            if store::mode_of(&log.path).unread_by_others() {
+                pass.outcome.incognito += 1;
+                if !dry_run {
+                    pass.state
+                        .consumed
+                        .insert(log.path.to_string_lossy().into_owned(), log.len);
+                }
+                continue;
             }
             let excerpt = fold(&log.path, log.from, BATCH_BUDGET)?;
             if excerpt.text.is_empty() {
@@ -782,7 +805,7 @@ impl Pass<'_> {
 mod tests {
     use super::*;
     use crate::tools::test_dir;
-    use crate::turn::tests::{chat_scripted, says};
+    use crate::turn::tests::{all_text, chat_recording, chat_scripted, says};
     use nightloom_core::ContentBlock;
 
     /// A config dir with an unfiled session dir. Returns `(config, unfiled)`.
@@ -862,6 +885,73 @@ mod tests {
         assert!(rest.text.starts_with('['));
         assert!(rest.text.contains("assistant: answer 0"));
         assert_eq!(rest.user_turns, 2);
+    }
+
+    /// An incognito log beside an ordinary one: the pass reads the ordinary
+    /// one, never folds the other — its text is not in the instruction the
+    /// model sees — counts the skip, and moves its watermark to the end so
+    /// it is not pending forever. A dry run counts it and moves nothing.
+    #[tokio::test]
+    async fn an_incognito_log_is_skipped_counted_and_never_shown_to_the_model() {
+        let (config, unfiled) = fixture("incognito");
+        let plain = write_log(&unfiled, 2);
+        let mut inc = Session::incognito(&unfiled).unwrap();
+        for i in 0..2 {
+            inc.record_user(format!("PRIVATE-QUESTION-{i}"));
+            inc.record_assistant(
+                "scripted",
+                vec![ContentBlock::Text {
+                    text: format!("PRIVATE-ANSWER-{i}"),
+                }],
+                Some("end_turn".into()),
+                Usage::default(),
+            );
+        }
+        let inc_path = unfiled.join(format!("{}.jsonl", inc.id));
+
+        let (mut chat, seen) = chat_recording(vec![says("none"), says("none")]);
+        let cancel = CancellationToken::new();
+
+        let dry = run(&mut chat, &config, true, &cancel, &mut |_| {})
+            .await
+            .unwrap()
+            .expect("unread logs");
+        assert_eq!(dry.incognito, 1);
+        assert_eq!(dry.logs_read, 1);
+        assert!(
+            state_in(&config).consumed.is_empty(),
+            "a dry run moves nothing"
+        );
+
+        let outcome = run(&mut chat, &config, false, &cancel, &mut |_| {})
+            .await
+            .unwrap()
+            .expect("unread logs");
+        assert_eq!(outcome.incognito, 1);
+        assert_eq!(outcome.logs_read, 1);
+        let state = state_in(&config);
+        assert_eq!(
+            state.consumed[&inc_path.to_string_lossy().to_string()],
+            fs::metadata(&inc_path).unwrap().len()
+        );
+        assert!(
+            state
+                .consumed
+                .contains_key(&plain.to_string_lossy().to_string())
+        );
+        // Nothing of it was in front of the model, on either run: the one
+        // place its text could appear is the instruction, and the recording
+        // provider kept every request it was sent.
+        let sent = all_text(&seen);
+        assert!(sent.contains("question 0"), "{sent}");
+        assert!(!sent.contains("PRIVATE"), "{sent}");
+
+        // Nothing pending afterwards: the skip is not re-counted next run.
+        assert_eq!(pending_count_in(&config), 0);
+        let again = run(&mut chat, &config, false, &cancel, &mut |_| {})
+            .await
+            .unwrap();
+        assert!(again.is_none());
     }
 
     /// Two small logs pack into one turn; the reply's two good lines land

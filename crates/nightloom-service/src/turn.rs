@@ -392,9 +392,12 @@ impl Chat {
         // on a file, the session is still unnamed and will be tried again
         // next turn, and there is no version of "the reply is lost because
         // naming it did not work" that is the right trade.
+        // Never for an ephemeral chat (2026-09-15): a name is for a list,
+        // and this chat is in none — the call would be paid for nothing.
         if self.auto_title
             && matches!(&outcome, Ok(o) if !o.interrupted)
             && session.title().is_none()
+            && session.mode() != nightloom_core::ChatMode::Ephemeral
         {
             let _ = self.title(session, cancel).await;
         }
@@ -1136,6 +1139,25 @@ pub(crate) mod tests {
     /// the crate conventions.
     pub(crate) fn chat_scripted(scripts: Vec<Vec<StreamEvent>>) -> Chat {
         Chat::new(Scripted::provider(scripts), "scripted-model")
+    }
+
+    /// The same, plus every request the provider was handed, for a test in
+    /// another module that has to assert on what a pass put in front of
+    /// the model rather than only on what came back.
+    pub(crate) fn chat_recording(scripts: Vec<Vec<StreamEvent>>) -> (Chat, Seen) {
+        let (provider, seen) = Scripted::recording(scripts);
+        (Chat::new(provider, "scripted-model"), seen)
+    }
+
+    /// Every message text of every recorded request, joined — the whole of
+    /// what the model was ever shown.
+    pub(crate) fn all_text(seen: &Seen) -> String {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .flat_map(|r| r.messages.iter().map(|m| m.text()))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     fn tail_text(requests: &[ChatRequest], i: usize) -> String {
@@ -2614,6 +2636,19 @@ pub(crate) mod tests {
             .filter(|e| matches!(e, SessionEvent::Title { .. }))
             .count();
         assert_eq!(names, 1);
+    }
+
+    /// An ephemeral chat is never named, even with titles on: it appears in
+    /// no list, so the call would buy nothing.
+    #[tokio::test]
+    async fn an_ephemeral_chat_is_never_named() {
+        // One script only: a title call would panic the provider.
+        let provider = Scripted::provider(vec![says("reply")]);
+        let mut chat = Chat::new(provider, "test-model");
+        chat.enable_titles();
+        let mut session = Session::ephemeral();
+        let _ = run(&chat, &mut session, "one").await;
+        assert_eq!(session.title(), None);
     }
 
     /// Off unless a shell asks, so the probe and the eval suite are not

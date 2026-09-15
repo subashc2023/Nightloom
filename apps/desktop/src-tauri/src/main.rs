@@ -6,7 +6,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use nightloom_core::Tool;
+use nightloom_core::{ChatMode, Effect, Tool};
 use nightloom_core::{
     DocumentInput, ImageInput, ProviderError, SegmentKind, Session, SessionEvent, SystemPrompt,
     Thinking, WireView,
@@ -19,8 +19,8 @@ use nightloom_service::store::{self, SessionMatch, SessionSummary};
 use nightloom_service::tools::{ChatDir, ChatDirs, Reviewer, Root, SearchBackend};
 use nightloom_service::{
     AgentSpec, Chat, ClaudeCodeAgent, CompactOutcome, KnowledgeContext, Price, ProjectContext,
-    PromptConfig, ProviderKind, Recorder, TurnEvent, TurnInput, TurnOutcome, resolve_binary,
-    searched_locations,
+    PromptConfig, ProviderKind, Recorder, TurnEvent, TurnInput, TurnOutcome, carry_transcript,
+    resolve_binary, searched_locations,
 };
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
@@ -130,6 +130,11 @@ struct PromptBuilt {
     /// On the Claude Code engine, the bridged segments; `None` on the
     /// provider engine.
     agent: Option<SystemPrompt>,
+    /// The mode of the chat the connection was built for (2026-09-15): an
+    /// incognito chat's engine has no writers, and a normal chat opened
+    /// after it must get them back — the same reconnect comparison as
+    /// `off`, for the same reason.
+    mode: ChatMode,
 }
 
 /// The registry, plus the project currently open.
@@ -616,6 +621,11 @@ struct ChatSpec {
     /// as `layers_off`: what this chat says instead of the file, whatever
     /// the file says.
     layer_edits: BTreeMap<SegmentKind, String>,
+    /// What the open chat was started as (`Session::mode`), read at connect
+    /// time like the two above. A chat that writes nothing gets no writer
+    /// in `build_chat`, and subagents and reviewers inherit it with the
+    /// rest of the spec, so the promise holds one level down.
+    mode: ChatMode,
 }
 
 impl ChatSpec {
@@ -734,7 +744,10 @@ fn build_chat(
         // only appends — an observation is judged and filed by the dream
         // pass, not here. Reviewers never get it: they are built from a spec
         // whose `knowledge` was cleared.
+        // Never for a chat that writes nothing: the inbox is memory, and
+        // memory is the first thing such a chat promised not to reach.
         if spec.knowledge.is_some()
+            && !spec.mode.writes_nothing()
             && let Some(config) = project::config_dir()
         {
             let source = spec.project.as_ref().map(|p| p.name.clone()).or_else(|| {
@@ -777,11 +790,39 @@ fn build_chat(
         let model = chat.model.clone();
         let bench = reviewers(app, policy, spec, &model, mcp_tools);
         chat.enable_reviews(bench, spec.root());
+        // Last, over everything above: a chat that writes nothing keeps
+        // the readers and drops every writer, whoever supplied it.
+        if spec.mode.writes_nothing() {
+            chat.tools.retain(|t| reads_only(t.as_ref()));
+        }
     }
     if !spec.sidecar {
         chat.sidecar = Vec::new();
     }
     Ok(chat)
+}
+
+/// Whether a tool may stay on an incognito or ephemeral chat.
+///
+/// By effect, not by name, so a writer added to the built-in set or served
+/// by an MCP server is out until someone decides otherwise — the same
+/// default-closed posture the dream's tool set takes. `ReadOnly` stays;
+/// `Session` stays (the task list and self-compaction change the
+/// conversation and nothing else; `remember` is `Session` too and is never
+/// pushed for such a chat, see `build_chat`); `Mutating` goes — files, the
+/// shell, subagents, every MCP tool — **except the web**. A fetch or a
+/// search writes nothing on this machine and reaches nothing of the user's;
+/// incognito is about his data, not egress, and egress keeps its own switch
+/// on the rail. The Claude Code engine draws the same line with
+/// `READ_ONLY_TOOLS`.
+fn reads_only(tool: &dyn Tool) -> bool {
+    match tool.effect() {
+        Effect::ReadOnly | Effect::Session => true,
+        Effect::Mutating => {
+            let name = tool.def().name;
+            name == "web_fetch" || name == "web_search"
+        }
+    }
 }
 
 /// The curated bench, resolved into buildable reviewers.
@@ -942,6 +983,7 @@ async fn connect(
         chats: Some(chats),
         layers_off: layers_off(&state).await,
         layer_edits: layer_edits(&state).await,
+        mode: session_mode(&state).await,
     };
     let mcp = ensure_mcp(&state, &spec.workspace, spec.tools).await;
     let mcp_tools = state
@@ -1013,6 +1055,7 @@ async fn connect(
         model: Some(info.model.clone()),
         cwd: Some(spec.workspace),
         agent: None,
+        mode: spec.mode,
     };
     Ok(info)
 }
@@ -1039,6 +1082,19 @@ async fn layer_edits(state: &AppState) -> BTreeMap<SegmentKind, String> {
         .await
         .as_ref()
         .map(|s| s.prompt_layer_edits().clone())
+        .unwrap_or_default()
+}
+
+/// What the open chat was started as, or `Normal` when no chat is open yet
+/// — the same terms as [`layers_off`]: a chat has to exist to have a mode,
+/// and the one `send` creates lazily is an ordinary one.
+async fn session_mode(state: &AppState) -> ChatMode {
+    state
+        .session
+        .lock()
+        .await
+        .as_ref()
+        .map(Session::mode)
         .unwrap_or_default()
 }
 
@@ -1138,6 +1194,7 @@ async fn connect_agent(
     // the other engine, plus the one layer that exists only here.
     let off = layers_off(&state).await;
     let edits = layer_edits(&state).await;
+    let mode = session_mode(&state).await;
     let prompt = nightloom_service::agent_prompt(
         &PromptConfig {
             identity: false,
@@ -1192,6 +1249,11 @@ async fn connect_agent(
                 args.push("--project".into());
                 args.push(p.id.clone());
             }
+            // The server for a chat that writes nothing serves no
+            // `remember`; the two readers and the fetch stay (2026-09-15).
+            if mode.writes_nothing() {
+                args.push("--no-remember".into());
+            }
             spec.mcp_config = Some(
                 serde_json::json!({
                     "mcpServers": {
@@ -1207,6 +1269,10 @@ async fn connect_agent(
     } else {
         spec.tools = Some(Vec::new());
     }
+    // After the tool decision above, which it narrows and never widens:
+    // the measured read-only list for either non-normal mode, and no CLI
+    // session file for an ephemeral one (`AgentSpec::apply_mode`).
+    spec.apply_mode(mode);
 
     // Probed rather than assumed. A missing or unrunnable binary is the
     // overwhelmingly likely first failure on this engine, and finding out at
@@ -1269,6 +1335,7 @@ async fn connect_agent(
         model: spec_model,
         cwd: Some(workspace),
         agent: Some(prompt),
+        mode,
     };
     Ok(info)
 }
@@ -1376,9 +1443,27 @@ async fn rename_session(
     Ok(())
 }
 
+/// Start a chat in `mode` — an ordinary one when absent, which is what every
+/// caller before 2026-09-15 meant. Incognito gets a log marked on its first
+/// line; ephemeral gets no log at all (`Session::ephemeral`), so nothing of
+/// it is ever on disk and there is no listing row to reopen it from.
+///
+/// The mode is the chat's, not the connection's: the engine is built per
+/// rail change, so after this returns the UI reconnects the way it does for
+/// a switched-off prompt layer (`prompt_layers` reports the chat's mode
+/// beside the one the engine was built with) and `connect` /
+/// `connect_agent` read it back through `session_mode`.
 #[tauri::command]
-async fn new_session(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let session = Session::with_log(&state.log_dir().await).map_err(|e| e.to_string())?;
+async fn new_session(
+    state: State<'_, AppState>,
+    mode: Option<ChatMode>,
+) -> Result<serde_json::Value, String> {
+    let session = match mode.unwrap_or_default() {
+        ChatMode::Normal => Session::with_log(&state.log_dir().await),
+        ChatMode::Incognito => Session::incognito(&state.log_dir().await),
+        ChatMode::Ephemeral => Ok(Session::ephemeral()),
+    }
+    .map_err(|e| e.to_string())?;
     let id = session.id.clone();
     *state.session.lock().await = Some(session);
     // A new chat is a new conversation on the agent too. Left set, the next
@@ -1555,16 +1640,27 @@ async fn send_agent(
     // records into the same log through `Recorder`, so it can seal it the same
     // way, and this window has no stderr for the notice to go to either.
     let sealed_before = session.write_failure().is_some();
-    let input = TurnInput {
+    let mut input = TurnInput {
         text,
         images: images.unwrap_or_default(),
         documents: documents.unwrap_or_default(),
     };
+    // An ephemeral chat's CLI session cannot be resumed (measured: see
+    // `AgentSpec::no_session_persistence`), so what the CLI is sent from the
+    // second turn on is the conversation Nightloom holds in memory, rendered
+    // back in front of the message — rendered *before* this turn's message
+    // is recorded, so it holds everything up to it and not the turn itself.
+    // The log keeps the text as typed; only the wire carries the replay.
+    let carried =
+        (session.mode() == ChatMode::Ephemeral).then(|| carry_transcript(session, &input.text));
     session.record_user_with_attachments(
         input.text.clone(),
         input.images.clone(),
         input.documents.clone(),
     );
+    if let Some(carried) = carried {
+        input.text = carried;
+    }
 
     let cancel = CancellationToken::new();
     *state.cancel.lock().unwrap() = cancel.clone();
@@ -1780,18 +1876,26 @@ struct PromptLayersInfo {
     built: Vec<SegmentKind>,
     edits: BTreeMap<SegmentKind, String>,
     built_edits: BTreeMap<SegmentKind, String>,
+    /// The open chat's mode and the mode the engine was built for, the
+    /// third pair the UI compares (2026-09-15): an incognito chat's engine
+    /// has no writers, and the normal chat opened after it needs them back.
+    mode: ChatMode,
+    built_mode: ChatMode,
 }
 
 #[tauri::command]
 async fn prompt_layers(state: State<'_, AppState>) -> Result<PromptLayersInfo, String> {
     let off = layers_off(&state).await;
     let edits = layer_edits(&state).await;
+    let mode = session_mode(&state).await;
     let built = state.prompt.lock().await;
     Ok(PromptLayersInfo {
         off,
         built: built.off.clone(),
         edits,
         built_edits: built.edits.clone(),
+        mode,
+        built_mode: built.mode,
     })
 }
 
@@ -2856,6 +2960,8 @@ struct CaptureReport {
     skipped: usize,
     deferred: usize,
     remaining: usize,
+    /// Incognito chats seen and deliberately not read (2026-09-15).
+    incognito: usize,
     per_project: Vec<CapturedReport>,
     interrupted: bool,
     cost_usd: Option<f64>,
@@ -2924,6 +3030,7 @@ async fn capture(
         logs_read: outcome.logs_read,
         skipped: outcome.skipped,
         deferred: outcome.deferred,
+        incognito: outcome.incognito,
         remaining: outcome.remaining,
         per_project: outcome
             .per_project
@@ -3157,6 +3264,14 @@ fn mac_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     let new_chat = MenuItemBuilder::with_id("new_chat", "New Chat")
         .accelerator("CmdOrCtrl+N")
         .build(app)?;
+    // The two other kinds of chat (nightshift backlog 059, 2026-09-15),
+    // beside the ordinary one wherever it is offered. ⌘⇧N for the default
+    // he asked for; ephemeral has no key, the same way New project has none.
+    let new_incognito = MenuItemBuilder::with_id("new_incognito", "New Incognito Chat")
+        .accelerator("CmdOrCtrl+Shift+N")
+        .build(app)?;
+    let new_ephemeral =
+        MenuItemBuilder::with_id("new_ephemeral", "New Ephemeral Chat").build(app)?;
     // New project is a form (backlog 047, 2026-09-14) and Open project the
     // folder picker it used to be. No accelerator on New: the chord set is
     // blocker 035/043's, and ⌘P's N reaches it.
@@ -3216,6 +3331,8 @@ fn mac_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
 
     let file = SubmenuBuilder::new(app, "File")
         .item(&new_chat)
+        .item(&new_incognito)
+        .item(&new_ephemeral)
         .separator()
         .item(&new_project)
         .item(&add_project)

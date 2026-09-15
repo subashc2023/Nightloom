@@ -404,6 +404,14 @@ fn substring(
     let mut hits: Vec<(SessionMatch, Option<String>)> = Vec::new();
     for (dir, project) in covered {
         for found in store::search(dir, query).map_err(|e| e.to_string())? {
+            // The sidebar's scan finds an incognito chat for the user, who
+            // owns it; this reader is another chat, which may not. The
+            // ranked path above never gets this far — the index holds no
+            // term for such a log — so the fallback has to draw the same
+            // line itself.
+            if found.summary.mode.unread_by_others() {
+                continue;
+            }
             hits.push((found, project.clone()));
         }
     }
@@ -586,6 +594,16 @@ fn read(
     max_chars: usize,
 ) -> Result<String, String> {
     let path = resolve(dirs, prefix)?;
+    // Refused by id as well as hidden from search: a model that has the id
+    // from the user, or from a result line written before the chat was
+    // started as incognito, still gets no window onto it. The first line
+    // says so before the log is read.
+    if store::mode_of(&path).unread_by_others() {
+        return Err(format!(
+            "that chat is incognito: it was started so that no other chat can read it, \
+             and this one cannot ({prefix:?})"
+        ));
+    }
     let modified: DateTime<Utc> = fs::metadata(&path)
         .and_then(|m| m.modified())
         .map_err(|e| format!("cannot read {}: {e}", path.display()))?
@@ -979,6 +997,59 @@ mod tests {
             .await
             .unwrap();
         assert!(out.contains("Elsewhere"), "{out}");
+    }
+
+    /// An incognito chat is invisible to both tools: absent from the ranked
+    /// search and from the substring fallback (a query with no word in it),
+    /// and refused by `read_chat` with a sentence that says why, by the
+    /// short id and the full one — while the ordinary chat beside it is
+    /// found and read as before.
+    #[tokio::test]
+    async fn an_incognito_chat_is_hidden_from_search_and_refused_by_read() {
+        let (dirs, _) = dirs_for("chats-incognito");
+        let mut inc = Session::incognito(&dirs.active).unwrap();
+        inc.record_user("the secret word is xylophone ★");
+        inc.record_assistant(
+            "m",
+            vec![ContentBlock::Text {
+                text: "xylophone ★ noted".into(),
+            }],
+            Some("end_turn".into()),
+            Usage::default(),
+        );
+        inc.record_title("Xylophone plans");
+        let plain = logged(
+            &dirs.active,
+            "Ordinary",
+            "an ordinary question",
+            "an answer",
+            "",
+        );
+
+        let search = SearchChats::new(dirs.clone());
+        let out = call(&search, json!({"query": "xylophone"})).await.unwrap();
+        assert!(!out.contains("Xylophone"), "ranked: {out}");
+        assert!(
+            out.contains("No chat") || out.contains("0 chat") || !out.contains(&short_id(&inc.id)),
+            "{out}"
+        );
+        // A lone symbol has no word to rank by and goes to the substring
+        // scan, which has to draw the same line.
+        let out = call(&search, json!({"query": "★"})).await.unwrap();
+        assert!(!out.contains(&short_id(&inc.id)), "substring: {out}");
+        let out = call(&search, json!({"query": "ordinary"})).await.unwrap();
+        assert!(out.contains(&short_id(&plain)), "{out}");
+
+        let read = ReadChat::new(dirs);
+        for id in [short_id(&inc.id), inc.id.clone()] {
+            let err = call(&read, json!({"session": id})).await.unwrap_err();
+            assert!(err.contains("that chat is incognito"), "{err}");
+            assert!(!err.contains("xylophone"), "the refusal leaks: {err}");
+        }
+        let out = call(&read, json!({"session": short_id(&plain)}))
+            .await
+            .unwrap();
+        assert!(out.contains("an ordinary question"), "{out}");
     }
 
     // ---- measurements, on the real corpora; `--ignored --nocapture` --------

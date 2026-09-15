@@ -19,6 +19,10 @@ pub struct McpServeArgs {
     /// the unfiled chats.
     #[arg(long)]
     project: Option<String>,
+    /// Serve without `remember`: the server for an incognito or ephemeral
+    /// chat, which must not be able to write to memory (2026-09-15).
+    #[arg(long)]
+    no_remember: bool,
 }
 
 pub async fn run(args: McpServeArgs) -> Result<()> {
@@ -27,7 +31,10 @@ pub async fn run(args: McpServeArgs) -> Result<()> {
     };
     mcp_server::serve(
         config,
-        args.project,
+        mcp_server::ServeArgs {
+            project: args.project,
+            remember: !args.no_remember,
+        },
         tokio::io::stdin(),
         tokio::io::stdout(),
     )
