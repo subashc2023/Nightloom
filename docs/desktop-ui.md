@@ -244,7 +244,12 @@ time) managing per-provider API keys, rail visibility, the model picker, web
 search keys, the vault's folder, the projects folder (since 2026-09-14, the
 *Projects folder* row), and — since 2026-09-14 — the per-model
 instruction files (the *Model instructions* row; the files themselves are
-described under Notes below).
+described under Notes below). That pane lists every file, has *+ Add for
+`<current model>`* for the one the rail is on, and — later the same day,
+nightshift backlog 053 — an *Any model* picker under it: a provider (every
+one the app knows, plus the Claude Code engine) and a model from that
+provider's known list, or a typed id, with a dot for whether its file exists
+and one button, *Open* or *Create*.
 
 API keys entered in-app live in the OS credential store (`keyring` crate, service
 "nightloom", user = provider label; `openai-chat` falls back to `openai`'s stored
@@ -409,6 +414,21 @@ pencil under the model list in the popover. Both close the surface they are on
 and open `NoteView`; Save and the back button bring it back (`closeNote` reads
 `app.noteFrom`; the popover scrolls to its model list, Settings reopens on the
 row), the round trip the prompt library makes for the popover.
+
+The Settings row also reaches a model the chat is *not* on (backlog 053,
+2026-09-14): the *Any model* card below the list is a provider select — every
+provider plus the Claude Code engine — and a model select filled the way the
+provider's own pane is (curated, the API's list where a key exists, custom,
+the provider's default; on the engine the four aliases), with an *Other —
+type an id…* row for anything unlisted. A dot and a line say whether
+`modelInstructionFile(id)` is in the folder; *Open* opens it in `NoteView` by
+the same path as *+ Add for*, and *Create* first writes it through
+`save_note("models", …)` with one header line naming the pair
+(`<!-- model instructions · <provider> / <id> -->`, `instructionFileFor` in
+`catalog.ts`), then opens it. The provider is in that line only: the file is
+keyed on the id exactly as the preamble keys it, so nothing about which file a
+chat reads changed. A file created and left with only its header is non-empty
+and so is sent — one comment line — until it is emptied or filled.
 
 **The Dream button (Knowledge bar, `Dream · N`, hidden at zero)** runs the
 consolidation pass over the observation inbox (the mechanics are in

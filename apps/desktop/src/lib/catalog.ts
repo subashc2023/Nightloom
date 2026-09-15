@@ -131,6 +131,27 @@ export function modelOfInstructionFile(name: string): string {
   return name.replace(/\.md$/, "").replace(/__/g, "/");
 }
 
+/**
+ * What Settings' any-model picker writes when it creates a file for a
+ * provider/model pair (nightshift backlog 053): the name is
+ * `modelInstructionFile` and nothing else — the preamble keys the file on
+ * the model id alone, and a second mapping here would be a file the chat
+ * never reads — and the content is one comment line naming the pair, so a
+ * file found in the folder months later says what it was for. The provider
+ * lives in that line only. On the Claude Code engine `provider` is
+ * `"claude-code"` and `model` the alias the picker sends, since that is the
+ * name the bridge looks up.
+ */
+export function instructionFileFor(
+  provider: string,
+  model: string,
+): { name: string; header: string } {
+  return {
+    name: modelInstructionFile(model),
+    header: `<!-- model instructions · ${provider} / ${model.trim()} -->\n`,
+  };
+}
+
 /** `200000` → `200k`, `1048576` → `1M`; the context window beside a model id. */
 export function formatWindow(n: number | null | undefined): string {
   if (n == null) return "";

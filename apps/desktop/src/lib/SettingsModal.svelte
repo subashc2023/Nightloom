@@ -24,10 +24,12 @@
     transcript,
   } from "./transcriptPrefs.svelte";
   import {
+    AGENT_MODELS,
     CURATED,
     PROVIDER_NOTES,
     formatWindow,
     groupModels,
+    instructionFileFor,
     modelInstructionFile,
     modelOfInstructionFile,
     modelsFor,
@@ -36,6 +38,7 @@
     type ModelSection,
   } from "./catalog";
   import type { Note, ProviderInfo, SearchBackendInfo } from "./types";
+  import { untrack } from "svelte";
   import Icon from "./Icon.svelte";
 
   /**
@@ -158,6 +161,117 @@
   const addExists = $derived(
     !!addModel && modelFiles.some((f) => f.name === modelInstructionFile(addModel)),
   );
+
+  /**
+   * The any-model picker (nightshift backlog 053): a provider and a model
+   * chosen here rather than in the popover, so Fable's file can be read or
+   * started while the chat is on Opus. The provider list is every one the
+   * app knows plus the Claude Code engine, which is not a provider but has
+   * files of its own (named after the alias the picker sends). The model
+   * list is what the provider's Settings pane would show — curated, fetched
+   * where a key exists, custom — plus its default, since a chat may be on
+   * that without it appearing anywhere; and an id in none of those can be
+   * typed, because some providers only list with a key. The file is
+   * `modelInstructionFile(id)`: the one rule, the same the preamble reads.
+   */
+  const AGENT_KIND = "claude-code";
+  /** The model select's "type one instead" row; not a model id. */
+  const OTHER = "<other>";
+  let pickProvider = $state(
+    app.draft.engine === "claude-code"
+      ? AGENT_KIND
+      : app.draft.provider || app.providers[0]?.kind || "",
+  );
+  let pickModel = $state("");
+  let pickOther = $state(false);
+  let pickText = $state("");
+  let pickBusy = $state(false);
+  let pickError = $state<string | null>(null);
+  const pickProviders = $derived([
+    ...app.providers.map((p) => ({ kind: p.kind, label: providerLabel(p.kind) })),
+    { kind: AGENT_KIND, label: "Claude Code engine" },
+  ]);
+  const pickModels = $derived.by(() => {
+    if (pickProvider === AGENT_KIND) return AGENT_MODELS.filter((m) => m !== "");
+    const p = app.providers.find((p) => p.kind === pickProvider);
+    const seen = new Set<string>();
+    const all: string[] = [];
+    // The same sources in the same order as `candidates` above, and the
+    // provider's default last if it is in none of them.
+    for (const m of [
+      ...(CURATED[pickProvider] ?? []),
+      ...(app.modelLists[pickProvider] ?? []),
+      ...(app.prefs.customModels[pickProvider] ?? []),
+      ...(p?.default_model ? [p.default_model] : []),
+    ]) {
+      if (!seen.has(m)) {
+        seen.add(m);
+        all.push(m);
+      }
+    }
+    return all;
+  });
+  // A provider with a key has its live list fetched once, as opening its
+  // pane does — the same `fetchModels`, so the two never disagree.
+  $effect(() => {
+    const p = app.providers.find((p) => p.kind === pickProvider);
+    if (p?.available) void fetchModels(pickProvider);
+  });
+  // The model follows the provider: the first of the new list, or the text
+  // field when the list is empty (OpenAI-compatible with nothing added).
+  // `untrack` so a pick of our own does not re-run this.
+  $effect(() => {
+    const list = pickModels;
+    untrack(() => {
+      if (!list.includes(pickModel)) {
+        pickModel = list[0] ?? "";
+        pickOther = list.length === 0;
+      }
+    });
+  });
+  function pickModelChanged(e: Event) {
+    const v = (e.currentTarget as HTMLSelectElement).value;
+    if (v === OTHER) {
+      pickOther = true;
+    } else {
+      pickOther = false;
+      pickModel = v;
+    }
+    pickError = null;
+  }
+  /** The id the picker names, whichever way it was chosen. */
+  const pickId = $derived((pickOther ? pickText : pickModel).trim());
+  /** Its file, when one exists — the dot, the size, and Open over Create. */
+  const pickFile = $derived(
+    pickId ? (modelFiles.find((f) => f.name === modelInstructionFile(pickId)) ?? null) : null,
+  );
+  /**
+   * Open the picked pair's file, creating it first when there is none: one
+   * header line naming the pair, written by the note call the editor's own
+   * Save uses, then the editor on the same path the current-model row
+   * opens. `api.saveNote` directly rather than the store's: the store's
+   * re-connects the chat, and a header for a model the chat is not on is a
+   * no-op there while the editor's Save re-connects anyway.
+   */
+  async function openPicked() {
+    if (!pickId || pickBusy) return;
+    if (!pickFile) {
+      pickBusy = true;
+      pickError = null;
+      try {
+        const { name, header } = instructionFileFor(pickProvider, pickId);
+        await api.saveNote("models", name, header);
+        await refreshModelFiles();
+      } catch (e) {
+        pickError = String(e);
+        return;
+      } finally {
+        pickBusy = false;
+      }
+    }
+    openModelInstructions(pickId, "settings");
+  }
+
   function size(bytes: number): string {
     if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
     return `${bytes} B`;
@@ -816,6 +930,69 @@
           </button>
         </div>
       </section>
+
+      <!-- Any provider and model, not only the rail's (nightshift backlog
+           053): the file the preamble reads for that pair, opened when it
+           exists and created — one header line naming the pair — when not.
+           The same editor path as the row above. -->
+      <section class="card">
+        <div class="ch"><span class="t">Any model</span></div>
+        <p class="note small">
+          Read or start the file for a model the chat is not on. The list is
+          what the picker knows for that provider — its curated ids and, with
+          a key, what its API lists — and an id in neither can be typed.
+        </p>
+        <div class="kf">
+          <select aria-label="Provider" value={pickProvider} onchange={(e) => (pickProvider = e.currentTarget.value)}>
+            {#each pickProviders as p (p.kind)}
+              <option value={p.kind}>{p.label}</option>
+            {/each}
+          </select>
+          <select aria-label="Model" value={pickOther ? OTHER : pickModel} onchange={pickModelChanged}>
+            {#each pickModels as m (m)}
+              <option value={m}>{m}</option>
+            {/each}
+            <option value={OTHER}>Other — type an id…</option>
+          </select>
+          {#if pickOther}
+            <input
+              type="text"
+              class="pick-id"
+              placeholder="model id, exactly as the provider names it"
+              aria-label="Model id"
+              bind:value={pickText}
+            />
+          {/if}
+        </div>
+        <div class="kf pick-row">
+          <span class="dot" class:ok={!!pickFile}></span>
+          <span class="key-status pick-st">
+            {#if !pickId}
+              Pick a model.
+            {:else if pickFile}
+              <code>{pickFile.name}</code> · {size(pickFile.bytes)}
+            {:else}
+              No file yet — it would be <code>{modelInstructionFile(pickId)}</code>.
+            {/if}
+          </span>
+          <span class="spacer"></span>
+          <button
+            class="ns-btn"
+            disabled={!pickId || pickBusy}
+            title={!pickId
+              ? "Pick a model first"
+              : pickFile
+                ? `Opens the editor on ${pickFile.name}`
+                : `Writes ${modelInstructionFile(pickId)} with a header line and opens it`}
+            onclick={() => void openPicked()}
+          >
+            {pickBusy ? "creating…" : pickFile ? "Open" : "Create"}
+          </button>
+        </div>
+        {#if pickError}
+          <div class="error">{pickError}</div>
+        {/if}
+      </section>
     </div>
   {:else if searchSel}
     <div class="pane">
@@ -1374,6 +1551,21 @@
     font-family: var(--mono);
     font-size: 10.5px;
     color: var(--dim);
+  }
+  /* The any-model picker's second row: dot · file or "no file yet" · Open/Create. */
+  .pick-row {
+    flex-wrap: nowrap;
+  }
+  .pick-st {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .pick-st code {
+    font-family: var(--mono);
+    font-size: 0.92em;
+  }
+  .kf input.pick-id {
+    flex: 1 1 100%;
   }
   .dream-auto {
     display: flex;

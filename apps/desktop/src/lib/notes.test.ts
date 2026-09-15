@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { modelInstructionFile, modelOfInstructionFile } from "./catalog";
+import { instructionFileFor, modelInstructionFile, modelOfInstructionFile } from "./catalog";
 import { notesTree } from "./nightshift";
 import type { NoteEntry, NoteScope } from "./types";
 
@@ -71,5 +71,26 @@ describe("the models note scope", () => {
     // missing here cannot be sent, and one missing there is an error.
     const scopes: NoteScope[] = ["project", "knowledge", "instructions", "memory", "models"];
     expect(scopes).toContain("models");
+  });
+
+  it("creates from the any-model picker at the path the preamble reads (backlog 053)", () => {
+    // The picker names a provider *and* a model, but the preamble keys the
+    // file on the model id alone — `model_instruction_file` in
+    // `crates/nightloom-service/src/prompt.rs`, pinned there by
+    // `a_model_id_with_a_slash_is_one_file` — so Create must land on exactly
+    // `modelInstructionFile(id)`, with the provider in the header line only.
+    // Spelled out here as the backend spells it, not via the helper, so a
+    // drift in either copy of the rule fails this test.
+    const { name, header } = instructionFileFor("anthropic", "claude-fable-5-1");
+    expect(name).toBe("claude-fable-5-1.md");
+    expect(name).toBe(modelInstructionFile("claude-fable-5-1"));
+    expect(name).toBe("claude-fable-5-1".trim().replace(/\//g, "__") + ".md");
+    expect(header).toBe("<!-- model instructions · anthropic / claude-fable-5-1 -->\n");
+    // A router id folds its slash the same way, and the engine's alias is
+    // the alias — the name the bridge looks up at connect.
+    expect(instructionFileFor("openrouter", "deepseek/deepseek-v4-flash").name).toBe(
+      "deepseek__deepseek-v4-flash.md",
+    );
+    expect(instructionFileFor("claude-code", "fable").name).toBe("fable.md");
   });
 });
