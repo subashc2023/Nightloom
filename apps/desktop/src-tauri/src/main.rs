@@ -47,6 +47,18 @@ struct AppState {
     /// all.
     agent: tokio::sync::Mutex<Option<ClaudeCodeAgent>>,
     session: tokio::sync::Mutex<Option<Session>>,
+    /// The kind the next chat will be, while there is no chat
+    /// (nightshift backlog 061, 2026-09-15).
+    ///
+    /// New chat is a state, not a file: `new_session` drops the open
+    /// session and records the kind asked for here, and the first message
+    /// creates the log in that kind (`ensure_session`). Until then nothing
+    /// is on disk and nothing is listed, so clicking New chat twice is the
+    /// same as clicking it once. The mode is read from here only while
+    /// `session` is `None` — once a log exists its first line is the
+    /// answer (`session_mode`) — and a project switch resets it, since the
+    /// pending kind was chosen for the list the user was looking at.
+    pending_mode: tokio::sync::Mutex<ChatMode>,
     /// Swapped per turn. Shared with [`WindowApprover`], which has to wait on
     /// whichever token is current at the moment it asks.
     cancel: Arc<std::sync::Mutex<CancellationToken>>,
@@ -874,8 +886,10 @@ fn reviewers(
 }
 
 /// Build the provider + `Chat` for this window; retry stalls are reported as
-/// `turn-notice` events. Sessions are created lazily by `send`, so switching
-/// providers (or auto-connecting at launch) never leaves empty session logs.
+/// `turn-notice` events. Sessions are created lazily by the first message
+/// (`ensure_session`), so switching providers (or auto-connecting at launch)
+/// never leaves empty session logs — and since 2026-09-15 neither does New
+/// chat, which only sets the kind the first message will create in.
 ///
 /// `preamble` gates the assembled system prompt (identity, environment,
 /// project instructions, user memory) and `sidecar` the per-turn status
@@ -1085,17 +1099,53 @@ async fn layer_edits(state: &AppState) -> BTreeMap<SegmentKind, String> {
         .unwrap_or_default()
 }
 
-/// What the open chat was started as, or `Normal` when no chat is open yet
-/// — the same terms as [`layers_off`]: a chat has to exist to have a mode,
-/// and the one `send` creates lazily is an ordinary one.
+/// What the open chat was started as, or — when no chat is open yet — the
+/// kind the next one will be (`AppState::pending_mode`). The two are one
+/// question to every caller: `connect` and `connect_agent` build the engine
+/// for it, and `prompt_layers` reports it beside the built one, so a
+/// pending incognito chat gets its engine without writers *before* the
+/// first message rather than one reconnect after it.
 async fn session_mode(state: &AppState) -> ChatMode {
-    state
-        .session
-        .lock()
-        .await
-        .as_ref()
-        .map(Session::mode)
-        .unwrap_or_default()
+    let pending = *state.pending_mode.lock().await;
+    mode_of(state.session.lock().await.as_ref(), pending)
+}
+
+/// The mode the shell is in: the open chat's own, else the pending one.
+/// The pure half of [`session_mode`], so a test can pin it without an
+/// `AppState`.
+fn mode_of(session: Option<&Session>, pending: ChatMode) -> ChatMode {
+    session.map(Session::mode).unwrap_or(pending)
+}
+
+/// The session the next turn records into, created now if there is none
+/// (nightshift backlog 061, 2026-09-15).
+///
+/// One helper for the four commands that used to each create an ordinary
+/// log when they found no session — `send`, `send_agent`,
+/// `set_prompt_layers`, `set_prompt_layer_text`. They create in the
+/// pending kind now, which is what makes New chat a state rather than a
+/// file: the kind is chosen at the button and honoured at the first
+/// message. The pending mode is left as it was — once the log exists its
+/// first line answers the question, and `session_mode` reads that first.
+fn ensure_session<'a>(
+    session: &'a mut Option<Session>,
+    mode: ChatMode,
+    log_dir: &Path,
+) -> Result<&'a mut Session, String> {
+    if session.is_none() {
+        *session = Some(start_session(mode, log_dir).map_err(|e| e.to_string())?);
+    }
+    Ok(session.as_mut().expect("session ensured above"))
+}
+
+/// A chat in `mode`: an ordinary log, a log marked incognito on its first
+/// line, or no log at all (`Session::ephemeral`).
+fn start_session(mode: ChatMode, log_dir: &Path) -> std::io::Result<Session> {
+    match mode {
+        ChatMode::Normal => Session::with_log(log_dir),
+        ChatMode::Incognito => Session::incognito(log_dir),
+        ChatMode::Ephemeral => Ok(Session::ephemeral()),
+    }
 }
 
 /// The default binary, matching the CLI's `--agent-binary`.
@@ -1443,35 +1493,44 @@ async fn rename_session(
     Ok(())
 }
 
-/// Start a chat in `mode` — an ordinary one when absent, which is what every
-/// caller before 2026-09-15 meant. Incognito gets a log marked on its first
-/// line; ephemeral gets no log at all (`Session::ephemeral`), so nothing of
-/// it is ever on disk and there is no listing row to reopen it from.
+/// Leave the open chat and say what kind the next one will be — an ordinary
+/// one when `mode` is absent, which is what every caller before 2026-09-15
+/// meant.
+///
+/// Nothing is created here (nightshift backlog 061, 2026-09-15). Until
+/// today this made the log at once, and the sidebar filled with empty
+/// rows: each click on New chat was a file. Now the click is a state —
+/// no session, a pending kind — and the first message creates the log in
+/// that kind (`ensure_session`), which is when the row appears and gets
+/// its name. Clicking twice is a no-op; a project switch resets the kind.
+/// Incognito gets a log marked on its first line; ephemeral gets no log
+/// at all (`Session::ephemeral`), so nothing of it is ever on disk and
+/// there is no listing row to reopen it from.
 ///
 /// The mode is the chat's, not the connection's: the engine is built per
 /// rail change, so after this returns the UI reconnects the way it does for
 /// a switched-off prompt layer (`prompt_layers` reports the chat's mode
 /// beside the one the engine was built with) and `connect` /
-/// `connect_agent` read it back through `session_mode`.
+/// `connect_agent` read it back through `session_mode` — which reads the
+/// pending kind while there is no chat, so a pending incognito chat's
+/// engine has no writers before its first message, not after.
+///
+/// Returns `{ "mode": … }` rather than an id, since there is no id yet.
+/// The command keeps its name so the frontend's API surface is unchanged.
 #[tauri::command]
 async fn new_session(
     state: State<'_, AppState>,
     mode: Option<ChatMode>,
 ) -> Result<serde_json::Value, String> {
-    let session = match mode.unwrap_or_default() {
-        ChatMode::Normal => Session::with_log(&state.log_dir().await),
-        ChatMode::Incognito => Session::incognito(&state.log_dir().await),
-        ChatMode::Ephemeral => Ok(Session::ephemeral()),
-    }
-    .map_err(|e| e.to_string())?;
-    let id = session.id.clone();
-    *state.session.lock().await = Some(session);
+    let mode = mode.unwrap_or_default();
+    *state.session.lock().await = None;
+    *state.pending_mode.lock().await = mode;
     // A new chat is a new conversation on the agent too. Left set, the next
     // turn would resume the previous chat's history behind an empty
     // transcript — the same lie in the other direction from the one
     // `SessionEvent::AgentSession` exists to prevent.
     adopt_agent_session(&state, None).await;
-    Ok(serde_json::json!({ "id": id }))
+    Ok(serde_json::json!({ "mode": mode }))
 }
 
 /// Point the agent at `resume` (or at nothing), if the agent engine is live.
@@ -1548,11 +1607,9 @@ async fn send(
         .ok_or_else(|| "not connected".to_string())?;
 
     let log_dir = state.log_dir().await;
+    let pending = *state.pending_mode.lock().await;
     let mut session_guard = state.session.lock().await;
-    if session_guard.is_none() {
-        *session_guard = Some(Session::with_log(&log_dir).map_err(|e| e.to_string())?);
-    }
-    let session = session_guard.as_mut().expect("session ensured above");
+    let session = ensure_session(&mut session_guard, pending, &log_dir)?;
 
     let cancel = CancellationToken::new();
     *state.cancel.lock().unwrap() = cancel.clone();
@@ -1631,11 +1688,9 @@ async fn send_agent(
         .ok_or_else(|| "not connected".to_string())?;
 
     let log_dir = state.log_dir().await;
+    let pending = *state.pending_mode.lock().await;
     let mut session_guard = state.session.lock().await;
-    if session_guard.is_none() {
-        *session_guard = Some(Session::with_log(&log_dir).map_err(|e| e.to_string())?);
-    }
-    let session = session_guard.as_mut().expect("session ensured above");
+    let session = ensure_session(&mut session_guard, pending, &log_dir)?;
     // Sampled before the first append of the turn. See `send`: an agent turn
     // records into the same log through `Recorder`, so it can seal it the same
     // way, and this window has no stderr for the notice to go to either.
@@ -1905,8 +1960,10 @@ async fn prompt_layers(state: State<'_, AppState>) -> Result<PromptLayersInfo, S
 /// the prompt it was built with, and the UI reconnects after this returns —
 /// the same path a rail knob takes — so `connect` / `connect_agent` read the
 /// new set back the one way they read it. A session is created if the chat
-/// has none yet, as `send` would create one: the exclusion is a fact about
-/// the chat, and a chat has to exist to have it.
+/// has none yet, as `send` would create one and in the same pending kind:
+/// the exclusion is a fact about the chat, and a chat has to exist to have
+/// it. So this is the one way a row can appear before the first message —
+/// a layer unchecked on a fresh New chat creates the log then.
 ///
 /// Allowed on the Claude Code engine, unlike a rewind or an elision: those
 /// change what the *log* projects, which that engine never reads, while
@@ -1919,11 +1976,9 @@ async fn set_prompt_layers(
     off: Vec<SegmentKind>,
 ) -> Result<Vec<SessionEvent>, String> {
     let log_dir = state.log_dir().await;
+    let pending = *state.pending_mode.lock().await;
     let mut session_guard = state.session.lock().await;
-    if session_guard.is_none() {
-        *session_guard = Some(Session::with_log(&log_dir).map_err(|e| e.to_string())?);
-    }
-    let session = session_guard.as_mut().expect("session ensured above");
+    let session = ensure_session(&mut session_guard, pending, &log_dir)?;
     session.record_prompt_layers(off);
     Ok(session.events().to_vec())
 }
@@ -1948,11 +2003,9 @@ async fn set_prompt_layer_text(
         return Err(format!("{kind:?} is not a layer a chat can rewrite"));
     }
     let log_dir = state.log_dir().await;
+    let pending = *state.pending_mode.lock().await;
     let mut session_guard = state.session.lock().await;
-    if session_guard.is_none() {
-        *session_guard = Some(Session::with_log(&log_dir).map_err(|e| e.to_string())?);
-    }
-    let session = session_guard.as_mut().expect("session ensured above");
+    let session = ensure_session(&mut session_guard, pending, &log_dir)?;
     let mut edits = session.prompt_layer_edits().clone();
     match text.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()) {
         Some(text) => {
@@ -2388,6 +2441,10 @@ async fn open_project(
         project
     };
     *state.session.lock().await = None;
+    // The pending kind was chosen against the list the user was looking at;
+    // the next chat in the new project is an ordinary one until they say
+    // otherwise (nightshift backlog 061).
+    *state.pending_mode.lock().await = ChatMode::Normal;
     adopt_agent_session(&state, None).await;
     // After the guard is dropped, and before the counts are read: a project
     // opened for the first time since the move has its chats and notes still
@@ -2401,6 +2458,7 @@ async fn open_project(
 async fn close_project(state: State<'_, AppState>) -> Result<(), String> {
     state.workspaces.lock().await.active = None;
     *state.session.lock().await = None;
+    *state.pending_mode.lock().await = ChatMode::Normal;
     adopt_agent_session(&state, None).await;
     Ok(())
 }
@@ -2440,6 +2498,7 @@ async fn forget_project(
     };
     if closed {
         *state.session.lock().await = None;
+        *state.pending_mode.lock().await = ChatMode::Normal;
     }
     Ok(())
 }
@@ -3449,6 +3508,7 @@ fn main() {
                 chat: tokio::sync::Mutex::new(None),
                 agent: tokio::sync::Mutex::new(None),
                 session: tokio::sync::Mutex::new(None),
+                pending_mode: tokio::sync::Mutex::new(ChatMode::Normal),
                 cancel,
                 workspaces: tokio::sync::Mutex::new(Workspaces {
                     registry: Registry::load(),
@@ -3589,4 +3649,98 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Nightloom");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A fresh, empty log directory per test, so "unchanged" means "still
+    /// empty" and one test's log is never another's.
+    fn empty_log_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("nightloom-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn files_in(dir: &Path) -> Vec<PathBuf> {
+        let mut v: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        v.sort();
+        v
+    }
+
+    // New chat is a state, not a file (nightshift backlog 061): the pure
+    // halves of `new_session`, `session_mode` and the first message's
+    // `ensure_session`, driven the way the commands drive them. The
+    // commands themselves need a Tauri `State`, which needs a window; what
+    // they add is three lock-and-copy lines each.
+    #[test]
+    fn a_pending_incognito_chat_writes_nothing_until_its_first_turn() {
+        let dir = empty_log_dir("pending-incognito");
+        // `new_session(incognito)`: no session, the kind recorded.
+        let mut session: Option<Session> = None;
+        let pending = ChatMode::Incognito;
+        assert!(files_in(&dir).is_empty(), "New chat created a file");
+        // In between, the shell reports the pending kind — so the engine
+        // built now has no writers.
+        assert_eq!(mode_of(session.as_ref(), pending), ChatMode::Incognito);
+        // Clicking New chat again is the same state again.
+        session = None;
+        assert!(
+            files_in(&dir).is_empty(),
+            "a second New chat created a file"
+        );
+
+        // The first turn creates the log, in that kind.
+        let created = ensure_session(&mut session, pending, &dir).unwrap();
+        let id = created.id.clone();
+        let files = files_in(&dir);
+        assert_eq!(files.len(), 1, "the first turn creates exactly one log");
+        assert_eq!(files[0], dir.join(format!("{id}.jsonl")));
+        let text = std::fs::read_to_string(&files[0]).unwrap();
+        let first: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+        assert_eq!(first["event"], "session_created");
+        assert_eq!(first["mode"], "incognito");
+        assert_eq!(first["id"], id);
+        // Once the log exists, its first line is the answer, whatever is
+        // pending.
+        assert_eq!(
+            mode_of(session.as_ref(), ChatMode::Normal),
+            ChatMode::Incognito
+        );
+        // A second turn records into the same log rather than a new one.
+        let again = ensure_session(&mut session, pending, &dir).unwrap();
+        assert_eq!(again.id, id);
+        assert_eq!(files_in(&dir).len(), 1);
+    }
+
+    #[test]
+    fn the_pending_kind_decides_what_the_first_turn_creates() {
+        let dir = empty_log_dir("pending-kinds");
+        // Normal: an unmarked log.
+        let mut normal = None;
+        let s = ensure_session(&mut normal, ChatMode::Normal, &dir).unwrap();
+        assert_eq!(s.mode(), ChatMode::Normal);
+        let text = std::fs::read_to_string(dir.join(format!("{}.jsonl", s.id))).unwrap();
+        assert!(
+            !text.lines().next().unwrap().contains("\"mode\""),
+            "a normal log is unmarked"
+        );
+        // Ephemeral: no log at all, and `session_mode` still says so.
+        let mut ephemeral = None;
+        let s = ensure_session(&mut ephemeral, ChatMode::Ephemeral, &dir).unwrap();
+        assert_eq!(s.mode(), ChatMode::Ephemeral);
+        assert!(s.log_path().is_none());
+        assert_eq!(files_in(&dir).len(), 1, "an ephemeral chat added no file");
+        assert_eq!(
+            mode_of(ephemeral.as_ref(), ChatMode::Normal),
+            ChatMode::Ephemeral
+        );
+        // No session and nothing pending is an ordinary chat, as before.
+        assert_eq!(mode_of(None, ChatMode::Normal), ChatMode::Normal);
+    }
 }

@@ -649,9 +649,11 @@ else, never a modal. The mock is
   `App.svelte`'s Shift table. All four go through `runMenuCommand`
   (`new_incognito`, `new_ephemeral`) to `newSession(mode)`.
 - **The marks.** `chatMode(events)` projects the open chat's mode from its
-  `session_created` line — `newSession` now fetches the transcript back
-  rather than resetting to `[]`, so the line is there before the first send.
-  A sidebar row for an incognito chat carries `◐` before its name and the
+  `session_created` line — ~~`newSession` now fetches the transcript back
+  rather than resetting to `[]`, so the line is there before the first send~~
+  (superseded 2026-09-15, backlog 061: `newSession` creates nothing, and
+  before the first send `chatMode` reads `app.pendingMode` instead — see the
+  next section). A sidebar row for an incognito chat carries `◐` before its name and the
   word `incognito` in its meta line (`SessionMeta.mode`); the top bar shows
   `◐ incognito` after the short id, or `◌ ephemeral — nothing is kept`; the
   Context page's caveat line says *incognito: writes nothing, unread by other
@@ -671,6 +673,34 @@ else, never a modal. The mock is
   CLI session; switching chats or starting a new one drops the in-memory
   session, and there is no row to reopen it from. It does not clean up after
   other modes — nothing is deleted on his behalf.
+
+### New chat is a state, not a file (nightshift backlog 061, 2026-09-15)
+
+Clicking *New chat* — any of the three kinds — creates nothing on disk and
+nothing in the list, and clicking it again is the same state again. Before
+this, each click made a log at once and the sidebar filled with "empty
+session" rows, one per click. Now the click leaves no chat open
+(`app.activeSessionId = null`, `app.events = []`), records the kind asked
+for as `app.pendingMode`, and tells the backend, which drops its session and
+records the same kind (`AppState::pending_mode`). The sidebar's wide New chat
+half is drawn as the selected row while no chat is open — it is the "tab"
+being pressed — and reads `New chat ◐` / `New chat ◌` when the pending kind
+is incognito or ephemeral (`newChatSelected`, `newChatLabel` in
+`state.svelte.ts`). The first message creates the log in the pending kind
+(`ensure_session` in `main.rs`, one helper for the four commands that used
+to each create an ordinary log), `send` picks the id off the transcript it
+fetches back and refreshes the list then, and that is when the row appears
+and gets its name. Until then `chatMode` reads the pending kind, so the top
+bar's mark and the Context caveat show it, and `session_mode` on the
+backend reads the same — so `syncPromptLayers` reconnects and a pending
+incognito chat's engine has no writers *before* its first message
+(`App.svelte`'s effect keys on `app.pendingMode` as well as the open chat,
+since New chat from the blank state leaves the id null as it was). Opening,
+closing or forgetting a project resets the pending kind to ordinary on both
+sides. The one edge: a Context layer unchecked, or given its own text,
+before the first message creates the log then — an exclusion is a fact about
+a chat, and a chat has to exist to have it — so that row appears early,
+in the pending kind. Existing empty logs are not touched by app code.
 
 ### New project and Open project
 

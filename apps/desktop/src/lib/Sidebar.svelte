@@ -9,6 +9,8 @@
     enableNightshift,
     MODE_GLYPH,
     MODE_LINES,
+    newChatLabel,
+    newChatSelected,
     newSession,
     openSession,
     refreshNightshift,
@@ -326,10 +328,19 @@
   {#if app.leftTab === "chats"}
     <!-- A split button: the wide half is New chat as it always was, the
          narrow ▾ half offers the other two kinds. Right-clicking the wide
-         half opens the same menu, for whoever reaches for that. -->
+         half opens the same menu, for whoever reaches for that.
+
+         The wide half is drawn as the selected row while no chat is open
+         (nightshift backlog 061, 2026-09-15): New chat is a state, not a
+         file, so until the first message there is no row to select and
+         this button is the thing that is pressed. It carries the pending
+         kind's glyph — `New chat ◐` — when that kind is not the ordinary
+         one, the way a row would. -->
     <div class="new-chat-wrap">
       <button
         class="new-chat"
+        class:active={newChatSelected()}
+        aria-current={newChatSelected() ? "true" : undefined}
         onclick={() => void newSession()}
         oncontextmenu={(e) => {
           e.preventDefault();
@@ -337,7 +348,7 @@
         }}
         disabled={app.busy}
       >
-        New chat
+        {newChatLabel()}
       </button>
       <button
         class="new-chat more"
@@ -965,6 +976,13 @@
   .new-chat:hover:not(:disabled) {
     border-color: var(--accent);
     color: var(--accent);
+  }
+  /* Selected: the row's own active tokens (`.session-item.active` below),
+     so "no chat open" and "this chat open" read as the same kind of
+     highlight. */
+  .new-chat.active {
+    background: var(--sheet);
+    border-color: var(--line2);
   }
   .new-chat:disabled {
     opacity: 0.5;

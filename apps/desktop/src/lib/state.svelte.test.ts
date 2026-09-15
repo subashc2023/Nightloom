@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   app,
   chatMode,
@@ -7,6 +7,9 @@ import {
   liveFlags,
   MODE_GLYPH,
   MODE_LINES,
+  newChatLabel,
+  newChatSelected,
+  newSession,
   promptLayerEdits,
   promptLayersOff,
   roundCost,
@@ -21,6 +24,19 @@ import type {
   TodoItem,
   Usage,
 } from "./types";
+import * as api from "./api";
+
+// The backend, as far as `newSession` reaches it: the two commands New chat
+// used to call (create, then list) and the one it still calls. Everything
+// else in `./api` is the real module, since nothing here invokes it.
+vi.mock("./api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./api")>()),
+  newSession: vi.fn(async (mode?: "normal" | "incognito" | "ephemeral") => ({
+    mode: mode ?? "normal",
+  })),
+  listSessions: vi.fn(async () => []),
+  transcript: vi.fn(async () => []),
+}));
 
 // These three functions are hand-written copies of backend logic —
 // `Session::live_flags`, `Session::todos` and `Price::cost`. Nothing links the
@@ -246,9 +262,25 @@ describe("chatMode", () => {
     ...(mode ? { mode } : {}),
   });
 
+  beforeEach(() => {
+    app.pendingMode = "normal";
+  });
+
   it("is normal for no chat, and for a log written before the field existed", () => {
     expect(chatMode([])).toBe("normal");
     expect(chatMode([created(), user("one")])).toBe("normal");
+  });
+
+  it("is the pending kind while there is no chat (nightshift backlog 061)", () => {
+    // New chat is a state: no creation line yet, so the top bar's mark and
+    // the Context caveat read what the first message will create.
+    app.pendingMode = "incognito";
+    expect(chatMode([])).toBe("incognito");
+    app.pendingMode = "ephemeral";
+    expect(chatMode([])).toBe("ephemeral");
+    // And the line, once it exists, wins over whatever is still pending.
+    expect(chatMode([created(), user("one")])).toBe("normal");
+    expect(chatMode([created("incognito")])).toBe("incognito");
   });
 
   it("reads the creation line's mode", () => {
@@ -440,5 +472,58 @@ describe("clockOf — the Start field's and the chip's time", () => {
     expect(clockOf(later, now)).toBe("at 05:12");
     const next = new Date(2026, 8, 13, 0, 5).getTime();
     expect(clockOf(next, now)).toBe("at 00:05 tomorrow");
+  });
+});
+
+// New chat is a state, not a file (nightshift backlog 061, 2026-09-15): the
+// click sets the pending kind and clears the chat, creates nothing, refreshes
+// nothing, and the sidebar's button is the selected item until the first
+// message lands a row. The button's two projections are pinned here rather
+// than the component, which this suite has no DOM to mount.
+describe("newSession — a state, not a file", () => {
+  beforeEach(() => {
+    vi.mocked(api.newSession).mockClear();
+    vi.mocked(api.listSessions).mockClear();
+    vi.mocked(api.transcript).mockClear();
+    app.busy = false;
+    app.activeSessionId = "abc";
+    app.events = [
+      { event: "session_created", id: "abc", at: AT },
+      user("one"),
+    ];
+    app.pendingMode = "normal";
+  });
+
+  it("leaves no chat open and records the kind, and the button is selected", async () => {
+    await newSession("incognito");
+    expect(app.activeSessionId).toBeNull();
+    expect(app.events).toEqual([]);
+    expect(app.pendingMode).toBe("incognito");
+    expect(newChatSelected()).toBe(true);
+    expect(newChatLabel()).toBe(`New chat ${MODE_GLYPH.incognito}`);
+    // The backend was told, so its own pending kind matches.
+    expect(api.newSession).toHaveBeenCalledWith("incognito");
+  });
+
+  it("is an ordinary chat when no kind is given, and the button is plain", async () => {
+    await newSession();
+    expect(app.pendingMode).toBe("normal");
+    expect(newChatLabel()).toBe("New chat");
+    expect(newChatSelected()).toBe(true);
+  });
+
+  it("clicking twice creates and lists nothing", async () => {
+    await newSession();
+    await newSession("ephemeral");
+    // No list refresh and no transcript fetch: there is no row and no line.
+    expect(api.listSessions).not.toHaveBeenCalled();
+    expect(api.transcript).not.toHaveBeenCalled();
+    expect(api.newSession).toHaveBeenCalledTimes(2);
+    expect(app.activeSessionId).toBeNull();
+    expect(app.pendingMode).toBe("ephemeral");
+  });
+
+  it("is not selected while a chat is open", () => {
+    expect(newChatSelected()).toBe(false);
   });
 });

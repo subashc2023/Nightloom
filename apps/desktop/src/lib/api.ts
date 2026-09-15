@@ -179,8 +179,13 @@ export function renameSession(id: string, title: string): Promise<void> {
   return invoke("rename_session", { id, title });
 }
 
-/** Start a chat; `mode` absent is an ordinary one (see `ChatMode`). */
-export function newSession(mode?: ChatMode): Promise<{ id: string }> {
+/**
+ * New chat: leave the open one and say what kind the next one will be;
+ * `mode` absent is an ordinary one (see `ChatMode`). Nothing is created —
+ * the first message creates the log in that kind — so what comes back is
+ * the kind, not an id (nightshift backlog 061, 2026-09-15).
+ */
+export function newSession(mode?: ChatMode): Promise<{ mode: ChatMode }> {
   return invoke("new_session", { mode });
 }
 

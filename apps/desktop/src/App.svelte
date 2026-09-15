@@ -40,9 +40,15 @@
    * the wire carrying the last chat's prompt. Re-checked whenever the open
    * chat changes, and again when a turn or a connect ends, since the sync
    * itself stands aside while either is in flight (`syncPromptLayers`).
+   *
+   * The pending kind is a dependency too (nightshift backlog 061): New chat
+   * from the blank state leaves `activeSessionId` null as it was, and a
+   * pending incognito chat needs its engine built without writers before
+   * the first message, not one reconnect after it.
    */
   $effect(() => {
     void app.activeSessionId;
+    void app.pendingMode;
     void app.connecting;
     void app.busy;
     void syncPromptLayers();
@@ -59,7 +65,9 @@
    * 2026-09-13): a session re-opened from the sidebar carries its
    * `session_created` line, and on the old test that one line turned the
    * Welcome page into an empty transcript. New chat and the empty session it
-   * made now show the same page.
+   * made now show the same page — and since 2026-09-15 (nightshift backlog
+   * 061) New chat makes no session at all: `app.events` is `[]` until the
+   * first message, which is blank by the same test.
    */
   const blank = $derived(
     !app.live &&

@@ -398,6 +398,17 @@ export const app = $state({
   connectError: null as string | null,
   sessions: [] as SessionMeta[],
   activeSessionId: null as string | null,
+  /**
+   * The kind the next chat will be while no chat is open (nightshift
+   * backlog 061, 2026-09-15). New chat is a state, not a file: `newSession`
+   * records the kind here and clears the chat, and the first message
+   * creates the log in that kind. `chatMode` reads this when the transcript
+   * has no `session_created` line, so the top bar's mark, the Context
+   * caveat and the reconnect all see the pending kind before the first
+   * message. The backend holds the same value (`AppState::pending_mode`)
+   * and creates from its own copy; this one is for what is drawn.
+   */
+  pendingMode: "normal" as ChatMode,
   /** Source of truth for the transcript (re-synced from the backend after each turn). */
   events: [] as SessionEvent[],
   /** In-progress assistant turn built from turn-events; null when idle. */
@@ -1246,6 +1257,9 @@ export async function useProject(id: string | null): Promise<void> {
   saveLastProject(app.project?.id ?? null);
   app.activeSessionId = null;
   app.events = [];
+  // The pending kind was chosen for the list just left; the backend reset
+  // its copy in `open_project` / `close_project` (nightshift backlog 061).
+  app.pendingMode = "normal";
   app.error = null;
   // Switching projects from the Nightshift page stays on it — the page
   // follows the open project (round 2, point 12); everywhere else it is a
@@ -2664,26 +2678,35 @@ export async function refreshSessions(): Promise<void> {
 }
 
 /**
- * Start a chat. `mode` absent is an ordinary one; `incognito` and
- * `ephemeral` are the two kinds that write nothing (see `ChatMode`).
+ * New chat: leave the open one and say what kind the next one will be.
+ * `mode` absent is an ordinary one; `incognito` and `ephemeral` are the
+ * two kinds that write nothing (see `ChatMode`).
  *
- * The transcript is fetched back rather than reset to `[]`, because the
- * mode lives on the log's first line and the UI projects it from there
- * (`chatMode`): the top bar's mark, the Context page's caveat and the
- * reconnect that strips the engine's writers all read `app.events[0]`.
- * A normal chat comes back as the one `session_created` line it always
- * was, which the Welcome page already treats as blank.
+ * Nothing is created and the list is not refreshed (nightshift backlog
+ * 061, 2026-09-15). Until today this made the log at once and the sidebar
+ * filled with empty rows, one per click. Now the click is a state — no
+ * chat open, `pendingMode` set, the sidebar's New chat drawn as the
+ * selected item — and the first message creates the log in that kind;
+ * `send` picks the id off the transcript it fetches back and refreshes the
+ * list then, which is when the row appears with its name. Clicking twice
+ * is the same state twice. The backend is told so it drops its session and
+ * records the same kind (`AppState::pending_mode`).
+ *
+ * The transcript is `[]`, not a fetched creation line: there is no line
+ * yet, so `chatMode` reads `pendingMode` instead, and the top bar's mark,
+ * the Context page's caveat and the reconnect that strips the engine's
+ * writers all see the pending kind through it.
  */
 export async function newSession(mode?: ChatMode): Promise<void> {
   if (app.busy) return;
   try {
-    const { id } = await api.newSession(mode);
-    app.activeSessionId = id;
-    app.events = await api.transcript();
+    await api.newSession(mode);
+    app.activeSessionId = null;
+    app.events = [];
+    app.pendingMode = mode ?? "normal";
     app.error = null;
     app.agentTurn = null;
     closeNote();
-    await refreshSessions();
   } catch (e) {
     app.error = String(e);
   }
@@ -2692,15 +2715,32 @@ export async function newSession(mode?: ChatMode): Promise<void> {
 /**
  * What the open chat was started as, projected from the log the way
  * `Session::mode()` projects it in the core: the first `session_created`
- * line's `mode`, and `normal` when it carries none or there is no chat yet.
- * A rewind cannot reach the creation line, so this never reads the live
- * flags.
+ * line's `mode`, `normal` when it carries none — and, when there is no
+ * chat yet, the kind the next one will be (`app.pendingMode`), the same
+ * fallback the backend's `session_mode` makes. A rewind cannot reach the
+ * creation line, so this never reads the live flags.
  */
 export function chatMode(events: SessionEvent[]): ChatMode {
   for (const e of events) {
     if (e.event === "session_created") return e.mode ?? "normal";
   }
-  return "normal";
+  return app.pendingMode;
+}
+
+/**
+ * The sidebar's New chat button is the selected item while no chat is open
+ * — it is the "tab" being pressed until the first message lands a row —
+ * and it carries the pending kind's glyph when that is not the ordinary
+ * one. Two small projections rather than template expressions, so the
+ * suite can pin them without a DOM.
+ */
+export function newChatSelected(): boolean {
+  return app.activeSessionId === null;
+}
+
+export function newChatLabel(): string {
+  const glyph = MODE_GLYPH[app.pendingMode];
+  return glyph ? `New chat ${glyph}` : "New chat";
 }
 
 /** One line on what a mode means, for the places that offer it. */
