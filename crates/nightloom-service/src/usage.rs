@@ -552,6 +552,38 @@ pub fn summary() -> UsageSummary {
     summary_in(&dir, today)
 }
 
+/// Run the collector once, now — `python3 ~/.claude/usage-ledger.py update`
+/// — and wait for it. The LaunchAgent runs the same command every six
+/// hours; this is the button for "I want the number now" (his ask,
+/// 2026-09-14: the ledger had a scheduled update and no manual one). The
+/// collector rescans the last 45 days of transcripts and the desktop app's
+/// cache, takes a few seconds, and is the only thing that writes the ledger
+/// — Nightloom still writes nothing itself. Returns the collector's last
+/// output line on success and its stderr on failure.
+pub fn refresh() -> Result<String, String> {
+    let dir = claude_dir().ok_or("no home directory")?;
+    let script = dir.join("usage-ledger.py");
+    if !script.is_file() {
+        return Err(format!("no collector at {}", script.display()));
+    }
+    let out = std::process::Command::new("python3")
+        .arg(&script)
+        .arg("update")
+        .output()
+        .map_err(|e| format!("could not run the collector: {e}"))?;
+    if out.status.success() {
+        let text = String::from_utf8_lossy(&out.stdout);
+        Ok(text.lines().last().unwrap_or("updated").to_string())
+    } else {
+        let err = String::from_utf8_lossy(&out.stderr);
+        Err(format!(
+            "the collector exited {}: {}",
+            out.status.code().unwrap_or(-1),
+            err.lines().last().unwrap_or("no output")
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

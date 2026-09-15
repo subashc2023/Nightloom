@@ -80,3 +80,12 @@ use.
 Porting the collector (it depends on the desktop app's Chromium cache layout
 and the `zstd` binary; nightshift blocker 060 kept it a sidecar); per-project
 totals (the ledger has no project column); dollar caps that refuse turns.
+
+## Refresh now (2026-09-14, evening)
+
+The pane's *Refresh now* runs the collector once — `python3
+~/.claude/usage-ledger.py update`, the LaunchAgent's own command — waits
+for it, and rereads (`usage::refresh`, `refresh_usage_ledger`). It is the
+one write to the ledger the app ever causes, and it is the collector's, not
+Nightloom's. The surfaces card is one row per surface and per weekly cap,
+each with a bar, rather than one line.

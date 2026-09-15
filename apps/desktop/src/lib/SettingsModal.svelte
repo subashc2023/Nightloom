@@ -307,6 +307,23 @@
   $effect(() => {
     if (selected === "usage") void refreshUsage();
   });
+  // The button: run the collector now rather than wait for its six-hourly
+  // turn. A few seconds; the pane says so while it runs.
+  let usageRefreshing = $state(false);
+  let usageRefreshNote = $state<string | null>(null);
+  async function refreshUsageNow() {
+    if (usageRefreshing) return;
+    usageRefreshing = true;
+    usageRefreshNote = null;
+    try {
+      usage = await api.refreshUsageLedger();
+      usageRefreshNote = "Collector run; the ledger is current.";
+    } catch (e) {
+      usageRefreshNote = String(e);
+    } finally {
+      usageRefreshing = false;
+    }
+  }
   /** Dollars as the ledger's own report prints them: two places, grouped. */
   function usd(n: number): string {
     return "$" + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -799,8 +816,17 @@
         <h2 class="pane-title">Usage</h2>
         <span class="slug">{usage?.available && usage.week ? `${usd(usage.week.usd)} in 7 days` : "no ledger"}</span>
         <span class="spacer"></span>
+        <button
+          class="ns-btn small"
+          disabled={usageRefreshing}
+          title="Run the collector now (python3 ~/.claude/usage-ledger.py update) and reread the ledger"
+          onclick={() => void refreshUsageNow()}
+        >{usageRefreshing ? "Refreshing…" : "Refresh now"}</button>
         <button class="close" title="Close" aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
       </div>
+      {#if usageRefreshNote}
+        <p class="note small">{usageRefreshNote}</p>
+      {/if}
       <p class="note">
         What Claude Code has cost, from the usage ledger under
         <code>~/.claude</code>. These are the API's own usage fields — tokens
@@ -873,16 +899,38 @@
           <div class="ch"><span class="t">Surfaces</span><span class="dim small">share of the weekly limit, last 7 days</span></div>
           {#if usage.surfaces}
             {@const s = usage.surfaces}
-            <div class="usage-split">
-              <span><b>{pct(s.claude_code_pct)}</b> Claude Code</span>
-              <span><b>{pct(s.chat_pct)}</b> chat</span>
-              <span><b>{pct(s.cowork_pct)}</b> cowork</span>
-              <span><b>{pct(s.other_pct)}</b> other</span>
+            <!-- One row per fact, with a bar: the one-line version read as
+                 "stuffed" (his word, 2026-09-14). -->
+            <div class="usage-rows">
+              {#each [
+                { label: "Claude Code", value: s.claude_code_pct },
+                { label: "Chat", value: s.chat_pct },
+                { label: "Cowork", value: s.cowork_pct },
+                { label: "Other", value: s.other_pct },
+              ] as { label, value } (label)}
+                <div class="usage-row">
+                  <span class="usage-row-label">{label}</span>
+                  <span class="usage-bar"><span class="usage-bar-fill" style:width="{Math.max(0, Math.min(100, value ?? 0))}%"></span></span>
+                  <b class="usage-row-value">{pct(value)}</b>
+                </div>
+              {/each}
+            </div>
+            <div class="usage-rows caps">
+              <div class="usage-row">
+                <span class="usage-row-label">Weekly cap, all models</span>
+                <span class="usage-bar"><span class="usage-bar-fill cap" style:width="{Math.max(0, Math.min(100, s.weekly_all_pct ?? 0))}%"></span></span>
+                <b class="usage-row-value">{pct(s.weekly_all_pct)} used</b>
+              </div>
+              {#if s.weekly_scoped_model}
+                <div class="usage-row">
+                  <span class="usage-row-label">Weekly cap, {s.weekly_scoped_model} alone</span>
+                  <span class="usage-bar"><span class="usage-bar-fill cap" style:width="{Math.max(0, Math.min(100, s.weekly_scoped_pct ?? 0))}%"></span></span>
+                  <b class="usage-row-value">{pct(s.weekly_scoped_pct)} used</b>
+                </div>
+              {/if}
             </div>
             <div class="key-status">
-              Weekly cap {pct(s.weekly_all_pct)} used across every model{#if s.weekly_scoped_model};
-                <b>{s.weekly_scoped_model}</b>'s own weekly cap {pct(s.weekly_scoped_pct)} used{/if}.
-              Window from {s.window_started_at.replace("T", " ")} UTC, as of {s.as_of.replace("T", " ")} UTC.
+              Window from {s.window_started_at.replace("T", " ")} UTC · snapshot {s.as_of.replace("T", " ")} UTC.
             </div>
             <p class="note small">
               From the desktop app's own usage response, read from its cache on
@@ -1738,16 +1786,45 @@
     font-weight: 600;
     color: var(--ink);
   }
-  .usage-split {
+  .usage-rows {
     display: flex;
-    gap: 16px;
-    flex-wrap: wrap;
+    flex-direction: column;
+    gap: 6px;
     font-size: 13px;
+    margin-bottom: 10px;
   }
-  .usage-split b {
+  .usage-rows.caps {
+    padding-top: 10px;
+    border-top: 1px solid var(--line2);
+  }
+  .usage-row {
+    display: grid;
+    grid-template-columns: 190px 1fr 72px;
+    align-items: center;
+    gap: 12px;
+  }
+  .usage-row-label {
+    color: var(--ink2);
+  }
+  .usage-bar {
+    height: 6px;
+    border-radius: 3px;
+    background: var(--well);
+    overflow: hidden;
+  }
+  .usage-bar-fill {
+    display: block;
+    height: 100%;
+    background: var(--accent);
+    border-radius: 3px;
+  }
+  .usage-bar-fill.cap {
+    background: var(--ink2);
+  }
+  .usage-row-value {
     font-family: var(--mono);
     font-weight: 600;
-    margin-right: 4px;
+    text-align: right;
   }
   /* The model-instruction files, one row each: id, size, pencil. */
   .mfiles {

@@ -2051,6 +2051,18 @@ async fn usage_ledger() -> Result<nightloom_service::usage::UsageSummary, String
         .map_err(|e| format!("reading the usage ledger failed: {e}"))
 }
 
+/// Run the usage collector once and hand back the fresh summary. The only
+/// write to the ledger the app ever causes, and it is the collector's own.
+#[tauri::command]
+async fn refresh_usage_ledger() -> Result<nightloom_service::usage::UsageSummary, String> {
+    tokio::task::spawn_blocking(|| {
+        nightloom_service::usage::refresh()?;
+        Ok(nightloom_service::usage::summary())
+    })
+    .await
+    .map_err(|e| format!("refreshing the usage ledger failed: {e}"))?
+}
+
 /// Point new projects at a folder, or back at the default with `None`.
 ///
 /// **Moves nothing.** The projects already made are registered by their own
@@ -3273,6 +3285,7 @@ fn main() {
             projects_folder_info,
             set_projects_folder,
             usage_ledger,
+            refresh_usage_ledger,
             resolve_new_project_path,
             new_project,
             open_project,

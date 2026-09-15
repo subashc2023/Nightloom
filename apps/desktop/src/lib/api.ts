@@ -318,6 +318,11 @@ export function usageLedger(): Promise<UsageSummary> {
   return invoke("usage_ledger");
 }
 
+/** Run the collector now and return the fresh summary; a few seconds. */
+export function refreshUsageLedger(): Promise<UsageSummary> {
+  return invoke("refresh_usage_ledger");
+}
+
 /** The folder a name would get, for the form's live path row. */
 export function resolveNewProjectPath(name: string): Promise<NewProjectPath> {
   return invoke("resolve_new_project_path", { name });
