@@ -143,14 +143,62 @@
   });
 
   let viewport = $state<HTMLDivElement | null>(null);
-  // Pin to bottom unless the user has scrolled up more than ~80px.
-  // Deliberately not $state: changes to it should not re-trigger the effect.
+  // Pin to bottom until the user scrolls up; re-pin when they reach the
+  // bottom again. Deliberately not $state: changes to it should not
+  // re-trigger the effect.
   let pinned = true;
+  // Set around our own scrollTop writes so the scroll event they raise is
+  // not mistaken for the user's.
+  let scrollingSelf = false;
+
+  function atBottom(): boolean {
+    if (!viewport) return true;
+    return viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 8;
+  }
+
+  // The user's intent arrives before the scroll position does: one wheel
+  // tick up moves ~40px, and a "pinned unless more than 80px up" rule read
+  // that as still pinned, so the next delta snapped the view back to the
+  // foot — his "glitching back and forth" while trying to read a fast
+  // reply from the top (2026-09-14). Any upward input unpins at once.
+  // As an action rather than markup handlers: these read intent off a
+  // scroll container, and the a11y lint (rightly) has no category for that.
+  function scrollIntent(node: HTMLElement) {
+    let touchY = 0;
+    const wheel = (e: WheelEvent) => {
+      if (e.deltaY < 0) pinned = false;
+    };
+    const key = (e: KeyboardEvent) => {
+      if (["ArrowUp", "PageUp", "Home"].includes(e.key)) pinned = false;
+    };
+    const touchstart = (e: TouchEvent) => {
+      touchY = e.touches[0]?.clientY ?? 0;
+    };
+    const touchmove = (e: TouchEvent) => {
+      const y = e.touches[0]?.clientY ?? 0;
+      if (y > touchY) pinned = false;
+      touchY = y;
+    };
+    node.addEventListener("wheel", wheel, { passive: true });
+    node.addEventListener("keydown", key);
+    node.addEventListener("touchstart", touchstart, { passive: true });
+    node.addEventListener("touchmove", touchmove, { passive: true });
+    return {
+      destroy() {
+        node.removeEventListener("wheel", wheel);
+        node.removeEventListener("keydown", key);
+        node.removeEventListener("touchstart", touchstart);
+        node.removeEventListener("touchmove", touchmove);
+      },
+    };
+  }
 
   function onscroll() {
-    if (!viewport) return;
-    pinned =
-      viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 80;
+    if (scrollingSelf) return;
+    // A scrollbar drag has no wheel event; it unpins here on its way up
+    // and re-pins here on its way back down. Reaching the foot by any
+    // means re-pins.
+    pinned = atBottom();
   }
 
   $effect(() => {
@@ -158,12 +206,17 @@
     void app.liveVersion;
     void app.pendingApprovals.length;
     void tick().then(() => {
-      if (pinned && viewport) viewport.scrollTop = viewport.scrollHeight;
+      if (pinned && viewport) {
+        scrollingSelf = true;
+        viewport.scrollTop = viewport.scrollHeight;
+        // The scroll event fires asynchronously; clear after it has.
+        requestAnimationFrame(() => (scrollingSelf = false));
+      }
     });
   });
 </script>
 
-<div class="transcript" bind:this={viewport} {onscroll}>
+<div class="transcript" bind:this={viewport} {onscroll} use:scrollIntent tabindex="-1">
   <div class="inner">
     {#each items as item, i (i)}
       {#if item.kind === "user"}
