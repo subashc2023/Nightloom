@@ -9,13 +9,14 @@ Where things live, and which of them Nightloom owns.
 ~/.nightloom/projects/<id>/sessions/   the chats
 ~/.nightloom/unfiled/sessions/         desktop chats with no project open
 ~/.nightloom/projects.json             the registry
-~/.nightloom/AGENTS.md                 user memory   (how I want you to behave; edited in the app since 2026-09-14, Notes → Memory)
+~/.nightloom/AGENTS.md                 user memory   (how I want you to behave — instructions only since 2026-09-15; edited in the app since 2026-09-14, Notes → Memory)
 ~/.nightloom/knowledge/                the vault     (what I know)
+~/.nightloom/knowledge/background.md   who I am and what I have worked on — the claude.ai export's summary, read on demand; written once, then his
 ~/.nightloom/knowledge.json            where the vault is, when moved
 ~/.nightloom/observations.jsonl        the memory inbox (append-only, never pruned)
 ~/.nightloom/capture.json              how far the capture pass has read each chat log
 ~/.nightloom/dream.json                how far the dream has read into the inbox
-~/.nightloom/proposals/                the dream's proposed edits to user memory (pending; dismissed/ and applied/ beneath)
+~/.nightloom/proposals/                the dream's proposed edits to user memory (pending; dismissed/, applied/ and held/ beneath)
 ~/.nightloom/projects/<id>/proposals/  the same for that project's AGENTS.md
 
 # read, not owned — written by ~/.claude/usage-ledger.py (a LaunchAgent, every 6 h); Nightloom only reads them
@@ -396,6 +397,23 @@ puts the text in the buffer as a **draft** — `● draft`, Revert restores the
 file, Save writes it by the ordinary `save_note` and only then calls
 `mark_applied`. The CLI prints the clause and nothing more.
 
+**The user's file is instructions only (2026-09-15, nightshift backlog 055).**
+The vault turn's instruction says so — behaviour in the file, facts about the
+user in the vault (`profile.md`, a topic note, `background.md`), never a
+section like the claude.ai export's `Work context`, `Personal context`, `Top
+of mind` or `Brief history` — and the tool holds the line behind the prompt:
+a replacement for the user's memory that *adds* one of those headings (judged
+against the file's current text, in either the export's bold spelling or a
+`#` heading) is written under `proposals/held/` with a `held: { at, why }`
+note, never into the pending queue, so the app never offers it as a draft;
+the model is told what was held and why, and may call again with an
+instructions-only text. An earlier offer in the same turn stands — a refused
+replacement replaces nothing. `DreamOutcome.filed[i].proposed` stays false for
+a held turn, and the pass's own summary is where the user reads that it
+happened. A section the file already carries is not one the proposal adds, so
+a memory from before the split can still be proposed to — including the
+proposal that moves the section out.
+
 ### Scheduling
 
 **Deliberately manual** — a dream spends real money unattended — and both shells
@@ -610,13 +628,27 @@ imported.
 Current archives also carry `memories/<account uuid>.json`: one summary of the
 user across every conversation, one summary per project, and the memory files
 claude.ai keeps behind both (`/profile.md`, `/projects/<uuid>/overview.md`, …).
-Nothing new is stored for it either. The user summary is the user memory
-(`~/.nightloom/AGENTS.md`), the global files go to the vault at their own paths,
-a project's files go under its docspace at `.agents/memory/`, and the project
-summary goes there whole as `summary.md` **and** under a dated `## Memory
-(imported from claude.ai …)` heading appended to the project's `AGENTS.md`.
-Every destination follows the docspace's never-overwrite rule, and the heading
-is the append's idempotency check — a second run finds it and adds nothing.
+Nothing new is stored for it either. ~~The user summary is the user memory
+(`~/.nightloom/AGENTS.md`)~~ — **superseded 2026-09-15 (nightshift backlog
+055): the user summary goes to the vault as `background.md`, whole, under
+frontmatter in the vault's style, and the user memory gets only the
+"Background, on demand" paragraph that points at it, once.** The summary is
+biography (work context, personal context, top of mind, a history), and the
+memory file is loaded into every chat; a fitness question was paying for the
+research context on every turn. The global files go to the vault at their own
+paths, a project's files go under its docspace at `.agents/memory/`, and the
+project summary goes there whole as `summary.md` **and** under a dated `##
+Memory (imported from claude.ai …)` heading appended to the project's
+`AGENTS.md`. Every destination follows the docspace's never-overwrite rule
+— ~~**except `background.md`**, which is the export's text and not the user's and
+is replaced by a re-import~~ **`background.md` included, since the same
+evening**: he said he would correct it by hand (nightshift backlog 058), so a
+re-import that finds it different keeps it and says so. The heading is the append's idempotency check —
+a second run finds it and adds nothing — and the pointer paragraph's heading is
+the same check for the user memory. A user memory that still carries the
+export's sections (an import from before the split) is not edited, but the
+report names them on every run. The CLI's `memories:` line names the vault note
+when a run wrote it.
 
 One decision is new. A project summary over **4,000 characters** is not inlined:
 `AGENTS.md` is loaded on every turn of every chat in the project, the export's

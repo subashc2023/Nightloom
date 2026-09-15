@@ -155,6 +155,15 @@ fn print_memory(report: &import::ImportReport) {
         ));
     }
     println!("memories: {}", counts.join(", "));
+    // The export's summary of the user is the one memory file somebody
+    // would look for in AGENTS.md and not find, so its home is named.
+    if let Some(path) = &report.background_note {
+        println!(
+            "  {DIM}the export's summary of you went to {} — read on demand; \
+             ~/.nightloom/AGENTS.md points at it and holds instructions only{RESET}",
+            path.display()
+        );
+    }
     if !report.needs_condensing.is_empty() {
         println!(
             "  {DIM}over {} characters, so AGENTS.md points at .agents/memory/summary.md — \

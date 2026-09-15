@@ -32,6 +32,22 @@ cwd**, emitted outermost-first so the most specific file wins. User memory is
 `~/.nightloom/AGENTS.md`, first in the ladder and outside the walk because it is
 about the *user* rather than a location on disk.
 
+**User memory is instructions only (2026-09-15, nightshift backlog 055).** The
+file holds how the model should behave — in every conversation, whatever it is
+about — and nothing about who the user is, what they work on or what happened.
+Those facts live in the vault (`profile.md`, the topic notes, `background.md`)
+and are read on demand: the file carries a short "Background, on demand"
+paragraph naming the notes and how to reach them, and the vault index in the
+prompt lists them one line each. The rule exists because the claude.ai import
+once pasted the export's whole summary of the user — work context, personal
+context, top of mind, a history — into this file, and every turn of every chat
+paid for it whether or not the question touched it. Two writers hold the line:
+the importer sends the export's summary to the vault as `background.md` and
+adds the pointer paragraph once (`import.rs`), and the dream's proposal tool
+holds back a replacement that would add one of those sections rather than
+offer it as a draft (`proposal.rs`). The user edits the file themselves, in
+the app under Notes → Memory.
+
 One filename, not a house-branded one beside it, for the reason `mcp.json` uses
 the `mcpServers` key: a project that already wrote an `AGENTS.md` is picked up
 without being asked to duplicate it.

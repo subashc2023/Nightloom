@@ -204,10 +204,17 @@ pub fn tools_for(dir: &Path) -> Vec<Box<dyn nightloom_core::Tool>> {
 /// prepares the chat itself.
 ///
 /// `config` is where a proposal is filed (beside the project's store, or in
-/// the config dir for the user's file); the returned slot says afterwards
+/// the config dir for the user's file); `current` is the always-loaded
+/// file's text as the instruction will quote it, handed to the tool so its
+/// guard judges what a proposal *adds*; the returned slot says afterwards
 /// whether the turn proposed. The tool is added here and nowhere else — it
 /// is not in `tools::builtin_in`, so no ordinary chat can reach it.
-pub fn prepare(chat: &mut Chat, target: &Target, config: &Path) -> ProposalSlot {
+pub fn prepare(
+    chat: &mut Chat,
+    target: &Target,
+    config: &Path,
+    current: Option<&str>,
+) -> ProposalSlot {
     let mut system = SystemPrompt::default();
     system.push(Segment {
         kind: SegmentKind::Identity,
@@ -220,7 +227,7 @@ pub fn prepare(chat: &mut Chat, target: &Target, config: &Path) -> ProposalSlot 
     let proposal_target = target.proposal_target();
     let (propose, slot) =
         ProposeInstructions::new(proposal_target.store_in(config), proposal_target);
-    tools.push(Box::new(propose));
+    tools.push(Box::new(propose.against(current)));
     chat.tools = tools;
     chat.sidecar = Vec::new();
     chat.approver = None;
@@ -409,10 +416,11 @@ pub async fn run(
         std::fs::create_dir_all(&dir)
             .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
         filed[i].git_before = snapshot_target(&g.target, "nightloom: pre-dream snapshot");
-        let slot = prepare(chat, &g.target, config);
         // The always-loaded file, quoted under the preamble's own cap so the
-        // model proposes against what every conversation actually reads.
+        // model proposes against what every conversation actually reads —
+        // and handed to the tool, so its guard judges against the same text.
         let current = read_capped(&g.target.instructions_path(config));
+        let slot = prepare(chat, &g.target, config, current.as_deref());
         let instruction = compose_instruction(&g.batch, &g.target, current.as_deref());
 
         let mut session = Session::new();
@@ -652,6 +660,28 @@ pub fn compose_instruction(
          cannot write the file: the proposal is shown to the user as a diff in the app, and \
          only they apply it; a second call in this pass replaces the first.\n\n"
     );
+    if matches!(target, Target::Vault(_)) {
+        // The user's file is instructions only (backlog 055). Said here,
+        // where the model decides what a replacement holds, and named
+        // against the failure: the claude.ai import once pasted the
+        // export's whole summary of the user into this file, and a
+        // fitness question paid for the research context on every turn.
+        let _ = write!(
+            out,
+            "That file is instructions only: how you should behave, in every conversation — \
+             tone, format, what never to do, how to explain. Nothing about who the user is, \
+             what they work on, what they are doing now or what happened belongs in it, \
+             however true and however often it comes up: a fact loaded into every chat is paid \
+             for by the chats it is useless to, and it goes stale in a file nobody rereads. \
+             Facts go to the vault, on demand — profile.md for the short who-they-are, a topic \
+             note for a subject, background.md for their history — and the file already says \
+             how a conversation reaches them. So a replacement never adds a section like the \
+             claude.ai export's «Work context», «Personal context», «Top of mind» or «Brief \
+             history»: one that does is held back, filed as a record, and not shown to the \
+             user at all. If the current text carries such a section, a replacement that \
+             moves it out to the vault is the one change worth proposing.\n\n"
+        );
+    }
     match current {
         Some(text) => {
             let _ = write!(
@@ -907,6 +937,37 @@ mod tests {
         assert!(!text.contains("<current-instructions>"));
     }
 
+    /// The vault's turn is told the user's file is instructions only and
+    /// where the facts go instead, and named the export's sections it must
+    /// not add; a project's turn is not, since its `AGENTS.md` has no such
+    /// rule (backlog 055).
+    #[test]
+    fn the_vault_turn_is_told_the_memory_is_instructions_only() {
+        let a = obs("Started lifting.", ObservationKind::UserStated, None);
+        let text = compose_instruction(&[&a], &vault_target(), None);
+        assert!(text.contains("That file is instructions only"));
+        assert!(text.contains("profile.md"));
+        assert!(text.contains("background.md"));
+        for heading in crate::import::EXPORT_MEMORY_HEADINGS {
+            assert!(text.contains(&format!("«{heading}»")), "{heading}");
+        }
+        assert!(text.contains("held back"));
+        // Before the quoted file, with the rest of the standing-instructions block.
+        assert!(
+            text.find("That file is instructions only").unwrap()
+                < text.find("The file does not exist yet").unwrap()
+        );
+
+        let target = Target::Project {
+            id: "abc".into(),
+            name: "Lanternfish".into(),
+            workspace: std::env::temp_dir(),
+        };
+        let text = compose_instruction(&[&a], &target, None);
+        assert!(!text.contains("instructions only"));
+        assert!(!text.contains("«Work context»"));
+    }
+
     /// The tool exists in a dream turn and nowhere else: `prepare` adds it
     /// beside the files-and-search set, and the built-in set — what every
     /// ordinary chat is composed from — has never heard of it.
@@ -914,7 +975,7 @@ mod tests {
     fn propose_instructions_is_a_dream_tool_and_not_a_builtin() {
         let (config, vault, _) = fixture("tool", "Lanternfish");
         let mut chat = chat_scripted(vec![]);
-        prepare(&mut chat, &Target::Vault(vault), &config);
+        prepare(&mut chat, &Target::Vault(vault), &config, None);
         let names: Vec<String> = chat.tools.iter().map(|t| t.def().name).collect();
         assert!(names.contains(&"propose_instructions".to_string()));
         assert!(names.contains(&"read_file".to_string()));
@@ -1295,5 +1356,96 @@ mod tests {
         assert!(!outcome.filed[0].proposed);
         assert!(proposed_line(&outcome.filed).is_none());
         assert_eq!(crate::proposal::list_in(&config).len(), 1);
+    }
+
+    /// The guard (backlog 055): a vault turn that proposes a user memory
+    /// with one of the export's biographical sections leaves nothing in the
+    /// pending queue and no clause in the outcome — the text is a record
+    /// under `proposals/held/` with the reason, the file is untouched, and
+    /// a corrected second call in the same turn is offered as usual.
+    #[tokio::test]
+    async fn a_proposal_that_adds_a_background_section_is_held_not_offered() {
+        let (config, vault, _) = fixture("propose-held", "Lanternfish");
+        let user_file = config.join(INSTRUCTION_FILE);
+        fs::write(&user_file, "# Me\n\nBe terse.\n").unwrap();
+        append(&config, "Started a PPL split at Planet Fitness.", None);
+
+        let mut chat = chat_scripted(vec![
+            propose(
+                "# Me\n\nBe terse.\n\n**Personal context**\n\nLifts, PPL split.\n",
+                "Observation 1.",
+            ),
+            says("held"),
+        ]);
+        let cancel = CancellationToken::new();
+        let outcome = run(&mut chat, &vault, &config, &cancel, &mut |_| {})
+            .await
+            .unwrap()
+            .expect("a batch was pending");
+
+        assert_eq!(fs::read(&user_file).unwrap(), b"# Me\n\nBe terse.\n");
+        assert!(!outcome.filed[0].proposed);
+        assert!(proposed_line(&outcome.filed).is_none());
+        assert!(crate::proposal::list_in(&config).is_empty());
+        let held_dir = crate::proposal::dir_in(&config).join(crate::proposal::HELD_DIR);
+        let held: Vec<_> = fs::read_dir(&held_dir).unwrap().flatten().collect();
+        assert_eq!(held.len(), 1);
+        let record: crate::proposal::Proposal =
+            serde_json::from_slice(&fs::read(held[0].path()).unwrap()).unwrap();
+        assert!(record.text.contains("**Personal context**"));
+        let why = record.held.as_ref().map(|h| h.why.as_str()).unwrap_or("");
+        assert!(why.contains("**Personal context**"), "{why}");
+        assert!(why.contains("instructions only"), "{why}");
+
+        // The same turn, corrected: instructions only, and it is offered.
+        append(&config, "Wants answers in metric.", None);
+        let mut chat = chat_scripted(vec![
+            propose("# Me\n\n**Top of mind**\n\nExams.\n", "wrong"),
+            propose("# Me\n\nBe terse. Metric units.\n", "right"),
+            says("done"),
+        ]);
+        let outcome = run(&mut chat, &vault, &config, &cancel, &mut |_| {})
+            .await
+            .unwrap()
+            .expect("a batch was pending");
+        assert!(outcome.filed[0].proposed);
+        let listed = crate::proposal::list_in(&config);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].proposal.text, "# Me\n\nBe terse. Metric units.\n");
+        assert_eq!(fs::read_dir(&held_dir).unwrap().count(), 2);
+    }
+
+    /// A section the file already has is not one the proposal adds: a
+    /// replacement that keeps it — or moves it out — is offered, so a
+    /// memory from before the split can still be proposed to.
+    #[tokio::test]
+    async fn a_section_the_memory_already_has_does_not_hold_the_proposal() {
+        let (config, vault, _) = fixture("propose-kept", "Lanternfish");
+        let user_file = config.join(INSTRUCTION_FILE);
+        fs::write(
+            &user_file,
+            "# Me\n\nBe terse.\n\n**Work context**\n\nA freshman.\n",
+        )
+        .unwrap();
+        append(&config, "Now a sophomore.", None);
+        let mut chat = chat_scripted(vec![
+            propose(
+                "# Me\n\nBe terse.\n\n**Work context**\n\nA sophomore.\n",
+                "Observation 1.",
+            ),
+            says("done"),
+        ]);
+        let cancel = CancellationToken::new();
+        let outcome = run(&mut chat, &vault, &config, &cancel, &mut |_| {})
+            .await
+            .unwrap()
+            .expect("a batch was pending");
+        assert!(outcome.filed[0].proposed);
+        assert_eq!(crate::proposal::list_in(&config).len(), 1);
+        assert!(
+            !crate::proposal::dir_in(&config)
+                .join(crate::proposal::HELD_DIR)
+                .exists()
+        );
     }
 }

@@ -21,6 +21,14 @@
 //! what was proposed — the draft was editable). What the dream suggested
 //! and what the user did with it is information, the same argument the
 //! supersede-don't-erase rule makes for notes.
+//!
+//! **The user's memory is instructions only (2026-09-15, nightshift backlog
+//! 055).** A proposal for `~/.nightloom/AGENTS.md` that would add one of
+//! the claude.ai export's biographical sections is not offered at all: it
+//! is written under `proposals/held/` with a [`Held`] note saying why, the
+//! model is told to file the facts in the vault instead, and the pending
+//! queue never sees it. The prompt (`dream::compose_instruction`) says the
+//! rule first; the guard is the cheap check behind the prompt.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -39,6 +47,9 @@ pub const PROPOSALS_DIR: &str = "proposals";
 pub const DISMISSED_DIR: &str = "dismissed";
 /// Where an applied proposal goes, under [`PROPOSALS_DIR`].
 pub const APPLIED_DIR: &str = "applied";
+/// Where a proposal the guard held back goes, under [`PROPOSALS_DIR`] —
+/// filed with a note, never offered as a draft. See [`Held`].
+pub const HELD_DIR: &str = "held";
 
 /// The most a proposed replacement may be. The preamble reads the file it
 /// replaces under the same per-file ceiling (`prompt::FILE_LIMIT`), so a
@@ -107,6 +118,30 @@ pub struct Proposal {
     /// Set when the proposal was dismissed and moved aside; see [`dismiss`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dismissed_at: Option<DateTime<Utc>>,
+    /// Set when the guard held the proposal back instead of offering it;
+    /// see [`Held`]. Such a file is written under `held/` from the start
+    /// and never sits in the pending queue.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held: Option<Held>,
+}
+
+/// Why a proposal for the user's memory was filed under [`HELD_DIR`] rather
+/// than offered.
+///
+/// The user's `~/.nightloom/AGENTS.md` is instructions only — how the model
+/// should behave, everywhere — since 2026-09-15 (nightshift backlog 055):
+/// facts about the user live in the vault and are read on demand. The
+/// prompt says so; this is the cheap check behind it. A replacement that
+/// grows one of the claude.ai export's biographical headings (`Work
+/// context`, `Personal context`, `Top of mind`, `Brief history` —
+/// `import::EXPORT_MEMORY_HEADINGS`) is the export's shape coming back
+/// through the dream, and it is kept as a record with the reason rather
+/// than shown as a diff the user would have to decline.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Held {
+    pub at: DateTime<Utc>,
+    /// One sentence naming the headings, for whoever reads the record.
+    pub why: String,
 }
 
 /// What was saved when a proposal was applied. The hash is of the text the
@@ -177,8 +212,8 @@ fn read_at(path: &Path) -> Result<Proposal, String> {
 
 /// Every pending proposal in `store`, newest first. A file that does not
 /// parse is skipped rather than fatal — one hand-edited or half-written
-/// file must not hide the rest — and the subfolders (dismissed, applied)
-/// are not walked: they are the record, not the queue.
+/// file must not hide the rest — and the subfolders (dismissed, applied,
+/// held) are not walked: they are the record, not the queue.
 pub fn list_in(store: &Path) -> Vec<Entry> {
     let dir = dir_in(store);
     let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -270,45 +305,109 @@ const PROPOSE_DESC: &str = "Propose a full replacement for the always-loaded ins
      The file is read whole into every conversation's system prompt, so keep the replacement \
      under about 4,000 characters. You cannot write the file: the proposal is shown to the user \
      in the app as a diff against the current text, and only they apply it. At most one \
-     proposal per pass — a second call replaces the first.";
+     proposal per pass — a second call replaces the first. The user's memory file is \
+     instructions only: how to behave, everywhere. Facts about the user — who they are, what \
+     they work on, what happened — belong in the vault's profile.md, a topic note or \
+     background.md, never in this file; a replacement that adds a Work context, Personal \
+     context, Top of mind or Brief history section is held back and not shown.";
 
 /// The `propose_instructions` tool, available only inside a dream turn
 /// (`dream::prepare` adds it; `tools::builtin_in` never does). Holds the
-/// store it writes beside, the target the proposal names, and the path of
-/// the file it wrote this turn, so a second call overwrites rather than
-/// files a second proposal.
+/// store it writes beside, the target the proposal names, the file's text
+/// as the pass was shown it (so the guard can tell a heading the proposal
+/// *adds* from one the file already had), and the paths of what it wrote
+/// this turn, so a second call overwrites rather than files a second
+/// proposal.
 pub struct ProposeInstructions {
     store: PathBuf,
     target: ProposalTarget,
-    written: Arc<Mutex<Option<PathBuf>>>,
+    current: Option<String>,
+    slot: Arc<Mutex<SlotState>>,
+}
+
+/// What one turn's tool has written: the proposal on offer, and the last
+/// one the guard held back. Two paths rather than one flag, because the
+/// dream reports the first and a test reads the second.
+#[derive(Debug, Default)]
+struct SlotState {
+    written: Option<PathBuf>,
+    held: Option<PathBuf>,
 }
 
 /// What the dream inspects after the turn: did the model propose, and where
 /// the file is. A clone of the tool's own slot, so the answer is the tool's
 /// and not a directory listing that could pick up an older proposal.
 #[derive(Debug, Clone)]
-pub struct ProposalSlot(Arc<Mutex<Option<PathBuf>>>);
+pub struct ProposalSlot(Arc<Mutex<SlotState>>);
 
 impl ProposalSlot {
-    /// The proposal this turn wrote, if it wrote one.
+    /// The proposal this turn wrote and is offering, if it wrote one. A
+    /// held proposal is not one: it is filed, not offered.
     pub fn path(&self) -> Option<PathBuf> {
-        self.0.lock().unwrap().clone()
+        self.0.lock().unwrap().written.clone()
+    }
+
+    /// The proposal the guard held back this turn, if any — the record
+    /// under [`HELD_DIR`] with its [`Held`] note.
+    pub fn held(&self) -> Option<PathBuf> {
+        self.0.lock().unwrap().held.clone()
     }
 }
 
 impl ProposeInstructions {
     pub fn new(store: PathBuf, target: ProposalTarget) -> (Self, ProposalSlot) {
-        let written = Arc::new(Mutex::new(None));
-        let slot = ProposalSlot(written.clone());
+        let slot = Arc::new(Mutex::new(SlotState::default()));
         (
             Self {
                 store,
                 target,
-                written,
+                current: None,
+                slot: slot.clone(),
             },
-            slot,
+            ProposalSlot(slot),
         )
     }
+
+    /// Tell the tool what the always-loaded file says now — the same text
+    /// the instruction quotes — so the guard judges what a proposal adds.
+    /// Without it, every export heading in a proposal counts as added.
+    pub fn against(mut self, current: Option<&str>) -> Self {
+        self.current = current.map(str::to_string);
+        self
+    }
+}
+
+/// The export's biographical headings a proposal for the user's memory
+/// carries that the file does not have yet, as the lines were written.
+/// Empty for any other target — a project's `AGENTS.md` has its own rules,
+/// and the section names are the export's shape for the *user*.
+pub fn background_headings_added(
+    target: &ProposalTarget,
+    text: &str,
+    current: Option<&str>,
+) -> Vec<String> {
+    if *target != ProposalTarget::User {
+        return Vec::new();
+    }
+    let already: Vec<String> = current
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| crate::import::is_export_memory_heading(l))
+        .map(heading_key)
+        .collect();
+    text.lines()
+        .filter(|l| crate::import::is_export_memory_heading(l))
+        .filter(|l| !already.contains(&heading_key(l)))
+        .map(|l| l.trim().to_string())
+        .collect()
+}
+
+/// `**Work context**` and `## work context` are the same heading for the
+/// purpose of "did the file already have it".
+fn heading_key(line: &str) -> String {
+    line.trim()
+        .trim_matches(|c: char| c == '#' || c == '*' || c == '_' || c == ':' || c.is_whitespace())
+        .to_ascii_lowercase()
 }
 
 #[async_trait::async_trait]
@@ -361,7 +460,7 @@ impl Tool for ProposeInstructions {
             .filter(|w| !w.is_empty())
             .ok_or_else(|| "missing required argument: why".to_string())?;
         let now = Utc::now();
-        let proposal = Proposal {
+        let mut proposal = Proposal {
             v: 1,
             at: now,
             target: self.target.clone(),
@@ -370,17 +469,52 @@ impl Tool for ProposeInstructions {
             from_dream: true,
             applied: None,
             dismissed_at: None,
+            held: None,
         };
         // The slot is held across the write so two calls racing (which a
         // turn never does — tools run one at a time — but a lock is cheaper
         // than the argument) cannot both decide they are the first.
-        let mut written = self.written.lock().unwrap();
-        let replaced = written.is_some();
-        let path = written
+        let mut slot = self.slot.lock().unwrap();
+
+        // The guard: a replacement for the user's memory that grows one of
+        // the export's biographical sections is filed under held/ with the
+        // reason, and the model is told what to do instead. An earlier
+        // proposal this turn offered stays on offer — the refused text was
+        // meant to replace it, and a refusal is not a replacement.
+        let added = background_headings_added(&self.target, text, self.current.as_deref());
+        if !added.is_empty() {
+            let why = format!(
+                "held back, not offered: the replacement adds {} to the user's memory, which is \
+                 instructions only — facts about the user go to the vault (profile.md, a topic \
+                 note, background.md) and are read on demand",
+                added.join(", ")
+            );
+            proposal.held = Some(Held {
+                at: now,
+                why: why.clone(),
+            });
+            let path = slot.held.clone().unwrap_or_else(|| {
+                dir_in(&self.store)
+                    .join(HELD_DIR)
+                    .join(format!("{}.json", stamp(now)))
+            });
+            write_at(&path, &proposal)?;
+            slot.held = Some(path);
+            return Ok(format!(
+                "Not proposed — {why}. The text was filed as a record and will not be shown to \
+                 the user. If the instructions themselves need changing, call again with a \
+                 replacement that carries no section about who the user is; file the facts \
+                 in the vault with the file tools instead.",
+            ));
+        }
+
+        let replaced = slot.written.is_some();
+        let path = slot
+            .written
             .clone()
             .unwrap_or_else(|| dir_in(&self.store).join(format!("{}.json", stamp(now))));
         write_at(&path, &proposal)?;
-        *written = Some(path);
+        slot.written = Some(path);
         Ok(format!(
             "Proposed{}. The user will see it in the app as a diff against the current file \
              and decide; nothing was written to the file itself.",
@@ -509,6 +643,7 @@ mod tests {
             from_dream: true,
             applied: None,
             dismissed_at: None,
+            held: None,
         };
         p.at = "2026-09-13T00:00:00Z".parse().unwrap();
         write_at(&dir.join("older.json"), &p).unwrap();
@@ -541,6 +676,7 @@ mod tests {
             from_dream: true,
             applied: None,
             dismissed_at: None,
+            held: None,
         };
         write_at(&dir.join("a.json"), &p).unwrap();
         write_at(&dir.join("b.json"), &p).unwrap();
@@ -569,5 +705,79 @@ mod tests {
         assert!(read(&store, "../a").is_err());
         assert!(dismiss(&store, "dismissed/a").is_err());
         assert!(read(&store, "missing").is_err());
+    }
+
+    /// What counts as an added section: the export's four, in either
+    /// spelling, for the user's file only, and not one the file already had.
+    #[test]
+    fn added_background_headings_are_the_export_s_and_the_user_s_only() {
+        let user = ProposalTarget::User;
+        let text = "# Me\n\n## Work context\n\nA freshman.\n\n**Top of mind**\n\nFinals.\n";
+        assert_eq!(
+            background_headings_added(&user, text, None),
+            ["## Work context", "**Top of mind**"]
+        );
+        // Already in the file, in the other spelling: not added.
+        assert_eq!(
+            background_headings_added(&user, text, Some("**work context**\n")),
+            ["**Top of mind**"]
+        );
+        assert!(background_headings_added(&user, "# Me\n\nBe terse.\n", None).is_empty());
+        // A project's AGENTS.md has no such rule.
+        assert!(background_headings_added(&project(), text, None).is_empty());
+    }
+
+    /// The held path end to end at the tool: the record lands under
+    /// `held/` with its note, the queue stays empty, the slot says held and
+    /// not written, and the reply tells the model what to do instead. An
+    /// earlier offered proposal is not withdrawn by a refused replacement.
+    #[tokio::test]
+    async fn a_biographical_proposal_for_the_user_is_held_with_a_note() {
+        let store = test_dir("proposal-held");
+        let (tool, slot) = ProposeInstructions::new(store.clone(), ProposalTarget::User);
+        let tool = tool.against(Some("# Me\n\nBe terse.\n"));
+
+        let reply = propose(&tool, "# Me\n\n**Brief history**\n\nMoved west.\n", "w")
+            .await
+            .unwrap();
+        assert!(reply.starts_with("Not proposed"), "{reply}");
+        assert!(reply.contains("**Brief history**"));
+        assert!(reply.contains("file the facts in the vault"));
+        assert!(list_in(&store).is_empty());
+        assert!(slot.path().is_none());
+        let held = slot.held().expect("a held record");
+        assert_eq!(held.parent().unwrap(), dir_in(&store).join(HELD_DIR));
+        let record = read_at(&held).unwrap();
+        assert_eq!(record.target, ProposalTarget::User);
+        assert_eq!(record.text, "# Me\n\n**Brief history**\n\nMoved west.\n");
+        let note = record.held.expect("held note");
+        assert!(note.why.contains("**Brief history**"));
+        assert!(note.why.contains("instructions only"));
+
+        // Offered, then a refused replacement: the offer stands.
+        propose(&tool, "# Me\n\nBe terse and metric.\n", "w")
+            .await
+            .unwrap();
+        assert!(slot.path().is_some());
+        let reply = propose(&tool, "# Me\n\n## Personal context\n\nLifts.\n", "w")
+            .await
+            .unwrap();
+        assert!(reply.starts_with("Not proposed"));
+        assert_eq!(list_in(&store).len(), 1);
+        assert_eq!(
+            list_in(&store)[0].proposal.text,
+            "# Me\n\nBe terse and metric.\n"
+        );
+        // One held record per turn, the later text.
+        assert_eq!(
+            read_at(&slot.held().unwrap()).unwrap().text,
+            "# Me\n\n## Personal context\n\nLifts.\n"
+        );
+        assert_eq!(
+            std::fs::read_dir(dir_in(&store).join(HELD_DIR))
+                .unwrap()
+                .count(),
+            1
+        );
     }
 }

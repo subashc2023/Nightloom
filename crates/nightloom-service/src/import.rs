@@ -22,11 +22,14 @@
 //!
 //! The account's *memory* maps the same way, onto the two note stores that
 //! already exist (see [`import_memories`] for the table): the summary of the
-//! user becomes the user memory, the global memory files go to the vault,
-//! and a project's summary and files go under its `AGENTS.md` and docspace.
-//! Only one thing is new: a project summary longer than
-//! [`MEMORY_INLINE_LIMIT`] is not inlined, because `AGENTS.md` is loaded on
-//! every turn and the export's summaries run to 13k characters.
+//! user goes to the vault as [`BACKGROUND_NOTE`] and the user memory gets a
+//! paragraph pointing at it (it was the user memory itself until 2026-09-15
+//! — biography loaded into every chat, which is what the vault is for), the
+//! global memory files go to the vault, and a project's summary and files
+//! go under its `AGENTS.md` and docspace. One thing beyond that is new: a
+//! project summary longer than [`MEMORY_INLINE_LIMIT`] is not inlined,
+//! because `AGENTS.md` is loaded on every turn and the export's summaries
+//! run to 13k characters.
 //!
 //! ## The export is the only way in
 //!
@@ -137,6 +140,75 @@ const MEMORY_HEADING: &str = "## Memory (imported from claude.ai";
 // writers cannot drift apart.
 /// The full project memory, kept on demand beside the other memory files.
 const MEMORY_SUMMARY: &str = "summary.md";
+
+/// The vault note the export's summary of the user is written to.
+///
+/// Not `~/.nightloom/AGENTS.md`, since 2026-09-15 (nightshift backlog 055).
+/// That file is read whole into every conversation, and the export's
+/// summary is biography — work context, personal context, what is top of
+/// mind, a history — which a fitness question pays for and a research
+/// question pays for the other way round. So the summary goes to the vault
+/// as one note, read when a question needs it, and the always-loaded file
+/// keeps instructions only plus a paragraph saying where the background is.
+pub const BACKGROUND_NOTE: &str = "background.md";
+/// The heading of the pointer paragraph in the user memory, and what a
+/// second import looks for to know the paragraph is already there.
+pub const BACKGROUND_HEADING: &str = "## Background, on demand";
+/// The pointer paragraph itself, word for word the one written into the
+/// real file by hand on 2026-09-14, so the importer and that edit agree.
+pub const BACKGROUND_POINTER: &str = "## Background, on demand
+
+Nothing about Swaraag's history, work or current projects is loaded here.
+It lives in the knowledge vault (`@kb/`), and is read only when a question
+needs it — a fitness question does not need his research context and the
+other way round. Read the one note the question calls for, not all of them:
+
+- `@kb/background.md` — who he is, what he has worked on, recent months (from the claude.ai export; partly out of date)
+- `@kb/profile.md`, `@kb/preferences.md` — the short profile and how he likes things done
+- `@kb/topics/` — fitness, coursework, ai-safety, music-production, technical-skills, recent-work
+- `@kb/areas/` — one note per project or application he is working on
+- `@kb/people/` — the people who come up
+
+The vault index in this prompt lists every note with a one-line summary; use
+it to pick. On the Claude Code engine `@kb/<name>` is a real path under the
+vault directory, granted to you — use `Read`.";
+/// The section headings the export's summary of the user carries — the
+/// biographical ones, which is to say the ones that must never end up in
+/// the always-loaded file. The importer warns when a user memory still has
+/// them (an import from before the split), and the dream's proposal tool
+/// holds back a proposal that would add one (`crate::proposal`).
+pub const EXPORT_MEMORY_HEADINGS: [&str; 4] = [
+    "Work context",
+    "Personal context",
+    "Top of mind",
+    "Brief history",
+];
+
+/// Whether `line`, as a heading, is one of [`EXPORT_MEMORY_HEADINGS`].
+///
+/// The export writes them bold (`**Work context**`); a model asked for a
+/// replacement writes them as Markdown headings (`## Work context`) as
+/// often as not. So the line is stripped of heading marks, emphasis and a
+/// trailing colon on both ends and compared without case, and a heading
+/// with more words in it (`## Work context, spring`) does not match — the
+/// guard is for the export's sections coming back, not for the word.
+pub fn is_export_memory_heading(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let core = trimmed
+        .trim_start_matches(|c: char| c == '#' || c == '*' || c == '_' || c.is_whitespace())
+        .trim_end_matches(|c: char| c == '*' || c == '_' || c == ':' || c.is_whitespace());
+    // A bare line of prose that happens to read "Top of mind" is a heading
+    // only if it was marked as one; a paragraph is not.
+    if core == trimmed {
+        return false;
+    }
+    EXPORT_MEMORY_HEADINGS
+        .iter()
+        .any(|h| h.eq_ignore_ascii_case(core))
+}
 
 // ---------------------------------------------------------------------------
 // The export's own shapes
@@ -814,6 +886,11 @@ pub struct ImportReport {
     /// Memory files written: the user memory, vault notes, project summaries
     /// and per-project memory files, together.
     pub memory_written: usize,
+    /// The vault note the export's summary of the user went to
+    /// ([`BACKGROUND_NOTE`]), when this run wrote it. Named in the report
+    /// because it is the one memory file a user would look for in the
+    /// always-loaded file and not find there.
+    pub background_note: Option<PathBuf>,
     /// Memory files already present with different content and left alone.
     pub memory_left_alone: usize,
     /// Project summaries appended to a project's `AGENTS.md`, whether inline
@@ -1132,17 +1209,19 @@ fn write_instructions(
 ///
 /// | export | destination |
 /// |---|---|
-/// | `conversations_memory` | `~/.nightloom/AGENTS.md`, the user memory |
+/// | `conversations_memory` | the vault's `background.md`, whole; the user memory gets the pointer paragraph |
 /// | global `memory_files` | the vault, at the file's own path |
 /// | `project_memories[uuid]` | `<workspace>/.agents/memory/summary.md`, whole, and a section of `AGENTS.md` |
 /// | `/projects/<uuid>/…` files | `<workspace>/.agents/memory/…` |
 ///
-/// The same never-overwrite rule as the docspace, everywhere: nothing on
-/// disk is replaced, a file that differs is said out loud, and one that is
-/// byte-identical is not mentioned. A project is found by the `claude:<uuid>`
-/// source the import registers it under; a uuid with no project here is a
-/// warning, since the export can hold memory for a project that did not
-/// parse or was filtered out.
+/// The same never-overwrite rule as the docspace, everywhere but one place:
+/// nothing on disk is replaced, a file that differs is said out loud, and
+/// one that is byte-identical is not mentioned. The exception is
+/// `background.md`, which is the export's text and not the user's, and is
+/// replaced by a re-import — see [`write_background`]. A project is found
+/// by the `claude:<uuid>` source the import registers it under; a uuid with
+/// no project here is a warning, since the export can hold memory for a
+/// project that did not parse or was filtered out.
 fn import_memories(
     export: &Export,
     opts: &ImportOptions,
@@ -1154,24 +1233,35 @@ fn import_memories(
         return;
     }
 
-    // The user's own memory: the file the preamble reads in every project
-    // and in a chat with none.
+    // The vault may not exist yet on this machine; it is created rather than
+    // reported, being the default location of a feature that has simply not
+    // been used. Resolved lazily, by whichever of the two writers below
+    // needs it first.
+    let mut vault: Option<PathBuf> = None;
+
+    // The export's summary of the user: to the vault as one note, read on
+    // demand, and never into the file the preamble reads whole in every
+    // project and in a chat with none. That file gets the paragraph saying
+    // where the background went, once (backlog 055, 2026-09-15).
     let text = memories.conversations_memory.trim();
     if !text.is_empty() {
-        match crate::prompt::user_instruction_path() {
-            Some(path) => write_memory(&path, &format!("{text}\n"), "the user memory", report),
-            None => report
+        match (
+            crate::knowledge::vault_dir(),
+            crate::prompt::user_instruction_path(),
+        ) {
+            (Some(dir), Some(path)) => {
+                write_background(&dir, text, report);
+                ensure_background_pointer(&path, report);
+                vault = Some(dir);
+            }
+            _ => report
                 .warnings
-                .push("no home directory, so the user memory was left out".to_string()),
+                .push("no home directory, so the export's summary of you was left out".to_string()),
         }
     }
 
-    // Sort the files by where they go, and the vault ones out first. The
-    // vault may not exist yet on this machine; it is created rather than
-    // reported, being the default location of a feature that has simply not
-    // been used.
+    // Sort the files by where they go, and the vault ones out first.
     let mut per_project: BTreeMap<&str, Vec<(&str, &str)>> = BTreeMap::new();
-    let mut vault: Option<PathBuf> = None;
     for file in &memories.memory_files {
         if file.content.is_empty() {
             continue;
@@ -1304,6 +1394,152 @@ fn write_memory(path: &Path, body: &str, label: &str, report: &mut ImportReport)
     match fs::write(path, body) {
         Ok(()) => report.memory_written += 1,
         Err(e) => report.warnings.push(format!("{label}: cannot write: {e}")),
+    }
+}
+
+/// The vault note for the export's summary of the user, as a whole file:
+/// frontmatter in the vault's own style, a header saying what it is and
+/// what a re-import does to it, then the export's text untouched.
+///
+/// `date` is the import's, not the export's — the archive does not say when
+/// it was made, only its folder name does, and a folder name is a label.
+/// The same text on the same day is the same file byte for byte, which is
+/// what lets a second run write nothing.
+fn background_note(text: &str, date: &str) -> String {
+    format!(
+        "---\n\
+         name: background\n\
+         description: Who the user is and what they have worked on — the claude.ai export's \
+         summary of them, imported {date}; read on demand, never loaded into every chat\n\
+         sources: [claude.ai export, {date}]\n\
+         aliases: []\n\
+         ---\n\
+         \n\
+         # Background (on demand)\n\
+         \n\
+         The claude.ai export's summary of the user, imported {date}. The always-loaded\n\
+         memory (`~/.nightloom/AGENTS.md`) holds instructions only and points here: a\n\
+         question that needs who the user is or what they have worked on reads this\n\
+         note, and one that does not never pays for it. A re-import never replaces this\n\
+         file once it exists, so corrections made here survive.\n\
+         \n\
+         {text}\n"
+    )
+}
+
+/// Write the export's summary of the user to the vault as [`BACKGROUND_NOTE`].
+///
+/// Written once. It was going to be the one memory file a re-import
+/// replaces — the export's own text under the importer's header — until he
+/// said he would correct what is wrong in it by hand (nightshift backlog
+/// 058); from then on it is his the moment it exists, like every other
+/// note, and a re-import that finds it different says so and keeps it.
+/// Byte-identical is not mentioned, as everywhere.
+fn write_background(vault: &Path, text: &str, report: &mut ImportReport) {
+    let path = vault.join(BACKGROUND_NOTE);
+    let body = background_note(text, &Utc::now().format("%Y-%m-%d").to_string());
+    // Never over an existing note: the first import wrote it, and he said
+    // he would correct what is wrong in it by hand (nightshift backlog 058,
+    // 2026-09-14). A re-import that replaced the file would undo that
+    // silently; it warns and keeps his instead.
+    if path.is_file() {
+        if fs::read_to_string(&path).is_ok_and(|existing| existing != body) {
+            report.warnings.push(format!(
+                "vault {BACKGROUND_NOTE}: kept the existing note (it may carry his edits); the export's version was not written"
+            ));
+        }
+        return;
+    }
+    if let Err(e) = fs::create_dir_all(vault) {
+        report.warnings.push(format!(
+            "vault {BACKGROUND_NOTE}: cannot create {}: {e}",
+            vault.display()
+        ));
+        return;
+    }
+    match fs::write(&path, body) {
+        Ok(()) => {
+            report.memory_written += 1;
+            report.background_note = Some(path);
+        }
+        Err(e) => report
+            .warnings
+            .push(format!("vault {BACKGROUND_NOTE}: cannot write: {e}")),
+    }
+}
+
+/// Make sure the user memory carries the "Background, on demand" paragraph,
+/// and nothing else about it.
+///
+/// A file with the heading already is left exactly as it is — the check is
+/// the heading line, so the paragraph cannot pile up run after run. A file
+/// without it gets the paragraph appended, below whatever is there: the
+/// standing instructions and the other instructions are the user's, and an
+/// importer that moved them would be an editor nobody asked for. A missing
+/// or blank file becomes the paragraph alone, which is a user memory that
+/// says where to look and instructs nothing — the export's own instruction
+/// sections are in `background.md` for the user to lift from, not seeded
+/// here, because which of them are still true is their call (nightshift
+/// blocker 061).
+///
+/// A file that still carries the export's biographical sections — an import
+/// from before the split — is not edited either, but it is said out loud,
+/// on every run until they are gone, since the sections cost every turn.
+fn ensure_background_pointer(path: &Path, report: &mut ImportReport) {
+    let existing = match fs::read_to_string(path) {
+        Ok(existing) => existing,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            report
+                .warnings
+                .push(format!("the user memory: cannot read: {e}"));
+            return;
+        }
+    };
+    let leftover: Vec<&str> = existing
+        .lines()
+        .filter(|line| is_export_memory_heading(line))
+        .map(str::trim)
+        .collect();
+    if !leftover.is_empty() {
+        report.warnings.push(format!(
+            "the user memory still carries the export's background sections ({}); they are \
+             loaded into every chat, and belong in the vault's {BACKGROUND_NOTE}",
+            leftover.join(", ")
+        ));
+    }
+    if existing
+        .lines()
+        .any(|line| line.trim() == BACKGROUND_HEADING)
+    {
+        return;
+    }
+    let mut body = if existing.trim().is_empty() {
+        String::new()
+    } else {
+        let mut body = existing;
+        if !body.ends_with('\n') {
+            body.push('\n');
+        }
+        body.push('\n');
+        body
+    };
+    body.push_str(BACKGROUND_POINTER);
+    body.push('\n');
+    if let Some(parent) = path.parent()
+        && let Err(e) = fs::create_dir_all(parent)
+    {
+        report.warnings.push(format!(
+            "the user memory: cannot create {}: {e}",
+            parent.display()
+        ));
+        return;
+    }
+    match fs::write(path, body) {
+        Ok(()) => report.memory_written += 1,
+        Err(e) => report
+            .warnings
+            .push(format!("the user memory: cannot write: {e}")),
     }
 }
 
@@ -2802,11 +3038,15 @@ mod tests {
         let report = run(&export, &into);
         assert_eq!(report.projects.len(), 2, "{:?}", report.warnings);
 
-        // 1. The user memory.
-        assert_eq!(
-            fs::read_to_string(user_memory_path()).unwrap(),
-            format!("{USER_MEMORY}\n")
-        );
+        // 1. The user's summary: in the vault, on demand, and never in the
+        //    always-loaded file — which points at it instead.
+        let background = fs::read_to_string(vault().join(BACKGROUND_NOTE)).unwrap();
+        assert!(background.starts_with("---\nname: background\n"));
+        assert!(background.ends_with(&format!("\n{USER_MEMORY}\n")));
+        let user_memory = fs::read_to_string(user_memory_path()).unwrap();
+        assert!(!user_memory.contains(USER_MEMORY));
+        assert_eq!(user_memory.matches(BACKGROUND_HEADING).count(), 1);
+        assert!(user_memory.contains(BACKGROUND_POINTER));
         // 2. Global files in the vault, at their own paths, `.md` and all.
         assert_eq!(
             fs::read_to_string(vault().join("profile.md")).unwrap(),
@@ -2877,10 +3117,11 @@ mod tests {
         );
 
         // 1 vault + 2 summaries + 3 project files are this test's own; the
-        // user memory and `profile.md` are shared with the other memory
-        // tests in this process, and whichever ran first wrote them.
+        // user memory's pointer, `background.md` and `profile.md` are shared
+        // with the other memory tests in this process, and whichever ran
+        // first wrote them.
         assert!(
-            (6..=8).contains(&report.memory_written),
+            (6..=9).contains(&report.memory_written),
             "{} written, {:?}",
             report.memory_written,
             report.warnings
@@ -2963,9 +3204,10 @@ mod tests {
         let export = read_export(&path).unwrap();
         let into = test_dir("import-memories-escape-out");
         let report = run(&export, &into);
-        // Only the user memory, which is byte-identical from the other tests
-        // or freshly written here — never one of the two files.
-        assert!(report.memory_written <= 1, "{:?}", report.warnings);
+        // Only the user's summary (the vault note and the pointer), which
+        // are byte-identical from the other tests or freshly written here —
+        // never one of the two files.
+        assert!(report.memory_written <= 2, "{:?}", report.warnings);
         assert_eq!(
             report
                 .warnings
@@ -3041,5 +3283,174 @@ mod tests {
         let export = read_export(&dir).unwrap();
         assert_eq!(export.memories.project_memories.len(), 1);
         assert_eq!(export.memories.project_memories["p-1"], "From a folder.");
+    }
+
+    // ---- the user's summary: vault note + pointer (backlog 055) ----------
+    //
+    // The user memory and the vault are one pair of paths for the whole
+    // test process, so the rules that need a file in a known prior state
+    // are exercised on the two writers directly, with paths of their own.
+
+    /// The export's summary as it actually ships: instructions top and
+    /// bottom, the four biographical sections between.
+    const EXPORT_SUMMARY: &str = "## Standing instructions\n\nBe terse.\n\n\
+        **Work context**\n\nA freshman.\n\n**Personal context**\n\nLifts.\n\n\
+        **Top of mind**\n\nFinals.\n\n**Brief history**\n\nMoved west.\n\n\
+        **Other instructions**\n\n- No em dashes.";
+
+    #[test]
+    fn the_summary_becomes_a_vault_note_and_the_memory_a_pointer() {
+        let dir = test_dir("import-background-fresh");
+        let vault = dir.join("knowledge");
+        let memory = dir.join("AGENTS.md");
+        let mut report = ImportReport::default();
+
+        write_background(&vault, EXPORT_SUMMARY, &mut report);
+        ensure_background_pointer(&memory, &mut report);
+
+        let note = fs::read_to_string(vault.join(BACKGROUND_NOTE)).unwrap();
+        let today = Utc::now().format("%Y-%m-%d").to_string();
+        assert!(note.starts_with("---\nname: background\n"));
+        assert!(note.contains(&format!("sources: [claude.ai export, {today}]\n")));
+        assert!(note.contains("# Background (on demand)\n"));
+        assert!(note.ends_with(&format!("\n{EXPORT_SUMMARY}\n")));
+        assert_eq!(report.background_note, Some(vault.join(BACKGROUND_NOTE)));
+
+        // A memory that did not exist is the paragraph alone — and none of
+        // the export's sections, instructions included (blocker 061).
+        let text = fs::read_to_string(&memory).unwrap();
+        assert_eq!(text, format!("{BACKGROUND_POINTER}\n"));
+        assert!(!text.contains("Work context"));
+        assert!(!text.contains("Be terse."));
+        assert_eq!(report.memory_written, 2);
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    }
+
+    /// A second run changes nothing: the note is byte-identical and not
+    /// counted, the paragraph is found by its heading and not added again.
+    #[test]
+    fn re_importing_the_summary_is_idempotent() {
+        let dir = test_dir("import-background-again");
+        let vault = dir.join("knowledge");
+        let memory = dir.join("AGENTS.md");
+        let mut first = ImportReport::default();
+        write_background(&vault, EXPORT_SUMMARY, &mut first);
+        ensure_background_pointer(&memory, &mut first);
+        let note_before = fs::read_to_string(vault.join(BACKGROUND_NOTE)).unwrap();
+        let memory_before = fs::read_to_string(&memory).unwrap();
+
+        let mut second = ImportReport::default();
+        write_background(&vault, EXPORT_SUMMARY, &mut second);
+        ensure_background_pointer(&memory, &mut second);
+        assert_eq!(second.memory_written, 0, "{:?}", second.warnings);
+        assert_eq!(second.background_note, None);
+        assert_eq!(
+            fs::read_to_string(vault.join(BACKGROUND_NOTE)).unwrap(),
+            note_before
+        );
+        assert_eq!(fs::read_to_string(&memory).unwrap(), memory_before);
+        assert_eq!(memory_before.matches(BACKGROUND_HEADING).count(), 1);
+    }
+
+    /// The note is the export's, so a newer export — or a hand edit — is
+    /// replaced rather than left alone; the never-overwrite rule is for
+    /// what the user wrote, and the header says so.
+    #[test]
+    fn the_background_note_is_written_once_and_his_edits_survive_a_reimport() {
+        let dir = test_dir("import-background-keep");
+        let vault = dir.join("knowledge");
+        let mut report = ImportReport::default();
+        write_background(&vault, "An older export.", &mut report);
+        assert_eq!(report.memory_written, 1);
+        fs::write(vault.join(BACKGROUND_NOTE), "edited by hand\n").unwrap();
+
+        let mut again = ImportReport::default();
+        write_background(&vault, "A newer export.", &mut again);
+        assert_eq!(again.memory_written, 0);
+        assert_eq!(again.warnings.len(), 1, "{:?}", again.warnings);
+        assert!(again.warnings[0].contains("kept the existing note"));
+        assert_eq!(
+            fs::read_to_string(vault.join(BACKGROUND_NOTE)).unwrap(),
+            "edited by hand\n"
+        );
+    }
+
+    /// The instructions already in the file are the user's: the paragraph
+    /// goes below them, byte for byte above, and a file that has it is not
+    /// touched at all — wherever in the file it sits.
+    #[test]
+    fn the_pointer_is_appended_once_and_the_instructions_are_untouched() {
+        let dir = test_dir("import-background-pointer");
+        let memory = dir.join("AGENTS.md");
+        let theirs =
+            "## Standing instructions\n\nBe terse.\n\n**Other instructions**\n\n- No em dashes.";
+        fs::write(&memory, theirs).unwrap();
+
+        let mut report = ImportReport::default();
+        ensure_background_pointer(&memory, &mut report);
+        let text = fs::read_to_string(&memory).unwrap();
+        assert_eq!(text, format!("{theirs}\n\n{BACKGROUND_POINTER}\n"));
+        assert_eq!(report.memory_written, 1);
+
+        // Already there, in the middle as the hand split put it: nothing.
+        let split = format!(
+            "## Standing instructions\n\nBe terse.\n\n{BACKGROUND_POINTER}\n\n\
+             **Other instructions**\n\n- No em dashes.\n"
+        );
+        fs::write(&memory, &split).unwrap();
+        let mut again = ImportReport::default();
+        ensure_background_pointer(&memory, &mut again);
+        assert_eq!(fs::read_to_string(&memory).unwrap(), split);
+        assert_eq!(again.memory_written, 0);
+        assert!(again.warnings.is_empty(), "{:?}", again.warnings);
+    }
+
+    /// A memory the old importer filled — the export's sections between the
+    /// instructions — is not edited, but the sections are named on every
+    /// run, since each of them is paid for on every turn.
+    #[test]
+    fn leftover_background_sections_are_named_not_removed() {
+        let dir = test_dir("import-background-leftover");
+        let memory = dir.join("AGENTS.md");
+        fs::write(&memory, format!("{EXPORT_SUMMARY}\n")).unwrap();
+        let mut report = ImportReport::default();
+        ensure_background_pointer(&memory, &mut report);
+        let text = fs::read_to_string(&memory).unwrap();
+        assert!(text.starts_with(EXPORT_SUMMARY));
+        assert!(text.ends_with(&format!("{BACKGROUND_POINTER}\n")));
+        let warning = report
+            .warnings
+            .iter()
+            .find(|w| w.contains("still carries the export's background sections"))
+            .unwrap_or_else(|| panic!("{:?}", report.warnings));
+        assert!(warning.contains(
+            "**Work context**, **Personal context**, **Top of mind**, **Brief history**"
+        ));
+        assert!(warning.contains(BACKGROUND_NOTE));
+    }
+
+    #[test]
+    fn export_headings_match_bold_and_hash_forms_only() {
+        for line in [
+            "**Work context**",
+            "## Personal context",
+            "# Top of mind",
+            "  ### brief history  ",
+            "__Work context__",
+            "**Top of mind:**",
+        ] {
+            assert!(is_export_memory_heading(line), "{line:?}");
+        }
+        for line in [
+            "Work context",
+            "## Work context, spring quarter",
+            "## Standing instructions",
+            "**Other instructions**",
+            "The work context is thin.",
+            "",
+            "##",
+        ] {
+            assert!(!is_export_memory_heading(line), "{line:?}");
+        }
     }
 }
