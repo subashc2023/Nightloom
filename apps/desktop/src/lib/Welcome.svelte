@@ -1,11 +1,12 @@
 <script lang="ts">
   import {
     app,
-    addProject,
     importFromClaude,
+    openProjectFolder,
     pickerModels,
     revealFolder,
     runMenuCommand,
+    showNewProject,
     showNote,
   } from "./state.svelte";
   import { MODEL_KEYS, providerLabel } from "./catalog";
@@ -286,9 +287,13 @@
 
     {#if !app.project}
       <div class="unfiled">
-        <button class="ns-btn outline" onclick={() => void addProject()}>
+        <button class="ns-btn outline" onclick={showNewProject}>
           <Icon name="plus" size={13} />
           New project…
+        </button>
+        <button class="ns-btn ghost" onclick={() => void openProjectFolder()}>
+          <Icon name="folder" size={13} />
+          Open project…
         </button>
         <button class="ns-btn ghost" onclick={() => void importFromClaude()}>
           <Icon name="download" size={13} />
@@ -305,8 +310,11 @@
     <button class="kk" onclick={() => runMenuCommand("commands")} title="Every command and its key">
       <Kbd keys="{mod}K" />commands
     </button>
-    <button class="kk" onclick={() => runMenuCommand("projects")} title="Switch project — 1–9, N new, I import, 0 leave">
+    <button class="kk" onclick={() => runMenuCommand("projects")} title="Switch project — 1–9, N new, O open, I import, 0 leave">
       <Kbd keys="{mod}P" />projects
+    </button>
+    <button class="kk" onclick={() => runMenuCommand("add_project")} title="Open a folder you already have as a project">
+      <Kbd keys="{mod}O" />open project
     </button>
     <button class="kk" onclick={() => runMenuCommand("model")} title="Model, tasks and context">
       <Kbd keys="{mod}M" />model

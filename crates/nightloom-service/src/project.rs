@@ -80,6 +80,15 @@ pub const SESSIONS_DIR: &str = "sessions";
 
 /// Registry filename, in the user's config dir.
 const REGISTRY_FILE: &str = "projects.json";
+/// Where a repointed projects folder is recorded, beside `projects.json` —
+/// the vault's `knowledge.json` shape: one key, absent means the default.
+/// Not `projects.json`, which the registry already is.
+const PROJECTS_FOLDER_FILE: &str = "projects-folder.json";
+/// The folder new projects go in when nothing is configured and the registry
+/// gives no hint: `~/Documents/Nightloom/projects`.
+const DEFAULT_PROJECTS_FOLDER: [&str; 3] = ["Documents", "Nightloom", "projects"];
+/// Longest folder name made from a project's name.
+pub const SLUG_LIMIT: usize = 60;
 
 /// Notes listed at most. A docspace is meant to be read, and an index of a
 /// thousand files is not one — past this the listing is cut.
@@ -511,6 +520,262 @@ fn default_name(root: &Path) -> String {
         .map(|n| n.to_string_lossy().into_owned())
         .filter(|n| !n.is_empty())
         .unwrap_or_else(|| root.display().to_string())
+}
+
+/// A folder name for a project's name: `Value Generalization` becomes
+/// `Value-Generalization`.
+///
+/// Letters, digits, `-` and `_` are kept; every other run of characters
+/// becomes one `-`; leading and trailing dashes go; the result is cut at
+/// [`SLUG_LIMIT`]. One rule for the two writers that turn a name into a
+/// folder — the claude.ai importer and the desktop's New project form — so
+/// an imported project and a typed one sit side by side spelled the same way.
+///
+/// **Empty when nothing survives** (a name of punctuation). The importer
+/// substitutes `project`; the form disables Create and says why, since a
+/// folder the user did not name is not what they asked for.
+pub fn slug(name: &str) -> String {
+    let mut slug = String::new();
+    let mut gap = false;
+    for ch in name.chars() {
+        if ch.is_alphanumeric() || ch == '-' || ch == '_' {
+            if gap && !slug.is_empty() {
+                slug.push('-');
+            }
+            gap = false;
+            slug.push(ch);
+        } else {
+            gap = true;
+        }
+        if slug.chars().count() > SLUG_LIMIT {
+            break;
+        }
+    }
+    // Cut after the loop rather than in it: a gap and its letter land as
+    // two characters at once, and the importer's in-loop check let a long
+    // name run one past the limit.
+    let cut: String = slug.chars().take(SLUG_LIMIT).collect();
+    cut.trim_matches('-').to_string()
+}
+
+// ---- the projects folder ----
+
+/// The one-key file recording a repointed projects folder. The vault's
+/// `knowledge.json` shape, for the same reasons: absent means the default,
+/// and the path is kept as chosen so a folder on an unmounted drive survives
+/// being read and written back.
+#[derive(Serialize, Deserialize)]
+struct ProjectsFolderFile {
+    #[serde(default = "schema_version")]
+    version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    dir: Option<PathBuf>,
+}
+
+/// Where a new project's folder goes when the form is not told otherwise.
+///
+/// The setting if one is recorded, else [`default_projects_folder`]. `None`
+/// only when there is no user config dir at all.
+pub fn projects_folder(registry: &Registry) -> Option<PathBuf> {
+    config_dir().map(|config| projects_folder_in(&config, registry))
+}
+
+/// The projects folder for a given config dir — the override if one is
+/// recorded, else the default worked out from the registry.
+pub fn projects_folder_in(config: &Path, registry: &Registry) -> PathBuf {
+    read_projects_folder(config).unwrap_or_else(|| default_projects_folder(registry))
+}
+
+/// Whether new projects go where they would with nothing configured. The
+/// Settings pane says so, and it is what Reset to default switches off.
+pub fn is_default_projects_folder_in(config: &Path) -> bool {
+    read_projects_folder(config).is_none()
+}
+
+fn read_projects_folder(config: &Path) -> Option<PathBuf> {
+    let text = fs::read_to_string(config.join(PROJECTS_FOLDER_FILE)).ok()?;
+    let parsed: ProjectsFolderFile = serde_json::from_str(&text).ok()?;
+    parsed.dir.filter(|d| !d.as_os_str().is_empty())
+}
+
+/// The folder new projects go in when nothing is configured.
+///
+/// The registry is the hint: the parent of the most recently *created*
+/// project whose workspace sits in a folder literally named `projects` —
+/// which is where a claude.ai import put its projects, and where the user
+/// has been keeping them since. A project registered from some other place
+/// (a repository checked out elsewhere) says nothing about where new ones
+/// should go, so it is skipped rather than allowed to move the default.
+/// With no such project: `~/Documents/Nightloom/projects`.
+pub fn default_projects_folder(registry: &Registry) -> PathBuf {
+    let hinted = registry
+        .projects
+        .iter()
+        .filter_map(|p| {
+            let parent = p.workspace.as_deref()?.parent()?;
+            (parent.file_name()? == "projects").then(|| (p.created, parent.to_path_buf()))
+        })
+        .max_by_key(|(created, _)| *created)
+        .map(|(_, parent)| parent);
+    hinted.unwrap_or_else(|| {
+        let base = home_dir().unwrap_or_else(std::env::temp_dir);
+        DEFAULT_PROJECTS_FOLDER
+            .iter()
+            .fold(base, |dir, part| dir.join(part))
+    })
+}
+
+/// Point new projects at `dir`, or back at the default with `None`.
+///
+/// Writes only the setting. **Moves nothing**: the projects already made are
+/// registered by their own paths and stay where they are, and a folder is
+/// not a migration.
+pub fn set_projects_folder(dir: Option<&Path>) -> Result<(), String> {
+    let config = config_dir().ok_or_else(|| "no user config directory to record it in".to_string())?;
+    set_projects_folder_in(&config, dir)
+}
+
+pub fn set_projects_folder_in(config: &Path, dir: Option<&Path>) -> Result<(), String> {
+    let path = config.join(PROJECTS_FOLDER_FILE);
+    // Back to the default is the absence of the file, as the vault does it.
+    let Some(dir) = dir else {
+        return match fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(format!("cannot clear {}: {e}", path.display())),
+        };
+    };
+    if dir.as_os_str().is_empty() {
+        return Err("the projects folder cannot be empty".to_string());
+    }
+    fs::create_dir_all(config).map_err(|e| format!("cannot create {}: {e}", config.display()))?;
+    let file = ProjectsFolderFile {
+        version: schema_version(),
+        dir: Some(normalize(dir)),
+    };
+    let text = serde_json::to_string_pretty(&file)
+        .map_err(|e| format!("cannot encode the projects folder: {e}"))?;
+    fs::write(&path, text).map_err(|e| format!("cannot write {}: {e}", path.display()))
+}
+
+/// `$HOME` (or `%USERPROFILE%`), for the default projects folder. Not the
+/// config dir's parent: `NIGHTLOOM_HOME` moves the config dir, not Documents.
+fn home_dir() -> Option<PathBuf> {
+    std::env::var("HOME")
+        .ok()
+        .filter(|h| !h.is_empty())
+        .or_else(|| std::env::var("USERPROFILE").ok().filter(|h| !h.is_empty()))
+        .map(PathBuf::from)
+}
+
+/// Where a new project's folder would go for a given name: the slug, and
+/// the path under the projects folder. What the form shows live as the name
+/// is typed, computed here rather than in the webview so the preview and the
+/// folder Create makes cannot disagree.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NewProjectPath {
+    /// `<projects folder>/<slug>`; empty when the slug is.
+    pub path: PathBuf,
+    /// Empty when the name has no letter or digit in it — the form's reason
+    /// for disabling Create.
+    pub slug: String,
+    /// The projects folder the path was made under.
+    pub folder: PathBuf,
+}
+
+impl NewProjectPath {
+    pub fn resolve(name: &str, folder: &Path) -> Self {
+        let slug = slug(name);
+        let path = if slug.is_empty() {
+            PathBuf::new()
+        } else {
+            folder.join(&slug)
+        };
+        Self {
+            path,
+            slug,
+            folder: folder.to_path_buf(),
+        }
+    }
+}
+
+/// Where the New project form puts the folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NewProjectFolder {
+    /// `<projects folder>/<slug>` — made by Create, and refused if something
+    /// non-empty is already there.
+    Resolved(PathBuf),
+    /// A folder the user chose through the picker for "I already have work
+    /// somewhere". Existing files are the point, so they are no error.
+    Picked(PathBuf),
+}
+
+impl Registry {
+    /// The New project form's Create: make the folder, write `AGENTS.md`
+    /// when instructions were given, register under the typed name.
+    ///
+    /// Everything is checked before anything is written, so a refusal leaves
+    /// no half-made project behind: a resolved folder that already holds
+    /// files is refused (it is somebody's work — Open project… is for that),
+    /// a picked folder already registered is refused by name (opening it is
+    /// one row away in ⌘P, and a second project on the folder is a thing
+    /// nobody asks for by accident), and instructions are never written over
+    /// an `AGENTS.md` a picked folder already has.
+    pub fn new_project(
+        &mut self,
+        name: &str,
+        folder: NewProjectFolder,
+        instructions: Option<&str>,
+    ) -> Result<Project, String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("a project needs a name".to_string());
+        }
+        let (dir, picked) = match folder {
+            NewProjectFolder::Resolved(dir) => (dir, false),
+            NewProjectFolder::Picked(dir) => (dir, true),
+        };
+        if dir.as_os_str().is_empty() {
+            return Err("the name needs at least one letter or digit to make a folder from".to_string());
+        }
+        let dir = normalize(&dir);
+        if dir.is_file() {
+            return Err(format!("{} is a file, not a folder", dir.display()));
+        }
+        if !picked && dir.is_dir() && fs::read_dir(&dir).map(|mut d| d.next().is_some()).unwrap_or(true) {
+            return Err(format!(
+                "{} already exists and is not empty — Open project… opens a folder you already have, or choose another name",
+                dir.display()
+            ));
+        }
+        if let Some(existing) = self.find_by_workspace(&dir) {
+            return Err(format!(
+                "{} is already the project \"{}\" — Open project… opens it",
+                dir.display(),
+                existing.name
+            ));
+        }
+        let instructions = instructions.map(str::trim).filter(|t| !t.is_empty());
+        let agents = dir.join(crate::prompt::INSTRUCTION_FILE);
+        if instructions.is_some() && agents.exists() {
+            return Err(format!(
+                "{} already has an AGENTS.md — clear the instructions here and edit that one after opening",
+                dir.display()
+            ));
+        }
+        fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+        // Normalized again now that it exists: `normalize` canonicalizes only
+        // a path that is there, and the registry compares canonical paths
+        // (`/var/…` is `/private/var/…` on macOS once it can be resolved).
+        let dir = normalize(&dir);
+        let agents = dir.join(crate::prompt::INSTRUCTION_FILE);
+        if let Some(text) = instructions {
+            let mut text = text.to_string();
+            text.push('\n');
+            fs::write(&agents, text).map_err(|e| format!("cannot write {}: {e}", agents.display()))?;
+        }
+        self.create(name, Some(dir), None)
+    }
 }
 
 /// Absolute, canonical where possible, and without Windows' verbatim prefix.
@@ -1211,6 +1476,277 @@ mod tests {
             project.workspace.as_deref(),
             Some(normalize(&dir).as_path())
         );
+    }
+
+    /// A registry shaped like the one on the machine this was built on: a
+    /// claude.ai import's projects under one `projects` folder, plus a
+    /// repository registered from elsewhere and *created later*.
+    fn a_registry_like_his(projects_folder: &Path, elsewhere: &Path) -> Registry {
+        let imported = [
+            "Sophism",
+            "Muton",
+            "Baldi-Miller-Research",
+            "I-C-SCI-45C",
+            "Sigma-Pi",
+            "Research-Exploration",
+            "Calendar",
+            "Summer-2026",
+            "ARENA-8-0",
+            "Resume",
+            "Mu-Sigma",
+            "AI-Safety-Collective-at-Irvine",
+            "Knowledge-Building-Exploration",
+            "SPAR-Applications",
+            "Value-Generalization",
+            "Calisthenics",
+            "Unfiled-chats",
+        ];
+        let import_day = "2026-08-21T21:25:38Z".parse::<DateTime<Utc>>().unwrap();
+        let later = "2026-09-11T16:13:53Z".parse::<DateTime<Utc>>().unwrap();
+        let mut projects: Vec<Project> = imported
+            .iter()
+            .map(|slug| Project {
+                id: new_id(),
+                name: slug.replace('-', " "),
+                workspace: Some(projects_folder.join(slug)),
+                source: Some(format!("claude:{slug}")),
+                created: import_day,
+                last_opened: import_day,
+            })
+            .collect();
+        projects.push(Project {
+            id: new_id(),
+            name: "Nightshift (value generalization)".into(),
+            workspace: Some(elsewhere.to_path_buf()),
+            source: None,
+            created: later,
+            last_opened: later,
+        });
+        Registry {
+            path: None,
+            projects,
+        }
+    }
+
+    #[test]
+    fn the_default_projects_folder_is_where_the_last_created_project_under_a_projects_folder_sits() {
+        let base = PathBuf::from("/Users/swaraagsistla/Documents/ComputerScience/Nightloom");
+        let reg = a_registry_like_his(&base.join("projects"), &base.join("nightshift-code"));
+
+        // Seventeen workspaces under `.../Nightloom/projects`, and one newer
+        // project registered from a repository beside it. The repository is
+        // the most recently created project, and it must not move the
+        // default: its parent is not a `projects` folder, so it says nothing
+        // about where new ones go.
+        assert_eq!(default_projects_folder(&reg), base.join("projects"));
+
+        // No setting recorded: the default is what the pane shows, marked
+        // as the default.
+        let config = temp_dir("projects-folder-default");
+        assert_eq!(projects_folder_in(&config, &reg), base.join("projects"));
+        assert!(is_default_projects_folder_in(&config));
+        fs::remove_dir_all(&config).ok();
+    }
+
+    #[test]
+    fn a_newer_project_under_a_projects_folder_moves_the_default() {
+        let old = PathBuf::from("/old/projects");
+        let mut reg = a_registry_like_his(&old, Path::new("/repos/thing"));
+        let newer = "2026-09-14T23:58:07Z".parse::<DateTime<Utc>>().unwrap();
+        reg.projects.push(Project {
+            id: new_id(),
+            name: "Neural (MCP test)".into(),
+            workspace: Some(PathBuf::from("/new/projects/Neural-MCP-test")),
+            source: None,
+            created: newer,
+            last_opened: newer,
+        });
+        // Most recently *created* wins, not most recently opened: where the
+        // user last made a project is where they are keeping them now.
+        assert_eq!(default_projects_folder(&reg), PathBuf::from("/new/projects"));
+    }
+
+    #[test]
+    fn with_no_hint_the_default_is_documents_nightloom_projects() {
+        let reg = Registry {
+            path: None,
+            projects: Vec::new(),
+        };
+        let got = default_projects_folder(&reg);
+        assert!(
+            got.ends_with(Path::new("Documents/Nightloom/projects")),
+            "{}",
+            got.display()
+        );
+    }
+
+    #[test]
+    fn the_projects_folder_setting_is_one_file_beside_the_registry() {
+        let config = temp_dir("projects-folder-setting");
+        let reg = Registry {
+            path: None,
+            projects: Vec::new(),
+        };
+        let chosen = config.join("elsewhere");
+        fs::create_dir_all(&chosen).unwrap();
+
+        set_projects_folder_in(&config, Some(&chosen)).unwrap();
+        assert!(config.join(PROJECTS_FOLDER_FILE).is_file());
+        assert_eq!(projects_folder_in(&config, &reg), normalize(&chosen));
+        assert!(!is_default_projects_folder_in(&config));
+
+        // Reset is the absence of the file, as the vault does it.
+        set_projects_folder_in(&config, None).unwrap();
+        assert!(!config.join(PROJECTS_FOLDER_FILE).exists());
+        assert!(is_default_projects_folder_in(&config));
+        // And resetting twice is not an error.
+        set_projects_folder_in(&config, None).unwrap();
+
+        // An unreadable file costs the setting, not the feature.
+        fs::write(config.join(PROJECTS_FOLDER_FILE), "{not json").unwrap();
+        assert!(is_default_projects_folder_in(&config));
+        fs::remove_dir_all(&config).ok();
+    }
+
+    #[test]
+    fn a_name_slugs_the_way_the_importer_spells_folders() {
+        assert_eq!(slug("Value Generalization"), "Value-Generalization");
+        assert_eq!(slug("I&C SCI 45C"), "I-C-SCI-45C");
+        assert_eq!(slug("ARENA 8.0"), "ARENA-8-0");
+        assert_eq!(slug("  Baldi / Miller Research  "), "Baldi-Miller-Research");
+        assert_eq!(slug("snake_case-kept"), "snake_case-kept");
+        // Nothing survives: the form's disabled-Create case.
+        assert_eq!(slug("..."), "");
+        assert_eq!(slug(""), "");
+        assert_eq!(slug("!!!").len(), 0);
+        // Cut at the limit, and a dash left at the cut is trimmed.
+        let long: String = "ab ".repeat(40);
+        assert!(slug(&long).chars().count() <= SLUG_LIMIT);
+        assert!(!slug(&long).ends_with('-'));
+    }
+
+    #[test]
+    fn the_resolved_path_is_the_slug_under_the_projects_folder() {
+        let folder = Path::new("/somewhere/projects");
+        let r = NewProjectPath::resolve("Value Generalization", folder);
+        assert_eq!(r.slug, "Value-Generalization");
+        assert_eq!(r.path, folder.join("Value-Generalization"));
+        assert_eq!(r.folder, folder);
+        // No slug, no path — the form shows the reason instead of a folder.
+        let none = NewProjectPath::resolve("???", folder);
+        assert!(none.slug.is_empty());
+        assert!(none.path.as_os_str().is_empty());
+    }
+
+    #[test]
+    fn create_makes_the_folder_writes_the_instructions_and_registers_by_name() {
+        let dir = temp_dir("new-project");
+        let mut reg = Registry::load_from(dir.join("registry.json"));
+        let folder = dir.join("projects");
+        let target = NewProjectPath::resolve("Value Generalization", &folder).path;
+
+        let project = reg
+            .new_project(
+                "Value Generalization",
+                NewProjectFolder::Resolved(target.clone()),
+                Some("  Be terse.\nCite sources.  "),
+            )
+            .unwrap();
+
+        assert_eq!(project.name, "Value Generalization");
+        assert_eq!(project.workspace.as_deref(), Some(normalize(&target).as_path()));
+        assert!(target.is_dir());
+        assert_eq!(
+            fs::read_to_string(target.join("AGENTS.md")).unwrap(),
+            "Be terse.\nCite sources.\n"
+        );
+        assert_eq!(reg.find_by_workspace(&target).map(|p| p.id.as_str()), Some(project.id.as_str()));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn create_writes_no_agents_file_when_no_instructions_were_given() {
+        let dir = temp_dir("new-project-bare");
+        let mut reg = Registry::load_from(dir.join("registry.json"));
+        let target = dir.join("projects").join("Bare");
+        reg.new_project("Bare", NewProjectFolder::Resolved(target.clone()), Some("   "))
+            .unwrap();
+        assert!(target.is_dir());
+        assert!(!target.join("AGENTS.md").exists());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn create_refuses_a_resolved_folder_that_already_holds_work() {
+        let dir = temp_dir("new-project-taken");
+        let mut reg = Registry::load_from(dir.join("registry.json"));
+        let target = dir.join("projects").join("Taken");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("notes.txt"), "someone's work").unwrap();
+
+        let err = reg
+            .new_project("Taken", NewProjectFolder::Resolved(target.clone()), None)
+            .unwrap_err();
+        assert!(err.contains("not empty"), "{err}");
+        assert!(reg.projects().is_empty(), "nothing registered on a refusal");
+        assert!(target.join("notes.txt").is_file(), "and nothing touched");
+
+        // An *empty* folder of that name is fine — nothing is lost by using it.
+        let empty = dir.join("projects").join("Empty");
+        fs::create_dir_all(&empty).unwrap();
+        reg.new_project("Empty", NewProjectFolder::Resolved(empty), None)
+            .unwrap();
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_picked_folder_may_hold_work_but_not_another_project_or_agents_file() {
+        let dir = temp_dir("new-project-picked");
+        let mut reg = Registry::load_from(dir.join("registry.json"));
+        let picked = dir.join("existing-work");
+        fs::create_dir_all(&picked).unwrap();
+        fs::write(picked.join("main.rs"), "fn main() {}").unwrap();
+
+        // Existing files are the point of picking a folder.
+        let project = reg
+            .new_project("Existing", NewProjectFolder::Picked(picked.clone()), Some("hi"))
+            .unwrap();
+        assert_eq!(project.workspace.as_deref(), Some(normalize(&picked).as_path()));
+        assert!(picked.join("AGENTS.md").is_file());
+
+        // Picking it again is refused by the project's name — Open project…
+        // is the row for that, and a second project on one folder is a
+        // deliberate act the form does not perform.
+        let err = reg
+            .new_project("Again", NewProjectFolder::Picked(picked.clone()), None)
+            .unwrap_err();
+        assert!(err.contains("Existing"), "{err}");
+        assert_eq!(reg.projects().len(), 1);
+
+        // Instructions never overwrite an AGENTS.md that is already there.
+        let other = dir.join("has-agents");
+        fs::create_dir_all(&other).unwrap();
+        fs::write(other.join("AGENTS.md"), "mine").unwrap();
+        let err = reg
+            .new_project("Other", NewProjectFolder::Picked(other.clone()), Some("theirs"))
+            .unwrap_err();
+        assert!(err.contains("AGENTS.md"), "{err}");
+        assert_eq!(fs::read_to_string(other.join("AGENTS.md")).unwrap(), "mine");
+        assert_eq!(reg.projects().len(), 1);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn create_needs_a_name_that_makes_a_folder() {
+        let dir = temp_dir("new-project-noslug");
+        let mut reg = Registry::load_from(dir.join("registry.json"));
+        let err = reg
+            .new_project("???", NewProjectFolder::Resolved(PathBuf::new()), None)
+            .unwrap_err();
+        assert!(err.contains("letter or digit"), "{err}");
+        assert!(reg.new_project("  ", NewProjectFolder::Resolved(dir.join("x")), None).is_err());
+        assert!(reg.projects().is_empty());
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

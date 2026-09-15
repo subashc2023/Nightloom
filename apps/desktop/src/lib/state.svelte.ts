@@ -49,6 +49,8 @@ import type {
   NoteScope,
   Price,
   ProjectInfo,
+  ProjectsFolderInfo,
+  NewProjectPath,
   PromptLayer,
   ProposalEntry,
   ProposalScope,
@@ -348,12 +350,32 @@ export const app = $state({
   /** Where the vault is; null on a machine with no user config directory. */
   knowledge: null as KnowledgeInfo | null,
   /**
+   * Where new projects go (Settings → Projects folder); null on a machine
+   * with no user config directory. Read on launch and after Settings
+   * repoints it.
+   */
+  projectsFolder: null as ProjectsFolderInfo | null,
+  /**
+   * The New project form's draft, kept here rather than in the form so a
+   * stray Escape, a click on a chat, or a switch of project loses nothing
+   * typed (the never-lose-work rule): coming back finds the name, the
+   * instructions and a picked folder still there. Cleared by Create and by
+   * an explicit Discard, nothing else.
+   */
+  newProjectDraft: { name: "", instructions: "", pickedPath: null } as {
+    name: string;
+    instructions: string;
+    /** A folder chosen through Change…; null means `<projects folder>/<slug>`. */
+    pickedPath: string | null;
+  },
+  /**
    * What the centre pane shows. "note" is the note editor and "graph" the
    * vault's link graph, both of which replace the transcript rather than
    * floating over it — reading, writing and navigating notes is work, not a
-   * dialog.
+   * dialog. "new-project" is the form that makes a project (backlog 047,
+   * 2026-09-14): a screen in Welcome's place, for the same reason.
    */
-  view: "chat" as "chat" | "note" | "graph" | "nightshift",
+  view: "chat" as "chat" | "note" | "graph" | "nightshift" | "new-project",
   /**
    * The note open in the centre pane, when `view` is "note".
    *
@@ -631,8 +653,11 @@ export function runMenuCommand(id: string): void {
     case "new_chat":
       void newSession();
       break;
+    case "new_project":
+      showNewProject();
+      break;
     case "add_project":
-      void addProject();
+      void openProjectFolder();
       break;
     case "import_claude":
       void importFromClaude();
@@ -880,6 +905,7 @@ export async function init(): Promise<void> {
   }
   await refreshSessions();
   await refreshKnowledge();
+  await refreshProjectsFolder();
   await refreshNotes();
   await refreshDreamStatus();
   await refreshCaptureStatus();
@@ -961,6 +987,27 @@ export async function refreshKnowledge(): Promise<void> {
     app.knowledge = await api.knowledgeInfo();
   } catch {
     app.knowledge = null;
+  }
+}
+
+/** Where new projects go. Read on launch and after Settings repoints it. */
+export async function refreshProjectsFolder(): Promise<void> {
+  try {
+    app.projectsFolder = await api.projectsFolderInfo();
+  } catch {
+    app.projectsFolder = null;
+  }
+}
+
+/**
+ * Point new projects at a folder, or back at the default with null. Moves
+ * nothing; the projects already made are registered by their own paths.
+ */
+export async function useProjectsFolder(dir: string | null): Promise<void> {
+  try {
+    app.projectsFolder = await api.setProjectsFolder(dir);
+  } catch (e) {
+    addToast(String(e));
   }
 }
 
@@ -1198,13 +1245,16 @@ export async function useProject(id: string | null): Promise<void> {
 }
 
 /**
- * Pick a folder and open it as a project.
+ * Open project…: pick a folder and open it as a project.
  *
  * `createProject` is idempotent on the path, so choosing a folder that is
  * already a project opens it rather than erroring — which is what someone who
- * navigated back to it meant.
+ * navigated back to it meant. This was *New project…* until 2026-09-14
+ * (backlog 047): making a project is now a form (`showNewProject`), and
+ * this is the flow for work that already has a folder — imported, cloned,
+ * or simply not on the list.
  */
-export async function addProject(): Promise<void> {
+export async function openProjectFolder(): Promise<void> {
   let path: string | null = null;
   try {
     path = await api.pickFolder();
@@ -1219,6 +1269,79 @@ export async function addProject(): Promise<void> {
     await useProject(project.id);
   } catch (e) {
     addToast(String(e));
+  }
+}
+
+// ---- the New project form ----
+
+/**
+ * New project…: the form in the centre pane (backlog 047, 2026-09-14). A
+ * screen rather than a modal because it replaces Welcome, the page it is
+ * reached from; the draft lives in `app.newProjectDraft` and survives every
+ * way out of the screen except Create and Discard.
+ */
+export function showNewProject(): void {
+  app.overlay = null;
+  app.view = "new-project";
+  app.openNote = null;
+  app.proposalReview = null;
+}
+
+/** Leave the form. The draft stays — Escape and Cancel both come here. */
+export function closeNewProject(): void {
+  if (app.view === "new-project") app.view = "chat";
+}
+
+/** Drop the draft and leave. Behind a confirmation in the form. */
+export function discardNewProject(): void {
+  app.newProjectDraft = { name: "", instructions: "", pickedPath: null };
+  closeNewProject();
+}
+
+/**
+ * The folder row's Change…: the native picker, for "I already have work
+ * somewhere". Picking replaces the resolved path with the picked one; a
+ * cancel leaves whatever was there.
+ */
+export async function pickNewProjectFolder(): Promise<void> {
+  try {
+    const picked = await api.pickFolder(
+      "Choose the project's folder",
+      app.newProjectDraft.pickedPath ?? app.projectsFolder?.dir,
+    );
+    if (picked) app.newProjectDraft.pickedPath = picked;
+  } catch (e) {
+    addToast(String(e));
+  }
+}
+
+/** The form's live folder row: what the backend would make for this name. */
+export function resolveNewProjectPath(name: string): Promise<NewProjectPath> {
+  return api.resolveNewProjectPath(name);
+}
+
+/**
+ * Create: make the folder, write the instructions, register, open. No
+ * picker appears. The draft is cleared only once the project exists, so a
+ * refusal (a folder already holding work, a name that makes no slug) leaves
+ * the form as it was with the reason in a toast.
+ */
+export async function createNewProject(): Promise<boolean> {
+  if (app.busy) return false;
+  const d = app.newProjectDraft;
+  try {
+    const project = await api.newProject(d.name, d.pickedPath, d.instructions);
+    app.newProjectDraft = { name: "", instructions: "", pickedPath: null };
+    await refreshProjects();
+    // The folder now exists if it did not; the Settings pane's line reads
+    // off `exists`.
+    await refreshProjectsFolder();
+    app.view = "chat";
+    await useProject(project.id);
+    return true;
+  } catch (e) {
+    addToast(String(e));
+    return false;
   }
 }
 

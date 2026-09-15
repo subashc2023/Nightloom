@@ -29,6 +29,8 @@ import type {
   InterviewView,
   InterviewWritten,
   ProjectInfo,
+  ProjectsFolderInfo,
+  NewProjectPath,
   PromptLayer,
   PromptLayersInfo,
   Proposal,
@@ -291,6 +293,38 @@ export function createProject(
   name?: string,
 ): Promise<ProjectInfo> {
   return invoke("create_project", { path, name });
+}
+
+/** Where new projects go; null on a machine with no user config directory. */
+export function projectsFolderInfo(): Promise<ProjectsFolderInfo | null> {
+  return invoke("projects_folder_info");
+}
+
+/**
+ * Point new projects at a folder, or back at the default with `null`.
+ * Moves nothing — the projects already made stay where they are.
+ */
+export function setProjectsFolder(dir: string | null): Promise<ProjectsFolderInfo | null> {
+  return invoke("set_projects_folder", { dir });
+}
+
+/** The folder a name would get, for the form's live path row. */
+export function resolveNewProjectPath(name: string): Promise<NewProjectPath> {
+  return invoke("resolve_new_project_path", { name });
+}
+
+/**
+ * The New project form's Create: makes the folder (`path` when the user
+ * picked one, else `<projects folder>/<slug>`), writes `AGENTS.md` when
+ * instructions were given, registers under the typed name. Never idempotent
+ * and never a picker — that is `createProject` from `pickFolder`.
+ */
+export function newProject(
+  name: string,
+  path: string | null,
+  instructions: string,
+): Promise<ProjectInfo> {
+  return invoke("new_project", { name, path, instructions });
 }
 
 /**

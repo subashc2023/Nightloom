@@ -10,7 +10,8 @@
    * The two keyboard overlays of the 2026-09-13 redesign (canvas row 5,
    * blocker 030's "shell shortcuts as the stable layer"):
    *
-   * - **projects** (⌘P): every project on a number, N new, I import, 0 leave.
+   * - **projects** (⌘P): every project on a number, N new, O open, I
+   *   import, 0 leave.
    *   No text box — a digit or a letter acts at once.
    * - **commands** (⌘K): every command with its key, filtered by typing.
    *
@@ -59,12 +60,25 @@
       disabled: app.busy,
       current: app.project?.id === p.id,
     }));
+    // New is the form, Open the folder picker (backlog 047, 2026-09-14).
+    // O is an overlay letter like N and I, not a chord: the chord set is
+    // blocker 035/043's.
     rows.push({
       id: "new",
       label: "New project…",
-      meta: "choose a folder",
+      meta: "a name, a folder made for it",
       icon: "plus",
       key: "N",
+      group: "Or",
+      run: () => go(() => runMenuCommand("new_project")),
+      disabled: app.busy,
+    });
+    rows.push({
+      id: "open",
+      label: "Open project…",
+      meta: "a folder you already have",
+      icon: "folder",
+      key: "O",
       group: "Or",
       run: () => go(() => runMenuCommand("add_project")),
       disabled: app.busy,
@@ -194,9 +208,19 @@
         disabled: app.busy,
       },
       {
+        id: "new_project",
+        label: "New project…",
+        meta: "a name, a folder made for it",
+        icon: "plus",
+        key: "",
+        group: "Go",
+        run: () => go(() => runMenuCommand("new_project")),
+        disabled: app.busy,
+      },
+      {
         id: "add_project",
-        label: "Open folder as project…",
-        meta: "",
+        label: "Open project…",
+        meta: "a folder you already have",
         icon: "folder",
         key: `${mod}O`,
         group: "Go",
@@ -308,7 +332,7 @@
       return;
     }
     if (mode === "projects" && !e.metaKey && !e.ctrlKey && !e.altKey) {
-      // A key that names a row runs it: digits for projects, N, I, 0.
+      // A key that names a row runs it: digits for projects, N, O, I, 0.
       const k = e.key.length === 1 ? e.key.toUpperCase() : "";
       const hit = k && rows.find((r) => r.key === k);
       if (hit) {

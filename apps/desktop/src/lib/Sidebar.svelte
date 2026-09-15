@@ -1,7 +1,8 @@
 <script lang="ts">
   import {
     app,
-    addProject,
+    openProjectFolder,
+    showNewProject,
     addToast,
     closeNightshift,
     deleteSession,
@@ -358,7 +359,7 @@
         No chats {app.project ? "in this project" : "yet"}.
         {#if !app.project}
           <br />Chats started without a project stay in the app's own folder —
-          <button class="link" onclick={() => void addProject()}>
+          <button class="link" onclick={() => void openProjectFolder()}>
             open a folder
           </button>
           to share notes between them.
@@ -425,7 +426,8 @@
       {#if !app.project}
         <p class="hint">Open a project to use Nightshift — the page shows the project in the top-left chip.</p>
         <div class="ns-card open-card">
-          <button class="ns-btn small" onclick={() => void addProject()}>New project…</button>
+          <button class="ns-btn small" onclick={showNewProject}>New project…</button>
+          <button class="ns-btn small ghost" onclick={() => void openProjectFolder()}>Open project…</button>
         </div>
       {:else if !openRow}
         <p class="hint">{app.nightshift.loading ? "Reading the project…" : `${app.project.name} is not in the project list yet.`}</p>

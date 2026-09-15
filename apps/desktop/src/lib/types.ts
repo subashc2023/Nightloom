@@ -326,6 +326,28 @@ export interface KnowledgeInfo {
   exists: boolean;
 }
 
+/** Where new projects go (Settings → Projects folder). */
+export interface ProjectsFolderInfo {
+  dir: string;
+  /** Whether it is where new projects would go with nothing configured. */
+  is_default: boolean;
+  /** False until the first project is created there — Create makes it. */
+  exists: boolean;
+}
+
+/**
+ * What the New project form shows as its folder row: the slug the name
+ * makes and the path under the projects folder. Computed by the backend by
+ * the same rule Create uses, so the preview and the folder cannot disagree.
+ */
+export interface NewProjectPath {
+  /** `<projects folder>/<slug>`; empty when the slug is. */
+  path: string;
+  /** Empty when the name has no letter or digit in it. */
+  slug: string;
+  folder: string;
+}
+
 /** What a `[[link]]` target turned out to name. */
 export type Resolution =
   | { kind: "note"; index: number }

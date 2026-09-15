@@ -241,7 +241,8 @@ folder" — and the rail names the directory under it.
 
 `SettingsModal.svelte` is a sidebar-nav modal (provider list left, one pane at a
 time) managing per-provider API keys, rail visibility, the model picker, web
-search keys, the vault's folder, and — since 2026-09-14 — the per-model
+search keys, the vault's folder, the projects folder (since 2026-09-14, the
+*Projects folder* row), and — since 2026-09-14 — the per-model
 instruction files (the *Model instructions* row; the files themselves are
 described under Notes below).
 
@@ -269,6 +270,27 @@ Reviewers are built from the window's `ChatSpec` with `knowledge` cleared, on th
 CLI's argument about a second vendor. `connect_agent` reports it as `null`, since
 Claude Code owns its own file access and a chip naming a folder that engine never
 reads would be worse than no chip.
+
+### The projects folder
+
+A row *Projects folder* beside the vault's, in the same shape: the path, a
+native folder picker, Reset to default, and the sentence that repointing
+**moves nothing** — the projects already made are registered by their own paths
+and stay where they are; this only decides where *New project…* puts the next
+one. Recorded in `~/.nightloom/projects-folder.json` (one `dir` key, absent
+means the default; `projects.json` is the registry, so the vault's
+`<thing>.json` convention could not be followed literally).
+
+The default is worked out from the registry rather than hard-coded
+(`project::default_projects_folder`): the parent of the most recently
+*created* project whose workspace sits in a folder literally named `projects`
+— where a claude.ai import put its projects, and where the user has been
+keeping them since — else `~/Documents/Nightloom/projects`. A project
+registered from somewhere else (a repository checked out beside the projects
+folder, created later) is skipped rather than allowed to move the default: its
+parent says nothing about where new ones go. Most recently *created* rather
+than opened, because where the user last made a project is where they are
+keeping them now.
 
 ### The model picker
 
@@ -517,6 +539,41 @@ instead of being duplicated: a second composer would be a second place to fix a
 paste bug. The switch is on `app.events.length === 0 && !app.live`, and
 `app.live` is in the test so the pane flips on the first send rather than on the
 re-sync a whole turn later.
+
+### New project and Open project
+
+Until 2026-09-14 *New project…* was a folder picker, which served the case it is
+not for: "when you're making a new project, you pretty much have nothing to go
+off of" (Swaraag, nightshift backlog 047). It is now two rows everywhere it was
+one — ⌘P (N and O), ⌘K, the project menu, the Welcome page, the sidebar's
+Nightshift mode, the macOS File menu — and the picker kept the chord it had.
+
+**New project…** (`NewProject.svelte`) is a screen in Welcome's place, the note
+editor's frame, not a modal: a name, a folder row, and an optional Instructions
+textarea. The folder row shows `<projects folder>/<slug>` as the name is typed,
+greyed because it is a preview of a folder that does not exist yet; *Change…*
+opens the picker for "I already have work somewhere" and the picked path
+replaces the resolved one. The slug is the importer's rule (`project::slug`,
+`Value Generalization` → `Value-Generalization`), computed on the backend by
+`resolve_new_project_path` so the preview and the folder Create makes cannot
+disagree; a name of pure punctuation makes no slug, and Create is disabled with
+the reason on the row. Create (`new_project` → `Registry::new_project`) checks
+everything before writing anything — a resolved folder already holding files is
+refused (that is somebody's work; *Open project…* is for it), a picked folder
+already registered is refused by the project's name, instructions are never
+written over an `AGENTS.md` a picked folder has — then makes the folder, writes
+`AGENTS.md` when there was text (the file the preamble reads whole; nothing
+else), registers under the typed name and opens the project. No dialog appears.
+
+The draft is `app.newProjectDraft`, not component state (the never-lose-work
+rule): Escape, Cancel, a click on a chat and a project switch all leave the form
+with the name, the instructions and a picked folder still in it, marked
+`● draft`; only Create and Discard (behind `ConfirmDialog`) clear it. ⌘↵ creates.
+
+**Open project…** (`openProjectFolder`, `create_project` → `Registry::add`) is
+the old flow renamed: pick a folder, it becomes a project named after the
+folder; pick one already registered and it opens rather than duplicating, since
+`add` is idempotent on the workspace.
 
 `ApprovalPrompt.svelte` renders inline under the tool chip it concerns rather
 than as a modal, shows each argument unelided (a `bash` command has to be

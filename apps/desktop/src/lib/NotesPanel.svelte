@@ -1,7 +1,7 @@
 <script lang="ts">
   import {
     app,
-    addProject,
+    openProjectFolder,
     deleteNote,
     revealFolder,
     reviewProposal,
@@ -279,8 +279,8 @@
             Notes about the code live in the folder, so a teammate can read
             them and a diff can review them. Open a project to get a set.
           </p>
-          <button class="pick" onclick={() => void addProject()}
-            >Choose a folder…</button
+          <button class="pick" onclick={() => void openProjectFolder()}
+            >Open a folder…</button
           >
         </div>
       {:else}

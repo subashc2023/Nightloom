@@ -111,9 +111,6 @@ use crate::tools::Root;
 /// space on the scaffolding.
 const TOOL_RESULT_LIMIT: usize = 4096;
 
-/// Longest folder name generated from a project title.
-const SLUG_LIMIT: usize = 60;
-
 /// Filenames looked for, at any depth, in a zip or a folder.
 const CONVERSATIONS: &str = "conversations.json";
 const PROJECTS: &str = "projects.json";
@@ -1719,24 +1716,14 @@ fn note_name(filename: &str) -> String {
 }
 
 /// A folder name for a project title, unique within this run.
+///
+/// The slugging itself is [`crate::project::slug`], shared with the desktop's
+/// New project form so the folder an import makes and the folder the form
+/// previews are spelled by one rule. What this adds is the importer's two
+/// needs: a title of pure punctuation still gets a folder, and two projects
+/// with one title get two.
 fn unique_slug(name: &str, uuid: &str, taken: &mut HashSet<String>) -> String {
-    let mut slug = String::new();
-    let mut gap = false;
-    for ch in name.chars() {
-        if ch.is_alphanumeric() || ch == '-' || ch == '_' {
-            if gap && !slug.is_empty() {
-                slug.push('-');
-            }
-            gap = false;
-            slug.push(ch);
-        } else {
-            gap = true;
-        }
-        if slug.chars().count() >= SLUG_LIMIT {
-            break;
-        }
-    }
-    let slug = slug.trim_matches('-').to_string();
+    let slug = crate::project::slug(name);
     let mut slug = if slug.is_empty() {
         "project".to_string()
     } else {

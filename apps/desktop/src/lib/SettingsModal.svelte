@@ -11,6 +11,7 @@
     setPalette,
     setPrefs,
     useKnowledgeDir,
+    useProjectsFolder,
     loadContextLimits,
     PALETTES,
   } from "./state.svelte";
@@ -217,6 +218,15 @@
       app.knowledge?.dir,
     );
     if (picked) await useKnowledgeDir(picked);
+  }
+
+  /** The picker for where new projects go, opened at the current folder. */
+  async function pickProjectsFolder() {
+    const picked = await api.pickFolder(
+      "Choose where new projects go",
+      app.projectsFolder?.dir,
+    );
+    if (picked) await useProjectsFolder(picked);
   }
 
   function railVisible(kind: string): boolean {
@@ -494,6 +504,18 @@
         {modelFiles.length === 0 ? "none" : `${modelFiles.length} model${modelFiles.length === 1 ? "" : "s"}`}
       </span>
     </button>
+    <div class="nav-title">Projects</div>
+    <button
+      class="nav-item"
+      class:active={selected === "projects"}
+      onclick={() => select("projects")}
+    >
+      <span class="nav-label">Projects folder</span>
+      <span class="st">
+        <span class="dot" class:ok={!!app.projectsFolder}></span>
+        {app.projectsFolder ? (app.projectsFolder.is_default ? "default" : "set") : "none"}
+      </span>
+    </button>
     <div class="nav-title">Appearance</div>
     <button
       class="nav-item"
@@ -540,6 +562,58 @@
           </button>
         {/each}
       </div>
+    </div>
+  {:else if selected === "projects"}
+    <div class="pane">
+      <div class="pane-head">
+        <h2 class="pane-title">Projects folder</h2>
+        <span class="slug">new projects go in</span>
+        <span class="spacer"></span>
+        <button class="close" title="Close" aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+      </div>
+      <p class="note">
+        Where <em>New project…</em> makes a folder: <code>&lt;this folder&gt;/&lt;name&gt;</code>,
+        with the name spelled the way the importer spells folders
+        (<code>Value Generalization</code> → <code>Value-Generalization</code>).
+        The form shows the path as you type and its Change… picks another
+        folder for one project; this is the default for all of them.
+      </p>
+
+      <section class="card">
+        <div class="ch"><span class="t">Folder</span></div>
+        <div class="key-status">
+          {#if !app.projectsFolder}
+            No user config directory on this machine, so there is nowhere to
+            record one.
+          {:else}
+            <code class="path">{app.projectsFolder.dir}</code>
+            <br />
+            {app.projectsFolder.is_default
+              ? "The default — beside the last project made under a projects folder, or ~/Documents/Nightloom/projects."
+              : "Set here rather than the default."}{app.projectsFolder.exists
+              ? ""
+              : " Not created yet; the first New project makes it."}
+          {/if}
+        </div>
+        <!-- As the vault pane says: repointing is a setting, not a move. -->
+        <p class="note small">
+          Nothing is moved: the projects you already have are registered by
+          their own paths and stay where they are. This only decides where
+          the next one goes.
+        </p>
+        <div class="kf">
+          <button class="ns-btn" disabled={!app.projectsFolder} onclick={() => void pickProjectsFolder()}
+            >Choose folder…</button
+          >
+          <button
+            class="ns-btn ghost"
+            disabled={!app.projectsFolder || app.projectsFolder.is_default}
+            onclick={() => void useProjectsFolder(null)}
+          >
+            Reset to default
+          </button>
+        </div>
+      </section>
     </div>
   {:else if selected === "knowledge"}
     <div class="pane">

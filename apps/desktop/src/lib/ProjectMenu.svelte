@@ -1,10 +1,11 @@
 <script lang="ts">
   import {
     app,
-    addProject,
     forgetProject,
+    openProjectFolder,
     renameProject,
     revealFolder,
+    showNewProject,
     useProject,
   } from "./state.svelte";
   import Icon from "./Icon.svelte";
@@ -44,9 +45,14 @@
     await useProject(id);
   }
 
+  function make() {
+    close();
+    showNewProject();
+  }
+
   async function pick() {
     close();
-    await addProject();
+    await openProjectFolder();
   }
 </script>
 
@@ -124,9 +130,14 @@
   </div>
 
   <div class="rule"></div>
-  <button class="wide new" onclick={() => void pick()} disabled={app.busy}>
+  <button class="wide new" onclick={make} disabled={app.busy}>
     <Icon name="plus" size={14} />
     New project…
+  </button>
+  <button class="wide quiet" onclick={() => void pick()} disabled={app.busy}>
+    <Icon name="folder" size={14} />
+    Open project…
+    <span class="wide-meta">a folder you already have</span>
   </button>
   {#if app.project}
     <button class="wide quiet" onclick={() => void choose(null)} disabled={app.busy}>

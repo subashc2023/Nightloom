@@ -31,7 +31,7 @@
     <p class="hint">
       {app.project
         ? `${app.project.name} is not in the project list yet.`
-        : "Open a project to use Nightshift — the page shows the project in the top-left chip. New project… is in that menu."}
+        : "Open a project to use Nightshift — the page shows the project in the top-left chip. New project… and Open project… are in that menu."}
     </p>
   {:else if !selectedRow.nightshift}
     <p class="hint">{selectedRow.name} does not have Nightshift enabled — the sidebar's Nightshift mode has the Enable card.</p>

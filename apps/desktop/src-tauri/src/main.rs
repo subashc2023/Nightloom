@@ -1999,6 +1999,120 @@ async fn create_project(
     Ok(ProjectInfo::of(&project))
 }
 
+// ---- the New project form and the projects folder ------------------------
+
+/// Where new projects go: the folder, whether it is the default, and
+/// whether it exists yet — the shape of [`KnowledgeInfo`], for the Settings
+/// pane beside the vault's.
+#[derive(Serialize, Clone)]
+struct ProjectsFolderInfo {
+    dir: String,
+    /// Whether it is where new projects would go with nothing configured.
+    /// What Reset to default switches off.
+    is_default: bool,
+    /// False until the first project is created there. Not an error: the
+    /// form's Create makes it along with the project's own folder.
+    exists: bool,
+}
+
+impl ProjectsFolderInfo {
+    /// `None` on a machine with no config directory.
+    fn current(registry: &Registry) -> Option<Self> {
+        let config = project::config_dir()?;
+        let dir = project::projects_folder_in(&config, registry);
+        Some(Self {
+            exists: dir.is_dir(),
+            is_default: project::is_default_projects_folder_in(&config),
+            dir: dir.to_string_lossy().into_owned(),
+        })
+    }
+}
+
+#[tauri::command]
+async fn projects_folder_info(state: State<'_, AppState>) -> Result<Option<ProjectsFolderInfo>, String> {
+    let guard = state.workspaces.lock().await;
+    Ok(ProjectsFolderInfo::current(&guard.registry))
+}
+
+/// Point new projects at a folder, or back at the default with `None`.
+///
+/// **Moves nothing.** The projects already made are registered by their own
+/// paths and stay where they are; this only decides where the next one goes.
+#[tauri::command]
+async fn set_projects_folder(
+    state: State<'_, AppState>,
+    dir: Option<String>,
+) -> Result<Option<ProjectsFolderInfo>, String> {
+    let chosen = dir.map(PathBuf::from).filter(|d| !d.as_os_str().is_empty());
+    if let Some(dir) = &chosen {
+        // As the vault's setting does: a picked folder exists, a typed one
+        // may not, and making it beats refusing a path a moment from right.
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    }
+    project::set_projects_folder(chosen.as_deref())?;
+    let guard = state.workspaces.lock().await;
+    Ok(ProjectsFolderInfo::current(&guard.registry))
+}
+
+/// What the form shows as the folder row while the name is typed.
+#[derive(Serialize)]
+struct NewProjectPathInfo {
+    /// `<projects folder>/<slug>`; empty when the slug is.
+    path: String,
+    /// Empty when the name has no letter or digit — the form disables
+    /// Create and says so.
+    slug: String,
+    /// The projects folder the path sits under.
+    folder: String,
+}
+
+/// The folder a name would get: computed here, by the same rule Create
+/// uses, so the preview and the folder cannot disagree.
+#[tauri::command]
+async fn resolve_new_project_path(
+    state: State<'_, AppState>,
+    name: String,
+) -> Result<NewProjectPathInfo, String> {
+    let guard = state.workspaces.lock().await;
+    let folder = project::projects_folder(&guard.registry)
+        .ok_or_else(|| "no user config directory to keep projects under".to_string())?;
+    let resolved = project::NewProjectPath::resolve(&name, &folder);
+    Ok(NewProjectPathInfo {
+        path: resolved.path.to_string_lossy().into_owned(),
+        slug: resolved.slug,
+        folder: resolved.folder.to_string_lossy().into_owned(),
+    })
+}
+
+/// The form's Create. `path` is a folder the user picked for "I already
+/// have work somewhere"; without one the folder is `<projects folder>/<slug>`,
+/// resolved here again rather than trusted from the webview. The checks and
+/// the writes are [`Registry::new_project`]'s.
+#[tauri::command]
+async fn new_project(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    name: String,
+    path: Option<String>,
+    instructions: Option<String>,
+) -> Result<ProjectInfo, String> {
+    let mut guard = state.workspaces.lock().await;
+    let folder = match path.map(PathBuf::from).filter(|p| !p.as_os_str().is_empty()) {
+        Some(picked) => project::NewProjectFolder::Picked(picked),
+        None => {
+            let base = project::projects_folder(&guard.registry)
+                .ok_or_else(|| "no user config directory to keep projects under".to_string())?;
+            project::NewProjectFolder::Resolved(project::NewProjectPath::resolve(&name, &base).path)
+        }
+    };
+    let project = guard
+        .registry
+        .new_project(&name, folder, instructions.as_deref())?;
+    announce_migration(&app, &project);
+    Ok(ProjectInfo::of(&project))
+}
+
 /// Open a project: its chats become the listing and its folder the workspace.
 ///
 /// Drops the active session, because a session is a handle on a log file in
@@ -2899,7 +3013,11 @@ fn mac_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     let new_chat = MenuItemBuilder::with_id("new_chat", "New Chat")
         .accelerator("CmdOrCtrl+N")
         .build(app)?;
-    let add_project = MenuItemBuilder::with_id("add_project", "Open Folder as Project…")
+    // New project is a form (backlog 047, 2026-09-14) and Open project the
+    // folder picker it used to be. No accelerator on New: the chord set is
+    // blocker 035/043's, and ⌘P's N reaches it.
+    let new_project = MenuItemBuilder::with_id("new_project", "New Project…").build(app)?;
+    let add_project = MenuItemBuilder::with_id("add_project", "Open Project…")
         .accelerator("CmdOrCtrl+O")
         .build(app)?;
     let import = MenuItemBuilder::with_id("import_claude", "Import from claude.ai…").build(app)?;
@@ -2955,6 +3073,7 @@ fn mac_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     let file = SubmenuBuilder::new(app, "File")
         .item(&new_chat)
         .separator()
+        .item(&new_project)
         .item(&add_project)
         .item(&import)
         .separator()
@@ -3134,6 +3253,10 @@ fn main() {
             list_projects,
             active_project,
             create_project,
+            projects_folder_info,
+            set_projects_folder,
+            resolve_new_project_path,
+            new_project,
             open_project,
             close_project,
             rename_project,
