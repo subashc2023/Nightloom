@@ -580,6 +580,29 @@ than as a modal, shows each argument unelided (a `bash` command has to be
 readable to be consented to), and takes initial focus on the card rather than a
 button so a stray Enter cannot grant permission.
 
+### Transcript toggles
+
+Two transcript-wide toggles in the top bar beside Context (nightshift backlog
+052, 2026-09-14): *✦ thinking* and *⚒ tools*, ⌘⇧T and ⌘⇧B, also under ⌘K.
+Thinking on opens every thinking block; off folds each to the `✦ thinking`
+pill, except the one still streaming, which stays open until it is done — how
+the pill behaved before the toggles. Tools on is the full block; off folds each
+call to one line, `▸ name · the input's most telling field, cut to 60 chars ·
+N chars` (or `error`, `denied`, `running`), and a parked approval prompt renders
+outside the fold either way. A click on any single block overrides its toggle;
+flipping the toggle clears those clicks for its kind (each override remembers
+the toggle revision it was made under, `resolveOpen` in
+`transcriptPrefs.svelte.ts`). Defaults are thinking off, tools on — the
+pre-toggle reading — remembered in `localStorage["nightloom.transcript"]`.
+
+The same change keys a block's override on a stable id (`tool:<id>`,
+`thinking:<ordinal among the message's thinking blocks>`) rather than its
+index, and toggles on `pointerdown` rather than `click`: while a reply streams
+the transcript is pinned to its foot and every delta pushes the pills up the
+page, so a press and its release land on different elements and no `click`
+reaches the button — which is what "clicking a thinking pill mid-reply does
+nothing" was. `click` still serves the keyboard (`detail === 0`).
+
 ### Attachments
 
 `Composer.svelte` takes images and PDFs by paste and drop, reads them to base64

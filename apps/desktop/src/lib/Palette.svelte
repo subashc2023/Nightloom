@@ -1,5 +1,6 @@
 <script lang="ts">
   import { app, pickerModels, providerPills, reviewProposal, runMenuCommand, switchModelAt, usable, useProject } from "./state.svelte";
+  import { toggleTranscriptPref, transcript } from "./transcriptPrefs.svelte";
   import { MODEL_KEYS, providerLabel } from "./catalog";
   import type { IconName } from "./icons";
   import Icon from "./Icon.svelte";
@@ -187,6 +188,28 @@
         group: "Panels",
         run: () => go(() => runMenuCommand("context")),
         disabled: !app.connection,
+      },
+      // The two transcript toggles (nightshift backlog 052, 2026-09-14):
+      // what the open transcript shows of a reply's working. The label
+      // names the change the row makes, so the current state is readable
+      // from the palette.
+      {
+        id: "toggle_thinking",
+        label: transcript.thinking ? "Fold thinking to pills" : "Show thinking in every reply",
+        meta: "transcript-wide; a click on one block still overrides",
+        icon: "cols",
+        key: `${mod}${shift}T`,
+        group: "Panels",
+        run: () => go(() => toggleTranscriptPref("thinking")),
+      },
+      {
+        id: "toggle_tools",
+        label: transcript.tools ? "Fold tool calls to one line each" : "Show tool calls in full",
+        meta: "transcript-wide; a click on one call still overrides",
+        icon: "term",
+        key: `${mod}${shift}B`,
+        group: "Panels",
+        run: () => go(() => toggleTranscriptPref("tool")),
       },
       {
         id: "projects",
