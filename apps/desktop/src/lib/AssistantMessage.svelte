@@ -3,6 +3,15 @@
   import type { ApprovalRequest, Usage } from "./types";
   import { renderMarkdown } from "./markdown";
   import { compactJson } from "./toolinput";
+  import {
+    flipOverride,
+    resolveOpen,
+    segmentIds,
+    toolSummary,
+    transcript,
+    type BlockKind,
+    type Override,
+  } from "./transcriptPrefs.svelte";
   import ApprovalPrompt from "./ApprovalPrompt.svelte";
 
   interface Footer {
@@ -51,18 +60,50 @@
     approvals?: ApprovalRequest[];
   } = $props();
 
-  // Per-segment expansion overrides for thinking pills, keyed by index.
-  // With no override, a thinking block is open only while actively streaming.
-  let expanded = $state<Record<number, boolean>>({});
+  // Per-block clicks, keyed by the block's stable id (`segmentIds`) rather
+  // than its index, and consulted before the streaming rule and the two
+  // transcript-wide toggles (`resolveOpen`, nightshift backlog 052): a click
+  // on a block always wins over its default. The map is this component's,
+  // so it lives as long as the message on screen does.
+  let overrides = $state<Record<string, Override>>({});
+  const ids = $derived(segmentIds(segs));
 
+  function kindOf(seg: Segment): BlockKind {
+    return seg.kind === "thinking" ? "thinking" : "tool";
+  }
+  function doneOf(seg: Segment): boolean {
+    if (seg.kind === "thinking") return seg.done;
+    if (seg.kind === "tool") return seg.call.result !== null;
+    return true;
+  }
   function isOpen(i: number, seg: Segment): boolean {
-    const override = expanded[i];
-    if (override !== undefined) return override;
-    return streaming && seg.kind === "thinking" && !seg.done;
+    return resolveOpen(kindOf(seg), ids[i], streaming, doneOf(seg), overrides, transcript);
+  }
+  function toggle(i: number, seg: Segment): void {
+    overrides[ids[i]] = flipOverride(
+      kindOf(seg),
+      ids[i],
+      streaming,
+      doneOf(seg),
+      overrides,
+      transcript,
+    );
   }
 
-  function toggle(i: number, seg: Segment) {
-    expanded[i] = !isOpen(i, seg);
+  // Toggled on pointerdown, not click. While a reply streams the transcript
+  // stays pinned to its foot and every delta pushes the pill up the page,
+  // so between the press and the release the pointer is over something
+  // else and no `click` reaches the button — which is what "clicking a
+  // thinking tag mid-reply does nothing" looks like (backlog 052). The
+  // press is a single instant and cannot be split. `click` is kept for the
+  // keyboard, where `detail` is 0; a pointer's click has already been
+  // handled at its press.
+  function press(e: PointerEvent, i: number, seg: Segment): void {
+    if (e.button !== 0) return;
+    toggle(i, seg);
+  }
+  function keyClick(e: MouseEvent, i: number, seg: Segment): void {
+    if (e.detail === 0) toggle(i, seg);
   }
 </script>
 
@@ -73,7 +114,11 @@
   {#each segs as seg, i}
     {#if seg.kind === "thinking"}
       <div>
-        <button class="pill" onclick={() => toggle(i, seg)}>✦ thinking</button>
+        <button
+          class="pill"
+          aria-expanded={isOpen(i, seg)}
+          onpointerdown={(e) => press(e, i, seg)}
+          onclick={(e) => keyClick(e, i, seg)}>✦ thinking</button>
         {#if isOpen(i, seg)}
           <div class="thinking-text">{seg.text}</div>
         {/if}
@@ -84,25 +129,51 @@
       <div class="markdown">{@html renderMarkdown(seg.text)}</div>
     {:else if seg.kind === "tool"}
       <div class="tool">
-        <div class="tool-chip">
-          <span class="tool-name">⚒ {seg.call.name}</span>
-          <span class="tool-input">{compactJson(seg.call.input)}</span>
-          {#if seg.call.denied}<span class="denied-tag">denied</span>{/if}
-        </div>
-        {#if seg.call.denied}
-          <!-- The reason can come from the gate itself (a cancelled turn
-               refuses what it left parked), so it stands in for "you said no"
-               rather than being appended to it. -->
-          <div class="denied-note">
-            Not run — permission denied{seg.call.result?.content
-              ? `: ${seg.call.result.content}`
-              : "."}
-          </div>
-        {:else if seg.call.result}
-          <pre
-            class="tool-result"
-            class:error={seg.call.result.is_error}>{seg.call.result.content}</pre>
+        {#if isOpen(i, seg)}
+          <button
+            class="tool-chip"
+            aria-expanded="true"
+            title="Collapse to one line"
+            onpointerdown={(e) => press(e, i, seg)}
+            onclick={(e) => keyClick(e, i, seg)}
+          >
+            <span class="caret">▾</span>
+            <span class="tool-name">⚒ {seg.call.name}</span>
+            <span class="tool-input">{compactJson(seg.call.input)}</span>
+            {#if seg.call.denied}<span class="denied-tag">denied</span>{/if}
+          </button>
+          {#if seg.call.denied}
+            <!-- The reason can come from the gate itself (a cancelled turn
+                 refuses what it left parked), so it stands in for "you said no"
+                 rather than being appended to it. -->
+            <div class="denied-note">
+              Not run — permission denied{seg.call.result?.content
+                ? `: ${seg.call.result.content}`
+                : "."}
+            </div>
+          {:else if seg.call.result}
+            <pre
+              class="tool-result"
+              class:error={seg.call.result.is_error}>{seg.call.result.content}</pre>
+          {/if}
+        {:else}
+          <!-- The one-line form (tool calls off): the name, the argument
+               that best says what it did, and how much came back. -->
+          <button
+            class="tool-chip line"
+            class:error={!!seg.call.result?.is_error || !!seg.call.denied}
+            aria-expanded="false"
+            title="Expand this call"
+            onpointerdown={(e) => press(e, i, seg)}
+            onclick={(e) => keyClick(e, i, seg)}
+          >
+            <span class="caret">▸</span>
+            <span class="tool-line">{toolSummary(seg.call, streaming)}</span>
+          </button>
         {/if}
+        <!-- Outside the collapse: a call parked at the gate needs its prompt
+             on screen whatever the toggle says, or the turn waits on a
+             decision nobody can see. -->
         {#each approvals.filter((a) => a.id === seg.call.id) as req (req.id)}
           <ApprovalPrompt {req} />
         {/each}
@@ -181,6 +252,31 @@
     align-items: baseline;
     gap: 0.6rem;
     min-width: 0;
+    /* A button since the toggles (backlog 052), drawn as the line it was. */
+    background: none;
+    border: none;
+    padding: 0;
+    text-align: left;
+    width: 100%;
+    cursor: pointer;
+    user-select: none;
+  }
+  .tool-chip:hover .tool-name,
+  .tool-chip:hover .caret {
+    color: var(--text);
+  }
+  .caret {
+    color: var(--dim);
+    flex: none;
+    width: 0.8em;
+  }
+  .tool-line {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .tool-chip.line.error .tool-line {
+    color: var(--failed);
   }
   .tool-name {
     color: var(--accent);

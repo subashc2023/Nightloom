@@ -12,6 +12,7 @@
     SIDEBAR_MIN,
   } from "./lib/state.svelte";
   import { isMac } from "./lib/platform";
+  import { toggleTranscriptPref } from "./lib/transcriptPrefs.svelte";
   import Grip from "./lib/Grip.svelte";
   import Sidebar from "./lib/Sidebar.svelte";
   import TitleBar from "./lib/TitleBar.svelte";
@@ -23,6 +24,7 @@
   import NoteView from "./lib/NoteView.svelte";
   import GraphView from "./lib/GraphView.svelte";
   import Welcome from "./lib/Welcome.svelte";
+  import NewProject from "./lib/NewProject.svelte";
   import Palette from "./lib/Palette.svelte";
   import NightshiftSurface from "./lib/NightshiftSurface.svelte";
   import Icon from "./lib/Icon.svelte";
@@ -101,6 +103,15 @@
       runMenuCommand(`${e.shiftKey ? "model" : "provider"}_${e.code.slice(5)}`);
       return true;
     }
+    // ⌘⇧T shows or folds thinking, ⌘⇧B the tool calls (nightshift backlog
+    // 052, 2026-09-14). On every platform, like the digits: neither is a
+    // menu item, so macOS cannot double-fire them. Physical keys, so a
+    // layout cannot move them. Both were free — the grep on 2026-09-14
+    // found no Shift+T or Shift+B anywhere in the app or its menu.
+    if (primary && e.shiftKey && (e.code === "KeyT" || e.code === "KeyB")) {
+      toggleTranscriptPref(e.code === "KeyT" ? "thinking" : "tool");
+      return true;
+    }
     if (isMac || !e.ctrlKey) return false;
     const k = e.key.toLowerCase();
     const id = e.shiftKey ? SHIFT_KEYS[k] : KEYS[k];
@@ -173,6 +184,8 @@
           <GraphView />
         {:else if app.view === "nightshift"}
           <NightshiftSurface />
+        {:else if app.view === "new-project"}
+          <NewProject />
         {:else if blank}
           <Welcome />
         {:else}

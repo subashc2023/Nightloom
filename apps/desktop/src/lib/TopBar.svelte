@@ -10,6 +10,8 @@
   } from "./state.svelte";
   import RightRail from "./RightRail.svelte";
   import ContextPanel from "./ContextPanel.svelte";
+  import { toggleTranscriptPref, transcript } from "./transcriptPrefs.svelte";
+  import { isMac } from "./platform";
 
   /**
    * The chat top bar in the redesign (item 036, the mock-up's Chat artboard):
@@ -171,6 +173,9 @@
     app.showRail = false;
     app.showContext = !app.showContext;
   }
+
+  // The two transcript toggles' key caps, for their tooltips.
+  const shiftKey = isMac ? "⌘⇧" : "Ctrl+Shift+";
 </script>
 
 <header class="topbar">
@@ -230,6 +235,36 @@
         {/if}
       </button>
     {/if}
+
+    <!-- The two transcript toggles (nightshift backlog 052, 2026-09-14),
+         beside Context because they are about the conversation as shown:
+         every thinking block open or every one a closed pill, every tool
+         call the full block or one line each. A click on any single block
+         still overrides its toggle; flipping the toggle clears those
+         clicks. Remembered across relaunch; thinking off and tools on is
+         how the transcript read before them. -->
+    <button
+      class="ns-chip toggle"
+      class:on={transcript.thinking}
+      aria-pressed={transcript.thinking}
+      title={transcript.thinking
+        ? `Thinking shown in every reply — click to fold it to a pill (${shiftKey}T)`
+        : `Thinking folded to a pill — click to show it in every reply (${shiftKey}T)`}
+      onclick={() => toggleTranscriptPref("thinking")}
+    >
+      <span class="mark" aria-hidden="true">✦</span>thinking
+    </button>
+    <button
+      class="ns-chip toggle"
+      class:on={transcript.tools}
+      aria-pressed={transcript.tools}
+      title={transcript.tools
+        ? `Tool calls shown in full — click to fold each to one line (${shiftKey}B)`
+        : `Tool calls folded to one line each — click to show them in full (${shiftKey}B)`}
+      onclick={() => toggleTranscriptPref("tool")}
+    >
+      <span class="mark" aria-hidden="true">⚒</span>tools
+    </button>
 
     {#if cached != null}
       <div
@@ -406,6 +441,29 @@
   }
   .cache.expired {
     color: var(--dim);
+  }
+  /* The transcript toggles: off is the dimmed chip with its mark struck
+     through the colour, on is the accent mark. */
+  .toggle {
+    cursor: pointer;
+    font-family: var(--sans);
+    color: var(--dim);
+    gap: 5px;
+  }
+  .toggle .mark {
+    font-size: 11px;
+    opacity: 0.55;
+  }
+  .toggle.on {
+    color: var(--ink);
+  }
+  .toggle.on .mark {
+    color: var(--accent);
+    opacity: 1;
+  }
+  .toggle:hover {
+    border-color: var(--accent);
+    color: var(--ink);
   }
   .spend.partial {
     font-style: italic;
