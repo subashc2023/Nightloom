@@ -212,11 +212,30 @@ and reviewers are built from the same spec and inherit it, so a blind test stays
 blind one level down. The rail's Preamble switch is the outer gate: off there is
 off for every chat, and the per-chat switches have nothing left to remove.
 
-**Not built, on purpose: per-chat *rewriting* of a layer's text.** An edited
+~~**Not built, on purpose: per-chat *rewriting* of a layer's text.** An edited
 copy of the project's instructions that one chat sees is a fork no later chat
 knows about. Editing text is what the store editors (instructions, memory,
 notes, vault) and the per-chat library prompt are for; a layer here is on or
-off, and the text it carries is the one every chat carries.
+off, and the text it carries is the one every chat carries.~~ **Superseded
+2026-09-15 (nightshift backlog 057), his call: "changing the actual
+information per chat just in practice means changing what the flag is
+attached to".** A chat may now carry its own *body* for user memory, model
+instructions and project instructions — `PromptConfig.edits`, a
+`BTreeMap<SegmentKind, String>` read from `SessionEvent::PromptLayers.edits`
+at connect time. `assemble` puts the override where the file would go, in the
+file's wrapper (`<user-instructions>`, `<model-instructions model=…>`,
+`<project-instructions>` with no `path` — the text is the chat's, not a
+file's) and under the file's 32 KB cap; for project instructions it stands in
+for the whole walk as one segment. It is honoured only where the layer's own
+gate is on — an override for a layer switched off is dormant, not a way round
+`without` — and only for `SegmentKind::EDITABLE`. `layer_source(kind, model,
+cwd)` returns what the layer reads from disk as a body (the walk joined with a
+blank line, outermost first), the seed a shell offers before the chat has its
+own text. The fork the old paragraph worried about is answered by visibility,
+not refusal: the desktop's Context page says **edited for this chat** on the
+card, *as sent* carries the override, *Make this the file* hands it to the
+store editor as a draft and never writes, and the dream keeps proposing
+against the file.
 
 ### Both index layers are off in `nightloom-evals`
 

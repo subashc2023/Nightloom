@@ -8,7 +8,7 @@ Crate `nightloom-desktop`: a Tauri 2 shell over `nightloom-service` with a Svelt
 `src-tauri/src/main.rs` exposes `providers` / `set_api_key` / `clear_api_key` /
 `list_models` / `connect` / `list_sessions` / `new_session` / `open_session` /
 `transcript` / `send` / `cancel` / `compact` / `rewind` / `context_view` /
-`edit_context` / `prompt_layers` / `set_prompt_layers` / `delete_session` / `approve_call` / `pick_folder` /
+`edit_context` / `prompt_layers` / `set_prompt_layers` / `set_prompt_layer_text` / `prompt_layer_file` / `delete_session` / `approve_call` / `pick_folder` /
 `list_projects` / `active_project` / `create_project` / `open_project` /
 `close_project` / `rename_project` / `forget_project` / `list_notes` /
 `read_note` / `save_note` / `delete_note` (each taking a `scope`) /
@@ -307,7 +307,19 @@ nothing else, since the UI reconnects afterwards the way a rail knob does and
 would: the exclusion is a fact about the chat, and a chat has to exist to have
 it. `prompt_layers` returns the open chat's set beside the one the live engine
 was built with (`PromptBuilt.off`), which is how the UI knows a reconnect is due
-after opening another chat.
+after opening another chat — and since 2026-09-15 (nightshift backlog 057) the
+chat's own texts beside the ones the engine was built with (`edits`,
+`built_edits`; `PromptBuilt.edits`), compared on the same terms.
+
+`set_prompt_layer_text` records the chat's own text for one of the three
+editable layers (`SessionEvent::PromptLayers.edits`), or drops it with `text`
+absent, on exactly `set_prompt_layers`' terms: the log only, the session
+created if need be, the UI reconnects, allowed on Claude Code. The text is the
+file's *body*; `assemble` wraps it. `prompt_layer_file` returns what that layer
+reads from disk right now — the seed for an edit — by the model id and the
+workspace the live prompt was built with (`PromptBuilt.model`, `.cwd`), through
+`nightloom_service::layer_source`: the same reads the prompt makes, not the
+segment's text with its wrapper stripped.
 
 `edit_context` returns the new view **and** the new transcript, for the same
 reason `rewind` returns a transcript: an elision changes every projection off the

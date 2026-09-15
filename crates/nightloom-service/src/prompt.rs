@@ -115,6 +115,20 @@ pub struct PromptConfig {
     pub cwd: PathBuf,
     /// Shell-supplied text, appended last (CLI --system, desktop textarea).
     pub custom: Option<String>,
+    /// The chat's own text for a layer, by kind, in place of the file's
+    /// (nightshift backlog 057, 2026-09-15). The *body* — what the file
+    /// would hold — not the segment: [`assemble`] wraps it in the kind's own
+    /// tag and caps it as it caps the file, so the model reads the same
+    /// shape either way and a shell that promotes the override into the
+    /// file hands the editor exactly what a save would write. Honoured for
+    /// [`SegmentKind::EDITABLE`] only, and only where the layer's own gate
+    /// (`user_memory`, `model`, `project_instructions`) is on: an override
+    /// for a layer that is off is dormant, not a way round the switch. For
+    /// project instructions it stands in for the whole walk — one segment,
+    /// every `AGENTS.md` between the root and the workspace — since the
+    /// walk is what the chat is overriding. Empty for every caller but a
+    /// shell that reads a chat's log.
+    pub edits: BTreeMap<SegmentKind, String>,
 }
 
 impl Default for PromptConfig {
@@ -129,6 +143,7 @@ impl Default for PromptConfig {
             knowledge: None,
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             custom: None,
+            edits: BTreeMap::new(),
         }
     }
 }
@@ -198,21 +213,37 @@ pub fn assemble(config: &PromptConfig) -> SystemPrompt {
     if config.environment {
         prompt.push(environment_segment(&config.cwd));
     }
-    if config.user_memory
-        && let Some(seg) = user_memory_segment()
-    {
-        prompt.push(seg);
+    // Each of the three editable layers: the chat's own text where it has
+    // one, the file where it does not. The override takes the file's wrapper
+    // and the file's cap, so what the model reads has one shape.
+    if config.user_memory {
+        let seg = match config.edits.get(&SegmentKind::UserMemory) {
+            Some(body) => Some(user_memory_segment_from(body)),
+            None => user_memory_segment(),
+        };
+        if let Some(seg) = seg {
+            prompt.push(seg);
+        }
     }
-    if let Some(seg) = config
-        .model
-        .as_deref()
-        .and_then(model_instructions_segment)
-    {
-        prompt.push(seg);
+    if let Some(model) = config.model.as_deref() {
+        let seg = match config.edits.get(&SegmentKind::ModelInstructions) {
+            Some(body) => model_instructions_segment_from(model, body),
+            None => model_instructions_segment(model),
+        };
+        if let Some(seg) = seg {
+            prompt.push(seg);
+        }
     }
     if config.project_instructions {
-        for seg in project_instruction_segments(&config.cwd) {
-            prompt.push(seg);
+        match config.edits.get(&SegmentKind::ProjectInstructions) {
+            Some(body) => {
+                prompt.push(project_instructions_segment_from(body));
+            }
+            None => {
+                for seg in project_instruction_segments(&config.cwd) {
+                    prompt.push(seg);
+                }
+            }
         }
     }
     if let Some(project) = &config.project {
@@ -495,6 +526,54 @@ pub fn project_instruction_segments(cwd: &Path) -> Vec<Segment> {
     found
 }
 
+/// A chat's own project instructions, standing in for the whole walk: one
+/// segment, the same tag the files get but without a `path` — the text is
+/// the chat's, and naming a file it is not the contents of would be a lie
+/// the model might act on.
+fn project_instructions_segment_from(body: &str) -> Segment {
+    let content = truncate(body.to_string());
+    Segment::new(
+        SegmentKind::ProjectInstructions,
+        "project-instructions",
+        format!("<project-instructions>\n{content}\n</project-instructions>"),
+    )
+}
+
+/// What an editable layer reads from disk, as a body a user could edit:
+/// the seed for a chat's own text before it has one. The same reads the
+/// prompt makes — `read_capped` on the same paths — rather than the
+/// segment's text with its wrapper stripped, which would be a second parser
+/// for a string this process rendered a moment ago. For the project walk
+/// the files are joined with a blank line, outermost first, the order the
+/// model reads them in; the override replaces the walk as one text. `None`
+/// when nothing is on disk, or for a kind that is not editable.
+pub fn layer_source(kind: SegmentKind, model: Option<&str>, cwd: &Path) -> Option<String> {
+    match kind {
+        SegmentKind::UserMemory => read_capped(&user_instruction_path()?),
+        SegmentKind::ModelInstructions => {
+            let model = model?.trim();
+            if model.is_empty() {
+                return None;
+            }
+            read_capped(&model_instruction_path(model)?)
+        }
+        SegmentKind::ProjectInstructions => {
+            let mut bodies: Vec<String> = Vec::new();
+            for dir in cwd.ancestors() {
+                if let Some(content) = read_capped(&dir.join(INSTRUCTION_FILE)) {
+                    bodies.push(content.trim().to_string());
+                }
+            }
+            if bodies.is_empty() {
+                return None;
+            }
+            bodies.reverse();
+            Some(bodies.join("\n\n"))
+        }
+        _ => None,
+    }
+}
+
 /// The user's own `AGENTS.md`, from `~/.nightloom/`.
 ///
 /// First in the ladder and outside the walk, because it is the one layer that
@@ -503,11 +582,18 @@ pub fn project_instruction_segments(cwd: &Path) -> Vec<Segment> {
 /// the directory walk finds is read as refining it.
 pub fn user_memory_segment() -> Option<Segment> {
     let content = read_capped(&user_instruction_path()?)?;
-    Some(Segment::new(
+    Some(user_memory_segment_from(&content))
+}
+
+/// The memory segment around a given body — the file's, or a chat's own
+/// text in its place. One function for both so the wrapper cannot drift.
+fn user_memory_segment_from(body: &str) -> Segment {
+    let content = truncate(body.to_string());
+    Segment::new(
         SegmentKind::UserMemory,
         "user-memory",
         format!("<user-instructions>\n{content}\n</user-instructions>"),
-    ))
+    )
 }
 
 /// Where [`user_memory_segment`] reads from, exposed so a shell can name the
@@ -543,6 +629,18 @@ pub fn model_instructions_segment(model: &str) -> Option<Segment> {
         return None;
     }
     let content = read_capped(&model_instruction_path(model)?)?;
+    model_instructions_segment_from(model, &content)
+}
+
+/// The model's segment around a given body — the file's, or a chat's own
+/// text in its place. `None` for a blank model id, as the file lookup is,
+/// so the two agree on what "no model" means.
+fn model_instructions_segment_from(model: &str, body: &str) -> Option<Segment> {
+    let model = model.trim();
+    if model.is_empty() {
+        return None;
+    }
+    let content = truncate(body.to_string());
     Some(Segment::new(
         SegmentKind::ModelInstructions,
         "model-instructions",
@@ -981,6 +1079,7 @@ mod tests {
             knowledge: None,
             cwd,
             custom: None,
+            edits: BTreeMap::new(),
         }
     }
 
@@ -1682,6 +1781,140 @@ the body text",
         assert_eq!(
             kinds(&no_note),
             vec![SegmentKind::ProjectInstructions, SegmentKind::ProjectNotes]
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn edits(pairs: &[(SegmentKind, &str)]) -> BTreeMap<SegmentKind, String> {
+        pairs.iter().map(|(k, t)| (*k, t.to_string())).collect()
+    }
+
+    /// A chat's own text takes the file's place — the same wrapper, the
+    /// same position in the ladder — and only where the layer is on: an
+    /// override for a layer that is switched off is dormant, and one for a
+    /// kind that is not editable is ignored.
+    #[test]
+    fn a_chats_own_text_stands_in_for_the_file_and_only_where_the_layer_is_on() {
+        let dir = temp_dir("layer-edits");
+        std::fs::write(dir.join("AGENTS.md"), "a project rule").unwrap();
+        let config = PromptConfig {
+            user_memory: true,
+            model: Some("test-model".into()),
+            project_instructions: true,
+            edits: edits(&[
+                (SegmentKind::UserMemory, "Be terse."),
+                (SegmentKind::ModelInstructions, "Short answers."),
+                (SegmentKind::ProjectInstructions, "the chat's rule"),
+                // Not a file the user wrote; the assembler must not invent a
+                // segment for it.
+                (SegmentKind::Knowledge, "not a thing"),
+            ]),
+            ..bare(dir.clone())
+        };
+        let prompt = assemble(&config);
+        let segs = prompt.segments();
+        assert_eq!(
+            segs.iter().map(|s| s.kind).collect::<Vec<_>>(),
+            vec![
+                SegmentKind::UserMemory,
+                SegmentKind::ModelInstructions,
+                SegmentKind::ProjectInstructions,
+            ]
+        );
+        assert_eq!(
+            segs[0].text,
+            "<user-instructions>\nBe terse.\n</user-instructions>"
+        );
+        assert_eq!(
+            segs[1].text,
+            "<model-instructions model=\"test-model\">\nShort answers.\n</model-instructions>"
+        );
+        // The walk is replaced as one text, and the tag carries no path: the
+        // text is the chat's, not a file's.
+        assert_eq!(
+            segs[2].text,
+            "<project-instructions>\nthe chat's rule\n</project-instructions>"
+        );
+        assert_eq!(segs[2].name, "project-instructions");
+        assert!(!prompt.render_flat().unwrap().contains("a project rule"));
+
+        // Off wins: the override waits, it does not work round the switch.
+        let off = assemble(
+            &config
+                .clone()
+                .without(&[SegmentKind::ProjectInstructions, SegmentKind::UserMemory]),
+        );
+        assert_eq!(
+            off.segments().iter().map(|s| s.kind).collect::<Vec<_>>(),
+            vec![SegmentKind::ModelInstructions]
+        );
+
+        // No override: the file, as before.
+        let file = assemble(&PromptConfig {
+            edits: BTreeMap::new(),
+            ..config.clone()
+        });
+        let text = file.render_flat().unwrap();
+        assert!(text.contains("a project rule"), "{text}");
+        assert!(!text.contains("the chat's rule"), "{text}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The cap is the file's: a runaway override costs tokens, not the
+    /// window.
+    #[test]
+    fn a_chats_own_text_is_capped_like_the_file() {
+        let dir = temp_dir("layer-edits-cap");
+        let prompt = assemble(&PromptConfig {
+            user_memory: true,
+            edits: edits(&[(SegmentKind::UserMemory, &"x".repeat(FILE_LIMIT + 10))]),
+            ..bare(dir.clone())
+        });
+        let text = &prompt.segments()[0].text;
+        assert!(text.contains("… (truncated)"), "{}", text.len());
+        assert!(text.len() < FILE_LIMIT + 100);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The bridge carries the chat's text the way it carries the chat's
+    /// exclusions: through the same config, into the same flag.
+    #[test]
+    fn the_agent_bridge_carries_a_chats_own_text() {
+        let dir = temp_dir("agent-layer-edits");
+        std::fs::write(dir.join("AGENTS.md"), "a project rule").unwrap();
+        let config = PromptConfig {
+            project_instructions: true,
+            edits: edits(&[(SegmentKind::ProjectInstructions, "the chat's rule")]),
+            ..bare(dir.clone())
+        };
+        let text = agent_preamble(&config, Some("Be terse.")).unwrap();
+        assert!(text.contains("the chat's rule"), "{text}");
+        assert!(!text.contains("a project rule"), "{text}");
+        assert!(text.contains("<engine-note>"), "{text}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The seed for a first edit is what the prompt reads, joined the way
+    /// the model reads it: outermost first, a blank line between.
+    #[test]
+    fn layer_source_reads_the_walk_outermost_first() {
+        let dir = temp_dir("layer-source");
+        let inner = dir.join("inner");
+        std::fs::create_dir_all(&inner).unwrap();
+        std::fs::write(dir.join("AGENTS.md"), "outer rule\n").unwrap();
+        std::fs::write(inner.join("AGENTS.md"), "inner rule").unwrap();
+        let source = layer_source(SegmentKind::ProjectInstructions, None, &inner).unwrap();
+        assert!(source.ends_with("outer rule\n\ninner rule"), "{source}");
+        // Not editable: no seed, whatever is on disk.
+        assert_eq!(layer_source(SegmentKind::Knowledge, None, &inner), None);
+        // A model with no id has no file to seed from.
+        assert_eq!(
+            layer_source(SegmentKind::ModelInstructions, None, &inner),
+            None
+        );
+        assert_eq!(
+            layer_source(SegmentKind::ModelInstructions, Some("  "), &inner),
+            None
         );
         std::fs::remove_dir_all(&dir).unwrap();
     }

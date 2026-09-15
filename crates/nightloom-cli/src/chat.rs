@@ -228,6 +228,9 @@ fn build_chat(args: &ChatArgs, mcp_tools: &[Arc<dyn Tool>]) -> Result<Chat> {
         model: on.then(|| chat.model.clone()),
         cwd: cwd.clone(),
         custom: args.system.clone(),
+        // A chat's own text for a layer is read from a chat's log, which the
+        // CLI does not keep; the files are what it sends.
+        edits: Default::default(),
     });
     chat.thinking = args.thinking.clone().unwrap_or(Thinking::Default);
     chat.max_tokens = args.max_tokens;

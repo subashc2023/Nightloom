@@ -5,6 +5,7 @@ use crate::provider::Usage;
 use crate::todo::TodoItem;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -183,9 +184,25 @@ pub enum SessionEvent {
     /// `AGENTS.md` on the walk, not one of them), and a name is a path that
     /// changes when the workspace does.
     ///
+    /// `edits` (2026-09-15) is the chat's own text for a layer, keyed by
+    /// kind: the body the shell assembles in place of the file's — the
+    /// user's memory as this chat should read it, say — wrapped and capped
+    /// as the file would be. The same event as the off set rather than a
+    /// sibling, because the two are one fact (what this chat does to its
+    /// prompt) with one latest-wins rule, one rewind rule and one reconnect
+    /// comparison; a second event that superseded on its own would leave a
+    /// shell comparing two things that only ever move together. Only the
+    /// kinds in [`SegmentKind::EDITABLE`] are kept, and only non-blank text:
+    /// an empty override is not "send nothing" — the switch is — so it is
+    /// dropped rather than stored. Absent in every log written before the
+    /// field existed, and left out of the line when empty, so a log written
+    /// today with no edit is byte-identical to yesterday's.
+    ///
     /// [`Title`]: SessionEvent::Title
     PromptLayers {
         off: Vec<SegmentKind>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        edits: BTreeMap<SegmentKind, String>,
         at: DateTime<Utc>,
     },
     /// The listed events keep their place in the conversation but stop
@@ -885,7 +902,10 @@ impl Session {
         });
     }
 
-    /// Note which prompt layers this chat now excludes.
+    /// Note which prompt layers this chat now excludes. The chat's own
+    /// texts ([`record_prompt_layer_edits`](Self::record_prompt_layer_edits))
+    /// are carried forward unchanged: flipping a switch is not a way to lose
+    /// an edit.
     ///
     /// Normalized — ladder order, duplicates dropped — so two ways of saying
     /// the same set compare equal, and a no-op when the set is unchanged,
@@ -893,17 +913,49 @@ impl Session {
     /// is: a shell that re-sends the current set on every reconnect must
     /// not fill the log with it.
     pub fn record_prompt_layers(&mut self, off: impl IntoIterator<Item = SegmentKind>) {
+        let edits = self.prompt_layer_edits().clone();
+        self.record_prompt_layer_choice(off, edits);
+    }
+
+    /// Note the chat's own text for its layers — the whole map, replacing
+    /// the last one, so removing an override is recording the map without
+    /// it. The off set is carried forward unchanged, as
+    /// [`record_prompt_layers`](Self::record_prompt_layers) carries these.
+    ///
+    /// Normalized the same way: kinds outside [`SegmentKind::EDITABLE`] are
+    /// dropped, each text is trimmed, and a text that trims to nothing is
+    /// dropped too (see the event's doc for why). A no-op when the result is
+    /// what the log already says.
+    pub fn record_prompt_layer_edits(&mut self, edits: BTreeMap<SegmentKind, String>) {
+        let off = self.prompt_layers_off().to_vec();
+        self.record_prompt_layer_choice(off, edits);
+    }
+
+    /// The one writer behind the two above: both halves normalized, one
+    /// event, skipped when nothing changed.
+    fn record_prompt_layer_choice(
+        &mut self,
+        off: impl IntoIterator<Item = SegmentKind>,
+        edits: BTreeMap<SegmentKind, String>,
+    ) {
         let wanted: Vec<SegmentKind> = off.into_iter().collect();
         let off: Vec<SegmentKind> = SegmentKind::LAYERS
             .iter()
             .copied()
             .filter(|k| wanted.contains(k))
             .collect();
-        if self.prompt_layers_off() == off.as_slice() {
+        let edits: BTreeMap<SegmentKind, String> = edits
+            .into_iter()
+            .filter(|(k, _)| SegmentKind::EDITABLE.contains(k))
+            .map(|(k, t)| (k, t.trim().to_string()))
+            .filter(|(_, t)| !t.is_empty())
+            .collect();
+        if self.prompt_layers_off() == off.as_slice() && *self.prompt_layer_edits() == edits {
             return;
         }
         self.record(SessionEvent::PromptLayers {
             off,
+            edits,
             at: Utc::now(),
         });
     }
@@ -1230,6 +1282,23 @@ impl Session {
                 _ => None,
             })
             .unwrap_or(&[])
+    }
+
+    /// Projection: the chat's own text per layer — the `edits` of the most
+    /// recent live [`SessionEvent::PromptLayers`], or none. The same event
+    /// and the same terms as [`prompt_layers_off`](Self::prompt_layers_off):
+    /// a compaction leaves it, a rewind past it restores what was current
+    /// before.
+    pub fn prompt_layer_edits(&self) -> &BTreeMap<SegmentKind, String> {
+        static NONE: BTreeMap<SegmentKind, String> = BTreeMap::new();
+        self.live_events()
+            .into_iter()
+            .rev()
+            .find_map(|(_, e)| match e {
+                SessionEvent::PromptLayers { edits, .. } => Some(edits),
+                _ => None,
+            })
+            .unwrap_or(&NONE)
     }
 
     /// Projection: what this session has cost so far.
@@ -2807,5 +2876,137 @@ mod tests {
 
         s.rewind(first).unwrap();
         assert_eq!(s.prompt_layers_off(), &[SegmentKind::UserMemory]);
+    }
+
+    fn edits(pairs: &[(SegmentKind, &str)]) -> BTreeMap<SegmentKind, String> {
+        pairs.iter().map(|(k, t)| (*k, t.to_string())).collect()
+    }
+
+    /// A chat's own text for a layer is a fact about the chat like its off
+    /// set, so it comes back from the log — under the same event, as the
+    /// kind's name keyed to the body, and absent from the line when there
+    /// is none, so a log with no edit reads exactly as it did before the
+    /// field existed.
+    #[test]
+    fn prompt_layer_edits_round_trip_through_jsonl() {
+        let dir = std::env::temp_dir().join(format!("nightloom-test-{}", uuid::Uuid::new_v4()));
+        let mut s = Session::with_log(&dir).unwrap();
+        assert!(
+            s.prompt_layer_edits().is_empty(),
+            "a fresh chat has no override"
+        );
+        s.record_prompt_layers([SegmentKind::Knowledge]);
+        s.record_prompt_layer_edits(edits(&[(SegmentKind::UserMemory, "Be terse.")]));
+        let path = s.log_path().unwrap().to_path_buf();
+        drop(s);
+
+        let loaded = Session::load(&path).unwrap();
+        assert!(loaded.load_report().is_clean());
+        assert_eq!(
+            loaded.prompt_layer_edits(),
+            &edits(&[(SegmentKind::UserMemory, "Be terse.")])
+        );
+        // Recording the text carried the off set forward.
+        assert_eq!(loaded.prompt_layers_off(), &[SegmentKind::Knowledge]);
+        assert!(loaded.messages().is_empty());
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = text
+            .lines()
+            .filter(|l| l.contains(r#""event":"prompt_layers""#))
+            .collect();
+        assert_eq!(lines.len(), 2, "{text}");
+        // The first event had no edit and says nothing about one.
+        assert!(!lines[0].contains("edits"), "{}", lines[0]);
+        assert!(
+            lines[1].contains(r#""edits":{"user_memory":"Be terse."}"#),
+            "{}",
+            lines[1]
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A line written before `edits` existed is the common case in every
+    /// log on disk, and it must read as "no override".
+    #[test]
+    fn a_prompt_layers_line_without_edits_still_loads() {
+        let line = r#"{"event":"prompt_layers","off":["identity"],"at":"2026-09-14T00:00:00Z"}"#;
+        let event: SessionEvent = serde_json::from_str(line).unwrap();
+        match event {
+            SessionEvent::PromptLayers { off, edits, .. } => {
+                assert_eq!(off, vec![SegmentKind::Identity]);
+                assert!(edits.is_empty());
+            }
+            other => panic!("wrong event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn prompt_layer_edits_are_normalized_and_not_recorded_unchanged() {
+        let mut s = Session::new();
+        let count = |s: &Session| {
+            s.events()
+                .iter()
+                .filter(|e| matches!(e, SessionEvent::PromptLayers { .. }))
+                .count()
+        };
+        s.record_prompt_layer_edits(edits(&[
+            // Trimmed on the way in.
+            (SegmentKind::ModelInstructions, "  Short answers.\n"),
+            // Not a file the user wrote: dropped.
+            (SegmentKind::Knowledge, "not a thing"),
+            // Blank is not "send nothing" — the switch is — so it is dropped.
+            (SegmentKind::ProjectInstructions, "   "),
+        ]));
+        assert_eq!(
+            s.prompt_layer_edits(),
+            &edits(&[(SegmentKind::ModelInstructions, "Short answers.")])
+        );
+        assert_eq!(count(&s), 1);
+        // The same text again, said differently: nothing to record.
+        s.record_prompt_layer_edits(edits(&[(
+            SegmentKind::ModelInstructions,
+            "Short answers.  ",
+        )]));
+        assert_eq!(count(&s), 1);
+        // A switch flipped keeps the text; the text changed keeps the switch.
+        s.record_prompt_layers([SegmentKind::EngineNote]);
+        assert_eq!(count(&s), 2);
+        assert_eq!(
+            s.prompt_layer_edits(),
+            &edits(&[(SegmentKind::ModelInstructions, "Short answers.")])
+        );
+        s.record_prompt_layer_edits(BTreeMap::new());
+        assert_eq!(count(&s), 3);
+        assert!(s.prompt_layer_edits().is_empty());
+        assert_eq!(s.prompt_layers_off(), &[SegmentKind::EngineNote]);
+        // Outlives a compaction, like the off set: the chat is the same chat.
+        s.record_prompt_layer_edits(edits(&[(SegmentKind::UserMemory, "Be terse.")]));
+        s.record_compaction("a summary");
+        assert_eq!(
+            s.prompt_layer_edits(),
+            &edits(&[(SegmentKind::UserMemory, "Be terse.")])
+        );
+    }
+
+    /// A rewind past the event restores the text that was current before it,
+    /// for the reason it restores the off set.
+    #[test]
+    fn a_rewind_past_prompt_layer_edits_restores_the_earlier_text() {
+        let mut s = Session::new();
+        s.record_prompt_layer_edits(edits(&[(SegmentKind::UserMemory, "first")]));
+        let first = exchange(&mut s, "one", "first");
+        s.record_prompt_layer_edits(edits(&[(SegmentKind::UserMemory, "second")]));
+        exchange(&mut s, "two", "second");
+        assert_eq!(
+            s.prompt_layer_edits(),
+            &edits(&[(SegmentKind::UserMemory, "second")])
+        );
+
+        s.rewind(first).unwrap();
+        assert_eq!(
+            s.prompt_layer_edits(),
+            &edits(&[(SegmentKind::UserMemory, "first")])
+        );
     }
 }

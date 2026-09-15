@@ -20,6 +20,7 @@ import {
   type Engine,
   type SavedPrompt,
 } from "./catalog";
+import { EDITABLE_LAYERS } from "./types";
 import type {
   AgentInfo,
   AgentTurnResult,
@@ -51,7 +52,9 @@ import type {
   ProjectInfo,
   ProjectsFolderInfo,
   NewProjectPath,
+  EditableLayer,
   PromptLayer,
+  PromptLayerEdits,
   ProposalEntry,
   ProposalScope,
   ProviderInfo,
@@ -3086,17 +3089,121 @@ export async function setPromptLayer(layer: PromptLayer, on: boolean): Promise<v
 }
 
 /**
- * Reconnect if the open chat's layer set is not the one the engine was built
- * with — which is the case after opening another chat, or a new one, since
- * the engine is built once per rail change and not per chat. Cheap when the
- * two agree, which is every other time it runs; a no-op while a turn or a
- * connect is in flight, and the caller's effect re-runs it when either ends.
+ * The open chat's own text per layer, projected from the log the way
+ * `Session::prompt_layer_edits()` projects it in the core: the same event
+ * as the off set, so the same latest-wins, the same survival of a
+ * compaction, the same reversal by a rewind. A line written before the
+ * field existed carries none, which reads as no override.
+ */
+export function promptLayerEdits(events: SessionEvent[]): PromptLayerEdits {
+  const live = liveFlags(events);
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (!live[i]) continue;
+    const e = events[i];
+    if (e.event === "prompt_layers") return e.edits ?? {};
+  }
+  return {};
+}
+
+/** Whether two edit maps say the same thing: same kinds, same text. */
+export function sameEdits(a: PromptLayerEdits, b: PromptLayerEdits): boolean {
+  const key = (m: PromptLayerEdits) =>
+    JSON.stringify(EDITABLE_LAYERS.map((l) => [l, m[l] ?? null]));
+  return key(a) === key(b);
+}
+
+/**
+ * Give the open chat its own text for one layer, or take it back with
+ * `text` null (*Revert to the file*). The same two steps as `setPromptLayer`
+ * and for the same reason: the log first, then the reconnect that reads it
+ * back. A body that trims to nothing is recorded as no override — the
+ * backend normalizes it so — since "send nothing" is what the switch is for.
+ */
+export async function setPromptLayerText(
+  layer: EditableLayer,
+  text: string | null,
+): Promise<boolean> {
+  if (app.busy || app.connecting) return false;
+  const current = promptLayerEdits(app.events);
+  const wanted = text?.trim() || null;
+  if ((current[layer] ?? null) === wanted) return true;
+  try {
+    app.events = await api.setPromptLayerText(layer, wanted);
+    const first = app.events[0];
+    if (first && first.event === "session_created") app.activeSessionId = first.id;
+    app.error = null;
+  } catch (e) {
+    addToast(String(e));
+    return false;
+  }
+  await applyDraft();
+  void refreshSessions();
+  return true;
+}
+
+/**
+ * *Make this the file*: open the store editor on the file a layer reads,
+ * with the chat's text in the buffer as a draft — never a write. The draft
+ * goes through `noteDrafts`, so the ● marker, Revert and the same Save any
+ * edit takes all apply; the override stays on the chat until it is reverted
+ * here, so nothing is lost if the editor is closed without saving.
+ *
+ * Which file: memory is `~/.nightloom/AGENTS.md`; project instructions are
+ * the workspace's `AGENTS.md` (the innermost file of the walk, the one the
+ * Notes panel edits — an override that replaced several files lands in the
+ * one a save can reach, and the editor shows the difference); the model's
+ * is its file under `~/.nightloom/models/` by the id the chat is on. False
+ * when there is no such file to open — no project for the instructions, no
+ * model id for the model's — with the reason as a toast.
+ */
+export function promoteLayerText(layer: EditableLayer, text: string): boolean {
+  let scope: NoteScope;
+  let name: string;
+  if (layer === "user_memory") {
+    scope = "memory";
+    name = "AGENTS.md";
+  } else if (layer === "project_instructions") {
+    if (!app.project) {
+      addToast("Open a project first — the instructions file is the project's");
+      return false;
+    }
+    scope = "instructions";
+    name = "AGENTS.md";
+  } else {
+    const model = currentModelId();
+    if (!model) {
+      addToast("This chat is on the engine's default model, which has no file to edit");
+      return false;
+    }
+    scope = "models";
+    name = modelInstructionFile(model);
+  }
+  const key = `${scope}:${name}`;
+  app.noteDrafts[key] = text;
+  app.showContext = false;
+  const tab = app.leftTab;
+  showNote(scope, name);
+  // The model's file is not in the Notes list, so the tab stays where it
+  // was, as `openModelInstructions` leaves it.
+  if (scope === "models") app.leftTab = tab;
+  return true;
+}
+
+/**
+ * Reconnect if the open chat's layer set or its own texts are not the ones
+ * the engine was built with — which is the case after opening another chat,
+ * or a new one, since the engine is built once per rail change and not per
+ * chat. Cheap when the pairs agree, which is every other time it runs; a
+ * no-op while a turn or a connect is in flight, and the caller's effect
+ * re-runs it when either ends.
  */
 export async function syncPromptLayers(): Promise<void> {
   if (!app.connection || app.busy || app.connecting) return;
   try {
-    const { off, built } = await api.promptLayers();
-    if (!sameLayers(off, built)) await applyDraft();
+    const { off, built, edits, built_edits } = await api.promptLayers();
+    if (!sameLayers(off, built) || !sameEdits(edits ?? {}, built_edits ?? {})) {
+      await applyDraft();
+    }
   } catch {
     // Best-effort: the next rail change reconnects with the right set anyway.
   }

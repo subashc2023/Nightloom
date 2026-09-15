@@ -23,7 +23,7 @@ use nightloom_service::{
     searched_locations,
 };
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -111,10 +111,22 @@ struct AppState {
 /// match the chat now open" needs the set it was actually built with, not
 /// the set the log holds now — the two differ exactly after another chat is
 /// opened, which is when the UI has to reconnect.
+///
+/// `edits`, `model` and `cwd` (2026-09-15, nightshift backlog 057) are here
+/// on the same terms: the chat's own text per layer is compared like the
+/// off set to decide a reconnect, and `prompt_layer_file` seeds an edit
+/// from what the live prompt would read — the model's file by the id the
+/// prompt was built for, the walk from the workspace it was built in.
 #[derive(Default)]
 struct PromptBuilt {
     /// The layers switched off in the chat the connection was built for.
     off: Vec<SegmentKind>,
+    /// The chat's own text per layer the connection was built with.
+    edits: BTreeMap<SegmentKind, String>,
+    /// The model id the prompt looked up its instruction file by.
+    model: Option<String>,
+    /// The workspace the `AGENTS.md` walk started from.
+    cwd: Option<PathBuf>,
     /// On the Claude Code engine, the bridged segments; `None` on the
     /// provider engine.
     agent: Option<SystemPrompt>,
@@ -599,6 +611,11 @@ struct ChatSpec {
     /// inherit it with the rest of the spec, so a blind test stays blind
     /// one level down.
     layers_off: Vec<SegmentKind>,
+    /// The chat's own text per layer, read from its log
+    /// (`Session::prompt_layer_edits`) at connect time, on the same terms
+    /// as `layers_off`: what this chat says instead of the file, whatever
+    /// the file says.
+    layer_edits: BTreeMap<SegmentKind, String>,
 }
 
 impl ChatSpec {
@@ -668,6 +685,9 @@ fn build_chat(
             .flatten(),
         cwd: spec.workspace.clone(),
         custom: spec.system.clone(),
+        // The chat's own text per layer, in place of the file's for the
+        // three it may edit; dormant for a layer switched off below.
+        edits: spec.layer_edits.clone(),
     };
     // The chat's own exclusions last, over the rail's switches: what this
     // chat has turned off stays off whatever the rail says.
@@ -921,6 +941,7 @@ async fn connect(
         }),
         chats: Some(chats),
         layers_off: layers_off(&state).await,
+        layer_edits: layer_edits(&state).await,
     };
     let mcp = ensure_mcp(&state, &spec.workspace, spec.tools).await;
     let mcp_tools = state
@@ -985,6 +1006,12 @@ async fn connect(
     *state.agent.lock().await = None;
     *state.prompt.lock().await = PromptBuilt {
         off: spec.layers_off,
+        edits: spec.layer_edits,
+        // The id the prompt looked its file up by — the chat's, which
+        // `build_chat` filled in from the provider's default when the rail
+        // sent none.
+        model: Some(info.model.clone()),
+        cwd: Some(spec.workspace),
         agent: None,
     };
     Ok(info)
@@ -1000,6 +1027,18 @@ async fn layers_off(state: &AppState) -> Vec<SegmentKind> {
         .await
         .as_ref()
         .map(|s| s.prompt_layers_off().to_vec())
+        .unwrap_or_default()
+}
+
+/// The open chat's own text per layer, or none — the same terms as
+/// [`layers_off`].
+async fn layer_edits(state: &AppState) -> BTreeMap<SegmentKind, String> {
+    state
+        .session
+        .lock()
+        .await
+        .as_ref()
+        .map(|s| s.prompt_layer_edits().clone())
         .unwrap_or_default()
 }
 
@@ -1098,6 +1137,7 @@ async fn connect_agent(
     // string (see `PromptBuilt`). The chat's own exclusions apply here as on
     // the other engine, plus the one layer that exists only here.
     let off = layers_off(&state).await;
+    let edits = layer_edits(&state).await;
     let prompt = nightloom_service::agent_prompt(
         &PromptConfig {
             identity: false,
@@ -1121,6 +1161,7 @@ async fn connect_agent(
             knowledge: knowledge.map(|dir| KnowledgeContext { dir }),
             cwd: workspace.clone(),
             custom: None,
+            edits: edits.clone(),
         }
         .without(&off),
         system.as_deref(),
@@ -1218,10 +1259,15 @@ async fn connect_agent(
             resume: spec.resume.clone(),
         }),
     };
+    let spec_model = spec.model.clone();
     *state.agent.lock().await = Some(ClaudeCodeAgent::new(spec));
     *state.chat.lock().await = None;
     *state.prompt.lock().await = PromptBuilt {
         off,
+        edits,
+        // By the alias, as the prompt above looked it up.
+        model: spec_model,
+        cwd: Some(workspace),
         agent: Some(prompt),
     };
     Ok(info)
@@ -1724,20 +1770,29 @@ async fn edit_context(
     })
 }
 
-/// The chat's switched-off layers, and the set the live engine was built
-/// with. The UI reconnects when the two differ — after opening another chat,
-/// or a new one — so the prompt on the wire is always the open chat's.
+/// The chat's switched-off layers and its own texts, beside the set and
+/// the texts the live engine was built with. The UI reconnects when either
+/// pair differs — after opening another chat, or a new one — so the prompt
+/// on the wire is always the open chat's.
 #[derive(Serialize)]
 struct PromptLayersInfo {
     off: Vec<SegmentKind>,
     built: Vec<SegmentKind>,
+    edits: BTreeMap<SegmentKind, String>,
+    built_edits: BTreeMap<SegmentKind, String>,
 }
 
 #[tauri::command]
 async fn prompt_layers(state: State<'_, AppState>) -> Result<PromptLayersInfo, String> {
     let off = layers_off(&state).await;
-    let built = state.prompt.lock().await.off.clone();
-    Ok(PromptLayersInfo { off, built })
+    let edits = layer_edits(&state).await;
+    let built = state.prompt.lock().await;
+    Ok(PromptLayersInfo {
+        off,
+        built: built.off.clone(),
+        edits,
+        built_edits: built.edits.clone(),
+    })
 }
 
 /// Record which prompt layers this chat excludes, returning the transcript.
@@ -1767,6 +1822,66 @@ async fn set_prompt_layers(
     let session = session_guard.as_mut().expect("session ensured above");
     session.record_prompt_layers(off);
     Ok(session.events().to_vec())
+}
+
+/// Record the chat's own text for one layer — or drop it, with `text`
+/// absent — returning the transcript (nightshift backlog 057, 2026-09-15).
+///
+/// The same shape and the same rules as [`set_prompt_layers`]: only the log
+/// is written, the caller reconnects, a session is created if the chat has
+/// none, and the Claude Code engine is allowed for the same reason. The
+/// text is the file's *body* as the user would write it — the assembler
+/// wraps it (`nightloom_service::prompt::assemble`) — and a body that trims
+/// to nothing is recorded as no override, since "send nothing" is what the
+/// switch is for; the core says so too and normalizes it the same way.
+#[tauri::command]
+async fn set_prompt_layer_text(
+    state: State<'_, AppState>,
+    kind: SegmentKind,
+    text: Option<String>,
+) -> Result<Vec<SessionEvent>, String> {
+    if !SegmentKind::EDITABLE.contains(&kind) {
+        return Err(format!("{kind:?} is not a layer a chat can rewrite"));
+    }
+    let log_dir = state.log_dir().await;
+    let mut session_guard = state.session.lock().await;
+    if session_guard.is_none() {
+        *session_guard = Some(Session::with_log(&log_dir).map_err(|e| e.to_string())?);
+    }
+    let session = session_guard.as_mut().expect("session ensured above");
+    let mut edits = session.prompt_layer_edits().clone();
+    match text.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()) {
+        Some(text) => {
+            edits.insert(kind, text);
+        }
+        None => {
+            edits.remove(&kind);
+        }
+    }
+    session.record_prompt_layer_edits(edits);
+    Ok(session.events().to_vec())
+}
+
+/// What an editable layer reads from disk right now, as the body a user
+/// could edit — the seed for *Edit for this chat* before the chat has its
+/// own text. `None` when nothing is on disk. Read by the model id and the
+/// workspace the live prompt was built with (`PromptBuilt`), so the seed is
+/// the file the prompt would read and not a guess at it.
+#[tauri::command]
+async fn prompt_layer_file(
+    state: State<'_, AppState>,
+    kind: SegmentKind,
+) -> Result<Option<String>, String> {
+    let built = state.prompt.lock().await;
+    let cwd = built
+        .cwd
+        .clone()
+        .ok_or_else(|| "not connected".to_string())?;
+    Ok(nightloom_service::layer_source(
+        kind,
+        built.model.as_deref(),
+        &cwd,
+    ))
 }
 
 /// Delete a session log the reversible way: it moves to `<logs>/trash/`
@@ -3274,6 +3389,8 @@ fn main() {
             edit_context,
             prompt_layers,
             set_prompt_layers,
+            set_prompt_layer_text,
+            prompt_layer_file,
             delete_session,
             approve_call,
             pick_folder,

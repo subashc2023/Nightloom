@@ -4,11 +4,20 @@ import {
   clockOf,
   currentTodos,
   liveFlags,
+  promptLayerEdits,
   promptLayersOff,
   roundCost,
+  sameEdits,
   sameLayers,
 } from "./state.svelte";
-import type { Price, PromptLayer, SessionEvent, TodoItem, Usage } from "./types";
+import type {
+  Price,
+  PromptLayer,
+  PromptLayerEdits,
+  SessionEvent,
+  TodoItem,
+  Usage,
+} from "./types";
 
 // These three functions are hand-written copies of backend logic —
 // `Session::live_flags`, `Session::todos` and `Price::cost`. Nothing links the
@@ -230,6 +239,64 @@ describe("sameLayers", () => {
     expect(sameLayers([], [])).toBe(true);
     expect(sameLayers(["identity"], [])).toBe(false);
     expect(sameLayers(["identity"], ["environment"])).toBe(false);
+  });
+});
+
+function edited(off: PromptLayer[], edits: PromptLayerEdits): SessionEvent {
+  return { event: "prompt_layers", off, edits, at: AT };
+}
+
+// A copy of `Session::prompt_layer_edits`, under the same event as the off
+// set and on the same terms: the cards say "edited for this chat" off this,
+// and the backend assembles the prompt off its own.
+describe("promptLayerEdits", () => {
+  it("is no override until the chat says otherwise, including on a line without the field", () => {
+    expect(promptLayerEdits([user("one"), assistant("first")])).toEqual({});
+    // A `prompt_layers` line written before `edits` existed.
+    expect(promptLayerEdits([layers("identity")])).toEqual({});
+  });
+
+  it("takes the latest event's map, whole", () => {
+    const events = [
+      edited([], { user_memory: "first" }),
+      user("one"),
+      edited(["knowledge"], { model_instructions: "second" }),
+    ];
+    // The map is replaced, not merged: the earlier memory text is gone.
+    expect(promptLayerEdits(events)).toEqual({ model_instructions: "second" });
+    expect(promptLayersOff(events)).toEqual(["knowledge"]);
+  });
+
+  it("outlives a compaction and is undone by a rewind, like the off set", () => {
+    const kept = [edited([], { user_memory: "own" }), user("one"), assistant("first"), compaction()];
+    expect(promptLayerEdits(kept)).toEqual({ user_memory: "own" });
+    const wound = [
+      edited([], { user_memory: "first" }),
+      user("one"),
+      assistant("first"),
+      edited([], { user_memory: "second" }),
+      user("two"),
+      assistant("second"),
+      rewind(1),
+    ];
+    expect(promptLayerEdits(wound)).toEqual({ user_memory: "first" });
+  });
+});
+
+describe("sameEdits", () => {
+  it("compares kind by kind, ignoring key order and absent-vs-undefined", () => {
+    expect(sameEdits({}, {})).toBe(true);
+    expect(sameEdits({ user_memory: "a" }, { user_memory: "a" })).toBe(true);
+    expect(
+      sameEdits(
+        { user_memory: "a", project_instructions: "b" },
+        { project_instructions: "b", user_memory: "a" },
+      ),
+    ).toBe(true);
+    expect(sameEdits({ user_memory: undefined }, {})).toBe(true);
+    expect(sameEdits({ user_memory: "a" }, { user_memory: "b" })).toBe(false);
+    expect(sameEdits({ user_memory: "a" }, {})).toBe(false);
+    expect(sameEdits({ user_memory: "a" }, { model_instructions: "a" })).toBe(false);
   });
 });
 

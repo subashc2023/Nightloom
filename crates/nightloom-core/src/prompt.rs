@@ -18,7 +18,11 @@ use serde::{Deserialize, Serialize};
 /// What a segment carries. Adapters ignore this; it exists so shells can
 /// introspect an assembled prompt (show what's in play, drop one layer)
 /// without parsing text.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `Ord` and `Hash` are derived so a kind can key a map — a chat's own
+/// text per layer is stored as one — and the derived order is declaration
+/// order, which is not the ladder: use [`SegmentKind::LAYERS`] for that.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum SegmentKind {
@@ -74,6 +78,17 @@ impl SegmentKind {
         SegmentKind::ProjectNotes,
         SegmentKind::Knowledge,
         SegmentKind::EngineNote,
+    ];
+
+    /// The kinds whose text a chat may replace with its own — the three
+    /// that are a file the user wrote, in ladder order. The two indexes are
+    /// listings the shell computes, the identity and environment are the
+    /// harness's, and the engine note is the bridge's: none of those is a
+    /// text a user edits, so a chat's override for them is not a thing.
+    pub const EDITABLE: [SegmentKind; 3] = [
+        SegmentKind::UserMemory,
+        SegmentKind::ModelInstructions,
+        SegmentKind::ProjectInstructions,
     ];
 }
 

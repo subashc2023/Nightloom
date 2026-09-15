@@ -9,7 +9,6 @@
     sessionCost,
   } from "./state.svelte";
   import RightRail from "./RightRail.svelte";
-  import ContextPanel from "./ContextPanel.svelte";
   import { toggleTranscriptPref, transcript } from "./transcriptPrefs.svelte";
   import { isMac } from "./platform";
 
@@ -137,18 +136,17 @@
 
   // The popovers: the model one opens from the model chip (or ⌘M, or the
   // ⌘K palette — which is why the flags are app state), the context one
-  // from the gauge chip (or ⌘⇧C). Each closes on Escape, on a click
-  // outside it, or on its chip again; opening one closes the other.
+  // from the gauge chip (or ⌘⇧C). The rail closes on Escape, on a click
+  // outside it, or on its chip again; opening one closes the other. Context
+  // is a centre modal since 2026-09-15 (nightshift backlog 056) — mounted
+  // in `App.svelte` on the same overlay as Settings, which handles its
+  // own outside click — so only Escape is shared here.
   let popEl = $state<HTMLElement | null>(null);
   let chipEl = $state<HTMLElement | null>(null);
-  let ctxPopEl = $state<HTMLElement | null>(null);
-  let ctxChipEl = $state<HTMLElement | null>(null);
   function onDocClick(e: MouseEvent): void {
     const t = e.target as Node;
     if (popEl?.contains(t) || chipEl?.contains(t)) return;
-    if (ctxPopEl?.contains(t) || ctxChipEl?.contains(t)) return;
     app.showRail = false;
-    app.showContext = false;
   }
   function onKey(e: KeyboardEvent): void {
     if (e.key === "Escape") {
@@ -214,7 +212,6 @@
       <button
         class="ns-chip mono gauge {level}"
         class:open={app.showContext}
-        bind:this={ctxChipEl}
         aria-expanded={app.showContext}
         title={gauge
           ? gauge.limit
@@ -313,19 +310,9 @@
       <RightRail />
     </div>
   {/if}
-  {#if app.showContext}
-    <div class="popover ctx" bind:this={ctxPopEl}>
-      <div class="ctx-head">
-        <span class="ns-k">Context</span>
-        <span class="sub">what the next request carries</span>
-      </div>
-      <!-- One panel on both engines (2026-09-14). On Claude Code it lists
-           the layers Nightloom appends to the CLI's own prompt, and says in
-           the conversation section that the history is the CLI's — the
-           explanatory note that used to stand in for the panel here. -->
-      <ContextPanel />
-    </div>
-  {/if}
+  <!-- The Context page is no longer a popover here: it opens as a centre
+       modal from `App.svelte` (2026-09-15), on the same overlay as
+       Settings. The chip above still toggles `app.showContext`. -->
 </header>
 
 <style>
@@ -490,25 +477,6 @@
   /* The context popover: the same card, its own head, and the panel that
      was the rail's third tab. Shorter than the model popover — a list, not
      four sections. */
-  .popover.ctx {
-    height: auto;
-    max-height: min(620px, calc(100vh - var(--titlebar-h) - 80px));
-  }
-  .ctx-head {
-    display: flex;
-    align-items: baseline;
-    gap: 10px;
-    padding: 12px 14px 6px;
-    flex: none;
-  }
-  .ctx-head .sub {
-    font-size: 11px;
-    color: var(--dim);
-  }
-  .popover.ctx :global(.panel) {
-    flex: 1;
-    min-height: 0;
-  }
   /* The rail draws its own left border and panel background for the column it
      used to be; inside the popover the card is the frame. */
   .popover :global(.rail) {

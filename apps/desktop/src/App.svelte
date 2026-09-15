@@ -18,6 +18,7 @@
   import TitleBar from "./lib/TitleBar.svelte";
   import TopBar from "./lib/TopBar.svelte";
   import SettingsModal from "./lib/SettingsModal.svelte";
+  import ContextPanel from "./lib/ContextPanel.svelte";
   import PromptLibrary from "./lib/PromptLibrary.svelte";
   import Transcript from "./lib/Transcript.svelte";
   import Composer from "./lib/Composer.svelte";
@@ -209,6 +210,14 @@
     {#if app.showSettings}
       <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
       <div class="settings-overlay" onmousedown={(e) => { if (e.target === e.currentTarget) app.showSettings = false; }}><SettingsModal /></div>
+    {/if}
+    <!-- The Context page, on the same overlay as Settings (nightshift
+         backlog 056, 2026-09-15): what the next request carries, one card
+         per layer. It was a popover under the gauge chip; the chip and
+         ⌘⇧C still toggle it. -->
+    {#if app.showContext}
+      <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+      <div class="settings-overlay" onmousedown={(e) => { if (e.target === e.currentTarget) app.showContext = false; }}><ContextPanel /></div>
     {/if}
     <Palette />
     {#if app.showPrompts}

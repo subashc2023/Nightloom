@@ -48,6 +48,7 @@ pub use knowledge::{LinkGraph, vault_dir};
 pub use project::{Note, Project, Registry};
 pub use prompt::{
     KnowledgeContext, ProjectContext, PromptConfig, agent_preamble, agent_prompt, assemble,
+    layer_source,
 };
 pub use sidecar::{SidecarContext, SidecarPart};
 pub use turn::{Chat, CompactOutcome, TurnEvent, TurnInput, TurnOutcome};

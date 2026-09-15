@@ -291,7 +291,7 @@ A rename is an ordinary append — the old name stays in the log and the project
 takes the latest — which is what makes both shells' rename five lines rather than
 a mutation path of its own.
 
-### Prompt layers per chat (`SessionEvent::PromptLayers { off }`, `Session::prompt_layers_off()`)
+### Prompt layers per chat (`SessionEvent::PromptLayers { off, edits }`, `Session::prompt_layers_off()`, `Session::prompt_layer_edits()`)
 
 Which system-prompt layers this chat has switched off, as a list of
 `SegmentKind`s (2026-09-14, nightshift backlog 048). Latest wins like a title;
@@ -311,6 +311,22 @@ it at connect time and assembles the prompt without those layers
 (`PromptConfig::without`), so nothing replays it as a turn. A `Compaction`
 leaves it alone, a `Rewind` past it restores the earlier set — the same two
 rules as a title, for the same reasons.
+
+**`edits` (2026-09-15, nightshift backlog 057)** is the chat's own text per
+layer — a `BTreeMap<SegmentKind, String>` holding the *body* the shell
+assembles in place of the file's, for the three kinds in
+`SegmentKind::EDITABLE` (user memory, model instructions, project
+instructions). The same event as the off set rather than a sibling: the two
+are one fact about the chat with one latest-wins rule, one rewind rule and one
+reconnect comparison. `record_prompt_layer_edits` replaces the map whole
+(dropping an override is recording the map without it), keeps only editable
+kinds and non-blank text — an empty override is not "send nothing", the switch
+is — and carries the off set forward; `record_prompt_layers` carries the edits
+forward likewise, so flipping a switch never loses an edit. The field is
+`#[serde(default)]` and skipped when empty, so a log written before it existed
+reads as no override and a log written today with no edit is byte-identical to
+yesterday's. `SegmentKind` derives `Ord` and `Hash` for the map's sake; the
+derived order is declaration order, not the ladder.
 
 ## Attachments
 

@@ -32,6 +32,7 @@ import type {
   ProjectsFolderInfo,
   NewProjectPath,
   UsageSummary,
+  EditableLayer,
   PromptLayer,
   PromptLayersInfo,
   Proposal,
@@ -243,6 +244,29 @@ export function promptLayers(): Promise<PromptLayersInfo> {
  */
 export function setPromptLayers(off: PromptLayer[]): Promise<SessionEvent[]> {
   return invoke("set_prompt_layers", { off });
+}
+
+/**
+ * Record the open chat's own text for one layer — the file's body as this
+ * chat should read it — or drop it with `text` null. Resolves with the new
+ * transcript, like `setPromptLayers`, and changes nothing on the wire until
+ * the caller reconnects (`setPromptLayerText` in state.svelte.ts does).
+ */
+export function setPromptLayerText(
+  kind: EditableLayer,
+  text: string | null,
+): Promise<SessionEvent[]> {
+  return invoke("set_prompt_layer_text", { kind, text });
+}
+
+/**
+ * What an editable layer reads from disk right now, as the body a user
+ * could edit: the seed for *Edit for this chat*. Null when nothing is on
+ * disk. For the project walk, the files joined with a blank line, outermost
+ * first.
+ */
+export function promptLayerFile(kind: EditableLayer): Promise<string | null> {
+  return invoke("prompt_layer_file", { kind });
 }
 
 // ---- projects ----

@@ -188,7 +188,8 @@ is the check to repeat when touching it.
   way out of the modal loses typed text.
 - **`TaskPanel.svelte`** — the model's task list, badged with the open count.
 - ~~**`ContextPanel.svelte`** — the `WireView`; see [desktop.md](desktop.md).~~
-  **`ContextPanel.svelte`** is its own popover now, opened from the top bar's
+  **`ContextPanel.svelte`** is ~~its own popover now~~ **a centre modal since
+  2026-09-15 (nightshift backlog 056)**, opened from the top bar's
   context gauge (which reads *Context* before any usage) or ⌘⇧C. ~~On Claude Code
   it explains rather than vanishes: the panel itemises the request Nightloom
   is about to send, and that engine's CLI assembles its own — Nightloom appends
@@ -206,6 +207,22 @@ is the check to repeat when touching it.
   Conversation section says the CLI holds the history; the *gauge* still
   counts, from the usage the CLI reports per turn.
 
+  **Redrawn 2026-09-15 (nightshift backlog 056)** after he could not find
+  the unfold or *Show as sent* in the popover: the page is a modal on the
+  same overlay as Settings (`App.svelte`, `settings-overlay`; the TopBar
+  chip and ⌘⇧C still toggle `app.showContext`), because a 32 KB `AGENTS.md`
+  at reading size does not fit a 340 px column. **Each layer is a card** in
+  the Settings idiom — the rail's switch, the name, a one-line gloss in plain
+  words, the layer's size, and a **Read** button with a chevron that opens the
+  full text in place in the transcript's face and size (`--transcript-font`,
+  `--transcript-size`) in a box that scrolls past 22 rem, with Copy per file.
+  An off layer is struck through with "off for this chat" beside it in words;
+  a layer with nothing on disk says "nothing to send". **Layers · As sent** is
+  a segmented control in the page head; *As sent* is one card with the string,
+  its length and Copy. The Conversation section comes second, its gauge in
+  its heading row and the bar under it; the Claude Code caveat is one dim
+  line under the cards.
+
   **Each layer row has a switch** that turns the layer off *for this chat*:
   the row is struck through while off, so a blind test is visible while it
   runs, and the layer is absent from *as sent*. A flip records
@@ -220,11 +237,29 @@ is the check to repeat when touching it.
   have no row on Claude Code — they are the CLI's own — and that engine's rows
   carry the caveat that a resumed chat on CLI ≥ 2.1.265 keeps its recorded
   prompt until the next compaction. With the rail's Preamble switch off the
-  per-chat switches are disabled: nothing is left to remove. **Deliberately not
+  per-chat switches are disabled: nothing is left to remove. ~~**Deliberately not
   built:** rewriting a layer's text for one chat — the store editors and the
   library prompt are where text is edited; see
-  [service-prompt.md](service-prompt.md). One popover is open at a time
-  (`app.showRail` / `app.showContext`).
+  [service-prompt.md](service-prompt.md).~~ **Superseded 2026-09-15 (nightshift
+  backlog 057), his call — "changing the actual information per chat just in
+  practice means changing what the flag is attached to".** The Memory, Model
+  instructions and Project instructions cards carry **Edit for this chat**: the
+  body opens as a textarea at reading size, seeded from the chat's own text or
+  else from the file (`prompt_layer_file`, the same read the prompt makes), and
+  *Save for this chat* records it as `SessionEvent::PromptLayers.edits`
+  (`set_prompt_layer_text`) and reconnects the way a switch does. The card then
+  says **edited for this chat** and *as sent* carries the wrapped override;
+  **Revert to the file** drops it; **Make this the file** closes the page and
+  opens the store editor (Notes → Memory / Instructions, or the model's file)
+  with the override in the buffer as a draft through `noteDrafts` — the ● marker,
+  Revert and Save all apply, and nothing is written until Save is pressed there
+  (`promoteLayerText`). Overrides project off the log like the off set
+  (`promptLayerEdits`), survive reopen, are compared on reconnect
+  (`syncPromptLayers` reads `edits` / `built_edits`), are undone by a rewind
+  past them, and are not offered for the indexes, identity, environment or the
+  engine note. The fork the old paragraph worried about is now visible — the
+  card says so and the dream still proposes against the file. One popover is
+  open at a time (`app.showRail` / `app.showContext`).
 
 The thinking dropdown is capability-aware via `catalog.ts::thinkingSupport(kind,
 model)` — Claude 5 → adaptive effort, Claude ≤4.5 → budget, OpenAI → effort incl.

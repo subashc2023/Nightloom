@@ -167,7 +167,9 @@ gates the first two on its Preamble switch, on by default and now shown on both
 engines; the CLI (`nightloom-cli/src/agent.rs`) still sends only `--system`. A
 chat's own switched-off layers (`SessionEvent::PromptLayers`,
 [service-prompt.md](service-prompt.md) "Layers off per chat") apply here as on
-the other engine, plus the engine note, which is a layer on this engine alone.
+the other engine, plus the engine note, which is a layer on this engine alone;
+so does the chat's own text for a layer (`PromptLayers.edits`, 2026-09-15),
+which rides the same `PromptConfig` into the same flag.
 No segment carries a cache anchor: the CLI does its own caching.
 
 **A changed preamble does not necessarily reach a resumed session.** The docs

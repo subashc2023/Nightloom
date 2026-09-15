@@ -133,6 +133,9 @@ fn build_chat(
         model: None,
         cwd: workspace.to_path_buf(),
         custom: None,
+        // A chat's own text for a layer is read from a chat's log, which the
+        // CLI does not keep; the files are what it sends.
+        edits: Default::default(),
     });
     chat.thinking = target.thinking.clone();
     chat.max_tokens = max_tokens;

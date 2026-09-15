@@ -641,8 +641,12 @@ export type SessionEvent =
   // names (`project_instructions`, `project_notes`, …). Latest wins, like a
   // title; absent or empty means all on. Not a turn: the backend reads it at
   // connect time and assembles the prompt without those layers, and the
-  // transcript skips it. See `promptLayersOff` in state.svelte.ts.
-  | { event: "prompt_layers"; off: PromptLayer[]; at: string }
+  // transcript skips it. See `promptLayersOff` in state.svelte.ts. `edits`
+  // (2026-09-15) is the chat's own text per layer — the file's body as this
+  // chat should read it — for the three editable kinds; absent in every
+  // line written before it existed and when there is none. See
+  // `promptLayerEdits`.
+  | { event: "prompt_layers"; off: PromptLayer[]; edits?: PromptLayerEdits; at: string }
   // Content markers, not deletions: the listed events keep their place in the
   // conversation and project a stand-in instead of their payload. The log
   // still holds the content, so the transcript renders these turns in full and
@@ -787,12 +791,30 @@ export type PromptLayer =
   | "engine_note";
 
 /**
- * The open chat's switched-off layers beside the set the live engine was
- * built with; the two differ exactly when a reconnect is due.
+ * The layers whose text a chat may replace with its own (nightshift backlog
+ * 057): the three that are a file the user wrote. The indexes, the identity
+ * and environment, and the engine note are not text a user edits.
+ */
+export type EditableLayer = "user_memory" | "model_instructions" | "project_instructions";
+export const EDITABLE_LAYERS: readonly EditableLayer[] = [
+  "user_memory",
+  "model_instructions",
+  "project_instructions",
+];
+
+/** A chat's own text per layer, by the backend's `SegmentKind` name. */
+export type PromptLayerEdits = Partial<Record<EditableLayer, string>>;
+
+/**
+ * The open chat's switched-off layers and its own texts, beside the set and
+ * the texts the live engine was built with; either pair differing is a
+ * reconnect due.
  */
 export interface PromptLayersInfo {
   off: PromptLayer[];
   built: PromptLayer[];
+  edits: PromptLayerEdits;
+  built_edits: PromptLayerEdits;
 }
 
 /** What `editContext` changed: both projections, plus how many items moved. */
