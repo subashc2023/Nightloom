@@ -165,6 +165,33 @@ pub struct AgentSpec {
     /// one argument.
     ///
     /// [`--bare`]: https://code.claude.com/docs/en/headless
+    ///
+    /// **Re-spelled 2026-09-14 (nightshift blocker 058).** `--safe-mode`
+    /// turned out to discard the `--mcp-config` server too — CLI 2.1.263's
+    /// init event reports `mcp_servers: []` with it — so a safe-mode chat
+    /// had none of Nightloom's tools, and his question was "what is the
+    /// point of safe mode if it drops Nightloom's stuff?" Measured on this
+    /// machine, one Haiku turn per spelling, with a folder `CLAUDE.md`
+    /// holding a secret word, a project `SessionStart` hook touching a
+    /// file, and his real user-level `CLAUDE.md` and hooks:
+    ///
+    /// | spelling | user CLAUDE.md | folder CLAUDE.md | user hooks | project hooks | other MCP | Nightloom MCP |
+    /// |---|---|---|---|---|---|---|
+    /// | plain + `--strict-mcp-config` | loads | loads | fire | fire | none | yes |
+    /// | `--safe-mode --strict-mcp-config` | no | **loads** | no | no | none | **no** |
+    /// | `--setting-sources "" --strict-mcp-config` | no | loads | no | no | none | **yes** |
+    ///
+    /// So an empty `--setting-sources` (no user, project or local
+    /// settings) drops everything `--safe-mode` actually dropped — the
+    /// host's `CLAUDE.md`, both hook layers, the allowlist — and keeps the
+    /// one server named on the command line. `--safe-mode`'s own help
+    /// promises the folder `CLAUDE.md` off too, and does not deliver it;
+    /// neither spelling does, and under Nightloom that file is the
+    /// project's own, which is the right side of the line anyway.
+    /// `--disable-slash-commands` rides along to take the user's skills off
+    /// (18 → 0 in the init event; `--safe-mode` left them at 18).
+    /// `CLAUDE_CODE_SIMPLE=1` on its own was tried and kills OAuth
+    /// ("Not logged in"), the same trap as `--bare`.
     pub safe_mode: bool,
     /// Resume a previous Claude Code session by id.
     pub resume: Option<String>,
@@ -194,8 +221,10 @@ pub struct AgentSpec {
     /// Under `safe_mode` the CLI also gets `--strict-mcp-config`, ~~so this
     /// becomes the *only* server, which is what safe mode wants~~ — measured
     /// 2026-09-14: `--safe-mode` drops this server too (`mcp_servers: []` in
-    /// the init event), so a safe-mode turn has no Nightloom tools at all
-    /// (nightshift blocker 058).
+    /// the init event), so a safe-mode turn had no Nightloom tools at all
+    /// (nightshift blocker 058). Safe mode is now spelled without
+    /// `--safe-mode` (see that field), and this server survives it — the
+    /// only one that does.
     pub mcp_config: Option<String>,
     /// Passed through verbatim, last, so a caller can reach a flag this
     /// struct has not grown a field for.
@@ -319,10 +348,14 @@ impl AgentSpec {
             a.push(s.clone());
         }
         if self.safe_mode {
-            a.push("--safe-mode".into());
-            // See the field doc: safe mode alone left the account-level
-            // claude.ai connectors on the request.
+            // Not `--safe-mode`: see the field doc's table — that flag
+            // drops the `--mcp-config` server with everything else. No
+            // setting source at all is what leaves Nightloom's server
+            // standing while the host's CLAUDE.md, hooks and allowlist go.
+            a.push("--setting-sources".into());
+            a.push(String::new());
             a.push("--strict-mcp-config".into());
+            a.push("--disable-slash-commands".into());
         }
         if let Some(id) = &self.resume {
             a.push("--resume".into());
@@ -736,7 +769,7 @@ mod tests {
         let bare = spec().args("hi");
         for flag in [
             "--model",
-            "--safe-mode",
+            "--setting-sources",
             "--resume",
             "--max-budget-usd",
             "--system-prompt",
@@ -755,7 +788,7 @@ mod tests {
         let a = s.args("hi");
         for flag in [
             "--model",
-            "--safe-mode",
+            "--setting-sources",
             "--resume",
             "--max-budget-usd",
             "--system-prompt",
@@ -924,20 +957,25 @@ mod tests {
         assert!(spec().use_subscription);
     }
 
-    /// Safe mode has to ask for the MCP guarantee twice.
+    /// Safe mode is three flags and none of them is `--safe-mode`.
     ///
-    /// `--safe-mode` lists MCP servers among what it disables and was
-    /// observed leaving the account-level claude.ai connectors on the
-    /// request anyway, so the child answered a "read this file" by calling
-    /// Google Drive. The flag is not decoration and dropping it would
-    /// restore the bug silently.
+    /// `--safe-mode` discards the `--mcp-config` server with the host's
+    /// (measured 2026-09-14, nightshift blocker 058), so Nightloom's tools
+    /// vanished with it. An empty `--setting-sources` drops the host's
+    /// settings — CLAUDE.md, hooks, allowlist — and `--strict-mcp-config`
+    /// keeps every server but the one on the command line off; both are
+    /// load-bearing and the empty string is the value, not an omission.
+    /// The old `--safe-mode` coming back would restore the bug silently.
     #[test]
-    fn safe_mode_also_asks_for_strict_mcp_config() {
+    fn safe_mode_is_no_setting_sources_plus_strict_mcp_config() {
         let mut s = spec();
         s.safe_mode = true;
         let a = s.args("hi");
-        assert!(a.iter().any(|x| x == "--safe-mode"));
+        assert!(!a.iter().any(|x| x == "--safe-mode"), "{a:?}");
+        let i = a.iter().position(|x| x == "--setting-sources").expect("flag");
+        assert_eq!(a[i + 1], "", "the value is the empty list");
         assert!(a.iter().any(|x| x == "--strict-mcp-config"));
+        assert!(a.iter().any(|x| x == "--disable-slash-commands"));
     }
 
     /// And only under safe mode: without it the host's own servers are

@@ -366,9 +366,11 @@ struct AgentInfo {
     /// familiar gate.
     permission_mode: Option<String>,
     /// The CLI ran without the host's CLAUDE.md, hooks, plugins and MCP
-    /// servers. Note that this is `--safe-mode` and never `--bare`: bare
-    /// mode never reads OAuth credentials, so it would force the run back
-    /// onto an API key.
+    /// servers — Nightloom's own server excepted. Spelled as no setting
+    /// sources plus `--strict-mcp-config` since 2026-09-14 (`AgentSpec::
+    /// safe_mode` has the measurements; `--safe-mode` itself dropped
+    /// Nightloom's server), and never `--bare`: bare mode never reads
+    /// OAuth credentials, so it would force the run back onto an API key.
     safe_mode: bool,
     /// The agent session this chat continues, when it has one — read back
     /// off the log, so reopening a chat tomorrow resumes it rather than

@@ -66,8 +66,18 @@ now means *this server and no other*, which is what safe mode wants.~~ —
 so its `system/init` reports `mcp_servers: []` and a safe-mode chat has
 **none** of Nightloom's tools; without `--safe-mode` the same command lists
 `nightloom: connected`. `--strict-mcp-config` still rides along, harmless.
-Until blocker 058 is answered, safe mode means "nothing of the host's and
-nothing of Nightloom's beyond the preamble", and the Safe mode hint says so.
+~~Until blocker 058 is answered, safe mode means "nothing of the host's and
+nothing of Nightloom's beyond the preamble", and the Safe mode hint says so.~~
+**Answered the same evening:** "what is the point of safe mode if it drops
+Nightloom's stuff?" So safe mode is now spelled **`--setting-sources ""
+--strict-mcp-config --disable-slash-commands`** and never `--safe-mode`.
+Measured (the table is on `AgentSpec::safe_mode`): no setting sources drops
+the user `CLAUDE.md`, both hook layers and the allowlist exactly as
+`--safe-mode` did, and keeps the one server named by `--mcp-config`; both
+spellings still load the *folder's* `CLAUDE.md`, whatever `--safe-mode`'s
+help says, and under Nightloom that file is the project's own. Without the
+allowlist the `auto` classifier judges each Nightloom call, as it did
+before.
 The engine note tells the model when to reach for each, by their full
 `mcp__nightloom__` names (the CLI's `ToolSearch` resolves nothing shorter). The CLI's permission
 system judges the calls like any other MCP tool; the allowlist line for

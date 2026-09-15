@@ -592,7 +592,7 @@
     {#if agentMode}
       <label class="swq">
         <span class="t">Safe mode</span>
-        <Hint text="Run without the host's CLAUDE.md, hooks, plugins and MCP servers — Nightloom's own tools (search_chats, read_chat, remember, fetch_page) included, since the CLI drops every MCP server here. This is --safe-mode and not --bare: bare mode never reads OAuth credentials, so it would put the turn back on an API key." />
+        <Hint text="Run without your Claude Code setup: no user CLAUDE.md, hooks, skills, allowlist or other MCP servers. Nightloom's own tools (search_chats, read_chat, remember, fetch_page) stay. The project folder's CLAUDE.md still loads. Not --bare, which would put the turn back on an API key." />
         <input
           type="checkbox"
           class="sw"
