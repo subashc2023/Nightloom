@@ -356,9 +356,12 @@ fn engine_note_segment(knowledge: Option<&KnowledgeContext>) -> Segment {
         " Nightloom's own tools are the MCP tools named mcp__nightloom__fetch_page, \
          mcp__nightloom__search_chats, mcp__nightloom__read_chat and \
          mcp__nightloom__remember (ToolSearch them by those full names). For a whole \
-         page use fetch_page, not WebFetch; to find or quote another chat use \
-         search_chats then read_chat, searching this project unless asked to look \
-         wider; to leave something for memory use remember.",
+         page use fetch_page, not WebFetch. To find or quote another chat use \
+         search_chats then read_chat — as you would reach for a web search: not every \
+         turn, but whenever the message points outside this chat (an earlier decision, \
+         'as we discussed', a name you have no context for), and before asking the user \
+         to repeat themselves; recent chats rank first, and search this project unless \
+         asked to look wider. To leave something for memory use remember.",
     );
     text.push_str("\n</engine-note>");
     Segment::new(SegmentKind::EngineNote, "engine-note", text)

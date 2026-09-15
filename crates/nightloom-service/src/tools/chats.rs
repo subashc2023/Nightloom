@@ -104,13 +104,18 @@ const MAX_WINDOW: usize = 20000;
 /// name is what the model will cite.
 const TITLE_WIDTH: usize = 80;
 
-const SEARCH_DESC: &str = "Find which of the user's other chats are about something. Reach for it \
-     when the user refers to an earlier conversation, a decision they made before, or something \
-     they say they already discussed with you, and before answering from memory about their past \
-     work. Ranks chats by how much they say the query's words (case-insensitive, whole words, \
-     the chat's title counting extra) over what was said in each chat — user messages, \
-     assistant replies and the title — never over tool results, so a word that only appeared \
-     in a file a chat read will not find it. Use a few distinctive words rather than a sentence: \
+const SEARCH_DESC: &str = "Find which of the user's other chats are about something. Use it the \
+     way you would use a web search — not on every message, but when this message points \
+     outside this chat: the user refers to an earlier conversation, a decision they made \
+     before, a name or thing you have no context for, or something they say they already \
+     discussed with you. Search before asking them to repeat it, and before answering from \
+     memory about their past work. Ranks chats by how much they say the query's words \
+     (case-insensitive, whole words, the chat's title counting extra) over what was said in \
+     each chat — user messages, assistant replies and the title — never over tool results, so \
+     a word that only appeared in a file a chat read will not find it. Recent chats rank \
+     first: a chat's score halves for every month since it was last written, so what the user \
+     means is almost always near the top; an old chat is never dropped, only lower, so when \
+     they say it was a while ago read further down the list. Use a few distinctive words rather than a sentence: \
      every word you add that the chat did not say dilutes the ranking, and word order does not \
      matter. Returns one line per chat, best first: short id, title, date last active, score, \
      and an excerpt around the first of your words it says. Then call read_chat with the id to \

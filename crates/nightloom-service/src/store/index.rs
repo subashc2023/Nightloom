@@ -54,6 +54,15 @@ const TITLE_WEIGHT: u32 = 3;
 /// chat is penalised for being long.
 const K1: f64 = 1.2;
 const B: f64 = 0.75;
+/// Days after which a chat's score is halved. His rule (nightshift blocker
+/// 052, 2026-09-14): "chats that are referenced should be very close to the
+/// actual chat we're involved in"; a year-old chat that happens to share
+/// the words should not outrank last week's. The prior is a factor, never
+/// a cut: a chat with no younger competitor still comes back — "if no other
+/// chat exists on the topic except something ancient … I'm really just
+/// asking about something from a while ago" — only lower, and the model
+/// reads further down the list when the user says it was long ago.
+const RECENCY_HALF_LIFE_DAYS: f64 = 30.0;
 
 /// The `event` tags the index is built from, matched against the raw line
 /// before parsing, exactly as [`LISTED`](super::LISTED) is and for the same
@@ -396,6 +405,16 @@ impl ChatIndex {
     /// says every word more. A chat with no term in common scores nothing
     /// and is not returned.
     pub(crate) fn rank(&self, query: &str, limit: usize) -> (Vec<Ranked<'_>>, usize) {
+        self.rank_at(query, limit, Utc::now())
+    }
+
+    /// `rank` with the clock injected, so a test can age a chat.
+    pub(crate) fn rank_at(
+        &self,
+        query: &str,
+        limit: usize,
+        now: DateTime<Utc>,
+    ) -> (Vec<Ranked<'_>>, usize) {
         let mut terms = tokenize(query);
         terms.sort();
         terms.dedup();
@@ -417,10 +436,19 @@ impl ChatIndex {
         }
         let mut hits: Vec<Ranked<'_>> = scores
             .into_iter()
-            .map(|(name, score)| Ranked {
-                path: self.dir.join(name),
-                log: &self.logs[name],
-                score,
+            .map(|(name, score)| {
+                let log = &self.logs[name];
+                // BM25 says how much a chat is about the words; the recency
+                // prior says how likely it is the chat he means. Age is
+                // measured from the log's last write — a chat he is still
+                // adding to is current however old its first message.
+                let age_days = (now - log.modified).num_seconds().max(0) as f64 / 86_400.0;
+                let recency = 1.0 / (1.0 + age_days / RECENCY_HALF_LIFE_DAYS);
+                Ranked {
+                    path: self.dir.join(name),
+                    log,
+                    score: score * recency,
+                }
             })
             .collect();
         hits.sort_by(|a, b| {
@@ -695,6 +723,43 @@ mod tests {
 
         fs::remove_dir_all(&dir).ok();
         fs::remove_dir_all(&two).ok();
+    }
+
+    /// Recency is a prior on the score, never a cut: a year-old chat that
+    /// says the word three times loses to last week's that says it once,
+    /// and still comes back alone when nothing newer says it at all.
+    #[test]
+    fn an_old_chat_ranks_below_a_recent_one_and_is_never_dropped() {
+        let dir = scratch();
+        let old = logged(&dir, "", "kestrels, kestrels and kestrels again", "yes", "");
+        let new = logged(&dir, "", "one kestrels mention", "noted", "");
+        let mut index = ChatIndex::load_or_build(&dir).unwrap();
+        let now = Utc::now();
+        // Both fresh: repetition wins, as before.
+        let (hits, _) = index.rank_at("kestrels", 2, now);
+        assert_eq!(hits[0].log.id(&hits[0].path), old);
+        // Age the repetitive one by a year (the field, not the file: the
+        // prior reads the index's record of the last write).
+        index
+            .logs
+            .get_mut(&format!("{old}.jsonl"))
+            .unwrap()
+            .modified = now - chrono::Duration::days(365);
+        let (hits, total) = index.rank_at("kestrels", 2, now);
+        assert_eq!(total, 2);
+        assert_eq!(hits[0].log.id(&hits[0].path), new, "{:?}", titles(&hits));
+        assert_eq!(hits[1].log.id(&hits[1].path), old);
+        // Half-life: at 30 days the factor is one half.
+        let (fresh, _) = index.rank_at("kestrels", 2, now);
+        let (aged, _) = index.rank_at("kestrels", 2, now + chrono::Duration::days(30));
+        let f = fresh.iter().find(|h| h.log.id(&h.path) == new).unwrap().score;
+        let a = aged.iter().find(|h| h.log.id(&h.path) == new).unwrap().score;
+        assert!((a / f - 0.5).abs() < 0.02, "{f} → {a}");
+        // Only the old chat says it: it is still the answer.
+        let (hits, total) = index.rank_at("again", 5, now);
+        assert_eq!(total, 1);
+        assert_eq!(hits[0].log.id(&hits[0].path), old);
+        fs::remove_dir_all(&dir).ok();
     }
 
     /// Pinned: a word that appears only in a tool result, or only in a

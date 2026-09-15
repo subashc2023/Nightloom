@@ -360,8 +360,22 @@ credential store.
 ranked search over what the user's other chats said, plus a window onto one
 log. No embeddings, no automatic injection — a lookup is a tool call the user
 sees in the transcript, and the description tells the model to cite the chat by
-title and date when it uses what it found. Passages reaching the model on their
-own is a separate item (blocker 052).
+title and date when it uses what it found. ~~Passages reaching the model on their
+own is a separate item (blocker 052).~~ **Blocker 052 answered 2026-09-14: there
+is no automatic injection, on or off.** The model decides, the way it decides
+to search the web — the tool's description and the Claude Code engine note say
+"when the message points outside this chat (an earlier decision, 'as we
+discussed', a name you have no context for), not on every turn". What changed
+with the answer is the ranking below: recency is a prior.
+
+**Recent first.** A chat's BM25 score is multiplied by `1 / (1 + age/30 days)`,
+age measured from the log's last write — half at a month, a quarter at three, a
+thirteenth at a year (`RECENCY_HALF_LIFE_DAYS` in `store/index.rs`). His rule:
+"chats that are referenced should be very close to the actual chat we're
+involved in … I don't really need chats from a year ago which happened to
+pattern match." A prior, never a cut: an old chat with no younger competitor
+still comes back, only lower, and the description tells the model to read
+further down the list when the user says it was a while ago.
 
 **Ranked, through an index.** `search_chats` ranks by BM25 through
 `store::index::ChatIndex`, the `.index.json` kept beside each directory's logs

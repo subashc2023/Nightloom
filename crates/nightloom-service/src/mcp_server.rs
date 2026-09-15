@@ -81,8 +81,10 @@ const UNFILED_NAME: &str = "Unfiled chats";
 /// that surfaces server instructions gets them even when Nightloom's own
 /// prompt layer is switched off for the chat.
 const INSTRUCTIONS: &str = "Nightloom's tools. For a whole page use fetch_page, not WebFetch. \
-     To find or quote one of the user's other chats use search_chats, then read_chat. To leave \
-     something for the user's long-term memory use remember.";
+     To find or quote one of the user's other chats use search_chats, then read_chat — when \
+     the message points outside this chat (an earlier decision, 'as we discussed', a name you \
+     have no context for), not on every turn; recent chats rank first. To leave something for \
+     the user's long-term memory use remember.";
 
 /// Build the tool set for one project, or for the unfiled chats when there
 /// is none, from the config dir the registry lives under.
