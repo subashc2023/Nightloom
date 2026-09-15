@@ -19,6 +19,12 @@ sides stay snake_case (`media_type`, matching `context_limit` / `key_source`).
 
 The transcript is a projection of `SessionEvent[]`; after each turn the UI
 re-syncs via `transcript` rather than trusting its live buffer.
+Between send and the first streamed event the live buffer is empty, and an
+empty buffer used to render as nothing; now it renders as a waiting row — the
+moon icon rolling a short way and back, three still dots under
+`prefers-reduced-motion` — that the first delta, tool call or error replaces
+(nightshift backlog 049). It carries no text, because the UI cannot see
+whether anything is progressing, only that nothing has arrived.
 
 ## The window frame
 

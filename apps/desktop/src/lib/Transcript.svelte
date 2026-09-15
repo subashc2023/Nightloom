@@ -11,6 +11,7 @@
   } from "./types";
   import AssistantMessage from "./AssistantMessage.svelte";
   import ApprovalPrompt from "./ApprovalPrompt.svelte";
+  import Icon from "./Icon.svelte";
 
   interface AssistantFooter {
     model: string;
@@ -219,11 +220,24 @@
       {/if}
     {/each}
     {#if app.live}
-      <AssistantMessage
-        segs={app.live.segments}
-        streaming
-        approvals={app.pendingApprovals}
-      />
+      {#if app.live.segments.length === 0}
+        <!-- Between send and the first streamed event there is nothing to
+             render, and a blank row read as "nothing happened" (his words,
+             backlog 049). So something moves: the moon rolls a short way
+             and back until the first delta or tool call replaces it; with
+             the OS asked for less motion it is three still dots. It says
+             nothing about progress, because it can see none. -->
+        <div class="waiting" role="status" aria-label="Waiting for the reply">
+          <span class="roll" aria-hidden="true"><Icon name="moon" size={16} /></span>
+          <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+        </div>
+      {:else}
+        <AssistantMessage
+          segs={app.live.segments}
+          streaming
+          approvals={app.pendingApprovals}
+        />
+      {/if}
     {/if}
     {#each stranded as req (req.id)}
       <ApprovalPrompt {req} />
@@ -369,6 +383,45 @@
     padding: 0.6rem 0.8rem;
     white-space: pre-wrap;
     word-break: break-word;
+  }
+  .waiting {
+    display: flex;
+    align-items: center;
+    min-height: 20px;
+    color: var(--dim);
+  }
+  .roll {
+    display: inline-flex;
+    animation: roll 1.5s ease-in-out infinite alternate;
+  }
+  /* Two feet, not the width of the pane: a roll that crosses the transcript
+     competes with the reply it is waiting for. */
+  @keyframes roll {
+    from {
+      transform: translateX(0) rotate(0deg);
+    }
+    to {
+      transform: translateX(32px) rotate(360deg);
+    }
+  }
+  .dots {
+    display: none;
+    gap: 5px;
+  }
+  .dots i {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: currentColor;
+    opacity: 0.55;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .roll {
+      display: none;
+    }
+    .dots {
+      display: inline-flex;
+    }
   }
   .error-banner {
     color: var(--failed);
