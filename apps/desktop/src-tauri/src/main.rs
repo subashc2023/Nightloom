@@ -2036,6 +2036,21 @@ async fn projects_folder_info(state: State<'_, AppState>) -> Result<Option<Proje
     Ok(ProjectsFolderInfo::current(&guard.registry))
 }
 
+// ---- the usage ledger ------------------------------------------------------
+
+/// What Claude Code has cost, from the user-global ledger under `~/.claude`
+/// (nightshift backlog 045). Reads three files the collector there owns and
+/// writes none; the shape is [`nightloom_service::usage::UsageSummary`],
+/// which carries `available: false` and a reason rather than an error when
+/// the collector has never run here, so Settings opens either way. On a
+/// blocking thread because it reads and prices a whole CSV, small as it is.
+#[tauri::command]
+async fn usage_ledger() -> Result<nightloom_service::usage::UsageSummary, String> {
+    tokio::task::spawn_blocking(nightloom_service::usage::summary)
+        .await
+        .map_err(|e| format!("reading the usage ledger failed: {e}"))
+}
+
 /// Point new projects at a folder, or back at the default with `None`.
 ///
 /// **Moves nothing.** The projects already made are registered by their own
@@ -3257,6 +3272,7 @@ fn main() {
             create_project,
             projects_folder_info,
             set_projects_folder,
+            usage_ledger,
             resolve_new_project_path,
             new_project,
             open_project,

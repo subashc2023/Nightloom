@@ -31,6 +31,7 @@ import type {
   ProjectInfo,
   ProjectsFolderInfo,
   NewProjectPath,
+  UsageSummary,
   PromptLayer,
   PromptLayersInfo,
   Proposal,
@@ -306,6 +307,15 @@ export function projectsFolderInfo(): Promise<ProjectsFolderInfo | null> {
  */
 export function setProjectsFolder(dir: string | null): Promise<ProjectsFolderInfo | null> {
   return invoke("set_projects_folder", { dir });
+}
+
+/**
+ * What Claude Code has cost, from the ledger under `~/.claude`. Never
+ * rejects for a missing ledger — that comes back as `available: false`
+ * with the reason, so Settings can open on a machine with no collector.
+ */
+export function usageLedger(): Promise<UsageSummary> {
+  return invoke("usage_ledger");
 }
 
 /** The folder a name would get, for the form's live path row. */

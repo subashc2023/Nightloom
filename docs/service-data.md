@@ -17,7 +17,19 @@ Where things live, and which of them Nightloom owns.
 ~/.nightloom/dream.json                how far the dream has read into the inbox
 ~/.nightloom/proposals/                the dream's proposed edits to user memory (pending; dismissed/ and applied/ beneath)
 ~/.nightloom/projects/<id>/proposals/  the same for that project's AGENTS.md
+
+# read, not owned — written by ~/.claude/usage-ledger.py (a LaunchAgent, every 6 h); Nightloom only reads them
+~/.claude/usage-ledger.csv             per-UTC-day Claude Code token counts, keyed (date, model, scope)
+~/.claude/usage-rates.json             $/MTok per model and the two cache-write multipliers
+~/.claude/usage-surfaces.csv           7-day share of the weekly limit by surface, one row per snapshot
 ```
+
+The last three sit under `~/.claude`, not `~/.nightloom`, and stay there
+whatever `NIGHTLOOM_HOME` says: they are the user's, filled by a collector
+Nightloom neither ships nor runs, and Settings → Usage is a view over them
+(`usage.rs`; `docs/usage-ledger.md`). Nothing in this crate writes them, and
+their absence is the ordinary state of a machine without the collector,
+reported as a sentence rather than an error.
 
 **Config in the folder, data in the home** — equivalently, *about the code /
 about you*. Notes describe the codebase, so they sit with it: a teammate can read

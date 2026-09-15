@@ -23,6 +23,7 @@ rather than in the code.
 | [docs/service-prompt.md](docs/service-prompt.md) | `prompt.rs` and `sidecar.rs` — the static preamble, the `AGENTS.md` walk, the docspace and vault index layers and how the vault index survives scale; the per-turn sidecar and the compaction advisory. |
 | [docs/service-tools.md](docs/service-tools.md) | The built-in tools: `Root` path confinement and the `@kb` alias, subagents, cross-model review and the reviewer bench, web fetch and the search chain, the two other-chats tools and what they measured, and why killing a shell is not killing the command. |
 | [docs/service-data.md](docs/service-data.md) | Where things live. Projects (a project is not a folder), the knowledge vault, the memory inbox and the dream, credentials, the claude.ai importer, session-log discovery. |
+| [docs/usage-ledger.md](docs/usage-ledger.md) | The usage ledger under `~/.claude`: the three files read and never written, the cost formula, the dedup basis, and why it is not `Chat.price`. |
 | [docs/service-agent.md](docs/service-agent.md) | `agent/` — driving the signed-in `claude` CLI as a second engine behind the same event stream, and the four load-bearing details behind it. |
 | [docs/mcp.md](docs/mcp.md) | `nightloom-mcp`. The two wires and where correlation lives, `McpTool`'s always-`Mutating` classification, Streamable HTTP, `mcp.json`. |
 | [docs/evals.md](docs/evals.md) | `nightloom-evals`. The agentic suite and its traps, the three shape tasks, the probe. |

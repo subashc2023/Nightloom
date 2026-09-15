@@ -326,6 +326,71 @@ export interface KnowledgeInfo {
   exists: boolean;
 }
 
+/**
+ * The usage ledger (Settings → Usage; nightshift backlog 045): what Claude
+ * Code has cost, read from the user-global collector's files under
+ * `~/.claude` and never written. Every dollar is an API-equivalent — the
+ * turns were mostly billed to a subscription, and this is what they would
+ * have cost — priced by `usage-rates.json` on the dedup basis (one count
+ * per API message id, what the API would bill). Dates are UTC.
+ */
+export interface UsageSummary {
+  /** False with `reason` when the collector has never run on this machine. */
+  available: boolean;
+  reason: string | null;
+  /** The directory the three files live in. */
+  dir: string;
+  /** The collector's path, for the pane's one-line note. */
+  collector: string;
+  first_date: string | null;
+  last_date: string | null;
+  /** RFC 3339 UTC; the ledger CSV's mtime — when the collector last finished. */
+  updated_at: string | null;
+  today: WindowSpend | null;
+  week: WindowSpend | null;
+  month: WindowSpend | null;
+  /** The newest surfaces snapshot, if the file exists. */
+  surfaces: SurfaceRow | null;
+  /** Models the ledger counted that the rates table does not price. */
+  unpriced_models: string[];
+}
+
+/** A window of UTC days on the dedup basis. */
+export interface WindowSpend {
+  from: string;
+  to: string;
+  days_with_data: number;
+  usd: number;
+  /** Largest first; both scopes (main and subagent) folded together. */
+  by_model: ModelSpend[];
+}
+
+export interface ModelSpend {
+  model: string;
+  usd: number;
+  reqs: number;
+  output: number;
+  /** True when the rates table has no row: `usd` is 0 and means unpriced, not free. */
+  unpriced: boolean;
+}
+
+/**
+ * One snapshot of the desktop app's seven-day breakdown by surface. Percents
+ * are of weekly rate-limit utilization — cost-weighted, integer-rounded,
+ * not dollars. Blank cells in the file are null.
+ */
+export interface SurfaceRow {
+  as_of: string;
+  window_started_at: string;
+  claude_code_pct: number | null;
+  chat_pct: number | null;
+  cowork_pct: number | null;
+  other_pct: number | null;
+  weekly_all_pct: number | null;
+  weekly_scoped_model: string;
+  weekly_scoped_pct: number | null;
+}
+
 /** Where new projects go (Settings → Projects folder). */
 export interface ProjectsFolderInfo {
   dir: string;

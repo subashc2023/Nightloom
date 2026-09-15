@@ -242,7 +242,8 @@ folder" — and the rail names the directory under it.
 `SettingsModal.svelte` is a sidebar-nav modal (provider list left, one pane at a
 time) managing per-provider API keys, rail visibility, the model picker, web
 search keys, the vault's folder, the projects folder (since 2026-09-14, the
-*Projects folder* row), and — since 2026-09-14 — the per-model
+*Projects folder* row), the usage ledger (the *Usage* row, the same day —
+below), and — since 2026-09-14 — the per-model
 instruction files (the *Model instructions* row; the files themselves are
 described under Notes below). That pane lists every file, has *+ Add for
 `<current model>`* for the one the rail is on, and — later the same day,
@@ -296,6 +297,40 @@ folder, created later) is skipped rather than allowed to move the default: its
 parent says nothing about where new ones go. Most recently *created* rather
 than opened, because where the user last made a project is where they are
 keeping them now.
+
+### Usage
+
+A row *Usage* under its own heading, since 2026-09-14 (nightshift backlog
+045; blocker 060 chose a Settings pane over anything in the transcript, on
+the dashboard's own reasoning that text in a message is stored and replayed
+forever). The nav row carries a dot for whether a ledger exists and the
+seven-day figure; the pane, in order:
+
+1. **Spend** — a table of models down and three windows across (today, the
+   last 7 days, the last 30 days; UTC days, inclusive), dedup basis, with a
+   total row. A model's `main` and `subagent` scopes are added together; a
+   fast-mode request is its own row suffixed `#fast`. A model the rates
+   table does not price is listed under the table as counted-but-unpriced
+   rather than shown as $0.
+2. **Surfaces** — the newest snapshot's split of the weekly limit by surface
+   (Claude Code / chat / cowork / other) and the weekly-cap line: the
+   all-models cap's fill and the per-model scoped cap's, with the window
+   start and the snapshot time in UTC.
+3. **Ledger** — the directory, the first and last dates on record, when the
+   CSV was last written (its mtime, relative and absolute), and the one-line
+   note that the collector is `~/.claude/usage-ledger.py` on a six-hourly
+   LaunchAgent and that Nightloom writes none of it.
+
+The pane's opening paragraph carries the stance: these are the API's own
+usage fields priced by `usage-rates.json`, so turns run on a subscription
+are shown as what they *would* have cost, not as a bill — the same sentence
+`docs/service-agent.md` gives for the Claude Code engine's dollar figure.
+The numbers come from one Tauri command, `usage_ledger`, which returns
+`available: false` and a reason (never an error) on a machine where the
+collector has not run, so Settings opens either way; the modal reads it once
+on open, for the nav row, and again whenever the pane is shown. The reader
+and the formula are `crates/nightloom-service/src/usage.rs`, documented in
+`docs/usage-ledger.md`.
 
 ### The model picker
 

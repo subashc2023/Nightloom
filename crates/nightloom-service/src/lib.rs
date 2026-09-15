@@ -24,6 +24,7 @@ pub mod sidecar;
 pub mod store;
 pub mod tools;
 pub mod turn;
+pub mod usage;
 
 pub use agent::{
     AgentError, AgentOutcome, AgentSpec, ClaudeCodeAgent, Recorder, resolve_binary,

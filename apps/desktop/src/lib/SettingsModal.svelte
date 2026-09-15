@@ -37,7 +37,8 @@
     type ModelEntry,
     type ModelSection,
   } from "./catalog";
-  import type { Note, ProviderInfo, SearchBackendInfo } from "./types";
+  import type { Note, ProviderInfo, SearchBackendInfo, UsageSummary } from "./types";
+  import { relativeTime } from "./time";
   import { untrack } from "svelte";
   import Icon from "./Icon.svelte";
 
@@ -270,6 +271,57 @@
       }
     }
     openModelInstructions(pickId, "settings");
+  }
+
+  /**
+   * The usage ledger (nightshift backlog 045): what Claude Code has cost,
+   * read from `~/.claude/usage-ledger.csv` and priced by the rates table
+   * beside it — the user-global collector's files, never written here.
+   * Read once when the modal opens, for the nav's 7-day figure, and again
+   * whenever the pane is shown, since the collector runs on its own clock.
+   * A missing ledger is `available: false` with the reason, not a failure;
+   * a failed call reads as the same thing so Settings still opens.
+   */
+  let usage = $state<UsageSummary | null>(null);
+  async function refreshUsage() {
+    try {
+      usage = await api.usageLedger();
+    } catch (e) {
+      usage = {
+        available: false,
+        reason: String(e),
+        dir: "~/.claude",
+        collector: "~/.claude/usage-ledger.py",
+        first_date: null,
+        last_date: null,
+        updated_at: null,
+        today: null,
+        week: null,
+        month: null,
+        surfaces: null,
+        unpriced_models: [],
+      };
+    }
+  }
+  void refreshUsage();
+  $effect(() => {
+    if (selected === "usage") void refreshUsage();
+  });
+  /** Dollars as the ledger's own report prints them: two places, grouped. */
+  function usd(n: number): string {
+    return "$" + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+  /** One model's dollars in one window, or a dash when it had no traffic there. */
+  function usdOf(w: { by_model: { model: string; usd: number; unpriced: boolean }[] } | null, model: string): string {
+    const m = w?.by_model.find((x) => x.model === model);
+    if (!m) return "–";
+    return m.unpriced ? "unpriced" : usd(m.usd);
+  }
+  /** Every model with traffic in the 30-day window, in that window's order (largest first). */
+  const usageModels = $derived(usage?.month?.by_model.map((m) => m.model) ?? []);
+  /** A surfaces percent, or a dash for a blank cell. */
+  function pct(n: number | null): string {
+    return n === null ? "–" : `${n}%`;
   }
 
   function size(bytes: number): string {
@@ -637,6 +689,18 @@
         {app.projectsFolder ? (app.projectsFolder.is_default ? "default" : "set") : "none"}
       </span>
     </button>
+    <div class="nav-title">Usage</div>
+    <button
+      class="nav-item"
+      class:active={selected === "usage"}
+      onclick={() => select("usage")}
+    >
+      <span class="nav-label">Usage</span>
+      <span class="st">
+        <span class="dot" class:ok={!!usage?.available}></span>
+        {usage?.available && usage.week ? `${usd(usage.week.usd)} / 7d` : "none"}
+      </span>
+    </button>
     <div class="nav-title">Appearance</div>
     <button
       class="nav-item"
@@ -725,6 +789,128 @@
           </div>
         </div>
       </section>
+    </div>
+  {:else if selected === "usage"}
+    <!-- The usage ledger (nightshift backlog 045, blocker 060): a Settings
+         pane rather than anything in the transcript, on the dashboard's own
+         reasoning — text in a message is stored and replayed forever. -->
+    <div class="pane">
+      <div class="pane-head">
+        <h2 class="pane-title">Usage</h2>
+        <span class="slug">{usage?.available && usage.week ? `${usd(usage.week.usd)} in 7 days` : "no ledger"}</span>
+        <span class="spacer"></span>
+        <button class="close" title="Close" aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+      </div>
+      <p class="note">
+        What Claude Code has cost, from the usage ledger under
+        <code>~/.claude</code>. These are the API's own usage fields — tokens
+        in, out, cache written and cache read, one count per API message —
+        priced by <code>usage-rates.json</code>. Turns run on a subscription
+        are shown as what they <em>would</em> have cost on the API, not as a
+        bill; a rate change in that file restates every figure here. Days are
+        UTC, as on Anthropic's dashboard.
+      </p>
+
+      {#if !usage}
+        <p class="note small">Reading the ledger…</p>
+      {:else if !usage.available}
+        <section class="card">
+          <div class="ch"><span class="t">No ledger yet</span></div>
+          <div class="key-status">{usage.reason}</div>
+          <p class="note small">
+            The collector is <code>{usage.collector}</code>, run every six hours by
+            a LaunchAgent; nothing in Nightloom writes these files. Run
+            <code>python3 {usage.collector} update --all</code> once and this
+            pane fills.
+          </p>
+        </section>
+      {:else}
+        <section class="card">
+          <div class="ch"><span class="t">Spend</span><span class="dim small">dedup basis · API-equivalent</span></div>
+          <div class="usage-table">
+            <table>
+              <thead>
+                <tr>
+                  <th class="l">model</th>
+                  <th>today<br /><span class="sub">{usage.today?.to}</span></th>
+                  <th>7 days<br /><span class="sub">{usage.week?.from} →</span></th>
+                  <th>30 days<br /><span class="sub">{usage.month?.from} →</span></th>
+                </tr>
+              </thead>
+              <tbody>
+                {#each usageModels as m (m)}
+                  <tr>
+                    <td class="l"><code>{m}</code></td>
+                    <td>{usdOf(usage.today, m)}</td>
+                    <td>{usdOf(usage.week, m)}</td>
+                    <td>{usdOf(usage.month, m)}</td>
+                  </tr>
+                {/each}
+                <tr class="total">
+                  <td class="l">total</td>
+                  <td>{usd(usage.today?.usd ?? 0)}</td>
+                  <td>{usd(usage.week?.usd ?? 0)}</td>
+                  <td>{usd(usage.month?.usd ?? 0)}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          {#if usage.unpriced_models.length}
+            <p class="note small">
+              Counted but not priced — the rates table has no row for
+              {#each usage.unpriced_models as m, i (m)}{i ? ", " : ""}<code>{m}</code>{/each}.
+              Their turns are in the request counts and in none of the dollars.
+            </p>
+          {/if}
+          <p class="note small">
+            A model's <em>main</em> and <em>subagent</em> scopes are added
+            together here; a fast-mode request is its own row, suffixed
+            <code>#fast</code>, at its own price.
+          </p>
+        </section>
+
+        <section class="card">
+          <div class="ch"><span class="t">Surfaces</span><span class="dim small">share of the weekly limit, last 7 days</span></div>
+          {#if usage.surfaces}
+            {@const s = usage.surfaces}
+            <div class="usage-split">
+              <span><b>{pct(s.claude_code_pct)}</b> Claude Code</span>
+              <span><b>{pct(s.chat_pct)}</b> chat</span>
+              <span><b>{pct(s.cowork_pct)}</b> cowork</span>
+              <span><b>{pct(s.other_pct)}</b> other</span>
+            </div>
+            <div class="key-status">
+              Weekly cap {pct(s.weekly_all_pct)} used across every model{#if s.weekly_scoped_model};
+                <b>{s.weekly_scoped_model}</b>'s own weekly cap {pct(s.weekly_scoped_pct)} used{/if}.
+              Window from {s.window_started_at.replace("T", " ")} UTC, as of {s.as_of.replace("T", " ")} UTC.
+            </div>
+            <p class="note small">
+              From the desktop app's own usage response, read from its cache on
+              disk. Percents are of weekly rate-limit utilization — cost-weighted,
+              rounded to whole numbers, and not dollars.
+            </p>
+          {:else}
+            <div class="key-status">No surfaces snapshot yet — the collector records one when the desktop app has fetched its usage page.</div>
+          {/if}
+        </section>
+
+        <section class="card">
+          <div class="ch"><span class="t">Ledger</span></div>
+          <div class="key-status">
+            <code class="path">{usage.dir}</code>
+            <br />
+            {usage.first_date} → {usage.last_date}{usage.updated_at
+              ? `, last updated ${relativeTime(usage.updated_at)} (${new Date(usage.updated_at).toLocaleString()})`
+              : ""}.
+          </div>
+          <p class="note small">
+            The collector is <code>{usage.collector}</code>, run every six hours by
+            a LaunchAgent (<code>com.swaraagsistla.claude-usage-ledger</code>).
+            Nightloom reads its three files and writes none of them; the
+            same numbers, to the cent, are <code>claude_usage</code> in a shell.
+          </p>
+        </section>
+      {/if}
     </div>
   {:else if selected === "projects"}
     <div class="pane">
@@ -1510,6 +1696,58 @@
     font-size: 12.5px;
     color: var(--ink);
     overflow-wrap: anywhere;
+  }
+  /* The usage pane's spend table: models down, windows across, mono
+     figures right-aligned so the decimal points line up. */
+  .usage-table {
+    overflow-x: auto;
+  }
+  .usage-table table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 12.5px;
+  }
+  .usage-table th,
+  .usage-table td {
+    padding: 5px 8px;
+    text-align: right;
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    border-bottom: 1px solid var(--line);
+  }
+  .usage-table th {
+    font-weight: 500;
+    color: var(--dim);
+    font-size: 11px;
+    vertical-align: bottom;
+  }
+  .usage-table th .sub {
+    font-weight: 400;
+    font-size: 10px;
+  }
+  .usage-table .l {
+    text-align: left;
+  }
+  .usage-table td.l code {
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  .usage-table tr.total td {
+    border-bottom: none;
+    font-weight: 600;
+    color: var(--ink);
+  }
+  .usage-split {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    font-size: 13px;
+  }
+  .usage-split b {
+    font-family: var(--mono);
+    font-weight: 600;
+    margin-right: 4px;
   }
   /* The model-instruction files, one row each: id, size, pencil. */
   .mfiles {
