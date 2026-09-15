@@ -59,9 +59,17 @@ passes `--mcp-config` with an inline JSON naming its own binary
 (`current_exe() --mcp-serve --project <id>`, `AgentSpec::mcp_config`), so the
 engine gets Nightloom's `search_chats`, `read_chat`, `remember` and
 `fetch_page` as `mcp__nightloom__*` (nightshift backlog 046; the server is
-`mcp_server.rs`, documented in mcp.md). Under safe mode `--strict-mcp-config`
-now means *this server and no other*, which is what safe mode wants. The
-engine note tells the model when to reach for each. The CLI's permission
+`mcp_server.rs`, documented in mcp.md). ~~Under safe mode `--strict-mcp-config`
+now means *this server and no other*, which is what safe mode wants.~~ —
+**Wrong, measured 2026-09-14 (nightshift 046 pass 2, blocker 058):** CLI
+2.1.263's `--safe-mode` discards `--mcp-config` servers as well as the host's,
+so its `system/init` reports `mcp_servers: []` and a safe-mode chat has
+**none** of Nightloom's tools; without `--safe-mode` the same command lists
+`nightloom: connected`. `--strict-mcp-config` still rides along, harmless.
+Until blocker 058 is answered, safe mode means "nothing of the host's and
+nothing of Nightloom's beyond the preamble", and the Safe mode hint says so.
+The engine note tells the model when to reach for each, by their full
+`mcp__nightloom__` names (the CLI's `ToolSearch` resolves nothing shorter). The CLI's permission
 system judges the calls like any other MCP tool; the allowlist line for
 `~/.claude/settings.json` is `"mcp__nightloom__*"` under `permissions.allow`
 (`search_chats` and `read_chat` are read-only, `remember` appends one inbox

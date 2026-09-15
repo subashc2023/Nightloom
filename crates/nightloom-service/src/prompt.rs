@@ -347,9 +347,18 @@ fn engine_note_segment(knowledge: Option<&KnowledgeContext>) -> Segment {
              vault is a record of what was believed when, not only of what is believed now."
         ));
     }
+    // The full names, because that is what the CLI's ToolSearch resolves: a
+    // Sonnet turn asked for `select:search_chats,read_chat`, found nothing,
+    // and spent two turns before the prefixed name worked (nightshift
+    // backlog 046 pass 2). "This project" is said out loud for the same
+    // reason — the same turn searched every project when asked about one.
     text.push_str(
-        " For a whole page use fetch_page, not WebFetch; to find or quote another chat use \
-         search_chats / read_chat; to leave something for memory use remember.",
+        " Nightloom's own tools are the MCP tools named mcp__nightloom__fetch_page, \
+         mcp__nightloom__search_chats, mcp__nightloom__read_chat and \
+         mcp__nightloom__remember (ToolSearch them by those full names). For a whole \
+         page use fetch_page, not WebFetch; to find or quote another chat use \
+         search_chats then read_chat, searching this project unless asked to look \
+         wider; to leave something for memory use remember.",
     );
     text.push_str("\n</engine-note>");
     Segment::new(SegmentKind::EngineNote, "engine-note", text)

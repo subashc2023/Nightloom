@@ -191,8 +191,11 @@ pub struct AgentSpec {
     /// An MCP config for the CLI to load, as the inline JSON string
     /// `--mcp-config` accepts (`external`, the CLI reference: "JSON files
     /// or strings"). Nightloom's own server goes here — see `mcp_server`.
-    /// Under `safe_mode` the CLI also gets `--strict-mcp-config`, so this
-    /// becomes the *only* server, which is what safe mode wants.
+    /// Under `safe_mode` the CLI also gets `--strict-mcp-config`, ~~so this
+    /// becomes the *only* server, which is what safe mode wants~~ — measured
+    /// 2026-09-14: `--safe-mode` drops this server too (`mcp_servers: []` in
+    /// the init event), so a safe-mode turn has no Nightloom tools at all
+    /// (nightshift blocker 058).
     pub mcp_config: Option<String>,
     /// Passed through verbatim, last, so a caller can reach a flag this
     /// struct has not grown a field for.
