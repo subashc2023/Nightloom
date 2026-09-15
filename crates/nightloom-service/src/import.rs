@@ -154,24 +154,28 @@ pub const BACKGROUND_NOTE: &str = "background.md";
 /// The heading of the pointer paragraph in the user memory, and what a
 /// second import looks for to know the paragraph is already there.
 pub const BACKGROUND_HEADING: &str = "## Background, on demand";
-/// The pointer paragraph itself, word for word the one written into the
-/// real file by hand on 2026-09-14, so the importer and that edit agree.
+/// The pointer paragraph itself: the one rule the vault index cannot carry,
+/// and the one caveat an index line cannot.
+///
+/// Until 2026-09-15 this was word for word the hand edit of 2026-09-14 —
+/// a folder list, the `@kb/` addressing, "use the index to pick", and how
+/// to read a note on the Claude Code engine. Every one of those is already
+/// in the prompt: the vault index lists the folders and root notes with a
+/// line each and says how a note is reached, and the engine note says what
+/// `@kb/<name>` is on Claude Code. So the paragraph paid for the same map
+/// twice on every turn of every chat (nightshift backlog 060, blocker 064).
+/// What is left is what nothing else says — that the background is not
+/// here and is read one note at a time — and the staleness of
+/// [`BACKGROUND_NOTE`], which no index line can carry.
 pub const BACKGROUND_POINTER: &str = "## Background, on demand
 
-Nothing about Swaraag's history, work or current projects is loaded here.
-It lives in the knowledge vault (`@kb/`), and is read only when a question
-needs it — a fitness question does not need his research context and the
-other way round. Read the one note the question calls for, not all of them:
+Nothing about Swaraag — his history, work, projects, people — is loaded
+here. It lives in the knowledge vault, listed in this prompt's vault index;
+read the one note a question needs, not all of them. A fitness question does
+not need his research context, and the other way round.
 
-- `@kb/background.md` — who he is, what he has worked on, recent months (from the claude.ai export; partly out of date)
-- `@kb/profile.md`, `@kb/preferences.md` — the short profile and how he likes things done
-- `@kb/topics/` — fitness, coursework, ai-safety, music-production, technical-skills, recent-work
-- `@kb/areas/` — one note per project or application he is working on
-- `@kb/people/` — the people who come up
-
-The vault index in this prompt lists every note with a one-line summary; use
-it to pick. On the Claude Code engine `@kb/<name>` is a real path under the
-vault directory, granted to you — use `Read`.";
+`@kb/background.md` is the long summary from the claude.ai export: who he is
+and what he has worked on, partly out of date.";
 /// The section headings the export's summary of the user carries — the
 /// biographical ones, which is to say the ones that must never end up in
 /// the always-loaded file. The importer warns when a user memory still has

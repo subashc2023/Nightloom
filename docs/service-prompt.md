@@ -37,8 +37,12 @@ file holds how the model should behave — in every conversation, whatever it is
 about — and nothing about who the user is, what they work on or what happened.
 Those facts live in the vault (`profile.md`, the topic notes, `background.md`)
 and are read on demand: the file carries a short "Background, on demand"
-paragraph naming the notes and how to reach them, and the vault index in the
-prompt lists them one line each. The rule exists because the claude.ai import
+paragraph, and the vault index in the prompt lists the notes one line each.
+~~The paragraph names the notes and how to reach them~~ — **trimmed
+2026-09-15 (nightshift backlog 060): the paragraph is the rule alone — nothing
+about the user is here, read the one note a question needs — plus the
+`background.md` staleness caveat; the folder list and the `@kb/` addressing
+were the index's map said twice, and the index owns the map.** The rule exists because the claude.ai import
 once pasted the export's whole summary of the user — work context, personal
 context, top of mind, a history — into this file, and every turn of every chat
 paid for it whether or not the question touched it. Two writers hold the line:
