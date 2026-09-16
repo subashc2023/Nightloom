@@ -1054,6 +1054,10 @@
     line-height: 1.5;
     resize: none;
     overflow-y: auto;
+    /* A message wraps; a sliver of horizontal overflow was drawing a full
+       10px scrollbar thumb across the box (his screenshot, 2026-09-16). */
+    overflow-x: hidden;
+    box-sizing: border-box;
   }
   textarea::placeholder {
     color: var(--dim);
