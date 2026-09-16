@@ -634,17 +634,20 @@
     overflow: hidden;
     font-family: var(--sans);
   }
-  /* The project block is the same 82px as the Nightshift top bar, with the
+  /* ~~The project block is the same 82px as the Nightshift top bar, with the
      name centred, so the sidebar's name and the page title share one
-     baseline and one rule across the window (mock-up revision 2d). */
+     baseline and one rule across the window (mock-up revision 2d).~~
+     2026-09-16 (his ask): the name sits on the chat top bar's line instead —
+     that bar is 52px, its title centred at 26px, so a 12px top padding puts
+     the 22px name's line there; the path and the actions flow below and the
+     block takes the height they need. */
   .project {
     position: relative;
-    height: 82px;
     flex: none;
     border-bottom: 1px solid var(--line);
     display: flex;
     flex-direction: column;
-    justify-content: center;
+    padding: 12px 0 10px;
   }
   .chip {
     width: 100%;
