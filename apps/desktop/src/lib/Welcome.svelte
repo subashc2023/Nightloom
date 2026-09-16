@@ -60,7 +60,10 @@
     rx: Math.round(Math.min(w * 0.44, w / 2 - 95)),
     ry: Math.round(h * 0.36),
   });
-  const colMax = $derived(rings ? Math.min(560, 2 * (innerR.rx - 60)) : 560);
+  // 720, up from 560 (his 2026-09-16 review: a long prompt "feels kinda
+  // compressed horizontally") — near the open chat's composer width, still
+  // held inside the inner ring on a narrow window.
+  const colMax = $derived(rings ? Math.min(720, 2 * (innerR.rx - 60)) : 720);
 
   function ellipse(rx: number, ry: number): string {
     return `M ${cx + rx} ${cy} A ${rx} ${ry} 0 1 1 ${cx - rx} ${cy} A ${rx} ${ry} 0 1 1 ${cx + rx} ${cy}`;
