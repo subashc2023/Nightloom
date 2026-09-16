@@ -25,12 +25,33 @@ export function tokenize(text: string): string[] {
 
 export function wordDiff(before: string, after: string): DiffOp[] {
   if (before === after) return before ? [{ kind: "same", text: before }] : [];
-  const a = tokenize(before);
-  const b = tokenize(after);
+  const aAll = tokenize(before);
+  const bAll = tokenize(after);
+  // The common head and tail come off first: an edit is usually a few
+  // words inside a long message, and the table below is only ever built
+  // over the part that differs. Before this (2026-09-16), a reply past
+  // ~2000 tokens hit the cap and a two-word deletion at its end showed
+  // as the whole reply struck and added back.
+  let head = 0;
+  while (head < aAll.length && head < bAll.length && aAll[head] === bAll[head]) head++;
+  let tail = 0;
+  while (
+    tail < aAll.length - head &&
+    tail < bAll.length - head &&
+    aAll[aAll.length - 1 - tail] === bAll[bAll.length - 1 - tail]
+  )
+    tail++;
+  const a = aAll.slice(head, aAll.length - tail);
+  const b = bAll.slice(head, bAll.length - tail);
+  const same = (tokens: string[]): DiffOp[] => (tokens.length ? [{ kind: "same", text: tokens.join("") }] : []);
+  const headOps = same(aAll.slice(0, head));
+  const tailOps = same(aAll.slice(aAll.length - tail));
   if (a.length * b.length > LCS_LIMIT) {
     return merge([
-      { kind: "del", text: before },
-      { kind: "add", text: after },
+      ...headOps,
+      { kind: "del", text: a.join("") },
+      { kind: "add", text: b.join("") },
+      ...tailOps,
     ]);
   }
   // lcs[i][j]: the length of the longest common subsequence of a[i..] and
@@ -65,7 +86,7 @@ export function wordDiff(before: string, after: string): DiffOp[] {
   }
   for (; i < n; i++) ops.push({ kind: "del", text: a[i]! });
   for (; j < m; j++) ops.push({ kind: "add", text: b[j]! });
-  return merge(coalesce(ops));
+  return merge([...headOps, ...coalesce(ops), ...tailOps]);
 }
 
 /**

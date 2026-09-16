@@ -77,16 +77,27 @@ describe("wordDiff", () => {
     expect(hasChange(ops)).toBe(true);
   });
 
-  it("past the cap the diff is one removal and one insertion, still exact", () => {
+  it("one word inside a long text is one insertion, whatever the text's length", () => {
+    // ~~past the cap the diff is one removal and one insertion~~ 2026-09-16:
+    // the common head and tail no longer count toward the cap.
     const a = Array.from({ length: 2100 }, (_, i) => `w${i}`).join(" ");
     const b = a.replace("w7 ", "w7 x ");
     const ops = wordDiff(a, b);
-    expect(ops).toEqual([
-      { kind: "del", text: a },
-      { kind: "add", text: b },
-    ]);
+    expect(ops.filter((op) => op.kind !== "same")).toEqual([{ kind: "add", text: "x " }]);
     expect(before(ops)).toBe(a);
     expect(after(ops)).toBe(b);
+  });
+
+  it("past the cap on the differing middle the diff is one removal and one insertion, still exact", () => {
+    const a = Array.from({ length: 2100 }, (_, i) => `w${i}`).join(" ");
+    const b = Array.from({ length: 2100 }, (_, i) => `v${i}`).join(" ");
+    const ops = wordDiff("same " + a + " same", "same " + b + " same");
+    expect(ops).toEqual([
+      { kind: "same", text: "same " },
+      { kind: "del", text: a },
+      { kind: "add", text: b },
+      { kind: "same", text: " same" },
+    ]);
   });
 
   it("tokenize keeps whitespace runs as tokens and punctuation on its own", () => {
@@ -109,4 +120,17 @@ describe("wordDiff", () => {
       { kind: "same", text: ":" },
     ]);
   });
+});
+
+/// His report (2026-09-16): two words cut from the end of a long reply
+/// showed as the whole reply struck and added back — the LCS cap was
+/// reached on the whole text. The common head and tail are stripped
+/// first now, so the size of the message is not the size of the diff.
+it("a trailing deletion from a long text is one strike, not a whole replacement", () => {
+  const long = Array.from({ length: 3000 }, (_, i) => `word${i}`).join(" ");
+  const ops = wordDiff(long + " the end", long);
+  expect(ops).toEqual([
+    { kind: "same", text: long },
+    { kind: "del", text: " the end" },
+  ]);
 });
