@@ -445,6 +445,86 @@ prompt — the observations, the excerpts — under `~/.claude/projects/` on his
 own machine, as it holds every chat's; and the cost the desktop's toast used
 to print is gone on this engine, the ledger being the place to read it.
 
+## Five measurements (2026-09-16, nightshift backlog 082)
+
+Five one-turn questions about this engine, each answered on CLI 2.1.263 with
+Haiku in a throwaway cwd; the exact commands, the settling lines and the raw
+outputs are in the nightshift repo,
+`notes/runner-design/082-five-measurements-2026-09-16.md`. Every claim below
+is `inferred` from those runs unless tagged `external`.
+
+- **`/goal` works as a `-p` message — on a normal chat.** `claude -p "/goal
+  <condition>"` under `--setting-sources "" --strict-mcp-config` emitted a
+  synthetic assistant line "Goal set: …", ran a `Write`, and exited
+  `num_turns: 2` with the file in place (`external`, the goal doc: a `-p`
+  goal "runs the loop to completion in a single invocation"). Adding
+  `--disable-slash-commands` — Nightloom's safe-mode spelling — took
+  `slash_commands` to 0 and `/goal` came back as an ordinary result, "/goal
+  isn't available in this environment.", `num_turns: 0`, `stop_reason: null`,
+  which the desktop would show as the model's reply. So `/goal` is a feature
+  of normal chats; whether safe mode should give up the flag to have it is
+  nightshift blocker 082. Not visible in the stream: the judging model's own
+  call, and a second work turn (the condition held after one).
+- **No `Workflow` tool on his plan.** A plain run's `system/init.tools` has
+  34 built-ins (`Task`, `Artifact`, `Bash`, the cron and task tools,
+  `ToolSearch`, `WebFetch`, `WebSearch`, `Write`, …) and no `Workflow`;
+  nothing to build and nothing to expose.
+- **`--restricted` is not a substitute for `READ_ONLY_TOOLS`; keep `--tools`.**
+  Alone it removes `Bash`, `CronCreate`, `WebFetch`, `Monitor`,
+  `RemoteTrigger` and the MCP-resource tools and *keeps* `Edit`, `Write`,
+  `NotebookEdit`, `EnterWorktree` — a no-code-execution mode, not a
+  writes-nothing one — and `--permission-mode bypassPermissions` with it
+  exits 1 ("bypassPermissions not supported in restricted mode"), which is
+  what approval-off sends. It does keep a `--mcp-config` server (a scratch
+  stdio server connected and its tool was listed), but without
+  `--strict-mcp-config` it also kept the account-level claude.ai connectors
+  while dropping the user-level stdio server — the substituted-capability
+  shape `agent/mod.rs` warns about. What it adds over `--tools` (file tools
+  confined to the working dirs, settings/git writes needing a person) is
+  moot on a list with no writing tool.
+- **Hooks passed by `--settings` fire under safe mode, and the defer round
+  trip works end to end.** With `--setting-sources "" --strict-mcp-config
+  --disable-slash-commands` and `--settings '{"hooks":{"PreToolUse":[{"matcher":"Write",…}]}}'`:
+  (a) a hook that only touches a file fired and the `Write` went on to run;
+  (b) a hook answering `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"defer"}}`
+  made the process exit 0 with `stop_reason: "tool_deferred"` (and
+  `terminal_reason` the same), `is_error: false`, `result: ""`, and
+  `deferred_tool_use: {id, name: "Write", input: {file_path, content}}`, the
+  file unwritten; (c) `claude -p --resume <that session id>` with no prompt
+  argument and the hook now answering `allow` plus `updatedInput` re-fired
+  the hook with the same `tool_use_id`, ran the write with the hook's input
+  (the file held the hook's edited content), and finished `end_turn`,
+  `result: "done."`. `--permission-prompts host` was never needed — the
+  default is `host` and nothing waited, because the hook decides before the
+  permission system is asked. The doc's limits still apply (`external`,
+  hooks doc "Defer a tool call for later"): single tool call per turn, no
+  timeout, session on disk until resumed, `--permission-mode` must be passed
+  again on `-p` resume. Two parser notes: the `result` line is not always the
+  last line of the stream (a `system/task_summary` can follow), and the
+  resume stream opens with `command_lifecycle`, `attachment` and the tool
+  result's `user` event *before* its `system/init`.
+- **`AskUserQuestion` appears only with `--permission-prompt-tool`.** Under
+  safe mode the plain list and the list with the defer hook present are
+  identical (29 built-ins, no `AskUserQuestion`, no plan tools). Adding
+  `--permission-prompt-tool <name>` adds exactly `AskUserQuestion`,
+  `EnterPlanMode` and `ExitPlanMode` — and the name need not resolve
+  (`mcp__nope__ask` with no server worked the same as a real tool). With
+  both the prompt tool and the defer hook on a write, the hook's defer won
+  and the prompt tool's server logged no `tools/call` at all. So the Ask
+  position of backlog 084 needs both flags: the prompt tool to unlock the
+  question and plan tools, the hook to turn the call into an exit. A
+  `--tools` positive list must name `AskUserQuestion` for it to survive.
+
+One side finding, not one of the five: **`--permission-mode auto` on Haiku
+starts in Manual.** The init event reported `permissionMode: "default"` for
+`auto` (and `acceptEdits` faithfully), and a `Write` was refused "you
+haven't granted it yet". The permission-modes doc (`external`) lists Haiku
+among models "not supported on any provider" for auto mode and says an
+unavailable `auto` "starts the session in Manual instead". A Haiku chat
+with approval on therefore denies every call that would prompt, headless;
+`headless_permission_mode`'s comment knows the fallback exists but not that
+the model choice triggers it.
+
 ## What `--append-system-prompt` carries
 
 Three parts, in this order, joined by blank lines (`prompt::agent_prompt`
