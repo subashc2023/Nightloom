@@ -164,6 +164,11 @@ pub const EXIT_PLAN_MATCHER: &str = "ExitPlanMode";
 /// of every plan-mode turn was "Run Write?" for the plan file.
 pub const PLAN_MODE_PASS: [&str; 4] = ["Write", "Edit", "MultiEdit", "NotebookEdit"];
 
+/// What a subagent's call is refused with under Ask. Written for the model
+/// that reads it: what it may do instead, so the refusal reaches the user
+/// as a sentence in the parent's reply rather than as silence.
+pub const SUBAGENT_DENIED: &str = "this call needs the user's approval, which a subagent cannot ask for under Nightloom's Ask position — make the call from the main conversation, or report what you would have done";
+
 /// Where the chat goes once a plan is approved — the pick on the card
 /// (backlog 085, the design's `then Ask | Auto`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -342,6 +347,11 @@ struct HookInput {
     /// field is on every line the CLI sent (`hook-defer-input.log`).
     #[serde(default)]
     permission_mode: String,
+    /// Present exactly when the call is a subagent's (measured 2026-09-16,
+    /// nightshift `notes/runner-design/084-subagent-under-ask-2026-09-16.md`);
+    /// a top-level call's line has no such field.
+    #[serde(default)]
+    agent_id: Option<String>,
 }
 
 /// The hook's reply, as the CLI reads it. `None` inside is the empty
@@ -434,8 +444,17 @@ impl HookReply {
 
 /// The hook's whole decision, pure: the CLI's stdin line and the directory
 /// in, the reply out. Order: plan mode's editing tools stand aside, then a
-/// standing rule, then the one-shot decision for this very call
-/// (consumed), then defer.
+/// standing rule, then a subagent's call is refused in words, then the
+/// one-shot decision for this very call (consumed), then defer.
+///
+/// **A subagent's call is denied, never deferred** (2026-09-16, measured in
+/// nightshift `notes/runner-design/084-subagent-under-ask-2026-09-16.md`):
+/// a `defer` from inside a subagent is dropped by the CLI — no
+/// `deferred_tool_use`, nothing to resume — and the parent reads "no
+/// output" and often asserts the work was done. A denial with a reason is
+/// text the subagent reports, the parent sees, and the user sees in the
+/// parent's reply. A standing "allow for this chat" rule still covers it,
+/// checked first; whether it should is blocker 100's question.
 pub fn decide(dir: &Path, stdin_json: &str) -> HookReply {
     let input: HookInput = match serde_json::from_str(stdin_json) {
         Ok(i) => i,
@@ -452,6 +471,9 @@ pub fn decide(dir: &Path, stdin_json: &str) -> HookReply {
     }
     if read_rules(dir).allow.contains(&input.tool_name) {
         return HookReply::allow(None);
+    }
+    if input.agent_id.as_deref().is_some_and(|id| !id.is_empty()) {
+        return HookReply::deny(SUBAGENT_DENIED.into());
     }
     let path = dir.join(DECISION_FILE);
     let decision: Option<Decision> = std::fs::read(&path)
@@ -685,6 +707,26 @@ mod tests {
         .unwrap();
         let reply = decide(&dir, STDIN);
         assert_eq!(reply.reason(), Some("the user declined this call"));
+    }
+
+    /// A subagent's call carries `agent_id`; it is refused in words, never
+    /// deferred (the CLI drops a subagent's defer, measured 2026-09-16),
+    /// and a standing rule still covers it.
+    #[test]
+    fn a_subagents_call_is_denied_with_a_reason_not_deferred() {
+        let dir = scratch();
+        let from_subagent = STDIN.replacen(
+            r#""permission_mode":"acceptEdits""#,
+            r#""permission_mode":"acceptEdits","agent_id":"ae0b73db3d9ffbc33","agent_type":"general-purpose""#,
+            1,
+        );
+        let reply = decide(&dir, &from_subagent);
+        assert_eq!(reply.decision(), "deny");
+        assert_eq!(reply.reason(), Some(SUBAGENT_DENIED));
+        // The top-level shape of the same call still defers.
+        assert_eq!(decide(&dir, STDIN), HookReply::defer());
+        AskDir::new(&dir).allow_tool("Write").unwrap();
+        assert_eq!(decide(&dir, &from_subagent).decision(), "allow");
     }
 
     /// "Allow for this chat" is a rule that outlives the decision: the
