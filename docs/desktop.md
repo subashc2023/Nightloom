@@ -317,7 +317,15 @@ turn the CLI never saw) leaves the log as it was. `not_in_agent_mode` is
 lifted for exactly these four; `compact` and `edit_context` keep it. A turn
 is addressed on the CLI side by how many live user turns follow it
 (`turns_after`) and by its projected text (`cli_target`), never by its log
-index. The desktop test drives the same sequence against a synthesised
+index — and, since 2026-09-15 (nightshift backlog 066), a *block* of a
+reply by its count among the reply's text blocks or by its call id
+(`cli_block` → `cli_session::Block`). `edit_message` takes an optional
+`block` (an index into the reply's `blocks`; `Session::edit_block`,
+`CliSession::rewrite_block`), and **`remove_block { index, block }` /
+`restore_block { index, block }`** remove and restore one block — a text
+block, or a tool call together with its result (`Session::elide_block`,
+`CliSession::remove_block` / `restore_block`), on `remove_message`'s and
+`restore_message`'s terms. The desktop test drives the same sequence against a synthesised
 CLI file and checks the original is byte-identical afterwards.
 
 **Context** (`ContextPanel.svelte`, the rail's third tab): the `WireView`, one
@@ -380,7 +388,9 @@ a filtered list, because superseded turns are still rendered), `currentTodos`,
 and the ticker. `links.ts::resolveNote` is a fourth, mirroring
 `knowledge::resolve_link`. Since 2026-09-15 three more, in `edit.ts`:
 `editTexts`, `elideFlags` and `isEditable`, mirroring `Session::edit_texts`,
-`elide_flags` and `is_editable`.
+`elide_flags` and `is_editable`; and since backlog 066 `blockEdits`,
+`blockElisions` and `replyText`, mirroring `Session::block_edits`,
+`block_elisions` and `reply_text`.
 
 ## Importing from claude.ai
 

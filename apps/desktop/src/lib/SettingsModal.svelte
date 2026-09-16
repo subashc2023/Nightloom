@@ -3,6 +3,7 @@
     app,
     applyDraft,
     currentModelId,
+    DREAM_ENGINE,
     fetchModels,
     openModelInstructions,
     refreshProviders,
@@ -1076,9 +1077,9 @@
           one also runs after a compaction: the moment a conversation's detail
           is already being traded for a summary, and the trigger the
           consolidation evidence points at. A capture pass runs first, reading
-          the chats since the last one into the inbox, on the same model. Both
-          run unattended and spend real money, so it is off until you say
-          otherwise.
+          the chats since the last one into the inbox, on the same engine. Both
+          run unattended and bill whatever runs them, so it is off until you
+          say otherwise.
         </p>
         <label class="dream-auto">
           <input
@@ -1090,22 +1091,28 @@
         </label>
         <!-- The pass reads no chat context, so it does not need the chat's
              model — a cheap one does this job well, and an automatic pass is
-             exactly where cost compounds. -->
+             exactly where cost compounds. The Claude Code engine is a real
+             option here since 2026-09-16 (nightshift backlog 070): a dream
+             on it is one `claude -p` turn per folder, billed to the
+             subscription like a chat on that engine. -->
         <p class="note small">
-          Which model dreams. Leave on the rail's connection to dream with
-          whatever the chat runs on; picking a provider here also lets the
-          Claude Code engine dream, which has no provider of its own to lend.
+          Dreams run on whichever engine you pick here and bill it — an API
+          provider bills its key, Claude Code bills the subscription. Leave on
+          the rail's connection to use the chat's provider.
         </p>
         <div class="kf">
           <select bind:value={app.dreamPrefs.provider} onchange={saveDreamPrefs}>
             <option value="">the rail's connection</option>
+            <option value={DREAM_ENGINE}>Claude Code (subscription)</option>
             {#each app.providers as p (p.kind)}
               <option value={p.kind}>{providerLabel(p.kind)}</option>
             {/each}
           </select>
           <input
             type="text"
-            placeholder="model — blank for the provider's default"
+            placeholder={app.dreamPrefs.provider === DREAM_ENGINE
+              ? "alias — opus, sonnet, haiku; blank for the CLI's default"
+              : "model — blank for the provider's default"}
             disabled={!app.dreamPrefs.provider}
             bind:value={app.dreamPrefs.model}
             onchange={saveDreamPrefs}

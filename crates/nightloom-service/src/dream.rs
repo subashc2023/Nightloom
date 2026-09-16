@@ -59,6 +59,23 @@
 //! git. The test `agents_md_is_byte_identical_after_a_dream_that_proposes`
 //! pins it.
 //!
+//! **Two engines, one pass (2026-09-16, nightshift backlog 070).** Every
+//! dream before this ran through the provider layer and billed an API key,
+//! on a machine where nearly every chat runs on the Claude Code engine and
+//! bills the subscription. [`run_on_agent`] is the same pass as one
+//! `claude -p` turn per target: the working directory is the target's
+//! folder, the tools are the CLI's own `Read`, `Write`, `Edit`, `Glob` and
+//! `Grep` as a positive list ([`AGENT_TOOLS`]), the instruction is the same
+//! [`compose_instruction`] text, and `propose_instructions` reaches the
+//! model through Nightloom's MCP server started in its dream mode
+//! (`mcp_server::DreamServe`), which serves that tool and no other. The
+//! always-loaded file stays out of reach for the same reason as before: it
+//! is not under the working directory, and the CLI's permission mode is
+//! `acceptEdits` — an edit inside the folder runs, one outside is routed to
+//! a prompt nobody is there to answer. Both engines share [`run_with`],
+//! so the grouping, the snapshots, the watermark and the outcome are one
+//! code path and the engine is the only thing that differs.
+//!
 //! The tool set is files and search only: no `bash` (a consolidation pass
 //! needs no shell), no web (egress from an unattended job over personal
 //! notes, on the same argument `review` refuses its critics the network),
@@ -74,10 +91,12 @@ use chrono::Utc;
 use nightloom_core::{Segment, SegmentKind, Session, SystemPrompt, Usage};
 use tokio_util::sync::CancellationToken;
 
+use crate::agent::{AgentSpec, ClaudeCodeAgent, PassSpec};
+use crate::mcp_server::{self, DreamServe};
 use crate::observe::{self, Observation};
 use crate::project::{AGENTS_DIR, Project, Registry};
 use crate::prompt::{INSTRUCTION_FILE, read_capped};
-use crate::proposal::{ProposalSlot, ProposalTarget, ProposeInstructions};
+use crate::proposal::{self, ProposalSlot, ProposalTarget, ProposeInstructions};
 use crate::tools::{self, Root};
 use crate::turn::{Chat, TurnEvent};
 
@@ -259,6 +278,160 @@ fn identity_for(target: &Target) -> String {
     }
 }
 
+/// The CLI's built-in tools a dream on the Claude Code engine gets: files
+/// and search, the same five capabilities [`tools_for`] keeps, under the
+/// CLI's names. A **positive** list (`--tools`), never `--disallowedTools`,
+/// for the reason `agent::READ_ONLY_TOOLS` gives: a deny-list drifts open
+/// with the next release, and a dream must never find `Bash`, the web or
+/// `Task` in its hands. `--tools` leaves MCP tools alone, which is how
+/// `propose_instructions` arrives beside these.
+pub const AGENT_TOOLS: [&str; 5] = ["Read", "Write", "Edit", "Glob", "Grep"];
+
+/// What `--permission-mode` is for a dream on the CLI. `acceptEdits` runs
+/// an edit inside the working directory without asking and routes one
+/// outside it to a prompt — which, headless, is a denial (`external`, the
+/// permission-modes reference; measured 2026-09-16, see
+/// `docs/service-agent.md`). Not `bypassPermissions`: that would let a
+/// `Write` reach `../AGENTS.md`, and keeping that file out of reach is the
+/// one property the pass is built around.
+pub const AGENT_PERMISSION_MODE: &str = "acceptEdits";
+
+/// The sentences the CLI's system prompt gets for a dream, after the
+/// identity: the discipline the instruction also states, in the form the
+/// engine note gives a chat, plus the gloss from Nightloom's tool names to
+/// the CLI's. The instruction says `edit_file` and `list`; here those are
+/// `Edit` and `Glob`, and a model told the mapping once does not stall on
+/// a tool it cannot find.
+const AGENT_DISCIPLINE: &str = "You are running as one Claude Code turn. The folder you are in \
+     is the whole of your workspace and the only place you write; do not reach above it. Your \
+     file tools are Read, Write, Edit, Glob and Grep — where the instructions say edit_file \
+     use Edit, write_file is Write, list or list_dir is Glob, and grep is Grep. Amend notes \
+     with Edit at claim granularity; strike a superseded claim through with the date and put \
+     the new one beside it; never rewrite a note whole and never delete one. \
+     mcp__nightloom__propose_instructions is the propose_instructions the instructions name: \
+     call it at most once, only when an observation contradicts or extends the standing \
+     instructions, and never to restate what the notes here hold. Nobody is watching; do not \
+     ask questions, and end with the plain summary the instructions ask for.";
+
+/// The CLI's system prompt for a dream over `target`: the same identity the
+/// provider path's `prepare` installs, then [`AGENT_DISCIPLINE`].
+pub fn agent_system_prompt(target: &Target) -> String {
+    format!("{}\n\n{}", identity_for(target), AGENT_DISCIPLINE)
+}
+
+/// The `claude -p` invocation for one target: the pass's carried settings
+/// ([`PassSpec::spec_in`]) rooted at the target's folder, [`AGENT_TOOLS`],
+/// [`AGENT_PERMISSION_MODE`], the proposal tool pre-approved by its MCP
+/// name (the CLI's classifier would otherwise judge a call the pass is
+/// built to make), the system prompt above, and `--mcp-config` naming
+/// Nightloom's server in its dream mode for this target's store and file.
+/// No `--add-dir`: the folder is the working directory, and granting
+/// anything above it is exactly what must not happen.
+pub fn agent_spec_for(pass: &PassSpec, target: &Target, config: &Path) -> AgentSpec {
+    let mut spec = pass.spec_in(target.dir());
+    spec.tools = Some(AGENT_TOOLS.iter().map(|t| (*t).to_string()).collect());
+    spec.permission_mode = Some(AGENT_PERMISSION_MODE.into());
+    spec.allowed_tools = vec![mcp_server::mcp_name("propose_instructions")];
+    spec.append_system_prompt = Some(agent_system_prompt(target));
+    strict_mcp(&mut spec);
+    let proposal_target = target.proposal_target();
+    let dream = DreamServe {
+        store: proposal_target.store_in(config),
+        target: proposal_target,
+        instructions: target.instructions_path(config),
+    };
+    let (command, leading) = pass
+        .server
+        .split_first()
+        .map(|(c, rest)| (c.clone(), rest.to_vec()))
+        .unwrap_or_default();
+    let mut args = leading;
+    args.push("--dream".into());
+    args.push(dream.to_arg());
+    spec.mcp_config = Some(
+        serde_json::json!({
+            "mcpServers": {
+                mcp_server::SERVER_NAME: { "command": command, "args": args }
+            }
+        })
+        .to_string(),
+    );
+    spec
+}
+
+/// `--strict-mcp-config` on every pass, safe mode or not. `--tools` names
+/// the CLI's built-ins and leaves MCP tools alone, so without this a pass
+/// gets every server the host has configured beside Nightloom's — measured
+/// 2026-09-16 on his machine (haiku, the dream's flags, no safe mode): the
+/// init event listed `mcp__claude_ai_Google_Drive__create_file`,
+/// `share_file`, `trash_file` and the rest of that connector, and an
+/// OpenAlex server, next to `propose_instructions`. A consolidation pass
+/// over personal notes with a Drive writer in reach is the egress the
+/// module doc refuses. Safe mode already emits the flag
+/// (`AgentSpec::safe_mode`); a pass off safe mode gets it through
+/// `extra_args`, which is the field for a flag the spec has no switch for.
+/// Blocker 058's table records that plain `--strict-mcp-config` keeps the
+/// `--mcp-config` server and drops the others; that row was not re-measured
+/// for this path (the three runs were spent).
+pub(crate) fn strict_mcp(spec: &mut AgentSpec) {
+    if !spec.safe_mode {
+        spec.extra_args.push("--strict-mcp-config".into());
+    }
+}
+
+/// A dream's tool call on the CLI, as the activity line reads it: the
+/// desktop shows a `ToolCall`'s name beside the Dream button, and `Write`
+/// says less than "filed stack.md". Rewritten here so both shells agree;
+/// the `id` and `input` go through untouched, and any other event is
+/// forwarded as it came.
+fn describe_agent_event(event: TurnEvent) -> TurnEvent {
+    let TurnEvent::ToolCall { id, name, input } = event else {
+        return event;
+    };
+    let file = || {
+        input["file_path"]
+            .as_str()
+            .and_then(|p| Path::new(p).file_name())
+            .map(|f| f.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    };
+    let said = match name.as_str() {
+        "Write" => format!("filed {}", file()),
+        "Edit" => format!("amended {}", file()),
+        "Read" => format!("read {}", file()),
+        "Glob" | "Grep" => "surveying".to_string(),
+        n if n == mcp_server::mcp_name("propose_instructions") => {
+            "proposing a change to the instructions".to_string()
+        }
+        _ => name,
+    };
+    TurnEvent::ToolCall {
+        id,
+        name: said.trim_end().to_string(),
+        input,
+    }
+}
+
+/// Which engine runs a pass's turns: the provider layer through a `Chat`,
+/// or the Claude Code CLI through a [`PassSpec`]. Shared with the capture
+/// pass, which is the front half of the same pipeline and routes the same
+/// way.
+pub(crate) enum Engine<'a> {
+    Provider(&'a mut Chat),
+    Agent(&'a PassSpec),
+}
+
+/// What one target's turn came back with, whichever engine ran it.
+struct Turn {
+    usage: Usage,
+    /// The session's recorded price on the provider path; `None` on the
+    /// CLI, where nothing is billed per token and the CLI's own dollar
+    /// figure is an estimate of what the API would have charged.
+    cost: Option<f64>,
+    interrupted: bool,
+    proposed: bool,
+}
+
 /// What one dream did.
 #[derive(Debug)]
 pub struct DreamOutcome {
@@ -382,6 +555,116 @@ pub async fn run(
     cancel: &CancellationToken,
     on_event: &mut (dyn FnMut(TurnEvent) + Send),
 ) -> Result<Option<DreamOutcome>, String> {
+    run_with(Engine::Provider(chat), vault, config, cancel, on_event).await
+}
+
+/// [`run`] on the Claude Code engine (2026-09-16): one `claude -p` turn
+/// per target, built by [`agent_spec_for`], billed to the subscription.
+/// Everything [`run`] promises — the grouping, the prefix batch, the
+/// snapshots, the watermark's advance only on a complete pass — holds
+/// here, because it is the same function underneath. What differs: the
+/// CLI runs the file tools itself, so the confinement is its working
+/// directory and permission mode rather than `tools_for`'s root; the
+/// proposal tool is reached over MCP, so "did this turn propose" is read
+/// as the proposals new in the store after the turn rather than off the
+/// tool's slot; and `cost_usd` is `None`, since nothing was billed per
+/// token — the ledger (`usage.rs`) is where the turn's tokens show, read
+/// from the session file the CLI writes.
+pub async fn run_on_agent(
+    pass: &PassSpec,
+    vault: &Path,
+    config: &Path,
+    cancel: &CancellationToken,
+    on_event: &mut (dyn FnMut(TurnEvent) + Send),
+) -> Result<Option<DreamOutcome>, String> {
+    run_with(Engine::Agent(pass), vault, config, cancel, on_event).await
+}
+
+/// One turn over one target on `engine`. The provider path is what `run`
+/// always did — `prepare`, the turn, the slot; the agent path is the spec,
+/// the CLI, and the store's listing before and after.
+async fn turn_on(
+    engine: &mut Engine<'_>,
+    target: &Target,
+    config: &Path,
+    current: Option<&str>,
+    instruction: &str,
+    cancel: &CancellationToken,
+    forward: &mut (dyn FnMut(TurnEvent) + Send),
+) -> Result<Turn, String> {
+    match engine {
+        Engine::Provider(chat) => {
+            let slot = prepare(chat, target, config, current);
+            let mut session = Session::new();
+            let outcome = chat
+                .run_turn(&mut session, instruction, cancel, forward)
+                .await
+                .map_err(|e| format!("the dream's provider call failed: {e}"))?;
+            let cost = session.cost();
+            Ok(Turn {
+                usage: outcome.usage,
+                cost: (cost.unpriced_exchanges == 0).then_some(cost.usd),
+                interrupted: outcome.interrupted,
+                // Asked of the tool's own slot, not the folder: a listing
+                // could pick up a proposal an earlier dream left pending.
+                proposed: slot.path().is_some(),
+            })
+        }
+        Engine::Agent(pass) => {
+            let spec = agent_spec_for(pass, target, config);
+            let store = target.proposal_target().store_in(config);
+            // The listing before, so a proposal an earlier dream left
+            // pending is not mistaken for this turn's — the slot's job on
+            // the other path, done by difference here since the tool runs
+            // in the server's process.
+            let before: Vec<String> = proposal::list_in(&store)
+                .into_iter()
+                .map(|e| e.id)
+                .collect();
+            let agent = ClaudeCodeAgent::new(spec);
+            let mut streamed = false;
+            let mut described = |event: TurnEvent| {
+                streamed |= matches!(event, TurnEvent::TextDelta { .. });
+                forward(describe_agent_event(event));
+            };
+            let outcome = agent
+                .run_turn(instruction, cancel, &mut described)
+                .await
+                .map_err(|e| format!("the dream's Claude Code turn failed: {e}"))?;
+            let interrupted = cancel.is_cancelled();
+            if outcome.is_error && !interrupted {
+                return Err(format!(
+                    "the dream's Claude Code turn failed: {}",
+                    outcome.text.trim()
+                ));
+            }
+            // The summary is collected from the deltas; a CLI that did not
+            // stream this turn still said what it did on the result line.
+            if !streamed && !outcome.text.is_empty() {
+                forward(TurnEvent::TextDelta {
+                    text: outcome.text.clone(),
+                });
+            }
+            let proposed = proposal::list_in(&store)
+                .iter()
+                .any(|e| !before.contains(&e.id));
+            Ok(Turn {
+                usage: outcome.usage,
+                cost: None,
+                interrupted,
+                proposed,
+            })
+        }
+    }
+}
+
+async fn run_with(
+    mut engine: Engine<'_>,
+    vault: &Path,
+    config: &Path,
+    cancel: &CancellationToken,
+    on_event: &mut (dyn FnMut(TurnEvent) + Send),
+) -> Result<Option<DreamOutcome>, String> {
     let backlog = observe::backlog_in(config);
     if backlog.pending.is_empty() {
         return Ok(None);
@@ -420,32 +703,35 @@ pub async fn run(
         // model proposes against what every conversation actually reads —
         // and handed to the tool, so its guard judges against the same text.
         let current = read_capped(&g.target.instructions_path(config));
-        let slot = prepare(chat, &g.target, config, current.as_deref());
         let instruction = compose_instruction(&g.batch, &g.target, current.as_deref());
 
-        let mut session = Session::new();
         let mut forward = |event: TurnEvent| {
             if let TurnEvent::TextDelta { text } = &event {
                 summary.push_str(text);
             }
             on_event(event);
         };
-        let outcome = chat
-            .run_turn(&mut session, instruction.as_str(), cancel, &mut forward)
-            .await
-            .map_err(|e| format!("the dream's provider call failed: {e}"))?;
+        let outcome = turn_on(
+            &mut engine,
+            &g.target,
+            config,
+            current.as_deref(),
+            &instruction,
+            cancel,
+            &mut forward,
+        )
+        .await?;
         // A turn's commentary ends without a newline; the next target's
         // begins on its own line rather than mid-sentence.
         if !summary.is_empty() && !summary.ends_with('\n') {
             summary.push('\n');
         }
         usage.add(outcome.usage);
-        let cost = session.cost();
-        usd += cost.usd;
-        unpriced += cost.unpriced_exchanges;
-        // Asked of the tool's own slot, not the folder: a listing could
-        // pick up a proposal an earlier dream left pending.
-        filed[i].proposed = slot.path().is_some();
+        match outcome.cost {
+            Some(c) => usd += c,
+            None => unpriced += 1,
+        }
+        filed[i].proposed = outcome.proposed;
 
         if outcome.interrupted {
             interrupted = true;
@@ -1420,6 +1706,353 @@ mod tests {
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].proposal.text, "# Me\n\nBe terse. Metric units.\n");
         assert_eq!(fs::read_dir(&held_dir).unwrap().count(), 2);
+    }
+
+    // ---- the Claude Code engine (2026-09-16, nightshift backlog 070) ----
+
+    fn pass() -> PassSpec {
+        let mut pass = PassSpec::new(
+            "/opt/claude/bin/claude",
+            vec!["/Applications/Nightloom.app/x".into(), "--mcp-serve".into()],
+        );
+        pass.model = Some("haiku".into());
+        pass.safe_mode = true;
+        pass
+    }
+
+    /// The invocation for a project target: rooted at the memory folder
+    /// (not the workspace, whose `AGENTS.md` must stay out of reach), the
+    /// five file tools as a positive list, `acceptEdits`, the proposal tool
+    /// pre-approved by its MCP name, the identity and discipline on
+    /// `--append-system-prompt`, the rail's binary, model and safe mode
+    /// carried, no `--add-dir`, and `--mcp-config` starting Nightloom's
+    /// server in dream mode for this target's store and file.
+    #[test]
+    fn the_agent_spec_for_a_target_is_the_cwd_the_positive_list_and_the_dream_server() {
+        let (config, _vault, workspace) = fixture("agent-spec", "Lanternfish");
+        let project = Registry::load_in(&config)
+            .find_by_name("Lanternfish")
+            .unwrap()
+            .clone();
+        let target = Target::project(&project);
+        let spec = agent_spec_for(&pass(), &target, &config);
+
+        assert_eq!(
+            spec.workspace,
+            workspace.join(AGENTS_DIR).join(crate::project::MEMORY_DIR)
+        );
+        assert_eq!(spec.binary, "/opt/claude/bin/claude");
+        assert_eq!(spec.model.as_deref(), Some("haiku"));
+        assert!(spec.safe_mode);
+        assert!(spec.use_subscription);
+        assert!(
+            spec.add_dirs.is_empty(),
+            "nothing above the folder is granted"
+        );
+        assert!(spec.resume.is_none());
+        assert!(
+            !spec.no_session_persistence,
+            "the session file is what the ledger reads"
+        );
+        assert_eq!(
+            spec.tools.as_deref(),
+            Some(&AGENT_TOOLS.map(String::from)[..])
+        );
+        assert_eq!(spec.permission_mode.as_deref(), Some("acceptEdits"));
+        assert_eq!(spec.allowed_tools, ["mcp__nightloom__propose_instructions"]);
+        let system = spec.append_system_prompt.as_deref().unwrap();
+        assert!(system.contains("project «Lanternfish»"));
+        assert!(system.contains("strike a superseded claim through"));
+        assert!(system.contains("mcp__nightloom__propose_instructions"));
+        assert!(system.contains("at most once"));
+
+        let cfg: serde_json::Value =
+            serde_json::from_str(spec.mcp_config.as_deref().unwrap()).unwrap();
+        let server = &cfg["mcpServers"][mcp_server::SERVER_NAME];
+        assert_eq!(server["command"], "/Applications/Nightloom.app/x");
+        let args = server["args"].as_array().unwrap();
+        assert_eq!(args[0], "--mcp-serve");
+        assert_eq!(args[1], "--dream");
+        let dream = DreamServe::parse(args[2].as_str().unwrap()).unwrap();
+        assert_eq!(
+            dream.store,
+            config.join(crate::project::PROJECTS_DIR).join(&project.id)
+        );
+        assert_eq!(
+            dream.target,
+            ProposalTarget::Project {
+                id: project.id.clone(),
+                name: "Lanternfish".into()
+            }
+        );
+        assert_eq!(dream.instructions, workspace.join(INSTRUCTION_FILE));
+
+        // The argv the CLI sees, in the shape the flag tests assert on.
+        let argv = spec.args("hi").join(" ");
+        assert!(argv.contains("--tools Read Write Edit Glob Grep"), "{argv}");
+        for forbidden in [
+            "Bash",
+            "WebFetch",
+            "WebSearch",
+            "Task",
+            "--add-dir",
+            "--disallowedTools",
+        ] {
+            assert!(!argv.contains(forbidden), "{forbidden} in {argv}");
+        }
+        assert!(
+            argv.contains("--setting-sources  --strict-mcp-config"),
+            "{argv}"
+        );
+        assert_eq!(
+            spec.args("hi")
+                .iter()
+                .filter(|a| *a == "--strict-mcp-config")
+                .count(),
+            1,
+            "once under safe mode"
+        );
+        // And off safe mode too: the host's servers must never reach a pass.
+        let mut off = pass();
+        off.safe_mode = false;
+        let argv = agent_spec_for(&off, &target, &config).args("hi");
+        assert!(argv.iter().any(|a| a == "--strict-mcp-config"), "{argv:?}");
+        assert!(!argv.iter().any(|a| a == "--setting-sources"));
+
+        // The vault's target: the vault itself, the user's file, the config
+        // dir as the store.
+        let spec = agent_spec_for(&pass(), &Target::Vault(config.join("kb")), &config);
+        assert_eq!(spec.workspace, config.join("kb"));
+        let cfg: serde_json::Value =
+            serde_json::from_str(spec.mcp_config.as_deref().unwrap()).unwrap();
+        let dream = DreamServe::parse(
+            cfg["mcpServers"][mcp_server::SERVER_NAME]["args"][2]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(dream.store, config);
+        assert_eq!(dream.target, ProposalTarget::User);
+        assert_eq!(dream.instructions, config.join(INSTRUCTION_FILE));
+        assert!(
+            spec.append_system_prompt
+                .unwrap()
+                .contains("knowledge vault")
+        );
+    }
+
+    /// The activity line: a CLI tool call arrives as what it did to which
+    /// file, and anything that is not a tool call passes through.
+    #[test]
+    fn agent_tool_calls_are_described_for_the_activity_line() {
+        let call = |name: &str, input: serde_json::Value| TurnEvent::ToolCall {
+            id: "t".into(),
+            name: name.into(),
+            input,
+        };
+        let name_of = |e: TurnEvent| match e {
+            TurnEvent::ToolCall { name, .. } => name,
+            _ => panic!("a tool call"),
+        };
+        assert_eq!(
+            name_of(describe_agent_event(call(
+                "Write",
+                json!({"file_path": "/kb/stack.md"})
+            ))),
+            "filed stack.md"
+        );
+        assert_eq!(
+            name_of(describe_agent_event(call(
+                "Edit",
+                json!({"file_path": "/kb/a/user.md"})
+            ))),
+            "amended user.md"
+        );
+        assert_eq!(
+            name_of(describe_agent_event(call("Grep", json!({"pattern": "x"})))),
+            "surveying"
+        );
+        assert_eq!(
+            name_of(describe_agent_event(call(
+                "mcp__nightloom__propose_instructions",
+                json!({"text": "x"})
+            ))),
+            "proposing a change to the instructions"
+        );
+        assert_eq!(
+            name_of(describe_agent_event(call("Task", json!({})))),
+            "Task"
+        );
+        assert!(matches!(
+            describe_agent_event(TurnEvent::TextDelta { text: "hi".into() }),
+            TurnEvent::TextDelta { .. }
+        ));
+    }
+
+    /// The stand-in for `claude`: a shell script that writes one note into
+    /// its working directory (what the CLI's `Write` would do), starts the
+    /// MCP server exactly as the `--mcp-config` it was handed says — this
+    /// test binary's `mcp_server::tests::dream_server_entry`, since the
+    /// crate builds no other binary — calls `propose_instructions` on it,
+    /// and prints the stream-json lines a real turn prints. The server
+    /// command and the `--dream` payload are cut out of the config with
+    /// sed (the payload is JSON inside JSON, escaped once), and the payload
+    /// reaches the server through the environment because the harness owns
+    /// that process's argv.
+    #[cfg(unix)]
+    const STAND_IN: &str = r##"#!/bin/sh
+cfg=""; prev=""
+for a in "$@"; do
+  if [ "$prev" = "--mcp-config" ]; then cfg="$a"; fi
+  prev="$a"
+done
+printf 'filed by the stand-in\n' > filed.md
+cmd=$(printf '%s' "$cfg" | sed -e 's/^.*"command":"//' -e 's/".*$//')
+payload=$(printf '%s' "$cfg" | sed -e 's/^.*"--dream","//' -e 's/"\],"command".*$//' -e 's/\\"/"/g')
+printf '%s\n' \
+ '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"stand-in","version":"0"}}}' \
+ '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+ '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"propose_instructions","arguments":{"text":"# proposed by the stand-in\n","why":"Observation 1."}}}' \
+ | NIGHTLOOM_TEST_DREAM="$payload" "$cmd" --exact mcp_server::tests::dream_server_entry --nocapture >/dev/null 2>&1
+printf '%s\n' '{"type":"system","subtype":"init","cwd":"x","tools":["Read","Write","Edit","Glob","Grep"],"mcp_servers":[{"name":"nightloom","status":"connected"}],"model":"claude-haiku-4-5","permissionMode":"acceptEdits","session_id":"fake-session"}'
+printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Write","input":{"file_path":"'"$PWD"'/filed.md","content":"filed by the stand-in"}}]},"parent_tool_use_id":null}'
+printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t2","name":"mcp__nightloom__propose_instructions","input":{"text":"# proposed by the stand-in\n","why":"Observation 1."}}]},"parent_tool_use_id":null}'
+printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"filed one note and proposed"}}}'
+printf '%s\n' '{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":100,"output_tokens":7}}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns":3,"result":"filed one note and proposed","session_id":"fake-session","total_cost_usd":0.001,"usage":{"input_tokens":100,"output_tokens":7}}'
+"##;
+
+    /// The guarantee on this engine, pinned end to end with [`STAND_IN`]:
+    /// afterwards both `AGENTS.md` files are byte-for-byte as they were,
+    /// the note is in each target's own folder and nowhere above it, the
+    /// proposals are beside their stores — written by the server the pass
+    /// started from its own `--mcp-config` — the outcome says both turns
+    /// proposed, the cost is unpriced, and the batch is consumed. What a
+    /// stand-in cannot pin is the CLI refusing a `Write` above cwd under
+    /// `acceptEdits`; that is measured, not tested
+    /// (docs/service-agent.md).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn agents_md_is_byte_identical_after_an_agent_dream_that_proposes() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (config, vault, workspace) = fixture("agent-propose", "Lanternfish");
+        let project_id = Registry::load_in(&config)
+            .find_by_name("Lanternfish")
+            .unwrap()
+            .id
+            .clone();
+        let project_file = workspace.join(INSTRUCTION_FILE);
+        let user_file = config.join(INSTRUCTION_FILE);
+        fs::write(&project_file, "# Lanternfish\n\nUse cargo.\n").unwrap();
+        fs::write(&user_file, "# Me\n\nBe terse.\n").unwrap();
+        append(&config, "Switched the build to tokio.", Some("Lanternfish"));
+        append(&config, "Prefers long replies now.", None);
+
+        let fake = config.join("claude");
+        fs::write(&fake, STAND_IN).unwrap();
+        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut pass = PassSpec::new(
+            fake.to_string_lossy().into_owned(),
+            vec![
+                std::env::current_exe()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+            ],
+        );
+        pass.model = Some("haiku".into());
+        let cancel = CancellationToken::new();
+        let mut names: Vec<String> = Vec::new();
+        let outcome = run_on_agent(&pass, &vault, &config, &cancel, &mut |event| {
+            if let TurnEvent::ToolCall { name, .. } = event {
+                names.push(name);
+            }
+        })
+        .await
+        .unwrap()
+        .expect("a batch was pending");
+
+        // The files the pass may not write.
+        assert_eq!(
+            fs::read(&project_file).unwrap(),
+            b"# Lanternfish\n\nUse cargo.\n"
+        );
+        assert_eq!(fs::read(&user_file).unwrap(), b"# Me\n\nBe terse.\n");
+
+        // The note landed in each target's own folder — the cwd — and not
+        // in the workspace root beside the instructions file.
+        let memory = workspace.join(AGENTS_DIR).join(crate::project::MEMORY_DIR);
+        assert_eq!(
+            fs::read_to_string(memory.join("filed.md")).unwrap(),
+            "filed by the stand-in\n"
+        );
+        assert!(vault.join("filed.md").exists());
+        assert!(!workspace.join("filed.md").exists());
+        assert!(!config.join("filed.md").exists());
+
+        // The proposals, each beside its store, written by the server the
+        // pass started.
+        let project_store = config.join(crate::project::PROJECTS_DIR).join(&project_id);
+        let listed = crate::proposal::list_in(&project_store);
+        assert_eq!(listed.len(), 1, "the project's proposal");
+        assert_eq!(listed[0].proposal.text, "# proposed by the stand-in\n");
+        assert_eq!(
+            listed[0].proposal.target,
+            ProposalTarget::Project {
+                id: project_id.clone(),
+                name: "Lanternfish".into(),
+            }
+        );
+        let listed = crate::proposal::list_in(&config);
+        assert_eq!(listed.len(), 1, "the user's proposal");
+        assert_eq!(listed[0].proposal.target, ProposalTarget::User);
+
+        assert!(!outcome.interrupted);
+        assert_eq!(outcome.consolidated, 2);
+        assert_eq!(outcome.filed.len(), 2);
+        assert!(
+            outcome.filed.iter().all(|f| f.proposed),
+            "{:?}",
+            outcome.filed
+        );
+        assert_eq!(
+            proposed_line(&outcome.filed).unwrap(),
+            "proposed a change to Lanternfish's instructions and to your memory — review it under Notes"
+        );
+        assert!(outcome.summary.contains("filed one note and proposed"));
+        assert_eq!(outcome.usage.input_tokens, 200);
+        assert_eq!(outcome.usage.output_tokens, 14);
+        assert_eq!(
+            outcome.cost_usd, None,
+            "the subscription is not a per-token bill"
+        );
+        assert_eq!(
+            names,
+            [
+                "filed filed.md",
+                "proposing a change to the instructions",
+                "filed filed.md",
+                "proposing a change to the instructions"
+            ]
+        );
+        assert!(observe::backlog_in(&config).pending.is_empty());
+
+        // A dream that proposes nothing is not told it did by the proposal
+        // an earlier dream left pending.
+        append(&config, "Another.", None);
+        fs::write(
+            &fake,
+            "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"num_turns\":1,\"result\":\"nothing\",\"session_id\":\"s2\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}'\n",
+        )
+        .unwrap();
+        let outcome = run_on_agent(&pass, &vault, &config, &cancel, &mut |_| {})
+            .await
+            .unwrap()
+            .expect("a batch was pending");
+        assert!(!outcome.filed[0].proposed);
+        assert_eq!(crate::proposal::list_in(&config).len(), 1);
     }
 
     /// A section the file already has is not one the proposal adds: a

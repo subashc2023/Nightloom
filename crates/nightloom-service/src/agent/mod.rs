@@ -340,7 +340,8 @@ impl AgentSpec {
     /// Split out from spawning so it can be asserted on directly — the same
     /// shape the provider adapters are tested in, where the unit under test
     /// is the request that would have gone out rather than the reply.
-    fn args(&self, prompt: &str) -> Vec<String> {
+    /// `pub(crate)` so the dream's test can assert on its own invocation.
+    pub(crate) fn args(&self, prompt: &str) -> Vec<String> {
         self.argv(Some(prompt))
     }
 
@@ -436,6 +437,62 @@ impl AgentSpec {
         }
         a.extend(self.extra_args.iter().cloned());
         a
+    }
+}
+
+/// How a background pass — a dream, a capture — drives the CLI
+/// (2026-09-16, nightshift backlog 070).
+///
+/// A chat's connection carries a dozen settings; a pass needs four of them,
+/// and this is the shape that says which. The binary, the model alias and
+/// safe mode are the rail's own, so a pass runs on whatever the user
+/// already trusts a chat with; the subscription default is
+/// [`AgentSpec::use_subscription`]'s, for its reason — the pass exists so a
+/// dream bills the plan and not a key, and an inherited key would silently
+/// undo that. Nothing of a chat's crosses: no preamble (the pass has its own
+/// instruction), no `--add-dir` (the target folder is the working
+/// directory, and the one file it must not reach lives above it), no
+/// resume (each target is one fresh turn).
+///
+/// `server` is how Nightloom's MCP server is started — the program and its
+/// leading arguments, `[<desktop binary>, "--mcp-serve"]` from the app and
+/// `[nightloom, "mcp-serve"]` from the CLI. A dream appends
+/// `--dream <json>` so the server serves `propose_instructions` and nothing
+/// else (`mcp_server::DreamServe`); a capture starts no server at all.
+#[derive(Debug, Clone)]
+pub struct PassSpec {
+    pub binary: String,
+    /// Model alias (`haiku`, `sonnet`) or a full id; `None` is the CLI's
+    /// default, as for a chat.
+    pub model: Option<String>,
+    pub safe_mode: bool,
+    pub use_subscription: bool,
+    pub server: Vec<String>,
+}
+
+impl PassSpec {
+    pub fn new(binary: impl Into<String>, server: Vec<String>) -> Self {
+        Self {
+            binary: binary.into(),
+            model: None,
+            safe_mode: false,
+            use_subscription: true,
+            server,
+        }
+    }
+
+    /// An [`AgentSpec`] rooted at `cwd` with this pass's settings and
+    /// nothing else set: the caller names the tools, the permission mode,
+    /// the system prompt and the server. Kept as the one place the four
+    /// carried settings are copied across, so a dream and a capture cannot
+    /// differ in which of the rail's settings they honour.
+    pub fn spec_in(&self, cwd: impl Into<PathBuf>) -> AgentSpec {
+        let mut spec = AgentSpec::new(cwd);
+        spec.binary = self.binary.clone();
+        spec.model = self.model.clone();
+        spec.safe_mode = self.safe_mode;
+        spec.use_subscription = self.use_subscription;
+        spec
     }
 }
 

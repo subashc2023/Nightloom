@@ -212,6 +212,14 @@
 
   // The two transcript toggles' key caps, for their tooltips.
   const shiftKey = isMac ? "⌘⇧" : "Ctrl+Shift+";
+  // What a prior turn's thinking costs (nightshift backlog 066, measured
+  // 2026-09-16 on his account, CLI 2.1.263): on Haiku 4.5 the thinking of
+  // an earlier turn is sent and billed with every later request; on Opus 5
+  // one turn could not separate it (nightshift blocker 079). There is no
+  // thinking editor; this is the one place the transcript says what the
+  // folded block costs.
+  const THINKING_COST_NOTE =
+    ". A prior turn's thinking is still sent and billed on later turns (measured on Haiku 4.5 via Claude Code; unverified on Opus 5).";
 </script>
 
 <header class="topbar">
@@ -287,9 +295,10 @@
       class="ns-chip toggle"
       class:on={transcript.thinking}
       aria-pressed={transcript.thinking}
-      title={transcript.thinking
+      title={(transcript.thinking
         ? `Thinking shown in every reply — click to fold it to a pill (${shiftKey}T)`
-        : `Thinking folded to a pill — click to show it in every reply (${shiftKey}T)`}
+        : `Thinking folded to a pill — click to show it in every reply (${shiftKey}T)`) +
+        THINKING_COST_NOTE}
       onclick={() => toggleTranscriptPref("thinking")}
     >
       <span class="mark" aria-hidden="true">✦</span>thinking

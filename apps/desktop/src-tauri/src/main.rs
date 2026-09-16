@@ -11,7 +11,7 @@ use nightloom_core::{
     DocumentInput, ImageInput, ProviderError, SegmentKind, Session, SessionEvent, SystemPrompt,
     Thinking, WireView,
 };
-use nightloom_service::agent::cli_session::{self, CliSession, Target};
+use nightloom_service::agent::cli_session::{self, Block, CliSession, Target};
 use nightloom_service::approval::{Approver, AutoApprove, Decision, PendingCall};
 use nightloom_service::credentials::{self, KeySource};
 use nightloom_service::import;
@@ -19,9 +19,9 @@ use nightloom_service::project::{self, Note, Project, Registry};
 use nightloom_service::store::{self, SessionMatch, SessionSummary};
 use nightloom_service::tools::{ChatDir, ChatDirs, Reviewer, Root, SearchBackend};
 use nightloom_service::{
-    AgentSpec, Chat, ClaudeCodeAgent, CompactOutcome, KnowledgeContext, Price, ProjectContext,
-    PromptConfig, ProviderKind, Recorder, TurnEvent, TurnInput, TurnOutcome, carry_transcript,
-    resolve_binary, searched_locations,
+    AgentSpec, Chat, ClaudeCodeAgent, CompactOutcome, KnowledgeContext, PassSpec, Price,
+    ProjectContext, PromptConfig, ProviderKind, Recorder, TurnEvent, TurnInput, TurnOutcome,
+    carry_transcript, resolve_binary, searched_locations,
 };
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
@@ -1403,6 +1403,50 @@ async fn connect_agent(
 /// Which agent a recorded [`SessionEvent::AgentSession`] belongs to.
 const AGENT: &str = "claude-code";
 
+/// What a background pass — a dream, a capture — runs on: a provider, or
+/// the Claude Code engine (2026-09-16, nightshift backlog 070). The
+/// frontend sends the same `provider` string it sends `connect`, with
+/// [`AGENT`] as the one value that is not a `ProviderKind`; routing on it
+/// here rather than in a second command keeps one lock, one cancel token
+/// and one event channel per pass whichever engine runs it.
+#[derive(Debug, PartialEq)]
+enum PassEngine {
+    Provider(ProviderKind),
+    Agent,
+}
+
+fn pass_engine(provider: &str) -> Result<PassEngine, String> {
+    if provider == AGENT {
+        return Ok(PassEngine::Agent);
+    }
+    Ok(PassEngine::Provider(provider.parse()?))
+}
+
+/// The CLI settings a pass on the Claude Code engine carries: the rail's
+/// binary (the default when blank, as `connect_agent`), the alias from
+/// Settings → Knowledge, the rail's safe mode, and this binary as the MCP
+/// server — the same `current_exe() --mcp-serve` a chat's server runs as,
+/// because it is the one binary the app can always find. The subscription
+/// stays on: a pass exists to bill the plan.
+fn pass_spec(
+    binary: Option<String>,
+    model: Option<String>,
+    safe_mode: Option<bool>,
+) -> Result<PassSpec, String> {
+    let exe = std::env::current_exe()
+        .map_err(|e| format!("cannot find this binary to serve propose_instructions from: {e}"))?;
+    let mut pass = PassSpec::new(
+        binary
+            .map(|b| b.trim().to_string())
+            .filter(|b| !b.is_empty())
+            .unwrap_or_else(|| AGENT_BINARY.into()),
+        vec![exe.to_string_lossy().into_owned(), "--mcp-serve".into()],
+    );
+    pass.model = model.map(|m| m.trim().to_string()).filter(|m| !m.is_empty());
+    pass.safe_mode = safe_mode.unwrap_or(false);
+    Ok(pass)
+}
+
 /// The model the last recorded exchange ran on, whatever superseded it since.
 ///
 /// Read off the whole log rather than the live projection: a compaction or a
@@ -1973,23 +2017,42 @@ fn cli_target(session: &Session, index: usize) -> Result<Target, String> {
             from_last,
             text: edited[index].unwrap_or(text).to_string(),
         }),
-        Some(SessionEvent::AssistantMessage { blocks, .. }) => Ok(Target::Assistant {
+        // The reply's text as its per-block markers leave it (backlog
+        // 066): edits applied, removed blocks out, removed calls leaving
+        // no mark — which is what the CLI's copy reads after the same
+        // edits, so the two histories still agree on the reply.
+        Some(SessionEvent::AssistantMessage { .. }) => Ok(Target::Assistant {
             from_last,
-            text: match edited[index] {
-                Some(t) => t.to_string(),
-                None => blocks
-                    .iter()
-                    .filter_map(|b| match b {
-                        nightloom_core::ContentBlock::Text { text } => Some(text.as_str()),
-                        _ => None,
-                    })
-                    .collect::<String>(),
-            },
+            text: session.reply_text(index).unwrap_or_default(),
         }),
         Some(_) => Err(format!(
             "event {index} is not a user message or an assistant reply"
         )),
         None => Err(format!("no event at {index}")),
+    }
+}
+
+/// The CLI's address for block `block` of the reply at `index`
+/// (nightshift backlog 066): a text block by its count among the reply's
+/// text blocks, a call by its id — the two things both histories agree
+/// on. Refuses anything else, as the core's `edit_block` / `elide_block`
+/// would.
+fn cli_block(session: &Session, index: usize, block: usize) -> Result<Block, String> {
+    let Some(SessionEvent::AssistantMessage { blocks, .. }) = session.events().get(index) else {
+        return Err(format!("event {index} is not a reply"));
+    };
+    match blocks.get(block) {
+        Some(nightloom_core::ContentBlock::Text { .. }) => Ok(Block::Text(
+            blocks[..block]
+                .iter()
+                .filter(|b| matches!(b, nightloom_core::ContentBlock::Text { .. }))
+                .count(),
+        )),
+        Some(nightloom_core::ContentBlock::ToolUse { id, .. }) => Ok(Block::ToolUse(id.clone())),
+        Some(_) => Err(format!(
+            "block {block} of event {index} is not text or a tool call"
+        )),
+        None => Err(format!("event {index} has no block {block}")),
     }
 }
 
@@ -2075,12 +2138,20 @@ struct MessageEdit {
 /// whichever log the next turn resumes from. The CLI copy is made
 /// *before* the marker: a refusal there leaves the log as it was, rather
 /// than a log that says one thing and a history that says another.
+///
+/// `block` (nightshift backlog 066) names one text block of a reply, as
+/// an index into its `blocks`: that block says `text` and the rest of
+/// the reply — its calls included — stays where it was
+/// (`Session::edit_block`; on Claude Code `CliSession::rewrite_block`, the
+/// block found by its count among the reply's text nodes). Absent, a
+/// reply's first text block, as before; meaningless on a user message.
 #[tauri::command]
 async fn edit_message(
     state: State<'_, AppState>,
     index: usize,
     text: String,
     mode: String,
+    block: Option<usize>,
 ) -> Result<MessageEdit, String> {
     match mode.as_str() {
         "save" => {
@@ -2094,21 +2165,36 @@ async fn edit_message(
             }
             if !session.is_editable(index) {
                 return Err(
-                    "only user messages and assistant replies without tool calls can be edited; a turn with a tool call can be removed instead".into(),
+                    "only user messages and assistant replies with text can be edited; a tool result can be removed instead".into(),
                 );
             }
             let workspace = agent_guard.as_ref().map(|a| a.spec().workspace.clone());
             let change = match &workspace {
                 Some(cwd) => {
                     let target = cli_target(session, index)?;
+                    let nth = match block {
+                        Some(b) => match cli_block(session, index, b)? {
+                            Block::Text(nth) => Some(nth),
+                            Block::ToolUse(_) => {
+                                return Err(format!(
+                                    "block {b} of event {index} is a tool call, which cannot be reworded; it can be removed"
+                                ));
+                            }
+                        },
+                        None => None,
+                    };
                     let new_text = text.clone();
-                    edit_on_cli(session, cwd, move |cli| {
-                        cli.rewrite(&target, &new_text).map(Some)
+                    edit_on_cli(session, cwd, move |cli| match nth {
+                        Some(nth) => cli.rewrite_block(&target, nth, &new_text).map(Some),
+                        None => cli.rewrite(&target, &new_text).map(Some),
                     })?
                 }
                 None => CliChange::Untouched,
             };
-            session.edit(index, text)?;
+            match block {
+                Some(b) => session.edit_block(index, b, text)?,
+                None => session.edit(index, text)?,
+            }
             change.adopt(session, agent_guard.as_mut());
             Ok(MessageEdit {
                 events: session.events().to_vec(),
@@ -2189,10 +2275,87 @@ async fn restore_message(state: State<'_, AppState>, index: usize) -> Result<Mes
     }
     let workspace = agent_guard.as_ref().map(|a| a.spec().workspace.clone());
     let change = match &workspace {
-        Some(cwd) => restore_on_cli(session, cwd, index)?,
+        Some(cwd) => restore_on_cli(session, cwd, index, None)?,
         None => CliChange::Untouched,
     };
     session.unelide([index])?;
+    change.adopt(session, agent_guard.as_mut());
+    Ok(MessageEdit {
+        events: session.events().to_vec(),
+        session: session.id.clone(),
+        forked: false,
+    })
+}
+
+/// Remove one block of the reply at `index` from the context (nightshift
+/// backlog 066): a text block, or a tool call **with its result** — the
+/// pair the core's `Session::elide_block` removes together and refuses to
+/// split. On the Claude Code engine the CLI's copy drops the text node,
+/// or the call's node and its result's node (`CliSession::remove_block`);
+/// the copy is made before the marker, as every edit here is. A marker,
+/// asked about nothing: the transcript draws the placeholder with the
+/// original a click away, Restore beside it.
+#[tauri::command]
+async fn remove_block(
+    state: State<'_, AppState>,
+    index: usize,
+    block: usize,
+) -> Result<MessageEdit, String> {
+    let mut agent_guard = state.agent.lock().await;
+    let mut session_guard = state.session.lock().await;
+    let session = session_guard
+        .as_mut()
+        .ok_or_else(|| "no active session".to_string())?;
+    let workspace = agent_guard.as_ref().map(|a| a.spec().workspace.clone());
+    let change = match &workspace {
+        Some(cwd) => {
+            let target = cli_target(session, index)?;
+            let which = cli_block(session, index, block)?;
+            edit_on_cli(session, cwd, move |cli| {
+                cli.remove_block(&target, &which).map(Some)
+            })?
+        }
+        None => CliChange::Untouched,
+    };
+    session.elide_block(index, block)?;
+    change.adopt(session, agent_guard.as_mut());
+    Ok(MessageEdit {
+        events: session.events().to_vec(),
+        session: session.id.clone(),
+        forked: false,
+    })
+}
+
+/// Put back a block [`remove_block`] took out — the `Unelide` marker with
+/// the block; on Claude Code the nodes back from the original the removal
+/// copied from (`CliSession::restore_block`), on [`restore_message`]'s
+/// terms.
+#[tauri::command]
+async fn restore_block(
+    state: State<'_, AppState>,
+    index: usize,
+    block: usize,
+) -> Result<MessageEdit, String> {
+    let mut agent_guard = state.agent.lock().await;
+    let mut session_guard = state.session.lock().await;
+    let session = session_guard
+        .as_mut()
+        .ok_or_else(|| "no active session".to_string())?;
+    if !session
+        .block_elisions()
+        .get(index)
+        .is_some_and(|gone| gone.contains(&block))
+    {
+        return Err(format!(
+            "block {block} of event {index} is not removed from the context"
+        ));
+    }
+    let workspace = agent_guard.as_ref().map(|a| a.spec().workspace.clone());
+    let change = match &workspace {
+        Some(cwd) => restore_on_cli(session, cwd, index, Some(block))?,
+        None => CliChange::Untouched,
+    };
+    session.unelide_block(index, block)?;
     change.adopt(session, agent_guard.as_mut());
     Ok(MessageEdit {
         events: session.events().to_vec(),
@@ -2205,8 +2368,15 @@ async fn restore_message(state: State<'_, AppState>, index: usize) -> Result<Mes
 /// one the turn was removed from, the turn's nodes put back, a copy
 /// written. `Untouched` when the chat has no CLI session now, or had none
 /// when the turn was removed (no `AgentSession` before the marker, or the
-/// same one as now — the removal then made no copy).
-fn restore_on_cli(session: &Session, workspace: &Path, index: usize) -> Result<CliChange, String> {
+/// same one as now — the removal then made no copy). With `block`, the
+/// marker looked for is the one that named that block of the reply, and
+/// only that block's nodes come back.
+fn restore_on_cli(
+    session: &Session,
+    workspace: &Path,
+    index: usize,
+    block: Option<usize>,
+) -> Result<CliChange, String> {
     let Some(current) = session
         .agent_session()
         .filter(|(agent, _)| *agent == AGENT)
@@ -2218,16 +2388,26 @@ fn restore_on_cli(session: &Session, workspace: &Path, index: usize) -> Result<C
         .live_events()
         .into_iter()
         .rev()
-        .find(|(_, e)| matches!(e, SessionEvent::Elide { targets, .. } if targets.contains(&index)))
+        .find(|(_, e)| {
+            matches!(e, SessionEvent::Elide { targets, block: b, .. } if targets.contains(&index) && *b == block)
+        })
         .map(|(i, _)| i)
         .ok_or_else(|| format!("event {index} is not removed from the context"))?;
     let Some(original) = agent_session_before(session, marker).filter(|id| *id != current) else {
         return Ok(CliChange::Untouched);
     };
     let target = cli_target(session, index)?;
+    let which = block.map(|b| cli_block(session, index, b)).transpose()?;
     let projects = cli_session::projects_dir()
         .ok_or_else(|| "no home directory, so no ~/.claude/projects to look in".to_string())?;
-    restore_cli_file(&projects, workspace, &current, &original, &target)
+    restore_cli_file(
+        &projects,
+        workspace,
+        &current,
+        &original,
+        &target,
+        which.as_ref(),
+    )
 }
 
 /// The pure half of [`restore_on_cli`], with the projects root as a
@@ -2238,6 +2418,7 @@ fn restore_cli_file(
     current: &str,
     original: &str,
     target: &Target,
+    block: Option<&Block>,
 ) -> Result<CliChange, String> {
     let read = |id: &str| -> Result<(PathBuf, CliSession), String> {
         let path = cli_session::find(projects, workspace, id).map_err(|e| e.to_string())?;
@@ -2247,9 +2428,11 @@ fn restore_cli_file(
     };
     let (path, current) = read(current)?;
     let (_, original) = read(original)?;
-    let restored = current
-        .restore(&original, target)
-        .map_err(|e| e.to_string())?;
+    let restored = match block {
+        Some(block) => current.restore_block(&original, target, block),
+        None => current.restore(&original, target),
+    }
+    .map_err(|e| e.to_string())?;
     cli_session::write_copy(&path, &restored)
         .map(CliChange::Resume)
         .map_err(|e| e.to_string())
@@ -3376,6 +3559,7 @@ struct FiledReport {
 /// `TurnEvent` shape `turn-event` carries but on its own channel, so a
 /// running chat and a running dream cannot interleave in the transcript.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn dream(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -3383,6 +3567,8 @@ async fn dream(
     model: Option<String>,
     base_url: Option<String>,
     thinking: Option<String>,
+    binary: Option<String>,
+    safe_mode: Option<bool>,
 ) -> Result<DreamReport, String> {
     let Some(config) = project::config_dir() else {
         return Err("no user config directory — there is no observation log to consolidate".into());
@@ -3397,29 +3583,45 @@ async fn dream(
     // than a pass that opens by erroring on list_dir.
     std::fs::create_dir_all(&vault).map_err(|e| e.to_string())?;
 
-    let kind: ProviderKind = provider.parse()?;
-    let thinking = match thinking {
-        Some(s) => s.parse::<Thinking>()?,
-        None => Thinking::Default,
-    };
-    let (provider, model) =
-        nightloom_service::connect(kind, model, credentials::provider_key(kind), base_url, None)
-            .map_err(|e| e.to_string())?;
-    let mut chat = Chat::new(provider, model);
-    chat.thinking = thinking;
-    chat.context_limit = nightloom_service::context_limit(kind, &chat.model);
-    chat.price = nightloom_service::price(kind, &chat.model);
-    // The pass prepares the chat itself, once per target (the vault, each
-    // project's memory folder), so there is no `prepare` here any more.
-
     let cancel = CancellationToken::new();
     *state.dream_cancel.lock().unwrap() = cancel.clone();
     let emitter = app.clone();
     let mut on_event = move |event: TurnEvent| {
         let _ = emitter.emit("dream-event", &event);
     };
-    let outcome = nightloom_service::dream::run(&mut chat, &vault, &config, &cancel, &mut on_event)
-        .await?
+    let outcome = match pass_engine(&provider)? {
+        // The Claude Code engine (2026-09-16, nightshift backlog 070): the
+        // rail's binary and safe mode, the Settings model alias, this
+        // binary as the MCP server for `propose_instructions`, billed to
+        // the subscription.
+        PassEngine::Agent => {
+            let pass = pass_spec(binary, model, safe_mode)?;
+            nightloom_service::dream::run_on_agent(&pass, &vault, &config, &cancel, &mut on_event)
+                .await?
+        }
+        PassEngine::Provider(kind) => {
+            let thinking = match thinking {
+                Some(s) => s.parse::<Thinking>()?,
+                None => Thinking::Default,
+            };
+            let (provider, model) = nightloom_service::connect(
+                kind,
+                model,
+                credentials::provider_key(kind),
+                base_url,
+                None,
+            )
+            .map_err(|e| e.to_string())?;
+            let mut chat = Chat::new(provider, model);
+            chat.thinking = thinking;
+            chat.context_limit = nightloom_service::context_limit(kind, &chat.model);
+            chat.price = nightloom_service::price(kind, &chat.model);
+            // The pass prepares the chat itself, once per target (the vault,
+            // each project's memory folder), so there is no `prepare` here.
+            nightloom_service::dream::run(&mut chat, &vault, &config, &cancel, &mut on_event)
+                .await?
+        }
+    }
         // Checked non-empty by the UI before offering the button; a race
         // with a CLI dream is the only way here, and "nothing left" is
         // its honest report.
@@ -3550,6 +3752,7 @@ struct CapturedReport {
 /// the same sentence a second dream gets. Progress streams as
 /// `capture-event`s on their own channel.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn capture(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -3557,6 +3760,8 @@ async fn capture(
     model: Option<String>,
     base_url: Option<String>,
     thinking: Option<String>,
+    binary: Option<String>,
+    safe_mode: Option<bool>,
 ) -> Result<CaptureReport, String> {
     let Some(config) = project::config_dir() else {
         return Err("no user config directory — there are no session logs to read".into());
@@ -3564,19 +3769,6 @@ async fn capture(
     let Ok(_running) = state.dreaming.try_lock() else {
         return Err("a dream or a capture is already running".into());
     };
-
-    let kind: ProviderKind = provider.parse()?;
-    let thinking = match thinking {
-        Some(s) => s.parse::<Thinking>()?,
-        None => Thinking::Default,
-    };
-    let (provider, model) =
-        nightloom_service::connect(kind, model, credentials::provider_key(kind), base_url, None)
-            .map_err(|e| e.to_string())?;
-    let mut chat = Chat::new(provider, model);
-    chat.thinking = thinking;
-    chat.context_limit = nightloom_service::context_limit(kind, &chat.model);
-    chat.price = nightloom_service::price(kind, &chat.model);
 
     // The same token the dream swaps in: the two never run at once (the
     // mutex above), so one Stop reaches whichever is running.
@@ -3586,10 +3778,36 @@ async fn capture(
     let mut on_event = move |event: TurnEvent| {
         let _ = emitter.emit("capture-event", &event);
     };
-    let outcome =
-        nightloom_service::capture::run(&mut chat, &config, false, &cancel, &mut on_event)
-            .await?
-            .ok_or_else(|| "nothing left to capture".to_string())?;
+    let outcome = match pass_engine(&provider)? {
+        // The Claude Code engine (2026-09-16): one no-tool `claude -p` per
+        // batch, the reply parsed as on the other engine.
+        PassEngine::Agent => {
+            let pass = pass_spec(binary, model, safe_mode)?;
+            nightloom_service::capture::run_on_agent(&pass, &config, false, &cancel, &mut on_event)
+                .await?
+        }
+        PassEngine::Provider(kind) => {
+            let thinking = match thinking {
+                Some(s) => s.parse::<Thinking>()?,
+                None => Thinking::Default,
+            };
+            let (provider, model) = nightloom_service::connect(
+                kind,
+                model,
+                credentials::provider_key(kind),
+                base_url,
+                None,
+            )
+            .map_err(|e| e.to_string())?;
+            let mut chat = Chat::new(provider, model);
+            chat.thinking = thinking;
+            chat.context_limit = nightloom_service::context_limit(kind, &chat.model);
+            chat.price = nightloom_service::price(kind, &chat.model);
+            nightloom_service::capture::run(&mut chat, &config, false, &cancel, &mut on_event)
+                .await?
+        }
+    }
+    .ok_or_else(|| "nothing left to capture".to_string())?;
     Ok(CaptureReport {
         observations: outcome.observations,
         logs_read: outcome.logs_read,
@@ -4144,6 +4362,8 @@ fn main() {
             edit_message,
             remove_message,
             restore_message,
+            remove_block,
+            restore_block,
             fork_session,
             context_view,
             edit_context,
@@ -4256,6 +4476,41 @@ mod tests {
             .collect();
         v.sort();
         v
+    }
+
+    /// A dream or a capture routes by the `provider` string (nightshift
+    /// backlog 070): the engine's name goes to the CLI with the rail's
+    /// binary and safe mode, the Settings alias, and this binary as the
+    /// server; a provider's name goes to the provider layer; anything else
+    /// is refused rather than guessed at. The commands themselves need a
+    /// Tauri `State`; this is the pure half they branch on.
+    #[test]
+    fn a_pass_routes_to_the_agent_by_the_engines_name_and_carries_the_rails_settings() {
+        assert_eq!(pass_engine("claude-code").unwrap(), PassEngine::Agent);
+        assert!(matches!(
+            pass_engine("anthropic").unwrap(),
+            PassEngine::Provider(ProviderKind::Anthropic)
+        ));
+        assert!(pass_engine("not-an-engine").is_err());
+
+        let pass = pass_spec(Some("  /opt/claude ".into()), Some(" haiku ".into()), Some(true)).unwrap();
+        assert_eq!(pass.binary, "/opt/claude");
+        assert_eq!(pass.model.as_deref(), Some("haiku"));
+        assert!(pass.safe_mode);
+        assert!(pass.use_subscription);
+        assert_eq!(pass.server.len(), 2);
+        assert_eq!(
+            pass.server[0],
+            std::env::current_exe().unwrap().to_string_lossy()
+        );
+        assert_eq!(pass.server[1], "--mcp-serve");
+
+        // Blank is the default binary and the CLI's default model, as on
+        // `connect_agent`.
+        let pass = pass_spec(Some("".into()), Some("".into()), None).unwrap();
+        assert_eq!(pass.binary, AGENT_BINARY);
+        assert!(pass.model.is_none());
+        assert!(!pass.safe_mode);
     }
 
     // New chat is a state, not a file (nightshift backlog 061): the pure
@@ -4492,7 +4747,7 @@ mod tests {
         assert_eq!(agent_session_before(&session, 4).as_deref(), Some(sid));
         let target = cli_target(&session, 2).unwrap();
         let CliChange::Resume(restored_id) =
-            restore_cli_file(&projects, cwd, &removed_id, sid, &target).unwrap()
+            restore_cli_file(&projects, cwd, &removed_id, sid, &target, None).unwrap()
         else {
             panic!("a restore is a copy");
         };
@@ -4532,7 +4787,7 @@ mod tests {
         plain.elide([2]).unwrap(); // 3
         plain.record_agent_session(AGENT, sid); // 4
         assert!(matches!(
-            restore_on_cli(&plain, cwd, 2).unwrap(),
+            restore_on_cli(&plain, cwd, 2, None).unwrap(),
             CliChange::Untouched
         ));
 
@@ -4554,6 +4809,220 @@ mod tests {
             Some((AGENT, "truncated-copy")),
             "the copy's line is later and still live, which is why unrewind records a fresh one"
         );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A CLI session file with a tool round, in the measured shape with
+    /// dummy content: "first" answered by thinking, "let me look", a
+    /// `Read` call, its result, and "two".
+    fn cli_tool_fixture(sid: &str) -> String {
+        let node = |uuid: &str, parent: Option<&str>, kind: &str, extra: serde_json::Value| {
+            let mut o = serde_json::json!({
+                "parentUuid": parent, "isSidechain": false, "type": kind, "uuid": uuid,
+                "timestamp": "t", "userType": "external", "cwd": "/private/tmp/x",
+                "sessionId": sid, "version": cli_session::MEASURED_VERSION, "gitBranch": "main"
+            });
+            for (k, v) in extra.as_object().unwrap() {
+                o[k] = v.clone();
+            }
+            o.to_string()
+        };
+        let reply = |uuid: &str, parent: &str, msg: &str, block: serde_json::Value| {
+            node(
+                uuid,
+                Some(parent),
+                "assistant",
+                serde_json::json!({"message": {"id": msg, "role": "assistant", "content": [block]}}),
+            )
+        };
+        [
+            node("u1", None, "user", serde_json::json!({"message": {"role": "user", "content": "first"}})),
+            reply("s1", "u1", "msg_1", serde_json::json!({"type": "thinking", "thinking": "look", "signature": "sig"})),
+            reply("s2", "s1", "msg_1", serde_json::json!({"type": "text", "text": "let me look"})),
+            reply("s3", "s2", "msg_1", serde_json::json!({"type": "tool_use", "id": "toolu_1", "name": "Read", "input": {"file_path": "a.txt"}})),
+            node("r1", Some("s3"), "user", serde_json::json!({"message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "contents"}]}})),
+            reply("s4", "r1", "msg_2", serde_json::json!({"type": "text", "text": "two"})),
+            serde_json::json!({"type": "last-prompt", "lastPrompt": "first", "leafUuid": "s4", "sessionId": sid}).to_string(),
+        ]
+        .join("\n")
+            + "\n"
+    }
+
+    /// The sequences `edit_message` with a block, `remove_block` and
+    /// `restore_block` run on the Claude Code engine (nightshift backlog
+    /// 066), minus the Tauri `State`: the block edit copies the file with
+    /// that text node changed under a new id and the original stays
+    /// byte-identical; the reply is still found afterwards by the text it
+    /// reads now; the pair removal copies the file without the call's node
+    /// and its result's; the restore puts both back from the original.
+    #[test]
+    fn a_block_edit_on_claude_code_records_a_new_id_and_leaves_the_original_alone() {
+        let dir = empty_log_dir("cli-block-edit");
+        let projects = dir.join("projects");
+        let cwd = Path::new("/private/tmp/x");
+        let folder = projects.join(cli_session::project_folder(cwd));
+        std::fs::create_dir_all(&folder).unwrap();
+        let sid = "aaaaaaaa-0000-0000-0000-000000000003";
+        let original = folder.join(format!("{sid}.jsonl"));
+        std::fs::write(&original, cli_tool_fixture(sid)).unwrap();
+        let before = std::fs::read(&original).unwrap();
+
+        use nightloom_core::ContentBlock;
+        let mut session = Session::with_log(&dir).unwrap();
+        session.record_user("first"); // 1
+        session.record_assistant(
+            "claude-haiku-4-5",
+            vec![
+                ContentBlock::Thinking {
+                    text: "look".into(),
+                    signature: Some("sig".into()),
+                },
+                ContentBlock::Text {
+                    text: "let me look".into(),
+                },
+                ContentBlock::ToolUse {
+                    id: "toolu_1".into(),
+                    name: "Read".into(),
+                    input: serde_json::json!({"file_path": "a.txt"}),
+                    signature: None,
+                },
+            ],
+            Some("tool_use".into()),
+            nightloom_core::Usage::default(),
+        ); // 2
+        session.record_tool_result(&ContentBlock::ToolResult {
+            tool_use_id: "toolu_1".into(),
+            name: "Read".into(),
+            content: "contents".into(),
+            is_error: false,
+        }); // 3
+        session.record_assistant(
+            "claude-haiku-4-5",
+            vec![ContentBlock::Text { text: "two".into() }],
+            Some("end_turn".into()),
+            nightloom_core::Usage::default(),
+        ); // 4
+        session.record_agent_session(AGENT, sid); // 5
+
+        // edit_message(2, "looking now", "save", block: 1): the reply's
+        // text block, addressed by its count among the text nodes.
+        let target = cli_target(&session, 2).unwrap();
+        assert_eq!(
+            target,
+            Target::Assistant {
+                from_last: 0,
+                text: "let me look".into()
+            }
+        );
+        assert_eq!(cli_block(&session, 2, 1).unwrap(), Block::Text(0));
+        assert_eq!(
+            cli_block(&session, 2, 2).unwrap(),
+            Block::ToolUse("toolu_1".into())
+        );
+        assert!(
+            cli_block(&session, 2, 0).is_err(),
+            "thinking has no address"
+        );
+        let CliChange::Resume(edited_id) = edit_cli_file(&projects, cwd, sid, |cli| {
+            cli.rewrite_block(&target, 0, "looking now").map(Some)
+        })
+        .unwrap() else {
+            panic!("a rewrite is a copy");
+        };
+        session.edit_block(2, 1, "looking now").unwrap(); // 6
+        session.record_agent_session(AGENT, &edited_id); // 7
+        assert_ne!(edited_id, sid);
+        assert_eq!(
+            std::fs::read(&original).unwrap(),
+            before,
+            "the original changed"
+        );
+        let copy = std::fs::read_to_string(folder.join(format!("{edited_id}.jsonl"))).unwrap();
+        assert!(copy.contains("looking now") && !copy.contains("let me look"));
+        assert!(copy.contains("toolu_1"), "the call stays");
+        assert!(!copy.contains(sid));
+        assert_eq!(files_in(&folder).len(), 2);
+        // The reply is addressed by what it says now, on both sides.
+        assert_eq!(
+            cli_target(&session, 2).unwrap(),
+            Target::Assistant {
+                from_last: 0,
+                text: "looking now".into()
+            }
+        );
+        let parsed = CliSession::parse(&copy).unwrap();
+        assert!(
+            parsed
+                .rewrite_block(&cli_target(&session, 2).unwrap(), 0, "again")
+                .is_ok(),
+            "the edited copy locates the reply by its new text"
+        );
+
+        // remove_block(2, 2): the call and its result out of a copy of
+        // the edited copy.
+        let target = cli_target(&session, 2).unwrap();
+        let which = cli_block(&session, 2, 2).unwrap();
+        let CliChange::Resume(removed_id) = edit_cli_file(&projects, cwd, &edited_id, |cli| {
+            cli.remove_block(&target, &which).map(Some)
+        })
+        .unwrap() else {
+            panic!("a removal is a copy");
+        };
+        session.elide_block(2, 2).unwrap(); // 8
+        session.record_agent_session(AGENT, &removed_id); // 9
+        let removed = std::fs::read_to_string(folder.join(format!("{removed_id}.jsonl"))).unwrap();
+        assert!(
+            !removed.contains("toolu_1"),
+            "the call and its result are gone"
+        );
+        assert!(removed.contains("looking now") && removed.contains("\"two\""));
+        assert_eq!(
+            session.messages().len(),
+            3,
+            "the log projects the pair gone too"
+        );
+        // The reply still reads the same to both histories: a removed call
+        // leaves no mark in the text.
+        assert_eq!(
+            cli_target(&session, 2).unwrap(),
+            Target::Assistant {
+                from_last: 0,
+                text: "looking now".into()
+            }
+        );
+
+        // restore_block(2, 2): the original for a block marker is the id
+        // before that marker — the edited copy — and both nodes come back.
+        assert_eq!(
+            agent_session_before(&session, 8).as_deref(),
+            Some(edited_id.as_str())
+        );
+        let CliChange::Resume(restored_id) = restore_cli_file(
+            &projects,
+            cwd,
+            &removed_id,
+            &edited_id,
+            &cli_target(&session, 2).unwrap(),
+            Some(&which),
+        )
+        .unwrap() else {
+            panic!("a restore is a copy");
+        };
+        session.unelide_block(2, 2).unwrap(); // 10
+        session.record_agent_session(AGENT, &restored_id); // 11
+        let restored =
+            std::fs::read_to_string(folder.join(format!("{restored_id}.jsonl"))).unwrap();
+        assert!(restored.contains("toolu_1"));
+        let parsed = CliSession::parse(&restored).unwrap();
+        assert_eq!(parsed.prompt_count(), 1);
+        assert!(
+            restored.contains("looking now"),
+            "the edit survives the restore"
+        );
+        assert_eq!(session.messages().len(), 4);
+        assert_eq!(std::fs::read(&original).unwrap(), before);
+        assert_eq!(files_in(&folder).len(), 4);
 
         std::fs::remove_dir_all(&dir).ok();
     }

@@ -87,12 +87,15 @@ export class UndoHistory {
   }
 
   /** Record an operation that has just succeeded. Anything undone and not
-   *  redone in this scope is forgotten, as everywhere. */
-  push(scope: string, entry: UndoEntry): void {
+   *  redone in this scope is forgotten, as everywhere. Returns the entry's
+   *  handle, which `undoIf` takes (backlog 066's Undo toast). */
+  push(scope: string, entry: UndoEntry): number {
     const s = this.stack(scope);
     s.entries.length = s.cursor;
-    s.entries.push({ ...entry, seq: ++this.seq, undoneSeq: 0 });
+    const seq = ++this.seq;
+    s.entries.push({ ...entry, seq, undoneSeq: 0 });
     s.cursor = s.entries.length;
+    return seq;
   }
 
   /** Forget a scope's whole history — what a sent turn does to its chat's. */
@@ -146,6 +149,16 @@ export class UndoHistory {
     next.entry.undoneSeq = ++this.seq;
     next.stack.cursor -= 1;
     return { label: next.entry.label };
+  }
+
+  /** Reverse the entry `push` returned `handle` for — but only while it
+   *  is still what an undo over `scopes` would take, since an Undo on a
+   *  toast is a promise about one operation and not about whatever was
+   *  done after it (backlog 066). Null when it is not, or nothing to do. */
+  async undoIf(scopes: string[], handle: number): Promise<Step> {
+    const next = this.nextUndo(scopes);
+    if (!next || next.entry.seq !== handle) return null;
+    return this.undo(scopes);
   }
 
   /** Repeat the most recently undone operation over `scopes`. Same terms. */

@@ -23,21 +23,34 @@ pub struct McpServeArgs {
     /// chat, which must not be able to write to memory (2026-09-15).
     #[arg(long)]
     no_remember: bool,
+    /// A dream's server (2026-09-16): the JSON `dream::run_on_agent` builds,
+    /// and `propose_instructions` is the one tool served. Needs no config
+    /// dir.
+    #[arg(long)]
+    dream: Option<String>,
 }
 
 pub async fn run(args: McpServeArgs) -> Result<()> {
-    let Some(config) = project::config_dir() else {
-        bail!("no user config directory — there are no chats to serve");
+    let dream = args
+        .dream
+        .as_deref()
+        .map(mcp_server::DreamServe::parse)
+        .transpose()
+        .map_err(anyhow::Error::msg)?;
+    let config = match project::config_dir() {
+        Some(config) => config,
+        None if dream.is_some() => std::path::PathBuf::new(),
+        None => bail!("no user config directory — there are no chats to serve"),
     };
-    mcp_server::serve(
-        config,
-        mcp_server::ServeArgs {
+    let serve_args = match dream {
+        Some(dream) => mcp_server::ServeArgs::for_dream(dream),
+        None => mcp_server::ServeArgs {
             project: args.project,
             remember: !args.no_remember,
+            dream: None,
         },
-        tokio::io::stdin(),
-        tokio::io::stdout(),
-    )
-    .await
-    .map_err(anyhow::Error::msg)
+    };
+    mcp_server::serve(config, serve_args, tokio::io::stdin(), tokio::io::stdout())
+        .await
+        .map_err(anyhow::Error::msg)
 }

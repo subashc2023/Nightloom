@@ -697,13 +697,22 @@ export type SessionEvent =
   // and only the context panel cares~~ — since 2026-09-15 (backlog 062) the
   // transcript draws a removed turn as its placeholder, greyed, with the
   // original a click away (`elideFlags` in edit.ts).
-  | { event: "elide"; targets: number[]; at: string }
-  | { event: "unelide"; targets: number[]; at: string }
+  // With `block` (nightshift backlog 066) the marker names one block of
+  // the reply at `targets[0]` — an index into its `blocks` — rather than
+  // the event: a text block, or a tool call with the result that answers
+  // it (which follows the call by id and is never named on its own). See
+  // `blockElisions` in edit.ts. Absent on every line written before.
+  | { event: "elide"; targets: number[]; block?: number; at: string }
+  | { event: "unelide"; targets: number[]; block?: number; at: string }
   // The event at `target` says `text` from here on (nightshift backlog
   // 062): a marker like `elide`, the original kept in the log for the
   // transcript to unfold. The latest live one on an index wins; a rewind
-  // past it restores the original. See `editTexts` in edit.ts.
-  | { event: "edit"; target: number; text: string; at: string }
+  // past it restores the original. See `editTexts` in edit.ts. `block`
+  // (backlog 066) is which text block of a reply says it, as an index into
+  // the reply's `blocks`; absent on a user message and on a reply edited
+  // before the field existed, which reads as its first text block. See
+  // `blockEdits`.
+  | { event: "edit"; target: number; block?: number; text: string; at: string }
   | { event: "compaction"; summary: string; at: string }
   // A log entry the backend could not read: an event from a newer build, or a
   // line the disk damaged. It holds its index so that `rewind` and `elide`,

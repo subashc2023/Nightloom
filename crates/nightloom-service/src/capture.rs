@@ -29,6 +29,19 @@
 //! the vault open and under git. A capture that guessed wrong costs one
 //! line the dream is instructed to distrust.
 //!
+//! **On the Claude Code engine (2026-09-16, nightshift backlog 070)** the
+//! pass is the same prompt as one `claude -p` turn with `--tools ""`
+//! ([`run_on_agent`]), the reply parsed exactly as here. Of the two shapes
+//! the spec offered — a working directory holding the excerpts with `Read`
+//! and an MCP `remember`, or a single no-tool prompt — the second is the
+//! one built, because it is what the pass already is: one prompt with the
+//! excerpts inline and no tool, so nothing changes in what the model can
+//! see or touch, no server runs, `remember` stays unreachable, and the
+//! injection surface is the one already argued for above. The working
+//! directory is an empty scratch folder under the config dir, granting
+//! nothing; the CLI's session file is what puts the turn in the usage
+//! ledger.
+//!
 //! The watermark is **per log** (`capture.json`, a map from log path to
 //! bytes consumed), unlike the dream's single offset, because there are
 //! many logs and each grows on its own: the chat open right now gains a
@@ -47,6 +60,8 @@ use nightloom_core::{Segment, SegmentKind, Session, SessionEvent, SystemPrompt, 
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
+use crate::agent::{AgentSpec, ClaudeCodeAgent, PassSpec};
+use crate::dream::Engine;
 use crate::observe::{self, Observation, ObservationKind};
 use crate::project::{PROJECTS_DIR, Registry, SESSIONS_DIR};
 use crate::prompt;
@@ -86,6 +101,14 @@ const STATE_FILE: &str = "capture.json";
 /// `<config>/unfiled/sessions` — the desktop's `default_log_dir` — and
 /// the name those chats are reported under.
 pub const UNFILED: &str = "unfiled";
+
+/// Where a capture on the Claude Code engine runs: `<config>/scratch/capture`,
+/// an empty folder that stays empty. The CLI needs a working directory and
+/// this one grants nothing — not the logs, not the vault — which is the
+/// point; with `--tools ""` there is nothing to read it with anyway. Stable
+/// rather than a fresh temp dir per run so the CLI's own session files land
+/// under one `~/.claude/projects/` folder instead of one per pass.
+pub const AGENT_SCRATCH: &str = "scratch/capture";
 
 /// How far each log has been read, and when the pass last ran.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -346,6 +369,22 @@ pub fn prepare(chat: &mut Chat, source: Option<&str>) {
     chat.approver = None;
 }
 
+/// The `claude -p` invocation for one capture turn: the pass's carried
+/// settings rooted at [`AGENT_SCRATCH`], **no tools** (`--tools ""`, the
+/// measured spelling), the identity on `--append-system-prompt`, no
+/// server, no `--add-dir`. The excerpts go in the prompt as on the provider
+/// path.
+pub fn agent_spec_for(pass: &PassSpec, config: &Path, source: Option<&str>) -> AgentSpec {
+    let mut spec = pass.spec_in(config.join(AGENT_SCRATCH));
+    spec.tools = Some(Vec::new());
+    spec.append_system_prompt = Some(identity_for(source));
+    // No `--mcp-config` and strict about it: `--tools ""` leaves the host's
+    // MCP servers in reach otherwise (`dream::strict_mcp`), and a capture
+    // has no tool to call by design.
+    crate::dream::strict_mcp(&mut spec);
+    spec
+}
+
 fn identity_for(source: Option<&str>) -> String {
     let whose = match source {
         Some(name) => format!("conversations recorded in the user's project «{name}»"),
@@ -579,6 +618,34 @@ pub async fn run(
     cancel: &CancellationToken,
     on_event: &mut (dyn FnMut(TurnEvent) + Send),
 ) -> Result<Option<CaptureOutcome>, String> {
+    run_with(Engine::Provider(chat), config, dry_run, cancel, on_event).await
+}
+
+/// [`run`] on the Claude Code engine (2026-09-16): each turn one `claude
+/// -p` with no tools, built by [`agent_spec_for`], billed to the
+/// subscription; the walk, the batching, the parse and the watermark are
+/// the same function underneath. `cost_usd` is `None` — nothing is billed
+/// per token, and the ledger is where the tokens show.
+pub async fn run_on_agent(
+    pass: &PassSpec,
+    config: &Path,
+    dry_run: bool,
+    cancel: &CancellationToken,
+    on_event: &mut (dyn FnMut(TurnEvent) + Send),
+) -> Result<Option<CaptureOutcome>, String> {
+    let scratch = config.join(AGENT_SCRATCH);
+    fs::create_dir_all(&scratch)
+        .map_err(|e| format!("could not create {}: {e}", scratch.display()))?;
+    run_with(Engine::Agent(pass), config, dry_run, cancel, on_event).await
+}
+
+async fn run_with(
+    engine: Engine<'_>,
+    config: &Path,
+    dry_run: bool,
+    cancel: &CancellationToken,
+    on_event: &mut (dyn FnMut(TurnEvent) + Send),
+) -> Result<Option<CaptureOutcome>, String> {
     let state = state_in(config);
     let dirs = session_dirs(config);
     let unread: Vec<(&SessionDir, Vec<Unread>)> = dirs
@@ -591,7 +658,7 @@ pub async fn run(
     }
     let now = Utc::now();
     let mut pass = Pass {
-        chat,
+        engine,
         config,
         standing: prompt::read_capped(&config.join(prompt::INSTRUCTION_FILE)),
         dry_run,
@@ -696,7 +763,7 @@ pub async fn run(
 /// One run's working state, so a turn is a method rather than a function
 /// with a dozen arguments.
 struct Pass<'a> {
-    chat: &'a mut Chat,
+    engine: Engine<'a>,
     config: &'a Path,
     /// The user's `AGENTS.md`, quoted to the model for exclusion.
     standing: Option<String>,
@@ -716,13 +783,11 @@ impl Pass<'_> {
     /// moves.
     async fn turn(&mut self, batch: &Batch) -> Result<bool, String> {
         self.turns += 1;
-        prepare(self.chat, batch.source.as_deref());
         let instruction = compose_instruction(
             &batch.excerpts,
             batch.source.as_deref(),
             self.standing.as_deref(),
         );
-        let mut session = Session::new();
         let mut reply = String::new();
         let on_event = &mut *self.on_event;
         let mut forward = |event: TurnEvent| {
@@ -731,21 +796,53 @@ impl Pass<'_> {
             }
             on_event(event);
         };
-        let done = self
-            .chat
-            .run_turn(
-                &mut session,
-                instruction.as_str(),
-                self.cancel,
-                &mut forward,
-            )
-            .await
-            .map_err(|e| format!("the capture's provider call failed: {e}"))?;
-        self.outcome.usage.add(done.usage);
-        let cost = session.cost();
-        self.usd += cost.usd;
-        self.unpriced += cost.unpriced_exchanges;
-        if done.interrupted {
+        let interrupted = match &mut self.engine {
+            Engine::Provider(chat) => {
+                prepare(chat, batch.source.as_deref());
+                let mut session = Session::new();
+                let done = chat
+                    .run_turn(
+                        &mut session,
+                        instruction.as_str(),
+                        self.cancel,
+                        &mut forward,
+                    )
+                    .await
+                    .map_err(|e| format!("the capture's provider call failed: {e}"))?;
+                self.outcome.usage.add(done.usage);
+                let cost = session.cost();
+                self.usd += cost.usd;
+                self.unpriced += cost.unpriced_exchanges;
+                done.interrupted
+            }
+            Engine::Agent(pass) => {
+                let spec = agent_spec_for(pass, self.config, batch.source.as_deref());
+                let done = ClaudeCodeAgent::new(spec)
+                    .run_turn(instruction.as_str(), self.cancel, &mut forward)
+                    .await
+                    .map_err(|e| format!("the capture's Claude Code turn failed: {e}"))?;
+                let interrupted = self.cancel.is_cancelled();
+                if done.is_error && !interrupted {
+                    return Err(format!(
+                        "the capture's Claude Code turn failed: {}",
+                        done.text.trim()
+                    ));
+                }
+                self.outcome.usage.add(done.usage);
+                // The subscription: no price per token, so the outcome's
+                // cost stays `None` the way an unpriced exchange leaves it.
+                self.unpriced += 1;
+                // The reply arrives as deltas when the CLI streams and as
+                // the result's text either way; the deltas are what
+                // `forward` collected, and an empty collection means the
+                // CLI did not stream this turn.
+                if reply.is_empty() {
+                    reply = done.text.clone();
+                }
+                interrupted
+            }
+        };
+        if interrupted {
             self.outcome.interrupted = true;
             return Ok(false);
         }
@@ -1205,5 +1302,103 @@ mod tests {
         assert!(unfiled.contains("no standing instructions"));
         assert!(identity_for(Some("Lanternfish")).contains("«Lanternfish»"));
         assert!(identity_for(None).contains("no project"));
+    }
+
+    // ---- the Claude Code engine (2026-09-16, nightshift backlog 070) ----
+
+    /// The invocation: the scratch folder as cwd, `--tools ""`, the
+    /// identity appended, nothing granted, no server. The rail's binary,
+    /// model and safe mode carried, as the dream's are.
+    #[test]
+    fn the_agent_spec_for_a_capture_is_no_tools_in_an_empty_scratch_folder() {
+        let (config, _) = fixture("agent-spec");
+        let mut pass = PassSpec::new("/opt/claude", vec!["/x".into(), "--mcp-serve".into()]);
+        pass.model = Some("haiku".into());
+        pass.safe_mode = true;
+        let spec = agent_spec_for(&pass, &config, Some("Lanternfish"));
+        assert_eq!(spec.workspace, config.join(AGENT_SCRATCH));
+        assert_eq!(spec.binary, "/opt/claude");
+        assert_eq!(spec.model.as_deref(), Some("haiku"));
+        assert!(spec.safe_mode);
+        assert!(spec.use_subscription);
+        assert_eq!(spec.tools, Some(Vec::new()), "no tools at all");
+        assert!(spec.mcp_config.is_none(), "no server, so no remember");
+        assert!(spec.add_dirs.is_empty());
+        assert!(spec.permission_mode.is_none());
+        assert!(
+            spec.append_system_prompt
+                .as_deref()
+                .unwrap()
+                .contains("«Lanternfish»")
+        );
+        let argv = spec.args("hi");
+        let i = argv.iter().position(|a| a == "--tools").unwrap();
+        assert_eq!(argv[i + 1], "");
+        assert!(!argv.iter().any(|a| a == "--mcp-config"));
+        assert!(argv.iter().any(|a| a == "--strict-mcp-config"));
+        pass.safe_mode = false;
+        let argv = agent_spec_for(&pass, &config, None).args("hi");
+        assert!(argv.iter().any(|a| a == "--strict-mcp-config"), "{argv:?}");
+    }
+
+    /// The pass on the CLI, with a stand-in for `claude` that answers the
+    /// way the model would: the reply is parsed, the observations appended
+    /// with the source, the watermark moved, the cost unpriced — and the
+    /// working directory the CLI was started in is the empty scratch
+    /// folder, not the logs'.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_capture_on_the_agent_appends_what_the_stand_in_replies() {
+        use std::os::unix::fs::PermissionsExt;
+        let (config, unfiled) = fixture("agent-run");
+        let log = write_log(&unfiled, 2);
+        let fake = config.join("claude");
+        let cwd_file = config.join("cwd.txt");
+        // Records its cwd, then replies as the model would.
+        fs::write(
+            &fake,
+            format!(
+                "#!/bin/sh\nprintf '%s' \"$PWD\" > '{}'\n\
+                 printf '%s\\n' '{{\"type\":\"stream_event\",\"event\":{{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":\"user_stated | Prefers tabs.\\ninferred | Asks in pairs.\\n\"}}}}}}'\n\
+                 printf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"num_turns\":1,\"result\":\"user_stated | Prefers tabs.\\ninferred | Asks in pairs.\\n\",\"session_id\":\"s1\",\"total_cost_usd\":0.001,\"usage\":{{\"input_tokens\":50,\"output_tokens\":9}}}}'\n",
+                cwd_file.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let pass = PassSpec::new(fake.to_string_lossy().into_owned(), vec![]);
+        let cancel = CancellationToken::new();
+        let outcome = run_on_agent(&pass, &config, false, &cancel, &mut |_| {})
+            .await
+            .unwrap()
+            .expect("a log was pending");
+        assert!(!outcome.interrupted);
+        assert_eq!(outcome.logs_read, 1);
+        assert_eq!(outcome.observations, 2);
+        assert_eq!(outcome.skipped, 0);
+        assert_eq!(outcome.cost_usd, None);
+        assert_eq!(outcome.usage.input_tokens, 50);
+        let backlog = observe::backlog_in(&config);
+        assert_eq!(backlog.pending.len(), 2);
+        assert_eq!(backlog.pending[0].obs.kind, ObservationKind::UserStated);
+        assert_eq!(backlog.pending[0].obs.text, "Prefers tabs.");
+        assert_eq!(backlog.pending[0].obs.source, None);
+        // The watermark moved to the end of the log.
+        let state = state_in(&config);
+        assert_eq!(
+            state
+                .consumed
+                .get(&log.to_string_lossy().into_owned())
+                .copied(),
+            Some(fs::metadata(&log).unwrap().len())
+        );
+        // The CLI ran in the scratch folder, which holds nothing.
+        let ran_in = fs::read_to_string(&cwd_file).unwrap();
+        assert_eq!(
+            fs::canonicalize(&ran_in).unwrap(),
+            fs::canonicalize(config.join(AGENT_SCRATCH)).unwrap()
+        );
+        assert_eq!(fs::read_dir(config.join(AGENT_SCRATCH)).unwrap().count(), 0);
     }
 }

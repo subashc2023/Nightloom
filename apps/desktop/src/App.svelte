@@ -6,6 +6,7 @@
     init,
     inTextField,
     runMenuCommand,
+    runToastAction,
     syncUndoMenu,
     setSidebarWidth,
     syncPromptLayers,
@@ -248,7 +249,14 @@
         {#if app.toasts.length > 0}
           <div class="toasts">
             {#each app.toasts as t (t.id)}
-              <div class="toast">{t.text}</div>
+              <!-- A toast with an action (backlog 066: "Removed from
+                   context · Undo") takes the pointer; the rest stay
+                   inert, as they were. -->
+              <div class="toast" class:actionable={!!t.action}>
+                {t.text}{#if t.action}<span class="toast-sep"> · </span><button
+                    class="toast-action"
+                    onclick={() => runToastAction(t.id)}>{t.action.label}</button>{/if}
+              </div>
             {/each}
           </div>
         {/if}
@@ -403,5 +411,23 @@
     padding: 0.4rem 0.7rem;
     border-radius: 6px;
     max-width: 22rem;
+  }
+  .toast.actionable {
+    pointer-events: auto;
+  }
+  /* The action is the toast's own text with the accent — a word, not a
+     button drawn as one. */
+  .toast-action {
+    background: none;
+    border: none;
+    padding: 0;
+    font: inherit;
+    color: var(--accent);
+    cursor: pointer;
+  }
+  .toast-action:hover,
+  .toast-action:focus-visible {
+    text-decoration: underline;
+    outline: none;
   }
 </style>

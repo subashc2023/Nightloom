@@ -5,22 +5,32 @@
     app,
     denialReason,
     liveFlags,
+    removeBlock,
     removeTurn,
+    restoreBlock,
+    restoreTurn,
     rewindTo,
     saveEdit,
+    saveReplyEdit,
     sendEdit,
   } from "./state.svelte";
   import type { Segment } from "./state.svelte";
   import {
     REMOVED_PLACEHOLDER,
+    blockEdits,
+    blockElisions,
+    displayTexts,
     editButtons,
+    editChanges,
     editLine,
+    editParts,
     editReduce,
     editTexts,
     elideFlags,
     isEditable,
     type EditState,
   } from "./edit";
+  import { toolInputSummary } from "./transcriptPrefs.svelte";
   import { cacheState } from "./cache";
   import { moveScroll, recallScroll, rememberScroll, scrollKey, NEW_SCROLL_KEY } from "./scroll.svelte";
   import { JUMP_OFFSET, MIN_TICKS, activeTick, stepTick, ticks as tickModel } from "./navigator";
@@ -100,6 +110,8 @@
     const live = liveFlags(app.events);
     const edited = editTexts(app.events);
     const removed = elideFlags(app.events);
+    const edits = blockEdits(app.events);
+    const gone = blockElisions(app.events);
     let index = -1;
     const push = (body: Body, original: string | null = null) =>
       out.push({
@@ -127,52 +139,56 @@
         );
       } else if (e.event === "assistant_message") {
         const segs: Segment[] = [];
-        // An edit stands in for the reply's text — the first text block
-        // takes it and any further text block goes, as the core projects
-        // it; a removal stands in for the text and the thinking, and
-        // keeps the calls, as the core's elision does.
-        const newText = removed[index] ? REMOVED_PLACEHOLDER : edited[index];
+        // A whole removal stands in for the text and the thinking and
+        // keeps the calls, as the core's elision does. Otherwise each
+        // block says its latest edit, a block removed on its own draws
+        // its placeholder (backlog 066), and every block carries its
+        // index so the hover Remove and Restore can name it.
+        const whole = removed[index];
         let placed = false;
         const said: string[] = [];
-        for (const b of e.blocks) {
+        e.blocks.forEach((b, block) => {
           switch (b.type) {
             case "thinking":
-              if (removed[index]) break;
+              if (whole) break;
               segs.push({ kind: "thinking", text: b.text, done: true });
               break;
             case "redacted_thinking":
-              if (removed[index]) break;
+              if (whole) break;
               segs.push({ kind: "redacted" });
               break;
             case "text":
               said.push(b.text);
-              if (newText != null) {
-                if (!placed) segs.push({ kind: "text", text: newText });
+              if (whole) {
+                if (!placed) segs.push({ kind: "text", text: REMOVED_PLACEHOLDER });
                 placed = true;
+              } else if (gone[index].has(block)) {
+                segs.push({ kind: "removed_text", block, text: b.text });
               } else {
-                segs.push({ kind: "text", text: b.text });
+                segs.push({ kind: "text", text: edits[index].get(block) ?? b.text });
               }
               break;
             case "tool_use": {
               const result = results.get(b.id) ?? null;
-              segs.push({
-                kind: "tool",
-                call: {
-                  id: b.id,
-                  name: b.name,
-                  input: b.input,
-                  result,
-                  denied: result?.denied ?? false,
-                },
-              });
+              const call = {
+                id: b.id,
+                name: b.name,
+                input: b.input,
+                result,
+                denied: result?.denied ?? false,
+              };
+              if (gone[index].has(block)) segs.push({ kind: "removed_tool", block, call });
+              else segs.push({ kind: "tool", call, block });
               break;
             }
             default:
               // Unknown content block types are ignored by contract.
               break;
           }
-        }
-        if (newText != null && !placed) segs.unshift({ kind: "text", text: newText });
+        });
+        const appended = edits[index].get(e.blocks.length);
+        if (appended != null && !whole) segs.push({ kind: "text", text: appended });
+        if (whole && !placed) segs.unshift({ kind: "text", text: REMOVED_PLACEHOLDER });
         push(
           {
             kind: "assistant",
@@ -184,7 +200,7 @@
               cost: e.cost,
             },
           },
-          newText != null ? said.join("") : null,
+          whole || edits[index].size > 0 ? said.join("") : null,
         );
       } else if (e.event === "compaction") {
         push({ kind: "compaction", summary: e.summary });
@@ -215,6 +231,9 @@
   let editing = $state<EditState>(null);
   let editCacheLine = $state("");
   let editorEl = $state<HTMLTextAreaElement | null>(null);
+  // A reply's editor is one textarea per text block (backlog 066); the
+  // first takes the focus and each grows to its own text.
+  let editorEls = $state<(HTMLTextAreaElement | null)[]>([]);
   const onClaudeCode = $derived(app.connection?.engine === "claude-code");
   const controlsTitle = $derived(
     onClaudeCode
@@ -224,10 +243,15 @@
 
   function beginEdit(item: Item) {
     const text = item.kind === "user" ? item.text : item.kind === "assistant" ? textOf(item.segs) : "";
-    editing = editReduce(editing, { type: "begin", index: item.index, text });
+    const parts =
+      item.kind === "assistant"
+        ? editParts(app.events, item.index, (b) => `${b.name} ${toolInputSummary(b.input)}`.trim())
+        : undefined;
+    editing = editReduce(editing, { type: "begin", index: item.index, text, parts });
     editCacheLine = editLine(cacheState(app.events, Date.now()));
     void tick().then(() => {
-      editorEl?.focus();
+      const first = editorEl ?? editorEls.find((el) => el);
+      first?.focus();
       autogrow();
     });
   }
@@ -237,14 +261,20 @@
       .map((s) => s.text)
       .join("");
   }
-  function autogrow() {
-    if (!editorEl) return;
-    editorEl.style.height = "auto";
-    editorEl.style.height = `${Math.min(editorEl.scrollHeight, 420)}px`;
+  function autogrow(el: HTMLTextAreaElement | null = null) {
+    const els = el ? [el] : [editorEl, ...editorEls];
+    for (const e of els) {
+      if (!e) continue;
+      e.style.height = "auto";
+      e.style.height = `${Math.min(e.scrollHeight, 420)}px`;
+    }
   }
   async function commitSave() {
     if (!editing || !editButtons(editing).save) return;
-    if (await saveEdit(editing.index, editing.draft)) editing = editReduce(editing, { type: "done" });
+    const ok = editing.parts
+      ? await saveReplyEdit(editing.index, editChanges(editing))
+      : await saveEdit(editing.index, editing.draft);
+    if (ok) editing = editReduce(editing, { type: "done" });
   }
   async function commitSend(item: Item) {
     if (!editing || !editButtons(editing).send || item.kind !== "user") return;
@@ -400,7 +430,7 @@
   // viewport's scroll space, which one is being read, whether the view
   // scrolls at all — measured once per frame on scroll and again after
   // the events change. `data-turn` on each turn is the anchor.
-  const navTicks = $derived(tickModel(app.events, liveFlags(app.events), editTexts(app.events)));
+  const navTicks = $derived(tickModel(app.events, liveFlags(app.events), displayTexts(app.events)));
   let navActive = $state<number | null>(null);
   let navScrolls = $state(false);
   const showNav = $derived(navScrolls && navTicks.length >= MIN_TICKS);
@@ -511,6 +541,9 @@
                 }}
                 onkeydown={(e) => editorKeys(e, item)}
                 aria-label="Edit this message"
+                autocorrect="off"
+                autocapitalize="off"
+                spellcheck="false"
               ></textarea>
               <div class="editor-line">{editCacheLine}</div>
               <div class="editor-row">
@@ -576,7 +609,18 @@
                    and the next turn resumes the copy — the title says so.
                    Icons, with the full sentence on hover and for a reader. -->
               <span class="turn-tools" title={controlsTitle}>
-                {#if !item.removed}
+                {#if item.removed}
+                  <!-- Restore on the placeholder itself (backlog 066): the
+                       same restore an undo of the removal runs. -->
+                  <button
+                    class="tool-btn"
+                    title="Restore to the context"
+                    aria-label="Restore to the context"
+                    onclick={() => void restoreTurn(item.index)}
+                  >
+                    <Icon name="refresh" size={14} />
+                  </button>
+                {:else}
                   <button
                     class="tool-btn"
                     title="Rewind to here: this turn and everything after it stop counting. Files written by tools are not reverted."
@@ -620,17 +664,31 @@
           data-turn={item.index}
         >
           {#if editing?.index === item.index}
+            <!-- The reply's text blocks as textareas in order, each tool
+                 call between them a fixed marker (backlog 066): the text
+                 around a call is edited, the call is not. A block's text
+                 deleted entirely removes that block on Save. -->
             <div class="editor">
-              <textarea
-                bind:this={editorEl}
-                value={editing.draft}
-                oninput={(e) => {
-                  editing = editReduce(editing, { type: "draft", text: (e.target as HTMLTextAreaElement).value });
-                  autogrow();
-                }}
-                onkeydown={(e) => editorKeys(e, item)}
-                aria-label="Edit this reply"
-              ></textarea>
+              {#each editing.parts ?? [] as part, p (part.block)}
+                {#if part.kind === "text"}
+                  <textarea
+                    bind:this={editorEls[p]}
+                    value={part.draft}
+                    oninput={(e) => {
+                      const el = e.target as HTMLTextAreaElement;
+                      editing = editReduce(editing, { type: "draft", text: el.value, block: part.block });
+                      autogrow(el);
+                    }}
+                    onkeydown={(e) => editorKeys(e, item)}
+                    aria-label="Edit this part of the reply"
+                    autocorrect="off"
+                    autocapitalize="off"
+                    spellcheck="false"
+                  ></textarea>
+                {:else}
+                  <div class="editor-marker" title="A tool call stays where it is; remove it from its own hover">{part.label}</div>
+                {/if}
+              {/each}
               <div class="editor-line">{editCacheLine}</div>
               <div class="editor-row">
                 <button
@@ -650,7 +708,14 @@
               </div>
             </div>
           {:else}
-            <AssistantMessage segs={item.segs} footer={item.footer} />
+            {@const editable = !item.superseded && !app.busy && !item.removed}
+            <AssistantMessage
+              segs={item.segs}
+              footer={item.footer}
+              {controlsTitle}
+              onremove={editable ? (block) => void removeBlock(item.index, block) : null}
+              onrestore={editable ? (block) => void restoreBlock(item.index, block) : null}
+            />
             {#if item.original !== null}
               <details class="original">
                 <summary>
@@ -661,7 +726,18 @@
               </details>
             {/if}
           {/if}
-          {#if !item.superseded && !app.busy && !item.removed && editing?.index !== item.index}
+          {#if !item.superseded && !app.busy && item.removed}
+            <span class="turn-tools assistant-tools" title={controlsTitle}>
+              <button
+                class="tool-btn"
+                title="Restore to the context"
+                aria-label="Restore to the context"
+                onclick={() => void restoreTurn(item.index)}
+              >
+                <Icon name="refresh" size={14} />
+              </button>
+            </span>
+          {:else if !item.superseded && !app.busy && !item.removed && editing?.index !== item.index}
             <span class="turn-tools assistant-tools" title={controlsTitle}>
               {#if item.editable}
                 <button
@@ -862,6 +938,20 @@
     font-family: var(--sans);
     font-size: 11.5px;
     color: var(--dim);
+  }
+  /* A tool call inside the reply editor (backlog 066): greyed, in the
+     tool line's face, not a field. */
+  .editor-marker {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--dim);
+    opacity: 0.7;
+    border: 1px dashed var(--border);
+    border-radius: 8px;
+    padding: 0.3rem 0.6rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .editor-row {
     display: flex;

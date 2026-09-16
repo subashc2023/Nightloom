@@ -325,6 +325,30 @@ snapshots) in turn order; the CLI line and the desktop toast read
 "consolidated 3 into Lanternfish, 2 into the vault", with one rollback clause
 per folder.
 
+**Two engines, one pass (2026-09-16, nightshift backlog 070).** Every dream
+before this ran through the provider layer and billed an API key, on a
+machine where ~95% of chats run on the Claude Code engine and bill the
+subscription (blocker 055). `dream::run_on_agent` beside `run` is the same
+pass as one `claude -p` turn per target — `run` and `run_on_agent` share one
+private `run_with`, so the grouping, the prefix batch, the snapshots, the
+watermark and the outcome are one code path and the engine is the only thing
+that differs. On the CLI the confinement is the working directory (the vault,
+or the project's memory folder) and `--permission-mode acceptEdits`, the tools
+are `--tools Read Write Edit Glob Grep`, the instruction is the same
+`compose_instruction` text with the `<current-instructions>` block, and
+`propose_instructions` arrives over MCP from Nightloom's own server in its
+`--dream` mode. `AGENTS.md` stays out of reach for the same reason as before —
+it is not under the working directory, and an edit above it is routed to a
+prompt nobody answers (measured; the flags, the MCP gating and the runs are in
+[service-agent.md](service-agent.md) "Dreams and captures on this engine").
+"Did this turn propose" is read as the proposal ids new in the store after the
+turn rather than off the tool's slot, since the tool ran in another process;
+`DreamOutcome.cost_usd` is `None` on this engine — nothing is billed per token,
+and the usage ledger ([usage-ledger.md](usage-ledger.md)) is where the turn's
+tokens show, read from the session file the CLI writes. Capture has the same
+pair, `capture::run_on_agent`: one no-tool `claude -p` per batch, the reply
+parsed as before.
+
 **Sessions append and read; the dream is the only writer of consolidated
 notes** — Letta's sleep-time inversion, and the one choke point where "should
 this be believed" gets asked.
@@ -429,7 +453,12 @@ proposal that moves the section out.
 
 ### Scheduling
 
-**Deliberately manual** — a dream spends real money unattended — and both shells
+**Deliberately manual** — ~~a dream spends real money unattended~~ **(struck
+2026-09-16, nightshift backlog 070: a dream bills whatever engine runs it, and
+on the Claude Code engine that is the subscription, not a key — see "The dream"
+above and [service-agent.md](service-agent.md) "Dreams and captures on this
+engine"; the passes still run unattended, which is the reason they stay
+manual)** — and both shells
 surface the backlog as the nudge: the CLI startup line names the pending count,
 and the desktop's Notes panel shows a `Dream · N` button in the Knowledge bar
 (hidden at zero; `dream_status` / `dream` / `cancel_dream` commands; progress as
@@ -458,8 +487,13 @@ model that dreams, validated at launch: a typo found out at the first compaction
 hours in and unattended, is the wrong moment. The desktop's toggle is in Settings
 → Knowledge beside a dream-model override, a localStorage preference
 (`nightloom.dream`) consulted by both the Dream button and the trigger — one knob
-answers "which model dreams", and it is also what lets the agent engine dream at
-all, having no provider of its own to lend. Both shells stay silent and spend
+answers "which engine dreams", ~~and it is also what lets the agent engine dream at
+all, having no provider of its own to lend~~ **(2026-09-16: the dropdown's
+"Claude Code (subscription)" is a real engine for the pass, its model box a
+CLI alias, and "the rail's connection" while the rail is on Claude Code runs
+the pass there with the rail's alias — `passTargetFor` in `state.svelte.ts`,
+`pass_engine` in the desktop's `main.rs`; the auto-after-compaction trigger
+takes the same route)**. Both shells stay silent and spend
 nothing when the inbox is empty. The desktop's trigger runs **capture first,
 then the dream**, on the same model: without the capture the inbox it would
 consolidate is empty on a machine where the model never calls `remember`. The

@@ -18,6 +18,7 @@ import {
   savePrompts,
   thinkingString,
   type CatalogPrefs,
+  type ConnectionDraft,
   type Engine,
   type SavedPrompt,
 } from "./catalog";
@@ -100,18 +101,27 @@ function saveLastProject(id: string | null): void {
  */
 const DREAM_PREFS_KEY = "nightloom.dream";
 
+/**
+ * The `provider` value that means the Claude Code engine (2026-09-16,
+ * nightshift backlog 070): the same string the backend's `AGENT` is, and
+ * the one value in the dream dropdown that is not a provider kind.
+ */
+export const DREAM_ENGINE = "claude-code";
+
 export interface DreamPrefs {
   /** Dream automatically after a compaction, when the inbox has entries. */
   auto: boolean;
-  /** Provider that dreams; "" means whatever the rail is connected to. */
+  /** Provider that dreams — a provider kind or `DREAM_ENGINE`; "" means
+   *  whatever the rail is connected to, the Claude Code engine included. */
   provider: string;
-  /** Model that dreams; "" means the provider's default. */
+  /** Model that dreams; "" means the provider's default. On `DREAM_ENGINE`
+   *  a CLI alias (`haiku`, `sonnet`) and "" the CLI's default. */
   model: string;
 }
 
-function loadDreamPrefs(): DreamPrefs {
+/** The stored preference read back, or the default when absent or malformed. */
+export function parseDreamPrefs(raw: string | null): DreamPrefs {
   try {
-    const raw = localStorage.getItem(DREAM_PREFS_KEY);
     if (raw) {
       const p = JSON.parse(raw) as Partial<DreamPrefs>;
       return {
@@ -124,6 +134,14 @@ function loadDreamPrefs(): DreamPrefs {
     // A malformed preference costs the preference, not the feature.
   }
   return { auto: false, provider: "", model: "" };
+}
+
+function loadDreamPrefs(): DreamPrefs {
+  try {
+    return parseDreamPrefs(localStorage.getItem(DREAM_PREFS_KEY));
+  } catch {
+    return parseDreamPrefs(null);
+  }
 }
 
 export function saveDreamPrefs(): void {
@@ -297,7 +315,15 @@ export type Segment =
   | { kind: "thinking"; text: string; done: boolean }
   | { kind: "redacted" }
   | { kind: "text"; text: string }
-  | { kind: "tool"; call: ToolCallView }
+  /** `block` — the index into the reply's `blocks` — is set on a recorded
+   *  reply's call so the hover Remove (backlog 066) can name it; absent
+   *  while streaming, when there is nothing to remove yet. */
+  | { kind: "tool"; call: ToolCallView; block?: number }
+  /** A block of a recorded reply removed from the context on its own
+   *  (backlog 066): drawn as its placeholder, greyed, with the original a
+   *  click away and Restore beside it. Never in a live message. */
+  | { kind: "removed_text"; block: number; text: string }
+  | { kind: "removed_tool"; block: number; call: ToolCallView }
   | { kind: "notice"; text: string };
 
 export interface Connection {
@@ -553,7 +579,9 @@ export const app = $state({
   palette: loadPalette() as Palette,
   /** Sidebar width and collapse, pane widths on the Nightshift screens. */
   layout: loadLayout(),
-  toasts: [] as { id: number; text: string }[],
+  /** `action` (backlog 066) is the toast's one button — "Undo" on a
+   *  removal or a rewind — and such a toast stays 8 s rather than 5. */
+  toasts: [] as { id: number; text: string; action?: { label: string; run: () => void } }[],
   /** Bumped whenever the undo stack changes, so the menu titles and the
    *  palette rows that read it re-derive (nightshift backlog 064). The
    *  stack itself is `history`, which is not reactive. */
@@ -1074,26 +1102,35 @@ export async function refreshCaptureStatus(): Promise<void> {
 }
 
 /**
- * Which connection a background pass runs on: the dream model set in
- * Settings, or the rail's. One knob answers "which model dreams" for the
- * button and the auto-trigger alike — and the capture pass uses the same
- * one, being the front half of the same pipeline — and it is also what lets
- * the agent engine run either pass at all, having no provider of its own to
- * lend. `null` with a toast when there is nothing to run on.
+ * Which connection a background pass runs on: the engine set in Settings,
+ * or the rail's. One knob answers "which model dreams" for the button and
+ * the auto-trigger alike — and the capture pass uses the same one, being
+ * the front half of the same pipeline. Since 2026-09-16 (nightshift
+ * backlog 070) the Claude Code engine is a real answer: chosen in Settings
+ * it runs with the rail's binary and safe mode and the Settings alias;
+ * left on the rail's connection while the rail is on Claude Code, it runs
+ * with the rail's alias too, billed to the subscription either way. Pure,
+ * so a test can pin the routing; `passTarget` reads the live state.
  */
-function passTarget(
-  what: string,
-): { provider: string; model?: string; baseUrl?: string; thinking?: string } | null {
-  const d = app.draft;
-  const prefs = app.dreamPrefs;
+export function passTargetFor(prefs: DreamPrefs, d: ConnectionDraft): api.PassArgs {
+  if (prefs.provider === DREAM_ENGINE) {
+    return {
+      provider: DREAM_ENGINE,
+      model: prefs.model.trim() || undefined,
+      binary: d.agentBinary.trim() || undefined,
+      safeMode: d.agentSafeMode,
+    };
+  }
   if (prefs.provider) {
     return { provider: prefs.provider, model: prefs.model.trim() || undefined };
   }
   if (d.engine === "claude-code") {
-    addToast(
-      `${what} runs on a provider API — set a dream model in Settings → Knowledge, or pick a provider in the rail`,
-    );
-    return null;
+    return {
+      provider: DREAM_ENGINE,
+      model: d.agentModel.trim() || undefined,
+      binary: d.agentBinary.trim() || undefined,
+      safeMode: d.agentSafeMode,
+    };
   }
   return {
     provider: d.provider,
@@ -1101,6 +1138,10 @@ function passTarget(
     baseUrl: d.baseUrl.trim() || undefined,
     thinking: thinkingString(d),
   };
+}
+
+function passTarget(): api.PassArgs {
+  return passTargetFor(app.dreamPrefs, app.draft);
 }
 
 /**
@@ -1111,8 +1152,7 @@ function passTarget(
  */
 export async function runCapture(): Promise<void> {
   if (app.capturing || app.dreaming) return;
-  const target = passTarget("capturing");
-  if (!target) return;
+  const target = passTarget();
   app.capturing = true;
   try {
     const r = await api.capture(target);
@@ -1157,13 +1197,12 @@ export async function stopCapture(): Promise<void> {
  *
  * The connection travels as arguments rather than reusing the window's chat:
  * a dream is its own job with its own prompt and tool set, and it works the
- * same whichever engine the window is on — except that the agent engine has
- * no provider to lend it, which gets a sentence instead of a guess.
+ * same whichever engine the window is on — the Claude Code engine included,
+ * since 2026-09-16 (`passTargetFor`).
  */
 export async function runDream(): Promise<void> {
   if (app.dreaming || app.capturing) return;
-  const target = passTarget("dreaming");
-  if (!target) return;
+  const target = passTarget();
   app.dreaming = true;
   app.dreamActivity = "";
   try {
@@ -3019,13 +3058,29 @@ export async function resolveApproval(
 
 let toastSeq = 0;
 
-export function addToast(text: string): void {
+/** How long a toast stays: five seconds, eight when it carries an action
+ *  — his "an undo floating button for 8s" (backlog 066). */
+export const TOAST_MS = 5000;
+export const ACTION_TOAST_MS = 8000;
+
+export function addToast(text: string, action?: { label: string; run: () => void }): void {
   const id = ++toastSeq;
-  app.toasts.push({ id, text });
-  setTimeout(() => {
-    const i = app.toasts.findIndex((t) => t.id === id);
-    if (i >= 0) app.toasts.splice(i, 1);
-  }, 5000);
+  app.toasts.push(action ? { id, text, action } : { id, text });
+  setTimeout(() => dismissToast(id), action ? ACTION_TOAST_MS : TOAST_MS);
+}
+
+export function dismissToast(id: number): void {
+  const i = app.toasts.findIndex((t) => t.id === id);
+  if (i >= 0) app.toasts.splice(i, 1);
+}
+
+/** A toast's action, run once: the toast goes with the click, so the
+ *  same Undo cannot fire twice. */
+export function runToastAction(id: number): void {
+  const t = app.toasts.find((t) => t.id === id);
+  if (!t?.action) return;
+  dismissToast(id);
+  t.action.run();
 }
 
 /** Mark a trailing in-progress thinking segment as complete (collapses its pill). */
@@ -3443,7 +3498,7 @@ export async function rewindTo(to: number): Promise<void> {
   // The inverse lifts the marker this call landed — and, after a redo,
   // the marker *that* call lands, which is why the index is a variable.
   let marker = lastMarker("rewind");
-  pushUndo(chatScope(), {
+  const handle = pushUndo(chatScope(), {
     label: "rewind",
     undo: async () => {
       app.events = await api.unrewind(marker);
@@ -3453,6 +3508,7 @@ export async function rewindTo(to: number): Promise<void> {
       marker = lastMarker("rewind");
     },
   });
+  undoToast("Rewound to here", handle);
 }
 
 /** The log index of the newest event of `kind` — the marker an operation
@@ -3488,9 +3544,35 @@ function undoScopes(): string[] {
   return [chatScope(), LIST_SCOPE];
 }
 
-function pushUndo(scope: string, entry: { label: string; undo: () => Promise<void>; redo: () => Promise<void> }): void {
-  history.push(scope, entry);
+function pushUndo(scope: string, entry: { label: string; undo: () => Promise<void>; redo: () => Promise<void> }): number {
+  const handle = history.push(scope, entry);
   app.undoTick++;
+  return handle;
+}
+
+/**
+ * The toast a removal or a rewind raises (backlog 066): "Removed from
+ * context · Undo", eight seconds, the Undo reversing *that* entry and
+ * nothing else — `undoIf` refuses once something newer is on the stack,
+ * and says so, since an Undo that lifted a later edit would be worse than
+ * one that did nothing.
+ */
+function undoToast(text: string, handle: number): void {
+  addToast(text, {
+    label: "Undo",
+    run: () => {
+      void (async () => {
+        try {
+          const step = await history.undoIf(undoScopes(), handle);
+          if (!step) addToast("Something was done since; use ⌘Z to undo in order");
+        } catch (e) {
+          addToast(`Could not undo: ${String(e)}`);
+        } finally {
+          app.undoTick++;
+        }
+      })();
+    },
+  });
 }
 
 /** "rewind" or null: what Undo would reverse right now. Reactive through
@@ -3573,21 +3655,26 @@ export async function syncUndoMenu(): Promise<void> {
 }
 
 /** The text the turn at `index` says now: its latest live edit, else its
- *  own — what an undo of an edit puts back. */
+ *  own — what an undo of an edit puts back. For a reply, its first text
+ *  block, which is what `saveEdit` on a reply rewords (backlog 066: the
+ *  transcript's reply editor goes block by block through `saveReplyEdit`
+ *  instead). */
 function currentText(index: number): string {
-  const live = liveFlags(app.events);
-  for (let i = app.events.length - 1; i > index; i--) {
-    const e = app.events[i];
-    if (live[i] && e.event === "edit" && e.target === index) return e.text;
-  }
   const e = app.events[index];
   if (!e) return "";
-  if (e.event === "user_message") return e.text;
+  if (e.event === "user_message") {
+    const live = liveFlags(app.events);
+    for (let i = app.events.length - 1; i > index; i--) {
+      const m = app.events[i];
+      if (live[i] && m.event === "edit" && m.target === index) return m.text;
+    }
+    return e.text;
+  }
   if (e.event === "assistant_message") {
-    return e.blocks
-      .filter((b): b is Extract<typeof b, { type: "text" }> => b.type === "text")
-      .map((b) => b.text)
-      .join("");
+    const first = e.blocks.findIndex((b) => b.type === "text");
+    const b = e.blocks[first];
+    const own = b?.type === "text" ? b.text : "";
+    return blockEditsOf(index).get(first >= 0 ? first : e.blocks.length) ?? own;
   }
   return "";
 }
@@ -3671,7 +3758,7 @@ export async function removeTurn(index: number): Promise<void> {
     addToast(String(e));
     return;
   }
-  pushUndo(chatScope(), {
+  const handle = pushUndo(chatScope(), {
     label: "remove",
     undo: async () => {
       app.events = (await api.restoreMessage(index)).events;
@@ -3680,6 +3767,156 @@ export async function removeTurn(index: number): Promise<void> {
       app.events = (await api.removeMessage(index)).events;
     },
   });
+  undoToast("Removed from context", handle);
+}
+
+/**
+ * The Restore on a removed turn's placeholder (backlog 066): the same
+ * restore an undo of the removal runs — `unelide`; on Claude Code the
+ * turn's nodes back from the original — with its own inverse on the
+ * stack, so a restore is itself undoable.
+ */
+export async function restoreTurn(index: number): Promise<void> {
+  if (app.busy) return;
+  try {
+    app.events = (await api.restoreMessage(index)).events;
+    app.error = null;
+  } catch (e) {
+    addToast(String(e));
+    return;
+  }
+  pushUndo(chatScope(), {
+    label: "restore",
+    undo: async () => {
+      app.events = (await api.removeMessage(index)).events;
+    },
+    redo: async () => {
+      app.events = (await api.restoreMessage(index)).events;
+    },
+  });
+}
+
+/**
+ * Remove one block of a reply from the context (backlog 066): a tool call
+ * with its result, from the hover on the call; or a text block, which is
+ * what a Save with that block's text deleted does. The inverse is the
+ * block's restore; the toast offers it for eight seconds.
+ */
+export async function removeBlock(index: number, block: number, toast = true): Promise<boolean> {
+  if (app.busy) return false;
+  try {
+    app.events = (await api.removeBlock(index, block)).events;
+    app.error = null;
+  } catch (e) {
+    addToast(String(e));
+    return false;
+  }
+  const handle = pushUndo(chatScope(), {
+    label: "remove",
+    undo: async () => {
+      app.events = (await api.restoreBlock(index, block)).events;
+    },
+    redo: async () => {
+      app.events = (await api.removeBlock(index, block)).events;
+    },
+  });
+  if (toast) undoToast("Removed from context", handle);
+  return true;
+}
+
+/** The Restore on a removed block's placeholder, on `restoreTurn`'s terms. */
+export async function restoreBlock(index: number, block: number): Promise<void> {
+  if (app.busy) return;
+  try {
+    app.events = (await api.restoreBlock(index, block)).events;
+    app.error = null;
+  } catch (e) {
+    addToast(String(e));
+    return;
+  }
+  pushUndo(chatScope(), {
+    label: "restore",
+    undo: async () => {
+      app.events = (await api.removeBlock(index, block)).events;
+    },
+    redo: async () => {
+      app.events = (await api.restoreBlock(index, block)).events;
+    },
+  });
+}
+
+/**
+ * Save a reply's editor (backlog 066): each changed text block reworded
+ * (`editBlock`), each emptied one removed (`removeBlock`), in order, as
+ * one entry on the stack — one Save, one undo — whose inverse puts every
+ * block back to what it said: an edit back for an edit, a restore for a
+ * removal. On Claude Code each step is its own copy of the CLI's file;
+ * a step that is refused stops the sequence, with what landed before it
+ * kept and undoable.
+ */
+export async function saveReplyEdit(
+  index: number,
+  changes: { block: number; text: string }[],
+): Promise<boolean> {
+  if (app.busy || changes.length === 0) return false;
+  const e = app.events[index];
+  if (e?.event !== "assistant_message") return false;
+  const edits = blockEditsOf(index);
+  const done: { block: number; text: string; previous: string }[] = [];
+  for (const c of changes) {
+    const b = e.blocks[c.block];
+    const previous = edits.get(c.block) ?? (b?.type === "text" ? b.text : "");
+    try {
+      app.events = (
+        c.text.length === 0
+          ? await api.removeBlock(index, c.block)
+          : await api.editBlock(index, c.block, c.text)
+      ).events;
+      app.error = null;
+    } catch (err) {
+      addToast(String(err));
+      break;
+    }
+    done.push({ block: c.block, text: c.text, previous });
+  }
+  if (done.length === 0) return false;
+  const apply = async (forward: boolean) => {
+    for (const d of forward ? done : [...done].reverse()) {
+      const text = forward ? d.text : d.previous;
+      app.events = (
+        forward && d.text.length === 0
+          ? await api.removeBlock(index, d.block)
+          : !forward && d.text.length === 0
+            ? await api.restoreBlock(index, d.block)
+            : await api.editBlock(index, d.block, text)
+      ).events;
+    }
+  };
+  pushUndo(chatScope(), {
+    label: "edit",
+    undo: () => apply(false),
+    redo: () => apply(true),
+  });
+  return done.length === changes.length;
+}
+
+/** The reply at `index`'s live block edits, without importing the whole
+ *  of edit.ts into this module's cycle. */
+function blockEditsOf(index: number): Map<number, string> {
+  const live = liveFlags(app.events);
+  const out = new Map<number, string>();
+  const e = app.events[index];
+  if (e?.event !== "assistant_message") return out;
+  app.events.forEach((m, i) => {
+    if (!live[i] || m.event !== "edit" || m.target !== index) return;
+    let block = m.block;
+    if (block == null) {
+      const first = e.blocks.findIndex((b) => b.type === "text");
+      block = first >= 0 ? first : e.blocks.length;
+    }
+    out.set(block, m.text);
+  });
+  return out;
 }
 
 /**

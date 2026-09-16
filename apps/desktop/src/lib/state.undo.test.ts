@@ -6,10 +6,15 @@ import {
   history,
   liveFlags,
   redo,
+  removeBlock,
   removeTurn,
   renameSession,
+  restoreBlock,
+  restoreTurn,
   rewindTo,
+  runToastAction,
   saveEdit,
+  saveReplyEdit,
   send,
   setPromptLayer,
   setPromptLayerText,
@@ -49,6 +54,9 @@ vi.mock("./api", async (importOriginal) => ({
   editMessage: vi.fn(async () => ({ events: base, session: "chat-1", forked: false })),
   removeMessage: vi.fn(async () => ({ events: base, session: "chat-1", forked: false })),
   restoreMessage: vi.fn(async () => ({ events: base, session: "chat-1", forked: false })),
+  editBlock: vi.fn(async () => ({ events: base, session: "chat-1", forked: false })),
+  removeBlock: vi.fn(async () => ({ events: base, session: "chat-1", forked: false })),
+  restoreBlock: vi.fn(async () => ({ events: base, session: "chat-1", forked: false })),
   editContext: vi.fn(async () => ({ view: { system: [], messages: [], sidecar: [] }, events: base, changed: 1 })),
   renameSession: vi.fn(async () => {}),
   deleteSession: vi.fn(async (id: string) => id),
@@ -75,6 +83,7 @@ beforeEach(() => {
   history.clear("chat-1");
   history.clear("*");
   history.clear("new");
+  app.toasts = [];
 });
 
 describe("liveFlags with unrewind", () => {
@@ -173,5 +182,111 @@ describe("one inverse per operation", () => {
     app.busy = true;
     await undo();
     expect(api.unrewind).not.toHaveBeenCalled();
+  });
+});
+
+// ---- Restore, tool calls, the Undo toast (nightshift backlog 066) ----
+
+const flush = () => new Promise((r) => setTimeout(r, 0));
+
+describe("the Undo toast", () => {
+  it("a removal raises 'Removed from context · Undo', and Undo restores that turn once", async () => {
+    await removeTurn(2);
+    const toast = app.toasts.find((t) => t.text === "Removed from context");
+    expect(toast?.action?.label).toBe("Undo");
+    runToastAction(toast!.id);
+    await flush();
+    expect(api.restoreMessage).toHaveBeenCalledWith(2);
+    expect(app.toasts.some((t) => t.id === toast!.id)).toBe(false);
+    expect(undoLabel()).toBeNull();
+    // The click is spent with the toast.
+    runToastAction(toast!.id);
+    await flush();
+    expect(api.restoreMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("a rewind raises 'Rewound to here · Undo'", async () => {
+    await rewindTo(3);
+    const toast = app.toasts.find((t) => t.text === "Rewound to here");
+    expect(toast?.action?.label).toBe("Undo");
+    runToastAction(toast!.id);
+    await flush();
+    expect(api.unrewind).toHaveBeenCalledWith(5);
+  });
+
+  it("refuses once something newer is on the stack, and says so", async () => {
+    await removeTurn(2);
+    const toast = app.toasts.find((t) => t.text === "Removed from context")!;
+    await saveEdit(1, "one, edited");
+    runToastAction(toast.id);
+    await flush();
+    expect(api.restoreMessage).not.toHaveBeenCalled();
+    expect(app.toasts.some((t) => t.text.startsWith("Something was done since"))).toBe(true);
+    // ⌘Z still undoes in order.
+    await undo();
+    expect(api.editMessage).toHaveBeenLastCalledWith(1, "one", "save");
+    await undo();
+    expect(api.restoreMessage).toHaveBeenCalledWith(2);
+  });
+});
+
+describe("Restore and tool calls", () => {
+  it("Restore on a placeholder pushes its inverse — the removal again", async () => {
+    await restoreTurn(2);
+    expect(api.restoreMessage).toHaveBeenCalledWith(2);
+    expect(undoLabel()).toBe("restore");
+    await undo();
+    expect(api.removeMessage).toHaveBeenCalledWith(2);
+    await redo();
+    expect(api.restoreMessage).toHaveBeenCalledTimes(2);
+  });
+
+  it("a tool call's removal → the block's restore, with the toast; Restore → the removal", async () => {
+    await removeBlock(2, 1);
+    expect(api.removeBlock).toHaveBeenCalledWith(2, 1);
+    expect(app.toasts.some((t) => t.text === "Removed from context")).toBe(true);
+    await undo();
+    expect(api.restoreBlock).toHaveBeenCalledWith(2, 1);
+    await restoreBlock(2, 1);
+    expect(undoLabel()).toBe("restore");
+    await undo();
+    expect(api.removeBlock).toHaveBeenLastCalledWith(2, 1);
+  });
+
+  it("a reply's Save is one entry: edits back for edits, restores for emptied blocks, in reverse", async () => {
+    app.events = [
+      created,
+      user("one"),
+      {
+        event: "assistant_message",
+        model: "m",
+        blocks: [
+          { type: "text", text: "alpha" },
+          { type: "tool_use", id: "c1", name: "read_file", input: {} },
+          { type: "text", text: "beta" },
+        ],
+        stop_reason: null,
+        usage: { input_tokens: 0, output_tokens: 0 },
+        at: AT,
+      },
+    ];
+    const ok = await saveReplyEdit(2, [
+      { block: 0, text: "alpha, reworded" },
+      { block: 2, text: "" },
+    ]);
+    expect(ok).toBe(true);
+    expect(api.editBlock).toHaveBeenCalledWith(2, 0, "alpha, reworded");
+    expect(api.removeBlock).toHaveBeenCalledWith(2, 2);
+    expect(undoLabel()).toBe("edit");
+    await undo();
+    expect(api.restoreBlock).toHaveBeenCalledWith(2, 2);
+    expect(api.editBlock).toHaveBeenLastCalledWith(2, 0, "alpha");
+    const order = (api.restoreBlock as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
+    const back = (api.editBlock as ReturnType<typeof vi.fn>).mock.invocationCallOrder[1];
+    expect(order).toBeLessThan(back);
+    await redo();
+    expect(api.editBlock).toHaveBeenLastCalledWith(2, 0, "alpha, reworded");
+    expect(api.removeBlock).toHaveBeenCalledTimes(2);
+    expect(undoLabel()).toBe("edit");
   });
 });

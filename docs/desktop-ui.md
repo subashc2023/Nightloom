@@ -860,11 +860,65 @@ the buttons:
 records, and the transcript now draws a removed turn as its placeholder
 ("removed from the context — still in the log"), greyed, with "what was
 removed" a click away; an assistant reply keeps its tool-call chips. It is
-restorable from the context panel on the API engine, and by backlog 064's
-undo once that exists; on Claude Code the context panel itemizes the
-preamble alone, so until 064 a removal there stands. A reply with a tool
-call has Remove and no Edit, on the core's argument
-([core.md](core.md) "Edit").
+restorable from the context panel on the API engine, ~~and by backlog
+064's undo once that exists; on Claude Code the context panel itemizes the
+preamble alone, so until 064 a removal there stands~~ by ⌘Z (064), and
+since 066 by the **Restore** control on the placeholder itself. ~~A reply
+with a tool call has Remove and no Edit, on the core's argument~~ — since
+066 every reply with text has Edit; see below.
+
+### Editing a reply block by block; Restore; the Undo toast (nightshift backlog 066, 2026-09-16)
+
+His ask: "being able to edit Claude's responses is honestly more valuable
+than editing my own … I have no control over what Claude outputs"; keep
+the start of a reply and drop the rest; replace a suggestion with "I won't
+ask you about ___"; a Restore on anything removed; "an undo floating
+button for 8s".
+
+**Edit on any reply.** The editor for a reply is its **text blocks as
+textareas in order, with each tool call between them as a fixed greyed
+marker** (`⚙ Read a.txt`, `editParts` in `edit.ts`, labelled by
+`toolInputSummary`) — the text around a call is edited, the call is not.
+Save rewords each changed block (`edit_message` with `block`, an index
+into the reply's `blocks`) and **removes each block whose text was deleted
+entirely** (`remove_block`), in order, as *one* entry on the undo stack
+(`saveReplyEdit`); a reply emptied whole is not a Save — that is Remove.
+Thinking is not shown in the editor: not the user's to edit, and the API
+leaves it out of later turns on its own (what it still *costs* is measured
+in [service-agent.md](service-agent.md) and said in the thinking toggle's
+title). The `edited` mark and "the original" unfold as before; on Claude
+Code each step is its own copy of the CLI's file, and the controls' title
+says so. The projections `blockEdits`, `blockElisions`, `replyText` in
+`edit.ts` mirror `Session::block_edits`, `block_elisions`, `reply_text`,
+on the same "must stay in step" terms as the three from 062;
+`displayTexts` feeds the navigator one string per turn.
+
+**Remove a tool call.** Hover the call's line in a reply and a small Remove
+appears at its right end (`AssistantMessage.svelte`, `onremove`): the
+`tool_use` block and the result that answers it leave the context
+**together** — one `elide` marker with a `block`, the result following
+the call by id ([core.md](core.md) "One block of a reply") — and the line
+becomes "[tool call removed]", greyed, with the call and its result a click
+away and **Restore** beside it. A removed text block reads "[text
+removed]" the same way. The core refuses a lone half; the UI never offers
+one.
+
+**Restore.** Every removed placeholder — a user turn, a reply, a tool
+call, a text block — carries a Restore control (the `refresh` icon, "Restore
+to the context") in its tools row, calling the same restore its undo would
+(`unelide`; on Claude Code the nodes back from the original), and pushing
+its own inverse on the stack so a Restore is itself undoable
+(`restoreTurn`, `restoreBlock`).
+
+**The Undo toast.** Remove (a turn or a call) and Rewind raise a toast —
+"Removed from context · Undo", "Rewound to here · Undo" — for **8 s**
+(`ACTION_TOAST_MS`; plain toasts keep 5). `addToast` gained an optional
+action `{ label, run }`, drawn as the toast's own text with the accent and
+taking the pointer (other toasts stay inert). Undo runs the stack's undo
+**for that entry alone**: `UndoHistory.push` returns a handle and
+`undoIf(scopes, handle)` refuses once anything newer is on the stack, with
+a toast saying to use ⌘Z in order — an Undo that lifted a later edit would
+be worse than one that did nothing. The click spends the toast.
 
 The transcript's projections for all this — `editTexts`, `elideFlags`,
 `isEditable` in `edit.ts` — mirror `Session::edit_texts`, `elide_flags` and
@@ -892,8 +946,10 @@ ordinary event and nothing is struck out — supersede, never delete.
 |---|---|
 | Rewind to here | an `unrewind` marker lifting that rewind ([core.md](core.md)); on Claude Code the chat resumes the file the rewind was cut from, still on disk |
 | Remove (transcript or Context panel) | a restore — `unelide`; on Claude Code a third copy of the CLI's file with the turn put back from the original ([service-agent.md](service-agent.md)) — the Restore that engine lacked in 062 |
-| Restore (Context panel) | the removal again |
+| Remove a tool call or a text block of a reply (066) | that block's restore, the pair with it |
+| Restore (Context panel, or the placeholder's own control since 066) | the removal again |
 | Edit and save | an edit back to what the turn said before, the same marker |
+| Save on a reply's editor (066) | every block back to what it said: an edit back for an edit, a restore for an emptied block, in reverse order — one entry for the whole Save |
 | Rename | a rename back; a chat that was never named gets its first message *as* its name, since a title cannot be un-recorded |
 | Delete | the log moved back out of `<logs>/trash/` (`restore_session`), and the chat reopened if nothing is open |
 | A prompt layer on or off | the set as it was |

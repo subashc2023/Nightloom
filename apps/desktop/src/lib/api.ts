@@ -283,9 +283,32 @@ export function editMessage(
   return invoke("edit_message", { index, text, mode });
 }
 
+/**
+ * Reword one text block of the reply at `index` (nightshift backlog 066):
+ * `edit_message` with `block`, an index into the reply's `blocks`; the
+ * calls and the other text blocks around it stay where they were.
+ */
+export function editBlock(index: number, block: number, text: string): Promise<MessageEdit> {
+  return invoke("edit_message", { index, text, mode: "save", block });
+}
+
 /** Remove the turn at `index` from the context: the `elide` marker, from the transcript. */
 export function removeMessage(index: number): Promise<MessageEdit> {
   return invoke("remove_message", { index });
+}
+
+/**
+ * Remove one block of the reply at `index` from the context (nightshift
+ * backlog 066): a text block, or a tool call with its result — the pair
+ * leaves together. On Claude Code the CLI's copy drops the nodes.
+ */
+export function removeBlock(index: number, block: number): Promise<MessageEdit> {
+  return invoke("remove_block", { index, block });
+}
+
+/** Put back a block `removeBlock` took out. */
+export function restoreBlock(index: number, block: number): Promise<MessageEdit> {
+  return invoke("restore_block", { index, block });
 }
 
 /**
@@ -549,18 +572,30 @@ export function dreamStatus(): Promise<number> {
  * `dream-event`s (the `TurnEvent` shape, on its own channel) while it works,
  * and resolves with what the pass did.
  */
-export function dream(args: {
-  provider: string;
-  model?: string;
-  baseUrl?: string;
-  thinking?: string;
-}): Promise<DreamReport> {
+export function dream(args: PassArgs): Promise<DreamReport> {
   return invoke("dream", {
     provider: args.provider,
     model: args.model,
     baseUrl: args.baseUrl,
     thinking: args.thinking,
+    binary: args.binary,
+    safeMode: args.safeMode,
   });
+}
+
+/**
+ * What a background pass runs on. `provider` is a provider kind, or
+ * `"claude-code"` for the Claude Code engine (2026-09-16), in which case
+ * `model` is a CLI alias and `binary` / `safeMode` are the rail's agent
+ * settings; `baseUrl` and `thinking` are the provider's alone.
+ */
+export interface PassArgs {
+  provider: string;
+  model?: string;
+  baseUrl?: string;
+  thinking?: string;
+  binary?: string;
+  safeMode?: boolean;
 }
 
 /** Interrupt the in-flight dream; nothing is consumed. */
@@ -578,17 +613,14 @@ export function captureStatus(): Promise<number> {
  * `TurnEvent` shape, on its own channel) while it works, and resolves with
  * what the pass did.
  */
-export function capture(args: {
-  provider: string;
-  model?: string;
-  baseUrl?: string;
-  thinking?: string;
-}): Promise<CaptureReport> {
+export function capture(args: PassArgs): Promise<CaptureReport> {
   return invoke("capture", {
     provider: args.provider,
     model: args.model,
     baseUrl: args.baseUrl,
     thinking: args.thinking,
+    binary: args.binary,
+    safeMode: args.safeMode,
   });
 }
 

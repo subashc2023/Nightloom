@@ -13,6 +13,8 @@
     type Override,
   } from "./transcriptPrefs.svelte";
   import ApprovalPrompt from "./ApprovalPrompt.svelte";
+  import Icon from "./Icon.svelte";
+  import { REMOVED_TEXT_PLACEHOLDER, REMOVED_TOOL_PLACEHOLDER } from "./edit";
 
   interface Footer {
     model: string;
@@ -52,12 +54,24 @@
     footer = null,
     streaming = false,
     approvals = [],
+    onremove = null,
+    onrestore = null,
+    controlsTitle = "",
   }: {
     segs: Segment[];
     footer?: Footer | null;
     streaming?: boolean;
     /** Calls in these segments still waiting on the user's decision. */
     approvals?: ApprovalRequest[];
+    /** Remove one block of a recorded reply — a tool call with its
+     *  result, from the hover on the call (nightshift backlog 066). Given
+     *  only when the reply can be edited: recorded, live, not removed, no
+     *  turn running. */
+    onremove?: ((block: number) => void) | null;
+    /** Restore a removed block from its placeholder. Same terms. */
+    onrestore?: ((block: number) => void) | null;
+    /** What hovering the controls says on this engine. */
+    controlsTitle?: string;
   } = $props();
 
   // Per-block clicks, keyed by the block's stable id (`segmentIds`) rather
@@ -177,6 +191,52 @@
         {#each approvals.filter((a) => a.id === seg.call.id) as req (req.id)}
           <ApprovalPrompt {req} />
         {/each}
+        <!-- The hover on the call itself (backlog 066): the call and its
+             result leave the context together, the log keeps both. -->
+        {#if onremove && seg.block != null}
+          <span class="block-tools" title={controlsTitle}>
+            <button
+              class="tool-btn"
+              title="Remove this tool call and its result from the context. Both stay in the log; Restore is on the placeholder."
+              aria-label="Remove this tool call and its result from the context"
+              onclick={() => onremove?.(seg.block!)}
+            >
+              <Icon name="minus" size={12} />
+            </button>
+          </span>
+        {/if}
+      </div>
+    {:else if seg.kind === "removed_tool" || seg.kind === "removed_text"}
+      <!-- A removed block's placeholder, greyed, the original a click
+           away, Restore beside it (backlog 066). -->
+      <div class="removed-block">
+        <details class="removed-original">
+          <summary>
+            <span class="removed-label">
+              {seg.kind === "removed_tool" ? REMOVED_TOOL_PLACEHOLDER : REMOVED_TEXT_PLACEHOLDER}
+            </span>
+          </summary>
+          {#if seg.kind === "removed_tool"}
+            <div class="removed-body tool-chip line">
+              <span class="tool-line">{toolSummary(seg.call, false)}</span>
+            </div>
+            {#if seg.call.result}
+              <pre class="tool-result" class:error={seg.call.result.is_error}>{seg.call.result.content}</pre>
+            {/if}
+          {:else}
+            <div class="removed-body">{seg.text}</div>
+          {/if}
+        </details>
+        {#if onrestore}
+          <button
+            class="tool-btn"
+            title="Restore to the context"
+            aria-label="Restore to the context"
+            onclick={() => onrestore?.(seg.block)}
+          >
+            <Icon name="refresh" size={12} />
+          </button>
+        {/if}
       </div>
     {:else if seg.kind === "notice"}
       <div class="notice">{seg.text}</div>
@@ -245,6 +305,77 @@
     display: flex;
     flex-direction: column;
     gap: 0.3rem;
+    position: relative;
+  }
+  /* The call's own hover control (backlog 066): at the line's right end,
+     shown when the call is hovered or the control focused, like the turn's
+     tools under the bubble. */
+  .block-tools {
+    position: absolute;
+    right: 0;
+    top: -2px;
+    opacity: 0;
+    transition: opacity 0.12s;
+  }
+  .tool:hover .block-tools,
+  .block-tools:focus-within {
+    opacity: 1;
+  }
+  .tool-btn {
+    display: inline-grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    background: var(--panel);
+    border: 1px solid transparent;
+    border-radius: 6px;
+    color: var(--dim);
+    padding: 0;
+    cursor: pointer;
+  }
+  .tool-btn:hover,
+  .tool-btn:focus-visible {
+    color: var(--ink);
+    border-color: var(--line2);
+  }
+  /* A removed block: the placeholder in the tool line's face, greyed and
+     italic like a removed turn, Restore at its side. */
+  .removed-block {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.4rem;
+  }
+  .removed-original {
+    flex: 1;
+    min-width: 0;
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--dim);
+  }
+  .removed-original summary {
+    cursor: pointer;
+    list-style: none;
+    opacity: 0.6;
+    font-style: italic;
+  }
+  .removed-original summary::-webkit-details-marker {
+    display: none;
+  }
+  .removed-body {
+    margin-top: 0.3rem;
+    border: 1px dashed var(--border);
+    border-radius: 8px;
+    padding: 0.4rem 0.6rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+    opacity: 0.6;
+    font-family: var(--transcript-font, var(--sans));
+    font-size: calc(var(--transcript-size, 16px) - 2px);
+  }
+  .removed-body.tool-chip {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    cursor: default;
   }
   .tool-chip {
     font-family: var(--mono);

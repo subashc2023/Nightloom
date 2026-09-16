@@ -79,6 +79,21 @@ pub enum Target {
     Assistant { from_last: usize, text: String },
 }
 
+/// One block of an assistant reply, as the CLI's file holds it
+/// (2026-09-15, nightshift backlog 066): the n-th text node of the reply,
+/// or the `tool_use` node with this id. A text node is counted rather
+/// than indexed because the two histories agree on the order of what was
+/// said and not on how the file splits a reply into nodes; a call is
+/// named by its id because the id is the one thing both histories carry
+/// verbatim.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Block {
+    /// The `nth` text node of the reply, from 0.
+    Text(usize),
+    /// The call whose `id` this is, with the result that answers it.
+    ToolUse(String),
+}
+
 /// One line of the file: the bytes as written, and the object they hold.
 ///
 /// The bytes are kept so a line the edit does not touch is copied out
@@ -422,33 +437,165 @@ impl CliSession {
     /// attachments; an assistant reply keeps its thinking (signed as it
     /// is, and about a text that is now different — which the API accepts
     /// on the models measured) and its first text node takes the new
-    /// text, any further text node going.
+    /// text, ~~any further text node going~~ — the other text nodes stay
+    /// since 2026-09-15 (nightshift backlog 066), as the core's projection
+    /// keeps them; [`rewrite_block`](Self::rewrite_block) takes any of
+    /// them.
     pub fn rewrite(&self, target: &Target, text: &str) -> Result<Self, CliSessionError> {
+        match target {
+            Target::User { .. } => {
+                let found = self.locate(target)?;
+                let mut copy = self.clone();
+                copy.lines[found[0]].set_text(text);
+                Ok(copy)
+            }
+            Target::Assistant { .. } => self.rewrite_block(target, 0, text),
+        }
+    }
+
+    /// The text nodes of a located reply, in order.
+    fn text_nodes(&self, found: &[usize]) -> Vec<usize> {
+        found
+            .iter()
+            .copied()
+            .filter(|&i| self.lines[i].block_type() == Some("text"))
+            .collect()
+    }
+
+    /// A copy with the `nth` text node of the reply at `target` replaced
+    /// (2026-09-15, nightshift backlog 066): one paragraph reworded, the
+    /// thinking, the calls and the other paragraphs left where they were,
+    /// which is what the core's `edit_block` projects for the other
+    /// engine. `nth` counts the reply's text nodes, not its blocks, since
+    /// the two histories agree on the order of what was said and not on
+    /// how the CLI splits it into nodes. A reply with no text node gives
+    /// its last node the text rather than invent a node.
+    pub fn rewrite_block(
+        &self,
+        target: &Target,
+        nth: usize,
+        text: &str,
+    ) -> Result<Self, CliSessionError> {
         let found = self.locate(target)?;
         let mut copy = self.clone();
-        match target {
-            Target::User { .. } => copy.lines[found[0]].set_text(text),
-            Target::Assistant { .. } => {
-                let texts: Vec<usize> = found
-                    .iter()
-                    .copied()
-                    .filter(|&i| self.lines[i].block_type() == Some("text"))
-                    .collect();
-                match texts.split_first() {
-                    Some((first, rest)) => {
-                        copy.lines[*first].set_text(text);
-                        copy.drop_nodes(rest);
-                    }
-                    None => {
-                        // A reply with no text node: give the last node
-                        // the text rather than invent a node.
-                        let last = *found.last().expect("a located reply has a node");
-                        copy.lines[last].set_text(text);
-                    }
-                }
+        let texts = self.text_nodes(&found);
+        match texts.get(nth) {
+            Some(&i) => copy.lines[i].set_text(text),
+            None if texts.is_empty() && nth == 0 => {
+                let last = *found.last().expect("a located reply has a node");
+                copy.lines[last].set_text(text);
+            }
+            None => {
+                return Err(CliSessionError::Locate(format!(
+                    "that reply has {} text block{} in Claude Code's history, not {}; nothing was changed",
+                    texts.len(),
+                    if texts.len() == 1 { "" } else { "s" },
+                    nth + 1
+                )));
             }
         }
         Ok(copy)
+    }
+
+    /// The line index of the node holding the result that answers the
+    /// call `tool_use_id`: a `user` node whose content lists a
+    /// `tool_result` with that id.
+    fn result_node(&self, tool_use_id: &str) -> Option<usize> {
+        self.lines.iter().position(|l| {
+            l.kind() == Some("user")
+                && matches!(l.content(), Some(Value::Array(blocks)) if blocks.iter().any(|b| {
+                    b.get("type").and_then(Value::as_str) == Some("tool_result")
+                        && b.get("tool_use_id").and_then(Value::as_str) == Some(tool_use_id)
+                }))
+        })
+    }
+
+    /// The nodes [`remove_block`](Self::remove_block) drops for `block`
+    /// of the reply at `found`, and — for a call whose result shares its
+    /// node with other results — the node that keeps its place with the
+    /// one result taken out of it.
+    fn block_nodes(
+        &self,
+        found: &[usize],
+        block: &Block,
+    ) -> Result<(Vec<usize>, Option<usize>), CliSessionError> {
+        match block {
+            Block::Text(nth) => {
+                let texts = self.text_nodes(found);
+                texts.get(*nth).map(|&i| (vec![i], None)).ok_or_else(|| {
+                    CliSessionError::Locate(format!(
+                        "that reply has {} text block{} in Claude Code's history, not {}; nothing was changed",
+                        texts.len(),
+                        if texts.len() == 1 { "" } else { "s" },
+                        nth + 1
+                    ))
+                })
+            }
+            Block::ToolUse(id) => {
+                let call = found
+                    .iter()
+                    .copied()
+                    .find(|&i| {
+                        self.lines[i].block_type() == Some("tool_use")
+                            && matches!(self.lines[i].content(), Some(Value::Array(b)) if b[0].get("id").and_then(Value::as_str) == Some(id))
+                    })
+                    .ok_or_else(|| {
+                        CliSessionError::Locate(
+                            "that tool call is not in Claude Code's history as this chat's log has it; nothing was changed".into(),
+                        )
+                    })?;
+                let Some(result) = self.result_node(id) else {
+                    return Ok((vec![call], None));
+                };
+                let alone =
+                    matches!(self.lines[result].content(), Some(Value::Array(b)) if b.len() == 1);
+                if alone {
+                    Ok((vec![call, result], None))
+                } else {
+                    Ok((vec![call], Some(result)))
+                }
+            }
+        }
+    }
+
+    /// A copy with one block of the reply at `target` removed (2026-09-15,
+    /// nightshift backlog 066): a text node dropped and its children
+    /// re-parented, or a `tool_use` node dropped **with the node holding
+    /// its result** — the pair the core's `elide_block` removes together,
+    /// so the copy's tree, like the projection, never has the half of a
+    /// call every provider rejects. A result that shares its node with
+    /// other results (parallel calls) is taken out of that node, which
+    /// stays. Nothing here says a marker: the CLI's own "drop outright"
+    /// shape was measured to resume.
+    pub fn remove_block(&self, target: &Target, block: &Block) -> Result<Self, CliSessionError> {
+        let found = self.locate(target)?;
+        let (going, trimmed) = self.block_nodes(&found, block)?;
+        let mut copy = self.clone();
+        if let (Some(i), Block::ToolUse(id)) = (trimmed, block)
+            && let Some(Value::Array(blocks)) = copy.lines[i].content_mut()
+        {
+            blocks.retain(|b| b.get("tool_use_id").and_then(Value::as_str) != Some(id));
+            copy.lines[i].dirty = true;
+        }
+        copy.drop_nodes(&going);
+        Ok(copy)
+    }
+
+    /// A copy with one block of the reply put back from `original`, on
+    /// [`restore`](Self::restore)'s terms: the text node, or the call's
+    /// node and its result's node, from the file the removal copied from.
+    /// A result node that stayed (a shared one) takes its original line
+    /// again, which puts the one result back among the others.
+    pub fn restore_block(
+        &self,
+        original: &Self,
+        target: &Target,
+        block: &Block,
+    ) -> Result<Self, CliSessionError> {
+        let found = original.locate(target)?;
+        let (mut nodes, trimmed) = original.block_nodes(&found, block)?;
+        nodes.extend(trimmed);
+        Ok(self.restore_nodes(original, &nodes))
     }
 
     /// A copy with the target removed. A user prompt, and an assistant
@@ -504,8 +651,14 @@ impl CliSession {
     /// as they are; a copy resumes from its last node, not from them.
     pub fn restore(&self, original: &Self, target: &Target) -> Result<Self, CliSessionError> {
         let found = original.locate(target)?;
+        Ok(self.restore_nodes(original, &found))
+    }
+
+    /// [`restore`](Self::restore)'s body over the `original`'s line
+    /// indices `found`, shared with [`restore_block`](Self::restore_block).
+    fn restore_nodes(&self, original: &Self, found: &[usize]) -> Self {
         let mut copy = self.clone();
-        for &i in &found {
+        for &i in found {
             let node = &original.lines[i];
             let Some(uuid) = node.uuid() else {
                 continue;
@@ -557,7 +710,7 @@ impl CliSession {
             copy.lines[j].json["parentUuid"] = Value::String(parent);
             copy.lines[j].dirty = true;
         }
-        Ok(copy)
+        copy
     }
 
     /// A copy cut before the user prompt `from_last` turns before the
@@ -1084,6 +1237,153 @@ mod tests {
             )
             .unwrap_err();
         assert!(err.to_string().contains("reads differently"), "{err}");
+    }
+
+    // ---- One block of a reply (nightshift backlog 066, 2026-09-15) ----
+
+    /// The fixture with the first reply split in two text nodes: "one"
+    /// then "one more" (`s2b`, under `s2`), the second prompt hanging from
+    /// the new node.
+    fn fixture_two_texts() -> String {
+        let extra = assistant(
+            "s2b",
+            "s2",
+            "msg_1",
+            json!({"type": "text", "text": "one more"}),
+        );
+        let mut lines: Vec<String> = fixture().lines().map(str::to_string).collect();
+        let at = lines
+            .iter()
+            .position(|l| l.contains("\"uuid\":\"s2\""))
+            .unwrap();
+        lines.insert(at + 1, extra);
+        for l in &mut lines {
+            if l.contains("\"uuid\":\"u2\"") || l.contains("\"type\":\"last-prompt\"") {
+                *l = l.replace("\"parentUuid\":\"s2\"", "\"parentUuid\":\"s2b\"");
+                *l = l.replace("\"leafUuid\":\"s2\"", "\"leafUuid\":\"s2b\"");
+            }
+        }
+        lines.join("\n") + "\n"
+    }
+
+    /// The n-th text node takes the text and the other text node, the
+    /// thinking and the call stay; `rewrite` on a reply is its first text
+    /// node and drops nothing now; a count past the reply's text nodes is
+    /// a refusal that names the count.
+    #[test]
+    fn a_block_rewrite_changes_one_text_node_and_keeps_the_rest() {
+        let s = CliSession::parse(&fixture_two_texts()).unwrap();
+        let target = Target::Assistant {
+            from_last: 1,
+            text: "oneone more".into(),
+        };
+        let out = s
+            .rewrite_block(&target, 1, "uno más")
+            .unwrap()
+            .render_as("new");
+        let lines = parsed(&out);
+        let s2 = lines.iter().find(|o| o["uuid"] == "s2").unwrap();
+        assert_eq!(s2["message"]["content"][0]["text"], "one");
+        let s2b = lines.iter().find(|o| o["uuid"] == "s2b").unwrap();
+        assert_eq!(s2b["message"]["content"][0]["text"], "uno más");
+        assert_eq!(
+            uuids(&out),
+            uuids(&fixture_two_texts()),
+            "no node added or dropped"
+        );
+
+        let out = s.rewrite(&target, "uno").unwrap().render_as("new");
+        let lines = parsed(&out);
+        let s2 = lines.iter().find(|o| o["uuid"] == "s2").unwrap();
+        assert_eq!(s2["message"]["content"][0]["text"], "uno");
+        let s2b = lines.iter().find(|o| o["uuid"] == "s2b").unwrap();
+        assert_eq!(
+            s2b["message"]["content"][0]["text"], "one more",
+            "the other text node stays"
+        );
+        assert_eq!(uuids(&out), uuids(&fixture_two_texts()));
+
+        let err = s.rewrite_block(&target, 2, "x").unwrap_err();
+        assert!(err.to_string().contains("has 2 text blocks"), "{err}");
+    }
+
+    /// A call goes with the node holding its result, the reply's text and
+    /// thinking staying and the next reply re-parented past both; a text
+    /// node goes alone; the restore from the original puts either back and
+    /// the tree reads as it did; a shared result node keeps its place with
+    /// the one result taken out, and gets it back.
+    #[test]
+    fn a_block_removal_drops_a_call_with_its_result_or_one_text_node() {
+        let original = CliSession::parse(&fixture()).unwrap();
+        let before = shape(&original);
+        let target = Target::Assistant {
+            from_last: 0,
+            text: "let me look".into(),
+        };
+        let call = Block::ToolUse("toolu_1".into());
+        let out = original
+            .remove_block(&target, &call)
+            .unwrap()
+            .render_as("b");
+        let lines = parsed(&out);
+        assert!(lines.iter().all(|o| o["uuid"] != "s5"), "the call is gone");
+        assert!(
+            lines.iter().all(|o| o["uuid"] != "r1"),
+            "its result with it"
+        );
+        let s4 = lines.iter().find(|o| o["uuid"] == "s4").unwrap();
+        assert_eq!(s4["message"]["content"][0]["text"], "let me look");
+        assert!(lines.iter().any(|o| o["uuid"] == "s3"), "thinking stays");
+        let s6 = lines.iter().find(|o| o["uuid"] == "s6").unwrap();
+        assert_eq!(s6["parentUuid"], "s4", "the next reply hangs from the text");
+        let removed = CliSession::parse(&out).unwrap();
+        let restored = removed.restore_block(&original, &target, &call).unwrap();
+        assert_eq!(shape(&restored), before);
+
+        // A text node alone.
+        let text = Block::Text(0);
+        let out = original
+            .remove_block(&target, &text)
+            .unwrap()
+            .render_as("b");
+        let lines = parsed(&out);
+        assert!(lines.iter().all(|o| o["uuid"] != "s4"));
+        let s5 = lines.iter().find(|o| o["uuid"] == "s5").unwrap();
+        assert_eq!(s5["parentUuid"], "s3", "the call hangs from the thinking");
+        let removed = CliSession::parse(&out).unwrap();
+        let restored = removed.restore_block(&original, &target, &text).unwrap();
+        assert_eq!(shape(&restored), before);
+
+        // A result that shares its node: the node stays, one result out.
+        let shared = fixture().replace(
+            r#"[{"content":"contents","tool_use_id":"toolu_1","type":"tool_result"}]"#,
+            r#"[{"content":"contents","tool_use_id":"toolu_1","type":"tool_result"},{"content":"other","tool_use_id":"toolu_2","type":"tool_result"}]"#,
+        );
+        assert_ne!(shared, fixture(), "the fixture's result line was found");
+        let original = CliSession::parse(&shared).unwrap();
+        let before = shape(&original);
+        let out = original
+            .remove_block(&target, &call)
+            .unwrap()
+            .render_as("b");
+        let lines = parsed(&out);
+        let r1 = lines.iter().find(|o| o["uuid"] == "r1").unwrap();
+        let results = r1["message"]["content"].as_array().unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["tool_use_id"], "toolu_2");
+        assert!(lines.iter().all(|o| o["uuid"] != "s5"));
+        let removed = CliSession::parse(&out).unwrap();
+        let restored = removed.restore_block(&original, &target, &call).unwrap();
+        assert_eq!(shape(&restored), before);
+
+        // A call the file does not have.
+        let err = original
+            .remove_block(&target, &Block::ToolUse("toolu_9".into()))
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("not in Claude Code's history"),
+            "{err}"
+        );
     }
 
     /// The cut drops the prompt, everything under it, and the bookkeeping

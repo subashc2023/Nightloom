@@ -30,6 +30,18 @@
 //! gate of theirs would prompt twice for the same call, or — headless —
 //! deny once for it.
 //!
+//! **A dream's server (2026-09-16, nightshift backlog 070).** Started with
+//! `--dream <json>` the server serves **one** tool, `propose_instructions`,
+//! and none of the four above: a dream on the Claude Code engine must not
+//! be able to read the user's other chats, write to the inbox it is
+//! draining, or leave the machine — the same tool set `dream::prepare`
+//! gives the API engine's pass, reached the only way the CLI can reach a
+//! tool of ours. The JSON names the store the proposal is filed beside, the
+//! target it is for and the path of the always-loaded file, and the tool is
+//! built by the same `ProposeInstructions::new(..).against(..)` the provider
+//! path calls, so the file it writes is the same file by construction.
+//! It needs no config dir and reads no registry.
+//!
 //! The wire is what the client already speaks: newline-delimited JSON-RPC
 //! 2.0 over stdio, `initialize` / `tools/list` / `tools/call`. The client's
 //! message types are not reused because it has none to reuse — it builds
@@ -57,8 +69,11 @@ use nightloom_core::tool::{CancellationToken, Effect, Tool};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
+use serde::{Deserialize, Serialize};
+
 use crate::capture;
 use crate::project::{PROJECTS_DIR, Registry, SESSIONS_DIR};
+use crate::proposal::{ProposalTarget, ProposeInstructions};
 use crate::tools::{ChatDir, ChatDirs, Fetch, ReadChat, Remember, SearchChats};
 
 /// The protocol revision this server speaks — the one the client asks for,
@@ -91,8 +106,27 @@ const INSTRUCTIONS: &str = "Nightloom's tools. For a whole page use fetch_page, 
 const REMEMBER_INSTRUCTION: &str =
     " To leave something for the user's long-term memory use remember.";
 
+/// What `initialize` says to a dream: the one tool, and when to call it —
+/// the instruction's own rule, restated where a host that surfaces server
+/// instructions will put it.
+const DREAM_INSTRUCTIONS: &str = "Nightloom's dream server: one tool, propose_instructions, \
+     which proposes a full replacement for the always-loaded instruction file of the folder \
+     you are consolidating into. Call it at most once, and only when an observation \
+     contradicts or extends what that file says; the file itself is not yours to write.";
+
+/// The name the CLI gives one of this server's tools:
+/// `mcp__nightloom__propose_instructions`. The spelling `--allowedTools`
+/// takes and the model calls by; the CLI's `ToolSearch` resolves nothing
+/// shorter.
+pub fn mcp_name(tool: &str) -> String {
+    format!("mcp__{SERVER_NAME}__{tool}")
+}
+
 /// What `initialize` says, for the tool set it is serving.
 fn instructions_for(tools: &[Box<dyn Tool>]) -> String {
+    if tools.len() == 1 && tools[0].def().name == "propose_instructions" {
+        return DREAM_INSTRUCTIONS.to_string();
+    }
     let remembers = tools.iter().any(|t| t.def().name == "remember");
     if remembers {
         format!("{INSTRUCTIONS}{REMEMBER_INSTRUCTION}")
@@ -205,7 +239,10 @@ pub async fn serve(
     reader: impl AsyncRead + Send + Unpin + 'static,
     writer: impl AsyncWrite + Send + Unpin + 'static,
 ) -> Result<(), String> {
-    let tools = tools_in(&config, args.project.as_deref(), args.remember)?;
+    let tools = match &args.dream {
+        Some(dream) => dream_tools(dream),
+        None => tools_in(&config, args.project.as_deref(), args.remember)?,
+    };
     serve_tools(tools, reader, writer).await;
     Ok(())
 }
@@ -218,6 +255,10 @@ pub struct ServeArgs {
     /// Whether `remember` is served. Off for an incognito or ephemeral
     /// chat, which is the `--no-remember` flag.
     pub remember: bool,
+    /// A dream's server (`--dream <json>`, 2026-09-16): `propose_instructions`
+    /// alone. `project` is not consulted and `remember` is `false`, which
+    /// is also the truth — the inbox is what the dream is draining.
+    pub dream: Option<DreamServe>,
 }
 
 impl ServeArgs {
@@ -225,8 +266,58 @@ impl ServeArgs {
         Self {
             project,
             remember: true,
+            dream: None,
         }
     }
+
+    pub fn for_dream(dream: DreamServe) -> Self {
+        Self {
+            project: None,
+            remember: false,
+            dream: Some(dream),
+        }
+    }
+}
+
+/// What a dream's server is told on the command line, as the JSON after
+/// `--dream`: enough to build the one tool, and nothing that names the
+/// user's chats. The always-loaded file is passed as a *path* and read
+/// here under the preamble's cap (`prompt::read_capped`) rather than as
+/// its text, because the text is what the tool's guard compares against
+/// and it may be 32 KiB — too much for one argument and pointless to copy
+/// when both processes can read the file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DreamServe {
+    /// Where the proposal is filed: the project's store, or the config dir
+    /// for the user's file (`ProposalTarget::store_in`).
+    pub store: PathBuf,
+    pub target: ProposalTarget,
+    /// The target's `AGENTS.md` — read for the guard, never written.
+    pub instructions: PathBuf,
+}
+
+impl DreamServe {
+    /// The argument as it goes after `--dream`. One line of JSON; the
+    /// desktop puts it inside the `--mcp-config` JSON, escaped once more.
+    pub fn to_arg(&self) -> String {
+        serde_json::to_string(self).expect("three plain fields serialize")
+    }
+
+    pub fn parse(json: &str) -> Result<Self, String> {
+        serde_json::from_str(json).map_err(|e| format!("--dream is not a dream target: {e}"))
+    }
+}
+
+/// The dream's tool set: `propose_instructions` and nothing else, built the
+/// way `dream::prepare` builds it — same constructor, same guard against
+/// the file's current text — so what a dream on this engine can propose,
+/// and where the proposal lands, is what the other engine's dream can and
+/// does. The slot the constructor returns is dropped: the pass in the other
+/// process reads "did it propose" off the store instead.
+pub fn dream_tools(dream: &DreamServe) -> Vec<Box<dyn Tool>> {
+    let current = crate::prompt::read_capped(&dream.instructions);
+    let (propose, _slot) = ProposeInstructions::new(dream.store.clone(), dream.target.clone());
+    vec![Box::new(propose.against(current.as_deref()))]
 }
 
 /// The write half of the stream, shared by every request's task. The mutex
@@ -379,9 +470,10 @@ async fn write_line(writer: &SharedWriter, value: &Value) {
 }
 
 /// The arguments after `mcp-serve` / `--mcp-serve`: `--project <id>` or
-/// `--project=<id>`, `--no-remember` (2026-09-15), and nothing else. Parsed
-/// by hand rather than with clap because the desktop binary has no clap and
-/// does not want one for a flag that Tauri must never see.
+/// `--project=<id>`, `--no-remember` (2026-09-15), `--dream <json>` or
+/// `--dream=<json>` (2026-09-16), and nothing else. Parsed by hand rather
+/// than with clap because the desktop binary has no clap and does not want
+/// one for a flag that Tauri must never see.
 pub fn parse_args(args: &[String]) -> Result<ServeArgs, String> {
     let mut out = ServeArgs::for_project(None);
     let mut it = args.iter();
@@ -395,9 +487,18 @@ pub fn parse_args(args: &[String]) -> Result<ServeArgs, String> {
             out.project = Some(id.to_string());
         } else if arg == "--no-remember" {
             out.remember = false;
+        } else if arg == "--dream" {
+            let json = it
+                .next()
+                .ok_or_else(|| "--dream needs a dream target".to_string())?;
+            out.dream = Some(DreamServe::parse(json)?);
+            out.remember = false;
+        } else if let Some(json) = arg.strip_prefix("--dream=") {
+            out.dream = Some(DreamServe::parse(json)?);
+            out.remember = false;
         } else {
             return Err(format!(
-                "unknown argument {arg:?}; the flags are --project <id> and --no-remember"
+                "unknown argument {arg:?}; the flags are --project <id>, --no-remember and --dream <json>"
             ));
         }
     }
@@ -408,10 +509,16 @@ pub fn parse_args(args: &[String]) -> Result<ServeArgs, String> {
 /// of this call's own. What a binary with no runtime of its own — the
 /// desktop, whose `main` is Tauri's — calls from the top of `main`; the CLI
 /// is already inside one and awaits [`serve`] directly.
+///
+/// A dream's server needs no config dir: everything it serves is named in
+/// its argument, and a dream over a test home must not read the real one.
 pub fn run_blocking(args: &[String]) -> Result<(), String> {
     let args = parse_args(args)?;
-    let config = crate::project::config_dir()
-        .ok_or_else(|| "no user config directory — there are no chats to serve".to_string())?;
+    let config = match crate::project::config_dir() {
+        Some(config) => config,
+        None if args.dream.is_some() => PathBuf::new(),
+        None => return Err("no user config directory — there are no chats to serve".to_string()),
+    };
     let runtime = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
     runtime.block_on(serve(config, args, tokio::io::stdin(), tokio::io::stdout()))
 }
@@ -686,5 +793,164 @@ mod tests {
         assert!(with.contains("use remember"), "{with}");
         assert!(!without.contains("remember"), "{without}");
         assert!(without.contains("search_chats"));
+    }
+
+    fn dream_target(config: &Path) -> DreamServe {
+        DreamServe {
+            store: config.to_path_buf(),
+            target: ProposalTarget::User,
+            instructions: config.join(crate::prompt::INSTRUCTION_FILE),
+        }
+    }
+
+    /// The flag parses both spellings into the same target, refuses a
+    /// value that is not one, and still needs a value.
+    #[test]
+    fn the_dream_flag_parses_both_spellings_into_the_same_target() {
+        let target = dream_target(Path::new("/cfg"));
+        let arg = target.to_arg();
+        let args = |s: &[&str]| s.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+        let spaced = parse_args(&args(&["--dream", &arg])).unwrap();
+        let joined = parse_args(&args(&[&format!("--dream={arg}")])).unwrap();
+        assert_eq!(spaced, joined);
+        assert_eq!(spaced.dream.as_ref(), Some(&target));
+        assert_eq!(spaced, ServeArgs::for_dream(target));
+        assert!(parse_args(&args(&["--dream"])).is_err());
+        assert!(parse_args(&args(&["--dream", "not json"])).is_err());
+        assert_eq!(
+            mcp_name("propose_instructions"),
+            "mcp__nightloom__propose_instructions"
+        );
+    }
+
+    /// A dream's server lists exactly one tool — not the chats, not the
+    /// inbox, not the fetch — says so in its instructions, and the
+    /// proposal it writes through `tools/call` is the file the provider
+    /// path's tool writes: same store, same target, same fields, same
+    /// guard against the file's current text.
+    #[tokio::test]
+    async fn a_dream_server_serves_propose_instructions_alone_and_writes_the_same_file() {
+        let config = crate::tools::test_dir("mcp-server-dream");
+        fs::write(
+            config.join(crate::prompt::INSTRUCTION_FILE),
+            "# Me\n\nBe terse.\n",
+        )
+        .unwrap();
+        let dream = dream_target(&config);
+
+        let names: Vec<String> = dream_tools(&dream).iter().map(|t| t.def().name).collect();
+        assert_eq!(names, ["propose_instructions"]);
+        let said = instructions_for(&dream_tools(&dream));
+        assert!(said.contains("propose_instructions"), "{said}");
+        for absent in ["search_chats", "read_chat", "remember", "fetch_page"] {
+            assert!(!said.contains(absent), "{absent} in {said}");
+        }
+
+        let (client_side, server_side) = tokio::io::duplex(1 << 16);
+        let (sr, sw) = tokio::io::split(server_side);
+        let args = ServeArgs::for_dream(dream.clone());
+        // A config dir that does not exist: a dream's server must not need one.
+        let no_config = config.join("no-such-config");
+        tokio::spawn(async move {
+            serve(no_config, args, sr, sw).await.unwrap();
+        });
+        let (r, mut w) = tokio::io::split(client_side);
+        let mut lines = BufReader::new(r).lines();
+
+        send(
+            &mut w,
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}"#,
+        )
+        .await;
+        let init = recv(&mut lines).await;
+        assert_eq!(init["result"]["instructions"], DREAM_INSTRUCTIONS);
+
+        send(&mut w, r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#).await;
+        let list = recv(&mut lines).await;
+        let listed = list["result"]["tools"].as_array().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0]["name"], "propose_instructions");
+        assert!(listed[0]["inputSchema"]["properties"]["text"].is_object());
+
+        // The other four are unknown here, not merely hidden.
+        send(
+            &mut w,
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"remember","arguments":{"text":"x","kind":"inferred"}}}"#,
+        )
+        .await;
+        let refused = recv(&mut lines).await;
+        assert_eq!(refused["error"]["code"], -32602);
+        assert!(observe::backlog_in(&config).pending.is_empty());
+
+        // Through the wire.
+        send(
+            &mut w,
+            r##"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"propose_instructions","arguments":{"text":"# Me\n\nBe expansive.\n","why":"Observation 1."}}}"##,
+        )
+        .await;
+        let proposed = recv(&mut lines).await;
+        assert_eq!(proposed["result"]["isError"], false, "{proposed}");
+        let over_wire = crate::proposal::list_in(&config);
+        assert_eq!(over_wire.len(), 1);
+
+        // The same call on the provider path's tool, in process.
+        let (direct, _slot) = ProposeInstructions::new(dream.store.clone(), dream.target.clone());
+        let direct = direct.against(Some("# Me\n\nBe terse.\n"));
+        direct
+            .call(
+                json!({ "text": "# Me\n\nBe expansive.\n", "why": "Observation 1." }),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let both = crate::proposal::list_in(&config);
+        assert_eq!(both.len(), 2);
+        let (a, b) = (&both[0].proposal, &both[1].proposal);
+        // Everything but the stamp.
+        assert_eq!(
+            (a.v, &a.target, &a.why, &a.text, a.from_dream),
+            (b.v, &b.target, &b.why, &b.text, b.from_dream)
+        );
+        assert!(a.held.is_none() && b.held.is_none());
+        // The file the proposal is for was read for the guard, not written.
+        assert_eq!(
+            fs::read(config.join(crate::prompt::INSTRUCTION_FILE)).unwrap(),
+            b"# Me\n\nBe terse.\n"
+        );
+
+        // And the guard holds over the wire too: a biographical section the
+        // file does not have is held, not offered.
+        send(
+            &mut w,
+            r##"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"propose_instructions","arguments":{"text":"# Me\n\n**Personal context**\n\nLifts.\n","why":"no"}}}"##,
+        )
+        .await;
+        let held = recv(&mut lines).await;
+        assert_eq!(held["result"]["isError"], false);
+        assert!(
+            held["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .starts_with("Not proposed"),
+        );
+        assert_eq!(crate::proposal::list_in(&config).len(), 2);
+    }
+
+    /// Not a test: the dream's server, for [`crate::dream`]'s end-to-end
+    /// test. That test stands in a shell script for `claude`, and the
+    /// script needs a real server process to call `propose_instructions`
+    /// on — this crate builds no binary, so the test binary is it. Run
+    /// under `cargo test` with nothing set, this passes and does nothing;
+    /// run as `<test exe> --exact mcp_server::tests::dream_server_entry
+    /// --nocapture` with `NIGHTLOOM_TEST_DREAM` holding the `--dream` JSON,
+    /// it serves that dream on stdin/stdout until EOF, the way
+    /// `run_blocking` would. The harness's own lines on stdout are the
+    /// fake's problem, and the fake reads none of them.
+    #[test]
+    fn dream_server_entry() {
+        let Ok(json) = std::env::var("NIGHTLOOM_TEST_DREAM") else {
+            return;
+        };
+        run_blocking(&["--dream".to_string(), json]).unwrap();
     }
 }

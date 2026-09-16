@@ -5,7 +5,7 @@ use crate::provider::{CacheTtl, Usage};
 use crate::todo::TodoItem;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -361,10 +361,27 @@ pub enum SessionEvent {
     /// the remainder. That is usually a good trade — a 40k-token tool result
     /// costs more than one missed prefix — but it is a cost, and a shell
     /// should say so.
+    ///
+    /// **One block of a reply** (`block`, 2026-09-15, nightshift backlog
+    /// 066 — his "edit things out" of a reply): with `block` set, the
+    /// marker names one block of the assistant reply at `targets[0]` by
+    /// its index in the reply's `blocks`, and that block alone goes from
+    /// the projection — a text block, or a `tool_use` **with the result
+    /// that answers it**, which follows the call by id and is never named
+    /// on its own ([`Session::elide_block`]). That pairing is what keeps
+    /// the structural argument above intact: the two halves of a call
+    /// leave together or not at all, so no marker can produce the orphan
+    /// every provider rejects. Absent on every line written before the
+    /// field existed and left out when absent, so a whole-event marker is
+    /// the line it always was.
     Elide {
         /// Indices into the event log. Always live, and always events that
         /// [`Session::is_elidable`] accepts.
         targets: Vec<usize>,
+        /// Index into the reply's `blocks`, when the marker names one block
+        /// of `targets[0]` rather than the whole event.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        block: Option<usize>,
         at: DateTime<Utc>,
     },
     /// Restores content hidden by an earlier [`SessionEvent::Elide`].
@@ -374,6 +391,9 @@ pub enum SessionEvent {
     /// and the log has held the content the whole time.
     Unelide {
         targets: Vec<usize>,
+        /// As on [`SessionEvent::Elide`]: one block of `targets[0]`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        block: Option<usize>,
         at: DateTime<Utc>,
     },
     /// The event at `target` says `text` from here on: the projection
@@ -385,11 +405,14 @@ pub enum SessionEvent {
     /// live marker on an index wins, and a rewind that supersedes this
     /// event puts the original back on the wire. It is content
     /// replacement and never structural: a user message keeps its
-    /// attachments and an assistant reply keeps its thinking, and the
-    /// target is refused outright when it carries a `tool_use` or is a
-    /// tool result ([`Session::is_editable`]), because a call whose text
-    /// changed under it is a history nobody measured and a result is not
-    /// the user's to reword.
+    /// attachments and an assistant reply keeps its thinking and its tool
+    /// calls. ~~The target is refused outright when it carries a
+    /// `tool_use`~~ — **superseded 2026-09-15 (nightshift backlog 066)**:
+    /// a reply is edited one text block at a time (`block`), and the calls
+    /// between its text blocks stay exactly where they were, so the
+    /// history the model sees is its own with one paragraph reworded. A
+    /// tool result is still not the user's to reword
+    /// ([`Session::is_editable`]).
     ///
     /// Elision outranks it in the projection: a removed turn stays removed
     /// however it was edited before, and editing a removed turn is refused
@@ -398,6 +421,14 @@ pub enum SessionEvent {
         /// Index into the event log. Always live, and always an event
         /// [`Session::is_editable`] accepts.
         target: usize,
+        /// Which text block of an assistant reply says `text` now, as an
+        /// index into its `blocks` (2026-09-15, backlog 066). Absent on a
+        /// user message, which has one text, and on every reply edited
+        /// before the field existed — read then as the reply's first text
+        /// block, which is what those lines meant. Left out of the line
+        /// when absent, so a user-message edit is the line it always was.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        block: Option<usize>,
         text: String,
         at: DateTime<Utc>,
     },
@@ -626,11 +657,21 @@ fn answer_orphaned_calls(messages: &mut Vec<SourcedMessage>) {
 /// tool loop is still open and ignores them on earlier turns; elision acts
 /// on a session whose last round has already closed, so the loop that needed
 /// them is over.
-fn elide_assistant(blocks: &[ContentBlock], index: usize) -> Vec<SourcedBlock> {
+fn elide_assistant(
+    blocks: &[ContentBlock],
+    gone: &BTreeSet<usize>,
+    index: usize,
+) -> Vec<SourcedBlock> {
     let mut dropped = 0u64;
     let mut kept: Vec<SourcedBlock> = Vec::new();
-    for b in blocks {
+    for (n, b) in blocks.iter().enumerate() {
         match b {
+            // A call removed with its result before the whole reply was
+            // (backlog 066) stays removed: its result is gone from the
+            // projection, and a kept call would be the orphan this
+            // function exists to avoid.
+            ContentBlock::ToolUse { .. } if gone.contains(&n) => {}
+            ContentBlock::ReasoningRef { .. } if leads_removed_call(blocks, gone, n) => {}
             ContentBlock::ToolUse { .. } | ContentBlock::ReasoningRef { .. } => {
                 kept.push(SourcedBlock::event(b.clone(), index));
             }
@@ -661,39 +702,83 @@ fn elide_assistant(blocks: &[ContentBlock], index: usize) -> Vec<SourcedBlock> {
     out
 }
 
-/// An edited assistant message: its text blocks become one block of the
-/// new text, at the position of the first; everything else stays verbatim.
+/// Whether the block at `n` is a `ReasoningRef` standing directly before a
+/// removed call: OpenAI Responses replays a reasoning item only with the
+/// item it led to, so when the call goes the handle goes with it.
+fn leads_removed_call(blocks: &[ContentBlock], gone: &BTreeSet<usize>, n: usize) -> bool {
+    matches!(blocks.get(n), Some(ContentBlock::ReasoningRef { .. }))
+        && matches!(blocks.get(n + 1), Some(ContentBlock::ToolUse { .. }))
+        && gone.contains(&(n + 1))
+}
+
+/// An assistant message with its per-block markers applied (2026-09-15,
+/// nightshift backlog 066): each text block says its latest edit, each
+/// removed block is left out, and everything else stays verbatim, in
+/// place.
 ///
 /// Thinking is kept, signature and all, because it was signed as it is and
 /// a reply's text changing does not change what the model thought first;
-/// the API ignores earlier turns' thinking anyway. There is never a
-/// `ToolUse` here — [`Session::is_editable`] refuses a reply that has one —
-/// so the only blocks besides text are reasoning, and reasoning keeps its
-/// place. A reply with no text block at all gets the new text appended,
-/// so an edit can never produce an empty message.
-fn edit_assistant(blocks: &[ContentBlock], text: &str, index: usize) -> Vec<SourcedBlock> {
+/// the API ignores earlier turns' thinking anyway. Tool calls keep their
+/// place between the text blocks around them — an edit is one paragraph
+/// reworded, never a call moved. A removed call's `ReasoningRef` goes with
+/// it ([`leads_removed_call`]); its result is dropped by the caller, which
+/// knows the ids. ~~Its text blocks become one block of the new text, at
+/// the position of the first~~ — the 062 shape, superseded: an edit
+/// written before `block` existed reads as the first text block's
+/// ([`Session::block_edits`]), and the other text blocks stay.
+///
+/// A message that would end up with no text and no call — every text
+/// block removed from a reply that made no call — says the elision marker
+/// instead, sized by what went: an empty assistant message is rejected on
+/// the wire, and the model should know something was there. An edit
+/// aimed one past the last block (the 062 shape for a reply that had no
+/// text block) is appended, so an edit can never produce an empty message.
+fn edit_assistant(
+    blocks: &[ContentBlock],
+    edits: &BTreeMap<usize, &str>,
+    gone: &BTreeSet<usize>,
+    index: usize,
+) -> Vec<SourcedBlock> {
     let mut out: Vec<SourcedBlock> = Vec::new();
-    let mut placed = false;
-    for b in blocks {
-        match b {
-            ContentBlock::Text { .. } => {
-                if !placed {
-                    out.push(SourcedBlock::event(
-                        ContentBlock::Text {
-                            text: text.to_string(),
-                        },
-                        index,
-                    ));
-                    placed = true;
-                }
+    let mut dropped = 0u64;
+    for (n, b) in blocks.iter().enumerate() {
+        if gone.contains(&n) {
+            if let ContentBlock::Text { text } = b {
+                dropped += estimate_tokens(text);
             }
-            other => out.push(SourcedBlock::event(other.clone(), index)),
+            continue;
+        }
+        if leads_removed_call(blocks, gone, n) {
+            continue;
+        }
+        match (b, edits.get(&n)) {
+            (ContentBlock::Text { .. }, Some(text)) => out.push(SourcedBlock::event(
+                ContentBlock::Text {
+                    text: text.to_string(),
+                },
+                index,
+            )),
+            (other, _) => out.push(SourcedBlock::event(other.clone(), index)),
         }
     }
-    if !placed {
+    if let Some(text) = edits.get(&blocks.len()) {
         out.push(SourcedBlock::event(
             ContentBlock::Text {
                 text: text.to_string(),
+            },
+            index,
+        ));
+    }
+    let has_content = out.iter().any(|sb| {
+        matches!(
+            sb.block,
+            ContentBlock::Text { .. } | ContentBlock::ToolUse { .. }
+        )
+    });
+    if !has_content && !gone.is_empty() {
+        out.push(SourcedBlock::event(
+            ContentBlock::Text {
+                text: elision_marker(dropped, 0, 0),
             },
             index,
         ));
@@ -973,7 +1058,7 @@ impl Session {
                 | SessionEvent::Rewind { .. }
                 | SessionEvent::Unrewind { .. }
                 | SessionEvent::Unknown => continue,
-                SessionEvent::Elide { targets, at } => {
+                SessionEvent::Elide { targets, block, at } => {
                     let targets: Vec<usize> = targets
                         .iter()
                         .filter_map(|t| renumber.get(t).copied())
@@ -981,9 +1066,13 @@ impl Session {
                     if targets.is_empty() {
                         continue;
                     }
-                    SessionEvent::Elide { targets, at: *at }
+                    SessionEvent::Elide {
+                        targets,
+                        block: *block,
+                        at: *at,
+                    }
                 }
-                SessionEvent::Unelide { targets, at } => {
+                SessionEvent::Unelide { targets, block, at } => {
                     let targets: Vec<usize> = targets
                         .iter()
                         .filter_map(|t| renumber.get(t).copied())
@@ -991,11 +1080,21 @@ impl Session {
                     if targets.is_empty() {
                         continue;
                     }
-                    SessionEvent::Unelide { targets, at: *at }
+                    SessionEvent::Unelide {
+                        targets,
+                        block: *block,
+                        at: *at,
+                    }
                 }
-                SessionEvent::Edit { target, text, at } => match renumber.get(target) {
+                SessionEvent::Edit {
+                    target,
+                    block,
+                    text,
+                    at,
+                } => match renumber.get(target) {
                     Some(target) => SessionEvent::Edit {
                         target: *target,
+                        block: *block,
                         text: text.clone(),
                         at: *at,
                     },
@@ -1569,9 +1668,19 @@ impl Session {
             if !live[i] {
                 continue;
             }
+            // A marker with a `block` names one block, not the event
+            // (`block_elisions`), and leaves the event's own flag alone.
             let (targets, on) = match e {
-                SessionEvent::Elide { targets, .. } => (targets, true),
-                SessionEvent::Unelide { targets, .. } => (targets, false),
+                SessionEvent::Elide {
+                    targets,
+                    block: None,
+                    ..
+                } => (targets, true),
+                SessionEvent::Unelide {
+                    targets,
+                    block: None,
+                    ..
+                } => (targets, false),
                 _ => continue,
             };
             for &t in targets {
@@ -1581,6 +1690,61 @@ impl Session {
             }
         }
         elided
+    }
+
+    /// Which blocks of each reply are removed on their own (2026-09-15,
+    /// nightshift backlog 066): per event, the indices into its `blocks`
+    /// named by the live `Elide` / `Unelide` markers that carry a `block`,
+    /// applied in log order. Empty for every event that is not a reply.
+    /// Live markers only, on [`elide_flags`](Self::elide_flags)'s terms.
+    pub fn block_elisions(&self) -> Vec<BTreeSet<usize>> {
+        let live = self.live_flags();
+        let mut gone: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); self.events.len()];
+        for (i, e) in self.events.iter().enumerate() {
+            if !live[i] {
+                continue;
+            }
+            let (target, block, on) = match e {
+                SessionEvent::Elide {
+                    targets,
+                    block: Some(b),
+                    ..
+                } => (targets.first(), *b, true),
+                SessionEvent::Unelide {
+                    targets,
+                    block: Some(b),
+                    ..
+                } => (targets.first(), *b, false),
+                _ => continue,
+            };
+            if let Some(set) = target.and_then(|&t| gone.get_mut(t)) {
+                if on {
+                    set.insert(block);
+                } else {
+                    set.remove(&block);
+                }
+            }
+        }
+        gone
+    }
+
+    /// The ids of the tool calls removed with their results
+    /// ([`Session::elide_block`] on a `tool_use`), in live replies: the
+    /// projection leaves out the result that answers each, which is how
+    /// the pair leaves together.
+    fn removed_calls(&self, gone: &[BTreeSet<usize>]) -> HashSet<String> {
+        let mut ids = HashSet::new();
+        for (i, e) in self.live_events() {
+            let SessionEvent::AssistantMessage { blocks, .. } = e else {
+                continue;
+            };
+            for &n in &gone[i] {
+                if let Some(ContentBlock::ToolUse { id, .. }) = blocks.get(n) {
+                    ids.insert(id.clone());
+                }
+            }
+        }
+        ids
     }
 
     /// Whether the event at `index` carries content that elision can remove.
@@ -1639,6 +1803,7 @@ impl Session {
         let n = fresh.len();
         self.record(SessionEvent::Elide {
             targets: fresh,
+            block: None,
             at: Utc::now(),
         });
         Ok(n)
@@ -1663,14 +1828,17 @@ impl Session {
         let n = restore.len();
         self.record(SessionEvent::Unelide {
             targets: restore,
+            block: None,
             at: Utc::now(),
         });
         Ok(n)
     }
 
-    /// What each event says now: the text of the latest live
+    /// What each user message says now: the text of the latest live
     /// [`SessionEvent::Edit`] aimed at it, or `None` where it says what it
-    /// always said.
+    /// always said. A reply's edits are per block and live in
+    /// [`block_edits`](Self::block_edits); this reads `None` for every
+    /// reply.
     ///
     /// Live markers only, like [`elide_flags`](Self::elide_flags) and for
     /// the same reason: a rewind past an edit restores the original for
@@ -1683,6 +1851,10 @@ impl Session {
                 continue;
             }
             if let SessionEvent::Edit { target, text, .. } = e
+                && matches!(
+                    self.events.get(*target),
+                    Some(SessionEvent::UserMessage { .. })
+                )
                 && let Some(slot) = texts.get_mut(*target)
             {
                 *slot = Some(text.as_str());
@@ -1691,27 +1863,95 @@ impl Session {
         texts
     }
 
-    /// Whether the event at `index` is one whose text the user may reword:
-    /// a user message, or an assistant reply that calls no tool.
+    /// What each reply's text blocks say now (2026-09-15, nightshift
+    /// backlog 066): per event, the index of each edited block into its
+    /// `blocks` and the text of the latest live edit aimed at it. Empty
+    /// for every event that is not a reply.
     ///
-    /// A reply with a `tool_use` in it is refused, not trimmed around: the
-    /// call was made *because of* the text beside it, and a history where
-    /// the reasoning changed and the call did not is one no provider was
-    /// asked to accept. A tool result is not the user's to reword at all.
-    /// Removal is the answer for both — [`is_elidable`](Self::is_elidable)
-    /// keeps the structure and swaps the content, which is the only safe
-    /// thing to do to a call.
+    /// An edit written before `block` existed (062's shape, `block`
+    /// absent) is read as the reply's first text block — what it meant —
+    /// or, for a reply that had no text block, as one past the last, which
+    /// the projection appends. Live markers only, as everywhere.
+    pub fn block_edits(&self) -> Vec<BTreeMap<usize, &str>> {
+        let live = self.live_flags();
+        let mut edits: Vec<BTreeMap<usize, &str>> = vec![BTreeMap::new(); self.events.len()];
+        for (i, e) in self.events.iter().enumerate() {
+            if !live[i] {
+                continue;
+            }
+            let SessionEvent::Edit {
+                target,
+                block,
+                text,
+                ..
+            } = e
+            else {
+                continue;
+            };
+            let Some(SessionEvent::AssistantMessage { blocks, .. }) = self.events.get(*target)
+            else {
+                continue;
+            };
+            let block = block.unwrap_or_else(|| {
+                blocks
+                    .iter()
+                    .position(|b| matches!(b, ContentBlock::Text { .. }))
+                    .unwrap_or(blocks.len())
+            });
+            edits[*target].insert(block, text.as_str());
+        }
+        edits
+    }
+
+    /// The text of the reply at `index` as it reads now: its text blocks
+    /// in order, each saying its latest edit, the removed ones left out,
+    /// joined. `None` for anything but a reply. What a shell compares
+    /// against another history of the same conversation (the Claude Code
+    /// engine's file), which is why removed calls leave no mark here.
+    pub fn reply_text(&self, index: usize) -> Option<String> {
+        let SessionEvent::AssistantMessage { blocks, .. } = self.events.get(index)? else {
+            return None;
+        };
+        let edits = self.block_edits();
+        let gone = self.block_elisions();
+        let mut out = String::new();
+        for (n, b) in blocks.iter().enumerate() {
+            if gone[index].contains(&n) {
+                continue;
+            }
+            if let ContentBlock::Text { text } = b {
+                out.push_str(edits[index].get(&n).copied().unwrap_or(text.as_str()));
+            }
+        }
+        if let Some(text) = edits[index].get(&blocks.len()) {
+            out.push_str(text);
+        }
+        Some(out)
+    }
+
+    /// Whether the event at `index` is one whose text the user may reword:
+    /// a user message, or an assistant reply with a text block in it.
+    ///
+    /// ~~A reply with a `tool_use` in it is refused~~ — superseded
+    /// 2026-09-15 (nightshift backlog 066): a reply is edited one text
+    /// block at a time ([`edit_block`](Self::edit_block)), its calls
+    /// staying where they were, so a call and the text beside it are never
+    /// reworded together and the refusal has nothing left to guard. A tool
+    /// result is not the user's to reword at all; removal
+    /// ([`is_elidable`](Self::is_elidable)) is the answer there.
     pub fn is_editable(&self, index: usize) -> bool {
         match self.events.get(index) {
             Some(SessionEvent::UserMessage { .. }) => true,
-            Some(SessionEvent::AssistantMessage { blocks, .. }) => !blocks
+            Some(SessionEvent::AssistantMessage { blocks, .. }) => blocks
                 .iter()
-                .any(|b| matches!(b, ContentBlock::ToolUse { .. })),
+                .any(|b| matches!(b, ContentBlock::Text { .. })),
             _ => false,
         }
     }
 
-    /// Record that `target` says `text` from here on.
+    /// Record that `target` says `text` from here on: a user message's
+    /// text, or a reply's first text block ([`edit_block`](Self::edit_block)
+    /// takes any).
     ///
     /// Nothing is deleted and no cost is refunded, on [`elide`](Self::elide)'s
     /// terms; what changes is the next request, and every cached prefix
@@ -1720,21 +1960,84 @@ impl Session {
     /// removal is for. A target that is currently removed is refused too,
     /// rather than edited underneath the marker: restore it first.
     pub fn edit(&mut self, target: usize, text: impl Into<String>) -> Result<(), String> {
+        match self.events.get(target) {
+            Some(SessionEvent::AssistantMessage { blocks, .. }) => {
+                let first = blocks
+                    .iter()
+                    .position(|b| matches!(b, ContentBlock::Text { .. }))
+                    .ok_or_else(|| format!("event {target} has no text block to edit"))?;
+                self.edit_block(target, first, text)
+            }
+            _ => {
+                let text = text.into();
+                self.check_editable(target, &text)?;
+                self.record(SessionEvent::Edit {
+                    target,
+                    block: None,
+                    text,
+                    at: Utc::now(),
+                });
+                Ok(())
+            }
+        }
+    }
+
+    /// Record that text block `block` of the reply at `target` says `text`
+    /// from here on (2026-09-15, nightshift backlog 066) — one paragraph
+    /// of a reply reworded, the calls and the other paragraphs around it
+    /// untouched. On [`edit`](Self::edit)'s terms otherwise; a block that
+    /// is not text, or that is itself removed, is refused.
+    pub fn edit_block(
+        &mut self,
+        target: usize,
+        block: usize,
+        text: impl Into<String>,
+    ) -> Result<(), String> {
         let text = text.into();
+        self.check_editable(target, &text)?;
+        let Some(SessionEvent::AssistantMessage { blocks, .. }) = self.events.get(target) else {
+            return Err(format!("event {target} is not a reply; edit it whole"));
+        };
+        match blocks.get(block) {
+            Some(ContentBlock::Text { .. }) => {}
+            Some(_) => {
+                return Err(format!(
+                    "block {block} of event {target} is not text; only a reply's text can be reworded"
+                ));
+            }
+            None => return Err(format!("event {target} has no block {block}")),
+        }
+        if self.block_elisions()[target].contains(&block) {
+            return Err(format!(
+                "block {block} of event {target} is removed from the context; restore it before editing it"
+            ));
+        }
+        self.record(SessionEvent::Edit {
+            target,
+            block: Some(block),
+            text,
+            at: Utc::now(),
+        });
+        Ok(())
+    }
+
+    /// The refusals [`edit`](Self::edit) and [`edit_block`](Self::edit_block)
+    /// share: blank text, a target that is not editable, rewound, or
+    /// removed.
+    fn check_editable(&self, target: usize, text: &str) -> Result<(), String> {
         if text.trim().is_empty() {
             return Err("an edit cannot be empty; remove the turn instead".into());
         }
-        let live = self.live_flags();
         match self.events.get(target) {
             None => return Err(format!("no event at {target}")),
             Some(_) if !self.is_editable(target) => {
                 return Err(format!(
-                    "event {target} cannot be edited; only user messages and assistant replies without tool calls can, and a turn with a tool call can be removed instead"
+                    "event {target} cannot be edited; only user messages and assistant replies with text can, and a tool result can be removed instead"
                 ));
             }
             Some(_) => {}
         }
-        if !live[target] {
+        if !self.live_flags()[target] {
             return Err(format!("event {target} was already rewound away"));
         }
         if self.elide_flags()[target] {
@@ -1742,12 +2045,88 @@ impl Session {
                 "event {target} is removed from the context; restore it before editing it"
             ));
         }
-        self.record(SessionEvent::Edit {
-            target,
-            text,
+        Ok(())
+    }
+
+    /// Remove one block of the reply at `index` from the context
+    /// (2026-09-15, nightshift backlog 066): a text block, or a `tool_use`
+    /// together with the result that answers it. `Ok(false)` when it was
+    /// already removed.
+    ///
+    /// The pair is the whole of the safety argument. A `tool_use` whose
+    /// result is gone, or a result whose call is, is rejected by every
+    /// provider, so a call is removed only as a pair — the marker names
+    /// the call, and the projection drops the result by its id — and a
+    /// result is refused here outright: remove the call it answers.
+    /// Thinking is refused too: the API drops earlier turns' thinking on
+    /// its own side ([`elide_assistant`] says why), so removing it would
+    /// change nothing the model reads and cost a cache prefix for it.
+    pub fn elide_block(&mut self, index: usize, block: usize) -> Result<bool, String> {
+        let blocks = match self.events.get(index) {
+            None => return Err(format!("no event at {index}")),
+            Some(SessionEvent::AssistantMessage { blocks, .. }) => blocks,
+            Some(SessionEvent::ToolResult { .. }) => {
+                return Err(format!(
+                    "event {index} is a tool result, which goes with its call; remove the call instead"
+                ));
+            }
+            Some(_) => {
+                return Err(format!(
+                    "event {index} is not a reply; a block is removed from a reply"
+                ));
+            }
+        };
+        match blocks.get(block) {
+            Some(ContentBlock::Text { .. } | ContentBlock::ToolUse { .. }) => {}
+            Some(ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. }) => {
+                return Err(format!(
+                    "block {block} of event {index} is thinking, which the API already leaves out of later turns; there is nothing to remove"
+                ));
+            }
+            Some(_) => {
+                return Err(format!(
+                    "block {block} of event {index} is not text or a tool call"
+                ));
+            }
+            None => return Err(format!("event {index} has no block {block}")),
+        }
+        if !self.live_flags()[index] {
+            return Err(format!(
+                "event {index} is not part of the live conversation and is already costing nothing"
+            ));
+        }
+        if self.elide_flags()[index] {
+            return Err(format!(
+                "event {index} is removed from the context whole; restore it before removing one block of it"
+            ));
+        }
+        if self.block_elisions()[index].contains(&block) {
+            return Ok(false);
+        }
+        self.record(SessionEvent::Elide {
+            targets: vec![index],
+            block: Some(block),
             at: Utc::now(),
         });
-        Ok(())
+        Ok(true)
+    }
+
+    /// Bring back a block [`elide_block`](Self::elide_block) removed — its
+    /// result with it, when it was a call. `Ok(false)` when it was not
+    /// removed.
+    pub fn unelide_block(&mut self, index: usize, block: usize) -> Result<bool, String> {
+        if index >= self.events.len() {
+            return Err(format!("no event at {index}"));
+        }
+        if !self.block_elisions()[index].contains(&block) {
+            return Ok(false);
+        }
+        self.record(SessionEvent::Unelide {
+            targets: vec![index],
+            block: Some(block),
+            at: Utc::now(),
+        });
+        Ok(true)
     }
 
     /// The current task list: the most recent `TodoState`, or empty. A
@@ -1949,6 +2328,9 @@ impl Session {
     fn project_sourced(&self) -> Vec<SourcedMessage> {
         let elided = self.elide_flags();
         let edited = self.edit_texts();
+        let block_edits = self.block_edits();
+        let gone = self.block_elisions();
+        let removed_calls = self.removed_calls(&gone);
         let mut messages: Vec<SourcedMessage> = Vec::new();
         for (i, e) in self.live_events() {
             match e {
@@ -2018,20 +2400,19 @@ impl Session {
                 }
                 SessionEvent::AssistantMessage { blocks, .. } => {
                     let content = if elided[i] {
-                        elide_assistant(blocks, i)
-                    } else if let Some(text) = edited[i] {
-                        edit_assistant(blocks, text, i)
+                        elide_assistant(blocks, &gone[i], i)
                     } else {
-                        blocks
-                            .iter()
-                            .map(|b| SourcedBlock::event(b.clone(), i))
-                            .collect()
+                        edit_assistant(blocks, &block_edits[i], &gone[i], i)
                     };
                     messages.push(SourcedMessage {
                         role: Role::Assistant,
                         content,
                     });
                 }
+                // The other half of a removed call (backlog 066): the
+                // result answers nothing now, so it projects nothing.
+                SessionEvent::ToolResult { tool_use_id, .. }
+                    if removed_calls.contains(tool_use_id) => {}
                 SessionEvent::ToolResult {
                     tool_use_id,
                     name,
@@ -3935,17 +4316,21 @@ mod tests {
         assert!(s.edit_texts().iter().all(Option::is_none));
     }
 
-    /// Refusals: a tool call, a tool result, a rewound turn, a removed
-    /// turn, blank text. Elision outranks an edit in the projection.
+    /// Refusals: a reply with no text, a tool result, a rewound turn, a
+    /// removed turn, blank text. Elision outranks an edit in the
+    /// projection. ~~A reply with a tool call~~ is editable since backlog
+    /// 066 (`a_reply_is_edited_one_text_block_at_a_time`); what this
+    /// fixture's tool reply lacks is a text block.
     #[test]
     fn edits_refuse_tool_turns_and_removed_turns() {
         let mut s = tool_round_session();
-        assert!(!s.is_editable(2), "a reply with a tool call");
+        assert!(!s.is_editable(2), "a reply with no text block");
         assert!(!s.is_editable(3), "a tool result");
         assert!(s.is_editable(1) && s.is_editable(4));
         let err = s.edit(2, "different reasoning").unwrap_err();
+        assert!(err.contains("no text block"), "{err}");
+        let err = s.edit(3, "a result").unwrap_err();
         assert!(err.contains("removed instead"), "{err}");
-        assert!(s.edit(3, "a result").is_err());
         assert!(s.edit(1, "   ").unwrap_err().contains("cannot be empty"));
         assert!(s.edit(99, "x").is_err());
 
@@ -3960,6 +4345,241 @@ mod tests {
         // Rewound away.
         s.rewind(1).unwrap();
         assert!(s.edit(1, "x").unwrap_err().contains("rewound"));
+    }
+
+    // ---- Per-block edits and removals (nightshift backlog 066, 2026-09-15) ----
+
+    /// user (1); reply (2) of thinking, "one", a call, "two"; its result
+    /// (3); reply (4) "three". The call sits between two text blocks so
+    /// that "text around a call" is what the tests exercise.
+    fn blocky_session() -> Session {
+        let mut s = Session::new();
+        s.record_user("look at the file");
+        s.record_assistant(
+            "test-model",
+            vec![
+                ContentBlock::Thinking {
+                    text: "reading".into(),
+                    signature: Some("sig".into()),
+                },
+                ContentBlock::Text { text: "one".into() },
+                ContentBlock::ToolUse {
+                    id: "c1".into(),
+                    name: "read_file".into(),
+                    input: serde_json::json!({"path": "a.txt"}),
+                    signature: None,
+                },
+                ContentBlock::Text { text: "two".into() },
+            ],
+            Some("tool_use".into()),
+            Usage::default(),
+        );
+        s.record_tool_result(&ContentBlock::ToolResult {
+            tool_use_id: "c1".into(),
+            name: "read_file".into(),
+            content: "contents".into(),
+            is_error: false,
+        });
+        s.record_assistant(
+            "test-model",
+            vec![ContentBlock::Text {
+                text: "three".into(),
+            }],
+            Some("end_turn".into()),
+            Usage::default(),
+        );
+        s
+    }
+
+    /// Any text block of a reply takes an edit, the blocks around it —
+    /// thinking, the call, the other text — staying where they were; the
+    /// marker carries the block; a marker written without one (062's
+    /// shape) reads as the first text block; the refusals name the block.
+    #[test]
+    fn a_reply_is_edited_one_text_block_at_a_time() {
+        let mut s = blocky_session();
+        assert!(s.is_editable(2), "a reply with a call is editable now");
+        s.edit_block(2, 3, "two, reworded").unwrap();
+        let reply = &s.messages()[1];
+        assert_eq!(reply.content.len(), 4);
+        assert!(matches!(&reply.content[0], ContentBlock::Thinking { .. }));
+        assert!(matches!(&reply.content[1], ContentBlock::Text { text } if text == "one"));
+        assert!(matches!(&reply.content[2], ContentBlock::ToolUse { id, .. } if id == "c1"));
+        assert!(
+            matches!(&reply.content[3], ContentBlock::Text { text } if text == "two, reworded")
+        );
+        // The result still answers the call.
+        assert!(matches!(
+            &s.messages()[2].content[0],
+            ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "c1"
+        ));
+        // `edit` on a reply is its first text block.
+        s.edit(2, "uno").unwrap();
+        assert!(
+            matches!(&s.messages()[1].content[1], ContentBlock::Text { text } if text == "uno")
+        );
+        assert_eq!(
+            s.block_edits()[2],
+            BTreeMap::from([(1, "uno"), (3, "two, reworded")])
+        );
+        assert_eq!(s.edit_texts()[2], None, "a reply's edits are per block");
+        assert_eq!(s.reply_text(2).as_deref(), Some("unotwo, reworded"));
+        assert_eq!(s.reply_text(1), None);
+
+        // The line carries the block; a user edit's line carries none.
+        let line = serde_json::to_string(s.events().last().unwrap()).unwrap();
+        assert!(line.contains(r#""block":1"#), "{line}");
+        s.edit(1, "look at the other file").unwrap();
+        let line = serde_json::to_string(s.events().last().unwrap()).unwrap();
+        assert!(!line.contains("block"), "{line}");
+        assert_eq!(s.edit_texts()[1], Some("look at the other file"));
+
+        // 062's shape, read today: the first text block.
+        let legacy: SessionEvent = serde_json::from_str(
+            r#"{"event":"edit","target":2,"text":"legacy","at":"2026-09-15T00:00:00Z"}"#,
+        )
+        .unwrap();
+        assert!(matches!(&legacy, SessionEvent::Edit { block: None, .. }));
+        s.record(legacy);
+        assert_eq!(s.block_edits()[2].get(&1), Some(&"legacy"));
+        assert!(
+            matches!(&s.messages()[1].content[1], ContentBlock::Text { text } if text == "legacy")
+        );
+        assert!(
+            matches!(&s.messages()[1].content[3], ContentBlock::Text { text } if text == "two, reworded"),
+            "the other text block stays"
+        );
+
+        // Refusals: thinking, the call, out of range, a user message by block.
+        assert!(s.edit_block(2, 0, "x").unwrap_err().contains("not text"));
+        assert!(s.edit_block(2, 2, "x").unwrap_err().contains("not text"));
+        assert!(s.edit_block(2, 9, "x").unwrap_err().contains("no block 9"));
+        assert!(s.edit_block(1, 0, "x").unwrap_err().contains("not a reply"));
+        assert!(
+            s.edit_block(2, 1, "  ")
+                .unwrap_err()
+                .contains("cannot be empty")
+        );
+    }
+
+    /// A call and its result leave together on one marker; a lone result,
+    /// thinking, and a block of a removed reply are refused; the restore
+    /// brings the pair back; a whole-reply removal after a pair removal
+    /// keeps the pair gone.
+    #[test]
+    fn removing_a_call_takes_its_result_and_a_lone_half_is_refused() {
+        let mut s = blocky_session();
+        assert_eq!(s.messages().len(), 4);
+        assert!(s.elide_block(2, 2).unwrap());
+        assert!(!s.elide_block(2, 2).unwrap(), "already removed");
+        let msgs = s.messages();
+        assert_eq!(msgs.len(), 3, "the result's message is gone with the call");
+        assert_eq!(msgs[1].role, Role::Assistant);
+        assert_eq!(msgs[2].role, Role::Assistant);
+        assert!(
+            !msgs[1]
+                .content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::ToolUse { .. })),
+            "the call is gone"
+        );
+        assert_eq!(msgs[1].text(), "onetwo", "the text around it stays");
+        assert_eq!(s.block_elisions()[2], BTreeSet::from([2]));
+        assert!(!s.elide_flags()[2], "the reply itself is not removed");
+        assert!(
+            !s.elide_flags()[3],
+            "the result is not marked; it follows the call"
+        );
+        let line = serde_json::to_string(&s.events()[5]).unwrap();
+        assert!(line.contains(r#""block":2"#), "{line}");
+        let again: SessionEvent = serde_json::from_str(&line).unwrap();
+        assert!(matches!(again, SessionEvent::Elide { block: Some(2), .. }));
+
+        // Refusals.
+        let err = s.elide_block(3, 0).unwrap_err();
+        assert!(err.contains("remove the call instead"), "{err}");
+        let err = s.elide_block(2, 0).unwrap_err();
+        assert!(err.contains("thinking"), "{err}");
+        assert!(s.elide_block(1, 0).unwrap_err().contains("not a reply"));
+        assert!(s.elide_block(2, 9).unwrap_err().contains("no block 9"));
+        assert!(
+            s.edit_block(2, 3, "x").is_ok(),
+            "the other blocks still edit"
+        );
+
+        // Restore: the pair is back.
+        assert!(s.unelide_block(2, 2).unwrap());
+        assert!(!s.unelide_block(2, 2).unwrap());
+        let msgs = s.messages();
+        assert_eq!(msgs.len(), 4);
+        assert!(matches!(&msgs[1].content[2], ContentBlock::ToolUse { id, .. } if id == "c1"));
+        assert!(matches!(
+            &msgs[2].content[0],
+            ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "c1"
+        ));
+
+        // A whole-reply removal on top of a pair removal keeps the pair
+        // gone; a block of a removed reply is refused until it is restored.
+        s.elide_block(2, 2).unwrap();
+        s.elide([2]).unwrap();
+        let msgs = s.messages();
+        assert_eq!(msgs.len(), 3);
+        assert!(msgs[1].text().contains("removed from the context"));
+        assert!(
+            !msgs[1]
+                .content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::ToolUse { .. }))
+        );
+        assert!(s.elide_block(2, 1).unwrap_err().contains("whole"));
+
+        // A whole marker's line has no block key, as before.
+        let line = serde_json::to_string(s.events().last().unwrap()).unwrap();
+        assert!(!line.contains("block"), "{line}");
+    }
+
+    /// A removed text block projects nothing; a reply left with no text
+    /// and no call says the marker instead; an edit on a removed block is
+    /// refused; `reply_text` leaves the removed block out; a fork carries
+    /// the block on its re-aimed marker.
+    #[test]
+    fn removing_every_text_block_leaves_the_calls_or_a_marker() {
+        let mut s = blocky_session();
+        s.elide_block(2, 1).unwrap();
+        s.elide_block(2, 3).unwrap();
+        let reply = &s.messages()[1];
+        assert_eq!(reply.content.len(), 2, "thinking and the call");
+        assert!(matches!(&reply.content[1], ContentBlock::ToolUse { .. }));
+        assert_eq!(s.reply_text(2).as_deref(), Some(""));
+        let err = s.edit_block(2, 1, "x").unwrap_err();
+        assert!(err.contains("restore it"), "{err}");
+
+        // The last reply has no call: its one text block gone leaves the
+        // marker, sized by what went.
+        s.elide_block(4, 0).unwrap();
+        let last = &s.messages()[3];
+        assert_eq!(last.content.len(), 1);
+        assert!(
+            last.text().contains("removed from the context"),
+            "{}",
+            last.text()
+        );
+        assert!(last.text().contains("tokens"), "{}", last.text());
+        s.unelide_block(4, 0).unwrap();
+        assert_eq!(s.messages()[3].text(), "three");
+
+        // A fork before a later turn carries the block markers, re-aimed.
+        s.record_user("and then?");
+        let dir =
+            std::env::temp_dir().join(format!("nightloom-fork-blocks-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fork = s.fork_from(&dir, s.events().len() - 1).unwrap();
+        assert_eq!(fork.block_elisions()[2], BTreeSet::from([1, 3]));
+        assert!(fork.events().iter().any(|e| matches!(
+            e,
+            SessionEvent::Elide { targets, block: Some(3), .. } if targets == &[2]
+        )));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// A fork carries the parent's live events before the cut, renumbered,

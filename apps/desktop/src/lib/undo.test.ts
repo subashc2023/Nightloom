@@ -110,4 +110,23 @@ describe("UndoHistory", () => {
     expect(h.undoLabel(["a"])).toBe("rewind");
     expect(h.redoLabel(["a"])).toBeNull();
   });
+
+  // The toast's Undo (nightshift backlog 066): one entry, by handle, only
+  // while it is still the one an undo would take.
+  it("undoIf reverses the handled entry only while it is next", async () => {
+    const h = new UndoHistory();
+    const trail: string[] = [];
+    const first = h.push("a", entry(trail, "remove"));
+    const second = h.push("a", entry(trail, "edit"));
+    expect(await h.undoIf(["a"], first)).toBeNull();
+    expect(trail).toEqual([]);
+    expect(await h.undoIf(["a"], second)).toEqual({ label: "edit" });
+    expect(await h.undoIf(["a"], first)).toEqual({ label: "remove" });
+    expect(await h.undoIf(["a"], first)).toBeNull();
+    expect(trail).toEqual(["undo edit", "undo remove"]);
+    // A list entry pushed later outranks the chat's for the same handle.
+    const third = h.push("a", entry(trail, "rewind"));
+    h.push(LIST_SCOPE, entry(trail, "rename"));
+    expect(await h.undoIf(["a", LIST_SCOPE], third)).toBeNull();
+  });
 });

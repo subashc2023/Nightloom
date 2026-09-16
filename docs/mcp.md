@@ -154,6 +154,20 @@ chats is the failure nobody would notice. The `ChatDirs` is built as the
 desktop's `connect` builds it, every project's sessions plus the unfiled ones,
 from the config dir the registry lives under (`capture::session_dirs`).
 
+**A dream's server (2026-09-16, nightshift backlog 070).** Started with
+`--dream <json>` — `nightloom mcp-serve --dream …`, `nightloom-desktop
+--mcp-serve --dream …` — the server serves **one** tool, `propose_instructions`,
+and none of the four: the JSON (`mcp_server::DreamServe`: the store the
+proposal is filed beside, the `ProposalTarget`, the path of the always-loaded
+file) is what `dream::run_on_agent` builds per target, and the tool is the same
+`ProposeInstructions::new(..).against(read_capped(file))` the API engine's
+dream gets, so the proposal file is the same file. `initialize` says so in its
+instructions; `remember` and the readers are unknown here, not hidden, since a
+dream on this engine must not read the other chats or write to the inbox it is
+draining. It needs no config dir and reads no registry. Documented with the
+rest of the pass in [service-agent.md](service-agent.md) "Dreams and captures
+on this engine".
+
 **There is no approval layer.** On the API engine each of these calls goes
 through `approval`; here the CLI's own permission system judges an
 `mcp__nightloom__*` call like any other, and a gate of ours in front of theirs

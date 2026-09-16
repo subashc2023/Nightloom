@@ -1119,9 +1119,9 @@ mod tests {
 // this is the conversation: a session the engine resumes turn by turn, the
 // transcript, and the stream of deltas the window renders.
 
+use nightloom_service::TurnEvent;
 use nightloom_service::agent::{AgentSpec, ClaudeCodeAgent};
 use nightloom_service::nightshift::interview;
-use nightloom_service::TurnEvent;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 

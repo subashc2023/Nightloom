@@ -331,20 +331,74 @@ an index wins, and a rewind that supersedes the marker puts the original
 back on the wire — and content replacement only, never structural: a user
 message keeps its attachments, an assistant reply keeps its thinking (signed
 as it is; the API ignores earlier turns' thinking and was measured to accept
-a reply whose text changed under a kept thinking block), and the first text
+a reply whose text changed under a kept thinking block), ~~and the first text
 block takes the new text with any further text block going. `is_editable`
 refuses a reply that carries a `tool_use` — the call was made *because of*
 the text beside it, and a history where the reasoning changed and the call
 did not is one no provider was asked to accept — and refuses a tool result
-outright; removal (`Elide`) is the answer for both, since it swaps content
-and keeps structure. Blank text is refused (an empty text block is rejected
-on the wire; removal is what "say nothing here" means), and so is a target
-currently elided: elision outranks the edit in the projection, so editing
-under the marker would record something invisible.
+outright; removal (`Elide`) is the answer for both~~ — **superseded
+2026-09-15 (nightshift backlog 066), see "One block of a reply" below** —
+and `is_editable` refuses a tool result outright, since it is not the
+user's to reword; removal (`Elide`) is the answer there, since it swaps
+content and keeps structure. Blank text is refused (an empty text block is
+rejected on the wire; removal is what "say nothing here" means), and so is
+a target currently elided: elision outranks the edit in the projection, so
+editing under the marker would record something invisible.
 
 Costs what an elision costs: the cached prefix past the target is gone on
 the next request. The desktop says so beside the editor, from the cache
 timer.
+
+### One block of a reply (`Edit.block`, `Elide.block` / `Unelide.block`, `Session::edit_block`, `elide_block`, `unelide_block`, `block_edits()`, `block_elisions()`, `reply_text()`, 2026-09-15)
+
+His "edit things out" of a reply (nightshift backlog 066): "if Claude
+continually makes a shit suggestion … I might want to remove it and
+replace it with a line that says 'I won't ask you about ___'", and "keep
+the start of it but don't need the rest". A reply is several blocks —
+thinking, text, tool calls, text — and the three markers now carry an
+optional **`block`**, an index into the reply's `blocks`, that aims them at
+one block rather than the event:
+
+- **`Edit { target, block: Some(n), text }`** — text block `n` says `text`;
+  every other block stays where it was, calls included. `is_editable` now
+  accepts any reply with a text block in it; the old refusal ("the call was
+  made because of the text beside it") has nothing left to guard once a
+  call and the text beside it are never reworded together. `Session::edit`
+  on a reply is its first text block; `edit_block` takes any. `block_edits()`
+  is the per-reply map (block → latest live text); `edit_texts()` now reads
+  `None` for every reply and keeps serving user messages. A line written
+  before the field existed (`block` absent) reads as the reply's first text
+  block, which is what it meant — ~~with any further text block going~~ the
+  other text blocks stay now, the one projection change for an old log.
+- **`Elide { targets: [reply], block: Some(n) }`** — that block is removed
+  from the projection: a text block, or a `tool_use` **with the result that
+  answers it**. The pair is the whole of the structural argument above,
+  kept: the marker names the call, the projection drops the result by its
+  `tool_use_id` (`removed_calls`), and a result is refused on its own
+  ("goes with its call; remove the call instead"), so no marker can produce
+  the orphan every provider rejects. A `ReasoningRef` standing directly
+  before a removed call goes with it (OpenAI Responses replays a reasoning
+  item only with the item it led to). Thinking is refused: the API leaves
+  earlier turns' thinking out on its own side, so removing it would change
+  nothing the model reads and cost a cache prefix for it. A block of a
+  reply removed *whole* is refused until the reply is restored; a whole
+  removal on top of a pair removal keeps the pair gone.
+- Removed blocks project **nothing** — no marker — unless the reply would
+  be left with no text and no call, when it says the elision marker sized
+  by what went (an empty assistant message is rejected on the wire). A
+  reply whose every text block is gone still carries its calls. Two
+  assistant messages can end up adjacent when a round's only result is
+  gone; Anthropic combines consecutive same-role turns (`external`, the
+  API reference), and the same shape resumed on the CLI (the "drop
+  outright" copy in [service-agent.md](service-agent.md)).
+- `elide_flags()` is untouched by block markers — they leave the event's
+  own flag alone — and `block_elisions()` is their per-reply set.
+  `reply_text(index)` is the reply's text as it reads now (edits applied,
+  removed blocks left out, calls leaving no mark), which is what the
+  desktop compares against Claude Code's file to find the same reply.
+- Absent on every line written before, and left out of the line when
+  absent, so a whole-event marker and a user-message edit are the lines
+  they always were; a fork carries the block on its re-aimed marker.
 
 ### Forks (`Session::fork_from(dir, upto)`, `SessionEvent::SessionCreated.forked_from`, `ForkedFrom`, 2026-09-15)
 
