@@ -68,6 +68,15 @@ pub fn watch(
                 };
                 match rx.recv_timeout(wait) {
                     Ok(Ok(event)) => {
+                        // An open or a close-without-write is a read, not a
+                        // change. inotify reports opens (`IN_OPEN` is in
+                        // notify's mask) and the recursive registration
+                        // itself opens every subdirectory to list it, so
+                        // without this the first batch on Linux is the tree's
+                        // directories. FSEvents and Windows never emit these.
+                        if matches!(event.kind, notify::EventKind::Access(_)) {
+                            continue;
+                        }
                         for p in event.paths {
                             if interesting(&root, &p) && !pending.contains(&p) {
                                 pending.push(p);
@@ -124,9 +133,13 @@ mod tests {
         fs::write(ws.join("state/status.tmp"), "x").unwrap();
         fs::write(ws.join("state/run.lock"), "1\n").unwrap();
         fs::write(ws.join("state/run.lock"), "2\n").unwrap();
+        // Wait for the batch that carries the write, not merely the first
+        // batch: a backend may deliver other events first.
         let deadline = Instant::now() + Duration::from_secs(8);
+        let has_write =
+            |b: &Vec<Vec<String>>| b.iter().flatten().any(|p| p.ends_with("state/run.lock"));
         while Instant::now() < deadline {
-            if !seen.lock().unwrap().is_empty() {
+            if has_write(&seen.lock().unwrap()) {
                 break;
             }
             std::thread::sleep(Duration::from_millis(50));
@@ -134,10 +147,7 @@ mod tests {
         let batches = seen.lock().unwrap().clone();
         assert!(!batches.is_empty(), "no change event arrived");
         let flat: Vec<&String> = batches.iter().flatten().collect();
-        assert!(
-            flat.iter().any(|p| p.ends_with("state/run.lock")),
-            "{flat:?}"
-        );
+        assert!(has_write(&batches), "{flat:?}");
         assert!(!flat.iter().any(|p| p.contains(".git")), "{flat:?}");
         assert!(!flat.iter().any(|p| p.ends_with(".tmp")), "{flat:?}");
         drop(w);
