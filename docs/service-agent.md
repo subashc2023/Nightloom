@@ -1116,3 +1116,13 @@ request of our own.** Anthropic's terms scope OAuth to "ordinary use of Claude
 Code and other native Anthropic applications" and say developers "should use API
 key authentication", so driving the signed-in binary is the supported shape and
 lifting its credential is the prohibited one.
+
+### The ask-note (2026-09-16)
+
+Under the Ask and Plan positions, `connect_agent` appends an `<ask-note>`
+paragraph after the prompt layers: a person is watching in Nightloom and
+answers in the window — approvals pause for them, `AskUserQuestion` is a
+form, a plan is a card — so a choice that is theirs should be asked, not
+guessed. The CLI lists those tools only when a prompt tool is named (084's
+M1), but its own descriptions assume a terminal. Auto and Off send no note;
+switching the engine-note layer off in Context drops this too.

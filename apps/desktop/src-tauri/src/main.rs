@@ -1342,6 +1342,25 @@ async fn connect_agent(
         // is approved — so it implies Ask and is subject to the same rule.
         let plan = plan.unwrap_or(false) && approval.unwrap_or(true);
         let ask = (ask.unwrap_or(false) || plan) && approval.unwrap_or(true);
+        // The CLI lists AskUserQuestion and the plan tools only when a
+        // prompt tool is named (084's M1), but its descriptions assume a
+        // terminal; nothing tells the model a person is here and sees a
+        // form. One paragraph, Ask and Plan only, so the other positions'
+        // prompts are byte-identical to before (2026-09-16, his "make a
+        // judgement call").
+        if ask && !off.contains(&SegmentKind::EngineNote) {
+            let note = "<ask-note>\nA person is watching this chat in Nightloom and answers \
+                        in the window: a tool call that needs approval pauses for them, \
+                        AskUserQuestion shows them a form, and a plan shows them a card \
+                        with Approve and Keep planning. When a choice is theirs to make \
+                        — a design call, a tradeoff, an ambiguous request — ask with \
+                        AskUserQuestion rather than guessing; they expect it here.\n\
+                        </ask-note>";
+            spec.append_system_prompt = Some(match spec.append_system_prompt.take() {
+                Some(s) => format!("{s}\n\n{note}"),
+                None => note.to_string(),
+            });
+        }
         // Nightloom's own tools on this engine — search_chats, read_chat,
         // remember, fetch_page — served by the binary the app is running as
         // (`--mcp-serve` at the top of `main`), because the CLI is not on
