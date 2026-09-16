@@ -251,10 +251,7 @@ pub enum SessionEvent {
     /// projection restarts here, re-seeded with the summary as a user
     /// message. The log itself stays append-only — earlier events remain on
     /// disk for UIs and audit.
-    Compaction {
-        summary: String,
-        at: DateTime<Utc>,
-    },
+    Compaction { summary: String, at: DateTime<Utc> },
     /// The model's task list, as of this point. Each write records the whole
     /// list; the latest event wins. Not part of the message projection — it
     /// reaches the model through the per-turn sidecar instead, so the list
@@ -273,10 +270,7 @@ pub enum SessionEvent {
     /// message, clipped — is what both shells did before, and it is the
     /// thing that stops working: forty chats whose names all begin "can you
     /// help me" are a list you have to open one by one.
-    Title {
-        text: String,
-        at: DateTime<Utc>,
-    },
+    Title { text: String, at: DateTime<Utc> },
     /// The external agent session this log mirrors, when a turn was run by
     /// one instead of by a provider call.
     ///

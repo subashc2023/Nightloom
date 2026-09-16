@@ -254,7 +254,8 @@ mod tests {
         fs::write(dir.join("notes/y.md"), "y\n").unwrap();
         // One modified file plus two untracked files, each counted, not the dir.
         assert_eq!(dirty_count(&dir), Some(3));
-        let not_a_repo = std::env::temp_dir().join(format!("nightloom-git-none-{}", std::process::id()));
+        let not_a_repo =
+            std::env::temp_dir().join(format!("nightloom-git-none-{}", std::process::id()));
         let _ = fs::remove_dir_all(&not_a_repo);
         fs::create_dir_all(&not_a_repo).unwrap();
         assert_eq!(dirty_count(&not_a_repo), None);

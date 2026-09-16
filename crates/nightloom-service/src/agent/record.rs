@@ -585,7 +585,10 @@ mod tests {
         assert_eq!(ids, ["c1"]);
         // And nothing else of the stray result: no empty assistant
         // message was flushed ahead of the round it did not belong to.
-        assert!(matches!(s.events()[2], SessionEvent::AssistantMessage { .. }));
+        assert!(matches!(
+            s.events()[2],
+            SessionEvent::AssistantMessage { .. }
+        ));
         assert!(matches!(s.events()[3], SessionEvent::ToolResult { .. }));
     }
 

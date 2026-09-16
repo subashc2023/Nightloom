@@ -2032,14 +2032,23 @@ the body text",
             model_instruction_file("openrouter:deepseek/deepseek-v4-flash"),
             "openrouter:deepseek__deepseek-v4-flash.md"
         );
-        assert_eq!(model_instruction_file(" claude-opus-5 "), "claude-opus-5.md");
+        assert_eq!(
+            model_instruction_file(" claude-opus-5 "),
+            "claude-opus-5.md"
+        );
         let path = model_instruction_path("a/b").expect("a config dir");
-        assert!(path.ends_with(Path::new("models").join("a__b.md")), "{path:?}");
+        assert!(
+            path.ends_with(Path::new("models").join("a__b.md")),
+            "{path:?}"
+        );
 
         // And the mapped name is the one the segment reads.
         let dir = temp_dir("model-slash");
         let file = plant_model_file("test-vendor/test-model-slash", "slash rule");
-        assert!(file.ends_with("test-vendor__test-model-slash.md"), "{file:?}");
+        assert!(
+            file.ends_with("test-vendor__test-model-slash.md"),
+            "{file:?}"
+        );
         let prompt = assemble(&PromptConfig {
             model: Some("test-vendor/test-model-slash".into()),
             ..bare(dir.clone())

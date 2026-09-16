@@ -1999,14 +1999,23 @@ mod tests {
             input: serde_json::json!({}),
         };
         agent.note_refused(None, call.clone());
-        assert!(agent.refused.is_none(), "no session: nothing to deliver it on");
+        assert!(
+            agent.refused.is_none(),
+            "no session: nothing to deliver it on"
+        );
         agent.note_refused(Some("sess-1"), call.clone());
-        assert_eq!(agent.refused.as_ref().map(|(s, c)| (s.as_str(), &c.id)), Some(("sess-1", &call.id)));
+        assert_eq!(
+            agent.refused.as_ref().map(|(s, c)| (s.as_str(), &c.id)),
+            Some(("sess-1", &call.id))
+        );
         agent.follow_on(&AgentOutcome {
             session_id: Some("sess-1".into()),
             ..AgentOutcome::default()
         });
-        assert!(agent.refused.is_none(), "delivered with the turn that landed");
+        assert!(
+            agent.refused.is_none(),
+            "delivered with the turn that landed"
+        );
     }
 
     /// The chat's directory is set after connect, once the chat exists,

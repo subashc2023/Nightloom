@@ -1250,7 +1250,9 @@ async fn connect_agent(
     spec.safe_mode = safe_mode.unwrap_or(false);
     // Effort and the fallback model (backlog 076), as the rail spelled
     // them; empty is the CLI's default and no fallback.
-    spec.effort = effort.map(|e| e.trim().to_string()).filter(|e| !e.is_empty());
+    spec.effort = effort
+        .map(|e| e.trim().to_string())
+        .filter(|e| !e.is_empty());
     spec.fallback_model = fallback_model
         .map(|f| f.trim().to_string())
         .filter(|f| !f.is_empty());
@@ -1363,7 +1365,10 @@ async fn connect_agent(
                 // measurement); served by the same process as the rest.
                 args.push("--ask".into());
                 spec.ask = Some(nightloom_service::agent::AskSpec {
-                    hook: vec![exe.to_string_lossy().into_owned(), "--permission-hook".into()],
+                    hook: vec![
+                        exe.to_string_lossy().into_owned(),
+                        "--permission-hook".into(),
+                    ],
                     // Per chat; `send_agent` points it at the open chat's
                     // directory before each turn, once the chat exists.
                     dir: PathBuf::new(),
@@ -1511,7 +1516,9 @@ fn pass_spec(
             .unwrap_or_else(|| AGENT_BINARY.into()),
         vec![exe.to_string_lossy().into_owned(), "--mcp-serve".into()],
     );
-    pass.model = model.map(|m| m.trim().to_string()).filter(|m| !m.is_empty());
+    pass.model = model
+        .map(|m| m.trim().to_string())
+        .filter(|m| !m.is_empty());
     pass.safe_mode = safe_mode.unwrap_or(false);
     Ok(pass)
 }
@@ -1931,7 +1938,8 @@ async fn send_agent(
             agent.note_refused(session_id.as_deref(), call.clone());
             state.ask.abandon_all();
             if let Ok(o) = &mut result {
-                o.notices.push("stopped while waiting for your answer".into());
+                o.notices
+                    .push("stopped while waiting for your answer".into());
                 o.deferred = None;
             }
             break;
@@ -2024,7 +2032,9 @@ async fn send_agent(
                     context_limit.map(|n| n as u64),
                     turns,
                 );
-                if let Err(e) = nightloom_service::mcp_server::write_context_status(&config, &status) {
+                if let Err(e) =
+                    nightloom_service::mcp_server::write_context_status(&config, &status)
+                {
                     let _ = app.emit("turn-notice", format!("context status not written: {e}"));
                 }
             }
@@ -3400,7 +3410,9 @@ impl ProjectsFolderInfo {
 }
 
 #[tauri::command]
-async fn projects_folder_info(state: State<'_, AppState>) -> Result<Option<ProjectsFolderInfo>, String> {
+async fn projects_folder_info(
+    state: State<'_, AppState>,
+) -> Result<Option<ProjectsFolderInfo>, String> {
     let guard = state.workspaces.lock().await;
     Ok(ProjectsFolderInfo::current(&guard.registry))
 }
@@ -3510,7 +3522,10 @@ async fn new_project(
     instructions: Option<String>,
 ) -> Result<ProjectInfo, String> {
     let mut guard = state.workspaces.lock().await;
-    let folder = match path.map(PathBuf::from).filter(|p| !p.as_os_str().is_empty()) {
+    let folder = match path
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+    {
         Some(picked) => project::NewProjectFolder::Picked(picked),
         None => {
             let base = project::projects_folder(&guard.registry)
@@ -3767,7 +3782,9 @@ async fn delete_note(
 ) -> Result<(), String> {
     let scope = scope.unwrap_or_default();
     if scope.is_fixed_file() {
-        return Err(format!("{AGENTS_MD} is not deleted from here — empty it instead"));
+        return Err(format!(
+            "{AGENTS_MD} is not deleted from here — empty it instead"
+        ));
     }
     project::delete_note(&scope_dir(&state, scope).await?, &name)
 }
@@ -3781,14 +3798,14 @@ async fn delete_note(
 /// other scope is a caller bug and says so.
 async fn proposal_store(state: &AppState, scope: NoteScope) -> Result<PathBuf, String> {
     match scope {
-        NoteScope::Instructions => state
-            .active()
-            .await
-            .map(|p| p.store_dir())
-            .ok_or_else(|| "no project is open, so there are no proposals for its instructions".to_string()),
+        NoteScope::Instructions => state.active().await.map(|p| p.store_dir()).ok_or_else(|| {
+            "no project is open, so there are no proposals for its instructions".to_string()
+        }),
         NoteScope::Memory => project::config_dir()
             .ok_or_else(|| "no user config directory to keep proposals in".to_string()),
-        other => Err(format!("{other:?} has no proposals — only instructions and memory do")),
+        other => Err(format!(
+            "{other:?} has no proposals — only instructions and memory do"
+        )),
     }
 }
 
@@ -4044,10 +4061,10 @@ async fn dream(
                 .await?
         }
     }
-        // Checked non-empty by the UI before offering the button; a race
-        // with a CLI dream is the only way here, and "nothing left" is
-        // its honest report.
-        .ok_or_else(|| "nothing left to consolidate".to_string())?;
+    // Checked non-empty by the UI before offering the button; a race
+    // with a CLI dream is the only way here, and "nothing left" is
+    // its honest report.
+    .ok_or_else(|| "nothing left to consolidate".to_string())?;
     Ok(DreamReport {
         consolidated: outcome.consolidated,
         filed: outcome
@@ -5029,7 +5046,12 @@ mod tests {
         ));
         assert!(pass_engine("not-an-engine").is_err());
 
-        let pass = pass_spec(Some("  /opt/claude ".into()), Some(" haiku ".into()), Some(true)).unwrap();
+        let pass = pass_spec(
+            Some("  /opt/claude ".into()),
+            Some(" haiku ".into()),
+            Some(true),
+        )
+        .unwrap();
         assert_eq!(pass.binary, "/opt/claude");
         assert_eq!(pass.model.as_deref(), Some("haiku"));
         assert!(pass.safe_mode);

@@ -832,8 +832,16 @@ mod tests {
         // Half-life: at 30 days the factor is one half.
         let (fresh, _) = index.rank_at("kestrels", 2, now);
         let (aged, _) = index.rank_at("kestrels", 2, now + chrono::Duration::days(30));
-        let f = fresh.iter().find(|h| h.log.id(&h.path) == new).unwrap().score;
-        let a = aged.iter().find(|h| h.log.id(&h.path) == new).unwrap().score;
+        let f = fresh
+            .iter()
+            .find(|h| h.log.id(&h.path) == new)
+            .unwrap()
+            .score;
+        let a = aged
+            .iter()
+            .find(|h| h.log.id(&h.path) == new)
+            .unwrap()
+            .score;
         assert!((a / f - 0.5).abs() < 0.02, "{f} → {a}");
         // Only the old chat says it: it is still the answer.
         let (hits, total) = index.rank_at("again", 5, now);

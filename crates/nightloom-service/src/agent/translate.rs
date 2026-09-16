@@ -369,7 +369,10 @@ mod tests {
                 skills,
                 agents,
             } => {
-                assert_eq!(session_id.as_deref(), Some("3dc6cb69-b57a-4617-b43d-6c9b9992b643"));
+                assert_eq!(
+                    session_id.as_deref(),
+                    Some("3dc6cb69-b57a-4617-b43d-6c9b9992b643")
+                );
                 assert_eq!(model.as_deref(), Some("claude-haiku-4-5-20251001"));
                 assert_eq!(version.as_deref(), Some("2.1.263"));
                 assert_eq!(permission_mode.as_deref(), Some("default"));
@@ -388,8 +391,10 @@ mod tests {
         assert_eq!(outcome.model.as_deref(), Some("claude-haiku-4-5-20251001"));
         // The older, shorter line (no lists) still parses, with empty lists.
         let (events, _) = drive(&[INIT]);
-        assert!(matches!(&events[0], TurnEvent::AgentInit { skills, version, .. }
-            if skills.is_empty() && version.is_none()));
+        assert!(
+            matches!(&events[0], TurnEvent::AgentInit { skills, version, .. }
+            if skills.is_empty() && version.is_none())
+        );
     }
 
     /// The suggestion line (backlog 083): verbatim from 2.1.263, one event.
@@ -397,7 +402,9 @@ mod tests {
     fn a_prompt_suggestion_line_is_one_event() {
         const LINE: &str = r#"{"type":"prompt_suggestion","suggestion":"Write the code","uuid":"967e0cd2-5115-4642-ad23-c4e38a6c28d5","session_id":"2279a73e-2a14-4b5d-a9af-2cce68531f10"}"#;
         let (events, _) = drive(&[LINE]);
-        assert!(matches!(&events[0], TurnEvent::PromptSuggestion { text } if text == "Write the code"));
+        assert!(
+            matches!(&events[0], TurnEvent::PromptSuggestion { text } if text == "Write the code")
+        );
         let (none, _) = drive(&[r#"{"type":"prompt_suggestion","suggestion":"  "}"#]);
         assert!(none.is_empty());
     }

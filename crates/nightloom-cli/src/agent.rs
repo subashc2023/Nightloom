@@ -45,8 +45,7 @@ fn spec(args: &ChatArgs) -> Result<AgentSpec> {
         // uses: `auto` lets the CLI's classifier decide and denies what it
         // cannot approve, `bypassPermissions` runs everything (nightshift
         // blocker 045; the helper's doc says why it is no longer `dontAsk`).
-        spec.permission_mode =
-            Some(AgentSpec::headless_permission_mode(!args.no_approval).into());
+        spec.permission_mode = Some(AgentSpec::headless_permission_mode(!args.no_approval).into());
     }
     Ok(spec)
 }

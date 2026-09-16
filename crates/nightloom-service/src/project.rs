@@ -631,7 +631,8 @@ pub fn default_projects_folder(registry: &Registry) -> PathBuf {
 /// registered by their own paths and stay where they are, and a folder is
 /// not a migration.
 pub fn set_projects_folder(dir: Option<&Path>) -> Result<(), String> {
-    let config = config_dir().ok_or_else(|| "no user config directory to record it in".to_string())?;
+    let config =
+        config_dir().ok_or_else(|| "no user config directory to record it in".to_string())?;
     set_projects_folder_in(&config, dir)
 }
 
@@ -736,13 +737,20 @@ impl Registry {
             NewProjectFolder::Picked(dir) => (dir, true),
         };
         if dir.as_os_str().is_empty() {
-            return Err("the name needs at least one letter or digit to make a folder from".to_string());
+            return Err(
+                "the name needs at least one letter or digit to make a folder from".to_string(),
+            );
         }
         let dir = normalize(&dir);
         if dir.is_file() {
             return Err(format!("{} is a file, not a folder", dir.display()));
         }
-        if !picked && dir.is_dir() && fs::read_dir(&dir).map(|mut d| d.next().is_some()).unwrap_or(true) {
+        if !picked
+            && dir.is_dir()
+            && fs::read_dir(&dir)
+                .map(|mut d| d.next().is_some())
+                .unwrap_or(true)
+        {
             return Err(format!(
                 "{} already exists and is not empty — Open project… opens a folder you already have, or choose another name",
                 dir.display()
@@ -772,7 +780,8 @@ impl Registry {
         if let Some(text) = instructions {
             let mut text = text.to_string();
             text.push('\n');
-            fs::write(&agents, text).map_err(|e| format!("cannot write {}: {e}", agents.display()))?;
+            fs::write(&agents, text)
+                .map_err(|e| format!("cannot write {}: {e}", agents.display()))?;
         }
         self.create(name, Some(dir), None)
     }
@@ -1253,7 +1262,10 @@ pub fn reveal(path: &Path) -> io::Result<()> {
 /// a file path would launch its application rather than show it.
 pub fn reveal_file(path: &Path) -> io::Result<()> {
     if cfg!(target_os = "macos") {
-        std::process::Command::new("open").arg("-R").arg(path).spawn()?;
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(path)
+            .spawn()?;
     } else if cfg!(target_os = "windows") {
         std::process::Command::new("explorer")
             .arg(format!("/select,{}", path.display()))
@@ -1364,7 +1376,10 @@ mod tests {
         assert_eq!(Path::new(&found.path), file);
         assert!(answers[1].is_none(), "a folder is not a file card");
         assert!(answers[2].is_none(), "a made-up path stays text");
-        assert!(answers[3].is_none(), "a relative path is the frontend's to resolve");
+        assert!(
+            answers[3].is_none(),
+            "a relative path is the frontend's to resolve"
+        );
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -1633,7 +1648,8 @@ mod tests {
     }
 
     #[test]
-    fn the_default_projects_folder_is_where_the_last_created_project_under_a_projects_folder_sits() {
+    fn the_default_projects_folder_is_where_the_last_created_project_under_a_projects_folder_sits()
+    {
         let base = PathBuf::from("/Users/swaraagsistla/Documents/ComputerScience/Nightloom");
         let reg = a_registry_like_his(&base.join("projects"), &base.join("nightshift-code"));
 
@@ -1667,7 +1683,10 @@ mod tests {
         });
         // Most recently *created* wins, not most recently opened: where the
         // user last made a project is where they are keeping them now.
-        assert_eq!(default_projects_folder(&reg), PathBuf::from("/new/projects"));
+        assert_eq!(
+            default_projects_folder(&reg),
+            PathBuf::from("/new/projects")
+        );
     }
 
     #[test]
@@ -1758,13 +1777,19 @@ mod tests {
             .unwrap();
 
         assert_eq!(project.name, "Value Generalization");
-        assert_eq!(project.workspace.as_deref(), Some(normalize(&target).as_path()));
+        assert_eq!(
+            project.workspace.as_deref(),
+            Some(normalize(&target).as_path())
+        );
         assert!(target.is_dir());
         assert_eq!(
             fs::read_to_string(target.join("AGENTS.md")).unwrap(),
             "Be terse.\nCite sources.\n"
         );
-        assert_eq!(reg.find_by_workspace(&target).map(|p| p.id.as_str()), Some(project.id.as_str()));
+        assert_eq!(
+            reg.find_by_workspace(&target).map(|p| p.id.as_str()),
+            Some(project.id.as_str())
+        );
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -1773,8 +1798,12 @@ mod tests {
         let dir = temp_dir("new-project-bare");
         let mut reg = Registry::load_from(dir.join("registry.json"));
         let target = dir.join("projects").join("Bare");
-        reg.new_project("Bare", NewProjectFolder::Resolved(target.clone()), Some("   "))
-            .unwrap();
+        reg.new_project(
+            "Bare",
+            NewProjectFolder::Resolved(target.clone()),
+            Some("   "),
+        )
+        .unwrap();
         assert!(target.is_dir());
         assert!(!target.join("AGENTS.md").exists());
         fs::remove_dir_all(&dir).ok();
@@ -1813,9 +1842,16 @@ mod tests {
 
         // Existing files are the point of picking a folder.
         let project = reg
-            .new_project("Existing", NewProjectFolder::Picked(picked.clone()), Some("hi"))
+            .new_project(
+                "Existing",
+                NewProjectFolder::Picked(picked.clone()),
+                Some("hi"),
+            )
             .unwrap();
-        assert_eq!(project.workspace.as_deref(), Some(normalize(&picked).as_path()));
+        assert_eq!(
+            project.workspace.as_deref(),
+            Some(normalize(&picked).as_path())
+        );
         assert!(picked.join("AGENTS.md").is_file());
 
         // Picking it again is refused by the project's name — Open project…
@@ -1832,7 +1868,11 @@ mod tests {
         fs::create_dir_all(&other).unwrap();
         fs::write(other.join("AGENTS.md"), "mine").unwrap();
         let err = reg
-            .new_project("Other", NewProjectFolder::Picked(other.clone()), Some("theirs"))
+            .new_project(
+                "Other",
+                NewProjectFolder::Picked(other.clone()),
+                Some("theirs"),
+            )
             .unwrap_err();
         assert!(err.contains("AGENTS.md"), "{err}");
         assert_eq!(fs::read_to_string(other.join("AGENTS.md")).unwrap(), "mine");
@@ -1848,7 +1888,10 @@ mod tests {
             .new_project("???", NewProjectFolder::Resolved(PathBuf::new()), None)
             .unwrap_err();
         assert!(err.contains("letter or digit"), "{err}");
-        assert!(reg.new_project("  ", NewProjectFolder::Resolved(dir.join("x")), None).is_err());
+        assert!(
+            reg.new_project("  ", NewProjectFolder::Resolved(dir.join("x")), None)
+                .is_err()
+        );
         assert!(reg.projects().is_empty());
         fs::remove_dir_all(&dir).ok();
     }

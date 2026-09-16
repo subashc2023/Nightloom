@@ -58,8 +58,7 @@ pub fn prompt(root: &Path) -> String {
 }
 
 /// The instruction that closes the interview and asks for the item.
-pub const WRITE_INSTRUCTION: &str =
-    "Write the item now, in exactly the TITLE / KIND / --- / sections shape from your instructions and nothing else.";
+pub const WRITE_INSTRUCTION: &str = "Write the item now, in exactly the TITLE / KIND / --- / sections shape from your instructions and nothing else.";
 
 /// The model's final answer, taken apart.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,7 +116,11 @@ pub fn transcript_md(item_id: &str, messages: &[(String, String)]) -> String {
         "# Interview for item {item_id}\n\nSwaraag's turns are `user_stated`; the interviewer's are `inferred`. Saved by Nightloom's intake interview; the proxy evaluator's substrate (item 005).\n"
     );
     for (role, text) in messages {
-        let who = if role == "user" { "Swaraag" } else { "Interviewer" };
+        let who = if role == "user" {
+            "Swaraag"
+        } else {
+            "Interviewer"
+        };
         s.push_str(&format!("\n## {who}\n\n{}\n", text.trim()));
     }
     s
@@ -144,7 +147,9 @@ pub fn create_item(
 
 /// Where an item's interview transcript lives.
 pub fn transcript_path(root: &Path, id: &str) -> std::path::PathBuf {
-    root.join("backlog").join("interviews").join(format!("{id}.md"))
+    root.join("backlog")
+        .join("interviews")
+        .join(format!("{id}.md"))
 }
 
 #[cfg(test)]
@@ -192,7 +197,10 @@ mod tests {
     fn transcript_names_who_said_what() {
         let md = transcript_md(
             "041",
-            &[("user".into(), "an idea".into()), ("assistant".into(), "a question?".into())],
+            &[
+                ("user".into(), "an idea".into()),
+                ("assistant".into(), "a question?".into()),
+            ],
         );
         assert!(md.contains("## Swaraag\n\nan idea"));
         assert!(md.contains("## Interviewer\n\na question?"));

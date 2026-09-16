@@ -137,7 +137,12 @@ pub fn new_item(root: &Path, title: &str, kind: &str) -> Result<String, String> 
 /// The scaffold above with a written body — the interview's exit
 /// (`interview.rs`). `body` is everything between the frontmatter and
 /// `## Progress`, which the runner owns and is always appended last.
-pub fn new_item_with_body(root: &Path, title: &str, kind: &str, body: &str) -> Result<String, String> {
+pub fn new_item_with_body(
+    root: &Path,
+    title: &str,
+    kind: &str,
+    body: &str,
+) -> Result<String, String> {
     launch::ensure_not_live(root)?;
     let title = title.trim();
     if title.is_empty() {
@@ -228,7 +233,10 @@ pub fn delete_item(root: &Path, id: &str) -> Result<String, String> {
         ));
     }
     fs::rename(path, &dest).map_err(|e| format!("could not move {}: {e}", path.display()))?;
-    let transcript = root.join("backlog").join("interviews").join(format!("{id}.md"));
+    let transcript = root
+        .join("backlog")
+        .join("interviews")
+        .join(format!("{id}.md"));
     if transcript.is_file() {
         let _ = fs::rename(&transcript, trash.join(format!("{id}.interview.md")));
     }
@@ -496,7 +504,10 @@ mod tests {
         let went = delete_item(&ws, &id).unwrap();
         assert!(went.starts_with("backlog/trash/"), "{went}");
         assert!(ws.join(&went).is_file());
-        assert!(ws.join(format!("backlog/trash/{id}.interview.md")).is_file());
+        assert!(
+            ws.join(format!("backlog/trash/{id}.interview.md"))
+                .is_file()
+        );
         assert!(!item_files(&ws).contains_key(&id));
         assert!(!load_order(&ws).contains(&id));
         assert!(delete_item(&ws, &id).is_err());
