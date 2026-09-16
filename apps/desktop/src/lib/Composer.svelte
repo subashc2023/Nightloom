@@ -1,7 +1,16 @@
 <script lang="ts">
   import Icon from "./Icon.svelte";
   import { app, addToast, send, cancelTurn } from "./state.svelte";
-  import type { Attachment } from "./types";
+  import {
+    addAttachment,
+    clearDraft,
+    draftKey,
+    nextAttachmentId,
+    readDraft,
+    removeAttachment,
+    setDraftAttachments,
+    setDraftText,
+  } from "./drafts.svelte";
 
   /**
    * `floating` drops the docked chrome (top border, panel fill) for the
@@ -11,8 +20,18 @@
    */
   let { floating = false }: { floating?: boolean } = $props();
 
-  let text = $state("");
-  let attachments = $state<Attachment[]>([]);
+  /**
+   * The draft is the open chat's, not the box's (nightshift backlog 065,
+   * 2026-09-15): `drafts.svelte.ts` keeps one per chat id — "new" while no
+   * chat is open — and this component binds to the entry for the current
+   * key. A chat switch changes the key and the box follows; the pending
+   * chat's entry moves to the chat its first message creates (the one line
+   * in `send`). Sending clears the entry, and nothing else does.
+   */
+  const key = $derived(draftKey(app.activeSessionId));
+  const draft = $derived(readDraft(key));
+  const text = $derived(draft.text);
+  const attachments = $derived(draft.attachments);
   let ta = $state<HTMLTextAreaElement | null>(null);
   // Drag events fire per element, so a boolean flickers as the pointer crosses
   // children; count enters against leaves instead.
@@ -125,8 +144,6 @@
   const MAX_AGENT_DOCUMENT_BASE64 = 20 * 1024 * 1024;
   const encodedLimit = (n: number) => Math.floor((n / 4) * 3);
 
-  let attachSeq = 0;
-
   function autogrow() {
     if (!ta) return;
     const max = maxHeight();
@@ -140,6 +157,14 @@
     const onresize = () => autogrow();
     window.addEventListener("resize", onresize);
     return () => window.removeEventListener("resize", onresize);
+  });
+
+  // A switched-to draft is a different height; the box is measured once
+  // the new text is in it.
+  $effect(() => {
+    void key;
+    void text;
+    requestAnimationFrame(autogrow);
   });
 
   function onkeydown(e: KeyboardEvent) {
@@ -209,8 +234,10 @@
       }
       try {
         const data = await readBase64(file);
-        attachments.push({
-          id: ++attachSeq,
+        // Under the key of the moment the file was dropped: a read can
+        // outlive a chat switch, and the chip belongs where it was pasted.
+        addAttachment(key, {
+          id: nextAttachmentId(),
           kind,
           name: describe(file),
           media_type: file.type,
@@ -265,8 +292,7 @@
   }
 
   function remove(id: number) {
-    const i = attachments.findIndex((a) => a.id === id);
-    if (i >= 0) attachments.splice(i, 1);
+    removeAttachment(key, id);
   }
 
   async function submit() {
@@ -279,14 +305,21 @@
       .map(({ media_type, name, data }) => ({ media_type, name, data }));
     const empty = !t && attachments.length === 0;
     if (empty || !app.connection || app.busy) return;
-    const pending = attachments;
-    text = "";
-    attachments = [];
+    const pending = attachments.slice();
+    const typed = text;
+    clearDraft(key);
     requestAnimationFrame(autogrow);
     await send(t, images, documents);
     // send() reports failures on app.error instead of throwing, and a turn
-    // that never reached the model should not cost the user its attachments.
-    if (app.error) attachments = pending;
+    // that never reached the model should not cost the user its attachments
+    // — or, since 2026-09-15, its words. Both go back under the key of the
+    // chat now open (the pending chat's first turn may have made the chat
+    // before failing, and `key` has followed it), the text only if nothing
+    // new was typed meanwhile.
+    if (app.error) {
+      if (!readDraft(key).text) setDraftText(key, typed);
+      setDraftAttachments(key, pending.concat(readDraft(key).attachments));
+    }
   }
 </script>
 
@@ -339,7 +372,7 @@
   <div class="card">
     <textarea
       bind:this={ta}
-      bind:value={text}
+      bind:value={() => text, (v) => setDraftText(key, v)}
       rows="1"
       placeholder={app.connection ? "Message…" : ""}
       disabled={!app.connection}

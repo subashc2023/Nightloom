@@ -928,3 +928,85 @@ not "no MathML" but the TeX source loose inside the `<math>` element for a scree
 reader to read out. `annotation-xml` is deliberately not added back — that one is
 an HTML integration point, which is the reason the family is off in the first
 place.
+
+## Per-chat drafts, scroll position and the message navigator (nightshift backlog 065, 2026-09-15)
+
+Three things that were global or absent are now per chat. His report: a draft
+typed in one chat was still in the box after switching to another; a chat
+scrolled to somewhere high up had to be re-scrolled every time he came back;
+and there was no way to move through a long chat but the wheel.
+
+**Drafts (`src/lib/drafts.svelte.ts`).** The composer's text and attachments
+were component state, and `Composer.svelte` outlives a chat switch — that was
+the whole bug. They now live in a rune store keyed by the chat: the open chat's
+id, or `"new"` while no chat is open (New chat is a state, not a file, see
+above). The composer binds to the entry for the current key and nothing else,
+so a switch swaps the box. The pending chat's draft follows the chat it makes:
+`send` and `sendAgent` pick the id off the re-synced `session_created` line and
+one line there calls `moveDraft("new", id)` before `activeSessionId` changes,
+which carries anything typed *during* the first turn (the box is not locked
+while a reply streams). Sending clears that chat's entry; nothing else does — not
+a switch, not Escape, not deleting the chat. A failed send puts the words and
+the chips back under the chat now open (the text only if nothing new was typed
+meanwhile); until today only the attachments came back.
+
+Persisted under one localStorage key, debounced 400 ms and flushed on
+`pagehide`, every access in try/catch, the transcript prefs' pattern. Text
+always; an attachment only when its base64 is under 512 KB and the store's
+attachments together under 3 MB — a pasted screenshot is often most of the
+few MB localStorage allows — so a large chip is in memory only and a relaunch
+keeps the text and drops it. Over quota, the write is retried with the text
+alone. A row whose chat has a non-empty draft carries a small `✎` (the incognito
+mark's style, titled "has a draft"), and the New chat button carries one for the
+pending draft.
+
+**Scroll (`src/lib/scroll.svelte.ts`).** `{ top, pinned }` per chat key, in a
+plain map — nothing draws from it, and a reactive map would re-run effects on
+every frame. `Transcript.svelte` writes it from its scroll handler, one write per
+frame at most, and reads it when the key changes: `pinned` at once, so the
+existing pin-during-reply effect (which fires on the same switch, the event
+count having changed) sees the switched-to chat's state; `top` after the tick
+that renders the new events, and only when not pinned. A chat with no entry
+lands at the bottom, as every chat did. Not persisted: a position is pixels of a
+layout a relaunch redoes. The first turn of a pending chat is the one key change
+that is not a switch — `"new"` becomes the created id while the same transcript
+is on screen — and the entry moves with the key rather than being restored.
+
+**Navigator (`src/lib/navigator.ts`, `src/lib/Navigator.svelte`).** The strip
+at the transcript's right edge, from his screenshot of LibreChat's rail (their
+`client/src/components/Chat/Messages/MessageNav.tsx`, read 2026-09-15; the
+interaction is borrowed, nothing is copied). `ticks(events, liveFlags, texts?)`
+is pure: one tick per live user or assistant message with its log index, role,
+a log-scaled weight in [0.25, 1] (full width at 4 000 characters; past a
+screenful the width says nothing the bubble does not), and its first non-empty
+line — the edited wording where a turn has one, and "(2 tool calls)" for a
+reply with no text. Rewound turns are drawn greyed in the transcript but get no
+tick; compactions and tool results get none. `activeTick` is which one is being
+read: the last tick whose top is at or above a reading line 48 px under the
+viewport's top edge (a third of the viewport if that is less), and the last
+message at the foot whatever the line says. A line a third of the way down was
+tried first and picked the *next* message after every jump to a short one.
+
+`Navigator.svelte` is a view: it draws what `Transcript.svelte` tells it —
+chevron top (scroll to the top, unpins), chevron bottom (scroll to the foot and
+follow the reply again), the ticks between as one grid row each of at most 7 px,
+sharing the height evenly when a long chat has more rows than the strip has
+pixels — and reports clicks. Assistant ticks take the accent, user ticks the
+secondary ink at lower opacity; the active one is bright and full width. Hover
+shows a bubble to the left with the role and up to two lines of the first line;
+click smooth-scrolls to the turn's `data-turn` anchor, 12 px under the edge, and
+focuses the viewport so `⌥↑` / `⌥↓` work from there. The strip is positioned by
+`.content` in `App.svelte`, which is exactly the transcript's area — under the
+top bar, above the composer — and is not drawn under four ticks or when the
+viewport does not scroll.
+
+`⌥↑` / `⌥↓` step to the previous / next message. They are bound on the
+viewport (`tabindex="-1"`), not the window: the composer's own `⌥↑` moves the
+caret by paragraph and should keep doing so. So they work after a click on the
+transcript or the strip, not while typing; a window-wide binding would belong
+in `App.svelte`'s `onShortcut` and was not added there.
+
+Tests: `drafts.test.ts` (per key, the handover, clear on send only, the
+persistence caps, a storage that throws), `scroll.test.ts` (remember, recall,
+default bottom, move), `navigator.test.ts` (roles, weights, first lines,
+rewound turns excluded, the reading line, the foot rule, stepping).

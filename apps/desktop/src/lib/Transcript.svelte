@@ -22,6 +22,8 @@
     type EditState,
   } from "./edit";
   import { cacheState } from "./cache";
+  import { moveScroll, recallScroll, rememberScroll, scrollKey, NEW_SCROLL_KEY } from "./scroll.svelte";
+  import { JUMP_OFFSET, MIN_TICKS, activeTick, stepTick, ticks as tickModel } from "./navigator";
   import type {
     ApprovalRequest,
     DocumentInput,
@@ -31,6 +33,7 @@
   import AssistantMessage from "./AssistantMessage.svelte";
   import ApprovalPrompt from "./ApprovalPrompt.svelte";
   import Icon from "./Icon.svelte";
+  import Navigator from "./Navigator.svelte";
 
   interface AssistantFooter {
     model: string;
@@ -318,11 +321,13 @@
   }
 
   function onscroll() {
-    if (scrollingSelf) return;
-    // A scrollbar drag has no wheel event; it unpins here on its way up
-    // and re-pins here on its way back down. Reaching the foot by any
-    // means re-pins.
-    pinned = atBottom();
+    if (!scrollingSelf) {
+      // A scrollbar drag has no wheel event; it unpins here on its way up
+      // and re-pins here on its way back down. Reaching the foot by any
+      // means re-pins.
+      pinned = atBottom();
+    }
+    scheduleScrollWork();
   }
 
   $effect(() => {
@@ -336,15 +341,156 @@
         // The scroll event fires asynchronously; clear after it has.
         requestAnimationFrame(() => (scrollingSelf = false));
       }
+      measureNav();
     });
   });
+
+  // ---- Per-chat scroll position (nightshift backlog 065, 2026-09-15) ----
+  //
+  // The position and `pinned` are written to `scroll.svelte.ts` under the
+  // open chat's key as the view scrolls, one write per frame at most, and
+  // read back when the key changes: `pinned` at once, so the pin effect
+  // above (which fires on the same switch, the event count having changed)
+  // sees the switched-to chat's state and not the last chat's; the
+  // position after the tick that renders the new events. A chat with no
+  // entry lands at the bottom, as every chat did before today.
+  //
+  // The first turn of a pending chat is the one key change that is not a
+  // switch: the key goes from "new" to the created id while this same
+  // transcript is on screen (the composer's `blank` test mounts it on the
+  // send), and the entry follows the key rather than being restored.
+  const sessionKey = $derived(scrollKey(app.activeSessionId));
+  let lastKey: string | null = null;
+  let scrollFrame = 0;
+
+  function scheduleScrollWork() {
+    if (scrollFrame) return;
+    scrollFrame = requestAnimationFrame(() => {
+      scrollFrame = 0;
+      if (viewport) rememberScroll(sessionKey, viewport.scrollTop, pinned);
+      measureNav();
+    });
+  }
+
+  $effect(() => {
+    const key = sessionKey;
+    const from = lastKey;
+    lastKey = key;
+    if (from === NEW_SCROLL_KEY && key !== NEW_SCROLL_KEY) {
+      moveScroll(from, key);
+      return;
+    }
+    const entry = recallScroll(key);
+    pinned = entry?.pinned ?? true;
+    void tick().then(() => {
+      if (!viewport) return;
+      if (entry && !entry.pinned) {
+        scrollingSelf = true;
+        viewport.scrollTop = entry.top;
+        requestAnimationFrame(() => (scrollingSelf = false));
+      }
+      measureNav();
+    });
+  });
+
+  // ---- The message navigator (nightshift backlog 065) ----
+  //
+  // The strip's model is a projection of the log (`navigator.ts`); what
+  // this owns is the geometry — where each message's anchor sits in the
+  // viewport's scroll space, which one is being read, whether the view
+  // scrolls at all — measured once per frame on scroll and again after
+  // the events change. `data-turn` on each turn is the anchor.
+  const navTicks = $derived(tickModel(app.events, liveFlags(app.events), editTexts(app.events)));
+  let navActive = $state<number | null>(null);
+  let navScrolls = $state(false);
+  const showNav = $derived(navScrolls && navTicks.length >= MIN_TICKS);
+
+  function anchorTop(index: number): number | null {
+    if (!viewport) return null;
+    const el = viewport.querySelector<HTMLElement>(`[data-turn="${index}"]`);
+    if (!el) return null;
+    return el.getBoundingClientRect().top - viewport.getBoundingClientRect().top + viewport.scrollTop;
+  }
+
+  function measureNav() {
+    if (!viewport) return;
+    navScrolls = viewport.scrollHeight > viewport.clientHeight + 8;
+    if (!navScrolls || navTicks.length < MIN_TICKS) {
+      navActive = null;
+      return;
+    }
+    const tops = navTicks.map((t) => anchorTop(t.index) ?? 0);
+    navActive = activeTick(tops, viewport.scrollTop, viewport.clientHeight, viewport.scrollHeight);
+  }
+
+  // A resize changes whether the view scrolls and where the third line is.
+  $effect(() => {
+    if (!viewport || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => measureNav());
+    ro.observe(viewport);
+    return () => ro.disconnect();
+  });
+
+  /** Scroll so the message sits just under the top edge; the view is no
+   *  longer following the reply. */
+  function jumpTo(i: number) {
+    const t = navTicks[i];
+    if (!t || !viewport) return;
+    const top = anchorTop(t.index);
+    if (top === null) return;
+    pinned = false;
+    viewport.scrollTo({ top: Math.max(0, top - JUMP_OFFSET), behavior: "smooth" });
+    // So ⌥↑ / ⌥↓ work from here: the keys are on the viewport, and a click
+    // on the strip would otherwise leave focus on the strip.
+    viewport.focus({ preventScroll: true });
+  }
+  function toTop() {
+    if (!viewport) return;
+    pinned = false;
+    viewport.scrollTo({ top: 0, behavior: "smooth" });
+    viewport.focus({ preventScroll: true });
+  }
+  function toBottom() {
+    if (!viewport) return;
+    pinned = true;
+    viewport.scrollTo({ top: viewport.scrollHeight, behavior: "smooth" });
+    viewport.focus({ preventScroll: true });
+  }
+
+  // ⌥↑ / ⌥↓ step to the previous / next message. On the viewport rather
+  // than the window: the composer's own ⌥↑ moves the caret by paragraph
+  // and should keep doing so. (`scrollIntent` above also sees ArrowUp and
+  // unpins, which is right — a step up is a step away from the foot.)
+  function viewportKeys(e: KeyboardEvent) {
+    if (!e.altKey || e.metaKey || e.ctrlKey) return;
+    if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+    if (navTicks.length === 0) return;
+    e.preventDefault();
+    const next = stepTick(navActive, e.key === "ArrowDown" ? 1 : -1, navTicks.length);
+    if (next !== null) jumpTo(next);
+  }
 </script>
 
-<div class="transcript" bind:this={viewport} {onscroll} use:scrollIntent tabindex="-1">
+<!-- The viewport takes ⌥↑ / ⌥↓ (backlog 065); it is a scroll region, not
+     a control, and the lint has no role for that. -->
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div
+  class="transcript"
+  bind:this={viewport}
+  {onscroll}
+  use:scrollIntent
+  tabindex="-1"
+  onkeydown={viewportKeys}
+>
   <div class="inner">
     {#each items as item, i (i)}
       {#if item.kind === "user"}
-        <div class="user-turn" class:superseded={item.superseded} class:removed={item.removed}>
+        <div
+          class="user-turn"
+          class:superseded={item.superseded}
+          class:removed={item.removed}
+          data-turn={item.index}
+        >
           <div class="user-key">
             <!-- Offered on both engines since 2026-09-15 (backlog 062): on
                  Claude Code each of these rewrites the CLI's history by copy
@@ -460,7 +606,12 @@
           <div class="compaction-body">{item.summary}</div>
         </details>
       {:else}
-        <div class="assistant-turn" class:superseded={item.superseded} class:removed={item.removed}>
+        <div
+          class="assistant-turn"
+          class:superseded={item.superseded}
+          class:removed={item.removed}
+          data-turn={item.index}
+        >
           {#if !item.superseded && !app.busy && !item.removed && editing?.index !== item.index}
             <span class="turn-tools assistant-tools" title={controlsTitle}>
               {#if item.editable}
@@ -554,6 +705,9 @@
     {/if}
   </div>
 </div>
+{#if showNav}
+  <Navigator ticks={navTicks} active={navActive} onjump={jumpTo} ontop={toTop} onbottom={toBottom} />
+{/if}
 
 <style>
   .transcript {
@@ -561,6 +715,9 @@
     min-height: 0;
     overflow-y: auto;
     padding: 28px 20px 20px;
+    /* A message the keys or the strip jump to is not the one that stole
+       the outline; the viewport is focused only so ⌥↑ / ⌥↓ reach it. */
+    outline: none;
   }
   .inner {
     max-width: 760px;

@@ -18,6 +18,7 @@
     showNightshift,
   } from "./state.svelte";
   import * as api from "./api";
+  import { NEW_DRAFT_KEY, hasDraft } from "./drafts.svelte";
   import { forkLine } from "./edit";
   import { isMac } from "./platform";
   import { untrack } from "svelte";
@@ -349,7 +350,7 @@
         }}
         disabled={app.busy}
       >
-        {newChatLabel()}
+        {newChatLabel()}{#if hasDraft(NEW_DRAFT_KEY)} <span class="mark draft" title="has a draft">✎</span>{/if}
       </button>
       <button
         class="new-chat more"
@@ -408,7 +409,7 @@
                 disabled={app.busy}
               >
                 <span class="snippet"
-                  >{#if s.mode === "incognito"}<span class="mark" title="Incognito: writes nothing, unread by other chats">{MODE_GLYPH.incognito}</span> {/if}{s.title ?? s.first_user ?? "empty session"}</span
+                  >{#if s.mode === "incognito"}<span class="mark" title="Incognito: writes nothing, unread by other chats">{MODE_GLYPH.incognito}</span> {/if}{#if hasDraft(s.id)}<span class="mark draft" title="has a draft">✎</span> {/if}{s.title ?? s.first_user ?? "empty session"}</span
                 >
                 <span class="excerpt">{s.excerpt}</span>
                 <span class="meta"
@@ -459,7 +460,7 @@
                 disabled={app.busy}
               >
                 <span class="snippet"
-                  >{#if s.mode === "incognito"}<span class="mark" title="Incognito: writes nothing, unread by other chats">{MODE_GLYPH.incognito}</span> {/if}{s.title ?? s.first_user ?? "empty session"}</span
+                  >{#if s.mode === "incognito"}<span class="mark" title="Incognito: writes nothing, unread by other chats">{MODE_GLYPH.incognito}</span> {/if}{#if hasDraft(s.id)}<span class="mark draft" title="has a draft">✎</span> {/if}{s.title ?? s.first_user ?? "empty session"}</span
                 >
                 <!-- A fork says where it came from (backlog 062): the
                      parent's name as its own row shows it, or that the
@@ -911,6 +912,12 @@
   }
   .mark {
     color: var(--dim);
+  }
+  /* A chat with words waiting in its composer (nightshift backlog 065):
+     the incognito mark's style, a size down so it reads as a note on the
+     row and not part of the title. */
+  .mark.draft {
+    font-size: 0.8em;
   }
   /* The kinds menu: the project menu's popover, under the split button. */
   .kinds {
