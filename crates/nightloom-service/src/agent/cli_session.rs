@@ -852,15 +852,34 @@ pub fn projects_dir() -> Option<PathBuf> {
     crate::usage::claude_dir().map(|d| d.join("projects"))
 }
 
-/// The folder name the CLI gives a working directory: every byte that is
-/// not ASCII alphanumeric becomes `-` (measured: `/private/tmp` →
-/// `-private-tmp`, `~/.claude-bridge` → `-Users-…--claude-bridge`,
+/// The folder name the CLI gives a working directory: every *character*
+/// that is not ASCII alphanumeric becomes one `-` (measured: `/private/tmp`
+/// → `-private-tmp`, `~/.claude-bridge` → `-Users-…--claude-bridge`,
 /// `Application Support` → `Application-Support`).
+///
+/// This is the one encoding of that path in Nightloom, and it is the CLI's
+/// own: the whole-project review of 2026-09-16 (F17) worried that a cwd
+/// with a dot or a non-ASCII character might encode differently from what
+/// the CLI's init line reports as `memory_paths.auto`, so it was measured
+/// (2.1.263, nightshift `m117/`): a cwd ending `…/m117/é.dir_1 ü` got the
+/// folder `…-m117---dir-1--` — `é` and `ü` one dash each (not one per
+/// UTF-8 byte), `.`, `_` and the space one dash each — which is exactly
+/// this function's output, and the folder exists on disk under that name.
+/// Callers therefore build `projects_dir()/project_folder(cwd)` (see
+/// [`project_dir`]) rather than carrying the init line's path around.
 pub fn project_folder(cwd: &Path) -> String {
     cwd.to_string_lossy()
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect()
+}
+
+/// The CLI's folder for `cwd`: [`projects_dir`] joined with
+/// [`project_folder`], or `None` when there is no home directory. The one
+/// place the two halves meet, so a caller after the memory file or the
+/// session files of a project asks for the folder and never re-encodes.
+pub fn project_dir(cwd: &Path) -> Option<PathBuf> {
+    projects_dir().map(|p| p.join(project_folder(cwd)))
 }
 
 /// Where the session `id` is kept under `projects` ([`projects_dir`]): the
@@ -1479,6 +1498,20 @@ mod tests {
             project_folder(Path::new("/Users/a/.claude-bridge workdir")),
             "-Users-a--claude-bridge-workdir"
         );
+    }
+
+    /// The measured pair from `m117/` (F17): a non-ASCII character is one
+    /// dash, not one per byte, and a dot, an underscore and a space are one
+    /// each — so the folder Nightloom computes is the one the CLI's init
+    /// line names in `memory_paths.auto`.
+    #[test]
+    fn the_project_folder_matches_the_clis_own_encoding_on_a_dotted_non_ascii_cwd() {
+        let cwd = "/private/tmp/claude-501/-Users-swaraagsistla-Documents-ComputerScience-Nightloom-nightshift-code/885ac8f6-2f89-4d49-9d63-0d1e84fd58d1/scratchpad/m117/é.dir_1 ü";
+        let measured = "-private-tmp-claude-501--Users-swaraagsistla-Documents-ComputerScience-Nightloom-nightshift-code-885ac8f6-2f89-4d49-9d63-0d1e84fd58d1-scratchpad-m117---dir-1--";
+        assert_eq!(project_folder(Path::new(cwd)), measured);
+        let dir = project_dir(Path::new(cwd)).expect("a home directory");
+        assert_eq!(dir.file_name().unwrap().to_string_lossy(), measured);
+        assert_eq!(dir.parent(), projects_dir().as_deref());
     }
 
     #[test]

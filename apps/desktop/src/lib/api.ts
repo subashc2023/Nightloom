@@ -168,6 +168,16 @@ export function askAside(text: string): Promise<AsideResult> {
   return invoke("ask_aside", { text });
 }
 
+/**
+ * Interrupt the aside, if any (review F13, 2026-09-16): the × on the aside
+ * card. Reaches an aside still waiting behind a running turn as well as one
+ * that is running, and leaves the turn alone; `askAside` then rejects with
+ * "the aside was cancelled" or resolves with an interrupted answer.
+ */
+export function cancelAside(): Promise<null> {
+  return invoke("cancel_aside");
+}
+
 /** The search backends, with which has a key and which one answers. */
 export function searchBackends(): Promise<SearchBackendInfo[]> {
   return invoke("search_backends");

@@ -110,6 +110,13 @@ struct AppState {
     /// from it because a dream is not a turn: stopping the chat must not
     /// stop the dream, and stopping the dream must not stop the chat.
     dream_cancel: Arc<std::sync::Mutex<CancellationToken>>,
+    /// Swapped per aside (nightshift backlog 081; review F13 2026-09-16
+    /// gave it its own token). An aside also installs itself in `cancel`
+    /// once it holds the agent, so Stop keeps cancelling it like a turn;
+    /// this one is what the aside card's own × cancels — and it works while
+    /// the aside is still parked behind a running turn, which `cancel`
+    /// cannot reach.
+    aside_cancel: Arc<std::sync::Mutex<CancellationToken>>,
     /// What the live connection's system prompt was built from, written by
     /// `connect` and `connect_agent` and read by `context_view` and
     /// `prompt_layers`. See [`PromptBuilt`] for why it is a field of its own.
@@ -2788,19 +2795,29 @@ struct AsideResult {
 /// turns, so an aside waits for a running turn rather than racing it, and
 /// Stop cancels it like a turn. Refused with a sentence when the chat has
 /// no CLI session yet.
+///
+/// Cancelling (review F13, 2026-09-16): the aside's token goes into
+/// `aside_cancel` before the wait for the agent, so `cancel_aside` reaches
+/// an aside that is still parked behind a turn — the wait is raced
+/// against it — as well as one that is running; and into `cancel` once
+/// the agent is held, as before, so Stop still ends a running aside.
 #[tauri::command]
 async fn ask_aside(
     state: State<'_, AppState>,
     power: State<'_, power::Holder>,
     text: String,
 ) -> Result<AsideResult, String> {
-    let agent_guard = state.agent.lock().await;
+    let cancel = CancellationToken::new();
+    *state.aside_cancel.lock().unwrap() = cancel.clone();
+    let agent_guard = tokio::select! {
+        guard = state.agent.lock() => guard,
+        _ = cancel.cancelled() => return Err("the aside was cancelled".to_string()),
+    };
     let agent = agent_guard
         .as_ref()
         .ok_or_else(|| "not connected".to_string())?;
     // Awake while the aside runs (nightshift backlog 101).
     let _awake = power.acquire();
-    let cancel = CancellationToken::new();
     *state.cancel.lock().unwrap() = cancel.clone();
     let mut answer = String::new();
     let mut on_event = |e: TurnEvent| {
@@ -3058,9 +3075,12 @@ async fn cli_memory_file(state: State<'_, AppState>) -> Result<CliMemoryFile, St
         .cwd
         .clone()
         .ok_or_else(|| "not connected".to_string())?;
-    let projects = cli_session::projects_dir().ok_or_else(|| "no home directory".to_string())?;
-    let dir = projects
-        .join(cli_session::project_folder(&cwd))
+    // Computed, not read from the init line's `memory_paths.auto`: the
+    // review of 2026-09-16 (F17) feared the two could differ on a dotted
+    // or non-ASCII cwd; the measurement in `cli_session::project_folder`'s
+    // comment says they do not, so one encoding, in one place, is enough.
+    let dir = cli_session::project_dir(&cwd)
+        .ok_or_else(|| "no home directory".to_string())?
         .join("memory");
     let index = dir.join("MEMORY.md");
     let text = std::fs::read_to_string(&index).ok();
@@ -4185,6 +4205,16 @@ fn cancel_dream(state: State<'_, AppState>) {
     state.dream_cancel.lock().unwrap().cancel();
 }
 
+/// Interrupt the aside, if any (review F13, 2026-09-16) — the × on the
+/// aside card. Reaches an aside still parked behind a running turn as well
+/// as one that is running, and never touches the turn: `ask_aside` races
+/// its wait for the agent against this token, and the CLI it spawned gets
+/// the same interrupt a turn gets on Stop.
+#[tauri::command]
+fn cancel_aside(state: State<'_, AppState>) {
+    state.aside_cancel.lock().unwrap().cancel();
+}
+
 // ---- the capture pass ------------------------------------------------------
 
 /// How many session logs have bytes past their capture watermark — the
@@ -4952,6 +4982,7 @@ fn main() {
                 mcp: tokio::sync::Mutex::new(None),
                 dreaming: tokio::sync::Mutex::new(()),
                 dream_cancel: Arc::new(std::sync::Mutex::new(CancellationToken::new())),
+                aside_cancel: Arc::new(std::sync::Mutex::new(CancellationToken::new())),
                 prompt: tokio::sync::Mutex::new(PromptBuilt::default()),
             });
             // The Nightshift file watches, beside `AppState` rather than in it.
@@ -4991,6 +5022,7 @@ fn main() {
             send,
             send_agent,
             ask_aside,
+            cancel_aside,
             cancel,
             compact,
             rewind,

@@ -281,6 +281,18 @@ as a dashed card — `aside · not in the chat`, the question, `asking…` then
 the answer, `N read from cache`, × — cleared by its × or a chat switch. A
 chat with no CLI session yet is refused with a sentence.
 
+**Cancelling an aside (2026-09-16, whole-project review F13).** Stop is
+drawn only while a turn runs, so a running aside had no button. `ask_aside`
+now keeps its token in `AppState.aside_cancel` as well as in `cancel`, and
+`cancel_aside` (`api.cancelAside()`) cancels it — while it is still parked
+behind a turn on the agent lock (the wait is raced against the token; the
+command rejects with "the aside was cancelled") or while its CLI runs (the
+turn's interrupt, an answer marked interrupted). Stop still ends a running
+aside as before, and `cancel_aside` never touches a turn. The card's ×
+should call it when the aside is still `asking…` (the wiring is with the
+chat Svelte's owner; until then × hides a running aside and the CLI runs
+its `--max-turns 2` out).
+
 The `AutoApprove` policy lives in `AppState`, **not** in `connect` — the rail
 re-connects on every knob change, and rebuilding the policy there would silently
 forget every "always allow" the user granted.
