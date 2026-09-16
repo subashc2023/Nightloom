@@ -41,6 +41,15 @@
   import { relativeTime } from "./time";
   import { dreamEngineRows, dreamModelPills, dreamSentence } from "./dreamRows";
   import { loadNotifyPrefs, saveNotifyPrefs, type NotifyPrefs } from "./notify";
+  import { loadSleepPrefs, saveSleepPrefs, type SleepPrefs } from "./sleep";
+  import {
+    WRAP_UP,
+    defaultMessage as handoffDefaultMessage,
+    hasOwnDefaultMessage,
+    setDefaultMessage as setHandoffDefaultMessage,
+    setThreshold as setHandoffThreshold,
+    threshold as handoffThreshold,
+  } from "./handoff.svelte";
   import { untrack } from "svelte";
   import Icon from "./Icon.svelte";
 
@@ -495,6 +504,27 @@
     saveNotifyPrefs(notifyPrefs);
   }
 
+  // Sleep-safe turns (nightshift backlog 101): the same idiom as the
+  // banner switches — read when the modal opens, written on each change;
+  // `saveSleepPrefs` also hands the keep-awake pair to Rust.
+  let sleepPrefs = $state<SleepPrefs>(loadSleepPrefs());
+  function setSleep(key: keyof SleepPrefs, on: boolean) {
+    sleepPrefs = { ...sleepPrefs, [key]: on };
+    saveSleepPrefs(sleepPrefs);
+  }
+
+  // The hand-off's defaults (nightshift backlog 086 pass 2, blocker 120):
+  // the threshold every chat starts from and the wrap-up message Wrap up
+  // now sends unless the chat has edited its own. Both live in
+  // `handoff.svelte.ts`'s reactive store, so the composer's notice and the
+  // Context page follow a change here at once.
+  const handoffDefaultPct = $derived(Math.round(handoffThreshold(null) * 100));
+  function setHandoffDefaultPct(v: string): void {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return;
+    setHandoffThreshold(null, Math.min(100, Math.max(1, Math.round(n))) / 100);
+  }
+
   /** Turn a whole family on or off in one write rather than one per chip. */
   function setSection(kind: string, s: ModelSection, on: boolean) {
     setPrefs((p) => {
@@ -699,6 +729,18 @@
         </span>
       </button>
     {/each}
+    <!-- The Claude Code engine's own pane (nightshift backlog 086 pass 2):
+         not a provider — no key, no model list — but the place its
+         defaults live: the hand-off, and the cards other items add. -->
+    <div class="nav-title">Claude Code</div>
+    <button
+      class="nav-item"
+      class:active={selected === "claude-code"}
+      onclick={() => select("claude-code")}
+    >
+      <span class="nav-label">Claude Code</span>
+      <span class="st">hand-off {handoffDefaultPct}%</span>
+    </button>
     <div class="nav-title">Web search</div>
     {#each app.searchBackends as b (b.name)}
       <button
@@ -874,6 +916,120 @@
             onchange={(e) => setNotify("needsYou", e.currentTarget.checked)}
           />
           <span>When a turn needs you — a permission, a question, a plan</span>
+        </label>
+      </section>
+    </div>
+  {:else if selected === "claude-code"}
+    <!-- The Claude Code engine's pane (nightshift backlog 086 pass 2,
+         blocker 120): the hand-off's defaults. A chat overrides both on
+         the composer's notice; this is what every chat starts from. -->
+    <div class="pane">
+      <div class="pane-head">
+        <h2 class="pane-title">Claude Code</h2>
+        <span class="slug">the engine's defaults</span>
+        <span class="spacer"></span>
+        <button class="close" title="Close" aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+      </div>
+      <p class="note">
+        What a Claude Code chat does when its context window fills. The CLI's
+        own auto-compact is off on this engine; instead, past the mark below,
+        the composer shows a notice with <em>Wrap up now</em>, which sends the
+        message below as a turn of its own — the model finishes what is
+        half-done, writes <code>HANDOFF.md</code>, and ends with a start prompt
+        that a linked new chat opens with, never sent by itself.
+      </p>
+
+      <section class="card">
+        <div class="ch"><span class="t">Hand-off</span></div>
+        <label class="handoff-row">
+          <span>Hand off at</span>
+          <input
+            type="number"
+            min="1"
+            max="100"
+            step="1"
+            value={handoffDefaultPct}
+            aria-label="Hand-off threshold, percent of the context window, for every chat"
+            onchange={(e) => setHandoffDefaultPct((e.currentTarget as HTMLInputElement).value)}
+          />
+          <span>% of the window, for every chat without a mark of its own (70% to begin with)</span>
+        </label>
+        <p class="note small">
+          Away from the chat — nothing sent or typed for a minute and the
+          window not in front — when the mark is crossed, the wrap-up is put
+          in the composer's queue and goes when the turn ends; the queue's ×
+          takes it back. With you present, only the notice shows.
+        </p>
+        <div class="ch"><span class="t">The wrap-up message</span>
+          <span class="spacer"></span>
+          {#if hasOwnDefaultMessage()}
+            <button class="ns-btn ghost small" onclick={() => setHandoffDefaultMessage("")}>Reset to default</button>
+          {/if}
+        </div>
+        <textarea
+          class="handoff-msg"
+          rows="9"
+          autocorrect="off"
+          autocapitalize="off"
+          spellcheck="false"
+          aria-label="The default wrap-up message"
+          value={handoffDefaultMessage()}
+          oninput={(e) => setHandoffDefaultMessage((e.currentTarget as HTMLTextAreaElement).value)}
+        ></textarea>
+        <p class="note small">
+          Sent as typed. Keep the ask for a fenced block tagged
+          <code>start-prompt</code>: that is what the new chat's first message
+          is read out of; without one its box opens empty. A chat can edit its
+          own copy on the notice without changing this.
+          {#if hasOwnDefaultMessage()}<em>Edited; Reset to default restores the built-in text (a box left empty reads as the built-in after a relaunch).</em>{:else}<em>The built-in text ({WRAP_UP.length} characters).</em>{/if}
+        </p>
+      </section>
+
+      <!-- Sleep-safe turns (nightshift backlog 101): his `caffeinate -dis`
+           made automatic while anything runs, and the turn a closed lid
+           cut off resumed on wake. Agent C's card, placed here rather than
+           after Notifications (its blocker 129) once this pane existed. -->
+      <section class="card">
+        <div class="ch"><span class="t">Sleep</span></div>
+        <p class="note small">
+          While a turn, dream or capture runs the Mac is kept awake (a
+          caffeinate assertion — see it under pmset -g assertions). A closed
+          lid on battery still sleeps it; on wake, a turn that was cut off
+          is continued.
+        </p>
+        <label class="dream-auto">
+          <input
+            type="checkbox"
+            checked={sleepPrefs.keepAwake}
+            onchange={(e) => setSleep("keepAwake", e.currentTarget.checked)}
+          />
+          <span>Keep the Mac awake while a turn runs</span>
+        </label>
+        <label class="dream-auto">
+          <input
+            type="checkbox"
+            checked={sleepPrefs.keepDisplayAwake}
+            disabled={!sleepPrefs.keepAwake}
+            onchange={(e) => setSleep("keepDisplayAwake", e.currentTarget.checked)}
+          />
+          <span>Keep the display on too</span>
+        </label>
+        <label class="dream-auto">
+          <input
+            type="checkbox"
+            checked={sleepPrefs.resumeAfterSleep}
+            onchange={(e) => setSleep("resumeAfterSleep", e.currentTarget.checked)}
+          />
+          <span>Resume a turn interrupted by sleep</span>
+        </label>
+        <label class="dream-auto">
+          <input
+            type="checkbox"
+            checked={sleepPrefs.resumeAsks}
+            disabled={!sleepPrefs.resumeAfterSleep}
+            onchange={(e) => setSleep("resumeAsks", e.currentTarget.checked)}
+          />
+          <span>Ask first (a Resume toast) instead of resuming automatically</span>
         </label>
       </section>
     </div>
@@ -1984,6 +2140,42 @@
     font-size: 13px;
     color: var(--ink);
     cursor: pointer;
+  }
+  /* The hand-off card (nightshift backlog 086 pass 2): the Context page's
+     threshold row and the composer's field face for the message. */
+  .handoff-row {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    flex-wrap: wrap;
+    font-size: 13px;
+    color: var(--ink);
+  }
+  .handoff-row input {
+    width: 4rem;
+    font-family: var(--mono);
+    font-size: 12px;
+    background: var(--paper);
+    color: var(--ink);
+    border: 1px solid var(--line2);
+    border-radius: 6px;
+    padding: 3px 6px;
+  }
+  .handoff-msg {
+    width: 100%;
+    background: var(--paper);
+    color: var(--ink);
+    border: 1px solid var(--line2);
+    border-radius: 6px;
+    padding: 7px 10px;
+    font-size: 13px;
+    font-family: inherit;
+    line-height: 1.45;
+    resize: vertical;
+  }
+  .handoff-msg:focus {
+    outline: none;
+    border-color: var(--accent);
   }
   /* The dream row as rows and pills (nightshift backlog 071): the Models
      card's `.mr` / `.cb` / `.cart` shapes, a name in the sans with one dim

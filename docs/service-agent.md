@@ -959,8 +959,15 @@ stop; when that turn ends the composer offers *Continue in a new chat* —
 asked, not automatic (nightshift blocker 092's default) — which opens a
 fresh chat in the same folder, linked to this one (`ForkedFrom` with
 `reason: "handoff"`, `Session::continued_from`), no CLI conversation to
-resume, and "Read HANDOFF.md and continue." in its box. Nothing is
-summarised in Nightloom's words.
+resume, and ~~"Read HANDOFF.md and continue." in its box~~ — **pass 2,
+2026-09-16 afternoon (nightshift blocker 120)**: the model's own start
+prompt, read from the last fenced `start-prompt` block of the wrap-up
+reply, in its box, never sent; the wrap-up is a message of its own
+(Settings → Claude Code holds the default and the threshold; the composer's
+notice edits both per chat), and it is queued by itself only when the mark
+is crossed while he is away. Nothing changed on this side: `continue_session`,
+`AgentSpec::auto_compact` and the lineage reason are as pass 1 left them.
+Nothing is summarised in Nightloom's words.
 
 ## What `--append-system-prompt` carries
 

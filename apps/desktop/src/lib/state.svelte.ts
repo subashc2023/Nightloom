@@ -1,6 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import * as api from "./api";
-import { CONTINUE_MESSAGE, noteAgentTurnEnd, resetHandoff, withWrapUp } from "./handoff.svelte";
+import { handoff, noteAgentTurnEnd, resetHandoff } from "./handoff.svelte";
 import { suggestions } from "./suggestions.svelte";
 import { isMac } from "./platform";
 import { moveDraft, newDraftKey, setDraftText } from "./drafts.svelte";
@@ -27,6 +27,7 @@ import {
 import { EDITABLE_LAYERS } from "./types";
 import { LIST_SCOPE, NEW_CHAT_SCOPE, UndoHistory } from "./undo";
 import { chatName, notifyNeedsYou, notifyTurnEnd } from "./notify";
+import { RESUME_TEXT, SleepWatch, loadSleepPrefs, pushPowerPrefs, type Woke } from "./sleep";
 import type {
   AgentInfo,
   AgentInit,
@@ -923,6 +924,11 @@ export async function init(): Promise<void> {
   initialized = true;
   await listen<TurnEvent>("turn-event", (e) => applyTurnEvent(e.payload));
   await listen<string>("turn-notice", (e) => addToast(e.payload));
+  // The Mac came back from sleep (nightshift backlog 101): `sleepWatch`
+  // matches it against the turn that was running, and the keep-awake
+  // switches reach Rust once at start-up.
+  await listen<Woke>("system-woke", (e) => sleepWatch.woke(e.payload));
+  void pushPowerPrefs();
   // The dream's own channel: a running chat and a running dream must not
   // interleave in the transcript, so its events never reach applyTurnEvent.
   // All the panel wants from them is a sign of life.
@@ -2926,12 +2932,17 @@ export const MODE_GLYPH: Record<ChatMode, string> = {
 /**
  * Continue the open chat in a fresh, linked one after the hand-off
  * (nightshift backlog 086): the *Continue in a new chat* card. The new
- * chat opens empty with "Read HANDOFF.md and continue." in its box, not
- * sent — asked, not automatic (blocker 092's default).
+ * chat opens with the model's own start prompt — the last `start-prompt`
+ * block of the wrap-up reply, kept by `noteAgentTurnEnd` — in its box,
+ * never sent (blocker 120, answering blocker 092). ~~with "Read HANDOFF.md
+ * and continue." in its box~~ (pass 1). No block in the reply: the box is
+ * left empty, a toast says so, and the composer's hint line repeats it
+ * until he types.
  */
 export async function continueChat(): Promise<void> {
   if (app.busy) return;
   try {
+    const start = handoff.startPrompt;
     const res = await api.continueSession();
     app.events = res.events;
     app.activeSessionId = res.session;
@@ -2941,7 +2952,12 @@ export async function continueChat(): Promise<void> {
     app.suggestion = null;
     app.aside = null;
     resetHandoff();
-    setDraftText(res.session, CONTINUE_MESSAGE);
+    if (start) {
+      setDraftText(res.session, start);
+    } else {
+      handoff.noStartPromptChat = res.session;
+      addToast("The wrap-up reply had no start-prompt block — the new chat's box is empty; say what to read first.");
+    }
     closeNote();
   } catch (e) {
     addToast(String(e));
@@ -3128,6 +3144,9 @@ export async function send(
       compactedThisTurn = false;
       void maybeAutoDream();
     }
+    // Last, once the turn is fully over: was it sleep that ended it
+    // (nightshift backlog 101)?
+    sleepTurnEnded(failed !== null);
   }
 }
 
@@ -3146,10 +3165,11 @@ async function sendAgent(
   images: ImageInput[] = [],
   documents: DocumentInput[] = [],
 ): Promise<void> {
-  // The hand-off's wrap-up rides this message when the window has crossed
+  // ~~The hand-off's wrap-up rides this message when the window has crossed
   // the chat's threshold (nightshift backlog 086); `withWrapUp` also moves
-  // the stage on, so it goes exactly once.
-  text = withWrapUp(app.activeSessionId, text);
+  // the stage on, so it goes exactly once.~~ Superseded 2026-09-16 (pass 2,
+  // blocker 120): the wrap-up is a message of its own, sent from the
+  // composer's notice or by the queue; nothing is appended here.
   app.suggestion = null;
   // Same as `send`: the pending chat's key at the moment of the send
   // (nightshift backlog 094).
@@ -3218,8 +3238,14 @@ async function sendAgent(
     void refreshNotes();
     // The plan chip follows the turn (nightshift backlog 073).
     void refreshPlanUsage();
-    // The hand-off reads the gauge's pair at each turn's end (backlog 086).
-    noteAgentTurnEnd(app.activeSessionId, contextUsed(), app.connection?.contextLimit ?? null);
+    // The hand-off reads the gauge's pair at each turn's end (backlog 086),
+    // and the log, for the start prompt in the wrap-up's own reply (pass 2).
+    noteAgentTurnEnd(app.activeSessionId, contextUsed(), app.connection?.contextLimit ?? null, app.events);
+    // Last, once the turn is fully over: was it sleep that ended it
+    // (nightshift backlog 101)? The CLI reports a mid-turn network death
+    // as its `result` line with `is_error`, not as a rejected send, so
+    // both count; `app.agentTurn` is this turn's when the send resolved.
+    sleepTurnEnded(failed !== null || app.agentTurn?.is_error === true);
   }
 }
 
@@ -3249,6 +3275,49 @@ export async function askAside(question: string): Promise<void> {
 
 export function dismissAside(): void {
   app.aside = null;
+}
+
+/**
+ * A turn that sleep cut off, resumed on wake (nightshift backlog 101).
+ *
+ * `sleepWatch` pairs the wake Rust reports (`system-woke`) with the turn
+ * that was running — the rule is `sleep.ts`'s `sleptThrough` — and this
+ * is what happens on a match: with the switch on, "continue" goes to the
+ * same chat as a turn of its own, worded so the transcript says why, and
+ * a toast says so; with *ask* set, the toast carries Resume instead and
+ * letting it go is Leave it. Both engines the same way — the CLI's session
+ * file holds every completed step, and the provider path records the
+ * partial reply before it surfaces the error — so "continue" is the next
+ * turn on what already happened either way. Deferred a tick so the send
+ * runs after the ended turn's `finally` has let go of `busy`.
+ */
+const sleepWatch = new SleepWatch(() => {
+  const prefs = loadSleepPrefs();
+  if (!prefs.resumeAfterSleep) return;
+  if (prefs.resumeAsks) {
+    addToast("The Mac slept and cut the turn off", { label: "Resume", run: () => void resumeAfterSleep() });
+    return;
+  }
+  addToast("The Mac slept and cut the turn off — resuming");
+  setTimeout(() => void resumeAfterSleep(), 0);
+});
+
+export async function resumeAfterSleep(): Promise<void> {
+  if (!app.connection || app.busy) return;
+  await send(RESUME_TEXT);
+}
+
+/** Report a turn's end to `sleepWatch`: when it started (the log's own
+ *  `user_message`, the way the banner reads it), when it ended, how. */
+function sleepTurnEnded(errored: boolean): void {
+  const sent = [...app.events].reverse().find((e) => e.event === "user_message");
+  const started = sent?.event === "user_message" ? Date.parse(sent.at) : NaN;
+  sleepWatch.turnEnded({
+    startedAtMs: Number.isNaN(started) ? Date.now() : started,
+    endedAtMs: Date.now(),
+    errored,
+    stopped,
+  });
 }
 
 /**

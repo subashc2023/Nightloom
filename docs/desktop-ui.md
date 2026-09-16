@@ -1540,6 +1540,83 @@ composer's bar, the top bar's mark and one control on the Context page.
 percent on a test chat is how to see the whole flow on Haiku without a
 long context.
 
+### Pass 2 (2026-09-16 afternoon, nightshift blocker 120; answers blocker 092)
+
+The shape above is his own hand-run practice made automatic — ask the
+model for a wrap-up and a start prompt, paste the prompt into a fresh
+session — with three refinements in his words: nothing fires mid-work, the
+message is editable per chat, and the default is editable globally. What
+changed, stage by stage (`handoff.svelte.ts`; the pure parts are
+unit-tested, the app was not driven):
+
+1. **The fill is read mid-turn too.** The CLI reports usage after each of
+   its own requests within a turn (`app.liveUsage`); the composer feeds
+   each reading to `noteFill` alongside the turn's end, so a crossing
+   while a long turn runs is seen while it runs. A mid-turn reading never
+   ends the `wrapping` stage: the wrap-up's reply is not in yet.
+2. **The notice** replaces the due bar. The board's hand-off card in the
+   composer: *Context 72% — past this chat's 70% hand-off mark*, the pair
+   at the right (`144k of 200k · 72%`), one line of what happens, then
+   **Hand off this chat at [70] %** (the per-chat mark; raising it above
+   the fill puts the notice away without counting as a *Stay here*, so the
+   new mark asks afresh — `reconsider`), the **wrap-up message** in a
+   field (prefilled from Settings; edits are kept for this chat in the
+   same localStorage entry as its mark — `nightloom.handoff`, `messages`),
+   **Wrap up now** (accent), **Stay here**, *Reset the message* when the
+   chat has its own, and the strip *stay past 85% and the wrap-up is asked
+   again*. **Nothing is sent by itself while a notice he has seen is
+   open.** ~~Your next message carries a wrap-up~~ — the wrap-up is a
+   message of its own now; his own messages go as typed.
+3. **Away, at the crossing only.** Away means no send and no keystroke in
+   the composer for 60 s (`AWAY_MS`; `noteActivity` on the textarea's
+   input and on submit) *and* the window not in front (`windowFocused`)
+   or the chat not the open one (`isAway`). When the mark is crossed
+   (`idle → due`, `autoQueues`) with him away, the wrap-up is put in the
+   composer's queue (backlog 089, `enqueueMessage`) — the row reads
+   *wrap-up · queued while you were away* — so it goes when the turn ends
+   and the queue's own × takes it back; *Stay here* takes it back too.
+   Present, only the notice shows. Never after a *Stay here*: the re-ask
+   past 85% shows the notice and nothing more (nightshift blocker 121's
+   default). A notice already open never queues.
+4. **The wrap-up message** (`WRAP_UP`, the built-in default): finish or
+   save whatever edit is half-done; write `HANDOFF.md` at the top of the
+   project (doing, done, next, decisions and why, files that matter, in
+   the model's words); end the reply with a short start prompt for the new
+   chat — which files to read, in which order, what to do first — in a
+   fenced block tagged `start-prompt`; then stop. ~~`---` rule and *Added
+   by Nightloom* marker~~ — gone with the append. **Settings → Claude
+   Code** (a new pane, nav under Providers) holds the default mark (*Hand
+   off at [70] %* for every chat without its own) and the message in a
+   field with *Reset to default*; both in the same `nightloom.handoff`
+   entry (`default`, `message`; null message = built-in). The store is a
+   reactive `$state`, so the notice, the Context page's field and Settings
+   agree at once. A box emptied while typing stays empty for this launch
+   (Wrap up now disables, nothing queues) and reads as the built-in after a
+   relaunch.
+5. **The switch.** When the wrap-up's turn ends the composer keeps the
+   *last* `start-prompt` block of the reply (`extractStartPrompt`,
+   `lastReplyText` over the log). **Continue in a new chat** creates the
+   linked chat (`continueChat` → `continue_session`, unchanged) with that
+   prompt in the box, **never sent** — blocker 092's answer. No block: the
+   box is empty, a toast says so, and the composer's hint line under the
+   box (*continued from the earlier chat — its wrap-up reply had no
+   start-prompt block…*) repeats it until he types. ~~"Read HANDOFF.md and
+   continue." in its box~~. The wrapped bar says which of the two it will
+   be before he clicks.
+6. **The queue after the hand-off.** `queueHold`: ~~due holds (F11)~~ —
+   the wrap-up rides no message, so a notice holds nothing and the queued
+   wrap-up drains through the queue like any row; what holds is a Stop
+   (F12, as before) and `wrapped` — HANDOFF.md written, the model stopped,
+   and the next thing is *Continue in a new chat*, not more work in the
+   full one. *Send next* is the explicit choice.
+
+Kept from pass 1: the `wrapping` and `wrapped` stages, *Stay here* on both
+the notice and the wrapped bar with the 85%-and-higher re-ask, the
+per-chat field on the Context page (now with the Settings default named),
+the top bar's *↳ continued from* mark, `continue_session` and the
+`handoff` lineage reason. No backend change. Not verified in the running
+app; the DoD's measurement on Haiku is the orchestrator's, after the roll.
+
 ## Prompt suggestions as a ghost line (nightshift backlog 083, 2026-09-16)
 
 Off by default. Context page → *This session* → **Prompt suggestions**

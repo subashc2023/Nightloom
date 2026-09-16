@@ -190,6 +190,33 @@ On this side:
 - Reads inside the working directory never pause; a read outside it goes to
   the prompt tool and is refused with a sentence the model can act on.
 
+**Pass 2 (2026-09-16 afternoon, the approved design boards 2a–2d).** The three
+cards share one **note field** above their buttons, empty by default, and one
+rule for where its text goes (`askNote.ts`, `routeNote`): with the *refusing*
+button — Deny, Skip, Keep planning — the note is the deny reason the hook hands
+the model, read before its next step; with the *accepting* button — Allow,
+Allow for this chat, Answer, Approve — nothing the model reads can ride with
+the call (an allow's reason is shown to the user only), so the note is held as
+the next message in the composer's queue (backlog 089) under the chat's draft
+key and goes when the turn ends, takeable back until then. The field's `?`
+says so on hover; nothing arms. The permission card's field takes ⏎ for Allow
+and esc for Deny, as its key strip says; the other two take no keys. A chevron
+in every header folds the card to its one-line row (`? Claude asks · 2
+questions · 1 of 2 still open · waits until you answer`); it stays inline at
+the foot of the paused turn (blocker 118's default). The question form is
+capped at a third of the transcript viewport and the plan card at two thirds,
+each scrolling inside; the edge at the card's foot drags a height that is kept
+per chat and kind in `localStorage` (`nightloom.ask.height.<chat id>.<kind>`),
+double-click forgets it. Three kinds of text read as three: the call's
+arguments are code (`mono`, the `.val` block); the model's reason — the
+`description` field the Bash tool's input carries — is plain model text in the
+transcript's face, six lines by default with a *more*; the plan is rendered
+markdown in the same face with a rule between it and the note; the note is the
+one input, drawn with the composer's field border and focus ring. The plan
+card's actions are **Approve** (accent) and **Keep planning** (outline) side by
+side, the *then Ask | Auto* pick a small selector at the right. The API
+engine's prompt is unchanged.
+
 ### The Plan position (2026-09-16, nightshift backlog 085)
 
 Plan mode on the same hook — the protocol and the measured edges are in
@@ -264,6 +291,54 @@ refusal is recognised in the logged `is_error` result. That recognition is a
 prefix match on `approval.rs::denial_message` — the one place the two sides are
 coupled by a string rather than a type, and it degrades to plain error rendering
 if the wording changes.
+
+## Sleep-safe turns (2026-09-16, nightshift backlog 101)
+
+Two halves, because a closed lid on battery sleeps a MacBook whatever any
+process asks.
+
+**Keep awake.** `power.rs` holds one `caffeinate` child for as long as at
+least one `power::Guard` is alive, reference-counted across whatever runs at
+once: `send`, `send_agent`, `compact`, `ask_aside`, `dream` and `capture`
+each take a guard as they start and drop it with the function — on success,
+on error, on Stop — so no path can leak it. The flags are his own habit,
+`-i -s` always and `-d` by the display switch, plus `-w <Nightloom's pid>`
+so a Nightloom that dies without dropping its guards releases the assertion
+anyway. A child rather than IOKit's `IOPMAssertionCreateWithName` because the
+bundle is not sandboxed and `nightshift.rs` already spawns `caffeinate -i`
+from the signed app for a held launch; IOKit would be a `core-foundation`
+dependency and unsafe FFI for the same assertion. With a turn running,
+`pmset -g assertions` lists `pid N(caffeinate)` under `PreventUserIdleSystemSleep`,
+`PreventSystemSleep` and (display on) `PreventUserIdleDisplaySleep`; none
+when idle. Off macOS the holder is a counter and spawns nothing.
+
+**Resume on wake.** Tauri 2 has no wake event and an
+`NSWorkspaceDidWakeNotification` observer would be a new `objc2` dependency,
+so `power::watch_wake` polls: every 30 s it compares the wall clock with the
+tick before, and a gap more than a minute past the poll is a sleep (tokio's
+timer is monotonic and macOS does not advance it during sleep — the same fact
+the Nightshift launch timer rests on). It emits `system-woke` with the sleep's
+bounds. The window (`sleep.ts`, `state.svelte.ts`) pairs that with the turn
+that was running. **The error does not fall inside the sleep**: the `claude -p`
+process and the webview are frozen, not ended, so the CLI's stream error (its
+`result` line with `is_error`, or a rejected send) surfaces only after the
+wake. The rule (`sleptThrough`) is therefore: a turn that started before the
+sleep, was not stopped by him, and ended in an error between one poll before
+the wake was noticed and five minutes after it. The two reports arrive in
+either order and `SleepWatch` matches whichever comes second. On a match,
+with the switch on, `"continue — the previous turn was cut off while the Mac
+was asleep; pick up where it stopped."` is sent to the same chat as a turn of
+its own — the transcript line and the instruction in one — and a toast says
+so; with *ask* set, the toast carries **Resume** and letting it time out is
+*leave it*. Both engines the same way: the CLI's session file holds every
+completed step, and the provider path records the partial reply before it
+surfaces the error, so "continue" is the next turn on what already happened.
+
+**Settings.** Four switches in `localStorage` under `nightloom.sleep`
+(`sleep.ts`, the `notify.ts` idiom): keep awake, display too, resume after
+sleep, ask first — all on but *ask*. The keep-awake pair reaches Rust through
+`set_power_prefs` at start-up and on each change; a change while a turn runs
+restarts the child with the new flags.
 
 ## Projects
 

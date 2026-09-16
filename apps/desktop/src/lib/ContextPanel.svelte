@@ -13,7 +13,7 @@
     setPromptLayerText,
   } from "./state.svelte";
   import { EDITABLE_LAYERS } from "./types";
-  import { DEFAULT_THRESHOLD, setThreshold, threshold } from "./handoff.svelte";
+  import { reconsider, setThreshold, threshold } from "./handoff.svelte";
   import { setPromptSuggestions, suggestions } from "./suggestions.svelte";
   import { applyDraft } from "./state.svelte";
   import type {
@@ -342,20 +342,24 @@
   }
   /*
    * The hand-off threshold (nightshift backlog 086): the share of the CLI's
-   * window past which the next message carries the wrap-up. Per chat, in
-   * localStorage, 70% by default; said here beside the conversation's
-   * total because that is the number it is compared to. `tick` re-reads
-   * after a change, since storage is not reactive.
+   * window past which the composer's notice asks for the wrap-up. Per
+   * chat, in localStorage; the default is Settings → Claude Code (70% to
+   * begin with; pass 2). Said here beside the conversation's total because
+   * that is the number it is compared to. ~~`tick` re-reads after a change,
+   * since storage is not reactive~~ — the store is reactive since pass 2;
+   * the tick is kept, harmless.
    */
   let thresholdTick = $state(0);
   const handoffPct = $derived.by(() => {
     void thresholdTick;
     return Math.round(threshold(app.activeSessionId) * 100);
   });
+  const handoffDefaultPct = $derived(Math.round(threshold(null) * 100));
   function setHandoffPct(v: string): void {
     const n = Number(v);
     if (!Number.isFinite(n)) return;
     setThreshold(app.activeSessionId, Math.min(100, Math.max(1, Math.round(n))) / 100);
+    reconsider(app.activeSessionId);
     thresholdTick++;
   }
   /** Prompt suggestions (backlog 083): app-wide, read at connect, so a
@@ -1062,8 +1066,9 @@
             />
             <span class="gloss">
               % of the window{app.activeSessionId ? ", for this chat" : " (the default)"} — the CLI's own
-              auto-compact is off; past this mark the next message asks the model to write HANDOFF.md
-              and stop, then offers a linked new chat. Default {Math.round(DEFAULT_THRESHOLD * 100)}%.
+              auto-compact is off; past this mark the composer's notice asks for the wrap-up (the model
+              writes HANDOFF.md, stops, and gives a start prompt for a linked new chat). The default,
+              {handoffDefaultPct}%, and the wrap-up's text are in Settings → Claude Code.
             </span>
           </label>
         {:else if items.length === 0}

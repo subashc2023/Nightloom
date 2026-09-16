@@ -1,7 +1,26 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import Icon from "./Icon.svelte";
-  import { app, addToast, askAside, send, cancelTurn, continueChat, turnWasStopped } from "./state.svelte";
-  import { handoff, queueHold, stayHere, threshold } from "./handoff.svelte";
+  import { app, addToast, askAside, send, cancelTurn, continueChat, contextUsed, turnWasStopped } from "./state.svelte";
+  import {
+    RE_ASK,
+    abortWrapUp,
+    awayNow,
+    beginWrapUp,
+    handoff,
+    hasOwnMessage,
+    hasOwnThreshold,
+    message,
+    noteActivity,
+    noteFill,
+    queueHold,
+    reconsider,
+    setMessage,
+    setThreshold,
+    stayHere,
+    threshold,
+  } from "./handoff.svelte";
+  import { fmtTokens } from "./tokens";
   import { ghostFor } from "./suggestions.svelte";
   import {
     addAttachment,
@@ -45,11 +64,15 @@
    * Messages held while a turn runs (nightshift backlog 089, 2026-09-16).
    * ↵ during a turn queues instead of doing nothing; the tray above the box
    * lists the queue; when the turn ends the oldest goes as the next turn
-   * (`dispatch` → `drain`) — unless the turn was one he stopped, or the
-   * hand-off's wrap-up is due, in which case the queue waits for *Send
-   * next* (`queueHold`; the whole-project review of 2026-09-16, F11 and
-   * F12: before that a Stop sent the next message at once, and a message
-   * queued as the window filled left with the wrap-up under it, unasked).
+   * (`dispatch` → `drain`) — unless the turn was one he stopped, or ~~the
+   * hand-off's wrap-up is due~~ the hand-off's own turn just ended
+   * (HANDOFF.md written; pass 2 of backlog 086), in which case the queue
+   * waits for *Send next* (`queueHold`; the whole-project review of
+   * 2026-09-16, F11 and F12: before that a Stop sent the next message at
+   * once, and a message queued as the window filled left with the wrap-up
+   * under it, unasked — F11's case is gone since the wrap-up became a
+   * message of its own, one the hand-off itself puts in this queue when
+   * the mark is crossed while he is away).
    * ~~a Stop ends the turn like any other end, so the queue is why he
    * stopped or he takes it back~~ (2026-09-16). Each row can be taken
    * back into the box or dropped; ↑ in an empty box takes the newest back,
@@ -235,22 +258,61 @@
   }
 
   /*
-   * The context-full hand-off (nightshift backlog 086), said where the next
-   * message is typed: past the chat's threshold the bar says the wrap-up
-   * rides the next message (or sends it alone); once that turn ends it
-   * offers *Continue in a new chat · Stay here* (asked, not automatic —
-   * blocker 092's default). Only for the chat the state is about, and
-   * only on the Claude Code engine, which is the one that fills.
+   * The context-full hand-off (nightshift backlog 086; pass 2 per blocker
+   * 120), said where the next message is typed. Past the chat's mark the
+   * notice shows the fill, a field that raises the mark for this chat, the
+   * wrap-up message editable for this chat, **Wrap up now** and **Stay
+   * here**; ~~the wrap-up rides the next message~~ — it is its own message
+   * now. Once its turn ends the bar offers *Continue in a new chat · Stay
+   * here* (asked, not automatic — blocker 092, answered by 120). Only for
+   * the chat the state is about, and only on the Claude Code engine, which
+   * is the one that fills.
    */
   const handoffHere = $derived(
     app.connection?.engine === "claude-code" && handoff.chat === app.activeSessionId && handoff.chat !== null,
   );
   const handoffPct = $derived(Math.round(handoff.fill * 100));
   const handoffThresholdPct = $derived(Math.round(threshold(app.activeSessionId) * 100));
-  function sendWrapUpNow(): void {
-    // A bare message: `send` appends the wrap-up itself.
-    void send("Please wrap up now.");
+  const handoffDefaultPct = $derived(Math.round(threshold(null) * 100));
+  const reAskPct = Math.round(RE_ASK * 100);
+  /** The wrap-up this chat would send: its own edit, else the Settings default. */
+  const wrapUpText = $derived(message(app.activeSessionId));
+  /** The wrap-up Nightloom queued while he was away is still in the queue. */
+  const wrapUpQueued = $derived(handoff.queuedId !== 0 && queue.some((q) => q.id === handoff.queuedId));
+
+  /** **Wrap up now**: the message as it stands, as a turn of its own. */
+  async function sendWrapUpNow(): Promise<void> {
+    if (app.busy || !app.connection || !wrapUpText.trim()) return;
+    noteActivity();
+    const chat = app.activeSessionId;
+    beginWrapUp(chat);
+    await dispatch(wrapUpText, [], true);
   }
+
+  /** The per-chat mark on the notice: raising it above the fill puts the notice away. */
+  function setChatThreshold(v: string): void {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return;
+    setThreshold(app.activeSessionId, Math.min(100, Math.max(1, Math.round(n))) / 100);
+    reconsider(app.activeSessionId);
+  }
+
+  /*
+   * The fill is read mid-turn too — the CLI reports usage after each of
+   * its own requests within a turn — so a crossing while he is away can
+   * put the wrap-up in the queue while the turn still runs, where it
+   * shows with its × and goes when the turn ends. The turn's end reads it
+   * again from `state.svelte.ts`.
+   */
+  $effect(() => {
+    if (!app.busy || app.connection?.engine !== "claude-code" || !app.activeSessionId) return;
+    const used = contextUsed();
+    const limit = app.connection?.contextLimit ?? null;
+    if (used == null || !limit) return;
+    const chat = app.activeSessionId;
+    // Untracked: the reading writes the stage it also reads.
+    untrack(() => noteFill(chat, used, limit, awayNow()));
+  });
 
   /*
    * The ghost line (nightshift backlog 083): the CLI's predicted next
@@ -447,7 +509,8 @@
    * since a second send would most likely fail the same way and bury the
    * error.
    */
-  async function dispatch(typed: string, chips: Attachment[]): Promise<void> {
+  async function dispatch(typed: string, chips: Attachment[], wrapUp = false): Promise<void> {
+    const chat = app.activeSessionId;
     const { images, documents } = split(chips);
     await send(typed.trim(), images, documents);
     // send() reports failures on app.error instead of throwing, and a turn
@@ -455,8 +518,13 @@
     // — or, since 2026-09-15, its words. Both go back under the key of the
     // chat now open (the pending chat's first turn may have made the chat
     // before failing, and `key` has followed it), the text only if nothing
-    // new was typed meanwhile.
+    // new was typed meanwhile. A wrap-up that failed goes back to its
+    // notice rather than into the box.
     if (app.error) {
+      if (wrapUp) {
+        abortWrapUp(chat);
+        return;
+      }
       if (!readDraft(key).text) setDraftText(key, typed);
       setDraftAttachments(key, chips.concat(readDraft(key).attachments));
       return;
@@ -477,7 +545,10 @@
     if (!explicit && hold) return;
     const q = shiftQueue(key);
     if (!q) return;
-    await dispatch(q.text, q.attachments);
+    // The row Nightloom queued while he was away is the wrap-up going.
+    const wrapUp = handoffHere && q.id === handoff.queuedId;
+    if (wrapUp) beginWrapUp(app.activeSessionId);
+    await dispatch(q.text, q.attachments, wrapUp);
   }
 
   /** Hold what is in the box for the next turn (the turn is running). */
@@ -507,6 +578,8 @@
     const t = text.trim();
     const empty = !t && attachments.length === 0;
     if (empty || !app.connection) return;
+    // A send is presence, for the hand-off's away rule.
+    noteActivity();
     if (app.busy) {
       enqueue();
       return;
@@ -552,7 +625,7 @@
   {#if queue.length > 0}
     <div class="queue" role="list" aria-label="queued messages">
       <div class="queue-head">
-        <span class="ns-chip mono">queued · {app.busy ? "sent when this turn ends" : hold === "stopped" ? "waiting — the turn was stopped" : hold === "handoff" ? "waiting — the hand-off is due" : "waiting"}</span>
+        <span class="ns-chip mono">queued · {app.busy ? "sent when this turn ends" : hold === "stopped" ? "waiting — the turn was stopped" : hold === "wrapped" ? "waiting — HANDOFF.md is written; continue in a new chat, or Send next here" : "waiting"}</span>
         {#if !app.busy}
           <button class="ns-btn ghost small" disabled={!app.connection} onclick={() => void drain(true)}>Send next</button>
         {/if}
@@ -560,7 +633,7 @@
       {#each queue as q, i (q.id)}
         <div class="queue-row" role="listitem">
           <span class="queue-n mono">{i + 1}</span>
-          <span class="queue-text" title={q.text}>{firstLine(q.text) || "(no text)"}{#if q.attachments.length > 0} <span class="ns-chip mono">{q.attachments.length} {q.attachments.length === 1 ? "file" : "files"}</span>{/if}</span>
+          <span class="queue-text" title={q.text}>{#if handoffHere && q.id === handoff.queuedId}<span class="ns-chip mono" title="Put here by Nightloom: the window crossed this chat's hand-off mark while you were away. × takes it back.">wrap-up · queued while you were away</span> {/if}{firstLine(q.text) || "(no text)"}{#if q.attachments.length > 0} <span class="ns-chip mono">{q.attachments.length} {q.attachments.length === 1 ? "file" : "files"}</span>{/if}</span>
           <button class="ns-btn ghost small" title="Back into the message box" onclick={() => takeBack(q.id)}>take back</button>
           <button class="remove" title="drop this message" aria-label="drop queued message {i + 1}" onclick={() => dropQueued(key, q.id)}>×</button>
         </div>
@@ -590,28 +663,85 @@
     </div>
   {/if}
   {#if handoffHere && handoff.stage === "due"}
-    <div class="handoff" role="status">
-      <span class="handoff-text">
-        <strong>Context {handoffPct}%</strong> — past this chat's {handoffThresholdPct}% hand-off mark.
-        Your next message carries a wrap-up: the model writes <code>HANDOFF.md</code> in the project and stops.
-      </span>
-      <span class="spacer"></span>
-      <button class="ns-btn accent small" disabled={app.busy} onclick={sendWrapUpNow}>Send the wrap-up now</button>
-      <button class="ns-btn ghost small" title="No wrap-up on the next message; asked again past 85%" onclick={stayHere}>Stay here</button>
+    <!-- The notice (backlog 086 pass 2, blocker 120): the board's hand-off
+         card — accent rule, a heading with the fill, one line of what
+         happens, the two things he can change for this chat, the actions.
+         Nothing goes by itself while it is on screen. -->
+    <div class="handoff" role="status" aria-label="Hand-off notice">
+      <div class="handoff-head">
+        <strong>Context {handoffPct}% — past this chat's {handoffThresholdPct}% hand-off mark</strong>
+        <span class="spacer"></span>
+        <span class="mono handoff-fill">{fmtTokens(handoff.used)} of {fmtTokens(handoff.limit)} · {handoffPct}%</span>
+      </div>
+      <p class="handoff-d">
+        {#if wrapUpQueued}
+          The wrap-up below is in the queue — put there while you were away — and goes when this turn ends;
+          its × takes it back.
+        {:else}
+          <strong>Wrap up now</strong> sends the message below as a turn of its own: the model finishes what is
+          half-done, writes <code>HANDOFF.md</code>, and ends with a start prompt for the new chat. Or raise this
+          chat's mark and keep going. Nothing is sent by itself while this notice is open.
+        {/if}
+      </p>
+      <label class="handoff-row">
+        <span>Hand off this chat at</span>
+        <input
+          type="number"
+          min="1"
+          max="100"
+          step="1"
+          value={handoffThresholdPct}
+          aria-label="This chat's hand-off threshold, percent of the context window"
+          onchange={(e) => setChatThreshold((e.currentTarget as HTMLInputElement).value)}
+        />
+        <span>% of the window{hasOwnThreshold(app.activeSessionId) ? ` (the default is ${handoffDefaultPct}%)` : " (the default)"}</span>
+      </label>
+      <textarea
+        class="handoff-msg"
+        rows="5"
+        autocorrect="off"
+        autocapitalize="off"
+        spellcheck="false"
+        aria-label="The wrap-up message for this chat"
+        title="What Wrap up now sends. Edits are kept for this chat only; the default is in Settings → Claude Code."
+        value={wrapUpText}
+        oninput={(e) => {
+          noteActivity();
+          setMessage(app.activeSessionId, (e.currentTarget as HTMLTextAreaElement).value);
+        }}
+      ></textarea>
+      <div class="handoff-acts">
+        {#if !wrapUpQueued}
+          <button class="ns-btn accent small" disabled={app.busy || !wrapUpText.trim()} onclick={() => void sendWrapUpNow()}>Wrap up now</button>
+        {/if}
+        <button class="ns-btn ghost small" title="No wrap-up; asked again past {reAskPct}%" onclick={stayHere}>Stay here</button>
+        {#if hasOwnMessage(app.activeSessionId)}
+          <button class="ns-btn ghost small" title="Back to the Settings default for this chat" onclick={() => setMessage(app.activeSessionId, "")}>Reset the message</button>
+        {/if}
+        <span class="handoff-keys mono">stay past {reAskPct}% and the wrap-up is asked again</span>
+      </div>
     </div>
   {:else if handoffHere && handoff.stage === "wrapping"}
     <div class="handoff" role="status">
-      <span class="handoff-text">Wrapping up — the model is writing <code>HANDOFF.md</code>.</span>
+      <div class="handoff-head"><span>Wrapping up — the model is finishing what is half-done, writing <code>HANDOFF.md</code>, and ending with the start prompt for the new chat.</span></div>
     </div>
   {:else if handoffHere && handoff.stage === "wrapped"}
-    <div class="handoff" role="status">
-      <span class="handoff-text">
-        <strong>HANDOFF.md written</strong> (check the reply above). Continue in a new chat in the same folder,
-        linked to this one, with "Read HANDOFF.md and continue" ready to send; this chat stays readable.
-      </span>
-      <span class="spacer"></span>
-      <button class="ns-btn accent small" disabled={app.busy} onclick={() => void continueChat()}>Continue in a new chat</button>
-      <button class="ns-btn ghost small" title="Keep going here; asked again past 85%" onclick={stayHere}>Stay here</button>
+    <div class="handoff" role="status" aria-label="Hand-off done">
+      <div class="handoff-head">
+        <strong>HANDOFF.md written</strong>
+        <span class="spacer"></span>
+        <span class="mono handoff-fill">{fmtTokens(handoff.used)} of {fmtTokens(handoff.limit)} · {handoffPct}%</span>
+      </div>
+      <p class="handoff-d">
+        Check the reply above. <strong>Continue in a new chat</strong> opens a linked chat in the same folder with
+        {#if handoff.startPrompt}the model's start prompt in the box, not sent{:else}an empty box — the reply had no
+          <code>start-prompt</code> block, so say what to read first{/if}. This chat stays readable.
+      </p>
+      <div class="handoff-acts">
+        <button class="ns-btn accent small" disabled={app.busy} onclick={() => void continueChat()}>Continue in a new chat</button>
+        <button class="ns-btn ghost small" title="Keep going here; asked again past {reAskPct}%" onclick={stayHere}>Stay here</button>
+        <span class="handoff-keys mono">stay past {reAskPct}% and the wrap-up is asked again</span>
+      </div>
     </div>
   {/if}
   {#if slashOpen}
@@ -662,7 +792,11 @@
       spellcheck="false"
       placeholder={app.connection ? "Message…" : ""}
       disabled={!app.connection}
-      oninput={autogrow}
+      oninput={() => {
+        // A keystroke is presence, for the hand-off's away rule (backlog 086).
+        noteActivity();
+        autogrow();
+      }}
       {onpaste}
       {onkeydown}
     ></textarea>
@@ -716,6 +850,10 @@
     <div class="hint">connect a provider to start</div>
   {:else if dragDepth > 0}
     <div class="hint">drop images or PDFs to attach</div>
+  {:else if handoff.noStartPromptChat !== null && handoff.noStartPromptChat === app.activeSessionId && !text}
+    <!-- The continued chat whose box was left empty (backlog 086 pass 2):
+         the note lives here, under the box, until he types. -->
+    <div class="hint">continued from the earlier chat — its wrap-up reply had no start-prompt block, so the box is empty; say which files to read first (HANDOFF.md is in the project)</div>
   {/if}
 </div>
 
@@ -975,31 +1113,96 @@
     flex-shrink: 0;
   }
 
-  /* The hand-off bar (backlog 086): one ruled row above the box. */
+  /* The hand-off notice (backlog 086; pass 2 follows the board's card:
+     accent rule, a heading with the fill at the right, one line, the
+     fields, the actions with the key strip). ~~one ruled row above the
+     box~~ — the row is now the heading. */
   .handoff {
+    max-width: 760px;
+    margin: 0 auto 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px 14px;
+    border: 1px solid var(--accent);
+    border-radius: 10px;
+    background: var(--sheet);
+    font-size: 13px;
+    color: var(--ink2);
+  }
+  .handoff-head {
     display: flex;
     align-items: center;
     gap: 8px;
     flex-wrap: wrap;
-    padding: 8px 12px;
-    border: 1px solid var(--partial, var(--line2));
-    border-radius: 8px;
-    background: var(--sheet);
-    font-size: 12.5px;
-    color: var(--ink2);
-    margin-bottom: 6px;
-  }
-  .handoff-text {
-    min-width: 0;
-    flex: 1 1 24rem;
+    font-size: 14px;
+    color: var(--ink);
     line-height: 1.4;
+  }
+  .handoff-fill {
+    font-size: 11.5px;
+    color: var(--dim);
+    font-variant-numeric: tabular-nums;
+  }
+  .handoff-d {
+    margin: 0;
+    font-size: 12.5px;
+    color: var(--dim);
+    line-height: 1.45;
   }
   .handoff code {
     font-family: var(--mono);
     font-size: 12px;
   }
-  .handoff .spacer {
-    flex: 0 0 0;
+  .handoff-row {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    flex-wrap: wrap;
+    font-size: 12.5px;
+  }
+  .handoff-row input {
+    width: 4rem;
+    font-family: var(--mono);
+    font-size: 12px;
+    background: var(--paper);
+    color: var(--ink);
+    border: 1px solid var(--line2);
+    border-radius: 6px;
+    padding: 3px 6px;
+  }
+  .handoff-row input:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  /* The message: the composer's own field face, so it reads as the one
+     thing here that is typed into. */
+  .handoff-msg {
+    width: 100%;
+    background: var(--paper);
+    color: var(--ink);
+    border: 1px solid var(--line2);
+    border-radius: 6px;
+    padding: 6px 8px;
+    font-size: 13px;
+    font-family: inherit;
+    line-height: 1.45;
+    resize: vertical;
+  }
+  .handoff-msg:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  .handoff-acts {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .handoff-keys {
+    margin-left: auto;
+    font-size: 11px;
+    color: var(--dim);
   }
 
   /* The `/` picker (backlog 077): a plain list joined to the card's top. */
