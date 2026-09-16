@@ -644,7 +644,7 @@
       <!-- Over the textarea's first line; the box is empty when it shows. -->
       <button
         type="button"
-        class="ghost"
+        class="ghost-line"
         title="The CLI's predicted next prompt — Tab or click puts it in the box, Esc drops it"
         onmousedown={(e) => e.preventDefault()}
         onclick={acceptGhost}
@@ -939,7 +939,7 @@
   .card {
     position: relative;
   }
-  .ghost {
+  .ghost-line {
     position: absolute;
     left: 14px;
     right: 14px;
