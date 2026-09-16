@@ -120,7 +120,8 @@ API has already dropped.
 A `rate_limit_event` appears only on an OAuth run, which makes its presence the
 one honest signal that a turn was billed to the plan. The dollar total is the
 CLI's own estimate of what the same turn *would* have cost on the API and is
-rendered saying so, never as a bill.
+rendered saying so, never as a bill. Since 2026-09-16 the event also carries the
+plan's percentages on a current CLI — see "The `rate_limit_event` shape" below.
 
 **Finding the binary is not `Command::new` alone** (`resolve_binary`,
 `searched_locations`). A GUI process on macOS is started by launchd with a
@@ -524,6 +525,139 @@ unavailable `auto` "starts the session in Manual instead". A Haiku chat
 with approval on therefore denies every call that would prompt, headless;
 `headless_permission_mode`'s comment knows the fallback exists but not that
 the model choice triggers it.
+
+## The `rate_limit_event` shape, and `context_status` (2026-09-16, nightshift backlog 073)
+
+**Measured**, verbatim from `env -u ANTHROPIC_API_KEY claude -p "Say exactly:
+hello" --tools "" --output-format stream-json --verbose --model haiku`, CLI
+2.1.263, 2026-09-16 (the `uuid` and `session_id` fields trimmed):
+
+```json
+{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","resetsAt":1789552800,"rateLimitType":"seven_day","utilization":0.86,"isUsingOverage":false,"surpassedThreshold":0.75,"unifiedWindows":{"five_hour":{"utilization":0.85,"resetsAt":1789551600},"seven_day":{"utilization":0.86,"resetsAt":1789552800}}}}
+```
+
+So on 2.1.263 the event names one window (`rateLimitType`, the one whose
+threshold it is about — `seven_day` here, with `surpassedThreshold: 0.75`
+and `status: allowed_warning`), gives that window's share used
+(`utilization`, 0–1), and under `unifiedWindows` gives **both** windows'
+share used and reset times. The 2.1.237 line `translate.rs` was written
+against (`{"status":"allowed","resetsAt":…,"rateLimitType":"five_hour",
+"overageStatus":"allowed","isUsingOverage":false}`) has neither figure;
+whether that build sent them and the fixture was trimmed, or the field is
+newer, is not known (`inferred`: the fixture is described as trimmed of
+fields nothing then read). `RateLimitInfo` now reads `utilization` and
+`unified_windows`, both optional, so an older build reads as *no figure*
+and never as zero; the test `rate_limit_event_carries_both_windows_on_263_and_none_on_237`
+pins both lines. One event per turn was seen; whether one arrives per
+window on a turn that crosses two thresholds was not measured.
+
+The desktop's plan chip (`docs/desktop-ui.md`, backlog 073) prefers this
+figure — it is the account's at the moment the turn ran — and falls back to
+the two sample files `crates/nightloom-service/src/plan_usage.rs` reads (the
+Claude app's `plan-usage-history.json`, the CLI's `~/.claude.json` cache;
+the fresher wins, `bin/usagectl.py`'s rule in the nightshift repo) before
+the first turn and on a CLI that sends no figure. The percentages are
+server-computed and account-wide; nothing here estimates a denominator.
+
+**`context_status`**, the fifth tool on Nightloom's MCP server
+(`mcp_server.rs`): `{session_id, model, used, window, pct, turns, at}` from
+the last turn that completed in this chat. The server is its own process
+with no view of the desktop, so `send_agent` writes the figure to
+`<config dir>/context-status.json` once the turn's log is sealed —
+`used` being the newest round's whole prompt plus output, the gauge's
+figure, `window` from the limits table (absent for an unknown model, and
+then `pct` too) — and the tool reads it back. During a chat's first turn
+the tool returns a tool error saying no turn has completed, which the model
+can read; a status file that fails to write is a `turn-notice`, not a
+failed turn.
+
+## The Ask position: the defer hook and the decision file (2026-09-16, nightshift backlog 084)
+
+Real permission prompts, the model's questions (`AskUserQuestion`) and plan
+approval (`ExitPlanMode`) on this engine, by the CLI's **defer hook**
+(`external`, code.claude.com/docs/en/hooks "Defer a tool call for later";
+every step measured on 2.1.263 first — nightshift
+`notes/runner-design/082-five-measurements-2026-09-16.md` and
+`084-report-2026-09-16.md`). `agent/ask.rs` is the whole mechanism; this
+section is the protocol as a reader needs it.
+
+**What the CLI is started with** (`AgentSpec::ask`, an `AskSpec`):
+
+- `--permission-mode default` — Manual mode. Not `auto`: the classifier
+  would approve silently what the person was meant to see.
+- `--settings '{"hooks":{"PreToolUse":[{"matcher":"<the prompting
+  tools>","hooks":[{"type":"command","command":"'<this binary>'
+  '--permission-hook' '<ask dir>'"}]}]}}'` — the hook, inline, so
+  `--setting-sources ""` (safe mode) does not drop it. The matcher is
+  `ask::MATCHER`: `Bash|Write|Edit|MultiEdit|NotebookEdit|WebFetch|
+  WebSearch|AskUserQuestion|ExitPlanMode|EnterWorktree|ExitWorktree|
+  CronCreate|CronDelete|ScheduleWakeup|mcp__.*` — the calls Manual mode
+  would prompt about, not `.*`: a `Read` inside the working directory never
+  prompts, and pausing the turn for every read would make Ask unusable.
+- `--permission-prompt-tool mcp__nightloom__ask` — without a prompt tool the
+  CLI does not offer `AskUserQuestion`, `EnterPlanMode` or `ExitPlanMode` at
+  all. **It must be a tool that exists**: a name no server serves is accepted
+  for the offered-tools list and then fails the first call the hook does not
+  cover ("MCP tool mcp__nightloom__ask … not found", exit 1). So the server
+  is started with `--ask` and serves `ask` (`ask::PromptTool`), which the CLI
+  withholds from the model and consults only when it would actually prompt
+  for a call the hook did not catch — a read outside the working
+  directories, say. It answers `{"behavior":"deny","message":…}` at once,
+  telling the model Nightloom could not pause that call; a prompt tool that
+  waited would be the long-lived process blocker 071 chose against.
+
+**The hook is this binary**: `nightloom-desktop --permission-hook <dir>`
+(`nightloom permission-hook <dir>` on the CLI crate, hidden). Same shape as
+`--mcp-serve`, for the same reason — the CLI spawns whatever path it was
+given, and the app's own executable is the one path that survives the signed
+bundle; a shipped script would need bundling as a resource and an executable
+bit codesigning keeps. It reads the CLI's JSON from stdin (`tool_use_id`,
+`tool_name`, `tool_input`, …), prints one JSON line, exits 0.
+
+**The decision file protocol**, in `<log dir>/ask/<chat id>/` — per chat, set
+on the agent before each turn (`ClaudeCodeAgent::set_ask_dir`):
+
+1. `rules.json` — `{"allow":["Bash", …]}`: the tools "Allow for this chat"
+   has granted. A match answers `allow` without pausing.
+2. `decision.json` — `{"tool_use_id":…,"decision":"allow"|"deny",
+   "updated_input"?:…,"reason"?:…}`: one answer for one call. Honoured only
+   when its `tool_use_id` is the call the CLI is asking about, and **removed
+   as it is read** — so an answer can never outlive its call and approve the
+   next one by accident (`ask::decide` and its tests).
+3. Otherwise `{"hookSpecificOutput":{"hookEventName":"PreToolUse",
+   "permissionDecision":"defer"}}`, and the process exits with
+   `stop_reason: "tool_deferred"` and `deferred_tool_use {id, name, input}`.
+
+**One Nightloom turn spans every CLI process it takes** (`send_agent`): run →
+`AgentOutcome.deferred` → the window's `tool-approval` event (the same one the
+API engine's gate emits) → wait on `AskGate` raced with Stop → `AskDir::write`
+the answer → `ClaudeCodeAgent::resume_deferred` (`-p --resume <id>`, no
+prompt; `Translator::resuming` seeds the deferred call's name so its result
+pairs) → repeat until a process ends without deferring. One turn rather than
+one per process so the log's pairing holds: the deferred `tool_use` gets its
+real result from the resume, not an orphan marker and then a duplicate. What
+this gives up: a prompt does not survive an app restart (the CLI session on
+disk does).
+
+**Answers**: `Allow` = `allow`; `Allow for this chat` = `allow` plus the rule;
+`Deny` = `deny` with the reason the model reads. `AskUserQuestion` goes back
+as the original input plus `answers` — question text → chosen label, several
+joined with `", "`, "Other" as typed — which the resumed tool echoed
+("Your questions have been answered: …"). `ExitPlanMode` goes back as its own
+input with `allow` (the doc says `allow` alone "is not sufficient" for these
+two); "Keep planning" is a `deny` with the reason.
+
+**Measured edges** (`084-report`, M5–M7): a turn with several calls at once
+does not fall through as the doc says — the CLI deferred on one, gave the
+other no result, and the model re-issued it as a fresh call that deferred in
+turn, so a batch serialises into one prompt per call (the dropped call is an
+orphan in the log). A new prompt on a session with a pending call prints two
+`result` lines in one process (the call re-deferred, then the prompt's end);
+the translator takes the last. So **a Stop while a prompt is up refuses the
+call on disk** (`Deny` in `decision.json`), which the next turn's hook
+delivers — otherwise a later "Allow for this chat" on that tool would run the
+stale call unasked. An ephemeral chat has no Ask (`apply_mode` drops it): no
+CLI session to resume, nowhere for an answer to go.
 
 ## What `--append-system-prompt` carries
 

@@ -18,7 +18,7 @@
     showNightshift,
   } from "./state.svelte";
   import * as api from "./api";
-  import { NEW_DRAFT_KEY, hasDraft } from "./drafts.svelte";
+  import { hasDraft, newDraftKey } from "./drafts.svelte";
   import { forkLine } from "./edit";
   import { isMac } from "./platform";
   import { untrack } from "svelte";
@@ -347,7 +347,7 @@
         }}
         disabled={app.busy}
       >
-        {newChatLabel()}{#if hasDraft(NEW_DRAFT_KEY)} <span class="mark draft" title="has a draft">✎</span>{/if}
+        {newChatLabel()}{#if hasDraft(newDraftKey(app.project?.id, app.pendingMode))} <span class="mark draft" title="has a draft">✎</span>{/if}
       </button>
       <button
         class="new-chat more"

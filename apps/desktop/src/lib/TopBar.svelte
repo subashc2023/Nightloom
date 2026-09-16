@@ -142,6 +142,54 @@
       : what;
   });
 
+  /**
+   * The plan chip (nightshift backlog 073, 2026-09-16): on the Claude Code
+   * engine, the subscription's five-hour and seven-day percentages beside
+   * the context gauge — two numbers he ran `/usage` for more than any
+   * other command. Read from the Claude desktop app's sample file and the
+   * CLI's cache (`plan_usage.rs`), whichever is fresher, at connect and at
+   * every turn end; the title says how old the reading is and when each
+   * window resets, and a reading past twenty minutes is marked stale
+   * rather than shown as current. Account-wide and server-computed: it
+   * counts every surface, not this chat. Nothing before a sample exists.
+   * ~~The last turn's `rate_limit_event` carries no percentage~~ — measured
+   * 2026-09-16 on CLI 2.1.263, it does (`unifiedWindows`, both windows),
+   * and that live figure is the first choice (`planUsageFromTurn`); the
+   * files are the fallback before the first turn and on an older CLI.
+   */
+  const plan = $derived.by(() => {
+    if (app.connection?.engine !== "claude-code") return null;
+    const u = app.planUsage;
+    if (!u || u.source === "none" || u.five_hour == null) return null;
+    return u;
+  });
+  const planTitle = $derived.by(() => {
+    if (!plan) return "";
+    const age =
+      plan.age_seconds == null
+        ? "age unknown"
+        : plan.age_seconds < 90
+          ? "sampled just now"
+          : `sampled ${Math.round(plan.age_seconds / 60)} min ago`;
+    const where =
+      plan.source === "turn"
+        ? "this chat's last turn (the CLI's rate-limit event)"
+        : plan.source === "desktop"
+          ? "the Claude app's sample"
+          : "the CLI's /usage cache";
+    const when = (iso: string | null) => {
+      if (!iso) return "reset time unknown";
+      const d = new Date(iso);
+      return Number.isNaN(d.getTime()) ? "reset time unknown" : `resets ${d.toLocaleString()}`;
+    };
+    return (
+      `Plan usage, account-wide (every surface, not just this chat): ` +
+      `5-hour window ${plan.five_hour}% (${when(plan.five_hour_resets_at)}); ` +
+      `7-day window ${plan.seven_day ?? "?"}% (${when(plan.seven_day_resets_at)}). ` +
+      `From ${where}, ${age}${plan.stale ? " — stale: past 20 minutes, may be behind" : ""}. Refreshed at each turn end.`
+    );
+  });
+
   function tokens(n: number): string {
     if (n >= 1_000_000) return `${parseFloat((n / 1_000_000).toFixed(2))}M`;
     if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
@@ -282,6 +330,26 @@
           <span class="figure sans">Context</span>
         {/if}
       </button>
+    {/if}
+
+    <!-- The plan chip (nightshift backlog 073): 5h and 7d beside the
+         gauge, bars in the live blue so it never reads as the context
+         gauge. Basic rendering tonight; the Fable board has the shape. -->
+    {#if plan}
+      <div class="ns-chip mono plan" class:stale={plan.stale} title={planTitle}>
+        <span class="figure">
+          <span class="of">plan</span>
+          <span class="pct">5h</span>
+          <div class="bar"><div class="fill plan-fill" style:width="{Math.min(plan.five_hour ?? 0, 100)}%"></div></div>
+          <span>{plan.five_hour}%</span>
+          {#if plan.seven_day != null}
+            <span class="pct">· wk</span>
+            <div class="bar"><div class="fill plan-fill" style:width="{Math.min(plan.seven_day, 100)}%"></div></div>
+            <span>{plan.seven_day}%</span>
+          {/if}
+          {#if plan.stale}<span class="of">· stale</span>{/if}
+        </span>
+      </div>
     {/if}
 
     <!-- The two transcript toggles (nightshift backlog 052, 2026-09-14),
@@ -493,6 +561,19 @@
   }
   .gauge.hot .fill {
     background: var(--failed);
+  }
+  .plan {
+    font-variant-numeric: tabular-nums;
+    color: var(--ink2);
+  }
+  .plan .figure {
+    align-items: center;
+  }
+  .plan-fill {
+    background: var(--live);
+  }
+  .plan.stale {
+    color: var(--dim);
   }
   /* Only the timer half dims when cold; the share is still a fact. */
   .cache.cold .cache-when {

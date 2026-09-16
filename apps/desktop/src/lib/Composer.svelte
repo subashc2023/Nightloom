@@ -5,12 +5,17 @@
     addAttachment,
     clearDraft,
     draftKey,
+    dropQueued,
+    enqueueMessage,
     nextAttachmentId,
     readDraft,
     removeAttachment,
     setDraftAttachments,
     setDraftText,
+    shiftQueue,
+    takeBackQueued,
   } from "./drafts.svelte";
+  import type { Attachment } from "./types";
 
   /**
    * `floating` drops the docked chrome (top border, panel fill) for the
@@ -22,16 +27,33 @@
 
   /**
    * The draft is the open chat's, not the box's (nightshift backlog 065,
-   * 2026-09-15): `drafts.svelte.ts` keeps one per chat id — "new" while no
-   * chat is open — and this component binds to the entry for the current
-   * key. A chat switch changes the key and the box follows; the pending
-   * chat's entry moves to the chat its first message creates (the one line
-   * in `send`). Sending clears the entry, and nothing else does.
+   * 2026-09-15): `drafts.svelte.ts` keeps one per chat id — the pending
+   * chat's key, `new:<project>:<kind>`, while no chat is open (backlog 094,
+   * 2026-09-16: one literal "new" was one slot across every project) — and
+   * this component binds to the entry for the current key. A chat or
+   * project switch changes the key and the box follows; the pending chat's
+   * entry moves to the chat its first message creates (the one line in
+   * `send`). Sending clears the entry, and nothing else does.
    */
-  const key = $derived(draftKey(app.activeSessionId));
+  const key = $derived(draftKey(app.activeSessionId, app.project?.id, app.pendingMode));
   const draft = $derived(readDraft(key));
   const text = $derived(draft.text);
   const attachments = $derived(draft.attachments);
+  /**
+   * Messages held while a turn runs (nightshift backlog 089, 2026-09-16).
+   * ↵ during a turn queues instead of doing nothing; the tray above the box
+   * lists the queue; when the turn ends the oldest goes as the next turn
+   * (`dispatch` → `drain`), and a Stop ends the turn like any other end, so
+   * the queue is why he stopped or he takes it back. Each row can be taken
+   * back into the box or dropped; ↑ in an empty box takes the newest back,
+   * as the CLI does. Held in the draft store, so it is per chat, follows
+   * the pending chat into the one it makes, and survives a relaunch. The
+   * engine is not consulted: `send` is one path for both. What Nightloom
+   * cannot do is hand a message to the *running* turn between tool calls
+   * the way the CLI does — that needs the long-lived process of blocker
+   * 062, and this is the half that needs nothing from it.
+   */
+  const queue = $derived(draft.queue);
   let ta = $state<HTMLTextAreaElement | null>(null);
   // Drag events fire per element, so a boolean flickers as the pointer crosses
   // children; count enters against leaves instead.
@@ -171,6 +193,11 @@
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       void submit();
+    } else if (e.key === "ArrowUp" && !text && queue.length > 0) {
+      // The CLI's rule: Up in an empty input takes the newest held
+      // message back. With text in the box, Up is the caret's.
+      e.preventDefault();
+      takeBack();
     }
   }
 
@@ -295,21 +322,26 @@
     removeAttachment(key, id);
   }
 
-  async function submit() {
-    const t = text.trim();
-    const images = attachments
-      .filter((a) => a.kind === "image")
-      .map(({ media_type, data }) => ({ media_type, data }));
-    const documents = attachments
-      .filter((a) => a.kind === "document")
-      .map(({ media_type, name, data }) => ({ media_type, name, data }));
-    const empty = !t && attachments.length === 0;
-    if (empty || !app.connection || app.busy) return;
-    const pending = attachments.slice();
-    const typed = text;
-    clearDraft(key);
-    requestAnimationFrame(autogrow);
-    await send(t, images, documents);
+  /** The wire shape of a set of chips. */
+  function split(chips: Attachment[]) {
+    return {
+      images: chips.filter((a) => a.kind === "image").map(({ media_type, data }) => ({ media_type, data })),
+      documents: chips
+        .filter((a) => a.kind === "document")
+        .map(({ media_type, name, data }) => ({ media_type, name, data })),
+    };
+  }
+
+  /**
+   * One turn, from words and chips already out of the box. After it, the
+   * oldest held message goes next (backlog 089) — unless the turn failed,
+   * in which case the words come back and the queue waits for *Send next*,
+   * since a second send would most likely fail the same way and bury the
+   * error.
+   */
+  async function dispatch(typed: string, chips: Attachment[]): Promise<void> {
+    const { images, documents } = split(chips);
+    await send(typed.trim(), images, documents);
     // send() reports failures on app.error instead of throwing, and a turn
     // that never reached the model should not cost the user its attachments
     // — or, since 2026-09-15, its words. Both go back under the key of the
@@ -318,8 +350,54 @@
     // new was typed meanwhile.
     if (app.error) {
       if (!readDraft(key).text) setDraftText(key, typed);
-      setDraftAttachments(key, pending.concat(readDraft(key).attachments));
+      setDraftAttachments(key, chips.concat(readDraft(key).attachments));
+      return;
     }
+    await drain();
+  }
+
+  /** Send the oldest held message as the next turn, if there is one. */
+  async function drain(): Promise<void> {
+    if (app.busy || !app.connection) return;
+    const q = shiftQueue(key);
+    if (!q) return;
+    await dispatch(q.text, q.attachments);
+  }
+
+  /** Hold what is in the box for the next turn (the turn is running). */
+  function enqueue(): void {
+    const t = text.trim();
+    if (!t && attachments.length === 0) return;
+    enqueueMessage(key, text, attachments.slice());
+    clearDraft(key);
+    requestAnimationFrame(autogrow);
+  }
+
+  function takeBack(id?: number): void {
+    takeBackQueued(key, id);
+    requestAnimationFrame(autogrow);
+    ta?.focus();
+  }
+
+  async function submit() {
+    const t = text.trim();
+    const empty = !t && attachments.length === 0;
+    if (empty || !app.connection) return;
+    if (app.busy) {
+      enqueue();
+      return;
+    }
+    const pending = attachments.slice();
+    const typed = text;
+    clearDraft(key);
+    requestAnimationFrame(autogrow);
+    await dispatch(typed, pending);
+  }
+
+  /** The first line of a held message, for its row. */
+  function firstLine(t: string): string {
+    const line = t.split("\n").find((l) => l.trim()) ?? "";
+    return line.length > 120 ? line.slice(0, 117) + "…" : line;
   }
 </script>
 
@@ -346,6 +424,24 @@
       onpointerdown={handleDown}
       ondblclick={handleReset}
     ></div>
+  {/if}
+  {#if queue.length > 0}
+    <div class="queue" role="list" aria-label="queued messages">
+      <div class="queue-head">
+        <span class="ns-chip mono">queued · {app.busy ? "sent when this turn ends" : "waiting"}</span>
+        {#if !app.busy}
+          <button class="ns-btn ghost small" disabled={!app.connection} onclick={() => void drain()}>Send next</button>
+        {/if}
+      </div>
+      {#each queue as q, i (q.id)}
+        <div class="queue-row" role="listitem">
+          <span class="queue-n mono">{i + 1}</span>
+          <span class="queue-text" title={q.text}>{firstLine(q.text) || "(no text)"}{#if q.attachments.length > 0} <span class="ns-chip mono">{q.attachments.length} {q.attachments.length === 1 ? "file" : "files"}</span>{/if}</span>
+          <button class="ns-btn ghost small" title="Back into the message box" onclick={() => takeBack(q.id)}>take back</button>
+          <button class="remove" title="drop this message" aria-label="drop queued message {i + 1}" onclick={() => dropQueued(key, q.id)}>×</button>
+        </div>
+      {/each}
+    </div>
   {/if}
   {#if attachments.length > 0}
     <div class="attachments">
@@ -397,9 +493,15 @@
       <button class="ns-btn ghost small" disabled={!app.connection} onclick={() => picker?.click()}>
         <Icon name="plus" />Attach
       </button>
-      <span class="ns-chip mono keys">↵ to send · ⇧↵ newline</span>
+      <span class="ns-chip mono keys">{app.busy ? "↵ queue" : "↵ to send"} · ⇧↵ newline</span>
       <span class="spacer"></span>
       {#if app.busy}
+        <button
+          class="ns-btn ghost small"
+          title="Hold this message; it goes when the turn ends"
+          onclick={enqueue}
+          disabled={!text.trim() && attachments.length === 0}>Queue</button
+        >
         <button class="ns-btn danger small" onclick={() => void cancelTurn()}>Stop</button>
       {:else}
         <button
@@ -470,6 +572,47 @@
   }
   .composer.floating textarea {
     font-size: 15.5px;
+  }
+  /* The queue tray: joined to the top of the card, dashed so it reads as
+     "not sent yet" (backlog 089). Plain rows; the real design is the
+     Fable board's. */
+  .queue {
+    max-width: 760px;
+    margin: 0 auto 0.5rem;
+    border: 1px dashed var(--line2);
+    border-radius: 8px;
+    padding: 0.4rem 0.6rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    font-size: 13px;
+  }
+  .queue-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+  .queue-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+  }
+  .queue-n {
+    color: var(--dim);
+    flex: none;
+  }
+  .queue-text {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .queue-row .remove {
+    position: static;
+    flex: none;
   }
   .attachments {
     max-width: 760px;

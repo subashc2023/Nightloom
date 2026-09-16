@@ -1,7 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
 import * as api from "./api";
 import { isMac } from "./platform";
-import { NEW_DRAFT_KEY, moveDraft } from "./drafts.svelte";
+import { moveDraft, newDraftKey } from "./drafts.svelte";
 import {
   defaultDraft,
   isProviderVisible,
@@ -27,6 +27,7 @@ import { LIST_SCOPE, NEW_CHAT_SCOPE, UndoHistory } from "./undo";
 import type {
   AgentInfo,
   AgentTurnResult,
+  PlanUsage,
   ApprovalDecision,
   ApprovalRequest,
   BlockerList,
@@ -562,6 +563,13 @@ export const app = $state({
    * that is false.
    */
   agentTurn: null as AgentTurnResult | null,
+  /**
+   * The plan's five-hour and seven-day percentages for the top bar's plan
+   * chip on the Claude Code engine (nightshift backlog 073). Read from two
+   * local sample files at connect and at every turn end — never on a
+   * timer faster than the sample changes — and shown with its age.
+   */
+  planUsage: null as PlanUsage | null,
   /** Observations awaiting the next dream — the badge on the Dream button. */
   dreamPending: 0,
   /** A dream is running; the button becomes its progress line. */
@@ -1089,6 +1097,63 @@ export async function refreshDreamStatus(): Promise<void> {
     // No config dir reads as zero on the backend; anything else is not
     // worth a toast for a badge.
   }
+}
+
+/**
+ * Re-read the plan's percentages (nightshift backlog 073). Two small file
+ * reads on the backend; called on connect to the Claude Code engine and at
+ * the end of every agent turn, which is as often as the figure can have
+ * moved on Nightloom's account of it.
+ */
+export async function refreshPlanUsage(): Promise<void> {
+  try {
+    const fresh = await api.planUsage();
+    // A file older than the turn-sourced reading already held is not an
+    // update: the turn's figure was the account's at that moment.
+    const held = app.planUsage;
+    if (
+      held?.source === "turn" &&
+      held.sampled_at_ms != null &&
+      fresh.sampled_at_ms != null &&
+      fresh.sampled_at_ms < held.sampled_at_ms
+    ) {
+      return;
+    }
+    app.planUsage = fresh;
+  } catch {
+    // A failed read keeps the last reading, whose age the chip shows.
+  }
+}
+
+/**
+ * The plan chip from the turn itself (nightshift backlog 073). On CLI
+ * 2.1.263 the `rate_limit_event` carries both windows' share used
+ * (`unifiedWindows`, measured 2026-09-16); that is the account's figure at
+ * the moment the turn ran, fresher than the Claude app's sample or the
+ * CLI's `/usage` cache, so it wins and the files are the fallback for a
+ * build that does not send it. Pure over its inputs so the suite can pin it.
+ */
+export function planUsageFromTurn(
+  plan: AgentTurnResult["plan"],
+  nowMs: number = Date.now(),
+): PlanUsage | null {
+  const w = plan?.unifiedWindows;
+  const fh = w?.five_hour?.utilization;
+  if (fh == null) return null;
+  const pct = (u: number | null | undefined) =>
+    u == null ? null : Math.max(0, Math.min(100, Math.round(u * 100)));
+  const iso = (secs: number | null | undefined) =>
+    secs == null ? null : new Date(secs * 1000).toISOString();
+  return {
+    five_hour: pct(fh),
+    seven_day: pct(w?.seven_day?.utilization),
+    sampled_at_ms: nowMs,
+    age_seconds: 0,
+    stale: false,
+    five_hour_resets_at: iso(w?.five_hour?.resetsAt),
+    seven_day_resets_at: iso(w?.seven_day?.resetsAt),
+    source: "turn",
+  };
 }
 
 /** Re-count the session logs with something new. Directory scans only. */
@@ -1801,6 +1866,7 @@ async function applyAgentDraft(): Promise<void> {
       budget: d.agentBudget > 0 ? d.agentBudget : undefined,
       system: d.system.trim() || undefined,
       preamble: d.preamble,
+      ask: d.agentAsk,
     });
     app.connection = {
       provider: res.provider,
@@ -1821,6 +1887,7 @@ async function applyAgentDraft(): Promise<void> {
     };
     app.project = res.project ?? null;
     saveLastConnection({ ...d });
+    void refreshPlanUsage();
   } catch (e) {
     // A failure here is usually the binary: not installed, or not on the
     // PATH this process inherited. The rail shows the message, which names
@@ -2902,6 +2969,9 @@ export async function send(
   if (app.connection.engine === "claude-code") {
     return sendAgent(text, images, documents);
   }
+  // The pending chat's draft key, taken now: it names the project and the
+  // kind this send is making a chat in (nightshift backlog 094).
+  const pendingKey = app.activeSessionId === null ? newDraftKey(app.project?.id, app.pendingMode) : null;
   app.error = null;
   app.events.push({
     event: "user_message",
@@ -2937,7 +3007,7 @@ export async function send(
       const first = app.events[0];
       if (first && first.event === "session_created") {
         // The pending chat's draft follows the chat it made (backlog 065).
-        if (app.activeSessionId === null) moveDraft(NEW_DRAFT_KEY, first.id);
+        if (pendingKey !== null && app.activeSessionId === null) moveDraft(pendingKey, first.id);
         app.activeSessionId = first.id;
       }
     } catch {
@@ -2973,6 +3043,9 @@ async function sendAgent(
   images: ImageInput[] = [],
   documents: DocumentInput[] = [],
 ): Promise<void> {
+  // Same as `send`: the pending chat's key at the moment of the send
+  // (nightshift backlog 094).
+  const pendingKey = app.activeSessionId === null ? newDraftKey(app.project?.id, app.pendingMode) : null;
   app.error = null;
   app.events.push({
     event: "user_message",
@@ -2993,6 +3066,11 @@ async function sendAgent(
       documents.length > 0 ? documents : undefined,
     );
     app.agentTurn = res;
+    // The plan chip from this turn's own rate-limit event when the CLI
+    // sent one with figures (nightshift backlog 073), else from the files
+    // in `finally`.
+    const fromTurn = planUsageFromTurn(res.plan);
+    if (fromTurn) app.planUsage = fromTurn;
     // The CLI resolves an alias to a real model id, which is the first
     // moment a context window can be looked up at all: `sonnet` is in no
     // limits table and a guessed denominator would promise headroom nobody
@@ -3007,13 +3085,17 @@ async function sendAgent(
   } finally {
     app.live = null;
     app.liveUsage = null;
+    // As in `send`: a prompt the CLI deferred (backlog 084) is answered or
+    // abandoned by the time the turn returns, and one left on screen would
+    // answer nothing.
+    app.pendingApprovals = [];
     app.busy = false;
     try {
       app.events = await api.transcript();
       const first = app.events[0];
       if (first && first.event === "session_created") {
         // The pending chat's draft follows the chat it made (backlog 065).
-        if (app.activeSessionId === null) moveDraft(NEW_DRAFT_KEY, first.id);
+        if (pendingKey !== null && app.activeSessionId === null) moveDraft(pendingKey, first.id);
         app.activeSessionId = first.id;
       }
     } catch {
@@ -3021,6 +3103,8 @@ async function sendAgent(
     }
     void refreshSessions();
     void refreshNotes();
+    // The plan chip follows the turn (nightshift backlog 073).
+    void refreshPlanUsage();
   }
 }
 
@@ -3045,12 +3129,13 @@ export async function resolveApproval(
   name: string,
   decision: ApprovalDecision,
   reason?: string,
+  answer?: unknown,
 ): Promise<void> {
   const i = app.pendingApprovals.findIndex((r) => r.id === id);
   if (i < 0) return;
   app.pendingApprovals.splice(i, 1);
   try {
-    await api.approveCall(id, name, decision, reason);
+    await api.approveCall(id, name, decision, reason, answer);
   } catch (e) {
     addToast(String(e));
   }

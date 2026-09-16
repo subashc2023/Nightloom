@@ -534,11 +534,32 @@
       {#if !app.draft.approval}
         <p class="warn sub-note">Every call runs unasked, including <code>bash</code>.</p>
       {/if}
-      {#if agentMode}
+      {#if agentMode && app.draft.approval}
+        <!-- The Ask position (nightshift backlog 084): the third setting of
+             the switch above, drawn as a second switch tonight. On, the CLI
+             pauses on each call a person should decide and the transcript
+             asks — the prompt, the model's questions, plan approval. -->
+        <label class="swq sub">
+          <span class="t">Ask me</span>
+          <Hint
+            text="Claude Code pauses on each write, command, question or plan and the transcript asks you — Allow, Allow for this chat, or Deny. Off, its classifier decides (`auto`). Reads in the workspace never ask."
+          />
+          <input
+            type="checkbox"
+            class="sw"
+            bind:checked={app.draft.agentAsk}
+            onchange={apply}
+            disabled={locked}
+          />
+        </label>
+      {/if}
+      {#if agentMode && !(app.draft.approval && app.draft.agentAsk)}
         <!-- Said rather than implied: the switch above is the familiar one
              and the gate behind it is not. Nightloom's approval prompt gates
              calls its own engine is about to run, and this engine runs its
-             own — headless, with nobody to ask. -->
+             own — headless, with nobody to ask. With Ask on, it does ask,
+             through the CLI's own pause (backlog 084), so the sentence is
+             withheld then. -->
         <p class="note sub-note">
           Claude Code decides these itself. Nightloom's approval prompt does not
           run on this engine, and neither do rewind, compaction, the Context tab

@@ -5,10 +5,11 @@
 //! lets tools that live *here* appear in another process — specifically in
 //! `claude -p`, which owns its own loop and tool set and so cannot be handed
 //! a `Vec<Box<dyn Tool>>` the way the API engine's `Chat` is. Passed to the
-//! CLI as `--mcp-config`, the four tools below reach the model there as
-//! `mcp__nightloom__search_chats` and so on.
+//! CLI as `--mcp-config`, the ~~four~~ five tools below reach the model there
+//! as `mcp__nightloom__search_chats` and so on.
 //!
-//! Four tools, and no more: `search_chats` and `read_chat` (the user's other
+//! ~~Four tools, and no more~~ Five tools since 2026-09-16 (`context_status`,
+//! below): `search_chats` and `read_chat` (the user's other
 //! conversations, which the CLI has no other way into), `remember` (the
 //! memory inbox, so an observation made on this engine lands in the same
 //! place as one made on the other), and `fetch_page` — the API engine's
@@ -18,6 +19,17 @@
 //! and the model then worked around it with `curl` and a 30k-token `cat`.
 //! Nightloom's fetch returns the extracted text itself, with an `offset` to
 //! continue past a cut, which is the tool that job needed.
+//!
+//! **`context_status` (2026-09-16, nightshift backlog 073).** How full the
+//! model's own context window is, from the last turn that completed in this
+//! chat: `{used, window, pct, turns}`. The server runs in its own process
+//! and has no view of the desktop's state, so the desktop writes the figure
+//! to one small file in the config dir at the end of every agent turn
+//! ([`write_context_status`], called from `send_agent`) and the tool reads
+//! it back. "Last turn" is exact: the turn asking is still running and its
+//! own usage is not known until it ends, so the answer is the prefix this
+//! turn started from. One file, not one per chat, because one chat runs at
+//! a time and the file names its session id for the reader to check.
 //!
 //! **No approval layer here.** On the API engine every one of these calls
 //! goes through [`crate::approval`]; on this engine the CLI's own permission
@@ -98,7 +110,8 @@ const UNFILED_NAME: &str = "Unfiled chats";
 const INSTRUCTIONS: &str = "Nightloom's tools. For a whole page use fetch_page, not WebFetch. \
      To find or quote one of the user's other chats use search_chats, then read_chat — when \
      the message points outside this chat (an earlier decision, 'as we discussed', a name you \
-     have no context for), not on every turn; recent chats rank first.";
+     have no context for), not on every turn; recent chats rank first. context_status says \
+     how full your context window was when this turn began.";
 
 /// The last sentence of [`INSTRUCTIONS`], present only when the tool is: a
 /// server started for an incognito chat (`--no-remember`) must not tell the
@@ -193,7 +206,113 @@ pub fn tools_in(
         tools.push(Box::new(Remember::new(config.to_path_buf(), source)));
     }
     tools.push(Box::new(FetchPage::default()));
+    tools.push(Box::new(ContextStatusTool {
+        config: config.to_path_buf(),
+    }));
     Ok(tools)
+}
+
+// ---- context_status (nightshift backlog 073, 2026-09-16) -------------------
+
+/// The file the desktop writes at the end of every agent turn and the tool
+/// reads: in the config dir, beside the registry.
+pub const CONTEXT_STATUS_FILE: &str = "context-status.json";
+
+/// What the model can ask about its own window. `used` is the newest
+/// round's whole prompt plus its output — the prefix the next request
+/// carries, the same figure the top bar's gauge shows — never the turn's
+/// running total, which counts the prefix once per round. `window` and
+/// `pct` are absent for a model the limits table does not know: a guessed
+/// denominator would promise headroom nobody verified.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContextStatus {
+    /// Nightloom's chat id, so a reader can tell whose figure this is.
+    pub session_id: String,
+    pub model: Option<String>,
+    pub used: u64,
+    pub window: Option<u64>,
+    pub pct: Option<u8>,
+    /// User messages in the chat so far, the asking turn's included.
+    pub turns: u32,
+    /// When the turn it describes ended, RFC 3339.
+    pub at: String,
+}
+
+impl ContextStatus {
+    /// Built from what `send_agent` has in hand once a turn is over.
+    pub fn new(
+        session_id: impl Into<String>,
+        model: Option<String>,
+        used: u64,
+        window: Option<u64>,
+        turns: u32,
+    ) -> Self {
+        let pct = window
+            .filter(|w| *w > 0)
+            .map(|w| ((used as f64 / w as f64) * 100.0).round().min(100.0) as u8);
+        Self {
+            session_id: session_id.into(),
+            model,
+            used,
+            window,
+            pct,
+            turns,
+            at: chrono::Utc::now().to_rfc3339(),
+        }
+    }
+}
+
+/// Write the status for the tool to read. Best-effort by design: the
+/// desktop calls this after the turn's work is done, and a failure to
+/// write a status file must not fail the turn — it is reported, not raised.
+pub fn write_context_status(config: &Path, status: &ContextStatus) -> Result<(), String> {
+    let text = serde_json::to_string_pretty(status).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(config).map_err(|e| e.to_string())?;
+    std::fs::write(config.join(CONTEXT_STATUS_FILE), text).map_err(|e| e.to_string())
+}
+
+/// The last written status, or `None` for no file or an unreadable one.
+pub fn read_context_status(config: &Path) -> Option<ContextStatus> {
+    let text = std::fs::read_to_string(config.join(CONTEXT_STATUS_FILE)).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// The tool. Reads the file on every call rather than at start-up: the
+/// server is spawned per turn by the CLI, but nothing about that is
+/// promised, and a read is one small file.
+struct ContextStatusTool {
+    config: PathBuf,
+}
+
+#[async_trait::async_trait]
+impl Tool for ContextStatusTool {
+    fn effect(&self) -> Effect {
+        Effect::ReadOnly
+    }
+
+    fn def(&self) -> ToolDef {
+        ToolDef {
+            name: "context_status".into(),
+            description: "How full your context window was when this turn began: tokens used \
+                 (the whole prompt plus the last reply), the model's window, the percentage, \
+                 and how many turns this chat has had. From the last completed turn in this \
+                 chat; nothing during the first turn. Use it before a long read or when \
+                 deciding whether to wrap up."
+                .into(),
+            input_schema: json!({ "type": "object", "properties": {} }),
+        }
+    }
+
+    async fn call(&self, _input: Value, _cancel: &CancellationToken) -> Result<String, String> {
+        match read_context_status(&self.config) {
+            Some(s) => serde_json::to_string(&s).map_err(|e| e.to_string()),
+            None => Err(
+                "no turn has completed in this chat yet, so there is no reading — \
+                 the first turn's usage is known only when it ends"
+                    .into(),
+            ),
+        }
+    }
 }
 
 /// `web_fetch` under the name and description this engine needs.
@@ -239,10 +358,13 @@ pub async fn serve(
     reader: impl AsyncRead + Send + Unpin + 'static,
     writer: impl AsyncWrite + Send + Unpin + 'static,
 ) -> Result<(), String> {
-    let tools = match &args.dream {
+    let mut tools = match &args.dream {
         Some(dream) => dream_tools(dream),
         None => tools_in(&config, args.project.as_deref(), args.remember)?,
     };
+    if args.ask {
+        tools.push(Box::new(crate::agent::ask::PromptTool));
+    }
     serve_tools(tools, reader, writer).await;
     Ok(())
 }
@@ -259,6 +381,12 @@ pub struct ServeArgs {
     /// alone. `project` is not consulted and `remember` is `false`, which
     /// is also the truth — the inbox is what the dream is draining.
     pub dream: Option<DreamServe>,
+    /// Serve `ask`, the permission host a chat in the Ask position names
+    /// with `--permission-prompt-tool` (`--ask`, 2026-09-16, nightshift
+    /// backlog 084; `agent::ask::PromptTool` says what it does and why it
+    /// refuses). Off otherwise: a tool that only refuses has no business
+    /// in a chat that is not asking.
+    pub ask: bool,
 }
 
 impl ServeArgs {
@@ -267,6 +395,7 @@ impl ServeArgs {
             project,
             remember: true,
             dream: None,
+            ask: false,
         }
     }
 
@@ -275,6 +404,7 @@ impl ServeArgs {
             project: None,
             remember: false,
             dream: Some(dream),
+            ask: false,
         }
     }
 }
@@ -487,6 +617,8 @@ pub fn parse_args(args: &[String]) -> Result<ServeArgs, String> {
             out.project = Some(id.to_string());
         } else if arg == "--no-remember" {
             out.remember = false;
+        } else if arg == "--ask" {
+            out.ask = true;
         } else if arg == "--dream" {
             let json = it
                 .next()
@@ -498,7 +630,7 @@ pub fn parse_args(args: &[String]) -> Result<ServeArgs, String> {
             out.remember = false;
         } else {
             return Err(format!(
-                "unknown argument {arg:?}; the flags are --project <id>, --no-remember and --dream <json>"
+                "unknown argument {arg:?}; the flags are --project <id>, --no-remember, --ask and --dream <json>"
             ));
         }
     }
@@ -592,7 +724,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_handshake_the_listing_and_the_four_tools_over_a_pipe() {
+    async fn the_handshake_the_listing_and_the_five_tools_over_a_pipe() {
         let (config, id) = fixture("session");
         let (r, mut w) = start(config.clone(), Some(id));
         let mut lines = BufReader::new(r).lines();
@@ -627,7 +759,13 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            ["search_chats", "read_chat", "remember", "fetch_page"]
+            [
+                "search_chats",
+                "read_chat",
+                "remember",
+                "fetch_page",
+                "context_status"
+            ]
         );
         // The MCP spelling, not the trait's: a host reads `inputSchema`.
         assert!(list["result"]["tools"][0]["inputSchema"]["properties"]["query"].is_object());
@@ -785,9 +923,18 @@ mod tests {
         };
         assert_eq!(
             names(true),
-            ["search_chats", "read_chat", "remember", "fetch_page"]
+            [
+                "search_chats",
+                "read_chat",
+                "remember",
+                "fetch_page",
+                "context_status"
+            ]
         );
-        assert_eq!(names(false), ["search_chats", "read_chat", "fetch_page"]);
+        assert_eq!(
+            names(false),
+            ["search_chats", "read_chat", "fetch_page", "context_status"]
+        );
         let with = instructions_for(&tools_in(&config, Some(&id), true).unwrap());
         let without = instructions_for(&tools_in(&config, Some(&id), false).unwrap());
         assert!(with.contains("use remember"), "{with}");
@@ -842,7 +989,13 @@ mod tests {
         assert_eq!(names, ["propose_instructions"]);
         let said = instructions_for(&dream_tools(&dream));
         assert!(said.contains("propose_instructions"), "{said}");
-        for absent in ["search_chats", "read_chat", "remember", "fetch_page"] {
+        for absent in [
+            "search_chats",
+            "read_chat",
+            "remember",
+            "fetch_page",
+            "context_status",
+        ] {
             assert!(!said.contains(absent), "{absent} in {said}");
         }
 
@@ -952,5 +1105,47 @@ mod tests {
             return;
         };
         run_blocking(&["--dream".to_string(), json]).unwrap();
+    }
+
+    /// `context_status` (nightshift backlog 073): nothing before a turn has
+    /// completed — a tool error the model can read, not a server error —
+    /// then exactly what the desktop wrote, with the percentage rounded
+    /// against the window and absent when the window is unknown.
+    #[tokio::test]
+    async fn context_status_reads_what_the_desktop_wrote() {
+        let (config, id) = fixture("context-status");
+        let tools = tools_in(&config, Some(&id), true).unwrap();
+        let tool = tools
+            .iter()
+            .find(|t| t.def().name == "context_status")
+            .expect("the tool is served");
+        assert_eq!(tool.effect(), Effect::ReadOnly);
+        let cancel = CancellationToken::new();
+
+        let err = tool.call(json!({}), &cancel).await.unwrap_err();
+        assert!(err.contains("no turn has completed"), "{err}");
+
+        let status = ContextStatus::new(
+            "s-1",
+            Some("claude-opus-5".into()),
+            61_000,
+            Some(200_000),
+            4,
+        );
+        assert_eq!(status.pct, Some(31));
+        write_context_status(&config, &status).unwrap();
+        let text = tool.call(json!({}), &cancel).await.unwrap();
+        let back: ContextStatus = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, status);
+        assert_eq!(read_context_status(&config), Some(status));
+
+        let unknown = ContextStatus::new("s-1", None, 5_000, None, 1);
+        assert_eq!(unknown.pct, None);
+        write_context_status(&config, &unknown).unwrap();
+        let back: ContextStatus =
+            serde_json::from_str(&tool.call(json!({}), &cancel).await.unwrap()).unwrap();
+        assert_eq!(back.window, None);
+        assert_eq!(back.used, 5_000);
+        assert_eq!(back.turns, 1);
     }
 }

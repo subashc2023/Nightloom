@@ -70,6 +70,22 @@ pub(super) enum SystemLine {
         #[serde(default)]
         error: Option<String>,
     },
+    /// A call the CLI refused because it would have prompted and nobody
+    /// could answer — Manual mode, headless. Verbatim on 2.1.263
+    /// (2026-09-16): `{"type":"system","subtype":"permission_denied",
+    /// "tool_name":"Write","tool_use_id":"toolu_…","message":"Claude
+    /// requested permissions to write to …, but you haven't granted it
+    /// yet."}`. Under the Ask position this is what a turn with several
+    /// calls at once comes to, since the CLI ignores `defer` for a batch.
+    #[serde(rename = "permission_denied")]
+    PermissionDenied {
+        #[serde(default)]
+        tool_name: String,
+        #[serde(default)]
+        tool_use_id: String,
+        #[serde(default)]
+        message: String,
+    },
     #[serde(other)]
     Other,
 }
@@ -166,6 +182,16 @@ pub(super) struct ResultLine {
     pub num_turns: Option<u32>,
     #[serde(default)]
     pub usage: Option<RawUsage>,
+    /// `end_turn` on the common path; `tool_deferred` when a hook parked
+    /// a call (2026-09-16, nightshift backlog 084). Then `result` is the
+    /// empty string, `is_error` false, and the call is in
+    /// `deferred_tool_use`. Verbatim on 2.1.263: `"stop_reason":
+    /// "tool_deferred","terminal_reason":"tool_deferred",…,"result":"",
+    /// "deferred_tool_use":{"id":"toolu_…","name":"Write","input":{…}}`.
+    #[serde(default)]
+    pub stop_reason: Option<String>,
+    #[serde(default)]
+    pub deferred_tool_use: Option<super::ask::DeferredCall>,
 }
 
 /// The plan's rate-limit window, as the CLI reports it.
@@ -186,6 +212,40 @@ pub struct RateLimitInfo {
     pub resets_at: Option<i64>,
     #[serde(default, rename = "isUsingOverage")]
     pub using_overage: bool,
+    /// Share of `window` used, 0–1. Measured on 2.1.263 (2026-09-16,
+    /// nightshift backlog 073); the 2.1.237 fixture in `translate.rs`
+    /// carries none, so absent on a build that does not send it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub utilization: Option<f64>,
+    /// Both windows in one event, 2.1.263: the live percentages the top
+    /// bar's plan chip prefers over any file, since they are this turn's.
+    #[serde(
+        default,
+        rename = "unifiedWindows",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub unified_windows: Option<UnifiedWindows>,
+}
+
+/// `rate_limit_info.unifiedWindows` (2.1.263): each window's share used
+/// and reset time, whichever window the event itself was about.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct UnifiedWindows {
+    #[serde(default)]
+    pub five_hour: Option<WindowReading>,
+    #[serde(default)]
+    pub seven_day: Option<WindowReading>,
+}
+
+/// One window of [`UnifiedWindows`].
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct WindowReading {
+    /// 0–1.
+    #[serde(default)]
+    pub utilization: Option<f64>,
+    /// Unix seconds.
+    #[serde(default, rename = "resetsAt")]
+    pub resets_at: Option<i64>,
 }
 
 /// Anthropic's usage shape, passed through by the CLI unchanged.

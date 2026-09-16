@@ -33,6 +33,7 @@ import type {
   ProjectsFolderInfo,
   NewProjectPath,
   UsageSummary,
+  PlanUsage,
   EditableLayer,
   PromptLayer,
   PromptLayersInfo,
@@ -133,6 +134,7 @@ export function connectAgent(args: AgentConnectArgs): Promise<ConnectResult> {
     budget: args.budget,
     system: args.system,
     preamble: args.preamble,
+    ask: args.ask,
   });
 }
 
@@ -167,15 +169,18 @@ export function setSearchKey(backend: string, key: string): Promise<null> {
 /**
  * Answer one `tool-approval` prompt. `reason` is handed to the model
  * verbatim on a denial, which is what lets it try something else instead of
- * repeating the call; it is ignored for the other decisions.
+ * repeating the call; it is ignored for the other decisions. `answer` is the
+ * replacement input a deferred call runs with on the Claude Code engine — a
+ * question's answers, an approved plan — and is ignored elsewhere.
  */
 export function approveCall(
   id: string,
   name: string,
   decision: ApprovalDecision,
   reason?: string,
+  answer?: unknown,
 ): Promise<null> {
-  return invoke("approve_call", { id, name, decision, reason });
+  return invoke("approve_call", { id, name, decision, reason, answer });
 }
 
 export function listSessions(): Promise<SessionMeta[]> {
@@ -441,6 +446,15 @@ export function refreshUsageLedger(): Promise<UsageSummary> {
   return invoke("refresh_usage_ledger");
 }
 
+/**
+ * The plan's five-hour and seven-day percentages for the top bar
+ * (nightshift backlog 073). Two local files, the fresher sample wins;
+ * never rejects for a machine with neither — that is `source: "none"`.
+ */
+export function planUsage(): Promise<PlanUsage> {
+  return invoke("plan_usage");
+}
+
 /** The folder a name would get, for the form's live path row. */
 export function resolveNewProjectPath(name: string): Promise<NewProjectPath> {
   return invoke("resolve_new_project_path", { name });
@@ -532,6 +546,34 @@ export function markApplied(scope: ProposalScope, id: string, text: string): Pro
 /** Show a folder in the OS file manager; defaults to the docspace. */
 export function reveal(path?: string): Promise<null> {
   return invoke("reveal", { path });
+}
+
+/** A file a reply named that exists, for the card under the reply
+ *  (nightshift backlog 078). */
+export interface NamedFile {
+  path: string;
+  size: number;
+}
+
+/** Which of these paths are real files: one answer per path, in order,
+ *  null for anything that is not an existing regular file. */
+export function namedFiles(paths: string[]): Promise<(NamedFile | null)[]> {
+  return invoke("named_files", { paths });
+}
+
+/** Show one file in the OS file manager, selected. Creates nothing. */
+export function revealFile(path: string): Promise<null> {
+  return invoke("reveal_file", { path });
+}
+
+/** Open a file in the application the OS pairs it with. */
+export function openFile(path: string): Promise<null> {
+  return invoke("open_file", { path });
+}
+
+/** Open an `https://` link in the browser. */
+export function openUrl(url: string): Promise<null> {
+  return invoke("open_url", { url });
 }
 
 /** Where the per-model instruction files live (`~/.nightloom/models`);

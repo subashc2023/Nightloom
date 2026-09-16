@@ -9,6 +9,7 @@
 //! captured lines, the same shape as the adapter tests that assert on
 //! request-body JSON.
 
+use super::ask::DeferredCall;
 use super::protocol::{
     ApiMessage, Block, Delta, Line, RateLimitInfo, ResultLine, StreamEv, SystemLine,
 };
@@ -40,6 +41,12 @@ pub struct AgentOutcome {
     pub notices: Vec<String>,
     /// The CLI reported the turn itself as failed.
     pub is_error: bool,
+    /// The call the CLI exited on, waiting for an answer (2026-09-16,
+    /// nightshift backlog 084). `Some` exactly when the `result` line said
+    /// `stop_reason: "tool_deferred"`; the process is gone, the session on
+    /// disk still holds the call, and the turn is not over until a
+    /// `--resume` runs it or refuses it — see [`super::ask`].
+    pub deferred: Option<DeferredCall>,
 }
 
 /// Feeds lines in, gets [`TurnEvent`]s out, accumulates an [`AgentOutcome`].
@@ -57,6 +64,16 @@ impl Translator {
         Self::default()
     }
 
+    /// A translator for the resume of a deferred call: the `tool_result`
+    /// that opens that stream belongs to a call this process never saw
+    /// announced, so its pairing is seeded from the outcome that deferred
+    /// it — or the result would render under the name `unknown`.
+    pub fn resuming(call: &DeferredCall) -> Self {
+        let mut t = Self::default();
+        t.pending.insert(call.id.clone(), call.name.clone());
+        t
+    }
+
     /// Translate one line. Unparseable lines yield nothing rather than
     /// failing the turn — the log is another process's and a build of it
     /// newer than this one is expected, not exceptional.
@@ -72,10 +89,7 @@ impl Translator {
             Line::StreamEvent { event } => self.stream_event(event),
             Line::Assistant(t) => self.blocks(t.message, t.parent_tool_use_id.is_some()),
             Line::User(t) => self.blocks(t.message, t.parent_tool_use_id.is_some()),
-            Line::System(s) => {
-                self.system(s);
-                Vec::new()
-            }
+            Line::System(s) => self.system(s),
             Line::Result(r) => self.result(r),
             Line::RateLimitEvent { rate_limit_info } => {
                 self.outcome.rate_limit = Some(rate_limit_info);
@@ -151,7 +165,7 @@ impl Translator {
         out
     }
 
-    fn system(&mut self, line: SystemLine) {
+    fn system(&mut self, line: SystemLine) -> Vec<TurnEvent> {
         match line {
             SystemLine::Init {
                 session_id,
@@ -172,8 +186,26 @@ impl Translator {
                     .notices
                     .push(format!("retrying after {what} ({attempt}/{max_retries})"));
             }
+            // The engine's own vocabulary for a refusal, so the transcript
+            // marks the call denied where it stands instead of leaving it
+            // in flight until the CLI's error result lands — and says why
+            // in the one line the CLI gives. The `user` line's error result
+            // still follows and pairs the call in the log, as it does for a
+            // provider-engine denial.
+            SystemLine::PermissionDenied {
+                tool_name,
+                tool_use_id,
+                message,
+            } => {
+                return vec![TurnEvent::ToolDenied {
+                    tool_use_id,
+                    name: tool_name,
+                    reason: message,
+                }];
+            }
             SystemLine::Other => {}
         }
+        Vec::new()
     }
 
     fn result(&mut self, r: ResultLine) -> Vec<TurnEvent> {
@@ -189,6 +221,19 @@ impl Translator {
         if let Some(sub) = r.subtype.filter(|s| s != "success") {
             self.outcome.notices.push(format!("ended: {sub}"));
         }
+        // A deferred call is the turn pausing, not ending: the CLI reports
+        // `subtype: "success"` and an empty `result` for it, so nothing
+        // above says so, and this is the one field that does. Assigned,
+        // not merged: a session resumed with a new prompt while a call was
+        // still pending prints *two* result lines in one process — the
+        // pending call deferred again, then the prompt's own end — and the
+        // later line is the one that says how the turn ended (measured
+        // 2026-09-16, `m084-8-stale.jsonl`).
+        self.outcome.deferred = if r.stop_reason.as_deref() == Some("tool_deferred") {
+            r.deferred_tool_use
+        } else {
+            None
+        };
         // The `result` line repeats the turn's totals, which `message_delta`
         // has already been reporting per round. Adding them again would
         // double every figure in the gauge, so it is read only when no
@@ -422,6 +467,94 @@ mod tests {
         assert!(!outcome.is_error);
     }
 
+    /// Verbatim from the 2026-09-16 defer measurement on 2.1.263
+    /// (nightshift `082-five-measurements-2026-09-16.md`, 4(b)), usage
+    /// fields trimmed: the CLI's `subtype` is still `success` and its
+    /// `result` empty, so the deferred call is the only thing that says
+    /// the turn paused.
+    const TOOL_USE_WRITE: &str = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_0183kRSEVfCJqZ7Xkb2qtMU8","name":"Write","input":{"file_path":"/tmp/b.txt","content":"hello"}}]},"parent_tool_use_id":null}"#;
+    const RESULT_DEFERRED: &str = r#"{"type":"result","subtype":"success","stop_reason":"tool_deferred","terminal_reason":"tool_deferred","is_error":false,"num_turns":1,"result":"","permission_denials":[],"session_id":"37d58676-f0f2-489b-8d59-f73106054e94","deferred_tool_use":{"id":"toolu_0183kRSEVfCJqZ7Xkb2qtMU8","name":"Write","input":{"file_path":"/tmp/b.txt","content":"hello"}}}"#;
+    /// The resume's opening line, same measurement (4(c)): the result for
+    /// the deferred call arrives before any `init`.
+    const RESUME_RESULT_LINE: &str = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"File created successfully at: /tmp/b.txt","is_error":false,"tool_use_id":"toolu_0183kRSEVfCJqZ7Xkb2qtMU8"}]},"parent_tool_use_id":null}"#;
+    /// A headless Manual-mode refusal, verbatim (4(a)'s first run).
+    const PERMISSION_DENIED: &str = r#"{"type":"system","subtype":"permission_denied","tool_name":"Write","tool_use_id":"toolu_01ARqRycp8phHpqzvrPHQTZ1","message":"Claude requested permissions to write to /tmp/a.txt, but you haven't granted it yet.","uuid":"12a21463","session_id":"c222b9af"}"#;
+
+    /// A deferred result carries the call out on the outcome, not as an
+    /// error and not as an ended turn: the call was already announced on
+    /// the `assistant` line and renders there, and `deferred` is what the
+    /// shell reads to know the turn is waiting.
+    #[test]
+    fn a_deferred_result_carries_the_pending_call() {
+        let (events, outcome) = drive(&[INIT, TOOL_USE_WRITE, RESULT_DEFERRED]);
+        assert_eq!(
+            events.len(),
+            1,
+            "the call itself, nothing for the result line"
+        );
+        assert!(matches!(&events[0], TurnEvent::ToolCall { id, name, .. }
+            if id == "toolu_0183kRSEVfCJqZ7Xkb2qtMU8" && name == "Write"));
+        let call = outcome.deferred.expect("deferred call");
+        assert_eq!(call.id, "toolu_0183kRSEVfCJqZ7Xkb2qtMU8");
+        assert_eq!(call.name, "Write");
+        assert_eq!(call.input["content"], "hello");
+        assert!(!outcome.is_error);
+        assert!(outcome.notices.is_empty(), "{:?}", outcome.notices);
+        assert_eq!(
+            outcome.session_id.as_deref(),
+            Some("37d58676-f0f2-489b-8d59-f73106054e94")
+        );
+        // An ordinary end is not a deferral, and a later end clears an
+        // earlier deferral in the same stream.
+        let (_, plain) = drive(&[RESULT]);
+        assert!(plain.deferred.is_none());
+        let (_, two) = drive(&[RESULT_DEFERRED, RESULT]);
+        assert!(two.deferred.is_none(), "the last result line wins");
+        assert_eq!(two.text, "hello");
+    }
+
+    /// The resume stream opens with the result of a call this translator
+    /// never saw; seeded, it pairs by name as if it had.
+    #[test]
+    fn a_resuming_translator_names_the_deferred_calls_result() {
+        let call = DeferredCall {
+            id: "toolu_0183kRSEVfCJqZ7Xkb2qtMU8".into(),
+            name: "Write".into(),
+            input: serde_json::json!({}),
+        };
+        let mut t = Translator::resuming(&call);
+        let events = t.push(RESUME_RESULT_LINE);
+        assert!(
+            matches!(&events[0], TurnEvent::ToolResult { name, is_error, .. }
+            if name == "Write" && !is_error)
+        );
+        // Unseeded, the same line is an orphan.
+        let (events, _) = drive(&[RESUME_RESULT_LINE]);
+        assert!(matches!(&events[0], TurnEvent::ToolResult { name, .. } if name == "unknown"));
+    }
+
+    /// A headless refusal renders as the engine's own denial, so the call
+    /// is marked where it stands with the CLI's one line of why.
+    #[test]
+    fn a_permission_denied_line_is_a_tool_denied_event() {
+        let (events, _) = drive(&[PERMISSION_DENIED]);
+        match &events[0] {
+            TurnEvent::ToolDenied {
+                tool_use_id,
+                name,
+                reason,
+            } => {
+                assert_eq!(tool_use_id, "toolu_01ARqRycp8phHpqzvrPHQTZ1");
+                assert_eq!(name, "Write");
+                assert!(
+                    reason.starts_with("Claude requested permissions"),
+                    "{reason}"
+                );
+            }
+            other => panic!("expected ToolDenied, got {other:?}"),
+        }
+    }
+
     /// A structured tool result flattens to text, naming what it cannot
     /// carry rather than yielding an empty string.
     #[test]
@@ -432,5 +565,34 @@ mod tests {
         ]);
         assert_eq!(flatten(&blocks), "line one\n[image]");
         assert_eq!(flatten(&serde_json::Value::Null), "");
+    }
+
+    /// Verbatim from `env -u ANTHROPIC_API_KEY claude -p "Say exactly: hello"
+    /// --tools "" --output-format stream-json --verbose --model haiku` on
+    /// 2.1.263, 2026-09-16 (nightshift backlog 073): the event now carries
+    /// the window's share used and both windows under `unifiedWindows`,
+    /// which the 2.1.237 line above does not. Both spellings parse; the
+    /// older one reads as no figure, never as zero.
+    const RATE_LIMIT_263: &str = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","resetsAt":1789552800,"rateLimitType":"seven_day","utilization":0.86,"isUsingOverage":false,"surpassedThreshold":0.75,"unifiedWindows":{"five_hour":{"utilization":0.85,"resetsAt":1789551600},"seven_day":{"utilization":0.86,"resetsAt":1789552800}}},"uuid":"c2d83942-97f4-4c02-b0a2-0d08d4ed4c8e","session_id":"1767de8a-1fcd-4dda-af8d-219cd2c14c5e"}"#;
+
+    #[test]
+    fn rate_limit_event_carries_both_windows_on_263_and_none_on_237() {
+        let (_, outcome) = drive(&[RATE_LIMIT_263, RESULT]);
+        let plan = outcome.rate_limit.expect("plan window");
+        assert_eq!(plan.window.as_deref(), Some("seven_day"));
+        assert_eq!(plan.status.as_deref(), Some("allowed_warning"));
+        assert_eq!(plan.utilization, Some(0.86));
+        let w = plan.unified_windows.expect("unifiedWindows on 2.1.263");
+        assert_eq!(w.five_hour.as_ref().and_then(|x| x.utilization), Some(0.85));
+        assert_eq!(
+            w.five_hour.as_ref().and_then(|x| x.resets_at),
+            Some(1789551600)
+        );
+        assert_eq!(w.seven_day.as_ref().and_then(|x| x.utilization), Some(0.86));
+
+        let (_, outcome) = drive(&[RATE_LIMIT, RESULT]);
+        let plan = outcome.rate_limit.expect("plan window");
+        assert_eq!(plan.utilization, None);
+        assert!(plan.unified_windows.is_none());
     }
 }

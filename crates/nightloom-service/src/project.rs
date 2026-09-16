@@ -1244,6 +1244,86 @@ pub fn reveal(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Show one file in the platform's file manager, selected — `open -R` on
+/// macOS, `explorer /select,` on Windows. Linux file managers have no common
+/// "select this file" verb, so the parent folder opens instead.
+///
+/// Distinct from `reveal`, which opens a *folder* (and creates it when it is
+/// missing): a file card's Reveal must never create anything, and `open` on
+/// a file path would launch its application rather than show it.
+pub fn reveal_file(path: &Path) -> io::Result<()> {
+    if cfg!(target_os = "macos") {
+        std::process::Command::new("open").arg("-R").arg(path).spawn()?;
+    } else if cfg!(target_os = "windows") {
+        std::process::Command::new("explorer")
+            .arg(format!("/select,{}", path.display()))
+            .spawn()?;
+    } else {
+        let parent = path.parent().unwrap_or(path);
+        std::process::Command::new("xdg-open").arg(parent).spawn()?;
+    }
+    Ok(())
+}
+
+/// Open a web page in the user's browser. `https://` only: the string comes
+/// from a model's reply, and the platform openers will happily launch a
+/// `file:` or a custom scheme, which is not what a link card is for.
+pub fn open_url(url: &str) -> io::Result<()> {
+    if !url.starts_with("https://") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "only https:// links open from a card",
+        ));
+    }
+    let program = if cfg!(target_os = "windows") {
+        "explorer"
+    } else if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    std::process::Command::new(program).arg(url).spawn()?;
+    Ok(())
+}
+
+/// A file a reply named that turned out to exist (nightshift backlog 078):
+/// the path as the card should open it, and its size for the label.
+#[derive(Debug, Clone, Serialize)]
+pub struct NamedFile {
+    pub path: String,
+    pub size: u64,
+}
+
+/// Which of a reply's path candidates are real files. One answer per
+/// candidate, in order, `None` for anything that is not an existing regular
+/// file — a folder, a broken link, a path the model made up. `~/` is
+/// expanded here because the frontend has no home directory to expand it
+/// with. Nothing is read but the metadata.
+pub fn named_files(paths: &[String]) -> Vec<Option<NamedFile>> {
+    let home = home_dir();
+    paths
+        .iter()
+        .map(|p| {
+            let expanded = match (p.strip_prefix("~/"), &home) {
+                (Some(rest), Some(h)) => h.join(rest),
+                (Some(_), None) => return None,
+                (None, _) => PathBuf::from(p),
+            };
+            if !expanded.is_absolute() {
+                return None;
+            }
+            let meta = fs::metadata(&expanded).ok()?;
+            if !meta.is_file() {
+                return None;
+            }
+            Some(NamedFile {
+                path: expanded.to_string_lossy().into_owned(),
+                size: meta.len(),
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

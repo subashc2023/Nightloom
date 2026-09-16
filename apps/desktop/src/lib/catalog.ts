@@ -171,6 +171,10 @@ export interface ConnectionDraft {
   agentModel: string;
   /** Run the agent without the host's CLAUDE.md, hooks, plugins and MCP. */
   agentSafeMode: boolean;
+  /** The Ask position of the approval switch on the agent engine: the CLI
+   *  pauses on each call a person should decide and the transcript asks
+   *  (2026-09-16). Only meaningful with `approval` on. */
+  agentAsk: boolean;
   /** Stop a turn once the CLI's own estimate passes this many dollars. 0 is
    *  no cap, which is the default: under a subscription the estimate is not
    *  a bill, and a cap on it stops turns for no saving. */
@@ -236,6 +240,7 @@ export function defaultDraft(): ConnectionDraft {
     agentBinary: "",
     agentModel: "",
     agentSafeMode: false,
+    agentAsk: false,
     agentBudget: 0,
     provider: "anthropic",
     model: "",

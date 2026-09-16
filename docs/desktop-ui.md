@@ -1311,3 +1311,43 @@ Tests: `drafts.test.ts` — oldest-first and shift, a send clearing the box and
 not the queue, take-back order and the newest by default, drop and the empty
 entry, the handover with the pending chat and the persistence round-trip, a
 queued attachment over the cap kept out of the store with its text in.
+
+## The plan chip on a Claude Code chat (nightshift backlog 073, 2026-09-16)
+
+His two most-run CLI commands were `/usage` and `/context`; neither exists in
+`-p`. The context half was already on the top bar — the gauge chip (`61k of
+200k · 31%`) reads the newest round's whole prompt plus output against the
+model's window on both engines. The plan half is new: on the Claude Code
+engine a **plan** chip beside the gauge, `plan 5h ▮ 85% · wk ▮ 86%`, two small
+bars in the live blue so it never reads as the context gauge, `· stale` when
+the reading is past twenty minutes. Its title says the account-wide caveat
+(every surface, not this chat), each window's reset time, where the reading
+came from and how old it is. Basic rendering; the Fable board of 2026-09-16
+has the shape.
+
+Where the number comes from, in order (`app.planUsage`, `state.svelte.ts`):
+
+1. **The turn itself.** On CLI 2.1.263 the `rate_limit_event` carries both
+   windows' share used (`unifiedWindows`; measured 2026-09-16,
+   `docs/service-agent.md`). `sendAgent` reads it off `res.plan` through
+   `planUsageFromTurn` — whole percentages, ISO reset times, `source: "turn"`,
+   age zero — and it is the account's figure at the moment the turn ran.
+2. **The two sample files**, through the `plan_usage` command
+   (`crates/nightloom-service/src/plan_usage.rs`): the Claude desktop app's
+   `~/Library/Application Support/Claude/plan-usage-history.json` (sampled
+   about every fifteen minutes while that app runs) and the CLI's
+   `~/.claude.json` cache (refreshed only by an interactive `/usage`), the
+   fresher sample winning — `bin/usagectl.py`'s rule in the nightshift repo,
+   reproduced rather than re-derived. Read on connect to the engine and at
+   every turn end; a file older than a turn-sourced reading already held does
+   not replace it. Never on a timer: nothing here changes faster than the
+   sample.
+
+Nothing is shown before a sample exists, and no denominator is estimated —
+the percentage is the one Anthropic reports. No dollar figure, and no
+threshold action (blocker 073 decides that).
+
+Tests: `state.svelte.test.ts` (`planUsageFromTurn`: both windows, the 2.1.237
+shape as no reading); Rust `plan_usage::tests` (the recency race, the null
+five-hour record, no files, a broken file) and `mcp_server::tests`
+(`context_status` before and after a write, the tool listing).

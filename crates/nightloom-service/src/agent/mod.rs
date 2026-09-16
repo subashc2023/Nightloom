@@ -28,11 +28,13 @@
 //!
 //! [`Provider`]: nightloom_core::Provider
 
+pub mod ask;
 pub mod cli_session;
 mod protocol;
 mod record;
 mod translate;
 
+pub use ask::{Answer, AskDir, AskGate, DeferredCall};
 pub use protocol::RateLimitInfo;
 pub use record::{Recorder, carry_transcript};
 pub use translate::{AgentOutcome, Translator};
@@ -239,9 +241,45 @@ pub struct AgentSpec {
     /// itself ([`Recorder`] keeps it in memory; [`carry_transcript`] renders
     /// it back into the prompt).
     pub no_session_persistence: bool,
+    /// The Ask position of the approval switch (2026-09-16, nightshift
+    /// backlog 084): the CLI pauses on each call a person should decide,
+    /// and Nightloom asks. See [`AskSpec`] for what it puts on the line and
+    /// [`ask`] for the hook and the files behind it. `None` is the two
+    /// older positions, `auto` and `bypassPermissions`
+    /// ([`AgentSpec::headless_permission_mode`]).
+    pub ask: Option<AskSpec>,
     /// Passed through verbatim, last, so a caller can reach a flag this
     /// struct has not grown a field for.
     pub extra_args: Vec<String>,
+}
+
+/// What the Ask position adds to the command line.
+///
+/// Three flags, each measured on 2.1.263 before this existed (nightshift
+/// `082-five-measurements-2026-09-16.md`, 4 and 5):
+///
+/// - `--permission-mode default` — Manual mode, where every call outside
+///   the working-directory reads would prompt; headless there is nobody to
+///   prompt, which is exactly the gap the hook fills first.
+/// - `--settings <json>` registering `<hook> --permission-hook <dir>` as a
+///   `PreToolUse` hook on the prompting tools ([`ask::MATCHER`]). Given
+///   inline it fires under safe mode too — `--setting-sources ""` drops
+///   the settings *files*, not this — and its `defer` makes the process
+///   exit with the call in `deferred_tool_use`.
+/// - `--permission-prompt-tool mcp__nightloom__ask` — without a prompt
+///   tool named, the CLI does not offer `AskUserQuestion`, `EnterPlanMode`
+///   or `ExitPlanMode` at all; with one, all three appear, whatever the
+///   name resolves to, and the tool is never called while the hook answers
+///   first. Nightloom's server does not serve it on purpose: a real
+///   prompt tool blocks the process on the answer, which is the mechanism
+///   blocker 071 chose against.
+#[derive(Debug, Clone)]
+pub struct AskSpec {
+    /// The hook program and its leading arguments — `[<this binary>,
+    /// "--permission-hook"]`; the directory is appended per turn.
+    pub hook: Vec<String>,
+    /// The chat's ask directory, where the decision and the rules live.
+    pub dir: PathBuf,
 }
 
 /// The CLI's built-in tools a chat that writes nothing may keep: the
@@ -284,6 +322,7 @@ impl AgentSpec {
             add_dirs: Vec::new(),
             mcp_config: None,
             no_session_persistence: false,
+            ask: None,
             extra_args: Vec::new(),
         }
     }
@@ -307,6 +346,12 @@ impl AgentSpec {
         }
         if mode == ChatMode::Ephemeral {
             self.no_session_persistence = true;
+            // Ask needs `--resume`, and an ephemeral chat's CLI session
+            // cannot be resumed (see `no_session_persistence`): a deferred
+            // call there would be a prompt whose answer has nowhere to go.
+            // The read-only list above leaves nothing that would pause
+            // anyway; this makes the fact explicit rather than incidental.
+            self.ask = None;
         }
     }
 
@@ -342,30 +387,40 @@ impl AgentSpec {
     /// is the request that would have gone out rather than the reply.
     /// `pub(crate)` so the dream's test can assert on its own invocation.
     pub(crate) fn args(&self, prompt: &str) -> Vec<String> {
-        self.argv(Some(prompt))
+        self.argv(Shape::Prompt(prompt))
     }
 
     /// The argument vector for one turn whose user message arrives on
     /// stdin as a `stream-json` line — the shape a turn with attachments
     /// takes, since argv carries text and nothing else.
     fn stdin_args(&self) -> Vec<String> {
-        self.argv(None)
+        self.argv(Shape::Stdin)
     }
 
-    /// Both shapes differ in the first two arguments only. A prompt goes on
-    /// argv as `-p <prompt>`; without one `-p` stands alone and
-    /// `--input-format stream-json` says the message is coming on stdin.
-    /// The rest is identical, which is the property that keeps the resume
-    /// path and every flag test valid for the stdin shape without a second
-    /// copy of each.
-    fn argv(&self, prompt: Option<&str>) -> Vec<String> {
+    /// The argument vector that continues a deferred call: `-p` with no
+    /// prompt at all, and `--resume` doing the work. The CLI accepts the
+    /// missing prompt only for a session holding a deferred call
+    /// (`external`, the hooks doc; measured 2026-09-16), which is the one
+    /// case this is built for.
+    pub(crate) fn resume_args(&self) -> Vec<String> {
+        self.argv(Shape::Resume)
+    }
+
+    /// The three shapes differ in the first arguments only. A prompt goes
+    /// on argv as `-p <prompt>`; the stdin shape is `-p --input-format
+    /// stream-json`, saying the message is coming on stdin; a resume of a
+    /// deferred call is `-p` alone. The rest is identical, which is the
+    /// property that keeps the resume path and every flag test valid for
+    /// every shape without a second copy of each.
+    fn argv(&self, shape: Shape<'_>) -> Vec<String> {
         let mut a: Vec<String> = vec!["-p".into()];
-        match prompt {
-            Some(p) => a.push(p.into()),
-            None => {
+        match shape {
+            Shape::Prompt(p) => a.push(p.into()),
+            Shape::Stdin => {
                 a.push("--input-format".into());
                 a.push("stream-json".into());
             }
+            Shape::Resume => {}
         }
         a.extend([
             "--output-format".into(),
@@ -394,9 +449,25 @@ impl AgentSpec {
             a.push("--allowedTools".into());
             a.extend(self.allowed_tools.iter().cloned());
         }
-        if let Some(mode) = &self.permission_mode {
-            a.push("--permission-mode".into());
-            a.push(mode.clone());
+        // Ask overrides the mode: the hook decides first, and what it
+        // does not catch falls to Manual, which headless is a refusal the
+        // transcript shows — never a silent classifier approval.
+        match (&self.ask, &self.permission_mode) {
+            (Some(_), _) => {
+                a.push("--permission-mode".into());
+                a.push("default".into());
+            }
+            (None, Some(mode)) => {
+                a.push("--permission-mode".into());
+                a.push(mode.clone());
+            }
+            (None, None) => {}
+        }
+        if let Some(ask) = &self.ask {
+            a.push("--settings".into());
+            a.push(ask::settings_json(&ask.hook, &ask.dir));
+            a.push("--permission-prompt-tool".into());
+            a.push(ask::PROMPT_TOOL.into());
         }
         if let Some(s) = &self.system_prompt {
             a.push("--system-prompt".into());
@@ -438,6 +509,14 @@ impl AgentSpec {
         a.extend(self.extra_args.iter().cloned());
         a
     }
+}
+
+/// How one turn's user message reaches the CLI — see [`AgentSpec::argv`].
+#[derive(Debug, Clone, Copy)]
+enum Shape<'a> {
+    Prompt(&'a str),
+    Stdin,
+    Resume,
 }
 
 /// How a background pass — a dream, a capture — drives the CLI
@@ -552,6 +631,15 @@ impl ClaudeCodeAgent {
         self.spec.resume = id.filter(|s| !s.is_empty());
     }
 
+    /// Point the Ask position's files at `dir` — the open chat's ask
+    /// directory, which the shell knows only once the chat exists. A
+    /// no-op on a connection that is not asking.
+    pub fn set_ask_dir(&mut self, dir: PathBuf) {
+        if let Some(ask) = &mut self.spec.ask {
+            ask.dir = dir;
+        }
+    }
+
     /// Run one turn to completion, streaming events as they arrive.
     ///
     /// A bare `&str` converts, so a text-only call reads as it always did;
@@ -577,16 +665,54 @@ impl ClaudeCodeAgent {
         on_event: &mut (dyn FnMut(TurnEvent) + Send),
     ) -> Result<AgentOutcome, AgentError> {
         let input = input.into();
-        let attached = !input.images.is_empty() || !input.documents.is_empty();
+        self.drive(Some(input), Translator::new(), cancel, on_event)
+            .await
+    }
+
+    /// Continue the turn a deferred call paused (2026-09-16, nightshift
+    /// backlog 084): the process that exited on `call` is gone, the
+    /// answer is in the chat's ask directory, and this runs `-p --resume
+    /// <id>` — no prompt — so the hook is asked again and the call runs or
+    /// is refused. The caller has already pointed [`AgentSpec::resume`] at
+    /// the session that deferred. Events stream as for any turn; the first
+    /// is the deferred call's own result, paired by name from `call`.
+    pub async fn resume_deferred(
+        &self,
+        call: &DeferredCall,
+        cancel: &CancellationToken,
+        on_event: &mut (dyn FnMut(TurnEvent) + Send),
+    ) -> Result<AgentOutcome, AgentError> {
+        self.drive(None, Translator::resuming(call), cancel, on_event)
+            .await
+    }
+
+    /// One CLI process, whichever shape: a prompt on argv, attachments on
+    /// stdin, or a deferred resume with neither.
+    async fn drive(
+        &self,
+        input: Option<TurnInput>,
+        mut translator: Translator,
+        cancel: &CancellationToken,
+        on_event: &mut (dyn FnMut(TurnEvent) + Send),
+    ) -> Result<AgentOutcome, AgentError> {
+        let attached = input
+            .as_ref()
+            .is_some_and(|i| !i.images.is_empty() || !i.documents.is_empty());
         let mut cmd = Command::new(resolve_binary(&self.spec.binary));
-        if attached {
-            cmd.args(self.spec.stdin_args()).stdin(Stdio::piped());
-        } else {
-            cmd.args(self.spec.args(&input.text))
-                // Null rather than inherited: with a terminal on the other
-                // end the CLI waits three seconds for piped input that is
-                // never coming, on every turn.
-                .stdin(Stdio::null());
+        match &input {
+            Some(_) if attached => {
+                cmd.args(self.spec.stdin_args()).stdin(Stdio::piped());
+            }
+            Some(input) => {
+                cmd.args(self.spec.args(&input.text))
+                    // Null rather than inherited: with a terminal on the
+                    // other end the CLI waits three seconds for piped input
+                    // that is never coming, on every turn.
+                    .stdin(Stdio::null());
+            }
+            None => {
+                cmd.args(self.spec.resume_args()).stdin(Stdio::null());
+            }
         }
         cmd.current_dir(&self.spec.workspace)
             .stdout(Stdio::piped())
@@ -615,8 +741,11 @@ impl ClaudeCodeAgent {
         // the handle is the EOF that tells the CLI the turn's input is
         // complete; without it the process stays open waiting for a second
         // message.
-        if attached && let Some(mut stdin) = child.stdin.take() {
-            let line = protocol::user_line(&input);
+        if attached
+            && let Some(input) = &input
+            && let Some(mut stdin) = child.stdin.take()
+        {
+            let line = protocol::user_line(input);
             tokio::spawn(async move {
                 // A child that exits before reading — a bad flag, a failed
                 // login — closes the pipe first, and the write error says no
@@ -637,7 +766,6 @@ impl ClaudeCodeAgent {
         });
 
         let mut lines = BufReader::new(stdout).lines();
-        let mut translator = Translator::new();
         let mut interrupted = false;
 
         loop {
@@ -940,7 +1068,10 @@ mod tests {
         s.add_dirs = vec![PathBuf::from("/vault"), PathBuf::from("/other")];
         let a = s.args("hi");
         let joined = a.join(" ");
-        assert!(joined.contains("--add-dir /vault --add-dir /other"), "{a:?}");
+        assert!(
+            joined.contains("--add-dir /vault --add-dir /other"),
+            "{a:?}"
+        );
         // The CLI's own flags come first; a directory grant is never the
         // thing that pushes `-p` off the front.
         assert_eq!(a[0], "-p");
@@ -1090,7 +1221,10 @@ mod tests {
         s.safe_mode = true;
         let a = s.args("hi");
         assert!(!a.iter().any(|x| x == "--safe-mode"), "{a:?}");
-        let i = a.iter().position(|x| x == "--setting-sources").expect("flag");
+        let i = a
+            .iter()
+            .position(|x| x == "--setting-sources")
+            .expect("flag");
         assert_eq!(a[i + 1], "", "the value is the empty list");
         assert!(a.iter().any(|x| x == "--strict-mcp-config"));
         assert!(a.iter().any(|x| x == "--disable-slash-commands"));
@@ -1127,11 +1261,18 @@ mod tests {
         assert!(!a.iter().any(|x| x == "--no-session-persistence"), "{a:?}");
 
         let mut s = spec();
+        s.ask = Some(AskSpec {
+            hook: vec!["hook".into()],
+            dir: PathBuf::from("/x"),
+        });
         s.apply_mode(ChatMode::Ephemeral);
         let a = s.args("hi");
         let i = a.iter().position(|x| x == "--tools").expect("--tools");
         assert_eq!(&a[i + 1..i + 6], READ_ONLY_TOOLS);
         assert!(a.iter().any(|x| x == "--no-session-persistence"), "{a:?}");
+        // No resume, no Ask: the hook is not registered on an ephemeral chat.
+        assert!(s.ask.is_none());
+        assert!(!a.iter().any(|x| x == "--settings"), "{a:?}");
         // Before the caller's own trailing arguments, like every other flag.
         s.extra_args = vec!["--x".into()];
         let a = s.args("hi");
@@ -1143,6 +1284,91 @@ mod tests {
         let a = s.args("hi");
         let i = a.iter().position(|x| x == "--tools").unwrap();
         assert_eq!(a[i + 1], "", "no tools stays no tools");
+    }
+
+    /// The Ask position is three flags on top of everything else, and it
+    /// wins over the mode the shell would otherwise send: Manual, the
+    /// hook registered inline (so safe mode cannot drop it), and a prompt
+    /// tool named so the question and plan tools are offered at all.
+    #[test]
+    fn the_ask_position_is_manual_mode_plus_the_hook_plus_a_prompt_tool() {
+        let mut s = spec();
+        s.permission_mode = Some("auto".into());
+        s.ask = Some(AskSpec {
+            hook: vec!["/app/nightloom-desktop".into(), "--permission-hook".into()],
+            dir: PathBuf::from("/logs/ask/chat-1"),
+        });
+        let a = s.args("hi");
+        let i = a.iter().position(|x| x == "--permission-mode").unwrap();
+        assert_eq!(a[i + 1], "default");
+        assert!(!a.iter().any(|x| x == "auto"), "{a:?}");
+        let i = a
+            .iter()
+            .position(|x| x == "--settings")
+            .expect("--settings");
+        let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
+        assert_eq!(
+            v["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
+            "'/app/nightloom-desktop' '--permission-hook' '/logs/ask/chat-1'"
+        );
+        let i = a
+            .iter()
+            .position(|x| x == "--permission-prompt-tool")
+            .expect("prompt tool");
+        assert_eq!(a[i + 1], ask::PROMPT_TOOL);
+        // And it survives safe mode beside the other flags.
+        s.safe_mode = true;
+        let a = s.args("hi");
+        assert!(a.iter().any(|x| x == "--settings"));
+        assert!(a.iter().any(|x| x == "--setting-sources"));
+        // Off, none of it leaks.
+        let bare = spec().args("hi");
+        for flag in ["--settings", "--permission-prompt-tool"] {
+            assert!(!bare.iter().any(|x| x == flag), "{flag} in {bare:?}");
+        }
+    }
+
+    /// The chat's directory is set after connect, once the chat exists,
+    /// and only on a connection that is asking.
+    #[test]
+    fn the_ask_dir_follows_the_open_chat() {
+        let mut agent = ClaudeCodeAgent::new(spec());
+        agent.set_ask_dir(PathBuf::from("/logs/ask/x"));
+        assert!(agent.spec().ask.is_none(), "not asking: nothing to point");
+        let mut s = spec();
+        s.ask = Some(AskSpec {
+            hook: vec!["hook".into()],
+            dir: PathBuf::from("/placeholder"),
+        });
+        let mut agent = ClaudeCodeAgent::new(s);
+        agent.set_ask_dir(PathBuf::from("/logs/ask/chat-2"));
+        assert_eq!(
+            agent.spec().ask.as_ref().unwrap().dir,
+            PathBuf::from("/logs/ask/chat-2")
+        );
+        let a = agent.spec().args("hi");
+        let i = a.iter().position(|x| x == "--settings").unwrap();
+        assert!(a[i + 1].contains("/logs/ask/chat-2"), "{}", a[i + 1]);
+    }
+
+    /// A deferred resume is `-p` with no prompt and no input format — the
+    /// one shape the CLI accepts without a message — and then the same
+    /// tail as every other turn, `--resume` included.
+    #[test]
+    fn the_resume_shape_has_no_prompt_and_carries_the_tail() {
+        let mut s = spec();
+        s.model = Some("haiku".into());
+        s.resume = Some("sess-7".into());
+        s.safe_mode = true;
+        let r = s.resume_args();
+        assert_eq!(r[0], "-p");
+        assert_eq!(r[1], "--output-format", "nothing between -p and the tail");
+        assert!(!r.iter().any(|x| x == "--input-format"), "{r:?}");
+        let i = r.iter().position(|x| x == "--resume").unwrap();
+        assert_eq!(r[i + 1], "sess-7");
+        // Same tail as the argv shape.
+        let argv = s.args("hi");
+        assert_eq!(argv[2..], r[1..]);
     }
 
     /// A path the user typed is honoured as typed. Second-guessing it would

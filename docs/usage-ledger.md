@@ -89,3 +89,13 @@ for it, and rereads (`usage::refresh`, `refresh_usage_ledger`). It is the
 one write to the ledger the app ever causes, and it is the collector's, not
 Nightloom's. The surfaces card is one row per surface and per weekly cap,
 each with a bar, rather than one line.
+
+## The plan's percentages are elsewhere (2026-09-16, nightshift backlog 073)
+
+The ledger is tokens over days. The plan's *windows* — how much of the
+five-hour and seven-day limits is used right now — are a different reading,
+server-computed and account-wide, and come from `plan_usage.rs` (the Claude
+app's sample file and the CLI's `/usage` cache, the fresher winning) or, on a
+current CLI, from the turn's own `rate_limit_event`. They feed the top bar's
+plan chip, not this pane; `docs/desktop-ui.md` §"The plan chip" and
+`docs/service-agent.md` §"The `rate_limit_event` shape".

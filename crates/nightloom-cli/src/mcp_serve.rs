@@ -28,6 +28,10 @@ pub struct McpServeArgs {
     /// dir.
     #[arg(long)]
     dream: Option<String>,
+    /// Serve `ask`, the permission host a chat in the desktop's Ask
+    /// position names with `--permission-prompt-tool` (2026-09-16).
+    #[arg(long)]
+    ask: bool,
 }
 
 pub async fn run(args: McpServeArgs) -> Result<()> {
@@ -48,6 +52,7 @@ pub async fn run(args: McpServeArgs) -> Result<()> {
             project: args.project,
             remember: !args.no_remember,
             dream: None,
+            ask: args.ask,
         },
     };
     mcp_server::serve(config, serve_args, tokio::io::stdin(), tokio::io::stdout())

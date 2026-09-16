@@ -73,6 +73,13 @@ export interface AgentConnectArgs {
    * so it would silently put the turn back on an API key.
    */
   safeMode: boolean;
+  /**
+   * The Ask position (2026-09-16): with `approval` on, the CLI pauses on
+   * each call a person should decide — a write, a command, a question, a
+   * plan — and the transcript asks, as on the API engine. Omitted reads as
+   * false, which is `auto`.
+   */
+  ask?: boolean;
   /** Stop the turn if the CLI's own cost estimate passes this. */
   budget?: number;
   /** Appended to Claude Code's system prompt, after the preamble. */
@@ -121,6 +128,15 @@ export interface AgentTurnResult {
     rateLimitType: string | null;
     resetsAt: number | null;
     isUsingOverage: boolean;
+    /** Share of `rateLimitType` used, 0–1. On 2.1.263 (measured 2026-09-16,
+     *  nightshift backlog 073); absent from a build that does not send it. */
+    utilization?: number | null;
+    /** Both windows at once, 2.1.263: the live figures the plan chip
+     *  prefers over any sample file. */
+    unifiedWindows?: {
+      five_hour: { utilization: number | null; resetsAt: number | null } | null;
+      seven_day: { utilization: number | null; resetsAt: number | null } | null;
+    } | null;
   } | null;
   notices: string[];
   is_error: boolean;
@@ -336,6 +352,26 @@ export interface KnowledgeInfo {
  * have cost — priced by `usage-rates.json` on the dedup basis (one count
  * per API message id, what the API would bill). Dates are UTC.
  */
+/**
+ * The plan's own five-hour and seven-day percentages (nightshift backlog
+ * 073, 2026-09-16), read from the Claude desktop app's sample file and the
+ * CLI's cache — whichever was sampled more recently; `plan_usage.rs` says
+ * why both. Server-computed and account-wide, never estimated. `stale`
+ * past twenty minutes, or with no sample at all (`source: "none"`).
+ */
+export interface PlanUsage {
+  five_hour: number | null;
+  seven_day: number | null;
+  sampled_at_ms: number | null;
+  age_seconds: number | null;
+  stale: boolean;
+  five_hour_resets_at: string | null;
+  seven_day_resets_at: string | null;
+  /** `turn` is the frontend's own: the last agent turn's `rate_limit_event`
+   *  (see `AgentTurnResult.plan.unifiedWindows`), fresher than any file. */
+  source: "desktop" | "cli-cache" | "none" | "turn";
+}
+
 export interface UsageSummary {
   /** False with `reason` when the collector has never run on this machine. */
   available: boolean;
@@ -604,6 +640,17 @@ export interface ApprovalRequest {
 }
 
 export type ApprovalDecision = "allow" | "always" | "deny";
+
+/**
+ * One question of the CLI's `AskUserQuestion` tool, as its `input.questions`
+ * carries it (verbatim shape measured 2026-09-16, nightshift backlog 084).
+ */
+export interface AskQuestion {
+  question: string;
+  header?: string;
+  options: { label: string; description?: string }[];
+  multiSelect?: boolean;
+}
 
 /** One entry of the model's task list (`todo_write`). */
 export interface TodoItem {

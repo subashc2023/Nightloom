@@ -98,13 +98,18 @@ environment — see [service-agent.md](service-agent.md#what---append-system-pro
 
 Three things follow, each stated in the UI rather than left to be discovered:
 
-- **Nightloom's approval gate does not run.** It gates calls its own engine is
+- **Nightloom's approval gate does not run** ~~.~~ **— unless the chat is in
+  the Ask position (2026-09-16, nightshift backlog 084).** It gates calls its own engine is
   about to execute, and this engine executes its own, so the switch maps to the
   CLI's ~~`dontAsk`~~ `auto` / `bypassPermissions` and the rail says which.
   (`auto` since 2026-09-14, nightshift blocker 045: the CLI's classifier
   decides each call and, headless, denies what it cannot approve rather than
   waiting; `dontAsk` with a fresh install's empty allowlist refused every
-  write, command and fetch.)
+  write, command and fetch.) With **Ask me** on under *Restrict permissions*
+  (`agentAsk` on the draft, `ask` on `connect_agent`), the CLI runs in Manual
+  mode with this binary as its `PreToolUse` hook and pauses on each call a
+  person should decide; the transcript then asks — see "The Ask position"
+  below.
 - **Rewind, compaction and ~~the context panel~~ context edits are withheld.** They change what the
   *log* projects onto the next request, and here nothing projects, so each would
   alter what the window shows and nothing about the conversation.
@@ -152,6 +157,38 @@ the top bar's spend readout, which means money.
 by the call id, which `approve_call` completes. The wait is raced against the
 turn's cancellation token, because a dismissed prompt or a closed window would
 otherwise park the turn forever.
+
+### The Ask position on the Claude Code engine (2026-09-16, nightshift backlog 084)
+
+The same `tool-approval` event and the same `pendingApprovals` list carry a
+call the CLI **deferred** — the protocol is in
+[service-agent.md](service-agent.md#the-ask-position-the-defer-hook-and-the-decision-file-2026-09-16-nightshift-backlog-084).
+On this side:
+
+- `connect_agent` takes `ask`; with it (and approval on) the spec gets an
+  `AskSpec` whose hook is `current_exe() --permission-hook`, the MCP server is
+  started with `--ask` so the prompt tool the CLI insists on exists, and the
+  rail's `permission_mode` reads `default (ask)`.
+- `send_agent` points the agent at `<log dir>/ask/<chat id>/` before the turn,
+  then loops: a `deferred` outcome emits the `tool-approval` event, waits on
+  `AppState.ask` (an `AskGate`, raced with Stop), writes the answer for the
+  hook, and resumes into the same `Recorder` — one Nightloom turn, however
+  many CLI processes. Stop while a prompt is up refuses the call on disk so
+  the next turn's hook delivers the refusal and no later "allow for this
+  chat" can run it unasked.
+- `approve_call` answers the deferred gate first when the id is one of its
+  calls: `allow`, `always` (a rule in the chat's `rules.json` — not the
+  process-wide policy), `deny` with the reason; the new optional `answer` is
+  the `updatedInput` a question or a plan sends back.
+- `ApprovalPrompt.svelte` renders three shapes on this engine, inline under
+  the paused call in the live turn (the design's placement): the permission
+  prompt with **Allow · Allow for this chat · Deny** and the reason field
+  always shown; the question form for `AskUserQuestion` (radio rows, checkbox
+  rows for `multiSelect`, an "Other" text, *Answer* / *Skip — let it
+  decide*); the plan card for `ExitPlanMode` (*Approve* / *Keep planning*
+  with an optional note). The API engine's prompt is unchanged.
+- Reads inside the working directory never pause; a read outside it goes to
+  the prompt tool and is refused with a sentence the model can act on.
 
 The `AutoApprove` policy lives in `AppState`, **not** in `connect` — the rail
 re-connects on every knob change, and rebuilding the policy there would silently

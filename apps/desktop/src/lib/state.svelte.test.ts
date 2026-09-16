@@ -10,6 +10,7 @@ import {
   newChatLabel,
   newChatSelected,
   newSession,
+  planUsageFromTurn,
   promptLayerEdits,
   promptLayersOff,
   roundCost,
@@ -525,5 +526,54 @@ describe("newSession — a state, not a file", () => {
 
   it("is not selected while a chat is open", () => {
     expect(newChatSelected()).toBe(false);
+  });
+});
+
+// The plan chip from the turn (nightshift backlog 073): CLI 2.1.263's
+// rate_limit_event carries both windows' share used; an older build's
+// carries none, and none is no reading rather than zero.
+describe("planUsageFromTurn", () => {
+  it("reads both windows off unifiedWindows as whole percentages with ISO reset times", () => {
+    const now = 1_789_544_000_000;
+    const u = planUsageFromTurn(
+      {
+        status: "allowed_warning",
+        rateLimitType: "seven_day",
+        resetsAt: 1789552800,
+        isUsingOverage: false,
+        utilization: 0.86,
+        unifiedWindows: {
+          five_hour: { utilization: 0.85, resetsAt: 1789551600 },
+          seven_day: { utilization: 0.86, resetsAt: 1789552800 },
+        },
+      },
+      now,
+    );
+    expect(u).toEqual({
+      five_hour: 85,
+      seven_day: 86,
+      sampled_at_ms: now,
+      age_seconds: 0,
+      stale: false,
+      five_hour_resets_at: new Date(1789551600 * 1000).toISOString(),
+      seven_day_resets_at: new Date(1789552800 * 1000).toISOString(),
+      source: "turn",
+    });
+  });
+
+  it("is null for the 2.1.237 shape, no plan at all, or a window without a figure", () => {
+    expect(planUsageFromTurn(null)).toBeNull();
+    expect(
+      planUsageFromTurn({ status: "allowed", rateLimitType: "five_hour", resetsAt: 1, isUsingOverage: false }),
+    ).toBeNull();
+    expect(
+      planUsageFromTurn({
+        status: "allowed",
+        rateLimitType: "five_hour",
+        resetsAt: 1,
+        isUsingOverage: false,
+        unifiedWindows: { five_hour: { utilization: null, resetsAt: 1 }, seven_day: null },
+      }),
+    ).toBeNull();
   });
 });

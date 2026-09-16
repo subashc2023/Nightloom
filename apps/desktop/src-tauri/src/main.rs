@@ -88,6 +88,11 @@ struct AppState {
     /// The half that resolves prompts, kept separately so `approve_call` can
     /// reach it without downcasting out of the policy.
     gate: Arc<WindowApprover>,
+    /// Where an agent turn waits for the answer to a call the CLI deferred
+    /// (2026-09-16, nightshift backlog 084). Its own gate rather than
+    /// `WindowApprover` because the answer carries a payload — a question's
+    /// answers, an approved plan — that the engine's `Decision` does not.
+    ask: Arc<nightloom_service::agent::AskGate>,
     /// MCP servers, started once per workspace and kept.
     ///
     /// Cached rather than reconnected because the rail re-connects on every
@@ -1210,6 +1215,7 @@ async fn connect_agent(
     budget: Option<f64>,
     system: Option<String>,
     preamble: Option<bool>,
+    ask: Option<bool>,
 ) -> Result<ConnectedInfo, String> {
     // Same rule as `connect`: an open project wins over the rail's saved
     // folder, or a chat filed under a project would be running somewhere
@@ -1295,6 +1301,11 @@ async fn connect_agent(
         // is `bypassPermissions`.
         spec.permission_mode =
             Some(AgentSpec::headless_permission_mode(approval.unwrap_or(true)).into());
+        // The Ask position (2026-09-16, nightshift backlog 084): the CLI
+        // pauses on each call a person should decide, this binary is its
+        // hook, and the window asks. Only with approval on — off is "run
+        // everything", and Ask is the opposite of that.
+        let ask = ask.unwrap_or(false) && approval.unwrap_or(true);
         // Nightloom's own tools on this engine — search_chats, read_chat,
         // remember, fetch_page — served by the binary the app is running as
         // (`--mcp-serve` at the top of `main`), because the CLI is not on
@@ -1313,6 +1324,18 @@ async fn connect_agent(
             // `remember`; the two readers and the fetch stay (2026-09-15).
             if mode.writes_nothing() {
                 args.push("--no-remember".into());
+            }
+            if ask {
+                // The permission host the CLI is pointed at, which must be a
+                // tool that exists (`agent::ask::PROMPT_TOOL` has the
+                // measurement); served by the same process as the rest.
+                args.push("--ask".into());
+                spec.ask = Some(nightloom_service::agent::AskSpec {
+                    hook: vec![exe.to_string_lossy().into_owned(), "--permission-hook".into()],
+                    // Per chat; `send_agent` points it at the open chat's
+                    // directory before each turn, once the chat exists.
+                    dir: PathBuf::new(),
+                });
             }
             spec.mcp_config = Some(
                 serde_json::json!({
@@ -1380,7 +1403,14 @@ async fn connect_agent(
             binary: resolved_binary,
             version,
             subscription: spec.use_subscription,
-            permission_mode: spec.permission_mode.clone(),
+            // What the CLI is actually started in: Ask is Manual mode with
+            // the hook, which `args()` sends as `default` whatever the
+            // field says.
+            permission_mode: if spec.ask.is_some() {
+                Some("default (ask)".into())
+            } else {
+                spec.permission_mode.clone()
+            },
             safe_mode: spec.safe_mode,
             resume: spec.resume.clone(),
         }),
@@ -1770,6 +1800,17 @@ async fn send_agent(
     if let Some(carried) = carried {
         input.text = carried;
     }
+    // The Ask position's files live beside the chat's log, per chat
+    // (`agent::ask`): `<log dir>/ask/<chat id>/`. An ephemeral chat has no
+    // log and no Ask (`AgentSpec::apply_mode` drops it), so nothing to
+    // point at is the expected case there.
+    let ask_dir = session
+        .log_path()
+        .and_then(|p| p.file_stem().map(|s| s.to_os_string()))
+        .map(|stem| log_dir.join("ask").join(stem));
+    if let Some(dir) = &ask_dir {
+        agent.set_ask_dir(dir.clone());
+    }
 
     let cancel = CancellationToken::new();
     *state.cancel.lock().unwrap() = cancel.clone();
@@ -1797,7 +1838,74 @@ async fn send_agent(
         let _ = app.emit("turn-event", &e);
         recorder.push(&e);
     };
-    let result = agent.run_turn(input, &cancel, &mut on_event).await;
+    let mut result = agent.run_turn(input, &cancel, &mut on_event).await;
+
+    // The Ask position's round trip (2026-09-16, nightshift backlog 084).
+    // One Nightloom turn spans every CLI process it takes: the process
+    // that deferred is gone, the call is open in `recorder`, the window is
+    // asked through the same `tool-approval` event the API engine uses,
+    // and the answer — written to the chat's ask directory for the hook to
+    // read — is followed by a `--resume` that runs or refuses the call and
+    // carries on, into this same recorder, until a process ends without
+    // deferring. Kept as one turn rather than ended at the deferral so the
+    // log's pairing holds: the deferred `tool_use` gets its real result
+    // from the resume, not an orphan marker and then a duplicate.
+    while let Ok(outcome) = &result
+        && let Some(call) = outcome.deferred.clone()
+    {
+        let Some(dir) = ask_dir.clone() else {
+            break;
+        };
+        let session_id = outcome.session_id.clone();
+        let rx = state.ask.wait(&call.id);
+        let _ = app.emit(
+            "tool-approval",
+            ApprovalRequest {
+                id: &call.id,
+                name: &call.name,
+                input: &call.input,
+                effect: nightloom_core::Effect::Mutating,
+            },
+        );
+        let answer = tokio::select! {
+            _ = cancel.cancelled() => None,
+            a = rx => a.ok(),
+        };
+        let ask = nightloom_service::agent::AskDir::new(dir);
+        let Some(answer) = answer else {
+            // Stopped, or the window let go of the prompt. The call stays
+            // pending in the CLI's session on disk, and a later "allow for
+            // this chat" on its tool would run it unasked — so it is
+            // refused on disk now, for the next turn's hook to deliver
+            // (measured: `m084-9-deny-stale.jsonl`). The recorder closes it
+            // with the orphan marker at `finish`.
+            let _ = ask.write(
+                &call,
+                &nightloom_service::agent::Answer::Deny {
+                    reason: "the turn was stopped before this was approved".into(),
+                },
+            );
+            state.ask.abandon_all();
+            if let Ok(o) = &mut result {
+                o.notices.push("stopped while waiting for your answer".into());
+                o.deferred = None;
+            }
+            break;
+        };
+        if let Err(e) = ask.write(&call, &answer) {
+            if let Ok(o) = &mut result {
+                o.notices.push(format!("could not record the answer: {e}"));
+                o.deferred = None;
+            }
+            break;
+        }
+        // The resume continues the session that deferred; adopting it here
+        // is what `follow_on` would do after the turn, brought forward.
+        if let Some(id) = &session_id {
+            agent.set_resume(Some(id.clone()));
+        }
+        result = agent.resume_deferred(&call, &cancel, &mut on_event).await;
+    }
 
     match result {
         Ok(outcome) => {
@@ -1823,6 +1931,40 @@ async fn send_agent(
                 .model
                 .as_deref()
                 .and_then(|m| nightloom_service::context_limit(ProviderKind::Anthropic, m));
+            // What the model may ask about its own window next turn
+            // (nightshift backlog 073): the newest round's prompt plus
+            // output — the gauge's figure — against the window, written
+            // to the config dir for the MCP server's `context_status`.
+            // Best-effort: a status file that failed to write is a notice,
+            // not a failed turn.
+            if let Some(config) = project::config_dir() {
+                let used = session
+                    .events()
+                    .iter()
+                    .rev()
+                    .find_map(|e| match e {
+                        nightloom_core::SessionEvent::AssistantMessage { usage, .. } => {
+                            Some(usage.input_tokens + usage.output_tokens)
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or(0);
+                let turns = session
+                    .events()
+                    .iter()
+                    .filter(|e| matches!(e, nightloom_core::SessionEvent::UserMessage { .. }))
+                    .count() as u32;
+                let status = nightloom_service::mcp_server::ContextStatus::new(
+                    session.id.clone(),
+                    outcome.model.clone(),
+                    used,
+                    context_limit.map(|n| n as u64),
+                    turns,
+                );
+                if let Err(e) = nightloom_service::mcp_server::write_context_status(&config, &status) {
+                    let _ = app.emit("turn-notice", format!("context status not written: {e}"));
+                }
+            }
             Ok(AgentTurn {
                 model: outcome.model,
                 context_limit,
@@ -3024,6 +3166,20 @@ async fn refresh_usage_ledger() -> Result<nightloom_service::usage::UsageSummary
     .map_err(|e| format!("refreshing the usage ledger failed: {e}"))?
 }
 
+/// The plan's own five-hour and seven-day percentages, for the top bar of
+/// a Claude Code chat (nightshift backlog 073). Read from the Claude
+/// desktop app's sample file and the CLI's cache, whichever was sampled
+/// more recently — `nightloom_service::plan_usage` says why both. Nothing
+/// is estimated: a machine with neither file answers `source: "none"`.
+/// The frontend asks at turn end and on connect, never on a timer faster
+/// than the sample changes.
+#[tauri::command]
+async fn plan_usage() -> Result<nightloom_service::plan_usage::PlanUsage, String> {
+    tokio::task::spawn_blocking(nightloom_service::plan_usage::read)
+        .await
+        .map_err(|e| format!("reading the plan usage failed: {e}"))
+}
+
 /// Point new projects at a folder, or back at the default with `None`.
 ///
 /// **Moves nothing.** The projects already made are registered by their own
@@ -3855,6 +4011,43 @@ async fn reveal(state: State<'_, AppState>, path: Option<String>) -> Result<(), 
     project::reveal(&target).map_err(|e| e.to_string())
 }
 
+/// Which of the paths a reply named are real files, for the file cards
+/// under the reply (nightshift backlog 078). One answer per path, in order;
+/// null for anything that is not an existing regular file.
+#[tauri::command]
+fn named_files(paths: Vec<String>) -> Vec<Option<project::NamedFile>> {
+    project::named_files(&paths)
+}
+
+/// Show one file in the OS file manager, selected — the file card's Reveal.
+/// Nothing is created: a card names a file that was there when it was drawn,
+/// and if it has gone since, the error is the answer.
+#[tauri::command]
+fn reveal_file(path: String) -> Result<(), String> {
+    let target = PathBuf::from(path);
+    if !target.is_file() {
+        return Err(format!("{} is no longer there", target.display()));
+    }
+    project::reveal_file(&target).map_err(|e| e.to_string())
+}
+
+/// Open a file in the application the OS pairs it with — the file card's
+/// Open. Same terms as `reveal_file`.
+#[tauri::command]
+fn open_file(path: String) -> Result<(), String> {
+    let target = PathBuf::from(path);
+    if !target.is_file() {
+        return Err(format!("{} is no longer there", target.display()));
+    }
+    project::reveal(&target).map_err(|e| e.to_string())
+}
+
+/// Open an `https://` link in the browser — the artifact card's Open.
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    project::open_url(&url).map_err(|e| e.to_string())
+}
+
 /// Interrupt the in-flight turn or compaction, if any.
 #[tauri::command]
 fn cancel(state: State<'_, AppState>) {
@@ -3862,6 +4055,10 @@ fn cancel(state: State<'_, AppState>) {
     state
         .gate
         .deny_all("the turn was interrupted before this was approved");
+    // A deferred call's wait is raced against the token above, and the
+    // turn refuses the call on disk itself (`send_agent`); this only lets
+    // go of the receiver so nothing is left keyed by a dead call.
+    state.ask.abandon_all();
 }
 
 /// Answer one `tool-approval` prompt.
@@ -3876,7 +4073,31 @@ fn approve_call(
     name: String,
     decision: String,
     reason: Option<String>,
+    answer: Option<serde_json::Value>,
 ) -> Result<(), String> {
+    // A call the CLI deferred (nightshift backlog 084) is answered on its
+    // own gate, and "always" there is a rule for this chat, not the
+    // process-wide policy: `agent::ask::Answer::AllowForChat`. `answer` is
+    // the `updatedInput` a question or a plan sends back with an allow.
+    if state.ask.has(&id) {
+        use nightloom_service::agent::Answer;
+        let answer = match decision.as_str() {
+            "allow" => Answer::Allow {
+                updated_input: answer,
+            },
+            "always" => Answer::AllowForChat {
+                updated_input: answer,
+            },
+            "deny" => Answer::Deny {
+                reason: reason
+                    .filter(|r| !r.trim().is_empty())
+                    .unwrap_or_else(|| "the user declined this call".into()),
+            },
+            other => return Err(format!("unknown decision: {other}")),
+        };
+        state.ask.answer(&id, answer);
+        return Ok(());
+    }
     let decision = match decision.as_str() {
         "allow" => Decision::Allow,
         "always" => {
@@ -4267,6 +4488,19 @@ fn main() {
         }
         return;
     }
+    // `nightloom-desktop --permission-hook <dir>`: this binary as the CLI's
+    // `PreToolUse` hook for a chat in the Ask position (2026-09-16,
+    // nightshift backlog 084). Reads the call from stdin, answers from the
+    // chat's ask directory, prints one line — `agent::ask::run_hook`. The
+    // same reason as `--mcp-serve` for living here: the CLI spawns whatever
+    // path it was given, and this binary is the one that is always present.
+    if argv.first().map(String::as_str) == Some("--permission-hook") {
+        if let Err(e) = nightloom_service::agent::ask::run_hook(&argv[1..]) {
+            eprintln!("nightloom-desktop --permission-hook: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
 
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
@@ -4320,6 +4554,7 @@ fn main() {
                 // can change something outside the conversation.
                 approval: Arc::new(AutoApprove::new(gate.clone())),
                 gate,
+                ask: Arc::new(nightloom_service::agent::AskGate::new()),
                 mcp: tokio::sync::Mutex::new(None),
                 dreaming: tokio::sync::Mutex::new(()),
                 dream_cancel: Arc::new(std::sync::Mutex::new(CancellationToken::new())),
@@ -4385,6 +4620,7 @@ fn main() {
             set_projects_folder,
             usage_ledger,
             refresh_usage_ledger,
+            plan_usage,
             resolve_new_project_path,
             new_project,
             open_project,
@@ -4410,6 +4646,10 @@ fn main() {
             capture,
             cancel_capture,
             reveal,
+            named_files,
+            reveal_file,
+            open_file,
+            open_url,
             nightshift::nightshift_projects,
             nightshift::nightshift_project,
             nightshift::nightshift_enable,
