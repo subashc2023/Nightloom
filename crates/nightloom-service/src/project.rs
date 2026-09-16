@@ -1138,7 +1138,13 @@ fn walk_notes(base: &Path, dir: &Path, depth: usize, out: &mut Vec<Note>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
-    for entry in entries.flatten() {
+    // In name order, not the filesystem's: APFS hands entries back sorted
+    // and ext4 does not, so which notes survive the cap mid-walk differed
+    // between a Mac and CI's Linux runner (the vault-folders test) — and a
+    // listing that depends on the disk's hash order is not a listing.
+    let mut entries: Vec<_> = entries.flatten().collect();
+    entries.sort_by_key(|e| e.file_name());
+    for entry in entries {
         if hidden(&entry) {
             continue;
         }
