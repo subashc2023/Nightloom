@@ -1071,11 +1071,20 @@
     opacity: 0.6;
     cursor: default;
   }
+  /* The row's tools (rename, trash) are out of the flow until the row is
+     hovered or one of them has keyboard focus — zero width, no padding —
+     so the name gets the whole row before it truncates (nightshift backlog
+     110: "it should say as much as it can"). On hover they take their
+     width back and the name shortens to make room, where it did before.
+     Invisible-but-present (`opacity: 0` alone) kept their width reserved
+     and the name was cut with space sitting empty at its right. */
   .delete {
     background: transparent;
     border: none;
     color: var(--dim);
-    padding: 0 0.4rem;
+    padding: 0;
+    width: 0;
+    overflow: hidden;
     cursor: pointer;
     border-radius: 8px;
     flex-shrink: 0;
@@ -1085,6 +1094,8 @@
   }
   .session-item:hover .delete,
   .delete:focus-visible {
+    width: auto;
+    padding: 0 0.4rem;
     opacity: 1;
   }
   .delete:hover {
@@ -1164,7 +1175,10 @@
   }
 
   .rename-btn {
-    padding: 0 0.3rem;
+    padding: 0;
+    width: 0;
+    overflow: hidden;
+    flex-shrink: 0;
     font-size: 0.75rem;
     color: var(--dim);
     background: none;
@@ -1175,6 +1189,8 @@
 
   .session-item:hover .rename-btn,
   .rename-btn:focus-visible {
+    width: auto;
+    padding: 0 0.3rem;
     opacity: 1;
   }
 
