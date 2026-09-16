@@ -532,7 +532,7 @@
   {/each}
   {#if moonAlone}
     <div class="working" role="status" aria-label={working}>
-      <span class="roll" aria-hidden="true"><Icon name="moon" size={14} /></span>
+      <span class="roll" aria-hidden="true"><Icon name="moon" size={20} /></span>
       <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
       <span class="working-text">{working}</span>
     </div>
@@ -786,8 +786,6 @@
     width: 52px;
   }
   .roll :global(svg) {
-    width: 20px;
-    height: 20px;
     animation: roll 1.5s ease-in-out infinite alternate;
   }
   @keyframes roll {
