@@ -65,7 +65,7 @@
     setThreshold as setHandoffThreshold,
     threshold as handoffThreshold,
   } from "./handoff.svelte";
-  import { onDestroy, untrack } from "svelte";
+  import { onDestroy, tick, untrack } from "svelte";
   import { isMac } from "./platform";
   import Icon from "./Icon.svelte";
   import Kbd from "./Kbd.svelte";
@@ -387,7 +387,15 @@
     filter = "";
     addDraft = "";
     replacing = false;
+    // The nav column scrolls, and a pane picked by key (backlog 109) can
+    // sit past its edge — ⌘7 at the bottom while the column shows the
+    // providers, ⌘1 at the top while it shows Palette. Bring the row in
+    // (his ask, 2026-09-16); `nearest` leaves a visible row where it is.
+    void tick().then(() =>
+      navEl?.querySelector<HTMLElement>(".nav-item.active")?.scrollIntoView({ block: "nearest" }),
+    );
   }
+  let navEl = $state<HTMLElement | null>(null);
 
   /** Which of the key card's states a provider is in. */
   function keyState(p: ProviderInfo): "stored" | "env" | "local" | "none" {
@@ -781,7 +789,7 @@
 {/snippet}
 
 <div class="modal">
-  <nav class="nav">
+  <nav class="nav" bind:this={navEl}>
     <div class="nav-h">Settings</div>
     <div class="nav-title">Providers<Kbd keys={keyOf(0)} dim /></div>
     {#each app.providers as p (p.kind)}
