@@ -2029,7 +2029,7 @@ async fn send_agent(
                     session.id.clone(),
                     outcome.model.clone(),
                     used,
-                    context_limit.map(|n| n as u64),
+                    context_limit,
                     turns,
                 );
                 if let Err(e) =
