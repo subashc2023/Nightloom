@@ -100,6 +100,12 @@
   // Where the chat goes once the plan is approved (backlog 085, "his pick
   // on the card"): Ask keeps the prompts, Auto hands the rest to the CLI's
   // classifier. Ask first, since it is the position that keeps asking.
+  // The Auto radio says "Manual on this account" (the whole-project review
+  // of 2026-09-16, F6): every `auto` run of the night came up as the CLI's
+  // `default` permission mode — `auto` is not available to this account's
+  // headless sessions (blocker 079, open) — and the position then has no
+  // hook and no prompt tool, so its first write is refused. The label is
+  // honest until 079 answers; the position itself is unchanged.
   let then = $state<"ask" | "auto">("ask");
 
   function onDeny() {
@@ -207,7 +213,7 @@
       <span class="then" role="radiogroup" aria-label="after approval">
         <span class="then-l">then</span>
         <label class="then-o"><input type="radio" name="then-{req.id}" value="ask" bind:group={then} /> Ask</label>
-        <label class="then-o"><input type="radio" name="then-{req.id}" value="auto" bind:group={then} /> Auto</label>
+        <label class="then-o" title="Claude Code's auto mode is not available to this account's headless sessions; the chat starts in Manual, with no prompts, so its first write is refused (blocker 079)"><input type="radio" name="then-{req.id}" value="auto" bind:group={then} /> Auto (Manual on this account)</label>
       </span>
       <button
         class="btn deny"

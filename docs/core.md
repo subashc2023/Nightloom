@@ -422,6 +422,16 @@ engine records the fork's own). `upto` must be a live user message, on
 and an ephemeral parent forks to another chat with no log. The parent is
 never touched: it keeps the turn being replaced and everything after it.
 
+**Added 2026-09-16 (nightshift backlog 086; the section above predates
+it).** `ForkedFrom` gained an optional `reason`, written only as
+`"handoff"`, for the second way to make a fork:
+`Session::continued_from(dir)` — a fresh chat that continues a full one
+from `HANDOFF.md`. Nothing is carried (the point is an empty window), so
+`index` is the parent's whole length, the mode is the parent's, and the
+parent is untouched. Absent — and left off the line — on an edit-and-send
+fork, which is what the field's absence has always meant; a parser written
+from the paragraph above still parses, but a fork can now carry zero events.
+
 ## Recorded, never re-derived
 
 ### Cost (`SessionEvent::AssistantMessage.cost`, `Session::cost()`)

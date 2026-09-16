@@ -161,8 +161,10 @@
     app.draft.agentModel = alias;
     apply();
   }
-  /** The CLI's effort levels (backlog 076), as `claude --help` lists them. */
-  const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+  /** The CLI's effort levels (backlog 076), as `claude --help` lists them,
+   *  after *default* — the empty value, which sends no `--effort` at all
+   *  (review F15, 2026-09-16), as the fallback pills have `none`. */
+  const EFFORTS = ["", "low", "medium", "high", "xhigh", "max"];
   function pickEffort(e: string) {
     if (e === app.draft.agentEffort) return;
     app.draft.agentEffort = e;
@@ -415,7 +417,7 @@
       <div class="sect-h">
         <span class="ns-k">Effort</span>
         <Hint
-          text="Claude Code's --effort: how hard the model thinks per turn. high is the default it ships with; xhigh and max spend more thinking tokens and time, low fewer. A level the model does not support falls back to one it does."
+          text="Claude Code's --effort: how hard the model thinks per turn. default sends no flag and leaves the level to the CLI (high, unless its settings say otherwise); xhigh and max spend more thinking tokens and time, low fewer. A level the model does not support falls back to one it does."
           side="right"
         />
       </div>
@@ -426,10 +428,10 @@
             role="radio"
             aria-checked={e === app.draft.agentEffort}
             disabled={locked}
-            title="--effort {e}"
+            title={e ? `--effort ${e}` : "no --effort flag; the CLI's own default"}
             onclick={() => pickEffort(e)}
           >
-            {e}
+            {e || "default"}
           </button>
         {/each}
       </div>

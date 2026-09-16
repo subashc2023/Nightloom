@@ -272,13 +272,18 @@ pub struct AgentSpec {
     /// `remember` are its own durable memory, and the engine note says so.
     pub auto_memory: bool,
     /// Whether the CLI may compact the conversation itself when its window
-    /// fills (nightshift backlog 086, 2026-09-16). **Off by default on
-    /// every path** — a chat, a dream, a capture: he does not compact (a
-    /// compaction boundary in 2 of 610 sessions), and Nightloom's own
-    /// hand-off — a wrap-up into `HANDOFF.md` and a linked new chat — is
-    /// what the window filling means here. Off is sent two ways, both
-    /// read from the CLI binary (2.1.263; nightshift
-    /// `notes/runner-design/086-measurements-2026-09-16.md`):
+    /// fills (nightshift backlog 086, 2026-09-16). **On by default — the
+    /// CLI's own default — and off for a chat**, which `connect_agent`
+    /// sets: there he does not compact (a compaction boundary in 2 of 610
+    /// sessions), and Nightloom's own hand-off — a wrap-up into
+    /// `HANDOFF.md` and a linked new chat — is what the window filling
+    /// means. A dream or a capture has no window, no hand-off card and
+    /// nobody watching, so for those the CLI's compaction stays as the
+    /// only thing between a long pass and its prompt-too-long error
+    /// (the whole-project review of 2026-09-16, F4; ~~off by default on
+    /// every path — a chat, a dream, a capture~~ left them with nothing).
+    /// Off is sent two ways, both read from the CLI binary (2.1.263;
+    /// nightshift `notes/runner-design/086-measurements-2026-09-16.md`):
     /// `autoCompactEnabled: false` in the one `--settings` JSON, the
     /// documented key with default true, and `DISABLE_AUTO_COMPACT=1` in
     /// the child's environment, which the code checks before it reads the
@@ -507,7 +512,7 @@ impl AgentSpec {
             append_system_prompt: None,
             safe_mode: false,
             auto_memory: true,
-            auto_compact: false,
+            auto_compact: true,
             prompt_suggestions: false,
             resume: None,
             fork_session: false,
@@ -869,6 +874,16 @@ pub struct ClaudeCodeAgent {
     /// what to *call* the answer, which matters wherever a model id is looked
     /// up rather than displayed: an alias is in no limits or pricing table.
     resolved: Option<String>,
+    /// A call a Stop left pending, refused on disk for the next turn's hook
+    /// to deliver, with the session it is pending in (the whole-project
+    /// review of 2026-09-16, F1). The next turn that resumes that session
+    /// opens with the refusal as its first line — a `tool_result` for a
+    /// call its process never announced — so its translator is seeded
+    /// from this, as a resume's is, and the result renders under the
+    /// call's own name rather than `unknown`. Cleared by [`Self::follow_on`]
+    /// once a turn has landed. (The log side is the recorder's: it drops a
+    /// result for a call the turn never opened.)
+    refused: Option<(String, DeferredCall)>,
 }
 
 impl ClaudeCodeAgent {
@@ -876,6 +891,7 @@ impl ClaudeCodeAgent {
         Self {
             spec,
             resolved: None,
+            refused: None,
         }
     }
 
@@ -903,6 +919,16 @@ impl ClaudeCodeAgent {
         if let Some(model) = &outcome.model {
             self.resolved = Some(model.clone());
         }
+        // A turn has landed: the refusal it opened with, if any, is delivered.
+        self.refused = None;
+    }
+
+    /// Remember a deferred call the shell refused on disk without running
+    /// it (a Stop while the prompt was up), pending in `session`: the next
+    /// turn resuming that session opens with its result (see the field).
+    /// Nothing to remember without a session to resume.
+    pub fn note_refused(&mut self, session: Option<&str>, call: DeferredCall) {
+        self.refused = session.map(|s| (s.to_string(), call));
     }
 
     /// Point at a specific session, or at none.
@@ -1010,7 +1036,13 @@ impl ClaudeCodeAgent {
         on_event: &mut (dyn FnMut(TurnEvent) + Send),
     ) -> Result<AgentOutcome, AgentError> {
         let input = input.into();
-        self.drive(&self.spec, Some(input), Translator::new(), cancel, on_event)
+        let translator = match &self.refused {
+            Some((session, call)) if self.spec.resume.as_deref() == Some(session) => {
+                Translator::resuming(call)
+            }
+            _ => Translator::new(),
+        };
+        self.drive(&self.spec, Some(input), translator, cancel, on_event)
             .await
     }
 
@@ -1849,10 +1881,10 @@ mod tests {
         assert_eq!(&a[i + 1..i + 6], READ_ONLY_TOOLS);
         assert!(a.iter().any(|x| x == "--no-session-persistence"), "{a:?}");
         // No resume, no Ask: the hook is not registered on an ephemeral chat
-        // (`--settings` still carries backlog 086's auto-compact switch).
+        // (a `--settings` JSON, when a chat's auto-compact switch puts one
+        // there, must not carry it either).
         assert!(s.ask.is_none());
-        let i = a.iter().position(|x| x == "--settings").unwrap();
-        assert!(!a[i + 1].contains("hooks"), "{a:?}");
+        assert!(!a.iter().any(|x| x.contains("hooks")), "{a:?}");
         // Before the caller's own trailing arguments, like every other flag.
         s.extra_args = vec!["--x".into()];
         let a = s.args("hi");
@@ -1902,15 +1934,14 @@ mod tests {
         let a = s.args("hi");
         assert!(a.iter().any(|x| x == "--settings"));
         assert!(a.iter().any(|x| x == "--setting-sources"));
-        // Off, none of it leaks (`--settings` still carries the
-        // auto-compact switch of backlog 086, so it is checked by content).
+        // Off, none of it leaks — checked by content, since a chat's
+        // auto-compact switch (backlog 086) may put a `--settings` there.
         let bare = spec().args("hi");
         assert!(
             !bare.iter().any(|x| x == "--permission-prompt-tool"),
             "{bare:?}"
         );
-        let i = bare.iter().position(|x| x == "--settings").unwrap();
-        assert!(!bare[i + 1].contains("hooks"), "{bare:?}");
+        assert!(!bare.iter().any(|x| x.contains("hooks")), "{bare:?}");
     }
 
     /// The memory switch (nightshift backlog 088): off is
@@ -1940,18 +1971,42 @@ mod tests {
         assert_eq!(v["autoMemoryEnabled"], false);
         assert!(v["hooks"]["PreToolUse"][0]["hooks"][0]["command"].is_string());
 
-        // Memory on and no hook: the JSON still carries the auto-compact
-        // switch (backlog 086, off on every path), and nothing else.
-        let a = spec().args("hi");
+        // Memory on, no hook, compaction off (a chat's shape, backlog 086):
+        // the JSON carries the auto-compact switch and nothing else.
+        let mut s = spec();
+        s.auto_compact = false;
+        let a = s.args("hi");
         let i = a.iter().position(|x| x == "--settings").unwrap();
         let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
         assert_eq!(v["autoCompactEnabled"], false);
         assert!(v.get("autoMemoryEnabled").is_none());
         assert!(v.get("hooks").is_none());
-        // Compaction allowed and memory on: no `--settings` at all.
-        let mut s = spec();
-        s.auto_compact = true;
-        assert!(!s.args("hi").iter().any(|x| x == "--settings"));
+        // The default — a dream's or a capture's shape (review F4,
+        // 2026-09-16) — leaves compaction to the CLI: no `--settings` at all.
+        assert!(spec().auto_compact);
+        assert!(!spec().args("hi").iter().any(|x| x == "--settings"));
+    }
+
+    /// A call refused by a Stop is remembered against its session until a
+    /// turn lands (review F1, 2026-09-16); without a session there is no
+    /// resume to deliver it on, so nothing is kept.
+    #[test]
+    fn a_refused_call_is_kept_for_the_next_turn_and_cleared_when_one_lands() {
+        let mut agent = ClaudeCodeAgent::new(spec());
+        let call = DeferredCall {
+            id: "toolu_1".into(),
+            name: "Edit".into(),
+            input: serde_json::json!({}),
+        };
+        agent.note_refused(None, call.clone());
+        assert!(agent.refused.is_none(), "no session: nothing to deliver it on");
+        agent.note_refused(Some("sess-1"), call.clone());
+        assert_eq!(agent.refused.as_ref().map(|(s, c)| (s.as_str(), &c.id)), Some(("sess-1", &call.id)));
+        agent.follow_on(&AgentOutcome {
+            session_id: Some("sess-1".into()),
+            ..AgentOutcome::default()
+        });
+        assert!(agent.refused.is_none(), "delivered with the turn that landed");
     }
 
     /// The chat's directory is set after connect, once the chat exists,
@@ -2074,10 +2129,9 @@ mod tests {
         let a = agent.spec().args("next");
         assert_eq!(mode_of(&a), AgentSpec::headless_permission_mode(true));
         assert!(!a.iter().any(|x| x == "--permission-prompt-tool"), "{a:?}");
-        // `--settings` stays for backlog 086's auto-compact switch; the
-        // hook is what must be gone.
-        let i = a.iter().position(|x| x == "--settings").unwrap();
-        assert!(!a[i + 1].contains("hooks"), "{a:?}");
+        // A `--settings` may stay for a chat's auto-compact switch
+        // (backlog 086); the hook is what must be gone.
+        assert!(!a.iter().any(|x| x.contains("hooks")), "{a:?}");
         // Neither call does anything on a connection that is not asking,
         // nor on one in the Ask position (a plan the model entered on its
         // own): the chat stays where the rail shows it.

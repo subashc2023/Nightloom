@@ -209,6 +209,17 @@ impl<'a> Recorder<'a> {
                 content,
                 is_error,
             } => {
+                // A result for a call this turn never opened is not this
+                // turn's to record (the whole-project review of
+                // 2026-09-16, F1): it is the refusal of a call a Stop left
+                // pending, delivered by the next turn's process as its
+                // first line (measured, `m084-9-deny-stale.jsonl`), and
+                // the turn that was stopped already closed that call with
+                // the orphan marker. A second result for one id is a log
+                // no provider accepts on replay.
+                if !self.open.iter().any(|(id, _)| id == tool_use_id) {
+                    return;
+                }
                 // The first result of a round is what says the assistant
                 // message before it is complete.
                 self.flush_assistant(Some("tool_use"));
@@ -539,6 +550,43 @@ mod tests {
         };
         assert!(*is_error);
         assert!(content.contains("Do not assume it ran"));
+    }
+
+    /// The refusal of a call a Stop left pending arrives as the first
+    /// line of the next turn (review F1, 2026-09-16); the stopped turn
+    /// already closed that call, so the result has no open call here and
+    /// is not recorded — one result per call, whatever the stream says.
+    #[test]
+    fn a_result_for_a_call_this_turn_never_opened_is_dropped() {
+        let mut s = Session::new();
+        s.record_user("go");
+        let mut r = Recorder::new(&mut s, "m");
+        r.push(&TurnEvent::ToolResult {
+            tool_use_id: "stale".into(),
+            name: "Edit".into(),
+            content: "the turn was stopped before this was approved".into(),
+            is_error: true,
+        });
+        r.push(&call("c1"));
+        r.push(&result("c1"));
+        r.push(&TurnEvent::TextDelta {
+            text: "done".into(),
+        });
+        assert!(r.finish(Some("end_turn")));
+
+        let ids: Vec<&str> = s
+            .events()
+            .iter()
+            .filter_map(|e| match e {
+                SessionEvent::ToolResult { tool_use_id, .. } => Some(tool_use_id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids, ["c1"]);
+        // And nothing else of the stray result: no empty assistant
+        // message was flushed ahead of the round it did not belong to.
+        assert!(matches!(s.events()[2], SessionEvent::AssistantMessage { .. }));
+        assert!(matches!(s.events()[3], SessionEvent::ToolResult { .. }));
     }
 
     #[test]

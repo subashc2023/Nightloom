@@ -122,13 +122,22 @@ switched on.
 The mirror image, and it lives in the service crate rather than here because
 what it serves is the service's tools: `search_chats`, `read_chat`, `remember`
 and `fetch_page` (the API engine's `web_fetch` under a name that says what it
-is for). It exists for the Claude Code engine, which owns its own loop and tool
-set and so cannot be handed a `Vec<Box<dyn Tool>>` the way `Chat` is; passed to
-`claude -p` as `--mcp-config`, the four reach the model there as
-`mcp__nightloom__search_chats` and so on. The server is a subcommand of both
-binaries — `nightloom mcp-serve [--project <id>]` and `nightloom-desktop
---mcp-serve [--project <id>]` — so the desktop can name `current_exe()` in the
-config it hands over and never has to find a CLI that is usually not on PATH.
+is for) — **and, since 2026-09-16, `context_status`** (nightshift backlog
+073: the window's fill and the plan's usage, for the model to read; five
+tools, ~~four~~). It exists for the Claude Code engine, which owns its own
+loop and tool set and so cannot be handed a `Vec<Box<dyn Tool>>` the way
+`Chat` is; passed to `claude -p` as `--mcp-config`, the ~~four~~ five reach
+the model there as `mcp__nightloom__search_chats` and so on. The server is a
+subcommand of both binaries — `nightloom mcp-serve [--project <id>]` and
+`nightloom-desktop --mcp-serve [--project <id>]` — so the desktop can name
+`current_exe()` in the config it hands over and never has to find a CLI that
+is usually not on PATH. **Flags, corrected 2026-09-16** (the section above
+was written for `--project` alone; `mcp_server::parse_args` is the
+authority): `--no-remember` (2026-09-15; the four without `remember`, for a
+chat whose memory switch is off), `--dream <json>` (below), and `--ask`
+(2026-09-16, nightshift backlog 084: serves a sixth tool, `ask`, the Ask
+position's permission-prompt tool, withheld from the model's own list —
+[service-agent.md](service-agent.md) "The Ask position").
 
 The wire is the one the client above speaks: newline-delimited JSON-RPC 2.0 on
 stdio, `initialize` (capabilities `tools`, an `instructions` string saying which
@@ -157,7 +166,7 @@ from the config dir the registry lives under (`capture::session_dirs`).
 **A dream's server (2026-09-16, nightshift backlog 070).** Started with
 `--dream <json>` — `nightloom mcp-serve --dream …`, `nightloom-desktop
 --mcp-serve --dream …` — the server serves **one** tool, `propose_instructions`,
-and none of the four: the JSON (`mcp_server::DreamServe`: the store the
+and none of the ~~four~~ five: the JSON (`mcp_server::DreamServe`: the store the
 proposal is filed beside, the `ProposalTarget`, the path of the always-loaded
 file) is what `dream::run_on_agent` builds per target, and the tool is the same
 `ProposeInstructions::new(..).against(read_capped(file))` the API engine's
@@ -174,7 +183,8 @@ through `approval`; here the CLI's own permission system judges an
 would prompt twice — or, headless, deny once. A standing grant goes in
 `~/.claude/settings.json`, under `permissions.allow`, as `"mcp__nightloom__*"`
 (the way `mcp__openalex__*` already is on this machine), or per tool. Of the
-four, `search_chats` and `read_chat` are read-only: the user's own logs, on
+~~four~~ five (2026-09-16), `search_chats`, `read_chat` and `context_status`
+are read-only: the user's own logs and the turn's own figures, on
 this machine, and nothing changes. `remember` appends one line to the memory
 inbox — `Effect::Session` on the API engine, and the argument in `remember.rs`
 for why that write needs no gate holds here too. `fetch_page` leaves the

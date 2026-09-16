@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { RE_ASK, WRAP_UP, nextStage } from "./handoff.svelte";
+import { RE_ASK, WRAP_UP, nextStage, queueHold } from "./handoff.svelte";
 
 // The context-full hand-off (nightshift backlog 086): the stage machine
 // that decides when the wrap-up is asked, tested as the pure function it
@@ -42,5 +42,26 @@ describe("the wrap-up text", () => {
       expect(WRAP_UP).toContain(part);
     }
     expect(WRAP_UP).toMatch(/Then stop/);
+  });
+});
+
+// The composer's queue (backlog 089) at a turn's end: the whole-project
+// review of 2026-09-16 found it sending the next held message on the heels
+// of a stopped turn (F12) and with the wrap-up appended, unasked (F11).
+describe("queueHold", () => {
+  it("lets the queue send itself when nothing is due and nothing was stopped", () => {
+    expect(queueHold("idle", false)).toBeNull();
+    expect(queueHold("wrapped", false)).toBeNull();
+  });
+
+  it("holds while the hand-off is due, so the wrap-up never rides a queued message", () => {
+    expect(queueHold("due", false)).toBe("handoff");
+    // Once the wrap-up has gone the queue may send again.
+    expect(queueHold("wrapping", false)).toBeNull();
+  });
+
+  it("holds after a Stop, and names the hand-off first when both apply", () => {
+    expect(queueHold("idle", true)).toBe("stopped");
+    expect(queueHold("due", true)).toBe("handoff");
   });
 });

@@ -4,8 +4,10 @@
  *
  * He does not compact — a compaction boundary in 2 of 610 sessions — and
  * the nightshift contract's answer to a full window is a hand-off written
- * to disk. So the CLI's auto-compact is off on every path (the Rust side,
- * `AgentSpec::auto_compact`), and this is what happens instead:
+ * to disk. So the CLI's auto-compact is off for a chat (the Rust side,
+ * `AgentSpec::auto_compact`, set by `connect_agent`; ~~on every path~~ —
+ * a dream or a capture keeps the CLI's compaction since 2026-09-16, review
+ * F4), and this is what happens instead:
  *
  * 1. At the end of each agent turn the window's fill — the last reply's
  *    `input + output` over the CLI's context window, the gauge's own pair
@@ -95,6 +97,24 @@ export function withWrapUp(chat: string | null, text: string): string {
   handoff.stage = "wrapping";
   const body = text.trim();
   return body ? `${body}\n\n${WRAP_UP}` : WRAP_UP;
+}
+
+/**
+ * Why the composer's queue (nightshift backlog 089) waits for *Send next*
+ * at a turn's end instead of sending the next held message itself, or
+ * null when it may go. Two reasons, both from the whole-project review of
+ * 2026-09-16 (F11, F12): the hand-off is due — a message sent now would
+ * leave with the wrap-up under it, unasked, and the model would write
+ * HANDOFF.md and stop instead of doing what the message said — or the
+ * turn that just ended was one he stopped, and a new turn on its heels
+ * leaves no moment to take the message back (the CLI returns queued input
+ * to the box on an interrupt). *Send next* is the explicit choice either
+ * way: by then the hand-off bar is on screen, and the Stop is his.
+ */
+export function queueHold(stage: HandoffStage, stopped: boolean): "handoff" | "stopped" | null {
+  if (stage === "due") return "handoff";
+  if (stopped) return "stopped";
+  return null;
 }
 
 /** *Stay here*: back to idle, remembering the fill so only a higher one asks again. */

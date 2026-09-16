@@ -930,10 +930,16 @@ does; a resumed session is a start).
 ## Auto-compact off; the hand-off instead (2026-09-16, nightshift backlog 086)
 
 The CLI compacts a conversation itself when its window fills. Under
-Nightloom it does not, on any path — a chat, a dream, a capture
-(`AgentSpec::auto_compact`, false by default): he does not compact (a
+Nightloom a chat does not (`AgentSpec::auto_compact`, which
+`connect_agent` sets false): he does not compact (a
 compaction boundary in 2 of 610 of his sessions), and the nightshift
-contract's answer to a full window is a hand-off written to disk. Off is
+contract's answer to a full window is a hand-off written to disk.
+~~It does not, on any path — a chat, a dream, a capture (false by
+default)~~ — **revised 2026-09-16 (the whole-project review, F4)**: the
+field defaults to true, the CLI's own default, and only a chat turns it
+off. A dream or a capture is a long background pass with no window, no
+hand-off card and nobody watching, so the CLI's compaction stays as the
+only thing between it and the prompt-too-long error. Off is
 sent two ways, both read from the 2.1.263 binary rather than measured with
 a 100k-token turn (nightshift
 `notes/runner-design/086-measurements-2026-09-16.md`): `autoCompactEnabled:

@@ -1257,6 +1257,12 @@ async fn connect_agent(
     // Off unless the shell asked (nightshift backlog 083): the CLI waits
     // for the prediction before it exits, about six seconds a turn.
     spec.prompt_suggestions = prompt_suggestions.unwrap_or(false);
+    // A chat does not compact (nightshift backlog 086): the shell's
+    // hand-off — a wrap-up into HANDOFF.md and a linked new chat — is what
+    // its window filling means. Only a chat: a dream or a capture keeps the
+    // CLI's own compaction, having nothing else (the whole-project review
+    // of 2026-09-16, F4).
+    spec.auto_compact = false;
     // Same vault call and the same project context `connect` builds, and
     // gated on the same switch: off means "nothing but what I typed" on
     // both engines. The library prompt is the trailer rather than the
@@ -1918,6 +1924,11 @@ async fn send_agent(
                     reason: "the turn was stopped before this was approved".into(),
                 },
             );
+            // The next turn opens with that refusal (review F1, 2026-09-16):
+            // the agent seeds its translator so the result carries the
+            // call's name, and the recorder leaves it out of the log,
+            // where this turn's orphan marker already answers the call.
+            agent.note_refused(session_id.as_deref(), call.clone());
             state.ask.abandon_all();
             if let Ok(o) = &mut result {
                 o.notices.push("stopped while waiting for your answer".into());

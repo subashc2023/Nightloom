@@ -181,8 +181,13 @@ export interface ConnectionDraft {
    *  only meaningful with `approval` on. */
   agentPlan: boolean;
   /** `--effort` on the agent engine (backlog 076): `low`, `medium`, `high`,
-   *  `xhigh` or `max`; `high` by default, which is what his settings say
-   *  and what the model defaults to. Sent as spelled. */
+   *  `xhigh` or `max`, sent as spelled — or empty, the rail's *default*
+   *  position, which sends no flag and leaves the level to the CLI. Empty
+   *  by default (the whole-project review of 2026-09-16, F15: ~~`high` by
+   *  default, which is what his settings say and what the model defaults
+   *  to~~ meant every chat's command line gained `--effort high`, and a
+   *  rail saved before the segment existed read back as a choice he never
+   *  made). */
   agentEffort: string;
   /** `--fallback-model`: an alias the CLI retries with when the model is
    *  overloaded; empty is none. */
@@ -254,7 +259,7 @@ export function defaultDraft(): ConnectionDraft {
     agentSafeMode: false,
     agentAsk: false,
     agentPlan: false,
-    agentEffort: "high",
+    agentEffort: "",
     agentFallback: "",
     agentBudget: 0,
     provider: "anthropic",

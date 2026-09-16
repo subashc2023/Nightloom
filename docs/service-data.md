@@ -827,7 +827,7 @@ decides what the store does with it:
 | | normal | incognito | ephemeral |
 |---|---|---|---|
 | log on disk | yes | yes, `"mode":"incognito"` on the creation line | **none** — `Session::ephemeral()` is in memory; nothing under the sessions dir, ever |
-| listing (`store::list`, the sidebar) | yes | yes, `SessionSummary.mode` marks the row (`LISTING_VERSION` 2) | never — there is no file to list |
+| listing (`store::list`, the sidebar) | yes | yes, `SessionSummary.mode` marks the row (`LISTING_VERSION` ~~2~~ 3 — bumped for the fork line later on 2026-09-15; corrected here 2026-09-16) | never — there is no file to list |
 | the user's own sidebar search (`store::search`) | yes | yes — it is hidden from other *chats*, not from him | — |
 | chat index (`ChatIndex`) | admitted | a record with **no terms**, outside `n`/`df`/`len` (`INDEX_VERSION` 2) | — |
 | `search_chats` / `read_chat` | yes | never returned; refused by id ([service-tools.md](service-tools.md)) | — |

@@ -3058,6 +3058,7 @@ export async function send(
   documents: DocumentInput[] = [],
 ): Promise<void> {
   if (!app.connection || app.busy) return;
+  stopped = false;
   // A turn the model answers is not undoable, and nothing under it is:
   // a rewind lifted from under a reply would put the model in a
   // conversation it never had (nightshift backlog 064).
@@ -3250,7 +3251,23 @@ export function dismissAside(): void {
   app.aside = null;
 }
 
+/**
+ * Whether the turn now ending, or just ended, is one he stopped (the
+ * whole-project review of 2026-09-16, F12). A Stop ends the turn like any
+ * other end, so the composer's queue (backlog 089) would otherwise send
+ * the next held message the moment the stopped turn returned. Set by
+ * `cancelTurn` as it asks, cleared when the next send starts,
+ * read by the composer's `drain` through `queueHold`.
+ */
+let stopped = $state(false);
+export function turnWasStopped(): boolean {
+  return stopped;
+}
+
 export async function cancelTurn(): Promise<void> {
+  // Before the call, not after: the stopped turn can return before the
+  // cancel's own reply does, and the queue reads the flag at that return.
+  stopped = true;
   try {
     await api.cancel();
     // Cancelling refuses every parked prompt on the backend, so they stop
@@ -3258,6 +3275,7 @@ export async function cancelTurn(): Promise<void> {
     // them before that could strand a still-running turn with no prompt.
     app.pendingApprovals = [];
   } catch (e) {
+    stopped = false;
     addToast(String(e));
   }
 }

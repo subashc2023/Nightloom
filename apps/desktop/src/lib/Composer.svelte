@@ -1,7 +1,7 @@
 <script lang="ts">
   import Icon from "./Icon.svelte";
-  import { app, addToast, askAside, send, cancelTurn, continueChat } from "./state.svelte";
-  import { handoff, stayHere, threshold } from "./handoff.svelte";
+  import { app, addToast, askAside, send, cancelTurn, continueChat, turnWasStopped } from "./state.svelte";
+  import { handoff, queueHold, stayHere, threshold } from "./handoff.svelte";
   import { ghostFor } from "./suggestions.svelte";
   import {
     addAttachment,
@@ -45,8 +45,13 @@
    * Messages held while a turn runs (nightshift backlog 089, 2026-09-16).
    * ↵ during a turn queues instead of doing nothing; the tray above the box
    * lists the queue; when the turn ends the oldest goes as the next turn
-   * (`dispatch` → `drain`), and a Stop ends the turn like any other end, so
-   * the queue is why he stopped or he takes it back. Each row can be taken
+   * (`dispatch` → `drain`) — unless the turn was one he stopped, or the
+   * hand-off's wrap-up is due, in which case the queue waits for *Send
+   * next* (`queueHold`; the whole-project review of 2026-09-16, F11 and
+   * F12: before that a Stop sent the next message at once, and a message
+   * queued as the window filled left with the wrap-up under it, unasked).
+   * ~~a Stop ends the turn like any other end, so the queue is why he
+   * stopped or he takes it back~~ (2026-09-16). Each row can be taken
    * back into the box or dropped; ↑ in an empty box takes the newest back,
    * as the CLI does. Held in the draft store, so it is per chat, follows
    * the pending chat into the one it makes, and survives a relaunch. The
@@ -459,9 +464,17 @@
     await drain();
   }
 
-  /** Send the oldest held message as the next turn, if there is one. */
-  async function drain(): Promise<void> {
+  /** Why the queue is waiting rather than sending itself, if it is. */
+  const hold = $derived(queueHold(handoffHere ? handoff.stage : "idle", turnWasStopped()));
+
+  /**
+   * Send the oldest held message as the next turn, if there is one. At a
+   * turn's end the queue holds when `queueHold` says so; *Send next* is
+   * the explicit choice and goes regardless.
+   */
+  async function drain(explicit = false): Promise<void> {
     if (app.busy || !app.connection) return;
+    if (!explicit && hold) return;
     const q = shiftQueue(key);
     if (!q) return;
     await dispatch(q.text, q.attachments);
@@ -539,9 +552,9 @@
   {#if queue.length > 0}
     <div class="queue" role="list" aria-label="queued messages">
       <div class="queue-head">
-        <span class="ns-chip mono">queued · {app.busy ? "sent when this turn ends" : "waiting"}</span>
+        <span class="ns-chip mono">queued · {app.busy ? "sent when this turn ends" : hold === "stopped" ? "waiting — the turn was stopped" : hold === "handoff" ? "waiting — the hand-off is due" : "waiting"}</span>
         {#if !app.busy}
-          <button class="ns-btn ghost small" disabled={!app.connection} onclick={() => void drain()}>Send next</button>
+          <button class="ns-btn ghost small" disabled={!app.connection} onclick={() => void drain(true)}>Send next</button>
         {/if}
       </div>
       {#each queue as q, i (q.id)}

@@ -217,6 +217,17 @@ describe("loadLastConnection", () => {
     expect(loadLastConnection()!.selfCompact).toBe(false);
   });
 
+  it("reads an absent effort as the CLI's default, which sends no flag", () => {
+    // The whole-project review of 2026-09-16 (F15): a rail saved before the
+    // Effort segment existed must not read back as `high`, a choice he
+    // never made, and the default position is the one that sends nothing.
+    save({ provider: "anthropic", engine: "claude-code" });
+    expect(loadLastConnection()!.agentEffort).toBe("");
+    expect(defaultDraft().agentEffort).toBe("");
+    save({ provider: "anthropic", engine: "claude-code", agentEffort: "max" });
+    expect(loadLastConnection()!.agentEffort).toBe("max");
+  });
+
   it("reads the engine strictly, defaulting to provider", () => {
     // A stray value would land the rail on an engine with no controls
     // showing. A draft from before the agent engine has no field, and the

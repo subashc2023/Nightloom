@@ -839,9 +839,13 @@ reply has no thinking row at all; on the API engine an empty recorded block
 keeps its marker. `thinkingState(events)` — `none` / `hidden` / `shown` — and
 `modelOmitsThinking(model)` are exported for the top-bar chip and ⌘⇧T, which
 should read disabled with the same title when every thinking block in the
-chat is hidden; that hunk in `TopBar.svelte` is not yet made (the file was
+chat is hidden; ~~that hunk in `TopBar.svelte` is not yet made (the file was
 held by another build the night this landed — the patch is in nightshift
-`notes/runner-design/097-report-2026-09-16.md`). No new request parameter:
+`notes/runner-design/097-report-2026-09-16.md`)~~ — **made later the same
+night (corrected 2026-09-16):** `thinkingToggleDead(events, connection)` in
+`activity.ts` is the one function; `TopBar.svelte` disables the chip on it
+with `HIDDEN_THINKING_TITLE`, `App.svelte` gates ⌘⇧T on it, and
+`Palette.svelte` disables the palette row. No new request parameter:
 the summaries were already asked for (nightshift blocker 093 asks whether he
 wants a switch to stop asking).
 
@@ -1454,7 +1458,9 @@ message, else *New chat*. Nothing is sent anywhere: no push, no phone
 are in `src/lib/notify.ts`, pinned by `notify.test.ts`.
 
 Not built: a per-chat mute, and the third banner the design draws for a
-filled window (the handoff of backlog 086 does not exist yet). Clicking a
+filled window (~~the handoff of backlog 086 does not exist yet~~ — corrected
+2026-09-16: the hand-off landed later the same night, "The context-full
+hand-off" below; `notify.ts` still posts no banner for it). Clicking a
 banner activates Nightloom; it does not open the chat the banner names,
 because the plugin exposes no click event on desktop.
 
