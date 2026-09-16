@@ -370,10 +370,15 @@
     </div>
   {/if}
   <div class="card">
+    <!-- No autocorrect, capitalisation or spell-marking on a message to a
+         model: macOS was rewriting his words as he typed (2026-09-16). -->
     <textarea
       bind:this={ta}
       bind:value={() => text, (v) => setDraftText(key, v)}
       rows="1"
+      autocorrect="off"
+      autocapitalize="off"
+      spellcheck="false"
       placeholder={app.connection ? "Message…" : ""}
       disabled={!app.connection}
       oninput={autogrow}
