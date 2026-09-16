@@ -3,6 +3,7 @@
     app,
     openProjectFolder,
     showNewProject,
+    useProject,
     addToast,
     closeNightshift,
     deleteSession,
@@ -284,6 +285,17 @@
       ></button>
       <ProjectMenu close={() => (menu = false)} />
     {/if}
+    <!-- The two actions worth a click without opening the menu (his ask,
+         2026-09-16): a new project, and leaving this one. Open project…
+         stays in the menu — it is a folder picker, rarer than either. -->
+    <div class="project-actions">
+      <button class="ns-btn small" onclick={showNewProject} disabled={app.busy}>New project…</button>
+      {#if app.project}
+        <button class="ns-btn small ghost" onclick={() => void useProject(null)} disabled={app.busy}>
+          Leave project
+        </button>
+      {/if}
+    </div>
   </div>
 
   <nav class="nav" aria-label="Mode">
@@ -647,6 +659,11 @@
     color: var(--ink);
     text-align: left;
     font-family: inherit;
+  }
+  .project-actions {
+    display: flex;
+    gap: 6px;
+    padding: 6px 18px 0;
   }
   .chip:hover .chip-name {
     color: var(--accent-ink);
