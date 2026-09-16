@@ -1050,6 +1050,26 @@ conversation the model is not having. Every one of the three commands
 returns the transcript, and `send`/`fork` the fork's id, so the UI re-syncs
 from the log rather than patching its own copy — `rewind`'s contract.
 
+### The edit as an inline diff (nightshift backlog 105, 2026-09-16)
+
+~~The `edited` mark unfolds "the original" under the message.~~ **Since
+2026-09-16 the mark is a toggle**: clicked, the message is drawn once with
+what the edit removed struck through in the code diff view's red
+(`--del-bg`/`--del-fg`) and what it added in its green (`--add-bg`/
+`--add-fg`) — his "like Google Docs has a way of doing this for edits";
+clicked again, the plain current text. `textdiff.ts` (`wordDiff`, pure,
+tested) aligns the two texts by longest common subsequence over words,
+whitespace runs and single punctuation marks, so a changed full stop is
+its own mark and a spacing-only edit marks the spacing, with a cap past
+which the diff is one removal and one insertion. A user message diffs in
+its bubble; a reply diffs **block by block** — the transcript hands
+`AssistantMessage` each text segment's pre-edit text (`originals`, `""` for
+an appended block) and the toggle — over the **markdown source**,
+pre-wrapped in the transcript's face, since the source is what was edited
+and a mark inside rendered HTML would cross links and code spans. The
+folded "what was removed" under a removed turn is unchanged; the folded
+"the original" under an edited one is gone.
+
 ### Undo and redo (nightshift backlog 064, 2026-09-15)
 
 His ask: "a Command Y, which does redo … in all of the chat related or

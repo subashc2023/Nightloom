@@ -33,6 +33,7 @@
   } from "./edit";
   import { toolInputSummary } from "./transcriptPrefs.svelte";
   import { parseSubagentBlock } from "./subagent";
+  import { wordDiff } from "./textdiff";
   import { fmtShare, fmtTokens, shareOf, sizeTitle, turnSizes } from "./tokens";
   import { cacheState } from "./cache";
   import { moveScroll, recallScroll, rememberScroll, scrollKey, NEW_SCROLL_KEY } from "./scroll.svelte";
@@ -80,6 +81,10 @@
    * as its placeholder, greyed, with the original a click away; `editable`
    * is whether Edit is offered at all (a reply with a tool call is
    * remove-only). All three come from `edit.ts`, which mirrors the core.
+   * `originals` (backlog 105), on a reply, is per segment the block's text
+   * before its edit — `null` for a block that was not edited, `""` for the
+   * appended one — so the `edited` mark can draw each block's edit as a
+   * diff over the current text.
    */
   type Item = Body & {
     index: number;
@@ -87,6 +92,7 @@
     original: string | null;
     removed: boolean;
     editable: boolean;
+    originals?: (string | null)[];
   };
 
   // Project SessionEvents into renderable items. tool_result events are
@@ -116,7 +122,7 @@
     const edits = blockEdits(app.events);
     const gone = blockElisions(app.events);
     let index = -1;
-    const push = (body: Body, original: string | null = null) =>
+    const push = (body: Body, original: string | null = null, originals?: (string | null)[]) =>
       out.push({
         ...body,
         index,
@@ -124,6 +130,7 @@
         original,
         removed: removed[index],
         editable: isEditable(app.events, index),
+        ...(originals ? { originals } : {}),
       });
     for (const e of app.events) {
       index++;
@@ -150,6 +157,7 @@
         const whole = removed[index];
         let placed = false;
         const said: string[] = [];
+        const originals: (string | null)[] = [];
         e.blocks.forEach((b, block) => {
           switch (b.type) {
             case "thinking":
@@ -182,7 +190,9 @@
               } else if (gone[index].has(block)) {
                 segs.push({ kind: "removed_text", block, text: b.text });
               } else {
-                segs.push({ kind: "text", text: edits[index].get(block) ?? b.text });
+                const now = edits[index].get(block);
+                segs.push({ kind: "text", text: now ?? b.text });
+                originals[segs.length - 1] = now != null ? b.text : null;
               }
               break;
             }
@@ -205,7 +215,10 @@
           }
         });
         const appended = edits[index].get(e.blocks.length);
-        if (appended != null && !whole) segs.push({ kind: "text", text: appended });
+        if (appended != null && !whole) {
+          segs.push({ kind: "text", text: appended });
+          originals[segs.length - 1] = "";
+        }
         if (whole && !placed) segs.unshift({ kind: "text", text: REMOVED_PLACEHOLDER });
         push(
           {
@@ -219,6 +232,7 @@
             },
           },
           whole || edits[index].size > 0 ? said.join("") : null,
+          !whole && edits[index].size > 0 ? originals : undefined,
         );
       } else if (e.event === "compaction") {
         push({ kind: "compaction", summary: e.summary });
@@ -301,6 +315,14 @@
   // about the edit being typed, not a clock.
   let editing = $state<EditState>(null);
   let editCacheLine = $state("");
+  // The edited mark's toggle (nightshift backlog 105): the turns whose edit
+  // is drawn as a diff over the current text — what the edit removed struck
+  // through, what it added marked — rather than as the plain text. Per
+  // turn index, this screen only; a click on the mark flips it.
+  let diffOpen = $state<Record<number, boolean>>({});
+  function toggleDiff(index: number): void {
+    diffOpen[index] = !diffOpen[index];
+  }
   let editorEl = $state<HTMLTextAreaElement | null>(null);
   // A reply's editor is one textarea per text block (backlog 066); the
   // first takes the focus and each grows to its own text.
@@ -636,7 +658,14 @@
                  review: "these buttons should be below, and should be
                  icons"); see `.turn-tools` below. -->
             {#if item.original !== null && !item.removed}
-              <span class="edited-mark" title="Edited; the original is below">edited</span>
+              <button
+                class="edited-mark"
+                class:on={!!diffOpen[item.index]}
+                type="button"
+                aria-pressed={!!diffOpen[item.index]}
+                title={diffOpen[item.index] ? "Edited — show the current text" : "Edited — show the edit as a diff"}
+                onclick={() => toggleDiff(item.index)}>edited</button
+              >
             {/if}
             <span class="ns-k">You · {relativeTime(item.at)}</span>
             <!-- The turn's own size (backlog 090): what it added to the
@@ -718,11 +747,19 @@
                   {/each}
                 </div>
               {/if}
-              {#if item.text}<div class="user-text">{item.text}</div>{/if}
+              {#if diffOpen[item.index] && item.original !== null && !item.removed}
+                <!-- The edit as a diff over the current text (backlog 105):
+                     the bubble's own face, the code diff view's colours. -->
+                <div class="user-text textdiff">
+                  {#each wordDiff(item.original, item.text) as op, k (k)}
+                    {#if op.kind === "del"}<del>{op.text}</del>{:else if op.kind === "add"}<ins>{op.text}</ins>{:else}{op.text}{/if}
+                  {/each}
+                </div>
+              {:else if item.text}<div class="user-text">{item.text}</div>{/if}
             </div>
-            {#if item.original !== null}
+            {#if item.original !== null && item.removed}
               <details class="original">
-                <summary>{item.removed ? "what was removed" : "the original"}</summary>
+                <summary>what was removed</summary>
                 <div class="original-text">{item.original}</div>
               </details>
             {/if}
@@ -841,15 +878,25 @@
               {controlsTitle}
               onremove={editable ? (block) => void removeBlock(item.index, block) : null}
               onrestore={editable ? (block) => void restoreBlock(item.index, block) : null}
+              originals={item.originals ?? null}
+              diff={!!diffOpen[item.index]}
             />
-            {#if item.original !== null}
+            {#if item.original !== null && item.removed}
               <details class="original">
-                <summary>
-                  {#if !item.removed}<span class="edited-mark">edited</span>{/if}
-                  {item.removed ? "what was removed" : "the original"}
-                </summary>
+                <summary>what was removed</summary>
                 <div class="original-text">{item.original}</div>
               </details>
+            {:else if item.original !== null}
+              <div class="edited-row">
+                <button
+                  class="edited-mark"
+                  class:on={!!diffOpen[item.index]}
+                  type="button"
+                  aria-pressed={!!diffOpen[item.index]}
+                  title={diffOpen[item.index] ? "Edited — show the current text" : "Edited — show the edit as a diff"}
+                  onclick={() => toggleDiff(item.index)}>edited</button
+                >
+              </div>
             {/if}
           {/if}
           {#if !item.superseded && !app.busy && item.removed}
@@ -1024,10 +1071,45 @@
   .edited-mark {
     font-family: var(--sans);
     font-size: 11px;
+    line-height: 1.5;
     color: var(--dim);
+    background: transparent;
     border: 1px solid var(--line2);
     border-radius: 999px;
     padding: 0 7px;
+    cursor: pointer;
+  }
+  .edited-mark:hover {
+    color: var(--ink);
+    border-color: var(--dim);
+  }
+  .edited-mark.on {
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+  .edited-mark:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+  .edited-row {
+    display: flex;
+    max-width: 640px;
+    padding: 2px 0 0;
+  }
+  /* The edit as a diff (backlog 105): the code diff view's colours on the
+     message's own text, removed spans struck through. */
+  .textdiff del {
+    background: var(--del-bg);
+    color: var(--del-fg);
+    text-decoration: line-through;
+    text-decoration-color: var(--del-fg);
+    border-radius: 3px;
+  }
+  .textdiff ins {
+    background: var(--add-bg);
+    color: var(--add-fg);
+    text-decoration: none;
+    border-radius: 3px;
   }
   /* The turn's size (backlog 090), in the gauge's mono figure style, and
      the gauge's own 56px bar scaled to the turn's share of the window. */

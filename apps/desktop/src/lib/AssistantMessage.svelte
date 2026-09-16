@@ -2,6 +2,7 @@
   import type { Segment } from "./state.svelte";
   import type { ApprovalRequest, Usage } from "./types";
   import { renderMarkdown } from "./markdown";
+  import { wordDiff } from "./textdiff";
   import { compactJson } from "./toolinput";
   import {
     flipOverride,
@@ -92,6 +93,8 @@
     onremove = null,
     onrestore = null,
     controlsTitle = "",
+    originals = null,
+    diff = false,
   }: {
     segs: Segment[];
     footer?: Footer | null;
@@ -114,6 +117,13 @@
     onrestore?: ((block: number) => void) | null;
     /** What hovering the controls says on this engine. */
     controlsTitle?: string;
+    /** Per segment, a text block's words before its edit (nightshift
+     *  backlog 105) — `null` where the block was not edited, `""` for one
+     *  the edit appended; absent on a reply never edited. */
+    originals?: (string | null)[] | null;
+    /** Draw each edited block as a diff over its current text rather than
+     *  as the rendered text: the transcript's `edited` mark toggles it. */
+    diff?: boolean;
   } = $props();
 
   // Per-block clicks, keyed by the block's stable id (`segmentIds`) rather
@@ -472,7 +482,17 @@
         {/if}
       </div>
     {:else if g.seg.kind === "text"}
-      <div class="markdown">{@html renderMarkdown(g.seg.text)}</div>
+      {#if diff && originals?.[g.i] != null}
+        {@const before = originals[g.i]!}
+        <!-- The edit as a diff over the markdown source (backlog 105): the
+             source is what he edited, and a mark inside rendered HTML would
+             have to cross links and code spans. The transcript's face. -->
+        <div class="markdown textdiff">
+          {#each wordDiff(before, g.seg.text) as op, k (k)}{#if op.kind === "del"}<del>{op.text}</del>{:else if op.kind === "add"}<ins>{op.text}</ins>{:else}{op.text}{/if}{/each}
+        </div>
+      {:else}
+        <div class="markdown">{@html renderMarkdown(g.seg.text)}</div>
+      {/if}
     {:else if g.seg.kind === "removed_tool" || g.seg.kind === "removed_text"}
       {@const seg = g.seg}
       <!-- A removed block's placeholder, greyed, the original a click
@@ -581,6 +601,25 @@
     font-size: var(--transcript-size, 16px);
     line-height: 1.55;
     color: var(--ink);
+  }
+  /* The edit as a diff (backlog 105): the source pre-wrapped in the same
+     face, the code diff view's colours, removed spans struck through. */
+  .textdiff {
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .textdiff del {
+    background: var(--del-bg);
+    color: var(--del-fg);
+    text-decoration: line-through;
+    text-decoration-color: var(--del-fg);
+    border-radius: 3px;
+  }
+  .textdiff ins {
+    background: var(--add-bg);
+    color: var(--add-fg);
+    text-decoration: none;
+    border-radius: 3px;
   }
   /* The activity block (backlog 096): one bordered group with a left rule
      — accent while the turn is live, the panel line once done — and its
