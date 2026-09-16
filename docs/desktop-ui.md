@@ -22,7 +22,10 @@ re-syncs via `transcript` rather than trusting its live buffer.
 Between send and the first streamed event the live buffer is empty, and an
 empty buffer used to render as nothing; now it renders as a waiting row — the
 moon icon rolling a short way and back, three still dots under
-`prefers-reduced-motion` — that the first delta, tool call or error replaces
+`prefers-reduced-motion` — ~~that the first delta, tool call or error replaces~~
+that the first delta, tool call or error replaces **with the same moon as the
+live reply's last row, `working · 41 s`, until the turn ends (backlog 096,
+2026-09-16; "The activity block" below)**
 (nightshift backlog 049). It carries no text, because the UI cannot see
 whether anything is progressing, only that nothing has arrived.
 
@@ -779,6 +782,119 @@ page, so a press and its release land on different elements and no `click`
 reaches the button — which is what "clicking a thinking pill mid-reply does
 nothing" was. `click` still serves the keyboard (`detail === 0`).
 
+### The activity block (nightshift backlog 096, 2026-09-16)
+
+A reply's thinking and tool calls no longer render as a run of bare mono
+lines and pills. Consecutive thinking, redacted-thinking and tool segments
+form one **activity block** (`groupSegments` in `src/lib/activity.ts`, drawn
+by `AssistantMessage.svelte`): a bordered group with a 2px left rule — accent
+while the turn is live, `--line2` once done — whose rows share one grid:
+icon · the tool's name in the sans · the input's telling field in mono,
+truncated · the result size right-aligned and dim (`8,122 chars`, `running`,
+`error · 40 chars`, `denied`). Thinking is a thin italic `✦ thinking` row in
+the same grid, not a pill; an MCP tool is named by its short name
+(`mcp__nightloom__search_chats` → `search chats`, the full name on hover,
+`shortToolName`). A text segment between calls ends the block and the next
+call starts another, so the reply reads in the order it happened. Removed
+blocks (backlog 066) and notices stand outside any block.
+
+The block's first line is its summary, `▾ 4 tool calls · 2 thinking`
+(`· 1 error`, `· 1 denied`, `· working` while live), and folds the block to
+that one line — `resolveFolded`: folded once the reply is done and the tools
+toggle is off, open otherwise, a click on the line remembered under
+`block:<first row's id>` and cleared by the tools toggle like a row's click.
+So the toggles of backlog 052 still govern: tools on is the block open with
+every call expanded (its whole input, then the result); tools off while
+streaming is the block open with one line per call; tools off after the
+reply is the fold. A click on a row still overrides that row alone. A parked
+approval prompt renders through a folded block, as it did through a folded
+call.
+
+While the message streams its last row is the moon of backlog 049 with
+`working · 41 s` beside it — inside the last block when the reply's last
+segment is in one, else a row of its own under the text — counted from the
+optimistic `user_message`'s `at` (`liveSince` in `Transcript.svelte`) and
+removed only when `app.live` clears. Reduced motion gets the three dots and
+the count.
+
+### Thinking the model kept to itself (nightshift backlog 097, 2026-09-16)
+
+A thinking block can arrive with no text. The Claude 5 family defaults
+`thinking.display` to `omitted`, so the block carries a signature and nothing
+else; the Claude Code CLI runs that way (measured 2026-09-16, CLI 2.1.263,
+Haiku 4.5: one `thinking` block with `thinking: ""` and two empty
+`thinking_delta`s), while Nightloom's own API engine asks for `summarized`
+([providers.md](providers.md)) and gets a summary to show. Before today every
+thinking block was the same pill, so on Claude Code the live reply offered a
+button onto nothing — "clicking the thinking button does nothing".
+
+Now a finished thinking block with no text (`thinkingHidden` in
+`src/lib/activity.ts`) is a static row in the activity block, `✦ thought ·
+hidden by the model`, dim, no pointer, titled "This model does not return its
+thinking; only that it thought." A block still streaming with no text yet is
+`✦ thinking …`, also static — early, not hidden. Only a block with text is the
+button. On Claude Code the recorder drops an empty block (`record.rs`,
+`flush_prose`), so the marker shows during the live turn and the re-synced
+reply has no thinking row at all; on the API engine an empty recorded block
+keeps its marker. `thinkingState(events)` — `none` / `hidden` / `shown` — and
+`modelOmitsThinking(model)` are exported for the top-bar chip and ⌘⇧T, which
+should read disabled with the same title when every thinking block in the
+chat is hidden; that hunk in `TopBar.svelte` is not yet made (the file was
+held by another build the night this landed — the patch is in nightshift
+`notes/runner-design/097-report-2026-09-16.md`). No new request parameter:
+the summaries were already asked for (nightshift blocker 093 asks whether he
+wants a switch to stop asking).
+
+### The sent message's entrance (nightshift backlog 095, 2026-09-16)
+
+The turn just sent rises into the transcript over 180 ms (opacity 0 → 1, a
+6 px lift, `ease-out` — the app has no easing token to reuse) and the waiting
+row of backlog 049 follows a 90 ms beat later. Only that turn moves: a user
+turn appended while the transcript was already showing the chat, in the same
+flush that set `app.live` (`enterFrom` in `Transcript.svelte`, an index
+floor reset whenever the chat key changes), so a chat opened or reopened
+loads whole with no cascade, and the post-turn re-sync keeps the element and
+does not replay it. Opacity and transform only, `backwards` fill so nothing
+lingers to fight `.superseded`; `prefers-reduced-motion` turns both off.
+
+### Per-message tokens and the share of the window (nightshift backlog 090, 2026-09-16)
+
+Every turn's meta line carries what that turn added to the context, in the
+gauge's mono figure (`You · 14m ago · 1.2k`), and a turn worth a bar — five
+percent of the window or more — gets the gauge's own 56px bar scaled to its
+share, with the percentage (`48k ▮▮ 24%`). One vocabulary for "share of the
+window", top bar and transcript alike. Hover for the sentence.
+
+Where the numbers come from (`turnSizes` in `src/lib/tokens.ts`, pinned on a
+fixture log): the log records one `usage` per assistant message, and its
+`input_tokens` is the **whole** prompt, cached or not, on both engines. So
+the context after reply *j* is `in_j + out_j` — the gauge's figure — and the
+growth from one reply to the next, `in_j − (in_{j−1} + out_{j−1})`, is what
+arrived between them: a user message with its attachments when one did, or
+the tool results of a round when none did. A reply's own size is its
+output; a round's results are charged to the reply that made the calls, and
+its footer says `40 out · 2k from tools`. The sizes telescope: **the turns
+sum to the last reply's `in + out`**, which is what the gauge shows — except
+that the first reply's input holds the system prompt and the first message
+together, which the log does not separate, so the first user turn's figure
+carries both and its title says so (the difference the item wanted "stated
+as preamble" is inside that first figure). No tokenizer, no extra request.
+
+Nothing is guessed. A rewound turn shows no figure and the chain runs over
+the live replies; a growth that comes out negative (a compaction or an edit
+shrank the context) shows nothing for that turn; a reply whose usage was
+not recorded (an old log's zeros, a failed turn) shows nothing and breaks
+the chain for the turn after it; a model with no known window gets the
+figure and no bar.
+
+The reply footer ~~summed `input + output`~~ (struck 2026-09-16: on both
+engines that was the whole prompt plus the reply — near the gauge's figure,
+and neither the message nor the total) now says **`N out`** only, the
+prompt's size in the title. The navigator's ticks (backlog 065) still weigh
+by characters, not tokens: the strip is about where a message sits, not
+what it costs, and the token figure is null for exactly the turns a strip
+must still show.
+
 ### The prompt-cache timer (nightshift backlog 063, 2026-09-15)
 
 Beside Context in the top bar: `cache · 41 min` counting down, `cache · 1:59`
@@ -1050,13 +1166,14 @@ and there was no way to move through a long chat but the wheel.
 **Drafts (`src/lib/drafts.svelte.ts`).** The composer's text and attachments
 were component state, and `Composer.svelte` outlives a chat switch — that was
 the whole bug. They now live in a rune store keyed by the chat: the open chat's
-id, or `"new"` while no chat is open (New chat is a state, not a file, see
-above). The composer binds to the entry for the current key and nothing else,
-so a switch swaps the box. The pending chat's draft follows the chat it makes:
-`send` and `sendAgent` pick the id off the re-synced `session_created` line and
-one line there calls `moveDraft("new", id)` before `activeSessionId` changes,
-which carries anything typed *during* the first turn (the box is not locked
-while a reply streams). Sending clears that chat's entry; nothing else does — not
+id, or ~~`"new"` while no chat is open~~ `new:<project id>:<kind>` while no chat
+is open (since 2026-09-16, backlog 094 below; New chat is a state, not a file,
+see above). The composer binds to the entry for the current key and nothing
+else, so a switch swaps the box. The pending chat's draft follows the chat it
+makes: `send` and `sendAgent` pick the id off the re-synced `session_created`
+line and one line there calls ~~`moveDraft("new", id)`~~ `moveDraft(pendingKey,
+id)` before `activeSessionId` changes, which carries anything typed *during*
+the first turn (the box is not locked while a reply streams). Sending clears that chat's entry; nothing else does — not
 a switch, not Escape, not deleting the chat. A failed send puts the words and
 the chips back under the chat now open (the text only if nothing new was typed
 meanwhile); until today only the attachments came back.
@@ -1121,3 +1238,76 @@ Tests: `drafts.test.ts` (per key, the handover, clear on send only, the
 persistence caps, a storage that throws), `scroll.test.ts` (remember, recall,
 default bottom, move), `navigator.test.ts` (roles, weights, first lines,
 rewound turns excluded, the reading line, the foot rule, stepping).
+
+## The New-chat draft is per project and per kind (nightshift backlog 094, 2026-09-16)
+
+His report: a draft typed into one project's New chat was still in the box
+after ⌘O into another project's New chat. The pending chat's draft was keyed by
+one literal, `"new"`, so it was one slot for the whole app; real chats, keyed by
+id, behaved.
+
+`draftKey(activeSessionId, projectId, mode)` in `src/lib/drafts.svelte.ts` now
+returns the chat id, or `newDraftKey(projectId, mode)` — `new:<project
+id>:<kind>`, `unfiled` for no project — while none is open. The kind is in the
+key too: the pending kind is held on both sides (blocker 061), and an incognito
+draft has no business in an ordinary new chat of the same project. `Composer.svelte`
+derives its key from `app.activeSessionId`, `app.project?.id` and
+`app.pendingMode`, so a project switch or a change of kind swaps the box the
+way a chat switch does, and both drafts come back on return. The New chat
+button's `✎` in `Sidebar.svelte` asks `hasDraft` of the same key. `send` and
+`sendAgent` compute the pending key at the moment of the send and hand that
+entry to the created chat, so the project and kind are the ones the chat was
+made in, not whatever is open when the turn ends.
+
+A store written before today has its pending draft under the bare `"new"`;
+`loadDrafts` reads that entry once as `new:unfiled:normal` (there is no record
+of which project it was typed in) — appended after anything already under that
+key — and the next save writes the new shape. Nothing stored is dropped.
+
+Tests: `drafts.test.ts` — the key per project and per kind, a project switch
+leaving the other project's draft untouched, the handover from a project-scoped
+key with another project's draft staying put, the one-time read of the old key
+and its append onto an existing unfiled entry.
+
+## Messages queued during a turn (nightshift backlog 089, 2026-09-16)
+
+Until today ↵ during a turn did nothing: `submit` returned on `app.busy`. Now a
+message sent while a turn runs is **held** and goes as the next turn when the
+running one ends. The CLI does more — it hands a queued message to the running
+turn between tool calls — but that needs a process that stays open across
+turns (blocker 062), and this is the half that needs nothing from it.
+
+The queue lives in the draft store (`src/lib/drafts.svelte.ts`), as `queue` on
+the chat's `Draft` entry, oldest first: it is the same kind of thing as the
+draft — words typed that have not reached the model — so it gets the same key
+(per chat, the pending chat's queue moving into the chat it makes), the same
+localStorage entry (a relaunch keeps it; attachments under the same caps), and
+the same `✎` on the sidebar row. `clearDraft`, which a send calls, now clears
+the box and keeps the entry while a queue remains. `enqueueMessage`,
+`shiftQueue` (the oldest, out), `takeBackQueued` (a row back into the box —
+its words in front of anything typed, its chips after the ones there; no id
+means the newest) and `dropQueued` are the operations.
+
+`Composer.svelte`: ↵ and the **Queue** button (beside Stop, which stays where
+Send was) hold the box's contents while `app.busy`; the key chip reads
+`↵ queue · ⇧↵ newline`. The tray above the box is a dashed box, `queued · sent
+when this turn ends` while busy and `queued · waiting` with a **Send next**
+button when not (a queue left by a failed turn, a stop that left an error, or
+a relaunch); each row is numbered, shows the first line and a file count, and
+has *take back* and ×. ↑ in an empty box takes the newest row back, the CLI's
+rule; with text in the box ↑ is the caret's. Sending is one function,
+`dispatch`: it calls `send`, and when that returns without `app.error` it
+`drain`s — shifts the oldest row and dispatches it, so a chain of held
+messages goes one turn each. A failed turn puts its words back (the existing
+rule) and does not drain: a second send would most likely fail the same way
+and bury the error. A Stop is a clean end on both engines (the agent returns
+its outcome with an `interrupted` notice), so the oldest held message goes at
+once — the queue is why he stopped, or he takes it back first.
+
+Both engines: `send` dispatches to `sendAgent` on Claude Code, and the composer
+is the same component, so nothing here is engine-specific.
+
+Tests: `drafts.test.ts` — oldest-first and shift, a send clearing the box and
+not the queue, take-back order and the newest by default, drop and the empty
+entry, the handover with the pending chat and the persistence round-trip, a
+queued attachment over the cap kept out of the store with its text in.

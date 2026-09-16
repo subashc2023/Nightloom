@@ -7,11 +7,23 @@
     flipOverride,
     resolveOpen,
     segmentIds,
+    toolInputSummary,
+    toolResultSummary,
     toolSummary,
     transcript,
     type BlockKind,
     type Override,
   } from "./transcriptPrefs.svelte";
+  import {
+    HIDDEN_THINKING_TITLE,
+    activitySummary,
+    groupSegments,
+    resolveFolded,
+    shortToolName,
+    thinkingHidden,
+    workingLabel,
+  } from "./activity";
+  import { fmtShare, fmtTokens, shareOf, sizeTitle, type TurnSize } from "./tokens";
   import ApprovalPrompt from "./ApprovalPrompt.svelte";
   import Icon from "./Icon.svelte";
   import { REMOVED_TEXT_PLACEHOLDER, REMOVED_TOOL_PLACEHOLDER } from "./edit";
@@ -41,8 +53,18 @@
       // The webview refused the clipboard; nothing to show but the button.
     }
   }
-  function fmtTokens(u: Usage): string {
-    return `${(u.input_tokens + u.output_tokens).toLocaleString()} tokens`;
+  // The footer says what the reply itself is (backlog 090): its output,
+  // and what its tool calls brought back when any did. It used to sum
+  // `input + output`, which on both engines is the whole prompt plus the
+  // reply — the gauge's figure, near enough, and neither the message nor
+  // the total. The prompt's size is still in the title.
+  function fmtOut(u: Usage, size: TurnSize | null): string {
+    const out = `${u.output_tokens.toLocaleString()} out`;
+    return size?.results ? `${out} · ${fmtTokens(size.results)} from tools` : out;
+  }
+  function footerTitle(f: Footer, size: TurnSize | null): string {
+    const base = `${f.usage.input_tokens.toLocaleString()} in (the whole prompt, cached or not) / ${f.usage.output_tokens.toLocaleString()} out${f.stop_reason ? ` · ${f.stop_reason}` : ""}`;
+    return size ? `${sizeTitle(size, "assistant", limit)}. ${base}` : base;
   }
   function fmtCost(c: number | undefined): string {
     if (c == null) return "";
@@ -53,6 +75,9 @@
     segs,
     footer = null,
     streaming = false,
+    since = null,
+    size = null,
+    limit = null,
     approvals = [],
     onremove = null,
     onrestore = null,
@@ -61,6 +86,13 @@
     segs: Segment[];
     footer?: Footer | null;
     streaming?: boolean;
+    /** When the live turn was sent (ms since epoch), for the `working · 41 s`
+     *  row (backlog 096); absent, the count starts when this mounts. */
+    since?: number | null;
+    /** What this reply added to the context (backlog 090), null when the
+     *  log cannot say; `limit` is the model's window for the share. */
+    size?: TurnSize | null;
+    limit?: number | null;
     /** Calls in these segments still waiting on the user's decision. */
     approvals?: ApprovalRequest[];
     /** Remove one block of a recorded reply — a tool call with its
@@ -78,9 +110,13 @@
   // than its index, and consulted before the streaming rule and the two
   // transcript-wide toggles (`resolveOpen`, nightshift backlog 052): a click
   // on a block always wins over its default. The map is this component's,
-  // so it lives as long as the message on screen does.
+  // so it lives as long as the message on screen does. An activity block's
+  // fold line (backlog 096) keeps its click here too, under `block:<id>`.
   let overrides = $state<Record<string, Override>>({});
   const ids = $derived(segmentIds(segs));
+  // The reply as the transcript draws it: runs of thinking and tool calls
+  // as one activity block each, everything else on its own (backlog 096).
+  const groups = $derived(groupSegments(segs, ids));
 
   function kindOf(seg: Segment): BlockKind {
     return seg.kind === "thinking" ? "thinking" : "tool";
@@ -103,6 +139,12 @@
       transcript,
     );
   }
+  function isFolded(key: string): boolean {
+    return resolveFolded(key, streaming, overrides, transcript);
+  }
+  function toggleFold(key: string): void {
+    overrides[key] = { open: isFolded(key), rev: transcript.rev.tool };
+  }
 
   // Toggled on pointerdown, not click. While a reply streams the transcript
   // stays pinned to its foot and every delta pushes the pill up the page,
@@ -119,94 +161,184 @@
   function keyClick(e: MouseEvent, i: number, seg: Segment): void {
     if (e.detail === 0) toggle(i, seg);
   }
+  function pressFold(e: PointerEvent, key: string): void {
+    if (e.button !== 0) return;
+    toggleFold(key);
+  }
+  function keyFold(e: MouseEvent, key: string): void {
+    if (e.detail === 0) toggleFold(key);
+  }
+
+  // The moon stays for the whole live turn (backlog 096): the waiting row
+  // of backlog 049 covers send-to-first-token, and from the first token on
+  // this message's last row is the moon with `working · 41 s`, counted
+  // from when the turn was sent. Inside the last activity block when the
+  // reply's last segment is in one, else a row of its own under the text.
+  // Gone the moment `streaming` drops.
+  let now = $state(Date.now());
+  const startedAt = Date.now();
+  $effect(() => {
+    if (!streaming) return;
+    now = Date.now();
+    const t = setInterval(() => (now = Date.now()), 1000);
+    return () => clearInterval(t);
+  });
+  const working = $derived(workingLabel(now - (since ?? startedAt)));
+  const lastGroup = $derived(groups[groups.length - 1]);
+  const moonInBlock = $derived(streaming && lastGroup?.kind === "activity");
+  const moonAlone = $derived(streaming && segs.length > 0 && !moonInBlock);
 </script>
 
 <div class="assistant">
   {#if footer}
     <span class="ns-k">{footer.model}</span>
   {/if}
-  {#each segs as seg, i}
-    {#if seg.kind === "thinking"}
-      <div>
+  {#each groups as g (g.kind === "activity" ? g.key : `one:${g.i}`)}
+    {#if g.kind === "activity"}
+      {@const folded = isFolded(g.key)}
+      {@const last = moonInBlock && g === lastGroup}
+      <!-- One block for the run: a left rule, accent while the turn is
+           live; a summary line that folds and unfolds the rows; the rows
+           on one grid — icon · name · argument · size (backlog 096). -->
+      <div class="activity" class:live={streaming}>
         <button
-          class="pill"
-          aria-expanded={isOpen(i, seg)}
-          onpointerdown={(e) => press(e, i, seg)}
-          onclick={(e) => keyClick(e, i, seg)}>✦ thinking</button>
-        {#if isOpen(i, seg)}
-          <div class="thinking-text">{seg.text}</div>
-        {/if}
-      </div>
-    {:else if seg.kind === "redacted"}
-      <div><span class="pill static">✦ redacted thinking</span></div>
-    {:else if seg.kind === "text"}
-      <div class="markdown">{@html renderMarkdown(seg.text)}</div>
-    {:else if seg.kind === "tool"}
-      <div class="tool">
-        {#if isOpen(i, seg)}
-          <button
-            class="tool-chip"
-            aria-expanded="true"
-            title="Collapse to one line"
-            onpointerdown={(e) => press(e, i, seg)}
-            onclick={(e) => keyClick(e, i, seg)}
-          >
-            <span class="caret">▾</span>
-            <span class="tool-name">⚒ {seg.call.name}</span>
-            <span class="tool-input">{compactJson(seg.call.input)}</span>
-            {#if seg.call.denied}<span class="denied-tag">denied</span>{/if}
-          </button>
-          {#if seg.call.denied}
-            <!-- The reason can come from the gate itself (a cancelled turn
-                 refuses what it left parked), so it stands in for "you said no"
-                 rather than being appended to it. -->
-            <div class="denied-note">
-              Not run — permission denied{seg.call.result?.content
-                ? `: ${seg.call.result.content}`
-                : "."}
-            </div>
-          {:else if seg.call.result}
-            <pre
-              class="tool-result"
-              class:error={seg.call.result.is_error}>{seg.call.result.content}</pre>
-          {/if}
+          class="fold"
+          aria-expanded={!folded}
+          title={folded ? "Show the calls" : "Fold to one line"}
+          onpointerdown={(e) => pressFold(e, g.key)}
+          onclick={(e) => keyFold(e, g.key)}
+        >
+          <span class="caret">{folded ? "▸" : "▾"}</span>
+          <span class="fold-text">{activitySummary(g.rows, streaming)}</span>
+        </button>
+        {#if !folded}
+          {#each g.rows as { seg, i } (ids[i] || i)}
+            {#if seg.kind === "thinking"}
+              {#if thinkingHidden(seg)}
+                <!-- The model thought and returned nothing of it (backlog
+                     097): a fact in the dim style, no pointer, nothing to
+                     open — a button here did nothing, which is what he
+                     saw. -->
+                <div class="arow static thinking" title={HIDDEN_THINKING_TITLE}>
+                  <span class="ico">✦</span>
+                  <span class="name">thought · hidden by the model</span>
+                  <span class="arg"></span>
+                  <span class="size"></span>
+                </div>
+              {:else if !seg.done && seg.text.trim() === ""}
+                <!-- Begun, nothing arrived yet: under way, not yet a button. -->
+                <div class="arow static thinking">
+                  <span class="ico">✦</span>
+                  <span class="name">thinking</span>
+                  <span class="arg"></span>
+                  <span class="size">…</span>
+                </div>
+              {:else}
+                <div class="row-wrap">
+                  <button
+                    class="arow thinking"
+                    aria-expanded={isOpen(i, seg)}
+                    title={isOpen(i, seg) ? "Hide the thinking" : "Show the thinking"}
+                    onpointerdown={(e) => press(e, i, seg)}
+                    onclick={(e) => keyClick(e, i, seg)}
+                  >
+                    <span class="ico">✦</span>
+                    <span class="name">thinking</span>
+                    <span class="arg"></span>
+                    <span class="size">{seg.done ? "" : "…"}</span>
+                  </button>
+                  {#if isOpen(i, seg)}
+                    <div class="thinking-text">{seg.text}</div>
+                  {/if}
+                </div>
+              {/if}
+            {:else if seg.kind === "redacted"}
+              <div class="arow static">
+                <span class="ico">✦</span>
+                <span class="name">redacted thinking</span>
+                <span class="arg"></span>
+                <span class="size"></span>
+              </div>
+            {:else if seg.kind === "tool"}
+              {@const open = isOpen(i, seg)}
+              {@const bad = !!seg.call.result?.is_error || !!seg.call.denied}
+              <div class="row-wrap tool">
+                <button
+                  class="arow"
+                  class:error={bad}
+                  aria-expanded={open}
+                  title={open ? "Collapse to one line" : "Expand this call"}
+                  onpointerdown={(e) => press(e, i, seg)}
+                  onclick={(e) => keyClick(e, i, seg)}
+                >
+                  <span class="ico">⚒</span>
+                  <span class="name" title={seg.call.name}>{shortToolName(seg.call.name)}</span>
+                  <span class="arg">{toolInputSummary(seg.call.input)}</span>
+                  <span class="size">{toolResultSummary(seg.call, streaming)}</span>
+                </button>
+                {#if open}
+                  <!-- The full call: its whole input, then what came back. -->
+                  <div class="tool-full">{compactJson(seg.call.input)}</div>
+                  {#if seg.call.denied}
+                    <!-- The reason can come from the gate itself (a cancelled turn
+                         refuses what it left parked), so it stands in for "you said no"
+                         rather than being appended to it. -->
+                    <div class="denied-note">
+                      Not run — permission denied{seg.call.result?.content
+                        ? `: ${seg.call.result.content}`
+                        : "."}
+                    </div>
+                  {:else if seg.call.result}
+                    <pre
+                      class="tool-result"
+                      class:error={seg.call.result.is_error}>{seg.call.result.content}</pre>
+                  {/if}
+                {/if}
+                <!-- Outside the collapse: a call parked at the gate needs its prompt
+                     on screen whatever the toggle says, or the turn waits on a
+                     decision nobody can see. -->
+                {#each approvals.filter((a) => a.id === seg.call.id) as req (req.id)}
+                  <ApprovalPrompt {req} />
+                {/each}
+                <!-- The hover on the call itself (backlog 066): the call and its
+                     result leave the context together, the log keeps both. -->
+                {#if onremove && seg.block != null}
+                  <span class="block-tools" title={controlsTitle}>
+                    <button
+                      class="tool-btn"
+                      title="Remove this tool call and its result from the context. Both stay in the log; Restore is on the placeholder."
+                      aria-label="Remove this tool call and its result from the context"
+                      onclick={() => onremove?.(seg.block!)}
+                    >
+                      <Icon name="minus" size={12} />
+                    </button>
+                  </span>
+                {/if}
+              </div>
+            {/if}
+          {/each}
         {:else}
-          <!-- The one-line form (tool calls off): the name, the argument
-               that best says what it did, and how much came back. -->
-          <button
-            class="tool-chip line"
-            class:error={!!seg.call.result?.is_error || !!seg.call.denied}
-            aria-expanded="false"
-            title="Expand this call"
-            onpointerdown={(e) => press(e, i, seg)}
-            onclick={(e) => keyClick(e, i, seg)}
-          >
-            <span class="caret">▸</span>
-            <span class="tool-line">{toolSummary(seg.call, streaming)}</span>
-          </button>
+          <!-- A parked prompt still shows through a folded block. -->
+          {#each g.rows as { seg, i } (i)}
+            {#if seg.kind === "tool"}
+              {#each approvals.filter((a) => a.id === seg.call.id) as req (req.id)}
+                <ApprovalPrompt {req} />
+              {/each}
+            {/if}
+          {/each}
         {/if}
-        <!-- Outside the collapse: a call parked at the gate needs its prompt
-             on screen whatever the toggle says, or the turn waits on a
-             decision nobody can see. -->
-        {#each approvals.filter((a) => a.id === seg.call.id) as req (req.id)}
-          <ApprovalPrompt {req} />
-        {/each}
-        <!-- The hover on the call itself (backlog 066): the call and its
-             result leave the context together, the log keeps both. -->
-        {#if onremove && seg.block != null}
-          <span class="block-tools" title={controlsTitle}>
-            <button
-              class="tool-btn"
-              title="Remove this tool call and its result from the context. Both stay in the log; Restore is on the placeholder."
-              aria-label="Remove this tool call and its result from the context"
-              onclick={() => onremove?.(seg.block!)}
-            >
-              <Icon name="minus" size={12} />
-            </button>
-          </span>
+        {#if last}
+          <div class="working" role="status" aria-label={working}>
+            <span class="roll" aria-hidden="true"><Icon name="moon" size={14} /></span>
+            <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+            <span class="working-text">{working}</span>
+          </div>
         {/if}
       </div>
-    {:else if seg.kind === "removed_tool" || seg.kind === "removed_text"}
+    {:else if g.seg.kind === "text"}
+      <div class="markdown">{@html renderMarkdown(g.seg.text)}</div>
+    {:else if g.seg.kind === "removed_tool" || g.seg.kind === "removed_text"}
+      {@const seg = g.seg}
       <!-- A removed block's placeholder, greyed, the original a click
            away, Restore beside it (backlog 066). -->
       <div class="removed-block">
@@ -238,17 +370,30 @@
           </button>
         {/if}
       </div>
-    {:else if seg.kind === "notice"}
-      <div class="notice">{seg.text}</div>
+    {:else if g.seg.kind === "notice"}
+      <div class="notice">{g.seg.text}</div>
     {/if}
   {/each}
+  {#if moonAlone}
+    <div class="working" role="status" aria-label={working}>
+      <span class="roll" aria-hidden="true"><Icon name="moon" size={14} /></span>
+      <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="working-text">{working}</span>
+    </div>
+  {/if}
   {#if footer && !streaming}
+    {@const share = size ? shareOf(size.tokens, limit) : null}
     <div class="footer">
       <button class="ns-btn ghost small" onclick={() => void copy()}>{copied ? "Copied" : "Copy"}</button>
-      <span
-        class="meta"
-        title="{footer.usage.input_tokens.toLocaleString()} in / {footer.usage.output_tokens.toLocaleString()} out{footer.stop_reason ? ` · ${footer.stop_reason}` : ''}"
-      >{fmtTokens(footer.usage)}{fmtCost(footer.cost)}</span>
+      <span class="meta" title={footerTitle(footer, size)}>{fmtOut(footer.usage, size)}{fmtCost(footer.cost)}</span>
+      {#if fmtShare(share)}
+        <!-- The reply's share of the window (backlog 090), the gauge's bar
+             scaled to it, once the reply is worth a bar. -->
+        <span class="meta share" title={size ? sizeTitle(size, "assistant", limit) : ""}>
+          <span class="share-bar" aria-hidden="true"><span class="share-fill" style:width="{(share ?? 0) * 100}%"></span></span>
+          {fmtShare(share)}
+        </span>
+      {/if}
     </div>
   {/if}
 </div>
@@ -273,23 +418,99 @@
     line-height: 1.55;
     color: var(--ink);
   }
-  .pill {
-    display: inline-block;
-    background: transparent;
+  /* The activity block (backlog 096): one bordered group with a left rule
+     — accent while the turn is live, the panel line once done — and its
+     rows on a shared grid so the names, arguments and sizes line up. */
+  .activity {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
     border: 1px solid var(--border);
+    border-left: 2px solid var(--line2);
+    border-radius: 8px;
+    padding: 4px 8px 4px 10px;
+    min-width: 0;
+  }
+  .activity.live {
+    border-left-color: var(--accent);
+  }
+  .fold,
+  .arow {
+    display: grid;
+    grid-template-columns: 1.1em minmax(0, auto) minmax(0, 1fr) auto;
+    column-gap: 0.6rem;
+    align-items: baseline;
+    width: 100%;
+    min-width: 0;
+    background: none;
+    border: none;
+    padding: 2px 0;
+    text-align: left;
     color: var(--dim);
-    border-radius: 999px;
-    font-size: 0.75rem;
-    padding: 0.15rem 0.65rem;
+    font-size: 0.78rem;
     cursor: pointer;
     user-select: none;
   }
-  button.pill:hover {
-    color: var(--text);
-    border-color: var(--accent);
+  .fold {
+    grid-template-columns: 1.1em minmax(0, 1fr);
+    font-family: var(--sans);
   }
-  .pill.static {
+  .fold:hover .fold-text,
+  .fold:hover .caret,
+  .arow:hover .name,
+  .arow:hover .ico {
+    color: var(--text);
+  }
+  .arow.static {
     cursor: default;
+  }
+  .caret,
+  .ico {
+    color: var(--dim);
+    font-family: var(--mono);
+  }
+  .name {
+    font-family: var(--sans);
+    color: var(--ink2);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 14rem;
+  }
+  .arow.thinking .name {
+    font-style: italic;
+    color: var(--dim);
+  }
+  .arg {
+    font-family: var(--mono);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .size {
+    font-family: var(--mono);
+    text-align: right;
+    white-space: nowrap;
+    opacity: 0.8;
+  }
+  .arow.error .arg,
+  .arow.error .size {
+    color: var(--failed);
+  }
+  .row-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    position: relative;
+    min-width: 0;
+  }
+  .tool-full {
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    color: var(--dim);
+    white-space: pre-wrap;
+    word-break: break-word;
+    padding-left: 1.7em;
   }
   .thinking-text {
     color: var(--dim);
@@ -297,23 +518,63 @@
     font-size: 0.85rem;
     white-space: pre-wrap;
     word-break: break-word;
-    margin-top: 0.4rem;
+    margin: 0.2rem 0 0.3rem 1.7em;
     padding-left: 0.75rem;
     border-left: 2px solid var(--border);
   }
-  .tool {
+  /* The moon, kept for the live turn (backlog 096): the same roll as the
+     waiting row in `Transcript.svelte`, the elapsed time beside it; still
+     dots under reduced motion. */
+  .working {
     display: flex;
-    flex-direction: column;
-    gap: 0.3rem;
-    position: relative;
+    align-items: center;
+    gap: 0.6rem;
+    min-height: 20px;
+    padding: 2px 0;
+    color: var(--dim);
+    font-size: 0.78rem;
   }
-  /* The call's own hover control (backlog 066): at the line's right end,
+  .working-text {
+    font-family: var(--mono);
+  }
+  .roll {
+    display: inline-flex;
+    animation: roll 1.5s ease-in-out infinite alternate;
+  }
+  @keyframes roll {
+    from {
+      transform: translateX(0) rotate(0deg);
+    }
+    to {
+      transform: translateX(32px) rotate(360deg);
+    }
+  }
+  .dots {
+    display: none;
+    gap: 5px;
+  }
+  .dots i {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: currentColor;
+    opacity: 0.55;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .roll {
+      display: none;
+    }
+    .dots {
+      display: inline-flex;
+    }
+  }
+  /* The call's own hover control (backlog 066): past the row's right end,
      shown when the call is hovered or the control focused, like the turn's
      tools under the bubble. */
   .block-tools {
     position: absolute;
-    right: 0;
-    top: -2px;
+    right: -30px;
+    top: 0;
     opacity: 0;
     transition: opacity 0.12s;
   }
@@ -385,37 +646,8 @@
     align-items: baseline;
     gap: 0.6rem;
     min-width: 0;
-    /* A button since the toggles (backlog 052), drawn as the line it was. */
-    background: none;
-    border: none;
-    padding: 0;
-    text-align: left;
-    width: 100%;
-    cursor: pointer;
-    user-select: none;
-  }
-  .tool-chip:hover .tool-name,
-  .tool-chip:hover .caret {
-    color: var(--text);
-  }
-  .caret {
-    color: var(--dim);
-    flex: none;
-    width: 0.8em;
   }
   .tool-line {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .tool-chip.line.error .tool-line {
-    color: var(--failed);
-  }
-  .tool-name {
-    color: var(--accent);
-    white-space: nowrap;
-  }
-  .tool-input {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -434,18 +666,11 @@
     word-break: break-word;
     margin: 0;
   }
-  .denied-tag {
-    color: var(--failed);
-    border: 1px solid var(--failed);
-    border-radius: 999px;
-    padding: 0 0.45rem;
-    font-size: 0.68rem;
-    white-space: nowrap;
-  }
   .denied-note {
     color: var(--dim);
     font-size: 0.78rem;
     word-break: break-word;
+    padding-left: 1.7em;
   }
   .tool-result.error {
     color: var(--failed);
@@ -466,5 +691,23 @@
     font-family: var(--mono);
     font-size: 11px;
     color: var(--dim);
+  }
+  .meta.share {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .share-bar {
+    display: inline-block;
+    width: 56px;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--line2);
+    overflow: hidden;
+  }
+  .share-fill {
+    display: block;
+    height: 100%;
+    background: var(--accent);
   }
 </style>

@@ -31,6 +31,7 @@
     type EditState,
   } from "./edit";
   import { toolInputSummary } from "./transcriptPrefs.svelte";
+  import { fmtShare, fmtTokens, shareOf, sizeTitle, turnSizes } from "./tokens";
   import { cacheState } from "./cache";
   import { moveScroll, recallScroll, rememberScroll, scrollKey, NEW_SCROLL_KEY } from "./scroll.svelte";
   import { JUMP_OFFSET, MIN_TICKS, activeTick, stepTick, ticks as tickModel } from "./navigator";
@@ -222,6 +223,31 @@
       if (seg.kind === "tool") shown.add(seg.call.id);
     }
     return app.pendingApprovals.filter((r) => !shown.has(r.id));
+  });
+
+  // What each turn added to the context (nightshift backlog 090): a
+  // projection of the log's usage figures (`tokens.ts`), one entry per
+  // event, null where nothing can be said; the share is against the
+  // connected model's window, which the picker rows carry and the top-bar
+  // gauge already scales by. Null window: the figure, no bar.
+  const sizes = $derived(turnSizes(app.events, liveFlags(app.events)));
+  const windowLimit = $derived(app.connection?.contextLimit ?? null);
+
+  // When the live turn was sent, for its `working · 41 s` row (backlog
+  // 096): both send paths push the optimistic `user_message` just before
+  // `app.live`, so the newest one's `at` is the turn's start. Null when
+  // nothing is live, or when the log has no such message (a turn started
+  // some other way); the message then counts from its own mount.
+  const liveSince: number | null = $derived.by(() => {
+    if (!app.live) return null;
+    for (let i = app.events.length - 1; i >= 0; i--) {
+      const e = app.events[i];
+      if (e.event === "user_message") {
+        const t = new Date(e.at).getTime();
+        return Number.isNaN(t) ? null : t;
+      }
+    }
+    return null;
   });
 
   // The in-place editor (nightshift backlog 062): one turn open at a time,
@@ -423,6 +449,35 @@
     });
   });
 
+  // ---- The sent message's entrance (nightshift backlog 095, 2026-09-16) ----
+  //
+  // Only the turn just sent moves: a user turn appended while this
+  // transcript was already showing this chat, at the moment a turn started
+  // (`app.live` set in the same flush as the optimistic push — both send
+  // paths do that), gets `.enter` and rises in over 180 ms. A chat opened or
+  // reopened loads whole: the key changed, so the mark resets and nothing
+  // cascades. The mark is an index floor rather than a flag per item so the
+  // post-turn re-sync, which replaces `app.events` with the same turn at the
+  // same index, keeps the element and the class and the animation does not
+  // replay (the each is keyed by position). Reduced motion turns it off in
+  // the CSS.
+  let enterFrom = $state(Infinity);
+  let enterKey: string | null = null;
+  let enterLen = 0;
+  $effect(() => {
+    const key = sessionKey;
+    const len = app.events.length;
+    const live = app.live !== null;
+    if (key !== enterKey) {
+      enterKey = key;
+      enterFrom = Infinity;
+      enterLen = len;
+      return;
+    }
+    if (len > enterLen && live) enterFrom = enterLen;
+    enterLen = len;
+  });
+
   // ---- The message navigator (nightshift backlog 065) ----
   //
   // The strip's model is a projection of the log (`navigator.ts`); what
@@ -519,6 +574,7 @@
           class="user-turn"
           class:superseded={item.superseded}
           class:removed={item.removed}
+          class:enter={item.index >= enterFrom}
           data-turn={item.index}
         >
           <div class="user-key">
@@ -529,6 +585,20 @@
               <span class="edited-mark" title="Edited; the original is below">edited</span>
             {/if}
             <span class="ns-k">You · {relativeTime(item.at)}</span>
+            <!-- The turn's own size (backlog 090): what it added to the
+                 context, and its share of the window with the gauge's bar
+                 once it is worth a bar. Nothing where the log cannot say. -->
+            {#if sizes[item.index]}
+              {@const size = sizes[item.index]!}
+              {@const share = shareOf(size.tokens, windowLimit)}
+              <span class="turn-size" title={sizeTitle(size, "user", windowLimit)}>
+                {fmtTokens(size.tokens)}
+                {#if fmtShare(share)}
+                  <span class="share-bar" aria-hidden="true"><span class="share-fill" style:width="{(share ?? 0) * 100}%"></span></span>
+                  <span class="share-pct">{fmtShare(share)}</span>
+                {/if}
+              </span>
+            {/if}
           </div>
           {#if editing?.index === item.index}
             <div class="editor">
@@ -712,6 +782,8 @@
             <AssistantMessage
               segs={item.segs}
               footer={item.footer}
+              size={sizes[item.index]}
+              limit={windowLimit}
               {controlsTitle}
               onremove={editable ? (block) => void removeBlock(item.index, block) : null}
               onrestore={editable ? (block) => void restoreBlock(item.index, block) : null}
@@ -778,6 +850,7 @@
         <AssistantMessage
           segs={app.live.segments}
           streaming
+          since={liveSince}
           approvals={app.pendingApprovals}
         />
       {/if}
@@ -877,6 +950,32 @@
     border: 1px solid var(--line2);
     border-radius: 999px;
     padding: 0 7px;
+  }
+  /* The turn's size (backlog 090), in the gauge's mono figure style, and
+     the gauge's own 56px bar scaled to the turn's share of the window. */
+  .turn-size {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--dim);
+  }
+  .share-bar {
+    display: inline-block;
+    width: 56px;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--line2);
+    overflow: hidden;
+  }
+  .share-fill {
+    display: block;
+    height: 100%;
+    background: var(--accent);
+  }
+  .share-pct {
+    color: var(--dim);
   }
   /* Removed from the context: the placeholder, greyed like a superseded
      turn, with the original a click away. */
@@ -1050,6 +1149,32 @@
     align-items: center;
     min-height: 20px;
     color: var(--dim);
+    /* A beat after the bubble (backlog 095); `backwards` keeps it unseen
+       through the delay, and leaves no fill behind to fight `.superseded`. */
+    animation: enter 180ms ease-out 90ms backwards;
+  }
+  /* The sent message's entrance (backlog 095): opacity and a 6px rise,
+     nothing that moves the layout. `ease-out`, since the app has no easing
+     token to reuse. Only the turn just sent carries `.enter` (see the
+     effect above); a chat opened whole does not cascade. */
+  .user-turn.enter {
+    animation: enter 180ms ease-out backwards;
+  }
+  @keyframes enter {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .user-turn.enter,
+    .waiting {
+      animation: none;
+    }
   }
   .roll {
     display: inline-flex;
