@@ -1,5 +1,16 @@
 <script lang="ts">
-  import { app, pickerModels, providerPills, reviewProposal, runMenuCommand, switchModelAt, usable, useProject } from "./state.svelte";
+  import {
+    app,
+    pickerModels,
+    providerPills,
+    redoLabel,
+    reviewProposal,
+    runMenuCommand,
+    switchModelAt,
+    undoLabel,
+    usable,
+    useProject,
+  } from "./state.svelte";
   import { toggleTranscriptPref, transcript } from "./transcriptPrefs.svelte";
   import { MODEL_KEYS, providerLabel } from "./catalog";
   import type { IconName } from "./icons";
@@ -169,6 +180,32 @@
         });
       });
     }
+    // Undo and redo (nightshift backlog 064): the rows say what they would
+    // reverse, and are greyed when nothing can be.
+    const undoing = undoLabel();
+    const redoing = redoLabel();
+    rows.push(
+      {
+        id: "undo",
+        label: undoing ? `Undo ${undoing}` : "Undo",
+        meta: undoing ? "the chat's or the list's newest change" : "nothing to undo",
+        icon: "revert",
+        key: `${mod}Z`,
+        group: "Edit",
+        run: () => go(() => runMenuCommand("undo_app")),
+        disabled: !undoing || app.busy,
+      },
+      {
+        id: "redo",
+        label: redoing ? `Redo ${redoing}` : "Redo",
+        meta: redoing ? "the change last undone" : "nothing to redo",
+        icon: "refresh",
+        key: `${mod}Y`,
+        group: "Edit",
+        run: () => go(() => runMenuCommand("redo_app")),
+        disabled: !redoing || app.busy,
+      },
+    );
     rows.push(
       {
         id: "model",

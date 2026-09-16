@@ -876,6 +876,61 @@ conversation the model is not having. Every one of the three commands
 returns the transcript, and `send`/`fork` the fork's id, so the UI re-syncs
 from the log rather than patching its own copy — `rewind`'s contract.
 
+### Undo and redo (nightshift backlog 064, 2026-09-15)
+
+His ask: "a Command Y, which does redo … in all of the chat related or
+editing related stuff". Until today the Edit menu's Undo and Redo were the
+OS's and reached text boxes only. Now the app has a stack of its own
+(`src/lib/undo.ts`, met by `state.svelte.ts`), and it is a stack of
+**inverse commands, never of snapshots**: every entry reverses its operation
+by calling the same backend command the operation used, so the log sees an
+ordinary event and nothing is struck out — supersede, never delete.
+
+**What is undoable, and what its undo is:**
+
+| operation | undo |
+|---|---|
+| Rewind to here | an `unrewind` marker lifting that rewind ([core.md](core.md)); on Claude Code the chat resumes the file the rewind was cut from, still on disk |
+| Remove (transcript or Context panel) | a restore — `unelide`; on Claude Code a third copy of the CLI's file with the turn put back from the original ([service-agent.md](service-agent.md)) — the Restore that engine lacked in 062 |
+| Restore (Context panel) | the removal again |
+| Edit and save | an edit back to what the turn said before, the same marker |
+| Rename | a rename back; a chat that was never named gets its first message *as* its name, since a title cannot be un-recorded |
+| Delete | the log moved back out of `<logs>/trash/` (`restore_session`), and the chat reopened if nothing is open |
+| A prompt layer on or off | the set as it was |
+| A layer's text for this chat | the previous text, or none |
+
+Redo does the operation again — a redone rewind is a fresh `rewind`, a
+redone remove a fresh `elide` — and a new operation after an undo forgets
+what could have been redone, as everywhere.
+
+**Not undoable, and said so here:** sending a message (the model has
+answered), edit-and-send (a fork — undo it by deleting the fork, which *is*
+undoable), compact, dream, capture, and a project forget. **A sent turn
+clears its chat's stack**: a rewind lifted from under a reply the model has
+already given would put the model in a conversation it never had — on
+Claude Code, one whose file it never wrote.
+
+**Per chat, plus the list.** Operations on a chat's log live under that
+chat's id (the pending New chat under its own key), so ⌘Z in one chat never
+lifts a rewind made in another that is not on screen. A rename, a delete and
+a restore live on the *list's* stack, reachable from any chat — after a
+delete there is no chat to hold the entry. Undo takes whichever of the two
+was pushed more recently; redo whichever was undone more recently.
+
+**Keys.** ⌘Z undo; ⌘Y (his) and ⌘⇧Z (the macOS convention the Edit menu
+already showed) redo. Ctrl on the other platforms. **A text box keeps its
+own history:** when the focus is in an input, a textarea or a contenteditable,
+the key is the box's — the composer's half-typed draft, a note being edited,
+a rename in progress — and the app's stack is untouched. On macOS the Edit
+menu's Undo and Redo are the app's own items now, retitled live with the
+operation ("Undo rewind", "Redo remove") and disabled when there is nothing
+to reverse and no text box has the focus (`set_undo_menu`); a click or ⌘Z
+with a text box focused hands the box its own undo through the webview.
+Elsewhere `App.svelte` binds the keys. ⌘K has "Undo …" / "Redo …" rows in
+an Edit group, greyed when there is nothing. A toast names every step
+("Undid rename"), since the change may be off screen. Both are no-ops while
+a turn is running, on rewind's reasoning.
+
 ### Attachments
 
 `Composer.svelte` takes images and PDFs by paste and drop, reads them to base64

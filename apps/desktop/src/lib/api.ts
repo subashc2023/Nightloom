@@ -89,6 +89,16 @@ export function rewind(to: number): Promise<SessionEvent[]> {
   return invoke("rewind", { to });
 }
 
+/**
+ * Lift the rewind recorded at log index `of` — the undo of a rewind
+ * (nightshift backlog 064); resolves with the new transcript. On Claude
+ * Code the chat goes back to resuming the CLI file the rewind was cut
+ * from, which is still on disk.
+ */
+export function unrewind(of: number): Promise<SessionEvent[]> {
+  return invoke("unrewind", { of });
+}
+
 export function connect(args: ConnectArgs): Promise<ConnectResult> {
   return invoke("connect", {
     provider: args.provider,
@@ -181,6 +191,20 @@ export function renameSession(id: string, title: string): Promise<void> {
 }
 
 /**
+ * Retitle and enable the macOS Edit menu's Undo and Redo (nightshift
+ * backlog 064): the operation each would reverse, or null for nothing;
+ * `textField` when the focus is in a text box, which keeps the plain
+ * items enabled for the box's own history. A no-op elsewhere.
+ */
+export function setUndoMenu(
+  undo: string | null,
+  redo: string | null,
+  textField: boolean,
+): Promise<void> {
+  return invoke("set_undo_menu", { undo, redo, textField });
+}
+
+/**
  * New chat: leave the open one and say what kind the next one will be;
  * `mode` absent is an ordinary one (see `ChatMode`). Nothing is created —
  * the first message creates the log in that kind — so what comes back is
@@ -220,6 +244,11 @@ export function deleteSession(id: string): Promise<string> {
   return invoke("delete_session", { id });
 }
 
+/** Put a deleted session back from the trash (nightshift backlog 064). */
+export function restoreSession(id: string): Promise<string> {
+  return invoke("restore_session", { id });
+}
+
 /** Itemize the request the active chat would send right now. */
 export function contextView(): Promise<WireView> {
   return invoke("context_view");
@@ -257,6 +286,15 @@ export function editMessage(
 /** Remove the turn at `index` from the context: the `elide` marker, from the transcript. */
 export function removeMessage(index: number): Promise<MessageEdit> {
   return invoke("remove_message", { index });
+}
+
+/**
+ * Put back the turn `removeMessage` took out (nightshift backlog 064): the
+ * `unelide` marker; on Claude Code a third copy of the CLI's file with the
+ * turn's nodes back from the original, recorded and resumed.
+ */
+export function restoreMessage(index: number): Promise<MessageEdit> {
+  return invoke("restore_message", { index });
 }
 
 /** Fork the open chat before the user turn at `upto`; the fork becomes the open chat. */

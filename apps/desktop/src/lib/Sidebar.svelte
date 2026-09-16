@@ -14,7 +14,7 @@
     newSession,
     openSession,
     refreshNightshift,
-    refreshSessions,
+    renameSession,
     showNightshift,
   } from "./state.svelte";
   import * as api from "./api";
@@ -78,12 +78,9 @@
     // Unchanged or emptied is a cancel, not a rename: an empty name would
     // leave the row labelled by its opening message with no way back.
     if (!name) return;
-    try {
-      await api.renameSession(id, name);
-      await refreshSessions();
-    } catch (e) {
-      addToast(String(e));
-    }
+    // Through the state's version, which puts the inverse on the undo
+    // stack and toasts a failure itself (nightshift backlog 064).
+    await renameSession(id, name);
   }
 
   // The search box. `query` is what is typed and `hits` is what came back;

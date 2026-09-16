@@ -7,8 +7,8 @@ Crate `nightloom-desktop`: a Tauri 2 shell over `nightloom-service` with a Svelt
 
 `src-tauri/src/main.rs` exposes `providers` / `set_api_key` / `clear_api_key` /
 `list_models` / `connect` / `list_sessions` / `new_session` / `open_session` /
-`transcript` / `send` / `cancel` / `compact` / `rewind` / `context_view` /
-`edit_context` / `prompt_layers` / `set_prompt_layers` / `set_prompt_layer_text` / `prompt_layer_file` / `delete_session` / `approve_call` / `pick_folder` /
+`transcript` / `send` / `cancel` / `compact` / `rewind` / `unrewind` / `context_view` /
+`edit_context` / `prompt_layers` / `set_prompt_layers` / `set_prompt_layer_text` / `prompt_layer_file` / `delete_session` / `restore_session` / `set_undo_menu` / `approve_call` / `pick_folder` /
 `list_projects` / `active_project` / `create_project` / `open_project` /
 `close_project` / `rename_project` / `forget_project` / `list_notes` /
 `read_note` / `save_note` / `delete_note` (each taking a `scope`) /
@@ -287,6 +287,18 @@ updating its own copy optimistically. It needs no guard against a turn in flight
 cutting the log out from under a reply being recorded — but the control is hidden
 while busy, because a queued rewind that fires after the next turn lands would be
 a surprise.
+
+**Undo's commands** (nightshift backlog 064, 2026-09-15): `unrewind { of }`
+lifts a rewind (`Session::unrewind`) and, on Claude Code, records and resumes
+the id in force before it; `restore_message { index }` is `remove_message`'s
+inverse — `unelide`, and on Claude Code a third CLI copy with the turn put
+back from the original (`restore_on_cli` / `restore_cli_file`, over
+`CliSession::restore`); `restore_session { id }` moves a log back out of
+`<logs>/trash/`; `set_undo_menu { undo, redo, text_field }` retitles and
+enables the macOS Edit menu's Undo and Redo, which are the app's own items
+now (`undo_app` / `redo_app`, forwarded like every custom item). The
+frontend's stack is `src/lib/undo.ts`; [desktop-ui.md](desktop-ui.md) lists
+what is undoable.
 
 **Edit, remove, fork** (`edit_message { index, text, mode: "save" | "send" }`,
 `remove_message { index }`, `fork_session { upto }`, 2026-09-15, nightshift

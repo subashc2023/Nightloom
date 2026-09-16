@@ -485,6 +485,81 @@ impl CliSession {
         Ok(copy)
     }
 
+    /// A copy with the target put back from `original` — the file the
+    /// turn was removed from, still on disk because nothing here deletes
+    /// (2026-09-15, nightshift backlog 064; the Restore that nightshift
+    /// blocker 067 said had to wait for the undo stack).
+    ///
+    /// The target is located in the *original*, by the same address the
+    /// removal used, so the text check runs against the file that still
+    /// has the text. Each of its nodes is then put back into this copy: one
+    /// that is still here (the marked text node of a reply with a tool
+    /// call) takes its original line again; one that was dropped (a prompt,
+    /// a text reply, a thinking node) is inserted after its parent's line,
+    /// a dropped prompt's `file-history-snapshot` with it. Then every node
+    /// this copy shares with the original hangs from the parent it had
+    /// there, where that parent is present — which undoes the re-parenting
+    /// [`drop_nodes`](Self::drop_nodes) did and leaves alone an edge some
+    /// other removal, still standing, moved. `last-prompt` lines are left
+    /// as they are; a copy resumes from its last node, not from them.
+    pub fn restore(&self, original: &Self, target: &Target) -> Result<Self, CliSessionError> {
+        let found = original.locate(target)?;
+        let mut copy = self.clone();
+        for &i in &found {
+            let node = &original.lines[i];
+            let Some(uuid) = node.uuid() else {
+                continue;
+            };
+            // From the original's file, so it is re-serialized under this
+            // copy's id rather than copied out with the original's.
+            let mut line = node.clone();
+            line.dirty = true;
+            match copy.lines.iter().position(|l| l.uuid() == Some(uuid)) {
+                Some(j) => copy.lines[j] = line,
+                None => {
+                    let at = node
+                        .parent()
+                        .and_then(|p| copy.lines.iter().position(|l| l.uuid() == Some(p)))
+                        .map_or(copy.lines.len(), |p| p + 1);
+                    copy.lines.insert(at, line);
+                    let names = |l: &Line| {
+                        l.kind() == Some("file-history-snapshot")
+                            && l.json.get("messageId").and_then(Value::as_str) == Some(uuid)
+                    };
+                    if let Some(snapshot) = original.lines.iter().find(|l| names(l))
+                        && !copy.lines.iter().any(names)
+                    {
+                        let mut snapshot = snapshot.clone();
+                        snapshot.dirty = true;
+                        copy.lines.insert(at + 1, snapshot);
+                    }
+                }
+            }
+        }
+        for j in 0..copy.lines.len() {
+            let Some(uuid) = copy.lines[j].uuid().map(str::to_string) else {
+                continue;
+            };
+            let Some(parent) = original
+                .lines
+                .iter()
+                .find(|l| l.uuid() == Some(&uuid))
+                .and_then(Line::parent)
+                .map(str::to_string)
+            else {
+                continue;
+            };
+            if copy.lines[j].parent() == Some(&parent)
+                || !copy.lines.iter().any(|l| l.uuid() == Some(&parent))
+            {
+                continue;
+            }
+            copy.lines[j].json["parentUuid"] = Value::String(parent);
+            copy.lines[j].dirty = true;
+        }
+        Ok(copy)
+    }
+
     /// A copy cut before the user prompt `from_last` turns before the
     /// newest: that node and everything descending from it go, with the
     /// bookkeeping that named them — `last-prompt` lines naming a dropped
@@ -929,6 +1004,86 @@ mod tests {
         assert!(lines.iter().all(|o| o["messageId"] != "u2"));
         let a4 = lines.iter().find(|o| o["uuid"] == "a4").unwrap();
         assert_eq!(a4["parentUuid"], "s2");
+    }
+
+    /// The main chain as uuids, with each node's message — what `--resume`
+    /// reads; line order and bookkeeping are not part of it.
+    fn shape(s: &CliSession) -> Vec<(String, Option<String>, Value)> {
+        s.chain()
+            .into_iter()
+            .map(|i| {
+                let l = &s.lines[i];
+                (
+                    l.uuid().unwrap().to_string(),
+                    l.parent().map(str::to_string),
+                    l.json.get("message").cloned().unwrap_or(Value::Null),
+                )
+            })
+            .collect()
+    }
+
+    /// A restore from the original puts the removed turn back in both of
+    /// removal's shapes: the dropped reply (and a dropped prompt) return
+    /// with their edges, the marked reply gets its text and thinking
+    /// back, and the tree reads as the original did.
+    #[test]
+    fn a_restore_from_the_original_undoes_both_shapes_of_removal() {
+        let original = CliSession::parse(&fixture()).unwrap();
+        let before = shape(&original);
+
+        // The dropped text reply.
+        let target = Target::Assistant {
+            from_last: 1,
+            text: "one".into(),
+        };
+        let removed = CliSession::parse(&original.remove(&target).unwrap().render_as("b")).unwrap();
+        assert_eq!(removed.chain().len(), before.len() - 2);
+        let restored = removed.restore(&original, &target).unwrap();
+        assert_eq!(shape(&restored), before);
+        let out = restored.render_as("c");
+        assert!(
+            !out.contains(SID) && !out.contains("\"sessionId\":\"b\""),
+            "one id throughout"
+        );
+
+        // The marked tool reply: thinking back, marker gone, call untouched.
+        let target = Target::Assistant {
+            from_last: 0,
+            text: "let me look".into(),
+        };
+        let removed = CliSession::parse(&original.remove(&target).unwrap().render_as("b")).unwrap();
+        let restored = removed.restore(&original, &target).unwrap();
+        assert_eq!(shape(&restored), before);
+        assert!(!restored.render_as("c").contains(REMOVED_MARKER));
+
+        // A dropped prompt, its snapshot with it.
+        let target = Target::User {
+            from_last: 0,
+            text: "second".into(),
+        };
+        let removed = CliSession::parse(&original.remove(&target).unwrap().render_as("b")).unwrap();
+        assert_eq!(removed.prompt_count(), 1);
+        let restored = removed.restore(&original, &target).unwrap();
+        assert_eq!(shape(&restored), before);
+        assert_eq!(restored.prompt_count(), 2);
+        let snapshots = parsed(&restored.render_as("c"))
+            .into_iter()
+            .filter(|o| o["type"] == "file-history-snapshot" && o["messageId"] == "u2")
+            .count();
+        assert_eq!(snapshots, 1);
+
+        // A restore of a turn the original does not have is the same
+        // refusal a removal of it would be.
+        let err = removed
+            .restore(
+                &original,
+                &Target::User {
+                    from_last: 0,
+                    text: "not this".into(),
+                },
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("reads differently"), "{err}");
     }
 
     /// The cut drops the prompt, everything under it, and the bookkeeping

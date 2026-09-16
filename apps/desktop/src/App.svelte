@@ -4,7 +4,9 @@
     app,
     closePrompts,
     init,
+    inTextField,
     runMenuCommand,
+    syncUndoMenu,
     setSidebarWidth,
     syncPromptLayers,
     toggleSidebar,
@@ -55,6 +57,18 @@
   });
 
   /**
+   * The macOS Edit menu's Undo and Redo follow the stack and the open chat
+   * (nightshift backlog 064): retitled with the operation, disabled when
+   * there is nothing to reverse and no text box has the focus. The focus
+   * half is the two window events below.
+   */
+  $effect(() => {
+    void app.activeSessionId;
+    void app.undoTick;
+    void syncUndoMenu();
+  });
+
+  /**
    * A conversation with nothing in it yet gets the launcher instead of an
    * empty transcript with a docked composer: an empty pane is where the two
    * questions that actually start a chat belong — which folder, and what do
@@ -90,6 +104,8 @@
     p: "projects",
     m: "model",
     e: "engine",
+    z: "undo_app",
+    y: "redo_app",
   };
   const SHIFT_KEYS: Record<string, string> = {
     s: "model_sonnet",
@@ -99,15 +115,29 @@
     // ⌘⇧N is an incognito chat (nightshift backlog 059, 2026-09-15); on
     // macOS the File menu carries it.
     n: "new_incognito",
+    // Ctrl+Shift+Z redoes, beside Ctrl+Y (nightshift backlog 064); on
+    // macOS the Edit menu carries ⌘Z and ⌘⇧Z.
+    z: "redo_app",
   };
   function onShortcut(e: KeyboardEvent): boolean {
     if (e.altKey) return false;
+    // Undo and redo (nightshift backlog 064): app-level only when the
+    // focus is not in a text box, whose own history the key belongs to —
+    // so the handler steps aside there and lets the box have it. ⌘Y is
+    // the redo he asked for, on every platform, since no menu item
+    // carries it; ⌘Z and ⌘⇧Z arrive from the macOS Edit menu, and on the
+    // other platforms from the tables below.
+    const primary = isMac ? e.metaKey : e.ctrlKey;
+    if (primary && !e.shiftKey && e.code === "KeyY") {
+      if (inTextField()) return false;
+      runMenuCommand("redo_app");
+      return true;
+    }
     // ⌘1…9 (Ctrl+1…9 elsewhere) is the n-th provider pill, on every
     // platform: it is not a menu item, so macOS cannot double-fire it.
     // Bare ⌘, not ⌘⇧, since his second look (2026-09-13): "anthropic
     // shouldn't be special" — the alias letters need Shift, the providers
     // do not. Matched on the physical key so a layout cannot move it.
-    const primary = isMac ? e.metaKey : e.ctrlKey;
     if (primary && /^Digit[1-9]$/.test(e.code)) {
       // ⌘⇧digit is the n-th model of the picker, every provider alike
       // (2026-09-14); Shift means model on both engines — letters on
@@ -128,6 +158,7 @@
     const k = e.key.toLowerCase();
     const id = e.shiftKey ? SHIFT_KEYS[k] : KEYS[k];
     if (!id) return false;
+    if ((id === "undo_app" || id === "redo_app") && inTextField()) return false;
     runMenuCommand(id);
     return true;
   }
@@ -149,6 +180,8 @@
     }
     if (onShortcut(e)) e.preventDefault();
   }}
+  onfocusin={() => void syncUndoMenu()}
+  onfocusout={() => void syncUndoMenu()}
 />
 
 <div class="shell">

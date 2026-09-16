@@ -216,6 +216,29 @@ pub enum SessionEvent {
         to: usize,
         at: DateTime<Utc>,
     },
+    /// The [`SessionEvent::Rewind`] at `of` no longer applies: the events
+    /// it superseded count again, as though it had not been recorded
+    /// (2026-09-15, nightshift backlog 064 — the undo of a rewind).
+    ///
+    /// A marker on [`SessionEvent::Unelide`]'s terms rather than the
+    /// rewind line struck from the file, and for the reason every marker
+    /// here is one: the log is append-only. Deleting the line would
+    /// renumber every event after it and re-aim every `Elide`, `Edit` and
+    /// later `Rewind` that carries an index — the same trap
+    /// [`SessionEvent::Unknown`] holds its position to avoid — and it would
+    /// erase the fact that the rewind happened, which "what I believed on
+    /// Tuesday" is. Redoing the rewind is a fresh `Rewind`, never a
+    /// resurrection of the old one.
+    ///
+    /// Lifting a rewind puts back every marker in its range too — an
+    /// elision, an edit, a narrower rewind — since those were only ever
+    /// superseded by it. A rewind lifted while a *wider* one still covers
+    /// it changes nothing visible until that one is lifted as well.
+    Unrewind {
+        /// Index into the event log of the `Rewind` this lifts.
+        of: usize,
+        at: DateTime<Utc>,
+    },
     /// Everything before this event is superseded by `summary`: the provider
     /// projection restarts here, re-seeded with the summary as a user
     /// message. The log itself stays append-only — earlier events remain on
@@ -948,6 +971,7 @@ impl Session {
                 | SessionEvent::AgentSession { .. }
                 | SessionEvent::Title { .. }
                 | SessionEvent::Rewind { .. }
+                | SessionEvent::Unrewind { .. }
                 | SessionEvent::Unknown => continue,
                 SessionEvent::Elide { targets, at } => {
                     let targets: Vec<usize> = targets
@@ -1350,15 +1374,41 @@ impl Session {
     /// Chained and overlapping rewinds fall out of this without a special
     /// case: each one clears its own range, and a later rewind reaching
     /// further back simply clears a superset of an earlier one's range.
+    ///
+    /// An [`SessionEvent::Unrewind`] lifts one rewind for good (2026-09-15).
+    /// Rather than un-clearing that rewind's range — which would bring back
+    /// events a *different* rewind also covers — the flags are rebuilt from
+    /// the start with every lifted rewind left out, so what remains is
+    /// exactly the union of the rewinds still standing. A lifted rewind
+    /// stays lifted even when a later rewind's range runs over the
+    /// `Unrewind` line: markers are never live, and a marker's effect does
+    /// not depend on its own liveness.
     fn live_flags(&self) -> Vec<bool> {
-        let mut live = vec![true; self.events.len()];
+        let n = self.events.len();
+        let mut lifted = vec![false; n];
+        for e in &self.events {
+            if let SessionEvent::Unrewind { of, .. } = e
+                && let Some(flag) = lifted.get_mut(*of)
+            {
+                *flag = true;
+            }
+        }
+        let mut live = vec![true; n];
         for (i, e) in self.events.iter().enumerate() {
-            if let SessionEvent::Rewind { to, .. } = e {
-                // The marker is not itself part of the conversation.
-                live[i] = false;
-                for flag in live.iter_mut().take(i).skip(*to) {
-                    *flag = false;
+            match e {
+                SessionEvent::Rewind { to, .. } => {
+                    // The marker is not itself part of the conversation,
+                    // lifted or not.
+                    live[i] = false;
+                    if lifted[i] {
+                        continue;
+                    }
+                    for flag in live.iter_mut().take(i).skip(*to) {
+                        *flag = false;
+                    }
                 }
+                SessionEvent::Unrewind { .. } => live[i] = false,
+                _ => {}
             }
         }
         live
@@ -1467,6 +1517,38 @@ impl Session {
         Ok(dropped)
     }
 
+    /// Lift the [`SessionEvent::Rewind`] at `of`, returning how many events
+    /// count again (2026-09-15, nightshift backlog 064).
+    ///
+    /// `of` must be a `Rewind` that has not been lifted already; a second
+    /// lift of the same marker would record a line that says nothing.
+    /// Nothing is checked about *later* rewinds: lifting one that a wider
+    /// rewind still covers is allowed and changes nothing visible, which is
+    /// the honest result rather than a refusal, since an undo stack lifts
+    /// them newest first and never asks for that order.
+    pub fn unrewind(&mut self, of: usize) -> Result<usize, String> {
+        match self.events.get(of) {
+            None => return Err(format!("no event at {of}")),
+            Some(SessionEvent::Rewind { .. }) => {}
+            Some(_) => return Err(format!("event {of} is not a rewind")),
+        }
+        if self
+            .events
+            .iter()
+            .any(|e| matches!(e, SessionEvent::Unrewind { of: o, .. } if *o == of))
+        {
+            return Err(format!("the rewind at {of} was already lifted"));
+        }
+        let before = self.live_flags();
+        self.record(SessionEvent::Unrewind { of, at: Utc::now() });
+        let after = self.live_flags();
+        Ok(before
+            .iter()
+            .zip(&after)
+            .filter(|(was, is)| !**was && **is)
+            .count())
+    }
+
     /// Which events are currently standing in for their content.
     ///
     /// Elide and unelide markers are applied in log order, so the last word
@@ -1475,7 +1557,12 @@ impl Session {
     /// supersedes the marker along with everything else in the range, and
     /// the content comes back — the same property that lets a rewind undo a
     /// compaction.
-    pub(crate) fn elide_flags(&self) -> Vec<bool> {
+    ///
+    /// Public since 2026-09-15 (nightshift backlog 064): a shell restoring
+    /// a removed turn on the Claude Code engine has to know it *is* removed
+    /// before it rewrites the CLI's file, and `unelide`'s zero comes too
+    /// late for that.
+    pub fn elide_flags(&self) -> Vec<bool> {
         let live = self.live_flags();
         let mut elided = vec![false; self.events.len()];
         for (i, e) in self.events.iter().enumerate() {
@@ -2708,6 +2795,92 @@ mod tests {
         // The same point cannot be rewound twice — it is already gone.
         let err = s.rewind(second).unwrap_err();
         assert!(err.contains("already rewound"), "{err}");
+    }
+
+    /// The undo of a rewind (nightshift backlog 064): an `Unrewind` marker
+    /// lifts one rewind, the markers in its range come back with it, a
+    /// wider rewind still standing keeps what it covers, and redoing is a
+    /// fresh rewind.
+    #[test]
+    fn an_unrewind_lifts_one_rewind_and_leaves_the_others_standing() {
+        let mut s = Session::new();
+        let first = exchange(&mut s, "one", "first"); // 1, 2
+        let second = exchange(&mut s, "two", "second"); // 3, 4
+        exchange(&mut s, "three", "third"); // 5, 6
+        s.elide([4]).unwrap(); // 7: the second reply removed
+        s.edit(5, "three, edited").unwrap(); // 8
+        assert_eq!(s.messages().len(), 6);
+
+        // Rewind to the third turn: it, its reply, and both markers
+        // recorded after it go — the elision aimed before the cut too,
+        // since the marker itself is in the range.
+        s.rewind(5).unwrap(); // 9
+        assert_eq!(s.messages().len(), 4);
+        assert!(!s.elide_flags()[4], "the elide marker was superseded");
+        assert_eq!(s.edit_texts()[5], None, "the edit was in the range");
+
+        // Lift it: the turn, the reply, the elision and the edit are back;
+        // the rewind is still in the log, as is the lift.
+        assert_eq!(s.unrewind(9).unwrap(), 4, "turn, reply, elision, edit");
+        let msgs = s.messages();
+        assert_eq!(msgs.len(), 6);
+        assert_eq!(msgs[4].text(), "three, edited");
+        assert!(s.elide_flags()[4], "the elision counts again");
+        assert_eq!(s.events().len(), 11);
+        assert!(matches!(s.events()[9], SessionEvent::Rewind { to: 5, .. }));
+        assert!(matches!(
+            s.events()[10],
+            SessionEvent::Unrewind { of: 9, .. }
+        ));
+
+        // Twice is a line that says nothing.
+        let err = s.unrewind(9).unwrap_err();
+        assert!(err.contains("already lifted"), "{err}");
+        let err = s.unrewind(3).unwrap_err();
+        assert!(err.contains("not a rewind"), "{err}");
+        assert!(s.unrewind(99).is_err());
+
+        // A narrow rewind under a wider one: lifting the narrow one changes
+        // nothing while the wide one stands, and lifting the wide one
+        // then brings back everything but what the narrow one covered.
+        s.rewind(second).unwrap(); // 11
+        s.rewind(first).unwrap(); // 12
+        assert!(s.messages().is_empty());
+        assert_eq!(s.unrewind(11).unwrap(), 0);
+        assert!(s.messages().is_empty());
+        assert_eq!(
+            s.unrewind(12).unwrap(),
+            8,
+            "everything back, the narrow one being lifted too"
+        );
+        assert_eq!(s.messages().len(), 6);
+
+        // Redo is a fresh rewind, which supersedes on its own terms.
+        s.rewind(second).unwrap(); // 15
+        assert_eq!(s.messages().len(), 2);
+        assert_eq!(s.checkpoints().len(), 1);
+
+        // Superseded, not deleted: every line is still there.
+        assert_eq!(s.events().len(), 16);
+    }
+
+    #[test]
+    fn an_unrewind_round_trips_through_jsonl() {
+        let dir = std::env::temp_dir().join(format!("nightloom-unrewind-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut s = Session::with_log(&dir).unwrap();
+        exchange(&mut s, "one", "first");
+        let second = exchange(&mut s, "two", "second");
+        s.rewind(second).unwrap();
+        s.unrewind(5).unwrap();
+        let path = dir.join(format!("{}.jsonl", s.id));
+        let reloaded = Session::load(&path).unwrap();
+        assert_eq!(reloaded.messages().len(), 4);
+        assert!(matches!(
+            reloaded.events()[6],
+            SessionEvent::Unrewind { of: 5, .. }
+        ));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

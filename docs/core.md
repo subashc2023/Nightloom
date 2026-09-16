@@ -161,8 +161,8 @@ Append-only event log (`SessionEvent`), persisted as JSONL. **The event log is
 the source of truth**; the provider message list (`Session::messages()`) and any
 UI rendering are projections of it.
 
-Four markers supersede without mutating — `Rewind`, `Compaction`, `Elide` /
-`Unelide`, and since 2026-09-15 `Edit` — and one line can name a lineage
+Five markers supersede without mutating — `Rewind` / `Unrewind`, `Compaction`,
+`Elide` / `Unelide`, and since 2026-09-15 `Edit` — and one line can name a lineage
 (`SessionCreated.forked_from`); all under "Markers over mutations" below.
 
 Tool results are recorded as individual `SessionEvent::ToolResult` events; the
@@ -272,6 +272,30 @@ find out which turn you wanted back after the turn that spoiled it. `messages()`
 deliberately do **not**, because the tokens were spent and a bill that shrank on
 rewind would be fiction. Files written by tools are not reverted, and both shells
 say so at the moment of rewinding.
+
+### Unrewind (`SessionEvent::Unrewind { of }`, `Session::unrewind`, 2026-09-15)
+
+The undo of a rewind (nightshift backlog 064). `of` names a `Rewind` in the
+log, and that rewind no longer applies: what it superseded counts again,
+the markers in its range included — an elision, an edit, a narrower rewind
+recorded after `to` were only ever superseded by it. A **marker on
+`Unelide`'s terms rather than the rewind line struck from the file**, and
+for the reason every marker here is one: the log is append-only, and
+deleting a line would renumber every event after it and re-aim every
+`Elide`, `Edit` and later `Rewind` that carries an index — the trap
+`Unknown` holds its position to avoid. It would also erase the fact that
+the rewind happened, which is information. Redoing a rewind is a fresh
+`Rewind`, never a resurrection of the lifted one.
+
+`live_flags` rebuilds the flags with every lifted rewind left out, rather
+than un-clearing one rewind's range, so what remains is exactly the union
+of the rewinds still standing: a rewind lifted while a *wider* one still
+covers it changes nothing visible until that one is lifted too. A lifted
+rewind stays lifted even when a later rewind's range runs over the
+`Unrewind` line — markers are never live, and a marker's effect does not
+depend on its own liveness. `unrewind` refuses a second lift of the same
+marker (a line that says nothing) and a target that is not a rewind. The
+desktop's `liveFlags` mirrors the rebuild, as it mirrors the rest.
 
 ### Elision (`SessionEvent::Elide` / `Unelide`, `Session::elide`, `is_elidable`, `elide_flags()`)
 

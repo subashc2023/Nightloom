@@ -258,6 +258,27 @@ What each edit does to the copy, and why:
   desktop starts the next turn with no `--resume` instead, and the chat
   records the id that turn opens.
 
+- **Restore** (`restore`, 2026-09-15, nightshift backlog 064 — the Restore
+  this engine lacked when 062 landed, nightshift blocker 067): the turn's
+  nodes put back into the *current* file from the **original** the
+  removal copied from, which is still on disk since nothing here deletes.
+  The target is located in the original, by the address the removal used,
+  so the text check runs against the file that has the text. A node still
+  present (the marked text node of a reply with a tool call) takes its
+  original line again; one that was dropped (a prompt, a text reply, a
+  thinking node) is inserted after its parent's line, a prompt's
+  `file-history-snapshot` with it; then every node the copy shares with
+  the original hangs from the parent it had there, where that parent is
+  present — undoing the re-parenting and leaving alone an edge some other
+  removal moved. Written as a third copy under a new id, recorded and
+  resumed (`restore_message` in the desktop). Not a plain return to the
+  original id, which the undo of a *rewind* can afford: anything done to
+  the copy since would go with it. Which file is the original: the latest
+  `AgentSession` live before the `Elide` marker that hid the turn.
+- **Unrewind** (no file work): the rewind resumed a truncated copy; lifting
+  it resumes the file the copy was cut from, recorded as a fresh
+  `AgentSession` line since the copy's own line is later and still live.
+
 **Addressing a turn.** Nightloom's log and the CLI's file share their
 *tail*, not their head — a chat may hold turns from before it came to this
 engine, and the CLI holds only the turns since — so a target is counted

@@ -1,6 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
 import * as api from "./api";
 import { isMac } from "./platform";
+import { NEW_DRAFT_KEY, moveDraft } from "./drafts.svelte";
 import {
   defaultDraft,
   isProviderVisible,
@@ -21,6 +22,7 @@ import {
   type SavedPrompt,
 } from "./catalog";
 import { EDITABLE_LAYERS } from "./types";
+import { LIST_SCOPE, NEW_CHAT_SCOPE, UndoHistory } from "./undo";
 import type {
   AgentInfo,
   AgentTurnResult,
@@ -53,6 +55,7 @@ import type {
   ProjectInfo,
   ProjectsFolderInfo,
   NewProjectPath,
+  ContextEdit,
   EditableLayer,
   PromptLayer,
   PromptLayerEdits,
@@ -551,6 +554,10 @@ export const app = $state({
   /** Sidebar width and collapse, pane widths on the Nightshift screens. */
   layout: loadLayout(),
   toasts: [] as { id: number; text: string }[],
+  /** Bumped whenever the undo stack changes, so the menu titles and the
+   *  palette rows that read it re-derive (nightshift backlog 064). The
+   *  stack itself is `history`, which is not reactive. */
+  undoTick: 0,
   /**
    * The Nightshift surface: every registered project's detection row, which
    * one is selected, which tab is showing, and the selected project's newest
@@ -714,6 +721,17 @@ export function runMenuCommand(id: string): void {
     case "model_fable":
     case "model_haiku":
       void switchModel(id.slice(6));
+      break;
+    // The Edit menu's Undo and Redo, ours since nightshift backlog 064: in
+    // a text box the key is the box's — the webview's own command keeps
+    // the typing history — and anywhere else it is the app's stack.
+    case "undo_app":
+      if (inTextField()) document.execCommand("undo");
+      else void undo();
+      break;
+    case "redo_app":
+      if (inTextField()) document.execCommand("redo");
+      else void redo();
       break;
     default:
       // ⌘1…9: the n-th provider pill; ⌘⇧1…9: the n-th model in the picker
@@ -2797,16 +2815,38 @@ export async function compactSession(): Promise<void> {
 
 export async function deleteSession(id: string): Promise<void> {
   if (app.busy) return;
+  let full: string;
   try {
-    await api.deleteSession(id);
-    if (id === app.activeSessionId) {
+    full = await api.deleteSession(id);
+    if (id === app.activeSessionId || full === app.activeSessionId) {
       app.activeSessionId = null;
       app.events = [];
     }
   } catch (e) {
     addToast(String(e));
+    await refreshSessions();
+    return;
   }
   await refreshSessions();
+  // A delete is a move to the trash, so its undo is the move back — and,
+  // when nothing is open, the chat reopened, since that is where the user
+  // was. On the list's stack: after the delete there is no chat to hold it.
+  pushUndo(LIST_SCOPE, {
+    label: "delete",
+    undo: async () => {
+      await api.restoreSession(full);
+      await refreshSessions();
+      if (app.activeSessionId === null) await openSession(full);
+    },
+    redo: async () => {
+      await api.deleteSession(full);
+      if (full === app.activeSessionId) {
+        app.activeSessionId = null;
+        app.events = [];
+      }
+      await refreshSessions();
+    },
+  });
 }
 
 export async function send(
@@ -2815,6 +2855,11 @@ export async function send(
   documents: DocumentInput[] = [],
 ): Promise<void> {
   if (!app.connection || app.busy) return;
+  // A turn the model answers is not undoable, and nothing under it is:
+  // a rewind lifted from under a reply would put the model in a
+  // conversation it never had (nightshift backlog 064).
+  history.clear(chatScope());
+  app.undoTick++;
   if (app.connection.engine === "claude-code") {
     return sendAgent(text, images, documents);
   }
@@ -2852,6 +2897,8 @@ export async function send(
       // Sessions are created lazily on first send; pick up the id.
       const first = app.events[0];
       if (first && first.event === "session_created") {
+        // The pending chat's draft follows the chat it made (backlog 065).
+        if (app.activeSessionId === null) moveDraft(NEW_DRAFT_KEY, first.id);
         app.activeSessionId = first.id;
       }
     } catch {
@@ -2926,6 +2973,8 @@ async function sendAgent(
       app.events = await api.transcript();
       const first = app.events[0];
       if (first && first.event === "session_created") {
+        // The pending chat's draft follows the chat it made (backlog 065).
+        if (app.activeSessionId === null) moveDraft(NEW_DRAFT_KEY, first.id);
         app.activeSessionId = first.id;
       }
     } catch {
@@ -3165,6 +3214,23 @@ export async function setPromptLayer(layer: PromptLayer, on: boolean): Promise<v
   const current = promptLayersOff(app.events);
   const off = on ? current.filter((l) => l !== layer) : [...current, layer];
   if (sameLayers(off, current)) return;
+  if (!(await applyLayers(off))) return;
+  // The inverse is the set as it was; scoped to the chat the call may
+  // just have created, which is why the scope is read after it.
+  pushUndo(chatScope(), {
+    label: `${layer.replace(/_/g, " ")} ${on ? "on" : "off"}`,
+    undo: async () => {
+      await applyLayers(current);
+    },
+    redo: async () => {
+      await applyLayers(off);
+    },
+  });
+}
+
+/** The two steps of a layer change: the log, then the reconnect that
+ *  reads it back. False on a refusal, toasted. */
+async function applyLayers(off: PromptLayer[]): Promise<boolean> {
   try {
     app.events = await api.setPromptLayers(off);
     // A chat whose log was just created by this call: pick up its id the way
@@ -3174,10 +3240,11 @@ export async function setPromptLayer(layer: PromptLayer, on: boolean): Promise<v
     app.error = null;
   } catch (e) {
     addToast(String(e));
-    return;
+    return false;
   }
   await applyDraft();
   void refreshSessions();
+  return true;
 }
 
 /**
@@ -3218,9 +3285,25 @@ export async function setPromptLayerText(
   if (app.busy || app.connecting) return false;
   const current = promptLayerEdits(app.events);
   const wanted = text?.trim() || null;
-  if ((current[layer] ?? null) === wanted) return true;
+  const previous = current[layer] ?? null;
+  if (previous === wanted) return true;
+  if (!(await applyLayerText(layer, wanted))) return false;
+  pushUndo(chatScope(), {
+    label: `${layer.replace(/_/g, " ")} text`,
+    undo: async () => {
+      await applyLayerText(layer, previous);
+    },
+    redo: async () => {
+      await applyLayerText(layer, wanted);
+    },
+  });
+  return true;
+}
+
+/** `applyLayers` for one layer's own text. */
+async function applyLayerText(layer: EditableLayer, text: string | null): Promise<boolean> {
   try {
-    app.events = await api.setPromptLayerText(layer, wanted);
+    app.events = await api.setPromptLayerText(layer, text);
     const first = app.events[0];
     if (first && first.event === "session_created") app.activeSessionId = first.id;
     app.error = null;
@@ -3319,10 +3402,23 @@ export async function syncPromptLayers(): Promise<void> {
  * is the entire reason a rewind supersedes instead of deleting.
  */
 export function liveFlags(events: SessionEvent[]): boolean[] {
+  // An `unrewind` lifts one rewind for good (nightshift backlog 064): the
+  // flags are built with every lifted rewind left out, rather than that
+  // rewind's range un-cleared, so what remains is the union of the rewinds
+  // still standing — the same rebuild the core does.
+  const lifted = events.map(() => false);
+  for (const e of events) {
+    if (e.event === "unrewind" && e.of < lifted.length) lifted[e.of] = true;
+  }
   const live = events.map(() => true);
   events.forEach((e, i) => {
+    if (e.event === "unrewind") {
+      live[i] = false;
+      return;
+    }
     if (e.event !== "rewind") return;
     live[i] = false; // the marker is not part of the conversation
+    if (lifted[i]) return;
     for (let j = e.to; j < i; j++) live[j] = false;
   });
   return live;
@@ -3342,7 +3438,158 @@ export async function rewindTo(to: number): Promise<void> {
     app.error = null;
   } catch (e) {
     app.error = String(e);
+    return;
   }
+  // The inverse lifts the marker this call landed — and, after a redo,
+  // the marker *that* call lands, which is why the index is a variable.
+  let marker = lastMarker("rewind");
+  pushUndo(chatScope(), {
+    label: "rewind",
+    undo: async () => {
+      app.events = await api.unrewind(marker);
+    },
+    redo: async () => {
+      app.events = await api.rewind(to);
+      marker = lastMarker("rewind");
+    },
+  });
+}
+
+/** The log index of the newest event of `kind` — the marker an operation
+ *  just recorded, for its inverse to name. */
+function lastMarker(kind: SessionEvent["event"]): number {
+  for (let i = app.events.length - 1; i >= 0; i--) {
+    if (app.events[i].event === kind) return i;
+  }
+  return -1;
+}
+
+// ---- Undo and redo (nightshift backlog 064, 2026-09-15) ---------------
+//
+// The stack is `undo.ts`; this is where it meets the app. Each operation
+// below pushes its inverse after it succeeds — `rewindTo`, `saveEdit`,
+// `removeTurn`, `editContextItems`, `renameSession`, `deleteSession`,
+// `setPromptLayer`, `setPromptLayerText` — and `send` clears the chat's
+// stack, since a turn the model has answered is not undoable and nothing
+// under it is either. Not on the stack, and the doc says so: a send, a
+// fork (edit-and-send; undo is to trash the fork), a compaction, a dream,
+// a capture, a project forget.
+
+/** The stack. Not reactive; `app.undoTick` is bumped on every change. */
+export const history = new UndoHistory(() => app.busy);
+
+/** The open chat's scope: its id, or the pending New chat's key. */
+export function chatScope(): string {
+  return app.activeSessionId ?? NEW_CHAT_SCOPE;
+}
+
+/** What ⌘Z looks at: the open chat's stack and the list's. */
+function undoScopes(): string[] {
+  return [chatScope(), LIST_SCOPE];
+}
+
+function pushUndo(scope: string, entry: { label: string; undo: () => Promise<void>; redo: () => Promise<void> }): void {
+  history.push(scope, entry);
+  app.undoTick++;
+}
+
+/** "rewind" or null: what Undo would reverse right now. Reactive through
+ *  the tick and the open chat. */
+export function undoLabel(): string | null {
+  void app.undoTick;
+  return history.undoLabel(undoScopes());
+}
+
+export function redoLabel(): string | null {
+  void app.undoTick;
+  return history.redoLabel(undoScopes());
+}
+
+/**
+ * Reverse the newest operation on the open chat or the list. A toast names
+ * it, since the change may be off screen (a rename in the sidebar, a layer
+ * in a closed panel). A refusal is a toast too, and the stack is left as
+ * it was so the entry can be tried again.
+ */
+export async function undo(): Promise<void> {
+  try {
+    const step = await history.undo(undoScopes());
+    if (step) addToast(`Undid ${step.label}`);
+  } catch (e) {
+    addToast(`Could not undo: ${String(e)}`);
+  } finally {
+    app.undoTick++;
+  }
+}
+
+export async function redo(): Promise<void> {
+  try {
+    const step = await history.redo(undoScopes());
+    if (step) addToast(`Redid ${step.label}`);
+  } catch (e) {
+    addToast(`Could not redo: ${String(e)}`);
+  } finally {
+    app.undoTick++;
+  }
+}
+
+/**
+ * Whether the keyboard focus is in something with a history of its own — a
+ * text box or a contenteditable — where ⌘Z belongs to the typing and not
+ * to the app. Read at the moment of the key or the menu click.
+ */
+export function inTextField(): boolean {
+  if (typeof document === "undefined") return false;
+  const el = document.activeElement;
+  if (!el) return false;
+  if (el instanceof HTMLTextAreaElement) return true;
+  if (el instanceof HTMLInputElement) {
+    return !["button", "checkbox", "radio", "range", "submit", "reset", "color", "file"].includes(el.type);
+  }
+  return el instanceof HTMLElement && el.isContentEditable;
+}
+
+/**
+ * Keep the macOS Edit menu's Undo and Redo in step with the stack and the
+ * focus: retitled with the operation, disabled when there is nothing to
+ * reverse and no text box to hand the key to. Memoized on what was last
+ * sent, since focus moves often and the menu rarely changes. A no-op off
+ * macOS, where App.svelte binds the keys itself.
+ */
+let undoMenuSent = "";
+export async function syncUndoMenu(): Promise<void> {
+  if (!isMac) return;
+  const undo = undoLabel();
+  const redo = redoLabel();
+  const textField = inTextField();
+  const key = `${undo}|${redo}|${textField}`;
+  if (key === undoMenuSent) return;
+  undoMenuSent = key;
+  try {
+    await api.setUndoMenu(undo, redo, textField);
+  } catch {
+    // A missing menu (a test, a window without one) is not worth a toast.
+  }
+}
+
+/** The text the turn at `index` says now: its latest live edit, else its
+ *  own — what an undo of an edit puts back. */
+function currentText(index: number): string {
+  const live = liveFlags(app.events);
+  for (let i = app.events.length - 1; i > index; i--) {
+    const e = app.events[i];
+    if (live[i] && e.event === "edit" && e.target === index) return e.text;
+  }
+  const e = app.events[index];
+  if (!e) return "";
+  if (e.event === "user_message") return e.text;
+  if (e.event === "assistant_message") {
+    return e.blocks
+      .filter((b): b is Extract<typeof b, { type: "text" }> => b.type === "text")
+      .map((b) => b.text)
+      .join("");
+  }
+  return "";
 }
 
 /**
@@ -3354,15 +3601,27 @@ export async function rewindTo(to: number): Promise<void> {
  */
 export async function saveEdit(index: number, text: string): Promise<boolean> {
   if (app.busy) return false;
+  const previous = currentText(index);
   try {
     const res = await api.editMessage(index, text, "save");
     app.events = res.events;
     app.error = null;
-    return true;
   } catch (e) {
     addToast(String(e));
     return false;
   }
+  // An edit is undone by an edit back to what the turn said before: the
+  // same marker, the same CLI copy on Claude Code, the original kept.
+  const editTo = async (t: string) => {
+    const res = await api.editMessage(index, t, "save");
+    app.events = res.events;
+  };
+  pushUndo(chatScope(), {
+    label: "edit",
+    undo: () => editTo(previous),
+    redo: () => editTo(text),
+  });
+  return true;
 }
 
 /**
@@ -3410,7 +3669,76 @@ export async function removeTurn(index: number): Promise<void> {
     app.error = null;
   } catch (e) {
     addToast(String(e));
+    return;
   }
+  pushUndo(chatScope(), {
+    label: "remove",
+    undo: async () => {
+      app.events = (await api.restoreMessage(index)).events;
+    },
+    redo: async () => {
+      app.events = (await api.removeMessage(index)).events;
+    },
+  });
+}
+
+/**
+ * The context panel's Remove and Restore (`edit_context`), with the
+ * inverse on the stack: a removal is undone by a restore of the same
+ * items and the other way round. Resolves with the panel's new view, or
+ * null on a refusal (toasted here). The API engine only, as the command
+ * is; the transcript's own controls go through `removeTurn`.
+ */
+export async function editContextItems(
+  targets: number[],
+  remove: boolean,
+): Promise<ContextEdit | null> {
+  let result: ContextEdit;
+  try {
+    result = await api.editContext(targets, remove);
+    app.events = result.events;
+  } catch (e) {
+    addToast(String(e));
+    return null;
+  }
+  const apply = async (rm: boolean) => {
+    app.events = (await api.editContext(targets, rm)).events;
+  };
+  pushUndo(chatScope(), {
+    label: remove ? "remove" : "restore",
+    undo: () => apply(!remove),
+    redo: () => apply(remove),
+  });
+  return result;
+}
+
+/**
+ * Rename a chat, the old name kept for the undo. A chat that was never
+ * named shows its first message, and that is what the undo names it —
+ * the log's `Title` cannot be un-recorded, only superseded — so the row
+ * reads as it did, now by a title. On the list's stack, since the chat
+ * renamed need not be the open one.
+ */
+export async function renameSession(id: string, title: string): Promise<void> {
+  const row = app.sessions.find((s) => s.id === id);
+  const previous = row?.title ?? row?.first_user ?? null;
+  try {
+    await api.renameSession(id, title);
+  } catch (e) {
+    addToast(String(e));
+    return;
+  }
+  await refreshSessions();
+  if (previous === null) return;
+  const nameIt = async (t: string) => {
+    await api.renameSession(id, t);
+    await refreshSessions();
+  };
+  pushUndo(LIST_SCOPE, {
+    label: "rename",
+    undo: () => nameIt(previous),
+    redo: () => nameIt(title),
+  });
 }
 
 /**

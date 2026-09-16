@@ -8,6 +8,7 @@
     promoteLayerText,
     promptLayerEdits,
     promptLayersOff,
+    editContextItems,
     setPromptLayer,
     setPromptLayerText,
   } from "./state.svelte";
@@ -281,18 +282,18 @@
   async function edit(targets: number[], remove: boolean) {
     working = true;
     try {
-      const result = await api.editContext(targets, remove);
+      // Through the state so the inverse lands on the undo stack
+      // (nightshift backlog 064); it re-syncs the transcript from the same
+      // call rather than patching it here, since an elision changes every
+      // projection off the log. Null is a refusal it has already toasted.
+      const result = await editContextItems(targets, remove);
+      if (!result) return;
       view = result.view;
-      // The transcript is re-synced from the same call rather than patched
-      // here: an elision changes every projection off the log.
-      app.events = result.events;
       if (result.changed > 0 && remove) {
         addToast(
           `Removed ${result.changed} item${result.changed === 1 ? "" : "s"} — the content stays in the session log, and the prompt cache is invalidated from here on.`,
         );
       }
-    } catch (e) {
-      addToast(String(e));
     } finally {
       working = false;
     }

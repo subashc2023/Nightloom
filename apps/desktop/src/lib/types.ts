@@ -660,6 +660,10 @@ export type SessionEvent =
   // Supersedes events `to..` up to this marker. The log keeps them, so the
   // UI can show what was dropped; see `liveFlags` in state.svelte.ts.
   | { event: "rewind"; to: number; at: string }
+  // Lifts the `rewind` at `of` (nightshift backlog 064): what it superseded
+  // counts again, markers in its range included. A marker rather than the
+  // rewind line struck, since every later index-carrying marker would move.
+  | { event: "unrewind"; of: number; at: string }
   | {
       event: "tool_result";
       tool_use_id: string;

@@ -1856,6 +1856,61 @@ async fn rewind(state: State<'_, AppState>, to: usize) -> Result<Vec<SessionEven
     Ok(session.events().to_vec())
 }
 
+/// Lift the rewind recorded at log index `of` — the undo of a rewind
+/// (nightshift backlog 064, 2026-09-15) — returning the transcript the way
+/// [`rewind`] does and for the same reason.
+///
+/// The log gets its `Unrewind` marker ([`Session::unrewind`]); nothing is
+/// struck out. On the Claude Code engine the rewind resumed a truncated
+/// copy of the CLI's file and recorded that copy's id; the file it was
+/// cut from is still on disk, untouched, so no rewrite is needed here —
+/// the chat goes back to resuming *that* id, which is the latest one
+/// recorded before the rewind's marker, live again now that the rewind
+/// is lifted. It is recorded as a fresh `AgentSession` line rather than
+/// found by projection because the copy's own line is still live and
+/// later. A rewind that left the CLI nothing to resume (`CliChange::Fresh`)
+/// recorded no id; lifting it points the agent back at whichever id
+/// stood before, or at nothing if there was none.
+#[tauri::command]
+async fn unrewind(state: State<'_, AppState>, of: usize) -> Result<Vec<SessionEvent>, String> {
+    let mut agent_guard = state.agent.lock().await;
+    let mut session_guard = state.session.lock().await;
+    let session = session_guard
+        .as_mut()
+        .ok_or_else(|| "no active session".to_string())?;
+    session.unrewind(of)?;
+    if agent_guard.is_some() {
+        let before = agent_session_before(session, of);
+        let current = session
+            .agent_session()
+            .filter(|(agent, _)| *agent == AGENT)
+            .map(|(_, id)| id.to_string());
+        let change = match (before, current) {
+            (Some(b), Some(c)) if b == c => CliChange::Untouched,
+            (Some(b), _) => CliChange::Resume(b),
+            (None, Some(_)) => CliChange::Fresh,
+            (None, None) => CliChange::Untouched,
+        };
+        change.adopt(session, agent_guard.as_mut());
+    }
+    Ok(session.events().to_vec())
+}
+
+/// The Claude Code session id in force just before the marker at `at`:
+/// the latest live `AgentSession` line recorded before it. `None` when
+/// the chat had no CLI session then.
+fn agent_session_before(session: &Session, at: usize) -> Option<String> {
+    session
+        .live_events()
+        .into_iter()
+        .rev()
+        .filter(|(i, _)| *i < at)
+        .find_map(|(_, e)| match e {
+            SessionEvent::AgentSession { agent, id, .. } if agent == AGENT => Some(id.clone()),
+            _ => None,
+        })
+}
+
 /// What an edit did to Claude Code's history, for the log and the agent
 /// to follow.
 enum CliChange {
@@ -2104,6 +2159,100 @@ async fn remove_message(state: State<'_, AppState>, index: usize) -> Result<Mess
         session: session.id.clone(),
         forked: false,
     })
+}
+
+/// Put back the turn at `index` that [`remove_message`] took out — the
+/// `Unelide` marker, on both engines (nightshift backlog 064, 2026-09-15;
+/// the Restore that nightshift blocker 067 said had to wait for the undo).
+///
+/// On the Claude Code engine the removal wrote a copy of the CLI's file
+/// without the turn and recorded that copy's id. The file it was copied
+/// from is still on disk — nothing here deletes — so the restore is a
+/// rewrite of the *current* file with the turn's nodes put back from that
+/// original ([`CliSession::restore`]), written as a third copy under a new
+/// id, which is recorded and resumed. Not a plain return to the original
+/// id, which the undo of a rewind can afford: anything done to the copy
+/// since would be lost with it, and the rewrite keeps it. Which file is
+/// the original: the latest `AgentSession` live before the `Elide` marker
+/// that hid this turn. A turn removed while the chat had no CLI session
+/// behind it needs no file work. The copy is made *before* the marker, as
+/// every edit here is, so a refusal records nothing.
+#[tauri::command]
+async fn restore_message(state: State<'_, AppState>, index: usize) -> Result<MessageEdit, String> {
+    let mut agent_guard = state.agent.lock().await;
+    let mut session_guard = state.session.lock().await;
+    let session = session_guard
+        .as_mut()
+        .ok_or_else(|| "no active session".to_string())?;
+    if !session.elide_flags().get(index).copied().unwrap_or(false) {
+        return Err(format!("event {index} is not removed from the context"));
+    }
+    let workspace = agent_guard.as_ref().map(|a| a.spec().workspace.clone());
+    let change = match &workspace {
+        Some(cwd) => restore_on_cli(session, cwd, index)?,
+        None => CliChange::Untouched,
+    };
+    session.unelide([index])?;
+    change.adopt(session, agent_guard.as_mut());
+    Ok(MessageEdit {
+        events: session.events().to_vec(),
+        session: session.id.clone(),
+        forked: false,
+    })
+}
+
+/// [`edit_on_cli`]'s counterpart for a restore: the current file and the
+/// one the turn was removed from, the turn's nodes put back, a copy
+/// written. `Untouched` when the chat has no CLI session now, or had none
+/// when the turn was removed (no `AgentSession` before the marker, or the
+/// same one as now — the removal then made no copy).
+fn restore_on_cli(session: &Session, workspace: &Path, index: usize) -> Result<CliChange, String> {
+    let Some(current) = session
+        .agent_session()
+        .filter(|(agent, _)| *agent == AGENT)
+        .map(|(_, id)| id.to_string())
+    else {
+        return Ok(CliChange::Untouched);
+    };
+    let marker = session
+        .live_events()
+        .into_iter()
+        .rev()
+        .find(|(_, e)| matches!(e, SessionEvent::Elide { targets, .. } if targets.contains(&index)))
+        .map(|(i, _)| i)
+        .ok_or_else(|| format!("event {index} is not removed from the context"))?;
+    let Some(original) = agent_session_before(session, marker).filter(|id| *id != current) else {
+        return Ok(CliChange::Untouched);
+    };
+    let target = cli_target(session, index)?;
+    let projects = cli_session::projects_dir()
+        .ok_or_else(|| "no home directory, so no ~/.claude/projects to look in".to_string())?;
+    restore_cli_file(&projects, workspace, &current, &original, &target)
+}
+
+/// The pure half of [`restore_on_cli`], with the projects root as a
+/// parameter for the test's sake, like [`edit_cli_file`].
+fn restore_cli_file(
+    projects: &Path,
+    workspace: &Path,
+    current: &str,
+    original: &str,
+    target: &Target,
+) -> Result<CliChange, String> {
+    let read = |id: &str| -> Result<(PathBuf, CliSession), String> {
+        let path = cli_session::find(projects, workspace, id).map_err(|e| e.to_string())?;
+        let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        let parsed = CliSession::parse(&text).map_err(|e| e.to_string())?;
+        Ok((path, parsed))
+    };
+    let (path, current) = read(current)?;
+    let (_, original) = read(original)?;
+    let restored = current
+        .restore(&original, target)
+        .map_err(|e| e.to_string())?;
+    cli_session::write_copy(&path, &restored)
+        .map(CliChange::Resume)
+        .map_err(|e| e.to_string())
 }
 
 /// Fork the open chat before the user turn at `upto` and make the fork
@@ -2402,6 +2551,44 @@ async fn delete_session(state: State<'_, AppState>, id: String) -> Result<String
     }
     std::fs::rename(&path, &dest).map_err(|e| e.to_string())?;
     Ok(full_id)
+}
+
+/// Put a deleted session back: its log moves from `<logs>/trash/` to
+/// `<logs>/`, where the listing finds it again (nightshift backlog 064,
+/// 2026-09-15 — the undo of a delete, and the first way back the trash
+/// has had from inside the app). `id` is the full id [`delete_session`]
+/// returned; a chat deleted twice under one id (a re-import) comes back
+/// newest first, by the stamp its second copy was filed under. Refused,
+/// with nothing moved, when a live log already has the name — the trash
+/// copy stays where it is rather than replace a chat that exists.
+#[tauri::command]
+async fn restore_session(state: State<'_, AppState>, id: String) -> Result<String, String> {
+    let log_dir = state.log_dir().await;
+    let trash = log_dir.join("trash");
+    let plain = trash.join(format!("{id}.jsonl"));
+    let stamped = std::fs::read_dir(&trash)
+        .map_err(|e| e.to_string())?
+        .filter_map(|entry| entry.ok().map(|e| e.path()))
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with(&format!("{id}.")) && n.ends_with(".jsonl"))
+                && *p != plain
+        })
+        .max();
+    let source = match (plain.exists(), stamped) {
+        (_, Some(newest)) => newest,
+        (true, None) => plain,
+        (false, None) => return Err(format!("no deleted chat {id} in the trash")),
+    };
+    let dest = log_dir.join(format!("{id}.jsonl"));
+    if dest.exists() {
+        return Err(format!(
+            "a chat {id} already exists; the deleted one stays in the trash"
+        ));
+    }
+    std::fs::rename(&source, &dest).map_err(|e| e.to_string())?;
+    Ok(id)
 }
 
 // ---- projects ----------------------------------------------------------
@@ -3719,9 +3906,27 @@ fn mac_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
         .close_window()
         .build()?;
 
-    let edit = SubmenuBuilder::new(app, "Edit")
-        .undo()
-        .redo()
+    // Undo and Redo are ours since 2026-09-15 (nightshift backlog 064),
+    // not the OS's predefined pair: the app has an undo stack of its own —
+    // a rewind, a removal, an edit, a rename, a delete, a layer — and a
+    // predefined item is validated by the first responder, which would
+    // leave it disabled whenever no text field had history, and pointed at
+    // the composer's typing whenever one did. These two are forwarded like
+    // every custom item; the frontend decides what ⌘Z means from where the
+    // focus is (a text field keeps its own history through the webview's
+    // `execCommand`), and `set_undo_menu` retitles and enables them live.
+    // Enabled from the start so copy-paste-undo in a text box works before
+    // the frontend has said anything.
+    let undo = MenuItemBuilder::with_id(UNDO_MENU_ID, "Undo")
+        .accelerator("CmdOrCtrl+Z")
+        .build(app)?;
+    let redo = MenuItemBuilder::with_id(REDO_MENU_ID, "Redo")
+        .accelerator("CmdOrCtrl+Shift+Z")
+        .build(app)?;
+
+    let edit = SubmenuBuilder::with_id(app, EDIT_MENU_ID, "Edit")
+        .item(&undo)
+        .item(&redo)
         .separator()
         .cut()
         .copy()
@@ -3761,6 +3966,57 @@ fn mac_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     MenuBuilder::new(app)
         .items(&[&app_menu, &file, &edit, &view, &model_menu, &window])
         .build()
+}
+
+/// The Edit menu's ids the frontend and [`set_undo_menu`] agree on.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const EDIT_MENU_ID: &str = "edit";
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const UNDO_MENU_ID: &str = "undo_app";
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const REDO_MENU_ID: &str = "redo_app";
+
+/// Retitle and enable the Edit menu's Undo and Redo to match the
+/// frontend's undo stack (nightshift backlog 064, 2026-09-15): `undo` /
+/// `redo` name the operation each would reverse ("rewind", "remove") or
+/// are absent when there is nothing to; `text_field` says the focus is in
+/// a text box, where the item stays enabled under its plain title because
+/// the key then undoes typing. A no-op off macOS, where there is no menu
+/// bar and `App.svelte` binds the keys itself.
+#[tauri::command]
+async fn set_undo_menu(
+    app: AppHandle,
+    undo: Option<String>,
+    redo: Option<String>,
+    text_field: bool,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let menu = app.menu().ok_or_else(|| "no menu".to_string())?;
+        let edit = menu
+            .get(EDIT_MENU_ID)
+            .and_then(|m| m.as_submenu().cloned())
+            .ok_or_else(|| "no Edit menu".to_string())?;
+        for (id, verb, label) in [(UNDO_MENU_ID, "Undo", undo), (REDO_MENU_ID, "Redo", redo)] {
+            let item = edit
+                .get(id)
+                .and_then(|m| m.as_menuitem().cloned())
+                .ok_or_else(|| format!("no {verb} item"))?;
+            let title = match (&label, text_field) {
+                (Some(l), false) => format!("{verb} {l}"),
+                _ => verb.to_string(),
+            };
+            item.set_text(title).map_err(|e| e.to_string())?;
+            item.set_enabled(label.is_some() || text_field)
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, undo, redo, text_field);
+        Ok(())
+    }
 }
 
 /// Hands a menu click to the webview as a `menu` event carrying the item's id.
@@ -3881,8 +4137,10 @@ fn main() {
             cancel,
             compact,
             rewind,
+            unrewind,
             edit_message,
             remove_message,
+            restore_message,
             fork_session,
             context_view,
             edit_context,
@@ -3891,6 +4149,8 @@ fn main() {
             set_prompt_layer_text,
             prompt_layer_file,
             delete_session,
+            restore_session,
+            set_undo_menu,
             approve_call,
             pick_folder,
             pick_export,
@@ -4179,6 +4439,118 @@ mod tests {
             edit_on_cli(&plain, cwd, |cli| cli.truncate(0)).unwrap(),
             CliChange::Untouched
         ));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The sequence `remove_message` then `restore_message` runs on the
+    /// Claude Code engine (nightshift backlog 064), minus the Tauri
+    /// `State`: the removal copies the file without the turn, the restore
+    /// copies *that* file with the turn put back from the original, the
+    /// log records a new handle each time, and neither earlier file
+    /// changes. Then the log half of `unrewind`: the id in force before a
+    /// rewind is the one to resume once it is lifted.
+    #[test]
+    fn a_restore_on_claude_code_records_a_new_agent_session_and_leaves_both_files_alone() {
+        let dir = empty_log_dir("cli-restore");
+        let projects = dir.join("projects");
+        let cwd = Path::new("/private/tmp/x");
+        let folder = projects.join(cli_session::project_folder(cwd));
+        std::fs::create_dir_all(&folder).unwrap();
+        let sid = "aaaaaaaa-0000-0000-0000-000000000002";
+        let original = folder.join(format!("{sid}.jsonl"));
+        std::fs::write(&original, cli_fixture(sid)).unwrap();
+        let original_bytes = std::fs::read(&original).unwrap();
+
+        let mut session = Session::with_log(&dir).unwrap();
+        session.record_user("first"); // 1
+        session.record_assistant(
+            "claude-haiku-4-5",
+            vec![nightloom_core::ContentBlock::Text { text: "one".into() }],
+            Some("end_turn".into()),
+            nightloom_core::Usage::default(),
+        ); // 2
+        session.record_agent_session(AGENT, sid); // 3
+
+        // remove_message(2): the reply dropped from a copy.
+        let target = cli_target(&session, 2).unwrap();
+        let CliChange::Resume(removed_id) =
+            edit_cli_file(&projects, cwd, sid, |cli| cli.remove(&target).map(Some)).unwrap()
+        else {
+            panic!("a removal is a copy");
+        };
+        session.elide([2]).unwrap(); // 4
+        session.record_agent_session(AGENT, &removed_id); // 5
+        let removed_path = folder.join(format!("{removed_id}.jsonl"));
+        let removed_bytes = std::fs::read(&removed_path).unwrap();
+        assert!(!String::from_utf8_lossy(&removed_bytes).contains("\"one\""));
+
+        // restore_message(2): the original is the id before the marker.
+        assert_eq!(agent_session_before(&session, 4).as_deref(), Some(sid));
+        let target = cli_target(&session, 2).unwrap();
+        let CliChange::Resume(restored_id) =
+            restore_cli_file(&projects, cwd, &removed_id, sid, &target).unwrap()
+        else {
+            panic!("a restore is a copy");
+        };
+        session.unelide([2]).unwrap(); // 6
+        session.record_agent_session(AGENT, &restored_id); // 7
+
+        assert_ne!(restored_id, removed_id);
+        assert_ne!(restored_id, sid);
+        assert_eq!(session.agent_session(), Some((AGENT, restored_id.as_str())));
+        assert!(!session.elide_flags()[2]);
+        assert_eq!(
+            std::fs::read(&original).unwrap(),
+            original_bytes,
+            "the original changed"
+        );
+        assert_eq!(
+            std::fs::read(&removed_path).unwrap(),
+            removed_bytes,
+            "the removed copy changed"
+        );
+        assert_eq!(files_in(&folder).len(), 3);
+        let restored =
+            std::fs::read_to_string(folder.join(format!("{restored_id}.jsonl"))).unwrap();
+        assert!(restored.contains("\"one\""), "the reply is back");
+        assert!(
+            !restored.contains(sid) && !restored.contains(&removed_id),
+            "one id throughout"
+        );
+        let parsed = CliSession::parse(&restored).unwrap();
+        assert_eq!(parsed.prompt_count(), 1);
+
+        // A turn removed while the chat had no CLI session behind it — the
+        // marker before any handle — needs no file work on restore.
+        let mut plain = Session::new();
+        plain.record_user("q"); // 1
+        plain.record_assistant("m", vec![], None, nightloom_core::Usage::default()); // 2
+        plain.elide([2]).unwrap(); // 3
+        plain.record_agent_session(AGENT, sid); // 4
+        assert!(matches!(
+            restore_on_cli(&plain, cwd, 2).unwrap(),
+            CliChange::Untouched
+        ));
+
+        // unrewind: the rewind recorded a new handle after its marker; the
+        // one to go back to is the latest before it.
+        session.record_user("second"); // 8
+        session.record_agent_session(AGENT, "after-second"); // 9
+        session.rewind(8).unwrap(); // 10
+        session.record_agent_session(AGENT, "truncated-copy"); // 11
+        assert_eq!(session.agent_session(), Some((AGENT, "truncated-copy")));
+        session.unrewind(10).unwrap(); // 12
+        assert_eq!(
+            agent_session_before(&session, 10).as_deref(),
+            Some("after-second"),
+            "the id in force before the rewind, live again"
+        );
+        assert_eq!(
+            session.agent_session(),
+            Some((AGENT, "truncated-copy")),
+            "the copy's line is later and still live, which is why unrewind records a fresh one"
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }
