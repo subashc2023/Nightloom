@@ -754,3 +754,32 @@ textarea.ns-fld {
   overflow-x: auto;
   overflow-y: hidden;
 }
+
+/* ---- find in page (nightshift backlog 106) ------------------------------
+
+   ⌘F's hits, lit from outside the message components by `find.ts`. The
+   first pair is the CSS Custom Highlight API — `FindBar.svelte` registers
+   the hit ranges under these two names and nothing is inserted into the
+   DOM; a `::highlight()` rule may only carry colour, background and text
+   decoration. The second pair is the fallback where the webview lacks the
+   API: `<mark>` wrappers, unwrapped again on close. Global because the
+   highlights and the marks live inside markup the renderer and the
+   transcript produce, which a scoped style cannot reach. */
+
+::highlight(find-match) {
+  background-color: var(--accent-soft);
+  color: var(--ink);
+}
+::highlight(find-current) {
+  background-color: var(--accent);
+  color: var(--paper);
+}
+mark.find-hit {
+  background: var(--accent-soft);
+  color: var(--ink);
+  border-radius: 2px;
+}
+mark.find-hit.find-current {
+  background: var(--accent);
+  color: var(--paper);
+}

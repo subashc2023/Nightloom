@@ -18,6 +18,8 @@
   import { toggleTranscriptPref } from "./lib/transcriptPrefs.svelte";
   import { thinkingToggleDead } from "./lib/activity";
   import { initZoom, runZoom, zoomChord } from "./lib/zoom";
+  import { findChord } from "./lib/find";
+  import FindBar from "./lib/FindBar.svelte";
   import Grip from "./lib/Grip.svelte";
   import Sidebar from "./lib/Sidebar.svelte";
   import TitleBar from "./lib/TitleBar.svelte";
@@ -98,6 +100,9 @@
           e.event === "compaction",
       ),
   );
+
+  /** The find bar (nightshift backlog 106), for ⌘F below. */
+  let findBar = $state<FindBar | null>(null);
 
   /**
    * The redesign's shortcuts (nightshift blocker 035) on Windows and Linux,
@@ -190,6 +195,16 @@
       void runZoom(zoom);
       return true;
     }
+    // ⌘F opens find in page (nightshift backlog 106), or refocuses the
+    // bar with its text selected when it is already up — Chrome's
+    // behaviour, and from inside a text box too. On every platform: not
+    // a menu item, so macOS cannot double-fire it. The bar takes ⌘G /
+    // ⌘⇧G itself while open; ⌘⇧F is left for the search-everywhere half
+    // (backlog 117).
+    if (findChord(e, primary) === "open") {
+      void findBar?.show();
+      return true;
+    }
     if (isMac || !e.ctrlKey) return false;
     const k = e.key.toLowerCase();
     const id = e.shiftKey ? SHIFT_KEYS[k] : KEYS[k];
@@ -272,6 +287,11 @@
         {:else}
           <Transcript />
         {/if}
+        <!-- ⌘F's find bar (nightshift backlog 106), over whichever view
+             is showing: it searches and lights its parent's text from
+             outside, so it sits here beside the views rather than in
+             any of them. -->
+        <FindBar bind:this={findBar} />
         {#if app.toasts.length > 0}
           <div class="toasts">
             {#each app.toasts as t (t.id)}
