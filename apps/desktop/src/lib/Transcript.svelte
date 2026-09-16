@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { relativeTime } from "./time";
+  import { exactTime, relativeTimeLong } from "./time";
   import { tick } from "svelte";
   import {
     app,
@@ -57,6 +57,8 @@
     stop_reason: string | null;
     /** Recorded when the exchange ran; absent means unpriced, not free. */
     cost?: number;
+    /** When the reply was recorded — its completion (backlog 123). */
+    at: string;
   }
 
   type Body =
@@ -231,6 +233,7 @@
               usage: e.usage,
               stop_reason: e.stop_reason,
               cost: e.cost,
+              at: e.at,
             },
           },
           whole || edits[index].size > 0 ? said.join("") : null,
@@ -309,6 +312,17 @@
       }
     }
     return null;
+  });
+
+  // The clock the message feet read from (nightshift backlog 123): every
+  // message ends in `37 minutes ago`, and a relative time that is computed
+  // once freezes — review finding F14 caught the plan chip's age doing
+  // exactly that. Half a minute is enough for a text whose finest unit is
+  // a minute; the interval lives as long as the transcript does.
+  let now = $state(Date.now());
+  $effect(() => {
+    const t = setInterval(() => (now = Date.now()), 30_000);
+    return () => clearInterval(t);
   });
 
   // The in-place editor (nightshift backlog 062): one turn open at a time,
@@ -692,7 +706,9 @@
                 onclick={() => toggleDiff(item.index)}>edited</button
               >
             {/if}
-            <span class="ns-k">You · {relativeTime(item.at)}</span>
+            <!-- The time moved to the foot (backlog 123): one place is
+                 enough, and his ask was the foot. -->
+            <span class="ns-k">You</span>
             <!-- The turn's own size (backlog 090): what it added to the
                  context, and its share of the window with the gauge's bar
                  once it is worth a bar. Nothing where the log cannot say. -->
@@ -789,6 +805,10 @@
               </details>
             {/if}
           {/if}
+          <!-- The foot (backlog 123): the hover tools, then when the message
+               was sent, in words, the exact moment on hover. The time is
+               always drawn; the tools only when the turn can be acted on. -->
+          <div class="turn-foot">
             {#if !item.superseded && !app.busy && editing?.index !== item.index}
               <!-- Offered on both engines since 2026-09-15 (backlog 062): on
                    Claude Code each of these rewrites the CLI's history by copy
@@ -836,6 +856,8 @@
                 {/if}
               </span>
             {/if}
+            <span class="when" title={exactTime(item.at)}>{relativeTimeLong(item.at, now)}</span>
+          </div>
         </div>
       {:else if item.kind === "compaction"}
         <details class="compaction" class:superseded={item.superseded}>
@@ -905,6 +927,7 @@
               onrestore={editable ? (block) => void restoreBlock(item.index, block) : null}
               originals={item.originals ?? null}
               diff={!!diffOpen[item.index]}
+              clock={now}
             />
             {#if item.original !== null && item.removed}
               <details class="original">
@@ -1109,6 +1132,21 @@
   }
   .assistant-tools {
     align-self: flex-start;
+  }
+  /* The user message's foot (backlog 123): the hover tools and the time on
+     one 22px row under the bubble's corner, so the transcript does not
+     shift on hover. The time in the footer's dim 11px, the interface face. */
+  .turn-foot {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    height: 22px;
+  }
+  .when {
+    font-family: var(--sans);
+    font-size: 11px;
+    color: var(--dim);
+    cursor: default;
   }
   .tool-btn {
     display: inline-grid;

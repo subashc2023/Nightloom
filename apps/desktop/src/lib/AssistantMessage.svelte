@@ -3,6 +3,7 @@
   import type { ApprovalRequest, Usage } from "./types";
   import { renderMarkdown } from "./markdown";
   import { wordDiff } from "./textdiff";
+  import { exactTime, relativeTimeLong } from "./time";
   import { compactJson } from "./toolinput";
   import {
     flipOverride,
@@ -46,6 +47,8 @@
     usage: Usage;
     stop_reason: string | null;
     cost?: number;
+    /** When the reply was recorded — its completion (backlog 123). */
+    at?: string;
   }
 
   /** The turn's text segments, for Copy — thinking and tool traffic are not
@@ -143,6 +146,7 @@
     controlsTitle = "",
     originals = null,
     diff = false,
+    clock = Date.now(),
   }: {
     segs: Segment[];
     footer?: Footer | null;
@@ -172,6 +176,9 @@
     /** Draw each edited block as a diff over its current text rather than
      *  as the rendered text: the transcript's `edited` mark toggles it. */
     diff?: boolean;
+    /** The transcript's clock (ms since epoch), ticking while the chat is
+     *  open, so the footer's `37 minutes ago` keeps up (backlog 123). */
+    clock?: number;
   } = $props();
 
   // Per-block clicks, keyed by the block's stable id (`segmentIds`) rather
@@ -635,6 +642,11 @@
           <span class="share-bar" aria-hidden="true"><span class="share-fill" style:width="{(share ?? 0) * 100}%"></span></span>
           {fmtShare(share)}
         </span>
+      {/if}
+      {#if footer.at}
+        <!-- When the reply landed (backlog 123): in words, the exact
+             moment on hover, as Claude Code's footer does. -->
+        <span class="meta when" title={exactTime(footer.at)}>{relativeTimeLong(footer.at, clock)}</span>
       {/if}
     </div>
   {/if}
@@ -1150,6 +1162,12 @@
     display: inline-flex;
     align-items: center;
     gap: 5px;
+  }
+  /* The time, after the figures, in the interface face rather than their
+     mono: it is a phrase, not a number. */
+  .meta.when {
+    font-family: var(--sans);
+    cursor: default;
   }
   .share-bar {
     display: inline-block;
