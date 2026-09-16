@@ -776,8 +776,18 @@
   .working-text {
     font-family: var(--mono);
   }
+  /* The moon rolls inside a track of its own, so the text after it starts
+     past the far end of the roll rather than under it (his 2026-09-16
+     screenshot: the moon rolling over "working · 29 s"); it is drawn a
+     size up while it rolls. */
   .roll {
     display: inline-flex;
+    flex: none;
+    width: 52px;
+  }
+  .roll :global(svg) {
+    width: 20px;
+    height: 20px;
     animation: roll 1.5s ease-in-out infinite alternate;
   }
   @keyframes roll {
