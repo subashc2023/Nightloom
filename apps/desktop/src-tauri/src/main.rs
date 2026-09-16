@@ -4388,6 +4388,19 @@ fn set_power_prefs(power: State<'_, power::Holder>, prefs: power::Prefs) {
     power.set_prefs(prefs);
 }
 
+/// Scale the whole window (nightshift backlog 108): `WebviewWindow::set_zoom`,
+/// which on macOS is `WKWebView.pageZoom` (11+) — the same page zoom
+/// Chrome's ⌘+ does, every CSS pixel scaled. The factor is the frontend's
+/// (`zoom.ts` keeps it in localStorage and re-applies it at start-up, since
+/// the webview forgets it between launches); Rust only sets it.
+#[tauri::command]
+fn set_zoom(app: AppHandle, factor: f64) -> Result<(), String> {
+    app.get_webview_window("main")
+        .ok_or_else(|| "no main window".to_string())?
+        .set_zoom(factor)
+        .map_err(|e| e.to_string())
+}
+
 /// Interrupt the in-flight turn or compaction, if any.
 #[tauri::command]
 fn cancel(state: State<'_, AppState>) {
@@ -4649,6 +4662,19 @@ fn mac_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     let engine = MenuItemBuilder::with_id("engine", "Switch Engine (Provider ⇄ Claude Code)")
         .accelerator("CmdOrCtrl+E")
         .build(app)?;
+    // Whole-app zoom (nightshift backlog 108): ⌘= is the key Chrome binds
+    // Zoom In to (⌘+ needs Shift on a US layout; `zoom.ts` takes that one
+    // too, since it is not a menu item), ⌘− out, ⌘0 back to 100 %. The
+    // ids reach `zoom.ts` as `menu` events, not `runMenuCommand`.
+    let zoom_in = MenuItemBuilder::with_id("zoom_in", "Zoom In")
+        .accelerator("CmdOrCtrl+=")
+        .build(app)?;
+    let zoom_out = MenuItemBuilder::with_id("zoom_out", "Zoom Out")
+        .accelerator("CmdOrCtrl+-")
+        .build(app)?;
+    let zoom_reset = MenuItemBuilder::with_id("zoom_reset", "Actual Size")
+        .accelerator("CmdOrCtrl+0")
+        .build(app)?;
     let sonnet = MenuItemBuilder::with_id("model_sonnet", "Sonnet (Claude Code)")
         .accelerator("CmdOrCtrl+Shift+S")
         .build(app)?;
@@ -4726,6 +4752,10 @@ fn mac_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
         .item(&projects)
         .separator()
         .item(&engine)
+        .separator()
+        .item(&zoom_in)
+        .item(&zoom_out)
+        .item(&zoom_reset)
         .separator()
         .fullscreen()
         .build()?;
@@ -5007,6 +5037,7 @@ fn main() {
             open_url,
             notify,
             set_power_prefs,
+            set_zoom,
             nightshift::nightshift_projects,
             nightshift::nightshift_project,
             nightshift::nightshift_enable,

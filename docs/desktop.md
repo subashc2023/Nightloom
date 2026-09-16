@@ -340,6 +340,25 @@ sleep, ask first — all on but *ask*. The keep-awake pair reaches Rust through
 `set_power_prefs` at start-up and on each change; a change while a turn runs
 restarts the child with the new flags.
 
+## Zoom (2026-09-16, nightshift backlog 108)
+
+⌘= (⌘+) / ⌘− / ⌘0 scale the whole window in Chrome's steps — 50 · 67 · 75
+· 90 · 100 · 110 · 125 · 150 · 175 · 200 % — with a toast saying the
+percentage. The mechanism is the webview's own page zoom: the `set_zoom`
+command calls `WebviewWindow::set_zoom`, which on macOS is
+`WKWebView.pageZoom` (11+; wry 0.55's `zoom`), the same thing Chrome's ⌘+
+does, every CSS pixel scaled. The transcript font setting (backlog 051) is a
+separate knob on top and untouched. `zoom.ts` keeps the factor in
+`localStorage` under `nightloom.zoom` and re-applies it at start-up, since
+the webview forgets it between launches; if the command ever fails, the same
+factor goes on as CSS `zoom` on `<html>` (WebKit and Chromium both honour it)
+and `zoomMechanism()` says which path ran. On macOS the three are View-menu
+items (Zoom In · Zoom Out · Actual Size, `CmdOrCtrl+=` / `-` / `0`) and
+arrive as `menu` events that `zoom.ts` listens for itself — not through
+`runMenuCommand`; `App.svelte`'s `onShortcut` binds them on Windows and
+Linux, and ⌘⇧= (the literal ⌘+ on a US layout, no menu item) everywhere.
+⌘0 was free to take: blocker 035's "0" is a bare key inside the ⌘P palette.
+
 ## Projects
 
 A project chip over `ProjectMenu.svelte` (switch, rename, show folder, remove)

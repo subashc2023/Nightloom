@@ -17,6 +17,7 @@
   import { isMac } from "./lib/platform";
   import { toggleTranscriptPref } from "./lib/transcriptPrefs.svelte";
   import { thinkingToggleDead } from "./lib/activity";
+  import { initZoom, runZoom, zoomChord } from "./lib/zoom";
   import Grip from "./lib/Grip.svelte";
   import Sidebar from "./lib/Sidebar.svelte";
   import TitleBar from "./lib/TitleBar.svelte";
@@ -36,6 +37,9 @@
 
   onMount(() => {
     void init();
+    // The stored zoom back on the window, and the View menu's zoom items
+    // (nightshift backlog 108).
+    void initZoom();
   });
 
   /**
@@ -166,6 +170,17 @@
       // a chat whose thinking the model does not return has nothing to open.
       if (e.code === "KeyT" && thinkingToggleDead(app.events, app.connection)) return true;
       toggleTranscriptPref(e.code === "KeyT" ? "thinking" : "tool");
+      return true;
+    }
+    // ⌘= / ⌘− / ⌘0 zoom the whole app (nightshift backlog 108). On macOS
+    // the three are View-menu items and arrive as `menu` events, so only
+    // ⌘⇧= — the literal ⌘+ on a US layout, no menu item — is taken here;
+    // elsewhere all of them are. Physical keys, so a layout cannot move
+    // them. ⌘0 was free: blocker 035's "0" is a bare key inside the ⌘P
+    // palette, not a chord.
+    const zoom = zoomChord(e, primary, isMac);
+    if (zoom) {
+      void runZoom(zoom);
       return true;
     }
     if (isMac || !e.ctrlKey) return false;

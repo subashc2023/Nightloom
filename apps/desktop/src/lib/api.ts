@@ -626,6 +626,12 @@ export function setPowerPrefs(prefs: { keepAwake: boolean; keepDisplayAwake: boo
   return invoke("set_power_prefs", { prefs });
 }
 
+/** Whole-app zoom (nightshift backlog 108): the webview's page zoom, 1 is
+ *  Actual Size. `zoom.ts` keeps the factor; Rust only sets it. */
+export function setZoom(factor: number): Promise<null> {
+  return invoke("set_zoom", { factor });
+}
+
 /** Where the per-model instruction files live (`~/.nightloom/models`);
  *  null on a machine with no user config directory. */
 export function modelInstructionsDir(): Promise<string | null> {
