@@ -3920,8 +3920,11 @@ fn mac_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     let undo = MenuItemBuilder::with_id(UNDO_MENU_ID, "Undo")
         .accelerator("CmdOrCtrl+Z")
         .build(app)?;
+    // ⌘Y, not ⌘⇧Z: his ask (2026-09-16, "make it command Y for redo").
+    // As a menu accelerator it reaches a text box too, where the window
+    // handler steps aside; ⌘⇧Z stays as a second spelling in `App.svelte`.
     let redo = MenuItemBuilder::with_id(REDO_MENU_ID, "Redo")
-        .accelerator("CmdOrCtrl+Shift+Z")
+        .accelerator("CmdOrCtrl+Y")
         .build(app)?;
 
     let edit = SubmenuBuilder::with_id(app, EDIT_MENU_ID, "Edit")

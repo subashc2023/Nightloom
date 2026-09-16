@@ -128,8 +128,17 @@
     // carries it; ⌘Z and ⌘⇧Z arrive from the macOS Edit menu, and on the
     // other platforms from the tables below.
     const primary = isMac ? e.metaKey : e.ctrlKey;
-    if (primary && !e.shiftKey && e.code === "KeyY") {
-      if (inTextField()) return false;
+    // Since 2026-09-16 the Edit menu's Redo *is* ⌘Y (his ask), so on macOS
+    // it arrives as a menu event and this branch would double-fire; there
+    // the window handler carries ⌘⇧Z instead, which is no longer a menu
+    // item. Both go through `redo_app`, which hands a text box its own
+    // redo. Other platforms keep the ⌘Y branch and the tables below.
+    if (isMac) {
+      if (primary && e.shiftKey && e.code === "KeyZ") {
+        runMenuCommand("redo_app");
+        return true;
+      }
+    } else if (primary && !e.shiftKey && e.code === "KeyY") {
       runMenuCommand("redo_app");
       return true;
     }
