@@ -153,6 +153,13 @@
     // Bare ⌘, not ⌘⇧, since his second look (2026-09-13): "anthropic
     // shouldn't be special" — the alias letters need Shift, the providers
     // do not. Matched on the physical key so a layout cannot move it.
+    // Settings open: ⌘1…9 and ⌘[ / ⌘] are the modal's — its groups and
+    // its next/previous pane (nightshift backlog 109) — and the app's
+    // provider and model digits wait for it to close. `SettingsModal`'s
+    // own window handler takes them; this one only stands aside.
+    if (app.showSettings && primary && !e.shiftKey && /^(Digit[1-9]|Bracket(Left|Right))$/.test(e.code)) {
+      return false;
+    }
     if (primary && /^Digit[1-9]$/.test(e.code)) {
       // ⌘⇧digit is the n-th model of the picker, every provider alike
       // (2026-09-14); Shift means model on both engines — letters on

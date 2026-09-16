@@ -1,3 +1,18 @@
+<script module lang="ts">
+  /**
+   * The pane he left, and when (nightshift backlog 109): reopening within
+   * two minutes lands on it, later on the default. Module state rather
+   * than `app`, since nothing outside this modal reads it; the modal is
+   * unmounted on close, so the instance's own state cannot carry it.
+   */
+  let lastPane: { pane: string; closedAt: number } | null = null;
+  export const REMEMBER_PANE_MS = 2 * 60 * 1000;
+  /** The remembered pane if it was left within the window, else null. */
+  export function recentPane(now = Date.now()): string | null {
+    return lastPane && now - lastPane.closedAt <= REMEMBER_PANE_MS ? lastPane.pane : null;
+  }
+</script>
+
 <script lang="ts">
   import {
     app,
@@ -50,8 +65,10 @@
     setThreshold as setHandoffThreshold,
     threshold as handoffThreshold,
   } from "./handoff.svelte";
-  import { untrack } from "svelte";
+  import { onDestroy, untrack } from "svelte";
+  import { isMac } from "./platform";
   import Icon from "./Icon.svelte";
+  import Kbd from "./Kbd.svelte";
 
   /**
    * Redesigned 2026-09-13 (nightshift surface-redesign-2026-09-13, canvas
@@ -65,11 +82,17 @@
    */
 
   // Opens on the pane a round trip asked for — back from a model's
-  // instruction file — else on the rail's provider.
+  // instruction file — else on the pane he left within the last two
+  // minutes (backlog 109), else on the rail's provider.
   let selected = $state(
-    app.settingsOpenOn ?? (app.draft.provider || app.providers[0]?.kind || ""),
+    app.settingsOpenOn ??
+      recentPane() ??
+      (app.draft.provider || app.providers[0]?.kind || ""),
   );
   app.settingsOpenOn = null;
+  onDestroy(() => {
+    lastPane = { pane: selected, closedAt: Date.now() };
+  });
   let keyDraft = $state("");
   let keyBusy = $state(false);
   let keyError = $state<string | null>(null);
@@ -618,8 +641,55 @@
     }
   }
 
+  /**
+   * The nav's groups in order, each with its panes (nightshift backlog
+   * 109): ⌘1…⌘7 is the group — its first pane, or the next pane of the
+   * group when already in it, so ⌘1 again steps through the providers —
+   * and ⌘] / ⌘[ walk every pane in nav order. Groups rather than panes
+   * because the panes number well past nine (six providers, the
+   * backends, and five more); the chip on each group title says which
+   * key. Scoped to the modal: `App.svelte` stands aside from these chords
+   * while it is open, and the app's own ⌘-digits are back on close.
+   */
+  const groups = $derived.by(() => [
+    { title: "Providers", panes: app.providers.map((p) => p.kind) },
+    { title: "Claude Code", panes: ["claude-code"] },
+    { title: "Web search", panes: app.searchBackends.map((b) => "search:" + b.name) },
+    { title: "Knowledge", panes: ["knowledge", "models"] },
+    { title: "Projects", panes: ["projects"] },
+    { title: "Usage", panes: ["usage"] },
+    { title: "Appearance", panes: ["appearance"] },
+  ]);
+  function keyOf(groupIndex: number): string {
+    return `⌘${groupIndex + 1}`;
+  }
+  function selectGroup(n: number) {
+    const g = groups[n - 1];
+    if (!g || g.panes.length === 0) return;
+    const at = g.panes.indexOf(selected);
+    select(at < 0 ? g.panes[0] : g.panes[(at + 1) % g.panes.length]);
+  }
+  function stepPane(dir: 1 | -1) {
+    const all = groups.flatMap((g) => g.panes);
+    if (all.length === 0) return;
+    const at = all.indexOf(selected);
+    select(all[(at < 0 ? 0 : at + dir + all.length) % all.length]);
+  }
+
   function onkeydown(e: KeyboardEvent) {
-    if (e.key === "Escape") app.showSettings = false;
+    if (e.key === "Escape") {
+      app.showSettings = false;
+      return;
+    }
+    const primary = isMac ? e.metaKey : e.ctrlKey;
+    if (!primary || e.altKey || e.shiftKey) return;
+    if (/^Digit[1-9]$/.test(e.code)) {
+      e.preventDefault();
+      selectGroup(Number(e.code.slice(5)));
+    } else if (e.code === "BracketRight" || e.code === "BracketLeft") {
+      e.preventDefault();
+      stepPane(e.code === "BracketRight" ? 1 : -1);
+    }
   }
 </script>
 
@@ -713,7 +783,7 @@
 <div class="modal">
   <nav class="nav">
     <div class="nav-h">Settings</div>
-    <div class="nav-title">Providers</div>
+    <div class="nav-title">Providers<Kbd keys={keyOf(0)} dim /></div>
     {#each app.providers as p (p.kind)}
       {@const st = navState(p)}
       <button
@@ -732,7 +802,7 @@
     <!-- The Claude Code engine's own pane (nightshift backlog 086 pass 2):
          not a provider — no key, no model list — but the place its
          defaults live: the hand-off, and the cards other items add. -->
-    <div class="nav-title">Claude Code</div>
+    <div class="nav-title">Claude Code<Kbd keys={keyOf(1)} dim /></div>
     <button
       class="nav-item"
       class:active={selected === "claude-code"}
@@ -741,7 +811,7 @@
       <span class="nav-label">Claude Code</span>
       <span class="st">hand-off {handoffDefaultPct}%</span>
     </button>
-    <div class="nav-title">Web search</div>
+    <div class="nav-title">Web search<Kbd keys={keyOf(2)} dim /></div>
     {#each app.searchBackends as b (b.name)}
       <button
         class="nav-item"
@@ -755,7 +825,7 @@
         </span>
       </button>
     {/each}
-    <div class="nav-title">Knowledge</div>
+    <div class="nav-title">Knowledge<Kbd keys={keyOf(3)} dim /></div>
     <button
       class="nav-item"
       class:active={selected === "knowledge"}
@@ -778,7 +848,7 @@
         {modelFiles.length === 0 ? "none" : `${modelFiles.length} model${modelFiles.length === 1 ? "" : "s"}`}
       </span>
     </button>
-    <div class="nav-title">Projects</div>
+    <div class="nav-title">Projects<Kbd keys={keyOf(4)} dim /></div>
     <button
       class="nav-item"
       class:active={selected === "projects"}
@@ -790,7 +860,7 @@
         {app.projectsFolder ? (app.projectsFolder.is_default ? "default" : "set") : "none"}
       </span>
     </button>
-    <div class="nav-title">Usage</div>
+    <div class="nav-title">Usage<Kbd keys={keyOf(5)} dim /></div>
     <button
       class="nav-item"
       class:active={selected === "usage"}
@@ -802,14 +872,15 @@
         {usage?.available && usage.week ? `${usd(usage.week.usd)} / 7d` : "none"}
       </span>
     </button>
-    <div class="nav-title">Appearance</div>
+    <div class="nav-title">Appearance<Kbd keys={keyOf(6)} dim /></div>
     <button
       class="nav-item"
       class:active={selected === "appearance"}
       onclick={() => select("appearance")}
     >
       <span class="nav-label">Palette</span>
-      <span class="st">{app.palette}</span>
+      <!-- The palette's name, not its letter: "B" read as a key (backlog 109). -->
+      <span class="st">{PALETTES.find((p) => p.id === app.palette)?.name ?? app.palette}</span>
     </button>
     <div class="nav-spacer"></div>
     <div class="nav-foot">Esc or click outside to close</div>
@@ -1757,6 +1828,9 @@
     color: var(--ink);
   }
   .nav-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
     padding: 12px 10px 4px;
     font-size: 11px;
     letter-spacing: 0.08em;

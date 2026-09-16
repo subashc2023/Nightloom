@@ -359,6 +359,22 @@ arrive as `menu` events that `zoom.ts` listens for itself — not through
 Linux, and ⌘⇧= (the literal ⌘+ on a US layout, no menu item) everywhere.
 ⌘0 was free to take: blocker 035's "0" is a bare key inside the ⌘P palette.
 
+## Settings keys and the remembered pane (2026-09-16, nightshift backlog 109)
+
+No "Settings" section existed before this line; the modal is `SettingsModal.svelte`.
+While it is open, **⌘1…⌘7** is a nav *group* — Providers · Claude Code · Web
+search · Knowledge · Projects · Usage · Appearance, a `Kbd` chip on each group
+title — landing on the group's first pane, or on its next pane when already in
+it (⌘1 again steps through the providers); **⌘] / ⌘[** walk every pane in nav
+order. Groups rather than panes because the panes number past nine. The modal's
+own window handler takes the chords; `App.svelte`'s `onShortcut` stands aside
+from ⌘-digit and ⌘-bracket while `app.showSettings`, so the provider and model
+digits (blockers 043/044) are back the moment it closes. The pane he left is
+kept in module state with the time it closed; reopening within two minutes
+(`REMEMBER_PANE_MS`) lands on it, later on the default (the rail's provider), and
+an explicit `settingsOpenOn` still wins. The Palette row prints the palette's
+name — "Slate & copper" — not its letter, which read as a key.
+
 ## Projects
 
 A project chip over `ProjectMenu.svelte` (switch, rename, show folder, remove)
