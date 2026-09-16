@@ -1046,7 +1046,12 @@ mod tests {
         let over_wire = crate::proposal::list_in(&config);
         assert_eq!(over_wire.len(), 1);
 
-        // The same call on the provider path's tool, in process.
+        // The same call on the provider path's tool, in process. Proposal
+        // files are named by a millisecond stamp, and on CI's Linux runner
+        // the two calls landed in the same millisecond, so the second
+        // overwrote the first and the count below read 1 (every push since
+        // 09-14). A turn never proposes twice in a millisecond; the test can.
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
         let (direct, _slot) = ProposeInstructions::new(dream.store.clone(), dream.target.clone());
         let direct = direct.against(Some("# Me\n\nBe terse.\n"));
         direct
