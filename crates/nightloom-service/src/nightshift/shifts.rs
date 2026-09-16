@@ -379,9 +379,18 @@ mod tests {
         assert!(!s.live && !s.interrupted && !s.unknown, "exit is set");
         assert!(s.log_bytes > 0);
         // A finished shift's absolute page path and relative review path both
-        // resolve to something under a root.
+        // resolve to something under a root. The page is the path the runner
+        // wrote on macOS: where the platform reads it as absolute it comes
+        // back untouched, and where it does not (Windows wants a drive) it is
+        // joined under the root like any relative path.
         let root = Path::new("/r");
-        assert!(resolve_in(root, st.page.as_deref().unwrap()).is_absolute());
+        let page = st.page.as_deref().unwrap();
+        let resolved = resolve_in(root, page);
+        if Path::new(page).is_absolute() {
+            assert_eq!(resolved, Path::new(page));
+        } else {
+            assert_eq!(resolved, root.join(page));
+        }
         assert_eq!(
             resolve_in(root, st.review.as_deref().unwrap()),
             root.join("notes/reviews/2026-09-11-review-2026-09-11T02-16-40.md")

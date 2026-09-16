@@ -536,7 +536,9 @@ mod tests {
         )
         .unwrap();
         let err = save_order(&ws, &[]).unwrap_err();
-        assert!(err.contains("live"), "{err}");
+        // Refused either way: "live" where the platform can check the pid,
+        // "cannot tell" where it cannot and a lock counts as live.
+        assert!(err.contains("live") || err.contains("cannot tell"), "{err}");
         let _ = fs::remove_dir_all(&ws);
     }
 

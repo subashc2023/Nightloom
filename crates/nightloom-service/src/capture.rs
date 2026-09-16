@@ -1005,6 +1005,11 @@ mod tests {
             );
         }
         let inc_path = unfiled.join(format!("{}.jsonl", inc.id));
+        // Closed before the scan, as `plain` already is: on Windows a
+        // directory listing reports a still-open file at the size its
+        // directory entry last saw, which for a log nobody has closed is
+        // zero, and a log with no bytes past its watermark is not unread.
+        drop(inc);
 
         let (mut chat, seen) = chat_recording(vec![says("none"), says("none")]);
         let cancel = CancellationToken::new();

@@ -188,6 +188,10 @@ mod tests {
             );
         };
         g(&["init", "-q"]);
+        // In the repo's own config, so the code's git calls see it too: the
+        // Windows runner's global `autocrlf` would otherwise check `reset`'s
+        // files out with `\r\n` and the byte-for-byte reads below would miss.
+        g(&["config", "core.autocrlf", "false"]);
         fs::write(dir.join("a.md"), "one\n").unwrap();
         g(&["add", "a.md"]);
         g(&["commit", "-q", "-m", "first"]);
