@@ -619,6 +619,13 @@ export function notify(title: string, body: string): Promise<null> {
   return invoke("notify", { title, body });
 }
 
+/** The keep-awake switches (nightshift backlog 101), for the holder in
+ *  `power.rs`; `sleep.ts` keeps them and sends them at start-up and on
+ *  each change. */
+export function setPowerPrefs(prefs: { keepAwake: boolean; keepDisplayAwake: boolean }): Promise<null> {
+  return invoke("set_power_prefs", { prefs });
+}
+
 /** Where the per-model instruction files live (`~/.nightloom/models`);
  *  null on a machine with no user config directory. */
 export function modelInstructionsDir(): Promise<string | null> {

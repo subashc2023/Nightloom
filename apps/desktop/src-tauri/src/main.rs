@@ -32,6 +32,8 @@ use tokio_util::sync::CancellationToken;
 
 /// Nightshift: the unattended runner's file contract, as commands.
 mod nightshift;
+/// Sleep-safe turns: the power assertion and the wake watcher.
+mod power;
 
 struct AppState {
     chat: tokio::sync::Mutex<Option<Chat>>,
@@ -1727,6 +1729,7 @@ async fn transcript(state: State<'_, AppState>) -> Result<Vec<SessionEvent>, Str
 async fn send(
     app: AppHandle,
     state: State<'_, AppState>,
+    power: State<'_, power::Holder>,
     text: String,
     images: Option<Vec<ImageInput>>,
     documents: Option<Vec<DocumentInput>>,
@@ -1735,6 +1738,9 @@ async fn send(
     let chat = chat_guard
         .as_ref()
         .ok_or_else(|| "not connected".to_string())?;
+    // The Mac stays awake for the turn (nightshift backlog 101): held to
+    // the end of this function, whichever way it ends.
+    let _awake = power.acquire();
 
     let log_dir = state.log_dir().await;
     let pending = *state.pending_mode.lock().await;
@@ -1808,6 +1814,7 @@ struct AgentTurn {
 async fn send_agent(
     app: AppHandle,
     state: State<'_, AppState>,
+    power: State<'_, power::Holder>,
     text: String,
     images: Option<Vec<ImageInput>>,
     documents: Option<Vec<DocumentInput>>,
@@ -1816,6 +1823,9 @@ async fn send_agent(
     let agent = agent_guard
         .as_mut()
         .ok_or_else(|| "not connected".to_string())?;
+    // Awake for the whole turn, every resume of a deferred call included
+    // (nightshift backlog 101); the guard drops with the function.
+    let _awake = power.acquire();
 
     let log_dir = state.log_dir().await;
     let pending = *state.pending_mode.lock().await;
@@ -2063,12 +2073,17 @@ async fn send_agent(
 /// full history). Cancellable via `cancel`, which leaves the session
 /// unchanged.
 #[tauri::command]
-async fn compact(state: State<'_, AppState>) -> Result<CompactOutcome, String> {
+async fn compact(
+    state: State<'_, AppState>,
+    power: State<'_, power::Holder>,
+) -> Result<CompactOutcome, String> {
     not_in_agent_mode(&state, "compact").await?;
     let chat_guard = state.chat.lock().await;
     let chat = chat_guard
         .as_ref()
         .ok_or_else(|| "not connected".to_string())?;
+    // A compaction is a model call too (nightshift backlog 101).
+    let _awake = power.acquire();
     let mut session_guard = state.session.lock().await;
     let session = session_guard
         .as_mut()
@@ -2755,11 +2770,17 @@ struct AsideResult {
 /// Stop cancels it like a turn. Refused with a sentence when the chat has
 /// no CLI session yet.
 #[tauri::command]
-async fn ask_aside(state: State<'_, AppState>, text: String) -> Result<AsideResult, String> {
+async fn ask_aside(
+    state: State<'_, AppState>,
+    power: State<'_, power::Holder>,
+    text: String,
+) -> Result<AsideResult, String> {
     let agent_guard = state.agent.lock().await;
     let agent = agent_guard
         .as_ref()
         .ok_or_else(|| "not connected".to_string())?;
+    // Awake while the aside runs (nightshift backlog 101).
+    let _awake = power.acquire();
     let cancel = CancellationToken::new();
     *state.cancel.lock().unwrap() = cancel.clone();
     let mut answer = String::new();
@@ -4002,6 +4023,7 @@ struct FiledReport {
 async fn dream(
     app: AppHandle,
     state: State<'_, AppState>,
+    power: State<'_, power::Holder>,
     provider: String,
     model: Option<String>,
     base_url: Option<String>,
@@ -4018,6 +4040,9 @@ async fn dream(
     let Ok(_running) = state.dreaming.try_lock() else {
         return Err("a dream is already running".into());
     };
+    // A dream runs with nobody at the keyboard by design; the Mac stays
+    // awake for it (nightshift backlog 101).
+    let _awake = power.acquire();
     // A first dream on a fresh install: an empty folder is a better start
     // than a pass that opens by erroring on list_dir.
     std::fs::create_dir_all(&vault).map_err(|e| e.to_string())?;
@@ -4195,6 +4220,7 @@ struct CapturedReport {
 async fn capture(
     app: AppHandle,
     state: State<'_, AppState>,
+    power: State<'_, power::Holder>,
     provider: String,
     model: Option<String>,
     base_url: Option<String>,
@@ -4208,6 +4234,8 @@ async fn capture(
     let Ok(_running) = state.dreaming.try_lock() else {
         return Err("a dream or a capture is already running".into());
     };
+    // Same as the dream (nightshift backlog 101).
+    let _awake = power.acquire();
 
     // The same token the dream swaps in: the two never run at once (the
     // mutex above), so one Stop reaches whichever is running.
@@ -4349,6 +4377,15 @@ fn notify(app: AppHandle, title: String, body: String) -> Result<(), String> {
         .body(body)
         .show()
         .map_err(|e| e.to_string())
+}
+
+/// The sleep-safe switches (nightshift backlog 101), sent by `sleep.ts` at
+/// start-up and on every change. The frontend keeps them, the way it keeps
+/// the notification switches; Rust only needs to know what to spawn. A
+/// change while a turn runs restarts the child with the new flags.
+#[tauri::command]
+fn set_power_prefs(power: State<'_, power::Holder>, prefs: power::Prefs) {
+    power.set_prefs(prefs);
 }
 
 /// Interrupt the in-flight turn or compaction, if any.
@@ -4872,6 +4909,12 @@ fn main() {
             app.manage(nightshift::Watches::default());
             app.manage(nightshift::PendingLaunches::default());
             app.manage(nightshift::Interviews::default());
+            // The power assertion's holder and the wake watcher (nightshift
+            // backlog 101). The holder has nothing to spawn until a turn
+            // takes a guard; the watcher ticks every 30 s for the life of
+            // the app.
+            app.manage(power::Holder::default());
+            power::watch_wake(app.handle().clone());
             // Last, and that ordering is load-bearing rather than tidiness:
             // the webview starts loading the moment the window exists and its
             // first paint calls straight into `providers` and `list_sessions`,
@@ -4963,6 +5006,7 @@ fn main() {
             open_file,
             open_url,
             notify,
+            set_power_prefs,
             nightshift::nightshift_projects,
             nightshift::nightshift_project,
             nightshift::nightshift_enable,
