@@ -11,7 +11,7 @@
     MODE_GLYPH,
     sessionCost,
   } from "./state.svelte";
-  import { cacheLine, cacheState, nextTickMs } from "./cache";
+  import { cacheLine, cacheState, nextTickMs, remainingText } from "./cache";
   import RightRail from "./RightRail.svelte";
   import { toggleTranscriptPref, transcript } from "./transcriptPrefs.svelte";
   import { isMac } from "./platform";
@@ -129,6 +129,7 @@
       if (id != null) clearTimeout(id);
     };
   });
+  const cacheShareTitle = "Share of the last request's prompt served from cache.";
   const cacheTitle = $derived.by(() => {
     if (!cache) return "";
     const engine = app.connection?.engine === "claude-code" ? "claude-code" : "api";
@@ -275,16 +276,6 @@
       </button>
     {/if}
 
-    <!-- The prompt-cache timer (nightshift backlog 063), beside Context
-         because it is about the same request: how long the last turn's
-         cache stays warm, `cache cold` after, nothing before the first
-         turn that recorded one. -->
-    {#if cache}
-      <div class="ns-chip mono cache timer" class:cold={!cache.warm} title={cacheTitle}>
-        {cacheLine(cache)}
-      </div>
-    {/if}
-
     <!-- The two transcript toggles (nightshift backlog 052, 2026-09-14),
          beside Context because they are about the conversation as shown:
          every thinking block open or every one a closed pill, every tool
@@ -315,9 +306,22 @@
       <span class="mark" aria-hidden="true">⚒</span>tools
     </button>
 
-    {#if cached != null}
-      <div class="ns-chip mono cache" title="Share of the last request's prompt served from cache">
-        {Math.round(cached * 100)}% cached
+    <!-- One chip for the cache (his ask, 2026-09-16): the share of the
+         last request served from it, then the timer from backlog 063 —
+         how long it stays warm, or `cold`. A chat whose last turn predates
+         the timer's fields shows the share alone, and the title says why.
+         Nothing before the first turn. -->
+    {#if cached != null || cache}
+      <div
+        class="ns-chip mono cache"
+        class:cold={cache ? !cache.warm : false}
+        title={cache
+          ? `${cacheShareTitle} ${cacheTitle}`
+          : `${cacheShareTitle} No timer for this chat: its last turn was made before the cache lifetime was recorded (2026-09-15); the next turn will show one.`}
+      >
+        {#if cached != null}{Math.round(cached * 100)}% cached{:else}cache{/if}{#if cache}
+          <span class="cache-when" aria-label={cacheLine(cache)}>· {remainingText(cache.remainingMs) ?? "cold"}</span>
+        {/if}
       </div>
     {/if}
 
@@ -481,7 +485,8 @@
   .gauge.hot .fill {
     background: var(--failed);
   }
-  .cache.cold {
+  /* Only the timer half dims when cold; the share is still a fact. */
+  .cache.cold .cache-when {
     color: var(--dim);
   }
   /* The transcript toggles: off is the dimmed chip with its mark struck
