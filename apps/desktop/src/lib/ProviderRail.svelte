@@ -20,6 +20,7 @@
     sanitizeThinking,
     thinkingSupport,
   } from "./catalog";
+  import { effortDefaultLabel } from "./effortDefaults";
   import Hint from "./Hint.svelte";
   import Icon from "./Icon.svelte";
   import Kbd from "./Kbd.svelte";
@@ -106,6 +107,15 @@
     { value: "plan", label: "Plan", title: "Reads only, until you approve the plan on its card (`plan`)" },
     { value: "off", label: "Off", title: "Every call runs unasked (`bypassPermissions`)" },
   ];
+  /** The line under the segment, one per position (the design's board 3b,
+   *  2026-09-16 — "the line under the control changes with it"). Off's is
+   *  the warning, drawn in the markup. */
+  const APPROVAL_LINE: Record<ApprovalPosition, string> = {
+    auto: "The CLI's classifier decides each call; what it can't approve is denied, not asked.",
+    ask: "Calls that change files, run commands or leave this machine wait for you — the card at the foot of the turn.",
+    plan: "Reads only, then a plan for you to approve before anything is edited.",
+    off: "Every call runs unasked, including bash.",
+  };
   const approvalPosition = $derived<ApprovalPosition>(
     !app.draft.approval ? "off"
     : app.draft.agentPlan ? "plan"
@@ -165,6 +175,30 @@
    *  after *default* — the empty value, which sends no `--effort` at all
    *  (review F15, 2026-09-16), as the fallback pills have `none`. */
   const EFFORTS = ["", "low", "medium", "high", "xhigh", "max"];
+  /**
+   * What *default* resolves to for the chosen model — the value the
+   * segment's first position names (`default · high`), his ask of review
+   * round 1 (2026-09-16): "there should be something signaling what the
+   * default on that specific model is". Read from backlog 100's table
+   * (`effortDefaults.ts`, the documented default per model and engine):
+   * a level, `none` for a model with no effort control (Haiku 4.5), `?`
+   * when the table has not heard of the model — the empty alias, a
+   * foreign id. A `?` is never drawn as a value.
+   */
+  const effortDefaultText = $derived(effortDefaultLabel("claude-code", app.draft.agentModel));
+  /** The line under the Effort segment, one per state (board 3b revised). */
+  const effortLine = $derived.by(() => {
+    const picked = app.draft.agentEffort;
+    const model = app.draft.agentModel.trim() || "the model";
+    const d = effortDefaultText;
+    if (d === "none") return `${model} has no effort control; the flag is accepted but the docs say it does nothing`;
+    if (!picked) {
+      return d === "?"
+        ? "the CLI has not said what this model's default is; leaving it is still the model's own"
+        : `the model's own — ${model} · ${d} on Claude Code`;
+    }
+    return d === "?" ? "set for this chat" : `set for this chat · the default would be ${d}`;
+  });
   function pickEffort(e: string) {
     if (e === app.draft.agentEffort) return;
     app.draft.agentEffort = e;
@@ -408,66 +442,6 @@
         <p class="note">last turn ran <code>{app.agentTurn.model}</code></p>
       {/if}
       {@render instructionsRow()}
-
-      <!-- Effort and the fallback model (nightshift backlog 076, the
-           design's Rail board): a five-way segment in the thinking idiom,
-           and the alias pills with `none` first. Both go to the CLI as
-           flags (`--effort`, `--fallback-model`) and are saved with the
-           rest of the rail. -->
-      <div class="sect-h">
-        <span class="ns-k">Effort</span>
-        <Hint
-          text="Claude Code's --effort: how hard the model thinks per turn. default sends no flag and leaves the level to the CLI (high, unless its settings say otherwise); xhigh and max spend more thinking tokens and time, low fewer. A level the model does not support falls back to one it does."
-          side="right"
-        />
-      </div>
-      <div class="segs" role="radiogroup" aria-label="Effort">
-        {#each EFFORTS as e (e)}
-          <button
-            class:on={e === app.draft.agentEffort}
-            role="radio"
-            aria-checked={e === app.draft.agentEffort}
-            disabled={locked}
-            title={e ? `--effort ${e}` : "no --effort flag; the CLI's own default"}
-            onclick={() => pickEffort(e)}
-          >
-            {e || "default"}
-          </button>
-        {/each}
-      </div>
-      <div class="sect-h">
-        <span class="ns-k">Fallback model</span>
-        <Hint
-          text="Claude Code's --fallback-model: the alias it retries a turn with when the model above is overloaded or unavailable. none sends no fallback."
-          side="right"
-        />
-      </div>
-      <div class="pv" role="radiogroup" aria-label="Fallback model">
-        <button
-          class="p"
-          class:on={app.draft.agentFallback.trim() === ""}
-          role="radio"
-          aria-checked={app.draft.agentFallback.trim() === ""}
-          disabled={locked}
-          title="No fallback"
-          onclick={() => pickFallback("")}
-        >
-          none
-        </button>
-        {#each AGENT_PILLS as a (a)}
-          <button
-            class="p"
-            class:on={app.draft.agentFallback.trim() === a}
-            role="radio"
-            aria-checked={app.draft.agentFallback.trim() === a}
-            disabled={locked}
-            title="--fallback-model {a}"
-            onclick={() => pickFallback(a)}
-          >
-            {a}
-          </button>
-        {/each}
-      </div>
     </section>
   {:else}
     <section class="sect">
@@ -663,8 +637,8 @@
         </div>
         {#if !app.draft.approval}
           <p class="warn">Every call runs unasked, including <code>bash</code>.</p>
-        {:else if app.draft.agentPlan}
-          <p class="note">Reads and read-only commands only, until you approve the plan on its card.</p>
+        {:else}
+          <p class="note">{APPROVAL_LINE[approvalPosition]}</p>
         {/if}
       </div>
       {#if !(app.draft.approval && app.draft.agentAsk)}
@@ -680,6 +654,82 @@
           or attachments.
         </p>
       {/if}
+    {/if}
+    {#if agentMode}
+      <!-- Effort and the fallback model (nightshift backlog 076; the
+           design's Rail board puts them here, under Approval, each a
+           labelled control with its `?`): the six-way segment whose first
+           position names what *default* resolves to when that is known
+           (review round 1, board 3b revised), and the alias pills with
+           `none` first. Both go to the CLI as flags (`--effort`,
+           `--fallback-model`) and are saved with the rest of the rail. -->
+      <div class="ctl">
+        <div class="swq">
+          <span class="t">Effort</span>
+          <Hint
+            text="Claude Code's --effort: how hard the model thinks per turn. default sends no flag and leaves it to the model — high on Fable 5.1, Opus 5 and Sonnet 5, the same as the API's; a level saved in ~/.claude/settings.json (effortLevel, or /effort from a terminal) wins over it. xhigh and max spend more thinking tokens and time, low fewer. A level the model does not support falls back to one it does."
+          />
+        </div>
+        <div class="segs" role="radiogroup" aria-label="Effort">
+          {#each EFFORTS as e (e)}
+            <button
+              class:on={e === app.draft.agentEffort}
+              class:d={!e}
+              role="radio"
+              aria-checked={e === app.draft.agentEffort}
+              disabled={locked}
+              title={e
+                ? `--effort ${e}`
+                : effortDefaultText === "?"
+                  ? "no --effort flag; the model's own default, which the docs do not name for this model"
+                  : `no --effort flag; the model's own default, ${effortDefaultText}`}
+              onclick={() => pickEffort(e)}
+            >
+              {#if e}
+                {e}
+              {:else}
+                default
+                <span class="dv" class:unk={effortDefaultText === "?"}>· {effortDefaultText}</span>
+              {/if}
+            </button>
+          {/each}
+        </div>
+        <p class="note">{effortLine}</p>
+      </div>
+      <div class="ctl">
+        <div class="swq">
+          <span class="t">Fallback model</span>
+          <Hint
+            text="Claude Code's --fallback-model: the alias it retries a turn with when the model above is overloaded or unavailable. none sends no fallback. Kept on the chat like the model; the Last turn section says which one ran."
+          />
+        </div>
+        <div class="pv" role="radiogroup" aria-label="Fallback model">
+          <button
+            class="p"
+            class:on={app.draft.agentFallback.trim() === ""}
+            role="radio"
+            aria-checked={app.draft.agentFallback.trim() === ""}
+            disabled={locked}
+            title="No fallback"
+            onclick={() => pickFallback("")}
+          >
+            none
+          </button>
+          {#each AGENT_PILLS as a (a)}
+            <button
+              class="p"
+              class:on={app.draft.agentFallback.trim() === a}
+              role="radio"
+              aria-checked={app.draft.agentFallback.trim() === a}
+              disabled={locked}
+              title="--fallback-model {a}"
+              onclick={() => pickFallback(a)}
+            >
+              {a}
+            </button>
+          {/each}
+        </div>
+      </div>
     {/if}
 
     {#if app.draft.tools}
@@ -930,6 +980,21 @@
       <div class="sect-h"><span class="ns-k">Last turn</span></div>
       {#if plan}
         <p class="note">plan: {plan}</p>
+      {/if}
+      {#if agent}
+        <!-- The design's Rail board (2026-09-16): what the turn ran with —
+             the effort as sent, the fallback as sent, the permission mode
+             the CLI reported. Whether the fallback was *used* is not in
+             the stream (backlog 076 measured `modelUsage` naming the
+             primary alone), so the line names it rather than claiming. -->
+        <p class="note">
+          effort {agent.effort ?? "default"} · {agent.fallback_model
+            ? `fallback ${agent.fallback_model}`
+            : "no fallback"}
+          {#if agent.permission_mode}
+            · <code>{agent.permission_mode}</code>
+          {/if}
+        </p>
       {/if}
       {#if app.agentTurn.cost_usd != null}
         <p
@@ -1413,6 +1478,30 @@
   }
   .approval .swq {
     cursor: default;
+  }
+  /* A labelled control under Behaviour (the design's Rail board): the
+     label row with its `?`, the segment or pills, the line under it. */
+  .ctl {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .ctl .swq {
+    cursor: default;
+  }
+  /* The Effort segment's *default* position names the model's own value
+     (board 3b revised, 2026-09-16): wider than the levels, the value dim
+     beside the word, italic and fainter while it is unknown. */
+  .segs button.d {
+    flex: 1.6;
+  }
+  .segs .dv {
+    font-size: 10.5px;
+    opacity: 0.75;
+  }
+  .segs .dv.unk {
+    font-style: italic;
+    opacity: 0.6;
   }
 
   /* Switch rows: the label, its `?`, the pill. */

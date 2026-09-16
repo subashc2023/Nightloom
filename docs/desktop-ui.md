@@ -817,6 +817,25 @@ optimistic `user_message`'s `at` (`liveSince` in `Transcript.svelte`) and
 removed only when `app.live` clears. Reduced motion gets the three dots and
 the count.
 
+**Restyled to the approved board (2026-09-16 afternoon, nightshift
+`claude-code-ui-design-2026-09-16/Main.dc.html`, boards 1 and 6).** The
+block now carries the board's measures: a faint sheet background, rows 28px
+tall with a hairline between them, one grid of icon 18 · name 118 · argument
+· size, 12px in from either edge; each call's icon by its kind (`toolIcon`
+— a book for Read, a glass for Grep and Glob, a pencil for Edit and Write,
+the terminal for Bash, a figure for Agent, stacked bars for an MCP tool, the
+⚒ for anything else) and a spark for thinking. A finished thinking row reads
+`✦ thought for 6 s` when the live turn timed it (`Segment.ms`, set by
+`closeThinking` in `state.svelte.ts`; a recorded reply has no clock, so
+`thought`), `✦ thought · summary` with the summary's first line in italic
+when the model is one that omits its thinking and returned text anyway (the
+API engine's summary), and opens with a `▸` at its right. The subagent row
+names its child's tools (`▸ subagent · Read, Grep · 3 calls · 1.4k words so
+far`) on the paper, one column in. The moon rides the last block even when
+the reply's words follow it; the reply footer's figure is what the turn
+added to the window (`48k`, the bar's own number), the reply's `N out` and
+the tool results in its title.
+
 ### Thinking the model kept to itself (nightshift backlog 097, 2026-09-16)
 
 A thinking block can arrive with no text. The Claude 5 family defaults
@@ -1527,6 +1546,24 @@ slash commands from the same init line, filtered by what follows the slash;
 inserts text only — the CLI runs a skill named in the message when Send
 goes. Nothing on the other engine, and nothing before the first turn.
 
+**Restyled to the approved boards (2026-09-16 afternoon, nightshift
+`claude-code-ui-design-2026-09-16/Session.dc.html` and `Layers.dc.html`).**
+*This session*: an MCP server's row is the board's grid — status dot (green
+connected, red failed) · name in mono · what it offers (its tools by short
+name, or a failed server's error in the failed red, or its status) · the
+tool count — with a hairline between rows; Tools and Skills sit side by
+side, as do Slash commands and Agents; the slash chips past twelve fold
+behind `+ n more` (a click shows them all, `fewer` folds them back); the
+Agents card says a subagent's turns fold under its Agent call; the foot is
+one span per fact (`claude 2.1.263 · session 5eb30ca1 · model … ·
+permission auto · effort high · no fallback · safe mode off — on, this
+panel loses MCP, skills, commands and hooks`), the safe-mode measurement on
+hover of its span. *Layers* on Claude Code: `read-only` is the board's
+ruled pill in the accent ink; the CLI's own prompt and its memory show
+their size against the window as the gauge's bar (`11k ▮ 5.5%`, the
+estimate on hover); the pane's foot says the CLI's prompt is shown, never
+replaced.
+
 ## The context-full hand-off (nightshift backlog 086, 2026-09-16)
 
 On the Claude Code engine the CLI's auto-compact is off (`docs/service-agent.md`
@@ -1636,6 +1673,18 @@ per-chat field on the Context page (now with the Settings default named),
 the top bar's *↳ continued from* mark, `continue_session` and the
 `handoff` lineage reason. No backend change. Not verified in the running
 app; the DoD's measurement on Haiku is the orchestrator's, after the roll.
+
+**Restyled to the approved boards (2026-09-16 afternoon, nightshift
+`claude-code-ui-design-2026-09-16/Handoff.dc.html`, `Continued.dc.html`).**
+The behaviour above is unchanged; three drawings were matched. A chat the
+hand-off card opened (`forked_from.reason === "handoff"`) now carries the
+board's header above its first turn in `Transcript.svelte` — a dashed row
+with the branch mark, *Continued from "q5 divergence sweep" · HANDOFF.md*,
+and *open the earlier chat* at its right — beside the top bar's own mark.
+The done card (*HANDOFF.md written*) carries the branch mark in the accent.
+A notice row in the transcript (today the compaction notice; the board's
+`context 72% — wrapping up` row is the same kind) is the board's ruled
+amber mono: a rule either side, the words between.
 
 ## Prompt suggestions as a ghost line (nightshift backlog 083, 2026-09-16)
 

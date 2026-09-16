@@ -1,6 +1,7 @@
 <script lang="ts">
   import * as api from "./api";
   import Icon from "./Icon.svelte";
+  import { fmtTokens } from "./tokens";
   import {
     app,
     addToast,
@@ -309,6 +310,13 @@
   /** ~4 chars a token: the same rough estimate the backend's sizes use,
    *  said as an estimate. */
   const cliPromptTokens = $derived(Math.round(cliPromptChars / 4));
+  /** A CLI-side layer's share of the window, for the board's size bar
+   *  (`11.2k ▮ 5.6%`): null while the window is unknown. */
+  function windowShare(tokens: number): number | null {
+    const limit = view?.context_limit;
+    return limit ? Math.min(1, tokens / limit) : null;
+  }
+  const cliMemoryTokens = $derived(Math.round((cliMemory?.text ?? "").length / 4));
 
   /*
    * This session (nightshift backlog 077): what the CLI reported it has at
@@ -339,6 +347,16 @@
   );
   function serverBad(status: string): boolean {
     return status === "failed" || status === "needs-auth" || status === "error";
+  }
+  /** The slash-command chips past this count fold behind `+ n more`
+   *  (the design's board 4); a click shows them all. */
+  const SLASH_SHOWN = 12;
+  let allSlash = $state(false);
+  const shownSlash = $derived(allSlash ? builtinSlash : builtinSlash.slice(0, SLASH_SHOWN));
+  /** An MCP tool's short name, `search_works` → `search works`, for the
+   *  server's row. */
+  function shortMcp(n: string): string {
+    return n.replace(/_+/g, " ");
   }
   /*
    * The hand-off threshold (nightshift backlog 086): the share of the CLI's
@@ -564,21 +582,34 @@
             {#if init.mcp_servers.length === 0}
               <p class="note small">None{app.connection?.agent?.safe_mode ? " — safe mode drops every MCP server" : ""}.</p>
             {:else}
+              <!-- The board's row (Session.dc.html): dot · name · what it
+                   offers, or why it failed · the tool count. A connected
+                   server lists its tools by short name; a failed one its
+                   error in the failed red; anything else its status. -->
               <ul class="plain">
                 {#each init.mcp_servers as s (s.name)}
                   {@const tools = mcpTools.get(s.name.replace(/[^A-Za-z0-9_]/g, "_")) ?? mcpTools.get(s.name) ?? []}
-                  <li class="srow" class:bad={serverBad(s.status)}>
-                    <span class="dot" class:ok={s.status === "connected"} class:bad={serverBad(s.status)}></span>
-                    <span class="sname">{s.name}</span>
-                    <span class="sstatus">{s.status}</span>
-                    {#if tools.length > 0}<span class="meta">{tools.length} tools</span>{/if}
-                    {#if s.error}<span class="serr">{s.error}</span>{/if}
+                  {@const bad = serverBad(s.status)}
+                  <li class="srow grid" class:bad>
+                    <span class="dot" class:ok={s.status === "connected"} class:bad></span>
+                    <span class="sname mono">{s.name}</span>
+                    <span class="sstatus" title={bad ? s.error ?? s.status : tools.map(shortMcp).join(" · ")}>
+                      {#if bad}
+                        {s.status}{s.error ? ` — ${s.error}` : ""}
+                      {:else if tools.length > 0}
+                        {tools.map(shortMcp).join(" · ")}
+                      {:else}
+                        {s.status}
+                      {/if}
+                    </span>
+                    <span class="meta">{tools.length > 0 ? `${tools.length} tools` : ""}</span>
                   </li>
                 {/each}
               </ul>
             {/if}
           </section>
 
+          <div class="pair">
           <section class="card">
             <div class="ch">
               <div class="name">
@@ -615,12 +646,14 @@
             {:else}
               <ul class="plain">
                 {#each init.skills as sk (sk)}
-                  <li class="srow"><span class="sname mono">/{sk}</span><span class="sstatus">type / in the composer</span></li>
+                  <li class="srow krow"><span class="sname mono">/{sk}</span><span class="sstatus">type / in the composer</span></li>
                 {/each}
               </ul>
             {/if}
           </section>
+          </div>
 
+          <div class="pair">
           <section class="card">
             <div class="ch">
               <div class="name">
@@ -628,13 +661,18 @@
                 <span class="gloss">The CLI's built-in commands beyond the skills. Most are terminal UI; a name typed in the prompt runs the ones that are not.</span>
               </div>
               <span class="spacer"></span>
-              <span class="meta">{builtinSlash.length}</span>
+              <span class="meta">{allSlash || builtinSlash.length <= SLASH_SHOWN ? builtinSlash.length : `${SLASH_SHOWN} of ${builtinSlash.length}`}</span>
             </div>
             {#if builtinSlash.length === 0}
               <p class="note small">None{app.connection?.agent?.safe_mode ? " — safe mode drops them" : ""}.</p>
             {:else}
               <div class="chips">
-                {#each builtinSlash as c (c)}<span class="chip">/{c}</span>{/each}
+                {#each shownSlash as c (c)}<span class="chip">/{c}</span>{/each}
+                {#if builtinSlash.length > SLASH_SHOWN}
+                  <button class="more" onclick={() => (allSlash = !allSlash)}>
+                    {allSlash ? "fewer" : `+ ${builtinSlash.length - SLASH_SHOWN} more`}
+                  </button>
+                {/if}
               </div>
             {/if}
           </section>
@@ -651,12 +689,21 @@
             <div class="chips">
               {#each init.agents as a (a)}<span class="chip">{a}</span>{/each}
             </div>
+            <p class="note small">a subagent's turns fold under its Agent call in the transcript</p>
           </section>
+          </div>
         </div>
-        <p class="foot mono">
-          Claude Code {init.version ?? "?"} · session {init.session_id ? init.session_id.slice(0, 8) : "?"} · model {init.model ?? "?"} · permission mode {init.permission_mode ?? "?"}{app.connection?.agent?.safe_mode ? " · safe mode" : ""}{app.connection?.agent?.effort ? ` · effort ${app.connection.agent.effort}` : ""}{app.connection?.agent?.fallback_model ? ` · fallback ${app.connection.agent.fallback_model}` : " · no fallback"}
+        <!-- The board's foot: one span per fact, the safe-mode clause on
+             hover of its span. -->
+        <p class="foot mono cfoot">
+          <span>claude {init.version ?? "?"}</span>
+          <span>session {init.session_id ? init.session_id.slice(0, 8) : "?"}</span>
+          <span>model {init.model ?? "?"}</span>
+          <span>permission {init.permission_mode ?? "?"}</span>
+          <span>effort {app.connection?.agent?.effort ?? "default"}</span>
+          <span>{app.connection?.agent?.fallback_model ? `fallback ${app.connection.agent.fallback_model}` : "no fallback"}</span>
+          <span title={SAFE_MODE_DROPS}>safe mode {app.connection?.agent?.safe_mode ? "on — MCP, skills, commands and hooks dropped" : "off — on, this panel loses MCP, skills, commands and hooks"}</span>
         </p>
-        <p class="note small">{SAFE_MODE_DROPS}</p>
       {/if}
       <!-- Prompt suggestions (backlog 083): the switch lives here because
            the prediction is the CLI's, per session; off by default. -->
@@ -712,7 +759,7 @@
             <div class="ch">
               <span class="sw-space"></span>
               <div class="name">
-                <span class="t">Claude Code's own prompt <span class="state">read-only</span></span>
+                <span class="t">Claude Code's own prompt <span class="state ro">read-only</span></span>
                 <span class="gloss">
                   The CLI's built-in system prompt, which the layers below are appended to. It cannot be switched off:
                   replacing it (<code>--system-prompt</code>) breaks the tools whose behaviour is written into it.
@@ -721,7 +768,16 @@
               </div>
               <span class="spacer"></span>
               {#if cliPrompt}
-                <span class="meta" title="Estimated at four characters a token; {cliPromptChars.toLocaleString()} characters in {cliPrompt.sections.length} sections">~{cliPromptTokens.toLocaleString()} tok est.</span>
+                {@const share = windowShare(cliPromptTokens)}
+                <!-- The board's size against the window (Layers.dc.html):
+                     the gauge's 56px bar scaled to the layer's share. -->
+                <span class="meta lbar" title="Estimated at four characters a token; {cliPromptChars.toLocaleString()} characters in {cliPrompt.sections.length} sections{share !== null ? ` — ${(share * 100).toFixed(1)}% of the window` : ""}">
+                  <span>{fmtTokens(cliPromptTokens)}</span>
+                  {#if share !== null}
+                    <span class="sb" aria-hidden="true"><i style:width="{share * 100}%"></i></span>
+                    <span>{(share * 100).toFixed(1)}%</span>
+                  {/if}
+                </span>
                 <button
                   class="ns-btn small read"
                   class:on={isOpen}
@@ -955,7 +1011,14 @@
               </div>
               <span class="spacer"></span>
               {#if !cliMemoryOff && hasFile}
-                <span class="meta">{(cliMemory?.text ?? "").length.toLocaleString()} chars</span>
+                {@const share = windowShare(cliMemoryTokens)}
+                <span class="meta lbar" title="Estimated at four characters a token; {(cliMemory?.text ?? "").length.toLocaleString()} characters{share !== null ? ` — ${(share * 100).toFixed(1)}% of the window` : ""}">
+                  <span>{fmtTokens(cliMemoryTokens)}</span>
+                  {#if share !== null}
+                    <span class="sb" aria-hidden="true"><i style:width="{share * 100}%"></i></span>
+                    <span>{(share * 100).toFixed(1)}%</span>
+                  {/if}
+                </span>
                 <button
                   class="ns-btn small read"
                   class:on={isOpen}
@@ -991,6 +1054,10 @@
         <p class="note small caveat">{MODE_CAVEAT[kind]}</p>
       {/if}
       {#if agentEngine}
+        <p class="note small caveat">
+          On Claude Code the history is the CLI's; only what Nightloom appends is switchable. The
+          CLI's prompt is shown, never replaced — the tools' behaviour is written into it.
+        </p>
         <p class="note small caveat">{AGENT_CAVEAT}</p>
       {/if}
 
@@ -1256,6 +1323,73 @@
     font-size: 12.5px;
     flex-wrap: wrap;
   }
+  /* The board's grids (Session.dc.html): a server row is dot · name ·
+     what it offers · count, a skill row name · gloss; a hairline between
+     rows. */
+  .srow.grid {
+    display: grid;
+    grid-template-columns: 16px 150px minmax(0, 1fr) 70px;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: nowrap;
+    padding: 3px 0;
+  }
+  .srow.grid .sstatus {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .srow.grid .meta {
+    text-align: right;
+    font-size: 11px;
+  }
+  .srow.grid .dot {
+    justify-self: center;
+  }
+  .srow.krow {
+    display: grid;
+    grid-template-columns: 120px minmax(0, 1fr);
+    gap: 10px;
+    padding: 2px 0;
+  }
+  .srow.krow .sstatus {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .plain .srow.grid + .srow.grid,
+  .plain .srow.krow + .srow.krow {
+    border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  }
+  /* Two cards side by side — Tools · Skills, Slash commands · Agents. */
+  .pair {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+  .pair .card {
+    min-width: 0;
+  }
+  .more {
+    font: inherit;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--dim);
+    background: none;
+    border: 1px dashed var(--line2);
+    border-radius: 6px;
+    padding: 1px 6px;
+    cursor: pointer;
+  }
+  .more:hover {
+    color: var(--ink);
+  }
+  .foot.cfoot {
+    display: flex;
+    gap: 14px;
+    flex-wrap: wrap;
+    font-size: 11px;
+  }
   .sname {
     color: var(--ink);
   }
@@ -1270,11 +1404,6 @@
   .srow.bad .sstatus {
     color: var(--error);
   }
-  .serr {
-    color: var(--error);
-    font-size: 12px;
-    flex-basis: 100%;
-  }
   .dot {
     width: 7px;
     height: 7px;
@@ -1284,7 +1413,7 @@
     flex-shrink: 0;
   }
   .dot.ok {
-    background: var(--accent);
+    background: var(--done);
   }
   .dot.bad {
     background: var(--error);
@@ -1371,6 +1500,34 @@
     font-size: 12px;
     color: var(--dim);
     margin-left: 8px;
+  }
+  /* `read-only` as the board's pill: ruled, in the accent ink. */
+  .state.ro {
+    font-size: 11px;
+    color: var(--accent-ink);
+    border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+    border-radius: 999px;
+    padding: 0 7px;
+    white-space: nowrap;
+  }
+  /* A layer's size against the window: the gauge's bar scaled to it. */
+  .lbar {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+  }
+  .lbar .sb {
+    width: 56px;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--line2);
+    overflow: hidden;
+  }
+  .lbar .sb i {
+    display: block;
+    height: 100%;
+    background: var(--accent);
   }
   /* The name of a layer switched off is struck through and the state is
      said in words beside it: the blind test should be visible while it

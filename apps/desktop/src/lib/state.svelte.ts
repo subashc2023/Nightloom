@@ -326,7 +326,11 @@ export interface ToolCallView {
  * message and for completed messages projected from SessionEvents.
  */
 export type Segment =
-  | { kind: "thinking"; text: string; done: boolean }
+  /** `ms` — how long the block streamed, for the row's `thought for 6 s`
+   *  (the design's board 1, 2026-09-16); set on the live turn only, a
+   *  recorded reply has no clock to read it from. `at` is the clock while
+   *  it streams, cleared when `ms` is written. */
+  | { kind: "thinking"; text: string; done: boolean; ms?: number; at?: number }
   | { kind: "redacted" }
   | { kind: "text"; text: string }
   /** `block` — the index into the reply's `blocks` — is set on a recorded
@@ -3414,7 +3418,13 @@ export function runToastAction(id: number): void {
 /** Mark a trailing in-progress thinking segment as complete (collapses its pill). */
 function closeThinking(segments: Segment[]): void {
   const last = segments[segments.length - 1];
-  if (last && last.kind === "thinking") last.done = true;
+  if (last && last.kind === "thinking" && !last.done) {
+    last.done = true;
+    if (last.at != null) {
+      last.ms = Date.now() - last.at;
+      delete last.at;
+    }
+  }
 }
 
 function applyTurnEvent(ev: TurnEvent): void {
@@ -3526,7 +3536,7 @@ function applyToSegments(segments: Segment[], ev: TurnEvent): void {
       if (last && last.kind === "thinking" && !last.done) {
         last.text += ev.text;
       } else {
-        segments.push({ kind: "thinking", text: ev.text, done: false });
+        segments.push({ kind: "thinking", text: ev.text, done: false, at: Date.now() });
       }
       break;
     case "redacted_thinking":

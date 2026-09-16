@@ -728,6 +728,7 @@
   {:else if handoffHere && handoff.stage === "wrapped"}
     <div class="handoff" role="status" aria-label="Hand-off done">
       <div class="handoff-head">
+        <span class="handoff-mark" aria-hidden="true"><Icon name="branch" size={15} /></span>
         <strong>HANDOFF.md written</strong>
         <span class="spacer"></span>
         <span class="mono handoff-fill">{fmtTokens(handoff.used)} of {fmtTokens(handoff.limit)} · {handoffPct}%</span>
@@ -1138,6 +1139,11 @@
     font-size: 14px;
     color: var(--ink);
     line-height: 1.4;
+  }
+  /* The board's branch mark on the done card (Handoff.dc.html). */
+  .handoff-mark {
+    display: inline-flex;
+    color: var(--accent);
   }
   .handoff-fill {
     font-size: 11.5px;

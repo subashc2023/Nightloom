@@ -33,6 +33,20 @@ export const ICONS = {
   download: '<path d="M10 3v9M6.5 8.5 10 12l3.5-3.5M4 15h12"/>',
   trash: '<path d="M4 6h12M8 6V4h4v2M6 6l.7 10h6.6L14 6M8.5 9v4M11.5 9v4"/>',
   updown: '<path d="m7 8 3-3 3 3M7 12l3 3 3-3"/>',
+  /* The activity block's row icons (nightshift
+     claude-code-ui-design-2026-09-16, board 1): one per kind of call, so a
+     Read, a Grep, an Agent and an MCP tool read apart at a glance, and the
+     spark for a thinking row. */
+  read: '<path d="M4 4h5a2 2 0 0 1 2 2v11a1.5 1.5 0 0 0-1.5-1.5H4zM16 4h-5a2 2 0 0 0-2 2v11a1.5 1.5 0 0 1 1.5-1.5H16z"/>',
+  grep: '<circle cx="8.5" cy="8.5" r="4.5"/><path d="m12 12 4.5 4.5M6.5 8.5h4"/>',
+  edit: '<path d="m4 16 3.5-.7 8-8-2.8-2.8-8 8z"/>',
+  agent: '<circle cx="10" cy="7" r="3"/><path d="M4 17c0-3 2.7-5 6-5s6 2 6 5"/>',
+  mcp: '<rect x="3" y="4" width="14" height="5" rx="1.5"/><rect x="3" y="11" width="14" height="5" rx="1.5"/><path d="M6 6.5h.01M6 13.5h.01"/>',
+  think: '<path d="M10 3l1.6 3.9L15.5 8.5l-3.9 1.6L10 14l-1.6-3.9L4.5 8.5l3.9-1.6z"/>',
+  /* The branch: a chat continued from a full one (board 5b). */
+  branch: '<circle cx="6" cy="5" r="2"/><circle cx="6" cy="15" r="2"/><circle cx="14" cy="8" r="2"/><path d="M6 7v6M14 10c0 3-8 2-8 5"/>',
+  /* The link card under a reply (board 6). */
+  link: '<path d="M8.5 11.5a3 3 0 0 0 4.2 0l2-2a3 3 0 0 0-4.2-4.2l-1 1M11.5 8.5a3 3 0 0 0-4.2 0l-2 2a3 3 0 0 0 4.2 4.2l1-1"/>',
 } as const;
 
 export type IconName = keyof typeof ICONS;

@@ -14,6 +14,7 @@
     saveEdit,
     saveReplyEdit,
     sendEdit,
+    openSession,
   } from "./state.svelte";
   import type { Segment, ToolCallView } from "./state.svelte";
   import {
@@ -32,6 +33,7 @@
     type EditState,
   } from "./edit";
   import { toolInputSummary } from "./transcriptPrefs.svelte";
+  import { forkLine } from "./edit";
   import { parseSubagentBlock } from "./subagent";
   import { wordDiff } from "./textdiff";
   import { fmtShare, fmtTokens, shareOf, sizeTitle, turnSizes } from "./tokens";
@@ -630,6 +632,21 @@
     const next = stepTick(navActive, e.key === "ArrowDown" ? 1 : -1, navTicks.length);
     if (next !== null) jumpTo(next);
   }
+
+  /**
+   * The "Continued from" header (the design's board 5b, backlog 086): a
+   * chat the hand-off card opened carries its parent on its creation line
+   * with `reason: "handoff"`; above its first turn a dashed row names the
+   * earlier chat and HANDOFF.md, and opens the earlier chat on click. The
+   * top bar's own mark stays; this is the transcript's copy of it, where
+   * the board draws it.
+   */
+  const continuedFrom = $derived.by(() => {
+    const session = app.sessions.find((s) => s.id === app.activeSessionId) ?? null;
+    if (!session?.forked_from || session.forked_from.reason !== "handoff") return null;
+    const line = forkLine(session, app.sessions) ?? "from an earlier chat";
+    return { id: session.forked_from.session, name: line.replace(/^from /, "") };
+  });
 </script>
 
 <!-- The viewport takes ⌥↑ / ⌥↓ (backlog 065); it is a scroll region, not
@@ -644,6 +661,14 @@
   onkeydown={viewportKeys}
 >
   <div class="inner">
+    {#if continuedFrom}
+      <div class="continued">
+        <span class="continued-ic"><Icon name="branch" size={14} /></span>
+        <span>Continued from <span class="continued-t">“{continuedFrom.name}”</span> · <span class="mono">HANDOFF.md</span></span>
+        <span class="spacer"></span>
+        <button class="continued-open" onclick={() => void openSession(continuedFrom.id)}>open the earlier chat</button>
+      </div>
+    {/if}
     {#each items as item, i (i)}
       {#if item.kind === "user"}
         <div
@@ -1008,6 +1033,45 @@
     display: flex;
     flex-direction: column;
     gap: 26px;
+  }
+  /* The board's continued-from row: dashed, the branch mark, the earlier
+     chat's name in the ink, a link to open it. */
+  .continued {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    border: 1px dashed var(--line2);
+    border-radius: 10px;
+    font-size: 13px;
+    color: var(--ink2);
+    background: color-mix(in srgb, var(--sheet) 50%, transparent);
+  }
+  .continued-ic {
+    color: var(--dim);
+    display: inline-flex;
+  }
+  .continued-t {
+    color: var(--ink);
+  }
+  .continued .mono {
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  .continued .spacer {
+    flex: 1;
+  }
+  .continued-open {
+    background: none;
+    border: none;
+    padding: 0;
+    font: inherit;
+    font-size: 12.5px;
+    color: var(--accent-ink);
+    cursor: pointer;
+  }
+  .continued-open:hover {
+    text-decoration: underline;
   }
   .user-turn {
     display: flex;

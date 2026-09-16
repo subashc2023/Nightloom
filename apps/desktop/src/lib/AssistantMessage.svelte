@@ -19,11 +19,13 @@
     HIDDEN_THINKING_TITLE,
     activitySummary,
     groupSegments,
+    modelOmitsThinking,
     resolveFolded,
     shortToolName,
     thinkingHidden,
     workingLabel,
   } from "./activity";
+  import type { IconName } from "./icons";
   import { fmtShare, fmtTokens, shareOf, sizeTitle, type TurnSize } from "./tokens";
   import {
     artifactLinks,
@@ -80,6 +82,52 @@
   function fmtCost(c: number | undefined): string {
     if (c == null) return "";
     return c > 0 && c < 0.01 ? ` · $${c.toFixed(4)}` : ` · $${c.toFixed(2)}`;
+  }
+  /**
+   * The footer's figure (the design's board 1, 2026-09-16): what the turn
+   * added to the window — the reply and what its tools brought back, the
+   * same number the bar beside it is a share of — with the reply's own
+   * `N out` in the title. Without a size to show, the output count as
+   * before.
+   */
+  function fmtFigure(u: Usage, size: TurnSize | null): string {
+    return size ? fmtTokens(size.tokens) : fmtOut(u, null);
+  }
+
+  /**
+   * The row's icon by the call's name (board 1): the CLI's tools by name,
+   * an MCP tool by its prefix, Nightloom's own engine's snake_case tools by
+   * what they do; null for anything else, which keeps the ⚒ glyph.
+   */
+  function toolIcon(name: string): IconName | null {
+    if (name.startsWith("mcp__")) return "mcp";
+    const n = name.toLowerCase();
+    if (n === "agent" || n === "task") return "agent";
+    if (n.startsWith("read") || n === "notebookread" || n === "read_chat") return "read";
+    if (n.startsWith("grep") || n.startsWith("glob") || n.includes("search")) return "grep";
+    if (n.startsWith("edit") || n.startsWith("write") || n === "multiedit" || n === "notebookedit") return "edit";
+    if (n === "bash") return "term";
+    if (n.includes("fetch")) return "ext";
+    return null;
+  }
+
+  /**
+   * The thinking row's words, three states (boards 1 and 6, backlog 097):
+   * `thought for 6 s` once done with a clock; `thought · summary` when the
+   * text is the summary the API engine asked for — a model that omits its
+   * thinking returned something, so it is that; `thought` for a recorded
+   * block with no clock; `thinking` while it streams.
+   */
+  function thoughtLabel(seg: { done: boolean; ms?: number }): string {
+    if (!seg.done) return "thinking";
+    if (summarised) return "thought · summary";
+    if (seg.ms == null) return "thought";
+    const sec = Math.max(1, Math.round(seg.ms / 1000));
+    return sec < 60 ? `thought for ${sec} s` : `thought for ${Math.floor(sec / 60)} min ${sec % 60} s`;
+  }
+  /** The summary's first line, for the row's argument column. */
+  function firstLine(text: string): string {
+    return text.trim().split(/\n/, 1)[0] ?? "";
   }
 
   let {
@@ -204,8 +252,12 @@
     return () => clearInterval(t);
   });
   const working = $derived(workingLabel(now - (since ?? startedAt)));
-  const lastGroup = $derived(groups[groups.length - 1]);
-  const moonInBlock = $derived(streaming && lastGroup?.kind === "activity");
+  const summarised = $derived(!!footer && modelOmitsThinking(footer.model));
+  // The block the moon rides is the last one, whether or not text follows
+  // it (board 1 draws the moon as the block's last row with the reply's
+  // words under it); with no block yet it sits under the text alone.
+  const lastGroup = $derived([...groups].reverse().find((g) => g.kind === "activity"));
+  const moonInBlock = $derived(streaming && !!lastGroup);
   const moonAlone = $derived(streaming && segs.length > 0 && !moonInBlock);
 
   // The cards under the reply (backlog 078): an artifact the model published
@@ -280,6 +332,11 @@
 
 {#snippet subagent(children: Segment[])}
   {@const calls = children.filter((c) => c.kind === "tool").length}
+  {@const names = children
+    .filter((c) => c.kind === "tool")
+    .map((c) => (c.kind === "tool" ? shortToolName(c.call.name) : ""))
+    .slice(0, 4)
+    .join(", ")}
   {@const words = children
     .filter((c) => c.kind === "text")
     .reduce((n, c) => n + (c.kind === "text" ? c.text.split(/\s+/).filter(Boolean).length : 0), 0)}
@@ -288,14 +345,15 @@
       <span class="ico">▸</span>
       <span class="name">subagent</span>
       <span class="arg">
-        {#if calls}{calls} call{calls === 1 ? "" : "s"}{/if}{#if calls && words} · {/if}{#if words}{words} words{streaming ? " so far" : ""}{/if}
+        {#if names}{names}{calls > 4 ? ", …" : ""}{" · "}{/if}{#if calls}{calls} call{calls === 1 ? "" : "s"}{/if}{#if calls && words}{" · "}{/if}{#if words}{words} words{streaming ? " so far" : ""}{/if}
       </span>
     </summary>
     <div class="sub-body">
       {#each children as c, k (k)}
         {#if c.kind === "tool"}
+          {@const icon = toolIcon(c.call.name)}
           <div class="arow static" class:error={!!c.call.result?.is_error}>
-            <span class="ico">⚒</span>
+            <span class="ico">{#if icon}<Icon name={icon} size={13} />{:else}⚒{/if}</span>
             <span class="name" title={c.call.name}>{shortToolName(c.call.name)}</span>
             <span class="arg">{toolInputSummary(c.call.input)}</span>
             <span class="size">{toolResultSummary(c.call, streaming)}</span>
@@ -304,15 +362,15 @@
             {@render subagent(c.call.children)}
           {/if}
         {:else if c.kind === "thinking"}
-          <div class="arow static">
-            <span class="ico">✦</span>
+          <div class="arow static thinking">
+            <span class="ico"><Icon name="think" size={13} /></span>
             <span class="name">thought</span>
             <span class="arg">{c.text}</span>
             <span class="size"></span>
           </div>
         {:else if c.kind === "redacted"}
-          <div class="arow static">
-            <span class="ico">✦</span>
+          <div class="arow static thinking">
+            <span class="ico"><Icon name="think" size={13} /></span>
             <span class="name">redacted thinking</span>
             <span class="arg"></span>
             <span class="size"></span>
@@ -356,33 +414,33 @@
                      097): a fact in the dim style, no pointer, nothing to
                      open — a button here did nothing, which is what he
                      saw. -->
-                <div class="arow static thinking" title={HIDDEN_THINKING_TITLE}>
-                  <span class="ico">✦</span>
+                <div class="arow static thinking hidden wide" title={HIDDEN_THINKING_TITLE}>
+                  <span class="ico"><Icon name="think" size={13} /></span>
                   <span class="name">thought · hidden by the model</span>
-                  <span class="arg"></span>
                   <span class="size"></span>
                 </div>
               {:else if !seg.done && seg.text.trim() === ""}
                 <!-- Begun, nothing arrived yet: under way, not yet a button. -->
-                <div class="arow static thinking">
-                  <span class="ico">✦</span>
+                <div class="arow static thinking wide">
+                  <span class="ico"><Icon name="think" size={13} /></span>
                   <span class="name">thinking</span>
-                  <span class="arg"></span>
                   <span class="size">…</span>
                 </div>
               {:else}
+                {@const summary = summarised && seg.done}
                 <div class="row-wrap">
                   <button
                     class="arow thinking"
+                    class:wide={!summary}
                     aria-expanded={isOpen(i, seg)}
                     title={isOpen(i, seg) ? "Hide the thinking" : "Show the thinking"}
                     onpointerdown={(e) => press(e, i, seg)}
                     onclick={(e) => keyClick(e, i, seg)}
                   >
-                    <span class="ico">✦</span>
-                    <span class="name">thinking</span>
-                    <span class="arg"></span>
-                    <span class="size">{seg.done ? "" : "…"}</span>
+                    <span class="ico"><Icon name="think" size={13} /></span>
+                    <span class="name">{thoughtLabel(seg)}</span>
+                    {#if summary}<span class="arg summary">{firstLine(seg.text)}</span>{/if}
+                    <span class="size">{seg.done ? (isOpen(i, seg) ? "▾" : "▸") : "…"}</span>
                   </button>
                   {#if isOpen(i, seg)}
                     <div class="thinking-text">{seg.text}</div>
@@ -390,15 +448,15 @@
                 </div>
               {/if}
             {:else if seg.kind === "redacted"}
-              <div class="arow static">
-                <span class="ico">✦</span>
+              <div class="arow static thinking wide">
+                <span class="ico"><Icon name="think" size={13} /></span>
                 <span class="name">redacted thinking</span>
-                <span class="arg"></span>
                 <span class="size"></span>
               </div>
             {:else if seg.kind === "tool"}
               {@const open = isOpen(i, seg)}
               {@const bad = !!seg.call.result?.is_error || !!seg.call.denied}
+              {@const icon = toolIcon(seg.call.name)}
               <div class="row-wrap tool">
                 <button
                   class="arow"
@@ -408,7 +466,7 @@
                   onpointerdown={(e) => press(e, i, seg)}
                   onclick={(e) => keyClick(e, i, seg)}
                 >
-                  <span class="ico">⚒</span>
+                  <span class="ico">{#if icon}<Icon name={icon} size={13} />{:else}⚒{/if}</span>
                   <span class="name" title={seg.call.name}>{shortToolName(seg.call.name)}</span>
                   <span class="arg">{toolInputSummary(seg.call.input)}</span>
                   <span class="size">{toolResultSummary(seg.call, streaming)}</span>
@@ -544,12 +602,12 @@
     <div class="cards">
       {#each links as l (l.url)}
         <div class="card link" title={l.url}>
-          <span class="card-ico"><Icon name="ext" size={13} /></span>
+          <span class="card-ico"><Icon name="link" size={14} /></span>
           <span class="card-text">
             <span class="card-title">{l.title}</span>
             <span class="card-sub">{l.url.replace(/^https?:\/\//, "")}</span>
           </span>
-          <button class="ns-btn ghost small" title="Open in the browser" onclick={() => void openLink(l.url)}>Open ↗</button>
+          <button class="ns-btn ghost small" title="Open in the browser" onclick={() => void openLink(l.url)}>Open <Icon name="ext" size={11} /></button>
         </div>
       {/each}
       {#each files as f (f.path)}
@@ -569,7 +627,7 @@
     {@const share = size ? shareOf(size.tokens, limit) : null}
     <div class="footer">
       <button class="ns-btn ghost small" onclick={() => void copy()}>{copied ? "Copied" : "Copy"}</button>
-      <span class="meta" title={footerTitle(footer, size)}>{fmtOut(footer.usage, size)}{fmtCost(footer.cost)}</span>
+      <span class="meta" title={footerTitle(footer, size)}>{fmtFigure(footer.usage, size)}{fmtCost(footer.cost)}</span>
       {#if fmtShare(share)}
         <!-- The reply's share of the window (backlog 090), the gauge's bar
              scaled to it, once the reply is worth a bar. -->
@@ -627,32 +685,45 @@
   .activity {
     display: flex;
     flex-direction: column;
-    gap: 1px;
-    border: 1px solid var(--border);
+    border: 1px solid var(--line);
     border-left: 2px solid var(--line2);
     border-radius: 8px;
-    padding: 4px 8px 4px 10px;
+    background: color-mix(in srgb, var(--sheet) 60%, transparent);
     min-width: 0;
+    /* Not `overflow: hidden`: the call's hover Remove (backlog 066) sits
+       past the right edge. */
   }
   .activity.live {
     border-left-color: var(--accent);
   }
-  .fold,
+  /* The board's measures (claude-code-ui-design-2026-09-16, board 1): rows
+     28px tall on one grid — icon 18 · name 118 · argument · size — a
+     hairline between neighbours, 12px in from either edge. */
+  .activity > * + * {
+    border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  }
   /* The subagent row under an Agent call (backlog 075): the disclosure's
-     summary drawn like a row, its body indented one rule in. */
+     summary drawn like a row, indented one column in on the paper, its
+     body one rule in. */
   .sub {
-    margin: 2px 0 2px 1.7em;
+    margin: 0;
+    border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+    background: color-mix(in srgb, var(--paper) 50%, transparent);
   }
   .sub-line {
     display: grid;
-    grid-template-columns: 1.1em minmax(0, auto) minmax(0, 1fr);
-    column-gap: 0.6rem;
-    align-items: baseline;
+    grid-template-columns: 18px minmax(0, auto) minmax(0, 1fr);
+    column-gap: 10px;
+    align-items: center;
+    min-height: 28px;
     cursor: pointer;
     list-style: none;
     color: var(--dim);
     font-size: 0.78rem;
-    padding: 2px 0;
+    padding: 5px 12px 5px 40px;
+  }
+  .sub-line .arg {
+    color: var(--ink2);
   }
   .sub-line::-webkit-details-marker {
     display: none;
@@ -664,7 +735,11 @@
   .sub-body {
     border-left: 2px solid var(--line);
     padding-left: 0.6rem;
-    margin-left: 0.4em;
+    margin: 0 12px 6px 40px;
+  }
+  .sub-body .arow {
+    padding-left: 0;
+    padding-right: 0;
   }
   .sub-text {
     margin: 2px 0;
@@ -674,25 +749,35 @@
     color: var(--text);
     font-family: inherit;
   }
+  .fold,
   .arow {
     display: grid;
-    grid-template-columns: 1.1em minmax(0, auto) minmax(0, 1fr) auto;
-    column-gap: 0.6rem;
-    align-items: baseline;
+    grid-template-columns: 18px 118px minmax(0, 1fr) auto;
+    column-gap: 10px;
+    align-items: center;
     width: 100%;
     min-width: 0;
+    min-height: 28px;
     background: none;
     border: none;
-    padding: 2px 0;
+    padding: 5px 12px;
     text-align: left;
     color: var(--dim);
     font-size: 0.78rem;
     cursor: pointer;
     user-select: none;
   }
+  /* The one-line summary that folds the block: the board's mono, dim. */
   .fold {
-    grid-template-columns: 1.1em minmax(0, 1fr);
-    font-family: var(--sans);
+    grid-template-columns: 18px minmax(0, 1fr);
+  }
+  /* A row with nothing in the argument column lets its name run across. */
+  .arow.wide {
+    grid-template-columns: 18px minmax(0, 1fr) auto;
+  }
+  .fold-text {
+    font-family: var(--mono);
+    font-size: 11.5px;
   }
   .fold:hover .fold-text,
   .fold:hover .caret,
@@ -707,6 +792,8 @@
   .ico {
     color: var(--dim);
     font-family: var(--mono);
+    display: inline-flex;
+    align-items: center;
   }
   .name {
     font-family: var(--sans);
@@ -714,20 +801,42 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    max-width: 14rem;
   }
+  /* A thinking row: the name italic and dim, the spark in the accent. A
+     hidden one (backlog 097) is dimmer still and no pointer. */
   .arow.thinking .name {
     font-style: italic;
     color: var(--dim);
   }
+  .arow.thinking .ico {
+    color: var(--accent);
+    opacity: 0.7;
+  }
+  .arow.thinking.hidden {
+    opacity: 0.7;
+  }
+  .arow.thinking.hidden .ico {
+    color: var(--dim);
+  }
   .arg {
     font-family: var(--mono);
+    font-size: 11.5px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  /* The summary's first line (board 6, `thought · summary`): prose, not
+     an argument, so the interface face in italic. */
+  .arg.summary {
+    font-family: var(--sans);
+    font-style: italic;
+    font-size: 0.78rem;
+  }
   .size {
     font-family: var(--mono);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    min-width: 64px;
     text-align: right;
     white-space: nowrap;
     opacity: 0.8;
@@ -749,7 +858,7 @@
     color: var(--dim);
     white-space: pre-wrap;
     word-break: break-word;
-    padding-left: 1.7em;
+    padding: 0 12px 6px 40px;
   }
   .thinking-text {
     color: var(--dim);
@@ -757,7 +866,7 @@
     font-size: 0.85rem;
     white-space: pre-wrap;
     word-break: break-word;
-    margin: 0.2rem 0 0.3rem 1.7em;
+    margin: 0 12px 8px 40px;
     padding-left: 0.75rem;
     border-left: 2px solid var(--border);
   }
@@ -768,13 +877,20 @@
     display: flex;
     align-items: center;
     gap: 0.6rem;
-    min-height: 20px;
-    padding: 2px 0;
+    min-height: 28px;
+    padding: 4px 12px;
     color: var(--dim);
     font-size: 0.78rem;
   }
+  /* Inside the block the moon is a row like the others (board 1): the
+     moon in the accent, `working · 41 s` in the mono beside it. Alone
+     under the text it keeps its old room. */
+  .activity .working .roll {
+    color: var(--accent);
+  }
   .working-text {
     font-family: var(--mono);
+    font-size: 11.5px;
   }
   /* The moon rolls inside a track of its own, so the text after it starts
      past the far end of the roll rather than under it (his 2026-09-16
@@ -917,16 +1033,37 @@
     color: var(--dim);
     font-size: 0.78rem;
     word-break: break-word;
-    padding-left: 1.7em;
+    padding: 0 12px 6px 40px;
+  }
+  .row-wrap > .tool-result {
+    margin: 0 12px 8px 40px;
+  }
+  /* The interruption card (084 pass 2) keeps the block's width, in from
+     its edges by the row's own padding. */
+  .row-wrap > :global(.approval) {
+    margin: 4px 12px 8px;
   }
   .tool-result.error {
     color: var(--failed);
     background: var(--failed-soft);
     border-color: var(--failed);
   }
+  /* A notice row (a compaction, a crossing): the board's ruled amber mono
+     (Handoff.dc.html) — a rule either side, the words between. */
   .notice {
-    color: var(--dim);
-    font-size: 0.78rem;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--partial);
+  }
+  .notice::before,
+  .notice::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--line);
   }
   /* The cards under a reply (backlog 078): one row each, the composer's
      attachment chip's shape — badge · name · size · buttons — in the
@@ -937,17 +1074,19 @@
     gap: 6px;
     align-items: flex-start;
   }
+  /* The board's card (Cards.dc.html): 8 × 12 inside, the sheet, at most
+     560 wide; the title 13.5px, a path in the mono at 12.5px. */
   .card {
     display: inline-flex;
     align-items: center;
     gap: 10px;
-    max-width: 100%;
+    max-width: min(100%, 560px);
     min-width: 0;
-    padding: 6px 10px;
+    padding: 8px 12px;
     border: 1px solid var(--line2);
     border-radius: 8px;
-    background: var(--panel);
-    font-size: 0.85rem;
+    background: var(--sheet);
+    font-size: 13.5px;
     color: var(--ink);
   }
   .card-ico {
@@ -978,7 +1117,7 @@
   }
   .card-title.mono {
     font-family: var(--mono);
-    font-size: 0.78rem;
+    font-size: 12.5px;
   }
   .card-sub,
   .card-size {
@@ -994,6 +1133,7 @@
   }
   .card .ns-btn {
     flex: none;
+    gap: 4px;
   }
   .footer {
     display: flex;
