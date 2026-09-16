@@ -24,6 +24,9 @@ export const ICONS = {
   pencil: '<path d="m4 16 3.5-.7 8-8-2.8-2.8-8 8zM11.5 5.7l2.8 2.8"/>',
   key: '<circle cx="7" cy="12" r="3.5"/><path d="M9.5 9.5 16 3M13 6l2 2M11 8l2 2"/>',
   x: '<path d="M5 5l10 10M15 5 5 15"/>',
+  /* Remove-from-context on a turn: a minus in a ring, not a bin — the
+     message stays in the log (backlog 062, icons 2026-09-15). */
+  minus: '<circle cx="10" cy="10" r="6.5"/><path d="M7 10h6"/>',
   lock: '<rect x="5" y="9" width="10" height="8" rx="1.5"/><path d="M7 9V6.5a3 3 0 0 1 6 0V9"/>',
   refresh: '<path d="M16 10a6 6 0 0 1-10.4 4.1M4 10a6 6 0 0 1 10.4-4.1M14 3v3h-3M6 17v-3h3"/>',
   "eye-off": '<path d="M3 3l14 14M8.5 8.6A2 2 0 0 0 11.4 11.4M6.4 6.5C4.3 7.7 3 10 3 10s2.5 4.5 7 4.5c1.3 0 2.4-.3 3.4-.9M9 5.6c.3 0 .7-.1 1-.1 4.5 0 7 4.5 7 4.5s-.6 1.1-1.7 2.2"/>',

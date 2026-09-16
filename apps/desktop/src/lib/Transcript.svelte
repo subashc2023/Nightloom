@@ -492,38 +492,9 @@
           data-turn={item.index}
         >
           <div class="user-key">
-            <!-- Offered on both engines since 2026-09-15 (backlog 062): on
-                 Claude Code each of these rewrites the CLI's history by copy
-                 and the next turn resumes the copy — the title says so. -->
-            {#if !item.superseded && !app.busy && editing?.index !== item.index}
-              <span class="turn-tools" title={controlsTitle}>
-                {#if !item.removed}
-                  <button
-                    class="tool-btn"
-                    title="Rewind to here: this turn and everything after it stop counting. Files written by tools are not reverted."
-                    onclick={() => void rewindTo(item.index)}
-                  >
-                    Rewind to here
-                  </button>
-                  {#if item.editable}
-                    <button
-                      class="tool-btn"
-                      title="Edit this message: Save keeps it here with the new text; Send starts a fork from here."
-                      onclick={() => beginEdit(item)}
-                    >
-                      Edit
-                    </button>
-                  {/if}
-                  <button
-                    class="tool-btn"
-                    title="Remove this message from the context. It stays in the log; the context panel restores it."
-                    onclick={() => void removeTurn(item.index)}
-                  >
-                    Remove
-                  </button>
-                {/if}
-              </span>
-            {/if}
+            <!-- The tools sit under the bubble (his 2026-09-15 evening
+                 review: "these buttons should be below, and should be
+                 icons"); see `.turn-tools` below. -->
             {#if item.original !== null && !item.removed}
               <span class="edited-mark" title="Edited; the original is below">edited</span>
             {/if}
@@ -599,6 +570,42 @@
               </details>
             {/if}
           {/if}
+            {#if !item.superseded && !app.busy && editing?.index !== item.index}
+              <!-- Offered on both engines since 2026-09-15 (backlog 062): on
+                   Claude Code each of these rewrites the CLI's history by copy
+                   and the next turn resumes the copy — the title says so.
+                   Icons, with the full sentence on hover and for a reader. -->
+              <span class="turn-tools" title={controlsTitle}>
+                {#if !item.removed}
+                  <button
+                    class="tool-btn"
+                    title="Rewind to here: this turn and everything after it stop counting. Files written by tools are not reverted."
+                    aria-label="Rewind to here"
+                    onclick={() => void rewindTo(item.index)}
+                  >
+                    <Icon name="revert" size={14} />
+                  </button>
+                  {#if item.editable}
+                    <button
+                      class="tool-btn"
+                      title="Edit this message: Save keeps it here with the new text; Send starts a fork from here."
+                      aria-label="Edit this message"
+                      onclick={() => beginEdit(item)}
+                    >
+                      <Icon name="pencil" size={14} />
+                    </button>
+                  {/if}
+                  <button
+                    class="tool-btn"
+                    title="Remove this message from the context. It stays in the log; the context panel restores it."
+                    aria-label="Remove this message from the context"
+                    onclick={() => void removeTurn(item.index)}
+                  >
+                    <Icon name="minus" size={14} />
+                  </button>
+                {/if}
+              </span>
+            {/if}
         </div>
       {:else if item.kind === "compaction"}
         <details class="compaction" class:superseded={item.superseded}>
@@ -612,26 +619,6 @@
           class:removed={item.removed}
           data-turn={item.index}
         >
-          {#if !item.superseded && !app.busy && !item.removed && editing?.index !== item.index}
-            <span class="turn-tools assistant-tools" title={controlsTitle}>
-              {#if item.editable}
-                <button
-                  class="tool-btn"
-                  title="Edit this reply in place; the original stays in the log"
-                  onclick={() => beginEdit(item)}
-                >
-                  Edit
-                </button>
-              {/if}
-              <button
-                class="tool-btn"
-                title="Remove this reply from the context. Its tool calls stay; it stays in the log."
-                onclick={() => void removeTurn(item.index)}
-              >
-                Remove
-              </button>
-            </span>
-          {/if}
           {#if editing?.index === item.index}
             <div class="editor">
               <textarea
@@ -673,6 +660,28 @@
                 <div class="original-text">{item.original}</div>
               </details>
             {/if}
+          {/if}
+          {#if !item.superseded && !app.busy && !item.removed && editing?.index !== item.index}
+            <span class="turn-tools assistant-tools" title={controlsTitle}>
+              {#if item.editable}
+                <button
+                  class="tool-btn"
+                  title="Edit this reply in place; the original stays in the log"
+                  aria-label="Edit this reply"
+                  onclick={() => beginEdit(item)}
+                >
+                  <Icon name="pencil" size={14} />
+                </button>
+              {/if}
+              <button
+                class="tool-btn"
+                title="Remove this reply from the context. Its tool calls stay; it stays in the log."
+                aria-label="Remove this reply from the context"
+                onclick={() => void removeTurn(item.index)}
+              >
+                <Icon name="minus" size={14} />
+              </button>
+            </span>
           {/if}
         </div>
       {/if}
@@ -744,11 +753,14 @@
     filter: saturate(0.4);
   }
   /* The hover controls on a turn — Rewind, Edit, Remove — shown on both
-     engines since 2026-09-15 (backlog 062). Hidden until hovered or
-     focused, as the Rewind button always was. */
+     engines since 2026-09-15 (backlog 062). Under the bubble as a row of
+     icons, the sentence on hover (his review that evening: "below, and
+     icons"). Hidden until the turn is hovered or a control is focused; the
+     row keeps its height so the transcript does not shift on hover. */
   .turn-tools {
     display: inline-flex;
-    gap: 6px;
+    gap: 2px;
+    height: 22px;
     opacity: 0;
     transition: opacity 0.12s;
   }
@@ -761,18 +773,21 @@
     align-self: flex-start;
   }
   .tool-btn {
+    display: inline-grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
     background: none;
-    border: 1px solid var(--line2);
+    border: 1px solid transparent;
     border-radius: 6px;
     color: var(--dim);
-    font-family: var(--sans);
-    font-size: 11.5px;
-    padding: 2px 8px;
+    padding: 0;
     cursor: pointer;
   }
-  .tool-btn:hover {
+  .tool-btn:hover,
+  .tool-btn:focus-visible {
     color: var(--ink);
-    border-color: var(--accent);
+    border-color: var(--line2);
   }
   .assistant-turn {
     display: flex;
