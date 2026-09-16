@@ -4,6 +4,7 @@
   import {
     app,
     denialReason,
+    dismissAside,
     liveFlags,
     removeBlock,
     removeTurn,
@@ -14,7 +15,7 @@
     saveReplyEdit,
     sendEdit,
   } from "./state.svelte";
-  import type { Segment } from "./state.svelte";
+  import type { Segment, ToolCallView } from "./state.svelte";
   import {
     REMOVED_PLACEHOLDER,
     blockEdits,
@@ -31,6 +32,7 @@
     type EditState,
   } from "./edit";
   import { toolInputSummary } from "./transcriptPrefs.svelte";
+  import { parseSubagentBlock } from "./subagent";
   import { fmtShare, fmtTokens, shareOf, sizeTitle, turnSizes } from "./tokens";
   import { cacheState } from "./cache";
   import { moveScroll, recallScroll, rememberScroll, scrollKey, NEW_SCROLL_KEY } from "./scroll.svelte";
@@ -158,7 +160,21 @@
               if (whole) break;
               segs.push({ kind: "redacted" });
               break;
-            case "text":
+            case "text": {
+              // A subagent's recorded turn (backlog 075) nests under the
+              // call that spawned it — in this message for a foreground
+              // subagent, in an earlier one of the turn for a background
+              // one — as one text segment of the narrative; it is not the
+              // reply's own prose and never counts as `said`.
+              const sub = parseSubagentBlock(b.text);
+              if (sub && !whole) {
+                const parent = findCallIn(segs, sub.parent) ?? findCallBack(out, sub.parent);
+                if (parent) {
+                  parent.children ??= [];
+                  parent.children.push({ kind: "text", text: sub.body });
+                  break;
+                }
+              }
               said.push(b.text);
               if (whole) {
                 if (!placed) segs.push({ kind: "text", text: REMOVED_PLACEHOLDER });
@@ -169,6 +185,7 @@
                 segs.push({ kind: "text", text: edits[index].get(block) ?? b.text });
               }
               break;
+            }
             case "tool_use": {
               const result = results.get(b.id) ?? null;
               const call = {
@@ -210,6 +227,34 @@
     }
     return out;
   });
+
+  /** The tool call with `id` in `segs`, at any depth. */
+  function findCallIn(segs: Segment[], id: string): ToolCallView | null {
+    for (let i = segs.length - 1; i >= 0; i--) {
+      const seg = segs[i];
+      if (seg.kind !== "tool" && seg.kind !== "removed_tool") continue;
+      if (seg.call.id === id) return seg.call;
+      if (seg.call.children) {
+        const inner = findCallIn(seg.call.children, id);
+        if (inner) return inner;
+      }
+    }
+    return null;
+  }
+  /** The same, searching back through the assistant messages already
+   *  projected — a background subagent's block lands after its parent's
+   *  message (backlog 075). */
+  function findCallBack(items: Item[], id: string): ToolCallView | null {
+    for (let i = items.length - 1; i >= 0; i--) {
+      const it = items[i];
+      if (it.kind === "user") return null;
+      if (it.kind === "assistant") {
+        const call = findCallIn(it.segs, id);
+        if (call) return call;
+      }
+    }
+    return null;
+  }
 
   /**
    * Prompts with no tool call to attach to — the live buffer is gone (an
@@ -265,6 +310,15 @@
     onClaudeCode
       ? "The next turn resumes a rewritten copy of Claude Code's history; the original session file is kept."
       : "",
+  );
+  // Rewind on this engine only edits the CLI's conversation history (backlog
+  // 087): it does not touch anything a tool wrote to disk. A "code restore"
+  // that would undo those file writes is wanted but not built — see 062 and
+  // docs/service-agent.md "Editing the CLI's history".
+  const rewindTitle = $derived(
+    onClaudeCode
+      ? "Rewind to here: this turn and everything after it stop counting. Conversation only — files stay as they are; git is the undo."
+      : "Rewind to here: this turn and everything after it stop counting. Files written by tools are not reverted.",
   );
 
   function beginEdit(item: Item) {
@@ -693,7 +747,7 @@
                 {:else}
                   <button
                     class="tool-btn"
-                    title="Rewind to here: this turn and everything after it stop counting. Files written by tools are not reverted."
+                    title={rewindTitle}
                     aria-label="Rewind to here"
                     onclick={() => void rewindTo(item.index)}
                   >
@@ -834,6 +888,30 @@
         </div>
       {/if}
     {/each}
+    <!-- The aside (nightshift backlog 081): a side question answered off the
+         chat's warm cache and recorded nowhere — not in this log, not in
+         the CLI's files. Drawn at the foot, dashed, so it never reads as
+         a turn; its × is the only way it leaves, short of a chat switch. -->
+    {#if app.aside}
+      <div class="aside" role="note" aria-label="aside, not part of the chat">
+        <div class="aside-head">
+          <span class="ns-chip mono">aside · not in the chat</span>
+          {#if app.aside.answer !== null && app.aside.cacheRead > 0}
+            <span class="ns-chip mono">{app.aside.cacheRead.toLocaleString()} read from cache</span>
+          {/if}
+          <span class="spacer"></span>
+          <button class="ns-btn ghost small" title="Dismiss the aside" onclick={dismissAside}>×</button>
+        </div>
+        <div class="aside-q">{app.aside.question}</div>
+        {#if app.aside.error}
+          <div class="aside-err">{app.aside.error}</div>
+        {:else if app.aside.answer === null}
+          <div class="aside-wait">asking…</div>
+        {:else}
+          <pre class="aside-a">{app.aside.answer}</pre>
+        {/if}
+      </div>
+    {/if}
     {#if app.live}
       {#if app.live.segments.length === 0}
         <!-- Between send and the first streamed event there is nothing to
@@ -1143,6 +1221,43 @@
     padding: 0.6rem 0.8rem;
     white-space: pre-wrap;
     word-break: break-word;
+  }
+  /* The aside card (backlog 081): dashed, dim, outside the turns. */
+  .aside {
+    margin: 8px 0;
+    padding: 8px 10px;
+    border: 1px dashed var(--line2);
+    border-radius: 10px;
+    color: var(--dim);
+    font-size: 0.85rem;
+  }
+  .aside-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .aside-head .spacer {
+    flex: 1;
+  }
+  .aside-q {
+    margin-top: 6px;
+    color: var(--ink);
+    white-space: pre-wrap;
+  }
+  .aside-a {
+    margin: 6px 0 0;
+    color: var(--ink);
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: inherit;
+  }
+  .aside-wait {
+    margin-top: 6px;
+    font-style: italic;
+  }
+  .aside-err {
+    margin-top: 6px;
+    color: var(--error);
   }
   .waiting {
     display: flex;

@@ -12,9 +12,12 @@
     sessionCost,
   } from "./state.svelte";
   import { cacheLine, cacheState, nextTickMs, remainingText } from "./cache";
+  import { HIDDEN_THINKING_TITLE, thinkingToggleDead } from "./activity";
   import RightRail from "./RightRail.svelte";
   import { toggleTranscriptPref, transcript } from "./transcriptPrefs.svelte";
   import { isMac } from "./platform";
+  import { openSession } from "./state.svelte";
+  import { forkLine } from "./edit";
 
   /**
    * The chat top bar in the redesign (item 036, the mock-up's Chat artboard):
@@ -35,6 +38,18 @@
    * row, so `title` above is empty for it and this mark is what says what
    * it is; it also says, in the same breath, that nothing is kept.
    */
+  /**
+   * "Continued from" (nightshift backlog 086): a chat opened by the
+   * hand-off card carries its parent on its creation line with
+   * `reason: "handoff"`; the mark names the parent the way the sidebar's
+   * lineage line does and opens it on click. An edit-and-send fork has
+   * no reason and no mark here — the sidebar already says "from …".
+   */
+  const continuedFrom = $derived.by(() => {
+    if (!session?.forked_from || session.forked_from.reason !== "handoff") return null;
+    const line = forkLine(session, app.sessions) ?? "from an earlier chat";
+    return { id: session.forked_from.session, line: line.replace(/^from /, "") };
+  });
   const mode = $derived(chatMode(app.events));
   const modeText = $derived(
     mode === "incognito"
@@ -268,6 +283,11 @@
   // folded block costs.
   const THINKING_COST_NOTE =
     ". A prior turn's thinking is still sent and billed on later turns (measured on Haiku 4.5 via Claude Code; unverified on Opus 5).";
+  // The chip reads disabled when the toggle has nothing to open (nightshift
+  // backlog 097, 2026-09-16): every recorded thinking block is empty, or
+  // nothing has thought yet and the Claude Code engine is on a model that
+  // omits its thinking. ⌘⇧T and the palette row gate on the same function.
+  const thinkingDead = $derived(thinkingToggleDead(app.events, app.connection));
 </script>
 
 <header class="topbar">
@@ -282,6 +302,15 @@
       <span class="mode {mode}" title={modeTitle}
         ><span aria-hidden="true">{MODE_GLYPH[mode]}</span> {modeText}</span
       >
+    {/if}
+    {#if continuedFrom}
+      <button
+        class="continued"
+        title="This chat continues a full one from its HANDOFF.md — click to open the earlier chat"
+        onclick={() => void openSession(continuedFrom.id)}
+      >
+        <span aria-hidden="true">↳</span> continued from {continuedFrom.line}
+      </button>
     {/if}
   </div>
 
@@ -363,10 +392,13 @@
       class="ns-chip toggle"
       class:on={transcript.thinking}
       aria-pressed={transcript.thinking}
-      title={(transcript.thinking
-        ? `Thinking shown in every reply — click to fold it to a pill (${shiftKey}T)`
-        : `Thinking folded to a pill — click to show it in every reply (${shiftKey}T)`) +
-        THINKING_COST_NOTE}
+      disabled={thinkingDead}
+      title={thinkingDead
+        ? HIDDEN_THINKING_TITLE + " The toggle has nothing to open in this chat."
+        : (transcript.thinking
+            ? `Thinking shown in every reply — click to fold it to a pill (${shiftKey}T)`
+            : `Thinking folded to a pill — click to show it in every reply (${shiftKey}T)`) +
+          THINKING_COST_NOTE}
       onclick={() => toggleTranscriptPref("thinking")}
     >
       <span class="mark" aria-hidden="true">✦</span>thinking
@@ -481,6 +513,23 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  /* The hand-off's trace (backlog 086): the mode mark's size, a button
+     because it opens the earlier chat. */
+  .continued {
+    font-size: 11.5px;
+    color: var(--dim);
+    background: transparent;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    font-family: var(--sans);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .continued:hover {
+    color: var(--ink);
   }
   .right {
     display: flex;
@@ -601,6 +650,13 @@
   .toggle:hover {
     border-color: var(--accent);
     color: var(--ink);
+  }
+  .toggle:disabled,
+  .toggle:disabled:hover {
+    cursor: default;
+    opacity: 0.5;
+    border-color: transparent;
+    color: var(--dim);
   }
   .spend.partial {
     font-style: italic;

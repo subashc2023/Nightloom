@@ -1351,3 +1351,203 @@ Tests: `state.svelte.test.ts` (`planUsageFromTurn`: both windows, the 2.1.237
 shape as no reading); Rust `plan_usage::tests` (the recency race, the null
 five-hour record, no files, a broken file) and `mcp_server::tests`
 (`context_status` before and after a write, the tool listing).
+
+## Cards under a reply: artifact links and named files (nightshift backlog 078, 2026-09-16)
+
+Under Nightloom the Claude Code CLI never offers `SendUserFile` — that tool
+exists only for a Remote Control client or a cloud session — so a file the
+model produced reaches the user as a path in a sentence, and an `Artifact`
+call's page comes back as a `claude.ai/artifact/…` URL in text. Once a reply
+has stopped streaming, `AssistantMessage.svelte` draws both as cards **under
+the reply text**, before the footer: a link card (mark · the markdown link's
+text or "Artifact" · the URL · *Open ↗*) and a file card (extension badge ·
+the path, relative to the chat's workspace when it is under it · size · *Open*
+· *Reveal*). Nothing is drawn while the reply streams — a path half-typed is
+not a file yet — and a recorded reply is scanned once.
+
+Detection is in `src/lib/cards.ts` and is deliberately conservative, because a
+false card is worse than a missed one:
+
+- An artifact link is `https://claude.ai/artifact/<id>` (six or more id
+  characters), each once, in order, at most eight.
+- A path is a candidate only when it is **absolute** (`/…` or `~/…`) or
+  **quoted in backticks with a slash in it** (`` `notes/ace/x.md` ``), the
+  latter resolved against the chat's workspace (`app.connection.workspace`,
+  else the project's root) and against nothing else. A bare filename
+  (`state.svelte.ts`) is never a candidate: in a coding chat every reply names
+  files in passing. Fenced code blocks are skipped; trailing sentence
+  punctuation is trimmed; a path ending in `/` is a folder and stays text.
+- The backend has the last word: `named_files` (`project::named_files`)
+  stats every candidate and answers only for an existing regular file, with
+  its size. A folder, a broken link or a path the model made up stays text.
+  `~/` is expanded there.
+
+*Open* on a file goes through `open_file` (`project::reveal`, the platform
+opener — the OS pairs the file with its application); *Reveal* through
+`reveal_file` (`open -R` on macOS, `explorer /select,` on Windows, the parent
+folder on Linux), which creates nothing, unlike the docspace's `reveal`. The
+link card's *Open* is `open_url`, `https://` only. A failure is a toast.
+
+Cards are drawn on both engines: the API engine's `write_file` names files too,
+and the detection is gated on the disk, not the provider.
+
+Tests: `cards.test.ts` (the link and its title, punctuation, fences, the
+bare-filename and folder exclusions, the root rules, the cap, the label);
+Rust `project::tests::named_files_answers_only_for_a_real_regular_file`.
+
+## The dream row as rows and pills (nightshift backlog 071, 2026-09-16)
+
+Settings → Knowledge → Dreaming picks which engine and model run a dream and
+a capture (one knob for both, nightshift blocker 054). ~~It was a `<select>`
+of engines and a mono text box for a typed model id under a four-line hint~~
+**(2026-09-16: it is now one sentence and a set of rows.)** The sentence at
+the top says what will happen — *Dreams and captures run on Claude Code ·
+haiku, billed to the subscription* — and is derived from the preference, or
+from the rail's current draft when the preference is "the rail's
+connection". Under it, one row per engine in the Models card's idiom (a
+round check · the name · a billing pill): *The rail's connection* (pill
+*bills as the chat does*, with what the rail is on right now under the
+name), *Claude Code* (pill *the subscription*), then each provider (pill *its
+API key*, or the red *no key set* when none is stored — the row still picks;
+the pill says why a pass would fail). The chosen row unfolds a *Model* line
+of pills: on Claude Code the CLI's aliases from `AGENT_MODELS` with *the
+CLI's default* first; on a provider *default (<id>)* then the ids in that
+provider's picker (`modelsFor`, the popover's own list). A stored id that is
+in neither list — typed into the box this replaced — is kept as one more
+pill. Picking a different engine clears the model, since an alias is not a
+provider id.
+
+Nothing else changed: the preference is still `nightloom.dream`
+(`provider`, `model`, `auto`), `passTargetFor` reads it as before, the
+auto-after-compaction switch is where it was. The rows and pills are built
+by `src/lib/dreamRows.ts` (`dreamEngineRows`, `dreamModelPills`,
+`dreamSentence`, `railNow`), pinned in `dreamRows.test.ts`.
+
+## The turn-end banner (nightshift backlog 079, 2026-09-16)
+
+In the terminal his own Stop hook says when a turn finishes; under Nightloom
+nothing did. Now the app posts a native notification itself, through the
+`notify` command (`tauri-plugin-notification`, from Rust — blocker 106), in
+two cases and on both engines:
+
+- **A turn finished** — `<chat> — turn finished` over `3 files changed ·
+  48k out · 2 min 10 s` (each part only when there is one; `done` when
+  none), or `<chat> — turn failed` over the error's first line. Posted from
+  the top of the `finally` in `send` and `sendAgent` (`state.svelte.ts`),
+  before the live state it reads is cleared: the files from the turn's
+  `Write` / `Edit` / `MultiEdit` / `NotebookEdit` / `write_file` /
+  `edit_file` calls that were neither denied nor failed, distinct by path;
+  the tokens from the last usage event; the time from the optimistic
+  `user_message`'s `at`.
+- **A turn needs him** — `<chat> — Run Bash?` over `<the argument> · waits
+  until you answer`; `Claude asks a question` and `Approve the plan?` for
+  `AskUserQuestion` and `ExitPlanMode`. Posted from the `tool-approval`
+  listener, which both engines' prompts arrive through (the CLI's deferred
+  call since backlog 084).
+
+Two rules. **A focused window is never notified** (`document.hasFocus()`,
+checked at the moment of posting, not a setting). And Settings → Appearance
+→ *Notifications* has one switch per kind (`nightloom.notify`, both on by
+default). The chat is named by its title, else the first line of its first
+message, else *New chat*. Nothing is sent anywhere: no push, no phone
+(blocker 078). The pure parts — the preference, the copy, the file count —
+are in `src/lib/notify.ts`, pinned by `notify.test.ts`.
+
+Not built: a per-chat mute, and the third banner the design draws for a
+filled window (the handoff of backlog 086 does not exist yet). Clicking a
+banner activates Nightloom; it does not open the chat the banner names,
+because the plugin exposes no click event on desktop.
+
+## The Context page on Claude Code: This session, the CLI's own prompt, its memory (nightshift backlog 077 and 088, 2026-09-16)
+
+Three additions to the Context modal (`ContextPanel.svelte`) on the Claude
+Code engine, all read-only except one switch; the design they are the
+basic form of is `Session.dc.html` and `Layers.dc.html` in nightshift's
+`notes/runner-design/claude-code-ui-design-2026-09-16/`.
+
+- **This session** — a third segment of the head, after *Layers · As sent*.
+  What the CLI reported at the start of the chat's latest turn, kept
+  whole from its `system/init` line (`TurnEvent::AgentInit`, `app.agentInit`,
+  cleared on a chat switch): cards for **MCP servers** (name, the status the
+  CLI gave — `connected`, `pending`, `needs-auth`, `failed` with its error —
+  a bad one in the error colour, and the server's tool count from the
+  `mcp__<server>__` prefixes), **Tools** (the built-ins as chips, then each
+  server's tools by short name), **Skills** (rows: type `/` in the
+  composer), **Slash commands** (the built-ins beyond the skills, as
+  chips), **Agents**; a mono foot with the CLI version, the session id,
+  the model and the permission mode; and one line saying what safe mode
+  drops (measured on 2.1.263: every MCP server and its tools, every skill
+  and slash command, and the `Skill` tool; agents and built-ins stay).
+  Before the chat's first turn the pane says so — the list is the CLI's,
+  and it has not reported yet.
+- **Claude Code's own prompt** — the first card under *Layers*, marked
+  `read-only`, no switch: replacing the CLI's prompt (`--system-prompt`)
+  breaks the tools whose behaviour is written into it, so it is shown, not
+  offered. Read from the `prompt_snapshot` attachment the CLI writes into
+  its own session file after the first turn (`cli_prompt_snapshot` in
+  `main.rs`; the shape is in nightshift
+  `notes/runner-design/077-measurements-2026-09-16.md`), with a token size
+  estimated at four characters a token and said as an estimate; Read opens
+  the sections joined. None before the first turn or for an ephemeral chat
+  (no file), and the gloss says which.
+- **Claude Code memory** — the card at the foot of the layers, with the
+  per-chat switch; see `docs/service-agent.md` "The CLI's auto memory, as a
+  layer".
+
+**The `/` picker** (`Composer.svelte`): on this engine, once the chat has
+had a turn, a message that starts with `/` opens a list over the skills and
+slash commands from the same init line, filtered by what follows the slash;
+↑↓ move, ↵ or Tab insert `/name ` and close, Esc closes, a click picks. It
+inserts text only — the CLI runs a skill named in the message when Send
+goes. Nothing on the other engine, and nothing before the first turn.
+
+## The context-full hand-off (nightshift backlog 086, 2026-09-16)
+
+On the Claude Code engine the CLI's auto-compact is off (`docs/service-agent.md`
+"Auto-compact off"), and this is what a full window does instead. The
+stage machine is `handoff.svelte.ts` (`nextStage`, unit-tested; the app
+could not be driven the night it was built); everything on screen is the
+composer's bar, the top bar's mark and one control on the Context page.
+
+1. **Due.** At the end of each agent turn the gauge's pair — the last
+   reply's `input + output` over the CLI's window — is compared to the
+   chat's threshold. Past it, a ruled bar above the message box reads
+   *Context N% — past this chat's 70% hand-off mark. Your next message
+   carries a wrap-up…* with **Send the wrap-up now** and **Stay here**.
+2. **Wrapping.** The next message goes out with the wrap-up appended under
+   a `---` rule, marked *Added by Nightloom* so his words and the app's
+   are never confused: write `HANDOFF.md` at the top of the project —
+   doing, done, next, decisions, files that matter — in the model's own
+   words, then stop. Visible in the transcript as part of his message.
+3. **Wrapped.** When that turn ends the bar offers **Continue in a new
+   chat** · **Stay here**. Continue (`continueChat` → `continue_session`)
+   opens a fresh chat in the same folder, linked to this one, with "Read
+   HANDOFF.md and continue." ready in the box — not sent; this chat stays
+   in the sidebar, readable. The new chat's top bar carries *↳ continued
+   from <the earlier chat>*, a click on which opens it; the sidebar row
+   shows the lineage line it already shows for forks.
+4. **Stay here** at either stage goes back to quiet, and the wrap-up is
+   asked again only past 85% and higher than where it was dismissed.
+
+**The threshold** is per chat (localStorage, 70% by default): Context page
+→ Conversation, *Hand off at [70] % of the window*. Lowering it to a few
+percent on a test chat is how to see the whole flow on Haiku without a
+long context.
+
+## Prompt suggestions as a ghost line (nightshift backlog 083, 2026-09-16)
+
+Off by default. Context page → *This session* → **Prompt suggestions**
+switch (app-wide, localStorage; a flip reconnects the open Claude Code
+chat). On, the CLI is started with `--prompt-suggestions true` — the value
+spelled out, since the option would otherwise swallow the prompt — and
+after each turn's `result` it emits `{"type":"prompt_suggestion",
+"suggestion":"…"}` (`TurnEvent::PromptSuggestion`, `app.suggestion`). The
+composer shows it dimmed over the empty box with a `Tab` cap
+(`suggestions.svelte.ts` `ghostFor`): Tab or a click puts it in the box,
+Esc drops it, typing hides it, a send or a chat switch clears it. Never
+sent on its own; nothing on the API engine. The cost the switch names:
+the CLI waits for the prediction before its process exits — about six
+seconds added to every turn on Haiku (measured, nightshift
+`notes/runner-design/083-measurements-2026-09-16.md`) — and one more
+request against the plan, unreported by the CLI. A one-word exchange
+produces no suggestion; a real question does.

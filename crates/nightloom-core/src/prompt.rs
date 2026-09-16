@@ -60,6 +60,15 @@ pub enum SegmentKind {
     /// layers off addresses them by kind, and the note is a layer a user may
     /// reasonably drop — the library prompt, which *is* `Custom`, is not.
     EngineNote,
+    /// Claude Code's own auto memory for the chat's folder
+    /// (`~/.claude/projects/<cwd>/memory/MEMORY.md` and its topic files;
+    /// nightshift backlog 088, 2026-09-16). Never a segment of a
+    /// [`SystemPrompt`]: the CLI reads the file itself and Nightloom does
+    /// not assemble it. It is a kind so a chat can switch it off the way
+    /// it switches any other layer — recorded in the log by kind, read at
+    /// connect, and sent to the CLI as `autoMemoryEnabled: false` for
+    /// that chat. Off on any other engine, where there is no such file.
+    CliMemory,
     /// Anything a shell supplies directly (`--system`, the desktop textarea).
     Custom,
 }

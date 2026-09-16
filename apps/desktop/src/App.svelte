@@ -16,6 +16,7 @@
   } from "./lib/state.svelte";
   import { isMac } from "./lib/platform";
   import { toggleTranscriptPref } from "./lib/transcriptPrefs.svelte";
+  import { thinkingToggleDead } from "./lib/activity";
   import Grip from "./lib/Grip.svelte";
   import Sidebar from "./lib/Sidebar.svelte";
   import TitleBar from "./lib/TitleBar.svelte";
@@ -161,6 +162,9 @@
     // layout cannot move them. Both were free — the grep on 2026-09-14
     // found no Shift+T or Shift+B anywhere in the app or its menu.
     if (primary && e.shiftKey && (e.code === "KeyT" || e.code === "KeyB")) {
+      // ⌘⇧T is inert where the chip is disabled (nightshift backlog 097):
+      // a chat whose thinking the model does not return has nothing to open.
+      if (e.code === "KeyT" && thinkingToggleDead(app.events, app.connection)) return true;
       toggleTranscriptPref(e.code === "KeyT" ? "thinking" : "tool");
       return true;
     }

@@ -13,8 +13,13 @@
     setPromptLayerText,
   } from "./state.svelte";
   import { EDITABLE_LAYERS } from "./types";
+  import { DEFAULT_THRESHOLD, setThreshold, threshold } from "./handoff.svelte";
+  import { setPromptSuggestions, suggestions } from "./suggestions.svelte";
+  import { applyDraft } from "./state.svelte";
   import type {
     BlockKind,
+    CliMemoryFile,
+    CliPromptSnapshot,
     EditableLayer,
     PromptLayer,
     Size,
@@ -45,7 +50,7 @@
   // open one at all. The library prompt has no kind of its own in the
   // catalogue and is keyed by its name.
   let open = $state<Set<string>>(new Set());
-  let mode = $state<"layers" | "sent">("layers");
+  let mode = $state<"layers" | "sent" | "session">("layers");
   let copied = $state<string | null>(null);
 
   function toggle(key: string): void {
@@ -250,9 +255,122 @@
       "ephemeral: nothing is kept — no log, no name, no CLI session; on Claude Code the earlier turns are replayed into each prompt rather than resumed",
   };
 
+  /*
+   * Claude Code's own auto memory for the chat's folder (nightshift backlog
+   * 088, 2026-09-16): `~/.claude/projects/<cwd>/memory/MEMORY.md`, which
+   * the CLI reads itself at session start. A card on this engine only,
+   * with the same per-chat switch as the layers above — off is recorded
+   * in the log by kind and reaches the CLI as `autoMemoryEnabled: false`
+   * on the next connect — and a Read that shows the file. Nightloom never
+   * writes it; the vault and `remember` are its own memory. Measured: safe
+   * mode does not drop it (the CLI reads it whether or not settings files
+   * load), so the switch is the one way off from here.
+   */
+  const CLI_MEMORY: PromptLayer = "cli_memory";
+  let cliMemory = $state<CliMemoryFile | null>(null);
+  async function refreshCliMemory(): Promise<void> {
+    if (!agentEngine) {
+      cliMemory = null;
+      return;
+    }
+    try {
+      cliMemory = await api.cliMemoryFile();
+    } catch {
+      cliMemory = null;
+    }
+  }
+  const cliMemoryOff = $derived(off.includes(CLI_MEMORY));
+  const cliMemoryFolder = $derived(app.connection?.workspace ?? "");
+
+  /*
+   * Claude Code's own prompt (nightshift backlog 077, his ask of 00:55):
+   * read-only, no switch — it cannot be dropped without breaking the tools
+   * whose behaviour is written into it — read from the `prompt_snapshot`
+   * the CLI writes into its own session file after the first turn. Null
+   * before that, for an ephemeral chat (no file), and on the other engine;
+   * the card says which.
+   */
+  const CLI_PROMPT = "cli_prompt";
+  let cliPrompt = $state<CliPromptSnapshot | null>(null);
+  async function refreshCliPrompt(): Promise<void> {
+    if (!agentEngine) {
+      cliPrompt = null;
+      return;
+    }
+    try {
+      cliPrompt = await api.cliPromptSnapshot();
+    } catch {
+      cliPrompt = null;
+    }
+  }
+  const cliPromptChars = $derived(
+    cliPrompt ? cliPrompt.sections.reduce((n, s) => n + s.length, 0) : 0,
+  );
+  /** ~4 chars a token: the same rough estimate the backend's sizes use,
+   *  said as an estimate. */
+  const cliPromptTokens = $derived(Math.round(cliPromptChars / 4));
+
+  /*
+   * This session (nightshift backlog 077): what the CLI reported it has at
+   * the start of the chat's latest turn — `app.agentInit`, the init line
+   * kept whole. Nothing here is fetched; it arrives with the turn. Skills
+   * are typed as `/name` in the composer, which is how the CLI runs one
+   * named in the prompt. The MCP tools are grouped under their server by
+   * the `mcp__<server>__` prefix, since the init line lists them flat.
+   */
+  const init = $derived(app.agentInit);
+  const builtinTools = $derived((init?.tools ?? []).filter((t) => !t.startsWith("mcp__")));
+  const mcpTools = $derived.by(() => {
+    const by = new Map<string, string[]>();
+    for (const t of init?.tools ?? []) {
+      if (!t.startsWith("mcp__")) continue;
+      const rest = t.slice(5);
+      const cut = rest.indexOf("__");
+      const server = cut < 0 ? rest : rest.slice(0, cut);
+      const name = cut < 0 ? "" : rest.slice(cut + 2);
+      by.set(server, [...(by.get(server) ?? []), name]);
+    }
+    return by;
+  });
+  /** The built-in slash commands: the init line lists the skills first,
+   *  then the rest; the skills have their own card. */
+  const builtinSlash = $derived(
+    (init?.slash_commands ?? []).filter((c) => !(init?.skills ?? []).includes(c)),
+  );
+  function serverBad(status: string): boolean {
+    return status === "failed" || status === "needs-auth" || status === "error";
+  }
+  /*
+   * The hand-off threshold (nightshift backlog 086): the share of the CLI's
+   * window past which the next message carries the wrap-up. Per chat, in
+   * localStorage, 70% by default; said here beside the conversation's
+   * total because that is the number it is compared to. `tick` re-reads
+   * after a change, since storage is not reactive.
+   */
+  let thresholdTick = $state(0);
+  const handoffPct = $derived.by(() => {
+    void thresholdTick;
+    return Math.round(threshold(app.activeSessionId) * 100);
+  });
+  function setHandoffPct(v: string): void {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return;
+    setThreshold(app.activeSessionId, Math.min(100, Math.max(1, Math.round(n))) / 100);
+    thresholdTick++;
+  }
+  /** Prompt suggestions (backlog 083): app-wide, read at connect, so a
+   *  flip reconnects the open chat the way a rail knob does. */
+  async function flipSuggestions(on: boolean): Promise<void> {
+    setPromptSuggestions(on);
+    if (agentEngine) await applyDraft();
+  }
+  const SAFE_MODE_DROPS =
+    "Safe mode (the rail) starts the CLI with no settings files: measured on 2.1.263, that is every MCP server and its tools, every skill and slash command, and the Skill tool itself; the agents and the built-in tools stay.";
+
   async function refresh() {
     if (!app.connection) {
       view = null;
+      cliMemory = null;
       return;
     }
     loading = true;
@@ -265,6 +383,8 @@
     } finally {
       loading = false;
     }
+    void refreshCliMemory();
+    void refreshCliPrompt();
   }
 
   // Re-read whenever the log or the connection moves. The view is a
@@ -394,6 +514,17 @@
         >
           As sent
         </button>
+        {#if agentEngine}
+          <button
+            role="tab"
+            class:on={mode === "session"}
+            aria-selected={mode === "session"}
+            title="What the Claude Code session has, as the CLI reported it at the start of the latest turn: MCP servers, tools, skills, slash commands, agents"
+            onclick={() => (mode = "session")}
+          >
+            This session
+          </button>
+        {/if}
       </div>
     {/if}
     <button class="close" title="Close" aria-label="Close context" onclick={close}><Icon name="x" size={14} /></button>
@@ -406,6 +537,145 @@
       <p class="note err">{error}</p>
     {:else if !view}
       <p class="note">{loading ? "Reading…" : "Nothing yet."}</p>
+    {:else if mode === "session"}
+      {#if !init}
+        <p class="note">
+          No turn yet in this chat. The CLI reports what the session has at
+          the start of each turn — send one and this fills in.
+        </p>
+        {#if app.connection?.agent?.safe_mode}
+          <p class="note small">{SAFE_MODE_DROPS}</p>
+        {/if}
+      {:else}
+        <div class="cards">
+          <section class="card">
+            <div class="ch">
+              <div class="name">
+                <span class="t">MCP servers</span>
+                <span class="gloss">Each server the CLI loaded, with the status it reported. A failed or unauthenticated one is marked.</span>
+              </div>
+              <span class="spacer"></span>
+              <span class="meta">{init.mcp_servers.length}</span>
+            </div>
+            {#if init.mcp_servers.length === 0}
+              <p class="note small">None{app.connection?.agent?.safe_mode ? " — safe mode drops every MCP server" : ""}.</p>
+            {:else}
+              <ul class="plain">
+                {#each init.mcp_servers as s (s.name)}
+                  {@const tools = mcpTools.get(s.name.replace(/[^A-Za-z0-9_]/g, "_")) ?? mcpTools.get(s.name) ?? []}
+                  <li class="srow" class:bad={serverBad(s.status)}>
+                    <span class="dot" class:ok={s.status === "connected"} class:bad={serverBad(s.status)}></span>
+                    <span class="sname">{s.name}</span>
+                    <span class="sstatus">{s.status}</span>
+                    {#if tools.length > 0}<span class="meta">{tools.length} tools</span>{/if}
+                    {#if s.error}<span class="serr">{s.error}</span>{/if}
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </section>
+
+          <section class="card">
+            <div class="ch">
+              <div class="name">
+                <span class="t">Tools</span>
+                <span class="gloss">The CLI's built-in tools this session offers, then each server's tools by short name.</span>
+              </div>
+              <span class="spacer"></span>
+              <span class="meta">{init.tools.length}</span>
+            </div>
+            <div class="chips">
+              {#each builtinTools as t (t)}<span class="chip">{t}</span>{/each}
+            </div>
+            {#each [...mcpTools.entries()] as [server, names] (server)}
+              <div class="sub">
+                <span class="meta">{server}</span>
+                <div class="chips">
+                  {#each names as n (n)}<span class="chip mcp">{n}</span>{/each}
+                </div>
+              </div>
+            {/each}
+          </section>
+
+          <section class="card">
+            <div class="ch">
+              <div class="name">
+                <span class="t">Skills</span>
+                <span class="gloss">Type <code>/</code> in the composer to pick one; the CLI runs a skill named in the prompt.</span>
+              </div>
+              <span class="spacer"></span>
+              <span class="meta">{init.skills.length}</span>
+            </div>
+            {#if init.skills.length === 0}
+              <p class="note small">None{app.connection?.agent?.safe_mode ? " — safe mode drops every skill" : ""}.</p>
+            {:else}
+              <ul class="plain">
+                {#each init.skills as sk (sk)}
+                  <li class="srow"><span class="sname mono">/{sk}</span><span class="sstatus">type / in the composer</span></li>
+                {/each}
+              </ul>
+            {/if}
+          </section>
+
+          <section class="card">
+            <div class="ch">
+              <div class="name">
+                <span class="t">Slash commands</span>
+                <span class="gloss">The CLI's built-in commands beyond the skills. Most are terminal UI; a name typed in the prompt runs the ones that are not.</span>
+              </div>
+              <span class="spacer"></span>
+              <span class="meta">{builtinSlash.length}</span>
+            </div>
+            {#if builtinSlash.length === 0}
+              <p class="note small">None{app.connection?.agent?.safe_mode ? " — safe mode drops them" : ""}.</p>
+            {:else}
+              <div class="chips">
+                {#each builtinSlash as c (c)}<span class="chip">/{c}</span>{/each}
+              </div>
+            {/if}
+          </section>
+
+          <section class="card">
+            <div class="ch">
+              <div class="name">
+                <span class="t">Agents</span>
+                <span class="gloss">The subagent types the CLI's Task tool can spawn.</span>
+              </div>
+              <span class="spacer"></span>
+              <span class="meta">{init.agents.length}</span>
+            </div>
+            <div class="chips">
+              {#each init.agents as a (a)}<span class="chip">{a}</span>{/each}
+            </div>
+          </section>
+        </div>
+        <p class="foot mono">
+          Claude Code {init.version ?? "?"} · session {init.session_id ? init.session_id.slice(0, 8) : "?"} · model {init.model ?? "?"} · permission mode {init.permission_mode ?? "?"}{app.connection?.agent?.safe_mode ? " · safe mode" : ""}{app.connection?.agent?.effort ? ` · effort ${app.connection.agent.effort}` : ""}{app.connection?.agent?.fallback_model ? ` · fallback ${app.connection.agent.fallback_model}` : " · no fallback"}
+        </p>
+        <p class="note small">{SAFE_MODE_DROPS}</p>
+      {/if}
+      <!-- Prompt suggestions (backlog 083): the switch lives here because
+           the prediction is the CLI's, per session; off by default. -->
+      <section class="card">
+        <div class="ch">
+          <input
+            type="checkbox"
+            class="sw"
+            checked={suggestions.enabled}
+            disabled={app.busy || app.connecting}
+            aria-label="Prompt suggestions"
+            onchange={(e) => void flipSuggestions((e.currentTarget as HTMLInputElement).checked)}
+          />
+          <div class="name">
+            <span class="t">Prompt suggestions <span class="state">{suggestions.enabled ? "on" : "off"}</span></span>
+            <span class="gloss">
+              After each turn the CLI predicts your next prompt and the composer shows it as a dimmed line — Tab
+              accepts. Costs about six seconds on every turn (the CLI waits for the prediction before it exits)
+              and one more request against the plan. App-wide; a change reconnects the chat.
+            </span>
+          </div>
+        </div>
+      </section>
     {:else if mode === "sent"}
       {@const text = view.system_text ?? ""}
       <section class="card">
@@ -428,6 +698,51 @@
         </p>
       {/if}
       <div class="cards">
+        <!-- Claude Code's own prompt (nightshift backlog 077): first,
+             since it is what everything below is appended to; read-only,
+             no switch. From the CLI's own session file, after the first
+             turn. -->
+        {#if agentEngine}
+          {@const isOpen = open.has(CLI_PROMPT)}
+          <section class="card layer">
+            <div class="ch">
+              <span class="sw-space"></span>
+              <div class="name">
+                <span class="t">Claude Code's own prompt <span class="state">read-only</span></span>
+                <span class="gloss">
+                  The CLI's built-in system prompt, which the layers below are appended to. It cannot be switched off:
+                  replacing it (<code>--system-prompt</code>) breaks the tools whose behaviour is written into it.
+                  {#if !cliPrompt}Read from the CLI's session file after the chat's first turn; none yet, or an ephemeral chat with no file.{/if}
+                </span>
+              </div>
+              <span class="spacer"></span>
+              {#if cliPrompt}
+                <span class="meta" title="Estimated at four characters a token; {cliPromptChars.toLocaleString()} characters in {cliPrompt.sections.length} sections">~{cliPromptTokens.toLocaleString()} tok est.</span>
+                <button
+                  class="ns-btn small read"
+                  class:on={isOpen}
+                  aria-expanded={isOpen}
+                  onclick={() => toggle(CLI_PROMPT)}
+                >
+                  {isOpen ? "Close" : "Read"}
+                  <span class="chev" class:up={isOpen}><Icon name="chev" size={12} /></span>
+                </button>
+              {/if}
+            </div>
+            {#if isOpen && cliPrompt}
+              <div class="body">
+                <div class="body-bar">
+                  <span class="file" title={cliPrompt.path}>{cliPrompt.path}</span>
+                  <span class="spacer"></span>
+                  <button class="ns-btn ghost small" onclick={() => copy(CLI_PROMPT, cliPrompt?.sections.join("\n\n"))}>
+                    {copied === CLI_PROMPT ? "Copied" : "Copy"}
+                  </button>
+                </div>
+                <pre class="reader">{cliPrompt.sections.join("\n\n")}</pre>
+              </div>
+            {/if}
+          </section>
+        {/if}
         {#each LAYERS.filter((l) => shown(l.engines)) as layer (layer.kind)}
           {@const isOff = off.includes(layer.kind)}
           {@const segs = segmentsOf(layer.kind)}
@@ -599,6 +914,74 @@
             {/if}
           </section>
         {/each}
+
+        <!-- Claude Code's own memory for this folder (nightshift backlog
+             088): a card on this engine only. Not a segment of the prompt
+             above — the CLI reads the file itself — so no size, no anchor;
+             the switch is the same per-chat switch, and off reaches the
+             CLI as a setting on reconnect. -->
+        {#if agentEngine}
+          {@const isOpen = open.has(CLI_MEMORY)}
+          {@const hasFile = cliMemory?.text != null}
+          <section class="card layer" class:off={cliMemoryOff}>
+            <div class="ch">
+              <input
+                type="checkbox"
+                class="sw"
+                checked={!cliMemoryOff}
+                disabled={switching || app.busy || app.connecting}
+                aria-label="Claude Code memory for this chat"
+                title={cliMemoryOff
+                  ? "Off for this chat — the CLI is started with autoMemoryEnabled false; switch on to let it read its memory again"
+                  : "On — the CLI reads its own memory for this folder; switch off to keep it from this chat"}
+                onchange={(e) => void flip(CLI_MEMORY, (e.currentTarget as HTMLInputElement).checked)}
+              />
+              <div class="name">
+                <span class="t">Claude Code memory</span>
+                {#if cliMemoryOff}
+                  <span class="state off-state">off for this chat</span>
+                {:else if cliMemory && !hasFile}
+                  <span class="state">nothing on disk yet</span>
+                {/if}
+                <span class="gloss">
+                  The CLI's own auto memory for {cliMemoryFolder || "this folder"} — read by Claude Code
+                  itself, not sent by Nightloom, and never written from here. Safe mode leaves it on;
+                  this switch is the one way off.
+                </span>
+              </div>
+              <span class="spacer"></span>
+              {#if !cliMemoryOff && hasFile}
+                <span class="meta">{(cliMemory?.text ?? "").length.toLocaleString()} chars</span>
+                <button
+                  class="ns-btn small read"
+                  class:on={isOpen}
+                  aria-expanded={isOpen}
+                  onclick={() => toggle(CLI_MEMORY)}
+                >
+                  {isOpen ? "Close" : "Read"}
+                  <span class="chev" class:up={isOpen}><Icon name="chev" size={12} /></span>
+                </button>
+              {/if}
+            </div>
+            {#if !cliMemoryOff && isOpen && cliMemory}
+              <div class="body">
+                <div class="body-bar">
+                  <span class="file" title={cliMemory.path}>{cliMemory.path}</span>
+                  <span class="spacer"></span>
+                  <button class="ns-btn ghost small" onclick={() => copy(CLI_MEMORY, cliMemory?.text)}>
+                    {copied === CLI_MEMORY ? "Copied" : "Copy"}
+                  </button>
+                </div>
+                <pre class="reader">{cliMemory.text}</pre>
+                {#if cliMemory.others.length > 0}
+                  <span class="gloss">
+                    Topic files beside it, read by the CLI on demand: {cliMemory.others.join(", ")}
+                  </span>
+                {/if}
+              </div>
+            {/if}
+          </section>
+        {/if}
       </div>
       {#if kind !== "normal"}
         <p class="note small caveat">{MODE_CAVEAT[kind]}</p>
@@ -663,6 +1046,26 @@
             its system prompt. The gauge in the bar is the usage the CLI
             reports after each turn.
           </p>
+          <!-- The hand-off (backlog 086): where the wrap-up is asked. -->
+          <label class="threshold">
+            <span class="gloss">
+              Hand off at
+            </span>
+            <input
+              type="number"
+              min="1"
+              max="100"
+              step="1"
+              value={handoffPct}
+              aria-label="Hand-off threshold, percent of the context window"
+              onchange={(e) => setHandoffPct((e.currentTarget as HTMLInputElement).value)}
+            />
+            <span class="gloss">
+              % of the window{app.activeSessionId ? ", for this chat" : " (the default)"} — the CLI's own
+              auto-compact is off; past this mark the next message asks the model to write HANDOFF.md
+              and stop, then offers a linked new chat. Default {Math.round(DEFAULT_THRESHOLD * 100)}%.
+            </span>
+          </label>
         {:else if items.length === 0}
           <p class="note small">Nothing yet.</p>
         {:else}
@@ -812,6 +1215,106 @@
   }
   .caveat {
     margin-top: -4px;
+  }
+
+  .threshold {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .threshold input {
+    width: 4rem;
+    font-family: var(--mono);
+    font-size: 12px;
+    background: var(--well);
+    color: var(--ink);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 2px 6px;
+  }
+
+  /* This session (backlog 077): plain rows and chips, nothing new in
+     colour beyond the status dot. */
+  .plain {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .srow {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    font-size: 12.5px;
+    flex-wrap: wrap;
+  }
+  .sname {
+    color: var(--ink);
+  }
+  .sname.mono {
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  .sstatus {
+    color: var(--dim);
+    font-size: 12px;
+  }
+  .srow.bad .sstatus {
+    color: var(--error);
+  }
+  .serr {
+    color: var(--error);
+    font-size: 12px;
+    flex-basis: 100%;
+  }
+  .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--dim);
+    align-self: center;
+    flex-shrink: 0;
+  }
+  .dot.ok {
+    background: var(--accent);
+  }
+  .dot.bad {
+    background: var(--error);
+  }
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .chip {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--ink2);
+    background: var(--well);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 1px 6px;
+  }
+  .chip.mcp {
+    color: var(--dim);
+  }
+  .sub {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .foot {
+    margin: 0;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--dim);
+  }
+  code {
+    font-family: var(--mono);
+    font-size: 12px;
   }
 
   /* Cards, the Settings idiom. */

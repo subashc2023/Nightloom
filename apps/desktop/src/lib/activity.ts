@@ -197,6 +197,22 @@ export function modelOmitsThinking(model: string | null | undefined): boolean {
   );
 }
 
+/**
+ * Whether the thinking toggle (the top-bar chip, ⌘⇧T, the palette row) has
+ * anything to open in this chat: nothing, when every recorded thinking
+ * block is empty, or when none has thought yet and the Claude Code engine
+ * is on a model that omits its thinking. A pure function of the log and
+ * the connection, so the three call sites cannot disagree.
+ */
+export function thinkingToggleDead(
+  events: Parameters<typeof thinkingState>[0],
+  connection: { engine?: string; model?: string | null } | null | undefined,
+): boolean {
+  const avail = thinkingState(events);
+  if (avail === "hidden") return true;
+  return avail === "none" && connection?.engine === "claude-code" && modelOmitsThinking(connection?.model);
+}
+
 /** `working · 41 s`, or `working · 2 min 3 s` past a minute. */
 export function workingLabel(elapsedMs: number): string {
   const s = Math.max(0, Math.floor(elapsedMs / 1000));

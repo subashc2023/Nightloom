@@ -1,7 +1,9 @@
 import { listen } from "@tauri-apps/api/event";
 import * as api from "./api";
+import { CONTINUE_MESSAGE, noteAgentTurnEnd, resetHandoff, withWrapUp } from "./handoff.svelte";
+import { suggestions } from "./suggestions.svelte";
 import { isMac } from "./platform";
-import { moveDraft, newDraftKey } from "./drafts.svelte";
+import { moveDraft, newDraftKey, setDraftText } from "./drafts.svelte";
 import {
   defaultDraft,
   isProviderVisible,
@@ -24,8 +26,10 @@ import {
 } from "./catalog";
 import { EDITABLE_LAYERS } from "./types";
 import { LIST_SCOPE, NEW_CHAT_SCOPE, UndoHistory } from "./undo";
+import { chatName, notifyNeedsYou, notifyTurnEnd } from "./notify";
 import type {
   AgentInfo,
+  AgentInit,
   AgentTurnResult,
   PlanUsage,
   ApprovalDecision,
@@ -306,6 +310,14 @@ export interface ToolCallView {
   result: { content: string; is_error: boolean } | null;
   /** Refused at the approval gate: nothing ran, `result` holds the reason. */
   denied?: boolean;
+  /**
+   * A subagent's own turn, when this call spawned one (Claude Code's
+   * `Agent`; nightshift backlog 075): its calls, thinking and words as
+   * segments of their own, drawn collapsed under this row. Live they
+   * arrive as `subagent` turn events; from the log they are the marked
+   * text block the recorder wrote against this call's id.
+   */
+  children?: Segment[];
 }
 
 /**
@@ -570,6 +582,21 @@ export const app = $state({
    * timer faster than the sample changes — and shown with its age.
    */
   planUsage: null as PlanUsage | null,
+  /**
+   * What the open chat's Claude Code session has — the CLI's `system/init`
+   * line from its latest turn (nightshift backlog 077), for the Context
+   * page's *This session* pane. Cleared when the chat changes; null before
+   * the chat's first turn and on the other engine.
+   */
+  agentInit: null as AgentInit | null,
+  /** The CLI's predicted next prompt for the open chat (nightshift backlog
+   *  083), the composer's ghost line; cleared by a send or a chat switch. */
+  suggestion: null as string | null,
+  /** The open chat's aside (nightshift backlog 081): a side question and
+   *  its answer, shown at the foot of the transcript and recorded nowhere;
+   *  `answer` null while it is being asked. Cleared by a chat switch or
+   *  its own ×. */
+  aside: null as { question: string; answer: string | null; error: string | null; cacheRead: number } | null,
   /** Observations awaiting the next dream — the badge on the Dream button. */
   dreamPending: 0,
   /** A dream is running; the button becomes its progress line. */
@@ -906,9 +933,12 @@ export async function init(): Promise<void> {
   // nothing in its stream is for the panel. Listened to so the channel is
   // drained rather than for anything it carries.
   await listen<TurnEvent>("capture-event", () => {});
-  await listen<ApprovalRequest>("tool-approval", (e) =>
-    app.pendingApprovals.push(e.payload),
-  );
+  await listen<ApprovalRequest>("tool-approval", (e) => {
+    app.pendingApprovals.push(e.payload);
+    // The needs-you banner (backlog 079): the turn waits on him, and if the
+    // window is behind something else nothing on screen says so.
+    void notifyNeedsYou(bannerChat(), e.payload);
+  });
   await listen<string>("menu", (e) => runMenuCommand(e.payload));
   // Only the watched project (selectNightshiftProject calls nightshiftWatch)
   // emits this, and only that project's row and morning page are worth
@@ -1867,6 +1897,10 @@ async function applyAgentDraft(): Promise<void> {
       system: d.system.trim() || undefined,
       preamble: d.preamble,
       ask: d.agentAsk,
+      plan: d.agentPlan,
+      promptSuggestions: suggestions.enabled,
+      effort: d.agentEffort.trim() || undefined,
+      fallbackModel: d.agentFallback.trim() || undefined,
     });
     app.connection = {
       provider: res.provider,
@@ -1909,6 +1943,9 @@ export async function useEngine(engine: Engine): Promise<void> {
   // beside the error — which is what happened.
   app.connection = null;
   app.agentTurn = null;
+  app.agentInit = null;
+  app.suggestion = null;
+  app.aside = null;
   await applyDraft();
 }
 
@@ -2830,6 +2867,9 @@ export async function newSession(mode?: ChatMode): Promise<void> {
     app.pendingMode = mode ?? "normal";
     app.error = null;
     app.agentTurn = null;
+    app.agentInit = null;
+    app.suggestion = null;
+    app.aside = null;
     closeNote();
   } catch (e) {
     app.error = String(e);
@@ -2883,6 +2923,33 @@ export const MODE_GLYPH: Record<ChatMode, string> = {
   ephemeral: "◌",
 };
 
+/**
+ * Continue the open chat in a fresh, linked one after the hand-off
+ * (nightshift backlog 086): the *Continue in a new chat* card. The new
+ * chat opens empty with "Read HANDOFF.md and continue." in its box, not
+ * sent — asked, not automatic (blocker 092's default).
+ */
+export async function continueChat(): Promise<void> {
+  if (app.busy) return;
+  try {
+    const res = await api.continueSession();
+    app.events = res.events;
+    app.activeSessionId = res.session;
+    app.error = null;
+    app.agentTurn = null;
+    app.agentInit = null;
+    app.suggestion = null;
+    app.aside = null;
+    resetHandoff();
+    setDraftText(res.session, CONTINUE_MESSAGE);
+    closeNote();
+  } catch (e) {
+    addToast(String(e));
+    return;
+  }
+  void refreshSessions();
+}
+
 export async function openSession(id: string): Promise<void> {
   if (app.busy) return;
   try {
@@ -2891,6 +2958,9 @@ export async function openSession(id: string): Promise<void> {
     app.error = null;
     // The plan window and estimate belong to the chat you just left.
     app.agentTurn = null;
+    app.agentInit = null;
+    app.suggestion = null;
+    app.aside = null;
     closeNote();
   } catch (e) {
     app.error = String(e);
@@ -2955,6 +3025,33 @@ export async function deleteSession(id: string): Promise<void> {
   });
 }
 
+/** The chat as a banner names it (nightshift backlog 079): the open
+ *  session's title, else the first message of the turn just sent. */
+function bannerChat(): string {
+  const s = app.sessions.find((x) => x.id === app.activeSessionId);
+  const sent = [...app.events].reverse().find((e) => e.event === "user_message");
+  return chatName(s?.title, s?.first_user ?? (sent?.event === "user_message" ? sent.text : null));
+}
+
+/**
+ * The turn-end banner (nightshift backlog 079), read from the live state
+ * before `finally` clears it — the segments for the files changed, the
+ * last usage for the tokens, the optimistic `user_message`'s `at` for the
+ * time. Whether it is posted at all (the window's focus, the setting) is
+ * `notify.ts`'s decision.
+ */
+function notifyTurnEnded(error: string | null): void {
+  const sent = [...app.events].reverse().find((e) => e.event === "user_message");
+  const since = sent?.event === "user_message" ? Date.parse(sent.at) : NaN;
+  void notifyTurnEnd({
+    chat: bannerChat(),
+    segs: app.live?.segments ?? [],
+    outTokens: app.liveUsage?.output_tokens ?? null,
+    elapsedMs: Number.isNaN(since) ? null : Date.now() - since,
+    error,
+  });
+}
+
 export async function send(
   text: string,
   images: ImageInput[] = [],
@@ -2985,6 +3082,7 @@ export async function send(
   app.live = { segments: [] };
   app.liveUsage = null;
   app.busy = true;
+  let failed: string | null = null;
   try {
     await api.send(
       text,
@@ -2992,8 +3090,12 @@ export async function send(
       documents.length > 0 ? documents : undefined,
     );
   } catch (e) {
-    app.error = String(e);
+    failed = String(e);
+    app.error = failed;
   } finally {
+    // The banner for an unfocused window (backlog 079), before the live
+    // state it reads is cleared.
+    notifyTurnEnded(failed);
     app.live = null;
     // The trailing assistant message now carries the same reading.
     app.liveUsage = null;
@@ -3043,6 +3145,11 @@ async function sendAgent(
   images: ImageInput[] = [],
   documents: DocumentInput[] = [],
 ): Promise<void> {
+  // The hand-off's wrap-up rides this message when the window has crossed
+  // the chat's threshold (nightshift backlog 086); `withWrapUp` also moves
+  // the stage on, so it goes exactly once.
+  text = withWrapUp(app.activeSessionId, text);
+  app.suggestion = null;
   // Same as `send`: the pending chat's key at the moment of the send
   // (nightshift backlog 094).
   const pendingKey = app.activeSessionId === null ? newDraftKey(app.project?.id, app.pendingMode) : null;
@@ -3059,6 +3166,7 @@ async function sendAgent(
   app.live = { segments: [] };
   app.liveUsage = null;
   app.busy = true;
+  let failed: string | null = null;
   try {
     const res = await api.sendAgent(
       text,
@@ -3081,8 +3189,12 @@ async function sendAgent(
     if (app.connection && res.model) app.connection.model = res.model;
     for (const notice of res.notices) addToast(notice);
   } catch (e) {
-    app.error = String(e);
+    failed = String(e);
+    app.error = failed;
   } finally {
+    // The banner for an unfocused window (backlog 079), before the live
+    // state it reads is cleared.
+    notifyTurnEnded(failed);
     app.live = null;
     app.liveUsage = null;
     // As in `send`: a prompt the CLI deferred (backlog 084) is answered or
@@ -3105,7 +3217,37 @@ async function sendAgent(
     void refreshNotes();
     // The plan chip follows the turn (nightshift backlog 073).
     void refreshPlanUsage();
+    // The hand-off reads the gauge's pair at each turn's end (backlog 086).
+    noteAgentTurnEnd(app.activeSessionId, contextUsed(), app.connection?.contextLimit ?? null);
   }
+}
+
+/**
+ * Ask a side question of the open chat without adding to it (backlog 081):
+ * the answer comes from the chat's context off its warm cache, and neither
+ * the question nor the answer is in the log or the CLI's session. One at a
+ * time; a running turn is waited for on the backend's lock.
+ */
+export async function askAside(question: string): Promise<void> {
+  const q = question.trim();
+  if (!q || app.connection?.engine !== "claude-code") return;
+  app.aside = { question: q, answer: null, error: null, cacheRead: 0 };
+  try {
+    const res = await api.askAside(q);
+    if (app.aside?.question !== q) return; // dismissed or replaced meanwhile
+    app.aside = {
+      question: q,
+      answer: res.answer,
+      error: res.is_error ? (res.notices.join("; ") || "the aside failed") : null,
+      cacheRead: res.cache_read,
+    };
+  } catch (e) {
+    if (app.aside?.question === q) app.aside = { question: q, answer: null, error: String(e), cacheRead: 0 };
+  }
+}
+
+export function dismissAside(): void {
+  app.aside = null;
 }
 
 export async function cancelTurn(): Promise<void> {
@@ -3130,12 +3272,26 @@ export async function resolveApproval(
   decision: ApprovalDecision,
   reason?: string,
   answer?: unknown,
+  then?: "ask" | "auto",
 ): Promise<void> {
   const i = app.pendingApprovals.findIndex((r) => r.id === id);
   if (i < 0) return;
   app.pendingApprovals.splice(i, 1);
+  // An approved plan moves the chat off the Plan position (backlog 085):
+  // the backend's agent takes the pick as it resumes, and the rail's
+  // switch follows here so the two never disagree about what the next
+  // turn runs as. Saved like any rail change; no reconnect, the agent is
+  // already there.
+  if (then && name === "ExitPlanMode" && decision === "allow" && app.draft.agentPlan) {
+    app.draft.agentPlan = false;
+    app.draft.agentAsk = then === "ask";
+    if (app.connection?.agent) {
+      app.connection.agent.permission_mode = then === "ask" ? "default (ask)" : "auto";
+    }
+    saveLastConnection({ ...app.draft });
+  }
   try {
-    await api.approveCall(id, name, decision, reason, answer);
+    await api.approveCall(id, name, decision, reason, answer, then);
   } catch (e) {
     addToast(String(e));
   }
@@ -3205,6 +3361,70 @@ function applyTurnEvent(ev: TurnEvent): void {
   }
   if (!app.live) return;
   const segments = app.live.segments;
+  switch (ev.type) {
+    case "text_delta":
+    case "thinking_delta":
+    case "redacted_thinking":
+    case "tool_call":
+    case "tool_result":
+    case "tool_denied":
+      applyToSegments(segments, ev);
+      break;
+    case "subagent": {
+      // A subagent's event (backlog 075) goes under the row of the call
+      // that spawned it — found by id, at any depth, since a subagent's
+      // subagent is under a child's call — and is applied there exactly
+      // as the main thread's would be, so the same renderer draws it.
+      const parent = findCall(segments, ev.parent_tool_use_id);
+      if (!parent) break;
+      parent.children ??= [];
+      applyToSegments(parent.children, ev.event);
+      break;
+    }
+    case "round_limit":
+      closeThinking(segments);
+      segments.push({
+        kind: "notice",
+        text: `tool round limit reached (${ev.rounds} rounds)`,
+      });
+      break;
+    case "agent_init":
+      // The CLI's init line (nightshift backlog 077): kept whole for the
+      // Context page. Nothing in the transcript changes.
+      app.agentInit = ev;
+      break;
+    case "prompt_suggestion":
+      // After the result (backlog 083): the composer's ghost line.
+      app.suggestion = ev.text;
+      break;
+    default:
+      // Unknown turn-event types are ignored by contract.
+      break;
+  }
+  app.liveVersion++;
+}
+
+/** The tool call with `id` among `segments`, or under any call's subagent. */
+function findCall(segments: Segment[], id: string): ToolCallView | null {
+  for (let i = segments.length - 1; i >= 0; i--) {
+    const seg = segments[i];
+    if (seg.kind !== "tool") continue;
+    if (seg.call.id === id) return seg.call;
+    if (seg.call.children) {
+      const inner = findCall(seg.call.children, id);
+      if (inner) return inner;
+    }
+  }
+  return null;
+}
+
+/**
+ * Apply one content event to a list of segments — the live reply's, or a
+ * subagent's under its parent call (backlog 075). One function for both
+ * so a child's text, thinking and calls accumulate exactly as the main
+ * thread's do.
+ */
+function applyToSegments(segments: Segment[], ev: TurnEvent): void {
   const last = segments[segments.length - 1];
   switch (ev.type) {
     case "text_delta":
@@ -3254,18 +3474,9 @@ function applyTurnEvent(ev: TurnEvent): void {
         }
       }
       break;
-    case "round_limit":
-      closeThinking(segments);
-      segments.push({
-        kind: "notice",
-        text: `tool round limit reached (${ev.rounds} rounds)`,
-      });
-      break;
     default:
-      // Unknown turn-event types are ignored by contract.
       break;
   }
-  app.liveVersion++;
 }
 
 const DENIAL_PREFIX = "The user refused permission to run ";

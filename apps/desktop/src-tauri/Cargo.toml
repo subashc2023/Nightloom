@@ -19,3 +19,7 @@ tokio-util.workspace = true
 # API keys entered in-app land in the OS credential store (Windows
 # Credential Manager / macOS Keychain / Secret Service), never on disk.
 tauri-plugin-dialog = "2"
+# The turn-end banner (nightshift backlog 079, blocker 106) is posted from
+# Rust through the OS notification centre; the webview has no Notification
+# API of its own, so this is the one way to reach it.
+tauri-plugin-notification = "2"

@@ -175,6 +175,18 @@ export interface ConnectionDraft {
    *  pauses on each call a person should decide and the transcript asks
    *  (2026-09-16). Only meaningful with `approval` on. */
   agentAsk: boolean;
+  /** The Plan position (2026-09-16, backlog 085): Ask under the CLI's plan
+   *  mode — nothing is edited until the plan on the card is approved, and
+   *  Approve picks Ask or Auto for the rest of the chat. Implies `agentAsk`;
+   *  only meaningful with `approval` on. */
+  agentPlan: boolean;
+  /** `--effort` on the agent engine (backlog 076): `low`, `medium`, `high`,
+   *  `xhigh` or `max`; `high` by default, which is what his settings say
+   *  and what the model defaults to. Sent as spelled. */
+  agentEffort: string;
+  /** `--fallback-model`: an alias the CLI retries with when the model is
+   *  overloaded; empty is none. */
+  agentFallback: string;
   /** Stop a turn once the CLI's own estimate passes this many dollars. 0 is
    *  no cap, which is the default: under a subscription the estimate is not
    *  a bill, and a cap on it stops turns for no saving. */
@@ -241,6 +253,9 @@ export function defaultDraft(): ConnectionDraft {
     agentModel: "",
     agentSafeMode: false,
     agentAsk: false,
+    agentPlan: false,
+    agentEffort: "high",
+    agentFallback: "",
     agentBudget: 0,
     provider: "anthropic",
     model: "",

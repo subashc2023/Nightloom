@@ -392,7 +392,10 @@ fn engine_note_segment(knowledge: Option<&KnowledgeContext>) -> Segment {
          turn, but whenever the message points outside this chat (an earlier decision, \
          'as we discussed', a name you have no context for), and before asking the user \
          to repeat themselves; recent chats rank first, and search this project unless \
-         asked to look wider. To leave something for memory use remember.",
+         asked to look wider. To leave something for memory use remember: the vault and \
+         remember are the durable memory here, and Claude Code's own auto memory for this \
+         folder, if you have it, is the CLI's — read it, but keep what should last in the \
+         vault.",
     );
     text.push_str("\n</engine-note>");
     Segment::new(SegmentKind::EngineNote, "engine-note", text)

@@ -228,6 +228,21 @@ resumed with "list every message so far":
 | **drop outright** (the node alone gone, its child re-parented) | yes | 7017 / 334 | the orphaned "OK" merged as a second assistant message |
 | **placeholder** (the node's text replaced) | yes | 7017 / 341 | the placeholder in place of the turn |
 
+**A fork by flag, beside those (2026-09-16, nightshift backlog 080).**
+`--resume <id> --fork-session` makes the CLI itself mint a new session id
+and leave the original untouched — no copy written by Nightloom
+(`AgentSpec.fork_session`, `ClaudeCodeAgent::fork_on_next_turn`, one turn,
+cleared by `follow_on` once the fork's id has landed). Measured the same
+way, a two-turn Haiku session (PELICAN, OTTER) resumed with "list every
+message so far": the flag-fork got a new id, its file written whole beside
+the original (58 KB against 56 KB), **cache read 7,298 / write 436**, both
+code words in the history; a plain `--resume` of the same session read
+7,493 / wrote 48. So the flag reads the shared prefix as the copy does.
+What it cannot do is cut, and every fork the desktop makes today cuts
+(edit-and-send truncates before the edited turn), so the mechanism is in
+place and unwired — nightshift blocker 109 asks whether a "Branch here,
+keep everything" action should exist to use it.
+
 So the CLI accepts all three, and the prompt cache reads the unchanged
 prefix in every case. Then, with the **built module** doing the rewrite:
 a one-turn session on `opus` and one on `sonnet` (PELICAN), each copied
@@ -345,6 +360,14 @@ nodes) is where the new shape gets measured.
 which flattens the CLI's tool calls to text: an edited copy keeps the real
 assistant turns and tool calls, which is why it caches. And nothing here
 touches auth — the line below still binds.
+
+**Wanted: a "code restore" (2026-09-16, nightshift backlog 087).** Everything
+above edits only the CLI's conversation file. Rewind, in particular, does not
+touch anything a tool wrote to disk — the desktop's hover text says so and
+points at git as the undo. A companion restore that puts back what a tool
+*wrote* (file edits, not just the transcript) is wanted but not built; it
+waits on a long-lived process to carry it, per nightshift backlog 062's
+Progress note the same day.
 
 ## Dreams and captures on this engine (2026-09-16, nightshift backlog 070)
 
@@ -658,6 +681,280 @@ call on disk** (`Deny` in `decision.json`), which the next turn's hook
 delivers — otherwise a later "Allow for this chat" on that tool would run the
 stale call unasked. An ephemeral chat has no Ask (`apply_mode` drops it): no
 CLI session to resume, nowhere for an answer to go.
+
+## The Plan position: plan mode under the same hook (2026-09-16, nightshift backlog 085)
+
+The Ask position with `--permission-mode plan` in place of `default`
+(`AskSpec.mode: AskMode::Plan`): the CLI reads, runs what plan mode lets it,
+writes its plan file under `~/.claude/plans/` and calls `ExitPlanMode`, which
+the hook defers like any call. The card shows the plan (`input.plan`, the
+markdown; `input.planFilePath`, the CLI's copy) with **Approve** and a
+`then Ask | Auto` pick, or **Keep planning** (a `deny` with the note as the
+reason). Measured on 2.1.263, Haiku, before it was built
+(nightshift `085-report-2026-09-16.md`):
+
+- **The plan file's `Write` reaches the hook first.** Under 084's hook the
+  first prompt of every plan-mode turn was "Run Write?" for a file in the
+  CLI's own directory. So in plan mode the hook **stands aside** for the
+  editing tools (`PLAN_MODE_PASS`: `Write`, `Edit`, `MultiEdit`,
+  `NotebookEdit` — `{}` on stdout, no decision, which is not `ask`) and the
+  CLI's own plan-mode rules apply: the plan file is allowed, any other edit
+  is blocked with a message the model reads. The check runs before
+  `rules.json` on purpose — a standing "Allow for this chat" on `Write` from
+  an earlier Ask turn must not open plan mode. `Bash`, the web, questions,
+  MCP tools and `ExitPlanMode` itself still defer. With that, one process
+  goes from the prompt to the deferred `ExitPlanMode` (`m085-10`).
+- **The approval's resume must stay in `plan` mode.** `ExitPlanMode`
+  validates the mode before the hook runs: resumed in `default` the tool
+  returned the error "You are not in plan mode … If your plan was already
+  approved, continue with implementation" and the decision file was never
+  consumed (the model continued anyway). Resumed in `plan` with the full
+  hook, the decision was consumed, the result read "User has approved your
+  plan. You can now start coding", the CLI left plan mode inside the
+  process, and the next `Write` deferred as an ordinary Ask prompt
+  (`m085-11`). That is `PlanThen::Ask`: `plan_approved` changes nothing
+  before the resume, `plan_exited` sets the mode to `Ask` after it.
+- **A resume with no hook is refused outright**: `stop_reason:
+  "tool_deferred_unavailable"`, exit 1, the call re-reported (`m085-8`).
+  So every resume of a deferred plan carries the hook and the prompt tool
+  — the resume flag set is the turn's own, unchanged.
+- **After approval a headless plan process lands in Manual, never in
+  `auto`**: with the hook narrowed to `ExitPlanMode` the next write went to
+  the prompt tool and was refused (`m085-7`). So `PlanThen::Auto` is one
+  resume in `auto` with the hook on `ExitPlanMode` alone
+  (`AskMode::ExitingToAuto`, `EXIT_PLAN_MATCHER`), then the Auto position
+  proper (no hook, `auto`). On that path the tool's result is the "not in
+  plan mode … continue" error, which the model follows. **And `auto`
+  reported `permissionMode: "default"` on every run tonight** — unavailable
+  to this session, the CLI starts in Manual — which is the Auto position's
+  standing caveat (`headless_permission_mode`), so on this machine "then
+  Auto" refused the first write through the prompt tool (`m085-9`).
+- **`--tools` must name `ExitPlanMode`** or the model has no plan tool
+  (`m085-2`: "I don't have an ExitPlanMode tool available"). The desktop
+  leaves `--tools` unset on a normal chat; `READ_ONLY_TOOLS` (incognito) does
+  not include it, so an incognito plan-mode chat can plan but not present.
+- Cost: the plan-file pause is gone; the approval resume in `plan` read the
+  deferring process's prefix from cache where the `default` one wrote a new
+  prefix (12,466 read against 0 read / 12,829 written on the forks).
+
+## Stop: the interrupt first, the kill after a grace (2026-09-16, nightshift backlog 074)
+
+Until tonight Stop was `kill_tree` — `child.kill()`, SIGKILL — and the CLI
+never saw it coming. Now `drive` sends **SIGINT** first (`kill -INT <pid>`
+spawned, the crate having no `libc`; nothing on Windows, where a detached
+child has no console to take a Ctrl-C, so that platform goes straight to the
+kill as before), reads everything the CLI writes on its way out for up to
+`INTERRUPT_GRACE` (5 s), and kills only if the stream has not ended by then.
+The stderr read is bounded on this path too: a killed CLI can leave a
+grandchild holding the pipe, and the tail is not worth a 30-second wait.
+
+**Measured on 2.1.263, Haiku, a foreground `python3 … time.sleep(40)` under
+`bypassPermissions`** (nightshift `074-report-2026-09-16.md`; the CLI's own
+Bash guard blocks a foreground `sleep`, and a plain `sleep` request is run
+in the background, so a Python sleep was the command):
+
+| stop mid-tool | exit | what the stream ends with | `-p "What happened?" --resume` |
+|---|---|---|---|
+| SIGINT | 0, **0.5 s** after the signal | the call's error result, verbatim `The user doesn't want to proceed with this tool use. The tool use was rejected (…) STOP what you are doing and wait for the user to tell you how to proceed.`; a user line `[Request interrupted by user for tool use]`; a `result` — `subtype: "error_during_execution"`, `terminal_reason: "aborted_tools"`, `is_error: true` | 6 s, **no tool call**: the model says the command was rejected |
+| SIGKILL (the old Stop) | 137 | a `system/task_started` for the command; no `result` | **47 s, two Bash calls: it re-ran the 40-second command on its own** and replied `done` |
+
+Mid-text the SIGINT shape is the assistant line with `"aborted": true`, a
+`[Request interrupted by user]` user line and a `result` with
+`terminal_reason: "aborted_streaming"`.
+
+So **the resume-after-stop behaviour is**: after an interrupt the CLI's
+session file closes the turn — the open call carries a rejection — and the
+next message is answered as a new one; after a kill the session holds an
+unfinished turn and the next `--resume` finishes it first, whatever the new
+message said. That is the whole reason for the change.
+
+What the turn records: the CLI's own error result pairs the open call
+(`Translator` sees a `tool_result` for it, so the `Recorder` gets a real
+result rather than its orphan marker); the interrupt's `result` line lands
+the session id and usage; `is_error` is cleared on this path and the
+translator's `ended: error_during_execution` notice dropped — a stop is the
+user's act, not a failed turn — and one notice says which way it went:
+`interrupted — Claude Code ended the turn` or `interrupted — killed after
+the interrupt went unanswered`. The `[Request interrupted…]` text block is a
+user line and is not rendered (the translator drops text blocks there).
+A Stop while an Ask prompt is up has no process to signal; the pending
+call is refused on disk as 084 built it.
+
+## Subagents: their words and calls, under the call that spawned them (2026-09-16, nightshift backlog 075)
+
+`--forward-subagent-text` is on every launch (`external`, the headless
+reference: v2.1.211+ forwards a subagent's text and thinking as
+`assistant`/`user` lines with `parent_tool_use_id` set, at every depth).
+Measured on 2.1.263 with an Explore subagent over three files
+(nightshift `075-report-2026-09-16.md`, `m075-1-forward.jsonl` against
+`m075-2-noforward.jsonl`):
+
+- The child's lines carry `parent_tool_use_id` = the `Agent` call's id.
+  Its calls and results arrive as whole `assistant`/`user` lines; its
+  **final text arrives as one whole `assistant` line** — no `stream_event`
+  deltas exist for a child, so that line is the only copy; its `thinking`
+  blocks came with **empty text** on Haiku. The main thread's text still
+  arrives as deltas, its `assistant` text blocks a duplicate.
+- **With or without the flag, the same lines arrived** on this release —
+  the child's text included. The flag is sent for the documented
+  guarantee; what it gates is the CLI's per release.
+- The subagent ran in the background: the `Agent` call's own result
+  came back at once (`Async agent launched successfully…`), the child's
+  lines followed, and when it finished the CLI printed a **second
+  `system/init` and a second `result`** in the same process — the main
+  thread's follow-up turn, unprompted. The translator takes the last
+  `result` as before.
+
+**Events.** A nested line's blocks go out wrapped: `TurnEvent::Subagent
+{ parent_tool_use_id, event }` with the inner event exactly the main
+thread's shape (`ToolCall` with the bare name, `ToolResult`, `TextDelta`
+for the whole text, `ThinkingDelta` when non-empty). ~~Nested calls were
+marked with a `sub:` prefix on the name~~ — that named no parent (two
+subagents at once were one stream) and, recorded as a `tool_use` name
+with a colon, was invalid on a provider replay.
+
+**The log.** `Recorder` keeps each subagent's narrative by parent id —
+one line per call (`▸ Read a.txt`), its result's first line under it
+(`  ↳ …`, 160 chars), the child's words as they are, a `✦` row per
+non-empty thought — and writes it as **one text block** when the round's
+assistant message closes: `<subagent parent="toolu_…">\n…\n</subagent>`
+(`subagent_block`; clipped at the usual 64 KB). That moment works for
+both kinds of subagent: a foreground one's block lands in the message
+holding the parent's call; a background one's lands in a later message of
+the same turn, still tagged. The child's own `tool_use`/`tool_result`
+blocks are no longer recorded, so the message replays. Size, from the
+measured runs: the old recording of the child's six calls with full
+results was ~3.7 KB and ~14.9 KB; the narrative block 2.0 KB and 1.9 KB —
+the child's results are summarised to a line each, its words kept whole.
+
+## Effort and a fallback model (2026-09-16, nightshift backlog 076)
+
+Two flags on `AgentSpec`, each only when set, passed through as the rail
+spelled them: `effort: Option<String>` → `--effort <level>` (`low`,
+`medium`, `high`, `xhigh`, `max` — `external`, `claude --help` 2.1.263;
+an unsupported level falls back, per the model-config doc) and
+`fallback_model: Option<String>` → `--fallback-model <alias[,alias]>`
+(`-p` only, which is every turn here). The rail sends `high` by default —
+what his settings say and what the model defaults to; under safe mode the
+settings are dropped, so saying it keeps the two spellings equal — and no
+fallback. Both ride on every shape, the deferred resume included, and the
+Context page's session line reads them back (`AgentInfo.effort`,
+`fallback_model`).
+
+Measured on Haiku, one run per level, "explain in three sentences why the
+sky is blue" (nightshift `076-report-2026-09-16.md`):
+
+| `--effort` | output tokens | of which thinking | API ms |
+|---|---|---|---|
+| low | 177 | 96 | 2,466 |
+| high | 190 | 66 | 2,688 |
+| xhigh | 313 | 222 | 3,909 |
+
+One run each, so the ordering is the finding and the figures are not.
+Neither the stream nor the session file on 2.1.263 carries an `effort`
+field to read the level back from (the survey's "every assistant line
+carries `effort: high`" was not seen on this release). `--fallback-model
+sonnet` on a Haiku turn was accepted and unused: the result's `modelUsage`
+named Haiku alone, and nothing in the stream says a fallback was
+configured — so "no fallback used" is read from `modelUsage` naming the
+primary only. The `xhigh` turn on Opus the item asks for was not run
+(nightshift blocker 079 holds Opus turns).
+
+## Ask aside: a side question on the warm cache (2026-09-16, nightshift backlog 081)
+
+The CLI's interactive `/btw` — a question answered from what is already in
+context, kept out of the history — does not exist in `-p`: sent as a
+prompt it answers `/btw isn't available in this environment.` with no
+model call, and still writes bookkeeping lines into the session file
+(nightshift `081-report-2026-09-16.md`, M1). The possible version is a
+**throwaway fork**: `AgentSpec::aside()` clones the chat's spec and adds
+`--fork-session --no-session-persistence --permission-mode dontAsk
+--max-turns 2`, changing nothing that shapes the cached prefix;
+`ClaudeCodeAgent::ask_aside` runs it into the caller's own event sink, so
+the chat's `Recorder` never sees it. Measured on Haiku:
+
+| aside shape | cache read / write | notes |
+|---|---|---|
+| the chat's own tools, `dontAsk`, `--max-turns 2`, no persistence | **32,052 / 241** | answered from context; **no session file written**; the chat's next real turn read the same prefix and saw nothing of the aside |
+| `--tools ""` (the survey's guess) | 0 / 10,360 | cold — the tools block is the front of the prefix |
+| `--permission-mode plan` | 0 / 44,176 | cold — plan mode rewrites the system prompt |
+
+So an aside is not *toolless*, it is *harmless*: `dontAsk` refuses anything
+that would prompt (a write, a command), a read inside the workspace may
+still run (the CLI never prompts for one — measured, it ran under
+`dontAsk`), and the second turn is that read's answering round (`--max-turns
+1` ran the read and then ended `error_max_turns` with no answer). On an
+asking chat the hook is left out — a deferral would park the aside on a
+prompt — but the prompt tool stays named, since dropping it changes the
+offered tools and the prefix with them (`AskMode::Aside`). A Plan-position
+chat's aside runs in `dontAsk` too and so goes cold on the plan-mode
+prompt; accepted.
+
+## The CLI's auto memory, as a layer (2026-09-16, nightshift backlog 088)
+
+Claude Code keeps its own **auto memory** per working directory —
+`~/.claude/projects/<cwd, non-alphanumerics as '-'>/memory/MEMORY.md` plus
+topic files beside it, read at session start and written by the CLI as it
+goes (`external`, code.claude.com/docs/en/memory "Auto memory"; on by
+default, off with `autoMemoryEnabled: false` or
+`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`). Under Nightloom it **stays on**, and
+the Context page shows it on this engine as a card, *Claude Code memory*,
+with the same per-chat switch the prompt layers have and a Read that shows
+`MEMORY.md` and names the topic files. Nothing here writes those files: the
+vault and `remember` are Nightloom's durable memory, and the engine note now
+says so to the model in one clause.
+
+**Measured** (2026-09-16, CLI 2.1.263, Haiku, a planted `MEMORY.md` with a
+secret word under a scratch cwd's project folder; the rows are in nightshift
+`notes/runner-design/088-measurements-2026-09-16.md`):
+
+| flags | the model's answer | so |
+|---|---|---|
+| none | the word | on by default under `-p` |
+| Nightloom's safe mode (`--setting-sources "" --strict-mcp-config --disable-slash-commands`) | the word | **safe mode does not drop it** — it drops settings files, and the memory directory is not one |
+| `--settings '{"autoMemoryEnabled":false}'` | NONE | the switch works inline |
+| two `--settings` flags | the word | **they do not merge; the last one wins** |
+| safe mode + the setting | NONE | the switch holds under safe mode, like the Ask hook |
+
+**How the switch travels.** Off is recorded in the chat's log as the kind
+`cli_memory` in the same `prompt_layers` event the other switches use
+(`SegmentKind::CliMemory`, never a segment of the assembled prompt), read
+at connect into `AgentSpec::auto_memory`, and sent as `autoMemoryEnabled:
+false` **in the one `--settings` JSON** the Ask hook also rides in — because
+of the fourth row above. On sends nothing. Like every layer switch on this
+engine it takes effect on the next connect, which the switch itself
+triggers. Whether a `--resume`d session re-reads the file on each launch was
+not measured (`inferred` from the docs' "read at session start" that it
+does; a resumed session is a start).
+
+## Auto-compact off; the hand-off instead (2026-09-16, nightshift backlog 086)
+
+The CLI compacts a conversation itself when its window fills. Under
+Nightloom it does not, on any path — a chat, a dream, a capture
+(`AgentSpec::auto_compact`, false by default): he does not compact (a
+compaction boundary in 2 of 610 of his sessions), and the nightshift
+contract's answer to a full window is a hand-off written to disk. Off is
+sent two ways, both read from the 2.1.263 binary rather than measured with
+a 100k-token turn (nightshift
+`notes/runner-design/086-measurements-2026-09-16.md`): `autoCompactEnabled:
+false` in the one `--settings` JSON — the documented key, default true,
+read through the merged settings like `autoMemoryEnabled` — and
+`DISABLE_AUTO_COMPACT=1` in the child's environment, which the CLI's code
+checks before it reads the setting at all. `--autocompact <tokens>` only
+resizes the window and cannot switch it off. **Not measured end to end**:
+a turn past the window with both in place is the one thing left to see.
+
+What happens instead lives in the desktop (`handoff.svelte.ts`,
+`Composer.svelte`, `continue_session` in `main.rs`; `docs/desktop-ui.md`
+"The context-full hand-off"): at each turn's end the gauge's fill is
+compared to the chat's threshold (70% by default); past it the next message
+carries a wrap-up asking the model to write `HANDOFF.md` in the project and
+stop; when that turn ends the composer offers *Continue in a new chat* —
+asked, not automatic (nightshift blocker 092's default) — which opens a
+fresh chat in the same folder, linked to this one (`ForkedFrom` with
+`reason: "handoff"`, `Session::continued_from`), no CLI conversation to
+resume, and "Read HANDOFF.md and continue." in its box. Nothing is
+summarised in Nightloom's words.
 
 ## What `--append-system-prompt` carries
 

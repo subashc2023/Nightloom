@@ -41,8 +41,32 @@ pub(super) enum Line {
     /// turn was billed to the plan and not to a key.
     #[serde(rename = "rate_limit_event")]
     RateLimitEvent { rate_limit_info: RateLimitInfo },
+    /// The CLI's predicted next prompt (nightshift backlog 083): one line
+    /// after `result`, only with `--prompt-suggestions true`. Measured
+    /// shape on 2.1.263: `{"type":"prompt_suggestion","suggestion":"Write
+    /// the code","uuid":"…","session_id":"…"}`.
+    #[serde(rename = "prompt_suggestion")]
+    PromptSuggestion {
+        #[serde(default)]
+        suggestion: String,
+    },
     #[serde(other)]
     Unknown,
+}
+
+/// One MCP server as the init line lists it: `{"name": "openalex",
+/// "status": "pending"}` — measured statuses `connected`, `pending`,
+/// `needs-auth`; the headless reference also allows `failed` with an
+/// `error` string, kept optional since no run here produced one.
+/// `Serialize` too, since it rides out on a [`crate::TurnEvent`] as is.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct McpServerStatus {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -57,6 +81,24 @@ pub(super) enum SystemLine {
         model: Option<String>,
         #[serde(default)]
         tools: Vec<String>,
+        /// What else the session has (nightshift backlog 077, 2026-09-16;
+        /// keys as measured on 2.1.263, nightshift
+        /// `notes/runner-design/077-measurements-2026-09-16.md`): the MCP
+        /// servers with their status, the slash commands (the skills
+        /// first, then the built-ins), the skills, the agents, the CLI's
+        /// version and the permission mode it started in.
+        #[serde(default)]
+        mcp_servers: Vec<McpServerStatus>,
+        #[serde(default)]
+        slash_commands: Vec<String>,
+        #[serde(default)]
+        skills: Vec<String>,
+        #[serde(default)]
+        agents: Vec<String>,
+        #[serde(default)]
+        claude_code_version: Option<String>,
+        #[serde(default, rename = "permissionMode")]
+        permission_mode: Option<String>,
     },
     /// A retryable API failure, about to be retried. Reported rather than
     /// swallowed for the same reason `Retry` notifies the shell: a stall
@@ -127,9 +169,24 @@ pub(super) enum Block {
     },
     #[serde(rename = "redacted_thinking")]
     RedactedThinking,
-    /// `text` and `thinking` land here and are deliberately dropped: the
-    /// same content already arrived as deltas on `stream_event`, and
-    /// emitting both would render every reply twice.
+    /// ~~`text` and `thinking` land in `Other` and are deliberately
+    /// dropped~~ — parsed since 2026-09-16 (nightshift backlog 075), and
+    /// still dropped on a top-level line, where the same content already
+    /// arrived as deltas on `stream_event` and emitting both would render
+    /// every reply twice. A **subagent's** line (`parent_tool_use_id` set)
+    /// has no deltas — measured on 2.1.263, `m075-1-forward.jsonl`: the
+    /// child's text arrives whole on its `assistant` line and nowhere
+    /// else — so there these are the only copy, and they are emitted.
+    #[serde(rename = "text")]
+    Text {
+        #[serde(default)]
+        text: String,
+    },
+    #[serde(rename = "thinking")]
+    Thinking {
+        #[serde(default)]
+        thinking: String,
+    },
     #[serde(other)]
     Other,
 }

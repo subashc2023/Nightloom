@@ -1,6 +1,8 @@
 <script lang="ts">
   import Icon from "./Icon.svelte";
-  import { app, addToast, send, cancelTurn } from "./state.svelte";
+  import { app, addToast, askAside, send, cancelTurn, continueChat } from "./state.svelte";
+  import { handoff, stayHere, threshold } from "./handoff.svelte";
+  import { ghostFor } from "./suggestions.svelte";
   import {
     addAttachment,
     clearDraft,
@@ -189,7 +191,108 @@
     requestAnimationFrame(autogrow);
   });
 
+  /*
+   * The `/` picker (nightshift backlog 077, 2026-09-16): on the Claude
+   * Code engine a message that starts with `/` opens a list over the
+   * skills and slash commands the CLI reported at the chat's latest turn
+   * (`app.agentInit`), filtered by what follows the slash; ↑↓ move, ↵ or
+   * Tab insert `/name ` and close, Esc closes. The CLI runs a skill named
+   * in the prompt, so the picker only inserts text — nothing runs until
+   * Send. Nothing before the chat's first turn (the list is the CLI's, and
+   * it has not reported yet) and nothing on the other engine.
+   */
+  const slashNames = $derived.by(() => {
+    if (app.connection?.engine !== "claude-code" || !app.agentInit) return [];
+    const skills = app.agentInit.skills;
+    const rest = app.agentInit.slash_commands.filter((c) => !skills.includes(c));
+    return [...skills.map((n) => ({ name: n, kind: "skill" })), ...rest.map((n) => ({ name: n, kind: "command" }))];
+  });
+  let slashDismissed = $state(false);
+  let slashIndex = $state(0);
+  const slashOpen = $derived(
+    slashNames.length > 0 && /^\/[A-Za-z0-9_-]*$/.test(text) && !slashDismissed,
+  );
+  const slashMatches = $derived.by(() => {
+    if (!slashOpen) return [];
+    const q = text.slice(1).toLowerCase();
+    return slashNames.filter((s) => s.name.toLowerCase().startsWith(q)).slice(0, 12);
+  });
+  $effect(() => {
+    // A fresh box (no leading slash) re-arms the picker; typing resets the row.
+    void text;
+    if (!/^\//.test(text)) slashDismissed = false;
+    slashIndex = 0;
+  });
+  function pickSlash(name: string): void {
+    setDraftText(key, `/${name} `);
+    slashDismissed = true;
+    ta?.focus();
+  }
+
+  /*
+   * The context-full hand-off (nightshift backlog 086), said where the next
+   * message is typed: past the chat's threshold the bar says the wrap-up
+   * rides the next message (or sends it alone); once that turn ends it
+   * offers *Continue in a new chat · Stay here* (asked, not automatic —
+   * blocker 092's default). Only for the chat the state is about, and
+   * only on the Claude Code engine, which is the one that fills.
+   */
+  const handoffHere = $derived(
+    app.connection?.engine === "claude-code" && handoff.chat === app.activeSessionId && handoff.chat !== null,
+  );
+  const handoffPct = $derived(Math.round(handoff.fill * 100));
+  const handoffThresholdPct = $derived(Math.round(threshold(app.activeSessionId) * 100));
+  function sendWrapUpNow(): void {
+    // A bare message: `send` appends the wrap-up itself.
+    void send("Please wrap up now.");
+  }
+
+  /*
+   * The ghost line (nightshift backlog 083): the CLI's predicted next
+   * prompt, dimmed in the empty box; Tab puts it in the box, Esc drops
+   * it, typing hides it. Never sent on its own.
+   */
+  const ghost = $derived(ghostFor(app.suggestion, text));
+  function acceptGhost(): void {
+    if (!ghost) return;
+    setDraftText(key, ghost);
+    app.suggestion = null;
+    ta?.focus();
+  }
+
   function onkeydown(e: KeyboardEvent) {
+    if (ghost && e.key === "Tab" && !e.shiftKey) {
+      e.preventDefault();
+      acceptGhost();
+      return;
+    }
+    if (ghost && e.key === "Escape") {
+      e.preventDefault();
+      app.suggestion = null;
+      return;
+    }
+    if (slashOpen && slashMatches.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        slashIndex = (slashIndex + 1) % slashMatches.length;
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        slashIndex = (slashIndex - 1 + slashMatches.length) % slashMatches.length;
+        return;
+      }
+      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+        e.preventDefault();
+        pickSlash(slashMatches[slashIndex].name);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        slashDismissed = true;
+        return;
+      }
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       void submit();
@@ -379,6 +482,14 @@
     ta?.focus();
   }
 
+  async function submitAside() {
+    const t = text.trim();
+    if (!t || attachments.length > 0 || app.busy) return;
+    clearDraft(key);
+    requestAnimationFrame(autogrow);
+    await askAside(t);
+  }
+
   async function submit() {
     const t = text.trim();
     const empty = !t && attachments.length === 0;
@@ -465,9 +576,70 @@
       {/each}
     </div>
   {/if}
+  {#if handoffHere && handoff.stage === "due"}
+    <div class="handoff" role="status">
+      <span class="handoff-text">
+        <strong>Context {handoffPct}%</strong> — past this chat's {handoffThresholdPct}% hand-off mark.
+        Your next message carries a wrap-up: the model writes <code>HANDOFF.md</code> in the project and stops.
+      </span>
+      <span class="spacer"></span>
+      <button class="ns-btn accent small" disabled={app.busy} onclick={sendWrapUpNow}>Send the wrap-up now</button>
+      <button class="ns-btn ghost small" title="No wrap-up on the next message; asked again past 85%" onclick={stayHere}>Stay here</button>
+    </div>
+  {:else if handoffHere && handoff.stage === "wrapping"}
+    <div class="handoff" role="status">
+      <span class="handoff-text">Wrapping up — the model is writing <code>HANDOFF.md</code>.</span>
+    </div>
+  {:else if handoffHere && handoff.stage === "wrapped"}
+    <div class="handoff" role="status">
+      <span class="handoff-text">
+        <strong>HANDOFF.md written</strong> (check the reply above). Continue in a new chat in the same folder,
+        linked to this one, with "Read HANDOFF.md and continue" ready to send; this chat stays readable.
+      </span>
+      <span class="spacer"></span>
+      <button class="ns-btn accent small" disabled={app.busy} onclick={() => void continueChat()}>Continue in a new chat</button>
+      <button class="ns-btn ghost small" title="Keep going here; asked again past 85%" onclick={stayHere}>Stay here</button>
+    </div>
+  {/if}
+  {#if slashOpen}
+    <div class="slash" role="listbox" aria-label="Skills and slash commands">
+      {#if slashMatches.length === 0}
+        <div class="slash-row dim">No skill or command starts with “{text.slice(1)}” — ↵ sends the text as typed</div>
+      {:else}
+        {#each slashMatches as m, i (m.name)}
+          <button
+            type="button"
+            role="option"
+            class="slash-row"
+            class:on={i === slashIndex}
+            aria-selected={i === slashIndex}
+            onmousedown={(e) => e.preventDefault()}
+            onclick={() => pickSlash(m.name)}
+          >
+            <span class="mono">/{m.name}</span>
+            <span class="dim">{m.kind}</span>
+          </button>
+        {/each}
+        <div class="slash-row dim">↑↓ move · ↵ or Tab insert · Esc close · the CLI runs a skill named in the message</div>
+      {/if}
+    </div>
+  {/if}
   <div class="card">
     <!-- No autocorrect, capitalisation or spell-marking on a message to a
          model: macOS was rewriting his words as he typed (2026-09-16). -->
+    {#if ghost}
+      <!-- Over the textarea's first line; the box is empty when it shows. -->
+      <button
+        type="button"
+        class="ghost"
+        title="The CLI's predicted next prompt — Tab or click puts it in the box, Esc drops it"
+        onmousedown={(e) => e.preventDefault()}
+        onclick={acceptGhost}
+      >
+        <span class="ghost-text">{ghost}</span>
+        <span class="ghost-key">Tab</span>
+      </button>
+    {/if}
     <textarea
       bind:this={ta}
       bind:value={() => text, (v) => setDraftText(key, v)}
@@ -504,6 +676,19 @@
         >
         <button class="ns-btn danger small" onclick={() => void cancelTurn()}>Stop</button>
       {:else}
+        {#if app.connection?.engine === "claude-code"}
+          <!-- Ask aside (nightshift backlog 081): the typed question goes
+               to the chat's context off its warm cache and is recorded
+               nowhere — the CLI's /btw. Text only; attachments are a turn's. -->
+          <button
+            class="ns-btn ghost small"
+            title="Ask this of the chat without adding it to the chat: answered from what is already in context, no changes, recorded nowhere (Claude Code's /btw)"
+            disabled={!text.trim() || attachments.length > 0}
+            onclick={() => void submitAside()}
+          >
+            Ask aside
+          </button>
+        {/if}
         <button
           class="ns-btn accent send"
           onclick={() => void submit()}
@@ -735,5 +920,110 @@
     margin: 0.4rem auto 0;
     color: var(--dim);
     font-size: 0.75rem;
+  }
+  /* The ghost line (backlog 083): the textarea's own face, dimmed, laid
+     over its first line; the card is the positioning frame. */
+  .card {
+    position: relative;
+  }
+  .ghost {
+    position: absolute;
+    left: 14px;
+    right: 14px;
+    top: 12px;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 2px 0;
+    background: transparent;
+    border: none;
+    text-align: left;
+    font-size: 15px;
+    line-height: 1.5;
+    font-family: inherit;
+    color: var(--dim);
+    cursor: pointer;
+    pointer-events: auto;
+    z-index: 1;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+  .ghost-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+  }
+  .ghost-key {
+    font-family: var(--mono);
+    font-size: 11px;
+    border: 1px solid var(--line2);
+    border-radius: 4px;
+    padding: 0 4px;
+    flex-shrink: 0;
+  }
+
+  /* The hand-off bar (backlog 086): one ruled row above the box. */
+  .handoff {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 8px 12px;
+    border: 1px solid var(--partial, var(--line2));
+    border-radius: 8px;
+    background: var(--sheet);
+    font-size: 12.5px;
+    color: var(--ink2);
+    margin-bottom: 6px;
+  }
+  .handoff-text {
+    min-width: 0;
+    flex: 1 1 24rem;
+    line-height: 1.4;
+  }
+  .handoff code {
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  .handoff .spacer {
+    flex: 0 0 0;
+  }
+
+  /* The `/` picker (backlog 077): a plain list joined to the card's top. */
+  .slash {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--line);
+    border-bottom: none;
+    border-radius: 8px 8px 0 0;
+    background: var(--sheet);
+    max-height: 16rem;
+    overflow-y: auto;
+  }
+  .slash-row {
+    display: flex;
+    gap: 10px;
+    align-items: baseline;
+    padding: 5px 10px;
+    font-size: 12.5px;
+    text-align: left;
+    background: transparent;
+    border: none;
+    color: var(--ink);
+    font-family: var(--sans);
+    cursor: pointer;
+  }
+  .slash-row.on {
+    background: var(--well);
+  }
+  .slash-row .mono {
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  .slash-row .dim,
+  .slash-row.dim {
+    color: var(--dim);
+    cursor: default;
+    font-size: 11.5px;
   }
 </style>

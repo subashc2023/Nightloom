@@ -1345,6 +1345,30 @@ mod tests {
     }
 
     #[test]
+    fn named_files_answers_only_for_a_real_regular_file() {
+        // The card's rule (nightshift backlog 078): a folder, a missing path
+        // and a relative path all stay text; only a file that exists gets a
+        // card, with its size.
+        let dir = temp_dir("named");
+        let file = dir.join("report.md");
+        fs::write(&file, "hello").unwrap();
+        let answers = named_files(&[
+            file.to_string_lossy().into_owned(),
+            dir.to_string_lossy().into_owned(),
+            dir.join("made-up.md").to_string_lossy().into_owned(),
+            "notes/relative.md".to_string(),
+        ]);
+        assert_eq!(answers.len(), 4);
+        let found = answers[0].as_ref().expect("the file exists");
+        assert_eq!(found.size, 5);
+        assert_eq!(Path::new(&found.path), file);
+        assert!(answers[1].is_none(), "a folder is not a file card");
+        assert!(answers[2].is_none(), "a made-up path stays text");
+        assert!(answers[3].is_none(), "a relative path is the frontend's to resolve");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn chats_live_outside_the_folder_and_notes_live_in_it() {
         let dir = temp_dir("layout");
         let mut reg = Registry::load_from(dir.join("registry.json"));

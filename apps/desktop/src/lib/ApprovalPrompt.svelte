@@ -37,13 +37,14 @@
     box?.focus();
   });
 
-  function decide(decision: "allow" | "always" | "deny", answer?: unknown) {
+  function decide(decision: "allow" | "always" | "deny", answer?: unknown, then?: "ask" | "auto") {
     void resolveApproval(
       req.id,
       req.name,
       decision,
       decision === "deny" ? reason.trim() || undefined : undefined,
       answer,
+      then,
     );
   }
 
@@ -85,10 +86,21 @@
   }
 
   // ---- the plan ---------------------------------------------------------
+  // `input.plan` is the markdown and `input.planFilePath` the CLI's own
+  // copy under `~/.claude/plans/` (verbatim shape, 2026-09-16,
+  // `m085-4-resume.jsonl`).
   const plan = $derived.by(() => {
     const p = (req.input as { plan?: unknown } | null)?.plan;
     return typeof p === "string" ? p : null;
   });
+  const planFile = $derived.by(() => {
+    const p = (req.input as { planFilePath?: unknown } | null)?.planFilePath;
+    return typeof p === "string" ? p : null;
+  });
+  // Where the chat goes once the plan is approved (backlog 085, "his pick
+  // on the card"): Ask keeps the prompts, Auto hands the rest to the CLI's
+  // classifier. Ask first, since it is the position that keeps asking.
+  let then = $state<"ask" | "auto">("ask");
 
   function onDeny() {
     if (denying) {
@@ -191,7 +203,12 @@
     {/if}
 
     <div class="actions">
-      <button class="btn allow" onclick={() => decide("allow", req.input)}>Approve</button>
+      <button class="btn allow" onclick={() => decide("allow", req.input, then)}>Approve</button>
+      <span class="then" role="radiogroup" aria-label="after approval">
+        <span class="then-l">then</span>
+        <label class="then-o"><input type="radio" name="then-{req.id}" value="ask" bind:group={then} /> Ask</label>
+        <label class="then-o"><input type="radio" name="then-{req.id}" value="auto" bind:group={then} /> Auto</label>
+      </span>
       <button
         class="btn deny"
         onclick={() => {
@@ -208,7 +225,11 @@
       bind:value={reason}
       placeholder="what to change (optional, sent with Keep planning)"
     />
-    <p class="hint">The plan is kept with the chat; Approve lets the model start on it.</p>
+    <p class="hint">
+      Nothing has been edited. Approve lets the model start on it, as Ask (each
+      write still asks) or Auto (its classifier decides); the rail's Approval
+      switch follows your pick.{#if planFile} The CLI keeps the plan at <code>{planFile}</code>.{/if}
+    </p>
   </div>
 {:else if deferred}
   <div
@@ -459,6 +480,26 @@
   }
   .val.plan {
     max-height: 22rem;
+  }
+  /* The plan card's "then Ask | Auto" pick (backlog 085): plain radios
+     beside Approve. */
+  .then {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.78rem;
+    color: var(--dim);
+  }
+  .then-o {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.2rem;
+    color: var(--text);
+    cursor: pointer;
+  }
+  .hint code {
+    font-family: var(--mono);
+    font-size: 0.95em;
   }
   .btn:disabled {
     opacity: 0.5;

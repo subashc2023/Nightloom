@@ -96,6 +96,30 @@
     apply();
   }
 
+  /** The approval segment on the Claude Code engine (backlogs 084, 085):
+   *  four positions over three draft fields. Auto is the default, the two
+   *  asking positions sit together, Off last. */
+  type ApprovalPosition = "auto" | "ask" | "plan" | "off";
+  const APPROVAL: { value: ApprovalPosition; label: string; title: string }[] = [
+    { value: "auto", label: "Auto", title: "Claude Code's classifier decides each call (`auto`)" },
+    { value: "ask", label: "Ask", title: "Pauses on each write, command, question or plan; the transcript asks" },
+    { value: "plan", label: "Plan", title: "Reads only, until you approve the plan on its card (`plan`)" },
+    { value: "off", label: "Off", title: "Every call runs unasked (`bypassPermissions`)" },
+  ];
+  const approvalPosition = $derived<ApprovalPosition>(
+    !app.draft.approval ? "off"
+    : app.draft.agentPlan ? "plan"
+    : app.draft.agentAsk ? "ask"
+    : "auto",
+  );
+  function pickApproval(v: ApprovalPosition) {
+    if (v === approvalPosition) return;
+    app.draft.approval = v !== "off";
+    app.draft.agentAsk = v === "ask" || v === "plan";
+    app.draft.agentPlan = v === "plan";
+    apply();
+  }
+
   // The radio list past six rows gets a filter; the list itself is what
   // Settings switched on, in the picker's order.
   let modelFilter = $state("");
@@ -135,6 +159,18 @@
     agentOther = false;
     if (alias === app.draft.agentModel) return;
     app.draft.agentModel = alias;
+    apply();
+  }
+  /** The CLI's effort levels (backlog 076), as `claude --help` lists them. */
+  const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+  function pickEffort(e: string) {
+    if (e === app.draft.agentEffort) return;
+    app.draft.agentEffort = e;
+    apply();
+  }
+  function pickFallback(alias: string) {
+    if (alias === app.draft.agentFallback) return;
+    app.draft.agentFallback = alias;
     apply();
   }
   function agentKey(alias: string): string | null {
@@ -370,6 +406,66 @@
         <p class="note">last turn ran <code>{app.agentTurn.model}</code></p>
       {/if}
       {@render instructionsRow()}
+
+      <!-- Effort and the fallback model (nightshift backlog 076, the
+           design's Rail board): a five-way segment in the thinking idiom,
+           and the alias pills with `none` first. Both go to the CLI as
+           flags (`--effort`, `--fallback-model`) and are saved with the
+           rest of the rail. -->
+      <div class="sect-h">
+        <span class="ns-k">Effort</span>
+        <Hint
+          text="Claude Code's --effort: how hard the model thinks per turn. high is the default it ships with; xhigh and max spend more thinking tokens and time, low fewer. A level the model does not support falls back to one it does."
+          side="right"
+        />
+      </div>
+      <div class="segs" role="radiogroup" aria-label="Effort">
+        {#each EFFORTS as e (e)}
+          <button
+            class:on={e === app.draft.agentEffort}
+            role="radio"
+            aria-checked={e === app.draft.agentEffort}
+            disabled={locked}
+            title="--effort {e}"
+            onclick={() => pickEffort(e)}
+          >
+            {e}
+          </button>
+        {/each}
+      </div>
+      <div class="sect-h">
+        <span class="ns-k">Fallback model</span>
+        <Hint
+          text="Claude Code's --fallback-model: the alias it retries a turn with when the model above is overloaded or unavailable. none sends no fallback."
+          side="right"
+        />
+      </div>
+      <div class="pv" role="radiogroup" aria-label="Fallback model">
+        <button
+          class="p"
+          class:on={app.draft.agentFallback.trim() === ""}
+          role="radio"
+          aria-checked={app.draft.agentFallback.trim() === ""}
+          disabled={locked}
+          title="No fallback"
+          onclick={() => pickFallback("")}
+        >
+          none
+        </button>
+        {#each AGENT_PILLS as a (a)}
+          <button
+            class="p"
+            class:on={app.draft.agentFallback.trim() === a}
+            role="radio"
+            aria-checked={app.draft.agentFallback.trim() === a}
+            disabled={locked}
+            title="--fallback-model {a}"
+            onclick={() => pickFallback(a)}
+          >
+            {a}
+          </button>
+        {/each}
+      </div>
     </section>
   {:else}
     <section class="sect">
@@ -515,13 +611,11 @@
       <input type="checkbox" class="sw" bind:checked={app.draft.tools} onchange={apply} disabled={locked} />
     </label>
 
-    {#if app.draft.tools}
+    {#if app.draft.tools && !agentMode}
       <label class="swq sub">
-        <span class="t">{agentMode ? "Restrict permissions" : "Ask before writing"}</span>
+        <span class="t">Ask before writing</span>
         <Hint
-          text={agentMode
-            ? "Claude Code runs its own permission checks in `auto` mode: its classifier decides each call, and one it cannot approve is refused rather than left waiting. Off is `bypassPermissions`."
-            : "Calls that change files or run commands wait for you in the transcript. Reads and task-list writes never ask."}
+          text="Calls that change files or run commands wait for you in the transcript. Reads and task-list writes never ask."
         />
         <input
           type="checkbox"
@@ -534,26 +628,44 @@
       {#if !app.draft.approval}
         <p class="warn sub-note">Every call runs unasked, including <code>bash</code>.</p>
       {/if}
-      {#if agentMode && app.draft.approval}
-        <!-- The Ask position (nightshift backlog 084): the third setting of
-             the switch above, drawn as a second switch tonight. On, the CLI
-             pauses on each call a person should decide and the transcript
-             asks — the prompt, the model's questions, plan approval. -->
-        <label class="swq sub">
-          <span class="t">Ask me</span>
+    {/if}
+    {#if app.draft.tools && agentMode}
+      <!-- Approval on the Claude Code engine (nightshift backlogs 084 and
+           085, the design's Rail board): one four-way segment in the
+           thinking-segments idiom, Auto · Ask · Plan · Off, over the same
+           three draft fields the two switches it replaces were bound to —
+           `approval` (off = the Off position, `bypassPermissions`),
+           `agentAsk` (the defer hook, backlog 084) and `agentPlan`
+           (`plan` mode under the same hook, backlog 085). -->
+      <div class="approval sub-note">
+        <div class="swq">
+          <span class="t">Approval</span>
           <Hint
-            text="Claude Code pauses on each write, command, question or plan and the transcript asks you — Allow, Allow for this chat, or Deny. Off, its classifier decides (`auto`). Reads in the workspace never ask."
+            text="Auto: Claude Code's own classifier decides each call, and one it cannot approve is refused rather than left waiting. Ask: it pauses on each write, command, question or plan and the transcript asks you. Plan: it only reads until you approve its plan on the card, then goes on as Ask or Auto, your pick there. Off: `bypassPermissions`, every call runs unasked. Reads in the workspace never ask."
           />
-          <input
-            type="checkbox"
-            class="sw"
-            bind:checked={app.draft.agentAsk}
-            onchange={apply}
-            disabled={locked}
-          />
-        </label>
-      {/if}
-      {#if agentMode && !(app.draft.approval && app.draft.agentAsk)}
+        </div>
+        <div class="segs" role="radiogroup" aria-label="Approval">
+          {#each APPROVAL as c (c.value)}
+            <button
+              class:on={c.value === approvalPosition}
+              class:off={c.value === "off" && approvalPosition === "off"}
+              role="radio"
+              aria-checked={c.value === approvalPosition}
+              disabled={locked}
+              title={c.title}
+              onclick={() => pickApproval(c.value)}
+            >
+              {c.label}
+            </button>
+          {/each}
+        </div>
+        {#if !app.draft.approval}
+          <p class="warn">Every call runs unasked, including <code>bash</code>.</p>
+        {:else if app.draft.agentPlan}
+          <p class="note">Reads and read-only commands only, until you approve the plan on its card.</p>
+        {/if}
+      </div>
+      {#if !(app.draft.approval && app.draft.agentAsk)}
         <!-- Said rather than implied: the switch above is the familiar one
              and the gate behind it is not. Nightloom's approval prompt gates
              calls its own engine is about to run, and this engine runs its
@@ -566,7 +678,9 @@
           or attachments.
         </p>
       {/if}
+    {/if}
 
+    {#if app.draft.tools}
       {#if !agentMode}
         <label class="swq sub">
           <span class="t">Web access</span>
@@ -1284,6 +1398,19 @@
   .segs button:disabled {
     cursor: default;
     opacity: 0.6;
+  }
+  /* The approval segment (backlogs 084, 085): Off reads as the warning
+     it is when it is the position chosen. */
+  .segs button.on.off {
+    background: var(--error);
+  }
+  .approval {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .approval .swq {
+    cursor: default;
   }
 
   /* Switch rows: the label, its `?`, the pill. */

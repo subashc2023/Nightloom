@@ -3,7 +3,6 @@
     app,
     applyDraft,
     currentModelId,
-    DREAM_ENGINE,
     fetchModels,
     openModelInstructions,
     refreshProviders,
@@ -40,6 +39,8 @@
   } from "./catalog";
   import type { Note, ProviderInfo, SearchBackendInfo, UsageSummary } from "./types";
   import { relativeTime } from "./time";
+  import { dreamEngineRows, dreamModelPills, dreamSentence } from "./dreamRows";
+  import { loadNotifyPrefs, saveNotifyPrefs, type NotifyPrefs } from "./notify";
   import { untrack } from "svelte";
   import Icon from "./Icon.svelte";
 
@@ -454,6 +455,46 @@
     });
   }
 
+  // ---- the dream row (nightshift backlog 071) ----
+  //
+  // Which engine and model a dream (and the capture pass, the same knob —
+  // blocker 054) runs on, as rows and pills rather than a dropdown and a
+  // typed id. Presentation only: the preference is still `provider` (a
+  // provider kind, the Claude Code engine's `DREAM_ENGINE`, or "" for the
+  // rail's connection) and `model` ("" for the engine's default), and
+  // `passTargetFor` reads it as before. The rows and pills are built by
+  // `dreamRows.ts`, which the suite pins.
+
+  const dreamEngines = $derived(dreamEngineRows(app.providers, app.draft));
+  const dreamModels = $derived(
+    dreamModelPills(app.dreamPrefs.provider, app.dreamPrefs.model, app.providers, app.prefs),
+  );
+  const dreamSummary = $derived(
+    dreamSentence(dreamEngines, app.dreamPrefs.provider, app.dreamPrefs.model, app.draft),
+  );
+
+  function pickDreamEngine(value: string) {
+    if (value === app.dreamPrefs.provider) return;
+    app.dreamPrefs.provider = value;
+    // The model lists differ per engine (an alias is not a provider id), so
+    // a change of engine starts from that engine's default.
+    app.dreamPrefs.model = "";
+    saveDreamPrefs();
+  }
+  function pickDreamModel(value: string) {
+    app.dreamPrefs.model = value;
+    saveDreamPrefs();
+  }
+
+  // The turn-end banner's switches (nightshift backlog 079): read from
+  // localStorage when the modal opens, written on each change; `notify.ts`
+  // reads the store again at each turn, so nothing here needs to be live.
+  let notifyPrefs = $state<NotifyPrefs>(loadNotifyPrefs());
+  function setNotify(key: keyof NotifyPrefs, on: boolean) {
+    notifyPrefs = { ...notifyPrefs, [key]: on };
+    saveNotifyPrefs(notifyPrefs);
+  }
+
   /** Turn a whole family on or off in one write rather than one per chip. */
   function setSection(kind: string, s: ModelSection, on: boolean) {
     setPrefs((p) => {
@@ -807,6 +848,34 @@
           </div>
         </div>
       </section>
+
+      <!-- The turn-end banner (nightshift backlog 079): two switches, one
+           per kind. The rule they cannot change is the focus one — a
+           window in front is never notified. -->
+      <section class="card">
+        <div class="ch"><span class="t">Notifications</span></div>
+        <p class="note small">
+          A native banner while Nightloom is behind another window, on either
+          engine. Never for the window in front. Clicking one brings Nightloom
+          forward.
+        </p>
+        <label class="dream-auto">
+          <input
+            type="checkbox"
+            checked={notifyPrefs.turnEnd}
+            onchange={(e) => setNotify("turnEnd", e.currentTarget.checked)}
+          />
+          <span>When a turn finishes — files changed, tokens, time</span>
+        </label>
+        <label class="dream-auto">
+          <input
+            type="checkbox"
+            checked={notifyPrefs.needsYou}
+            onchange={(e) => setNotify("needsYou", e.currentTarget.checked)}
+          />
+          <span>When a turn needs you — a permission, a question, a plan</span>
+        </label>
+      </section>
     </div>
   {:else if selected === "usage"}
     <!-- The usage ledger (nightshift backlog 045, blocker 060): a Settings
@@ -1095,28 +1164,47 @@
              option here since 2026-09-16 (nightshift backlog 070): a dream
              on it is one `claude -p` turn per folder, billed to the
              subscription like a chat on that engine. -->
-        <p class="note small">
-          Dreams run on whichever engine you pick here and bill it — an API
-          provider bills its key, Claude Code bills the subscription. Leave on
-          the rail's connection to use the chat's provider.
-        </p>
-        <div class="kf">
-          <select bind:value={app.dreamPrefs.provider} onchange={saveDreamPrefs}>
-            <option value="">the rail's connection</option>
-            <option value={DREAM_ENGINE}>Claude Code (subscription)</option>
-            {#each app.providers as p (p.kind)}
-              <option value={p.kind}>{providerLabel(p.kind)}</option>
-            {/each}
-          </select>
-          <input
-            type="text"
-            placeholder={app.dreamPrefs.provider === DREAM_ENGINE
-              ? "alias — opus, sonnet, haiku; blank for the CLI's default"
-              : "model — blank for the provider's default"}
-            disabled={!app.dreamPrefs.provider}
-            bind:value={app.dreamPrefs.model}
-            onchange={saveDreamPrefs}
-          />
+        <!-- The engine and the model as rows and pills (nightshift backlog
+             071), in the Models card's idiom: no dropdown, no typed id. The
+             sentence above the rows is the whole answer to "what will run,
+             on what, billed to what"; the rows are how to change it. -->
+        <p class="note small dream-summary">{dreamSummary}</p>
+        <div class="dream-rows" role="radiogroup" aria-label="Which engine dreams">
+          {#each dreamEngines as e (e.value)}
+            {@const on = app.dreamPrefs.provider === e.value}
+            <div class="mr dream-row" class:on>
+              <button
+                class="cb"
+                class:on
+                role="radio"
+                aria-checked={on}
+                aria-label="Dream on {e.name}"
+                onclick={() => pickDreamEngine(e.value)}
+              >
+                {#if on}<Icon name="check" size={11} />{/if}
+              </button>
+              <span class="dream-name">
+                <button class="dream-pick" onclick={() => pickDreamEngine(e.value)}>{e.name}</button>
+                {#if e.sub}<span class="dream-sub">{e.sub}</span>{/if}
+              </span>
+              <span class="ns-pill" class:open={!e.warn} class:failed={e.warn}>{e.bills}</span>
+            </div>
+            {#if on && dreamModels.length > 0}
+              <div class="dream-models">
+                <span class="ns-k">Model</span>
+                {#each dreamModels as m (m.value)}
+                  <button
+                    class="cart"
+                    class:on={app.dreamPrefs.model === m.value}
+                    title={m.value === app.dreamPrefs.model ? "The model that dreams" : `Dream on ${m.label}`}
+                    onclick={() => pickDreamModel(m.value)}
+                  >
+                    {#if app.dreamPrefs.model === m.value}<Icon name="check" size={11} />{/if}{m.label}
+                  </button>
+                {/each}
+              </div>
+            {/if}
+          {/each}
         </div>
       </section>
     </div>
@@ -1896,6 +1984,58 @@
     font-size: 13px;
     color: var(--ink);
     cursor: pointer;
+  }
+  /* The dream row as rows and pills (nightshift backlog 071): the Models
+     card's `.mr` / `.cb` / `.cart` shapes, a name in the sans with one dim
+     line under it, the billing pill at the right. */
+  .dream-summary {
+    color: var(--ink);
+  }
+  .dream-rows {
+    display: flex;
+    flex-direction: column;
+  }
+  .dream-row .cb {
+    border-radius: 999px;
+  }
+  .dream-name {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0;
+  }
+  .dream-pick {
+    background: none;
+    border: none;
+    padding: 0;
+    font: inherit;
+    color: var(--ink2);
+    text-align: left;
+    cursor: pointer;
+  }
+  .dream-row.on .dream-pick {
+    color: var(--ink);
+  }
+  .dream-sub {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .dream-models {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    padding: 4px 10px 8px 37px;
+  }
+  .dream-models .cart.on:hover {
+    /* Picking, not dropping: the strip's red "click to drop" hover is
+       wrong here — the pill that is on stays on. */
+    color: var(--accent-ink);
+    border-color: color-mix(in srgb, var(--accent) 45%, transparent);
   }
   select,
   input[type="password"],

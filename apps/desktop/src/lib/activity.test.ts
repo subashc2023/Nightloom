@@ -9,6 +9,7 @@ import {
   shortToolName,
   thinkingHidden,
   thinkingState,
+  thinkingToggleDead,
   workingLabel,
 } from "./activity";
 import { segmentIds } from "./transcriptPrefs.svelte";
@@ -192,6 +193,30 @@ describe("thinkingState", () => {
     expect(
       thinkingState([reply({ type: "thinking", text: "" }), reply({ type: "thinking", text: "so" })]),
     ).toBe("shown");
+  });
+});
+
+describe("thinkingToggleDead", () => {
+  const reply = (...blocks: { type: string; text?: string }[]) => ({
+    event: "assistant_message",
+    blocks,
+  });
+  const cc = (model: string) => ({ engine: "claude-code", model });
+  it("is dead when every recorded thinking block is empty, on any engine", () => {
+    const log = [reply({ type: "thinking", text: "" }, { type: "text", text: "hi" })];
+    expect(thinkingToggleDead(log, cc("claude-haiku-4-5"))).toBe(true);
+    expect(thinkingToggleDead(log, { engine: "api", model: "claude-opus-5" })).toBe(true);
+  });
+  it("is dead before the first reply only on Claude Code with an omitting model", () => {
+    expect(thinkingToggleDead([], cc("claude-opus-5"))).toBe(true);
+    expect(thinkingToggleDead([], cc("claude-haiku-4-5"))).toBe(false);
+    expect(thinkingToggleDead([], { engine: "api", model: "claude-opus-5" })).toBe(false);
+    expect(thinkingToggleDead([], null)).toBe(false);
+  });
+  it("is live once one block has text, whatever the model", () => {
+    expect(thinkingToggleDead([reply({ type: "thinking", text: "so" })], cc("claude-opus-5"))).toBe(
+      false,
+    );
   });
 });
 

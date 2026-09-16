@@ -407,6 +407,11 @@ struct AgentInfo {
     /// Nightloom's server), and never `--bare`: bare mode never reads
     /// OAuth credentials, so it would force the run back onto an API key.
     safe_mode: bool,
+    /// `--effort` as sent, or `None` for the CLI's default (nightshift
+    /// backlog 076); shown on the Context page's session line.
+    effort: Option<String>,
+    /// `--fallback-model` as sent, or `None` for no fallback.
+    fallback_model: Option<String>,
     /// The agent session this chat continues, when it has one — read back
     /// off the log, so reopening a chat tomorrow resumes it rather than
     /// starting a fresh one behind an unchanged transcript.
@@ -1216,6 +1221,10 @@ async fn connect_agent(
     system: Option<String>,
     preamble: Option<bool>,
     ask: Option<bool>,
+    plan: Option<bool>,
+    prompt_suggestions: Option<bool>,
+    effort: Option<String>,
+    fallback_model: Option<String>,
 ) -> Result<ConnectedInfo, String> {
     // Same rule as `connect`: an open project wins over the rail's saved
     // folder, or a chat filed under a project would be running somewhere
@@ -1239,6 +1248,15 @@ async fn connect_agent(
         .filter(|m| !m.is_empty());
     spec.max_budget_usd = budget.filter(|b| *b > 0.0);
     spec.safe_mode = safe_mode.unwrap_or(false);
+    // Effort and the fallback model (backlog 076), as the rail spelled
+    // them; empty is the CLI's default and no fallback.
+    spec.effort = effort.map(|e| e.trim().to_string()).filter(|e| !e.is_empty());
+    spec.fallback_model = fallback_model
+        .map(|f| f.trim().to_string())
+        .filter(|f| !f.is_empty());
+    // Off unless the shell asked (nightshift backlog 083): the CLI waits
+    // for the prediction before it exits, about six seconds a turn.
+    spec.prompt_suggestions = prompt_suggestions.unwrap_or(false);
     // Same vault call and the same project context `connect` builds, and
     // gated on the same switch: off means "nothing but what I typed" on
     // both engines. The library prompt is the trailer rather than the
@@ -1261,6 +1279,10 @@ async fn connect_agent(
     let off = layers_off(&state).await;
     let edits = layer_edits(&state).await;
     let mode = session_mode(&state).await;
+    // The CLI's own memory is a layer the chat can switch off like the
+    // rest (nightshift backlog 088), but never one Nightloom assembles:
+    // the kind reaches the CLI as a setting, not as text.
+    spec.auto_memory = !off.contains(&SegmentKind::CliMemory);
     let prompt = nightloom_service::agent_prompt(
         &PromptConfig {
             identity: false,
@@ -1305,7 +1327,11 @@ async fn connect_agent(
         // pauses on each call a person should decide, this binary is its
         // hook, and the window asks. Only with approval on — off is "run
         // everything", and Ask is the opposite of that.
-        let ask = ask.unwrap_or(false) && approval.unwrap_or(true);
+        // The Plan position (backlog 085) is Ask under `plan` mode — the
+        // same hook and prompt tool, nothing edited until the card's plan
+        // is approved — so it implies Ask and is subject to the same rule.
+        let plan = plan.unwrap_or(false) && approval.unwrap_or(true);
+        let ask = (ask.unwrap_or(false) || plan) && approval.unwrap_or(true);
         // Nightloom's own tools on this engine — search_chats, read_chat,
         // remember, fetch_page — served by the binary the app is running as
         // (`--mcp-serve` at the top of `main`), because the CLI is not on
@@ -1335,6 +1361,11 @@ async fn connect_agent(
                     // Per chat; `send_agent` points it at the open chat's
                     // directory before each turn, once the chat exists.
                     dir: PathBuf::new(),
+                    mode: if plan {
+                        nightloom_service::agent::AskMode::Plan
+                    } else {
+                        nightloom_service::agent::AskMode::Ask
+                    },
                 });
             }
             spec.mcp_config = Some(
@@ -1405,13 +1436,15 @@ async fn connect_agent(
             subscription: spec.use_subscription,
             // What the CLI is actually started in: Ask is Manual mode with
             // the hook, which `args()` sends as `default` whatever the
-            // field says.
-            permission_mode: if spec.ask.is_some() {
-                Some("default (ask)".into())
-            } else {
-                spec.permission_mode.clone()
+            // field says; Plan is `plan` with the same hook (backlog 085).
+            permission_mode: match spec.ask.as_ref().map(|a| a.mode) {
+                Some(nightloom_service::agent::AskMode::Plan) => Some("plan (ask)".into()),
+                Some(_) => Some("default (ask)".into()),
+                None => spec.permission_mode.clone(),
             },
             safe_mode: spec.safe_mode,
+            effort: spec.effort.clone(),
+            fallback_model: spec.fallback_model.clone(),
             resume: spec.resume.clone(),
         }),
     };
@@ -1904,7 +1937,26 @@ async fn send_agent(
         if let Some(id) = &session_id {
             agent.set_resume(Some(id.clone()));
         }
+        // An approved plan (backlog 085): the card's pick says where the
+        // chat goes next, and the agent shapes this one resume for it —
+        // `plan` mode still for Ask, `auto` with the narrow hook for Auto
+        // — then takes the position once the resume has run. The rail
+        // flips its own switch when it sends the answer (`resolveApproval`).
+        let plan_then = match &answer {
+            nightloom_service::agent::Answer::Allow { plan_then, .. }
+                if call.name == nightloom_service::agent::ask::EXIT_PLAN_TOOL =>
+            {
+                *plan_then
+            }
+            _ => None,
+        };
+        if let Some(then) = plan_then {
+            agent.plan_approved(then);
+        }
         result = agent.resume_deferred(&call, &cancel, &mut on_event).await;
+        if plan_then.is_some() {
+            agent.plan_exited();
+        }
     }
 
     match result {
@@ -2628,6 +2680,94 @@ async fn fork_session(state: State<'_, AppState>, upto: usize) -> Result<Message
     })
 }
 
+/// Continue the open chat in a fresh one after a hand-off (nightshift
+/// backlog 086, 2026-09-16): the window has filled, the model has written
+/// `HANDOFF.md` in the project, and the next chat starts empty in the same
+/// folder, linked to this one (`forked_from` with `reason: "handoff"`),
+/// with no CLI conversation to resume — its first turn opens a new one.
+/// The parent stays in the list, untouched and readable. Asked, never
+/// automatic (nightshift blocker 092, default taken): the caller is the
+/// *Continue in a new chat* card. Nothing is summarised here in
+/// Nightloom's words; the hand-off is the model's file.
+#[tauri::command]
+async fn continue_session(state: State<'_, AppState>) -> Result<MessageEdit, String> {
+    let mut agent_guard = state.agent.lock().await;
+    let log_dir = state.log_dir().await;
+    let mut session_guard = state.session.lock().await;
+    let parent = session_guard
+        .as_ref()
+        .ok_or_else(|| "no active session".to_string())?;
+    let next = parent.continued_from(&log_dir).map_err(|e| e.to_string())?;
+    if let Some(agent) = agent_guard.as_mut() {
+        agent.set_resume(None);
+    }
+    let events = next.events().to_vec();
+    let id = next.id.clone();
+    *session_guard = Some(next);
+    Ok(MessageEdit {
+        events,
+        session: id,
+        forked: true,
+    })
+}
+
+/// An aside's answer (nightshift backlog 081): the model's text, what the
+/// CLI estimated it would have cost, and nothing that touches the chat.
+#[derive(Serialize)]
+struct AsideResult {
+    answer: String,
+    /// The CLI's estimate of the API cost — not a bill under a subscription.
+    cost_usd: Option<f64>,
+    /// The aside read the chat's prefix from cache: this many tokens.
+    cache_read: u64,
+    is_error: bool,
+    notices: Vec<String>,
+}
+
+/// Ask a side question of the open chat without adding to it (nightshift
+/// backlog 081) — the CLI's interactive `/btw`, which `-p` refuses, done as
+/// a throwaway fork of the chat's session on its warm cache
+/// (`AgentSpec::aside` has the shape and the measurements). Nothing is
+/// recorded: not in the chat's log, not in the CLI's files (the fork is
+/// run without session persistence). The agent's lock serialises it with
+/// turns, so an aside waits for a running turn rather than racing it, and
+/// Stop cancels it like a turn. Refused with a sentence when the chat has
+/// no CLI session yet.
+#[tauri::command]
+async fn ask_aside(state: State<'_, AppState>, text: String) -> Result<AsideResult, String> {
+    let agent_guard = state.agent.lock().await;
+    let agent = agent_guard
+        .as_ref()
+        .ok_or_else(|| "not connected".to_string())?;
+    let cancel = CancellationToken::new();
+    *state.cancel.lock().unwrap() = cancel.clone();
+    let mut answer = String::new();
+    let mut on_event = |e: TurnEvent| {
+        if let TurnEvent::TextDelta { text } = &e {
+            answer.push_str(text);
+        }
+    };
+    let outcome = agent
+        .ask_aside(&text, &cancel, &mut on_event)
+        .await
+        .ok_or_else(|| {
+            "this chat has no Claude Code session to ask beside yet — send a message first"
+                .to_string()
+        })?
+        .map_err(|e| e.to_string())?;
+    Ok(AsideResult {
+        answer: if answer.trim().is_empty() {
+            outcome.text
+        } else {
+            answer
+        },
+        cost_usd: outcome.cost_usd,
+        cache_read: outcome.usage.cache_read_tokens.unwrap_or(0),
+        is_error: outcome.is_error,
+        notices: outcome.notices,
+    })
+}
+
 /// What removing items changed: the new view, plus the transcript, because
 /// an elision moves both.
 #[derive(Serialize)]
@@ -2832,6 +2972,121 @@ async fn prompt_layer_file(
         built.model.as_deref(),
         &cwd,
     ))
+}
+
+/// Claude Code's auto memory for the folder the live engine was built on
+/// (nightshift backlog 088, 2026-09-16): the CLI's `MEMORY.md` under
+/// `~/.claude/projects/<cwd>/memory/`, read for the Context page's card,
+/// and the names of the topic files beside it, which the CLI reads on
+/// demand and this card only lists. Read-only — Nightloom never writes
+/// under `~/.claude/projects/`. `text` is `None` when there is no such
+/// file, which the card says in words; the path is returned either way so
+/// the card can name where the CLI would look.
+#[derive(Serialize)]
+struct CliMemoryFile {
+    path: String,
+    text: Option<String>,
+    others: Vec<String>,
+}
+
+#[tauri::command]
+async fn cli_memory_file(state: State<'_, AppState>) -> Result<CliMemoryFile, String> {
+    use nightloom_service::agent::cli_session;
+    let built = state.prompt.lock().await;
+    let cwd = built
+        .cwd
+        .clone()
+        .ok_or_else(|| "not connected".to_string())?;
+    let projects = cli_session::projects_dir().ok_or_else(|| "no home directory".to_string())?;
+    let dir = projects
+        .join(cli_session::project_folder(&cwd))
+        .join("memory");
+    let index = dir.join("MEMORY.md");
+    let text = std::fs::read_to_string(&index).ok();
+    let mut others: Vec<String> = std::fs::read_dir(&dir)
+        .map(|rd| {
+            rd.flatten()
+                .filter(|e| e.path().is_file())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| n != "MEMORY.md")
+                .collect()
+        })
+        .unwrap_or_default();
+    others.sort();
+    Ok(CliMemoryFile {
+        path: index.to_string_lossy().into_owned(),
+        text,
+        others,
+    })
+}
+
+/// Claude Code's own system prompt for the open chat, read-only
+/// (nightshift backlog 077, 2026-09-16; his ask of 00:55). Not in the init
+/// event and no flag prints it: the one place it exists is the
+/// `prompt_snapshot` attachment the CLI writes into its session file after
+/// the first turn (`{"type":"attachment","attachment":{"type":
+/// "prompt_snapshot","systemPrompt":[…sections…]}}`, measured on 2.1.263 —
+/// nightshift `notes/runner-design/077-measurements-2026-09-16.md`), and
+/// which `--system-prompt-snapshot on` (the default) reuses verbatim on
+/// every request and resume. So: the chat's CLI session id from its log,
+/// the file through `cli_session::find`, the *last* snapshot line in it.
+/// `None` before the first turn, for an ephemeral chat (no file), and on
+/// the other engine. Nothing is sent anywhere; it is his file on his disk.
+#[derive(Serialize)]
+struct CliPromptSnapshot {
+    /// The prompt's sections, in the order the CLI sends them.
+    sections: Vec<String>,
+    /// The file it was read from.
+    path: String,
+}
+
+#[tauri::command]
+async fn cli_prompt_snapshot(
+    state: State<'_, AppState>,
+) -> Result<Option<CliPromptSnapshot>, String> {
+    use nightloom_service::agent::cli_session;
+    let id = match state.session.lock().await.as_ref() {
+        Some(s) => match s.agent_session() {
+            Some((agent, id)) if agent == AGENT => id.to_string(),
+            _ => return Ok(None),
+        },
+        None => return Ok(None),
+    };
+    let cwd = match state.prompt.lock().await.cwd.clone() {
+        Some(cwd) => cwd,
+        None => return Ok(None),
+    };
+    let Some(projects) = cli_session::projects_dir() else {
+        return Ok(None);
+    };
+    let path = match cli_session::find(&projects, &cwd, &id) {
+        Ok(p) => p,
+        Err(_) => return Ok(None),
+    };
+    let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let mut last: Option<Vec<String>> = None;
+    for line in text.lines() {
+        if !line.contains("prompt_snapshot") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if v["type"] != "attachment" || v["attachment"]["type"] != "prompt_snapshot" {
+            continue;
+        }
+        if let Some(arr) = v["attachment"]["systemPrompt"].as_array() {
+            last = Some(
+                arr.iter()
+                    .filter_map(|s| s.as_str().map(str::to_string))
+                    .collect(),
+            );
+        }
+    }
+    Ok(last.map(|sections| CliPromptSnapshot {
+        sections,
+        path: path.to_string_lossy().into_owned(),
+    }))
 }
 
 /// Delete a session log the reversible way: it moves to `<logs>/trash/`
@@ -4048,6 +4303,26 @@ fn open_url(url: String) -> Result<(), String> {
     project::open_url(&url).map_err(|e| e.to_string())
 }
 
+/// Post a banner through the OS notification centre (nightshift backlog
+/// 079): a turn finished, or a call is waiting on an answer, while the
+/// window is not the one in front. The frontend decides *whether* — it is
+/// the one that knows the window's focus and the setting — and this only
+/// posts. From Rust rather than the webview so the capability set gains
+/// nothing and no npm package is needed, as with the folder picker.
+///
+/// macOS shows a banner only for a bundled, signed app; a `cargo tauri dev`
+/// build posts into nothing, without an error.
+#[tauri::command]
+fn notify(app: AppHandle, title: String, body: String) -> Result<(), String> {
+    use tauri_plugin_notification::NotificationExt;
+    app.notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show()
+        .map_err(|e| e.to_string())
+}
+
 /// Interrupt the in-flight turn or compaction, if any.
 #[tauri::command]
 fn cancel(state: State<'_, AppState>) {
@@ -4074,16 +4349,19 @@ fn approve_call(
     decision: String,
     reason: Option<String>,
     answer: Option<serde_json::Value>,
+    then: Option<String>,
 ) -> Result<(), String> {
     // A call the CLI deferred (nightshift backlog 084) is answered on its
     // own gate, and "always" there is a rule for this chat, not the
     // process-wide policy: `agent::ask::Answer::AllowForChat`. `answer` is
-    // the `updatedInput` a question or a plan sends back with an allow.
+    // the `updatedInput` a question or a plan sends back with an allow;
+    // `then` is the plan card's pick, `ask` or `auto` (backlog 085).
     if state.ask.has(&id) {
-        use nightloom_service::agent::Answer;
+        use nightloom_service::agent::{Answer, PlanThen};
         let answer = match decision.as_str() {
             "allow" => Answer::Allow {
                 updated_input: answer,
+                plan_then: then.as_deref().and_then(PlanThen::parse),
             },
             "always" => Answer::AllowForChat {
                 updated_input: answer,
@@ -4503,7 +4781,9 @@ fn main() {
     }
 
     #[allow(unused_mut)]
-    let mut builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
+    let mut builder = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init());
 
     // Only on macOS. On Windows and Linux a menu is drawn *inside* the window,
     // under a caption bar this app no longer has — it would be a grey strip
@@ -4590,6 +4870,7 @@ fn main() {
             transcript,
             send,
             send_agent,
+            ask_aside,
             cancel,
             compact,
             rewind,
@@ -4606,6 +4887,9 @@ fn main() {
             set_prompt_layers,
             set_prompt_layer_text,
             prompt_layer_file,
+            cli_memory_file,
+            cli_prompt_snapshot,
+            continue_session,
             delete_session,
             restore_session,
             set_undo_menu,
@@ -4650,6 +4934,7 @@ fn main() {
             reveal_file,
             open_file,
             open_url,
+            notify,
             nightshift::nightshift_projects,
             nightshift::nightshift_project,
             nightshift::nightshift_enable,

@@ -46,6 +46,19 @@
 //! answer was "for this chat". The directory is per chat rather than per
 //! connection because a per-chat rule is the one the user can see and
 //! revoke; the permanent kind belongs in the CLI's own settings.
+//!
+//! **The Plan position** (2026-09-16, nightshift backlog 085) is the same
+//! hook under `--permission-mode plan`. Measured the same night
+//! (`notes/runner-design/085-report-2026-09-16.md`): in plan mode the
+//! model's first call is a `Write` of its plan file under
+//! `~/.claude/plans/`, which the hook's `Write` matcher would defer before
+//! the plan is ever presented — so in plan mode the hook has **no
+//! opinion** on the editing tools ([`PLAN_MODE_PASS`]) and leaves them to
+//! the CLI, which allows the plan file and blocks every other edit with a
+//! message the model reads. `ExitPlanMode` then defers like any call, the
+//! card shows the plan, and the approval's resume is run in `plan` mode
+//! still (the tool errors "not in plan mode" under any other) with the
+//! chat's next position decided by the card ([`PlanThen`]).
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -131,6 +144,56 @@ impl nightloom_core::tool::Tool for PromptTool {
 /// CLI prompts for every MCP tool it has no rule for.
 pub const MATCHER: &str = "Bash|Write|Edit|MultiEdit|NotebookEdit|WebFetch|WebSearch|AskUserQuestion|ExitPlanMode|EnterWorktree|ExitWorktree|CronCreate|CronDelete|ScheduleWakeup|mcp__.*";
 
+/// The plan tool's name, as the CLI reports it in `deferred_tool_use`.
+pub const EXIT_PLAN_TOOL: &str = "ExitPlanMode";
+
+/// The matcher for the one resume that leaves plan mode for the Auto
+/// position (2026-09-16, backlog 085): the hook is registered for the
+/// pending plan call alone, so it is reachable — a resume of a deferred
+/// call with no hook at all is refused outright, `stop_reason:
+/// "tool_deferred_unavailable"` (measured, `m085-8`) — and nothing else
+/// pauses; every later call is the CLI's own mode's to decide.
+pub const EXIT_PLAN_MATCHER: &str = "ExitPlanMode";
+
+/// The tools the hook stands aside for under `--permission-mode plan`:
+/// the CLI polices edits there itself — its own plan file under
+/// `~/.claude/plans/` is allowed, anything else is blocked with a message
+/// the model reads — and a hook `allow` would override that (a standing
+/// "Allow for this chat" on `Write` included). Measured 2026-09-16
+/// (`m085-1`, `m085-3`): with the hook deferring these, the first prompt
+/// of every plan-mode turn was "Run Write?" for the plan file.
+pub const PLAN_MODE_PASS: [&str; 4] = ["Write", "Edit", "MultiEdit", "NotebookEdit"];
+
+/// Where the chat goes once a plan is approved — the pick on the card
+/// (backlog 085, the design's `then Ask | Auto`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanThen {
+    /// The Ask position: the hook keeps deferring what a person should
+    /// decide. The approval's resume runs in `plan` mode with the full
+    /// hook, which is the clean path (`m085-6`: the tool's result reads
+    /// "User has approved exiting plan mode", the next write defers).
+    Ask,
+    /// The Auto position: the approval's resume runs in `auto` with the
+    /// hook on [`EXIT_PLAN_MATCHER`] alone, and the chat is then `auto`
+    /// with no hook. The tool's result on that path is the CLI's "You are
+    /// not in plan mode … If your plan was already approved, continue"
+    /// error, which the model follows (`m085-9`); and where `auto` is
+    /// unavailable to the session the CLI starts in Manual, as it does
+    /// for the Auto position today.
+    Auto,
+}
+
+impl PlanThen {
+    /// The card's word: `ask` or `auto`. Anything else is nobody's pick.
+    pub fn parse(word: &str) -> Option<Self> {
+        match word.trim() {
+            "ask" => Some(Self::Ask),
+            "auto" => Some(Self::Auto),
+            _ => None,
+        }
+    }
+}
+
 /// The call the CLI paused on, as `deferred_tool_use` reports it.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct DeferredCall {
@@ -148,7 +211,14 @@ pub enum Answer {
     /// plan travel back (`external`, the hooks doc: `updatedInput`
     /// "replaces the entire input object"; for `AskUserQuestion` and
     /// `ExitPlanMode` `allow` alone "is not sufficient").
-    Allow { updated_input: Option<Value> },
+    ///
+    /// `plan_then` is the card's pick on an approved plan (backlog 085)
+    /// and nothing else's: it never reaches the decision file, it tells
+    /// the shell which position the chat takes after the resume.
+    Allow {
+        updated_input: Option<Value>,
+        plan_then: Option<PlanThen>,
+    },
     /// Run it, and every later call to the same tool in this chat.
     AllowForChat { updated_input: Option<Value> },
     /// Refuse it; the reason is what the model reads.
@@ -193,7 +263,7 @@ impl AskDir {
     pub fn write(&self, call: &DeferredCall, answer: &Answer) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.dir)?;
         let decision = match answer {
-            Answer::Allow { updated_input } => Decision {
+            Answer::Allow { updated_input, .. } => Decision {
                 tool_use_id: call.id.clone(),
                 decision: "allow".into(),
                 updated_input: updated_input.clone(),
@@ -268,13 +338,20 @@ struct HookInput {
     tool_name: String,
     #[serde(default)]
     tool_use_id: String,
+    /// The process's mode — `plan` is the one read (backlog 085); the
+    /// field is on every line the CLI sent (`hook-defer-input.log`).
+    #[serde(default)]
+    permission_mode: String,
 }
 
-/// The hook's reply, as the CLI reads it.
+/// The hook's reply, as the CLI reads it. `None` inside is the empty
+/// object `{}` — no decision, the CLI's own flow continues — which is a
+/// different thing from `ask`: `ask` forces a prompt, and headless that is
+/// the prompt tool refusing.
 #[derive(Debug, PartialEq, Serialize)]
 pub struct HookReply {
-    #[serde(rename = "hookSpecificOutput")]
-    pub hook_specific_output: HookOutput,
+    #[serde(rename = "hookSpecificOutput", skip_serializing_if = "Option::is_none")]
+    pub hook_specific_output: Option<HookOutput>,
 }
 
 #[derive(Debug, PartialEq, Serialize)]
@@ -295,12 +372,21 @@ pub struct HookOutput {
 impl HookReply {
     fn new(decision: &str) -> Self {
         Self {
-            hook_specific_output: HookOutput {
+            hook_specific_output: Some(HookOutput {
                 hook_event_name: "PreToolUse".into(),
                 permission_decision: decision.into(),
                 permission_decision_reason: None,
                 updated_input: None,
-            },
+            }),
+        }
+    }
+
+    /// No decision at all: `{}` on stdout, and the CLI decides as if no
+    /// hook were registered. Plan mode's editing tools take this path
+    /// ([`PLAN_MODE_PASS`]).
+    pub fn pass() -> Self {
+        Self {
+            hook_specific_output: None,
         }
     }
 
@@ -310,24 +396,46 @@ impl HookReply {
 
     pub fn allow(updated_input: Option<Value>) -> Self {
         let mut r = Self::new("allow");
-        r.hook_specific_output.updated_input = updated_input;
+        if let Some(out) = &mut r.hook_specific_output {
+            out.updated_input = updated_input;
+        }
         r
     }
 
     pub fn deny(reason: String) -> Self {
         let mut r = Self::new("deny");
-        r.hook_specific_output.permission_decision_reason = Some(reason);
+        if let Some(out) = &mut r.hook_specific_output {
+            out.permission_decision_reason = Some(reason);
+        }
         r
     }
 
+    /// The decision word, or `pass` for the reply that carries none.
     pub fn decision(&self) -> &str {
-        &self.hook_specific_output.permission_decision
+        self.hook_specific_output
+            .as_ref()
+            .map_or("pass", |o| o.permission_decision.as_str())
+    }
+
+    /// The `updatedInput` an allow carries, if any.
+    pub fn updated_input(&self) -> Option<&Value> {
+        self.hook_specific_output
+            .as_ref()
+            .and_then(|o| o.updated_input.as_ref())
+    }
+
+    /// The reason a denial carries, if any.
+    pub fn reason(&self) -> Option<&str> {
+        self.hook_specific_output
+            .as_ref()
+            .and_then(|o| o.permission_decision_reason.as_deref())
     }
 }
 
 /// The hook's whole decision, pure: the CLI's stdin line and the directory
-/// in, the reply out. Order: a standing rule, then the one-shot decision
-/// for this very call (consumed), then defer.
+/// in, the reply out. Order: plan mode's editing tools stand aside, then a
+/// standing rule, then the one-shot decision for this very call
+/// (consumed), then defer.
 pub fn decide(dir: &Path, stdin_json: &str) -> HookReply {
     let input: HookInput = match serde_json::from_str(stdin_json) {
         Ok(i) => i,
@@ -336,6 +444,12 @@ pub fn decide(dir: &Path, stdin_json: &str) -> HookReply {
         // CLI's own flow decide is the conservative reading.
         Err(_) => return HookReply::new("ask"),
     };
+    // Before the rules on purpose: plan mode's promise is that nothing is
+    // edited until the plan is approved, and a rule granted in an earlier
+    // Ask turn must not be the thing that breaks it.
+    if input.permission_mode == "plan" && PLAN_MODE_PASS.contains(&input.tool_name.as_str()) {
+        return HookReply::pass();
+    }
     if read_rules(dir).allow.contains(&input.tool_name) {
         return HookReply::allow(None);
     }
@@ -385,12 +499,18 @@ pub fn run_hook(args: &[String]) -> std::io::Result<()> {
 /// through, each word single-quoted, so a bundle path with a space in it
 /// survives.
 pub fn settings_json(hook: &[String], dir: &Path) -> String {
+    settings_json_matching(hook, dir, MATCHER)
+}
+
+/// The same registration on a matcher of the caller's — [`EXIT_PLAN_MATCHER`]
+/// for the one resume that leaves plan mode for Auto (backlog 085).
+pub fn settings_json_matching(hook: &[String], dir: &Path, matcher: &str) -> String {
     let mut words: Vec<String> = hook.iter().map(|w| shell_quote(w)).collect();
     words.push(shell_quote(&dir.to_string_lossy()));
     serde_json::json!({
         "hooks": {
             "PreToolUse": [{
-                "matcher": MATCHER,
+                "matcher": matcher,
                 "hooks": [{ "type": "command", "command": words.join(" ") }]
             }]
         }
@@ -498,13 +618,14 @@ mod tests {
             &call(),
             &Answer::Allow {
                 updated_input: Some(updated.clone()),
+                plan_then: None,
             },
         )
         .unwrap();
         assert!(dir.join(DECISION_FILE).exists());
         let reply = decide(&dir, STDIN);
         assert_eq!(reply.decision(), "allow");
-        assert_eq!(reply.hook_specific_output.updated_input, Some(updated));
+        assert_eq!(reply.updated_input(), Some(&updated));
         assert!(!dir.join(DECISION_FILE).exists(), "consumed on read");
         assert_eq!(
             decide(&dir, STDIN),
@@ -530,6 +651,7 @@ mod tests {
                 &other,
                 &Answer::Allow {
                     updated_input: None,
+                    plan_then: None,
                 },
             )
             .unwrap();
@@ -553,13 +675,7 @@ mod tests {
         .unwrap();
         let reply = decide(&dir, STDIN);
         assert_eq!(reply.decision(), "deny");
-        assert_eq!(
-            reply
-                .hook_specific_output
-                .permission_decision_reason
-                .as_deref(),
-            Some("not that file")
-        );
+        assert_eq!(reply.reason(), Some("not that file"));
         ask.write(
             &call(),
             &Answer::Deny {
@@ -568,13 +684,7 @@ mod tests {
         )
         .unwrap();
         let reply = decide(&dir, STDIN);
-        assert_eq!(
-            reply
-                .hook_specific_output
-                .permission_decision_reason
-                .as_deref(),
-            Some("the user declined this call")
-        );
+        assert_eq!(reply.reason(), Some("the user declined this call"));
     }
 
     /// "Allow for this chat" is a rule that outlives the decision: the
@@ -668,7 +778,8 @@ mod tests {
         assert!(!gate.answer(
             "toolu_9",
             Answer::Allow {
-                updated_input: None
+                updated_input: None,
+                plan_then: None,
             }
         ));
         assert!(gate.answer(
@@ -688,5 +799,93 @@ mod tests {
         let rx = gate.wait("toolu_2");
         gate.abandon_all();
         assert!(rx.await.is_err());
+    }
+
+    /// The CLI's stdin line for the plan file, verbatim from the 2026-09-16
+    /// measurement (`m085-3-plan.jsonl`'s deferred call, the mode as the
+    /// hook receives it), trimmed of fields nothing here reads.
+    const PLAN_STDIN: &str = r##"{"session_id":"3f1a","cwd":"/tmp","hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":"/Users/swaraagsistla/.claude/plans/plan-how-to-create-peaceful-pond.md","content":"# Plan: Create hello.txt\n"},"tool_use_id":"toolu_019t7zvHMdEVna6wJuJPVQks","permission_mode":"plan"}"##;
+
+    /// In plan mode the editing tools are the CLI's to police: the hook
+    /// says nothing — `{}` on stdout, not `ask`, which would force a
+    /// prompt — even over a standing rule or a written decision. Every
+    /// other tool, and every mode, is as before.
+    #[test]
+    fn plan_mode_leaves_the_editing_tools_to_the_cli() {
+        let dir = scratch();
+        let reply = decide(&dir, PLAN_STDIN);
+        assert_eq!(reply, HookReply::pass());
+        assert_eq!(reply.decision(), "pass");
+        assert_eq!(serde_json::to_string(&reply).unwrap(), "{}");
+        // A rule from an earlier Ask turn does not open plan mode.
+        AskDir::new(&dir).allow_tool("Write").unwrap();
+        assert_eq!(decide(&dir, PLAN_STDIN), HookReply::pass());
+        for tool in ["Edit", "MultiEdit", "NotebookEdit"] {
+            let line = PLAN_STDIN.replace(
+                r#""tool_name":"Write""#,
+                &format!(r#""tool_name":"{tool}""#),
+            );
+            assert_eq!(decide(&dir, &line), HookReply::pass(), "{tool}");
+        }
+        // The plan tool, a command and a question still pause.
+        for tool in ["ExitPlanMode", "Bash", "AskUserQuestion"] {
+            let line = PLAN_STDIN.replace(
+                r#""tool_name":"Write""#,
+                &format!(r#""tool_name":"{tool}""#),
+            );
+            assert_eq!(decide(&dir, &line), HookReply::defer(), "{tool}");
+        }
+        // The same Write outside plan mode is the rule's to allow.
+        let manual = PLAN_STDIN.replace(
+            r#""permission_mode":"plan""#,
+            r#""permission_mode":"default""#,
+        );
+        assert_eq!(decide(&dir, &manual).decision(), "allow");
+    }
+
+    /// The card's pick is the shell's business and never the file's: the
+    /// decision written for an approved plan is a plain allow.
+    #[test]
+    fn the_plan_pick_is_parsed_and_stays_out_of_the_decision_file() {
+        assert_eq!(PlanThen::parse("ask"), Some(PlanThen::Ask));
+        assert_eq!(PlanThen::parse(" auto "), Some(PlanThen::Auto));
+        assert_eq!(PlanThen::parse("plan"), None);
+        let dir = scratch();
+        let plan = DeferredCall {
+            id: "toolu_01B1VWgn7SxyPcebfMWpB3vb".into(),
+            name: EXIT_PLAN_TOOL.into(),
+            input: json!({"plan": "# Plan\n", "planFilePath": "/Users/x/.claude/plans/p.md"}),
+        };
+        AskDir::new(&dir)
+            .write(
+                &plan,
+                &Answer::Allow {
+                    updated_input: Some(plan.input.clone()),
+                    plan_then: Some(PlanThen::Auto),
+                },
+            )
+            .unwrap();
+        let raw = std::fs::read_to_string(dir.join(DECISION_FILE)).unwrap();
+        assert!(!raw.contains("auto"), "{raw}");
+        let v: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(v["decision"], "allow");
+        assert_eq!(
+            v["updated_input"]["planFilePath"],
+            "/Users/x/.claude/plans/p.md"
+        );
+    }
+
+    /// The Auto exit's registration names the plan tool alone, so the
+    /// pending call is reachable and nothing else pauses.
+    #[test]
+    fn the_exit_matcher_is_the_plan_tool_alone() {
+        let s = settings_json_matching(
+            &["hook".into()],
+            Path::new("/tmp/ask/chat-1"),
+            EXIT_PLAN_MATCHER,
+        );
+        let v: Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(v["hooks"]["PreToolUse"][0]["matcher"], "ExitPlanMode");
+        assert_eq!(EXIT_PLAN_MATCHER, EXIT_PLAN_TOOL);
     }
 }

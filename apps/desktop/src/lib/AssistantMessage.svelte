@@ -24,6 +24,16 @@
     workingLabel,
   } from "./activity";
   import { fmtShare, fmtTokens, shareOf, sizeTitle, type TurnSize } from "./tokens";
+  import {
+    artifactLinks,
+    displayPath,
+    extOf,
+    fmtSize,
+    pathCandidates,
+    type ArtifactLink,
+  } from "./cards";
+  import * as api from "./api";
+  import { addToast, app } from "./state.svelte";
   import ApprovalPrompt from "./ApprovalPrompt.svelte";
   import Icon from "./Icon.svelte";
   import { REMOVED_TEXT_PLACEHOLDER, REMOVED_TOOL_PLACEHOLDER } from "./edit";
@@ -187,7 +197,124 @@
   const lastGroup = $derived(groups[groups.length - 1]);
   const moonInBlock = $derived(streaming && lastGroup?.kind === "activity");
   const moonAlone = $derived(streaming && segs.length > 0 && !moonInBlock);
+
+  // The cards under the reply (backlog 078): an artifact the model published
+  // and a file it wrote, read out of the reply's text once it has stopped
+  // streaming — a path half-typed mid-stream is not a file yet. The links
+  // are a pure function of the text; the files are whatever the backend
+  // finds on disk among the candidates, so a path the model made up stays
+  // text. Run once per finished reply: a recorded reply's text never changes.
+  interface FileCard {
+    path: string;
+    label: string;
+    size: number;
+  }
+  const roots = $derived(
+    [app.connection?.workspace, app.project?.root].filter((r): r is string => !!r),
+  );
+  const replyText = $derived(textOf());
+  const links = $derived<ArtifactLink[]>(streaming ? [] : artifactLinks(replyText));
+  let files = $state<FileCard[]>([]);
+  let checked = "";
+  $effect(() => {
+    if (streaming) return;
+    const text = replyText;
+    const bases = roots;
+    const key = `${bases.join("\0")}\0${text}`;
+    if (key === checked) return;
+    checked = key;
+    const candidates = pathCandidates(text, bases);
+    if (candidates.length === 0) {
+      files = [];
+      return;
+    }
+    let stale = false;
+    void api
+      .namedFiles(candidates.map((c) => c.path))
+      .then((found) => {
+        if (stale) return;
+        files = found.flatMap((f) =>
+          f ? [{ path: f.path, label: displayPath(f.path, bases), size: f.size }] : [],
+        );
+      })
+      .catch(() => {
+        // The backend could not look; nothing to draw, nothing to say.
+        if (!stale) files = [];
+      });
+    return () => {
+      stale = true;
+    };
+  });
+  async function openLink(url: string): Promise<void> {
+    try {
+      await api.openUrl(url);
+    } catch (e) {
+      addToast(`Could not open the link: ${String(e)}`);
+    }
+  }
+  async function openFile(path: string): Promise<void> {
+    try {
+      await api.openFile(path);
+    } catch (e) {
+      addToast(`Could not open: ${String(e)}`);
+    }
+  }
+  async function revealFile(path: string): Promise<void> {
+    try {
+      await api.revealFile(path);
+    } catch (e) {
+      addToast(`Could not reveal: ${String(e)}`);
+    }
+  }
 </script>
+
+{#snippet subagent(children: Segment[])}
+  {@const calls = children.filter((c) => c.kind === "tool").length}
+  {@const words = children
+    .filter((c) => c.kind === "text")
+    .reduce((n, c) => n + (c.kind === "text" ? c.text.split(/\s+/).filter(Boolean).length : 0), 0)}
+  <details class="sub">
+    <summary class="sub-line">
+      <span class="ico">▸</span>
+      <span class="name">subagent</span>
+      <span class="arg">
+        {#if calls}{calls} call{calls === 1 ? "" : "s"}{/if}{#if calls && words} · {/if}{#if words}{words} words{streaming ? " so far" : ""}{/if}
+      </span>
+    </summary>
+    <div class="sub-body">
+      {#each children as c, k (k)}
+        {#if c.kind === "tool"}
+          <div class="arow static" class:error={!!c.call.result?.is_error}>
+            <span class="ico">⚒</span>
+            <span class="name" title={c.call.name}>{shortToolName(c.call.name)}</span>
+            <span class="arg">{toolInputSummary(c.call.input)}</span>
+            <span class="size">{toolResultSummary(c.call, streaming)}</span>
+          </div>
+          {#if c.call.children?.length}
+            {@render subagent(c.call.children)}
+          {/if}
+        {:else if c.kind === "thinking"}
+          <div class="arow static">
+            <span class="ico">✦</span>
+            <span class="name">thought</span>
+            <span class="arg">{c.text}</span>
+            <span class="size"></span>
+          </div>
+        {:else if c.kind === "redacted"}
+          <div class="arow static">
+            <span class="ico">✦</span>
+            <span class="name">redacted thinking</span>
+            <span class="arg"></span>
+            <span class="size"></span>
+          </div>
+        {:else if c.kind === "text"}
+          <pre class="sub-text">{c.text}</pre>
+        {/if}
+      {/each}
+    </div>
+  </details>
+{/snippet}
+
 
 <div class="assistant">
   {#if footer}
@@ -300,6 +427,15 @@
                 {#each approvals.filter((a) => a.id === seg.call.id) as req (req.id)}
                   <ApprovalPrompt {req} />
                 {/each}
+                <!-- The subagent this call spawned (backlog 075): one indented
+                     row that opens to the child's turn — its calls, thinking and
+                     words, nested subagents included. Live the children are
+                     segments of their own; from the log they are the recorder's
+                     narrative, one text segment. Outside the collapse, like the
+                     prompt: a subagent at work is what the row is about. -->
+                {#if seg.call.children?.length}
+                  {@render subagent(seg.call.children)}
+                {/if}
                 <!-- The hover on the call itself (backlog 066): the call and its
                      result leave the context together, the log keeps both. -->
                 {#if onremove && seg.block != null}
@@ -381,6 +517,34 @@
       <span class="working-text">{working}</span>
     </div>
   {/if}
+  {#if !streaming && (links.length > 0 || files.length > 0)}
+    <!-- Under the reply text, not inline in it (backlog 078): an artifact
+         result as a link card, a file the reply names as the attachment
+         card — extension badge, path, size, Open, Reveal. -->
+    <div class="cards">
+      {#each links as l (l.url)}
+        <div class="card link" title={l.url}>
+          <span class="card-ico"><Icon name="ext" size={13} /></span>
+          <span class="card-text">
+            <span class="card-title">{l.title}</span>
+            <span class="card-sub">{l.url.replace(/^https?:\/\//, "")}</span>
+          </span>
+          <button class="ns-btn ghost small" title="Open in the browser" onclick={() => void openLink(l.url)}>Open ↗</button>
+        </div>
+      {/each}
+      {#each files as f (f.path)}
+        <div class="card file" title={f.path}>
+          <span class="card-ext">{extOf(f.path)}</span>
+          <span class="card-text">
+            <span class="card-title mono">{f.label}</span>
+          </span>
+          <span class="card-size">{fmtSize(f.size)}</span>
+          <button class="ns-btn ghost small" title="Open with its application" onclick={() => void openFile(f.path)}>Open</button>
+          <button class="ns-btn ghost small" title="Show in the file manager" onclick={() => void revealFile(f.path)}>Reveal</button>
+        </div>
+      {/each}
+    </div>
+  {/if}
   {#if footer && !streaming}
     {@const share = size ? shareOf(size.tokens, limit) : null}
     <div class="footer">
@@ -435,6 +599,42 @@
     border-left-color: var(--accent);
   }
   .fold,
+  /* The subagent row under an Agent call (backlog 075): the disclosure's
+     summary drawn like a row, its body indented one rule in. */
+  .sub {
+    margin: 2px 0 2px 1.7em;
+  }
+  .sub-line {
+    display: grid;
+    grid-template-columns: 1.1em minmax(0, auto) minmax(0, 1fr);
+    column-gap: 0.6rem;
+    align-items: baseline;
+    cursor: pointer;
+    list-style: none;
+    color: var(--dim);
+    font-size: 0.78rem;
+    padding: 2px 0;
+  }
+  .sub-line::-webkit-details-marker {
+    display: none;
+  }
+  .sub[open] > .sub-line .ico {
+    transform: rotate(90deg);
+    display: inline-block;
+  }
+  .sub-body {
+    border-left: 2px solid var(--line);
+    padding-left: 0.6rem;
+    margin-left: 0.4em;
+  }
+  .sub-text {
+    margin: 2px 0;
+    font-size: 0.78rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--text);
+    font-family: inherit;
+  }
   .arow {
     display: grid;
     grid-template-columns: 1.1em minmax(0, auto) minmax(0, 1fr) auto;
@@ -680,6 +880,73 @@
   .notice {
     color: var(--dim);
     font-size: 0.78rem;
+  }
+  /* The cards under a reply (backlog 078): one row each, the composer's
+     attachment chip's shape — badge · name · size · buttons — in the
+     existing tokens. */
+  .cards {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    align-items: flex-start;
+  }
+  .card {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    max-width: 100%;
+    min-width: 0;
+    padding: 6px 10px;
+    border: 1px solid var(--line2);
+    border-radius: 8px;
+    background: var(--panel);
+    font-size: 0.85rem;
+    color: var(--ink);
+  }
+  .card-ico {
+    display: inline-flex;
+    color: var(--accent);
+    flex: none;
+  }
+  .card-ext {
+    flex: none;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--bg);
+    background: var(--dim);
+    border-radius: 4px;
+    padding: 2px 5px;
+  }
+  .card-text {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .card-title {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .card-title.mono {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+  }
+  .card-sub,
+  .card-size {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .card-size {
+    flex: none;
+  }
+  .card .ns-btn {
+    flex: none;
   }
   .footer {
     display: flex;

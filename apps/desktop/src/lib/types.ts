@@ -80,6 +80,21 @@ export interface AgentConnectArgs {
    * false, which is `auto`.
    */
   ask?: boolean;
+  /**
+   * The Plan position (2026-09-16, backlog 085): Ask under the CLI's plan
+   * mode — it reads, drafts a plan and asks on the card before any edit;
+   * Approve picks whether the chat goes on as Ask or Auto. Implies `ask`.
+   */
+  plan?: boolean;
+  /** Ask the CLI to predict the next prompt after each turn (nightshift
+   *  backlog 083): `--prompt-suggestions true`. Off by default — about six
+   *  seconds added to every turn. */
+  promptSuggestions?: boolean;
+  /** `--effort low|medium|high|xhigh|max` (backlog 076); omitted is the
+   *  CLI's default. */
+  effort?: string;
+  /** `--fallback-model <alias>`; omitted is no fallback. */
+  fallbackModel?: string;
   /** Stop the turn if the CLI's own cost estimate passes this. */
   budget?: number;
   /** Appended to Claude Code's system prompt, after the preamble. */
@@ -108,6 +123,10 @@ export interface AgentInfo {
   /** "auto" | "bypassPermissions", or null when tools are off. */
   permission_mode: string | null;
   safe_mode: boolean;
+  /** `--effort` as sent, or null for the CLI's default (backlog 076). */
+  effort: string | null;
+  /** `--fallback-model` as sent, or null for none. */
+  fallback_model: string | null;
   /** The agent session this chat continues, when it has one. */
   resume: string | null;
 }
@@ -577,6 +596,9 @@ export interface SessionMeta {
 export interface ForkedFrom {
   session: string;
   index: number;
+  /** `"handoff"` for a chat that continues a full one from HANDOFF.md
+   *  (nightshift backlog 086); absent on an edit-and-send fork. */
+  reason?: string;
 }
 
 /** A session that matched a search. Flattened on the Rust side, so it is a
@@ -788,7 +810,64 @@ export type TurnEvent =
   | { type: "round_limit"; rounds: number }
   /** The model compacted the context itself, mid-turn, via `compact_context`. */
   | { type: "compacted"; summary: string }
-  | { type: "usage"; usage: Usage };
+  | { type: "usage"; usage: Usage }
+  /** What the Claude Code session has, from the CLI's `system/init` line —
+   *  the first event of every turn on that engine (nightshift backlog 077). */
+  | ({ type: "agent_init" } & AgentInit)
+  /** The CLI's predicted next prompt, after the result (nightshift backlog
+   *  083); the composer's ghost line. */
+  | { type: "prompt_suggestion"; text: string }
+  /** An event of a subagent's own turn on the Claude Code engine, carrying
+   *  the id of the `Agent` call that spawned it (nightshift backlog 075);
+   *  `event` is the child's text, thinking, call or result as the main
+   *  thread's would be, and nests under that call's row. */
+  | { type: "subagent"; parent_tool_use_id: string; event: TurnEvent };
+
+/** An aside's answer (nightshift backlog 081): the model's text, off the
+ *  chat's warm cache, recorded nowhere. */
+export interface AsideResult {
+  answer: string;
+  /** The CLI's estimate of the API cost — not a bill under a subscription. */
+  cost_usd: number | null;
+  /** Tokens of the chat's prefix the aside read back from cache. */
+  cache_read: number;
+  is_error: boolean;
+  notices: string[];
+}
+
+/** One MCP server as the CLI's init line lists it: `connected`, `pending`,
+ *  `needs-auth`, or `failed` with an error. */
+export interface McpServer {
+  name: string;
+  status: string;
+  error?: string;
+}
+
+/**
+ * The CLI's `system/init` line, as the Context page's *This session* pane
+ * shows it (nightshift backlog 077): MCP servers with status, the tool
+ * names (built-in and `mcp__…`), the skills, the slash commands (the skills
+ * first, then the built-ins), the agents, the CLI version and the
+ * permission mode. Under safe mode the lists are honestly short.
+ */
+export interface AgentInit {
+  session_id: string | null;
+  model: string | null;
+  version: string | null;
+  permission_mode: string | null;
+  tools: string[];
+  mcp_servers: McpServer[];
+  slash_commands: string[];
+  skills: string[];
+  agents: string[];
+}
+
+/** Claude Code's own system prompt, read from the CLI's session file
+ *  (`prompt_snapshot`); null before the first turn or with no file. */
+export interface CliPromptSnapshot {
+  sections: string[];
+  path: string;
+}
 
 /**
  * Item size. `tokens` is an *estimate* (the backend has no tokenizer, by
@@ -895,7 +974,19 @@ export type PromptLayer =
   | "project_instructions"
   | "project_notes"
   | "knowledge"
-  | "engine_note";
+  | "engine_note"
+  /** Claude Code's own auto memory for the chat's folder (nightshift backlog
+   *  088): a switch only — the CLI reads the file itself, and off is sent
+   *  to it as a setting. Claude Code engine only. */
+  | "cli_memory";
+
+/** What `cli_memory_file` returns: the CLI's `MEMORY.md` for the built cwd,
+ *  `text` null when there is none, and the topic files beside it by name. */
+export interface CliMemoryFile {
+  path: string;
+  text: string | null;
+  others: string[];
+}
 
 /**
  * The layers whose text a chat may replace with its own (nightshift backlog

@@ -12,6 +12,7 @@
     useProject,
   } from "./state.svelte";
   import { toggleTranscriptPref, transcript } from "./transcriptPrefs.svelte";
+  import { thinkingToggleDead } from "./activity";
   import { MODEL_KEYS, providerLabel } from "./catalog";
   import type { IconName } from "./icons";
   import Icon from "./Icon.svelte";
@@ -238,6 +239,8 @@
         key: `${mod}${shift}T`,
         group: "Panels",
         run: () => go(() => toggleTranscriptPref("thinking")),
+        // Inert where the top-bar chip is (nightshift backlog 097).
+        disabled: thinkingToggleDead(app.events, app.connection),
       },
       {
         id: "toggle_tools",

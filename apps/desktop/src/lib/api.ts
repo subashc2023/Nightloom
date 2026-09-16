@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AsideResult,
   AgentConnectArgs,
   AgentTurnResult,
   ApprovalDecision,
@@ -34,6 +35,8 @@ import type {
   NewProjectPath,
   UsageSummary,
   PlanUsage,
+  CliMemoryFile,
+  CliPromptSnapshot,
   EditableLayer,
   PromptLayer,
   PromptLayersInfo,
@@ -135,6 +138,10 @@ export function connectAgent(args: AgentConnectArgs): Promise<ConnectResult> {
     system: args.system,
     preamble: args.preamble,
     ask: args.ask,
+    plan: args.plan,
+    promptSuggestions: args.promptSuggestions,
+    effort: args.effort,
+    fallbackModel: args.fallbackModel,
   });
 }
 
@@ -150,6 +157,15 @@ export function sendAgent(
   documents?: DocumentInput[],
 ): Promise<AgentTurnResult> {
   return invoke("send_agent", { text, images, documents });
+}
+
+/**
+ * A side question on the open chat's warm cache, kept out of it (nightshift
+ * backlog 081): the CLI's `/btw`, done as a throwaway fork. Rejects with a
+ * sentence when the chat has no Claude Code session yet.
+ */
+export function askAside(text: string): Promise<AsideResult> {
+  return invoke("ask_aside", { text });
 }
 
 /** The search backends, with which has a key and which one answers. */
@@ -179,8 +195,9 @@ export function approveCall(
   decision: ApprovalDecision,
   reason?: string,
   answer?: unknown,
+  then?: "ask" | "auto",
 ): Promise<null> {
-  return invoke("approve_call", { id, name, decision, reason, answer });
+  return invoke("approve_call", { id, name, decision, reason, answer, then });
 }
 
 export function listSessions(): Promise<SessionMeta[]> {
@@ -330,6 +347,12 @@ export function forkSession(upto: number): Promise<MessageEdit> {
   return invoke("fork_session", { upto });
 }
 
+/** A fresh chat that continues the open one after a hand-off (nightshift
+ *  backlog 086): empty, same folder, linked with `reason: "handoff"`. */
+export function continueSession(): Promise<MessageEdit> {
+  return invoke("continue_session");
+}
+
 /** The open chat's switched-off prompt layers, and what the engine was built with. */
 export function promptLayers(): Promise<PromptLayersInfo> {
   return invoke("prompt_layers");
@@ -366,6 +389,19 @@ export function setPromptLayerText(
  */
 export function promptLayerFile(kind: EditableLayer): Promise<string | null> {
   return invoke("prompt_layer_file", { kind });
+}
+
+/** Claude Code's auto memory for the built cwd, for the Context page's
+ *  card (nightshift backlog 088). Read-only. */
+export function cliMemoryFile(): Promise<CliMemoryFile> {
+  return invoke("cli_memory_file");
+}
+
+/** Claude Code's own system prompt for the open chat, from the CLI's
+ *  session file (nightshift backlog 077). Read-only; null before the first
+ *  turn, for an ephemeral chat, and on the other engine. */
+export function cliPromptSnapshot(): Promise<CliPromptSnapshot | null> {
+  return invoke("cli_prompt_snapshot");
 }
 
 // ---- projects ----
@@ -574,6 +610,13 @@ export function openFile(path: string): Promise<null> {
 /** Open an `https://` link in the browser. */
 export function openUrl(url: string): Promise<null> {
   return invoke("open_url", { url });
+}
+
+/** Post a banner through the OS notification centre (nightshift backlog
+ *  079). Whether to — the window's focus, the setting — is decided here in
+ *  `notify.ts`; the backend only posts. */
+export function notify(title: string, body: string): Promise<null> {
+  return invoke("notify", { title, body });
 }
 
 /** Where the per-model instruction files live (`~/.nightloom/models`);

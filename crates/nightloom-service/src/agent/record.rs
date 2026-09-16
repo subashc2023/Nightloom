@@ -142,6 +142,12 @@ pub struct Recorder<'a> {
     /// Whether anything at all was recorded, so an empty turn writes no
     /// empty assistant message.
     wrote: bool,
+    /// Each subagent's narrative so far, by the id of the call that
+    /// spawned it, in the order the subagents first spoke (2026-09-16,
+    /// nightshift backlog 075). Written out as one [`subagent_block`] per
+    /// parent when the round's assistant message closes — see
+    /// [`Recorder::flush_subagents`] for why then.
+    subagents: Vec<(String, String)>,
 }
 
 impl<'a> Recorder<'a> {
@@ -158,6 +164,7 @@ impl<'a> Recorder<'a> {
             usage: Usage::default(),
             sent_at: Utc::now(),
             wrote: false,
+            subagents: Vec::new(),
         }
     }
 
@@ -218,10 +225,77 @@ impl<'a> Recorder<'a> {
                 self.sent_at = Utc::now();
             }
             TurnEvent::Usage { usage } => self.usage.add(*usage),
+            TurnEvent::Subagent {
+                parent_tool_use_id,
+                event,
+            } => self.push_subagent(parent_tool_use_id, event),
             // Nothing else an agent emits reaches the log: a denial and a
             // round limit are the engine's own vocabulary, and a compaction
             // is the agent's business inside its own history.
             _ => {}
+        }
+    }
+
+    /// A subagent's event goes into its narrative, not into the round's
+    /// blocks (backlog 075). Its calls used to be recorded as the main
+    /// thread's `tool_use` blocks under a `sub:` name — which named no
+    /// parent and, carrying a colon, was a name no provider accepts on
+    /// replay. Now the child's turn is kept as prose against the parent's
+    /// id: each call one line, its result's first line under it, its
+    /// words as they are. A log reader that knows the marker
+    /// ([`SUBAGENT_OPEN`]) nests it under the parent's row; a provider
+    /// replaying the log sees assistant text, which is valid.
+    fn push_subagent(&mut self, parent: &str, event: &TurnEvent) {
+        let line = match event {
+            TurnEvent::TextDelta { text } => text.clone(),
+            // Empty on Haiku (2.1.263 sends the block with no text); a
+            // model that forwards its thinking gets a row per thought.
+            TurnEvent::ThinkingDelta { text } if text.trim().is_empty() => return,
+            TurnEvent::ThinkingDelta { text } => format!("✦ {}", first_line(text)),
+            TurnEvent::RedactedThinking => "✦ (thinking withheld)".to_string(),
+            TurnEvent::ToolCall { name, input, .. } => {
+                format!("▸ {name} {}", first_line(&compact_input(input)))
+            }
+            TurnEvent::ToolResult {
+                content, is_error, ..
+            } => format!(
+                "  ↳ {}{}",
+                if *is_error { "error: " } else { "" },
+                first_line(content)
+            ),
+            // A nested subagent's events arrive wrapped again, under its
+            // own parent; anything else a child emits has no place here.
+            _ => return,
+        };
+        let entry = match self.subagents.iter_mut().find(|(id, _)| id == parent) {
+            Some(entry) => entry,
+            None => {
+                self.subagents.push((parent.to_string(), String::new()));
+                self.subagents.last_mut().expect("just pushed")
+            }
+        };
+        if !entry.1.is_empty() && !entry.1.ends_with('\n') {
+            entry.1.push('\n');
+        }
+        entry.1.push_str(&line);
+    }
+
+    /// Every subagent narrative so far becomes a marked text block. Called
+    /// as the round's assistant message closes, which is the one moment
+    /// that works for both kinds of subagent: a foreground one has spoken
+    /// before its parent's result arrives, so its block lands in the
+    /// message holding the parent's call; a background one speaks after
+    /// that result (the parent's result is "Async agent launched…" at
+    /// once; measured `m075-1-forward.jsonl`) and its block lands in a
+    /// later message of the same turn, still tagged with the parent's id.
+    fn flush_subagents(&mut self) {
+        for (parent, narrative) in std::mem::take(&mut self.subagents) {
+            if narrative.trim().is_empty() {
+                continue;
+            }
+            self.blocks.push(ContentBlock::Text {
+                text: subagent_block(&parent, &clip(&narrative)),
+            });
         }
     }
 
@@ -272,6 +346,7 @@ impl<'a> Recorder<'a> {
     /// Write the round's assistant message, if it has anything in it.
     fn flush_assistant(&mut self, stop_reason: Option<&str>) {
         self.flush_prose();
+        self.flush_subagents();
         if self.blocks.is_empty() {
             return;
         }
@@ -286,6 +361,68 @@ impl<'a> Recorder<'a> {
             Some(CLAUDE_CODE_CACHE_TTL),
         );
         self.wrote = true;
+    }
+}
+
+/// The marker a subagent's narrative is recorded under, as a text block:
+/// `<subagent parent="<tool_use_id>">\n…\n</subagent>` (backlog 075). A
+/// renderer that knows it nests the block under the parent's call; one
+/// that does not shows a readable transcript with the parent named.
+pub const SUBAGENT_OPEN: &str = "<subagent parent=\"";
+pub const SUBAGENT_CLOSE: &str = "</subagent>";
+
+/// One subagent's narrative as the log records it.
+pub fn subagent_block(parent: &str, narrative: &str) -> String {
+    format!(
+        "{SUBAGENT_OPEN}{parent}\">\n{}\n{SUBAGENT_CLOSE}",
+        narrative.trim_end_matches('\n')
+    )
+}
+
+/// The first line of a result or a thought, cut to a row's width: the
+/// child's narrative is a summary, and the full content is in the CLI's
+/// own session.
+fn first_line(text: &str) -> String {
+    const WIDTH: usize = 160;
+    let line = text.lines().next().unwrap_or("").trim();
+    if line.chars().count() <= WIDTH {
+        return line.to_string();
+    }
+    let cut: String = line.chars().take(WIDTH).collect();
+    format!("{cut}…")
+}
+
+/// A call's input on one line: the values of its fields, in order, the
+/// way a transcript row shows them (`file_path` first when it has one).
+fn compact_input(input: &serde_json::Value) -> String {
+    match input {
+        serde_json::Value::Object(map) => {
+            let mut parts: Vec<String> = Vec::new();
+            for key in [
+                "file_path",
+                "command",
+                "pattern",
+                "path",
+                "prompt",
+                "description",
+            ] {
+                if let Some(v) = map.get(key) {
+                    parts.push(scalar(v));
+                }
+            }
+            if parts.is_empty() {
+                parts.extend(map.values().map(scalar));
+            }
+            parts.join(" · ")
+        }
+        other => scalar(other),
+    }
+}
+
+fn scalar(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::String(s) => s.clone(),
+        other => other.to_string(),
     }
 }
 
@@ -606,5 +743,133 @@ mod tests {
         assert!(out.contains("were cut to fit"));
         assert!(out.contains("reply 39"));
         assert!(!out.contains("reply 0\n"));
+    }
+
+    fn sub(parent: &str, event: TurnEvent) -> TurnEvent {
+        TurnEvent::Subagent {
+            parent_tool_use_id: parent.into(),
+            event: Box::new(event),
+        }
+    }
+
+    fn assistant_blocks(s: &Session) -> Vec<Vec<ContentBlock>> {
+        s.events()
+            .iter()
+            .filter_map(|e| match e {
+                SessionEvent::AssistantMessage { blocks, .. } => Some(blocks.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A foreground subagent (backlog 075): its calls and words become one
+    /// marked text block in the message that holds the parent's call — no
+    /// `sub:` tool_use blocks of its own, so the message replays — and the
+    /// parent's real result is recorded as it was.
+    #[test]
+    fn a_subagents_turn_is_recorded_as_a_marked_block_against_its_parent() {
+        let mut s = Session::new();
+        s.record_user("explore");
+        let mut r = Recorder::new(&mut s, "m");
+        r.push(&TurnEvent::ToolCall {
+            id: "p1".into(),
+            name: "Agent".into(),
+            input: json!({"prompt": "read everything", "subagent_type": "Explore"}),
+        });
+        r.push(&sub(
+            "p1",
+            TurnEvent::ThinkingDelta {
+                text: String::new(),
+            },
+        ));
+        r.push(&sub("p1", call("c1")));
+        r.push(&sub(
+            "p1",
+            TurnEvent::ToolResult {
+                tool_use_id: "c1".into(),
+                name: "Read".into(),
+                content: "1\tdef add(a, b):\n2\t    return a + b\n".into(),
+                is_error: false,
+            },
+        ));
+        r.push(&sub(
+            "p1",
+            TurnEvent::TextDelta {
+                text: "## Summary\n\nAdds numbers.".into(),
+            },
+        ));
+        r.push(&TurnEvent::ToolResult {
+            tool_use_id: "p1".into(),
+            name: "Agent".into(),
+            content: "Adds numbers.".into(),
+            is_error: false,
+        });
+        r.push(&TurnEvent::TextDelta {
+            text: "Done.".into(),
+        });
+        assert!(r.finish(Some("end_turn")));
+        let msgs = assistant_blocks(&s);
+        assert_eq!(msgs.len(), 2, "{msgs:?}");
+        let first = &msgs[0];
+        assert!(matches!(&first[0], ContentBlock::ToolUse { name, .. } if name == "Agent"));
+        let text = match &first[1] {
+            ContentBlock::Text { text } => text.clone(),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            text,
+            "<subagent parent=\"p1\">\n\u{25b8} Read a.txt\n  \u{21b3} 1\tdef add(a, b):\n## Summary\n\nAdds numbers.\n</subagent>"
+        );
+        assert_eq!(first.len(), 2, "no sub: tool_use blocks: {first:?}");
+        assert!(
+            !s.events().iter().any(|e| matches!(e,
+                SessionEvent::ToolResult { tool_use_id, .. } if tool_use_id == "c1")),
+            "the child's result is in the narrative, not a result event"
+        );
+        assert!(s.events().iter().any(|e| matches!(e,
+            SessionEvent::ToolResult { tool_use_id, content, .. } if tool_use_id == "p1" && content == "Adds numbers.")));
+        assert!(matches!(&msgs[1][0], ContentBlock::Text { text } if text == "Done."));
+    }
+
+    /// A background subagent speaks after its parent's result: the block
+    /// lands in the next message of the turn, still tagged with the
+    /// parent's id, and a turn that ends while the child is mid-sentence
+    /// still writes what it had.
+    #[test]
+    fn a_background_subagents_words_land_in_a_later_message_of_the_turn() {
+        let mut s = Session::new();
+        s.record_user("explore in the background");
+        let mut r = Recorder::new(&mut s, "m");
+        r.push(&TurnEvent::ToolCall {
+            id: "p2".into(),
+            name: "Agent".into(),
+            input: json!({"prompt": "x"}),
+        });
+        r.push(&TurnEvent::ToolResult {
+            tool_use_id: "p2".into(),
+            name: "Agent".into(),
+            content: "Async agent launched successfully.".into(),
+            is_error: false,
+        });
+        r.push(&TurnEvent::TextDelta {
+            text: "Waiting.".into(),
+        });
+        r.push(&sub("p2", call("c2")));
+        r.push(&sub(
+            "p2",
+            TurnEvent::TextDelta {
+                text: "Found it.".into(),
+            },
+        ));
+        r.finish(Some("end_turn"));
+        let msgs = assistant_blocks(&s);
+        assert_eq!(msgs.len(), 2, "{msgs:?}");
+        assert!(matches!(&msgs[1][0], ContentBlock::Text { text } if text == "Waiting."));
+        assert!(matches!(&msgs[1][1], ContentBlock::Text { text }
+            if text.starts_with("<subagent parent=\"p2\">\n") && text.contains("\u{25b8} Read a.txt\nFound it.\n</subagent>")));
+        assert_eq!(
+            subagent_block("p", "a\n"),
+            "<subagent parent=\"p\">\na\n</subagent>"
+        );
     }
 }

@@ -87,13 +87,21 @@ impl Translator {
         };
         match parsed {
             Line::StreamEvent { event } => self.stream_event(event),
-            Line::Assistant(t) => self.blocks(t.message, t.parent_tool_use_id.is_some()),
-            Line::User(t) => self.blocks(t.message, t.parent_tool_use_id.is_some()),
+            Line::Assistant(t) => self.blocks(t.message, t.parent_tool_use_id),
+            Line::User(t) => self.blocks(t.message, t.parent_tool_use_id),
             Line::System(s) => self.system(s),
             Line::Result(r) => self.result(r),
             Line::RateLimitEvent { rate_limit_info } => {
                 self.outcome.rate_limit = Some(rate_limit_info);
                 Vec::new()
+            }
+            Line::PromptSuggestion { suggestion } => {
+                let text = suggestion.trim().to_string();
+                if text.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![TurnEvent::PromptSuggestion { text }]
+                }
             }
             Line::Unknown => Vec::new(),
         }
@@ -124,23 +132,28 @@ impl Translator {
     }
 
     /// `nested` is a message from a subagent — one Claude Code spawned via
-    /// its own `Task` tool, carrying the spawning call's id.
+    /// its own `Agent` tool, carrying the spawning call's id.
     ///
     /// Its calls are rendered rather than hidden, because watching a
     /// subagent work is most of what a subagent's progress *is*. But they
     /// are marked, because a nested `Read` shown as a bare `Read` claims the
     /// main thread did it — and the two have different reasons to worry you.
-    fn blocks(&mut self, message: ApiMessage, nested: bool) -> Vec<TurnEvent> {
+    /// ~~Marked by a `sub:` prefix on the name~~ — since 2026-09-16
+    /// (nightshift backlog 075) marked by wrapping: every event of a nested
+    /// line goes out as [`TurnEvent::Subagent`] with the parent's id, the
+    /// inner event exactly what the main thread's would be. The prefix
+    /// named no parent, so two subagents at once were one stream; and a
+    /// name with a colon in it was recorded into the log as a `tool_use`
+    /// name, which no provider accepts on replay. The child's text and
+    /// thinking are emitted here too — a nested line is their only copy
+    /// (`protocol::Block::Text`); a top-level line's are still dropped.
+    fn blocks(&mut self, message: ApiMessage, nested: Option<String>) -> Vec<TurnEvent> {
         let mut out = Vec::new();
         for block in message.content {
-            match block {
+            let event = match block {
                 Block::ToolUse { id, name, input } => {
                     self.pending.insert(id.clone(), name.clone());
-                    out.push(TurnEvent::ToolCall {
-                        id,
-                        name: label(&name, nested),
-                        input,
-                    });
+                    TurnEvent::ToolCall { id, name, input }
                 }
                 Block::ToolResult {
                     tool_use_id,
@@ -151,16 +164,29 @@ impl Translator {
                         .pending
                         .remove(&tool_use_id)
                         .unwrap_or_else(|| "unknown".to_string());
-                    out.push(TurnEvent::ToolResult {
+                    TurnEvent::ToolResult {
                         tool_use_id,
-                        name: label(&name, nested),
+                        name,
                         content: flatten(&content),
                         is_error,
-                    });
+                    }
                 }
-                Block::RedactedThinking => out.push(TurnEvent::RedactedThinking),
-                Block::Other => {}
-            }
+                Block::RedactedThinking => TurnEvent::RedactedThinking,
+                Block::Text { text } if nested.is_some() && !text.is_empty() => {
+                    TurnEvent::TextDelta { text }
+                }
+                Block::Thinking { thinking } if nested.is_some() && !thinking.is_empty() => {
+                    TurnEvent::ThinkingDelta { text: thinking }
+                }
+                Block::Text { .. } | Block::Thinking { .. } | Block::Other => continue,
+            };
+            out.push(match &nested {
+                Some(parent) => TurnEvent::Subagent {
+                    parent_tool_use_id: parent.clone(),
+                    event: Box::new(event),
+                },
+                None => event,
+            });
         }
         out
     }
@@ -171,10 +197,36 @@ impl Translator {
                 session_id,
                 model,
                 tools,
+                mcp_servers,
+                slash_commands,
+                skills,
+                agents,
+                claude_code_version,
+                permission_mode,
             } => {
-                self.outcome.session_id = session_id;
-                self.outcome.model = model;
-                let _ = tools;
+                self.outcome.session_id = session_id.clone();
+                self.outcome.model = model.clone();
+                // The rest of the line goes out as one event (nightshift
+                // backlog 077): what this session has, for the Context
+                // page's *This session* pane.
+                return vec![TurnEvent::AgentInit {
+                    session_id,
+                    model,
+                    version: claude_code_version,
+                    permission_mode,
+                    tools,
+                    mcp_servers: mcp_servers
+                        .into_iter()
+                        .map(|s| crate::turn::McpServer {
+                            name: s.name,
+                            status: s.status,
+                            error: s.error,
+                        })
+                        .collect(),
+                    slash_commands,
+                    skills,
+                    agents,
+                }];
             }
             SystemLine::ApiRetry {
                 attempt,
@@ -249,14 +301,6 @@ impl Translator {
 
 /// A tool's name as the transcript should show it. ASCII, because this
 /// lands in a terminal chip and in the desktop's tool list alike.
-fn label(name: &str, nested: bool) -> String {
-    if nested {
-        format!("sub:{name}")
-    } else {
-        name.to_string()
-    }
-}
-
 /// A `tool_result`'s content, which is a bare string on the common path and
 /// a block array when the tool returned something structured.
 fn flatten(content: &serde_json::Value) -> String {
@@ -306,6 +350,58 @@ mod tests {
         (events, t.finish())
     }
 
+    /// The init line goes out whole as one event (nightshift backlog 077):
+    /// a verbatim 2.1.263 line, trimmed to the lists' first entries.
+    #[test]
+    fn the_init_line_is_one_event_with_what_the_session_has() {
+        const FULL: &str = r#"{"type":"system","subtype":"init","cwd":"/tmp/x","session_id":"3dc6cb69-b57a-4617-b43d-6c9b9992b643","tools":["Task","Bash","mcp__claude_ai_Google_Drive__search_files"],"mcp_servers":[{"name":"openalex","status":"pending"},{"name":"claude.ai Gmail","status":"needs-auth"}],"model":"claude-haiku-4-5-20251001","permissionMode":"default","slash_commands":["design","clear"],"terminal_slash_commands":["doctor"],"apiKeySource":"none","claude_code_version":"2.1.263","output_style":"default","agents":["Explore","Plan"],"skills":["design"],"plugins":[],"capabilities":["msg_lifecycle_v1"],"uuid":"54c8ef44-b001-4c04-b4f4-6043092b9529","memory_paths":{"auto":"/Users/x/.claude/projects/-tmp-x/memory/"}}"#;
+        let (events, outcome) = drive(&[FULL]);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            TurnEvent::AgentInit {
+                session_id,
+                model,
+                version,
+                permission_mode,
+                tools,
+                mcp_servers,
+                slash_commands,
+                skills,
+                agents,
+            } => {
+                assert_eq!(session_id.as_deref(), Some("3dc6cb69-b57a-4617-b43d-6c9b9992b643"));
+                assert_eq!(model.as_deref(), Some("claude-haiku-4-5-20251001"));
+                assert_eq!(version.as_deref(), Some("2.1.263"));
+                assert_eq!(permission_mode.as_deref(), Some("default"));
+                assert_eq!(tools.len(), 3);
+                assert_eq!(mcp_servers[0].name, "openalex");
+                assert_eq!(mcp_servers[0].status, "pending");
+                assert!(mcp_servers[0].error.is_none());
+                assert_eq!(mcp_servers[1].status, "needs-auth");
+                assert_eq!(slash_commands, &["design", "clear"]);
+                assert_eq!(skills, &["design"]);
+                assert_eq!(agents, &["Explore", "Plan"]);
+            }
+            other => panic!("expected AgentInit, got {other:?}"),
+        }
+        // And the outcome still learns the id and model from it.
+        assert_eq!(outcome.model.as_deref(), Some("claude-haiku-4-5-20251001"));
+        // The older, shorter line (no lists) still parses, with empty lists.
+        let (events, _) = drive(&[INIT]);
+        assert!(matches!(&events[0], TurnEvent::AgentInit { skills, version, .. }
+            if skills.is_empty() && version.is_none()));
+    }
+
+    /// The suggestion line (backlog 083): verbatim from 2.1.263, one event.
+    #[test]
+    fn a_prompt_suggestion_line_is_one_event() {
+        const LINE: &str = r#"{"type":"prompt_suggestion","suggestion":"Write the code","uuid":"967e0cd2-5115-4642-ad23-c4e38a6c28d5","session_id":"2279a73e-2a14-4b5d-a9af-2cce68531f10"}"#;
+        let (events, _) = drive(&[LINE]);
+        assert!(matches!(&events[0], TurnEvent::PromptSuggestion { text } if text == "Write the code"));
+        let (none, _) = drive(&[r#"{"type":"prompt_suggestion","suggestion":"  "}"#]);
+        assert!(none.is_empty());
+    }
+
     #[test]
     fn text_and_thinking_stream_as_deltas() {
         let (events, _) = drive(&[THINK, TEXT]);
@@ -351,18 +447,49 @@ mod tests {
         }
     }
 
-    /// A subagent's calls render, and say that is what they are. Shown bare
-    /// they would claim the main thread opened the file.
+    /// A subagent's calls render, and say whose they are: wrapped with the
+    /// parent's id, the inner call bare. Shown as the main thread's they
+    /// would claim it opened the file; named `sub:Read` (the old marking)
+    /// they named no parent and could not be replayed. Its text is the
+    /// nested line's only copy, so it is emitted; its empty thinking (what
+    /// Haiku sent on 2.1.263, `m075-1-forward.jsonl`) is not.
     #[test]
     fn subagent_calls_are_marked() {
         const NESTED: &str = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_9","name":"Read","input":{}}]},"parent_tool_use_id":"toolu_parent"}"#;
         const NESTED_RESULT: &str = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"ok","tool_use_id":"toolu_9"}]},"parent_tool_use_id":"toolu_parent"}"#;
-        let (events, _) = drive(&[NESTED, NESTED_RESULT]);
-        assert!(matches!(&events[0], TurnEvent::ToolCall { name, .. } if name == "sub:Read"));
-        assert!(matches!(&events[1], TurnEvent::ToolResult { name, .. } if name == "sub:Read"));
-        // The main thread's calls keep their plain names.
-        let (top, _) = drive(&[TOOL_USE]);
+        const NESTED_TEXT: &str = r###"{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"","signature":"x"},{"type":"text","text":"## Project Summary\n\nTiny."}]},"parent_tool_use_id":"toolu_parent"}"###;
+        let (events, _) = drive(&[NESTED, NESTED_RESULT, NESTED_TEXT]);
+        assert_eq!(events.len(), 3, "{events:?}");
+        match &events[0] {
+            TurnEvent::Subagent {
+                parent_tool_use_id,
+                event,
+            } => {
+                assert_eq!(parent_tool_use_id, "toolu_parent");
+                assert!(
+                    matches!(&**event, TurnEvent::ToolCall { name, id, .. } if name == "Read" && id == "toolu_9")
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(&events[1], TurnEvent::Subagent { event, .. }
+            if matches!(&**event, TurnEvent::ToolResult { name, content, .. } if name == "Read" && content == "ok")));
+        assert!(matches!(&events[2], TurnEvent::Subagent { event, .. }
+            if matches!(&**event, TurnEvent::TextDelta { text } if text == "## Project Summary\n\nTiny.")));
+        // The main thread's calls keep their plain, unwrapped names, and
+        // its text blocks are still left to the deltas.
+        const TOP_TEXT: &str = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hello"}]},"parent_tool_use_id":null}"#;
+        let (top, _) = drive(&[TOOL_USE, TOP_TEXT]);
+        assert_eq!(top.len(), 1, "{top:?}");
         assert!(matches!(&top[0], TurnEvent::ToolCall { name, .. } if name == "Read"));
+        // The wire shape the window reads.
+        let json = serde_json::to_string(&events[2]).unwrap();
+        assert!(json.contains(r#""type":"subagent""#), "{json}");
+        assert!(
+            json.contains(r#""parent_tool_use_id":"toolu_parent""#),
+            "{json}"
+        );
+        assert!(json.contains(r#""event":{"type":"text_delta""#), "{json}");
     }
 
     /// A result whose call was never seen still renders, rather than being
@@ -489,10 +616,11 @@ mod tests {
         let (events, outcome) = drive(&[INIT, TOOL_USE_WRITE, RESULT_DEFERRED]);
         assert_eq!(
             events.len(),
-            1,
-            "the call itself, nothing for the result line"
+            2,
+            "the init line's event and the call itself, nothing for the result line"
         );
-        assert!(matches!(&events[0], TurnEvent::ToolCall { id, name, .. }
+        assert!(matches!(&events[0], TurnEvent::AgentInit { .. }));
+        assert!(matches!(&events[1], TurnEvent::ToolCall { id, name, .. }
             if id == "toolu_0183kRSEVfCJqZ7Xkb2qtMU8" && name == "Write"));
         let call = outcome.deferred.expect("deferred call");
         assert_eq!(call.id, "toolu_0183kRSEVfCJqZ7Xkb2qtMU8");

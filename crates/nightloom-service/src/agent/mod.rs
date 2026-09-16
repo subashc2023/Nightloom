@@ -34,9 +34,9 @@ mod protocol;
 mod record;
 mod translate;
 
-pub use ask::{Answer, AskDir, AskGate, DeferredCall};
+pub use ask::{Answer, AskDir, AskGate, DeferredCall, PlanThen};
 pub use protocol::RateLimitInfo;
-pub use record::{Recorder, carry_transcript};
+pub use record::{Recorder, SUBAGENT_CLOSE, SUBAGENT_OPEN, carry_transcript, subagent_block};
 pub use translate::{AgentOutcome, Translator};
 
 use crate::{TurnEvent, TurnInput};
@@ -54,6 +54,24 @@ use tokio_util::sync::CancellationToken;
 /// same reason: whatever the CLI managed to write is worth having, and a
 /// read that cannot finish must not hold the turn open.
 const DRAIN_GRACE: Duration = Duration::from_secs(2);
+
+/// How long an interrupted CLI gets to end the turn itself before it is
+/// killed (2026-09-16, nightshift backlog 074).
+///
+/// Measured on 2.1.263, Haiku, a foreground `python3 … sleep(40)` under
+/// `bypassPermissions`, the signal sent at 15 s (nightshift
+/// `074-report-2026-09-16.md`):
+///
+/// | stop | exit | last lines | next `--resume`, "what happened?" |
+/// |---|---|---|---|
+/// | SIGINT | 0, **0.5 s** after the signal | the call's error result ("The user doesn't want to proceed with this tool use…"), `[Request interrupted by user for tool use]`, a `result` with `terminal_reason: "aborted_tools"` | 6 s, no tool call: says the command was rejected |
+/// | SIGKILL (the old Stop) | 137 | a `task_started` for the command; no `result` | **47 s, re-ran the 40 s command on its own** and replied `done` |
+///
+/// So the interrupt is what keeps a stopped chat stopped: the CLI closes
+/// the turn in its session file, and the resume takes the next message
+/// as a new one. The grace is ten times the measured time to exit, for a
+/// slower machine; past it the kill below is the backstop it always was.
+const INTERRUPT_GRACE: Duration = Duration::from_secs(5);
 
 /// Tail of the child's stderr kept for diagnosis, in bytes.
 const STDERR_TAIL: usize = 4096;
@@ -119,6 +137,36 @@ pub struct AgentSpec {
     /// heard of is the CLI's to reject, and it says so far better than a
     /// stale table here could.
     pub model: Option<String>,
+    /// `--effort <level>` (2026-09-16, nightshift backlog 076): `low`,
+    /// `medium`, `high`, `xhigh` or `max` (`external`, `claude --help`
+    /// 2.1.263), passed through as the rail sent it — the levels a model
+    /// supports are the CLI's to know, and an unsupported one falls back
+    /// (`external`, the model-config doc). `None` sends nothing and the
+    /// CLI's default applies (his settings say `high`; under safe mode the
+    /// settings are dropped and the model's own default applies). Measured
+    /// on Haiku, one run each, "explain in three sentences why the sky is
+    /// blue" (`m076/e-*.jsonl`):
+    ///
+    /// | `--effort` | output tokens | of which thinking | API ms |
+    /// |---|---|---|---|
+    /// | low | 177 | 96 | 2,466 |
+    /// | high | 190 | 66 | 2,688 |
+    /// | xhigh | 313 | 222 | 3,909 |
+    ///
+    /// One run each, so the ordering is the finding and the figures are
+    /// not. Neither the stream nor the session file on 2.1.263 carries an
+    /// `effort` field to read the level back from. The `xhigh` turn on
+    /// Opus the item asks for was not run (nightshift blocker 079).
+    pub effort: Option<String>,
+    /// `--fallback-model <model>` (backlog 076): the model the CLI retries
+    /// with when `model` is overloaded or unavailable — a comma-separated
+    /// list is accepted (`external`, `claude --help`). `-p` only, which is
+    /// every turn here. Measured once on Haiku with `sonnet` as the
+    /// fallback: accepted, and with Haiku answering the result's
+    /// `modelUsage` named Haiku alone — no line in the stream says a
+    /// fallback was configured or not needed, so "no fallback used" is
+    /// read from `modelUsage` naming the primary only.
+    pub fallback_model: Option<String>,
     /// The tool set. `Some(vec![])` is no tools at all, `None` leaves the
     /// CLI's default set in place.
     pub tools: Option<Vec<String>>,
@@ -196,11 +244,85 @@ pub struct AgentSpec {
     /// (18 → 0 in the init event; `--safe-mode` left them at 18).
     /// `CLAUDE_CODE_SIMPLE=1` on its own was tried and kills OAuth
     /// ("Not logged in"), the same trap as `--bare`.
+    ///
+    /// **Auto memory, measured 2026-09-16 (nightshift backlog 088), CLI
+    /// 2.1.263, Haiku, a planted `MEMORY.md` under the scratch cwd's
+    /// project folder:** this spelling of safe mode does **not** drop the
+    /// CLI's auto memory (`~/.claude/projects/<cwd>/memory/`) — an empty
+    /// `--setting-sources` drops the settings *files*, and the memory
+    /// directory is not one. The table above, with one column added:
+    ///
+    /// | spelling | auto memory |
+    /// |---|---|
+    /// | plain | loads |
+    /// | `--setting-sources "" --strict-mcp-config --disable-slash-commands` | **loads** |
+    /// | either + `--settings '{"autoMemoryEnabled":false}'` | off |
+    ///
+    /// So the per-chat switch is [`AgentSpec::auto_memory`], sent inline
+    /// like the Ask hook, and it holds under safe mode for the same
+    /// reason the hook does.
     pub safe_mode: bool,
+    /// Whether the CLI reads its own auto memory for this cwd
+    /// (`~/.claude/projects/<cwd>/memory/`; nightshift backlog 088,
+    /// 2026-09-16). On by default, as the CLI has it; off sends
+    /// `autoMemoryEnabled: false` in `--settings`. **In the same JSON as
+    /// the Ask hook's, never a second `--settings`:** measured on 2.1.263,
+    /// two `--settings` flags do not merge — the last one wins, and the
+    /// memory came back. Nightloom never writes these files; the vault and
+    /// `remember` are its own durable memory, and the engine note says so.
+    pub auto_memory: bool,
+    /// Whether the CLI may compact the conversation itself when its window
+    /// fills (nightshift backlog 086, 2026-09-16). **Off by default on
+    /// every path** — a chat, a dream, a capture: he does not compact (a
+    /// compaction boundary in 2 of 610 sessions), and Nightloom's own
+    /// hand-off — a wrap-up into `HANDOFF.md` and a linked new chat — is
+    /// what the window filling means here. Off is sent two ways, both
+    /// read from the CLI binary (2.1.263; nightshift
+    /// `notes/runner-design/086-measurements-2026-09-16.md`):
+    /// `autoCompactEnabled: false` in the one `--settings` JSON, the
+    /// documented key with default true, and `DISABLE_AUTO_COMPACT=1` in
+    /// the child's environment, which the code checks before it reads the
+    /// setting at all. Not measured with a turn past the window.
+    pub auto_compact: bool,
+    /// Ask the CLI to predict the next prompt after each turn (nightshift
+    /// backlog 083, 2026-09-16): `--prompt-suggestions true` — the value
+    /// spelled out, since the option takes an optional one and would
+    /// swallow the prompt otherwise (measured). Off by default. The
+    /// `prompt_suggestion` line arrives *after* `result`, from a request
+    /// the CLI waits for before exiting: about six seconds on every turn
+    /// (measured on Haiku), which the shell's setting says out loud.
+    pub prompt_suggestions: bool,
     /// Resume a previous Claude Code session by id.
     pub resume: Option<String>,
+    /// With `resume`, continue it as a **new** session and leave the
+    /// original untouched: `--fork-session` (2026-09-16, nightshift backlog
+    /// 080; `external`, `claude --help`: "When resuming, create a new
+    /// session ID instead of reusing the original"). One turn only —
+    /// [`ClaudeCodeAgent::follow_on`] adopts the id the CLI minted and
+    /// clears this. Measured on 2.1.263, Haiku, a two-turn session
+    /// (PELICAN, OTTER) resumed with "list every message so far":
+    ///
+    /// | resume | session id | cache read / write | history |
+    /// |---|---|---|---|
+    /// | `--resume <id> --fork-session` | a new one; the original's file untouched, the fork's written whole beside it | 7,298 / 436 | intact, both code words |
+    /// | `--resume <id>` (plain) | the same | 7,493 / 48 | intact |
+    /// | a **copy** of the file under a new id (backlog 062's fork, cut before the second turn) | the copy's | 7,017 / 247 | first turn only |
+    ///
+    /// So a fork by flag reads the shared prefix from cache as the copy
+    /// does, and costs no file rewrite. What it cannot do is cut: the fork
+    /// carries the whole history, so a fork that drops turns — every fork
+    /// the desktop makes today, edit-and-send truncating before the edited
+    /// turn — still needs [`cli_session`]'s copy.
+    pub fork_session: bool,
     /// Hard ceiling on what one turn may spend.
     pub max_budget_usd: Option<f64>,
+    /// `--max-turns <n>`: how many model rounds one turn may take. `None`
+    /// is the CLI's default (unbounded). An aside sends 2
+    /// ([`AgentSpec::aside`]): its answering round, plus one in case the
+    /// model read something first — measured, a turn that calls a tool
+    /// under `--max-turns 1` runs the tool and then ends `error_max_turns`
+    /// with no answer (nightshift `081-report-2026-09-16.md`, M4).
+    pub max_turns: Option<u32>,
     /// Keep `ANTHROPIC_API_KEY` out of the child's environment.
     ///
     /// On by default, and the single most consequential field here. Claude
@@ -273,6 +395,27 @@ pub struct AgentSpec {
 ///   first. Nightloom's server does not serve it on purpose: a real
 ///   prompt tool blocks the process on the answer, which is the mechanism
 ///   blocker 071 chose against.
+///
+/// **The Plan position (2026-09-16, nightshift backlog 085)** is the same
+/// three flags with `--permission-mode plan` in place of `default`
+/// ([`AskMode::Plan`]): the CLI reads, runs what it may, writes its plan
+/// file and calls `ExitPlanMode`, which the hook defers like any call.
+/// Measured on 2.1.263, Haiku (nightshift `085-report-2026-09-16.md`):
+///
+/// | resume of the deferred `ExitPlanMode`, allowed | `ExitPlanMode` result | next `Write` |
+/// |---|---|---|
+/// | `--permission-mode plan`, full hook | "User has approved exiting plan mode" | deferred (Ask) |
+/// | `--permission-mode default`, full hook | error "You are not in plan mode … continue" | deferred (Ask) |
+/// | `--permission-mode plan`, hook on `ExitPlanMode` only | approved | Manual: prompt tool refuses |
+/// | `--permission-mode auto`, hook on `ExitPlanMode` only | the same error | Manual: prompt tool refuses |
+/// | `--permission-mode auto`, no hook | — | refused before any call: `tool_deferred_unavailable`, exit 1 |
+///
+/// So the approval's resume keeps `plan` for the Ask pick (the clean
+/// row), takes `auto` with the narrow matcher for the Auto pick
+/// ([`AskMode::ExitingToAuto`], one process), and must always carry the
+/// hook. Note `auto` reported `permissionMode: "default"` on every run
+/// tonight — unavailable to the session, the CLI starts in Manual — which
+/// is the Auto position's standing caveat ([`AgentSpec::headless_permission_mode`]).
 #[derive(Debug, Clone)]
 pub struct AskSpec {
     /// The hook program and its leading arguments — `[<this binary>,
@@ -280,6 +423,51 @@ pub struct AskSpec {
     pub hook: Vec<String>,
     /// The chat's ask directory, where the decision and the rules live.
     pub dir: PathBuf,
+    /// Which position the hook serves.
+    pub mode: AskMode,
+}
+
+/// The permission mode the hook is registered under (backlog 085).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AskMode {
+    /// `--permission-mode default`: 084's Ask position.
+    Ask,
+    /// `--permission-mode plan`: nothing is edited until the plan the
+    /// card shows is approved.
+    Plan,
+    /// One resume only, the Auto pick on an approved plan:
+    /// `--permission-mode auto` with the hook on the plan tool alone
+    /// ([`ask::EXIT_PLAN_MATCHER`]). [`ClaudeCodeAgent::plan_exited`]
+    /// turns it into the Auto position proper (no hook, `auto`).
+    ExitingToAuto,
+    /// An aside of an asking chat (backlog 081): the prompt tool is still
+    /// named — without it the question and plan tools leave the offered
+    /// list and the cached prefix goes cold — but **no hook** is
+    /// registered, since a deferral would park the aside on a prompt, and
+    /// the mode is `dontAsk`, which refuses anything that would prompt.
+    Aside,
+}
+
+impl AskMode {
+    /// The `--permission-mode` value.
+    pub fn permission_mode(self) -> &'static str {
+        match self {
+            Self::Ask => "default",
+            Self::Plan => "plan",
+            Self::ExitingToAuto => "auto",
+            Self::Aside => "dontAsk",
+        }
+    }
+
+    /// The hook's matcher.
+    pub fn matcher(self) -> &'static str {
+        match self {
+            Self::Ask | Self::Plan => ask::MATCHER,
+            Self::ExitingToAuto => ask::EXIT_PLAN_MATCHER,
+            // Never registered; see the variant.
+            Self::Aside => "",
+        }
+    }
 }
 
 /// The CLI's built-in tools a chat that writes nothing may keep: the
@@ -310,14 +498,21 @@ impl AgentSpec {
             binary: "claude".into(),
             workspace: workspace.into(),
             model: None,
+            effort: None,
+            fallback_model: None,
             tools: None,
             allowed_tools: Vec::new(),
             permission_mode: None,
             system_prompt: None,
             append_system_prompt: None,
             safe_mode: false,
+            auto_memory: true,
+            auto_compact: false,
+            prompt_suggestions: false,
             resume: None,
+            fork_session: false,
             max_budget_usd: None,
+            max_turns: None,
             use_subscription: true,
             add_dirs: Vec::new(),
             mcp_config: None,
@@ -406,6 +601,42 @@ impl AgentSpec {
         self.argv(Shape::Resume)
     }
 
+    /// The spec for an **aside** (2026-09-16, nightshift backlog 081): a
+    /// side question answered from the chat's context, off the chat's
+    /// warm cache, kept out of its history — what the CLI's interactive
+    /// `/btw` does, which `-p` refuses ("`/btw` isn't available in this
+    /// environment", measured). `None` when the chat has no CLI session
+    /// yet: there is nothing to ask beside.
+    ///
+    /// Everything that shapes the cached prefix — the model, the tools,
+    /// the MCP servers, the prompt tool, the system prompt — stays as the
+    /// chat has it, because the prefix is what makes an aside cheap.
+    /// Measured on Haiku against a 30-tool session (`081-report`, M3): the
+    /// same tools under `dontAsk` read 32,052 of the prefix back and wrote
+    /// 242; `--tools ""` read **0** and wrote 10,360; `plan` mode read 0
+    /// and wrote 44,176. So an aside is not toolless — it is harmless:
+    /// `dontAsk` refuses anything that would prompt, a read inside the
+    /// workspace may still happen, and `--max-turns 2` gives such a read
+    /// its answering round. `--fork-session` keeps the chat's session
+    /// untouched (the next real turn saw nothing of the aside, M2) and
+    /// `--no-session-persistence` keeps the fork off the disk (no file
+    /// appeared, M3's last row). The Ask position's hook is not
+    /// registered — a deferral would park the aside on a prompt — but its
+    /// prompt tool stays named, or the offered tools change and the
+    /// prefix with them.
+    pub fn aside(&self) -> Option<AgentSpec> {
+        self.resume.as_ref()?;
+        let mut spec = self.clone();
+        spec.fork_session = true;
+        spec.no_session_persistence = true;
+        spec.max_turns = Some(2);
+        spec.permission_mode = Some("dontAsk".into());
+        if let Some(ask) = &mut spec.ask {
+            ask.mode = AskMode::Aside;
+        }
+        Some(spec)
+    }
+
     /// The three shapes differ in the first arguments only. A prompt goes
     /// on argv as `-p <prompt>`; the stdin shape is `-p --input-format
     /// stream-json`, saying the message is coming on stdin; a resume of a
@@ -430,10 +661,30 @@ impl AgentSpec {
             // the end of the turn.
             "--verbose".into(),
             "--include-partial-messages".into(),
+            // A subagent's text and thinking as `assistant`/`user` lines
+            // carrying `parent_tool_use_id` (2026-09-16, nightshift backlog
+            // 075; `external`, the headless reference: v2.1.211+, "at every
+            // nesting depth"). Measured on 2.1.263 with an Explore subagent
+            // (`m075-1-forward.jsonl` against `m075-2-noforward.jsonl`): the
+            // child's final text arrived as one whole `assistant` line and
+            // its thinking blocks came empty **with or without the flag**,
+            // so on this release it changes nothing that was seen; it is
+            // sent for the documented guarantee, since what the flag
+            // gates is the CLI's to decide per release, and the translator
+            // reads the lines the same either way.
+            "--forward-subagent-text".into(),
         ]);
         if let Some(m) = &self.model {
             a.push("--model".into());
             a.push(m.clone());
+        }
+        if let Some(e) = &self.effort {
+            a.push("--effort".into());
+            a.push(e.clone());
+        }
+        if let Some(f) = &self.fallback_model {
+            a.push("--fallback-model".into());
+            a.push(f.clone());
         }
         if let Some(tools) = &self.tools {
             a.push("--tools".into());
@@ -453,9 +704,9 @@ impl AgentSpec {
         // does not catch falls to Manual, which headless is a refusal the
         // transcript shows — never a silent classifier approval.
         match (&self.ask, &self.permission_mode) {
-            (Some(_), _) => {
+            (Some(ask), _) => {
                 a.push("--permission-mode".into());
-                a.push("default".into());
+                a.push(ask.mode.permission_mode().into());
             }
             (None, Some(mode)) => {
                 a.push("--permission-mode".into());
@@ -463,11 +714,30 @@ impl AgentSpec {
             }
             (None, None) => {}
         }
+        // One `--settings` for everything sent inline: the CLI keeps only
+        // the last one given (measured 2026-09-16, `auto_memory`'s doc), so
+        // the Ask hook and the memory switch share a JSON object.
+        let mut settings = serde_json::Map::new();
         if let Some(ask) = &self.ask {
-            a.push("--settings".into());
-            a.push(ask::settings_json(&ask.hook, &ask.dir));
+            if ask.mode != AskMode::Aside
+                && let Ok(serde_json::Value::Object(hook)) = serde_json::from_str::<serde_json::Value>(
+                    &ask::settings_json_matching(&ask.hook, &ask.dir, ask.mode.matcher()),
+                )
+            {
+                settings.extend(hook);
+            }
             a.push("--permission-prompt-tool".into());
             a.push(ask::PROMPT_TOOL.into());
+        }
+        if !self.auto_memory {
+            settings.insert("autoMemoryEnabled".into(), serde_json::Value::Bool(false));
+        }
+        if !self.auto_compact {
+            settings.insert("autoCompactEnabled".into(), serde_json::Value::Bool(false));
+        }
+        if !settings.is_empty() {
+            a.push("--settings".into());
+            a.push(serde_json::Value::Object(settings).to_string());
         }
         if let Some(s) = &self.system_prompt {
             a.push("--system-prompt".into());
@@ -490,10 +760,18 @@ impl AgentSpec {
         if let Some(id) = &self.resume {
             a.push("--resume".into());
             a.push(id.clone());
+            // Meaningless without a session to fork, so never sent alone.
+            if self.fork_session {
+                a.push("--fork-session".into());
+            }
         }
         if let Some(budget) = self.max_budget_usd {
             a.push("--max-budget-usd".into());
             a.push(budget.to_string());
+        }
+        if let Some(n) = self.max_turns {
+            a.push("--max-turns".into());
+            a.push(n.to_string());
         }
         for dir in &self.add_dirs {
             a.push("--add-dir".into());
@@ -505,6 +783,10 @@ impl AgentSpec {
         }
         if self.no_session_persistence {
             a.push("--no-session-persistence".into());
+        }
+        if self.prompt_suggestions {
+            a.push("--prompt-suggestions".into());
+            a.push("true".into());
         }
         a.extend(self.extra_args.iter().cloned());
         a
@@ -611,9 +893,12 @@ impl ClaudeCodeAgent {
     }
 
     /// Adopt the session the last turn opened, so the next one continues it.
+    /// A fork asked for by [`Self::fork_on_next_turn`] is done once the CLI
+    /// has named the new session: the next turn resumes *that*, plainly.
     pub fn follow_on(&mut self, outcome: &AgentOutcome) {
         if let Some(id) = &outcome.session_id {
             self.spec.resume = Some(id.clone());
+            self.spec.fork_session = false;
         }
         if let Some(model) = &outcome.model {
             self.resolved = Some(model.clone());
@@ -631,6 +916,17 @@ impl ClaudeCodeAgent {
         self.spec.resume = id.filter(|s| !s.is_empty());
     }
 
+    /// Make the next turn a fork of the session pointed at: the CLI mints
+    /// a new id, the original stays as it was, and [`Self::follow_on`]
+    /// adopts the new id when the turn lands (backlog 080). A no-op with
+    /// nothing to resume. For a fork that keeps the whole history; a fork
+    /// that cuts is `cli_session`'s copy.
+    pub fn fork_on_next_turn(&mut self) {
+        if self.spec.resume.is_some() {
+            self.spec.fork_session = true;
+        }
+    }
+
     /// Point the Ask position's files at `dir` — the open chat's ask
     /// directory, which the shell knows only once the chat exists. A
     /// no-op on a connection that is not asking.
@@ -638,6 +934,55 @@ impl ClaudeCodeAgent {
         if let Some(ask) = &mut self.spec.ask {
             ask.dir = dir;
         }
+    }
+
+    /// Whether the connection is in the Plan position.
+    pub fn planning(&self) -> bool {
+        self.spec
+            .ask
+            .as_ref()
+            .is_some_and(|a| a.mode == AskMode::Plan)
+    }
+
+    /// The card's Approve on a deferred `ExitPlanMode` (backlog 085),
+    /// called **before** the resume that carries the allow. For the Ask
+    /// pick nothing changes yet: the resume must run in `plan` mode for
+    /// the tool to succeed (the table on [`AskSpec`]), and the hook keeps
+    /// deferring. For the Auto pick the resume is the one-off
+    /// [`AskMode::ExitingToAuto`] shape. Either way [`Self::plan_exited`]
+    /// follows the resume. A no-op on a connection that is not in the
+    /// Plan position — a plan the model entered on its own mid-Ask
+    /// (`EnterPlanMode`) is approved in place and the chat stays Ask,
+    /// which is what the rail still shows.
+    pub fn plan_approved(&mut self, then: PlanThen) {
+        if let Some(ask) = &mut self.spec.ask
+            && ask.mode == AskMode::Plan
+            && then == PlanThen::Auto
+        {
+            ask.mode = AskMode::ExitingToAuto;
+        }
+    }
+
+    /// After the approval's resume: the chat takes the position the card
+    /// picked — Ask (the hook stays, `default` mode) or Auto (no hook,
+    /// `auto`, exactly what the switch's Auto position sends).
+    pub fn plan_exited(&mut self) {
+        match self.spec.ask.as_ref().map(|a| a.mode) {
+            Some(AskMode::Plan) => {
+                if let Some(ask) = &mut self.spec.ask {
+                    ask.mode = AskMode::Ask;
+                }
+            }
+            Some(AskMode::ExitingToAuto) => {
+                self.spec.ask = None;
+                self.spec.permission_mode = Some(Self::auto_mode().into());
+            }
+            _ => {}
+        }
+    }
+
+    fn auto_mode() -> &'static str {
+        AgentSpec::headless_permission_mode(true)
     }
 
     /// Run one turn to completion, streaming events as they arrive.
@@ -665,7 +1010,7 @@ impl ClaudeCodeAgent {
         on_event: &mut (dyn FnMut(TurnEvent) + Send),
     ) -> Result<AgentOutcome, AgentError> {
         let input = input.into();
-        self.drive(Some(input), Translator::new(), cancel, on_event)
+        self.drive(&self.spec, Some(input), Translator::new(), cancel, on_event)
             .await
     }
 
@@ -682,14 +1027,41 @@ impl ClaudeCodeAgent {
         cancel: &CancellationToken,
         on_event: &mut (dyn FnMut(TurnEvent) + Send),
     ) -> Result<AgentOutcome, AgentError> {
-        self.drive(None, Translator::resuming(call), cancel, on_event)
-            .await
+        self.drive(
+            &self.spec,
+            None,
+            Translator::resuming(call),
+            cancel,
+            on_event,
+        )
+        .await
+    }
+
+    /// Answer a side question from the chat's context without adding to
+    /// it (backlog 081; [`AgentSpec::aside`] has the shape and the
+    /// measurements). `None` when there is no session to ask beside.
+    /// Events stream as for a turn, into a caller's own sink — the chat's
+    /// recorder must not see them. Nothing of the agent changes: not the
+    /// session it resumes, not the model it resolved.
+    pub async fn ask_aside(
+        &self,
+        question: &str,
+        cancel: &CancellationToken,
+        on_event: &mut (dyn FnMut(TurnEvent) + Send),
+    ) -> Option<Result<AgentOutcome, AgentError>> {
+        let spec = self.spec.aside()?;
+        let input = TurnInput::from(question);
+        Some(
+            self.drive(&spec, Some(input), Translator::new(), cancel, on_event)
+                .await,
+        )
     }
 
     /// One CLI process, whichever shape: a prompt on argv, attachments on
     /// stdin, or a deferred resume with neither.
     async fn drive(
         &self,
+        spec: &AgentSpec,
         input: Option<TurnInput>,
         mut translator: Translator,
         cancel: &CancellationToken,
@@ -698,27 +1070,27 @@ impl ClaudeCodeAgent {
         let attached = input
             .as_ref()
             .is_some_and(|i| !i.images.is_empty() || !i.documents.is_empty());
-        let mut cmd = Command::new(resolve_binary(&self.spec.binary));
+        let mut cmd = Command::new(resolve_binary(&spec.binary));
         match &input {
             Some(_) if attached => {
-                cmd.args(self.spec.stdin_args()).stdin(Stdio::piped());
+                cmd.args(spec.stdin_args()).stdin(Stdio::piped());
             }
             Some(input) => {
-                cmd.args(self.spec.args(&input.text))
+                cmd.args(spec.args(&input.text))
                     // Null rather than inherited: with a terminal on the
                     // other end the CLI waits three seconds for piped input
                     // that is never coming, on every turn.
                     .stdin(Stdio::null());
             }
             None => {
-                cmd.args(self.spec.resume_args()).stdin(Stdio::null());
+                cmd.args(spec.resume_args()).stdin(Stdio::null());
             }
         }
-        cmd.current_dir(&self.spec.workspace)
+        cmd.current_dir(&spec.workspace)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        if self.spec.use_subscription {
+        if spec.use_subscription {
             cmd.env_remove("ANTHROPIC_API_KEY");
             cmd.env_remove("ANTHROPIC_AUTH_TOKEN");
             // Set when Nightloom itself was launched from a Claude Code
@@ -727,9 +1099,13 @@ impl ClaudeCodeAgent {
             cmd.env_remove("CLAUDECODE");
             cmd.env_remove("CLAUDE_CODE_ENTRYPOINT");
         }
+        if !spec.auto_compact {
+            // The belt to the setting's braces (`AgentSpec::auto_compact`).
+            cmd.env("DISABLE_AUTO_COMPACT", "1");
+        }
 
         let mut child = cmd.spawn().map_err(|source| AgentError::Spawn {
-            binary: self.spec.binary.clone(),
+            binary: spec.binary.clone(),
             source,
         })?;
 
@@ -789,26 +1165,80 @@ impl ClaudeCodeAgent {
             }
         }
 
+        // How the stop went, for the one notice the turn shows: the CLI
+        // closed the turn on the interrupt, or had to be killed.
+        let mut stop = "interrupted";
         if interrupted {
-            kill_tree(&mut child).await;
-            // Whatever was already buffered is still worth translating, but
-            // a reader that cannot finish must not hold the turn open.
-            let _ = tokio::time::timeout(DRAIN_GRACE, async {
-                while let Ok(Some(line)) = lines.next_line().await {
-                    for event in translator.push(&line) {
-                        on_event(event);
+            // Interrupt first (2026-09-16, nightshift backlog 074), kill
+            // only if that does not end the process. On the interrupt the
+            // CLI closes the turn itself — the open call gets an error
+            // result, the stream ends on a `result` line — and its session
+            // file says the turn is over, so the next `--resume` answers
+            // the next message instead of carrying on with the work that
+            // was stopped (measured: `INTERRUPT_GRACE`'s doc). A kill
+            // leaves neither. Everything the CLI writes on its way out is
+            // translated here, into the same events as the rest of the
+            // turn.
+            let ended = if interrupt(&child).await {
+                tokio::time::timeout(INTERRUPT_GRACE, async {
+                    // Until the end of the stream (or a broken pipe): the
+                    // process is on its way out either way.
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        for event in translator.push(&line) {
+                            on_event(event);
+                        }
                     }
-                }
-            })
-            .await;
+                })
+                .await
+                .is_ok()
+            } else {
+                false
+            };
+            if ended {
+                stop = "interrupted — Claude Code ended the turn";
+            } else {
+                stop = "interrupted — killed after the interrupt went unanswered";
+                kill_tree(&mut child).await;
+                // Whatever was already buffered is still worth translating,
+                // but a reader that cannot finish must not hold the turn
+                // open.
+                let _ = tokio::time::timeout(DRAIN_GRACE, async {
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        for event in translator.push(&line) {
+                            on_event(event);
+                        }
+                    }
+                })
+                .await;
+            }
         }
 
         let status = child.wait().await?;
-        let stderr = stderr_task.await.unwrap_or_default();
+        // A killed CLI can leave a grandchild holding its stderr open —
+        // the pipe's end never comes, and the tail is not worth the wait.
+        let stderr = if interrupted {
+            tokio::time::timeout(DRAIN_GRACE, stderr_task)
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .unwrap_or_default()
+        } else {
+            stderr_task.await.unwrap_or_default()
+        };
         let mut outcome = translator.finish();
 
         if interrupted {
-            outcome.notices.push("interrupted".into());
+            // The CLI's `result` on an interrupt is `is_error: true` with
+            // `subtype: "error_during_execution"` (`terminal_reason:
+            // "aborted_tools"` or `"aborted_streaming"`); that is the
+            // stop's own record, not a failed turn — so neither the flag
+            // nor the translator's "ended: …" notice for it stands, and
+            // the log's stop reason stays what a kill always left it.
+            outcome.is_error = false;
+            outcome
+                .notices
+                .retain(|n| n != "ended: error_during_execution");
+            outcome.notices.push(stop.into());
             return Ok(outcome);
         }
         // A non-zero exit with nothing translated is a startup failure —
@@ -818,7 +1248,7 @@ impl ClaudeCodeAgent {
         // prints in-run failures as the result on stdout.
         if !status.success() && outcome.text.is_empty() && outcome.session_id.is_none() {
             return Err(AgentError::Failed {
-                binary: self.spec.binary.clone(),
+                binary: spec.binary.clone(),
                 status: status.to_string(),
                 stderr,
             });
@@ -935,6 +1365,36 @@ fn which_on_path(_name: &str) -> Option<PathBuf> {
     None
 }
 
+/// Ask the CLI to stop the way Ctrl-C does, and say whether it was asked.
+///
+/// `kill -INT <pid>` rather than `libc::kill`: the crate has no `libc`
+/// dependency, and `/bin/kill` is on every Unix this runs on — the same
+/// trade `kill_tree` makes with `taskkill`. `false` on Windows, where a
+/// detached child has no console to receive a Ctrl-C event and the item
+/// asks for no change to that platform's semantics: the caller goes
+/// straight to the kill.
+async fn interrupt(child: &tokio::process::Child) -> bool {
+    #[cfg(unix)]
+    {
+        let Some(pid) = child.id() else {
+            return false;
+        };
+        Command::new("kill")
+            .args(["-INT", &pid.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await
+            .is_ok_and(|s| s.success())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = child;
+        false
+    }
+}
+
 /// Kill the child and anything it started.
 ///
 /// A copy of `tools::shell::kill_tree`'s Windows half, and kept here rather
@@ -975,9 +1435,24 @@ mod tests {
             "stream-json",
             "--verbose",
             "--include-partial-messages",
+            "--forward-subagent-text",
         ] {
             assert!(a.iter().any(|x| x == flag), "missing {flag} in {a:?}");
         }
+        // On every shape, the resume included: a subagent may be mid-turn
+        // when a deferred call is resumed.
+        assert!(
+            spec()
+                .stdin_args()
+                .iter()
+                .any(|x| x == "--forward-subagent-text")
+        );
+        assert!(
+            spec()
+                .resume_args()
+                .iter()
+                .any(|x| x == "--forward-subagent-text")
+        );
     }
 
     /// The empty tool set is an empty string, not an omitted flag — omitted
@@ -1198,6 +1673,108 @@ mod tests {
         assert!(agent.spec().args("hi").iter().any(|x| x == "sess-1"));
     }
 
+    /// An aside is the chat's own command line — model, tools, servers,
+    /// prompt tool, system prompt — plus the four flags that make it a
+    /// harmless throwaway on the warm cache, and minus the hook. Without a
+    /// session there is no aside.
+    #[test]
+    fn an_aside_keeps_the_prefix_and_adds_the_throwaway_flags() {
+        assert!(spec().aside().is_none(), "nothing to ask beside");
+        let mut s = asking(AskMode::Plan);
+        s.model = Some("opus".into());
+        s.mcp_config = Some("{\"mcpServers\":{}}".into());
+        s.append_system_prompt = Some("preamble".into());
+        s.resume = Some("sess-3".into());
+        let aside = s.aside().expect("a session to ask beside");
+        let a = aside.args("what did we decide?");
+        for (flag, value) in [
+            ("--resume", "sess-3"),
+            ("--model", "opus"),
+            ("--mcp-config", "{\"mcpServers\":{}}"),
+            ("--append-system-prompt", "preamble"),
+            ("--permission-prompt-tool", ask::PROMPT_TOOL),
+            ("--permission-mode", "dontAsk"),
+            ("--max-turns", "2"),
+        ] {
+            let i = a
+                .iter()
+                .position(|x| x == flag)
+                .unwrap_or_else(|| panic!("{flag} in {a:?}"));
+            assert_eq!(a[i + 1], value, "{flag}");
+        }
+        for flag in ["--fork-session", "--no-session-persistence"] {
+            assert!(a.iter().any(|x| x == flag), "{flag} in {a:?}");
+        }
+        // No hook: a deferral would park the aside on a prompt (the
+        // settings object may still carry the chat's other switches). And
+        // the tools are untouched — `--tools ""` is what goes cold.
+        if let Some(i) = a.iter().position(|x| x == "--settings") {
+            assert!(!a[i + 1].contains("hooks"), "{}", a[i + 1]);
+        }
+        assert!(!a.iter().any(|x| x == "--tools"), "{a:?}");
+        let with_hook = s.args("real turn");
+        let i = with_hook.iter().position(|x| x == "--settings").unwrap();
+        assert!(
+            with_hook[i + 1].contains("hooks"),
+            "the chat itself keeps its hook"
+        );
+        // The chat's own spec is as it was.
+        assert_eq!(s.max_turns, None);
+        assert!(!s.fork_session && !s.no_session_persistence);
+        assert_eq!(s.ask.as_ref().unwrap().mode, AskMode::Plan);
+    }
+
+    /// Effort and the fallback model are two flags, each only when set,
+    /// passed through as spelled: the levels and the aliases are the
+    /// CLI's to validate.
+    #[test]
+    fn effort_and_fallback_model_are_passed_through_when_set() {
+        let bare = spec().args("hi");
+        for flag in ["--effort", "--fallback-model"] {
+            assert!(!bare.iter().any(|x| x == flag), "{flag} in {bare:?}");
+        }
+        let mut s = spec();
+        s.effort = Some("xhigh".into());
+        s.fallback_model = Some("sonnet,haiku".into());
+        let a = s.args("hi");
+        let i = a.iter().position(|x| x == "--effort").unwrap();
+        assert_eq!(a[i + 1], "xhigh");
+        let j = a.iter().position(|x| x == "--fallback-model").unwrap();
+        assert_eq!(a[j + 1], "sonnet,haiku");
+        // On the resume shape too: a deferred call's resume is a turn.
+        assert!(s.resume_args().iter().any(|x| x == "--effort"));
+    }
+
+    /// A fork by flag rides on `--resume` and lasts one turn: asked for
+    /// with nothing to resume it is refused, sent it follows the id, and
+    /// once the CLI has named the fork the next turn resumes that plainly.
+    #[test]
+    fn a_flag_fork_follows_the_resume_id_for_one_turn() {
+        let mut agent = ClaudeCodeAgent::new(spec());
+        agent.fork_on_next_turn();
+        assert!(!agent.spec().fork_session, "nothing to fork");
+        assert!(
+            !agent
+                .spec()
+                .args("hi")
+                .iter()
+                .any(|x| x == "--fork-session")
+        );
+        agent.set_resume(Some("parent-1".into()));
+        agent.fork_on_next_turn();
+        let a = agent.spec().args("hi");
+        let i = a.iter().position(|x| x == "--resume").unwrap();
+        assert_eq!(&a[i + 1..i + 3], ["parent-1", "--fork-session"]);
+        // The CLI answers with the fork's id (measured: a new one).
+        agent.follow_on(&AgentOutcome {
+            session_id: Some("fork-2".into()),
+            ..Default::default()
+        });
+        let a = agent.spec().args("next");
+        assert!(a.iter().any(|x| x == "fork-2"));
+        assert!(!a.iter().any(|x| x == "--fork-session"), "{a:?}");
+    }
+
     /// The default has to be the subscription. An inherited key bills the
     /// API silently, which is the one failure this module cannot detect
     /// after the fact.
@@ -1264,15 +1841,18 @@ mod tests {
         s.ask = Some(AskSpec {
             hook: vec!["hook".into()],
             dir: PathBuf::from("/x"),
+            mode: AskMode::Ask,
         });
         s.apply_mode(ChatMode::Ephemeral);
         let a = s.args("hi");
         let i = a.iter().position(|x| x == "--tools").expect("--tools");
         assert_eq!(&a[i + 1..i + 6], READ_ONLY_TOOLS);
         assert!(a.iter().any(|x| x == "--no-session-persistence"), "{a:?}");
-        // No resume, no Ask: the hook is not registered on an ephemeral chat.
+        // No resume, no Ask: the hook is not registered on an ephemeral chat
+        // (`--settings` still carries backlog 086's auto-compact switch).
         assert!(s.ask.is_none());
-        assert!(!a.iter().any(|x| x == "--settings"), "{a:?}");
+        let i = a.iter().position(|x| x == "--settings").unwrap();
+        assert!(!a[i + 1].contains("hooks"), "{a:?}");
         // Before the caller's own trailing arguments, like every other flag.
         s.extra_args = vec!["--x".into()];
         let a = s.args("hi");
@@ -1297,6 +1877,7 @@ mod tests {
         s.ask = Some(AskSpec {
             hook: vec!["/app/nightloom-desktop".into(), "--permission-hook".into()],
             dir: PathBuf::from("/logs/ask/chat-1"),
+            mode: AskMode::Ask,
         });
         let a = s.args("hi");
         let i = a.iter().position(|x| x == "--permission-mode").unwrap();
@@ -1321,11 +1902,56 @@ mod tests {
         let a = s.args("hi");
         assert!(a.iter().any(|x| x == "--settings"));
         assert!(a.iter().any(|x| x == "--setting-sources"));
-        // Off, none of it leaks.
+        // Off, none of it leaks (`--settings` still carries the
+        // auto-compact switch of backlog 086, so it is checked by content).
         let bare = spec().args("hi");
-        for flag in ["--settings", "--permission-prompt-tool"] {
-            assert!(!bare.iter().any(|x| x == flag), "{flag} in {bare:?}");
-        }
+        assert!(
+            !bare.iter().any(|x| x == "--permission-prompt-tool"),
+            "{bare:?}"
+        );
+        let i = bare.iter().position(|x| x == "--settings").unwrap();
+        assert!(!bare[i + 1].contains("hooks"), "{bare:?}");
+    }
+
+    /// The memory switch (nightshift backlog 088): off is
+    /// `autoMemoryEnabled: false` in `--settings`, and with the Ask hook
+    /// on it shares the hook's JSON — one `--settings`, since the CLI keeps
+    /// only the last. On sends nothing, as the CLI's default is on.
+    #[test]
+    fn auto_memory_off_rides_in_the_one_settings_json() {
+        let mut s = spec();
+        s.auto_memory = false;
+        let a = s.args("hi");
+        assert_eq!(a.iter().filter(|x| *x == "--settings").count(), 1);
+        let i = a.iter().position(|x| x == "--settings").unwrap();
+        let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
+        assert_eq!(v["autoMemoryEnabled"], false);
+        assert!(v.get("hooks").is_none());
+
+        s.ask = Some(AskSpec {
+            hook: vec!["/app/nightloom-desktop".into(), "--permission-hook".into()],
+            dir: PathBuf::from("/logs/ask/chat-1"),
+            mode: AskMode::Ask,
+        });
+        let a = s.args("hi");
+        assert_eq!(a.iter().filter(|x| *x == "--settings").count(), 1, "{a:?}");
+        let i = a.iter().position(|x| x == "--settings").unwrap();
+        let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
+        assert_eq!(v["autoMemoryEnabled"], false);
+        assert!(v["hooks"]["PreToolUse"][0]["hooks"][0]["command"].is_string());
+
+        // Memory on and no hook: the JSON still carries the auto-compact
+        // switch (backlog 086, off on every path), and nothing else.
+        let a = spec().args("hi");
+        let i = a.iter().position(|x| x == "--settings").unwrap();
+        let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
+        assert_eq!(v["autoCompactEnabled"], false);
+        assert!(v.get("autoMemoryEnabled").is_none());
+        assert!(v.get("hooks").is_none());
+        // Compaction allowed and memory on: no `--settings` at all.
+        let mut s = spec();
+        s.auto_compact = true;
+        assert!(!s.args("hi").iter().any(|x| x == "--settings"));
     }
 
     /// The chat's directory is set after connect, once the chat exists,
@@ -1339,6 +1965,7 @@ mod tests {
         s.ask = Some(AskSpec {
             hook: vec!["hook".into()],
             dir: PathBuf::from("/placeholder"),
+            mode: AskMode::Ask,
         });
         let mut agent = ClaudeCodeAgent::new(s);
         agent.set_ask_dir(PathBuf::from("/logs/ask/chat-2"));
@@ -1369,6 +1996,213 @@ mod tests {
         // Same tail as the argv shape.
         let argv = s.args("hi");
         assert_eq!(argv[2..], r[1..]);
+    }
+
+    fn asking(mode: AskMode) -> AgentSpec {
+        let mut s = spec();
+        s.permission_mode = Some("auto".into());
+        s.ask = Some(AskSpec {
+            hook: vec!["hook".into(), "--permission-hook".into()],
+            dir: PathBuf::from("/logs/ask/chat-3"),
+            mode,
+        });
+        s
+    }
+
+    fn mode_of(a: &[String]) -> String {
+        let i = a.iter().position(|x| x == "--permission-mode").unwrap();
+        a[i + 1].clone()
+    }
+
+    fn matcher_of(a: &[String]) -> String {
+        let i = a.iter().position(|x| x == "--settings").unwrap();
+        let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
+        v["hooks"]["PreToolUse"][0]["matcher"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    /// The Plan position is the Ask position under `plan` mode: the same
+    /// hook on the same matcher, the same prompt tool, and `plan` in
+    /// place of `default` — whatever mode the shell would have sent.
+    #[test]
+    fn the_plan_position_is_the_ask_position_in_plan_mode() {
+        let a = asking(AskMode::Plan).args("hi");
+        assert_eq!(mode_of(&a), "plan");
+        assert!(!a.iter().any(|x| x == "auto"), "{a:?}");
+        assert_eq!(matcher_of(&a), ask::MATCHER);
+        assert!(a.iter().any(|x| x == "--permission-prompt-tool"));
+        let b = asking(AskMode::Ask).args("hi");
+        assert_eq!(mode_of(&b), "default");
+        assert_eq!(matcher_of(&b), matcher_of(&a));
+        assert!(ClaudeCodeAgent::new(asking(AskMode::Plan)).planning());
+        assert!(!ClaudeCodeAgent::new(asking(AskMode::Ask)).planning());
+    }
+
+    /// Approve → Ask: the resume goes out in `plan` still (the tool
+    /// errors "not in plan mode" under any other, measured), and only
+    /// after it does the chat become Ask.
+    #[test]
+    fn approving_a_plan_into_ask_keeps_plan_mode_for_the_resume_then_asks() {
+        let mut agent = ClaudeCodeAgent::new(asking(AskMode::Plan));
+        agent.plan_approved(PlanThen::Ask);
+        let r = agent.spec().resume_args();
+        assert_eq!(mode_of(&r), "plan");
+        assert_eq!(matcher_of(&r), ask::MATCHER);
+        agent.plan_exited();
+        assert!(!agent.planning());
+        let a = agent.spec().args("next");
+        assert_eq!(mode_of(&a), "default");
+        assert_eq!(matcher_of(&a), ask::MATCHER, "the hook stays: Ask");
+    }
+
+    /// Approve → Auto: one resume in `auto` with the hook narrowed to
+    /// the plan tool — a resume with no hook at all is refused by the
+    /// CLI (`tool_deferred_unavailable`, measured) — and then the Auto
+    /// position proper: no hook, no prompt tool, `auto`.
+    #[test]
+    fn approving_a_plan_into_auto_narrows_the_hook_for_one_resume_then_drops_it() {
+        let mut agent = ClaudeCodeAgent::new(asking(AskMode::Plan));
+        agent.plan_approved(PlanThen::Auto);
+        let r = agent.spec().resume_args();
+        assert_eq!(mode_of(&r), "auto");
+        assert_eq!(matcher_of(&r), "ExitPlanMode");
+        assert!(r.iter().any(|x| x == "--permission-prompt-tool"), "{r:?}");
+        agent.plan_exited();
+        assert!(agent.spec().ask.is_none());
+        let a = agent.spec().args("next");
+        assert_eq!(mode_of(&a), AgentSpec::headless_permission_mode(true));
+        assert!(!a.iter().any(|x| x == "--permission-prompt-tool"), "{a:?}");
+        // `--settings` stays for backlog 086's auto-compact switch; the
+        // hook is what must be gone.
+        let i = a.iter().position(|x| x == "--settings").unwrap();
+        assert!(!a[i + 1].contains("hooks"), "{a:?}");
+        // Neither call does anything on a connection that is not asking,
+        // nor on one in the Ask position (a plan the model entered on its
+        // own): the chat stays where the rail shows it.
+        let mut plain = ClaudeCodeAgent::new(spec());
+        plain.plan_approved(PlanThen::Auto);
+        plain.plan_exited();
+        assert!(plain.spec().ask.is_none() && plain.spec().permission_mode.is_none());
+        let mut asking_chat = ClaudeCodeAgent::new(asking(AskMode::Ask));
+        asking_chat.plan_approved(PlanThen::Auto);
+        assert_eq!(mode_of(&asking_chat.spec().resume_args()), "default");
+        asking_chat.plan_exited();
+        assert_eq!(mode_of(&asking_chat.spec().args("next")), "default");
+    }
+
+    /// A stand-in CLI for the stop path: announces a call, then parks. On
+    /// SIGINT it does what 2.1.263 did (`m074-4-sigint-tool.jsonl`): the
+    /// call's error result, the interrupt line, a `result` with
+    /// `aborted_tools`, exit 0. `sleep … & wait` rather than a foreground
+    /// sleep so the trap runs at once.
+    #[cfg(unix)]
+    fn stand_in(dir: &std::path::Path, body: &str) -> String {
+        let path = dir.join("claude-stand-in");
+        std::fs::write(&path, format!("#!/bin/sh\n{body}")).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    #[cfg(unix)]
+    const ENDS_ON_INTERRUPT: &str = r##"printf '%s\n' '{"type":"system","subtype":"init","cwd":"x","tools":["Bash"],"mcp_servers":[],"model":"claude-haiku-4-5","permissionMode":"bypassPermissions","session_id":"stop-1"}'
+printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_stop","name":"Bash","input":{"command":"python3 -c ..."}}]},"parent_tool_use_id":null}'
+trap 'kill $child 2>/dev/null
+printf "%s\n" "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"content\":\"The user doesn'"'"'t want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.\",\"is_error\":true,\"tool_use_id\":\"toolu_stop\"}]},\"parent_tool_use_id\":null}"
+printf "%s\n" "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"[Request interrupted by user for tool use]\"}]},\"parent_tool_use_id\":null}"
+printf "%s\n" "{\"type\":\"result\",\"subtype\":\"error_during_execution\",\"is_error\":true,\"terminal_reason\":\"aborted_tools\",\"num_turns\":3,\"session_id\":\"stop-1\",\"stop_reason\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}"
+exit 0' INT
+sleep 30 >/dev/null 2>&1 & child=$!
+wait
+"##;
+
+    /// Stop sends the interrupt first and takes what the CLI writes on
+    /// its way out: the open call is closed by the CLI's own error result
+    /// (not the recorder's orphan marker), the session id is on the
+    /// outcome, the notice says the CLI ended the turn, and the CLI's
+    /// `is_error: true` on that result is not a failed turn.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stop_interrupts_first_and_keeps_what_the_cli_writes_on_the_way_out() {
+        let dir = std::env::temp_dir().join(format!("nightloom-stop-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut s = AgentSpec::new(&dir);
+        s.binary = stand_in(&dir, ENDS_ON_INTERRUPT);
+        let agent = ClaudeCodeAgent::new(s);
+        let cancel = CancellationToken::new();
+        let trigger = cancel.clone();
+        let mut events = Vec::new();
+        let started = std::time::Instant::now();
+        let outcome = agent
+            .run_turn("go", &cancel, &mut |e| {
+                if matches!(e, TurnEvent::ToolCall { .. }) {
+                    trigger.cancel();
+                }
+                events.push(e);
+            })
+            .await
+            .unwrap();
+        assert!(
+            started.elapsed() < INTERRUPT_GRACE,
+            "the CLI ended the turn; nothing waited for the kill"
+        );
+        let result = events.iter().find_map(|e| match e {
+            TurnEvent::ToolResult {
+                tool_use_id,
+                is_error,
+                content,
+                ..
+            } if tool_use_id == "toolu_stop" => Some((*is_error, content.clone())),
+            _ => None,
+        });
+        let (is_error, content) = result.expect("the call's result came from the CLI");
+        assert!(is_error);
+        assert!(content.contains("doesn't want to proceed"), "{content}");
+        assert_eq!(outcome.session_id.as_deref(), Some("stop-1"));
+        assert!(!outcome.is_error, "a stop is not a failed turn");
+        assert_eq!(
+            outcome.notices,
+            vec!["interrupted — Claude Code ended the turn".to_string()],
+            "one notice, one toast"
+        );
+    }
+
+    /// A CLI that ignores the interrupt is killed once the grace runs out,
+    /// as before; the notice says so.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_cli_that_ignores_the_interrupt_is_killed_after_the_grace() {
+        let dir = std::env::temp_dir().join(format!("nightloom-stop-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut s = AgentSpec::new(&dir);
+        s.binary = stand_in(
+            &dir,
+            "printf '%s\\n' '{\"type\":\"system\",\"subtype\":\"init\",\"cwd\":\"x\",\"tools\":[],\"mcp_servers\":[],\"model\":\"m\",\"permissionMode\":\"auto\",\"session_id\":\"stop-2\"}'\ntrap '' INT\nsleep 30 >/dev/null 2>&1 & wait\n",
+        );
+        let agent = ClaudeCodeAgent::new(s);
+        let cancel = CancellationToken::new();
+        let trigger = cancel.clone();
+        let started = std::time::Instant::now();
+        let outcome = agent
+            .run_turn("go", &cancel, &mut |e| {
+                if matches!(e, TurnEvent::AgentInit { .. }) {
+                    trigger.cancel();
+                }
+            })
+            .await
+            .unwrap();
+        assert!(started.elapsed() >= INTERRUPT_GRACE);
+        assert!(started.elapsed() < INTERRUPT_GRACE + DRAIN_GRACE + Duration::from_secs(3));
+        assert!(
+            outcome
+                .notices
+                .iter()
+                .any(|n| n.starts_with("interrupted — killed")),
+            "{:?}",
+            outcome.notices
+        );
     }
 
     /// A path the user typed is honoured as typed. Second-guessing it would

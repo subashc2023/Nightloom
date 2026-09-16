@@ -73,6 +73,56 @@ pub enum TurnEvent {
     Usage {
         usage: Usage,
     },
+    /// What the Claude Code session has, from the CLI's `system/init` line
+    /// — the first line of every turn on that engine (nightshift backlog
+    /// 077, 2026-09-16). The provider engine never emits it. Carried as an
+    /// event rather than folded into the outcome so the shell has it at
+    /// the turn's start, and so a shell that ignores unknown events loses
+    /// nothing: MCP servers with their status, the built-in and MCP tool
+    /// names, the skills, the slash commands, the agents, the CLI's version
+    /// and the permission mode it started in. Under Nightloom's safe mode
+    /// the lists are honestly short (measured: no servers, no skills, no
+    /// slash commands; the agents and built-in tools stay).
+    AgentInit {
+        session_id: Option<String>,
+        model: Option<String>,
+        version: Option<String>,
+        permission_mode: Option<String>,
+        tools: Vec<String>,
+        mcp_servers: Vec<McpServer>,
+        slash_commands: Vec<String>,
+        skills: Vec<String>,
+        agents: Vec<String>,
+    },
+    /// The CLI's predicted next prompt, after the turn's result (nightshift
+    /// backlog 083). Shown as a ghost line in the composer; never sent
+    /// unless accepted. Claude Code engine, and only when asked for.
+    PromptSuggestion {
+        text: String,
+    },
+    /// An event of a subagent's own turn — one the Claude Code CLI spawned
+    /// through its `Agent` tool — carrying the id of the call that spawned
+    /// it (2026-09-16, nightshift backlog 075; `--forward-subagent-text`).
+    /// `event` is the child's text, thinking, call or result exactly as the
+    /// main thread's would be, so a renderer nests it under the parent's
+    /// row and a log keeps it against the parent's id; a nested subagent's
+    /// parent is itself a child's call. Claude Code engine only.
+    Subagent {
+        parent_tool_use_id: String,
+        event: Box<TurnEvent>,
+    },
+}
+
+/// One MCP server as the CLI's init line lists it (see
+/// [`TurnEvent::AgentInit`]): measured statuses are `connected`,
+/// `pending` and `needs-auth`; the headless reference also names `failed`
+/// with an `error` string.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct McpServer {
+    pub name: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// What the user is sending this turn.

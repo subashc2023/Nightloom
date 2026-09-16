@@ -109,6 +109,14 @@ impl ChatMode {
 pub struct ForkedFrom {
     pub session: String,
     pub index: usize,
+    /// Why the chat was cut from its parent, when it was not an edit
+    /// (nightshift backlog 086, 2026-09-16): `"handoff"` for a chat that
+    /// continues a full one from `HANDOFF.md` — `index` is then the
+    /// parent's whole length, since nothing is carried. Absent on an
+    /// edit-and-send fork, which is what the field's absence has always
+    /// meant; older logs read back as that.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// One entry in a session's append-only event log.
@@ -1043,6 +1051,7 @@ impl Session {
             Some(ForkedFrom {
                 session: self.id.clone(),
                 index: upto,
+                reason: None,
             }),
         );
         // Old index → new index, for the markers that carry one.
@@ -1106,6 +1115,32 @@ impl Session {
             fork.record(copied);
         }
         Ok(fork)
+    }
+
+    /// A fresh chat that continues this one after a hand-off (nightshift
+    /// backlog 086, 2026-09-16): nothing is carried — the point is an
+    /// empty window — and the creation line names the parent with the cut
+    /// at its whole length and `reason: "handoff"`, so the sidebar's
+    /// lineage and the top bar's "continued from" have their trace. The
+    /// same mode as the parent; the parent is untouched and stays readable.
+    pub fn continued_from(&self, dir: impl AsRef<Path>) -> io::Result<Self> {
+        let mode = self.mode();
+        let id = uuid::Uuid::new_v4().to_string();
+        let log = match mode {
+            ChatMode::Ephemeral => None,
+            _ => Some(JsonlLog::create(dir.as_ref().join(format!("{id}.jsonl")))?),
+        };
+        Ok(Self::create_from(
+            id,
+            Utc::now(),
+            log,
+            mode,
+            Some(ForkedFrom {
+                session: self.id.clone(),
+                index: self.events.len(),
+                reason: Some("handoff".into()),
+            }),
+        ))
     }
 
     /// Where this chat was forked from, if it was — read off the creation
@@ -4634,7 +4669,8 @@ mod tests {
             fork.forked_from(),
             Some(&ForkedFrom {
                 session: parent.id.clone(),
-                index: 12
+                index: 12,
+                reason: None,
             })
         );
         assert_eq!(fork.mode(), ChatMode::Normal);

@@ -190,6 +190,70 @@ On this side:
 - Reads inside the working directory never pause; a read outside it goes to
   the prompt tool and is refused with a sentence the model can act on.
 
+### The Plan position (2026-09-16, nightshift backlog 085)
+
+Plan mode on the same hook — the protocol and the measured edges are in
+[service-agent.md](service-agent.md#the-plan-position-plan-mode-under-the-same-hook-2026-09-16-nightshift-backlog-085).
+On this side:
+
+- The rail's Behaviour section on the Claude Code engine shows one
+  **Approval** segment, `Auto · Ask · Plan · Off` (the design's control, in
+  the thinking-segments idiom), over the same three draft fields the two
+  switches it replaces were bound to: `approval` (Off = off), `agentAsk`,
+  `agentPlan`. Plan implies Ask. The API engine's *Ask before writing* switch
+  is unchanged.
+- `connect_agent` takes `plan`; with it (and approval on) the `AskSpec` is
+  `AskMode::Plan` and the rail's `permission_mode` reads `plan (ask)`.
+- The plan card gains a `then Ask | Auto` pick beside **Approve** (Ask
+  first) and names the CLI's plan file. `resolveApproval` passes the pick as
+  `then`; `approve_call` puts it on `Answer::Allow.plan_then`; `send_agent`
+  calls `plan_approved(then)` before the resume and `plan_exited()` after,
+  so the chat leaves plan mode as Ask or Auto. The rail flips its own switch
+  in `resolveApproval` at the same moment (saved like any rail change, no
+  reconnect — the backend's agent already holds the new position).
+- **Keep planning** is a `deny` whose reason is the note typed, or "keep
+  planning: the user wants changes to the plan".
+
+### Subagents under their call (2026-09-16, nightshift backlog 075)
+
+A `subagent` turn event (`{parent_tool_use_id, event}`; the protocol is in
+[service-agent.md](service-agent.md#subagents-their-words-and-calls-under-the-call-that-spawned-them-2026-09-16-nightshift-backlog-075))
+is applied to the `children` of the call it names — found by id at any
+depth (`findCall`) — through the same `applyToSegments` the live reply
+uses, so a child's text, thinking and calls accumulate as the main thread's
+do. From the log, `Transcript.svelte` recognises the recorder's marked text
+block (`subagent.ts`), attaches its narrative as one text segment to the
+parent call in this message or an earlier one of the turn, and never counts
+it as the reply's prose. `AssistantMessage.svelte` draws `children` as one
+indented `<details>` row under the call — `▸ subagent · 3 calls · 120 words
+so far` — opening to the child's rows (nested subagents recurse).
+
+### Effort and the fallback model on the rail (2026-09-16, nightshift backlog 076)
+
+Under the Model section of the Claude Code pane: **Effort**, a five-way
+segment `low · medium · high · xhigh · max` (`high` on by default), and
+**Fallback model**, the alias pills with `none` first. Draft fields
+`agentEffort` and `agentFallback`, saved with the rest of the rail;
+`connect_agent` takes `effort` and `fallback_model` and the spec sends the
+flags (the protocol section in
+[service-agent.md](service-agent.md#effort-and-a-fallback-model-2026-09-16-nightshift-backlog-076)).
+The Context page's *This session* foot line ends `· effort high · no
+fallback` (or `· fallback sonnet`).
+
+### Ask aside (2026-09-16, nightshift backlog 081)
+
+On the Claude Code engine the composer has an **Ask aside** button beside
+Send (text only, idle only): the typed question goes to `ask_aside`, which
+runs `ClaudeCodeAgent::ask_aside` under the agent's lock (so it waits for a
+turn rather than racing it; Stop cancels it) and returns the answer, the
+CLI's cost estimate and the cache read — recorded nowhere, not in the log
+and not in the CLI's files (the protocol and the measurements are in
+[service-agent.md](service-agent.md#ask-aside-a-side-question-on-the-warm-cache-2026-09-16-nightshift-backlog-081)).
+`app.aside` holds one at a time; `Transcript.svelte` draws it at the foot
+as a dashed card — `aside · not in the chat`, the question, `asking…` then
+the answer, `N read from cache`, × — cleared by its × or a chat switch. A
+chat with no CLI session yet is refused with a sentence.
+
 The `AutoApprove` policy lives in `AppState`, **not** in `connect` — the rail
 re-connects on every knob change, and rebuilding the policy there would silently
 forget every "always allow" the user granted.
@@ -230,7 +294,12 @@ that require choosing a folder first would be a worse app.
 
 `pick_folder` drives the native dialog **from Rust** (`tauri-plugin-dialog`), so
 the webview needs no filesystem permission in its capability set and no matching
-npm package — it can ask, and it gets back a path the user chose. `reveal` is a
+npm package — it can ask, and it gets back a path the user chose. `notify`
+posts a banner the same way (`tauri-plugin-notification`, added 2026-09-16 for
+the turn-end notification of nightshift backlog 079, blocker 106): the frontend
+decides whether — the window's focus and the Settings switch — and Rust only
+posts; macOS shows it only for a bundled, signed app, so a `cargo tauri dev`
+build posts into nothing. `reveal` is a
 per-OS spawn (`explorer` / `open` / `xdg-open`) and is **not** a tool: nothing the
 model asks for opens a window on the user's desktop.
 

@@ -964,7 +964,8 @@ mod tests {
                 of(&fork.id).forked_from,
                 Some(ForkedFrom {
                     session: parent.id.clone(),
-                    index: 2
+                    index: 2,
+                    reason: None,
                 }),
                 "pass {pass}"
             );
