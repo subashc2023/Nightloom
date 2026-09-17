@@ -4741,6 +4741,12 @@ fn notify_usage_refreshed(app: AppHandle, title: String, body: String) -> Result
         std::thread::Builder::new()
             .name("usage-banner".into())
             .spawn(move || {
+                // Which app is posting: without this the library looks up
+                // an application literally named "use_default" and macOS
+                // opens a "Where is use_default?" chooser over his screen
+                // (seen 2026-09-17 on the first Refresh now). Set once; a
+                // second press gets AlreadySet, which is fine.
+                let _ = notify_rust::set_application("app.nightloom.desktop");
                 let handle = match notify_rust::Notification::new()
                     .summary(&title)
                     .body(&body)
