@@ -105,6 +105,11 @@
   }
 
   async function commitRename(id: string) {
+    // Only the row still being renamed commits (review 2026-09-17, agent
+    // Q's FE12 patch note): Escape clears `renaming`, the input leaves the
+    // DOM, and the blur that removal can fire must not turn the cancel
+    // into a rename; Enter's own blur is the one commit.
+    if (renaming !== id) return;
     const name = draft.trim();
     renaming = null;
     // Unchanged or emptied is a cancel, not a rename: an empty name would
@@ -473,7 +478,10 @@
                 onblur={() => void commitRename(s.id)}
                 onkeydown={(e) => {
                   if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                  else if (e.key === "Escape") renaming = null;
+                  else if (e.key === "Escape") {
+                    renaming = null;
+                    draft = "";
+                  }
                 }}
               />
             {:else}
