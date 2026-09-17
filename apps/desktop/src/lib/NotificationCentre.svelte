@@ -21,6 +21,7 @@
   import { KIND_LABEL, KIND_ORDER, countsOf, type Notice, type NoticeKind } from "./centre";
   import { relativeTime } from "./time";
   import DiffView from "./DiffView.svelte";
+  import ConfirmDialog from "./ConfirmDialog.svelte";
 
   const count = $derived(centreCount());
   const counts = $derived(countsOf(app.centre.notices));
@@ -33,6 +34,8 @@
   let diffError = $state<string | null>(null);
   /** A file being reverted, so its button reads "…" while git runs. */
   let reverting = $state<string | null>(null);
+  /** A Revert awaiting its confirmation — the app's dialog, not `window.confirm`. */
+  let pendingRevert = $state<{ notice: Notice; file: string } | null>(null);
 
   let panelEl = $state<HTMLElement | null>(null);
   let bellEl = $state<HTMLElement | null>(null);
@@ -46,12 +49,15 @@
   // popover rule.
   $effect(() => {
     if (!app.centre.open) return;
+    // While the Revert dialog is up it owns the scrim and Escape.
     const onDown = (e: MouseEvent) => {
+      if (pendingRevert) return;
       const t = e.target as Node;
       if (panelEl?.contains(t) || bellEl?.contains(t)) return;
       app.centre.open = false;
     };
     const onKey = (e: KeyboardEvent) => {
+      if (pendingRevert) return;
       if (e.key === "Escape") app.centre.open = false;
     };
     window.addEventListener("mousedown", onDown, true);
@@ -81,12 +87,18 @@
     }
   }
 
-  async function revert(n: Notice, file: string) {
+  function revert(n: Notice, file: string) {
     if (!n.commit) return;
-    if (!window.confirm(`Put ${file} back as it was before this dream? The change is committed, so the dream's version stays in git.`)) return;
-    reverting = file;
+    pendingRevert = { notice: n, file };
+  }
+
+  async function confirmRevert() {
+    const p = pendingRevert;
+    if (!p) return;
+    pendingRevert = null;
+    reverting = p.file;
     try {
-      await revertDreamFile(n, file);
+      await revertDreamFile(p.notice, p.file);
     } finally {
       reverting = null;
     }
@@ -180,6 +192,22 @@
           </section>
         {/each}
       </div>
+
+      {#if pendingRevert}
+        <!-- Inside the panel on purpose: the outside-click closer above
+             tests DOM containment, and the dialog's fixed scrim is a child. -->
+        <ConfirmDialog
+          title="Put this file back as it was before the dream?"
+          lead="The restore is a commit of its own, so the dream's version stays in git and nothing is lost either way."
+          facts={[
+            ["file", pendingRevert.file],
+            ["dream", pendingRevert.notice.commit?.hash.slice(0, 7) ?? ""],
+          ]}
+          confirmLabel="Revert"
+          onconfirm={() => void confirmRevert()}
+          onclose={() => (pendingRevert = null)}
+        />
+      {/if}
 
       <div class="centre-foot">
         <button

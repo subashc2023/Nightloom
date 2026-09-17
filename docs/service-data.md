@@ -382,6 +382,15 @@ to record progress) advances only when the turn completes uninterrupted — a
 failed or cancelled pass offers the same batch again, and re-dreaming is the safe
 direction to fail in since the pass dedupes against the vault it already wrote.
 
+The tidy (2026-09-16 evening, nightshift backlog 069/072) is the dream's
+housekeeping twin, not a dream: `dream::tidy_targets` walks the same targets
+— the vault, every registered project's memory folder — with `tidy.rs`'s
+rules and snapshots each folder it changed under its own `nightloom: tidy —`
+subject; the bell lists only the `nightloom: dream —` commits
+(`centre::DREAM_SUBJECT`), so a tidy's snapshot is a rollback point, not a
+notice. It never reads the inbox, never calls a model, and never touches
+`archive/`. "Scheduling" below has the daily pass it runs in.
+
 Batching is the point, not a convenience: the abstraction step ("do several
 observations across sessions point at one conclusion none of them states?") only
 exists across sessions, and per-session consolidation is fast writing wearing
@@ -457,8 +466,9 @@ proposal that moves the section out.
 2026-09-16, nightshift backlog 070: a dream bills whatever engine runs it, and
 on the Claude Code engine that is the subscription, not a key — see "The dream"
 above and [service-agent.md](service-agent.md) "Dreams and captures on this
-engine"; the passes still run unattended, which is the reason they stay
-manual)** — and both shells
+engine"; ~~the passes still run unattended, which is the reason they stay
+manual~~ — struck 2026-09-16 evening, nightshift backlog 069: they no longer
+have to be, see "The daily pass" at the end of this section)** — and both shells
 surface the backlog as the nudge: the CLI startup line names the pending count,
 and the desktop's Notes panel shows a `Dream · N` button in the Knowledge bar
 (hidden at zero; `dream_status` / `dream` / `cancel_dream` commands; progress as
@@ -499,6 +509,43 @@ then the dream**, on the same model: without the capture the inbox it would
 consolidate is empty on a machine where the model never calls `remember`. The
 CLI's `--auto-dream` is unchanged and runs the dream alone; `nightloom capture`
 is a separate command there.
+
+**The daily pass (2026-09-16 evening, nightshift backlog 069).** The clause
+struck above said the passes stay manual because they run unattended. His
+answer on the item was that they should run on their own once a day and he
+should find the results waiting — so the desktop now has a wall-clock trigger
+beside the compaction one, off by default. Settings → Knowledge → *Every day*
+holds a switch, an hour (default 04:00), a *macOS notification* switch (off;
+blocker 106) and *Run the daily pass now*; the preference is `nightloom.daily`
+(`on`, `hour`, `notifyMac`) and the last run's stamp is `nightloom.daily.last`.
+The pass is `runDailyPass` in `state.svelte.ts`: **capture → dream → tidy**
+on the connection `passTargetFor` picks, so it runs on the subscription
+engine or a provider alike, under the buttons' one-at-a-time lock; capture
+is skipped when no chat has bytes past its watermark and the dream when the
+inbox is empty, so a quiet day spends nothing. The due rule is `dailyDue`
+(`centre.ts`, pinned): the switch is on, today's hour has come, and no pass
+has run since that hour; a minute clock fires it while the app is open, and
+start-up and the wake watcher's `system-woke` (backlog 101) fire it when the
+hour passed closed or asleep. The stamp is written at the *start* of a run,
+so a pass that fails waits for the next day or the button rather than
+retrying every minute. The tidy step is `dream::tidy_targets` — the Rust
+twin of Nightshift's `bin/tidy_struck.py` in `tidy.rs`, same rules and the
+same fixture: a `~~struck~~` span dated older than thirty days moves
+verbatim to `archive/struck/<same path>.md` with a `[struck DATE ->
+archive/struck/…]` pointer left in place; undated, unterminated and fenced
+spans never move; the archive is never walked. It runs over the vault and
+every project's memory folder and snapshots a folder that shed something
+(`nightloom: tidy — archived N struck lines …`), with the same "no rollback"
+clause as the dream when the folder is not a repository (blocker 091's
+default; blocker 167: it runs in the daily pass only, there is no Tidy
+button). The dream's prompt is told not to un-archive a pointer
+(`compose_instruction`, "Supersede, don't erase"). The CLI is unchanged:
+`nightloom capture` and `nightloom dream` are still separate commands and
+`--auto-dream` still rides compaction. What the pass leaves behind — the
+proposals, the dream's commits, the tidy's — is what the bell lists
+([desktop-ui.md](desktop-ui.md) "The bell and the daily pass"); the reading
+side is `centre.rs` (`proposals_in`, `dream_commits_in`, `dream_diff`,
+`revert_dream_file`, `exe_modified`).
 
 The desktop's `remember` rides the rail's knowledge switch and is absent from
 reviewers, whose spec already clears `knowledge`. The two chat tools

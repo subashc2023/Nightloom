@@ -893,7 +893,11 @@ pub fn compose_instruction(
          better home and leave the other as a one-line pointer to it.\n\
          - Supersede, don't erase. When an observation contradicts a note, keep the old \
          claim struck through (~~like this~~, with the date) and write the new one beside \
-         it. What the user believed before is still information.\n\
+         it. What the user believed before is still information. A line of the form \
+         [struck DATE -> archive/struck/...] marks a struck claim the daily tidy moved out \
+         of the note after thirty days: leave the pointer where it is, never delete it, \
+         never copy the archived text back, and if a new observation bears on that claim \
+         write the new one beside the pointer.\n\
          - Cite. A claim you add or change ends with its provenance in parentheses — \
          (observed 2026-08-30, project nightloom) — so a reader can tell a consolidated \
          claim from a hand-written one and chase a doubt back to its source.\n\
@@ -1238,6 +1242,9 @@ mod tests {
         // The rules that keep the pass safe are actually in the prompt.
         assert!(text.contains("Never delete a note"));
         assert!(text.contains("Supersede"));
+        // The tidy's pointer (backlog 072 / 069) is not un-archived by a later dream.
+        assert!(text.contains("[struck DATE -> archive/struck/...]"));
+        assert!(text.contains("never copy the archived text back"));
         assert!(text.contains("poisoned"));
         assert!(text.contains("list the vault"));
         // The vault's turn is not told about a project it is not filing for.

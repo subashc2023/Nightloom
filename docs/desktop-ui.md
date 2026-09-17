@@ -1752,3 +1752,87 @@ seconds added to every turn on Haiku (measured, nightshift
 `notes/runner-design/083-measurements-2026-09-16.md`) — and one more
 request against the plan, unreported by the CLI. A one-word exchange
 produces no suggestion; a real question does.
+
+## The bell and the daily pass (nightshift backlog 069, 2026-09-16)
+
+His words on the item: the dream should run on its own once a day and he
+should find what it did waiting for him, in one place, with a way to
+review or undo each thing. Three parts, all in `nightshift`.
+
+**The daily pass.** Settings → Knowledge → *Every day*, a card under
+*Dreaming*: a switch (off by default — the pass runs unattended and bills
+whatever engine runs it), an hour (default 04:00), *A macOS notification
+when the bell gains something* (off; blocker 106), *Run the daily pass
+now*, and a last-run line (*never run* until it has). The preference is
+`nightloom.daily` (`on`, `hour`, `notifyMac`); the last run's stamp is
+`nightloom.daily.last`. The pass is `runDailyPass` in `state.svelte.ts`:
+capture (skipped when no chat has new bytes) → dream (skipped when the
+inbox is empty) → tidy (`tidy_memory`, apply — the thirty-day archive of
+struck lines, [service-data.md](service-data.md) "The daily pass"), on
+the connection `passTargetFor` already picks, so it runs on the
+subscription engine or a provider alike, under the Dream and Capture
+buttons' one-at-a-time lock. A toast closes it: *daily pass: captured
+from 3 chats, dreamed 7 observations, nothing old enough to archive* — or
+*nothing new to capture, nothing to dream* on a quiet day, which spends
+nothing. The due rule is `dailyDue` in `src/lib/centre.ts` (pinned by
+`centre.test.ts`): on, today's hour has come, no pass since that hour. A
+minute clock fires it while the app is open; start-up and the wake
+watcher's `system-woke` (backlog 101) fire it when the hour passed closed
+or asleep. The stamp is written at the *start* of a run, so a failed pass
+waits for the next day or the button rather than retrying every minute.
+
+**The bell.** `NotificationCentre.svelte`, a 🔔 with a count, in the chat
+view's top bar and in the Nightshift page's header. Its list is
+*derived*, not stored — rebuilt by `refreshCentre` after every pass, when
+the panel opens, on a `nightshift-change`, and when a morning page is
+marked read — from five sources, and only the dismissed ids
+(`nightloom.centre.dismissed`) and the last seen build stamp
+(`nightloom.centre.build`) live in localStorage. The panel, *To review*,
+lists each kind with a count and a *Dismiss all*, each row with *Dismiss*:
+
+- **Proposals** — every project's and his own, from the proposal stores
+  (`centre_proposals` walks the registry). *Review the diff* switches the
+  project if it must and opens `NoteView` in its proposal mode (Load into
+  editor / Dismiss), the flow that already existed.
+- **Notes changed by a dream** — the `nightloom: dream —` commits in the
+  vault and in each project's `.agents` (`centre_dream_commits`, `git log`
+  with numstat, the last ten). *Show the diff* draws the commit in
+  `DiffView` under the row with the file list (+/−) and a **Revert** per
+  file: the app's confirm dialog, then `git checkout <sha>^ -- <file>`
+  (or `git rm` for a file the dream created) **committed** as
+  `nightloom: reverted <file> from dream <sha>` — blocker 168's default,
+  so the vault's history stays a straight line and the dream's version is
+  still in it.
+- **Morning pages** unread and **Blockers** open — from the Nightshift
+  rows every project already reports (`nightshift_projects`, the same
+  counts as the tab badges). *Read it* / *Answer* open the Review tab on
+  that project.
+- **Releases** — the running binary's modification time
+  (`build_stamp`) differs from the one this window last saw: *A release
+  was installed (0.1.0)*. The roll script rewrites the binary and nothing
+  else does, which is why the stamp is the time and not a version.
+
+At the foot: *Run the daily pass now* (the Settings button again) and the
+schedule line. A click outside the panel or Escape closes it. With the
+card's *macOS notification* switch on, a refresh that found notices this
+window has not listed before posts one banner through the `notify`
+command (*Nightloom — to review* over the first title and *and N more*);
+a window's first refresh never posts, so a relaunch is silent.
+
+**To see it today** (the checklist in nightshift's
+`notes/runner-design/069-report-2026-09-16.md`, condensed): press *Run the
+daily pass now*; watch the toasts; click the 🔔; *Show the diff* on a
+dream row and *Revert* one file — the toast, and `git log` in the vault
+showing the revert commit; *Review the diff* on a proposal; *Dismiss* a
+row and relaunch — it stays gone; switch the pass on with the next full
+hour and leave the app open. Nothing here was seen on screen the night it
+was built (no `cargo tauri dev` under the running app); the checklist is
+the measurement, and the morning's build is where it is walked.
+
+The Rust side is `crates/nightloom-service/src/centre.rs` (proposals
+everywhere, the dream commits, the diff, the per-file revert, the exe
+stamp) and `tidy.rs` with `dream::tidy_targets`; six commands in the
+desktop's `main.rs` (`centre_proposals`, `centre_dream_commits`,
+`centre_dream_diff`, `centre_revert_file`, `build_stamp`, `tidy_memory`).
+Not built: a per-row mute, a notice for a capture's outcome on its own,
+and anything sent off the machine (blocker 078 still binds).
