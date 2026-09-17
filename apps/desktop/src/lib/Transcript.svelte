@@ -40,6 +40,7 @@
   import { wordDiff } from "./textdiff";
   import { continuedFlags } from "./runs";
   import { quoteLabel, samePassage, selectionText, type AsideQuote } from "./asideQuote";
+  import { renderMarkdown } from "./markdown";
   import { isMac } from "./platform";
   import { fmtShare, fmtTokens, shareOf, sizeTitle, turnSizes } from "./tokens";
   import { cacheState } from "./cache";
@@ -1286,7 +1287,9 @@
           {:else if app.aside.answer === null}
             <div class="aside-wait">asking…</div>
           {:else}
-            <pre class="aside-a">{app.aside.answer}</pre>
+            <!-- Through the reply renderer: the answer is markdown with
+                 equations, and it read raw (his report, 2026-09-17). -->
+            <div class="aside-a markdown">{@html renderMarkdown(app.aside.answer)}</div>
           {/if}
         {/if}
       </div>
@@ -1739,9 +1742,7 @@
   .aside-a {
     margin: 6px 0 0;
     color: var(--ink);
-    white-space: pre-wrap;
     word-break: break-word;
-    font-family: inherit;
   }
   .aside-wait {
     margin-top: 6px;
