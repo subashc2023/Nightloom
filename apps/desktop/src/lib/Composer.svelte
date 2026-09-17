@@ -1284,10 +1284,12 @@
         >
         <button class="ns-btn danger small" onclick={() => void cancelTurn()}>Stop</button>
       {:else}
-        {#if app.connection?.engine === "claude-code"}
+        {#if app.connection?.engine === "claude-code" && app.events.length > 0}
           <!-- Ask aside (nightshift backlog 081): the typed question goes
                to the chat's context off its warm cache and is recorded
-               nowhere — the CLI's /btw. Text only; attachments are a turn's. -->
+               nowhere — the CLI's /btw. Text only; attachments are a turn's.
+               Not before the first turn: an empty chat has no context to
+               ask (the Welcome screen showed it — his report, 2026-09-17). -->
           <button
             class="ns-btn ghost small"
             title="Ask this of the chat without adding it to the chat: answered from what is already in context, no changes, recorded nowhere (Claude Code's /btw)"
