@@ -2471,6 +2471,13 @@ fn edit_on_cli(
     workspace: &Path,
     change: impl FnOnce(&CliSession) -> Result<Option<CliSession>, cli_session::CliSessionError>,
 ) -> Result<CliChange, String> {
+    // An ephemeral chat has a CLI session id — the CLI reports one even
+    // under `--no-session-persistence` — but no file behind it, and the
+    // next turn replays the log anyway; the id alone was read as "a file
+    // to edit" and rewind on one refused (his report, 2026-09-17).
+    if session.mode() == ChatMode::Ephemeral {
+        return Ok(CliChange::Untouched);
+    }
     let Some(id) = session
         .agent_session()
         .filter(|(agent, _)| *agent == AGENT)
@@ -2771,6 +2778,10 @@ fn restore_on_cli(
     index: usize,
     block: Option<usize>,
 ) -> Result<CliChange, String> {
+    // As in `edit_on_cli`: an ephemeral chat has an id but no file.
+    if session.mode() == ChatMode::Ephemeral {
+        return Ok(CliChange::Untouched);
+    }
     let Some(current) = session
         .agent_session()
         .filter(|(agent, _)| *agent == AGENT)
