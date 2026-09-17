@@ -239,7 +239,10 @@ fn check_path(p: &str) -> Result<(), String> {
     let path = Path::new(p);
     if p.is_empty()
         || p.starts_with('-')
-        || path.is_absolute()
+        // `has_root`, not `is_absolute`: on Windows `/tmp/x` has a root but
+        // no drive, so it is not "absolute" — and git would still resolve
+        // it outside the repository.
+        || path.has_root()
         || path
             .components()
             .any(|c| matches!(c, std::path::Component::ParentDir))
