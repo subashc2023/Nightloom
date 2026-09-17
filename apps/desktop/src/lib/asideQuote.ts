@@ -73,3 +73,81 @@ export interface SelectionEnd {
 export function samePassage(a: SelectionEnd | null, b: SelectionEnd | null): boolean {
   return a !== null && b !== null && a.turn === b.turn && a.prose === b.prose;
 }
+
+// --- The selection as text the model can read -------------------------------
+//
+// `Selection.toString()` reads the rendered DOM, and a rendered equation is
+// KaTeX's layout: subscripts, fraction rows and the hidden MathML each on
+// their own line — `y=2·1[x / 1 / x / 2` for y = 2·1[x₁, x₂] (his report,
+// 2026-09-17). The model then receives that, not the equation. KaTeX keeps
+// the source in an `<annotation encoding="application/x-tex">` the
+// sanitizer preserves (`markdown.ts`), so every equation the selection
+// touches is replaced by its `$…$` source, and a selection that starts or
+// ends inside one is widened to the whole equation — half a formula has
+// no source to quote.
+
+const BLOCKS = new Set(["P", "DIV", "LI", "PRE", "BLOCKQUOTE", "H1", "H2", "H3", "H4", "H5", "H6", "TR", "UL", "OL"]);
+
+function katexOf(node: Node | null): Element | null {
+  let el: Element | null = node instanceof Element ? node : (node?.parentElement ?? null);
+  while (el) {
+    if (el.classList.contains("katex-display")) return el;
+    if (el.classList.contains("katex") && !el.parentElement?.classList.contains("katex-display")) return el;
+    el = el.parentElement;
+  }
+  return null;
+}
+
+function texOf(katex: Element): string | null {
+  const ann = katex.querySelector('annotation[encoding="application/x-tex"]');
+  const tex = ann?.textContent?.trim();
+  if (!tex) return null;
+  return katex.classList.contains("katex-display") ? `$$${tex}$$` : `$${tex}$`;
+}
+
+function walk(node: Node, out: string[]): void {
+  if (node.nodeType === Node.TEXT_NODE) {
+    out.push((node as Text).data);
+    return;
+  }
+  if (!(node instanceof Element)) {
+    for (const c of Array.from(node.childNodes)) walk(c, out);
+    return;
+  }
+  if (node.classList.contains("katex-display") || node.classList.contains("katex")) {
+    const tex = texOf(node);
+    // A partial clone (the range cut through it) has no annotation; the
+    // widening below makes that rare, and falling back to its text is
+    // still better than dropping it.
+    if (tex) {
+      out.push(tex);
+      return;
+    }
+  }
+  if (node.tagName === "BR") {
+    out.push("\n");
+    return;
+  }
+  const block = BLOCKS.has(node.tagName);
+  if (block) out.push("\n");
+  for (const c of Array.from(node.childNodes)) walk(c, out);
+  if (block) out.push("\n");
+}
+
+/** The selected passage with every equation as its LaTeX source. */
+export function selectionText(range: Range): string {
+  const r = range.cloneRange();
+  const startEq = katexOf(r.startContainer);
+  const endEq = katexOf(r.endContainer);
+  if (startEq) r.setStartBefore(startEq);
+  if (endEq) r.setEndAfter(endEq);
+  const out: string[] = [];
+  walk(r.cloneContents(), out);
+  return out
+    .join("")
+    .split("\n")
+    .map((l) => l.replace(/[ \t]+/g, " ").trim())
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}

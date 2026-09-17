@@ -39,7 +39,7 @@
   import { parseSubagentBlock } from "./subagent";
   import { wordDiff } from "./textdiff";
   import { continuedFlags } from "./runs";
-  import { quoteLabel, samePassage, type AsideQuote } from "./asideQuote";
+  import { quoteLabel, samePassage, selectionText, type AsideQuote } from "./asideQuote";
   import { isMac } from "./platform";
   import { fmtShare, fmtTokens, shareOf, sizeTitle, turnSizes } from "./tokens";
   import { cacheState } from "./cache";
@@ -844,8 +844,11 @@
     if (!samePassage(a, b) || !a) return null;
     const item = items.find((it) => it.index === a.turn);
     if (!item || item.superseded || item.removed || item.kind === "compaction") return null;
-    const text = sel.toString();
-    if (!text.trim()) return null;
+    // Not `sel.toString()`: a rendered equation reads as its layout, and
+    // the model would get that (his report, 2026-09-17); `selectionText`
+    // quotes each equation as its `$…$` source instead.
+    const text = selectionText(sel.getRangeAt(0));
+    if (!text) return null;
     return { quote: { text, role: a.role, ordinal: ordinals[a.turn] ?? 1 }, range: sel.getRangeAt(0) };
   }
 
