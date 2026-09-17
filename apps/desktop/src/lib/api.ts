@@ -55,9 +55,12 @@ import type {
   ShiftSummary,
   ContextEdit,
   MessageEdit,
+  RemoteStatus,
   SessionEvent,
   SessionMeta,
   SessionHit,
+  SearchResult,
+  SearchScope,
   TurnResult,
   WireView,
 } from "./types";
@@ -221,6 +224,15 @@ export function listSessions(): Promise<SessionMeta[]> {
 
 export function searchSessions(query: string): Promise<SessionHit[]> {
   return invoke("search_sessions", { query });
+}
+
+/** The search-everywhere panel's query (nightshift backlog 117): results
+ *  per message grouped by chat, or per line grouped by note. */
+export function searchEverywhere(
+  query: string,
+  scope: SearchScope,
+): Promise<SearchResult> {
+  return invoke("search_everywhere", { query, scope });
 }
 
 export function renameSession(id: string, title: string): Promise<void> {
@@ -640,6 +652,12 @@ export function openUrl(url: string): Promise<null> {
  *  `notify.ts`; the backend only posts. */
 export function notify(title: string, body: string): Promise<null> {
   return invoke("notify", { title, body });
+}
+
+/** The Refresh-now banner (backlog 116): its click comes back as the
+ *  `usage-banner-clicked` event. */
+export function notifyUsageRefreshed(title: string, body: string): Promise<null> {
+  return invoke("notify_usage_refreshed", { title, body });
 }
 
 /** The keep-awake switches (nightshift backlog 101), for the holder in
@@ -1087,4 +1105,32 @@ export function nightshiftWatch(projectId: string): Promise<null> {
 
 export function nightshiftUnwatch(projectId: string): Promise<null> {
   return invoke("nightshift_unwatch", { projectId });
+}
+
+// ---- the phone page over the tailnet (nightshift backlog 091, Shape B) ----
+// The listener's switch and its token; `remote.rs`. Off by default; every
+// call answers with the card's whole state.
+
+export function remoteStatus(): Promise<RemoteStatus> {
+  return invoke("remote_status");
+}
+
+/** Bind the Mac's tailnet address at `port` (the last one when omitted);
+ *  refused with a sentence naming Tailscale when there is none. */
+export function remoteStart(port?: number): Promise<RemoteStatus> {
+  return invoke("remote_start", { port: port ?? null });
+}
+
+export function remoteStop(): Promise<RemoteStatus> {
+  return invoke("remote_stop");
+}
+
+export function remoteSetKeepAwake(on: boolean): Promise<RemoteStatus> {
+  return invoke("remote_set_keep_awake", { on });
+}
+
+/** The token, made if there is none; `regenerate` replaces it, and every
+ *  phone must scan again. */
+export function remoteToken(regenerate: boolean): Promise<RemoteStatus> {
+  return invoke("remote_token", { regenerate });
 }

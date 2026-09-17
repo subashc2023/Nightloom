@@ -21,6 +21,7 @@
     fetchModels,
     openChatInstructions,
     openModelInstructions,
+    refreshPlanUsage,
     refreshProviders,
     refreshSearchBackends,
     saveDreamPrefs,
@@ -55,10 +56,10 @@
     type ModelEntry,
     type ModelSection,
   } from "./catalog";
-  import type { Note, ProviderInfo, SearchBackendInfo, UsageSummary } from "./types";
+  import type { Note, ProviderInfo, RemoteStatus, SearchBackendInfo, UsageSummary } from "./types";
   import { relativeTime } from "./time";
   import { dreamEngineRows, dreamModelPills, dreamSentence } from "./dreamRows";
-  import { loadNotifyPrefs, saveNotifyPrefs, type NotifyPrefs } from "./notify";
+  import { loadNotifyPrefs, notifyUsageRefreshed, saveNotifyPrefs, type NotifyPrefs } from "./notify";
   import { loadSleepPrefs, saveSleepPrefs, type SleepPrefs } from "./sleep";
   import {
     WRAP_UP,
@@ -362,25 +363,34 @@
     }
   }
   void refreshUsage();
+  // Both panes read the ledger (backlog 127 split it); Usage also asks
+  // for a fresh plan sample, the top bar's own reading.
   $effect(() => {
-    if (selected === "usage") void refreshUsage();
+    if (selected === "usage" || selected === "cost") void refreshUsage();
+    if (selected === "usage") void refreshPlanUsage();
   });
   // The button: run the collector now rather than wait for its six-hourly
-  // turn. A few seconds; the pane says so while it runs.
+  // turn. A few seconds; the pane says so while it runs — and, since he
+  // pressed it (nightshift backlog 116), a native banner when it lands,
+  // focused or not, whose click opens this pane. The periodic refresh
+  // never posts one: it does not come through here.
   let usageRefreshing = $state(false);
   let usageRefreshNote = $state<string | null>(null);
   async function refreshUsageNow() {
     if (usageRefreshing) return;
     usageRefreshing = true;
     usageRefreshNote = null;
+    let error: string | null = null;
     try {
       usage = await api.refreshUsageLedger();
       usageRefreshNote = "Collector run; the ledger is current.";
     } catch (e) {
-      usageRefreshNote = String(e);
+      error = String(e);
+      usageRefreshNote = error;
     } finally {
       usageRefreshing = false;
     }
+    void notifyUsageRefreshed(usage, app.planUsage, error, notifyPrefs);
   }
   /** Dollars as the ledger's own report prints them: two places, grouped. */
   function usd(n: number): string {
@@ -397,6 +407,29 @@
   /** A surfaces percent, or a dash for a blank cell. */
   function pct(n: number | null): string {
     return n === null ? "–" : `${n}%`;
+  }
+  /** The plan card (backlog 127): the top bar's reading, said in full. */
+  const plan = $derived(app.planUsage && app.planUsage.source !== "none" ? app.planUsage : null);
+  const planWhere = $derived(
+    !plan
+      ? ""
+      : plan.source === "turn"
+        ? "the last Claude Code turn's rate-limit event"
+        : plan.source === "desktop"
+          ? "the Claude app's sample"
+          : "the CLI's /usage cache",
+  );
+  const planAge = $derived(
+    !plan || plan.age_seconds == null
+      ? "age unknown"
+      : plan.age_seconds < 90
+        ? "sampled just now"
+        : `sampled ${Math.round(plan.age_seconds / 60)} min ago`,
+  );
+  function resetsAt(iso: string | null): string {
+    if (!iso) return "reset time unknown";
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? "reset time unknown" : `resets ${d.toLocaleString()}`;
   }
 
   function size(bytes: number): string {
@@ -559,6 +592,39 @@
     saveNotifyPrefs(notifyPrefs);
   }
 
+  // The phone page over the tailnet (nightshift backlog 091, Shape B):
+  // the listener's switch lives in Rust (`remote.rs`), so the card reads
+  // its state on open and after every change rather than keeping one of
+  // its own. Off by default; nothing binds until the switch is thrown.
+  let remote = $state<RemoteStatus | null>(null);
+  let remoteBusy = $state(false);
+  let remoteError = $state<string | null>(null);
+  let remotePort = $state("");
+  let remoteRevealed = $state(false);
+  async function remoteRun(call: () => Promise<RemoteStatus>) {
+    if (remoteBusy) return;
+    remoteBusy = true;
+    remoteError = null;
+    try {
+      remote = await call();
+      remotePort = String(remote.port);
+    } catch (e) {
+      remoteError = String(e);
+    } finally {
+      remoteBusy = false;
+    }
+  }
+  function remoteRefresh() {
+    void remoteRun(() => api.remoteStatus());
+  }
+  function remoteToggle(on: boolean) {
+    const port = Number(remotePort);
+    void remoteRun(() => (on ? api.remoteStart(Number.isInteger(port) && port > 0 ? port : undefined) : api.remoteStop()));
+  }
+  $effect(() => {
+    if (selected === "remote") untrack(remoteRefresh);
+  });
+
   // Sleep-safe turns (nightshift backlog 101): the same idiom as the
   // banner switches — read when the modal opens, written on each change;
   // `saveSleepPrefs` also hands the keep-awake pair to Rust.
@@ -675,7 +741,7 @@
 
   /**
    * The nav's groups in order, each with its panes (nightshift backlog
-   * 109): ⌘1…⌘7 is the group — its first pane, or the next pane of the
+   * 109): ⌘1…⌘8 is the group — its first pane, or the next pane of the
    * group when already in it, so ⌘1 again steps through the providers —
    * and ⌘] / ⌘[ walk every pane in nav order. Groups rather than panes
    * because the panes number well past nine (six providers, the
@@ -683,14 +749,18 @@
    * key. Scoped to the modal: `App.svelte` stands aside from these chords
    * while it is open, and the app's own ⌘-digits are back on close.
    */
+  // The order is his (nightshift backlog 127, 2026-09-16): Usage and
+  // Cost at the top, Providers and Web search just above Appearance.
   const groups = $derived.by(() => [
-    { title: "Providers", panes: app.providers.map((p) => p.kind) },
+    { title: "Usage", panes: ["usage"] },
+    { title: "Cost", panes: ["cost"] },
     { title: "Subscription", panes: ["claude-code"] },
-    { title: "Web search", panes: app.searchBackends.map((b) => "search:" + b.name) },
     { title: "Knowledge", panes: ["knowledge", "models"] },
     { title: "Projects", panes: ["projects"] },
-    { title: "Usage", panes: ["usage"] },
+    { title: "Providers", panes: app.providers.map((p) => p.kind) },
+    { title: "Web search", panes: app.searchBackends.map((b) => "search:" + b.name) },
     { title: "Appearance", panes: ["appearance"] },
+    { title: "Remote", panes: ["remote"] },
   ]);
   function keyOf(groupIndex: number): string {
     return `⌘${groupIndex + 1}`;
@@ -815,26 +885,37 @@
 <div class="modal">
   <nav class="nav" bind:this={navEl}>
     <div class="nav-h">Settings</div>
-    <div class="nav-title">Providers<Kbd keys={keyOf(0)} dim /></div>
-    {#each app.providers as p (p.kind)}
-      {@const st = navState(p)}
-      <button
-        class="nav-item"
-        class:active={p.kind === selected}
-        class:muted={!railVisible(p.kind)}
-        onclick={() => select(p.kind)}
-      >
-        <span class="nav-label">{providerLabel(p.kind)}</span>
-        <span class="st">
-          {#if !railVisible(p.kind)}<span class="eye" title="Hidden from the model picker"><Icon name="eye-off" size={12} /></span>{/if}
-          <span class="dot {st.cls}"></span>{st.text}
-        </span>
-      </button>
-    {/each}
+    <!-- Usage and Cost, two panes since nightshift backlog 127: what the
+         plan has left and where the week went, then what it would have
+         cost. Both read the same ledger; the split is his. -->
+    <div class="nav-title">Usage<Kbd keys={keyOf(0)} dim /></div>
+    <button
+      class="nav-item"
+      class:active={selected === "usage"}
+      onclick={() => select("usage")}
+    >
+      <span class="nav-label">Usage</span>
+      <span class="st">
+        <span class="dot" class:ok={app.planUsage?.five_hour != null || !!usage?.available}></span>
+        {app.planUsage?.five_hour != null ? `5h ${app.planUsage.five_hour}%` : usage?.available ? "ledger" : "none"}
+      </span>
+    </button>
+    <div class="nav-title">Cost<Kbd keys={keyOf(1)} dim /></div>
+    <button
+      class="nav-item"
+      class:active={selected === "cost"}
+      onclick={() => select("cost")}
+    >
+      <span class="nav-label">Cost</span>
+      <span class="st">
+        <span class="dot" class:ok={!!usage?.available}></span>
+        {usage?.available && usage.week ? `${usd(usage.week.usd)} / 7d` : "none"}
+      </span>
+    </button>
     <!-- The Claude Code engine's own pane (nightshift backlog 086 pass 2):
          not a provider — no key, no model list — but the place its
          defaults live: the hand-off, and the cards other items add. -->
-    <div class="nav-title">Subscription<Kbd keys={keyOf(1)} dim /></div>
+    <div class="nav-title">Subscription<Kbd keys={keyOf(2)} dim /></div>
     <button
       class="nav-item"
       class:active={selected === "claude-code"}
@@ -843,20 +924,6 @@
       <span class="nav-label">Subscription</span>
       <span class="st">hand-off {handoffDefaultPct}%</span>
     </button>
-    <div class="nav-title">Web search<Kbd keys={keyOf(2)} dim /></div>
-    {#each app.searchBackends as b (b.name)}
-      <button
-        class="nav-item"
-        class:active={"search:" + b.name === selected}
-        onclick={() => select("search:" + b.name)}
-      >
-        <span class="nav-label">{b.label}</span>
-        <span class="st">
-          <span class="dot" class:ok={b.key_source === "stored"} class:env={b.key_source === "env"}></span>
-          {b.key_source === "stored" ? "key" : b.key_source === "env" ? "env" : "no key"}
-        </span>
-      </button>
-    {/each}
     <div class="nav-title">Knowledge<Kbd keys={keyOf(3)} dim /></div>
     <button
       class="nav-item"
@@ -892,19 +959,37 @@
         {app.projectsFolder ? (app.projectsFolder.is_default ? "default" : "set") : "none"}
       </span>
     </button>
-    <div class="nav-title">Usage<Kbd keys={keyOf(5)} dim /></div>
-    <button
-      class="nav-item"
-      class:active={selected === "usage"}
-      onclick={() => select("usage")}
-    >
-      <span class="nav-label">Usage</span>
-      <span class="st">
-        <span class="dot" class:ok={!!usage?.available}></span>
-        {usage?.available && usage.week ? `${usd(usage.week.usd)} / 7d` : "none"}
-      </span>
-    </button>
-    <div class="nav-title">Appearance<Kbd keys={keyOf(6)} dim /></div>
+    <div class="nav-title">Providers<Kbd keys={keyOf(5)} dim /></div>
+    {#each app.providers as p (p.kind)}
+      {@const st = navState(p)}
+      <button
+        class="nav-item"
+        class:active={p.kind === selected}
+        class:muted={!railVisible(p.kind)}
+        onclick={() => select(p.kind)}
+      >
+        <span class="nav-label">{providerLabel(p.kind)}</span>
+        <span class="st">
+          {#if !railVisible(p.kind)}<span class="eye" title="Hidden from the model picker"><Icon name="eye-off" size={12} /></span>{/if}
+          <span class="dot {st.cls}"></span>{st.text}
+        </span>
+      </button>
+    {/each}
+    <div class="nav-title">Web search<Kbd keys={keyOf(6)} dim /></div>
+    {#each app.searchBackends as b (b.name)}
+      <button
+        class="nav-item"
+        class:active={"search:" + b.name === selected}
+        onclick={() => select("search:" + b.name)}
+      >
+        <span class="nav-label">{b.label}</span>
+        <span class="st">
+          <span class="dot" class:ok={b.key_source === "stored"} class:env={b.key_source === "env"}></span>
+          {b.key_source === "stored" ? "key" : b.key_source === "env" ? "env" : "no key"}
+        </span>
+      </button>
+    {/each}
+    <div class="nav-title">Appearance<Kbd keys={keyOf(7)} dim /></div>
     <button
       class="nav-item"
       class:active={selected === "appearance"}
@@ -913,6 +998,18 @@
       <span class="nav-label">Palette</span>
       <!-- The palette's name, not its letter: "B" read as a key (backlog 109). -->
       <span class="st">{PALETTES.find((p) => p.id === app.palette)?.name ?? app.palette}</span>
+    </button>
+    <div class="nav-title">Remote<Kbd keys={keyOf(7)} dim /></div>
+    <button
+      class="nav-item"
+      class:active={selected === "remote"}
+      onclick={() => select("remote")}
+    >
+      <span class="nav-label">Phone</span>
+      <span class="st">
+        <span class="dot" class:ok={!!remote?.on}></span>
+        {remote?.on ? "on" : "off"}
+      </span>
     </button>
     <div class="nav-spacer"></div>
     <div class="nav-foot">Esc or click outside to close</div>
@@ -1001,8 +1098,9 @@
         <div class="ch"><span class="t">Notifications</span></div>
         <p class="note small">
           A native banner while Nightloom is behind another window, on either
-          engine. Never for the window in front. Clicking one brings Nightloom
-          forward.
+          engine. Never for the window in front — except the Refresh-now one,
+          which you asked for by pressing the button. Clicking one brings
+          Nightloom forward.
         </p>
         <label class="dream-auto">
           <input
@@ -1020,6 +1118,98 @@
           />
           <span>When a turn needs you — a permission, a question, a plan</span>
         </label>
+        <label class="dream-auto">
+          <input
+            type="checkbox"
+            checked={notifyPrefs.usageRefresh}
+            onchange={(e) => setNotify("usageRefresh", e.currentTarget.checked)}
+          />
+          <span>When Usage → Refresh now finishes — the figures; clicking it opens that page. Never for the automatic refresh</span>
+        </label>
+      </section>
+    </div>
+  {:else if selected === "remote"}
+    <!-- The phone page over the tailnet (nightshift backlog 091, Shape B):
+         a listener in this process, bound to the Mac's Tailscale address
+         and nothing else (blocker 105's default — no LAN, no 0.0.0.0, no
+         option), off by default. The token is the phone's key: shown as a
+         QR the camera opens and as text for a paste. -->
+    <div class="pane">
+      <div class="pane-head">
+        <h2 class="pane-title">Phone</h2>
+        <span class="slug">{remote?.on ? `on · ${remote.address}:${remote.port}` : "off"}</span>
+        <span class="spacer"></span>
+        <button class="close" title="Close" aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+      </div>
+      <p class="note">
+        Nightloom on your phone, over Tailscale: the open project's chats, a
+        chat's transcript as it streams, Send, Stop, and the approval cards.
+        Reachable only from devices on your tailnet — the listener binds the
+        Mac's Tailscale address and nothing else. The turn still runs here.
+      </p>
+
+      <section class="card">
+        <div class="ch"><span class="t">Listener</span></div>
+        <label class="dream-auto">
+          <input
+            type="checkbox"
+            checked={!!remote?.on}
+            disabled={remoteBusy}
+            onchange={(e) => remoteToggle(e.currentTarget.checked)}
+          />
+          <span>On — serve the phone page</span>
+        </label>
+        <label class="handoff-row">
+          <span>Port</span>
+          <input
+            type="number"
+            min="1"
+            max="65535"
+            step="1"
+            bind:value={remotePort}
+            disabled={remoteBusy || !!remote?.on}
+            aria-label="The listener's port"
+          />
+          <span class="remote-mono">{remote?.address ? `bound to ${remote.address}` : "Tailscale is not up on this Mac"}</span>
+        </label>
+        <label class="dream-auto">
+          <input
+            type="checkbox"
+            checked={!!remote?.keep_awake}
+            disabled={remoteBusy}
+            onchange={(e) => void remoteRun(() => api.remoteSetKeepAwake(e.currentTarget.checked))}
+          />
+          <span>Keep the Mac awake while remote is on (needs the Sleep switch above; a closed lid on battery still sleeps it)</span>
+        </label>
+        {#if remoteError}<p class="error">{remoteError}</p>{/if}
+      </section>
+
+      <section class="card">
+        <div class="ch"><span class="t">Token</span></div>
+        <p class="note small">
+          The phone's key. Scan the code with the camera — Safari opens the
+          page with the token in it, once — or paste the text into the page.
+          Regenerate when a phone should stop having it; every phone then
+          scans again.
+        </p>
+        {#if remote?.qr_svg}
+          <div class="remote-qr">{@html remote.qr_svg}</div>
+          <p class="note small remote-mono">{remote.setup_url}</p>
+        {:else if remote?.has_token}
+          <p class="note small">The code needs the Tailscale address — open the Tailscale app and sign in.</p>
+        {:else}
+          <p class="note small">No token yet: one is made when the listener first goes on.</p>
+        {/if}
+        <div class="remote-actions">
+          {#if remote?.token}
+            <button class="ns-btn" onclick={() => (remoteRevealed = !remoteRevealed)}>{remoteRevealed ? "Hide" : "Show"} the token</button>
+            <button class="ns-btn" onclick={() => void navigator.clipboard?.writeText(remote?.token ?? "")}>Copy</button>
+          {/if}
+          <button class="ns-btn" disabled={remoteBusy} onclick={() => void remoteRun(() => api.remoteToken(!!remote?.has_token))}>
+            {remote?.has_token ? "Regenerate" : "Make a token"}
+          </button>
+        </div>
+        {#if remoteRevealed && remote?.token}<p class="note small remote-mono">{remote.token}</p>{/if}
       </section>
     </div>
   {:else if selected === "claude-code"}
@@ -1137,13 +1327,15 @@
       </section>
     </div>
   {:else if selected === "usage"}
-    <!-- The usage ledger (nightshift backlog 045, blocker 060): a Settings
-         pane rather than anything in the transcript, on the dashboard's own
-         reasoning — text in a message is stored and replayed forever. -->
+    <!-- Usage (nightshift backlog 127, split from the one Usage pane of
+         backlog 045): what the plan has left and where the week went — the
+         plan's two windows, the surfaces, the weekly caps, the collector
+         and its Refresh now (the 116 banner opens here). Dollars are on
+         Cost, below. -->
     <div class="pane">
       <div class="pane-head">
         <h2 class="pane-title">Usage</h2>
-        <span class="slug">{usage?.available && usage.week ? `${usd(usage.week.usd)} in 7 days` : "no ledger"}</span>
+        <span class="slug">{plan && plan.five_hour != null ? `5h ${plan.five_hour}% · week ${plan.seven_day ?? "?"}%` : "no plan sample"}</span>
         <span class="spacer"></span>
         <button
           class="ns-btn small"
@@ -1156,6 +1348,131 @@
       {#if usageRefreshNote}
         <p class="note small">{usageRefreshNote}</p>
       {/if}
+      <p class="note">
+        How much of the plan is used and where the week went. The plan's two
+        windows are the top bar's own reading — server-computed, account-wide,
+        every surface. The surfaces and the caps are from the usage ledger
+        under <code>~/.claude</code>. What it would have cost is the
+        <button class="ns-link" onclick={() => select("cost")}>Cost</button> page.
+      </p>
+
+      <section class="card">
+        <div class="ch"><span class="t">Plan</span><span class="dim small">account-wide · every surface</span></div>
+        {#if plan && plan.five_hour != null}
+          <div class="usage-rows">
+            <div class="usage-row">
+              <span class="usage-row-label">5-hour window</span>
+              <span class="usage-bar"><span class="usage-bar-fill cap" style:width="{Math.max(0, Math.min(100, plan.five_hour))}%"></span></span>
+              <b class="usage-row-value">{pct(plan.five_hour)} used</b>
+            </div>
+            <div class="usage-row">
+              <span class="usage-row-label">7-day window</span>
+              <span class="usage-bar"><span class="usage-bar-fill cap" style:width="{Math.max(0, Math.min(100, plan.seven_day ?? 0))}%"></span></span>
+              <b class="usage-row-value">{pct(plan.seven_day)} used</b>
+            </div>
+          </div>
+          <div class="key-status">
+            5-hour {resetsAt(plan.five_hour_resets_at)} · 7-day {resetsAt(plan.seven_day_resets_at)}.
+            <br />
+            From {planWhere}, {planAge}{plan.stale ? " — stale: past 20 minutes, may be behind" : ""}. Refreshed at each turn end.
+          </div>
+        {:else}
+          <div class="key-status">
+            No plan sample yet — the Claude app's usage page, the CLI's <code>/usage</code>, or a Claude Code turn's rate-limit event fills this.
+          </div>
+        {/if}
+      </section>
+
+      {#if !usage}
+        <p class="note small">Reading the ledger…</p>
+      {:else if !usage.available}
+        <section class="card">
+          <div class="ch"><span class="t">No ledger yet</span></div>
+          <div class="key-status">{usage.reason}</div>
+          <p class="note small">
+            The collector is <code>{usage.collector}</code>, run every six hours by
+            a LaunchAgent; nothing in Nightloom writes these files. Run
+            <code>python3 {usage.collector} update --all</code> once and this
+            pane fills.
+          </p>
+        </section>
+      {:else}
+        <section class="card">
+          <div class="ch"><span class="t">Surfaces</span><span class="dim small">share of the weekly limit, last 7 days</span></div>
+          {#if usage.surfaces}
+            {@const s = usage.surfaces}
+            <!-- One row per fact, with a bar: the one-line version read as
+                 "stuffed" (his word, 2026-09-14). -->
+            <div class="usage-rows">
+              {#each [
+                { label: "Claude Code", value: s.claude_code_pct },
+                { label: "Chat", value: s.chat_pct },
+                { label: "Cowork", value: s.cowork_pct },
+                { label: "Other", value: s.other_pct },
+              ] as { label, value } (label)}
+                <div class="usage-row">
+                  <span class="usage-row-label">{label}</span>
+                  <span class="usage-bar"><span class="usage-bar-fill" style:width="{Math.max(0, Math.min(100, value ?? 0))}%"></span></span>
+                  <b class="usage-row-value">{pct(value)}</b>
+                </div>
+              {/each}
+            </div>
+            <div class="usage-rows caps">
+              <div class="usage-row">
+                <span class="usage-row-label">Weekly cap, all models</span>
+                <span class="usage-bar"><span class="usage-bar-fill cap" style:width="{Math.max(0, Math.min(100, s.weekly_all_pct ?? 0))}%"></span></span>
+                <b class="usage-row-value">{pct(s.weekly_all_pct)} used</b>
+              </div>
+              {#if s.weekly_scoped_model}
+                <div class="usage-row">
+                  <span class="usage-row-label">Weekly cap, {s.weekly_scoped_model} alone</span>
+                  <span class="usage-bar"><span class="usage-bar-fill cap" style:width="{Math.max(0, Math.min(100, s.weekly_scoped_pct ?? 0))}%"></span></span>
+                  <b class="usage-row-value">{pct(s.weekly_scoped_pct)} used</b>
+                </div>
+              {/if}
+            </div>
+            <div class="key-status">
+              Window from {s.window_started_at.replace("T", " ")} UTC · snapshot {s.as_of.replace("T", " ")} UTC.
+            </div>
+            <p class="note small">
+              From the desktop app's own usage response, read from its cache on
+              disk. Percents are of weekly rate-limit utilization — cost-weighted,
+              rounded to whole numbers, and not dollars.
+            </p>
+          {:else}
+            <div class="key-status">No surfaces snapshot yet — the collector records one when the desktop app has fetched its usage page.</div>
+          {/if}
+        </section>
+
+        <section class="card">
+          <div class="ch"><span class="t">Ledger</span></div>
+          <div class="key-status">
+            <code class="path">{usage.dir}</code>
+            <br />
+            {usage.first_date} → {usage.last_date}{usage.updated_at
+              ? `, last updated ${relativeTime(usage.updated_at)} (${new Date(usage.updated_at).toLocaleString()})`
+              : ""}.
+          </div>
+          <p class="note small">
+            The collector is <code>{usage.collector}</code>, run every six hours by
+            a LaunchAgent (<code>com.swaraagsistla.claude-usage-ledger</code>).
+            Nightloom reads its three files and writes none of them; the
+            same numbers, to the cent, are <code>claude_usage</code> in a shell.
+          </p>
+        </section>
+      {/if}
+    </div>
+  {:else if selected === "cost"}
+    <!-- Cost (nightshift backlog 127): every dollar figure — the spend
+         table by model and window. The ledger and the collector are the
+         Usage page's; this page only prices what they counted. -->
+    <div class="pane">
+      <div class="pane-head">
+        <h2 class="pane-title">Cost</h2>
+        <span class="slug">{usage?.available && usage.week ? `${usd(usage.week.usd)} in 7 days` : "no ledger"}</span>
+        <span class="spacer"></span>
+        <button class="close" title="Close" aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+      </div>
       <p class="note">
         What Claude Code has cost, from the usage ledger under
         <code>~/.claude</code>. These are the API's own usage fields — tokens
@@ -1224,69 +1541,6 @@
           </p>
         </section>
 
-        <section class="card">
-          <div class="ch"><span class="t">Surfaces</span><span class="dim small">share of the weekly limit, last 7 days</span></div>
-          {#if usage.surfaces}
-            {@const s = usage.surfaces}
-            <!-- One row per fact, with a bar: the one-line version read as
-                 "stuffed" (his word, 2026-09-14). -->
-            <div class="usage-rows">
-              {#each [
-                { label: "Claude Code", value: s.claude_code_pct },
-                { label: "Chat", value: s.chat_pct },
-                { label: "Cowork", value: s.cowork_pct },
-                { label: "Other", value: s.other_pct },
-              ] as { label, value } (label)}
-                <div class="usage-row">
-                  <span class="usage-row-label">{label}</span>
-                  <span class="usage-bar"><span class="usage-bar-fill" style:width="{Math.max(0, Math.min(100, value ?? 0))}%"></span></span>
-                  <b class="usage-row-value">{pct(value)}</b>
-                </div>
-              {/each}
-            </div>
-            <div class="usage-rows caps">
-              <div class="usage-row">
-                <span class="usage-row-label">Weekly cap, all models</span>
-                <span class="usage-bar"><span class="usage-bar-fill cap" style:width="{Math.max(0, Math.min(100, s.weekly_all_pct ?? 0))}%"></span></span>
-                <b class="usage-row-value">{pct(s.weekly_all_pct)} used</b>
-              </div>
-              {#if s.weekly_scoped_model}
-                <div class="usage-row">
-                  <span class="usage-row-label">Weekly cap, {s.weekly_scoped_model} alone</span>
-                  <span class="usage-bar"><span class="usage-bar-fill cap" style:width="{Math.max(0, Math.min(100, s.weekly_scoped_pct ?? 0))}%"></span></span>
-                  <b class="usage-row-value">{pct(s.weekly_scoped_pct)} used</b>
-                </div>
-              {/if}
-            </div>
-            <div class="key-status">
-              Window from {s.window_started_at.replace("T", " ")} UTC · snapshot {s.as_of.replace("T", " ")} UTC.
-            </div>
-            <p class="note small">
-              From the desktop app's own usage response, read from its cache on
-              disk. Percents are of weekly rate-limit utilization — cost-weighted,
-              rounded to whole numbers, and not dollars.
-            </p>
-          {:else}
-            <div class="key-status">No surfaces snapshot yet — the collector records one when the desktop app has fetched its usage page.</div>
-          {/if}
-        </section>
-
-        <section class="card">
-          <div class="ch"><span class="t">Ledger</span></div>
-          <div class="key-status">
-            <code class="path">{usage.dir}</code>
-            <br />
-            {usage.first_date} → {usage.last_date}{usage.updated_at
-              ? `, last updated ${relativeTime(usage.updated_at)} (${new Date(usage.updated_at).toLocaleString()})`
-              : ""}.
-          </div>
-          <p class="note small">
-            The collector is <code>{usage.collector}</code>, run every six hours by
-            a LaunchAgent (<code>com.swaraagsistla.claude-usage-ledger</code>).
-            Nightloom reads its three files and writes none of them; the
-            same numbers, to the cent, are <code>claude_usage</code> in a shell.
-          </p>
-        </section>
       {/if}
     </div>
   {:else if selected === "projects"}
@@ -2355,6 +2609,31 @@
   }
   /* The hand-off card (nightshift backlog 086 pass 2): the Context page's
      threshold row and the composer's field face for the message. */
+  .remote-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 6px;
+  }
+  .remote-mono {
+    font-family: var(--mono, ui-monospace, monospace);
+    font-size: 11px;
+    word-break: break-all;
+  }
+  .remote-qr {
+    width: 200px;
+    height: 200px;
+    background: #fff;
+    padding: 8px;
+    border-radius: 6px;
+    box-sizing: content-box;
+    margin: 6px 0;
+  }
+  .remote-qr :global(svg) {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
   .handoff-row {
     display: flex;
     align-items: baseline;

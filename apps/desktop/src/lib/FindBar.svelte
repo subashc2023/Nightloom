@@ -1,7 +1,9 @@
 <script lang="ts">
-  import { tick } from "svelte";
+  import { onDestroy, onMount, tick } from "svelte";
   import Icon from "./Icon.svelte";
+  import { app, toggleSidebar } from "./state.svelte";
   import { isMac } from "./platform";
+  import { registerFindBar } from "./search";
   import {
     collectSegments,
     countLabel,
@@ -13,6 +15,7 @@
     keepHit,
     markFallback,
     scrollRangeIntoView,
+    SEARCH_CHORD_LABEL,
     stepHit,
     supportsHighlightApi,
     type Hit,
@@ -41,6 +44,14 @@
    *
    * A note being edited is a textarea, which has no text nodes: find
    * works on the note's preview, not its editor.
+   *
+   * The search-everywhere panel (backlog 117, board 11b) hands off here:
+   * `openWith(query, turn)` opens the bar without taking focus, searches,
+   * and makes current the first hit inside the transcript's
+   * `[data-turn]` for that message — resolved on the observer's re-search
+   * when the chat has not rendered yet. The link at the bar's right goes
+   * the other way: "search all chats" opens the panel with this query,
+   * and "back to results" while the panel holds an answer.
    */
 
   let open = $state(false);
@@ -56,6 +67,11 @@
   let painter: Highlighter | null = null;
   let observer: MutationObserver | null = null;
   let frame = 0;
+  /** The turn `openWith` asked for and the page has not yet shown. */
+  let pendingTurn: number | null = null;
+
+  onMount(() => registerFindBar({ openWith, query: () => (open ? query : "") }));
+  onDestroy(() => registerFindBar(null));
 
   /** The page: the bar's parent. Null before mount and while closed. */
   function page(): HTMLElement | null {
@@ -78,8 +94,27 @@
     field?.select();
   }
 
+  /**
+   * The panel's hand-off: open with `q` (the focus stays where it is —
+   * in the panel, whose arrows keep previewing), search, and land on the
+   * first hit inside turn `turn` when one is on the page. A chat that is
+   * still loading has no such turn yet: the request is kept and resolved
+   * by the observer's re-search once the transcript renders.
+   */
+  export async function openWith(q: string, turn?: number) {
+    query = q;
+    pendingTurn = turn ?? null;
+    if (!open) {
+      open = true;
+      await tick();
+      watch();
+    }
+    search(true);
+  }
+
   export function close() {
     if (!open) return;
+    pendingTurn = null;
     unwatch();
     painter?.clear();
     painter = null;
@@ -104,9 +139,41 @@
     segments = collectSegments(root, excluded);
     hits = findMatches(segments.texts, query);
     current = fresh ? (hits.length > 0 ? 0 : null) : keepHit(current, hits.length);
+    let landed = false;
+    if (pendingTurn !== null) {
+      const i = hitInTurn(root, pendingTurn);
+      if (i !== null) {
+        current = i;
+        pendingTurn = null;
+        landed = true;
+      }
+    }
     painter.apply(segments, hits, current);
-    if (fresh) reveal();
+    if (fresh || landed) reveal();
     watch();
+  }
+
+  /**
+   * The first hit whose text sits inside `[data-turn="turn"]`, or null.
+   * A turn on the page with no hit inside it — the hit was in the chat's
+   * name, or in text the transcript folds — gives up the request rather
+   * than waiting for a render that will not come, and scrolls the turn
+   * itself into view instead.
+   */
+  function hitInTurn(root: HTMLElement, turn: number): number | null {
+    const sel = `[data-turn="${turn}"]`;
+    for (let i = 0; i < hits.length; i++) {
+      const node = segments.nodes[hits[i].start.seg];
+      if (node?.parentElement?.closest(sel)) return i;
+    }
+    const el = root.querySelector<HTMLElement>(sel);
+    if (el) {
+      pendingTurn = null;
+      const r = root.ownerDocument.createRange();
+      r.selectNodeContents(el);
+      scrollRangeIntoView(r, root);
+    }
+    return null;
   }
 
   /** Re-light with a new current hit and bring it into view. */
@@ -162,7 +229,16 @@
   }
 
   function onInput() {
+    pendingTurn = null;
     search(true);
+  }
+
+  /** The bar's link: the panel, with this query (board 11c's "from ⌘F"),
+   *  or back to the results it already holds. */
+  function toPanel() {
+    if (!app.search.result) app.search.query = query;
+    if (app.layout.sidebarCollapsed) toggleSidebar();
+    app.search.open = true;
   }
 
   function fieldKeys(e: KeyboardEvent) {
@@ -212,6 +288,13 @@
     <button class="find-btn" title="Close (⎋)" onclick={close}>
       <Icon name="x" size={12} />
     </button>
+    {#if !app.search.open}
+      <span class="find-sep"></span>
+      <button class="find-link" onclick={toPanel}>
+        {app.search.result ? "back to results" : "search all chats"}
+        <span class="find-link-key">{SEARCH_CHORD_LABEL}</span>
+      </button>
+    {/if}
   </div>
 {/if}
 
@@ -285,5 +368,31 @@
   }
   .find-btn.up :global(svg) {
     transform: rotate(180deg);
+  }
+  /* The link to the search panel (backlog 117), after a hairline. */
+  .find-sep {
+    width: 1px;
+    height: 16px;
+    background: var(--line2);
+    margin: 0 2px;
+  }
+  .find-link {
+    background: transparent;
+    border: none;
+    padding: 0 4px;
+    font: inherit;
+    font-size: 11.5px;
+    color: var(--accent-ink);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .find-link:hover {
+    text-decoration: underline;
+  }
+  .find-link-key {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--dim);
+    margin-left: 4px;
   }
 </style>

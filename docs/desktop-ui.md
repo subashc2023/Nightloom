@@ -281,7 +281,7 @@ folder" — and the rail names the directory under it.
 time) managing per-provider API keys, rail visibility, the model picker, web
 search keys, the vault's folder, the projects folder (since 2026-09-14, the
 *Projects folder* row), the usage ledger (the *Usage* row, the same day —
-below), and — since 2026-09-14 — the per-model
+below; *Usage* and *Cost* since 2026-09-16), and — since 2026-09-14 — the per-model
 instruction files (the *Model instructions* row; the files themselves are
 described under Notes below). That pane lists every file, has *+ Add for
 `<current model>`* for the one the rail is on, and — later the same day,
@@ -298,6 +298,16 @@ key) and win over env vars; the UI only ever sees `key_source`
 The curated model list, visibility prefs, last connection and saved system
 prompts live in `src/lib/catalog.ts` + localStorage (`nightloom.catalog-prefs`,
 `nightloom.last-connection`, `nightloom.prompts`).
+
+**The nav's order (2026-09-16 evening, nightshift backlog 127, his):**
+Usage · Cost · Subscription · Knowledge · Projects · Providers · Web search ·
+Appearance — the two usage pages at the top, Providers and Web search just
+above Appearance (which holds Palette). ~~Providers · Subscription · Web
+search · Knowledge · Projects · Usage · Appearance~~ was the order before.
+The group chords of backlog 109 follow it: ⌘1 Usage … ⌘8 Appearance, each
+key its group's first pane or the next pane of the group when already in
+it; ⌘] / ⌘[ walk every pane in nav order; the two-minute pane memory is
+unchanged (pane ids, not positions).
 
 ### The vault's folder
 
@@ -338,11 +348,23 @@ keeping them now.
 
 ### Usage
 
-A row *Usage* under its own heading, since 2026-09-14 (nightshift backlog
+~~A row *Usage* under its own heading~~ **Two rows and two panes since
+2026-09-16 evening (nightshift backlog 127, his words): *Usage* then *Cost*,
+at the top of the nav** — since 2026-09-14 (nightshift backlog
 045; blocker 060 chose a Settings pane over anything in the transcript, on
 the dashboard's own reasoning that text in a message is stored and replayed
-forever). The nav row carries a dot for whether a ledger exists and the
-seven-day figure; the pane, in order:
+forever). ~~The nav row carries a dot for whether a ledger exists and the
+seven-day figure; the pane, in order:~~ **The split (2026-09-16): every card
+below landed on exactly one pane. *Usage* — how much of the plan is used
+and where the week went — opens with a **Plan** card that is the top bar's
+plan chip said in full (the 5-hour and 7-day windows as bars with their
+reset times, the sample's source and age, stale past twenty minutes;
+`app.planUsage`, refreshed when the pane opens), then **Surfaces** (2.) and
+**Ledger** (3.), with *Refresh now* in its head (the banner of backlog 116
+opens this pane). *Cost* — what it would have cost — is the stance
+paragraph and **Spend** (1.). The *Usage* nav row reads the 5-hour figure
+(else "ledger" / "none"); the *Cost* row reads the seven-day dollars. The
+old list, for what each card holds:**
 
 1. **Spend** — a table of models down and three windows across (today, the
    last 7 days, the last 30 days; UTC days, inclusive), dedup basis, with a
@@ -1545,12 +1567,21 @@ message, else *New chat*. Nothing is sent anywhere: no push, no phone
 (blocker 078). The pure parts — the preference, the copy, the file count —
 are in `src/lib/notify.ts`, pinned by `notify.test.ts`.
 
+A third switch since 2026-09-16 evening (nightshift backlog 116): *When
+Usage → Refresh now finishes*, the one banner that is posted to a focused
+window too and whose click opens a page — [usage-ledger.md](usage-ledger.md)
+"A banner when it lands" has the mechanism and its limits.
+
 Not built: a per-chat mute, and the third banner the design draws for a
 filled window (~~the handoff of backlog 086 does not exist yet~~ — corrected
 2026-09-16: the hand-off landed later the same night, "The context-full
 hand-off" below; `notify.ts` still posts no banner for it). Clicking a
 banner activates Nightloom; it does not open the chat the banner names,
-because the plugin exposes no click event on desktop.
+~~because the plugin exposes no click event on desktop~~ **(corrected
+2026-09-16 evening, backlog 116: the plugin's `show()` discards the click,
+but its macOS backend reports one when held synchronously — the Refresh-now
+banner does that; these two still ride the plugin's call and could be moved
+over the same way)**.
 
 ## The Context page on Claude Code: This session, the CLI's own prompt, its memory (nightshift backlog 077 and 088, 2026-09-16)
 

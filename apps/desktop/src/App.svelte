@@ -9,6 +9,7 @@
     runToastAction,
     syncUndoMenu,
     setSidebarWidth,
+    sidebarColumn,
     syncPromptLayers,
     toggleSidebar,
     SIDEBAR_MAX,
@@ -255,7 +256,7 @@
     class="app"
     class:nightshift={app.view === "nightshift"}
     class:collapsed={app.layout.sidebarCollapsed}
-    style:grid-template-columns="{app.layout.sidebarCollapsed ? 0 : app.layout.sidebarWidth}px minmax(0, 1fr)"
+    style:grid-template-columns="{app.layout.sidebarCollapsed ? 0 : sidebarColumn()}px minmax(0, 1fr)"
   >
     <Sidebar />
     {#if app.layout.sidebarCollapsed}
@@ -267,13 +268,13 @@
            drawn here because the sidebar clips its own overflow. -->
       <button
         class="side-toggle"
-        style:left="{app.layout.sidebarWidth - 11}px"
+        style:left="{sidebarColumn() - 11}px"
         title="Collapse sidebar (⌘\)"
         onclick={() => toggleSidebar()}
       >
         <Icon name="chevl" size={12} />
       </button>
-      <div class="side-grip" style:left="{app.layout.sidebarWidth - 4}px">
+      <div class="side-grip" style:left="{sidebarColumn() - 4}px">
         <Grip
           width={app.layout.sidebarWidth}
           min={SIDEBAR_MIN}

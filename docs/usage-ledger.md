@@ -90,6 +90,27 @@ one write to the ledger the app ever causes, and it is the collector's, not
 Nightloom's. The surfaces card is one row per surface and per weekly cap,
 each with a bar, rather than one line.
 
+**A banner when it lands (2026-09-16 evening, nightshift backlog 116).** The
+collector takes a few seconds and he has usually switched away by then, so
+the button's run — and only the button's; the six-hourly LaunchAgent run
+never comes through the app and posts nothing — ends in a native banner,
+*Usage refreshed* over the headline figures (`$12.35 in 7 days · 5h 41% ·
+week 23%`, each part only when the ledger or the plan has it; a failed run
+is *Usage refresh failed* over the error's first line). Posted whether or
+not the window is in front, since he asked for it by pressing; gated only
+by Settings → Appearance → Notifications → *When Usage → Refresh now
+finishes* (`nightloom.notify.usageRefresh`, on by default). **Clicking it
+opens Settings on this pane**: the banner goes through its own command,
+`notify_usage_refreshed`, which posts through the notification plugin's own
+macOS backend (`notify-rust`, blocker 169) held on a thread until the click,
+brings the window forward and emits `usage-banner-clicked`; the frontend
+sets `settingsOpenOn = "usage"`. The plugin's own `show()` cannot report a
+click, which is why the turn-end banners of backlog 079 only activate the
+app; off macOS this banner is posted the same way as those and its click is
+lost. The copy is `usageRefreshTitle` / `usageRefreshBody` in
+`src/lib/notify.ts`, pinned in `notify.test.ts`. Same limit as every banner:
+macOS shows one only for a bundled, signed app.
+
 ## The plan's percentages are elsewhere (2026-09-16, nightshift backlog 073)
 
 The ledger is tokens over days. The plan's *windows* — how much of the

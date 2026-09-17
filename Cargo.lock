@@ -2526,6 +2526,7 @@ dependencies = [
  "async-trait",
  "nightloom-core",
  "nightloom-service",
+ "notify-rust",
  "serde",
  "serde_json",
  "tauri",

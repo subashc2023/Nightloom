@@ -34,6 +34,8 @@ use tokio_util::sync::CancellationToken;
 mod nightshift;
 /// Sleep-safe turns: the power assertion and the wake watcher.
 mod power;
+/// The phone page over the tailnet (nightshift backlog 091, Shape B).
+mod remote;
 
 struct AppState {
     chat: tokio::sync::Mutex<Option<Chat>>,
@@ -4713,6 +4715,58 @@ fn notify(app: AppHandle, title: String, body: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// The event a click on the Refresh-now banner raises (backlog 116).
+const USAGE_BANNER_CLICKED: &str = "usage-banner-clicked";
+
+/// The Refresh-now banner (nightshift backlog 116, blocker 169): posted
+/// when the usage collector he *asked* to run finishes — never for the
+/// six-hourly refresh — and, unlike `notify`, its click comes back. The
+/// plugin's `show()` drops the handle its macOS backend returns, so this
+/// posts through that backend itself (`notify-rust`, the crate the plugin
+/// already compiles): the same `NSUserNotificationCenter` delegate, the
+/// same banner, held synchronously on a thread of its own until it is
+/// clicked or cleared. A click brings the window forward and emits
+/// `usage-banner-clicked`; the frontend opens Settings on the Usage pane.
+/// Off macOS it is `notify`, and the click is lost — said in the report.
+///
+/// The thread lives until the banner is acted on or cleared from the
+/// notification centre; one per press of the button, which is rare.
+#[tauri::command]
+fn notify_usage_refreshed(app: AppHandle, title: String, body: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        std::thread::Builder::new()
+            .name("usage-banner".into())
+            .spawn(move || {
+                let handle = match notify_rust::Notification::new()
+                    .summary(&title)
+                    .body(&body)
+                    .show()
+                {
+                    Ok(h) => h,
+                    Err(_) => return,
+                };
+                handle.wait_for_action(|action| {
+                    if action != "default" {
+                        return;
+                    }
+                    if let Some(w) = app.get_webview_window("main") {
+                        let _ = w.unminimize();
+                        let _ = w.show();
+                        let _ = w.set_focus();
+                    }
+                    let _ = app.emit(USAGE_BANNER_CLICKED, ());
+                });
+            })
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        notify(app, title, body)
+    }
+}
+
 /// The sleep-safe switches (nightshift backlog 101), sent by `sleep.ts` at
 /// start-up and on every change. The frontend keeps them, the way it keeps
 /// the notification switches; Rust only needs to know what to spawn. A
@@ -5290,6 +5344,9 @@ fn main() {
             // the app.
             app.manage(power::Holder::default());
             power::watch_wake(app.handle().clone());
+            // The phone page's host and relay (nightshift backlog 091): the
+            // listener itself is off until Settings → Remote switches it on.
+            remote::Remote::install(app.handle());
             // Last, and that ordering is load-bearing rather than tidiness:
             // the webview starts loading the moment the window exists and its
             // first paint calls straight into `providers` and `list_sessions`,
@@ -5390,8 +5447,14 @@ fn main() {
             open_file,
             open_url,
             notify,
+            notify_usage_refreshed,
             set_power_prefs,
             set_zoom,
+            remote::remote_status,
+            remote::remote_start,
+            remote::remote_stop,
+            remote::remote_set_keep_awake,
+            remote::remote_token,
             nightshift::nightshift_projects,
             nightshift::nightshift_project,
             nightshift::nightshift_enable,

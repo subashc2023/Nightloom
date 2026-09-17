@@ -16,7 +16,7 @@
  * can pin the copy.
  */
 import type { Segment } from "./state.svelte";
-import type { ApprovalRequest } from "./types";
+import type { ApprovalRequest, PlanUsage, UsageSummary } from "./types";
 import { toolInputSummary } from "./transcriptPrefs.svelte";
 import { fmtTokens } from "./tokens";
 import * as api from "./api";
@@ -26,6 +26,10 @@ export interface NotifyPrefs {
   turnEnd: boolean;
   /** A call is waiting on an answer while the window was in the background. */
   needsYou: boolean;
+  /** Settings → Usage → Refresh now finished (backlog 116). Never the
+   *  periodic refresh, and posted whether or not the window is in front:
+   *  he pressed the button. */
+  usageRefresh: boolean;
 }
 
 export const NOTIFY_PREFS_KEY = "nightloom.notify";
@@ -38,12 +42,13 @@ export function parseNotifyPrefs(raw: string | null): NotifyPrefs {
       return {
         turnEnd: typeof p.turnEnd === "boolean" ? p.turnEnd : true,
         needsYou: typeof p.needsYou === "boolean" ? p.needsYou : true,
+        usageRefresh: typeof p.usageRefresh === "boolean" ? p.usageRefresh : true,
       };
     }
   } catch {
     // A malformed preference costs the preference, not the feature.
   }
-  return { turnEnd: true, needsYou: true };
+  return { turnEnd: true, needsYou: true, usageRefresh: true };
 }
 
 export function loadNotifyPrefs(): NotifyPrefs {
@@ -185,5 +190,54 @@ export async function notifyNeedsYou(chat: string, req: ApprovalRequest, prefs?:
     await api.notify(needsYouTitle(chat, req), needsYouBody(req));
   } catch {
     // See above.
+  }
+}
+
+/** `Usage refreshed`, or `Usage refresh failed`. */
+export function usageRefreshTitle(failed: boolean): string {
+  return failed ? "Usage refresh failed" : "Usage refreshed";
+}
+
+/**
+ * The headline figures the pane shows, on one line: `$12.34 in 7 days ·
+ * 5h 41% · week 23%` — each part only when the ledger or the plan has it,
+ * `the ledger is current` when neither does. A failed run's body is the
+ * error's first line, as the turn-end banner does it.
+ */
+export function usageRefreshBody(
+  usage: Pick<UsageSummary, "available" | "week"> | null,
+  plan: Pick<PlanUsage, "five_hour" | "seven_day"> | null,
+  error: string | null,
+): string {
+  if (error) return error.split("\n")[0].slice(0, 120);
+  const parts: string[] = [];
+  if (usage?.available && usage.week) {
+    const usd =
+      "$" + usage.week.usd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    parts.push(`${usd} in 7 days`);
+  }
+  if (plan?.five_hour != null) parts.push(`5h ${Math.round(plan.five_hour)}%`);
+  if (plan?.seven_day != null) parts.push(`week ${Math.round(plan.seven_day)}%`);
+  return parts.length > 0 ? parts.join(" · ") : "the ledger is current";
+}
+
+/**
+ * Post the Refresh-now banner (backlog 116) — through its own command, so
+ * the click comes back and opens Settings → Usage. Only the switch gates
+ * it: he asked for this one by pressing the button, so a focused window
+ * is notified too. The periodic refresh never calls this.
+ */
+export async function notifyUsageRefreshed(
+  usage: Pick<UsageSummary, "available" | "week"> | null,
+  plan: Pick<PlanUsage, "five_hour" | "seven_day"> | null,
+  error: string | null,
+  prefs?: NotifyPrefs,
+): Promise<void> {
+  const p = prefs ?? loadNotifyPrefs();
+  if (!p.usageRefresh) return;
+  try {
+    await api.notifyUsageRefreshed(usageRefreshTitle(error !== null), usageRefreshBody(usage, plan, error));
+  } catch {
+    // As above: a banner that could not be shown is not worth a toast.
   }
 }

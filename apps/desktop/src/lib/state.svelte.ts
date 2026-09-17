@@ -3,7 +3,7 @@ import * as api from "./api";
 import { handoff, noteAgentTurnEnd, resetHandoff } from "./handoff.svelte";
 import { suggestions } from "./suggestions.svelte";
 import { isMac } from "./platform";
-import { moveDraft, newDraftKey, setDraftText } from "./drafts.svelte";
+import { draftKey, enqueueMessage, moveDraft, newDraftKey, setDraftText } from "./drafts.svelte";
 import {
   defaultDraft,
   isProviderVisible,
@@ -86,6 +86,8 @@ import type {
   ProposalScope,
   ProviderInfo,
   SearchBackendInfo,
+  SearchResult,
+  SearchScope,
   SessionEvent,
   SessionMeta,
   TodoItem,
@@ -267,6 +269,14 @@ function saveLayout(): void {
 export function toggleSidebar(): void {
   app.layout.sidebarCollapsed = !app.layout.sidebarCollapsed;
   saveLayout();
+}
+
+/** The sidebar's column while the search panel is open (nightshift backlog
+ *  117, board 11a): widened to 380px, or the sidebar's own width when that
+ *  is already wider; the saved width is untouched and comes back on esc. */
+export const SEARCH_COLUMN = 380;
+export function sidebarColumn(): number {
+  return app.search.open ? Math.max(SEARCH_COLUMN, app.layout.sidebarWidth) : app.layout.sidebarWidth;
 }
 
 export function setSidebarWidth(px: number): void {
@@ -568,7 +578,7 @@ export const app = $state({
   noteFrom: null as null | "rail" | "settings",
   /** Which pane Settings opens on next time, then clears; the round trip
    *  back from a model's file lands on the Model instructions row. */
-  settingsOpenOn: null as null | "models",
+  settingsOpenOn: null as null | "models" | "usage",
   /**
    * The library's unsaved edit, kept here rather than in the component so
    * that no way out of the modal loses typed text (memory never-lose-work):
@@ -684,6 +694,21 @@ export const app = $state({
   palette: loadPalette() as Palette,
   /** Sidebar width and collapse, pane widths on the Nightshift screens. */
   layout: loadLayout(),
+  /**
+   * The search-everywhere panel (nightshift backlog 117, with 106's second
+   * half): whether it is showing in the sidebar's column, the query and
+   * scope, the last answer and which row is selected. Here rather than in
+   * the component so a jump to a chat in another project — which swaps
+   * `app.project` and every list under it — keeps the results and the
+   * selection for the `back to results` link.
+   */
+  search: {
+    open: false,
+    query: "",
+    scope: "this" as SearchScope,
+    result: null as SearchResult | null,
+    selected: 0,
+  },
   /** `action` (backlog 066) is the toast's one button — "Undo" on a
    *  removal or a rewind — and such a toast stays 8 s rather than 5. */
   toasts: [] as { id: number; text: string; action?: { label: string; run: () => void } }[],
@@ -1013,6 +1038,12 @@ export async function init(): Promise<void> {
   // now — and one at start-up, below, for a pass missed while it was closed.
   await listen<Woke>("system-woke", () => void maybeDailyPass());
   startDailyClock();
+  // The Refresh-now banner's click (nightshift backlog 116): Rust has
+  // already brought the window forward; this opens Settings on Usage.
+  await listen("usage-banner-clicked", () => {
+    app.settingsOpenOn = "usage";
+    app.showSettings = true;
+  });
   void refreshCentre().then(() => maybeDailyPass());
   // The dream's own channel: a running chat and a running dream must not
   // interleave in the transcript, so its events never reach applyTurnEvent.
@@ -1030,6 +1061,36 @@ export async function init(): Promise<void> {
     // window is behind something else nothing on screen says so.
     void notifyNeedsYou(bannerChat(), e.payload);
   });
+  // The phone page (nightshift backlog 091, Shape B): a message, an answer
+  // or a stop from the phone reaches this window as an event and runs
+  // through the same `send`, `resolveApproval` and `cancelTurn` a click
+  // here does, so the transcript, the queue, the hand-off and the sleep
+  // watch see it as typed. A message for a chat that is not open opens
+  // it first; one that arrives while a turn runs joins the composer's
+  // queue (the phone also holds one for while the Mac is unreachable).
+  await listen<{ chat: string | null; text: string }>("remote-send", (e) => {
+    const { chat, text } = e.payload;
+    void (async () => {
+      if (chat && chat !== app.activeSessionId) await openSession(chat);
+      if (app.busy) {
+        enqueueMessage(draftKey(app.activeSessionId, app.project?.id, app.pendingMode), text, []);
+      } else {
+        await send(text);
+      }
+    })();
+  });
+  await listen<{
+    id: string;
+    name: string;
+    decision: ApprovalDecision;
+    reason?: string | null;
+    answer?: unknown;
+    then?: "ask" | "auto" | null;
+  }>("remote-approve", (e) => {
+    const { id, name, decision, reason, answer, then } = e.payload;
+    void resolveApproval(id, name, decision, reason ?? undefined, answer ?? undefined, then ?? undefined);
+  });
+  await listen("remote-cancel", () => void cancelTurn());
   await listen<string>("menu", (e) => runMenuCommand(e.payload));
   // Only the watched project (selectNightshiftProject calls nightshiftWatch)
   // emits this, and only that project's row and morning page are worth

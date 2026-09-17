@@ -691,6 +691,80 @@ export interface SessionHit extends SessionMeta {
   excerpt: string;
 }
 
+// ---- search everywhere (nightshift backlog 117, with 106's second half) ----
+// Mirrors `store/search.rs`: the panel's answer, per message grouped by
+// chat, and per line grouped by note.
+
+/** Which chats and notes the panel looks through: the sidebar's directory,
+ *  every project's chats plus the unfiled ones, or the open project's notes
+ *  and the vault. */
+export type SearchScope = "this" | "all" | "notes";
+
+export interface ProjectRef {
+  id: string;
+  name: string;
+}
+
+/** One matching message. The passage arrives already split around the
+ *  first hit, so the panel marks it with no offset arithmetic. */
+export interface ChatRow {
+  /** The message's position in its log — the transcript's `data-turn`. */
+  index: number;
+  /** `you`, the model's id, or `name` for a hit in the chat's title. */
+  who: string;
+  /** ISO8601 */
+  at: string;
+  before: string;
+  matched: string;
+  after: string;
+  /** Hits in this message; the row says "3 matches" past one. */
+  matches: number;
+}
+
+/** A chat with hits: its summary, flattened, plus the rows. */
+export interface ChatGroup extends SessionMeta {
+  /** Set under *all chats* for a chat from another project (blocker 154):
+   *  the group carries its pill and a jump switches to it. */
+  project?: ProjectRef;
+  /** Hits across the chat. */
+  hits: number;
+  rows: ChatRow[];
+}
+
+export interface NoteRow {
+  /** 1-based, the editor's numbering. */
+  line: number;
+  before: string;
+  matched: string;
+  after: string;
+  matches: number;
+}
+
+export interface NoteGroup {
+  scope: NoteScope;
+  name: string;
+  /** ISO8601 */
+  modified: string;
+  hits: number;
+  rows: NoteRow[];
+}
+
+/** The answer, with the counts the count line reads —
+ *  `14 matches in 9 messages · 4 chats · 0.2 s`. */
+export interface SearchResult {
+  /** Every hit, counted past the row limit. */
+  matches: number;
+  /** Matching messages and note lines. */
+  messages: number;
+  /** Matching chats and notes. */
+  chats: number;
+  /** Rows actually returned; under `messages` when capped. */
+  shown: number;
+  elapsed_ms: number;
+  groups: ChatGroup[];
+  notes: NoteGroup[];
+}
+
 /**
  * An image sent with a user message. `data` is raw base64 with no `data:`
  * prefix — the backend stores it verbatim and each adapter builds whatever
@@ -1504,4 +1578,19 @@ export interface InterviewWritten {
   id: string;
   title: string;
   kind: string;
+}
+
+/** The Settings → Remote card's read (nightshift backlog 091, Shape B):
+ *  the phone page's listener — on or off, the tailnet address it binds
+ *  (null when Tailscale is not up), the port, the keep-awake switch, and
+ *  the bearer token as text, as the QR's URL and as the QR itself. */
+export interface RemoteStatus {
+  on: boolean;
+  address: string | null;
+  port: number;
+  keep_awake: boolean;
+  has_token: boolean;
+  token: string | null;
+  setup_url: string | null;
+  qr_svg: string | null;
 }

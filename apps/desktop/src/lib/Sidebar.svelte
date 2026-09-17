@@ -20,16 +20,20 @@
     refreshNightshift,
     renameSession,
     showNightshift,
+    toggleSidebar,
   } from "./state.svelte";
   import * as api from "./api";
   import { hasDraft, newDraftKey } from "./drafts.svelte";
   import { forkLine } from "./edit";
+  import { findChord } from "./find";
+  import { findBar } from "./search";
   import { isMac } from "./platform";
   import { untrack } from "svelte";
-  import type { ChatKind, ChatMode, NightshiftInfo, NightshiftRow, SessionHit, SessionMeta } from "./types";
+  import type { ChatKind, ChatMode, NightshiftInfo, NightshiftRow, SessionMeta } from "./types";
   import { relativeTime } from "./time";
   import { sameMorning } from "./nightshift";
   import NotesPanel from "./NotesPanel.svelte";
+  import SearchPanel from "./SearchPanel.svelte";
   import ProjectMenu from "./ProjectMenu.svelte";
   import Icon from "./Icon.svelte";
   import DisableDialog from "./DisableDialog.svelte";
@@ -101,47 +105,35 @@
     await renameSession(id, name);
   }
 
-  // The search box. `query` is what is typed and `hits` is what came back;
-  // an empty query means "not searching" rather than "everything matched",
-  // so the list falls back to `app.sessions` on its own.
-  let query = $state("");
-  let hits = $state<SessionHit[] | null>(null);
-  let searching = $state(false);
+  // The search box (nightshift backlog 117, boards 11a–11c). ~~`query` is
+  // what is typed and `hits` is what came back~~ — the box is now the search
+  // panel's own field: focusing or typing in it opens the panel in this
+  // column, which searches (`SearchPanel.svelte`, `app.search`) and lists
+  // the matching messages; the box comes back on ↵ or esc holding the query,
+  // with a `14 ▸` to reopen while an answer is kept. The old inline list of
+  // matching chats, its 180 ms debounce and `search_sessions` call, is
+  // retired here; the ⌘K palette still uses `search_sessions`.
+  function openSearch() {
+    if (app.layout.sidebarCollapsed) toggleSidebar();
+    app.search.open = true;
+  }
 
-  // Debounced, because every keystroke would otherwise re-read every log in
-  // the directory. `seq` is what makes a slow early request unable to
-  // overwrite a fast later one — the results would be for a query nobody is
-  // looking at any more.
-  let seq = 0;
-  $effect(() => {
-    // Read so switching projects re-runs the search: `search_sessions` looks
-    // in whichever log directory is open, and results from the folder you
-    // just left would be rows that no longer list.
-    void app.project?.id;
-    const q = query.trim();
-    if (!q) {
-      hits = null;
-      searching = false;
+  /**
+   * The panel's chord from anywhere: toggles it; from ⌘F's bar it carries
+   * the bar's query (board 11c's "the query travels"). `SEARCH_KEY` in
+   * `find.ts` is the one place the key is named (blocker 164).
+   */
+  function windowKeys(e: KeyboardEvent) {
+    if (findChord(e, isMac ? e.metaKey : e.ctrlKey) !== "everywhere") return;
+    e.preventDefault();
+    if (app.search.open) {
+      app.search.open = false;
       return;
     }
-    searching = true;
-    const mine = ++seq;
-    const timer = setTimeout(() => {
-      void api
-        .searchSessions(q)
-        .then((found) => {
-          if (mine !== seq) return;
-          hits = found;
-        })
-        .catch(() => {
-          if (mine === seq) hits = [];
-        })
-        .finally(() => {
-          if (mine === seq) searching = false;
-        });
-    }, 180);
-    return () => clearTimeout(timer);
-  });
+    const fromBar = findBar()?.query() ?? "";
+    if (fromBar && fromBar !== app.search.query) app.search.query = fromBar;
+    openSearch();
+  }
 
   /**
    * The path, shortened from the left. A project root is usually deep and the
@@ -268,6 +260,8 @@
   }
 </script>
 
+<svelte:window onkeydown={windowKeys} />
+
 <aside class="sidebar">
   <div class="project">
     <button
@@ -315,6 +309,11 @@
     </div>
   </div>
 
+  {#if app.search.open}
+    <!-- The search panel takes the column (board 11a): the project block
+         above stays, the nav, the list and the foot give way. -->
+    <SearchPanel />
+  {:else}
   <nav class="nav" aria-label="Mode">
     <button
       aria-current={app.leftTab === "chats" ? "page" : undefined}
@@ -416,51 +415,24 @@
         </div>
       {/if}
     </div>
-    {#if app.sessions.length > 0 || query}
-      <input
-        class="search"
-        type="search"
-        placeholder="Search chats"
-        aria-label="Search chats"
-        bind:value={query}
-      />
+    {#if app.sessions.length > 0 || app.search.query}
+      <!-- The panel's field, at rest (board 11b): typing or focusing opens
+           the panel in place; the count reopens it. -->
+      <div class="search-wrap">
+        <input
+          class="search"
+          type="search"
+          placeholder="Search chats"
+          aria-label="Search chats"
+          bind:value={app.search.query}
+          onfocus={openSearch}
+        />
+        {#if app.search.result && !app.search.open}
+          <button class="search-cnt" title="Reopen the results" onclick={openSearch}>{app.search.result.matches} ▸</button>
+        {/if}
+      </div>
     {/if}
-    {#if hits !== null}
-      <!-- Searching replaces the list rather than filtering it in place: the
-           rows carry an excerpt and a hit count that the ordinary listing has
-           nothing to put in. -->
-      {#if hits.length === 0}
-        <p class="hint">
-          {searching ? "Searching…" : `Nothing mentions “${query.trim()}”.`}
-        </p>
-      {:else}
-        <div class="session-list">
-          {#each hits as s (s.id)}
-            <div
-              class="session-item"
-              class:active={s.id === app.activeSessionId}
-            >
-              <button
-                class="session-row"
-                onclick={() => void openSession(s.id)}
-                disabled={app.busy}
-              >
-                <span class="snippet"
-                  >{#if s.mode === "incognito"}<span class="mark" title="Incognito: writes nothing, unread by other chats">{MODE_GLYPH.incognito}</span> {/if}{#if hasDraft(s.id)}<span class="mark draft" title="has a draft">✎</span> {/if}{s.title ?? s.first_user ?? "empty session"}</span
-                >
-                <span class="excerpt">{s.excerpt}</span>
-                <span class="meta"
-                  >{s.hits}
-                  {s.hits === 1 ? "mention" : "mentions"} · {relativeTime(
-                    s.modified,
-                  )}{#if forkLine(s, app.sessions)} · <span class="from">{forkLine(s, app.sessions)}</span>{/if}</span
-                >
-              </button>
-            </div>
-          {/each}
-        </div>
-      {/if}
-    {:else if app.sessions.length === 0}
+    {#if app.sessions.length === 0}
       <p class="hint">
         No chats {app.project ? "in this project" : "yet"}.
         {#if !app.project}
@@ -616,6 +588,16 @@
     </div>
   {/if}
 
+  <div class="side-foot">
+    <button class="foot-btn" onclick={() => (app.showSettings = true)}>
+      <Icon name="gear" />
+      <span>Settings</span>
+      <span class="spacer"></span>
+      <span class="kbd">⌘,</span>
+    </button>
+  </div>
+  {/if}
+
   {#if deleting}
     <ConfirmDialog
       title="Delete this chat?"
@@ -639,15 +621,6 @@
       onclose={() => (disabling = null)}
     />
   {/if}
-
-  <div class="side-foot">
-    <button class="foot-btn" onclick={() => (app.showSettings = true)}>
-      <Icon name="gear" />
-      <span>Settings</span>
-      <span class="spacer"></span>
-      <span class="kbd">⌘,</span>
-    </button>
-  </div>
 
 </aside>
 
@@ -1180,23 +1153,36 @@
     outline: none;
     border-color: var(--accent);
   }
+  /* The box with its count (backlog 117): the count sits inside the box's
+     right edge, in the accent, and reopens the panel. */
+  .search-wrap {
+    position: relative;
+  }
+  .search-wrap:has(.search-cnt) .search {
+    padding-right: 2.8rem;
+  }
+  .search-cnt {
+    position: absolute;
+    right: 0.45rem;
+    top: 0;
+    height: calc(100% - 0.4rem);
+    background: transparent;
+    border: none;
+    padding: 0;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--accent-ink);
+    white-space: nowrap;
+    cursor: pointer;
+  }
 
   .search::placeholder {
     color: var(--dim);
   }
 
-  /* Why the session matched. Wraps to two lines and stops: it is evidence,
-     not the message. */
-  .excerpt {
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    line-clamp: 2;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-    font-size: 0.72rem;
-    line-height: 1.35;
-    color: var(--dim);
-  }
+  /* ~~Why the session matched (`.excerpt`): wraps to two lines and stops~~
+     — retired 2026-09-16 with the inline hit list; the search panel's rows
+     carry the passage (backlog 117). */
 
   .rename {
     flex: 1;

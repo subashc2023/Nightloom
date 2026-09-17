@@ -23,3 +23,9 @@ tauri-plugin-dialog = "2"
 # Rust through the OS notification centre; the webview has no Notification
 # API of its own, so this is the one way to reach it.
 tauri-plugin-notification = "2"
+# The Refresh-now banner (nightshift backlog 116, blocker 169) needs its
+# click back, which the plugin's `show()` discards; this is the plugin's own
+# macOS backend, already in the lockfile, held synchronously for that one
+# banner. Nothing else posts through it.
+[target.'cfg(target_os = "macos")'.dependencies]
+notify-rust = "4"

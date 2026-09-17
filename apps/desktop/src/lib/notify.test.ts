@@ -9,6 +9,8 @@ import {
   parseNotifyPrefs,
   turnEndBody,
   turnEndTitle,
+  usageRefreshBody,
+  usageRefreshTitle,
 } from "./notify";
 
 // The turn-end banner (nightshift backlog 079): the switches' defaults and
@@ -19,11 +21,40 @@ function call(over: Partial<ToolCallView>): Segment {
 }
 
 describe("parseNotifyPrefs", () => {
-  it("defaults both switches on, and reads each back", () => {
-    expect(parseNotifyPrefs(null)).toEqual({ turnEnd: true, needsYou: true });
-    expect(parseNotifyPrefs("nonsense")).toEqual({ turnEnd: true, needsYou: true });
-    expect(parseNotifyPrefs('{"turnEnd":false}')).toEqual({ turnEnd: false, needsYou: true });
-    expect(parseNotifyPrefs('{"needsYou":false,"turnEnd":true}')).toEqual({ turnEnd: true, needsYou: false });
+  it("defaults every switch on, and reads each back", () => {
+    const all = { turnEnd: true, needsYou: true, usageRefresh: true };
+    expect(parseNotifyPrefs(null)).toEqual(all);
+    expect(parseNotifyPrefs("nonsense")).toEqual(all);
+    expect(parseNotifyPrefs('{"turnEnd":false}')).toEqual({ ...all, turnEnd: false });
+    expect(parseNotifyPrefs('{"needsYou":false,"turnEnd":true}')).toEqual({ ...all, needsYou: false });
+    // A preference stored before backlog 116 has no usageRefresh: on.
+    expect(parseNotifyPrefs('{"turnEnd":true,"needsYou":true}').usageRefresh).toBe(true);
+    expect(parseNotifyPrefs('{"usageRefresh":false}')).toEqual({ ...all, usageRefresh: false });
+  });
+});
+
+// The Refresh-now banner (nightshift backlog 116): the title and the
+// headline figures, each part only when there is one.
+describe("the Refresh-now banner", () => {
+  const week = { from: "2026-09-10", to: "2026-09-16", days_with_data: 7, usd: 12.345, by_model: [] };
+  it("names the outcome", () => {
+    expect(usageRefreshTitle(false)).toBe("Usage refreshed");
+    expect(usageRefreshTitle(true)).toBe("Usage refresh failed");
+  });
+  it("carries this week's dollars and the plan's two percentages", () => {
+    expect(usageRefreshBody({ available: true, week }, { five_hour: 41.4, seven_day: 22.6 }, null)).toBe(
+      "$12.35 in 7 days · 5h 41% · week 23%",
+    );
+  });
+  it("drops a part that is missing, and says so when all are", () => {
+    expect(usageRefreshBody({ available: true, week }, null, null)).toBe("$12.35 in 7 days");
+    expect(usageRefreshBody({ available: false, week: null }, { five_hour: 3, seven_day: null }, null)).toBe("5h 3%");
+    expect(usageRefreshBody(null, null, null)).toBe("the ledger is current");
+  });
+  it("writes a failed run's body from the error's first line", () => {
+    expect(usageRefreshBody({ available: true, week }, null, "collector exited 1\nTraceback…")).toBe(
+      "collector exited 1",
+    );
   });
 });
 

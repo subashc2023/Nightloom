@@ -449,10 +449,13 @@ and shows "no folder" in its Workspace row on a Chat, and switches nothing.
 ## Settings keys and the remembered pane (2026-09-16, nightshift backlog 109)
 
 No "Settings" section existed before this line; the modal is `SettingsModal.svelte`.
-While it is open, **⌘1…⌘7** is a nav *group* — Providers · Claude Code · Web
-search · Knowledge · Projects · Usage · Appearance, a `Kbd` chip on each group
+While it is open, ~~**⌘1…⌘7** is a nav *group* — Providers · Claude Code · Web
+search · Knowledge · Projects · Usage · Appearance~~ **⌘1…⌘8 is a nav group —
+Usage · Cost · Subscription · Knowledge · Projects · Providers · Web search ·
+Appearance since 2026-09-16 evening (nightshift backlog 127, his order; ⌘6
+now steps through the providers)**, a `Kbd` chip on each group
 title — landing on the group's first pane, or on its next pane when already in
-it (⌘1 again steps through the providers); **⌘] / ⌘[** walk every pane in nav
+it (~~⌘1~~ ⌘6 again steps through the providers); **⌘] / ⌘[** walk every pane in nav
 order. Groups rather than panes because the panes number past nine. The modal's
 own window handler takes the chords; `App.svelte`'s `onShortcut` stands aside
 from ⌘-digit and ⌘-bracket while `app.showSettings`, so the provider and model
