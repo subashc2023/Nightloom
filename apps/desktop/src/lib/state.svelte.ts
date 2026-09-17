@@ -1154,15 +1154,7 @@ export async function init(): Promise<void> {
   // it first; one that arrives while a turn runs joins the composer's
   // queue (the phone also holds one for while the Mac is unreachable).
   await listen<{ chat: string | null; text: string }>("remote-send", (e) => {
-    const { chat, text } = e.payload;
-    void (async () => {
-      if (chat && chat !== app.activeSessionId) await openSession(chat);
-      if (app.busy) {
-        enqueueMessage(draftKey(app.activeSessionId, app.project?.id, app.pendingMode), text, []);
-      } else {
-        await send(text);
-      }
-    })();
+    void remoteSend(e.payload.chat, e.payload.text);
   });
   await listen<{
     id: string;
@@ -3687,6 +3679,13 @@ export async function continueChat(): Promise<void> {
 
 export async function openSession(id: string): Promise<void> {
   if (app.busy) return;
+  // A ⌘-click's "open in a new tab" (`app.openNext`, backlog 099) is
+  // consumed by the tab reflection, which runs only when the open changes
+  // the view or the chat. Opening the chat already in front changes
+  // neither, and a failed open changes nothing — so the modifier would
+  // stay armed and the *next* plain click would open a tab (review E,
+  // 2026-09-17). Both paths hand it back here; `newTab` does the same.
+  const inFront = id === app.activeSessionId && app.view === "chat";
   try {
     app.events = await api.openSession(id);
     // The aside thread stays with the chat being left and the opened
@@ -3699,8 +3698,10 @@ export async function openSession(id: string): Promise<void> {
     app.agentInit = null;
     app.suggestion = null;
     leaveNote();
+    if (inFront) app.openNext = "replace";
   } catch (e) {
     app.error = String(e);
+    app.openNext = "replace";
   }
 }
 
@@ -3761,6 +3762,28 @@ export async function deleteSession(id: string): Promise<void> {
       await refreshSessions();
     },
   });
+}
+
+/**
+ * A message from the phone (backlog 091): for the open chat, or for one
+ * that is opened first. `openSession` refuses while a turn runs (blocker
+ * 182) and can fail; either way the chat asked for is not the one open,
+ * and the words must be held under *its* key — before review E
+ * (2026-09-17) they were queued under the open chat's and went into it
+ * at that turn's end. Held this way they show in the asked-for chat's
+ * queue when it is opened, and go with its next send or *Send next*.
+ */
+export async function remoteSend(chat: string | null, text: string): Promise<void> {
+  if (chat && chat !== app.activeSessionId) await openSession(chat);
+  if (chat && chat !== app.activeSessionId) {
+    enqueueMessage(chat, text, []);
+    return;
+  }
+  if (app.busy) {
+    enqueueMessage(draftKey(app.activeSessionId, app.project?.id, app.pendingMode), text, []);
+  } else {
+    await send(text);
+  }
 }
 
 /** The chat as a banner names it (nightshift backlog 079): the open

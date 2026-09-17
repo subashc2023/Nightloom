@@ -236,10 +236,27 @@ fn apply_file(
         archive.push_str(e);
         archive.push('\n');
     }
-    std::fs::write(&apath, archive).map_err(|e| format!("{}: {e}", apath.display()))?;
+    write_whole(&apath, &archive)?;
     let out = lines.join("\n");
-    std::fs::write(root.join(rel), &out).map_err(|e| format!("{rel}: {e}"))?;
+    write_whole(&root.join(rel), &out)?;
     Ok(text.len().saturating_sub(out.len()))
+}
+
+/// Replace `path` whole: a process-named temp file beside it, then a
+/// rename. A plain `fs::write` truncates before it writes, and a quit in
+/// between leaves an empty note — or an empty archive, which is the only
+/// copy of every span an earlier run moved.
+fn write_whole(path: &Path, body: &str) -> Result<(), String> {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let tmp = path.with_file_name(format!("{name}.{}.tmp", std::process::id()));
+    std::fs::write(&tmp, body).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, path).map_err(|e| {
+        std::fs::remove_file(&tmp).ok();
+        format!("{}: {e}", path.display())
+    })
 }
 
 /// Every `.md` under `root`, root-relative with forward slashes, the
@@ -454,6 +471,14 @@ end.
         assert_eq!(again.movable, 0);
         // The archive itself is never walked.
         assert!(!again.touched.iter().any(|t| t.starts_with("archive/")));
+        // Written through a rename: no temp file beside either file.
+        let tmps: Vec<_> = walkdir::WalkDir::new(&dir)
+            .into_iter()
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(tmps.is_empty(), "{tmps:?}");
     }
 
     #[test]

@@ -129,4 +129,45 @@ describe("UndoHistory", () => {
     h.push(LIST_SCOPE, entry(trail, "rename"));
     expect(await h.undoIf(["a", LIST_SCOPE], third)).toBeNull();
   });
+
+  // A held ⌘Z (review E, 2026-09-17): the second call arrives while the
+  // first closure is still awaiting its IPC. It must not run the same
+  // closure again nor move the cursor twice — before the guard, N calls in
+  // flight ran the top entry N times and drove the cursor to -(N-1).
+  it("a second undo or redo while one is in flight is a no-op", async () => {
+    const h = new UndoHistory();
+    const trail: string[] = [];
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    h.push("a", entry(trail, "rewind"));
+    h.push("a", {
+      label: "edit",
+      undo: async () => {
+        trail.push("undo edit");
+        await gate;
+      },
+      redo: async () => {
+        trail.push("redo edit");
+        await gate;
+      },
+    });
+    const first = h.undo(["a"]);
+    const second = h.undo(["a"]);
+    expect(await second).toBeNull();
+    release();
+    expect(await first).toEqual({ label: "edit" });
+    expect(trail).toEqual(["undo edit"]);
+    // The stack is intact: the older entry is still next, and the undone
+    // one is the one redo takes.
+    expect(h.undoLabel(["a"])).toBe("rewind");
+    expect(h.redoLabel(["a"])).toBe("edit");
+
+    const r1 = h.redo(["a"]);
+    const r2 = h.redo(["a"]);
+    expect(await r2).toBeNull();
+    expect(await r1).toEqual({ label: "edit" });
+    expect(trail).toEqual(["undo edit", "redo edit"]);
+    expect(h.undoLabel(["a"])).toBe("edit");
+    expect(h.redoLabel(["a"])).toBeNull();
+  });
 });

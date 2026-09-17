@@ -234,11 +234,14 @@ fn check_ref(r: &str) -> Result<(), String> {
 }
 
 /// A repository-relative path the frontend handed back, from a listing this
-/// module produced: relative, no `..`, not an option.
+/// module produced: relative, no `..`, not an option, not pathspec magic —
+/// a leading `:` is still magic after `--`, and `:!x` matches every file
+/// but `x`.
 fn check_path(p: &str) -> Result<(), String> {
     let path = Path::new(p);
     if p.is_empty()
         || p.starts_with('-')
+        || p.starts_with(':')
         // `has_root`, not `is_absolute`: on Windows `/tmp/x` has a root but
         // no drive, so it is not "absolute" — and git would still resolve
         // it outside the repository.
@@ -282,10 +285,22 @@ pub fn revert_dream_file(repo: &Path, hash: &str, file: &str) -> Result<String, 
         return Err(format!("{} is not a git repository", repo.display()));
     }
     let parent = format!("{hash}^");
+    let path = Path::new(file);
+    // Only the dream commits; an editor save is a plain write. So an edit
+    // he made to this note since the dream is on disk and nowhere in git,
+    // and `checkout <parent> -- file` would overwrite it silently. Refuse
+    // while the file has uncommitted changes — the next dream's pre-dream
+    // snapshot commits them, and the revert is still there to click.
+    let dirty = git(repo, &["status", "--porcelain"], Some(path))?;
+    if !dirty.trim().is_empty() {
+        return Err(format!(
+            "{file} has been edited since the dream and that edit is not committed; \
+             reverting now would lose it"
+        ));
+    }
     // Did the file exist before the dream? `cat-file -e` answers without
     // printing it; a root commit has no parent, which reads as "no".
     let existed = git(repo, &["cat-file", "-e", &format!("{parent}:{file}")], None).is_ok();
-    let path = Path::new(file);
     if existed {
         git(repo, &["checkout", &parent], Some(path))?;
     } else {
@@ -433,6 +448,30 @@ mod tests {
         assert!(revert_dream_file(&dir, "HEAD", "../etc/passwd").is_err());
         assert!(revert_dream_file(&dir, "HEAD", "-f").is_err());
         assert!(revert_dream_file(&dir, "HEAD", "/tmp/x").is_err());
+        // Pathspec magic survives `--`; `:!x` would check out everything else.
+        assert!(revert_dream_file(&dir, "HEAD", ":!a.md").is_err());
+        assert!(dream_diff(&dir, "HEAD", Some(":(top)a.md")).is_err());
+    }
+
+    #[test]
+    fn revert_refuses_a_file_with_uncommitted_edits() {
+        let Some(dir) = repo() else { return };
+        fs::write(dir.join("a.md"), "one\n").unwrap();
+        commit_all(&dir, "start");
+        fs::write(dir.join("a.md"), "one\ntwo\n").unwrap();
+        let dream = commit_all(&dir, "nightloom: dream — consolidated 1 observations");
+        // His own edit after the dream: saved, not committed.
+        fs::write(dir.join("a.md"), "one\ntwo\nmine\n").unwrap();
+
+        let err = revert_dream_file(&dir, &dream, "a.md").unwrap_err();
+        assert!(err.contains("not committed"), "{err}");
+        // Nothing touched: the edit is still on disk and nothing was committed.
+        assert_eq!(
+            fs::read_to_string(dir.join("a.md")).unwrap(),
+            "one\ntwo\nmine\n"
+        );
+        let head = git(&dir, &["rev-parse", "HEAD"], None).unwrap();
+        assert_eq!(head.trim(), dream);
     }
 
     #[test]

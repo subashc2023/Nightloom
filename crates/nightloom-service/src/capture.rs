@@ -142,13 +142,22 @@ pub fn state_in(config: &Path) -> CaptureState {
 }
 
 /// Write the watermarks. Called after each turn's observations are
-/// appended, never before — see the module doc.
+/// appended, never before — see the module doc. Through a process-named
+/// temp file and a rename, the way `store/index.rs` writes: a plain
+/// `fs::write` truncates first, and a quit between the truncate and the
+/// write leaves a file `state_in` reads as "never captured anything" —
+/// every log re-read from byte 0 on the next run, billed.
 fn write_state(config: &Path, state: &CaptureState) -> Result<(), String> {
     let body = serde_json::to_string_pretty(state).map_err(|e| e.to_string())?;
     fs::create_dir_all(config)
         .map_err(|e| format!("could not create {}: {e}", config.display()))?;
     let path = config.join(STATE_FILE);
-    fs::write(&path, body).map_err(|e| format!("could not write {}: {e}", path.display()))
+    let tmp = config.join(format!("{STATE_FILE}.{}.tmp", std::process::id()));
+    fs::write(&tmp, body).map_err(|e| format!("could not write {}: {e}", tmp.display()))?;
+    fs::rename(&tmp, &path).map_err(|e| {
+        fs::remove_file(&tmp).ok();
+        format!("could not write {}: {e}", path.display())
+    })
 }
 
 /// One directory of session logs and whose chats they are.
@@ -945,6 +954,26 @@ mod tests {
             std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 60 * 60),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn the_watermark_file_is_replaced_whole_and_leaves_no_temp_file() {
+        let (config, _) = fixture("state-write");
+        let mut state = CaptureState::default();
+        state.consumed.insert("/a/b.jsonl".into(), 42);
+        write_state(&config, &state).unwrap();
+        // Overwritten in place with a shorter document: a rename, so the
+        // reader never sees the tail of the longer one.
+        state.consumed.clear();
+        write_state(&config, &state).unwrap();
+        assert!(state_in(&config).consumed.is_empty());
+        let leftovers: Vec<_> = fs::read_dir(&config)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
     }
 
     #[test]

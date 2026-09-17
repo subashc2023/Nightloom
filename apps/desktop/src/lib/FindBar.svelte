@@ -71,7 +71,14 @@
   let pendingTurn: number | null = null;
 
   onMount(() => registerFindBar({ openWith, query: () => (open ? query : "") }));
-  onDestroy(() => registerFindBar(null));
+  // The bar leaves with its pane's focus (`{#if focused}` in App.svelte):
+  // an open one must take its light and its observer with it, or the
+  // highlights stay painted on the page and the observer keeps scheduling
+  // searches against a bar that is gone (review E, 2026-09-17).
+  onDestroy(() => {
+    close();
+    registerFindBar(null);
+  });
 
   /** The page: the bar's parent. Null before mount and while closed. */
   function page(): HTMLElement | null {

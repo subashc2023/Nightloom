@@ -1539,12 +1539,29 @@ fn ensure_background_pointer(path: &Path, report: &mut ImportReport) {
         ));
         return;
     }
-    match fs::write(path, body) {
+    match write_whole(path, &body) {
         Ok(()) => report.memory_written += 1,
         Err(e) => report
             .warnings
             .push(format!("the user memory: cannot write: {e}")),
     }
+}
+
+/// Replace an always-loaded file whole: a process-named temp file beside
+/// it, then a rename. `fs::write` truncates before it writes, and the two
+/// files this rewrites — a project's `AGENTS.md`, the user's — are read
+/// into every conversation; a quit between the truncate and the write
+/// would leave one empty.
+fn write_whole(path: &Path, body: &str) -> io::Result<()> {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let tmp = path.with_file_name(format!("{name}.{}.tmp", std::process::id()));
+    fs::write(&tmp, body)?;
+    fs::rename(&tmp, path).inspect_err(|_| {
+        fs::remove_file(&tmp).ok();
+    })
 }
 
 /// Append a project's memory to its `AGENTS.md`, under a dated heading.
@@ -1602,7 +1619,7 @@ fn append_memory_section(root: &Path, name: &str, text: &str, report: &mut Impor
         "\n{MEMORY_HEADING} {})\n\n{section}\n",
         Utc::now().format("%Y-%m-%d")
     ));
-    match fs::write(&path, body) {
+    match write_whole(&path, &body) {
         Ok(()) => report.memory_inlined += 1,
         Err(e) => report
             .warnings
@@ -3399,6 +3416,13 @@ mod tests {
         let text = fs::read_to_string(&memory).unwrap();
         assert_eq!(text, format!("{theirs}\n\n{BACKGROUND_POINTER}\n"));
         assert_eq!(report.memory_written, 1);
+        // Replaced by a rename: nothing beside it.
+        assert!(
+            !fs::read_dir(&dir)
+                .unwrap()
+                .flatten()
+                .any(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+        );
 
         // Already there, in the middle as the hand split put it: nothing.
         let split = format!(

@@ -54,6 +54,9 @@ use tauri::{AppHandle, Emitter, State};
 const READ_CHUNK: usize = 16 * 1024;
 
 /// How often the title thread asks which process group has the terminal.
+/// The thread is unix-only (`spawn_title_watch`), so off unix this is dead
+/// and the Windows job's clippy runs with `-D warnings` (review D, 2026-09-17).
+#[cfg_attr(not(unix), allow(dead_code))]
 const TITLE_POLL: Duration = Duration::from_secs(1);
 
 /// What the window learns when a shell opens.
@@ -105,6 +108,9 @@ pub enum Outgoing {
         code: Option<u32>,
         signal: Option<String>,
     },
+    /// Made only by the unix title thread; off unix it is matched by the
+    /// window sink and never built, which `-D warnings` calls dead.
+    #[cfg_attr(not(unix), allow(dead_code))]
     Title {
         id: u32,
         title: String,

@@ -156,6 +156,13 @@ pub enum Error {
 struct Shared {
     host: Arc<dyn Host>,
     token: String,
+    /// Cancelled by [`Server::stop`] and on drop: every open event stream
+    /// ends on it. Axum runs each connection as its own task and its
+    /// shutdown only asks hyper to finish the in-flight response, which an
+    /// SSE stream never does — so without this, "off" (and a regenerated
+    /// token, which restarts the listener) left every phone that held a
+    /// stream still receiving the desktop's events (review 2026-09-17).
+    closing: tokio_util::sync::CancellationToken,
 }
 
 /// A running listener. Dropping it, or [`Server::stop`], closes the port;
@@ -164,6 +171,7 @@ struct Shared {
 pub struct Server {
     addr: SocketAddr,
     shutdown: Option<oneshot::Sender<()>>,
+    closing: tokio_util::sync::CancellationToken,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -202,7 +210,12 @@ impl Server {
             .local_addr()
             .map_err(|source| Error::Bind { addr, source })?;
         let (tx, rx) = oneshot::channel();
-        let app = router(Arc::new(Shared { host, token }));
+        let closing = tokio_util::sync::CancellationToken::new();
+        let app = router(Arc::new(Shared {
+            host,
+            token,
+            closing: closing.clone(),
+        }));
         let task = tokio::spawn(async move {
             let _ = axum::serve(listener, app)
                 .with_graceful_shutdown(async {
@@ -213,6 +226,7 @@ impl Server {
         Ok(Self {
             addr: bound,
             shutdown: Some(tx),
+            closing,
             task,
         })
     }
@@ -230,6 +244,7 @@ impl Server {
         if let Some(tx) = self.shutdown.take() {
             let _ = tx.send(());
         }
+        self.closing.cancel();
         self.task.abort();
         let _ = (&mut self.task).await;
     }
@@ -240,6 +255,7 @@ impl Drop for Server {
         if let Some(tx) = self.shutdown.take() {
             let _ = tx.send(());
         }
+        self.closing.cancel();
         self.task.abort();
     }
 }
@@ -254,6 +270,12 @@ fn router(shared: Arc<Shared>) -> Router {
         .route("/approve", post(approve))
         .route("/cancel", post(cancel))
         .route("/events", get(events))
+        // An explicit fallback so the bearer layer below covers a miss
+        // too: without one an unknown `/api` path fell through to the
+        // outer router's 404 *before* the token check, which let a caller
+        // with no token tell a real route (401) from a missing one (404)
+        // — a map of the API for free (review 2026-09-17, reviewer A).
+        .fallback(|| async { StatusCode::NOT_FOUND })
         .layer(middleware::from_fn_with_state(
             shared.clone(),
             require_token,
@@ -359,10 +381,15 @@ async fn events(
     State(shared): State<Arc<Shared>>,
 ) -> Sse<impl Stream<Item = Result<SseEvent, std::convert::Infallible>>> {
     let mut rx = shared.host.events();
+    let closing = shared.closing.clone();
     let stream = async_stream::stream! {
         yield Ok(SseEvent::default().event("hello").data("{}"));
         loop {
-            match rx.recv().await {
+            let next = tokio::select! {
+                _ = closing.cancelled() => break,
+                next = rx.recv() => next,
+            };
+            match next {
                 Ok(ev) => yield Ok(SseEvent::default().event(ev.name).data(ev.payload)),
                 Err(broadcast::error::RecvError::Lagged(n)) => {
                     yield Ok(SseEvent::default().event("lagged").data(n.to_string()));
@@ -596,6 +623,60 @@ mod tests {
         server.stop().await;
     }
 
+    /// Review 2026-09-17 (reviewer A): the bearer check is a layer over the
+    /// whole `/api` router, so it runs before the route table answers — an
+    /// unknown path, a wrong method, `OPTIONS` and `HEAD` all say 401 with
+    /// no token rather than 404 or 405, and an oversized body is refused
+    /// by the extractor's default limit once the token is right.
+    #[tokio::test]
+    async fn every_api_road_needs_the_bearer_before_anything_else() {
+        let (server, host, _tx, token) = up().await;
+        let base = format!("http://{}", server.addr());
+        let c = client();
+        let reqs = [
+            c.request(reqwest::Method::OPTIONS, format!("{base}/api/send")),
+            c.head(format!("{base}/api/state")),
+            c.get(format!("{base}/api/not-a-route")),
+            c.get(format!("{base}/api/send")),
+            c.post(format!("{base}/api/state")),
+        ];
+        for r in reqs {
+            let r = r.build().unwrap();
+            let what = format!("{} {}", r.method(), r.url().path());
+            let resp = c.execute(r).await.unwrap();
+            assert_eq!(resp.status(), 401, "{what}");
+        }
+        // A 3 MB message with the right token: the extractor's default
+        // limit (2 MB) refuses it. The server answers before the body is
+        // all read and hyper then closes the connection, so the client
+        // sees either the 413 or a reset while still writing — which of
+        // the two is a race on loopback. The property is that the host
+        // never sees the message.
+        let big = SendRequest {
+            text: "x".repeat(3 * 1024 * 1024),
+        };
+        match c
+            .post(format!("{base}/api/send"))
+            .bearer_auth(&token)
+            .json(&big)
+            .send()
+            .await
+        {
+            Ok(r) => assert_eq!(r.status(), 413),
+            Err(e) => assert!(e.is_request(), "{e}"),
+        }
+        assert!(host.sent.lock().unwrap().is_empty());
+        // An asset path that starts with `/` after the root is still a
+        // relative lookup, not an absolute one.
+        let r = c
+            .get(format!("{base}/assets//etc/passwd"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 404);
+        server.stop().await;
+    }
+
     #[tokio::test]
     async fn chats_transcript_send_approve_and_cancel_reach_the_host() {
         let (server, host, _tx, token) = up().await;
@@ -731,6 +812,51 @@ mod tests {
             "{got}"
         );
         server.stop().await;
+    }
+
+    /// Review 2026-09-17 (reviewer A): `stop` closed the port but not the
+    /// streams already open on it — axum spawns each connection as its own
+    /// task and shutdown only asks hyper to finish the in-flight response,
+    /// which an SSE stream never does. So "off", and a regenerated token
+    /// (which is a restart), left every phone that held a stream still
+    /// receiving the desktop's events. The stream must end with the
+    /// listener.
+    #[tokio::test]
+    async fn stopping_ends_an_open_event_stream() {
+        let (server, _host, tx, token) = up().await;
+        let base = format!("http://{}", server.addr());
+        let c = client();
+        let mut r = c
+            .get(format!("{base}/api/events"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        let mut got = String::new();
+        while !got.contains("event: hello") {
+            let chunk = r.chunk().await.unwrap().expect("stream open");
+            got.push_str(&String::from_utf8_lossy(&chunk));
+        }
+        server.stop().await;
+        // The relay is still alive (the desktop is), so an event sent now
+        // must not reach a stream the listener no longer owns.
+        let _ = tx.send(Event {
+            name: "turn-event".into(),
+            payload: "{}".into(),
+        });
+        // Read to the end: the stream must close, not deliver the event.
+        // Bounded so a stream that never closes fails the test rather than
+        // hanging it — the bound is generous, not a timing assumption.
+        let rest = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let mut rest = String::new();
+            while let Ok(Some(chunk)) = r.chunk().await {
+                rest.push_str(&String::from_utf8_lossy(&chunk));
+            }
+            rest
+        })
+        .await
+        .expect("the stream ends with the listener");
+        assert!(!rest.contains("event: turn-event"), "{rest}");
     }
 
     #[tokio::test]

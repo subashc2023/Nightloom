@@ -76,6 +76,18 @@ const INTERRUPT_GRACE: Duration = Duration::from_secs(5);
 /// Tail of the child's stderr kept for diagnosis, in bytes.
 const STDERR_TAIL: usize = 4096;
 
+/// The last [`STDERR_TAIL`] bytes of `text`, cut on a character boundary:
+/// a byte offset that lands inside a multi-byte character would panic the
+/// reader task and lose the tail exactly when it is the only diagnosis
+/// (review 2026-09-17, C).
+fn stderr_tail(text: &str) -> &str {
+    let mut from = text.len().saturating_sub(STDERR_TAIL);
+    while from < text.len() && !text.is_char_boundary(from) {
+        from += 1;
+    }
+    &text[from..]
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum AgentError {
     #[error("could not start {binary}: {source}{}", not_found_hint(.source))]
@@ -1200,8 +1212,7 @@ impl ClaudeCodeAgent {
             let mut buf = Vec::new();
             let _ = stderr.read_to_end(&mut buf).await;
             let text = String::from_utf8_lossy(&buf).into_owned();
-            let from = text.len().saturating_sub(STDERR_TAIL);
-            text[from..].to_string()
+            stderr_tail(&text).to_string()
         });
 
         let mut lines = BufReader::new(stdout).lines();
@@ -2341,6 +2352,24 @@ wait
 
     /// A path the user typed is honoured as typed. Second-guessing it would
     /// override the one escape hatch the fallback leaves them.
+    #[test]
+    fn the_stderr_tail_is_cut_on_a_char_boundary() {
+        let short = "plain";
+        assert_eq!(stderr_tail(short), short);
+        // `—` is three bytes; place it so the byte cut lands inside it.
+        let mut text = "x".repeat(STDERR_TAIL + 1);
+        text.insert(2, '—');
+        let tail = stderr_tail(&text);
+        assert!(tail.len() <= STDERR_TAIL);
+        assert!(
+            tail.chars().all(|c| c == 'x'),
+            "the straddled dash is dropped whole"
+        );
+        // A cut that lands on a boundary keeps exactly the tail.
+        let exact = "y".repeat(STDERR_TAIL + 10);
+        assert_eq!(stderr_tail(&exact).len(), STDERR_TAIL);
+    }
+
     #[test]
     fn an_explicit_path_is_never_rewritten() {
         for named in ["/opt/claude/bin/claude", "./claude", "../tools/claude"] {

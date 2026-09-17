@@ -72,6 +72,11 @@ export class UndoHistory {
    *  `rewindTo`'s reasoning — the running turn holds the session and would
    *  record its reply after the change landed. */
   private busy: () => boolean;
+  /** An undo or redo whose closure has not resolved yet (review E,
+   *  2026-09-17): a second ⌘Z inside that window — key repeat does it —
+   *  would read the same top entry, run its closure again and move the
+   *  cursor twice. Both calls are no-ops while one is in flight. */
+  private inFlight = false;
 
   constructor(busy: () => boolean = () => false) {
     this.busy = busy;
@@ -142,10 +147,15 @@ export class UndoHistory {
    *  nothing to reverse or a turn is running; the cursor moves only once
    *  the closure has resolved, so a refusal changes nothing. */
   async undo(scopes: string[]): Promise<Step> {
-    if (this.busy()) return null;
+    if (this.busy() || this.inFlight) return null;
     const next = this.nextUndo(scopes);
     if (!next) return null;
-    await next.entry.undo();
+    this.inFlight = true;
+    try {
+      await next.entry.undo();
+    } finally {
+      this.inFlight = false;
+    }
     next.entry.undoneSeq = ++this.seq;
     next.stack.cursor -= 1;
     return { label: next.entry.label };
@@ -163,10 +173,15 @@ export class UndoHistory {
 
   /** Repeat the most recently undone operation over `scopes`. Same terms. */
   async redo(scopes: string[]): Promise<Step> {
-    if (this.busy()) return null;
+    if (this.busy() || this.inFlight) return null;
     const next = this.nextRedo(scopes);
     if (!next) return null;
-    await next.entry.redo();
+    this.inFlight = true;
+    try {
+      await next.entry.redo();
+    } finally {
+      this.inFlight = false;
+    }
     next.entry.seq = ++this.seq;
     next.stack.cursor += 1;
     return { label: next.entry.label };

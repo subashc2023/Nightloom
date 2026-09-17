@@ -50,7 +50,10 @@ never `0.0.0.0`, never a LAN address, and there is no option for either
 (the app's bundled CLI, then `tailscale` on PATH), else from `ifconfig`'s
 `100.64.0.0/10` line; the server refuses to start on any address outside
 that range before a socket exists. With Tailscale off the switch fails
-with a sentence naming it.
+with a sentence naming it. While the listener is on, the card and the QR
+show the address it is *bound* to, not whatever Tailscale answers now:
+if the node's address changes (a re-login, a reset), switch Remote off
+and on to bind the new one.
 
 No TLS: the tailnet is WireGuard end to end, and a certificate the phone
 would have to trust is a setup step this page exists to not have. Only
@@ -75,7 +78,9 @@ rather than `EventSource` for the same reason: `EventSource` cannot send a
 header, and the token must not go in a URL.
 
 **Regenerate** (in the card) replaces the token and restarts a running
-listener with it; every phone must scan again.
+listener with it; every phone must scan again. Off, and a restart, end
+every open event stream at once — a phone holding one is cut, not left
+listening with the old token.
 
 ## Setting it up on the phone
 

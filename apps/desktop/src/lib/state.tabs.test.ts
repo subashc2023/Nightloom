@@ -7,10 +7,13 @@ import {
   newTab,
   openSession,
   reflectTabs,
+  remoteSend,
   showNote,
   stepTab,
 } from "./state.svelte";
 import * as tabs from "./tabs";
+import * as api from "./api";
+import { drafts, readDraft } from "./drafts.svelte";
 
 /**
  * The glue between the tab model and the one open chat (nightshift backlog
@@ -77,6 +80,30 @@ describe("reflection", () => {
     expect(chats(app.tabs)).toEqual([["a", "plan.md"]]);
     expect(app.activeSessionId).toBe("a");
     expect(app.view).toBe("note");
+  });
+
+  // Review E, 2026-09-17: the reflection runs only on a change, so an open
+  // that changes nothing must hand the modifier back itself, or the next
+  // plain click opens a tab it was not asked for.
+  it("⌘-click on the chat in front, or a failed open, hands the modifier back", async () => {
+    await openSession("a");
+    reflectTabs();
+    app.openNext = "new";
+    await openSession("a");
+    expect(app.openNext).toBe("replace");
+    await openSession("b");
+    reflectTabs();
+    expect(chats(app.tabs)).toEqual([["b"]]);
+
+    app.openNext = "new";
+    vi.mocked(api.openSession).mockRejectedValueOnce(new Error("no such chat"));
+    await openSession("c");
+    expect(app.error).toContain("no such chat");
+    expect(app.openNext).toBe("replace");
+    app.error = null;
+    await openSession("d");
+    reflectTabs();
+    expect(chats(app.tabs)).toEqual([["d"]]);
   });
 
   it("the graph and Nightshift are not tabs and change nothing", () => {
@@ -158,6 +185,26 @@ describe("closing", () => {
     expect(chats(app.tabs)).toEqual([["a"]]);
     expect(app.view).toBe("chat");
     expect(app.openNote).toBeNull();
+  });
+});
+
+// The phone's message (backlog 091) under blocker 182's one-live-chat rule
+// (review E, 2026-09-17): a chat the desktop cannot open right now — a turn
+// runs in another — holds the words under its own key, never the open chat's.
+describe("remote-send", () => {
+  it("holds a message for a chat that cannot be opened under that chat's key", async () => {
+    for (const k of Object.keys(drafts)) delete drafts[k];
+    await openSession("y");
+    reflectTabs();
+    app.busy = true;
+    await remoteSend("x", "for x");
+    expect(app.activeSessionId).toBe("y");
+    expect(readDraft("x").queue.map((q) => q.text)).toEqual(["for x"]);
+    expect(readDraft("y").queue).toEqual([]);
+    // For the open chat itself, a running turn queues as the composer would.
+    await remoteSend("y", "for y");
+    expect(readDraft("y").queue.map((q) => q.text)).toEqual(["for y"]);
+    app.busy = false;
   });
 });
 

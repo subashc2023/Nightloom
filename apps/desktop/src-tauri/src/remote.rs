@@ -303,9 +303,18 @@ pub struct RemoteStatus {
 const NO_TAILSCALE: &str =
     "Tailscale is not up on this Mac — open the Tailscale app and sign in, then try again";
 
-fn status_of(remote: &Remote, on: bool) -> RemoteStatus {
-    let address = tailnet::address();
-    let port = remote.port();
+/// `bound` is the running listener's address, or `None` when it is off.
+/// While it is on the card shows *that* address, not whatever Tailscale
+/// answers now: the two differ after a re-login or a reset changes the
+/// node's address, and a QR built from the new one would point the phone
+/// at a port nothing listens on (review 2026-09-17, reviewer A).
+fn status_of(remote: &Remote, bound: Option<std::net::SocketAddr>) -> RemoteStatus {
+    let on = bound.is_some();
+    let address = match bound {
+        Some(addr) => Some(addr.ip()),
+        None => tailnet::address().map(IpAddr::V4),
+    };
+    let port = bound.map(|a| a.port()).unwrap_or_else(|| remote.port());
     let token = credentials::remote_token();
     let setup_url = match (&address, &token) {
         (Some(ip), Some(t)) => Some(token::setup_url(&ip.to_string(), port, t)),
@@ -327,8 +336,8 @@ fn status_of(remote: &Remote, on: bool) -> RemoteStatus {
 /// The card's read: is the listener up, where, and the token.
 #[tauri::command]
 pub async fn remote_status(remote: State<'_, Remote>) -> Result<RemoteStatus, String> {
-    let on = remote.server.lock().await.is_some();
-    Ok(status_of(&remote, on))
+    let bound = remote.server.lock().await.as_ref().map(Server::addr);
+    Ok(status_of(&remote, bound))
 }
 
 /// Switch the listener on at `port` on the Mac's tailnet address. Refused
@@ -362,10 +371,11 @@ pub async fn remote_start(
         .await
         .map_err(|e| e.to_string())?;
     *remote.port.lock().unwrap_or_else(|p| p.into_inner()) = port;
+    let bound = server.addr();
     *slot = Some(server);
     drop(slot);
     remote.apply_awake(&app, remote.keep_awake());
-    Ok(status_of(&remote, true))
+    Ok(status_of(&remote, Some(bound)))
 }
 
 /// Switch the listener off: the port closes, open phone streams end, the
@@ -379,7 +389,7 @@ pub async fn remote_stop(
         server.stop().await;
     }
     remote.apply_awake(&app, false);
-    Ok(status_of(&remote, false))
+    Ok(status_of(&remote, None))
 }
 
 /// The "keep the Mac awake while remote is on" switch: the guard is held
@@ -391,9 +401,9 @@ pub async fn remote_set_keep_awake(
     on: bool,
 ) -> Result<RemoteStatus, String> {
     *remote.keep_awake.lock().unwrap_or_else(|p| p.into_inner()) = on;
-    let up = remote.server.lock().await.is_some();
-    remote.apply_awake(&app, on && up);
-    Ok(status_of(&remote, up))
+    let bound = remote.server.lock().await.as_ref().map(Server::addr);
+    remote.apply_awake(&app, on && bound.is_some());
+    Ok(status_of(&remote, bound))
 }
 
 /// The token, made and stored if there is none; `regenerate` replaces it
@@ -409,9 +419,9 @@ pub async fn remote_token(
     if fresh {
         credentials::set_remote_token(&token::generate()).map_err(|e| e.to_string())?;
     }
-    let up = remote.server.lock().await.is_some();
-    if fresh && up {
+    let bound = remote.server.lock().await.as_ref().map(Server::addr);
+    if fresh && bound.is_some() {
         return remote_start(app, remote, None).await;
     }
-    Ok(status_of(&remote, up))
+    Ok(status_of(&remote, bound))
 }

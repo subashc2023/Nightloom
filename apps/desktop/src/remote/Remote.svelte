@@ -284,7 +284,12 @@
       scrollToEnd();
     } catch (e) {
       if (e instanceof Unreachable) hold(text);
-      else fail(e);
+      else {
+        // A refusal (409, 401, a 5xx) is not a hold: the text goes back
+        // into the composer rather than nowhere, so nothing typed is lost.
+        fail(e);
+        if (!draft) draft = text;
+      }
     }
   }
 

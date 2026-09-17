@@ -1510,7 +1510,14 @@ async fn connect_agent(
     // is the case where a session was started on the agent, the rail was
     // switched to a provider and back — without it the transcript would
     // carry on and the agent would have forgotten all of it.
-    if let Some(session) = state.session.lock().await.as_ref()
+    //
+    // Not under `--no-session-persistence` (review 2026-09-17, C): an
+    // ephemeral chat's log carries the id the CLI reported, but the CLI
+    // saved nothing under it, and a `--resume` of it ends the next turn
+    // with `error_during_execution` — the same failure `follow_on` was
+    // taught to avoid on 2026-09-17, reached here by any rail change.
+    if !spec.no_session_persistence
+        && let Some(session) = state.session.lock().await.as_ref()
         && let Some((agent, id)) = session.agent_session()
         && agent == AGENT
     {
