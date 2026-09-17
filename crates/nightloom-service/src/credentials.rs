@@ -105,6 +105,25 @@ mod store {
             .filter(|k| !k.is_empty())
     }
 
+    /// A stored secret, `Ok(None)` when there is none, and `Err` when the
+    /// store could not say — a locked keychain, a denied prompt after a
+    /// re-signed build. For the one caller that would *replace* a secret
+    /// it cannot read (the remote token: a regenerated token un-pairs
+    /// every phone; review 2026-09-17 FA4, backlog 132), where "absent"
+    /// and "could not read" must not be the same answer.
+    pub(super) fn try_get(entry: &str) -> Result<Option<String>, CredentialError> {
+        let entry = keyring::Entry::new(KEYRING_SERVICE, entry)
+            .map_err(|e| CredentialError::Store(e.to_string()))?;
+        match entry.get_password() {
+            Ok(k) => {
+                let k = k.trim().to_string();
+                Ok((!k.is_empty()).then_some(k))
+            }
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(CredentialError::Store(e.to_string())),
+        }
+    }
+
     pub(super) fn set(entry: &str, key: &str) -> Result<(), CredentialError> {
         keyring::Entry::new(KEYRING_SERVICE, entry)
             .and_then(|e| e.set_password(key))
@@ -131,6 +150,11 @@ mod store {
 
     pub(super) fn get(_entry: &str) -> Option<String> {
         None
+    }
+
+    /// No store: nothing is stored, and that is known for certain.
+    pub(super) fn try_get(_entry: &str) -> Result<Option<String>, CredentialError> {
+        Ok(None)
     }
 
     pub(super) fn set(_entry: &str, _key: &str) -> Result<(), CredentialError> {
@@ -258,6 +282,15 @@ const REMOTE_TOKEN_ENTRY: &str = "remote:token";
 /// environment fallback: a token is made by the app and lives nowhere else.
 pub fn remote_token() -> Option<String> {
     store::get(REMOTE_TOKEN_ENTRY)
+}
+
+/// The token, with "none stored" told apart from "the store could not be
+/// read": the listener's start and the Regenerate button must keep the
+/// token he has on the latter rather than mint one (review 2026-09-17
+/// FA4 — a keychain the OS would not open regenerated the token and
+/// un-paired every phone).
+pub fn try_remote_token() -> Result<Option<String>, CredentialError> {
+    store::try_get(REMOTE_TOKEN_ENTRY)
 }
 
 /// Store the token. An empty one clears the entry, as the key setters do.

@@ -9,6 +9,8 @@
     runDream,
     saveNote,
     showGraph,
+    startContentDrag,
+    endContentDrag,
     showNote,
     stopCapture,
     stopDream,
@@ -159,6 +161,8 @@
   <div class="list">
     {#each notes as n (n.name)}
       <div class="item" class:active={isOpen(scope, n.name)}>
+        <!-- Draggable (backlog 140 pass 2): onto a strip for a tab of
+             this note at that slot, onto a pane's half to open it beside. -->
         <button
           class="row"
           onclick={(e) => {
@@ -167,6 +171,9 @@
             if (e.metaKey || e.ctrlKey) app.openNext = "new";
             showNote(scope, n.name);
           }}
+          draggable="true"
+          ondragstart={(e) => startContentDrag(e, { kind: "note", scope, name: n.name })}
+          ondragend={endContentDrag}
         >
           <span class="name">{n.name}</span>
           {#if n.summary}<span class="summary">{n.summary}</span>{/if}
@@ -247,10 +254,13 @@
         {/if}
         <button
           class="folder"
-          title="Show the link graph"
+          title="Show the link graph — drag it onto a strip for a tab"
           aria-label="Show the link graph"
           class:on={app.view === "graph"}
-          onclick={showGraph}>◈</button
+          onclick={showGraph}
+          draggable="true"
+          ondragstart={(e) => startContentDrag(e, { kind: "graph" })}
+          ondragend={endContentDrag}>◈</button
         >
       {/if}
       <button

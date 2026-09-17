@@ -76,8 +76,56 @@ The shells die with the app three ways: `terminal_close` on a ×, the
 registry's `Drop`, and — the backstop needing no exit hook — the kernel's
 hangup: when the process ends, its master fds close and the shell, the
 session leader, gets `SIGHUP`. A unit test pins that
-(`hangup_ends_the_shell_when_the_master_drops`). Nothing is persisted
-across launches: the pane reopens empty.
+(~~`hangup_ends_the_shell_when_the_master_drops`~~ — superseded 2026-09-17,
+backlog 135: that test dropped the master while the reader's copy of it
+stayed open, so what ended the shell was the EOF the writer's drop sends,
+not a hangup; it is now `eof_ends_the_shell_when_its_input_queue_drops`,
+and `hangup_ends_a_foreground_job_when_every_master_fd_closes` pins the
+hangup itself — a `sleep` in front, which reads nothing, dies of `SIGHUP`
+once the last master fd closes). Nothing is persisted across launches:
+the pane reopens empty.
+
+## Neither direction blocks the window (backlog 135, 2026-09-17)
+
+The night's review (D) measured two floods. A paste into a program that
+is not reading its input — `cargo build` in front, 3 KB pasted — sat
+3.75 s inside `terminal_write` on the main thread, the whole window
+frozen until the build finished, because the kernel's tty input queue
+holds about a kilobyte and a write past it waits. And `yes` reached the
+window as a million four-byte events a second: the pty hands back a line
+or two per read, and every read was its own event on the window's queue.
+
+Now: each shell has a **writer thread** with a bounded queue (256 writes
+or 256 KB). `terminal_write` queues and returns — measured 5 µs for the
+same 3 KB paste with a `sleep` in front. A queue that is full answers
+*the program is not reading its input*, which the pane shows once as a
+toast until a write goes through again; once the program reads, the
+queue drains in order. `terminal_open` and `terminal_close` are async
+commands too, so a fork or a wait on a dying shell (bash takes its whole
+200 ms grace) is off the main thread.
+
+Output goes reader → **emitter thread** → window. The emitter sends one
+event per frame (16 ms; the first chunk after a quiet spell goes at once,
+so a keystroke's echo is not held), at most 64 KB each — the 20 MB `yes`
+now arrives as 460 events of ~64 KB instead of 8 million of 3 bytes. And
+the window **acknowledges** what xterm.js has drawn (`terminal_ack`, sent
+from xterm's write callback): past 256 KB unacknowledged the emitter
+waits, the reader's queue to it fills, the reader stops reading, and the
+kernel makes the program wait — a `yes` runs at the speed the window
+draws, as it does in Terminal.app, and nothing is dropped. A window that
+stops answering (the pane hidden, a reload, the webview gone) is released
+every 2 s, so a shell is never stuck on a lost acknowledgement; while the
+dock is hidden the store's buffer of undrawn bytes is therefore bounded
+by the same mark.
+
+Thread-spawn failures (out of threads) are the window's error — the
+child is killed and `terminal_open` answers — rather than a panic; a
+title thread that cannot start leaves the tab reading the shell's name.
+
+Not changed (blocker 200): × still ends a shell with `SIGHUP` to the
+shell and lets the shell hang up its own jobs — the default shells do
+(measured: `/bin/sh`, `zsh`, `bash` all ended a foreground `sleep 300`);
+a `setopt NO_HUP` zsh, or a job that traps `SIGHUP`, survives the ×.
 
 `apps/desktop/src/lib/terminal.ts` is the pure part (the chords, the tab's
 label and states, the notice's counts; tested), `terminal.svelte.ts` the

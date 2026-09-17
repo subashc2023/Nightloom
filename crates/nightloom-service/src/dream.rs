@@ -665,6 +665,10 @@ async fn run_with(
     cancel: &CancellationToken,
     on_event: &mut (dyn FnMut(TurnEvent) + Send),
 ) -> Result<Option<DreamOutcome>, String> {
+    // One dreamer across processes (backlog 133, FB4): the other app or
+    // the CLI at the same hour is refused with a sentence, not run twice
+    // over one vault. Held to the end of the pass.
+    let _lock = crate::pass_lock::take(config)?;
     let backlog = observe::backlog_in(config);
     if backlog.pending.is_empty() {
         return Ok(None);
@@ -1052,7 +1056,15 @@ pub fn tidy_targets(
     days: i64,
     today: Option<chrono::NaiveDate>,
     apply: bool,
-) -> Vec<TidyOutcome> {
+) -> Result<Vec<TidyOutcome>, String> {
+    // An apply moves lines and commits: one at a time across processes,
+    // like the dream and the capture (backlog 133, FB4). A dry run only
+    // reads and may overlap anything.
+    let _lock = if apply {
+        Some(crate::pass_lock::take(config)?)
+    } else {
+        None
+    };
     let today = today.unwrap_or_else(|| Utc::now().date_naive());
     let mut targets = vec![Target::Vault(vault.to_path_buf())];
     targets.extend(
@@ -1062,7 +1074,7 @@ pub fn tidy_targets(
             .filter(|p| p.memory_dir().is_dir())
             .map(Target::project),
     );
-    targets
+    let targets = targets
         .into_iter()
         .filter(|t| t.dir().is_dir())
         .map(|t| {
@@ -1087,7 +1099,8 @@ pub fn tidy_targets(
                 git: git.brief(),
             }
         })
-        .collect()
+        .collect::<Vec<_>>();
+    Ok(targets)
 }
 
 /// Snapshot one target: the whole vault, or a workspace's `.agents/` alone.

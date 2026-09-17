@@ -6,7 +6,10 @@
    * Code turn works in the same folder, and one `TerminalShell` per shell
    * underneath. Always mounted — it draws nothing while the pane is
    * closed — so ⌃` has somewhere to live without `App.svelte` carrying
-   * it. Mounted once in every pane's dock slot (`App.svelte`'s
+   * it. Hidden (⌃`) or collapsed, the section and every shell stay
+   * mounted and are only not displayed (backlog 137): an unmount disposed
+   * each xterm with its scrollback and its screen, so a build's output
+   * was gone on the next ⌃`, and a `vim` came back blank. Mounted once in every pane's dock slot (`App.svelte`'s
    * `.pane-dock`, agent L's mount point); the one whose `pane` is the
    * store's draws, and the first pane's instance owns the window keys.
    * One dock for the window (blocker 189), under the pane it was opened
@@ -14,6 +17,7 @@
    */
   import { onMount } from "svelte";
   import { app, chatKind } from "./state.svelte";
+  import { TERM_DRAG } from "./tabs";
   import { isMac } from "./platform";
   import Icon from "./Icon.svelte";
   import TerminalShell from "./TerminalShell.svelte";
@@ -154,13 +158,15 @@
 
 <svelte:window onkeydown={onKey} />
 
-{#if term.open && mine}
+{#if term.shells.length > 0 && mine}
   <section
     class="term-dock"
     class:collapsed={term.collapsed}
+    class:hidden={!term.open}
     style:height={term.collapsed ? "auto" : `${term.height}px`}
     bind:this={dock}
     aria-label="Terminal"
+    aria-hidden={!term.open}
   >
     {#if !term.collapsed}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -188,8 +194,22 @@
           role="tab"
           aria-selected={s.id === term.active}
           tabindex="-1"
-          title={s.exit ? `${label} ended — click to start a new shell in ${shortCwd(s.cwd, home)}` : `${s.shell} in ${shortCwd(s.cwd, home)}`}
+          title={s.exit ? `${label} ended — click to start a new shell in ${shortCwd(s.cwd, home)}` : `${s.shell} in ${shortCwd(s.cwd, home)} — drag onto the other pane to dock the terminal there`}
           onclick={() => (s.exit ? void restartShell(s.id) : selectShell(s.id))}
+          draggable="true"
+          ondragstart={(e) => {
+            // Agent P's hunk (nightshift backlog 113's 12b, 2026-09-17):
+            // the dock is one for the window (blocker 189); dragging a
+            // shell tab onto a pane or its strip moves the dock under
+            // that pane. The tab's own type keeps a strip from reading
+            // it as a chat tab; `app.draggingTerm` is the mirror for
+            // `dragover`, which cannot read the data.
+            if (!e.dataTransfer) return;
+            e.dataTransfer.setData(TERM_DRAG, String(s.id));
+            e.dataTransfer.effectAllowed = "move";
+            app.draggingTerm = true;
+          }}
+          ondragend={() => (app.draggingTerm = false)}
           onkeydown={(e) => {
             if (e.key === "Enter" || e.key === " ") {
               e.preventDefault();
@@ -245,13 +265,11 @@
         {#if notice.clock}<span class="term-notice-sep">·</span><span class="mono">{notice.clock}</span>{/if}
       </div>
     {/if}
-    {#if !term.collapsed}
-      <div class="term-body">
-        {#each term.shells as s (s.id)}
-          <TerminalShell shell={s} visible={s.id === term.active} />
-        {/each}
-      </div>
-    {/if}
+    <div class="term-body" class:hidden={term.collapsed}>
+      {#each term.shells as s (s.id)}
+        <TerminalShell shell={s} visible={s.id === term.active && term.open && !term.collapsed} />
+      {/each}
+    </div>
   </section>
 {/if}
 
@@ -264,6 +282,10 @@
     min-height: 0;
     border-top: 1px solid var(--line);
     background: var(--term);
+  }
+  /* Hidden, not gone: the shells keep their screens (backlog 137). */
+  .term-dock.hidden {
+    display: none;
   }
   .term-grip {
     position: absolute;
@@ -437,5 +459,8 @@
     display: flex;
     flex: 1;
     min-height: 0;
+  }
+  .term-body.hidden {
+    display: none;
   }
 </style>

@@ -17,7 +17,13 @@
 //! address (measured: `utun6`, `inet 100.121.88.105 --> 100.121.88.105`).
 
 use std::net::{IpAddr, Ipv4Addr};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+
+/// How long the CLI may take to answer `ip -4` before it is killed and the
+/// interfaces are read instead (review 2026-09-17 FA7: a daemon that
+/// accepts the socket and never answers held the runtime worker asking).
+pub const CLI_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Where the Tailscale CLI lives on macOS when installed from the App Store
 /// or the standalone package: inside the app bundle, not on `PATH`.
@@ -52,8 +58,32 @@ pub fn address() -> Option<Ipv4Addr> {
 }
 
 /// `tailscale ip -4`: one address per line, the first is the node's own.
+/// Waited for at most `CLI_TIMEOUT`; a CLI that hangs is killed and reads
+/// as no answer.
 fn cli_address(cli: &str) -> Option<Ipv4Addr> {
-    let out = Command::new(cli).args(["ip", "-4"]).output().ok()?;
+    let mut child = Command::new(cli)
+        .args(["ip", "-4"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if start.elapsed() < CLI_TIMEOUT => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+    // The child has exited; its one line of output is in the pipe.
+    let out = child.wait_with_output().ok()?;
     if !out.status.success() {
         return None;
     }

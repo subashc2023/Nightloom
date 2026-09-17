@@ -200,7 +200,18 @@ pub fn advance_in(config: &Path, consumed: u64, at: DateTime<Utc>) -> Result<(),
     fs::create_dir_all(config)
         .map_err(|e| format!("could not create {}: {e}", config.display()))?;
     let path = config.join(STATE_FILE);
-    fs::write(&path, body).map_err(|e| format!("could not write {}: {e}", path.display()))
+    // Whole or not at all: a plain `fs::write` truncates first, and a quit
+    // between the truncate and the write left an empty `dream.json` that
+    // read as "consumed 0" — the next pass re-dreamed the whole log, one
+    // billed batch at a time (review 2026-09-17 FB5, backlog 133; the
+    // capture twin was fixed the same night). A process-named temp file
+    // and a rename, the shape `capture::write_state` uses.
+    let tmp = config.join(format!("{STATE_FILE}.{}.tmp", std::process::id()));
+    fs::write(&tmp, body).map_err(|e| format!("could not write {}: {e}", tmp.display()))?;
+    fs::rename(&tmp, &path).map_err(|e| {
+        fs::remove_file(&tmp).ok();
+        format!("could not write {}: {e}", path.display())
+    })
 }
 
 /// How many observations await the next dream — what a shell's startup line
@@ -263,6 +274,24 @@ mod tests {
         let again = backlog_in(&dir);
         assert_eq!(again.pending.len(), 1);
         assert_eq!(again.pending[0].obs.text, "second");
+    }
+
+    #[test]
+    fn the_watermark_is_replaced_whole_and_leaves_no_temp_file() {
+        let dir = temp_config("watermark-whole");
+        advance_in(&dir, 1_000_000, Utc::now()).unwrap();
+        // A shorter document over a longer one: a rename, so a reader never
+        // sees the longer one's tail, and a quit mid-write leaves the old
+        // file whole rather than an empty one.
+        advance_in(&dir, 7, Utc::now()).unwrap();
+        assert_eq!(state_in(&dir).consumed, 7);
+        let leftovers: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
     }
 
     #[test]

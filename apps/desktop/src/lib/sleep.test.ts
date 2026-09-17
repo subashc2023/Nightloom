@@ -50,6 +50,7 @@ const cut: TurnEnd = {
   endedAtMs: wake.woke_at_ms - 20_000,
   errored: true,
   stopped: false,
+  chat: "chat-x",
 };
 
 describe("sleptThrough", () => {
@@ -130,7 +131,16 @@ describe("SleepWatch", () => {
       endedAtMs: wake.woke_at_ms + 90_000,
       errored: true,
       stopped: false,
+      chat: "chat-x",
     });
     expect(seen).toHaveLength(0);
+  });
+
+  it("hands the cut-off turn's chat to the match, so the resume can find it (backlog 137)", () => {
+    const seen: TurnEnd[] = [];
+    const w = new SleepWatch((t) => seen.push(t));
+    w.woke(wake);
+    w.turnEnded({ ...cut, chat: "the-one-sleep-cut" });
+    expect(seen.map((t) => t.chat)).toEqual(["the-one-sleep-cut"]);
   });
 });

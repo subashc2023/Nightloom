@@ -109,6 +109,10 @@ export interface Woke {
 export interface TurnEnd {
   startedAtMs: number;
   endedAtMs: number;
+  /** The chat the turn ran in (backlog 137): the resume goes there, not
+   *  to whichever chat is open when the wake is noticed. Null for a
+   *  chat that had no id — none is sent then. */
+  chat: string | null;
   /** Ended in an error — a rejected send, or the CLI's `is_error` result. */
   errored: boolean;
   /** He pressed Stop; not sleep's doing whatever the timing. */

@@ -222,6 +222,9 @@ struct ProjectInfo {
     /// and a row that silently vanished would be the more alarming answer.
     exists: bool,
     last_opened: String,
+    /// The other folders the project's content lives in (nightshift backlog
+    /// 143), granted to every chat in it; empty for most projects.
+    extra_folders: Vec<String>,
 }
 
 impl ProjectInfo {
@@ -233,6 +236,11 @@ impl ProjectInfo {
                 .workspace
                 .as_ref()
                 .map(|r| r.to_string_lossy().into_owned()),
+            extra_folders: project
+                .extra_folders
+                .iter()
+                .map(|f| f.to_string_lossy().into_owned())
+                .collect(),
             notes_dir: project.notes_dir().to_string_lossy().into_owned(),
             notes: project::list_notes(&project.notes_dir()).len(),
             // Counted, not listed. This runs on every rail refresh and once
@@ -401,6 +409,51 @@ struct ConnectedInfo {
     /// rail has no other way to learn: which binary answered, what version
     /// it is, and whether the turn will be billed to the plan or to a key.
     agent: Option<AgentInfo>,
+    /// The extra folders this connection may reach beyond the workspace
+    /// (nightshift backlog 143): the project's and the chat's own, each with
+    /// where it came from and — on the API engine — the `@alias` the tools
+    /// spell it by. Empty when none is granted.
+    folders: Vec<FolderInfo>,
+}
+
+/// One extra folder as the rail and the Context popover show it.
+#[derive(Serialize, Clone)]
+struct FolderInfo {
+    path: String,
+    /// `project` or `chat` — which grant it came from; a folder granted
+    /// both ways reads `project`.
+    source: String,
+    /// `@name`, on the API engine; `None` on the CLI, whose tools take the
+    /// absolute path (`--add-dir`).
+    alias: Option<String>,
+}
+
+/// The extra folders a chat sees: the project's, then the chat's own, each
+/// once, missing ones dropped — a grant on a folder that is gone is not a
+/// tree the tools can be rooted at, and the rail says so by leaving it out.
+fn extra_folders(
+    project: Option<&Project>,
+    session: Option<&Session>,
+) -> Vec<(PathBuf, &'static str)> {
+    let mut out: Vec<(PathBuf, &'static str)> = Vec::new();
+    let home = project.map(Project::workspace_dir);
+    let mut push = |f: &PathBuf, source: &'static str| {
+        if home.as_ref() == Some(f) || out.iter().any(|(p, _)| p == f) || !f.is_dir() {
+            return;
+        }
+        out.push((f.clone(), source));
+    };
+    if let Some(p) = project {
+        for f in &p.extra_folders {
+            push(f, "project");
+        }
+    }
+    if let Some(s) = session {
+        for f in s.folders() {
+            push(f, "chat");
+        }
+    }
+    out
 }
 
 /// The agent engine as the rail shows it.
@@ -673,15 +726,30 @@ struct ChatSpec {
     /// rest of the spec, so the promise holds one level down.
     mode: ChatMode,
     /// What the open chat is for (`Session::kind`), read at connect time
-    /// like `mode` (nightshift backlog 102). A Chat keeps the readers and
+    /// like `mode` (nightshift backlog 102). ~~A Chat keeps the readers and
     /// drops every writer as an incognito chat does, and carries the Chat
-    /// instructions layer; its `workspace` is the neutral folder.
+    /// instructions layer; its `workspace` is the neutral folder.~~ Since
+    /// backlog 144 (2026-09-17) this is the *policy* — what the chat may
+    /// do now — and `declared_kind` is what the request is built for.
     chat_kind: ChatKind,
+    /// What the declaration is built for (`Session::declared_kind`,
+    /// nightshift backlog 144): the tool list, the Chat instructions layer
+    /// and the folder follow this, so that a kind switch changes nothing
+    /// at the head of the request and the cached prefix survives it. A
+    /// Chat declared as a Chat keeps the readers, drops every writer and
+    /// runs in the neutral folder, as before; a Chat over a Claude Code
+    /// declaration keeps everything declared and refuses the writers at
+    /// call time (`KindPolicy`).
+    declared_kind: ChatKind,
+    /// The extra folders the file tools may reach beyond the workspace
+    /// (nightshift backlog 143): the project's and the chat's own, as
+    /// `extra_folders` lists them. Each becomes a named tree of the `Root`.
+    extra_folders: Vec<PathBuf>,
 }
 
 impl ChatSpec {
     /// What the file tools may reach: the workspace, plus the vault when the
-    /// user has left it switched on.
+    /// user has left it switched on, plus the extra folders (backlog 143).
     ///
     /// The workspace alone is what the docspace living at `<workspace>/.agents`
     /// buys — a note is an ordinary relative path inside a directory the tools
@@ -690,10 +758,14 @@ impl ChatSpec {
     /// named second tree reached as `@kb/…`.
     fn root(&self) -> Root {
         let root = Root::new(self.workspace.clone());
-        match &self.knowledge {
+        let mut root = match &self.knowledge {
             Some(dir) => root.with_vault(dir.clone()),
             None => root,
+        };
+        for f in &self.extra_folders {
+            root.add_extra(f.clone());
         }
+        root
     }
 }
 
@@ -740,7 +812,9 @@ fn build_chat(
         // How a Chat talks (nightshift backlog 102): on for that kind and
         // gated like the model's file, since it is the same kind of
         // standing text about the user.
-        chat_instructions: spec.preamble && spec.chat_kind == ChatKind::Chat,
+        // By the declaration, not the policy (backlog 144): the layer is
+        // in the system prompt, and a switch must not rewrite that.
+        chat_instructions: spec.preamble && spec.declared_kind == ChatKind::Chat,
         // Gated on the preamble like every other discovered layer: `--bare`
         // and its desktop equivalent mean "nothing but what I typed".
         project: spec.preamble.then(|| spec.project.clone()).flatten(),
@@ -770,6 +844,16 @@ fn build_chat(
     // rail fires on every knob change.
     if spec.approval {
         chat.approver = Some(policy.clone());
+    }
+    // A Chat over a Claude Code declaration (nightshift backlog 144): the
+    // writers stay declared — see `declared_kind` — and are refused here
+    // when called, whatever the approval switch says, with the reason the
+    // model reads. Wrapped over the window's policy so an allowed call
+    // still goes through it.
+    if spec.chat_kind == ChatKind::Chat && spec.declared_kind == ChatKind::Build {
+        chat.approver = Some(Arc::new(KindPolicy {
+            inner: chat.approver.take(),
+        }));
     }
     if spec.tools {
         chat.tools = nightloom_service::tools::builtin_in(spec.root());
@@ -849,8 +933,10 @@ fn build_chat(
         // the readers and drops every writer, whoever supplied it. A Chat
         // (nightshift backlog 102) draws the same line for a different
         // reason — it has no folder to write into — and keeps `remember`,
-        // which `reads_only` counts as a reader of the conversation.
-        if spec.mode.writes_nothing() || spec.chat_kind == ChatKind::Chat {
+        // which `reads_only` counts as a reader of the conversation. By
+        // the declaration (backlog 144): a Chat switched from Claude Code
+        // keeps its writers declared and `KindPolicy` refuses them.
+        if spec.mode.writes_nothing() || spec.declared_kind == ChatKind::Chat {
             chat.tools.retain(|t| reads_only(t.as_ref()));
         }
     }
@@ -874,11 +960,39 @@ fn build_chat(
 /// on the rail. The Claude Code engine draws the same line with
 /// `READ_ONLY_TOOLS`.
 fn reads_only(tool: &dyn Tool) -> bool {
-    match tool.effect() {
+    reads_only_by(&tool.def().name, tool.effect())
+}
+
+/// The same line, on a name and an effect rather than a tool — what
+/// `KindPolicy` has of a pending call.
+fn reads_only_by(name: &str, effect: Effect) -> bool {
+    match effect {
         Effect::ReadOnly | Effect::Session => true,
-        Effect::Mutating => {
-            let name = tool.def().name;
-            name == "web_fetch" || name == "web_search"
+        Effect::Mutating => name == "web_fetch" || name == "web_search",
+    }
+}
+
+/// The Chat policy on the API engine (nightshift backlog 144): a chat that
+/// is a Chat now over a Claude Code declaration. Every call `reads_only`
+/// would drop from a born Chat is refused with the reason the model
+/// reads — the same `is_error` result a hallucinated tool gets — and the
+/// rest goes to the window's policy, or is allowed outright when the
+/// approval switch is off. The counterpart of the CLI's `PreToolUse` deny
+/// hook (`AgentSpec::chat_policy`); refusing at call time rather than
+/// undeclaring is what keeps the cached prefix across the switch.
+struct KindPolicy {
+    inner: Option<Arc<dyn Approver>>,
+}
+
+#[async_trait::async_trait]
+impl Approver for KindPolicy {
+    async fn approve(&self, call: &PendingCall<'_>) -> Decision {
+        if !reads_only_by(call.name, call.effect) {
+            return Decision::Deny(nightloom_service::agent::CHAT_POLICY_REASON.to_string());
+        }
+        match &self.inner {
+            Some(inner) => inner.approve(call).await,
+            None => Decision::Allow,
         }
     }
 }
@@ -979,6 +1093,7 @@ async fn connect(
     // stand-in one inside its store, so this has a path either way.
     let active = state.active().await;
     let chat_kind = session_kind(&state).await;
+    let declared_kind = session_declared_kind(&state).await;
     let workspace = match &active {
         Some(project) => project.workspace_dir(),
         None => workspace
@@ -986,13 +1101,24 @@ async fn connect(
             .filter(|p| p.is_dir())
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
     };
+    // The folder a switch to Claude Code named wins over the project's
+    // (nightshift backlog 144): a chat born as a Chat in a project with no
+    // folder, or one pointed elsewhere on purpose.
+    let workspace = session_kind_workspace(&state)
+        .await
+        .filter(|p| p.is_dir())
+        .unwrap_or(workspace);
     // A Chat has no working folder (nightshift backlog 102): whatever the
     // project or the rail said, it is rooted in the neutral directory —
     // the file tools, the AGENTS.md walk and the environment line all
     // read from there. The project's notes index still comes along below,
     // since the chat is filed under the project even if it is not about
-    // the project's tree.
-    let workspace = chat_workspace(chat_kind, workspace);
+    // the project's tree. By the declaration (backlog 144): a Chat that
+    // was born Claude Code keeps its folder.
+    let workspace = chat_workspace(declared_kind, workspace);
+    // The extra folders (nightshift backlog 143): the project's and the
+    // chat's own, each a further named tree the file tools may reach.
+    let granted = extra_folders(active.as_ref(), state.session.lock().await.as_ref());
 
     // Every project's chats plus the unfiled ones, named as the picker names
     // them, with the sidebar's directory as the default scope. The registry
@@ -1053,6 +1179,8 @@ async fn connect(
         layer_edits: layer_edits(&state).await,
         mode: session_mode(&state).await,
         chat_kind,
+        declared_kind,
+        extra_folders: granted.iter().map(|(p, _)| p.clone()).collect(),
     };
     let mcp = ensure_mcp(&state, &spec.workspace, spec.tools).await;
     let mcp_tools = state
@@ -1108,6 +1236,23 @@ async fn connect(
         }),
         engine: "provider".into(),
         agent: None,
+        // With the alias each went in under, from the root the tools were
+        // built with (backlog 143).
+        folders: {
+            let root = spec.root();
+            granted
+                .iter()
+                .map(|(path, source)| FolderInfo {
+                    path: path.to_string_lossy().into_owned(),
+                    source: (*source).into(),
+                    alias: root
+                        .extras()
+                        .into_iter()
+                        .find(|(_, p)| *p == path.as_path())
+                        .map(|(a, _)| format!("@{a}")),
+                })
+                .collect()
+        },
     };
     *state.chat.lock().await = Some(chat);
     // One engine at a time: `Some` in either slot is what says which is
@@ -1187,11 +1332,44 @@ fn kind_of(session: Option<&Session>, pending: ChatKind) -> ChatKind {
     session.map(Session::kind).unwrap_or(pending)
 }
 
+/// What the open chat's request is *built* for (`Session::declared_kind`,
+/// nightshift backlog 144), or the pending kind with no chat open: the tool
+/// list, the Chat layer and the folder follow this; [`session_kind`] is
+/// the policy enforced over it. The two differ only on a chat born Claude
+/// Code that is a Chat now — see `KindPolicy` and `AgentSpec::chat_policy`.
+async fn session_declared_kind(state: &AppState) -> ChatKind {
+    let pending = *state.pending_kind.lock().await;
+    state
+        .session
+        .lock()
+        .await
+        .as_ref()
+        .map(Session::declared_kind)
+        .unwrap_or(pending)
+}
+
+/// The folder the open chat's latest switch to Claude Code named, if it
+/// named one (`Session::kind_workspace`, nightshift backlog 144): a chat
+/// born as a Chat has no folder of its own, and the switch asks for one
+/// when the project's is not wanted. `None` for every other chat.
+async fn session_kind_workspace(state: &AppState) -> Option<PathBuf> {
+    state
+        .session
+        .lock()
+        .await
+        .as_ref()
+        .and_then(|s| s.kind_workspace().map(Path::to_path_buf))
+}
+
 /// Where a chat of `kind` runs: the folder the caller resolved for a Build
 /// chat, the neutral directory (`prompt::chat_dir`, `~/.nightloom/chat/`)
 /// for a Chat — falling back to the caller's folder only on a machine with
 /// no config directory to make one in, which is the machine every other
 /// standing file is already missing on.
+///
+/// Since backlog 144 the callers pass the *declared* kind: a chat born
+/// Claude Code that is a Chat now stays in its folder (nightshift blocker
+/// 210), the writers refused rather than the folder taken away.
 fn chat_workspace(kind: ChatKind, resolved: PathBuf) -> PathBuf {
     match kind {
         ChatKind::Build => resolved,
@@ -1300,6 +1478,7 @@ async fn connect_agent(
     // else entirely.
     let active = state.active().await;
     let kind = session_kind(&state).await;
+    let declared = session_declared_kind(&state).await;
     let workspace = match &active {
         Some(project) => project.workspace_dir(),
         None => workspace
@@ -1307,11 +1486,21 @@ async fn connect_agent(
             .filter(|p| p.is_dir())
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
     };
+    // The folder a switch to Claude Code named wins over the project's
+    // (nightshift backlog 144), as in `connect`.
+    let workspace = session_kind_workspace(&state)
+        .await
+        .filter(|p| p.is_dir())
+        .unwrap_or(workspace);
     // A Chat runs in the neutral directory whatever the project or the
     // rail said (nightshift backlog 102; `chat_workspace`): the CLI's cwd,
     // its per-cwd session files and its auto memory all land there, and
-    // the project's tree is not read as the chat's own.
-    let workspace = chat_workspace(kind, workspace);
+    // the project's tree is not read as the chat's own. By the declaration
+    // (backlog 144): a Chat that was born Claude Code stays in its folder
+    // — measured, the CLI resumes a session from any folder and the cwd is
+    // not in the cached prefix, but the folder's memory and CLAUDE.md are
+    // what the CLI loads, and the switch is meant to change nothing there.
+    let workspace = chat_workspace(declared, workspace);
 
     let mut spec = AgentSpec::new(workspace.clone());
     spec.binary = binary
@@ -1355,6 +1544,12 @@ async fn connect_agent(
     // headless, can only decline (nightshift blocker 050; `AgentSpec::add_dirs`
     // says what the grant covers).
     spec.add_dirs = knowledge.iter().cloned().collect();
+    // The extra folders (nightshift backlog 143): the project's and the
+    // chat's own, each granted the same way — readable without a prompt,
+    // edits under the permission mode (`external`, the CLI's permissions
+    // reference, via blocker 050).
+    let granted = extra_folders(active.as_ref(), state.session.lock().await.as_ref());
+    spec.add_dirs.extend(granted.iter().map(|(p, _)| p.clone()));
     // Built as segments and rendered from them, so the Context popover can
     // show the same segments the flag carries rather than a re-parse of the
     // string (see `PromptBuilt`). The chat's own exclusions apply here as on
@@ -1380,8 +1575,10 @@ async fn connect_agent(
             model: preamble.then(|| spec.model.clone()).flatten(),
             // The Chat instructions ride the preamble switch like the
             // model's file (nightshift backlog 102); appended after the
-            // CLI's own prompt, which stays underneath a Chat.
-            chat_instructions: preamble && kind == ChatKind::Chat,
+            // CLI's own prompt, which stays underneath a Chat. By the
+            // declaration (backlog 144): the layer is in the prompt, and
+            // a switch must not rewrite the prompt.
+            chat_instructions: preamble && declared == ChatKind::Chat,
             project: preamble
                 .then(|| {
                     active.as_ref().map(|p| ProjectContext {
@@ -1400,6 +1597,26 @@ async fn connect_agent(
         !off.contains(&SegmentKind::EngineNote),
     );
     spec.append_system_prompt = prompt.render_flat();
+    // The model is told which extra folders it may open, by their real
+    // paths — the CLI's tools take absolute paths, and a grant the model
+    // does not know about is one it never uses (backlog 143). Under the
+    // engine-note switch like the other notes.
+    if !granted.is_empty() && !off.contains(&SegmentKind::EngineNote) {
+        let list: Vec<String> = granted
+            .iter()
+            .map(|(p, source)| format!("{} ({source})", p.display()))
+            .collect();
+        let note = format!(
+            "<extra-folders>\nBesides the working directory, this chat may read and edit \
+             these folders, by their absolute paths: {}. Notes and AGENTS.md stay in the \
+             working directory.\n</extra-folders>",
+            list.join("; ")
+        );
+        spec.append_system_prompt = Some(match spec.append_system_prompt.take() {
+            Some(s) => format!("{s}\n\n{note}"),
+            None => note,
+        });
+    }
     if tools {
         // Headless has no way to ask, so the window's approval prompt does
         // not run here: it gates calls the engine is about to run, and this
@@ -1497,8 +1714,13 @@ async fn connect_agent(
     // session file for an ephemeral one (`AgentSpec::apply_mode`).
     spec.apply_mode(mode);
     // And the kind's own narrowing (nightshift backlog 102): a Chat gets
-    // the same five read-only tools; the folder was chosen above.
-    spec.apply_kind(kind);
+    // the same five read-only tools; the folder was chosen above. By the
+    // declaration (backlog 144) — and the policy over it: a Chat that was
+    // born Claude Code keeps every tool listed and gets the hook that
+    // refuses the writers (`AgentSpec::chat_policy`), which is what keeps
+    // the cached prefix across the switch.
+    spec.apply_kind(declared);
+    spec.apply_kind_policy(kind, declared);
 
     // Probed rather than assumed. A missing or unrunnable binary is the
     // overwhelmingly likely first failure on this engine, and finding out at
@@ -1566,6 +1788,15 @@ async fn connect_agent(
             fallback_model: spec.fallback_model.clone(),
             resume: spec.resume.clone(),
         }),
+        // By path only: the CLI's tools take the absolute path (backlog 143).
+        folders: granted
+            .iter()
+            .map(|(path, source)| FolderInfo {
+                path: path.to_string_lossy().into_owned(),
+                source: (*source).into(),
+                alias: None,
+            })
+            .collect(),
     };
     let spec_model = spec.model.clone();
     *state.agent.lock().await = Some(ClaudeCodeAgent::new(spec));
@@ -1773,17 +2004,34 @@ async fn rename_session(
     state: State<'_, AppState>,
     id: String,
     title: String,
+    active: Option<String>,
 ) -> Result<(), String> {
     let title = title.trim().to_string();
     if title.is_empty() {
         return Err("a name cannot be empty".into());
     }
-    let mut session_guard = state.session.lock().await;
-    if let Some(active) = session_guard.as_mut().filter(|s| s.id == id) {
-        active.record_title(title);
-        return Ok(());
+    // `try_lock`, not `lock` (review 2026-09-17 FD4, backlog 136): a turn
+    // holds the session for its length, and a rename of *another* chat
+    // waited behind it — the control looked dead for the turn. Locked
+    // means a turn is live, and `active` (the window's open chat) says
+    // which: that one is refused with a sentence, any other is a file
+    // the turn is not writing.
+    match state.session.try_lock() {
+        Ok(mut session_guard) => {
+            if let Some(open) = session_guard.as_mut().filter(|s| s.id == id) {
+                open.record_title(title);
+                return Ok(());
+            }
+        }
+        Err(_) => {
+            if active
+                .as_deref()
+                .is_some_and(|a| a == id || a.starts_with(&id))
+            {
+                return Err("that chat is running a turn — rename it when the turn ends".into());
+            }
+        }
     }
-    drop(session_guard);
 
     let path = store::find_by_prefix(&state.log_dir().await, &id).map_err(|e| e.to_string())?;
     let mut session = Session::load(&path).map_err(|e| e.to_string())?;
@@ -2021,6 +2269,12 @@ async fn send_agent(
     // The log keeps the text as typed; only the wire carries the replay.
     let carried =
         (session.mode() == ChatMode::Ephemeral).then(|| carry_transcript(session, &input.text));
+    // The kind switch's note (nightshift backlog 144), asked before the
+    // turn is recorded for the same reason the replay is: it is due on the
+    // first message after the switch and on no other. The log keeps the
+    // text as typed; the note is on the wire only, where the API engine's
+    // projection puts the same one.
+    let switch_note = session.kind_switch_note();
     session.record_user_with_attachments(
         input.text.clone(),
         input.images.clone(),
@@ -2028,6 +2282,9 @@ async fn send_agent(
     );
     if let Some(carried) = carried {
         input.text = carried;
+    }
+    if let Some(note) = switch_note {
+        input.text = format!("{note}\n\n{}", input.text);
     }
     // The Ask position's files live beside the chat's log, per chat
     // (`agent::ask`): `<log dir>/ask/<chat id>/`. An ephemeral chat has no
@@ -2039,6 +2296,25 @@ async fn send_agent(
         .map(|stem| log_dir.join("ask").join(stem));
     if let Some(dir) = &ask_dir {
         agent.set_ask_dir(dir.clone());
+    }
+    // The `context_status` file describes this chat before the turn, not
+    // whichever chat wrote it last (review 2026-09-17 FC-d, backlog 134):
+    // its own newest reading from the log, or no file at all for a chat
+    // with no completed turn. Best-effort, as the end-of-turn write is.
+    if let Some(config) = project::config_dir() {
+        let model = last_model(session);
+        let window = model
+            .as_deref()
+            .and_then(|m| nightloom_service::context_limit(ProviderKind::Anthropic, m));
+        if let Err(e) = nightloom_service::mcp_server::refresh_context_status(
+            &config,
+            &session.id,
+            model,
+            window,
+            session.events(),
+        ) {
+            let _ = app.emit("turn-notice", format!("context status not refreshed: {e}"));
+        }
     }
 
     let cancel = CancellationToken::new();
@@ -3185,6 +3461,106 @@ async fn set_prompt_layers(
     Ok(session.events().to_vec())
 }
 
+/// Make the open chat the other kind from the next turn on, returning the
+/// transcript (nightshift backlog 144, 2026-09-17; blocker 143 answered
+/// *switchable*).
+///
+/// The same shape and the same rules as [`set_prompt_layers`]: only the
+/// log is written — a `kind` event, the latest live one winning — the
+/// caller reconnects, and `connect` / `connect_agent` read the new kind
+/// back as the policy over a declaration that does not change
+/// (`Session::declared_kind`), so the cached prefix survives. A session is
+/// created if the chat has none yet, in the pending kind, so a switch on a
+/// fresh New chat is a switch and not a different New chat. Allowed on the
+/// Claude Code engine like a layer change: it changes what the next
+/// process is started with, not what the log projects.
+///
+/// `workspace` is the folder for a switch to Claude Code on a chat born as
+/// a Chat — the project's when absent; refused when it is not a directory,
+/// since a folder that does not exist is not one the tools can be rooted
+/// at. Ignored on a switch to a Chat, which has no folder to name.
+#[tauri::command]
+async fn set_chat_kind(
+    state: State<'_, AppState>,
+    kind: ChatKind,
+    workspace: Option<String>,
+) -> Result<Vec<SessionEvent>, String> {
+    let workspace = workspace
+        .map(|w| w.trim().to_string())
+        .filter(|w| !w.is_empty())
+        .map(PathBuf::from);
+    if let Some(dir) = &workspace
+        && !dir.is_dir()
+    {
+        return Err(format!("{} is not a folder", dir.display()));
+    }
+    let log_dir = state.log_dir().await;
+    let pending = *state.pending_mode.lock().await;
+    let pending_kind = *state.pending_kind.lock().await;
+    let mut session_guard = state.session.lock().await;
+    let session = ensure_session(&mut session_guard, pending, pending_kind, &log_dir)?;
+    session.record_kind(kind, workspace);
+    Ok(session.events().to_vec())
+}
+
+/// Set the extra folders the open chat may see (nightshift backlog 143),
+/// returning the transcript — the whole list, as the prompt layers are
+/// set. The same shape and rules as [`set_prompt_layers`]: only the log is
+/// written, the caller reconnects and both connects read the grant back;
+/// a session is created if the chat has none. A folder that is not a
+/// directory is refused. Allowed on the Claude Code engine: it changes
+/// what the next process is started with (`--add-dir`), not the log's
+/// projection.
+#[tauri::command]
+async fn set_chat_folders(
+    state: State<'_, AppState>,
+    folders: Vec<String>,
+) -> Result<Vec<SessionEvent>, String> {
+    let mut wanted: Vec<PathBuf> = Vec::new();
+    for f in folders {
+        let f = f.trim();
+        if f.is_empty() {
+            continue;
+        }
+        let dir = PathBuf::from(f);
+        if !dir.is_dir() {
+            return Err(format!("{} is not a folder", dir.display()));
+        }
+        wanted.push(dir);
+    }
+    let log_dir = state.log_dir().await;
+    let pending = *state.pending_mode.lock().await;
+    let pending_kind = *state.pending_kind.lock().await;
+    let mut session_guard = state.session.lock().await;
+    let session = ensure_session(&mut session_guard, pending, pending_kind, &log_dir)?;
+    session.record_folders(wanted);
+    Ok(session.events().to_vec())
+}
+
+/// Set a project's extra folders (nightshift backlog 143) — the whole
+/// list, replacing the registry's; applies to the project's chats at their
+/// next connect, which the caller fires for the open one. Returns the
+/// project as the rail shows it.
+#[tauri::command]
+async fn set_project_folders(
+    state: State<'_, AppState>,
+    id: String,
+    folders: Vec<String>,
+) -> Result<ProjectInfo, String> {
+    let folders: Vec<PathBuf> = folders
+        .into_iter()
+        .map(|f| f.trim().to_string())
+        .filter(|f| !f.is_empty())
+        .map(PathBuf::from)
+        .collect();
+    let mut guard = state.workspaces.lock().await;
+    let project = guard.registry.set_extra_folders(&id, folders)?;
+    if guard.active.as_ref().is_some_and(|p| p.id == id) {
+        guard.active = Some(project.clone());
+    }
+    Ok(ProjectInfo::of(&project))
+}
+
 /// Record the chat's own text for one layer — or drop it, with `text`
 /// absent — returning the transcript (nightshift backlog 057, 2026-09-15).
 ///
@@ -3370,20 +3746,33 @@ async fn cli_prompt_snapshot(
 /// session, the open log handle is dropped first (the next send starts a
 /// fresh session).
 #[tauri::command]
-async fn delete_session(state: State<'_, AppState>, id: String) -> Result<String, String> {
+async fn delete_session(
+    state: State<'_, AppState>,
+    id: String,
+    active: Option<String>,
+) -> Result<String, String> {
     let log_dir = state.log_dir().await;
     let path = store::find_by_prefix(&log_dir, &id).map_err(|e| e.to_string())?;
     let full_id = path
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let was_active = {
-        let mut session_guard = state.session.lock().await;
-        let active = session_guard.as_ref().is_some_and(|s| s.id == full_id);
-        if active {
-            *session_guard = None;
+    // As `rename_session`: no wait behind a running turn (FD4). The turn's
+    // own chat is refused; another chat's log is not what the turn holds.
+    let was_active = match state.session.try_lock() {
+        Ok(mut session_guard) => {
+            let open = session_guard.as_ref().is_some_and(|s| s.id == full_id);
+            if open {
+                *session_guard = None;
+            }
+            open
         }
-        active
+        Err(_) => {
+            if active.as_deref() == Some(full_id.as_str()) {
+                return Err("that chat is running a turn — delete it when the turn ends".into());
+            }
+            false
+        }
     };
     if was_active {
         adopt_agent_session(&state, None).await;
@@ -3416,6 +3805,12 @@ async fn delete_session(state: State<'_, AppState>, id: String) -> Result<String
 /// copy stays where it is rather than replace a chat that exists.
 #[tauri::command]
 async fn restore_session(state: State<'_, AppState>, id: String) -> Result<String, String> {
+    // The id becomes two file names below; a `../name` from the webview
+    // would move a live log out of the store (review 2026-09-17 FC-e,
+    // backlog 134).
+    if !store::is_log_id(&id) {
+        return Err(format!("not a chat id: {id:?}"));
+    }
     let log_dir = state.log_dir().await;
     let trash = log_dir.join("trash");
     let plain = trash.join(format!("{id}.jsonl"));
@@ -4623,17 +5018,31 @@ async fn centre_dream_diff(
     file: Option<String>,
 ) -> Result<String, String> {
     blocking(move || {
-        nightloom_service::centre::dream_diff(Path::new(&repo), &hash, file.as_deref())
+        let repo = dream_repo(&repo)?;
+        nightloom_service::centre::dream_diff(&repo, &hash, file.as_deref())
     })
     .await
+}
+
+/// The repository a `repo` from the window may name: the vault or a
+/// registered project's folder, as `centre::dream_repo` resolves it —
+/// never any other repository on the machine (review 2026-09-17 FB3,
+/// backlog 133).
+fn dream_repo(repo: &str) -> Result<PathBuf, String> {
+    let config = project::config_dir().ok_or("no config folder")?;
+    let vault = nightloom_service::knowledge::vault_dir().ok_or("no vault folder")?;
+    nightloom_service::centre::dream_repo(&config, &vault, Path::new(repo))
 }
 
 /// Put one file back as it was before a dream's commit, committed. The
 /// frontend confirms first; the sentence returned is the toast.
 #[tauri::command]
 async fn centre_revert_file(repo: String, hash: String, file: String) -> Result<String, String> {
-    blocking(move || nightloom_service::centre::revert_dream_file(Path::new(&repo), &hash, &file))
-        .await
+    blocking(move || {
+        let repo = dream_repo(&repo)?;
+        nightloom_service::centre::revert_dream_file(&repo, &hash, &file)
+    })
+    .await
 }
 
 /// What build is running: the crate's version and the binary's
@@ -4676,12 +5085,8 @@ async fn tidy_memory(
         return Err("a dream or a capture is already running".into());
     };
     let days = days.unwrap_or(nightloom_service::tidy::DEFAULT_DAYS).max(1);
-    blocking(move || {
-        Ok::<_, String>(nightloom_service::dream::tidy_targets(
-            &vault, &config, days, None, apply,
-        ))
-    })
-    .await
+    blocking(move || nightloom_service::dream::tidy_targets(&vault, &config, days, None, apply))
+        .await
 }
 
 /// Show a folder in the OS file manager.
@@ -4724,14 +5129,56 @@ fn reveal_file(path: String) -> Result<(), String> {
 }
 
 /// Open a file in the application the OS pairs it with — the file card's
-/// Open. Same terms as `reveal_file`.
+/// Open. Same terms as `reveal_file` — except a file the OS would *run*
+/// rather than show (review 2026-09-17 FD4b, backlog 136; blocker 205's
+/// list): the card's path is the model's choice, and `open` on a `.pkg`
+/// is the Installer, on a `.command` a Terminal running it, on an `.app`
+/// the app. Those are refused with a sentence naming Reveal, which only
+/// shows the file; `open_url` refuses everything but `https://` for the
+/// same reason.
 #[tauri::command]
 fn open_file(path: String) -> Result<(), String> {
     let target = PathBuf::from(path);
     if !target.is_file() {
         return Err(format!("{} is no longer there", target.display()));
     }
+    if let Some(kind) = launchable(&target) {
+        return Err(format!(
+            "{} is {kind} — Open would run it; Reveal shows it in the Finder instead",
+            target.display()
+        ));
+    }
     project::reveal(&target).map_err(|e| e.to_string())
+}
+
+/// What a file the OS would run rather than show is, by extension or the
+/// executable bit; `None` for a document. The list is blocker 205's.
+fn launchable(path: &Path) -> Option<&'static str> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
+    let by_ext = match ext.as_deref() {
+        Some("app") => Some("an application"),
+        Some("pkg" | "mpkg" | "dmg") => Some("an installer image"),
+        Some("command" | "tool" | "sh" | "zsh" | "bash" | "terminal") => Some("a shell script"),
+        Some("scpt" | "workflow" | "applescript") => Some("a script"),
+        Some("webloc" | "url") => Some("a link file"),
+        Some("lnk" | "exe" | "msi" | "bat" | "cmd" | "ps1" | "vbs" | "scr") => Some("a program"),
+        Some("jar" | "py" | "rb" | "pl") => Some("a script the OS may run"),
+        _ => None,
+    };
+    if by_ext.is_some() {
+        return by_ext;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if std::fs::metadata(path).is_ok_and(|m| m.permissions().mode() & 0o111 != 0) {
+            return Some("marked executable");
+        }
+    }
+    None
 }
 
 /// Open an `https://` link in the browser — the artifact card's Open.
@@ -5474,6 +5921,9 @@ fn main() {
             edit_context,
             prompt_layers,
             set_prompt_layers,
+            set_chat_kind,
+            set_chat_folders,
+            set_project_folders,
             set_prompt_layer_text,
             prompt_layer_file,
             cli_memory_file,
@@ -5539,11 +5989,13 @@ fn main() {
             remote::remote_stop,
             remote::remote_set_keep_awake,
             remote::remote_token,
+            remote::remote_sent,
             terminal::terminal_open,
             terminal::terminal_write,
             terminal::terminal_resize,
             terminal::terminal_close,
             terminal::terminal_list,
+            terminal::terminal_ack,
             nightshift::nightshift_projects,
             nightshift::nightshift_project,
             nightshift::nightshift_enable,
@@ -5744,6 +6196,70 @@ mod tests {
         // the real config dir, which a test must not touch.
         let resolved = dir.clone();
         assert_eq!(chat_workspace(ChatKind::Build, resolved.clone()), resolved);
+    }
+
+    /// The Chat policy on the API engine (nightshift backlog 144): a call
+    /// `reads_only` would drop from a born Chat is refused with the reason
+    /// the model reads, whatever the inner policy would say; a reader, the
+    /// web and a `Session` call pass to the inner policy, or are allowed
+    /// outright when approval is off. Once switched, the policy's verdict
+    /// is the same one the CLI's hook gives (`CHAT_POLICY_REASON`).
+    #[tokio::test]
+    async fn the_kind_policy_refuses_the_writers_and_passes_the_readers() {
+        use nightloom_service::agent::CHAT_POLICY_REASON;
+        use nightloom_service::approval::AutoApprove;
+        let input = serde_json::json!({});
+        let call = |name: &'static str, effect: Effect| PendingCall {
+            id: "c1",
+            name,
+            input: &input,
+            effect,
+        };
+        let refusing = Arc::new(AutoApprove::from_fn(|_| Decision::Deny("inner".into())));
+        let over_inner = KindPolicy {
+            inner: Some(refusing.clone()),
+        };
+        assert_eq!(
+            over_inner.approve(&call("bash", Effect::Mutating)).await,
+            Decision::Deny(CHAT_POLICY_REASON.into())
+        );
+        assert_eq!(
+            over_inner
+                .approve(&call("write_file", Effect::Mutating))
+                .await,
+            Decision::Deny(CHAT_POLICY_REASON.into())
+        );
+        // The web is a reader for this purpose, as it is for `reads_only`,
+        // and goes to the inner policy — which here refuses.
+        assert_eq!(
+            over_inner
+                .approve(&call("web_fetch", Effect::Mutating))
+                .await,
+            Decision::Deny("inner".into())
+        );
+        // Readers and session calls: `AutoApprove` allows them without
+        // asking its inner policy.
+        assert_eq!(
+            over_inner
+                .approve(&call("read_file", Effect::ReadOnly))
+                .await,
+            Decision::Allow
+        );
+        assert_eq!(
+            over_inner.approve(&call("remember", Effect::Session)).await,
+            Decision::Allow
+        );
+        let approval_off = KindPolicy { inner: None };
+        assert_eq!(
+            approval_off.approve(&call("bash", Effect::Mutating)).await,
+            Decision::Deny(CHAT_POLICY_REASON.into())
+        );
+        assert_eq!(
+            approval_off
+                .approve(&call("web_search", Effect::Mutating))
+                .await,
+            Decision::Allow
+        );
     }
 
     // ---- Edits on the Claude Code engine (nightshift backlog 062) ----
@@ -6213,5 +6729,38 @@ mod tests {
             1,
             "a rewound turn no longer counts"
         );
+    }
+
+    /// The file card's Open (backlog 136, blocker 205): a document opens, a
+    /// file the OS would run is refused by extension or executable bit.
+    #[test]
+    fn open_file_refuses_what_the_os_would_run() {
+        let dir = empty_log_dir("open-file");
+        let doc = dir.join("notes.md");
+        std::fs::write(&doc, "# hi\n").unwrap();
+        assert_eq!(launchable(&doc), None);
+        for name in [
+            "Installer.pkg",
+            "run.command",
+            "Tool.app",
+            "x.sh",
+            "link.webloc",
+            "setup.exe",
+        ] {
+            let p = dir.join(name);
+            std::fs::write(&p, "").unwrap();
+            assert!(launchable(&p).is_some(), "{name}");
+            let err = open_file(p.to_string_lossy().into_owned()).unwrap_err();
+            assert!(err.contains("Reveal"), "{err}");
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let bin = dir.join("built");
+            std::fs::write(&bin, "").unwrap();
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert_eq!(launchable(&bin), Some("marked executable"));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

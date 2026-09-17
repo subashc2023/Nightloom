@@ -90,6 +90,29 @@ pub struct SendRequest {
     pub text: String,
 }
 
+/// What became of a phone's message once the desktop took it (review
+/// 2026-09-17 FA2/FA3, backlog 132): the 202 used to mean only "emitted
+/// to the window", and a message the window then could not send — no
+/// engine, the chat busy elsewhere, a chat that would not open — was
+/// dropped with the phone told it was accepted. Now the window answers,
+/// and the answer is the 202's body (`{"status": "sent" | "queued"}`) or
+/// a 409 with the sentence.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Handed {
+    /// The turn started (or is starting) in the chat named.
+    Sent,
+    /// The chat is running a turn; the message is in its queue on the Mac
+    /// and goes when that turn ends.
+    Queued,
+}
+
+/// The 202's body.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug)]
+pub struct SendReply {
+    pub status: Handed,
+}
+
 /// An answer to one approval prompt: the desktop's `approve_call` arguments
 /// by another road. `decision` is `allow`, `always` or `deny`; `answer` is
 /// a question form's or a plan's updated input; `then` is the plan card's
@@ -129,8 +152,10 @@ pub trait Host: Send + Sync + 'static {
     async fn chats(&self) -> Result<Vec<ChatRow>, String>;
     async fn transcript(&self, id: &str) -> Result<Vec<SessionEvent>, String>;
     /// Send `text` to `chat`, or to the open chat when `None`. Returns once
-    /// the message is handed on, not when the turn ends.
-    async fn send(&self, chat: Option<&str>, text: &str) -> Result<(), String>;
+    /// the message is handed on — sent, or queued behind a running turn
+    /// in that chat — not when the turn ends; `Err` when it was not (the
+    /// sentence goes to the phone as a 409, and the phone keeps the text).
+    async fn send(&self, chat: Option<&str>, text: &str) -> Result<Handed, String>;
     async fn approve(&self, req: ApproveRequest) -> Result<(), String>;
     async fn cancel(&self) -> Result<(), String>;
     /// A fresh subscriber to the event relay.
@@ -170,6 +195,9 @@ struct Shared {
 /// is next up.
 pub struct Server {
     addr: SocketAddr,
+    /// The bearer this listener runs with, for a rebind that must fall
+    /// back to it (the desktop's `rebind`, review 2026-09-17 FA9).
+    token: String,
     shutdown: Option<oneshot::Sender<()>>,
     closing: tokio_util::sync::CancellationToken,
     task: tokio::task::JoinHandle<()>,
@@ -213,7 +241,7 @@ impl Server {
         let closing = tokio_util::sync::CancellationToken::new();
         let app = router(Arc::new(Shared {
             host,
-            token,
+            token: token.clone(),
             closing: closing.clone(),
         }));
         let task = tokio::spawn(async move {
@@ -225,6 +253,7 @@ impl Server {
         });
         Ok(Self {
             addr: bound,
+            token,
             shutdown: Some(tx),
             closing,
             task,
@@ -233,6 +262,11 @@ impl Server {
 
     pub fn addr(&self) -> SocketAddr {
         self.addr
+    }
+
+    /// The bearer this listener checks.
+    pub fn token(&self) -> &str {
+        &self.token
     }
 
     /// Close the port and end the serve task. The graceful signal lets an
@@ -351,8 +385,9 @@ async fn send_impl(shared: &Shared, chat: Option<&str>, req: SendRequest) -> Res
     }
     match shared.host.send(chat, &req.text).await {
         // Accepted, not done: the turn runs on the Mac and its progress
-        // comes down the event stream.
-        Ok(()) => StatusCode::ACCEPTED.into_response(),
+        // comes down the event stream; the body says whether it started
+        // or waits behind the running turn.
+        Ok(status) => (StatusCode::ACCEPTED, Json(SendReply { status })).into_response(),
         Err(e) => (StatusCode::CONFLICT, e).into_response(),
     }
 }
@@ -509,12 +544,21 @@ mod tests {
                 Err(format!("no chat {id}"))
             }
         }
-        async fn send(&self, chat: Option<&str>, text: &str) -> Result<(), String> {
+        async fn send(&self, chat: Option<&str>, text: &str) -> Result<Handed, String> {
+            // The window's three answers, by the text (review 2026-09-17
+            // FA2/FA3): refused, queued, or sent.
+            if text.contains("refuse me") {
+                return Err("the desktop is busy in another chat".into());
+            }
             self.sent
                 .lock()
                 .unwrap()
                 .push((chat.map(String::from), text.to_string()));
-            Ok(())
+            Ok(if text.contains("queue me") {
+                Handed::Queued
+            } else {
+                Handed::Sent
+            })
         }
         async fn approve(&self, req: ApproveRequest) -> Result<(), String> {
             self.approved.lock().unwrap().push(req);
@@ -720,6 +764,35 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(r.status(), 202);
+        assert_eq!(r.json::<SendReply>().await.unwrap().status, Handed::Sent);
+        // The window's answer travels: queued behind a turn is a 202 that
+        // says so; a refusal is a 409 with the sentence, and the message
+        // is not recorded as sent (review 2026-09-17 FA2/FA3).
+        let r = c
+            .post(format!("{base}/api/chats/abc/send"))
+            .bearer_auth(&token)
+            .json(&SendRequest {
+                text: "queue me please".into(),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 202);
+        assert_eq!(r.json::<SendReply>().await.unwrap().status, Handed::Queued);
+        let r = c
+            .post(format!("{base}/api/chats/abc/send"))
+            .bearer_auth(&token)
+            .json(&SendRequest {
+                text: "refuse me".into(),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 409);
+        assert_eq!(
+            r.text().await.unwrap(),
+            "the desktop is busy in another chat"
+        );
         let r = c
             .post(format!("{base}/api/send"))
             .bearer_auth(&token)
@@ -742,6 +815,7 @@ mod tests {
             *host.sent.lock().unwrap(),
             vec![
                 (Some("abc".to_string()), "from the phone".to_string()),
+                (Some("abc".to_string()), "queue me please".to_string()),
                 (None, "to the open chat".to_string()),
             ]
         );

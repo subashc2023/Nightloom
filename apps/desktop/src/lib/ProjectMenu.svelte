@@ -7,6 +7,8 @@
     revealFolder,
     showNewProject,
     useProject,
+    startContentDrag,
+    endContentDrag,
   } from "./state.svelte";
   import Icon from "./Icon.svelte";
 
@@ -74,12 +76,18 @@
             onblur={() => void commitRename()}
           />
         {:else}
+          <!-- Draggable (nightshift backlog 140 pass 2, agent P's hunk):
+               onto a strip or a pane's half for a project card there
+               (blocker 193); the menu stays open through the drag. -->
           <button
             class="open"
             disabled={app.busy}
             onclick={() => void choose(p.id)}
             ondblclick={() => startRename(p.id, p.name)}
             title={p.root ?? "No folder — notes and chats only"}
+            draggable="true"
+            ondragstart={(e) => startContentDrag(e, { kind: "project", id: p.id })}
+            ondragend={endContentDrag}
           >
             <span class="glyph"><Icon name="folder" size={14} /></span>
             <span class="txt">

@@ -99,8 +99,16 @@ export function dailyDue(prefs: DailyPrefs, lastMs: number | null, now: Date): b
   if (!prefs.on) return false;
   const fire = fireTimeOf(prefs.hour, now).getTime();
   if (now.getTime() < fire) return false;
-  return lastMs == null || lastMs < fire;
+  if (lastMs == null) return true;
+  // A pass within the last `RECENT_PASS_MS` is today's — a *Run now* at
+  // 03:50 with the hour at 04:00 used to be followed by a second full
+  // pass ten minutes later (backlog 133, review B's FB9).
+  if (now.getTime() - lastMs < RECENT_PASS_MS) return false;
+  return lastMs < fire;
 }
+
+/** How recent a pass must be to count as today's whatever the hour. */
+export const RECENT_PASS_MS = 12 * 60 * 60 * 1000;
 
 // ---- the notices ----
 

@@ -18,6 +18,7 @@ pub mod knowledge;
 pub mod mcp_server;
 pub mod nightshift;
 pub mod observe;
+pub mod pass_lock;
 pub mod plan_usage;
 pub mod project;
 pub mod prompt;

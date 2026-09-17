@@ -54,8 +54,21 @@
  * send clears the box but never the queue, which is why `clearDraft`
  * keeps the entry while a queue remains. The engine does not matter:
  * `send` is one path for both.
+ *
+ * The in-place edit (nightshift backlog 137, 2026-09-17): the editor open
+ * on a past turn is the same kind of thing — words he typed that have not
+ * gone anywhere — and it lived inside `Transcript.svelte`, which since
+ * the tabs (099) unmounts far more often than it used to: a note tab in
+ * the same pane, the live tab dragged to the other pane, a turn started
+ * from the phone. Each of those lost the draft. So the open edit, one per
+ * chat, is stashed here (`stashEdit` / `takeEdit`), keyed by the chat, the
+ * turn's index inside; the transcript writes it on a switch, on unmount
+ * and when a turn starts, and reads it back on mount, on the switch back
+ * and when the turn ends. In memory only for now — it is not in the
+ * localStorage entry, so a relaunch is the one thing that drops it.
  */
 import type { Attachment, ChatMode } from "./types";
+import type { EditState } from "./edit";
 
 export interface Draft {
   text: string;
@@ -401,4 +414,34 @@ export function moveDraft(from: string, to: string): void {
   }
   delete drafts[from];
   schedule();
+}
+
+// ---- the in-place edit, per chat (backlog 137) ------------------------------
+
+/** An open editor as the transcript holds it: the reducer's state and the
+ *  cache line as it read when the editor opened. */
+export interface EditStash {
+  editing: NonNullable<EditState>;
+  line: string;
+}
+
+const edits = new Map<string, EditStash>();
+
+/** Keep a chat's open edit; `null` forgets it (a cancel, a save). */
+export function stashEdit(key: string, entry: EditStash | null): void {
+  if (entry) edits.set(key, entry);
+  else edits.delete(key);
+}
+
+/** A chat's open edit, if one is held. Left in place: the transcript
+ *  forgets it through `stashEdit(key, null)` when the edit ends. */
+export function takeEdit(key: string): EditStash | null {
+  return edits.get(key) ?? null;
+}
+
+/** Whether a chat has an edit open somewhere — held here or, when the
+ *  transcript is mounted on it, in the transcript (which stashes on the
+ *  way out). For the tests. */
+export function hasEdit(key: string): boolean {
+  return edits.has(key);
 }

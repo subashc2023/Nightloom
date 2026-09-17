@@ -7,20 +7,28 @@
    * comes back, since a hidden grid measures as nothing.
    *
    * Bytes come in through the store's sink (`registerSink`), so a prompt
-   * printed before this mounted is replayed first; keystrokes go out as
-   * xterm's `onData` text through `terminal_write`; the grid's size goes
-   * out on every fit through `terminal_resize`, and the kernel tells the
-   * shell (`SIGWINCH`).
+   * printed before this mounted is replayed first, and each write is
+   * acknowledged once xterm has drawn it (`terminal_ack`, backlog 135:
+   * past 256 KB undrawn the shell's output waits for the window, the
+   * way a terminal has always slowed a `yes`); keystrokes go out as
+   * xterm's `onData` text through `terminal_write`, which queues and
+   * never waits — a program not reading its input answers an error, said
+   * once in a toast; the grid's size goes out on every fit through
+   * `terminal_resize`, and the kernel tells the shell (`SIGWINCH`).
    */
   import { onMount } from "svelte";
   import { Terminal } from "@xterm/xterm";
   import { FitAddon } from "@xterm/addon-fit";
   import "@xterm/xterm/css/xterm.css";
   import * as api from "./api";
+  import { addToast } from "./state.svelte";
   import { isMac } from "./platform";
   import { registerSink, term } from "./terminal.svelte";
   import { terminalChord, type ShellRow } from "./terminal";
 
+  /** `visible`: this shell's tab is in front *and* the dock is on screen
+   *  and not collapsed — a hidden dock keeps the instance (backlog 137)
+   *  and it refits when it shows again. */
   let { shell, visible }: { shell: ShellRow; visible: boolean } = $props();
 
   let host = $state<HTMLDivElement | null>(null);
@@ -95,8 +103,18 @@
       if (isMac && e.metaKey) return false;
       return true;
     });
+    // A refused write — the queue to a program not reading its input is
+    // full — is said once, until a write goes through again.
+    let refused = false;
     const unData = t.onData((data) => {
-      void api.terminalWrite(shell.id, data).catch(() => {});
+      void api.terminalWrite(shell.id, data).then(
+        () => (refused = false),
+        (e: unknown) => {
+          if (refused) return;
+          refused = true;
+          addToast(`${shell.title}: ${String(e)}`);
+        },
+      );
     });
     const unResize = t.onResize(({ cols, rows }) => {
       void api.terminalResize(shell.id, cols, rows).catch(() => {});
@@ -104,7 +122,13 @@
     // The first fit, after the resize handler exists: the shell was opened
     // at a guessed grid and this is the call that corrects it.
     refit();
-    const unsink = registerSink(shell.id, (bytes) => t.write(bytes));
+    const unsink = registerSink(shell.id, (bytes) =>
+      t.write(bytes, () => {
+        // A marker line (a string) is the store's own, not the pty's:
+        // nothing to acknowledge.
+        if (typeof bytes !== "string") void api.terminalAck(shell.id, bytes.length).catch(() => {});
+      }),
+    );
     const onFocus = () => (term.focused = true);
     const onBlur = () => {
       if (term.focused) term.focused = false;

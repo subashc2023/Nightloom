@@ -865,8 +865,14 @@ pub async fn nightshift_schedule_launch(
         }
         let _ = handle.emit("nightshift-launched", payload);
     });
+    // `-w <our pid>`: the child exits with this process, so a crash or a
+    // force-quit with a launch held does not leave a `caffeinate` under
+    // launchd and a Mac that never idle-sleeps (review 2026-09-17 FD5,
+    // backlog 136 — `power.rs`'s spawn had it, this older one did not).
     let awake = std::process::Command::new("caffeinate")
         .arg("-i")
+        .arg("-w")
+        .arg(std::process::id().to_string())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

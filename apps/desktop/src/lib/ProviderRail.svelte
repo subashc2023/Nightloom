@@ -2,18 +2,28 @@
   import {
     app,
     applyDraft,
+    bornKind,
     chatKind,
     currentModelId,
+    declaredKind,
     KIND_LINES,
     kindLabel,
+    kindSwitchCost,
+    kindWorkspace,
     loadContextLimits,
     openModelInstructions,
     pickerModels,
     providerPills,
+    switchChatKind,
+    chatFolders,
+    setChatFolders,
+    setProjectFolders,
     useEngine,
     usable,
     usePrompt,
   } from "./state.svelte";
+  import * as api from "./api";
+  import { fmtTokens } from "./tokens";
   import {
     AGENT_MODELS,
     MODEL_KEYS,
@@ -271,20 +281,122 @@
   /**
    * The open chat's kind (nightshift backlog 102): Claude Code · Chat on
    * the subscription engine, Build · Chat on the provider engine. Read
-   * from the log, or the pending kind before the first message; fixed at
-   * creation (blocker 143's default), so the rail states it and does not
-   * switch it — the New chat ▾ menu is where it is chosen. A Chat runs in
-   * the neutral folder whatever the row below says the project's is.
+   * from the log, or the pending kind before the first message. ~~Fixed
+   * at creation (blocker 143's default), so the rail states it and does
+   * not switch it~~ — switchable since backlog 144 (2026-09-17; blocker
+   * 143 answered): the Kind row is the same two-row picker the New chat ▾
+   * menu has, and picking the other kind takes effect on the next turn.
+   * `declared` is what the request is built for, which a switch leaves
+   * alone (the cached prefix with it): a Chat switched from Claude Code
+   * keeps its folder and its tool list and simply has the writers refused
+   * — so the folder row below reads the *declaration*, not the kind.
    */
   const kind = $derived(chatKind(app.events));
-  const isChat = $derived(kind === "chat");
+  const declared = $derived(declaredKind(app.events));
+  const isChat = $derived(declared === "chat");
+  const engineName = $derived(app.connection?.engine ?? app.draft.engine);
+  const KIND_ROWS: { kind: "build" | "chat" }[] = [{ kind: "build" }, { kind: "chat" }];
+
+  /** The pending switch, waiting on its one-line confirm: the kind picked
+   *  and, for a switch to Claude Code on a chat born as a Chat, the folder
+   *  it will run in (the project's, or a pick). */
+  let pendingKind = $state<"build" | "chat" | null>(null);
+  let pendingFolder = $state<string | null>(null);
+
+  /** What the confirm line says the switch costs and changes — the four
+   *  downsides measured for backlog 144, each named only where it applies. */
+  const switchLine = $derived.by(() => {
+    if (!pendingKind) return "";
+    if (pendingKind === "chat") {
+      return `From the next turn the shell, file edits, subagents and plans are refused; reads, search and the web stay. The folder stays${
+        app.project?.root ? ` (${app.project.root})` : ""
+      } and the cache is kept — the tools stay declared, the model is told at the top of your next message.`;
+    }
+    const cost = kindSwitchCost(app.events, "build");
+    const folder = pendingFolder ?? app.project?.root ?? null;
+    const parts = ["From the next turn every tool is on, under the approval setting below."];
+    if (declared === "chat") {
+      parts.push(
+        folder
+          ? `Runs in ${folder}${
+              engineName === "claude-code"
+                ? " — the CLI's memory and CLAUDE.md now come from there"
+                : ""
+            }.`
+          : "Pick a folder first — this project has none.",
+      );
+      parts.push(
+        cost && cost > 0
+          ? `Switching re-warms the cache: ~${fmtTokens(cost)} tokens written once, since the tools were never declared on this chat.`
+          : "The tools are declared from here on.",
+      );
+    } else {
+      parts.push("The cache is kept — the tools were declared all along.");
+    }
+    return parts.join(" ");
+  });
+
+  function askSwitch(to: "build" | "chat") {
+    if (to === kind) {
+      pendingKind = null;
+      return;
+    }
+    pendingKind = to;
+    pendingFolder = to === "build" ? kindWorkspace(app.events) : null;
+  }
+
+  /**
+   * The extra folders (nightshift backlog 143): what the connection was
+   * granted — the project's and the chat's own, each with its source and,
+   * on the API engine, the `@alias` the tools spell it by. Two ways in:
+   * *Add for this chat…* records a `folders` event on the log, *Add for
+   * the project…* writes the registry; either reconnects so the grant
+   * holds from the next turn. × takes one back the same way it came.
+   */
+  const folders = $derived(app.connection?.folders ?? []);
+  async function addFolder(scope: "chat" | "project") {
+    const picked = await api.pickFolder(
+      scope === "chat" ? "A folder this chat may see" : "A folder every chat in this project may see",
+      app.project?.root ?? undefined,
+    );
+    if (!picked) return;
+    if (scope === "chat") {
+      await setChatFolders([...chatFolders(app.events), picked]);
+    } else {
+      await setProjectFolders([...(app.project?.extra_folders ?? []), picked]);
+    }
+  }
+  async function removeFolder(path: string, source: string) {
+    if (source === "project") {
+      await setProjectFolders((app.project?.extra_folders ?? []).filter((f) => f !== path));
+    } else {
+      await setChatFolders(chatFolders(app.events).filter((f) => f !== path));
+    }
+  }
+
+  async function pickSwitchFolder() {
+    const picked = await api.pickFolder("Folder for this Claude Code chat", app.project?.root ?? undefined);
+    if (picked) pendingFolder = picked;
+  }
+
+  async function confirmSwitch() {
+    const to = pendingKind;
+    if (!to) return;
+    if (to === "build" && declared === "chat" && !pendingFolder && !app.project?.root) return;
+    const folder = to === "build" && declared === "chat" ? (pendingFolder ?? undefined) : undefined;
+    pendingKind = null;
+    pendingFolder = null;
+    await switchChatKind(to, folder);
+  }
 
   // The long-form explanations live on the control they explain — as the
   // `?` beside each one now, where they used to be tooltips.
   const workspaceTitle = $derived(
     isChat
-      ? "A Chat has no folder: it runs in a neutral, empty directory (~/.nightloom/chat), whatever the project's folder is. Start a Claude Code chat for the folder."
-      : app.project
+      ? "A Chat has no folder: it runs in a neutral, empty directory (~/.nightloom/chat), whatever the project's folder is. Switch the kind above, or start a Claude Code chat, for the folder."
+      : kind === "chat"
+        ? `Switched to a Chat from Claude Code: the folder stays and the writers are refused (${app.project?.root ?? app.connection?.workspace ?? "the folder"}).`
+        : app.project
         ? `Set by the project ${app.project.name}. A project is its folder — leave the project to point the tools elsewhere.`
         : app.connection
           ? `${app.connection.workspace}\n\nThe file tools refuse paths outside this folder. bash is not confined.`
@@ -367,17 +479,58 @@
     </button>
   </div>
 
-  <!-- The kind (nightshift backlog 102, boards 8a/8b): stated, not
-       switched — fixed at creation (blocker 143's default), chosen in the
-       sidebar's New chat ▾ menu or with ⌘N / ⌥⌘N. -->
+  <!-- The kind (nightshift backlog 102, boards 8a/8b; switchable since
+       backlog 144): the same two rows the sidebar's New chat ▾ menu has,
+       the dot on the kind the chat is now. Picking the other one shows the
+       confirm line and takes effect on the next turn. -->
   <div class="row kind-row">
     <span class="lbl">Kind</span>
-    <span class="kind-name">{kindLabel(kind, app.connection?.engine ?? app.draft.engine)}</span>
+    <span class="kind-name">{kindLabel(kind, engineName)}{#if kind !== bornKind(app.events)} <span class="kind-tag">switched</span>{/if}</span>
     <Hint
-      text="Claude Code — the project folder, all tools, approval as set below, plan mode within reach. Chat — read-only tools plus Nightloom's own (search chats, notes), the web, its own Chat instructions layer, no working directory. Presets over the same dials: change any of them for this chat and the kind stays. Fixed when the chat is made — the New chat ▾ menu, ⌘N for Claude Code, ⌥⌘N for a Chat."
+      text="Claude Code — the project folder, all tools, approval as set below, plan mode within reach. Chat — read-only tools plus Nightloom's own (search chats, notes), the web, its own Chat instructions layer, no working directory. Presets over the same dials: change any of them for this chat and the kind stays. Switchable here for this chat, from the next turn: to a Chat, the tools stay declared and the writers are refused, so the cache is kept; to Claude Code on a chat born as a Chat, the tools are declared once, which re-warms the cache."
     />
   </div>
-  <p class="kind-line">{KIND_LINES[kind]}{#if isChat} — the dials below follow and stay yours{/if}</p>
+  <div class="kind-pick" role="radiogroup" aria-label="Kind">
+    {#each KIND_ROWS as k (k.kind)}
+      <button
+        class="kind-opt"
+        class:on={k.kind === kind}
+        role="radio"
+        aria-checked={k.kind === kind}
+        disabled={locked}
+        onclick={() => askSwitch(k.kind)}
+      >
+        <span class="kind-glyph" aria-hidden="true">{k.kind === kind ? "●" : "○"}</span>
+        <span class="kind-text">
+          <span class="kind-opt-name">{kindLabel(k.kind, engineName)}</span>
+          <span class="kind-line">{KIND_LINES[k.kind]}</span>
+        </span>
+      </button>
+    {/each}
+  </div>
+  {#if pendingKind}
+    <div class="kind-confirm" role="group" aria-label="Confirm the kind switch">
+      <p class="kind-confirm-line">
+        <strong>Switch to {kindLabel(pendingKind, engineName)}?</strong>
+        {switchLine}
+      </p>
+      <div class="kind-confirm-btns">
+        {#if pendingKind === "build" && declared === "chat"}
+          <button class="ns-btn" onclick={() => void pickSwitchFolder()}>Pick a folder…</button>
+        {/if}
+        <button
+          class="ns-btn accent"
+          disabled={pendingKind === "build" && declared === "chat" && !pendingFolder && !app.project?.root}
+          onclick={() => void confirmSwitch()}
+        >
+          Switch
+        </button>
+        <button class="ns-btn" onclick={() => (pendingKind = null)}>Keep {kindLabel(kind, engineName)}</button>
+      </div>
+    </div>
+  {:else if kind !== declared}
+    <p class="kind-line kind-note">A Chat over a Claude Code chat: the folder and the tool list stay, the writers are refused when called.</p>
+  {/if}
 
   <div class="status" title={app.connection?.workspace ?? ""}>
     {#if app.connecting}
@@ -890,6 +1043,40 @@
         <Hint text={workspaceTitle} />
       </div>
 
+      <!-- Extra folders (nightshift backlog 143): the folders this chat may
+           see beyond the project's home — granted per chat or per project,
+           on both engines. -->
+      <div class="row fold-row">
+        <span class="lbl">Folders</span>
+        <div class="fold-list">
+          {#each folders as f (f.path)}
+            <div class="fold-item" title={f.alias ? `${f.alias}/… reaches ${f.path}` : f.path}>
+              {#if f.alias}<code class="fold-alias">{f.alias}</code>{/if}
+              <span class="fold-path">{f.path}</span>
+              <span class="fold-src">{f.source === "project" ? "project" : "this chat"}</span>
+              <button
+                class="fold-x"
+                title={f.source === "project" ? "Stop granting this folder to the project's chats" : "Stop granting this folder to this chat"}
+                aria-label="Remove {f.path}"
+                disabled={locked}
+                onclick={() => void removeFolder(f.path, f.source)}
+              >×</button>
+            </div>
+          {:else}
+            <span class="dim fold-none">{isChat ? "none — a Chat sees no folder" : "none beyond the folder above"}</span>
+          {/each}
+          {#if !isChat}
+            <div class="fold-add">
+              <button class="ns-btn" disabled={locked} onclick={() => void addFolder("chat")}>Add a folder for this chat…</button>
+              {#if app.project}<button class="ns-btn" disabled={locked} onclick={() => void addFolder("project")}>…for the project</button>{/if}
+            </div>
+          {/if}
+        </div>
+        <Hint
+          text="A project is not one folder: its content may live in others. A folder added here is readable and editable by the model without an approval per read — on Claude Code as an extra working directory (--add-dir), on the provider engine as a named tree the file tools reach by its @alias. Per chat: recorded on the chat's log, kept on reload, inherited by a fork. Per project: every chat in the project, from its next turn. Notes and AGENTS.md stay in the folder above."
+        />
+      </div>
+
       {#if hasReach}
         <div class="row reach-row">
           <span class="lbl">Reach</span>
@@ -1316,6 +1503,149 @@
     font-size: 11.5px;
     line-height: 1.4;
     color: var(--dim);
+  }
+  /* The picker (backlog 144): two rows in the sidebar menu's shape — a
+     dot, the name, the one-line gloss — and the confirm line under them. */
+  .kind-pick {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin: 4px 0 6px 64px;
+  }
+  .kind-opt {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    padding: 4px 6px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: none;
+    color: var(--ink);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .kind-opt.on {
+    border-color: var(--line2);
+    background: var(--accent-soft);
+  }
+  .kind-opt:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+  .kind-opt:focus-visible {
+    outline: 1px solid var(--accent);
+    outline-offset: 1px;
+  }
+  .kind-opt .kind-line {
+    margin: 1px 0 0;
+  }
+  .kind-glyph {
+    flex: none;
+    width: 12px;
+    font-size: 10px;
+    line-height: 18px;
+    color: var(--accent);
+  }
+  .kind-text {
+    display: flex;
+    flex-direction: column;
+  }
+  .kind-opt-name {
+    font-size: 12.5px;
+  }
+  .kind-tag {
+    font-size: 10.5px;
+    color: var(--dim);
+    margin-left: 4px;
+  }
+  .kind-confirm {
+    margin: 0 0 8px 64px;
+    padding: 8px 10px;
+    border: 1px solid var(--line2);
+    border-radius: 8px;
+    background: var(--paper);
+  }
+  .kind-confirm-line {
+    margin: 0 0 8px;
+    font-size: 11.5px;
+    line-height: 1.45;
+    color: var(--dim);
+  }
+  .kind-confirm-line strong {
+    color: var(--ink);
+    font-weight: 600;
+  }
+  .kind-confirm-btns {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .kind-note {
+    margin-top: 0;
+  }
+  /* Extra folders (backlog 143): a list under the Folder row, each with its
+     alias, path, source and an ×; the add buttons under it. */
+  .fold-row {
+    align-items: flex-start;
+  }
+  .fold-list {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .fold-item {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    min-width: 0;
+    font-size: 11.5px;
+  }
+  .fold-alias {
+    flex: none;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--ink2);
+  }
+  .fold-path {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    direction: rtl;
+    text-align: left;
+    color: var(--ink);
+  }
+  .fold-src {
+    flex: none;
+    font-size: 10.5px;
+    color: var(--dim);
+  }
+  .fold-x {
+    flex: none;
+    border: none;
+    background: none;
+    color: var(--dim);
+    font: inherit;
+    font-size: 13px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 2px;
+  }
+  .fold-x:hover:not(:disabled) {
+    color: var(--ink);
+  }
+  .fold-none {
+    font-size: 11.5px;
+  }
+  .fold-add {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-top: 2px;
   }
   /* rtl keeps the tail of a long path visible — the leaf folder is the part
      worth reading, and it is the part ltr clips. Only on the read-only

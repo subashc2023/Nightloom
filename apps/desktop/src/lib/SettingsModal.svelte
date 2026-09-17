@@ -1194,7 +1194,10 @@
         </p>
         {#if remote?.qr_svg}
           <div class="remote-qr">{@html remote.qr_svg}</div>
-          <p class="note small remote-mono">{remote.setup_url}</p>
+          <!-- The address without the token: the token is the QR's and the
+               Show button's to reveal, not the page's to print (review
+               2026-09-17 FA10, backlog 132). -->
+          <p class="note small remote-mono">{remoteRevealed ? remote.setup_url : (remote.setup_url ?? "").replace(/#token=.*$/, "#token=…")}</p>
         {:else if remote?.has_token}
           <p class="note small">The code needs the Tailscale address — open the Tailscale app and sign in.</p>
         {:else}

@@ -134,6 +134,17 @@ pub struct Project {
     /// was imported.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// The other folders this project's content lives in (nightshift
+    /// backlog 143, 2026-09-17): "a project is not a folder" was already
+    /// true above, and this is its other half — *what the project is
+    /// about* is one thing, *where its files are* is a list. Each is a
+    /// further tree the file tools may reach (`Root::with_extra`, as
+    /// `@<name>/…`) and the CLI is granted (`--add-dir`) for every chat in
+    /// the project; a chat can add its own on top (`SessionEvent::Folders`).
+    /// The home folder stays the one place notes and `AGENTS.md` live.
+    /// Absent from every registry written before the field existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_folders: Vec<PathBuf>,
     pub created: DateTime<Utc>,
     /// Bumped by [`Registry::touch`], so the picker can lead with what the
     /// user was last working on.
@@ -383,6 +394,7 @@ impl Registry {
             name,
             workspace,
             source,
+            extra_folders: Vec::new(),
             created: now,
             last_opened: now,
         };
@@ -409,6 +421,38 @@ impl Registry {
             .find(|p| p.id == id)
             .ok_or_else(|| format!("no project {id}"))?;
         project.name = name.to_string();
+        let out = project.clone();
+        self.save()?;
+        Ok(out)
+    }
+
+    /// Replace a project's extra folders (nightshift backlog 143) — the
+    /// whole list, so removing one is setting the list without it, as the
+    /// prompt-layer edits are. Deduplicated in order; the home folder is
+    /// dropped from it (it is not extra); a folder that is not a directory
+    /// is refused, since a grant on nothing is a promise the tools break.
+    pub fn set_extra_folders(
+        &mut self,
+        id: &str,
+        folders: Vec<PathBuf>,
+    ) -> Result<Project, String> {
+        let project = self
+            .projects
+            .iter_mut()
+            .find(|p| p.id == id)
+            .ok_or_else(|| format!("no project {id}"))?;
+        let home = project.workspace_dir();
+        let mut kept: Vec<PathBuf> = Vec::new();
+        for f in folders {
+            if !f.is_dir() {
+                return Err(format!("{} is not a folder", f.display()));
+            }
+            if f == home || kept.contains(&f) {
+                continue;
+            }
+            kept.push(f);
+        }
+        project.extra_folders = kept;
         let out = project.clone();
         self.save()?;
         Ok(out)
@@ -1461,6 +1505,7 @@ mod tests {
             name: "Old".to_string(),
             workspace: Some(normalize(&dir)),
             source: None,
+            extra_folders: Vec::new(),
             created: Utc::now(),
             last_opened: Utc::now(),
         };
@@ -1585,6 +1630,48 @@ mod tests {
         assert!(project.notes_dir().join("plan.md").is_file());
     }
 
+    /// A project's extra folders (nightshift backlog 143): the whole list
+    /// replaced, the home folder and a duplicate dropped, a missing folder
+    /// refused, absent from the file when empty, and back after a reload.
+    #[test]
+    fn extra_folders_are_a_list_the_registry_keeps_beside_the_home_folder() {
+        let dir = temp_dir("extra-folders");
+        let path = dir.join("projects.json");
+        let home = dir.join("home");
+        let notes = dir.join("notes");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&notes).unwrap();
+        let id = {
+            let mut reg = Registry::load_from(&path);
+            let p = reg.add(&home, None).unwrap();
+            assert!(p.extra_folders.is_empty());
+            assert!(!fs::read_to_string(&path).unwrap().contains("extra_folders"));
+            let err = reg
+                .set_extra_folders(&p.id, vec![dir.join("missing")])
+                .unwrap_err();
+            assert!(err.contains("not a folder"), "{err}");
+            let set = reg
+                .set_extra_folders(&p.id, vec![notes.clone(), p.workspace_dir(), notes.clone()])
+                .unwrap();
+            assert_eq!(set.extra_folders, vec![notes.clone()]);
+            assert!(reg.set_extra_folders("nope", vec![]).is_err());
+            p.id
+        };
+        let reloaded = Registry::load_from(&path);
+        assert_eq!(
+            reloaded.find(&id).unwrap().extra_folders,
+            vec![notes.clone()]
+        );
+        let mut reg = Registry::load_from(&path);
+        assert!(
+            reg.set_extra_folders(&id, vec![])
+                .unwrap()
+                .extra_folders
+                .is_empty()
+        );
+        assert!(!fs::read_to_string(&path).unwrap().contains("extra_folders"));
+    }
+
     #[test]
     fn the_registry_round_trips_through_its_file() {
         let dir = temp_dir("round-trip");
@@ -1635,6 +1722,7 @@ mod tests {
                 name: slug.replace('-', " "),
                 workspace: Some(projects_folder.join(slug)),
                 source: Some(format!("claude:{slug}")),
+                extra_folders: Vec::new(),
                 created: import_day,
                 last_opened: import_day,
             })
@@ -1644,6 +1732,7 @@ mod tests {
             name: "Nightshift (value generalization)".into(),
             workspace: Some(elsewhere.to_path_buf()),
             source: None,
+            extra_folders: Vec::new(),
             created: later,
             last_opened: later,
         });
@@ -1684,6 +1773,7 @@ mod tests {
             name: "Neural (MCP test)".into(),
             workspace: Some(PathBuf::from("/new/projects/Neural-MCP-test")),
             source: None,
+            extra_folders: Vec::new(),
             created: newer,
             last_opened: newer,
         });

@@ -6,6 +6,7 @@
     closeNote,
     dismissProposal,
     mirrorDraft,
+    noteDraftKey,
     revealFolder,
     saveNote,
     showNote,
@@ -143,7 +144,7 @@
     loading = true;
     try {
       const content = await api.readNote(target.scope, target.name);
-      const key = `${target.scope}:${target.name}`;
+      const key = noteDraftKey(target.scope, target.name);
       saved = content;
       // A draft left on this note takes the buffer; the file stays the
       // saved baseline, so the ● and the Revert button say what differs.

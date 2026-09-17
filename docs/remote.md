@@ -82,6 +82,33 @@ listener with it; every phone must scan again. Off, and a restart, end
 every open event stream at once — a phone holding one is cut, not left
 listening with the old token.
 
+### What the phone is told (backlog 132, 2026-09-17)
+
+A send from the phone used to be answered 202 the moment the listener had
+handed it to the desktop window — and a message the window then could not
+send (no engine connected, the desktop busy in *another* chat, a chat id
+that would not open) was dropped with the phone told it was taken. Now the
+window answers: the 202's body is `{"status":"sent"}` (the turn starts)
+or `{"status":"queued"}` (the open chat is mid-turn; the message is in its
+composer queue on the Mac and goes when that turn ends — the phone says
+so and draws the row when it lands), and a refusal is a **409** with the
+sentence, on which the phone keeps the text and, when the Mac is idle
+again, sends it from its own queue. A window that does not answer within
+3 s is a 409 too. The desktop side: `remote-send` carries an id; the
+window's `remoteSend` reports through `remote_sent`.
+
+Three smaller fixes from the same review: a keychain that *could not be
+read* (locked, a denied prompt after a re-signed build) no longer reads as
+"no token" — the listener's start and Regenerate refuse with a sentence
+and keep the token, so the phones stay paired (`try_remote_token`); the
+Tailscale CLI is waited for at most 2 s and the card's reads run off the
+runtime, so a hung daemon cannot stall a streaming turn; and a rebind that
+fails no longer leaves remote off — on a new port the new listener binds
+before the old one stops, on the same port the old address and token are
+brought back, and Regenerate stores the new token only once the listener
+runs with it. The URL under the QR shows `#token=…` until *Show the
+token*.
+
 ## Setting it up on the phone
 
 1. On the Mac: Tailscale open and signed in. Settings (⌘,) → **Remote** →
@@ -94,6 +121,13 @@ listening with the old token.
 3. Share → **Add to Home Screen** → open it from there: full screen, no
    Safari chrome, the Nightloom icon. (Without the QR: open the address in
    Safari and paste the token into the field on the first screen.)
+   *Unmeasured (review 2026-09-17 FA11, backlog 132):* a home-screen web
+   app on iOS runs in its own storage, and the page has already dropped
+   `#token` from the address by the time it is bookmarked — so the
+   home-screen copy may open to the paste field the first time. If it
+   does: Settings → Remote → **Show the token**, and paste it once; it is
+   kept from then on. Say so if you see it and the page will keep the
+   fragment until after the install instead.
 4. Tap a chat: its transcript, tool calls as one-line rows under the reply
    that made them. Type, Send: the message shows at once and the reply
    streams. **Stop** ends the turn.

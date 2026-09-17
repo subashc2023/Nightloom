@@ -125,6 +125,39 @@ export function decodeBase64(s: string): Uint8Array {
   return out;
 }
 
+/**
+ * The most a shell's undrawn output may hold (backlog 137): bytes that
+ * arrive before the shell's component has a sink — its first prompt,
+ * mostly — queue in the store; past this the oldest go and a marker says
+ * how much. The Rust side stops sending past 256 KB unacknowledged, but
+ * releases that every 2 s when nothing answers, so without a cap a shell
+ * with no component for an hour would hold hundreds of megabytes.
+ */
+export const PENDING_MAX_BYTES = 1024 * 1024;
+
+/**
+ * The queue trimmed to the cap from the front — whole chunks, oldest
+ * first — and how many bytes went. Pure, for the suite.
+ */
+export function trimPending(chunks: Uint8Array[], max: number = PENDING_MAX_BYTES): { chunks: Uint8Array[]; dropped: number } {
+  let total = 0;
+  for (const c of chunks) total += c.length;
+  let dropped = 0;
+  let i = 0;
+  while (total > max && i < chunks.length) {
+    total -= chunks[i].length;
+    dropped += chunks[i].length;
+    i++;
+  }
+  return { chunks: i === 0 ? chunks : chunks.slice(i), dropped };
+}
+
+/** The line xterm shows where dropped output would have been. */
+export function droppedMarker(bytes: number): string {
+  const kb = Math.round(bytes / 1024);
+  return `\r\n\x1b[2m[${kb} KB of output not shown — it arrived while this shell was not drawn]\x1b[0m\r\n`;
+}
+
 /** The tools that change a file, by their short name (`mcp__…__` peeled). */
 const FILE_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit", "edit", "write", "multi_edit"]);
 

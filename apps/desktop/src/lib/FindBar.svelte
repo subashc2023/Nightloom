@@ -292,16 +292,24 @@
     <button class="find-btn" title="Next match (⏎)" disabled={hits.length === 0} onclick={() => step(1)}>
       <Icon name="chev" size={12} />
     </button>
+    {#if !app.search.open}
+      <!-- The way to the search panel (backlog 117), in the bar's own
+           voice since backlog 139 (blocker 203, board a): a glyph button
+           before the ×, the words in its tooltip; the dot says the panel
+           still holds results to go back to. -->
+      <button
+        class="find-btn find-all"
+        class:kept={!!app.search.result}
+        title={app.search.result ? `Back to the results (${SEARCH_CHORD_LABEL})` : `Search all chats for this (${SEARCH_CHORD_LABEL})`}
+        aria-label={app.search.result ? "Back to the search results" : "Search all chats"}
+        onclick={toPanel}
+      >
+        <Icon name="search" size={12} />
+      </button>
+    {/if}
     <button class="find-btn" title="Close (⎋)" onclick={close}>
       <Icon name="x" size={12} />
     </button>
-    {#if !app.search.open}
-      <span class="find-sep"></span>
-      <button class="find-link" onclick={toPanel}>
-        {app.search.result ? "back to results" : "search all chats"}
-        <span class="find-link-key">{SEARCH_CHORD_LABEL}</span>
-      </button>
-    {/if}
   </div>
 {/if}
 
@@ -376,30 +384,22 @@
   .find-btn.up :global(svg) {
     transform: rotate(180deg);
   }
-  /* The link to the search panel (backlog 117), after a hairline. */
-  .find-sep {
-    width: 1px;
-    height: 16px;
-    background: var(--line2);
-    margin: 0 2px;
+  /* ~~The link to the search panel (backlog 117), after a hairline
+     (`.find-sep`, `.find-link`, `.find-link-key`).~~ Superseded 2026-09-17
+     (backlog 139): the way to the panel is a `find-btn` like its
+     neighbours, before the ×; a dot at its corner while the panel holds
+     results. */
+  .find-all {
+    position: relative;
   }
-  .find-link {
-    background: transparent;
-    border: none;
-    padding: 0 4px;
-    font: inherit;
-    font-size: 11.5px;
-    color: var(--accent-ink);
-    cursor: pointer;
-    white-space: nowrap;
-  }
-  .find-link:hover {
-    text-decoration: underline;
-  }
-  .find-link-key {
-    font-family: var(--mono);
-    font-size: 10.5px;
-    color: var(--dim);
-    margin-left: 4px;
+  .find-all.kept::after {
+    content: "";
+    position: absolute;
+    top: 3px;
+    right: 3px;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--accent);
   }
 </style>

@@ -5,8 +5,9 @@
     showNewProject,
     useProject,
     addToast,
-    closeNightshift,
     deleteSession,
+    endContentDrag,
+    startContentDrag,
     enableNightshift,
     MODE_GLYPH,
     MODE_LINES,
@@ -172,14 +173,15 @@
     return !(app.nightshift.read[r.id] ?? []).some((n) => sameMorning(n, newest));
   });
 
-  // The three modes. Chats and Notes leave the Nightshift screens if they
-  // were showing; Nightshift opens them.
+  // The three modes. ~~Chats and Notes leave the Nightshift screens if
+  // they were showing; Nightshift opens them.~~ Since nightshift backlog
+  // 140 (2026-09-17) the Nightshift page is a tab, so the sidebar's mode
+  // and the centre are decoupled: Chats and Notes change the list only,
+  // and the Nightshift tab stays in front until another tab is clicked.
   function goChats() {
-    if (app.view === "nightshift") closeNightshift();
     app.leftTab = "chats";
   }
   function goNotes() {
-    if (app.view === "nightshift") app.view = "chat";
     app.leftTab = "notes";
   }
 
@@ -342,10 +344,15 @@
       <span>Notes</span>
       {#if app.notes.length > 0}<span class="count">{app.notes.length}</span>{/if}
     </button>
+    <!-- Draggable (backlog 140 pass 2): onto a strip for a Nightshift
+         tab there, onto a pane's half to open it beside. -->
     <button
       aria-current={app.leftTab === "nightshift" ? "page" : undefined}
       class:on={app.leftTab === "nightshift"}
       onclick={() => showNightshift()}
+      draggable="true"
+      ondragstart={(e) => startContentDrag(e, { kind: "nightshift" })}
+      ondragend={endContentDrag}
     >
       <Icon name="moon" size={16} />
       <span>Nightshift</span>
@@ -470,6 +477,9 @@
                 }}
               />
             {:else}
+              <!-- Draggable (backlog 140 pass 2): onto a strip for a tab
+                   of this chat at that slot, onto a pane's half to open
+                   it beside. The drag carries `{kind: "chat", session}`. -->
               <button
                 class="session-row"
                 onclick={(e) => {
@@ -482,6 +492,9 @@
                 ondblclick={() =>
                   startRename(s.id, s.title ?? s.first_user ?? "")}
                 disabled={app.busy}
+                draggable="true"
+                ondragstart={(e) => startContentDrag(e, { kind: "chat", session: s.id })}
+                ondragend={endContentDrag}
               >
                 <span class="snippet"
                   >{#if inTab(s.id)}<span class="mark tab" title="Open in a tab">▭</span> {/if}{#if s.mode === "incognito"}<span class="mark" title="Incognito: writes nothing, unread by other chats">{MODE_GLYPH.incognito}</span> {/if}{#if hasDraft(s.id)}<span class="mark draft" title="has a draft">✎</span> {/if}{s.title ?? s.first_user ?? "empty session"}</span

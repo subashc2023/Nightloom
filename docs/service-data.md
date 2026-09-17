@@ -112,6 +112,26 @@ the containment argument is two halves (lexical normalization *and* a symlink
 check on the deepest existing ancestor), and a second hand-rolled copy is exactly
 what ends up missing one.
 
+### Extra folders (2026-09-17, nightshift backlog 143)
+
+The other half of "a project is not a folder": *what the project is about*
+is one thing, *where its files live* is a list. `Project.extra_folders:
+Vec<PathBuf>` (absent from the file when empty, so older registries read
+unchanged) names the other folders the project's content lives in;
+`Registry::set_extra_folders(id, list)` replaces the whole list — the home
+folder and duplicates dropped, a folder that is not a directory refused. A
+chat adds its own on top with `SessionEvent::Folders` on its log (the core;
+latest live list wins, a fork carries it, a rewind past the grant takes it
+back). At connect the desktop unions the two (`extra_folders` in `main.rs`:
+project first, then the chat's, each once, missing ones left out) and grants
+every folder on the engine in use — `--add-dir` on the CLI (readable without a
+prompt, edits under the permission mode; blocker 050's mechanism), a named
+tree of the `Root` on the API engine (`@<alias>/…`, see `tools/root.rs`). The
+home folder stays the one place notes and `AGENTS.md` live; the extra folders
+are not walked for instructions and are not in the docspace. His case: a chat
+in the *value generalization* project reading Python files and notebook JSON
+in a folder that is not the project's.
+
 ## `knowledge.rs` — the vault
 
 The user's own notes, as against the project's — the other half of the pair
@@ -395,6 +415,33 @@ Batching is the point, not a convenience: the abstraction step ("do several
 observations across sessions point at one conclusion none of them states?") only
 exists across sessions, and per-session consolidation is fast writing wearing
 consolidation's name.
+
+**One pass at a time, across processes (nightshift backlog 133, 2026-09-17).**
+The desktop's own guard against a dream overlapping a capture was a mutex of
+its own process; the dev app beside the installed app, or the CLI's
+`nightloom dream` at the same hour, each had their own, so both ran a dream
+over the one vault — every observation consolidated twice, two proposals for
+one file, a pre-dream snapshot committing the other dream's half-written
+notes under its name. `pass_lock.rs` is the lock they share: an advisory
+lock on `<config>/pass.lock` (`std::fs::File::try_lock`, `flock` on macOS
+and Linux, `LockFileEx` on Windows), taken by `dream::run`, `capture::run`
+and a tidy that applies, held for the pass's length, released when the guard
+drops — on a panic too, and by the OS when the process dies. The loser gets
+one sentence ("a dream, a capture or a tidy is already running in another
+Nightloom…"), which the daily pass shows as its line for the day rather than
+running nothing silently (the same review found that a failed pass left no
+trace at all; it is now the pass's line and toast, and a *Run now* within
+twelve hours of the hour counts as that day's pass instead of being followed
+by a second one at the hour). Two smaller things from the same review:
+`dream.json`, the dream's watermark, is written to a temp file and renamed
+over (a quit between a plain write's truncate and its write left it empty,
+and an empty watermark re-dreamed the whole log one billed batch at a time);
+and the centre's Revert runs git only in the vault or a registered project's
+folder (`centre::dream_repo`), never in whatever path the window names, and
+refuses when a *later* commit changed the same file — a newer dream's, a
+tidy's, a pre-dream snapshot of his own edit — naming the commits, since the
+checkout of the dream's parent would undo those too (blocker 204's default;
+a second click on a Revert already done still reads "already as it was").
 
 ### Proposals — the always-loaded files are proposed to, never written
 
@@ -938,3 +985,30 @@ neither built.
 
 Builds a provider (explicit `api_key` wins over env), resolves the model, wraps
 in `Retry`, and re-exports `list_models`.
+
+### A creation line this build cannot read is read closed (nightshift backlog 134, 2026-09-17)
+
+A log's first line names the chat's `mode` and `kind`. Strictly parsed, a
+value this build does not know — a newer build's, after a rollback; or one
+renamed without an alias — failed the whole line, and every reader then
+fell back to *normal + build*: an incognito chat written under the new
+value was listed as normal, indexed, found by other chats' `search_chats`
+and captured by the daily pass. `store::peek` now re-reads such a line with
+the two fields as plain strings (`peek_created_closed`): a known value maps
+to itself, an unknown mode reads as **incognito** (kept and listed, written
+nothing, read by nothing) and an unknown kind as the read-only **chat** —
+the answers that give nothing away — and the chat keeps its own id. The
+index folds the same closed reading, so the log is a record with no terms.
+What is not done here: `Session::load` itself (nightloom-core) still turns
+the line into `Unknown` and mints a fresh uuid for the id — the shell then
+opens such a chat under a name that matches no file; the `#[serde(other)]`
+catch-all on the two enums is the fix there (a patch note in the day's
+report, the core file being another agent's today).
+
+Two smaller things from the same review: the `context_status` file the MCP
+tool reads is refreshed from the chat's own log *before* each turn
+(`mcp_server::refresh_context_status`) — its newest reading, or removed for
+a chat with no completed turn — so a new chat's first turn no longer reads
+the previous chat's figure; and `restore_session` checks the id it is sent
+against `store::is_log_id` (a file stem, never a path) before it builds a
+file name from it.

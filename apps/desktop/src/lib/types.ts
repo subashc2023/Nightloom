@@ -197,6 +197,13 @@ export interface ConnectResult {
   /** Present only on the agent engine. */
   agent: AgentInfo | null;
   /**
+   * The extra folders this connection may reach beyond the workspace
+   * (nightshift backlog 143): the project's and the chat's own, each with
+   * its source and — on the API engine — the `@alias` the tools spell it
+   * by. Absent on a connection made before the field existed.
+   */
+  folders?: FolderInfo[];
+  /**
    * The model's context window, when the backend knows it. Null for models
    * absent from the limits table — the gauge then shows raw token counts
    * rather than a percentage, because a guessed denominator would claim
@@ -270,6 +277,18 @@ export interface ProjectInfo {
   exists: boolean;
   /** ISO8601 */
   last_opened: string;
+  /** The other folders the project's content lives in (nightshift backlog
+   *  143), granted to every chat in it. Absent on an older shape. */
+  extra_folders?: string[];
+}
+
+/** One extra folder as the rail and the Context popover show it (backlog 143). */
+export interface FolderInfo {
+  path: string;
+  /** `project` or `chat`. */
+  source: string;
+  /** `@name` on the API engine; null on the CLI, whose tools take the path. */
+  alias: string | null;
 }
 
 /**
@@ -915,6 +934,19 @@ export type SessionEvent =
   // line written before it existed and when there is none. See
   // `promptLayerEdits`.
   | { event: "prompt_layers"; off: PromptLayer[]; edits?: PromptLayerEdits; at: string }
+  // The chat is the other kind from here on (nightshift backlog 144):
+  // latest live one wins, like a title, so a rewind past it restores the
+  // kind before it; the creation line keeps what the chat was born as.
+  // Not a turn: the backend reads it at connect time as the policy over a
+  // declaration that does not change (`declaredKind`), and the next
+  // message carries a note to the model. `workspace` is the folder a
+  // switch to Claude Code named, when it named one. See `chatKind`.
+  | { event: "kind"; kind: ChatKind; workspace?: string; at: string }
+  // The extra folders this chat may see on top of its project's (nightshift
+  // backlog 143): the whole list, latest live one wins like `prompt_layers`.
+  // Not a turn: read at connect time and granted on the engine in use. See
+  // `chatFolders`.
+  | { event: "folders"; folders: string[]; at: string }
   // Content markers, not deletions: the listed events keep their place in the
   // conversation and project a stand-in instead of their payload. The log
   // still holds the content. ~~The transcript renders these turns in full

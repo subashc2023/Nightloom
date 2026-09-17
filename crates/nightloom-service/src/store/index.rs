@@ -246,9 +246,13 @@ fn fold_terms(path: &Path, from: u64, mut acc: Indexed) -> Result<(Indexed, u64)
             continue;
         }
         // A line this crate cannot parse is a newer event or a damaged one;
-        // either costs that line, as everywhere else in the store.
+        // either costs that line, as everywhere else in the store — except
+        // a creation line with a mode or kind this build does not know,
+        // which is read closed so the log is not admitted (backlog 134).
         if let Ok(event) = serde_json::from_str::<SessionEvent>(line) {
             acc.saw(&event);
+        } else if let Some(p) = super::peek(line) {
+            acc.summary.saw(p);
         }
     }
     Ok((acc, from + complete as u64))

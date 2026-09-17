@@ -8,6 +8,7 @@ import {
   liveFlags,
   loadQueue,
   newQueued,
+  parseSendReply,
   questionAnswer,
   saveQueue,
   toolSummary,
@@ -148,5 +149,14 @@ describe("the cards", () => {
 describe("the reconnect wait", () => {
   it("doubles from a second and caps at fifteen", () => {
     expect([0, 1, 2, 3, 4, 9].map(backoffMs)).toEqual([1000, 2000, 4000, 8000, 15000, 15000]);
+  });
+});
+
+describe("the 202's body (backlog 132)", () => {
+  it("reads queued, sent, and an older listener's empty body", () => {
+    expect(parseSendReply('{"status":"queued"}')).toBe("queued");
+    expect(parseSendReply('{"status":"sent"}')).toBe("sent");
+    expect(parseSendReply("")).toBe("sent");
+    expect(parseSendReply("not json")).toBe("sent");
   });
 });

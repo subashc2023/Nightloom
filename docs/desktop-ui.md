@@ -1906,7 +1906,9 @@ them all; the plan's 5h bar, the context bar and the kind survive last.
 ## Tabs and panes (nightshift backlog 099, 2026-09-17; blockers 140, 142, 182, 183)
 
 The centre is one or two **panes** side by side, each with a strip of
-**tabs**; a tab is a chat or a note. The model is `tabs.ts` (plain
+**tabs**; a tab is a chat or a note ~~— and nothing else~~ (since
+backlog 140, below: or the Nightshift page, the graph, the New project
+form, a project card, an aside). The model is `tabs.ts` (plain
 objects, tested); the one workspace is `app.tabs`; `App.svelte` draws the
 panes and `TabStrip.svelte` a strip.
 
@@ -1959,3 +1961,126 @@ a pane's content, the *open beside* half lights and a drop splits
 **The terminal's dock.** Each pane ends in `<div class="pane-dock"
 data-pane={pane.id}>`, under the composer, empty until backlog 113's
 terminal mounts into it.
+
+### Tabs above everything; the + chooser; drags in (nightshift backlog 140, 2026-09-17; blockers 193, 194, 195)
+
+His walk of `b6a9c07`: the + did nothing, the × on the sole tab did
+nothing, nothing could be dragged into a tab, and Nightshift made the
+strip vanish. All four came from one rule — the strip was drawn only
+for a chat or a note.
+
+**Tabs sit above everything.** `TabContent` is `chat | note |
+nightshift | graph | new-project | project {id} | aside {session}`.
+`shownContent()` maps every `app.view` to a content, so the reflection
+lands the Nightshift page, the graph and the New project form as tabs
+the way it lands a chat; `activateTab` opens them through
+`showNightshift` / `showGraph` / `showNewProject`. Those three are
+**singletons** (`SINGLETON_KINDS`): `land`, `openBeside` and `insertAt`
+activate the one there is, in either pane, rather than making a second.
+The openers call `reflectTabs()` themselves at their end, so a click
+with the view already that page (its tab in the other pane's
+background) still lands; `useProject` reflects after resetting the
+workspace, so the Nightshift page survives a project switch as a tab;
+`closeNewProject` closes the form's tab. The panes always draw; a pane
+renders by its active tab's kind. The **top bar** draws over the pane
+whose *active* tab is the live chat, else over the focused pane when a
+note is in front (the chat is open under it), else nowhere — the bar is
+a chat's. The sidebar's Chats and Notes modes no longer leave the
+Nightshift view.
+
+**A project tab is a card** (blocker 193): name, folder, counts, *Open
+this project* — the click is the switch, which resets the workspace as
+it always has; the open project's card says so and has no button.
+`forgetProject` drops the card.
+
+**An aside tab** (backlog 130 part 2, blocker 194) is a second view of
+the chat's thread where it lives — `app.aside` for the open chat, the
+stash for another (`asideOf`) — never a copy. While one exists
+(`asideInTab`) the transcript hides its card; closing the tab shows the
+card again; nothing enters the chat. `AsideView.svelte` draws the
+thread and offers a follow-up and × only while its chat is the open one
+(the backend forks the open chat); another chat's thread reads as it
+was, with a line saying to open the chat. A deleted chat takes its aside
+tab. The card's head row is the drag source (one hunk in
+`Transcript.svelte`).
+
+**The × on the sole tab.** The model swapped a sole New-chat tab for an
+identical one, which showed nothing; `closeTab` now says so in a toast
+(the window closes from its red light, blocker 183). A sole *chat* tab's
+× still leaves the new-chat page.
+
+**The +** opens `TabChooser.svelte` under the strip (blocker 195): New
+chat with the two kinds of backlog 102 (dot on the project's default),
+New note in this project / in the knowledge base (the row becomes a
+name field; ↵ creates and opens), the six newest notes of each store,
+Nightshift, Graph, the projects (cards). Every pick opens a **new tab
+beside the active one** (`openContent(content, "new")` — the sidebar's
+openers plus an explicit reflection, so a pick that changes nothing
+visible still lands and hands `openNext` back). ⌘T is unchanged.
+
+**Drags in.** A sidebar chat row, a note row (both stores), the
+sidebar's Nightshift button, the Notes panel's ◈ graph button, a project
+row in the project menu and the aside card's head are `draggable`,
+carrying a content descriptor as JSON under `CONTENT_DRAG` (parsed back
+by `parseContentDrag`, which refuses anything else) and mirrored in
+`app.draggingContent` for `dragover`. A strip takes it as a new tab at
+the slot (`insertAt`: the accent bar shows where; the tab already
+holding it is activated instead); a pane's half as *open beside* (one
+pane: a second pane holding it) or *open here* (two panes: a tab in that
+pane) — `dropContent`. A chat other than the open one is refused with
+the toast while a turn runs (blocker 182). The terminal dock's shell
+tabs drag too under `TERM_DRAG` (backlog 113's 12b, blocker 189): every
+pane lights whole — *dock the terminal here* / *the terminal is here* —
+and a drop on a pane or its strip sets `term.pane`, moving the one dock;
+the shells run on. Known: the dock's shells re-mount in the new pane, so
+the drawn scrollback is cleared by the move (the pty and its process are
+untouched) — a patch note for the terminal's owner names the fix (keep
+each shell's host element in the store and re-append it on mount).
+
+
+## Search everywhere in the sidebar's column (nightshift backlog 117; 138, 2026-09-17)
+
+⌘⇧E, the sidebar's search box, or ⌘K → *Search chats…* opens the panel in
+the sidebar's column (blocker 153: a panel, not a page): the field, the
+scope *this project · all chats · notes*, the count line, the hits grouped
+by chat with the passage, who said it and when. ↑↓ previews the chat
+behind with ⌘F's bar on the match; ↵ opens it and closes the panel, the
+query staying in the box with an `n ▸` to reopen; ⌘F's bar carries its
+query into the panel and back. `SearchPanel.svelte`, `search.ts`,
+`search.svelte.ts`; the store's `search.rs` answers.
+
+**Since backlog 138 (2026-09-17):** the column no longer jumps to 380px the
+frame the panel opens — it grows up to 80px past the sidebar's own width,
+never past 380, eased over 160 ms, and comes back the same way on close
+(`searchGrowth`, a tween the panel drives on mount and unmount;
+`sidebarColumn()` adds it to the sidebar's width; blocker 202 holds "same
+width" and "the full 380" as one-line alternatives). Under ~330px the scope
+row tightens. And there is a way out from anywhere: **esc closes the panel
+wherever the focus is** — a result row, a fold chevron, the transcript —
+not only from its field (before, an esc after any click reached the window,
+and macOS took it as *leave full screen*); another text field's esc stays
+that field's (the composer, a rename, ⌘F's bar). An **×** at the panel's
+head closes it by mouse; the field's own × clears the query and shows only
+while there is one.
+
+**⌘F's bar's right end (backlog 139, 2026-09-17; blocker 203):** the
+"search all chats ⌘⇧E" text link after the bar's × — a second thing in a
+second voice, tacked on after the bar's last control — is now a glyph
+button in the bar's own shape (the sidebar's search glass, 22px like ‹ › ×)
+placed *before* the ×, so the × is the last thing again; the words and the
+chord live in its tooltip ("Search all chats for this (⌘⇧E)"), and a small
+accent dot at its corner says the panel still holds results to go back to
+("Back to the results (⌘⇧E)"). The boards for the three shapes considered
+are `notes/runner-design/139-boards-2026-09-17.md` in the Nightshift repo.
+
+**The file card's Open refuses what the OS would run (nightshift backlog
+136, 2026-09-17; blocker 205).** Open hands the reply's path to the OS
+opener, and for an installer, a `.command`, an `.app` or a file with the
+execute bit that is a run, not a view — on a path the model chose. Those
+are refused with a sentence naming what the file is and Reveal, which only
+shows it (`main.rs` `launchable()`; the list is the blocker's). Two more
+from the same review: a sidebar rename or delete of a chat that is *not*
+the one running a turn no longer waits the turn out (`rename_session` /
+`delete_session` `try_lock`, told the open chat's id; the running chat is
+refused with a sentence), and the held nightshift launch's `caffeinate`
+carries `-w <pid>` so a crash cannot leave the Mac unable to sleep.

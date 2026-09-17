@@ -10,9 +10,16 @@ import {
   newChatLabel,
   newChatSelected,
   newSession,
+  bornKind,
+  chatFolders,
   chatKind,
+  setChatFolders,
+  declaredKind,
   defaultKind,
   kindLabel,
+  kindSwitchCost,
+  kindWorkspace,
+  switchChatKind,
   planUsageFromTurn,
   promptLayerEdits,
   promptLayersOff,
@@ -41,6 +48,17 @@ vi.mock("./api", async (importOriginal) => ({
   })),
   listSessions: vi.fn(async () => []),
   transcript: vi.fn(async () => []),
+  setChatKind: vi.fn(async (kind: "build" | "chat", workspace?: string) => [
+    { event: "session_created", id: "k1", at: "2026-01-01T00:00:00Z", kind: "chat" },
+    { event: "kind", kind, ...(workspace ? { workspace } : {}), at: "2026-01-01T00:00:00Z" },
+  ]),
+  setChatFolders: vi.fn(async (folders: string[]) => [
+    { event: "session_created", id: "f1", at: "2026-01-01T00:00:00Z" },
+    { event: "folders", folders, at: "2026-01-01T00:00:00Z" },
+  ]),
+  connect: vi.fn(async () => {
+    throw new Error("not connected in tests");
+  }),
 }));
 
 // These three functions are hand-written copies of backend logic —
@@ -543,6 +561,90 @@ describe("newSession — a state, not a file", () => {
     expect(kindLabel("build", "provider")).toBe("Build");
     expect(kindLabel("chat", "claude-code")).toBe("Chat");
     expect(kindLabel("chat", null)).toBe("Chat");
+  });
+
+  // A switch (nightshift backlog 144): the latest live `kind` event wins,
+  // the creation line still says what the chat was born as, a rewind past
+  // the switch restores the earlier kind, and the declaration is `build`
+  // from the first time the chat was ever one — so a switch to a Chat never
+  // costs the cache and a switch to Claude Code costs it only on a chat
+  // born as a Chat.
+  it("reads the latest live kind event, keeps the birth kind, and prices the switch", () => {
+    const born = (kind: "build" | "chat"): SessionEvent => ({ event: "session_created", id: "x", at: AT, kind });
+    const sw = (kind: "build" | "chat", workspace?: string): SessionEvent => ({
+      event: "kind",
+      kind,
+      ...(workspace ? { workspace } : {}),
+      at: AT,
+    });
+    const bornBuild = [born("build"), user("one"), assistant("first"), sw("chat"), user("two"), assistant("second")];
+    expect(chatKind(bornBuild)).toBe("chat");
+    expect(bornKind(bornBuild)).toBe("build");
+    expect(declaredKind(bornBuild)).toBe("build");
+    expect(kindWorkspace(bornBuild)).toBeNull();
+    expect(kindSwitchCost(bornBuild, "build")).toBe(0);
+    // Rewind past the switch: the kind before it.
+    expect(chatKind([...bornBuild, rewind(1)])).toBe("build");
+
+    const bornChat = [born("chat"), user("one"), assistant("first")];
+    expect(chatKind(bornChat)).toBe("chat");
+    expect(declaredKind(bornChat)).toBe("chat");
+    // To a Chat: never a cache cost. To Claude Code on a born Chat: the
+    // prefix, once nothing has been sent it is null.
+    expect(kindSwitchCost(bornChat, "chat")).toBe(0);
+    expect(kindSwitchCost(bornChat, "build")).toBeNull();
+    const switched = [...bornChat, sw("build", "/tmp/elsewhere"), user("two"), assistant("second"), sw("chat")];
+    expect(chatKind(switched)).toBe("chat");
+    expect(declaredKind(switched)).toBe("build");
+    expect(kindWorkspace(switched)).toBeNull();
+    expect(kindWorkspace(switched.slice(0, 5))).toBe("/tmp/elsewhere");
+    expect(kindSwitchCost(switched, "build")).toBe(0);
+    // A rewind past the first switch to Claude Code takes the declaration
+    // back with it.
+    expect(declaredKind([...switched, rewind(1)])).toBe("chat");
+  });
+
+  it("switchChatKind records the event, picks up the created chat's id, and is a no-op on the same kind", async () => {
+    vi.mocked(api.setChatKind).mockClear();
+    app.busy = false;
+    app.connecting = false;
+    app.events = [];
+    app.pendingKind = "chat";
+    await switchChatKind("chat");
+    expect(api.setChatKind).not.toHaveBeenCalled();
+    await switchChatKind("build", "/tmp/p");
+    expect(api.setChatKind).toHaveBeenCalledWith("build", "/tmp/p");
+    expect(app.activeSessionId).toBe("k1");
+    expect(chatKind(app.events)).toBe("build");
+    expect(kindWorkspace(app.events)).toBe("/tmp/p");
+    app.activeSessionId = null;
+    app.events = [];
+  });
+
+  // A chat's extra folders (nightshift backlog 143): the latest live
+  // `folders` event, taken back by a rewind past it; the setter records the
+  // whole list, deduplicated, and is a no-op on the same list.
+  it("reads the latest live folders event and records the whole list", async () => {
+    const created: SessionEvent = { event: "session_created", id: "x", at: AT };
+    const grant = (folders: string[]): SessionEvent => ({ event: "folders", folders, at: AT });
+    expect(chatFolders([created])).toEqual([]);
+    const events = [created, user("one"), assistant("first"), grant(["/a", "/b"]), user("two"), assistant("second"), grant(["/b"])];
+    expect(chatFolders(events)).toEqual(["/b"]);
+    expect(chatFolders(events.slice(0, 5))).toEqual(["/a", "/b"]);
+    expect(chatFolders([...events, rewind(1)])).toEqual([]);
+
+    vi.mocked(api.setChatFolders).mockClear();
+    app.busy = false;
+    app.connecting = false;
+    app.events = [];
+    await setChatFolders([]);
+    expect(api.setChatFolders).not.toHaveBeenCalled();
+    await setChatFolders(["/nb", "/nb", " "]);
+    expect(api.setChatFolders).toHaveBeenCalledWith(["/nb"]);
+    expect(app.activeSessionId).toBe("f1");
+    expect(chatFolders(app.events)).toEqual(["/nb"]);
+    app.activeSessionId = null;
+    app.events = [];
   });
 
   it("is an ordinary chat when no kind is given, and the button is plain", async () => {

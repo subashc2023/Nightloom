@@ -31,6 +31,14 @@ describe("the daily switch", () => {
     expect(dailyDue(on, at(9, 1, 15).getTime(), at(7, 0, 16))).toBe(false);
     // Three days since: due as soon as the hour is reached.
     expect(dailyDue(on, at(9, 1, 12).getTime(), at(9, 0, 16))).toBe(true);
+    // Run now at 8:50, the hour at 9: not a second pass at 9 (backlog 133).
+    expect(dailyDue(on, at(8, 50).getTime(), at(9))).toBe(false);
+    expect(dailyDue(on, at(8, 50).getTime(), at(12))).toBe(false);
+    // Twelve hours on, still no pass since the hour: due then.
+    expect(dailyDue(on, at(8, 50).getTime(), at(20, 51))).toBe(true);
+    // A Run now late last night counts as today's until midday.
+    expect(dailyDue(on, at(23, 0, 15).getTime(), at(9, 0, 16))).toBe(false);
+    expect(dailyDue(on, at(23, 0, 15).getTime(), at(11, 1, 16))).toBe(true);
   });
 });
 

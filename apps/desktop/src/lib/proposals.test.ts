@@ -19,13 +19,16 @@ import * as api from "./api";
 import {
   app,
   mirrorDraft,
+  noteDraftKey,
   reviewProposal,
   stageProposal,
   unstageProposal,
 } from "./state.svelte";
 import type { ProposalEntry } from "./types";
 
-const KEY = "instructions:AGENTS.md";
+// The project's `AGENTS.md` is keyed by the project (backlog 133); with
+// none open the key says so.
+const KEY = "unfiled:instructions:AGENTS.md";
 const SAVED = "# Lanternfish\n\nUse cargo.\n";
 
 function entry(text: string, id = "2026-09-14T03-12-45.000Z"): ProposalEntry {
@@ -99,5 +102,31 @@ describe("a loaded proposal is a draft", () => {
     // Nothing pending for instructions: the call is a no-op and the memory
     // review is still the one showing.
     expect(app.proposalReview?.scope).toBe("memory");
+  });
+});
+
+describe("a staged proposal belongs to its project (backlog 133)", () => {
+  it("does not come back as another project's draft after a switch, and is not marked applied there", () => {
+    app.project = { id: "A", name: "A", root: "/tmp/a" } as never;
+    const e = entry("# A's instructions\n");
+    stageProposal("instructions", e, SAVED);
+    const aKey = noteDraftKey("instructions", "AGENTS.md");
+    expect(aKey).toBe("A:instructions:AGENTS.md");
+    expect(app.noteDrafts[aKey]).toBe(e.proposal.text);
+    // The bell opens project B's proposal: B's editor reads under B's key.
+    app.project = { id: "B", name: "B", root: "/tmp/b" } as never;
+    const bKey = noteDraftKey("instructions", "AGENTS.md");
+    expect(bKey).toBe("B:instructions:AGENTS.md");
+    expect(app.noteDrafts[bKey]).toBeUndefined();
+    expect(app.stagedProposal?.key).toBe(aKey);
+    expect(app.stagedProposal?.key).not.toBe(bKey);
+    // Back in A, the draft is still there.
+    app.project = { id: "A", name: "A", root: "/tmp/a" } as never;
+    expect(app.noteDrafts[noteDraftKey("instructions", "AGENTS.md")]).toBe(e.proposal.text);
+    // The vault's file is one for every project: no project in its key.
+    expect(noteDraftKey("memory", "AGENTS.md")).toBe("memory:AGENTS.md");
+    expect(noteDraftKey("knowledge", "x.md")).toBe("knowledge:x.md");
+    expect(noteDraftKey("project", "notes/a.md")).toBe("A:project:notes/a.md");
+    app.project = null;
   });
 });

@@ -18,6 +18,8 @@ import {
   TERM_HEIGHT_KEY,
   clampHeight,
   decodeBase64,
+  droppedMarker,
+  trimPending,
   type ShellRow,
 } from "./terminal";
 
@@ -70,18 +72,22 @@ export function terminalCwd(): string | null {
 
 // ---- the bytes ------------------------------------------------------------
 
-type Sink = (bytes: Uint8Array) => void;
+type Sink = (bytes: Uint8Array | string) => void;
 const sinks = new Map<number, Sink>();
-const pending = new Map<number, Uint8Array[]>();
+/** Bytes that arrived before a shell's component had a sink, capped at
+ *  `PENDING_MAX_BYTES` (backlog 137) — the oldest go, and `dropped`
+ *  counts them for the marker the replay writes first. */
+const pending = new Map<number, { chunks: Uint8Array[]; dropped: number }>();
 
 /** A shell's component takes its bytes from here; what arrived before it
- *  mounted is replayed first. */
+ *  mounted is replayed first, behind a marker if some of it was dropped. */
 export function registerSink(id: number, sink: Sink): () => void {
   sinks.set(id, sink);
   const early = pending.get(id);
   if (early) {
     pending.delete(id);
-    for (const b of early) sink(b);
+    if (early.dropped > 0) sink(droppedMarker(early.dropped));
+    for (const b of early.chunks) sink(b);
   }
   return () => {
     if (sinks.get(id) === sink) sinks.delete(id);
@@ -92,10 +98,28 @@ function deliver(id: number, bytes: Uint8Array) {
   const sink = sinks.get(id);
   if (sink) sink(bytes);
   else {
-    const q = pending.get(id) ?? [];
-    q.push(bytes);
+    const q = pending.get(id) ?? { chunks: [], dropped: 0 };
+    q.chunks.push(bytes);
+    const trimmed = trimPending(q.chunks);
+    q.chunks = trimmed.chunks;
+    q.dropped += trimmed.dropped;
     pending.set(id, q);
   }
+}
+
+/** For the suite: what a shell holds undrawn. */
+export function pendingFor(id: number): { bytes: number; dropped: number } {
+  const q = pending.get(id);
+  if (!q) return { bytes: 0, dropped: 0 };
+  let bytes = 0;
+  for (const c of q.chunks) bytes += c.length;
+  return { bytes, dropped: q.dropped };
+}
+
+/** For the suite: a `terminal-data` event's bytes, as the listener hands
+ *  them on. */
+export function deliverForTest(id: number, bytes: Uint8Array): void {
+  deliver(id, bytes);
 }
 
 let listening = false;
@@ -210,8 +234,11 @@ export async function openTerminalFromBar(): Promise<void> {
   }
 }
 
-/** Hide the pane; the shells keep running. The composer gets the focus
- *  back through the normal tab order, not forced. */
+/** Hide the pane; the shells keep running — and keep their screens:
+ *  the dock stays mounted and is only not displayed (backlog 137), so the
+ *  scrollback, and a `vim` or `less` in front, come back as they were.
+ *  The composer gets the focus back through the normal tab order, not
+ *  forced. */
 export function hidePane(): void {
   term.open = false;
   term.focused = false;

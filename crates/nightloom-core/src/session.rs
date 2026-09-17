@@ -110,10 +110,13 @@ impl ChatMode {
 /// all — it runs in a neutral, empty directory — and a *Chat instructions*
 /// layer of its own.
 ///
-/// Fixed at creation (nightshift blocker 143, the default taken): the
-/// kind is what the engine was built for, and a mark on the first line is
-/// one every reader — the listing, the reconnect check, the top bar — sees
-/// before it reads anything else.
+/// ~~Fixed at creation (nightshift blocker 143, the default taken)~~ —
+/// switchable since 2026-09-17 (backlog 144; blocker 143 answered): the
+/// creation line says what the chat was *born* as, a later
+/// [`SessionEvent::Kind`] says what it is now, and [`Session::kind`] reads
+/// the latest. A mark on the first line is still one every reader — the
+/// listing, the reconnect check, the top bar — sees before it reads
+/// anything else, which is why the birth kind stays there.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChatKind {
@@ -129,6 +132,29 @@ impl ChatKind {
     /// written today with no kind is byte-identical to yesterday's.
     fn is_build(&self) -> bool {
         matches!(self, ChatKind::Build)
+    }
+
+    /// What the model is told on the first message after a switch *to*
+    /// this kind (nightshift backlog 144): the rule change at the tail of
+    /// the conversation, where it is freshest, rather than at the head,
+    /// where it would cost the cached prefix. Wrapped in a tag like the
+    /// engine's other notes so the model can tell it from the person's
+    /// words; the shell puts it in front of the user's text.
+    pub fn switch_note(&self) -> &'static str {
+        match self {
+            ChatKind::Chat => {
+                "<kind-switch>From here this chat is a Chat: the shell, the file-editing \
+                 tools, subagents and plans are withdrawn — a call to one is refused. \
+                 Reads, search and the web remain. Say so rather than calling one. The \
+                 tools listed at the start of this conversation are not all yours \
+                 now.</kind-switch>"
+            }
+            ChatKind::Build => {
+                "<kind-switch>From here this chat is a Claude Code chat: the shell, the \
+                 file-editing tools, subagents and plans are yours to call, under the \
+                 approval setting as before.</kind-switch>"
+            }
+        }
     }
 }
 
@@ -375,6 +401,50 @@ pub enum SessionEvent {
         off: Vec<SegmentKind>,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         edits: BTreeMap<SegmentKind, String>,
+        at: DateTime<Utc>,
+    },
+    /// The chat is a different kind from here on (nightshift backlog 144,
+    /// 2026-09-17; blocker 143 answered *switchable*). ~~Fixed at
+    /// creation~~ — the creation line still says what the chat was born
+    /// as, and this event says what it is now; the latest live one wins,
+    /// the way a [`Title`] does, so a rewind past it restores the kind the
+    /// chat had at that turn.
+    ///
+    /// What a switch changes is a *policy*, not the head of the request
+    /// (his design, 2026-09-17 ~15:00): the declared tools, the system
+    /// prompt and the folder stay what the engine was built with — see
+    /// [`Session::declared_kind`] — a tool the new kind lacks is refused
+    /// when called, and the next user message carries a note saying so
+    /// ([`Session::kind_switch_note`]). Measured on the CLI: keeping the
+    /// declaration keeps the whole cached prefix (~31k read, under 1.2k
+    /// written on the next turn), while changing it re-writes all of it
+    /// (0 read, 23k written) — nightshift `143-report-2026-09-17.md`.
+    ///
+    /// `workspace` is the folder a chat born as a Chat is given when it
+    /// becomes Claude Code, when the project's own folder is not the one
+    /// wanted (or the project has none); absent means the project's.
+    ///
+    /// [`Title`]: SessionEvent::Title
+    Kind {
+        kind: ChatKind,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace: Option<PathBuf>,
+        at: DateTime<Utc>,
+    },
+    /// The extra folders this chat may see on top of its project's
+    /// (nightshift backlog 143, 2026-09-17): the whole list, the latest
+    /// live one winning like [`PromptLayers`], so removing one is recording
+    /// the list without it and a rewind past a grant takes it back. A log
+    /// event rather than a field on the connection because the grant is a
+    /// fact *about the chat* — "this chat may read the notebooks folder"
+    /// holds when the chat is reopened tomorrow — and a fork carries it.
+    /// The shell reads it at connect time and grants each folder on the
+    /// engine in use (`--add-dir` on the CLI, a named tree on the API
+    /// engine); it is not part of the message projection.
+    ///
+    /// [`PromptLayers`]: SessionEvent::PromptLayers
+    Folders {
+        folders: Vec<PathBuf>,
         at: DateTime<Utc>,
     },
     /// The listed events keep their place in the conversation but stop
@@ -1572,6 +1642,46 @@ impl Session {
         });
     }
 
+    /// Make the chat `kind` from here on (nightshift backlog 144). A no-op
+    /// when it already is, and its folder is the one asked for, so a shell
+    /// that re-sends the current kind on a reconnect does not fill the log
+    /// with it. `workspace` is kept only on a switch to `Build` — a Chat
+    /// has no folder to name — and a switch to `Build` with none means the
+    /// project's folder ([`SessionEvent::Kind`]).
+    pub fn record_kind(&mut self, kind: ChatKind, workspace: Option<PathBuf>) {
+        let workspace = match kind {
+            ChatKind::Build => workspace,
+            ChatKind::Chat => None,
+        };
+        if self.kind() == kind && self.kind_workspace() == workspace.as_deref() {
+            return;
+        }
+        self.record(SessionEvent::Kind {
+            kind,
+            workspace,
+            at: Utc::now(),
+        });
+    }
+
+    /// Note the extra folders this chat may see (nightshift backlog 143) —
+    /// the whole list, deduplicated in order, replacing the last one; a
+    /// no-op when it is what the log already says.
+    pub fn record_folders(&mut self, folders: impl IntoIterator<Item = PathBuf>) {
+        let mut wanted: Vec<PathBuf> = Vec::new();
+        for f in folders {
+            if !wanted.contains(&f) {
+                wanted.push(f);
+            }
+        }
+        if self.folders() == wanted.as_slice() {
+            return;
+        }
+        self.record(SessionEvent::Folders {
+            folders: wanted,
+            at: Utc::now(),
+        });
+    }
+
     pub fn record_todos(&mut self, todos: Vec<TodoItem>) {
         self.record(SessionEvent::TodoState {
             todos,
@@ -2322,11 +2432,33 @@ impl Session {
             .unwrap_or_default()
     }
 
-    /// What this chat is for (nightshift backlog 102), read off the
-    /// creation line exactly as [`mode`](Self::mode) is and for the same
-    /// reasons; a log with no creation event, or one from before kinds
-    /// existed, is `Build` — the chat every reader assumed until then.
+    /// What this chat is for (nightshift backlog 102): ~~read off the
+    /// creation line exactly as [`mode`](Self::mode) is~~ — since backlog
+    /// 144 (2026-09-17) the most recent live [`SessionEvent::Kind`], and
+    /// only where there is none the creation line, as
+    /// [`born_kind`](Self::born_kind) reads it. Live, like a
+    /// [`title`](Self::title): a rewind past a switch restores the kind the
+    /// chat had at that turn, which is the honest answer to "what could the
+    /// model do then". A log with no creation event, or one from before
+    /// kinds existed, is `Build` — the chat every reader assumed until then.
+    ///
+    /// This is the *policy* kind — what the chat may do now. The engine's
+    /// declaration is [`declared_kind`](Self::declared_kind).
     pub fn kind(&self) -> ChatKind {
+        self.live_events()
+            .into_iter()
+            .rev()
+            .find_map(|(_, e)| match e {
+                SessionEvent::Kind { kind, .. } => Some(*kind),
+                _ => None,
+            })
+            .unwrap_or_else(|| self.born_kind())
+    }
+
+    /// What the chat was started as: the creation line's kind, which a
+    /// switch never rewrites (nightshift backlog 144). The listing reads
+    /// this off the first line before it reads anything else.
+    pub fn born_kind(&self) -> ChatKind {
         self.events
             .iter()
             .find_map(|e| match e {
@@ -2334,6 +2466,109 @@ impl Session {
                 _ => None,
             })
             .unwrap_or_default()
+    }
+
+    /// What the engine is *built* for (nightshift backlog 144): `Build` if
+    /// the chat was born one or has ever been switched to one over the
+    /// live events, else `Chat`. The declared tool list, the system prompt
+    /// and the folder follow this, and [`kind`](Self::kind) is enforced on
+    /// top as a policy — because the declaration leads every request, and
+    /// changing it throws away the cached prefix (measured: 0 read, 23k
+    /// written), while a refusal at call time and a note at the tail cost
+    /// nothing. So a chat born Claude Code that becomes a Chat keeps its
+    /// tools declared and its folder, and simply may not call the writers;
+    /// a chat born as a Chat that becomes Claude Code has the tools
+    /// declared from then on — one re-warm, the only one there is — and
+    /// keeps them declared if it goes back to being a Chat. A rewind past
+    /// the first switch to `Build` takes the declaration back with it,
+    /// which on the API engine is a rewind's ordinary cost.
+    pub fn declared_kind(&self) -> ChatKind {
+        if self.born_kind() == ChatKind::Build {
+            return ChatKind::Build;
+        }
+        let ever_build = self.live_events().into_iter().any(|(_, e)| {
+            matches!(
+                e,
+                SessionEvent::Kind {
+                    kind: ChatKind::Build,
+                    ..
+                }
+            )
+        });
+        if ever_build {
+            ChatKind::Build
+        } else {
+            ChatKind::Chat
+        }
+    }
+
+    /// The folder the latest live switch to `Build` named, if it named one
+    /// (nightshift backlog 144): where a chat born as a Chat runs once it
+    /// is Claude Code, when that is not the project's folder. `None` on a
+    /// chat that was born `Build`, or whose switch left the folder to the
+    /// project. Read off the live events like [`kind`](Self::kind).
+    pub fn kind_workspace(&self) -> Option<&Path> {
+        self.live_events()
+            .into_iter()
+            .rev()
+            .find_map(|(_, e)| match e {
+                SessionEvent::Kind {
+                    kind: ChatKind::Build,
+                    workspace,
+                    ..
+                } => Some(workspace.as_deref()),
+                SessionEvent::Kind { .. } => Some(None),
+                _ => None,
+            })
+            .flatten()
+    }
+
+    /// The note the next user message should carry, if the chat's kind
+    /// has changed since the last one (nightshift backlog 144): the kind
+    /// the model was last told about — the one in force at the latest
+    /// live user message — against the kind now. `None` when they agree,
+    /// so a switch and a switch back before anything is sent say nothing,
+    /// and a note is never repeated once a message has carried it. The
+    /// projection puts the same note on the same message
+    /// ([`Session::messages`]); a shell that sends the text itself, as
+    /// the Claude Code engine does, asks here before it records the turn.
+    pub fn kind_switch_note(&self) -> Option<&'static str> {
+        let live = self.live_events();
+        let last_user = live
+            .iter()
+            .rposition(|(_, e)| matches!(e, SessionEvent::UserMessage { .. }));
+        let told = match last_user {
+            Some(pos) => live[..pos]
+                .iter()
+                .rev()
+                .find_map(|(_, e)| match e {
+                    SessionEvent::Kind { kind, .. } => Some(*kind),
+                    _ => None,
+                })
+                .unwrap_or_else(|| self.born_kind()),
+            // Nothing sent yet: the model has been told nothing but what
+            // the chat was born as. (A chat born as a Chat and switched
+            // before its first message gets a note it did not strictly
+            // need — the head declares the tools — which is harmless, and
+            // keeps this rule the projection's rule.)
+            None => self.born_kind(),
+        };
+        let now = self.kind();
+        (told != now).then(|| now.switch_note())
+    }
+
+    /// Projection: the extra folders this chat may see — the most recent
+    /// live [`SessionEvent::Folders`], or none. Read off the live events
+    /// like the prompt layers and for the same reasons.
+    pub fn folders(&self) -> &[PathBuf] {
+        self.live_events()
+            .into_iter()
+            .rev()
+            .find_map(|(_, e)| match e {
+                SessionEvent::Folders { folders, .. } => Some(folders.as_slice()),
+                _ => None,
+            })
+            .unwrap_or(&[])
     }
 
     /// Projection: the prompt layers this chat has switched off — the most
@@ -2462,14 +2697,37 @@ impl Session {
         let gone = self.block_elisions();
         let removed_calls = self.removed_calls(&gone);
         let mut messages: Vec<SourcedMessage> = Vec::new();
+        // The kind switch's note rides the first user message after the
+        // switch (nightshift backlog 144; `kind_switch_note` is the same
+        // rule asked of the tail): `told` is the kind the model was last
+        // told — at birth, then by each note — and a live `Kind` event
+        // that leaves it apart from the kind now is what puts the note on.
+        // Tagged as that event's block, so the context view can point at it.
+        let mut told = self.born_kind();
+        let mut switch: Option<(usize, ChatKind)> = None;
         for (i, e) in self.live_events() {
             match e {
+                SessionEvent::Kind { kind, .. } => {
+                    switch = Some((i, *kind));
+                }
                 SessionEvent::UserMessage {
                     text,
                     images,
                     documents,
                     ..
                 } => {
+                    let note = match switch.take() {
+                        Some((k, kind)) if kind != told => {
+                            told = kind;
+                            Some(SourcedBlock::event(
+                                ContentBlock::Text {
+                                    text: kind.switch_note().to_string(),
+                                },
+                                k,
+                            ))
+                        }
+                        _ => None,
+                    };
                     // The edited text stands in for the original everywhere
                     // below, size estimate included: the marker describes
                     // what the wire would have carried.
@@ -2522,6 +2780,12 @@ impl Session {
                             ));
                         }
                         content
+                    };
+                    // The note leads, before the attachments and the words:
+                    // it is the rule the rest of the message is read under.
+                    let content = match note {
+                        Some(note) => std::iter::once(note).chain(content).collect(),
+                        None => content,
                     };
                     messages.push(SourcedMessage {
                         role: Role::User,
@@ -4239,6 +4503,217 @@ mod tests {
         assert_eq!(eph.kind(), ChatKind::Chat);
         assert!(eph.log_path().is_none());
         fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A kind switch (nightshift backlog 144) is an event the latest live
+    /// one of which wins: it comes back through `load`, the creation line
+    /// still says what the chat was born as, re-recording the current kind
+    /// writes nothing, and the folder a switch to Claude Code names rides
+    /// the event (a switch to a Chat never keeps one).
+    #[test]
+    fn a_kind_switch_is_the_latest_live_kind_event_and_survives_a_reload() {
+        let dir = std::env::temp_dir().join(format!("nightloom-kind-{}", uuid::Uuid::new_v4()));
+        let mut s = Session::start(&dir, ChatMode::Normal, ChatKind::Build).unwrap();
+        s.record_kind(ChatKind::Build, None);
+        assert_eq!(s.events().len(), 1, "the current kind is not re-recorded");
+        s.record_kind(ChatKind::Chat, Some(PathBuf::from("/ignored")));
+        assert_eq!(s.kind(), ChatKind::Chat);
+        assert_eq!(s.born_kind(), ChatKind::Build);
+        assert_eq!(s.kind_workspace(), None, "a Chat has no folder to name");
+        s.record_kind(ChatKind::Chat, None);
+        assert_eq!(s.events().len(), 2);
+        s.record_kind(ChatKind::Build, Some(PathBuf::from("/elsewhere")));
+        assert_eq!(s.kind(), ChatKind::Build);
+        assert_eq!(s.kind_workspace(), Some(Path::new("/elsewhere")));
+        s.record_kind(ChatKind::Build, None);
+        assert_eq!(
+            s.events().len(),
+            4,
+            "the same kind in another folder is a switch"
+        );
+        assert_eq!(s.kind_workspace(), None);
+
+        let path = s.log_path().unwrap().to_path_buf();
+        let raw = fs::read_to_string(&path).unwrap();
+        assert!(
+            raw.lines().nth(1).unwrap().contains(r#""event":"kind""#),
+            "{raw}"
+        );
+        assert!(
+            raw.lines().nth(1).unwrap().contains(r#""kind":"chat""#),
+            "{raw}"
+        );
+        assert!(!raw.lines().nth(1).unwrap().contains("workspace"), "{raw}");
+        assert!(raw.lines().nth(2).unwrap().contains("/elsewhere"), "{raw}");
+        drop(s);
+        let back = Session::load(&path).unwrap();
+        assert_eq!(back.kind(), ChatKind::Build);
+        assert_eq!(back.born_kind(), ChatKind::Build);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A chat's extra folders (nightshift backlog 143) are a list the
+    /// latest live event of which wins: deduplicated, a no-op when
+    /// unchanged, back through `load`, inherited by a fork, and taken back
+    /// by a rewind past the grant.
+    #[test]
+    fn extra_folders_are_the_latest_live_list_and_round_trip() {
+        let dir = std::env::temp_dir().join(format!("nightloom-folders-{}", uuid::Uuid::new_v4()));
+        let mut s = Session::start(&dir, ChatMode::Normal, ChatKind::Build).unwrap();
+        assert!(s.folders().is_empty());
+        s.record_folders([]);
+        assert_eq!(s.events().len(), 1, "no event for an unchanged empty list");
+        let first = exchange(&mut s, "one", "first");
+        s.record_folders([
+            PathBuf::from("/a"),
+            PathBuf::from("/b"),
+            PathBuf::from("/a"),
+        ]);
+        assert_eq!(s.folders(), [PathBuf::from("/a"), PathBuf::from("/b")]);
+        s.record_folders([PathBuf::from("/a"), PathBuf::from("/b")]);
+        assert_eq!(s.events().len(), 4, "the same list is not re-recorded");
+        exchange(&mut s, "two", "second");
+        s.record_folders([PathBuf::from("/b")]);
+        assert_eq!(s.folders(), [PathBuf::from("/b")]);
+
+        let path = s.log_path().unwrap().to_path_buf();
+        let raw = fs::read_to_string(&path).unwrap();
+        assert!(raw.contains(r#""event":"folders""#), "{raw}");
+        // A fork cut at the second turn carries the grant current then.
+        assert_eq!(
+            s.fork_from(&dir, 4).unwrap().folders(),
+            [PathBuf::from("/a"), PathBuf::from("/b")]
+        );
+        drop(s);
+        let mut back = Session::load(&path).unwrap();
+        assert_eq!(back.folders(), [PathBuf::from("/b")]);
+        back.rewind(first).unwrap();
+        assert!(
+            back.folders().is_empty(),
+            "a rewind past the grant takes it back"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A rewind past a switch restores the kind the chat had at that turn
+    /// — the kind is live, like a title, and unlike the mode on the
+    /// creation line, which no rewind reaches.
+    #[test]
+    fn a_rewind_past_a_kind_switch_restores_the_earlier_kind() {
+        let mut s = Session::new();
+        let first = exchange(&mut s, "one", "first");
+        s.record_kind(ChatKind::Chat, None);
+        exchange(&mut s, "two", "second");
+        assert_eq!(s.kind(), ChatKind::Chat);
+        s.rewind(first).unwrap();
+        assert_eq!(s.kind(), ChatKind::Build);
+        assert!(
+            s.kind_switch_note().is_none(),
+            "nothing to tell after the rewind"
+        );
+    }
+
+    /// The declaration is what the engine is built for: `Build` from the
+    /// moment the chat has ever been one over the live events, whatever
+    /// the policy kind is now — so a chat born Claude Code keeps its tools
+    /// declared as a Chat, and a chat born as a Chat declares them from
+    /// its first switch on. A rewind past that first switch takes the
+    /// declaration back with it.
+    #[test]
+    fn the_declaration_is_build_once_the_chat_has_ever_been_build() {
+        let mut born_build = Session::new();
+        born_build.record_kind(ChatKind::Chat, None);
+        assert_eq!(born_build.kind(), ChatKind::Chat);
+        assert_eq!(born_build.declared_kind(), ChatKind::Build);
+
+        let dir = std::env::temp_dir().join(format!("nightloom-kind-{}", uuid::Uuid::new_v4()));
+        let mut born_chat = Session::start(&dir, ChatMode::Ephemeral, ChatKind::Chat).unwrap();
+        assert_eq!(born_chat.declared_kind(), ChatKind::Chat);
+        let first = exchange(&mut born_chat, "one", "first");
+        born_chat.record_kind(ChatKind::Build, None);
+        assert_eq!(born_chat.declared_kind(), ChatKind::Build);
+        exchange(&mut born_chat, "two", "second");
+        born_chat.record_kind(ChatKind::Chat, None);
+        assert_eq!(born_chat.kind(), ChatKind::Chat);
+        assert_eq!(
+            born_chat.declared_kind(),
+            ChatKind::Build,
+            "once declared, the tools stay declared"
+        );
+        born_chat.rewind(first).unwrap();
+        assert_eq!(born_chat.declared_kind(), ChatKind::Chat);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The note rides the first user message after a switch, at its head,
+    /// tagged as the switch event's block; it is not repeated on the next
+    /// message; a switch and a switch back before anything is sent say
+    /// nothing; and the tail question (`kind_switch_note`) agrees with the
+    /// projection at every point.
+    #[test]
+    fn the_switch_note_rides_the_first_message_after_the_switch_and_never_again() {
+        let mut s = Session::new();
+        assert!(s.kind_switch_note().is_none());
+        exchange(&mut s, "one", "first");
+        s.record_kind(ChatKind::Chat, None);
+        let switch = s.events().len() - 1;
+        assert_eq!(s.kind_switch_note(), Some(ChatKind::Chat.switch_note()));
+        exchange(&mut s, "two", "second");
+        assert!(
+            s.kind_switch_note().is_none(),
+            "carried by the message before"
+        );
+        exchange(&mut s, "three", "third");
+
+        let messages = s.messages_sourced(None);
+        let second = &messages[2];
+        assert_eq!(second.role, Role::User);
+        assert_eq!(second.content.len(), 2, "the note, then the words");
+        assert!(matches!(
+            &second.content[0].block,
+            ContentBlock::Text { text } if text == ChatKind::Chat.switch_note()
+        ));
+        assert_eq!(
+            second.content[0].source,
+            BlockSource::Event { index: switch }
+        );
+        assert!(matches!(&second.content[1].block, ContentBlock::Text { text } if text == "two"));
+        assert_eq!(
+            messages[0].content.len(),
+            1,
+            "the first message is untouched"
+        );
+        assert_eq!(messages[4].content.len(), 1, "and the note is not repeated");
+
+        // Switched and switched back before a message: nothing to say, and
+        // the projection agrees.
+        s.record_kind(ChatKind::Build, None);
+        s.record_kind(ChatKind::Chat, None);
+        assert!(s.kind_switch_note().is_none());
+        exchange(&mut s, "four", "fourth");
+        assert_eq!(s.messages_sourced(None)[6].content.len(), 1);
+
+        // Back for good: the other note, once.
+        s.record_kind(ChatKind::Build, None);
+        assert_eq!(s.kind_switch_note(), Some(ChatKind::Build.switch_note()));
+        exchange(&mut s, "five", "fifth");
+        assert_eq!(s.messages_sourced(None)[8].content.len(), 2);
+        assert!(s.kind_switch_note().is_none());
+    }
+
+    /// A chat switched before its first message carries the note on that
+    /// message — the model has been told nothing yet but what the chat was
+    /// born as — and a switch back to the birth kind before it says nothing.
+    #[test]
+    fn a_switch_before_the_first_message_notes_it_on_that_message() {
+        let mut s = Session::new();
+        s.record_kind(ChatKind::Chat, None);
+        assert_eq!(s.kind_switch_note(), Some(ChatKind::Chat.switch_note()));
+        s.record_kind(ChatKind::Build, None);
+        assert!(s.kind_switch_note().is_none());
+        s.record_kind(ChatKind::Chat, None);
+        exchange(&mut s, "one", "first");
+        assert_eq!(s.messages_sourced(None)[0].content.len(), 2);
     }
 
     /// An ephemeral session is marked in memory and creates nothing on

@@ -142,7 +142,7 @@ describe("one inverse per operation", () => {
     app.activeSessionId = "chat-1";
     expect(undoLabel()).toBe("rename");
     await undo();
-    expect(api.renameSession).toHaveBeenLastCalledWith("chat-2", "Old name");
+    expect(api.renameSession).toHaveBeenLastCalledWith("chat-2", "Old name", app.activeSessionId);
   });
 
   it("delete → restore from the trash, reopened when nothing is open", async () => {

@@ -4,6 +4,8 @@ import type { SessionEvent } from "./types";
 import {
   clampHeight,
   clockLabel,
+  droppedMarker,
+  trimPending,
   decodeBase64,
   exitLabel,
   filesChanged,
@@ -136,6 +138,19 @@ describe("the notice row while a Claude Code turn works here (12c)", () => {
     expect(latestCall([{ kind: "tool", call: call({ input: { command: long } }) }], null)).toBe(
       `Bash ${"x".repeat(47)}…`,
     );
+  });
+
+  it("trims undrawn output from the front, whole chunks, and names the loss", () => {
+    const c = (n: number) => new Uint8Array(n);
+    const q = [c(400), c(300), c(300), c(100)];
+    const t = trimPending(q, 1000);
+    expect(t.chunks.map((x) => x.length)).toEqual([c(300), c(300), c(100)].map((x) => x.length));
+    expect(t.dropped).toBe(400);
+    const same = trimPending(q, 1100);
+    expect(same.chunks).toBe(q);
+    expect(same.dropped).toBe(0);
+    expect(trimPending([], 10)).toEqual({ chunks: [], dropped: 0 });
+    expect(droppedMarker(300 * 1024)).toContain("300 KB of output not shown");
   });
 
   it("counts the clock from the newest user message", () => {

@@ -116,6 +116,12 @@ export const handoff = $state<HandoffState>({
   noStartPromptChat: null,
 });
 
+/** The stage of every chat that is not the one `handoff` shows (backlog
+ *  137): `handoff` is the projection of one chat, as the composer and the
+ *  notice read it; a reading for another chat swaps the projection
+ *  through here. The fill is not kept — the next reading brings it. */
+const stages = new Map<string, Pick<HandoffState, "stage" | "dismissedAt" | "queuedId" | "startPrompt">>();
+
 /**
  * What a reading does to the stage. `wrapping` (the wrap-up went as this
  * turn) becomes `wrapped`; `idle` becomes `due` when the fill is past
@@ -215,11 +221,24 @@ export function noteFill(
   events: SessionEvent[] | null = null,
 ): void {
   if (handoff.chat !== chat) {
+    // Another chat's reading: this one's stage goes under its id and the
+    // other's comes back (backlog 137, review E's FE9 — a switch used to
+    // reset the stage, so a chat wrapped up and left for a moment was
+    // asked to wrap up again, and its found start prompt was gone).
+    if (handoff.chat !== null) {
+      stages.set(handoff.chat, {
+        stage: handoff.stage,
+        dismissedAt: handoff.dismissedAt,
+        queuedId: handoff.queuedId,
+        startPrompt: handoff.startPrompt,
+      });
+    }
+    const back = chat === null ? undefined : stages.get(chat);
     handoff.chat = chat;
-    handoff.stage = "idle";
-    handoff.dismissedAt = 0;
-    handoff.queuedId = 0;
-    handoff.startPrompt = null;
+    handoff.stage = back?.stage ?? "idle";
+    handoff.dismissedAt = back?.dismissedAt ?? 0;
+    handoff.queuedId = back?.queuedId ?? 0;
+    handoff.startPrompt = back?.startPrompt ?? null;
     handoff.noStartPromptChat = null;
   }
   handoff.used = used ?? 0;
@@ -320,8 +339,10 @@ export function reconsider(chat: string | null): void {
   }
 }
 
-/** After *Continue*: the new chat starts clean. */
+/** After *Continue*: the new chat starts clean, and the chat that was
+ *  wrapped up is forgotten here — its hand-off is done. */
 export function resetHandoff(): void {
+  if (handoff.chat !== null) stages.delete(handoff.chat);
   handoff.chat = null;
   handoff.stage = "idle";
   handoff.fill = 0;

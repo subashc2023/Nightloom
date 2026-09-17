@@ -5,7 +5,9 @@
   import {
     app,
     addToast,
+    chatKind,
     chatMode,
+    declaredKind,
     promoteLayerText,
     promptLayerEdits,
     promptLayersOff,
@@ -335,6 +337,13 @@
    */
   const init = $derived(app.agentInit);
   const builtinTools = $derived((init?.tools ?? []).filter((t) => !t.startsWith("mcp__")));
+  /** A Chat over a Claude Code declaration (nightshift backlog 144): the
+   *  CLI still lists every tool — the list is what keeps the cached prefix
+   *  — and a `PreToolUse` hook refuses all but the five read-only ones and
+   *  Nightloom's own. The card strikes the refused ones through. */
+  const chatPolicy = $derived(chatKind(app.events) === "chat" && declaredKind(app.events) === "build");
+  const KEPT_ON_A_CHAT = ["Read", "Glob", "Grep", "WebFetch", "WebSearch"];
+  const refused = (t: string) => chatPolicy && !KEPT_ON_A_CHAT.includes(t);
   const mcpTools = $derived.by(() => {
     const by = new Map<string, string[]>();
     for (const t of init?.tools ?? []) {
@@ -637,13 +646,13 @@
             <div class="ch">
               <div class="name">
                 <span class="t">Tools</span>
-                <span class="gloss">The CLI's built-in tools this session offers, then each server's tools by short name.</span>
+                <span class="gloss">The CLI's built-in tools this session offers, then each server's tools by short name.{#if chatPolicy} Struck through: still listed — the list is what keeps the cache warm — and refused when called, since this chat is a Chat now (Kind, in the rail).{/if}</span>
               </div>
               <span class="spacer"></span>
-              <span class="meta">{init.tools.length}</span>
+              <span class="meta">{init.tools.length}{#if chatPolicy} · {builtinTools.filter(refused).length} refused{/if}</span>
             </div>
             <div class="chips">
-              {#each builtinTools as t (t)}<span class="chip">{t}</span>{/each}
+              {#each builtinTools as t (t)}<span class="chip" class:refused={refused(t)} title={refused(t) ? "Refused on a Chat: a call to it gets an error result" : ""}>{t}</span>{/each}
             </div>
             {#each [...mcpTools.entries()] as [server, names] (server)}
               <div class="sub">
@@ -772,6 +781,32 @@
         </p>
       {/if}
       <div class="cards">
+        <!-- The folders this chat can see (nightshift backlog 143): the
+             home folder and every extra one, with its source and alias.
+             Read-only here — the rail's Folders row is where they change. -->
+        {#if app.connection && (app.connection.folders?.length ?? 0) > 0}
+          <section class="card">
+            <div class="ch">
+              <span class="sw-space"></span>
+              <div class="name">
+                <span class="t">Folders this chat can see</span>
+                <span class="gloss">
+                  The working directory, then the extra folders granted to the project or to this chat —
+                  {agentEngine ? "each an extra working directory of the CLI (--add-dir), readable without a prompt and editable under the approval setting" : "each a named tree the file tools reach by its @alias, like @kb for the vault"}.
+                  Change them in the rail's Folders row.
+                </span>
+              </div>
+              <span class="spacer"></span>
+              <span class="meta">{1 + (app.connection.folders?.length ?? 0)}</span>
+            </div>
+            <div class="chips fold-chips">
+              <span class="chip" title="The working directory">{app.connection.workspace}</span>
+              {#each app.connection.folders ?? [] as f (f.path)}
+                <span class="chip" title={f.path}>{#if f.alias}<strong>{f.alias}</strong> → {/if}{f.path} <em>· {f.source === "project" ? "project" : "this chat"}</em></span>
+              {/each}
+            </div>
+          </section>
+        {/if}
         <!-- Claude Code's own prompt (nightshift backlog 077): first,
              since it is what everything below is appended to; read-only,
              no switch. From the CLI's own session file, after the first
@@ -1445,6 +1480,19 @@
     display: flex;
     flex-wrap: wrap;
     gap: 4px;
+  }
+  .chip.refused {
+    text-decoration: line-through;
+    opacity: 0.55;
+  }
+  /* The folders card (backlog 143): one chip per folder, the path whole. */
+  .fold-chips .chip {
+    white-space: normal;
+    word-break: break-all;
+  }
+  .fold-chips .chip em {
+    font-style: normal;
+    color: var(--dim);
   }
   .chip {
     font-family: var(--mono);

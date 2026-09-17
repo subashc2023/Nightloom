@@ -275,8 +275,15 @@
       return;
     }
     try {
-      await client!.send(chatId, text);
+      const status = await client!.send(chatId, text);
       remote = { ...remote, busy: true };
+      if (status === "queued") {
+        // The Mac has it behind the running turn (backlog 132): it lands
+        // in the transcript when its own turn runs, so nothing is drawn
+        // yet — a row drawn now would vanish on the re-read.
+        note("the Mac is mid-turn — your message goes when it ends");
+        return;
+      }
       live = emptyTurn();
       // Drawn at once rather than after the log's re-read: his message is
       // the one thing on the page he already knows the text of.
@@ -312,10 +319,14 @@
     if (!client || link !== "online" || remote.busy || queue.length === 0) return;
     const [next, ...rest] = queue;
     try {
-      await client.send(next.chat, next.text);
+      const status = await client.send(next.chat, next.text);
       queue = rest;
       saveQueue(queue);
       remote = { ...remote, busy: true };
+      if (status === "queued") {
+        note("the Mac is mid-turn — the held message goes when it ends");
+        return;
+      }
       if (next.chat === chatId) {
         live = emptyTurn();
         events = [...events, { event: "user_message", text: next.text, at: new Date().toISOString() }];

@@ -3,7 +3,7 @@ import * as api from "./api";
 import { handoff, noteAgentTurnEnd, resetHandoff } from "./handoff.svelte";
 import { suggestions } from "./suggestions.svelte";
 import { isMac } from "./platform";
-import { draftKey, enqueueMessage, moveDraft, newDraftKey, setDraftText } from "./drafts.svelte";
+import { UNFILED, draftKey, enqueueMessage, moveDraft, newDraftKey, setDraftText } from "./drafts.svelte";
 import {
   defaultDraft,
   isProviderVisible,
@@ -29,6 +29,8 @@ import { LIST_SCOPE, NEW_CHAT_SCOPE, UndoHistory } from "./undo";
 import { chatName, notifyNeedsYou, notifyTurnEnd } from "./notify";
 import { RESUME_TEXT, SleepWatch, loadSleepPrefs, pushPowerPrefs, type Woke } from "./sleep";
 import { asideFollowUp, asideQuestion, type AsideQuote } from "./asideQuote";
+import { loadAsides } from "./asides";
+import { SEARCH_COLUMN_MAX, searchGrowth } from "./search.svelte";
 import * as tabs from "./tabs";
 import type { TabContent, Workspace } from "./tabs";
 import {
@@ -57,6 +59,7 @@ import type {
   ChatKind,
   ChatMode,
   DocumentInput,
+  FolderInfo,
   ImageInput,
   ItemList,
   KnowledgeInfo,
@@ -275,11 +278,14 @@ export function toggleSidebar(): void {
 }
 
 /** The sidebar's column while the search panel is open (nightshift backlog
- *  117, board 11a): widened to 380px, or the sidebar's own width when that
- *  is already wider; the saved width is untouched and comes back on esc. */
-export const SEARCH_COLUMN = 380;
+ *  117, board 11a): ~~widened to 380px, or the sidebar's own width when that
+ *  is already wider~~ — since backlog 138 (2026-09-17) the sidebar's width
+ *  plus a small growth the panel tweens in on open and out on close
+ *  (`search.svelte.ts`: up to 80px, never past 380, eased over 160 ms),
+ *  so the column no longer jumps; the saved width is untouched. */
+export const SEARCH_COLUMN = SEARCH_COLUMN_MAX;
 export function sidebarColumn(): number {
-  return app.search.open ? Math.max(SEARCH_COLUMN, app.layout.sidebarWidth) : app.layout.sidebarWidth;
+  return app.layout.sidebarWidth + Math.round(searchGrowth.current);
 }
 
 export function setSidebarWidth(px: number): void {
@@ -403,6 +409,10 @@ export interface Connection {
   engine: Engine;
   /** Present only on the agent engine. */
   agent: AgentInfo | null;
+  /** The extra folders this connection may reach (nightshift backlog 143),
+   *  each with its source and, on the API engine, its `@alias`. Optional so
+   *  a fixture built before the field existed still types. */
+  folders?: FolderInfo[];
 }
 
 /** One exchange of the open chat's aside (backlog 081; streamed since
@@ -742,6 +752,13 @@ export const app = $state({
   /** The tab being dragged, while one is: the strips and the panes' drop
    *  halves read it, since `dataTransfer` is unreadable during `dragover`. */
   draggingTab: null as string | null,
+  /** A content descriptor being dragged in from outside the strips (a
+   *  sidebar row, a note row, the Nightshift or Graph button, a project
+   *  row, the aside card — backlog 140 pass 2), for the same reason. */
+  draggingContent: null as TabContent | null,
+  /** The terminal dock's strip being dragged between panes (backlog 113's
+   *  12b): the halves light *dock here* and a drop moves `term.pane`. */
+  draggingTerm: false,
   /**
    * The search-everywhere panel (nightshift backlog 117, with 106's second
    * half): whether it is showing in the sidebar's column, the query and
@@ -1153,8 +1170,14 @@ export async function init(): Promise<void> {
   // watch see it as typed. A message for a chat that is not open opens
   // it first; one that arrives while a turn runs joins the composer's
   // queue (the phone also holds one for while the Mac is unreachable).
-  await listen<{ chat: string | null; text: string }>("remote-send", (e) => {
-    void remoteSend(e.payload.chat, e.payload.text);
+  // The listener waits for the answer (backlog 132): what became of the
+  // message goes back through `remote_sent`, and the phone hears it.
+  await listen<{ id: number; chat: string | null; text: string }>("remote-send", (e) => {
+    const { id, chat, text } = e.payload;
+    remoteSend(chat, text).then(
+      (outcome) => void api.remoteSent(id, outcome === "queued", null).catch(() => {}),
+      (err: unknown) => void api.remoteSent(id, false, String(err)).catch(() => {}),
+    );
   });
   await listen<{
     id: string;
@@ -1760,6 +1783,14 @@ export async function runDailyPass(): Promise<void> {
     } catch (e) {
       said.push(`tidy failed: ${String(e)}`);
     }
+  } catch (e) {
+    // A capture or a dream that failed — the pass lock held by another
+    // Nightloom, a provider without a key — used to leave through here
+    // with no line and no toast, and Settings read "last ran 04:00" as
+    // if it had (backlog 133, review B's FB9). Now the failure is the
+    // line and the toast; the day was stamped as run at the start, as
+    // before, so the minute clock does not retry the same failure.
+    said.push(`failed: ${String(e)}`);
   } finally {
     app.centre.dailyRunning = false;
   }
@@ -1828,7 +1859,8 @@ export async function useProject(id: string | null): Promise<void> {
   app.activeSessionId = null;
   app.events = [];
   // The tabs were the list just left too (backlog 099): a workspace is a
-  // project's, as an editor's is a folder's.
+  // project's, as an editor's is a folder's. The view that stays (the
+  // Nightshift page, below) lands in the fresh workspace at the end.
   app.tabs = tabs.emptyWorkspace();
   // The pending kind was chosen for the list just left; the backend reset
   // its copy in `open_project` / `close_project` (nightshift backlog 061).
@@ -1849,6 +1881,7 @@ export async function useProject(id: string | null): Promise<void> {
   // navigation to the new project's chat.
   if (app.view !== "nightshift") app.view = "chat";
   app.openNote = null;
+  reflectTabs();
   await applyDraft();
   await refreshProjects();
   await refreshSessions();
@@ -1896,11 +1929,22 @@ export function showNewProject(): void {
   app.view = "new-project";
   app.openNote = null;
   app.proposalReview = null;
+  // The form is a tab (backlog 140); landed here as well as by the
+  // effect, so a click with the form already the view still finds it.
+  reflectTabs();
 }
 
-/** Leave the form. The draft stays — Escape and Cancel both come here. */
+/** Leave the form. The draft stays — Escape and Cancel both come here.
+ *  The form is a tab (backlog 140): leaving closes its tab and lands the
+ *  neighbour, as the note view's ← Chat does. */
 export function closeNewProject(): void {
-  if (app.view === "new-project") app.view = "chat";
+  if (app.view !== "new-project") return;
+  const front = tabs.activeTab(tabs.focusedPane(app.tabs));
+  if (front.content.kind === "new-project") {
+    void closeTab(front.id);
+    return;
+  }
+  app.view = "chat";
 }
 
 /** Drop the draft and leave. Behind a confirmation in the form. */
@@ -2020,6 +2064,7 @@ export async function forgetProject(id: string): Promise<void> {
     "Removed from the list — the folder, its notes and its chats are untouched on disk.",
   );
   await refreshProjects();
+  dropProjectTabs(id);
   if (wasOpen) await useProject(null);
 }
 
@@ -2043,12 +2088,18 @@ export function showNote(scope: NoteScope, name: string): void {
   // also reachable from the welcome page and from the graph, where the
   // sidebar may be on Chats.
   app.leftTab = "notes";
+  // Landed here as well as by the effect (backlog 140): a ⌘-click on the
+  // note already in front changes nothing the effect sees, and the
+  // modifier must be consumed rather than left armed (review E's rule).
+  reflectTabs();
 }
 
 export function showGraph(): void {
   app.view = "graph";
   app.openNote = null;
   app.leftTab = "notes";
+  // The graph is a tab (backlog 140).
+  reflectTabs();
 }
 
 /**
@@ -2147,7 +2198,7 @@ export async function saveNote(
   // instead of it — the file was written by the editor's own path above,
   // which is the whole design of proposals.
   const staged = app.stagedProposal;
-  if (staged && staged.key === `${scope}:${name}`) {
+  if (staged && staged.key === noteDraftKey(scope, name)) {
     app.stagedProposal = null;
     try {
       await api.markApplied(staged.scope, staged.id, content);
@@ -2219,6 +2270,22 @@ export function mirrorDraft(key: string, text: string, saved: string): void {
 }
 
 /**
+ * The key a note's draft and a staged proposal live under. `scope:name`
+ * — and, for the scopes that are one file *per project* (the project's
+ * notes and its `AGENTS.md`), the project's id in front (backlog 133,
+ * review B's FB8): with one key for every project's `AGENTS.md`, a
+ * proposal loaded into project A's editor and left unsaved came back as
+ * B's unsaved draft after a switch from the bell, and a Save wrote A's
+ * instructions over B's file. The vault's, the models' and the unfiled
+ * chats' files are one each, so their keys carry no project.
+ */
+export function noteDraftKey(scope: NoteScope, name: string, projectId: string | null = app.project?.id ?? null): string {
+  return scope === "project" || scope === "instructions"
+    ? `${projectId ?? UNFILED}:${scope}:${name}`
+    : `${scope}:${name}`;
+}
+
+/**
  * Put a proposal's text in the editor as a draft. The file is untouched:
  * `noteDrafts` is where unsaved text lives, the ● draft marker and Revert
  * follow from it, and the only way the text reaches the file is the same
@@ -2226,7 +2293,7 @@ export function mirrorDraft(key: string, text: string, saved: string): void {
  * proposal as applied afterwards.
  */
 export function stageProposal(scope: ProposalScope, entry: ProposalEntry, saved: string): void {
-  const key = `${scope}:${AGENTS_MD}`;
+  const key = noteDraftKey(scope, AGENTS_MD);
   mirrorDraft(key, entry.proposal.text, saved);
   app.stagedProposal = { key, scope, id: entry.id };
   app.proposalReview = null;
@@ -2323,6 +2390,7 @@ export async function applyDraft(): Promise<void> {
       knowledge: res.knowledge ?? null,
       engine: "provider",
       agent: null,
+      folders: res.folders ?? [],
     };
     // The backend is the authority on which project a connection is filed
     // under: an open project overrides the workspace the rail saved, so
@@ -2385,6 +2453,7 @@ async function applyAgentDraft(): Promise<void> {
       knowledge: res.knowledge ?? null,
       engine: "claude-code",
       agent: res.agent ?? null,
+      folders: res.folders ?? [],
     };
     app.project = res.project ?? null;
     saveLastConnection({ ...d });
@@ -2412,7 +2481,10 @@ export async function useEngine(engine: Engine): Promise<void> {
   app.agentTurn = null;
   app.agentInit = null;
   app.suggestion = null;
-  app.aside = null;
+  // ~~`app.aside = null`~~ — not since backlog 137 (2026-09-17): the thread
+  // is his reading and belongs to the chat, not the engine; nulling it
+  // here lost it (the next switch away then dropped the stash entry too).
+  // The card stays; its follow-up box asks for the Claude Code engine.
   await applyDraft();
 }
 
@@ -2421,14 +2493,27 @@ export async function useEngine(engine: Engine): Promise<void> {
 
 /**
  * What the centre shows now, as tab content: the open note when the view
- * is the note, else the open chat (null while it is a new, unsent one).
- * Null on the views that are not tabs — the graph, Nightshift, the New
- * project form — which take the whole centre as they always have.
+ * is the note, the open chat (null while it is a new, unsent one) when it
+ * is the chat, and — since nightshift backlog 140 — the Nightshift page,
+ * the graph or the New project form as the singleton tab each is.
+ * ~~Null on the views that are not tabs — the graph, Nightshift, the New
+ * project form — which take the whole centre as they always have.~~
+ * (2026-09-17: tabs sit above everything now; nothing takes the whole
+ * centre.) Null only for a note view with no note.
  */
 export function shownContent(): TabContent | null {
-  if (app.view === "note") return app.openNote ? { kind: "note", ...app.openNote } : null;
-  if (app.view === "chat") return { kind: "chat", session: app.activeSessionId };
-  return null;
+  switch (app.view) {
+    case "note":
+      return app.openNote ? { kind: "note", ...app.openNote } : null;
+    case "chat":
+      return { kind: "chat", session: app.activeSessionId };
+    case "nightshift":
+      return { kind: "nightshift" };
+    case "graph":
+      return { kind: "graph" };
+    case "new-project":
+      return { kind: "new-project" };
+  }
 }
 
 /**
@@ -2477,21 +2562,115 @@ export async function activateTab(tabId: string): Promise<void> {
   tabs.activate(app.tabs, tabId);
   activating += 1;
   try {
-    if (c.kind === "note") {
+    await showContentOf(c);
+  } finally {
+    activating -= 1;
+  }
+}
+
+/**
+ * Make the globals show `c` — the view, the open chat, the open note —
+ * without touching the workspace: the tab is already in front. A chat
+ * opens as the sidebar opens it; a note as the Notes list does; the
+ * three whole-centre pages through their own openers (backlog 140). A
+ * project card and an aside tab are drawn by the pane from the tab
+ * alone and change nothing global.
+ */
+async function showContentOf(c: TabContent): Promise<void> {
+  switch (c.kind) {
+    case "note":
       if (app.view !== "note" || app.openNote?.scope !== c.scope || app.openNote?.name !== c.name) {
         showNote(c.scope, c.name);
       }
       return;
-    }
-    if (c.session === app.activeSessionId) {
-      if (app.view !== "chat") leaveNote();
+    case "chat":
+      if (c.session === app.activeSessionId) {
+        if (app.view !== "chat") leaveNote();
+        return;
+      }
+      if (c.session === null) await newSession();
+      else await openSession(c.session);
       return;
-    }
-    if (c.session === null) await newSession();
-    else await openSession(c.session);
-  } finally {
-    activating -= 1;
+    case "nightshift":
+      if (app.view !== "nightshift") showNightshift();
+      return;
+    case "graph":
+      if (app.view !== "graph") showGraph();
+      return;
+    case "new-project":
+      if (app.view !== "new-project") showNewProject();
+      return;
+    case "project":
+    case "aside":
+      return;
   }
+}
+
+/**
+ * Open `content` in the focused pane the way the sidebar would (backlog
+ * 140: the + chooser, a drop on a strip's far end): `new` a tab beside
+ * the active one, `replace` in its place. The globals are shown through
+ * the same openers the sidebar calls and the reflection lands the tab;
+ * the two kinds nothing global describes — a project card, an aside —
+ * are landed here directly. A chat other than the open one is refused
+ * while a turn runs, with the toast (blocker 182).
+ */
+export async function openContent(content: TabContent, how: tabs.LandHow = "new"): Promise<void> {
+  if (content.kind === "project" || content.kind === "aside") {
+    const t = tabs.land(app.tabs, tabs.focusedPane(app.tabs), content, how);
+    await activateTab(t.id);
+    return;
+  }
+  if (content.kind === "chat" && content.session !== app.activeSessionId && app.busy) {
+    addToast("A turn is running in the open chat — another chat opens when it ends");
+    return;
+  }
+  app.openNext = how;
+  await showContentOf(content);
+  // The reflection is idempotent; run it here too so an opener that
+  // changed nothing visible (the page already in front) still lands the
+  // tab and hands the modifier back (review E's rule, generalised).
+  reflectTabs();
+  app.openNext = "replace";
+}
+
+/**
+ * A content descriptor dropped on a strip (a new tab at `index` in that
+ * pane) or on a pane's half (a second pane holding it when there is one
+ * pane; the pane it was dropped on when there are two) — backlog 140
+ * pass 2. The tab is made first and then activated, so the reflection
+ * finds it in front.
+ */
+export async function dropContent(
+  content: TabContent,
+  target: { pane: string; index: number } | { side: "left" | "right"; pane: string },
+): Promise<void> {
+  if (content.kind === "chat" && content.session !== app.activeSessionId && app.busy) {
+    addToast("A turn is running in the open chat — another chat opens when it ends");
+    return;
+  }
+  const ws = app.tabs;
+  let tab: tabs.Tab;
+  if ("index" in target) {
+    const pane = tabs.paneById(ws, target.pane);
+    if (!pane) return;
+    tab = tabs.insertAt(ws, pane, content, target.index);
+  } else if (ws.panes.length < tabs.MAX_PANES) {
+    const existing = tabs.isSingleton(content) ? tabs.findAnywhere(ws, content) : undefined;
+    if (existing) {
+      tab = existing;
+    } else {
+      const pane = tabs.makePane([tabs.makeTab(content)]);
+      if (target.side === "left") ws.panes.unshift(pane);
+      else ws.panes.push(pane);
+      tab = pane.tabs[0];
+    }
+  } else {
+    const pane = tabs.paneById(ws, target.pane);
+    if (!pane) return;
+    tab = tabs.insertAt(ws, pane, content, pane.tabs.length);
+  }
+  await activateTab(tab.id);
 }
 
 /**
@@ -2507,12 +2686,14 @@ export function focusPane(paneId: string): void {
   if (!pane) return;
   ws.focused = paneId;
   const c = tabs.activeTab(pane).content;
-  if (c.kind === "note") {
-    if (app.openNote?.scope !== c.scope || app.openNote?.name !== c.name || app.view !== "note") {
-      showNote(c.scope, c.name);
-    }
-  } else if (c.session === app.activeSessionId && app.view === "note") {
-    leaveNote();
+  if (c.kind === "chat") {
+    // The live chat in front: the view follows it; a card stays a card.
+    if (c.session === app.activeSessionId && app.view !== "chat") leaveNote();
+  } else if (c.kind !== "project" && c.kind !== "aside") {
+    // A note or one of the whole-centre pages (backlog 140): the view
+    // follows the pane, as it did for a note. A project card and an
+    // aside are drawn from the tab alone; nothing global follows them.
+    void showContentOf(c);
   }
 }
 
@@ -2550,6 +2731,21 @@ export async function closeTab(tabId?: string): Promise<void> {
   const live = tabs.liveTab(ws, app.activeSessionId);
   if (app.busy && live?.id === id) {
     addToast("This chat's turn is running — stop it or wait, then close the tab");
+    return;
+  }
+  // The sole tab, already the new-chat page (backlog 140 — the × he
+  // found dead on `b6a9c07`): the model would swap it for an identical
+  // one and nothing would show. Say so instead; the window closes from
+  // its red light (blocker 183).
+  const pane = tabs.paneOf(ws, id);
+  if (
+    ws.panes.length === 1 &&
+    pane?.tabs.length === 1 &&
+    tab.content.kind === "chat" &&
+    tab.content.session === null &&
+    app.view === "chat"
+  ) {
+    addToast("This is the last tab and it is already a new chat — the window closes from its red light");
     return;
   }
   const r = tabs.close(ws, id);
@@ -2611,9 +2807,59 @@ function dropNoteTabs(scope: NoteScope, name?: string): void {
   }
 }
 
+/** A forgotten project's card goes (backlog 140). */
+function dropProjectTabs(id: string): void {
+  for (const r of tabs.dropProject(app.tabs, id)) {
+    if (r.show) void activateTab(r.show.id);
+  }
+}
+
 /** The pane a tab is drawn in, for the strip's drag handlers. */
 export function paneOfTab(tabId: string): string | null {
   return tabs.paneOf(app.tabs, tabId)?.id ?? null;
+}
+
+/**
+ * A drag source outside the strips (backlog 140 pass 2): the row or
+ * button calls this from `dragstart` with what it stands for, and
+ * `endContentDrag` from `dragend`. The descriptor rides in the drag
+ * under `CONTENT_DRAG` and is mirrored in `app.draggingContent` for the
+ * strips' and halves' `dragover`, which cannot read the data.
+ */
+export function startContentDrag(e: DragEvent, content: TabContent): void {
+  if (!e.dataTransfer) return;
+  e.dataTransfer.setData(tabs.CONTENT_DRAG, JSON.stringify(content));
+  e.dataTransfer.effectAllowed = "copy";
+  app.draggingContent = content;
+}
+
+export function endContentDrag(): void {
+  app.draggingContent = null;
+}
+
+/** The content a drop carries: the drag's data, else the mirror. */
+export function droppedContent(e: DragEvent): TabContent | null {
+  return tabs.parseContentDrag(e.dataTransfer?.getData(tabs.CONTENT_DRAG)) ?? app.draggingContent;
+}
+
+/**
+ * Whether a chat's aside thread is showing in a tab of its own (backlog
+ * 130 part 2): the transcript hides its card while one is, and shows it
+ * again when the tab closes — the thread itself never moves (blocker 194).
+ */
+export function asideInTab(session: string | null): boolean {
+  if (session === null) return false;
+  return tabs.allTabs(app.tabs).some((t) => t.content.kind === "aside" && t.content.session === session);
+}
+
+/**
+ * The aside thread a tab shows: the open chat's card, or the stashed
+ * thread of a chat that is not open (read-only there — the backend forks
+ * the open chat, so a follow-up needs the chat in front).
+ */
+export function asideOf(session: string): Aside | null {
+  if (session === app.activeSessionId) return app.aside;
+  return asideStash.get(session) ?? null;
 }
 
 // ---- nightshift ----
@@ -2622,9 +2868,19 @@ export function showNightshift(): void {
   app.view = "nightshift";
   app.leftTab = "nightshift";
   app.openNote = null;
+  // The page is a tab (backlog 140): one in the workspace; a second
+  // click activates it wherever it sits. Landed here as well as by the
+  // effect, so the click works when the view is already Nightshift but
+  // its tab is in the background of the other pane.
+  reflectTabs();
   void refreshNightshift();
 }
 
+/**
+ * ~~Leave the Nightshift page for the chat.~~ Since backlog 140 the page
+ * is a tab and the sidebar's Chats and Notes modes no longer leave it;
+ * this remains for the one caller that means "the chat, now".
+ */
 export function closeNightshift(): void {
   app.view = "chat";
   if (app.leftTab === "nightshift") app.leftTab = "chats";
@@ -3569,14 +3825,190 @@ export function chatMode(events: SessionEvent[]): ChatMode {
 
 /**
  * What the open chat is for (nightshift backlog 102), projected from the
- * log as `chatMode` is — the creation line's `kind`, `build` when it
- * carries none — and the pending kind while there is no chat yet.
+ * log: ~~the creation line's `kind`~~ — since backlog 144 (2026-09-17) the
+ * latest live `kind` event, as `Session::kind()` reads it in the core, and
+ * only where there is none the creation line's (`build` when it carries
+ * none), and the pending kind while there is no chat yet. Live, like a
+ * title: a rewind past a switch restores the kind before it.
  */
 export function chatKind(events: SessionEvent[]): ChatKind {
+  const live = liveFlags(events);
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (!live[i]) continue;
+    const e = events[i];
+    if (e.event === "kind") return e.kind;
+  }
+  return bornKind(events);
+}
+
+/** What the chat was started as — the creation line, which a switch never
+ *  rewrites — or the pending kind with no chat open. */
+export function bornKind(events: SessionEvent[]): ChatKind {
   for (const e of events) {
     if (e.event === "session_created") return e.kind ?? "build";
   }
   return app.pendingKind;
+}
+
+/**
+ * What the engine's request is *built* for (`Session::declared_kind`,
+ * nightshift backlog 144): `build` once the chat was born one or has ever
+ * been switched to one over the live events, else `chat`. A switch changes
+ * the policy (`chatKind`) and leaves this alone, so the declared tools and
+ * the system prompt — and with them the cached prefix — survive it; the
+ * one switch that changes it is a chat born as a Chat becoming Claude
+ * Code, which pays one re-warm (`kindSwitchCost`).
+ */
+export function declaredKind(events: SessionEvent[]): ChatKind {
+  if (bornKind(events) === "build") return "build";
+  const live = liveFlags(events);
+  return events.some((e, i) => live[i] && e.event === "kind" && e.kind === "build")
+    ? "build"
+    : "chat";
+}
+
+/**
+ * What switching the open chat to `kind` would cost on the next turn, in
+ * tokens written to the cache — `contextUsed()` when the declaration
+ * changes (a chat born as a Chat becoming Claude Code: the tools were
+ * never declared), and nothing otherwise, since the switch is a policy
+ * over an unchanged request. Null when nothing has been sent yet.
+ */
+export function kindSwitchCost(events: SessionEvent[], kind: ChatKind): number | null {
+  if (kind === declaredKind(events)) return 0;
+  if (kind === "chat") return 0;
+  return contextUsed() ?? null;
+}
+
+/**
+ * Make the open chat the other kind from the next turn on (nightshift
+ * backlog 144; blocker 143 answered *switchable*). The same two steps as
+ * a layer switch: the log first (creating the chat's log if the first
+ * send has not yet), then the reconnect that reads it back — `connect` /
+ * `connect_agent` build the declaration from `declaredKind` and enforce
+ * `chatKind` over it. `workspace` is the folder for a switch to Claude
+ * Code on a chat born as a Chat; the project's when omitted. Undoable,
+ * scoped to the chat; a switch on a live turn is refused like a layer
+ * change.
+ */
+export async function switchChatKind(kind: ChatKind, workspace?: string): Promise<void> {
+  if (app.busy || app.connecting) return;
+  const current = chatKind(app.events);
+  const before = kindWorkspace(app.events);
+  if (kind === current && (workspace ?? null) === before) return;
+  if (!(await applyKind(kind, workspace))) return;
+  pushUndo(chatScope(), {
+    label: `kind → ${kind === "chat" ? "Chat" : "Claude Code"}`,
+    undo: async () => {
+      await applyKind(current, before ?? undefined);
+    },
+    redo: async () => {
+      await applyKind(kind, workspace);
+    },
+  });
+}
+
+/** The folder the latest live switch to Claude Code named, if any. */
+export function kindWorkspace(events: SessionEvent[]): string | null {
+  const live = liveFlags(events);
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (!live[i]) continue;
+    const e = events[i];
+    if (e.event === "kind") return e.kind === "build" ? (e.workspace ?? null) : null;
+  }
+  return null;
+}
+
+/** The two steps of a kind switch: the log, then the reconnect that reads
+ *  it back. False on a refusal, toasted. */
+async function applyKind(kind: ChatKind, workspace?: string): Promise<boolean> {
+  try {
+    app.events = await api.setChatKind(kind, workspace);
+    const first = app.events[0];
+    if (first && first.event === "session_created") app.activeSessionId = first.id;
+    app.error = null;
+  } catch (e) {
+    addToast(String(e));
+    return false;
+  }
+  await applyDraft();
+  void refreshSessions();
+  return true;
+}
+
+/**
+ * The extra folders the open chat has granted itself (nightshift backlog
+ * 143), projected from the log as `Session::folders()` projects them: the
+ * latest live `folders` event, or none. The project's own are on
+ * `app.project.extra_folders`; the connection's `folders` is the union
+ * the backend granted, with each one's source and alias.
+ */
+export function chatFolders(events: SessionEvent[]): string[] {
+  const live = liveFlags(events);
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (!live[i]) continue;
+    const e = events[i];
+    if (e.event === "folders") return e.folders;
+  }
+  return [];
+}
+
+/**
+ * Set the open chat's extra folders — the whole list (backlog 143). The
+ * same two steps as a layer switch: the log first, creating the chat's
+ * log if the first send has not yet, then the reconnect that grants each
+ * folder on the engine in use. Undoable, scoped to the chat.
+ */
+export async function setChatFolders(folders: string[]): Promise<void> {
+  if (app.busy || app.connecting) return;
+  const current = chatFolders(app.events);
+  const wanted = folders.filter((f, i) => f.trim() !== "" && folders.indexOf(f) === i);
+  if (wanted.join("\n") === current.join("\n")) return;
+  if (!(await applyFolders(wanted))) return;
+  pushUndo(chatScope(), {
+    label: wanted.length > current.length ? "add a folder" : "remove a folder",
+    undo: async () => {
+      await applyFolders(current);
+    },
+    redo: async () => {
+      await applyFolders(wanted);
+    },
+  });
+}
+
+async function applyFolders(folders: string[]): Promise<boolean> {
+  try {
+    app.events = await api.setChatFolders(folders);
+    const first = app.events[0];
+    if (first && first.event === "session_created") app.activeSessionId = first.id;
+    app.error = null;
+  } catch (e) {
+    addToast(String(e));
+    return false;
+  }
+  await applyDraft();
+  void refreshSessions();
+  return true;
+}
+
+/**
+ * Set the open project's extra folders — the whole list (backlog 143);
+ * the registry is written, `app.project` picks the new shape up, and the
+ * open chat reconnects so the grant reaches it now rather than at its
+ * next open. Nothing to do without a project.
+ */
+export async function setProjectFolders(folders: string[]): Promise<void> {
+  const project = app.project;
+  if (!project || app.busy || app.connecting) return;
+  try {
+    const updated = await api.setProjectFolders(project.id, folders);
+    app.project = updated;
+    app.error = null;
+  } catch (e) {
+    addToast(String(e));
+    return;
+  }
+  await applyDraft();
 }
 
 /**
@@ -3731,7 +4163,7 @@ export async function deleteSession(id: string): Promise<void> {
   if (app.busy) return;
   let full: string;
   try {
-    full = await api.deleteSession(id);
+    full = await api.deleteSession(id, app.activeSessionId);
     if (id === app.activeSessionId || full === app.activeSessionId) {
       app.activeSessionId = null;
       app.events = [];
@@ -3754,7 +4186,7 @@ export async function deleteSession(id: string): Promise<void> {
       if (app.activeSessionId === null) await openSession(full);
     },
     redo: async () => {
-      await api.deleteSession(full);
+      await api.deleteSession(full, app.activeSessionId);
       if (full === app.activeSessionId) {
         app.activeSessionId = null;
         app.events = [];
@@ -3770,20 +4202,35 @@ export async function deleteSession(id: string): Promise<void> {
  * 182) and can fail; either way the chat asked for is not the one open,
  * and the words must be held under *its* key — before review E
  * (2026-09-17) they were queued under the open chat's and went into it
- * at that turn's end. Held this way they show in the asked-for chat's
- * queue when it is opened, and go with its next send or *Send next*.
+ * at that turn's end. ~~Held this way they show in the asked-for chat's
+ * queue when it is opened, and go with its next send or *Send next*.~~
+ * Since backlog 132 (2026-09-17) the phone is told instead: the answer
+ * is `"sent"` (the turn starts), `"queued"` (the open chat is running a
+ * turn; the message is in its composer queue and goes when that turn
+ * ends), or a thrown sentence — the chat asked for could not be opened
+ * (busy in another chat, a bad id), or no engine is connected — and the
+ * listener turns that into a 409, so the phone keeps the text in its own
+ * queue and tries again when the Mac is idle. Nothing is held here for a
+ * chat that is not open: that queue drained only when he opened the chat
+ * and pressed Send next, which the phone could not see.
  */
-export async function remoteSend(chat: string | null, text: string): Promise<void> {
-  if (chat && chat !== app.activeSessionId) await openSession(chat);
+export async function remoteSend(chat: string | null, text: string): Promise<"sent" | "queued"> {
   if (chat && chat !== app.activeSessionId) {
-    enqueueMessage(chat, text, []);
-    return;
+    if (app.busy) throw new Error("the desktop is busy in another chat — held on the phone until it is free");
+    await openSession(chat);
+    if (chat !== app.activeSessionId) {
+      throw new Error(app.error ? `the desktop could not open that chat: ${app.error}` : "the desktop could not open that chat");
+    }
   }
   if (app.busy) {
     enqueueMessage(draftKey(app.activeSessionId, app.project?.id, app.pendingMode), text, []);
-  } else {
-    await send(text);
+    return "queued";
   }
+  if (!app.connection) throw new Error("no engine is connected on the desktop — connect one there first");
+  // Answered before the turn, not after: `send` resolves at the turn's
+  // end, and the phone is waiting to hear the message was taken.
+  void send(text);
+  return "sent";
 }
 
 /** The chat as a banner names it (nightshift backlog 079): the open
@@ -4004,6 +4451,15 @@ let asideSeq = 0;
 export async function askAside(question: string, quote: AsideQuote | null = null): Promise<void> {
   const q = question.trim();
   if ((!q && !quote) || app.connection?.engine !== "claude-code") return;
+  // From the composer, with an answered thread on the card (backlog 137,
+  // blocker 201): the question continues that thread rather than
+  // replacing it — the thread is written nowhere else. A new passage
+  // (a quote) is the transcript's path, which asks before replacing.
+  const on = app.aside;
+  if (!quote && q && on && !on.draft && !asideAsking(on) && on.turns.some((t) => t.partial.trim())) {
+    await followUpAside(q);
+    return;
+  }
   // About a passage (backlog 107): the highlighted text rides inside the
   // one string the backend takes, framed as a selection and quoted
   // exactly (`asideQuestion`); the card keeps his words and the quote
@@ -4064,12 +4520,15 @@ export async function followUpAside(question: string): Promise<void> {
  * The aside thread of each chat left open (backlog 130): a chat switch
  * used to clear the card; now the thread is kept under the chat's id, the
  * way drafts are kept (backlog 065), and comes back when the chat does —
- * never written anywhere. A plain map, read once per switch. An exchange
- * still streaming when the chat is left keeps streaming into the stashed
- * thread (`findAsideTurn` looks here too), so the answer is whole when
- * he returns.
+ * ~~never written anywhere~~ written to localStorage since backlog 137
+ * (2026-09-17, `asides.ts` / `asides.svelte.ts`: text only, debounced,
+ * read back here at launch — a relaunch used to drop every thread). A
+ * plain map, read once per switch. An exchange still streaming when the
+ * chat is left keeps streaming into the stashed thread (`findAsideTurn`
+ * looks here too), so the answer is whole when he returns.
  */
-const asideStash = new Map<string, Aside>();
+export const asideStash: Map<string, Aside> =
+  typeof localStorage === "undefined" ? new Map() : loadAsides(localStorage);
 
 /** Stash the open chat's thread and take the next chat's, if any. */
 function switchAside(next: string | null): void {
@@ -4138,18 +4597,44 @@ export function dismissAside(): void {
  * turn on what already happened either way. Deferred a tick so the send
  * runs after the ended turn's `finally` has let go of `busy`.
  */
-const sleepWatch = new SleepWatch(() => {
+const sleepWatch = new SleepWatch((turn) => {
   const prefs = loadSleepPrefs();
   if (!prefs.resumeAfterSleep) return;
+  // The chat the turn ran in (backlog 137): the wake is noticed up to a
+  // poll later, and by then he may have opened another chat — "continue"
+  // used to go into that one. Another chat open, or a chat with no id:
+  // the toast names it and Resume opens it first; never sent unasked.
+  const chat = turn.chat;
+  if (chat === null) return;
+  if (chat !== app.activeSessionId) {
+    const s = app.sessions.find((x) => x.id === chat);
+    const name = chatName(s?.title, s?.first_user);
+    addToast(`The Mac slept and cut off the turn in “${name}”`, {
+      label: "Resume there",
+      run: () => void resumeAfterSleep(chat),
+    });
+    return;
+  }
   if (prefs.resumeAsks) {
-    addToast("The Mac slept and cut the turn off", { label: "Resume", run: () => void resumeAfterSleep() });
+    addToast("The Mac slept and cut the turn off", { label: "Resume", run: () => void resumeAfterSleep(chat) });
     return;
   }
   addToast("The Mac slept and cut the turn off — resuming");
-  setTimeout(() => void resumeAfterSleep(), 0);
+  setTimeout(() => void resumeAfterSleep(chat), 0);
 });
 
-export async function resumeAfterSleep(): Promise<void> {
+/** "continue" into the chat sleep cut off — opened first when it is not
+ *  the one in front (backlog 137). */
+export async function resumeAfterSleep(chat: string | null = app.activeSessionId): Promise<void> {
+  if (app.busy) return;
+  if (chat !== null && chat !== app.activeSessionId) {
+    try {
+      await openSession(chat);
+    } catch {
+      return; // the open's own error is on screen
+    }
+    if (app.activeSessionId !== chat) return;
+  }
   if (!app.connection || app.busy) return;
   await send(RESUME_TEXT);
 }
@@ -4164,6 +4649,7 @@ function sleepTurnEnded(errored: boolean): void {
     endedAtMs: Date.now(),
     errored,
     stopped,
+    chat: app.activeSessionId,
   });
 }
 
@@ -4644,7 +5130,7 @@ export function promoteLayerText(layer: EditableLayer, text: string): boolean {
     scope = "models";
     name = modelInstructionFile(model);
   }
-  const key = `${scope}:${name}`;
+  const key = noteDraftKey(scope, name);
   app.noteDrafts[key] = text;
   app.showContext = false;
   const tab = app.leftTab;
@@ -4680,12 +5166,23 @@ export async function syncPromptLayers(): Promise<void> {
       (mode ?? "normal") !== (built_mode ?? "normal") ||
       (kind ?? "build") !== (built_kind ?? "build")
     ) {
+      // A provider connect that fails leaves the built set as it was, so
+      // the pairs still disagree, `connecting` flips, the effect re-runs
+      // and this would reconnect again at once, forever (backlog 137,
+      // review E's FE8). The one pair that just failed is not retried;
+      // another chat, another set, or a rail change (which clears
+      // `connectError`) tries afresh.
+      const pair = JSON.stringify([app.activeSessionId, off, edits ?? {}, mode ?? "normal", kind ?? "build"]);
+      if (lastFailedSync === pair && app.connectError) return;
       await applyDraft();
+      lastFailedSync = app.connectError ? pair : null;
     }
   } catch {
     // Best-effort: the next rail change reconnects with the right set anyway.
   }
 }
+/** The (chat, wanted set) whose sync last failed to connect; see above. */
+let lastFailedSync: string | null = null;
 
 /**
  * Which events still count, after every `rewind` marker in the log.
@@ -5201,7 +5698,9 @@ export async function renameSession(id: string, title: string): Promise<void> {
   const row = app.sessions.find((s) => s.id === id);
   const previous = row?.title ?? row?.first_user ?? null;
   try {
-    await api.renameSession(id, title);
+    // The open chat named (backlog 136): mid-turn, another chat's rename
+    // lands at once and the running one is refused, not waited on.
+    await api.renameSession(id, title, app.activeSessionId);
   } catch (e) {
     addToast(String(e));
     return;
@@ -5209,7 +5708,7 @@ export async function renameSession(id: string, title: string): Promise<void> {
   await refreshSessions();
   if (previous === null) return;
   const nameIt = async (t: string) => {
-    await api.renameSession(id, t);
+    await api.renameSession(id, t, app.activeSessionId);
     await refreshSessions();
   };
   pushUndo(LIST_SCOPE, {

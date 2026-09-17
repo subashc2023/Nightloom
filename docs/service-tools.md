@@ -115,6 +115,20 @@ why the alias has to be *emitted* rather than merely accepted.
 shell attaches the vault with `Root::new(ws).with_vault(dir)` and everything
 downstream is unchanged.
 
+**Extra folders (2026-09-17, nightshift backlog 143).** ~~A workspace, plus at
+most one named tree — never an open-ended set~~: the set is still closed and
+named, but no longer at most one. `Root::with_extra(path)` / `add_extra(path)`
+grant a further tree under `@<alias>/…`, the alias the folder's leaf name
+lower-cased with anything but letters, digits, `-` and `_` turned to `-`
+(`folder_alias`: `Value Gen` → `@value-gen`), made unique in order of grant
+(`@notes`, `@notes-2`; `@kb` stays the vault's). `resolve` answers the vault's
+alias first, then an extra's, then the workspace and every tree by absolute
+spelling; an `@name` that is no grant is an ordinary workspace path as `@kbd/…`
+always was. `show` emits the alias so it round-trips; `path_hint()` (now a
+`String`) names each granted folder with its real path in every path-taking
+tool's description, and the refusal message lists them. The two checks run
+against whichever tree the alias picked — `@value-gen/../secret` is refused.
+
 **It is a guard rail, not a sandbox**: TOCTOU is uncovered, and `bash` is not
 confined at all — only its working directory is set, and its description says so
 plainly.

@@ -26,12 +26,37 @@
  * - A split moves a tab out of its pane into a new pane on the given
  *   side; it needs another tab left behind, and there are never more than
  *   two panes. Dropping a tab on a pane's strip moves it there.
+ *
+ * Since nightshift backlog 140 (2026-09-17, his walk of `b6a9c07`) tabs
+ * sit above everything: the Nightshift page, the link graph and the New
+ * project form are tab contents like a chat or a note, so the strip stays
+ * drawn whatever is in front. Those three are **singletons** — one tab in
+ * the whole workspace; a second request activates the one there is,
+ * wherever it sits. A project (a card naming it, with the switch as its
+ * button — blocker 193) and an aside thread (backlog 130 part 2: a
+ * chat's side conversation, viewed in a tab of its own — blocker 194)
+ * are contents too, one per project and one per chat.
  */
 import type { NoteScope } from "./types";
+import type { IconName } from "./icons";
 
 export type TabContent =
   | { kind: "chat"; session: string | null }
-  | { kind: "note"; scope: NoteScope; name: string };
+  | { kind: "note"; scope: NoteScope; name: string }
+  | { kind: "nightshift" }
+  | { kind: "graph" }
+  | { kind: "new-project" }
+  | { kind: "project"; id: string }
+  | { kind: "aside"; session: string };
+
+export type TabKind = TabContent["kind"];
+
+/** The kinds of which the workspace holds one tab at most. */
+export const SINGLETON_KINDS: ReadonlySet<TabKind> = new Set(["nightshift", "graph", "new-project"]);
+
+export function isSingleton(content: TabContent): boolean {
+  return SINGLETON_KINDS.has(content.kind);
+}
 
 export interface Tab {
   id: string;
@@ -56,6 +81,55 @@ export const MAX_PANES = 2;
 /** The drag's own data type: a tab carries its id under it, so a file or
  *  text dragged over a strip or a pane's half is not mistaken for a tab. */
 export const TAB_DRAG = "application/x-nightloom-tab";
+/**
+ * A drag from outside the strips (backlog 140 pass 2): a sidebar chat row,
+ * a note row, the Nightshift or Graph button, a project row, the aside
+ * card's head. It carries a content descriptor as JSON under this type;
+ * a strip makes a new tab of it at the drop's index, a pane's half opens
+ * it beside (`openBeside`). `app.draggingContent` mirrors it while the
+ * drag lasts, since `dataTransfer` is unreadable during `dragover`.
+ */
+export const CONTENT_DRAG = "application/x-nightloom-content";
+/**
+ * The terminal dock dragged between panes (backlog 113's 12b, blocker
+ * 189: one dock, under the pane it opened from — the drag moves which).
+ * The dock's own module sets and reads `term.pane`; the model only names
+ * the type so the strips and halves can tell it from a tab.
+ */
+export const TERM_DRAG = "application/x-nightloom-terminal";
+
+/** The descriptor a `CONTENT_DRAG` carries, or null for anything else. */
+export function parseContentDrag(json: string | null | undefined): TabContent | null {
+  if (!json) return null;
+  try {
+    const c = JSON.parse(json) as Partial<TabContent> & { kind?: string };
+    switch (c.kind) {
+      case "chat":
+        return { kind: "chat", session: typeof (c as { session?: unknown }).session === "string" ? (c as { session: string }).session : null };
+      case "note": {
+        const n = c as { scope?: unknown; name?: unknown };
+        if (typeof n.scope !== "string" || typeof n.name !== "string") return null;
+        return { kind: "note", scope: n.scope as NoteScope, name: n.name };
+      }
+      case "nightshift":
+      case "graph":
+      case "new-project":
+        return { kind: c.kind };
+      case "project": {
+        const p = c as { id?: unknown };
+        return typeof p.id === "string" ? { kind: "project", id: p.id } : null;
+      }
+      case "aside": {
+        const a = c as { session?: unknown };
+        return typeof a.session === "string" ? { kind: "aside", session: a.session } : null;
+      }
+      default:
+        return null;
+    }
+  } catch {
+    return null;
+  }
+}
 
 let seq = 0;
 /** Ids are only ever compared, never shown; a counter is enough and keeps
@@ -73,7 +147,10 @@ export function sameContent(a: TabContent, b: TabContent): boolean {
   if (a.kind !== b.kind) return false;
   if (a.kind === "chat" && b.kind === "chat") return a.session === b.session;
   if (a.kind === "note" && b.kind === "note") return a.scope === b.scope && a.name === b.name;
-  return false;
+  if (a.kind === "project" && b.kind === "project") return a.id === b.id;
+  if (a.kind === "aside" && b.kind === "aside") return a.session === b.session;
+  // The singletons carry nothing but their kind.
+  return isSingleton(a);
 }
 
 export function makeTab(content: TabContent): Tab {
@@ -119,6 +196,15 @@ export function findTab(pane: Pane, content: TabContent): Tab | undefined {
   return pane.tabs.find((t) => sameContent(t.content, content));
 }
 
+/** The tab holding `content` in either pane, left pane first. */
+export function findAnywhere(ws: Workspace, content: TabContent): Tab | undefined {
+  for (const p of ws.panes) {
+    const t = findTab(p, content);
+    if (t) return t;
+  }
+  return undefined;
+}
+
 /** Every tab, left pane first, in strip order. */
 export function allTabs(ws: Workspace): Tab[] {
   return ws.panes.flatMap((p) => p.tabs);
@@ -147,8 +233,15 @@ export type LandHow = "replace" | "new";
  * Put `content` in front in `pane`: the tab already holding it, else the
  * active tab retargeted (`replace`) or a new tab after it (`new`). Returns
  * the tab that now holds the content. The pane becomes the focused one.
+ * A singleton (Nightshift, the graph, the New project form) already open
+ * in the *other* pane is activated there instead — one such tab in the
+ * workspace, wherever it sits (backlog 140).
  */
 export function land(ws: Workspace, pane: Pane, content: TabContent, how: LandHow): Tab {
+  if (isSingleton(content)) {
+    const anywhere = findAnywhere(ws, content);
+    if (anywhere) return activate(ws, anywhere.id) as Tab;
+  }
   ws.focused = pane.id;
   const existing = findTab(pane, content);
   if (existing) {
@@ -164,6 +257,30 @@ export function land(ws: Workspace, pane: Pane, content: TabContent, how: LandHo
   const at = pane.tabs.findIndex((t) => t.id === current.id);
   pane.tabs.splice(at + 1, 0, tab);
   pane.active = tab.id;
+  return tab;
+}
+
+/**
+ * A content descriptor dropped on a strip (backlog 140 pass 2): a new tab
+ * of it at `index`, unless the pane already holds one — then that tab is
+ * activated — or the content is a singleton open elsewhere. Returns the
+ * tab that holds it; the caller shows it.
+ */
+export function insertAt(ws: Workspace, pane: Pane, content: TabContent, index: number): Tab {
+  if (isSingleton(content)) {
+    const anywhere = findAnywhere(ws, content);
+    if (anywhere) return activate(ws, anywhere.id) as Tab;
+  }
+  const existing = findTab(pane, content);
+  if (existing) {
+    ws.focused = pane.id;
+    pane.active = existing.id;
+    return existing;
+  }
+  const tab = makeTab(content);
+  pane.tabs.splice(Math.max(0, Math.min(index, pane.tabs.length)), 0, tab);
+  pane.active = tab.id;
+  ws.focused = pane.id;
   return tab;
 }
 
@@ -276,6 +393,10 @@ export function split(ws: Workspace, tabId: string, side: "left" | "right"): boo
  * one (landed as `how`), else in a new pane on the right. Returns the tab.
  */
 export function openBeside(ws: Workspace, content: TabContent, how: LandHow = "new"): Tab {
+  if (isSingleton(content)) {
+    const anywhere = findAnywhere(ws, content);
+    if (anywhere) return activate(ws, anywhere.id) as Tab;
+  }
   const here = focusedPane(ws);
   const other = otherPane(ws, here.id);
   if (other) return land(ws, other, content, how);
@@ -286,11 +407,22 @@ export function openBeside(ws: Workspace, content: TabContent, how: LandHow = "n
   return tab;
 }
 
-/** Drop every tab holding a chat that no longer exists (a deleted chat). */
+/** Drop every tab holding a chat that no longer exists (a deleted chat) —
+ *  and its aside's tab, which was that chat's side conversation. */
 export function dropChat(ws: Workspace, session: string): Closed[] {
   const out: Closed[] = [];
   for (const t of allTabs(ws)) {
-    if (t.content.kind === "chat" && t.content.session === session) out.push(close(ws, t.id));
+    const c = t.content;
+    if ((c.kind === "chat" || c.kind === "aside") && c.session === session) out.push(close(ws, t.id));
+  }
+  return out;
+}
+
+/** Drop every tab of `kind` (a project forgotten: its card goes). */
+export function dropProject(ws: Workspace, id: string): Closed[] {
+  const out: Closed[] = [];
+  for (const t of allTabs(ws)) {
+    if (t.content.kind === "project" && t.content.id === id) out.push(close(ws, t.id));
   }
   return out;
 }
@@ -321,9 +453,46 @@ export function liveTab(ws: Workspace, session: string | null): Tab | undefined 
 export function tabTitle(
   content: TabContent,
   sessions: { id: string; title?: string | null; first_user?: string | null }[],
+  projects: { id: string; name: string }[] = [],
 ): string {
-  if (content.kind === "note") return content.name;
-  if (content.session === null) return "New chat";
-  const s = sessions.find((x) => x.id === content.session);
-  return s?.title ?? s?.first_user ?? content.session.slice(0, 8);
+  switch (content.kind) {
+    case "note":
+      return content.name;
+    case "nightshift":
+      return "Nightshift";
+    case "graph":
+      return "Graph";
+    case "new-project":
+      return "New project";
+    case "project":
+      return projects.find((p) => p.id === content.id)?.name ?? "Project";
+    case "aside": {
+      const s = sessions.find((x) => x.id === content.session);
+      return `Aside · ${s?.title ?? s?.first_user ?? content.session.slice(0, 8)}`;
+    }
+    case "chat": {
+      if (content.session === null) return "New chat";
+      const s = sessions.find((x) => x.id === content.session);
+      return s?.title ?? s?.first_user ?? content.session.slice(0, 8);
+    }
+  }
+}
+
+/** The strip's glyph for a kind — an `Icon` name. */
+export function tabGlyph(content: TabContent): IconName {
+  switch (content.kind) {
+    case "note":
+      return "note";
+    case "nightshift":
+      return "moon";
+    case "graph":
+      return "link";
+    case "new-project":
+    case "project":
+      return "folder";
+    case "aside":
+      return "think";
+    case "chat":
+      return "chat";
+  }
 }

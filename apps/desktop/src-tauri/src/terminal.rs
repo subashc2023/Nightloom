@@ -33,6 +33,29 @@
 //! base64 and the window decodes it into the bytes xterm.js takes. Input
 //! goes the other way as plain text: the window only ever sends whole
 //! characters.
+//!
+//! # Neither direction may block the window (review D, backlog 135)
+//!
+//! Input: a write to the master blocks once the slave's input queue is
+//! full (about a kilobyte on macOS) and the foreground program is not
+//! reading — a paste into a running build sat 3.75 s on the main thread,
+//! the whole window frozen. So each shell has a writer thread fed by a
+//! bounded queue: [`terminal_write`] pushes and returns, and a queue that
+//! is full answers "the program is not reading its input" instead of
+//! waiting for it.
+//!
+//! Output: a reader that forwards every `read` as its own event put a
+//! million four-byte events a second onto the window's event loop from a
+//! `yes`. So the reader hands its chunks to an emitter thread that
+//! coalesces them into one event per frame (`FRAME`, at most `FRAME_BYTES`
+//! each; the first chunk after a quiet spell goes at once, so typing is
+//! not delayed), and the window acknowledges what xterm.js has drawn
+//! ([`terminal_ack`]). With more than `HIGH_WATER` bytes unacknowledged
+//! the emitter waits; the reader's queue to it is bounded, so the reader
+//! waits too, and the kernel then makes the program wait — the same
+//! backpressure a terminal window has always had. A window that stops
+//! answering (hidden, reloading, gone) is released every `STALL`, so a
+//! shell is never stuck on a lost acknowledgement.
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -41,17 +64,47 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError, TryRecvError, TrySendError};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, State};
 
-/// The reader's buffer: one read at a time, handed to the window as it
-/// comes. Small enough that a keystroke's echo is not held behind a
-/// build's output; large enough that `cat` of a big file is not a storm
-/// of tiny events.
+/// The reader's buffer: one read at a time. On macOS the pty hands back a
+/// line or two per read for line-oriented output whatever the size here,
+/// which is why the emitter coalesces (backlog 135).
 const READ_CHUNK: usize = 16 * 1024;
+
+/// The reader's queue to the emitter, in chunks. Full means the window
+/// is behind; the reader then waits, and the kernel makes the program
+/// wait.
+const READ_QUEUE: usize = 64;
+
+/// One event per frame, at most: the emitter gathers what arrives within
+/// this of the last event before sending the next.
+const FRAME: Duration = Duration::from_millis(16);
+
+/// The most one `terminal-data` event carries; a frame past it is sent
+/// early and the rest starts the next.
+const FRAME_BYTES: usize = 64 * 1024;
+
+/// Bytes sent and not yet acknowledged by the window above which the
+/// emitter waits for an ack before the next event.
+const HIGH_WATER: usize = 256 * 1024;
+
+/// How long the emitter waits for an ack past `HIGH_WATER` before it
+/// assumes the window is not answering and sends anyway.
+const STALL: Duration = Duration::from_secs(2);
+
+/// The writer's queue: this many pending writes, or `WRITE_QUEUE_BYTES`
+/// of them, and a further write is refused rather than queued.
+const WRITE_QUEUE: usize = 256;
+const WRITE_QUEUE_BYTES: usize = 256 * 1024;
+
+/// What `terminal_write` answers when the queue is full — the foreground
+/// program has not read its input for a while.
+const NOT_READING: &str = "the program is not reading its input";
 
 /// How often the title thread asks which process group has the terminal.
 /// The thread is unix-only (`spawn_title_watch`), so off unix this is dead
@@ -145,17 +198,76 @@ impl Sink for WindowSink {
     }
 }
 
-/// One open shell: the master side, the writer, the child. The reader is
-/// on its own thread with a clone of the master's read handle.
+/// One open shell: the master side, the writer's queue, the child. The
+/// reader, the emitter and the writer are each on their own thread.
 struct Shell {
     master: Box<dyn MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
+    /// The writer thread's queue; dropping it with the shell ends the
+    /// thread once it has written what it holds.
+    input: mpsc::SyncSender<Vec<u8>>,
+    /// Bytes in the writer's queue not yet written, for the byte bound.
+    queued: Arc<AtomicUsize>,
+    /// Bytes sent to the window and not yet acknowledged.
+    flow: Arc<Flow>,
     /// Shared with the reader thread, which waits on it at EOF for the
     /// exit code; `terminal_close` kills through it.
     child: Arc<Mutex<Box<dyn Child + Send + Sync>>>,
     /// Set when the window closed the shell, so the reader's EOF does not
     /// also report an exit the window never asked to hear about.
     closed: Arc<AtomicBool>,
+}
+
+/// The output's flow control: bytes sent and not yet acknowledged, and
+/// the emitter's wait for room.
+#[derive(Default)]
+struct Flow {
+    inflight: Mutex<usize>,
+    room: Condvar,
+}
+
+impl Flow {
+    /// Wait until fewer than `HIGH_WATER` bytes are outstanding, or the
+    /// window has not answered for `STALL` — then take it as gone (or
+    /// reloading, or hiding the pane) and let the next event through.
+    fn wait_for_room(&self) {
+        let mut inflight = self.inflight.lock().unwrap_or_else(|p| p.into_inner());
+        while *inflight >= HIGH_WATER {
+            let (guard, timeout) = self
+                .room
+                .wait_timeout(inflight, STALL)
+                .unwrap_or_else(|p| p.into_inner());
+            inflight = guard;
+            if timeout.timed_out() && *inflight >= HIGH_WATER {
+                *inflight = 0;
+            }
+        }
+    }
+
+    fn sent(&self, n: usize) {
+        *self.inflight.lock().unwrap_or_else(|p| p.into_inner()) += n;
+    }
+
+    fn acked(&self, n: usize) {
+        let mut inflight = self.inflight.lock().unwrap_or_else(|p| p.into_inner());
+        *inflight = inflight.saturating_sub(n);
+        self.room.notify_one();
+    }
+
+    #[cfg(test)]
+    fn outstanding(&self) -> usize {
+        *self.inflight.lock().unwrap_or_else(|p| p.into_inner())
+    }
+}
+
+/// What the reader hands the emitter: bytes, then the exit, in order —
+/// so the exit is never reported before the last of what the shell
+/// printed.
+enum Chunk {
+    Data(Vec<u8>),
+    Exit {
+        code: Option<u32>,
+        signal: Option<String>,
+    },
 }
 
 /// Every shell the window has open, by id. Managed by Tauri beside
@@ -219,7 +331,30 @@ impl Terminals {
         let id = self.next.fetch_add(1, Ordering::Relaxed) + 1;
         let child = Arc::new(Mutex::new(child));
         let closed = Arc::new(AtomicBool::new(false));
-        spawn_reader(sink.clone(), id, reader, child.clone(), closed.clone());
+        let flow = Arc::new(Flow::default());
+        let queued = Arc::new(AtomicUsize::new(0));
+        // The three threads. A spawn can fail (the process is out of
+        // threads); the child is already running by then, so a failure
+        // kills it and is the window's error, not a panic on whichever
+        // thread the command ran on (review D, FD6).
+        let threads = (|| -> std::io::Result<mpsc::SyncSender<Vec<u8>>> {
+            let (tx, rx) = mpsc::sync_channel::<Chunk>(READ_QUEUE);
+            spawn_emitter(sink.clone(), id, rx, flow.clone())?;
+            spawn_reader(tx, id, reader, child.clone(), closed.clone())?;
+            spawn_writer(id, writer, queued.clone())
+        })();
+        let input = match threads {
+            Ok(input) => input,
+            Err(e) => {
+                closed.store(true, Ordering::Relaxed);
+                let mut child = child.lock().unwrap_or_else(|p| p.into_inner());
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("could not start the shell's threads: {e}"));
+            }
+        };
+        // The title is a nicety: a shell without its thread still works,
+        // its tab reading the shell's name throughout.
         #[cfg(unix)]
         spawn_title_watch(
             sink,
@@ -238,7 +373,9 @@ impl Terminals {
                 id,
                 Shell {
                     master: pair.master,
-                    writer,
+                    input,
+                    queued,
+                    flow,
                     child,
                     closed,
                 },
@@ -251,14 +388,43 @@ impl Terminals {
         })
     }
 
+    /// Queue `data` for the shell's writer thread. Never waits on the
+    /// pty: a queue past its bound — the foreground program has stopped
+    /// reading — is refused with [`NOT_READING`], and the window says so.
     fn write(&self, id: u32, data: &str) -> Result<(), String> {
-        let mut shells = self.shells.lock().unwrap_or_else(|p| p.into_inner());
-        let shell = shells.get_mut(&id).ok_or("no such shell")?;
-        shell
-            .writer
-            .write_all(data.as_bytes())
-            .and_then(|()| shell.writer.flush())
-            .map_err(|e| e.to_string())
+        let shells = self.shells.lock().unwrap_or_else(|p| p.into_inner());
+        let shell = shells.get(&id).ok_or("no such shell")?;
+        let n = data.len();
+        if n == 0 {
+            return Ok(());
+        }
+        // Reserve the bytes before the send so two writes cannot both
+        // fit under the bound at once; give them back if it is refused.
+        let before = shell.queued.fetch_add(n, Ordering::AcqRel);
+        if before + n > WRITE_QUEUE_BYTES {
+            shell.queued.fetch_sub(n, Ordering::AcqRel);
+            return Err(NOT_READING.to_string());
+        }
+        match shell.input.try_send(data.as_bytes().to_vec()) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(_)) => {
+                shell.queued.fetch_sub(n, Ordering::AcqRel);
+                Err(NOT_READING.to_string())
+            }
+            // The writer thread ended: the pty is gone under it.
+            Err(TrySendError::Disconnected(_)) => {
+                shell.queued.fetch_sub(n, Ordering::AcqRel);
+                Err("the shell's terminal is gone".to_string())
+            }
+        }
+    }
+
+    /// The window drew `n` more bytes; the emitter may send more.
+    fn ack(&self, id: u32, n: usize) {
+        let shells = self.shells.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(shell) = shells.get(&id) {
+            shell.flow.acked(n);
+        }
     }
 
     fn resize(&self, id: u32, cols: u16, rows: u16) -> Result<(), String> {
@@ -331,14 +497,16 @@ fn shell_display_name(path: &str) -> String {
         .to_string()
 }
 
-/// The reader: every chunk to the window, then the exit.
+/// The reader: every chunk to the emitter's queue, then the exit. The
+/// queue is bounded, so a window that is behind holds the reader here,
+/// and the kernel holds the program.
 fn spawn_reader(
-    sink: Arc<dyn Sink>,
+    tx: mpsc::SyncSender<Chunk>,
     id: u32,
     mut reader: Box<dyn Read + Send>,
     child: Arc<Mutex<Box<dyn Child + Send + Sync>>>,
     closed: Arc<AtomicBool>,
-) {
+) -> std::io::Result<()> {
     thread::Builder::new()
         .name(format!("terminal-{id}"))
         .spawn(move || {
@@ -346,10 +514,11 @@ fn spawn_reader(
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
-                    Ok(n) => sink.send(Outgoing::Data {
-                        id,
-                        bytes: buf[..n].to_vec(),
-                    }),
+                    Ok(n) => {
+                        if tx.send(Chunk::Data(buf[..n].to_vec())).is_err() {
+                            return;
+                        }
+                    }
                     // EIO is how a Linux master reports the slave's last
                     // close; macOS gives a clean 0. Either is the end.
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -360,8 +529,7 @@ fn spawn_reader(
                 return;
             }
             let status = child.lock().unwrap_or_else(|p| p.into_inner()).wait().ok();
-            sink.send(Outgoing::Exit {
-                id,
+            let _ = tx.send(Chunk::Exit {
                 code: status.as_ref().and_then(|s| {
                     if s.signal().is_some() {
                         None
@@ -372,7 +540,104 @@ fn spawn_reader(
                 signal: status.as_ref().and_then(|s| s.signal().map(String::from)),
             });
         })
-        .expect("spawn the terminal's reader thread");
+        .map(|_| ())
+}
+
+/// The emitter: the reader's chunks to the window, one event per frame.
+/// The first chunk after a quiet spell goes at once; while the shell
+/// keeps printing, what arrives within `FRAME` of the last event is one
+/// event, capped at `FRAME_BYTES`. Past `HIGH_WATER` unacknowledged it
+/// waits for the window (see `Flow`).
+fn spawn_emitter(
+    sink: Arc<dyn Sink>,
+    id: u32,
+    rx: mpsc::Receiver<Chunk>,
+    flow: Arc<Flow>,
+) -> std::io::Result<()> {
+    thread::Builder::new()
+        .name(format!("terminal-emit-{id}"))
+        .spawn(move || {
+            let mut last_emit = Instant::now() - FRAME;
+            // A chunk that did not fit the frame it arrived in.
+            let mut carry: Option<Vec<u8>> = None;
+            loop {
+                let mut frame = match carry.take() {
+                    Some(b) => b,
+                    None => match rx.recv() {
+                        Ok(Chunk::Data(b)) => b,
+                        Ok(Chunk::Exit { code, signal }) => {
+                            sink.send(Outgoing::Exit { id, code, signal });
+                            return;
+                        }
+                        Err(_) => return,
+                    },
+                };
+                let deadline = last_emit + FRAME;
+                let mut exit = None;
+                while frame.len() < FRAME_BYTES {
+                    let now = Instant::now();
+                    let next = if now >= deadline {
+                        match rx.try_recv() {
+                            Ok(c) => c,
+                            Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
+                        }
+                    } else {
+                        match rx.recv_timeout(deadline - now) {
+                            Ok(c) => c,
+                            Err(RecvTimeoutError::Timeout) => continue,
+                            Err(RecvTimeoutError::Disconnected) => break,
+                        }
+                    };
+                    match next {
+                        Chunk::Data(b) => {
+                            if frame.len() + b.len() > FRAME_BYTES && !frame.is_empty() {
+                                carry = Some(b);
+                                break;
+                            }
+                            frame.extend_from_slice(&b);
+                        }
+                        Chunk::Exit { code, signal } => {
+                            exit = Some((code, signal));
+                            break;
+                        }
+                    }
+                }
+                flow.wait_for_room();
+                flow.sent(frame.len());
+                sink.send(Outgoing::Data { id, bytes: frame });
+                last_emit = Instant::now();
+                if let Some((code, signal)) = exit {
+                    sink.send(Outgoing::Exit { id, code, signal });
+                    return;
+                }
+            }
+        })
+        .map(|_| ())
+}
+
+/// The writer: the queue's bytes into the pty, in order. This is the
+/// thread that blocks when the foreground program is not reading; the
+/// command that queued the bytes has long returned. Ends with the queue
+/// (the shell closed) or with the first failed write (the pty gone).
+fn spawn_writer(
+    id: u32,
+    mut writer: Box<dyn Write + Send>,
+    queued: Arc<AtomicUsize>,
+) -> std::io::Result<mpsc::SyncSender<Vec<u8>>> {
+    let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(WRITE_QUEUE);
+    thread::Builder::new()
+        .name(format!("terminal-write-{id}"))
+        .spawn(move || {
+            while let Ok(bytes) = rx.recv() {
+                let n = bytes.len();
+                let r = writer.write_all(&bytes).and_then(|()| writer.flush());
+                queued.fetch_sub(n, Ordering::AcqRel);
+                if r.is_err() {
+                    return;
+                }
+            }
+        })
+        .map(|_| tx)
 }
 
 /// The title thread: which process group has the terminal, by name, once a
@@ -426,7 +691,9 @@ fn spawn_title_watch(
                 }
             }
         })
-        .expect("spawn the terminal's title thread");
+        // Out of threads: the strip keeps the shell's own name; the
+        // shell itself is unaffected (review D, FD6).
+        .ok();
 }
 
 /// A process's short name by pid — `proc_name` on macOS, `/proc` on Linux.
@@ -459,9 +726,12 @@ fn process_name(pid: libc::pid_t) -> Option<String> {
 
 // ---- the commands ---------------------------------------------------------
 
-/// New shell in `cwd`, sized to the pane's grid.
+/// New shell in `cwd`, sized to the pane's grid. `async`, as are `write`
+/// and `close`: a synchronous command runs on the main thread, and a
+/// fork, a wait on a dying shell, or a write the program is not reading
+/// would hold the window with it (review D, backlog 135).
 #[tauri::command]
-pub fn terminal_open(
+pub async fn terminal_open(
     app: AppHandle,
     terminals: State<'_, Terminals>,
     cwd: String,
@@ -472,13 +742,21 @@ pub fn terminal_open(
 }
 
 /// Keystrokes (and pastes) to the shell, as the text xterm.js produced.
+/// Queued, never waited on: `Err(NOT_READING)` when the queue is full.
 #[tauri::command]
-pub fn terminal_write(
+pub async fn terminal_write(
     terminals: State<'_, Terminals>,
     id: u32,
     data: String,
 ) -> Result<(), String> {
     terminals.write(id, &data)
+}
+
+/// The window has drawn `bytes` more of a shell's output; the emitter
+/// may send the next frame past the high-water mark.
+#[tauri::command]
+pub fn terminal_ack(terminals: State<'_, Terminals>, id: u32, bytes: usize) {
+    terminals.ack(id, bytes);
 }
 
 /// The pane's grid changed; the kernel tells the shell (`SIGWINCH`).
@@ -493,10 +771,12 @@ pub fn terminal_resize(
 }
 
 /// The shell's × — kill it and forget it. Never an error: a shell that
-/// already exited is closed the same way.
+/// already exited is closed the same way. (`Result` because an async
+/// command that borrows state must return one.)
 #[tauri::command]
-pub fn terminal_close(terminals: State<'_, Terminals>, id: u32) {
+pub async fn terminal_close(terminals: State<'_, Terminals>, id: u32) -> Result<(), String> {
     terminals.close(id);
+    Ok(())
 }
 
 /// The ids still open, for the tests and for a window that reloads.
@@ -630,28 +910,140 @@ mod tests {
     }
 
     #[test]
-    fn hangup_ends_the_shell_when_the_master_drops() {
-        // The backstop for the window going away without closing: the
-        // master's last owner drops, the kernel hangs the line up, the
-        // shell gets SIGHUP and exits.
+    fn eof_ends_the_shell_when_its_input_queue_drops() {
+        // What dropping a `Shell` does to an idle shell: the writer's
+        // queue goes, the writer thread ends and its dup of the master
+        // closes with a `\n` + `^D` (portable-pty's writer), and `sh`
+        // exits on the EOF. Not a hangup — the reader's dup keeps the
+        // pty open (review D, FD3); the hangup is the next test.
         let t = Terminals::default();
         let (info, _rx) = open_sh(&t, &std::env::temp_dir());
         let pid = info.pid.unwrap();
         assert!(alive(pid));
         let shell = t.shells.lock().unwrap().remove(&info.id).unwrap();
-        // Keep the child handle so nothing reaps it early; drop the master
-        // and the writer only. The reader thread's clone is the other
-        // owner of the fd; it ends when the read errors.
+        // Keep the child handle so nothing reaps it early.
         let Shell {
             master,
-            writer,
+            input,
             child,
             ..
         } = shell;
-        drop(writer);
+        drop(input);
         drop(master);
-        wait_until(|| !alive(pid), "the shell to die of SIGHUP");
+        wait_until(|| !alive(pid), "the shell to exit on EOF");
         let _ = child.lock().unwrap().wait();
+    }
+
+    #[test]
+    fn hangup_ends_a_foreground_job_when_every_master_fd_closes() {
+        // The backstop the module doc claims for the process ending: with
+        // no fd left on the master, the kernel hangs the line up and the
+        // session leader's group gets SIGHUP — a `sleep` in front, which
+        // reads nothing and would never see an EOF, dies of it. No reader
+        // clone is taken here, so the master is the one fd.
+        let pty = native_pty_system();
+        let pair = pty
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.args(["-c", "exec sleep 30"]);
+        let mut child = pair.slave.spawn_command(cmd).unwrap();
+        drop(pair.slave);
+        thread::sleep(Duration::from_millis(200));
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "sleep should still be running"
+        );
+        drop(pair.master);
+        // `kill(pid, 0)` answers for a zombie too, so the wait is the
+        // check: the job is reaped, and by the hangup.
+        let mut status = None;
+        wait_until(
+            || {
+                status = child.try_wait().unwrap();
+                status.is_some()
+            },
+            "the job to die of SIGHUP",
+        );
+        let signal = status.unwrap().signal().map(String::from);
+        assert!(
+            signal.as_deref().is_some_and(|s| s.contains("Hangup")),
+            "{signal:?}"
+        );
+    }
+
+    #[test]
+    fn a_full_input_queue_is_refused_and_drains_when_the_program_reads() {
+        // A paste the program is not reading fills the writer's queue up
+        // to its byte bound; the write past it is refused, not waited on;
+        // once the program is gone the shell reads it all.
+        let t = Terminals::default();
+        let (info, rx) = open_sh(&t, &std::env::temp_dir());
+        t.write(info.id, "sleep 2\n").unwrap();
+        read_until(&rx, |o| o.contains("sleep 2"));
+        thread::sleep(Duration::from_millis(300));
+        // Blank lines: the shell reads them after the sleep and does
+        // nothing, and a line the tty cuts (a cooked tty past its 1 KB
+        // line limit drops input with a bell, in any terminal) is still
+        // blank. Each under the line limit.
+        let filler = format!("{}\n", " ".repeat(999));
+        let mut accepted = 0usize;
+        let refused = loop {
+            match t.write(info.id, &filler) {
+                Ok(()) => accepted += 1,
+                Err(e) => break e,
+            }
+            // The queue, plus the one in the writer's hands, plus the
+            // line the tty took before it filled.
+            assert!(accepted <= WRITE_QUEUE + 2, "the queue never filled");
+        };
+        assert_eq!(refused, NOT_READING);
+        assert!(accepted * filler.len() <= WRITE_QUEUE_BYTES);
+        assert!(accepted >= WRITE_QUEUE, "only {accepted} accepted");
+        eprintln!(
+            "MEASURE queue: {accepted} writes of {} bytes accepted before {refused:?}",
+            filler.len()
+        );
+        // The sleep ends and the shell drains the queue: nothing is left
+        // in it, a write is accepted again, and its echo arrives.
+        let queued = t.shells.lock().unwrap()[&info.id].queued.clone();
+        wait_until(|| queued.load(Ordering::Acquire) == 0, "the queue to drain");
+        thread::sleep(Duration::from_millis(300));
+        t.write(info.id, "echo QUEUE-DRAINED\n").unwrap();
+        read_until(&rx, |o| o.contains("QUEUE-DRAINED\r\n"));
+        t.close(info.id);
+    }
+
+    #[test]
+    fn output_pauses_past_the_high_water_mark_until_the_window_acks() {
+        let t = Terminals::default();
+        let (info, rx) = open_sh(&t, &std::env::temp_dir());
+        read_until(&rx, |o| !o.is_empty());
+        t.write(info.id, "yes | head -c 5000000\n").unwrap();
+        // No acks: the emitter stops at the mark (plus one frame's cap).
+        thread::sleep(Duration::from_millis(600));
+        let got: usize = rx
+            .try_iter()
+            .map(|e| match e {
+                Outgoing::Data { bytes, .. } => bytes.len(),
+                _ => 0,
+            })
+            .sum();
+        eprintln!("MEASURE pause: {got} bytes in 600 ms without acks (mark {HIGH_WATER})");
+        assert!(got >= HIGH_WATER, "{got} never reached the mark");
+        assert!(got <= HIGH_WATER + FRAME_BYTES, "{got} ran past the mark");
+        let flow = t.shells.lock().unwrap()[&info.id].flow.clone();
+        assert!(flow.outstanding() >= HIGH_WATER);
+        // An ack for what was drawn lets the next frames through.
+        t.ack(info.id, got);
+        let more = read_until(&rx, |o| o.len() >= FRAME_BYTES);
+        assert!(!more.is_empty());
+        t.close(info.id);
     }
 
     #[test]
@@ -694,6 +1086,101 @@ mod tests {
             }
         };
         assert_eq!(title, "sleep");
+        t.close(info.id);
+    }
+
+    /// Review D's paste (FD1): 44 lines, 3,036 bytes, into a shell whose
+    /// foreground program is not reading its input.
+    fn paste_3k() -> String {
+        let mut s = String::new();
+        let mut i = 0;
+        while s.len() < 3036 {
+            let line = format!("echo line-{i:02} {}\n", "x".repeat(58));
+            let room = 3036 - s.len();
+            if line.len() > room {
+                s.push_str(&line[..room - 1]);
+                s.push('\n');
+            } else {
+                s.push_str(&line);
+            }
+            i += 1;
+        }
+        assert_eq!(s.len(), 3036);
+        s
+    }
+
+    #[test]
+    fn a_paste_into_a_program_not_reading_stdin_returns_at_once() {
+        let t = Terminals::default();
+        let (info, rx) = open_sh(&t, &std::env::temp_dir());
+        t.write(info.id, "sleep 4\n").unwrap();
+        // The sleep is in front once its line has echoed and a tick passed.
+        read_until(&rx, |o| o.contains("sleep 4"));
+        thread::sleep(Duration::from_millis(300));
+        let paste = paste_3k();
+        let start = Instant::now();
+        let r = t.write(info.id, &paste);
+        let took = start.elapsed();
+        eprintln!(
+            "MEASURE paste: {} bytes returned {:?} -> {:?}",
+            paste.len(),
+            r,
+            took
+        );
+        assert!(r.is_ok(), "{r:?}");
+        assert!(
+            took < Duration::from_millis(100),
+            "the paste blocked {took:?}"
+        );
+        t.close(info.id);
+    }
+
+    #[test]
+    fn a_flood_arrives_as_frames_not_lines() {
+        let t = Terminals::default();
+        let (info, rx) = open_sh(&t, &std::env::temp_dir());
+        read_until(&rx, |o| !o.is_empty());
+        let total: usize = 20_000_000;
+        t.write(info.id, "yes | head -c 20000000; echo FLOOD-DONE\n")
+            .unwrap();
+        let start = Instant::now();
+        let mut events = 0usize;
+        let mut bytes = 0usize;
+        let mut largest = 0usize;
+        let mut tail = String::new();
+        loop {
+            let Outgoing::Data { bytes: b, .. } =
+                rx.recv_timeout(Duration::from_secs(60)).expect("the flood")
+            else {
+                continue;
+            };
+            events += 1;
+            bytes += b.len();
+            largest = largest.max(b.len());
+            // The window's ack, as xterm.js's write callback sends it.
+            t.ack(info.id, b.len());
+            tail.push_str(&String::from_utf8_lossy(&b));
+            if tail.len() > 64 {
+                tail = tail[tail.len() - 64..].to_string();
+            }
+            if bytes >= total && tail.contains("FLOOD-DONE") {
+                break;
+            }
+        }
+        let took = start.elapsed();
+        eprintln!(
+            "MEASURE flood: {bytes} bytes as {events} events (mean {} B, largest {largest} B) in {took:?} = {:.0} events/s, {:.1} MB/s",
+            bytes / events.max(1),
+            events as f64 / took.as_secs_f64(),
+            bytes as f64 / took.as_secs_f64() / 1e6
+        );
+        assert!(largest <= FRAME_BYTES, "an event of {largest} bytes");
+        // Frames, not lines: a `yes` line is 3 bytes; a frame is thousands.
+        assert!(
+            bytes / events >= 4096,
+            "mean {} bytes per event",
+            bytes / events
+        );
         t.close(info.id);
     }
 

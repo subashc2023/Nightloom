@@ -2,13 +2,20 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   activateTab,
   app,
+  asideInTab,
   closeNote,
   closeTab,
+  dropContent,
+  focusPane,
   newTab,
+  openContent,
   openSession,
   reflectTabs,
   remoteSend,
+  showGraph,
+  showNightshift,
   showNote,
+  splitTab,
   stepTab,
 } from "./state.svelte";
 import * as tabs from "./tabs";
@@ -24,18 +31,40 @@ import { drafts, readDraft } from "./drafts.svelte";
 vi.mock("./api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./api")>()),
   openSession: vi.fn(async (id: string) => [
-    { event: "session_created", at: "2026-01-01T00:00:00Z", kind: "build", mode: "normal" },
-    { event: "user_message", at: "2026-01-01T00:00:00Z", text: `hello from ${id}` },
+    {
+      event: "session_created",
+      at: "2026-01-01T00:00:00Z",
+      kind: "build",
+      mode: "normal",
+    },
+    {
+      event: "user_message",
+      at: "2026-01-01T00:00:00Z",
+      text: `hello from ${id}`,
+    },
   ]),
   newSession: vi.fn(async () => ({ mode: "normal", kind: "build" })),
   listSessions: vi.fn(async () => []),
   transcript: vi.fn(async () => []),
 }));
 
+function label(c: tabs.TabContent): string {
+  switch (c.kind) {
+    case "chat":
+      return c.session ?? "new";
+    case "note":
+      return c.name;
+    case "project":
+      return `project:${c.id}`;
+    case "aside":
+      return `aside:${c.session}`;
+    default:
+      return c.kind;
+  }
+}
 const chats = (ws: tabs.Workspace) =>
-  ws.panes.map((p) =>
-    p.tabs.map((t) => (t.content.kind === "chat" ? (t.content.session ?? "new") : t.content.name)),
-  );
+  ws.panes.map((p) => p.tabs.map((t) => label(t.content)));
+const front = () => label(tabs.activeTab(tabs.focusedPane(app.tabs)).content);
 
 beforeEach(() => {
   app.tabs = tabs.emptyWorkspace();
@@ -106,10 +135,48 @@ describe("reflection", () => {
     expect(chats(app.tabs)).toEqual([["d"]]);
   });
 
-  it("the graph and Nightshift are not tabs and change nothing", () => {
-    app.view = "graph";
+  // ~~the graph and Nightshift are not tabs and change nothing~~ —
+  // backlog 140 (2026-09-17): tabs sit above everything.
+  it("the graph, Nightshift and the New project form are tabs; a plain click replaces", async () => {
+    await openSession("a");
     reflectTabs();
-    expect(chats(app.tabs)).toEqual([["new"]]);
+    showGraph();
+    expect(chats(app.tabs)).toEqual([["graph"]]);
+    app.openNext = "new";
+    showNightshift();
+    expect(chats(app.tabs)).toEqual([["graph", "nightshift"]]);
+    expect(front()).toBe("nightshift");
+    // The chat row again: replaces the Nightshift tab, the graph stays.
+    await openSession("a");
+    reflectTabs();
+    expect(chats(app.tabs)).toEqual([["graph", "a"]]);
+  });
+
+  it("one Nightshift tab at most: a second click focuses it, in the other pane too", async () => {
+    await openSession("a");
+    reflectTabs();
+    app.openNext = "new";
+    showNightshift();
+    app.openNext = "new";
+    await openSession("b");
+    reflectTabs();
+    expect(chats(app.tabs)).toEqual([["a", "nightshift", "b"]]);
+    await splitTab(app.tabs.panes[0].tabs[2].id, "right");
+    expect(chats(app.tabs)).toEqual([["a", "nightshift"], ["b"]]);
+    expect(app.tabs.focused).toBe(app.tabs.panes[1].id);
+    // From the right pane, the sidebar's Nightshift: the left pane's tab.
+    showNightshift();
+    expect(chats(app.tabs)).toEqual([["a", "nightshift"], ["b"]]);
+    expect(app.tabs.focused).toBe(app.tabs.panes[0].id);
+    expect(front()).toBe("nightshift");
+    // And again, with the view already Nightshift but the right pane
+    // focused (a mousedown there): the click still lands — dead before.
+    focusPane(app.tabs.panes[1].id);
+    expect(app.view).toBe("chat");
+    app.view = "nightshift";
+    showNightshift();
+    expect(app.tabs.focused).toBe(app.tabs.panes[0].id);
+    expect(chats(app.tabs)).toEqual([["a", "nightshift"], ["b"]]);
   });
 });
 
@@ -175,6 +242,22 @@ describe("closing", () => {
     expect(chats(app.tabs)).toEqual([["b"]]);
   });
 
+  // Backlog 140: the × he found dead was the sole New chat tab's — the
+  // model swapped it for an identical one and nothing showed.
+  it("× on the sole New chat tab says so; on a sole chat it leaves the new-chat page", async () => {
+    await closeTab();
+    expect(chats(app.tabs)).toEqual([["new"]]);
+    expect(app.toasts.at(-1)?.text).toMatch(/last tab/);
+    app.toasts = [];
+    await openSession("a");
+    reflectTabs();
+    await closeTab();
+    expect(chats(app.tabs)).toEqual([["new"]]);
+    expect(app.activeSessionId).toBeNull();
+    expect(app.view).toBe("chat");
+    expect(app.toasts).toHaveLength(0);
+  });
+
   it("the note view's ← Chat closes the note tab and lands the chat", async () => {
     await openSession("a");
     reflectTabs();
@@ -192,19 +275,27 @@ describe("closing", () => {
 // (review E, 2026-09-17): a chat the desktop cannot open right now — a turn
 // runs in another — holds the words under its own key, never the open chat's.
 describe("remote-send", () => {
-  it("holds a message for a chat that cannot be opened under that chat's key", async () => {
+  it("refuses a message for a chat it cannot open, and never queues it under the open chat", async () => {
+    // ~~held under that chat's key~~ — since backlog 132 the phone is told
+    // (a 409) and keeps the text itself; nothing lands in y, nothing waits
+    // in x's queue unseen.
     for (const k of Object.keys(drafts)) delete drafts[k];
     await openSession("y");
     reflectTabs();
     app.busy = true;
-    await remoteSend("x", "for x");
+    await expect(remoteSend("x", "for x")).rejects.toThrow(/busy in another chat/);
     expect(app.activeSessionId).toBe("y");
-    expect(readDraft("x").queue.map((q) => q.text)).toEqual(["for x"]);
+    expect(readDraft("x").queue).toEqual([]);
     expect(readDraft("y").queue).toEqual([]);
-    // For the open chat itself, a running turn queues as the composer would.
-    await remoteSend("y", "for y");
+    // For the open chat itself, a running turn queues as the composer
+    // would, and says so.
+    await expect(remoteSend("y", "for y")).resolves.toBe("queued");
     expect(readDraft("y").queue.map((q) => q.text)).toEqual(["for y"]);
     app.busy = false;
+    // Idle, a chat that will not open is refused with the reason.
+    vi.mocked(api.openSession).mockRejectedValueOnce("no such chat");
+    await expect(remoteSend("zz", "for zz")).rejects.toThrow(/could not open that chat/);
+    expect(readDraft("zz").queue).toEqual([]);
   });
 });
 
@@ -219,5 +310,66 @@ describe("⌘T", () => {
     await newTab();
     reflectTabs();
     expect(chats(app.tabs)).toEqual([["a", "new"]]);
+  });
+});
+
+// The + chooser (backlog 140 pass 1) and the drops from outside (pass 2).
+describe("openContent and dropContent", () => {
+  it("the chooser opens a new tab of what he picks; a project is a card, an aside a view", async () => {
+    await openSession("a");
+    reflectTabs();
+    await openContent({ kind: "graph" });
+    expect(chats(app.tabs)).toEqual([["a", "graph"]]);
+    expect(app.view).toBe("graph");
+    await openContent({ kind: "note", scope: "project", name: "plan.md" });
+    expect(chats(app.tabs)).toEqual([["a", "graph", "plan.md"]]);
+    expect(app.openNext).toBe("replace");
+    await openContent({ kind: "project", id: "p1" });
+    expect(chats(app.tabs)).toEqual([["a", "graph", "plan.md", "project:p1"]]);
+    // A card changes nothing global: the note is still the open one.
+    expect(app.view).toBe("note");
+    await openContent({ kind: "aside", session: "a" });
+    expect(front()).toBe("aside:a");
+    expect(asideInTab("a")).toBe(true);
+    expect(asideInTab("b")).toBe(false);
+    // New chat from the chooser: a new-chat tab, and one only.
+    await openContent({ kind: "chat", session: null });
+    expect(chats(app.tabs)).toEqual([
+      ["a", "graph", "plan.md", "project:p1", "aside:a", "new"],
+    ]);
+    expect(app.activeSessionId).toBeNull();
+    await openContent({ kind: "chat", session: null });
+    expect(chats(app.tabs)[0]).toHaveLength(6);
+    expect(app.openNext).toBe("replace");
+  });
+
+  it("a drop on a strip is a new tab at the index; on a half, a second pane", async () => {
+    await openSession("a");
+    reflectTabs();
+    const pane = app.tabs.panes[0].id;
+    await dropContent({ kind: "chat", session: "b" }, { pane, index: 0 });
+    expect(chats(app.tabs)).toEqual([["b", "a"]]);
+    expect(app.activeSessionId).toBe("b");
+    await dropContent(
+      { kind: "note", scope: "project", name: "x.md" },
+      { pane, side: "right" },
+    );
+    expect(chats(app.tabs)).toEqual([["b", "a"], ["x.md"]]);
+    expect(app.view).toBe("note");
+    expect(app.tabs.focused).toBe(app.tabs.panes[1].id);
+    // Two panes: a drop on the left pane's half lands there.
+    await dropContent({ kind: "nightshift" }, { pane, side: "left" });
+    expect(chats(app.tabs)).toEqual([["b", "a", "nightshift"], ["x.md"]]);
+    // A singleton dropped again, on the other pane: no second tab.
+    await dropContent(
+      { kind: "nightshift" },
+      { pane: app.tabs.panes[1].id, index: 0 },
+    );
+    expect(chats(app.tabs)).toEqual([["b", "a", "nightshift"], ["x.md"]]);
+    // Another chat under a running turn is refused with the toast.
+    app.busy = true;
+    await dropContent({ kind: "chat", session: "c" }, { pane, index: 0 });
+    expect(chats(app.tabs)).toEqual([["b", "a", "nightshift"], ["x.md"]]);
+    expect(app.toasts.at(-1)?.text).toMatch(/turn is running/);
   });
 });

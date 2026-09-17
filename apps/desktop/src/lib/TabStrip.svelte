@@ -3,21 +3,29 @@
     activateTab,
     app,
     closeTab,
+    dropContent,
+    droppedContent,
     moveTab,
-    newTab,
+    noteDraftKey,
     splitTab,
   } from "./state.svelte";
   import { hasDraft, newDraftKey } from "./drafts.svelte";
   import * as tabs from "./tabs";
-  import { TAB_DRAG, type Pane } from "./tabs";
+  import { TAB_DRAG, TERM_DRAG, type Pane } from "./tabs";
+  import { term } from "./terminal.svelte";
   import Icon from "./Icon.svelte";
+  import TabChooser from "./TabChooser.svelte";
   import { isMac } from "./platform";
 
   /**
    * One pane's strip of tabs (nightshift backlog 099, boards 9a and 9d):
    * a glyph for the kind, the title, a pulsing dot while the chat's turn
    * runs, the needs-you dot when it waits on him, ✎ for a draft, × on
-   * hover. `+` opens a new chat in a new tab (⌘T). The active tab is the
+   * hover. ~~`+` opens a new chat in a new tab (⌘T).~~ Since nightshift
+   * backlog 140 (2026-09-17) `+` opens a chooser under the strip
+   * (`TabChooser.svelte`) — New chat and its kinds, a new note, the
+   * notes, Nightshift, the graph, the projects — and the new tab is what
+   * he picks; ⌘T stays the one-key new chat. The active tab is the
    * sheet; the focused pane's active tab carries the accent rule on top,
    * so with two panes one strip says which the keys act on.
    *
@@ -25,7 +33,11 @@
    * to move, onto a pane's half to split — the halves are `App.svelte`'s
    * drop zones; this strip owns the reorder and the move. The drag carries
    * the tab's id under its own type, so a file or text dropped here is
-   * nothing to it.
+   * nothing to it. Content from outside (backlog 140 pass 2: a sidebar
+   * chat row, a note row, the Nightshift and Graph buttons, a project
+   * row, the aside card) drops here as a new tab at the slot; the
+   * terminal dock's strip (backlog 113's 12b) drops here to move the dock
+   * under this pane.
    */
   let { pane }: { pane: Pane } = $props();
 
@@ -33,15 +45,17 @@
   const live = $derived(tabs.liveTab(app.tabs, app.activeSessionId));
 
   function title(t: tabs.Tab): string {
-    return tabs.tabTitle(t.content, app.sessions);
+    return tabs.tabTitle(t.content, app.sessions, app.projects);
   }
 
   function draft(t: tabs.Tab): boolean {
     const c = t.content;
     if (c.kind === "note") {
-      const key = `${c.scope}:${c.name}`;
-      return app.noteDrafts[key] !== undefined;
+      // The draft's key carries the project for per-project files
+      // (backlog 133); `noteDraftKey` is the one place it is spelled.
+      return app.noteDrafts[noteDraftKey(c.scope, c.name)] !== undefined;
     }
+    if (c.kind !== "chat") return false;
     return hasDraft(c.session ?? newDraftKey(app.project?.id, app.pendingMode));
   }
 
@@ -55,10 +69,20 @@
 
   function hint(t: tabs.Tab): string {
     const c = t.content;
-    const base = c.kind === "note" ? `${c.name} — a note` : title(t);
+    const base =
+      c.kind === "note"
+        ? `${c.name} — a note`
+        : c.kind === "project"
+          ? `${title(t)} — a project`
+          : c.kind === "aside"
+            ? `${title(t)} — a side conversation, not in the chat`
+            : title(t);
     const state = needsYou(t) ? " · waiting on you" : running(t) ? " · a turn is running" : "";
     return `${base}${state} — ${isMac ? "⌘W" : "Ctrl+W"} closes`;
   }
+
+  /** The + chooser (backlog 140): open under this strip's + button. */
+  let chooser = $state(false);
 
   // ---- drag and drop ----
 
@@ -87,25 +111,44 @@
     return els.length;
   }
   function onDragOver(e: DragEvent) {
-    if (!app.draggingTab) return;
+    if (!app.draggingTab && !app.draggingContent && !app.draggingTerm) return;
     e.preventDefault();
     // The strip's drop is the strip's: the pane behind it draws the
     // *open beside* halves for a drag over its content, not over its tabs.
     e.stopPropagation();
-    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-    dropAt = indexAt(e);
+    if (e.dataTransfer) e.dataTransfer.dropEffect = app.draggingContent ? "copy" : "move";
+    // The dock has no slot in the strip: dropping it anywhere here docks
+    // it under this pane, so no accent bar.
+    dropAt = app.draggingTerm ? null : indexAt(e);
   }
   function onDragLeave(e: DragEvent) {
     if (stripEl && e.relatedTarget instanceof Node && stripEl.contains(e.relatedTarget)) return;
     dropAt = null;
   }
   function onDrop(e: DragEvent) {
+    const at = dropAt ?? indexAt(e);
+    dropAt = null;
+    // The terminal dock (backlog 113's 12b): under this pane now.
+    if (e.dataTransfer?.types.includes(TERM_DRAG) || app.draggingTerm) {
+      e.preventDefault();
+      e.stopPropagation();
+      app.draggingTerm = false;
+      term.pane = pane.id;
+      return;
+    }
+    // Content from outside (backlog 140 pass 2): a new tab at the slot.
+    const content = droppedContent(e);
+    if (content) {
+      e.preventDefault();
+      e.stopPropagation();
+      app.draggingContent = null;
+      void dropContent(content, { pane: pane.id, index: at });
+      return;
+    }
     const id = e.dataTransfer?.getData(TAB_DRAG) || app.draggingTab;
     if (!id) return;
     e.preventDefault();
     e.stopPropagation();
-    const at = dropAt ?? indexAt(e);
-    dropAt = null;
     app.draggingTab = null;
     void moveTab(id, pane.id, at);
   }
@@ -168,7 +211,7 @@
       ondragstart={(e) => onDragStart(e, t)}
       ondragend={onDragEnd}
     >
-      <span class="glyph" aria-hidden="true"><Icon name={t.content.kind === "note" ? "note" : "chat"} size={12} /></span>
+      <span class="glyph" aria-hidden="true"><Icon name={tabs.tabGlyph(t.content)} size={12} /></span>
       <span class="name">{title(t)}</span>
       {#if needsYou(t)}
         <span class="dot needs" title="Waiting on you"></span>
@@ -191,12 +234,24 @@
     </div>
   {/each}
   {#if dropAt === pane.tabs.length}<span class="tab-drop"></span>{/if}
-  <button class="tab-new" title="New tab ({isMac ? '⌘T' : 'Ctrl+T'})" aria-label="New tab" onclick={() => void newTab()}>
+  <!-- The + (backlog 140): a chooser of what the new tab becomes. ⌘T is
+       still the one-key new chat and lives in the File menu. -->
+  <button
+    class="tab-new"
+    class:open={chooser}
+    title="New tab… (⌘T is a new chat)"
+    aria-label="New tab"
+    aria-expanded={chooser}
+    onclick={() => (chooser = !chooser)}
+  >
     <Icon name="plus" size={12} />
   </button>
   <!-- The terminal pane's dock button lives in `App.svelte`'s pane foot,
        not here: the strip is the tabs' and stays the tabs'. -->
 </div>
+{#if chooser}
+  <TabChooser paneId={pane.id} close={() => (chooser = false)} />
+{/if}
 
 {#if menuFor}
   {@const t = pane.tabs.find((x) => x.id === menuFor)}
@@ -339,7 +394,8 @@
     cursor: pointer;
     flex-shrink: 0;
   }
-  .tab-new:hover {
+  .tab-new:hover,
+  .tab-new.open {
     background: var(--well);
     color: var(--ink);
   }

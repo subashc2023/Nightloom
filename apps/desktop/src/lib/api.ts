@@ -237,8 +237,11 @@ export function searchEverywhere(
   return invoke("search_everywhere", { query, scope });
 }
 
-export function renameSession(id: string, title: string): Promise<void> {
-  return invoke("rename_session", { id, title });
+/** `active` is the open chat's id (backlog 136): with a turn running, the
+ *  backend refuses to touch that chat and acts on any other at once
+ *  instead of waiting the turn out. */
+export function renameSession(id: string, title: string, active: string | null = null): Promise<void> {
+  return invoke("rename_session", { id, title, active });
 }
 
 /**
@@ -299,8 +302,8 @@ export function compact(): Promise<CompactResult> {
 }
 
 /** Delete a session log; returns the deleted session's full id. */
-export function deleteSession(id: string): Promise<string> {
-  return invoke("delete_session", { id });
+export function deleteSession(id: string, active: string | null = null): Promise<string> {
+  return invoke("delete_session", { id, active });
 }
 
 /** Put a deleted session back from the trash (nightshift backlog 064). */
@@ -403,6 +406,35 @@ export function promptLayers(): Promise<PromptLayersInfo> {
  */
 export function setPromptLayers(off: PromptLayer[]): Promise<SessionEvent[]> {
   return invoke("set_prompt_layers", { off });
+}
+
+/**
+ * Make the open chat the other kind from the next turn on (nightshift
+ * backlog 144). Resolves with the new transcript — a `kind` event lands in
+ * the log — and changes nothing on the wire until the caller reconnects,
+ * which `switchChatKind` in state.svelte.ts does. `workspace` is the
+ * folder for a switch to Claude Code on a chat born as a Chat; the
+ * project's when omitted. Refused when the folder does not exist.
+ */
+export function setChatKind(kind: ChatKind, workspace?: string): Promise<SessionEvent[]> {
+  return invoke("set_chat_kind", { kind, workspace });
+}
+
+/**
+ * Set the extra folders the open chat may see (nightshift backlog 143) —
+ * the whole list. Resolves with the new transcript; the caller reconnects
+ * (`setChatFolders` in state.svelte.ts does). Refused on a missing folder.
+ */
+export function setChatFolders(folders: string[]): Promise<SessionEvent[]> {
+  return invoke("set_chat_folders", { folders });
+}
+
+/**
+ * Set a project's extra folders (backlog 143) — the whole list; applies to
+ * its chats at their next connect. Resolves with the project as shown.
+ */
+export function setProjectFolders(id: string, folders: string[]): Promise<ProjectInfo> {
+  return invoke("set_project_folders", { id, folders });
 }
 
 /**
@@ -696,6 +728,11 @@ export function terminalResize(id: number, cols: number, rows: number): Promise<
 }
 export function terminalClose(id: number): Promise<null> {
   return invoke("terminal_close", { id });
+}
+/** xterm.js has drawn `bytes` more of a shell's output (backlog 135's
+ *  flow control): past 256 KB unacknowledged the shell's output waits. */
+export function terminalAck(id: number, bytes: number): Promise<null> {
+  return invoke("terminal_ack", { id, bytes });
 }
 
 /** Where the per-model instruction files live (`~/.nightloom/models`);
@@ -1158,4 +1195,11 @@ export function remoteSetKeepAwake(on: boolean): Promise<RemoteStatus> {
  *  phone must scan again. */
 export function remoteToken(regenerate: boolean): Promise<RemoteStatus> {
   return invoke("remote_token", { regenerate });
+}
+
+/** The window's answer to a phone's `remote-send` (backlog 132): the
+ *  listener is waiting on it to answer the phone — sent, queued behind
+ *  the chat's turn, or not taken and why. */
+export function remoteSent(id: number, queued: boolean, error: string | null): Promise<null> {
+  return invoke("remote_sent", { id, queued, error });
 }

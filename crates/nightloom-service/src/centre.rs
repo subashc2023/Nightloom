@@ -18,6 +18,7 @@
 //! committed.
 
 use serde::Serialize;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -125,6 +126,36 @@ pub fn dream_commits_in(config: &Path, vault: &Path, limit: usize) -> Vec<DreamC
         ));
     }
     out
+}
+
+/// The repository a `repo` from the window may mean: the vault, or a
+/// registered project's workspace — the same set `dream_commits_in` lists
+/// — canonicalised; anything else is refused. The two commands that run
+/// git (`dream_diff`, `revert_dream_file`) took the path as given, so a
+/// wrong or hostile caller inside the webview could run `checkout` in
+/// any repository on the machine (review 2026-09-17 FB3, backlog 133).
+pub fn dream_repo(config: &Path, vault: &Path, repo: &Path) -> Result<PathBuf, String> {
+    let asked = fs::canonicalize(repo)
+        .map_err(|e| format!("{} is not a folder here: {e}", repo.display()))?;
+    let mut allowed = Vec::new();
+    if let Ok(v) = fs::canonicalize(vault) {
+        allowed.push(v);
+    }
+    for p in Registry::load_in(config).projects() {
+        if let Some(w) = p.workspace.as_deref()
+            && let Ok(w) = fs::canonicalize(w)
+        {
+            allowed.push(w);
+        }
+    }
+    if allowed.contains(&asked) {
+        Ok(asked)
+    } else {
+        Err(format!(
+            "{} is not the vault or a project's folder — nothing is reverted there",
+            repo.display()
+        ))
+    }
 }
 
 fn git(repo: &Path, args: &[&str], pathspec: Option<&Path>) -> Result<String, String> {
@@ -301,6 +332,38 @@ pub fn revert_dream_file(repo: &Path, hash: &str, file: &str) -> Result<String, 
     // Did the file exist before the dream? `cat-file -e` answers without
     // printing it; a root commit has no parent, which reads as "no".
     let existed = git(repo, &["cat-file", "-e", &format!("{parent}:{file}")], None).is_ok();
+    // Already as it was — a second click on the same Revert: the file at
+    // HEAD is the file before the dream (or gone, when the dream added
+    // it). Said so before the later-commits check below, which the revert
+    // commit itself would otherwise trip.
+    let now_exists = git(repo, &["cat-file", "-e", &format!("HEAD:{file}")], None).is_ok();
+    let already = if existed {
+        now_exists && git(repo, &["diff", "--quiet", &parent, "HEAD"], Some(path)).is_ok()
+    } else {
+        !now_exists
+    };
+    if already {
+        return Ok(format!("{file} was already as it was before the dream"));
+    }
+    // Commits after the dream that touched this file — a later dream's,
+    // a tidy's, a pre-dream snapshot of his own edit — would go with the
+    // checkout of the dream's parent, silently (review 2026-09-17, FB1's
+    // follow-on; blocker 204's default: refuse and name them, rather
+    // than revert through them or only the dream's own change).
+    let later = git(
+        repo,
+        &["log", "--format=%h %s", &format!("{hash}..HEAD")],
+        Some(path),
+    )?;
+    let later: Vec<&str> = later.lines().filter(|l| !l.trim().is_empty()).collect();
+    if !later.is_empty() {
+        let n = later.len();
+        return Err(format!(
+            "{file} changed again in {n} later commit{} ({}); reverting this dream would undo those too — revert the newer one first, or edit the note by hand",
+            if n == 1 { "" } else { "s" },
+            later.join("; ")
+        ));
+    }
     if existed {
         git(repo, &["checkout", &parent], Some(path))?;
     } else {
@@ -477,6 +540,55 @@ mod tests {
         );
         let head = git(&dir, &["rev-parse", "HEAD"], None).unwrap();
         assert_eq!(head.trim(), dream);
+    }
+
+    #[test]
+    fn revert_refuses_a_file_a_later_commit_changed_again() {
+        let Some(dir) = repo() else { return };
+        fs::write(dir.join("a.md"), "one\n").unwrap();
+        commit_all(&dir, "start");
+        fs::write(dir.join("a.md"), "one\ntwo\n").unwrap();
+        let dream = commit_all(&dir, "nightloom: dream — consolidated 1 observations");
+        fs::write(dir.join("a.md"), "one\ntwo\nthree\n").unwrap();
+        commit_all(&dir, "nightloom: pre-dream snapshot");
+        let err = revert_dream_file(&dir, &dream, "a.md").unwrap_err();
+        assert!(err.contains("1 later commit"), "{err}");
+        assert!(err.contains("pre-dream snapshot"), "{err}");
+        assert_eq!(
+            fs::read_to_string(dir.join("a.md")).unwrap(),
+            "one\ntwo\nthree\n"
+        );
+        // Another file's later commit does not stand in the way.
+        fs::write(dir.join("b.md"), "x\n").unwrap();
+        let dream2 = commit_all(&dir, "nightloom: dream — consolidated 1 observations");
+        fs::write(dir.join("a.md"), "again\n").unwrap();
+        commit_all(&dir, "nightloom: tidy");
+        let said = revert_dream_file(&dir, &dream2, "b.md").unwrap();
+        assert!(said.contains("removed"), "{said}");
+    }
+
+    #[test]
+    fn a_repo_from_the_window_must_be_the_vault_or_a_projects_folder() {
+        let Some(vault) = repo() else { return };
+        let Some(project) = repo() else { return };
+        let Some(elsewhere) = repo() else { return };
+        let config =
+            std::env::temp_dir().join(format!("nightloom-centre-cfg-{}", std::process::id()));
+        fs::create_dir_all(&config).unwrap();
+        let mut reg = Registry::load_in(&config);
+        reg.add(&project, Some("p".into())).unwrap();
+        assert_eq!(
+            dream_repo(&config, &vault, &vault).unwrap(),
+            fs::canonicalize(&vault).unwrap()
+        );
+        assert_eq!(
+            dream_repo(&config, &vault, &project).unwrap(),
+            fs::canonicalize(&project).unwrap()
+        );
+        let err = dream_repo(&config, &vault, &elsewhere).unwrap_err();
+        assert!(err.contains("not the vault or a project's folder"), "{err}");
+        assert!(dream_repo(&config, &vault, Path::new("/nonexistent/x")).is_err());
+        let _ = fs::remove_dir_all(&config);
     }
 
     #[test]

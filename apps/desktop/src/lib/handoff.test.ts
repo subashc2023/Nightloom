@@ -282,6 +282,33 @@ describe("noteFill and the queue", () => {
     expect(handoff.startPrompt).toBe("Read HANDOFF.md, then src/a.ts.");
   });
 
+  it("keeps a chat's wrapped stage and start prompt across a reading for another chat (backlog 137)", () => {
+    resetHandoff();
+    noteFill("chat-x", 75, 100, false);
+    beginWrapUp("chat-x");
+    noteAgentTurnEnd("chat-x", 80, 100, reply("```start-prompt\nRead HANDOFF.md.\n```"));
+    expect(handoff.stage).toBe("wrapped");
+    // He opens chat Y to check something; its turn ends at a low fill.
+    noteAgentTurnEnd("chat-y", 10, 100, reply("fine"));
+    expect(handoff.chat).toBe("chat-y");
+    expect(handoff.stage).toBe("idle");
+    expect(handoff.startPrompt).toBeNull();
+    // Back on X: still wrapped, the start prompt still found — no second
+    // wrap-up is asked for, and nothing is queued while he is away.
+    noteAgentTurnEnd("chat-x", 82, 100, reply("more"));
+    expect(handoff.stage).toBe("wrapped");
+    expect(handoff.startPrompt).toBe("Read HANDOFF.md.");
+    expect(readDraft("chat-x").queue).toHaveLength(0);
+    // Stay here on Y is Y's alone.
+    noteFill("chat-y", 75, 100, false);
+    expect(handoff.stage).toBe("due");
+    stayHere();
+    expect(handoff.dismissedAt).toBe(0.75);
+    noteFill("chat-x", 82, 100, false);
+    expect(handoff.stage).toBe("wrapped");
+    expect(handoff.dismissedAt).toBe(0);
+  });
+
   it("leaves the start prompt null when the reply has no block, and a failed wrap-up returns to the notice", () => {
     resetHandoff();
     noteFill("chat-n", 75, 100, false);

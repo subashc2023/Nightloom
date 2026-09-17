@@ -157,3 +157,24 @@ export const SCOPES: { scope: SearchScope; label: string }[] = [
 export function matchesSuffix(n: number): string {
   return n > 1 ? ` · ${n} matches` : "";
 }
+
+/**
+ * Whether an Escape pressed while the panel is open is the panel's to
+ * take (backlog 138): yes from anywhere — a result row, a fold chevron,
+ * the transcript — except from another text field, whose own Escape it
+ * is (the composer's, a rename box, ⌘F's bar); the panel's own field
+ * counts as the panel. Before this the panel took Escape only from its
+ * field, and the next Escape reached the window, where macOS leaves full
+ * screen. `target` is the event's target, duck-typed for the suite.
+ */
+export function escapeClosesPanel(
+  target: { tagName?: string; isContentEditable?: boolean } | null,
+  panelField: unknown,
+): boolean {
+  if (!target) return true;
+  if (target === panelField) return true;
+  const tag = (target.tagName ?? "").toUpperCase();
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return false;
+  if (target.isContentEditable) return false;
+  return true;
+}

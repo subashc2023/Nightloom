@@ -387,10 +387,35 @@ pub struct AgentSpec {
     /// older positions, `auto` and `bypassPermissions`
     /// ([`AgentSpec::headless_permission_mode`]).
     pub ask: Option<AskSpec>,
+    /// The chat is a Chat by *policy* while its declaration stays Claude
+    /// Code's (nightshift backlog 144, 2026-09-17): every tool the CLI
+    /// would list stays listed — narrowing the list re-writes the whole
+    /// cached prefix (measured: 0 read, 23,234 written; `--disallowedTools`
+    /// does the same, 31,796 written) — and a `PreToolUse` hook refuses
+    /// any call outside [`READ_ONLY_TOOLS`] and Nightloom's own server
+    /// instead. Registered through the one `--settings` JSON, which is not
+    /// part of the request, so the next turn reads the prefix in full
+    /// (31–33k read, under 1.2k written) and a refused call reaches the
+    /// model as an `is_error` result carrying [`CHAT_POLICY_REASON`]
+    /// (nightshift `143-report-2026-09-17.md`, steps 8–11). Set by
+    /// [`apply_kind_policy`](Self::apply_kind_policy).
+    pub chat_policy: bool,
     /// Passed through verbatim, last, so a caller can reach a flag this
     /// struct has not grown a field for.
     pub extra_args: Vec<String>,
 }
+
+/// The `PreToolUse` matcher for the Chat policy: everything **but** the
+/// five read-only tools and Nightloom's own server. A negative lookahead
+/// rather than a list of the CLI's writers, so a tool the CLI grows next
+/// month is refused too — measured on 2.1.263 (step 11 of the report): the
+/// CLI's matcher takes the JavaScript pattern, Bash was refused and Read
+/// ran in the same turn.
+pub const CHAT_POLICY_MATCHER: &str = "^(?!(Read|Glob|Grep|WebFetch|WebSearch|mcp__)).*";
+
+/// What the model reads when the policy refuses a call — the hook's
+/// `permissionDecisionReason`, delivered as the tool's error result.
+pub const CHAT_POLICY_REASON: &str = "This chat is a Chat now: the shell, the file-editing tools, subagents and plans are withdrawn. Reads, search and the web remain.";
 
 /// What the Ask position adds to the command line.
 ///
@@ -535,6 +560,7 @@ impl AgentSpec {
             mcp_config: None,
             no_session_persistence: false,
             ask: None,
+            chat_policy: false,
             extra_args: Vec::new(),
         }
     }
@@ -586,6 +612,17 @@ impl AgentSpec {
                 self.tools = Some(READ_ONLY_TOOLS.iter().map(|t| (*t).to_string()).collect());
             }
         }
+    }
+
+    /// The policy half of a kind (nightshift backlog 144): `kind` is what
+    /// the chat may do now, `declared` what its declaration was built for
+    /// ([`apply_kind`](Self::apply_kind) with `Session::declared_kind`).
+    /// A Chat over a Claude Code declaration gets the refusing hook
+    /// ([`chat_policy`](Self::chat_policy)); every other pairing changes
+    /// nothing — a Chat declared as a Chat has nothing to refuse, and a
+    /// Claude Code chat has nothing withdrawn.
+    pub fn apply_kind_policy(&mut self, kind: ChatKind, declared: ChatKind) {
+        self.chat_policy = kind == ChatKind::Chat && declared == ChatKind::Build;
     }
 
     /// What the approval switch means on a headless run: `auto` when it is
@@ -766,6 +803,35 @@ impl AgentSpec {
             }
             a.push("--permission-prompt-tool".into());
             a.push(ask::PROMPT_TOOL.into());
+        }
+        if self.chat_policy {
+            // A second `PreToolUse` entry beside the Ask hook's, in the same
+            // array — the CLI runs every matching entry, and a deny from
+            // any of them stands. The command is an `echo` of the reply,
+            // so no program of Nightloom's has to be found for it to work.
+            let reply = serde_json::json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": CHAT_POLICY_REASON,
+                }
+            })
+            .to_string();
+            let entry = serde_json::json!({
+                "matcher": CHAT_POLICY_MATCHER,
+                "hooks": [{ "type": "command", "command": format!("echo '{reply}'") }]
+            });
+            let hooks = settings
+                .entry("hooks")
+                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+            if let serde_json::Value::Object(hooks) = hooks {
+                let pre = hooks
+                    .entry("PreToolUse")
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+                if let serde_json::Value::Array(pre) = pre {
+                    pre.push(entry);
+                }
+            }
         }
         if !self.auto_memory {
             settings.insert("autoMemoryEnabled".into(), serde_json::Value::Bool(false));
@@ -1930,6 +1996,71 @@ mod tests {
         none.tools = Some(Vec::new());
         none.apply_kind(ChatKind::Chat);
         assert_eq!(none.tools.as_deref(), Some(&[][..]));
+    }
+
+    /// The policy half of a kind (nightshift backlog 144): a Chat over a
+    /// Claude Code declaration leaves `--tools` alone and registers the
+    /// refusing hook in the one `--settings` JSON — beside the Ask hook's
+    /// entry when there is one, never a second `--settings` — with the
+    /// lookahead matcher and the reason the model reads. Every other
+    /// pairing registers nothing.
+    #[test]
+    fn a_chat_over_a_build_declaration_is_a_deny_hook_not_a_narrower_tool_list() {
+        let mut s = spec();
+        s.apply_kind(ChatKind::Build);
+        s.apply_kind_policy(ChatKind::Chat, ChatKind::Build);
+        assert!(s.chat_policy);
+        let a = s.args("hi");
+        assert!(!a.iter().any(|x| x == "--tools"), "{a:?}");
+        assert!(!a.iter().any(|x| x == "--disallowedTools"), "{a:?}");
+        assert_eq!(a.iter().filter(|x| *x == "--settings").count(), 1);
+        let i = a.iter().position(|x| x == "--settings").unwrap();
+        let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
+        let pre = v["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(pre.len(), 1);
+        assert_eq!(pre[0]["matcher"], CHAT_POLICY_MATCHER);
+        let command = pre[0]["hooks"][0]["command"].as_str().unwrap();
+        assert!(command.starts_with("echo '"), "{command}");
+        let reply: serde_json::Value =
+            serde_json::from_str(command.trim_start_matches("echo '").trim_end_matches('\''))
+                .unwrap();
+        assert_eq!(reply["hookSpecificOutput"]["permissionDecision"], "deny");
+        assert_eq!(
+            reply["hookSpecificOutput"]["permissionDecisionReason"],
+            CHAT_POLICY_REASON
+        );
+
+        // Beside the Ask hook: two entries in one array, one `--settings`.
+        s.ask = Some(AskSpec {
+            hook: vec!["/app/nightloom-desktop".into(), "--permission-hook".into()],
+            dir: PathBuf::from("/logs/ask/chat-1"),
+            mode: AskMode::Ask,
+        });
+        s.auto_memory = false;
+        let a = s.args("hi");
+        assert_eq!(a.iter().filter(|x| *x == "--settings").count(), 1);
+        let i = a.iter().position(|x| x == "--settings").unwrap();
+        let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
+        let pre = v["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(pre.len(), 2, "{v}");
+        assert_eq!(pre[0]["matcher"], ask::MATCHER);
+        assert_eq!(pre[1]["matcher"], CHAT_POLICY_MATCHER);
+        assert_eq!(v["autoMemoryEnabled"], false);
+
+        // The other pairings: nothing to refuse.
+        for (kind, declared) in [
+            (ChatKind::Build, ChatKind::Build),
+            (ChatKind::Chat, ChatKind::Chat),
+            (ChatKind::Build, ChatKind::Chat),
+        ] {
+            let mut s = spec();
+            s.apply_kind_policy(kind, declared);
+            assert!(!s.chat_policy, "{kind:?} over {declared:?}");
+            assert!(!s.args("hi").iter().any(|x| x == "--settings"));
+        }
+        // The matcher itself is JavaScript's (a negative lookahead the
+        // `regex` crate cannot compile); the CLI was measured reading it —
+        // Bash refused, Read run, in one turn (the report's step 11).
     }
 
     #[test]

@@ -13,6 +13,15 @@
 //! and `remote-cancel` (→ `cancelTurn`). The turn runs on the Mac either
 //! way; the phone reads its progress off the relayed `turn-event`s.
 //!
+//! The window answers (review 2026-09-17 FA2/FA3, backlog 132): each
+//! `remote-send` carries an id, and the window's `remoteSend` reports back
+//! through [`remote_sent`] — sent, queued behind the chat's running turn,
+//! or refused with a sentence (no engine, busy in another chat, a chat
+//! that would not open). `Host::send` waits for that answer (`SEND_WAIT`)
+//! and the phone gets a 202 that says which, or a 409 and keeps the text;
+//! a window that does not answer is a 409 too. Before this the 202 meant
+//! only "emitted", and a message the window dropped was gone.
+//!
 //! # What the phone reads and from where
 //!
 //! The chat list and a transcript come from the store on disk, by id, with
@@ -23,12 +32,15 @@
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use nightloom_core::SessionEvent;
 use nightloom_service::credentials;
 use nightloom_service::remote::{
-    ApproveRequest, Asset, ChatRow, DEFAULT_PORT, Event, Host, RemoteState, Server, tailnet, token,
+    ApproveRequest, Asset, ChatRow, DEFAULT_PORT, Event, Handed, Host, RemoteState, Server,
+    tailnet, token,
 };
 use nightloom_service::store;
 use serde::Serialize;
@@ -44,6 +56,11 @@ const RELAY_CAPACITY: usize = 256;
 /// The window events the phone's stream carries, unchanged.
 const RELAYED: [&str; 3] = ["turn-event", "tool-approval", "turn-notice"];
 
+/// How long `Host::send` waits for the window's answer to a `remote-send`
+/// before the phone is told the desktop did not take it. The window's
+/// part is a chat open at most — an IPC and a file read.
+const SEND_WAIT: Duration = Duration::from_secs(3);
+
 /// The desktop as the listener sees it.
 pub struct DesktopHost {
     app: AppHandle,
@@ -54,6 +71,9 @@ pub struct DesktopHost {
     /// Every `tool-approval` the relay has seen, by id; `state` reports the
     /// ones the gates still hold and forgets the rest.
     seen: Mutex<HashMap<String, serde_json::Value>>,
+    /// The `remote-send`s awaiting the window's answer, by id.
+    replies: Mutex<HashMap<u64, tokio::sync::oneshot::Sender<Result<Handed, String>>>>,
+    next_send: AtomicU64,
 }
 
 impl DesktopHost {
@@ -64,6 +84,8 @@ impl DesktopHost {
             tx,
             last_chat: Mutex::new(None),
             seen: Mutex::new(HashMap::new()),
+            replies: Mutex::new(HashMap::new()),
+            next_send: AtomicU64::new(1),
         })
     }
 
@@ -95,6 +117,18 @@ impl DesktopHost {
 
     fn state_of(&self) -> State<'_, AppState> {
         self.app.state::<AppState>()
+    }
+
+    /// The window's answer to a `remote-send` (from `remote_sent`).
+    fn answer(&self, id: u64, outcome: Result<Handed, String>) {
+        let tx = self
+            .replies
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&id);
+        if let Some(tx) = tx {
+            let _ = tx.send(outcome);
+        }
     }
 }
 
@@ -182,13 +216,33 @@ impl Host for DesktopHost {
         .await
     }
 
-    async fn send(&self, chat: Option<&str>, text: &str) -> Result<(), String> {
-        self.app
-            .emit(
-                "remote-send",
-                serde_json::json!({ "chat": chat, "text": text }),
-            )
-            .map_err(|e| format!("the desktop window could not take the message: {e}"))
+    async fn send(&self, chat: Option<&str>, text: &str) -> Result<Handed, String> {
+        let id = self.next_send.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.replies
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(id, tx);
+        if let Err(e) = self.app.emit(
+            "remote-send",
+            serde_json::json!({ "id": id, "chat": chat, "text": text }),
+        ) {
+            self.answer(id, Err(String::new()));
+            return Err(format!(
+                "the desktop window could not take the message: {e}"
+            ));
+        }
+        match tokio::time::timeout(SEND_WAIT, rx).await {
+            Ok(Ok(outcome)) => outcome,
+            Ok(Err(_)) => Err("the desktop window dropped the message".into()),
+            Err(_) => {
+                self.replies
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .remove(&id);
+                Err("the desktop window did not answer — is Nightloom's window open?".into())
+            }
+        }
     }
 
     async fn approve(&self, req: ApproveRequest) -> Result<(), String> {
@@ -308,13 +362,19 @@ const NO_TAILSCALE: &str =
 /// answers now: the two differ after a re-login or a reset changes the
 /// node's address, and a QR built from the new one would point the phone
 /// at a port nothing listens on (review 2026-09-17, reviewer A).
-fn status_of(remote: &Remote, bound: Option<std::net::SocketAddr>) -> RemoteStatus {
+///
+/// Plain values in, so it can run off the runtime: the Tailscale CLI (two
+/// processes, each waited for at most `tailnet::CLI_TIMEOUT`), the keychain
+/// and the QR render all block, and on a runtime worker they held a
+/// streaming turn with them (review 2026-09-17 FA7). `status` is the
+/// `spawn_blocking` wrapper every command uses.
+fn status_of(port: u16, keep_awake: bool, bound: Option<std::net::SocketAddr>) -> RemoteStatus {
     let on = bound.is_some();
     let address = match bound {
         Some(addr) => Some(addr.ip()),
         None => tailnet::address().map(IpAddr::V4),
     };
-    let port = bound.map(|a| a.port()).unwrap_or_else(|| remote.port());
+    let port = bound.map(|a| a.port()).unwrap_or(port);
     let token = credentials::remote_token();
     let setup_url = match (&address, &token) {
         (Some(ip), Some(t)) => Some(token::setup_url(&ip.to_string(), port, t)),
@@ -325,7 +385,7 @@ fn status_of(remote: &Remote, bound: Option<std::net::SocketAddr>) -> RemoteStat
         on,
         address: address.map(|a| a.to_string()),
         port,
-        keep_awake: remote.keep_awake(),
+        keep_awake,
         has_token: token.is_some(),
         token,
         setup_url,
@@ -333,11 +393,42 @@ fn status_of(remote: &Remote, bound: Option<std::net::SocketAddr>) -> RemoteStat
     }
 }
 
+/// `status_of` off the runtime, with the card's settings read first.
+async fn status(
+    remote: &Remote,
+    bound: Option<std::net::SocketAddr>,
+) -> Result<RemoteStatus, String> {
+    let port = remote.port();
+    let keep_awake = remote.keep_awake();
+    crate::blocking(move || Ok::<_, String>(status_of(port, keep_awake, bound))).await
+}
+
 /// The card's read: is the listener up, where, and the token.
 #[tauri::command]
 pub async fn remote_status(remote: State<'_, Remote>) -> Result<RemoteStatus, String> {
     let bound = remote.server.lock().await.as_ref().map(Server::addr);
-    Ok(status_of(&remote, bound))
+    status(&remote, bound).await
+}
+
+/// The window's answer to a `remote-send` (backlog 132): `queued` when the
+/// message waits behind the chat's running turn, `error` when it was not
+/// taken, else sent.
+#[tauri::command]
+pub fn remote_sent(remote: State<'_, Remote>, id: u64, queued: bool, error: Option<String>) {
+    let outcome = match error {
+        Some(e) => Err(e),
+        None if queued => Ok(Handed::Queued),
+        None => Ok(Handed::Sent),
+    };
+    remote.host.answer(id, outcome);
+}
+
+/// The token the keychain holds, or a sentence when it could not say
+/// (review 2026-09-17 FA4): a locked or refusing keychain must not read
+/// as "no token" — that minted a new one and un-paired every phone.
+fn stored_token() -> Result<Option<String>, String> {
+    credentials::try_remote_token()
+        .map_err(|e| format!("could not read the phone token from the keychain ({e}); the one you have is kept — try again"))
 }
 
 /// Switch the listener on at `port` on the Mac's tailnet address. Refused
@@ -349,12 +440,18 @@ pub async fn remote_start(
     remote: State<'_, Remote>,
     port: Option<u16>,
 ) -> Result<RemoteStatus, String> {
-    let ip: Ipv4Addr = tailnet::address().ok_or_else(|| NO_TAILSCALE.to_string())?;
     let port = port.unwrap_or_else(|| remote.port());
     if port == 0 {
         return Err("the port must be between 1 and 65535".into());
     }
-    let token = match credentials::remote_token() {
+    // The CLI and the keychain off the runtime (FA7); a keychain that
+    // could not be read keeps the token (FA4).
+    let (ip, stored) = crate::blocking(move || -> Result<_, String> {
+        let ip: Ipv4Addr = tailnet::address().ok_or_else(|| NO_TAILSCALE.to_string())?;
+        Ok((ip, stored_token()?))
+    })
+    .await?;
+    let token = match stored {
         Some(t) => t,
         None => {
             let t = token::generate();
@@ -362,20 +459,57 @@ pub async fn remote_start(
             t
         }
     };
-    let mut slot = remote.server.lock().await;
-    if let Some(server) = slot.take() {
-        server.stop().await;
-    }
-    let host: Arc<dyn Host> = remote.host.clone();
-    let server = Server::start(IpAddr::V4(ip), port, token, host)
-        .await
-        .map_err(|e| e.to_string())?;
-    *remote.port.lock().unwrap_or_else(|p| p.into_inner()) = port;
-    let bound = server.addr();
-    *slot = Some(server);
-    drop(slot);
+    let bound = rebind(&remote, IpAddr::V4(ip), port, token).await?;
     remote.apply_awake(&app, remote.keep_awake());
-    Ok(status_of(&remote, Some(bound)))
+    status(&remote, Some(bound)).await
+}
+
+/// Start the listener at `ip:port` with `token`, in place of the one
+/// running. Bind first and stop second when the port differs, so a bind
+/// that fails leaves the old listener up; on the same port the old one
+/// must go first, and if the new bind then fails the old address and
+/// token are tried again so the switch is not left off with nothing
+/// listening (review 2026-09-17 FA9). Either way an error names what
+/// failed, and the card shows the listener as it is.
+async fn rebind(
+    remote: &Remote,
+    ip: IpAddr,
+    port: u16,
+    token: String,
+) -> Result<std::net::SocketAddr, String> {
+    let host: Arc<dyn Host> = remote.host.clone();
+    let mut slot = remote.server.lock().await;
+    let old = slot.as_ref().map(|s| (s.addr(), s.token().to_string()));
+    let same_port = old.as_ref().is_some_and(|(a, _)| a.port() == port);
+    if !same_port {
+        let server = Server::start(ip, port, token, host)
+            .await
+            .map_err(|e| e.to_string())?;
+        if let Some(previous) = slot.replace(server) {
+            previous.stop().await;
+        }
+    } else {
+        if let Some(previous) = slot.take() {
+            previous.stop().await;
+        }
+        match Server::start(ip, port, token, host.clone()).await {
+            Ok(server) => {
+                *slot = Some(server);
+            }
+            Err(e) => {
+                // Best effort: the listener as it was, so a mistyped
+                // setting does not switch remote off.
+                if let Some((addr, old_token)) = old
+                    && let Ok(server) = Server::start(addr.ip(), addr.port(), old_token, host).await
+                {
+                    *slot = Some(server);
+                }
+                return Err(e.to_string());
+            }
+        }
+    }
+    *remote.port.lock().unwrap_or_else(|p| p.into_inner()) = port;
+    Ok(slot.as_ref().map(Server::addr).expect("just bound"))
 }
 
 /// Switch the listener off: the port closes, open phone streams end, the
@@ -389,7 +523,7 @@ pub async fn remote_stop(
         server.stop().await;
     }
     remote.apply_awake(&app, false);
-    Ok(status_of(&remote, None))
+    status(&remote, None).await
 }
 
 /// The "keep the Mac awake while remote is on" switch: the guard is held
@@ -403,25 +537,33 @@ pub async fn remote_set_keep_awake(
     *remote.keep_awake.lock().unwrap_or_else(|p| p.into_inner()) = on;
     let bound = remote.server.lock().await.as_ref().map(Server::addr);
     remote.apply_awake(&app, on && bound.is_some());
-    Ok(status_of(&remote, bound))
+    status(&remote, bound).await
 }
 
 /// The token, made and stored if there is none; `regenerate` replaces it
 /// (every phone must be set up again) and restarts a running listener with
-/// the new one.
+/// the new one. A keychain that could not be read keeps the token (FA4);
+/// with the listener up, the new token is stored only once the listener
+/// runs with it, so a restart that fails leaves the phones paired (FA9).
 #[tauri::command]
 pub async fn remote_token(
     app: AppHandle,
     remote: State<'_, Remote>,
     regenerate: bool,
 ) -> Result<RemoteStatus, String> {
-    let fresh = regenerate || credentials::remote_token().is_none();
-    if fresh {
-        credentials::set_remote_token(&token::generate()).map_err(|e| e.to_string())?;
-    }
+    let stored = crate::blocking(stored_token).await?;
+    let fresh = regenerate || stored.is_none();
     let bound = remote.server.lock().await.as_ref().map(Server::addr);
-    if fresh && bound.is_some() {
-        return remote_start(app, remote, None).await;
+    if !fresh {
+        return status(&remote, bound).await;
     }
-    Ok(status_of(&remote, bound))
+    let new = token::generate();
+    if let Some(addr) = bound {
+        let bound = rebind(&remote, addr.ip(), addr.port(), new.clone()).await?;
+        credentials::set_remote_token(&new).map_err(|e| e.to_string())?;
+        remote.apply_awake(&app, remote.keep_awake());
+        return status(&remote, Some(bound)).await;
+    }
+    credentials::set_remote_token(&new).map_err(|e| e.to_string())?;
+    status(&remote, None).await
 }

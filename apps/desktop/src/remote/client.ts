@@ -107,10 +107,14 @@ export class Client {
     return (await this.call(`/chats/${encodeURIComponent(id)}/transcript`)).json();
   }
 
-  /** 202: the turn runs on the Mac; its progress comes down the stream. */
-  async send(chat: string | null, text: string): Promise<void> {
+  /** 202: the turn runs on the Mac — or, `"queued"`, waits behind the one
+   *  running in that chat and goes when it ends (backlog 132). A 409 is
+   *  the desktop's sentence for not taking it, and the text is ours to
+   *  keep. */
+  async send(chat: string | null, text: string): Promise<"sent" | "queued"> {
     const path = chat ? `/chats/${encodeURIComponent(chat)}/send` : "/send";
-    await this.call(path, { method: "POST", body: JSON.stringify({ text }) });
+    const r = await this.call(path, { method: "POST", body: JSON.stringify({ text }) });
+    return parseSendReply(await r.text());
   }
 
   async approve(req: {
@@ -468,4 +472,15 @@ export const KEEP_PLANNING = "keep planning: the user wants changes to the plan"
 /** The reconnect wait after `n` failures: 1 s, 2 s, 4 s, … capped at 15 s. */
 export function backoffMs(n: number): number {
   return Math.min(15000, 1000 * 2 ** Math.max(0, Math.min(n, 4)));
+}
+
+/** The 202's body: `{"status":"queued"}` or `{"status":"sent"}`; a bare or
+ *  unreadable body (a listener from before backlog 132) reads as sent. */
+export function parseSendReply(body: string): "sent" | "queued" {
+  try {
+    const v = JSON.parse(body) as { status?: unknown };
+    return v && v.status === "queued" ? "queued" : "sent";
+  } catch {
+    return "sent";
+  }
 }

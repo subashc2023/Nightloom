@@ -280,6 +280,46 @@ pub fn write_context_status(config: &Path, status: &ContextStatus) -> Result<(),
     std::fs::write(config.join(CONTEXT_STATUS_FILE), text).map_err(|e| e.to_string())
 }
 
+/// Before a turn: make the file describe *this* chat, from its own log
+/// (review 2026-09-17 FC-d, backlog 134). The file is one for the config
+/// dir and was written only at a turn's end, so a new chat's first turn —
+/// and a turn after a project switch, or after a rewind — read the
+/// previous chat's figure with no way to tell. Now `send_agent` calls
+/// this first: a chat with a completed turn gets its own newest reading
+/// (the same figures the end-of-turn write takes from the log); a chat
+/// with none has the file removed, so the tool says "no reading" as its
+/// description promises. Best-effort, like the write.
+pub fn refresh_context_status(
+    config: &Path,
+    session_id: &str,
+    model: Option<String>,
+    window: Option<u64>,
+    events: &[nightloom_core::SessionEvent],
+) -> Result<(), String> {
+    let used = events.iter().rev().find_map(|e| match e {
+        nightloom_core::SessionEvent::AssistantMessage { usage, .. } => {
+            Some(usage.input_tokens + usage.output_tokens)
+        }
+        _ => None,
+    });
+    let Some(used) = used else {
+        let path = config.join(CONTEXT_STATUS_FILE);
+        return match std::fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.to_string()),
+        };
+    };
+    let turns = events
+        .iter()
+        .filter(|e| matches!(e, nightloom_core::SessionEvent::UserMessage { .. }))
+        .count() as u32;
+    write_context_status(
+        config,
+        &ContextStatus::new(session_id, model, used, window, turns),
+    )
+}
+
 /// The last written status, or `None` for no file or an unreadable one.
 pub fn read_context_status(config: &Path) -> Option<ContextStatus> {
     let text = std::fs::read_to_string(config.join(CONTEXT_STATUS_FILE)).ok()?;
@@ -1201,5 +1241,53 @@ mod tests {
         assert_eq!(back.window, None);
         assert_eq!(back.used, 5_000);
         assert_eq!(back.turns, 1);
+    }
+
+    /// Before a turn the file describes the chat about to run (backlog 134,
+    /// review C's FC-d): a new chat's first turn found the previous chat's
+    /// figure and could not tell. A chat with a completed turn gets its own
+    /// newest reading from its log; one with none has the file removed.
+    #[test]
+    fn the_status_is_refreshed_from_the_chats_own_log_before_a_turn() {
+        let (config, _) = fixture("context-refresh");
+        // Chat A ran three turns: the end-of-turn write.
+        write_context_status(
+            &config,
+            &ContextStatus::new("chat-a", Some("m".into()), 140_000, Some(200_000), 3),
+        )
+        .unwrap();
+        // Chat B, brand new: nothing completed, so no reading at all.
+        refresh_context_status(&config, "chat-b", None, None, &[]).unwrap();
+        assert_eq!(read_context_status(&config), None);
+        // Chat C, with one exchange in its log: its own figure, not A's.
+        let mut c = Session::new();
+        c.record_user("first");
+        c.record_assistant(
+            "m",
+            vec![],
+            None,
+            nightloom_core::Usage {
+                input_tokens: 9_000,
+                output_tokens: 1_000,
+                ..Default::default()
+            },
+        );
+        c.record_user("second");
+        refresh_context_status(
+            &config,
+            "chat-c",
+            Some("m".into()),
+            Some(200_000),
+            c.events(),
+        )
+        .unwrap();
+        let back = read_context_status(&config).unwrap();
+        assert_eq!(back.session_id, "chat-c");
+        assert_eq!(back.used, 10_000);
+        assert_eq!(back.turns, 2);
+        assert_eq!(back.pct, Some(5));
+        // Removing when there is no file is not an error.
+        refresh_context_status(&config, "chat-d", None, None, &[]).unwrap();
+        refresh_context_status(&config, "chat-d", None, None, &[]).unwrap();
     }
 }

@@ -5,15 +5,17 @@
 </script>
 
 <script lang="ts">
-  import { onMount, tick } from "svelte";
+  import { onDestroy, onMount, tick } from "svelte";
   import { addToast, app, openSession, showNote, useProject } from "./state.svelte";
   import * as api from "./api";
   import Icon from "./Icon.svelte";
   import { relativeTime } from "./time";
   import { SEARCH_CHORD_LABEL } from "./find";
+  import { growForSearch, shrinkAfterSearch } from "./search.svelte";
   import {
     countLine,
     emptyLine,
+    escapeClosesPanel,
     findBar,
     flatten,
     groupKey,
@@ -35,7 +37,12 @@
    * the message, every match marked by ⌘F's bar, which the panel hands
    * the query to. ↵ commits: the panel closes, the sidebar returns with
    * the query in its box and a `14 ▸` to reopen, the bar stays so ⌘G
-   * steps on. esc closes and leaves the chat where it is.
+   * steps on. esc closes and leaves the chat where it is — from anywhere
+   * while the panel is open, not only from its field (backlog 138: after
+   * a click on a row or a fold the next esc reached the window, where
+   * macOS leaves full screen), except from another text field, whose own
+   * esc it is; and the × at the head closes it by mouse. The column grows
+   * a little on open and comes back on close, eased (`search.svelte.ts`).
    *
    * The query, scope, answer and selection live in `app.search` so a
    * preview that switches the project (a chat from another project
@@ -99,7 +106,20 @@
   onMount(() => {
     field?.focus();
     field?.select();
+    growForSearch(app.layout.sidebarWidth);
   });
+  onDestroy(shrinkAfterSearch);
+
+  /** esc from anywhere while the panel is open: closed here, never let
+   *  through to the window (backlog 138). Another text field's esc is
+   *  that field's; the panel's own field is handled in `fieldKeys`. */
+  function windowKeys(e: KeyboardEvent) {
+    if (e.key !== "Escape" || e.defaultPrevented) return;
+    if (!escapeClosesPanel(e.target as { tagName?: string; isContentEditable?: boolean } | null, field)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    close();
+  }
 
   function setScope(scope: SearchScope) {
     if (app.search.scope === scope) return;
@@ -191,6 +211,8 @@
   }
 </script>
 
+<svelte:window onkeydown={windowKeys} />
+
 <div class="search-panel" role="search" aria-label="Search everywhere">
   <div class="search-head">
     <div class="search-field-wrap">
@@ -205,10 +227,17 @@
         autocomplete="off"
         spellcheck="false"
       />
-      <button class="search-clear" title="Clear · esc closes" aria-label="Clear" onclick={() => { app.search.query = ""; field?.focus(); }}>
-        <Icon name="x" size={12} />
-      </button>
+      {#if app.search.query}
+        <button class="search-clear" title="Clear" aria-label="Clear the search" onclick={() => { app.search.query = ""; field?.focus(); }}>
+          <Icon name="x" size={12} />
+        </button>
+      {/if}
     </div>
+    <!-- The way out by mouse (backlog 138): the sidebar comes back, the
+         query stays in its box. -->
+    <button class="search-close" title="Close search (esc)" aria-label="Close search" onclick={close}>
+      <Icon name="x" size={14} />
+    </button>
   </div>
 
   <!-- The scope. His note on board 11a: a little wider and bigger than
@@ -333,6 +362,9 @@
     min-height: 0;
     flex: 1;
     font-family: var(--sans);
+    /* The scope row is sized to the column (backlog 138): the panel no
+       longer forces 380px, so under ~330px the three labels tighten. */
+    container-type: inline-size;
   }
   .search-head {
     display: flex;
@@ -382,6 +414,24 @@
   .search-clear:hover {
     color: var(--ink);
   }
+  .search-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: 28px;
+    height: 32px;
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    padding: 0;
+    color: var(--dim);
+    cursor: pointer;
+  }
+  .search-close:hover {
+    color: var(--ink);
+    background: var(--well);
+  }
   .search-scope {
     display: inline-flex;
     align-items: center;
@@ -411,6 +461,13 @@
     background: var(--sheet);
     color: var(--ink);
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  }
+  /* After the base rule, so the narrow case wins the cascade. */
+  @container (max-width: 330px) {
+    .search-scope button {
+      padding: 5px 9px;
+      font-size: 12.5px;
+    }
   }
   .search-count {
     display: flex;

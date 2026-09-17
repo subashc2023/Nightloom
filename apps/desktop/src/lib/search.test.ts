@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { findChord, SEARCH_KEY } from "./find";
+import { SEARCH_COLUMN_MAX, SEARCH_GROWTH, searchGrowthFor } from "./search.svelte";
 import {
   countLine,
   elapsedLabel,
   emptyLine,
+  escapeClosesPanel,
   flatten,
   groupKey,
   matchesSuffix,
@@ -190,5 +192,31 @@ describe("the chord", () => {
     expect(
       findChord({ code: "KeyF", shiftKey: true, altKey: false }, true),
     ).toBeNull();
+  });
+});
+
+describe("the panel's Escape (backlog 138)", () => {
+  const field = { tagName: "INPUT" };
+  it("closes the panel from its own field, a result row, a chevron, or nothing focused", () => {
+    expect(escapeClosesPanel(field, field)).toBe(true);
+    expect(escapeClosesPanel({ tagName: "BUTTON" }, field)).toBe(true);
+    expect(escapeClosesPanel({ tagName: "DIV" }, field)).toBe(true);
+    expect(escapeClosesPanel({ tagName: "body" }, field)).toBe(true);
+    expect(escapeClosesPanel(null, field)).toBe(true);
+  });
+  it("leaves another text field's Escape alone — the composer, a rename, the find bar", () => {
+    expect(escapeClosesPanel({ tagName: "TEXTAREA" }, field)).toBe(false);
+    expect(escapeClosesPanel({ tagName: "INPUT" }, field)).toBe(false);
+    expect(escapeClosesPanel({ tagName: "DIV", isContentEditable: true }, field)).toBe(false);
+  });
+});
+
+describe("the panel's column (backlog 138)", () => {
+  it("grows a little past the sidebar's width, never past the board's 380, never negative", () => {
+    expect(searchGrowthFor(260)).toBe(SEARCH_GROWTH);
+    expect(searchGrowthFor(200)).toBe(SEARCH_GROWTH);
+    expect(searchGrowthFor(340)).toBe(SEARCH_COLUMN_MAX - 340);
+    expect(searchGrowthFor(380)).toBe(0);
+    expect(searchGrowthFor(440)).toBe(0);
   });
 });

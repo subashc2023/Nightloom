@@ -196,7 +196,7 @@ fn log_paths(log_dir: &Path) -> Result<Vec<PathBuf>, StoreError> {
 /// block — and then read four fields off them. The listing is the hot path
 /// (see [`list`]); the events it does not name are the overwhelming majority
 /// of the bytes.
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, Debug, PartialEq)]
 #[serde(tag = "event", rename_all = "snake_case")]
 enum Peek {
     SessionCreated {
@@ -244,9 +244,56 @@ fn peek(line: &str) -> Option<Peek> {
     }
     // Unknown or malformed lines shouldn't sink the whole listing; future
     // SessionEvent variants show up here before this crate learns them.
-    serde_json::from_str::<Peek>(line)
-        .ok()
-        .filter(|p| !matches!(p, Peek::Other))
+    match serde_json::from_str::<Peek>(line) {
+        Ok(Peek::Other) => None,
+        Ok(p) => Some(p),
+        Err(_) => peek_created_closed(line),
+    }
+}
+
+/// A creation line whose `mode` or `kind` this build does not know — a
+/// value a newer build wrote before a rollback, or one renamed without an
+/// alias — read *closed* (review 2026-09-17 FC-c, backlog 134). Strictly
+/// parsed, an unknown enum value failed the whole line, and every reader
+/// then fell back to normal + build: an incognito chat written under the
+/// new value was listed as normal, indexed, searched by other chats and
+/// captured by the daily pass. Now the line is re-read with the two fields
+/// as plain strings; a value this build knows maps to itself, an unknown
+/// mode reads as incognito (kept, listed, but written nothing and read by
+/// nothing) and an unknown kind as the read-only chat — the answers that
+/// give nothing away. `None` when the line is not a creation line at all.
+fn peek_created_closed(line: &str) -> Option<Peek> {
+    #[derive(Deserialize)]
+    struct Loose {
+        event: String,
+        id: String,
+        #[serde(default)]
+        mode: Option<String>,
+        #[serde(default)]
+        kind: Option<String>,
+        #[serde(default)]
+        forked_from: Option<ForkedFrom>,
+    }
+    let loose: Loose = serde_json::from_str(line).ok()?;
+    if loose.event != "session_created" {
+        return None;
+    }
+    let mode = match loose.mode.as_deref() {
+        None => ChatMode::Normal,
+        Some(m) => serde_json::from_value::<ChatMode>(serde_json::Value::String(m.to_string()))
+            .unwrap_or(ChatMode::Incognito),
+    };
+    let kind = match loose.kind.as_deref() {
+        None => ChatKind::Build,
+        Some(k) => serde_json::from_value::<ChatKind>(serde_json::Value::String(k.to_string()))
+            .unwrap_or(ChatKind::Chat),
+    };
+    Some(Peek::SessionCreated {
+        id: loose.id,
+        mode,
+        kind,
+        forked_from: loose.forked_from,
+    })
 }
 
 /// The listing fields, accumulated over a log's events in order.
@@ -505,13 +552,27 @@ pub(crate) fn mode_of(path: &Path) -> ChatMode {
     let Some(line) = head.lines().next() else {
         return ChatMode::Normal;
     };
-    match serde_json::from_str::<Peek>(line) {
-        Ok(Peek::SessionCreated { mode, .. }) => mode,
+    match peek(line) {
+        Some(Peek::SessionCreated { mode, .. }) => mode,
         // A creation line longer than the buffer, with the mode cut off,
         // fails to parse here. The buffer is four times a creation line,
         // so this is a damaged log; every reader treats one as normal.
+        // (An unknown mode value is not this case: `peek` reads it closed.)
         _ => ChatMode::Normal,
     }
+}
+
+/// Whether `id` is the shape of a log's file stem — a uuid, or the store's
+/// own `[A-Za-z0-9._-]` name — and nothing that could be a path: no
+/// separator, no leading dot (`..`). The desktop's `restore_session` builds
+/// two file names from the id the webview sends and checks it here first
+/// (review 2026-09-17 FC-e, backlog 134).
+pub fn is_log_id(id: &str) -> bool {
+    !id.is_empty()
+        && !id.starts_with('.')
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
 }
 
 /// How many session logs are in the dir, without reading any of them.
@@ -971,6 +1032,72 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].summary.mode, ChatMode::Incognito);
         fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A creation line with a mode or kind this build does not know — a
+    /// newer build's value after a rollback — reads *closed* (backlog 134,
+    /// review C's FC-c): the chat keeps its own id, lists as incognito (or
+    /// the read-only kind), is skipped by `mode_of`'s callers, and is not
+    /// admitted to the index. Before this the whole line failed to parse
+    /// and every reader fell back to normal + build.
+    #[test]
+    fn an_unknown_mode_or_kind_on_the_creation_line_reads_closed() {
+        let dir = std::env::temp_dir().join(format!("nightloom-store-closed-{}", uuid_like()));
+        fs::create_dir_all(&dir).unwrap();
+        let at = "2026-09-17T12:00:00Z";
+        let future_mode = dir.join("future-mode.jsonl");
+        fs::write(
+            &future_mode,
+            format!(
+                "{{\"event\":\"session_created\",\"id\":\"future-mode\",\"mode\":\"vaulted\",\"at\":\"{at}\"}}\n\
+                 {{\"event\":\"user_message\",\"text\":\"a secret about parsnips\",\"images\":[],\"documents\":[],\"at\":\"{at}\"}}\n"
+            ),
+        )
+        .unwrap();
+        let future_kind = dir.join("future-kind.jsonl");
+        fs::write(
+            &future_kind,
+            format!(
+                "{{\"event\":\"session_created\",\"id\":\"future-kind\",\"kind\":\"agentic\",\"at\":\"{at}\"}}\n\
+                 {{\"event\":\"user_message\",\"text\":\"an ordinary question\",\"images\":[],\"documents\":[],\"at\":\"{at}\"}}\n"
+            ),
+        )
+        .unwrap();
+        // A value this build knows still reads as itself through the same path.
+        assert_eq!(
+            peek_created_closed(
+                r#"{"event":"session_created","id":"x","mode":"incognito","kind":"chat","at":"2026-09-17T12:00:00Z"}"#
+            ),
+            Some(Peek::SessionCreated {
+                id: "x".into(),
+                mode: ChatMode::Incognito,
+                kind: ChatKind::Chat,
+                forked_from: None
+            })
+        );
+        assert_eq!(mode_of(&future_mode), ChatMode::Incognito);
+        assert_eq!(mode_of(&future_kind), ChatMode::Normal);
+        let listed = list(&dir).unwrap();
+        let of = |id: &str| listed.iter().find(|s| s.id == id).unwrap();
+        assert_eq!(of("future-mode").mode, ChatMode::Incognito);
+        assert_eq!(of("future-kind").kind, ChatKind::Chat);
+        assert_eq!(of("future-kind").mode, ChatMode::Normal);
+        // The index: the unknown-mode log is a record with no terms.
+        let idx = index::ChatIndex::load_or_build(&dir).unwrap();
+        assert_eq!(idx.len(), 1, "only the known-mode log is admitted");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_log_id_is_a_file_stem_and_never_a_path() {
+        assert!(is_log_id("5eb30ca1-0d5f-4c1e-9c7a-0a1b2c3d4e5f"));
+        assert!(is_log_id("imported_2026-09-17.v2"));
+        assert!(!is_log_id(""));
+        assert!(!is_log_id("../live-chat"));
+        assert!(!is_log_id("..\\live-chat"));
+        assert!(!is_log_id("a/b"));
+        assert!(!is_log_id(".hidden"));
+        assert!(!is_log_id("with space"));
     }
 
     /// A fork lists as a chat of its own with its parent named, through

@@ -484,10 +484,96 @@ which start one of the default kind; no row reads "New chat" (his review
 of board 8a). **⌘N** is a new Claude Code chat and **⌥⌘N** a new Chat
 (File menu `new_build` / `new_talk`; Ctrl+N and Ctrl+Alt+N in
 `onShortcut` elsewhere — the only Alt chord in the app). `new_chat` — the
-wide button, the Welcome strip — makes the default kind. Fixed at creation
+wide button, the Welcome strip — makes the default kind. ~~Fixed at creation
 (blocker 143's default): the rail *states* the kind under the engine cards
-and shows "no folder" in its Workspace row on a Chat, and switches nothing.
+and shows "no folder" in its Workspace row on a Chat, and switches nothing.~~
+Switchable since 2026-09-17 (the next section).
 `prompt_layers` reports `kind` / `built_kind` as the fourth reconnect pair.
+
+## Switching a chat's kind (2026-09-17, nightshift backlog 144; blocker 143 answered *switchable*)
+
+The Kind row in the rail is the same two-row picker the New chat ▾ menu
+has, the dot on the kind the chat is now; picking the other kind shows a
+one-line confirm and takes effect on the **next turn**. The transcript
+stays one chat.
+
+**What a switch changes — a policy, not the head of the request.** His
+design, after the measurements (`nightshift notes/runner-design/143-report-2026-09-17.md`,
+all `external`, CLI 2.1.263): the declared tool list and the system prompt
+lead every request, so changing them re-writes the whole cached prefix (0
+read, 23k written on the next turn — `--tools`, `--disallowedTools` and
+`--append-system-prompt` all do it), while a refusal at call time and a
+note at the tail are free (31–33k read, under 1.2k written). So:
+
+- The log gets a `kind` event (`SessionEvent::Kind`, latest live one wins
+  like a title; `Session::kind()` reads it, `born_kind()` the creation
+  line). A rewind past a switch restores the kind before it — unlike the
+  mode, which stays on the creation line, because a rewind is an honest
+  answer to "what could the model do at that turn" and the kind is a
+  fact about turns.
+- **`Session::declared_kind()`** is what the request is *built* for:
+  `Build` once the chat was born one or has ever been switched to one over
+  the live events. `connect` / `connect_agent` build the tool list, the
+  Chat instructions layer and the folder from it (`ChatSpec::declared_kind`,
+  `AgentSpec::apply_kind(declared)`, `chat_workspace(declared, …)`), and
+  enforce `kind()` over it:
+  - **Claude Code → Chat** — the tools stay declared, the folder stays
+    (blocker 210, default *stay*), and the writers are refused when
+    called: on the CLI a `PreToolUse` hook registered in the one
+    `--settings` JSON (`AgentSpec::chat_policy`, matcher
+    `CHAT_POLICY_MATCHER` — everything but the five read-only tools and
+    Nightloom's server, a JavaScript negative lookahead the CLI's matcher
+    accepts; the reply an `echo` of a deny carrying `CHAT_POLICY_REASON`),
+    on the API engine `KindPolicy` over the window's approver. A refused
+    call reaches the model as an `is_error` tool result with the reason
+    and the turn ends normally (measured, step 10). The Context popover's
+    Tools card strikes the refused tools through.
+  - **Chat → Claude Code** on a chat **born** as a Chat: the tools were
+    never declared, so the declaration changes once and the prefix is
+    re-written — the confirm line names the figure (`kindSwitchCost`:
+    `contextUsed()`); from then on the declaration stays `Build` and both
+    directions are free. The row asks for a folder when the project has
+    none (`pick_folder`; `workspace` on the `kind` event, read by
+    `Session::kind_workspace()`); the project's folder otherwise.
+  - The next user message carries a **`<kind-switch>` note** at its head
+    (`ChatKind::switch_note`): on the API engine the projection puts it
+    on the first user message after the switch, tagged as the switch
+    event's block; on the CLI `send_agent` asks `kind_switch_note()`
+    before recording the turn and prepends it to the prompt. Once per
+    switch, never repeated, and nothing when the kind was switched and
+    switched back before a message.
+- The CLI's session file is **not moved**: `--resume <id>` from another
+  folder finds the file under the folder the chat was born in and appends
+  there, each line with its own `cwd` (measured, steps 2–3). The spec's
+  fear that the resume would say "No conversation found" was the
+  ephemeral case (`--no-session-persistence`), not the folder.
+- Auto memory and `CLAUDE.md` are per folder (backlog 088): a switch that
+  changes the folder — only Chat → Claude Code on a born Chat — changes
+  what the CLI loads; the confirm line says so.
+
+Not chosen: declaring the full set on every Chat so that direction is
+free too (blocker 211, default no — ~7k tokens on every Chat turn).
+
+## Extra folders a chat may see (2026-09-17, nightshift backlog 143, pass 1)
+
+The rail's Workspace section gains a **Folders** row under the Folder row:
+every extra folder the connection was granted (`ConnectedInfo::folders` —
+path, source `project` · `this chat`, and on the API engine the `@alias`),
+each with an × that takes it back the way it came, and two buttons — *Add a
+folder for this chat…* (a `folders` event on the log, `set_chat_folders`)
+and *…for the project* (`set_project_folders`, the registry). Either
+reconnects, so the grant holds from the next turn. The Context popover's
+Layers tab leads with a **Folders this chat can see** card: the working
+directory, then each extra with its source and alias. On the CLI engine
+the appended prompt gains an `<extra-folders>` note naming each folder by
+its absolute path (the CLI's tools take paths, not aliases); on the API
+engine the tool descriptions name them (`Root::path_hint`). A Chat (by
+declaration) sees no folder and offers no row. What the model is told about
+`.ipynb` files: nothing special — both engines read them as JSON text.
+
+Pass 2 (not built): the approval prompt's *Allow this folder — for this chat
+· for the project* entrance on a path outside the trees, and the search
+panel's scope (default: extra folders are not searched).
 
 ## Settings keys and the remembered pane (2026-09-16, nightshift backlog 109)
 

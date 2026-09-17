@@ -1,9 +1,12 @@
 <script lang="ts">
   import { exactTime, relativeTimeLong } from "./time";
-  import { tick, untrack } from "svelte";
+  import { onDestroy, tick, untrack } from "svelte";
   import {
     app,
     asideAsking,
+    asideInTab,
+    endContentDrag,
+    startContentDrag,
     askAside,
     denialReason,
     dismissAside,
@@ -47,6 +50,9 @@
   import { fmtShare, fmtTokens, shareOf, sizeTitle, turnSizes } from "./tokens";
   import { cacheState } from "./cache";
   import { moveScroll, recallScroll, rememberScroll, scrollKey, NEW_SCROLL_KEY } from "./scroll.svelte";
+  import { stashEdit, takeEdit } from "./drafts.svelte";
+  // For its effect: the aside threads' keeper (backlog 137).
+  import "./asides.svelte";
   import { JUMP_OFFSET, MIN_TICKS, activeTick, stepTick, ticks as tickModel } from "./navigator";
   import type {
     ApprovalRequest,
@@ -57,6 +63,7 @@
   import AssistantMessage from "./AssistantMessage.svelte";
   import ApprovalPrompt from "./ApprovalPrompt.svelte";
   import Icon from "./Icon.svelte";
+  import ConfirmDialog from "./ConfirmDialog.svelte";
   import Navigator from "./Navigator.svelte";
 
   interface AssistantFooter {
@@ -475,6 +482,7 @@
     if (!editing) return;
     void keepPlace(editing.index, () => {
       editing = editReduce(editing, { type: "cancel" });
+      stashEdit(sessionKey, null);
     });
   }
   async function commitSave() {
@@ -483,7 +491,10 @@
     const changes = editChanges(editing);
     await keepPlace(index, async () => {
       const ok = parts ? await saveReplyEdit(index, changes) : await saveEdit(index, draft);
-      if (ok) editing = editReduce(editing, { type: "done" });
+      if (ok) {
+        editing = editReduce(editing, { type: "done" });
+        stashEdit(sessionKey, null);
+      }
     });
   }
   async function commitSend(item: Item) {
@@ -491,6 +502,7 @@
     const { index, draft } = editing;
     await keepPlace(index, () => {
       editing = editReduce(editing, { type: "done" });
+      stashEdit(sessionKey, null);
     });
     await sendEdit(index, draft, item.images, item.documents);
   }
@@ -507,8 +519,25 @@
       else void commitSave();
     }
   }
+  // A turn starting closes the editor rather than leave it over a
+  // transcript changing under it — but the draft is kept (backlog 137: a
+  // turn from the phone, a wake's "continue", a hand-off's wrap-up used to
+  // discard it), and comes back when the turn ends: the turn appends, so
+  // the edited turn is where it was.
   $effect(() => {
-    if (app.busy) editing = editReduce(editing, { type: "busy" });
+    const busy = app.busy;
+    untrack(() => {
+      if (busy) {
+        if (editing) stashEdit(sessionKey, { editing, line: editCacheLine });
+        editing = editReduce(editing, { type: "busy" });
+      } else if (!editing) {
+        const back = takeEdit(sessionKey);
+        if (back) {
+          editing = back.editing;
+          editCacheLine = back.line;
+        }
+      }
+    });
   });
 
   let viewport = $state<HTMLDivElement | null>(null);
@@ -623,9 +652,15 @@
   // chat's draft in it, and a switch back re-mounted the textarea. Now the
   // switch stashes the open edit under the chat it belongs to and restores
   // the switched-to chat's, if it has one — the draft survives the switch,
-  // as it did by accident before, and stays with its chat. A plain map,
-  // read once per switch, like the scroll entries.
-  const editStash = new Map<string, { editing: EditState; line: string }>();
+  // as it did by accident before, and stays with its chat. ~~A plain map,
+  // read once per switch, like the scroll entries.~~ The map moved out of
+  // this component (backlog 137, `drafts.svelte.ts`): with the tabs this
+  // component unmounts on a note tab in the same pane, on the live tab
+  // dragged across, and a component-local map went with it. The stash is
+  // written on the switch and on unmount, and read on the switch and on
+  // mount, so the draft is wherever the chat is drawn next. A cancel or a
+  // save forgets the entry (`stashEdit(key, null)`); a switch with no
+  // editor open leaves it, since a turn in progress may be holding it.
 
   $effect(() => {
     const key = sessionKey;
@@ -635,13 +670,12 @@
       moveScroll(from, key);
       return;
     }
-    if (from !== null && from !== key) {
+    if (from !== key) {
       // Untracked: this effect is about the key, and a keystroke in the
       // editor must not re-run the scroll restore below.
       untrack(() => {
-        if (editing) editStash.set(from, { editing, line: editCacheLine });
-        else editStash.delete(from);
-        const back = editStash.get(key) ?? null;
+        if (from !== null && editing) stashEdit(from, { editing, line: editCacheLine });
+        const back = takeEdit(key);
         editing = back?.editing ?? null;
         editCacheLine = back?.line ?? "";
       });
@@ -657,6 +691,13 @@
       }
       measureNav();
     });
+  });
+
+  // Unmounted with an editor open — the pane's active tab became a note,
+  // the live tab went to the other pane — the draft is stashed for the
+  // next mount on this chat (backlog 137).
+  onDestroy(() => {
+    if (editing && lastKey !== null) stashEdit(lastKey, { editing, line: editCacheLine });
   });
 
   // ---- The sent message's entrance (nightshift backlog 095, 2026-09-16) ----
@@ -1005,13 +1046,29 @@
     asidePill = { quote: p.quote, top, left };
   }
 
+  /** A new passage's question would replace an answered thread on the
+   *  card (backlog 137, blocker 201): the thread is written nowhere else
+   *  but the card, so it is asked about first, in the dialog's shape. */
+  let replacingAside = $state<AsideQuote | null>(null);
+  const asideHasAnswers = $derived(
+    !!app.aside && !app.aside.draft && app.aside.turns.some((t) => t.partial.trim().length > 0),
+  );
+
   async function askAboutSelection(): Promise<void> {
     const pill = asidePill;
     if (!pill) return;
-    draftAside(pill.quote);
-    asideDraft = "";
     document.getSelection()?.removeAllRanges();
     asidePill = null;
+    if (asideHasAnswers) {
+      replacingAside = pill.quote;
+      return;
+    }
+    await openAsideDraft(pill.quote);
+  }
+
+  async function openAsideDraft(quote: AsideQuote): Promise<void> {
+    draftAside(quote);
+    asideDraft = "";
     await tick();
     // The card is at the foot; bring it up and put the caret in its box.
     toBottom();
@@ -1385,11 +1442,42 @@
          his bubble's face, the moon while nothing has arrived, the answer
          streaming in under it in the reply's face; × mid-stream stops it
          and keeps what had arrived, marked. -->
-    {#if app.aside}
+    <!-- Agent P's one hunk (nightshift backlog 130 part 2, 2026-09-17):
+         the card hides while the thread is showing in a tab of its own
+         (`asideInTab`), and its head row drags — onto a strip or a
+         pane's half — to make that tab. The thread never moves. -->
+    {#if replacingAside}
+      <ConfirmDialog
+        title="Start a new aside about this passage?"
+        lead="The aside thread on the card is written nowhere else; a new passage replaces it. Follow up in the card instead to keep the thread."
+        facts={[
+          ["thread", `${app.aside?.turns.length ?? 0} ${(app.aside?.turns.length ?? 0) === 1 ? "exchange" : "exchanges"}`],
+          ["new passage", quoteLabel(replacingAside, "card")],
+        ]}
+        confirmLabel="Replace"
+        onconfirm={() => {
+          const q = replacingAside;
+          replacingAside = null;
+          if (q) void openAsideDraft(q);
+        }}
+        onclose={() => (replacingAside = null)}
+      />
+    {/if}
+    {#if app.aside && !asideInTab(app.activeSessionId)}
       {@const asking = asideAsking(app.aside)}
       {@const last = app.aside.turns[app.aside.turns.length - 1] ?? null}
       <div class="aside" role="note" aria-label="aside, not part of the chat">
-        <div class="aside-head">
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div
+          class="aside-head"
+          draggable={app.activeSessionId !== null && !app.aside.draft}
+          title={app.activeSessionId !== null && !app.aside.draft ? "Drag onto a tab strip to open this aside as a tab" : undefined}
+          ondragstart={(e) => {
+            if (app.activeSessionId === null || app.aside?.draft) return;
+            startContentDrag(e, { kind: "aside", session: app.activeSessionId });
+          }}
+          ondragend={endContentDrag}
+        >
           <span class="ns-chip mono">aside · not in the chat</span>
           {#if app.aside.quote}
             <span class="ns-chip mono">about {quoteLabel(app.aside.quote, "card")}</span>
@@ -1465,7 +1553,11 @@
               </div>
             {/if}
           {/each}
-          {#if last && !asking}
+          {#if last && !asking && !onClaudeCode}
+            <!-- The thread outlives an engine switch (backlog 137); a
+                 follow-up needs the engine the aside runs on. -->
+            <div class="aside-mark">Follow up on the Claude Code engine</div>
+          {:else if last && !asking}
             <!-- The follow-up box (backlog 130): the thread continues
                  here, still beside the chat — each follow-up carries the
                  exchanges above it, and nothing enters the log. -->

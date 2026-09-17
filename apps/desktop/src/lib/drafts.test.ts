@@ -18,6 +18,9 @@ import {
   saveDrafts,
   serializeDrafts,
   setDraftText,
+  stashEdit,
+  takeEdit,
+  hasEdit,
   shiftQueue,
   takeBackQueued,
 } from "./drafts.svelte";
@@ -291,5 +294,29 @@ describe("persistence", () => {
     setDraftText("a", "flushed");
     flushDrafts();
     expect(loadDrafts(localStorage).a?.text).toBe("flushed");
+  });
+});
+
+describe("the in-place edit's stash (backlog 137)", () => {
+  it("keeps one open edit per chat across a switch, an unmount and a turn", () => {
+    // What the transcript does on the way out: stash under the chat.
+    stashEdit("chat-a", { editing: { index: 3, original: "was", draft: "is now" }, line: "cache line" });
+    stashEdit("chat-b", { editing: { index: 1, original: "x", draft: "y" }, line: "" });
+    // Back on chat A: its own draft, not B's.
+    expect(takeEdit("chat-a")?.editing.draft).toBe("is now");
+    expect(takeEdit("chat-a")?.editing.index).toBe(3);
+    expect(takeEdit("chat-b")?.editing.draft).toBe("y");
+    // Taking does not forget: a second mount on the same chat finds it too.
+    expect(hasEdit("chat-a")).toBe(true);
+    // A cancel or a save forgets it; the other chat's stays.
+    stashEdit("chat-a", null);
+    expect(takeEdit("chat-a")).toBeNull();
+    expect(hasEdit("chat-b")).toBe(true);
+    stashEdit("chat-b", null);
+  });
+
+  it("answers null for a chat with no edit open", () => {
+    expect(takeEdit("never")).toBeNull();
+    expect(hasEdit("never")).toBe(false);
   });
 });

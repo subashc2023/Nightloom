@@ -5,13 +5,16 @@ import {
   allTabs,
   close,
   dropChat,
+  dropProject,
   emptyWorkspace,
   focusedPane,
+  insertAt,
   land,
   liveTab,
   makeTab,
   move,
   openBeside,
+  parseContentDrag,
   split,
   step,
   tabTitle,
@@ -19,8 +22,17 @@ import {
   type Workspace,
 } from "./tabs";
 
-const chat = (session: string | null): TabContent => ({ kind: "chat", session });
-const note = (name: string): TabContent => ({ kind: "note", scope: "project", name });
+const chat = (session: string | null): TabContent => ({
+  kind: "chat",
+  session,
+});
+const note = (name: string): TabContent => ({
+  kind: "note",
+  scope: "project",
+  name,
+});
+const nightshift: TabContent = { kind: "nightshift" };
+const graph: TabContent = { kind: "graph" };
 
 /** One pane with tabs of the given contents, the first active. */
 function ws(...contents: TabContent[]): Workspace {
@@ -33,8 +45,24 @@ function ws(...contents: TabContent[]): Workspace {
   return w;
 }
 
+/** A short name per tab: the chat's session (`new` unsent), the note's
+ *  file, the project's id, the aside's chat, else the kind. */
+function label(c: TabContent): string {
+  switch (c.kind) {
+    case "chat":
+      return c.session ?? "new";
+    case "note":
+      return c.name;
+    case "project":
+      return `project:${c.id}`;
+    case "aside":
+      return `aside:${c.session}`;
+    default:
+      return c.kind;
+  }
+}
 const order = (w: Workspace) =>
-  w.panes.map((p) => p.tabs.map((t) => (t.content.kind === "chat" ? t.content.session ?? "new" : t.content.name)));
+  w.panes.map((p) => p.tabs.map((t) => label(t.content)));
 
 describe("the workspace", () => {
   it("opens with one pane holding one new-chat tab", () => {
@@ -207,10 +235,107 @@ describe("liveTab and dropChat", () => {
 
 describe("tabTitle", () => {
   it("names the chat as the sidebar does, the note by its file", () => {
-    const sessions = [{ id: "abcdef123456", title: null, first_user: "hello there" }];
+    const sessions = [
+      { id: "abcdef123456", title: null, first_user: "hello there" },
+    ];
     expect(tabTitle(chat("abcdef123456"), sessions)).toBe("hello there");
     expect(tabTitle(chat("nope-nope-nope"), sessions)).toBe("nope-nop");
     expect(tabTitle(chat(null), sessions)).toBe("New chat");
     expect(tabTitle(note("plan.md"), sessions)).toBe("plan.md");
+  });
+
+  it("names the whole-centre pages, a project by its name, an aside by its chat (backlog 140)", () => {
+    const sessions = [
+      { id: "abcdef123456", title: "q5 sweep", first_user: null },
+    ];
+    const projects = [{ id: "p1", name: "Nightloom" }];
+    expect(tabTitle(nightshift, sessions)).toBe("Nightshift");
+    expect(tabTitle(graph, sessions)).toBe("Graph");
+    expect(tabTitle({ kind: "new-project" }, sessions)).toBe("New project");
+    expect(tabTitle({ kind: "project", id: "p1" }, sessions, projects)).toBe(
+      "Nightloom",
+    );
+    expect(tabTitle({ kind: "project", id: "gone" }, sessions, projects)).toBe(
+      "Project",
+    );
+    expect(tabTitle({ kind: "aside", session: "abcdef123456" }, sessions)).toBe(
+      "Aside · q5 sweep",
+    );
+  });
+});
+
+// Backlog 140 (2026-09-17): the whole-centre pages as tabs, one each.
+describe("singletons", () => {
+  it("a second Nightshift lands on the one there is, in either pane", () => {
+    const w = ws(chat("a"), chat("b"));
+    land(w, w.panes[0], nightshift, "new");
+    expect(order(w)).toEqual([["a", "nightshift", "b"]]);
+    split(w, w.panes[0].tabs[2].id, "right");
+    // From the right pane, a plain click on Nightshift: no second tab —
+    // the left pane's is activated and focused.
+    land(w, w.panes[1], nightshift, "replace");
+    expect(order(w)).toEqual([["a", "nightshift"], ["b"]]);
+    expect(w.focused).toBe(w.panes[0].id);
+    expect(activeTab(w.panes[0]).content).toEqual(nightshift);
+    // Open beside does the same.
+    w.focused = w.panes[1].id;
+    openBeside(w, nightshift);
+    expect(order(w)).toEqual([["a", "nightshift"], ["b"]]);
+  });
+
+  it("the graph replaces the active tab on a plain click, like a chat", () => {
+    const w = ws(chat("a"));
+    land(w, w.panes[0], graph, "replace");
+    expect(order(w)).toEqual([["graph"]]);
+    land(w, w.panes[0], chat("b"), "replace");
+    expect(order(w)).toEqual([["b"]]);
+  });
+});
+
+describe("drops from outside (backlog 140 pass 2)", () => {
+  it("a descriptor dropped on a strip is a new tab at that index, once", () => {
+    const w = ws(chat("a"), chat("b"));
+    const t = insertAt(w, w.panes[0], note("plan.md"), 1);
+    expect(order(w)).toEqual([["a", "plan.md", "b"]]);
+    expect(w.panes[0].active).toBe(t.id);
+    // The same note again: the tab there is, not a second.
+    insertAt(w, w.panes[0], note("plan.md"), 0);
+    expect(order(w)).toEqual([["a", "plan.md", "b"]]);
+    // A project card and an aside are contents too.
+    insertAt(w, w.panes[0], { kind: "project", id: "p1" }, 9);
+    insertAt(w, w.panes[0], { kind: "aside", session: "a" }, 0);
+    expect(order(w)).toEqual([["aside:a", "a", "plan.md", "b", "project:p1"]]);
+  });
+
+  it("a deleted chat takes its aside's tab; a forgotten project its card", () => {
+    const w = ws(
+      chat("a"),
+      { kind: "aside", session: "a" },
+      { kind: "project", id: "p1" },
+      chat("b"),
+    );
+    dropChat(w, "a");
+    expect(order(w)).toEqual([["project:p1", "b"]]);
+    dropProject(w, "p1");
+    expect(order(w)).toEqual([["b"]]);
+  });
+
+  it("parses the drag's descriptor and refuses anything else", () => {
+    expect(parseContentDrag(JSON.stringify(chat("a")))).toEqual(chat("a"));
+    expect(parseContentDrag(JSON.stringify(note("x.md")))).toEqual(
+      note("x.md"),
+    );
+    expect(parseContentDrag(JSON.stringify(nightshift))).toEqual(nightshift);
+    expect(
+      parseContentDrag(JSON.stringify({ kind: "project", id: "p" })),
+    ).toEqual({ kind: "project", id: "p" });
+    expect(
+      parseContentDrag(JSON.stringify({ kind: "note", scope: "project" })),
+    ).toBeNull();
+    expect(parseContentDrag("file:///etc/passwd")).toBeNull();
+    expect(
+      parseContentDrag(JSON.stringify({ kind: "shell", cmd: "rm" })),
+    ).toBeNull();
+    expect(parseContentDrag("")).toBeNull();
   });
 });

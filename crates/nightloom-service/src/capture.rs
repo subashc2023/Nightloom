@@ -655,6 +655,10 @@ async fn run_with(
     cancel: &CancellationToken,
     on_event: &mut (dyn FnMut(TurnEvent) + Send),
 ) -> Result<Option<CaptureOutcome>, String> {
+    // One pass across processes (backlog 133, FB4), shared with the dream
+    // and the tidy: two captures over one set of logs appended every
+    // observation twice.
+    let _lock = crate::pass_lock::take(config)?;
     let state = state_in(config);
     let dirs = session_dirs(config);
     let unread: Vec<(&SessionDir, Vec<Unread>)> = dirs
