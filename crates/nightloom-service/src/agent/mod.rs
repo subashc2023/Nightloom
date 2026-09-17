@@ -933,7 +933,17 @@ impl ClaudeCodeAgent {
     /// A fork asked for by [`Self::fork_on_next_turn`] is done once the CLI
     /// has named the new session: the next turn resumes *that*, plainly.
     pub fn follow_on(&mut self, outcome: &AgentOutcome) {
-        if let Some(id) = &outcome.session_id {
+        // Not under `--no-session-persistence`: the CLI names a session id
+        // for that turn too, but saved nothing under it, and resuming it
+        // ends the next turn with `error_during_execution` — every second
+        // message of an ephemeral chat (his report, 2026-09-17). There the
+        // replay in the message is the conversation, and `resume` stays as
+        // it was (`None` for an ephemeral chat).
+        if let Some(id) = outcome
+            .session_id
+            .as_ref()
+            .filter(|_| !self.spec.no_session_persistence)
+        {
             self.spec.resume = Some(id.clone());
             self.spec.fork_session = false;
         }
@@ -1569,6 +1579,25 @@ mod tests {
         ] {
             assert!(a.iter().any(|x| x == flag), "missing {flag}");
         }
+    }
+
+    /// An ephemeral chat's turn names a session id but saved nothing under
+    /// it: `follow_on` must not adopt it, or the next turn resumes a
+    /// session that does not exist.
+    #[test]
+    fn follow_on_does_not_adopt_an_unsaved_session() {
+        let mut s = spec();
+        s.no_session_persistence = true;
+        let mut agent = ClaudeCodeAgent::new(s);
+        let outcome = AgentOutcome {
+            session_id: Some("unsaved".into()),
+            ..Default::default()
+        };
+        agent.follow_on(&outcome);
+        assert_eq!(agent.spec().resume, None);
+        let mut agent = ClaudeCodeAgent::new(spec());
+        agent.follow_on(&outcome);
+        assert_eq!(agent.spec().resume.as_deref(), Some("unsaved"));
     }
 
     /// Approval on is `auto`, not `dontAsk`: the classifier decides, and a
