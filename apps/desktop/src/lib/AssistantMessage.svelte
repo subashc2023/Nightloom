@@ -94,7 +94,9 @@
    * before.
    */
   function fmtFigure(u: Usage, size: TurnSize | null): string {
-    return size ? fmtTokens(size.tokens) : fmtOut(u, null);
+    // With its unit: beside the foot's time (backlog 123) a bare "760"
+    // and "18 minutes ago" read as one run of numbers (his report).
+    return size ? `${fmtTokens(size.tokens)} tokens` : fmtOut(u, null);
   }
 
   /**

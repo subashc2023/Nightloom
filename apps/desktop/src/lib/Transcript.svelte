@@ -978,7 +978,7 @@
               {@const size = sizes[item.index]!}
               {@const share = shareOf(size.tokens, windowLimit)}
               <span class="turn-size" title={sizeTitle(size, "user", windowLimit)}>
-                {fmtTokens(size.tokens)}
+                {fmtTokens(size.tokens)} tokens
                 {#if fmtShare(share)}
                   <span class="share-bar" aria-hidden="true"><span class="share-fill" style:width="{(share ?? 0) * 100}%"></span></span>
                   <span class="share-pct">{fmtShare(share)}</span>
