@@ -1003,6 +1003,89 @@ pub fn compose_instruction(
     out
 }
 
+/// What the tidy step did to one target (2026-09-16, nightshift backlog 069
+/// and 072): the folder, the counts, and the snapshot that committed the
+/// move where the folder is in a repository.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct TidyOutcome {
+    /// The project's name, or `None` for the vault.
+    pub project: Option<String>,
+    pub dir: PathBuf,
+    pub report: crate::tidy::TidyReport,
+    /// One clause about the snapshot: "committed (abc1234)", "not in a git
+    /// repository, so there is no rollback", "unchanged", "snapshot failed:
+    /// …" — or empty when nothing moved (a dry run, or nothing old enough).
+    pub git: String,
+}
+
+impl GitNote {
+    /// The clause `TidyOutcome.git` carries.
+    pub fn brief(&self) -> String {
+        match self {
+            GitNote::Untouched => String::new(),
+            GitNote::NotARepo => "not in a git repository, so there is no rollback".into(),
+            GitNote::Clean => "unchanged".into(),
+            GitNote::Committed { hash, .. } if hash.is_empty() => "committed".into(),
+            GitNote::Committed { hash, .. } => format!("committed ({hash})"),
+            GitNote::Failed(e) => format!("snapshot failed: {e}"),
+        }
+    }
+}
+
+/// The daily pass's last step: age the consolidated notes. The vault and
+/// every registered project's memory folder that exists are tidied
+/// (`crate::tidy`), and a folder that shed something is snapshotted the
+/// way a dream's own work is — the same pathspec rule, so a workspace's
+/// source is never swept in — under a subject that says what happened.
+/// `apply = false` is the dry run: the counts, nothing written; `today`
+/// is for a test, `None` for the clock.
+///
+/// Not part of `run`: a dream from the button stays what it was, and the
+/// tidy is a step of the *daily* pass by the item's design (blocker 167).
+pub fn tidy_targets(
+    vault: &Path,
+    config: &Path,
+    days: i64,
+    today: Option<chrono::NaiveDate>,
+    apply: bool,
+) -> Vec<TidyOutcome> {
+    let today = today.unwrap_or_else(|| Utc::now().date_naive());
+    let mut targets = vec![Target::Vault(vault.to_path_buf())];
+    targets.extend(
+        Registry::load_in(config)
+            .projects()
+            .iter()
+            .filter(|p| p.memory_dir().is_dir())
+            .map(Target::project),
+    );
+    targets
+        .into_iter()
+        .filter(|t| t.dir().is_dir())
+        .map(|t| {
+            let dir = t.dir();
+            let report = crate::tidy::tidy_dir(&dir, days, today, apply);
+            let git = if apply && report.movable > 0 {
+                snapshot_target(
+                    &t,
+                    &format!(
+                        "nightloom: tidy — archived {} struck line{} older than {days} days",
+                        report.movable,
+                        if report.movable == 1 { "" } else { "s" }
+                    ),
+                )
+            } else {
+                GitNote::Untouched
+            };
+            TidyOutcome {
+                project: t.project_name().map(String::from),
+                dir,
+                report,
+                git: git.brief(),
+            }
+        })
+        .collect()
+}
+
 /// Snapshot one target: the whole vault, or a workspace's `.agents/` alone.
 ///
 /// A workspace is the user's code, and sweeping their uncommitted source

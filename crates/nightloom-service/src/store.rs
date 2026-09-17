@@ -15,6 +15,11 @@ use std::path::{Path, PathBuf};
 /// the logs on the listing cache's terms. A submodule because it reads the
 /// same events through the same fold, and the two must not disagree.
 pub mod index;
+/// The search-everywhere panel's scan (nightshift backlog 117): every chat
+/// in a scope and every note, answered per message with the message's
+/// position, so a hit can be opened in place. A submodule for the same
+/// reason as the index: one fold, one definition of "the conversation".
+pub mod search;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {

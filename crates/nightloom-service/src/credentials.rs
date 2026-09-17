@@ -245,6 +245,30 @@ pub fn clear_search_key(backend: SearchBackend) -> Result<(), CredentialError> {
     store::clear(&search_entry(backend))
 }
 
+// ---------------------------------------------------------------------------
+// The phone page's bearer token (nightshift backlog 091, 2026-09-16)
+// ---------------------------------------------------------------------------
+
+/// The credential-store entry for the remote listener's token. Namespaced
+/// like the search keys, for the same reason: one keyring service for the
+/// app, and `remote` must never read as a provider label.
+const REMOTE_TOKEN_ENTRY: &str = "remote:token";
+
+/// The token the phone page must present, if one has been generated. No
+/// environment fallback: a token is made by the app and lives nowhere else.
+pub fn remote_token() -> Option<String> {
+    store::get(REMOTE_TOKEN_ENTRY)
+}
+
+/// Store the token. An empty one clears the entry, as the key setters do.
+pub fn set_remote_token(token: &str) -> Result<(), CredentialError> {
+    let token = token.trim();
+    if token.is_empty() {
+        return store::clear(REMOTE_TOKEN_ENTRY);
+    }
+    store::set(REMOTE_TOKEN_ENTRY, token)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

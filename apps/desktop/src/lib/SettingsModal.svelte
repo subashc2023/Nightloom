@@ -24,6 +24,8 @@
     refreshProviders,
     refreshSearchBackends,
     saveDreamPrefs,
+    runDailyPass,
+    setDailyPrefs,
     setPalette,
     setPrefs,
     useKnowledgeDir,
@@ -1464,6 +1466,58 @@
           {/each}
         </div>
       </section>
+
+      <!-- The daily pass (nightshift backlog 069): capture → dream → tidy
+           once a day, on the engine the rows above choose. Off until he
+           says otherwise — it runs unattended. -->
+      <section class="card">
+        <div class="ch"><span class="t">Every day</span></div>
+        <p class="note small">
+          Once a day, capture the chats since the last pass into the memory
+          inbox, dream them into the vault and each project's memory, and
+          archive struck-through lines older than 30 days — on the engine
+          chosen above. At the hour if Nightloom is open; otherwise on the
+          next launch or wake after it. What the pass proposed and changed
+          lands in the bell.
+        </p>
+        <label class="dream-auto">
+          <input
+            type="checkbox"
+            checked={app.centre.daily.on}
+            onchange={(e) => setDailyPrefs({ ...app.centre.daily, on: e.currentTarget.checked })}
+          />
+          <span>Capture and dream every day at</span>
+          <select
+            class="daily-hour"
+            value={String(app.centre.daily.hour)}
+            onchange={(e) => setDailyPrefs({ ...app.centre.daily, hour: Number(e.currentTarget.value) })}
+          >
+            {#each Array.from({ length: 24 }, (_, h) => h) as h (h)}
+              <option value={String(h)}>{String(h).padStart(2, "0")}:00</option>
+            {/each}
+          </select>
+        </label>
+        <label class="dream-auto">
+          <input
+            type="checkbox"
+            checked={app.centre.daily.notifyMac}
+            onchange={(e) => setDailyPrefs({ ...app.centre.daily, notifyMac: e.currentTarget.checked })}
+          />
+          <span>A macOS notification when the bell gains something</span>
+        </label>
+        <div class="daily-row">
+          <button
+            class="ns-btn small"
+            disabled={app.centre.dailyRunning || app.dreaming || app.capturing}
+            onclick={() => void runDailyPass()}
+          >
+            {app.centre.dailyRunning ? "Running…" : "Run the daily pass now"}
+          </button>
+          <span class="dim small">
+            {#if app.centre.dailyLast}last: {app.centre.dailyLast}{:else if app.centre.lastDaily}last ran {new Date(app.centre.lastDaily).toLocaleString()}{:else}never run{/if}
+          </span>
+        </div>
+      </section>
     </div>
   {:else if selected === "models"}
     <div class="pane">
@@ -2281,6 +2335,23 @@
     font-size: 13px;
     color: var(--ink);
     cursor: pointer;
+  }
+  .daily-hour {
+    margin-left: 6px;
+    font: inherit;
+    font-size: 12.5px;
+    background: var(--well);
+    color: var(--ink);
+    border: 1px solid var(--line2);
+    border-radius: 6px;
+    padding: 2px 6px;
+  }
+  .daily-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 8px;
+    flex-wrap: wrap;
   }
   /* The hand-off card (nightshift backlog 086 pass 2): the Context page's
      threshold row and the composer's field face for the message. */

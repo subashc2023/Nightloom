@@ -1688,6 +1688,65 @@ async fn search_sessions(
     blocking(move || store::search(&dir, &query)).await
 }
 
+/// Which chats and notes the search panel looks through (nightshift
+/// backlog 117): `this` is the sidebar's directory; `all` every project's
+/// chats plus the unfiled ones (blocker 154's default — a hit elsewhere
+/// carries its project and the jump switches to it); `notes` the open
+/// project's docspace and the vault.
+#[derive(serde::Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum SearchScope {
+    This,
+    All,
+    Notes,
+}
+
+/// The search-everywhere panel's query (nightshift backlog 117, with 106's
+/// second half): results per *message*, grouped by chat, each row carrying
+/// the message's position in its log so ↵ opens the chat there. Unlike
+/// `search_sessions` above it, which answers "which chat" with one excerpt.
+/// The registry is cloned out under its own lock and the guard dropped, as
+/// the chat tools do it (the lock discipline on `workspaces`).
+#[tauri::command]
+async fn search_everywhere(
+    state: State<'_, AppState>,
+    query: String,
+    scope: SearchScope,
+) -> Result<store::search::SearchResult, String> {
+    let active = state.active().await;
+    let chats: Vec<store::search::ChatSource> = match scope {
+        SearchScope::This => vec![store::search::ChatSource {
+            project: None,
+            dir: state.log_dir().await,
+        }],
+        SearchScope::All => {
+            let projects = state.workspaces.lock().await.registry.projects();
+            store::search::all_sources(&projects, &state.default_log_dir)
+        }
+        SearchScope::Notes => Vec::new(),
+    };
+    let notes: Vec<store::search::NoteSource> = match scope {
+        SearchScope::Notes => {
+            let mut sources = Vec::new();
+            if let Some(p) = &active {
+                sources.push(store::search::NoteSource {
+                    scope: "project",
+                    dir: p.notes_dir(),
+                });
+            }
+            if let Some(vault) = nightloom_service::knowledge::vault_dir() {
+                sources.push(store::search::NoteSource {
+                    scope: "knowledge",
+                    dir: vault,
+                });
+            }
+            sources
+        }
+        _ => Vec::new(),
+    };
+    blocking(move || store::search::search(&chats, &notes, &query)).await
+}
+
 /// Rename a session, recording a `Title` event on its log.
 ///
 /// The escape hatch the generated name needs: a name is written once, from
@@ -4471,6 +4530,113 @@ fn cancel_capture(state: State<'_, AppState>) {
     state.dream_cancel.lock().unwrap().cancel();
 }
 
+// ---- the notification centre and the daily pass (nightshift backlog 069) --
+
+/// Every pending proposal, the user's and every project's — the bell's
+/// first kind. `list_proposals` above answers for the open project only;
+/// a daily pass dreams for every project with observations, so the centre
+/// asks across the registry. Reads directories, no locks.
+#[tauri::command]
+async fn centre_proposals() -> Result<Vec<nightloom_service::centre::ProposalNotice>, String> {
+    let Some(config) = project::config_dir() else {
+        return Ok(Vec::new());
+    };
+    blocking(move || Ok::<_, String>(nightloom_service::centre::proposals_in(&config))).await
+}
+
+/// The dream's own commits — the bell's "notes changed by a dream": the
+/// newest `limit` per folder (the vault, each project's `.agents`), with
+/// the files each touched. `git log` per folder, so a few hundred
+/// milliseconds at most; asked after a pass and when the panel opens.
+#[tauri::command]
+async fn centre_dream_commits(
+    limit: Option<usize>,
+) -> Result<Vec<nightloom_service::centre::DreamCommit>, String> {
+    let Some(config) = project::config_dir() else {
+        return Ok(Vec::new());
+    };
+    let Some(vault) = nightloom_service::knowledge::vault_dir() else {
+        return Ok(Vec::new());
+    };
+    let limit = limit.unwrap_or(10).clamp(1, 50);
+    blocking(move || {
+        Ok::<_, String>(nightloom_service::centre::dream_commits_in(
+            &config, &vault, limit,
+        ))
+    })
+    .await
+}
+
+/// One dream commit's patch, whole or for one file — what the panel's
+/// `DiffView` shows before a Revert.
+#[tauri::command]
+async fn centre_dream_diff(
+    repo: String,
+    hash: String,
+    file: Option<String>,
+) -> Result<String, String> {
+    blocking(move || {
+        nightloom_service::centre::dream_diff(Path::new(&repo), &hash, file.as_deref())
+    })
+    .await
+}
+
+/// Put one file back as it was before a dream's commit, committed. The
+/// frontend confirms first; the sentence returned is the toast.
+#[tauri::command]
+async fn centre_revert_file(repo: String, hash: String, file: String) -> Result<String, String> {
+    blocking(move || nightloom_service::centre::revert_dream_file(Path::new(&repo), &hash, &file))
+        .await
+}
+
+/// What build is running: the crate's version and the binary's
+/// modification time. The frontend keeps the last stamp it saw and reads a
+/// change as "a release was installed" — the bell's fifth kind — since a
+/// release roll is the only thing that rewrites the binary.
+#[derive(Serialize)]
+struct BuildStamp {
+    version: String,
+    exe_modified: Option<String>,
+}
+
+#[tauri::command]
+fn build_stamp() -> BuildStamp {
+    BuildStamp {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        exe_modified: nightloom_service::centre::exe_modified(),
+    }
+}
+
+/// The tidy step (nightshift backlog 072) over the vault and every project's
+/// memory folder: struck lines older than `days` (30 when absent) move to
+/// `archive/struck/` and the move is committed where the folder is a
+/// repository. `apply = false` is the dry run the panel's count comes from.
+/// Shares the dream's lock — a tidy under a running dream would move lines
+/// the pass is about to read.
+#[tauri::command]
+async fn tidy_memory(
+    state: State<'_, AppState>,
+    apply: bool,
+    days: Option<i64>,
+) -> Result<Vec<nightloom_service::dream::TidyOutcome>, String> {
+    let Some(config) = project::config_dir() else {
+        return Ok(Vec::new());
+    };
+    let Some(vault) = nightloom_service::knowledge::vault_dir() else {
+        return Ok(Vec::new());
+    };
+    let Ok(_running) = state.dreaming.try_lock() else {
+        return Err("a dream or a capture is already running".into());
+    };
+    let days = days.unwrap_or(nightloom_service::tidy::DEFAULT_DAYS).max(1);
+    blocking(move || {
+        Ok::<_, String>(nightloom_service::dream::tidy_targets(
+            &vault, &config, days, None, apply,
+        ))
+    })
+    .await
+}
+
 /// Show a folder in the OS file manager.
 ///
 /// The docspace is a real directory and its whole appeal is that it is: the
@@ -5144,6 +5310,7 @@ fn main() {
             connect_agent,
             list_sessions,
             search_sessions,
+            search_everywhere,
             rename_session,
             new_session,
             open_session,
@@ -5211,6 +5378,12 @@ fn main() {
             capture_status,
             capture,
             cancel_capture,
+            centre_proposals,
+            centre_dream_commits,
+            centre_dream_diff,
+            centre_revert_file,
+            build_stamp,
+            tidy_memory,
             reveal,
             named_files,
             reveal_file,

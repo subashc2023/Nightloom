@@ -10,6 +10,7 @@
 pub mod agent;
 pub mod approval;
 pub mod capture;
+pub mod centre;
 pub mod credentials;
 pub mod dream;
 pub mod import;
@@ -21,8 +22,10 @@ pub mod plan_usage;
 pub mod project;
 pub mod prompt;
 pub mod proposal;
+pub mod remote;
 pub mod sidecar;
 pub mod store;
+pub mod tidy;
 pub mod tools;
 pub mod turn;
 pub mod usage;

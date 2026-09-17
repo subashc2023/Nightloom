@@ -2,7 +2,6 @@
   import {
     addToast,
     app,
-    cacheHitRate,
     chatMode,
     compactSession,
     contextUsed,
@@ -11,21 +10,27 @@
     MODE_GLYPH,
     sessionCost,
   } from "./state.svelte";
-  import { cacheLine, cacheState, nextTickMs, remainingText } from "./cache";
-  import { HIDDEN_THINKING_TITLE, thinkingToggleDead } from "./activity";
+  import { cacheState } from "./cache";
   import RightRail from "./RightRail.svelte";
-  import { toggleTranscriptPref, transcript } from "./transcriptPrefs.svelte";
-  import { isMac } from "./platform";
+  import NotificationCentre from "./NotificationCentre.svelte";
   import { chatKind, kindLabel, openSession } from "./state.svelte";
   import { forkLine } from "./edit";
 
   /**
    * The chat top bar in the redesign (item 036, the mock-up's Chat artboard):
-   * the session's name and short id on the left; on the right the model chip,
-   * the context chip, the cache chip, the cost chip and Compact. The model
-   * chip opens a popover that *is* the old right rail (Model · Tasks ·
-   * Context), so nothing the rail did is lost — it just no longer takes a
-   * 240px column on every screen.
+   * the session's name and short id on the left; on the right the ~~model~~
+   * kind chip, the context chip, ~~the cache chip,~~ the cost chip and
+   * Compact. The ~~model~~ chip opens a popover that *is* the old right
+   * rail (Model · Tasks · Context), so nothing the rail did is lost — it
+   * just no longer takes a 240px column on every screen.
+   *
+   * Shortened 2026-09-16 (nightshift backlog 112, "the top bar is kinda
+   * getting too long"): the model's name, the thinking and tools toggles
+   * and the cache chip moved to the composer — the model and effort as
+   * buttons in the box, thinking · tools · cache on a row under it — and
+   * the chip reads the kind and the engine alone (blocker 141). This bar
+   * is what is about the *chat*: its name, its kind, how full its window
+   * is, the plan, what it has cost.
    */
 
   const session = $derived(app.sessions.find((s) => s.id === app.activeSessionId) ?? null);
@@ -98,8 +103,6 @@
     return { text: `$${c.usd.toFixed(digits)}`, complete: c.complete };
   });
 
-  const cached = $derived(cacheHitRate());
-
   /**
    * The prompt-cache timer (nightshift backlog 063, 2026-09-15): when the
    * last turn's cache entry expires, read off the log — each turn records
@@ -112,49 +115,28 @@
    * Claude Code engine's hour was unreadable from here. Both are now
    * recorded; see `cache.ts`.
    *
-   * The clock is a chain of timeouts aligned to when the text would change
-   * — once a minute, once a second under two minutes — rather than a
-   * one-second interval, so it wakes as rarely as the display allows and
-   * still never shows a value a second stale. The toast fires on the tick
-   * that crosses to cold, and only if this chain saw the cache warm: a
-   * chat reopened already cold is a state, not a crossing, and the chain
-   * is torn down and rebuilt whenever the open chat's log changes, so a
-   * background chat has no chain and cannot toast.
+   * ~~The clock is a chain of timeouts aligned to when the text would
+   * change~~ — the chip and its clock moved to the composer's bottom row
+   * (nightshift backlog 112, 2026-09-16); what stays here is the toast
+   * on the crossing to cold, since this bar is up on every view the chat
+   * is open under and the composer only under the transcript. One timeout
+   * to the expiry, and only if the cache was warm when the chain was
+   * built: a chat reopened already cold is a state, not a crossing, and
+   * the chain is torn down and rebuilt whenever the open chat's log
+   * changes, so a background chat has no chain and cannot toast.
    */
-  let now = $state(Date.now());
-  const cache = $derived(cacheState(app.events, now));
   $effect(() => {
     const warmUntil = cacheState(app.events, Date.now())?.warmUntil ?? null;
     if (warmUntil == null) return;
-    now = Date.now();
-    let id: ReturnType<typeof setTimeout> | null = null;
-    const tick = () => {
-      const t = Date.now();
-      now = t;
-      const wait = nextTickMs(warmUntil - t);
-      if (wait == null) {
-        addToast("Prompt cache cold — edits to the history now cost nothing extra");
-        return;
-      }
-      id = setTimeout(tick, wait);
-    };
-    const first = nextTickMs(warmUntil - Date.now());
-    if (first != null) id = setTimeout(tick, first);
-    return () => {
-      if (id != null) clearTimeout(id);
-    };
-  });
-  const cacheShareTitle = "Share of the last request's prompt served from cache.";
-  const cacheTitle = $derived.by(() => {
-    if (!cache) return "";
-    const engine = app.connection?.engine === "claude-code" ? "claude-code" : "api";
-    if (!cache.warm) {
-      return "The last turn's prompt cache has expired, so the next turn re-reads the whole history either way and editing it now costs nothing extra.";
-    }
-    const what = `Time left on the last turn's prompt cache (${cache.ttl}), counted from when its request was sent: until it expires an edit to the history re-writes the cache, and after it the next turn pays for the whole history whether or not you edited it.`;
-    return engine === "claude-code"
-      ? `${what} On this engine you are on the subscription, so "free" means an edit costs no more usage than an unedited turn would — whether cache reads are discounted against the plan's limit is not documented.`
-      : what;
+    const wait = warmUntil - Date.now();
+    if (wait <= 0) return;
+    // A millisecond past the boundary, as the display's ticks were: a
+    // timer firing on the boundary itself would read the cache as warm.
+    const id = setTimeout(
+      () => addToast("Prompt cache cold — edits to the history now cost nothing extra"),
+      wait + 1,
+    );
+    return () => clearTimeout(id);
   });
 
   /**
@@ -224,13 +206,10 @@
     return app.events.some((e, i) => live[i] && e.event === "assistant_message");
   });
 
-  const annotation = $derived.by(() => {
-    if (!app.connection) return "";
-    const parts: string[] = [];
-    parts.push(`thinking ${app.connection.thinking}`);
-    if (app.connection.tools) parts.push("tools");
-    return parts.join(" · ");
-  });
+  // ~~`annotation`: the chip's `· thinking default · tools` tail~~ — gone
+  // with backlog 112 (2026-09-16): the thinking mode is the composer's
+  // second button on the provider engine, and the tools switch is the
+  // rail's; board 10's chips carry neither.
 
   const openTasks = $derived(currentTodos().filter((t) => t.status !== "completed").length);
 
@@ -271,22 +250,9 @@
     app.showRail = false;
     app.showContext = !app.showContext;
   }
-
-  // The two transcript toggles' key caps, for their tooltips.
-  const shiftKey = isMac ? "⌘⇧" : "Ctrl+Shift+";
-  // What a prior turn's thinking costs (nightshift backlog 066, measured
-  // 2026-09-16 on his account, CLI 2.1.263): on Haiku 4.5 the thinking of
-  // an earlier turn is sent and billed with every later request; on Opus 5
-  // one turn could not separate it (nightshift blocker 079). There is no
-  // thinking editor; this is the one place the transcript says what the
-  // folded block costs.
-  const THINKING_COST_NOTE =
-    ". A prior turn's thinking is still sent and billed on later turns (measured on Haiku 4.5 via Claude Code; unverified on Opus 5).";
-  // The chip reads disabled when the toggle has nothing to open (nightshift
-  // backlog 097, 2026-09-16): every recorded thinking block is empty, or
-  // nothing has thought yet and the Claude Code engine is on a model that
-  // omits its thinking. ⌘⇧T and the palette row gate on the same function.
-  const thinkingDead = $derived(thinkingToggleDead(app.events, app.connection));
+  // ~~The two transcript toggles' key caps, the thinking-cost note (066)
+  // and `thinkingDead` (097)~~ — with the toggles, in `Composer.svelte`'s
+  // bottom row since backlog 112.
 </script>
 
 <header class="topbar">
@@ -314,6 +280,11 @@
   </div>
 
   <div class="right">
+    <!-- The kind chip (nightshift backlog 102; blocker 141's final form
+         since backlog 112): `Claude Code · subscription`, `Chat ·
+         subscription`, `Build · anthropic`, `Chat · anthropic` — the kind
+         and the engine, no model. The model's name is the composer's
+         button; this chip still opens the rail, where the model is. -->
     <button
       class="ns-chip model"
       class:open={app.showRail}
@@ -325,12 +296,10 @@
       <span class="dot" class:unknown={!app.connection}></span>
       {#if app.connection}
         <span class="model-name"
-          >{kindLabel(chatKind(app.events), app.connection.engine)} · {app.connection.model}</span
+          >{kindLabel(chatKind(app.events), app.connection.engine)} · {app.connection.engine === "claude-code"
+            ? "subscription"
+            : app.connection.provider}</span
         >
-        <span class="annotation"
-          >· {app.connection.engine === "claude-code" ? "subscription" : app.connection.provider}</span
-        >
-        {#if annotation}<span class="annotation">· {annotation}</span>{/if}
       {:else}
         <span class="annotation">not connected</span>
       {/if}
@@ -385,58 +354,9 @@
       </div>
     {/if}
 
-    <!-- The two transcript toggles (nightshift backlog 052, 2026-09-14),
-         beside Context because they are about the conversation as shown:
-         every thinking block open or every one a closed pill, every tool
-         call the full block or one line each. A click on any single block
-         still overrides its toggle; flipping the toggle clears those
-         clicks. Remembered across relaunch; thinking off and tools on is
-         how the transcript read before them. -->
-    <button
-      class="ns-chip toggle"
-      class:on={transcript.thinking}
-      aria-pressed={transcript.thinking}
-      disabled={thinkingDead}
-      title={thinkingDead
-        ? HIDDEN_THINKING_TITLE + " The toggle has nothing to open in this chat."
-        : (transcript.thinking
-            ? `Thinking shown in every reply — click to fold it to a pill (${shiftKey}T)`
-            : `Thinking folded to a pill — click to show it in every reply (${shiftKey}T)`) +
-          THINKING_COST_NOTE}
-      onclick={() => toggleTranscriptPref("thinking")}
-    >
-      <span class="mark" aria-hidden="true">✦</span>thinking
-    </button>
-    <button
-      class="ns-chip toggle"
-      class:on={transcript.tools}
-      aria-pressed={transcript.tools}
-      title={transcript.tools
-        ? `Tool calls shown in full — click to fold each to one line (${shiftKey}B)`
-        : `Tool calls folded to one line each — click to show them in full (${shiftKey}B)`}
-      onclick={() => toggleTranscriptPref("tool")}
-    >
-      <span class="mark" aria-hidden="true">⚒</span>tools
-    </button>
-
-    <!-- One chip for the cache (his ask, 2026-09-16): the share of the
-         last request served from it, then the timer from backlog 063 —
-         how long it stays warm, or `cold`. A chat whose last turn predates
-         the timer's fields shows the share alone, and the title says why.
-         Nothing before the first turn. -->
-    {#if cached != null || cache}
-      <div
-        class="ns-chip mono cache"
-        class:cold={cache ? !cache.warm : false}
-        title={cache
-          ? `${cacheShareTitle} ${cacheTitle}`
-          : `${cacheShareTitle} No timer for this chat: its last turn was made before the cache lifetime was recorded (2026-09-15); the next turn will show one.`}
-      >
-        {#if cached != null}{Math.round(cached * 100)}% cached{:else}cache{/if}{#if cache}
-          <span class="cache-when" aria-label={cacheLine(cache)}>· {remainingText(cache.remainingMs) ?? "cold"}</span>
-        {/if}
-      </div>
-    {/if}
+    <!-- ~~The two transcript toggles (backlog 052) and the cache chip
+         (063)~~ — the composer's bottom row since backlog 112
+         (2026-09-16), with their titles, keys and the 097 disabled rule. -->
 
     {#if spend}
       <div
@@ -466,6 +386,9 @@
         {app.busy ? "…" : "Compact"}
       </button>
     {/if}
+    <!-- The bell (nightshift backlog 069, agent I's hunk): what waits on
+         him, five kinds; the Nightshift header carries the same one. -->
+    <NotificationCentre />
   </div>
 
   {#if app.showRail}
@@ -570,7 +493,6 @@
   }
 
   .gauge,
-  .cache,
   .spend {
     font-variant-numeric: tabular-nums;
     color: var(--ink2);
@@ -628,40 +550,8 @@
   .plan.stale {
     color: var(--dim);
   }
-  /* Only the timer half dims when cold; the share is still a fact. */
-  .cache.cold .cache-when {
-    color: var(--dim);
-  }
-  /* The transcript toggles: off is the dimmed chip with its mark struck
-     through the colour, on is the accent mark. */
-  .toggle {
-    cursor: pointer;
-    font-family: var(--sans);
-    color: var(--dim);
-    gap: 5px;
-  }
-  .toggle .mark {
-    font-size: 11px;
-    opacity: 0.55;
-  }
-  .toggle.on {
-    color: var(--ink);
-  }
-  .toggle.on .mark {
-    color: var(--accent);
-    opacity: 1;
-  }
-  .toggle:hover {
-    border-color: var(--accent);
-    color: var(--ink);
-  }
-  .toggle:disabled,
-  .toggle:disabled:hover {
-    cursor: default;
-    opacity: 0.5;
-    border-color: transparent;
-    color: var(--dim);
-  }
+  /* The cache chip's and the toggles' rules went with them to
+     `Composer.svelte` (backlog 112). */
   .spend.partial {
     font-style: italic;
   }

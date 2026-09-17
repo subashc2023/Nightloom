@@ -353,6 +353,68 @@ export interface CaptureReport {
   cost_usd: number | null;
 }
 
+// ---- the notification centre (nightshift backlog 069) ----
+
+/** The project a centre notice belongs to; null means the user. */
+export interface ProjectRef {
+  id: string;
+  name: string;
+}
+
+/** One pending proposal with the project whose store holds it — the
+ *  centre reads every project's, not only the open one's. */
+export interface ProposalNotice {
+  project: ProjectRef | null;
+  entry: ProposalEntry;
+}
+
+/** One file a dream's commit touched. */
+export interface ChangedFile {
+  path: string;
+  added: number;
+  removed: number;
+}
+
+/** One after-dream commit (`nightloom: dream — …`) in the vault or a
+ *  project's `.agents`, with what it changed. */
+export interface DreamCommit {
+  project: ProjectRef | null;
+  /** The repository: the vault, or the project's workspace. */
+  repo: string;
+  hash: string;
+  /** RFC 3339. */
+  at: string;
+  subject: string;
+  files: ChangedFile[];
+}
+
+/** What build is running; a change between launches is a release. */
+export interface BuildStamp {
+  version: string;
+  exe_modified: string | null;
+}
+
+/** What the tidy step found or did in one folder. */
+export interface TidyReport {
+  files: number;
+  spans: number;
+  movable: number;
+  undated: number;
+  unterminated: number;
+  young: number;
+  saved: number;
+  touched: string[];
+}
+
+export interface TidyOutcome {
+  /** The project's name, or null for the vault. */
+  project: string | null;
+  dir: string;
+  report: TidyReport;
+  /** The snapshot clause, empty when nothing moved. */
+  git: string;
+}
+
 /** Where the knowledge base is and what is in it. */
 export interface KnowledgeInfo {
   dir: string;

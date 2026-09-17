@@ -43,8 +43,12 @@ import type {
   PromptLayersInfo,
   Proposal,
   ProposalEntry,
+  ProposalNotice,
   ProposalScope,
   ProviderInfo,
+  DreamCommit,
+  BuildStamp,
+  TidyOutcome,
   RevertPreview,
   Schedules,
   SearchBackendInfo,
@@ -750,6 +754,40 @@ export function capture(args: PassArgs): Promise<CaptureReport> {
 /** Interrupt the in-flight capture; the chat it stopped in is re-read next time. */
 export function cancelCapture(): Promise<null> {
   return invoke("cancel_capture");
+}
+
+// ---- the notification centre and the daily pass (nightshift backlog 069) ----
+
+/** Every pending proposal, the user's and every project's. */
+export function centreProposals(): Promise<ProposalNotice[]> {
+  return invoke("centre_proposals");
+}
+
+/** The newest dream commits per folder, with the files each touched. */
+export function centreDreamCommits(limit?: number): Promise<DreamCommit[]> {
+  return invoke("centre_dream_commits", { limit });
+}
+
+/** One dream commit's patch, whole or for one file. */
+export function centreDreamDiff(repo: string, hash: string, file?: string): Promise<string> {
+  return invoke("centre_dream_diff", { repo, hash, file });
+}
+
+/** Put one file back as it was before the dream's commit, committed; the
+ *  sentence returned is the toast. */
+export function centreRevertFile(repo: string, hash: string, file: string): Promise<string> {
+  return invoke("centre_revert_file", { repo, hash, file });
+}
+
+/** The running build's version and binary stamp. */
+export function buildStamp(): Promise<BuildStamp> {
+  return invoke("build_stamp");
+}
+
+/** The tidy step over the vault and every project's memory folder: a dry
+ *  run with `apply` false, a move (committed) with it true. */
+export function tidyMemory(apply: boolean, days?: number): Promise<TidyOutcome[]> {
+  return invoke("tidy_memory", { apply, days });
 }
 
 // ---- Nightshift ----
