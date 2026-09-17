@@ -4715,7 +4715,10 @@ fn notify(app: AppHandle, title: String, body: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-/// The event a click on the Refresh-now banner raises (backlog 116).
+/// The event a click on the Refresh-now banner raises (backlog 116). Only
+/// the macOS branch below can see a click, so only it reads this — the
+/// Windows job's clippy runs with `-D warnings` and dead code fails it.
+#[cfg(target_os = "macos")]
 const USAGE_BANNER_CLICKED: &str = "usage-banner-clicked";
 
 /// The Refresh-now banner (nightshift backlog 116, blocker 169): posted
