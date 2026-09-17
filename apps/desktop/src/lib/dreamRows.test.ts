@@ -13,10 +13,10 @@ const providers: ProviderInfo[] = [
 const prefs: CatalogPrefs = { hiddenProviders: [], hiddenModels: {}, customModels: {} };
 
 describe("dreamEngineRows", () => {
-  it("lists the rail's connection, Claude Code, then each provider with what it bills", () => {
+  it("lists the rail's connection, the subscription engine, then each provider with what it bills", () => {
     const rows = dreamEngineRows(providers, defaultDraft());
     expect(rows.map((r) => r.value)).toEqual(["", CLAUDE_CODE, "anthropic", "openrouter"]);
-    expect(rows[1]).toMatchObject({ name: "Claude Code", bills: "the subscription", warn: false });
+    expect(rows[1]).toMatchObject({ name: "Subscription", bills: "your Claude plan", warn: false });
     expect(rows[2]).toMatchObject({ bills: "its API key", warn: false, sub: "default model claude-sonnet-5" });
     expect(rows[3]).toMatchObject({ bills: "no key set", warn: true });
   });
@@ -26,9 +26,9 @@ describe("dreamEngineRows", () => {
     expect(railNow(d)).toMatch(/^Anthropic · .* · its API key$/);
     d.engine = "claude-code";
     d.agentModel = "haiku";
-    expect(railNow(d)).toBe("Claude Code · haiku · the subscription");
+    expect(railNow(d)).toBe("Subscription · haiku · your plan");
     d.agentModel = "";
-    expect(railNow(d)).toBe("Claude Code · the CLI's default · the subscription");
+    expect(railNow(d)).toBe("Subscription · the CLI's default · your plan");
   });
 });
 
@@ -64,7 +64,7 @@ describe("dreamSentence", () => {
 
   it("reads the engine, the model and the bill in one line", () => {
     expect(dreamSentence(rows, CLAUDE_CODE, "haiku", defaultDraft())).toBe(
-      "Dreams and captures run on Claude Code · haiku, billed to the subscription.",
+      "Dreams and captures run on Subscription · haiku, billed to your Claude plan.",
     );
     expect(dreamSentence(rows, "anthropic", "", defaultDraft())).toBe(
       "Dreams and captures run on Anthropic · its default model, billed to its API key.",
@@ -76,7 +76,7 @@ describe("dreamSentence", () => {
     d.engine = "claude-code";
     d.agentModel = "opus";
     expect(dreamSentence(rows, "", "", d)).toBe(
-      "Dreams and captures run on the rail's connection — Claude Code · opus · the subscription.",
+      "Dreams and captures run on the rail's connection — Subscription · opus · your plan.",
     );
   });
 });

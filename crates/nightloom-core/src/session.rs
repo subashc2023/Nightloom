@@ -97,6 +97,41 @@ impl ChatMode {
     }
 }
 
+/// What a chat is *for*, decided at its birth like [`ChatMode`] and
+/// orthogonal to it (nightshift backlog 102, 2026-09-16): a `Build` chat
+/// can be incognito, a `Chat` can be ephemeral.
+///
+/// The two are presets over dials the shell owns — the tool set, the
+/// working folder, one instructions layer — not a second surface. `Build`
+/// is every chat before the field existed: the project folder, every tool,
+/// approval as set, plans within reach; on the subscription engine the
+/// shell calls it *Claude Code*. `Chat` is the conversational one: the
+/// read-only tools plus the shell's own, the web, no working folder at
+/// all — it runs in a neutral, empty directory — and a *Chat instructions*
+/// layer of its own.
+///
+/// Fixed at creation (nightshift blocker 143, the default taken): the
+/// kind is what the engine was built for, and a mark on the first line is
+/// one every reader — the listing, the reconnect check, the top bar — sees
+/// before it reads anything else.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatKind {
+    /// The folder, every tool, approval as set — today's chat.
+    #[default]
+    Build,
+    /// Reads only, no folder, its own instructions layer.
+    Chat,
+}
+
+impl ChatKind {
+    /// For serde: a build chat is the absence of the field, so a log
+    /// written today with no kind is byte-identical to yesterday's.
+    fn is_build(&self) -> bool {
+        matches!(self, ChatKind::Build)
+    }
+}
+
 /// Where a forked chat came from: the parent's id and the position in the
 /// parent's log the fork was cut at (2026-09-15, nightshift backlog 062).
 ///
@@ -137,6 +172,11 @@ pub enum SessionEvent {
         /// and not on an event of its own.
         #[serde(default, skip_serializing_if = "ChatMode::is_normal")]
         mode: ChatMode,
+        /// What the chat is for (nightshift backlog 102, 2026-09-16).
+        /// Absent from every log written before kinds existed and from
+        /// every build log after, on the same terms as `mode`.
+        #[serde(default, skip_serializing_if = "ChatKind::is_build")]
+        kind: ChatKind,
         /// The chat this one was forked from, when it was
         /// ([`Session::fork_from`]). Absent on every log that is not a
         /// fork, like `mode` on a normal one, so nothing else changes shape.
@@ -912,6 +952,7 @@ impl Session {
             Utc::now(),
             None,
             ChatMode::Normal,
+            ChatKind::Build,
         )
     }
 
@@ -926,6 +967,7 @@ impl Session {
             Utc::now(),
             None,
             ChatMode::Ephemeral,
+            ChatKind::Build,
         )
     }
 
@@ -954,13 +996,45 @@ impl Session {
         }
         let id = uuid::Uuid::new_v4().to_string();
         let log = JsonlLog::create(dir.as_ref().join(format!("{id}.jsonl")))?;
-        Ok(Self::create(id, Utc::now(), Some(log), mode))
+        Ok(Self::create(
+            id,
+            Utc::now(),
+            Some(log),
+            mode,
+            ChatKind::Build,
+        ))
     }
 
-    /// The one constructor behind the four above: record the creation
+    /// A chat of the given kind in the given mode (nightshift backlog 102,
+    /// 2026-09-16): the one entry point a shell needs once it has both
+    /// answers from its New chat control. `Ephemeral` makes no log, as
+    /// [`ephemeral`](Self::ephemeral) does; the other two modes make one
+    /// under `dir`. The four constructors above are this with `Build`.
+    pub fn start(dir: impl AsRef<Path>, mode: ChatMode, kind: ChatKind) -> io::Result<Self> {
+        if mode == ChatMode::Ephemeral {
+            return Ok(Self::create(
+                uuid::Uuid::new_v4().to_string(),
+                Utc::now(),
+                None,
+                mode,
+                kind,
+            ));
+        }
+        let id = uuid::Uuid::new_v4().to_string();
+        let log = JsonlLog::create(dir.as_ref().join(format!("{id}.jsonl")))?;
+        Ok(Self::create(id, Utc::now(), Some(log), mode, kind))
+    }
+
+    /// The one constructor behind the five above: record the creation
     /// event and nothing else.
-    fn create(id: String, at: DateTime<Utc>, log: Option<JsonlLog>, mode: ChatMode) -> Self {
-        Self::create_from(id, at, log, mode, None)
+    fn create(
+        id: String,
+        at: DateTime<Utc>,
+        log: Option<JsonlLog>,
+        mode: ChatMode,
+        kind: ChatKind,
+    ) -> Self {
+        Self::create_from(id, at, log, mode, kind, None)
     }
 
     /// [`create`](Self::create) with the fork line filled in, which only
@@ -970,6 +1044,7 @@ impl Session {
         at: DateTime<Utc>,
         log: Option<JsonlLog>,
         mode: ChatMode,
+        kind: ChatKind,
         forked_from: Option<ForkedFrom>,
     ) -> Self {
         let mut s = Self {
@@ -983,6 +1058,7 @@ impl Session {
             id,
             at,
             mode,
+            kind,
             forked_from,
         });
         s
@@ -1032,6 +1108,7 @@ impl Session {
             }
         }
         let mode = self.mode();
+        let kind = self.kind();
         let id = uuid::Uuid::new_v4().to_string();
         let log = match mode {
             ChatMode::Ephemeral => None,
@@ -1042,6 +1119,7 @@ impl Session {
             Utc::now(),
             log,
             mode,
+            kind,
             Some(ForkedFrom {
                 session: self.id.clone(),
                 index: upto,
@@ -1119,6 +1197,7 @@ impl Session {
     /// same mode as the parent; the parent is untouched and stays readable.
     pub fn continued_from(&self, dir: impl AsRef<Path>) -> io::Result<Self> {
         let mode = self.mode();
+        let kind = self.kind();
         let id = uuid::Uuid::new_v4().to_string();
         let log = match mode {
             ChatMode::Ephemeral => None,
@@ -1129,6 +1208,7 @@ impl Session {
             Utc::now(),
             log,
             mode,
+            kind,
             Some(ForkedFrom {
                 session: self.id.clone(),
                 index: self.events.len(),
@@ -1184,8 +1264,15 @@ impl Session {
         }
         let log = JsonlLog::create(dir.as_ref().join(format!("{id}.jsonl")))?;
         // An import is an ordinary chat: what it was on the other side was
-        // never one of these modes.
-        Ok(Self::create(id, at, Some(log), ChatMode::Normal))
+        // never one of these modes, and a claude.ai chat is a build chat
+        // here only in the sense that every chat was before kinds existed.
+        Ok(Self::create(
+            id,
+            at,
+            Some(log),
+            ChatMode::Normal,
+            ChatKind::Build,
+        ))
     }
 
     /// Rebuild a session from a previously written JSONL log and reopen it
@@ -2230,6 +2317,20 @@ impl Session {
             .iter()
             .find_map(|e| match e {
                 SessionEvent::SessionCreated { mode, .. } => Some(*mode),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    /// What this chat is for (nightshift backlog 102), read off the
+    /// creation line exactly as [`mode`](Self::mode) is and for the same
+    /// reasons; a log with no creation event, or one from before kinds
+    /// existed, is `Build` — the chat every reader assumed until then.
+    pub fn kind(&self) -> ChatKind {
+        self.events
+            .iter()
+            .find_map(|e| match e {
+                SessionEvent::SessionCreated { kind, .. } => Some(*kind),
                 _ => None,
             })
             .unwrap_or_default()
@@ -4101,6 +4202,42 @@ mod tests {
         let back = Session::load(dir.join(format!("{}.jsonl", normal.id))).unwrap();
         assert_eq!(back.mode(), ChatMode::Normal);
         assert!(!back.mode().writes_nothing());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The kind (nightshift backlog 102) rides the creation line beside the
+    /// mode and on the same terms: a build log's first line carries no
+    /// `kind` key, so every log from before kinds existed reads as one; a
+    /// Chat is marked, comes back through `load`, keeps its mode, and a
+    /// fork or a hand-off continuation of it is a Chat too. An ephemeral
+    /// Chat makes no file.
+    #[test]
+    fn the_chat_kind_is_on_the_creation_line_and_is_inherited() {
+        let dir = std::env::temp_dir().join(format!("nightloom-kind-{}", uuid::Uuid::new_v4()));
+        let chat = Session::start(&dir, ChatMode::Incognito, ChatKind::Chat).unwrap();
+        let build = Session::start(&dir, ChatMode::Normal, ChatKind::Build).unwrap();
+        assert_eq!(chat.kind(), ChatKind::Chat);
+        assert_eq!(chat.mode(), ChatMode::Incognito);
+        assert_eq!(build.kind(), ChatKind::Build);
+        assert_eq!(Session::with_log(&dir).unwrap().kind(), ChatKind::Build);
+        assert_eq!(Session::ephemeral().kind(), ChatKind::Build);
+
+        let first = |id: &str| {
+            let raw = fs::read_to_string(dir.join(format!("{id}.jsonl"))).unwrap();
+            raw.lines().next().unwrap().to_string()
+        };
+        assert!(first(&chat.id).contains(r#""kind":"chat""#));
+        assert!(!first(&build.id).contains("kind"), "{}", first(&build.id));
+
+        let mut back = Session::load(dir.join(format!("{}.jsonl", chat.id))).unwrap();
+        assert_eq!(back.kind(), ChatKind::Chat);
+        back.record_user("q");
+        assert_eq!(back.fork_from(&dir, 1).unwrap().kind(), ChatKind::Chat);
+        assert_eq!(back.continued_from(&dir).unwrap().kind(), ChatKind::Chat);
+
+        let eph = Session::start(&dir, ChatMode::Ephemeral, ChatKind::Chat).unwrap();
+        assert_eq!(eph.kind(), ChatKind::Chat);
+        assert!(eph.log_path().is_none());
         fs::remove_dir_all(&dir).ok();
     }
 

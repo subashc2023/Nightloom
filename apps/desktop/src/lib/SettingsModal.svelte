@@ -19,6 +19,7 @@
     applyDraft,
     currentModelId,
     fetchModels,
+    openChatInstructions,
     openModelInstructions,
     refreshProviders,
     refreshSearchBackends,
@@ -189,6 +190,27 @@
   $effect(() => {
     if (selected === "models") void refreshModelFiles();
   });
+  /**
+   * The Chat instructions (nightshift backlog 102): one file beside the
+   * models' folder, `~/.nightloom/CHAT.md`, read by chats of the Chat kind.
+   * Its path for the card, and whether it has anything in it — read the
+   * way the editor reads it, so a missing file is empty text, not an error.
+   */
+  let chatPath = $state<string | null>(null);
+  let chatBytes = $state<number | null>(null);
+  async function refreshChatFile() {
+    try {
+      chatPath = await api.chatInstructionsPath();
+      const text = await api.readNote("chat", "CHAT.md");
+      chatBytes = new TextEncoder().encode(text).length;
+    } catch {
+      chatBytes = null;
+    }
+  }
+  void refreshChatFile();
+  $effect(() => {
+    if (selected === "models") void refreshChatFile();
+  });
   /** The model the "+ add" control names: the rail's, by the same rule the
    *  popover's pencil uses. */
   const addModel = $derived(currentModelId());
@@ -224,7 +246,7 @@
   let pickError = $state<string | null>(null);
   const pickProviders = $derived([
     ...app.providers.map((p) => ({ kind: p.kind, label: providerLabel(p.kind) })),
-    { kind: AGENT_KIND, label: "Claude Code engine" },
+    { kind: AGENT_KIND, label: "Subscription engine" },
   ]);
   const pickModels = $derived.by(() => {
     if (pickProvider === AGENT_KIND) return AGENT_MODELS.filter((m) => m !== "");
@@ -661,7 +683,7 @@
    */
   const groups = $derived.by(() => [
     { title: "Providers", panes: app.providers.map((p) => p.kind) },
-    { title: "Claude Code", panes: ["claude-code"] },
+    { title: "Subscription", panes: ["claude-code"] },
     { title: "Web search", panes: app.searchBackends.map((b) => "search:" + b.name) },
     { title: "Knowledge", panes: ["knowledge", "models"] },
     { title: "Projects", panes: ["projects"] },
@@ -810,13 +832,13 @@
     <!-- The Claude Code engine's own pane (nightshift backlog 086 pass 2):
          not a provider — no key, no model list — but the place its
          defaults live: the hand-off, and the cards other items add. -->
-    <div class="nav-title">Claude Code<Kbd keys={keyOf(1)} dim /></div>
+    <div class="nav-title">Subscription<Kbd keys={keyOf(1)} dim /></div>
     <button
       class="nav-item"
       class:active={selected === "claude-code"}
       onclick={() => select("claude-code")}
     >
-      <span class="nav-label">Claude Code</span>
+      <span class="nav-label">Subscription</span>
       <span class="st">hand-off {handoffDefaultPct}%</span>
     </button>
     <div class="nav-title">Web search<Kbd keys={keyOf(2)} dim /></div>
@@ -1004,13 +1026,13 @@
          the composer's notice; this is what every chat starts from. -->
     <div class="pane">
       <div class="pane-head">
-        <h2 class="pane-title">Claude Code</h2>
-        <span class="slug">the engine's defaults</span>
+        <h2 class="pane-title">Subscription</h2>
+        <span class="slug">the engine on your Claude plan — its defaults</span>
         <span class="spacer"></span>
         <button class="close" title="Close" aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
       </div>
       <p class="note">
-        What a Claude Code chat does when its context window fills. The CLI's
+        What a chat on this engine does when its context window fills. The CLI's
         own auto-compact is off on this engine; instead, past the mark below,
         the composer shows a notice with <em>Wrap up now</em>, which sends the
         message below as a turn of its own — the model finishes what is
@@ -1457,7 +1479,7 @@
         instructions. For how you want one model in particular to talk; what
         you want of every model belongs in Memory. Named after the model id,
         so a chat on <code>claude-opus-5</code> reads
-        <code>claude-opus-5.md</code>. On the Claude Code engine the name is
+        <code>claude-opus-5.md</code>. On the subscription engine the name is
         the alias the picker sends (<code>opus</code>, <code>sonnet</code>).
         An empty file is the same as none.
       </p>
@@ -1491,6 +1513,43 @@
             onclick={() => addModel && openModelInstructions(addModel, "settings")}
           >
             {addExists ? "Edit for" : "+ Add for"} {addModel ?? "the current model"}
+          </button>
+        </div>
+      </section>
+
+      <!-- The Chat instructions (nightshift backlog 102, board 8b): how a
+           Chat talks. One file for the kind, beside the models' folder; the
+           same editor as a model's file, and a missing file opens empty. -->
+      <section class="card">
+        <div class="ch"><span class="t">Chat instructions</span></div>
+        <p class="note small">
+          How a <em>Chat</em> — the conversational kind, no folder, reads only
+          — talks. Read into the system prompt of every Chat and no Claude
+          Code chat's, after the model's file and before the project's. On
+          the subscription engine it sits on top of the CLI's own prompt,
+          which stays underneath; on the provider engine Nightloom owns the
+          whole prompt. Something like: <em>Talk, don't build. Answer in prose
+          first; no file edits, no commands.</em>
+        </p>
+        <div class="kf pick-row">
+          <span class="dot" class:ok={(chatBytes ?? 0) > 0}></span>
+          <span class="key-status pick-st">
+            {#if chatPath === null}
+              No user config directory to keep it in.
+            {:else if (chatBytes ?? 0) > 0}
+              <code>{chatPath}</code> · {size(chatBytes ?? 0)}
+            {:else}
+              No file yet — it would be <code>{chatPath}</code>.
+            {/if}
+          </span>
+          <span class="spacer"></span>
+          <button
+            class="ns-btn"
+            disabled={chatPath === null}
+            title={chatPath ? `Opens the editor on ${chatPath}` : "No config directory"}
+            onclick={() => openChatInstructions("settings")}
+          >
+            {(chatBytes ?? 0) > 0 ? "Edit" : "Create"}
           </button>
         </div>
       </section>

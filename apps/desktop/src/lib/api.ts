@@ -7,6 +7,7 @@ import type {
   Blocker,
   BlockerList,
   CaptureReport,
+  ChatKind,
   ChatMode,
   CompactResult,
   ConnectArgs,
@@ -242,8 +243,16 @@ export function setUndoMenu(
  * the first message creates the log in that kind — so what comes back is
  * the kind, not an id (nightshift backlog 061, 2026-09-15).
  */
-export function newSession(mode?: ChatMode): Promise<{ mode: ChatMode }> {
-  return invoke("new_session", { mode });
+/**
+ * Leave the open chat and say what the next one will be: its privacy
+ * (`mode`) and what it is for (`kind`, nightshift backlog 102). Nothing is
+ * created; the first message makes the log in that mode and kind.
+ */
+export function newSession(
+  mode?: ChatMode,
+  kind?: ChatKind,
+): Promise<{ mode: ChatMode; kind: ChatKind }> {
+  return invoke("new_session", { mode, kind });
 }
 
 export function openSession(id: string): Promise<SessionEvent[]> {
@@ -646,6 +655,12 @@ export function setZoom(factor: number): Promise<null> {
  *  null on a machine with no user config directory. */
 export function modelInstructionsDir(): Promise<string | null> {
   return invoke("model_instructions_dir");
+}
+
+/** Where the Chat instructions live (`~/.nightloom/CHAT.md`, nightshift
+ *  backlog 102); null on a machine with no user config directory. */
+export function chatInstructionsPath(): Promise<string | null> {
+  return invoke("chat_instructions_path");
 }
 
 // ---- the knowledge base ----

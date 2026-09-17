@@ -98,6 +98,15 @@ pub struct PromptConfig {
     /// same preamble switch as user memory by every caller, since it is the
     /// same kind of standing text.
     pub model: Option<String>,
+    /// Include the Chat instructions — `~/.nightloom/CHAT.md`, how a *Chat*
+    /// talks (nightshift backlog 102, 2026-09-16). On for a chat of the
+    /// Chat kind and off for a Build chat; a switch rather than a kind,
+    /// because the assembler does not know kinds and the shell that does
+    /// gates it like the other standing texts. Between the model's file
+    /// and the project's rules in the ladder: about the user, narrower
+    /// than memory (one kind of chat, every model), still refined by the
+    /// folder's rules on the engine where a Chat has a folder to speak of.
+    pub chat_instructions: bool,
     /// The project this chat belongs to, if any: its name and the shared
     /// notes directory to index.
     ///
@@ -139,6 +148,7 @@ impl Default for PromptConfig {
             project_instructions: true,
             user_memory: true,
             model: None,
+            chat_instructions: false,
             project: None,
             knowledge: None,
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
@@ -167,6 +177,7 @@ impl PromptConfig {
                 SegmentKind::Environment => self.environment = false,
                 SegmentKind::UserMemory => self.user_memory = false,
                 SegmentKind::ModelInstructions => self.model = None,
+                SegmentKind::ChatInstructions => self.chat_instructions = false,
                 SegmentKind::ProjectInstructions => self.project_instructions = false,
                 SegmentKind::ProjectNotes => self.project = None,
                 SegmentKind::Knowledge => self.knowledge = None,
@@ -229,6 +240,15 @@ pub fn assemble(config: &PromptConfig) -> SystemPrompt {
         let seg = match config.edits.get(&SegmentKind::ModelInstructions) {
             Some(body) => model_instructions_segment_from(model, body),
             None => model_instructions_segment(model),
+        };
+        if let Some(seg) = seg {
+            prompt.push(seg);
+        }
+    }
+    if config.chat_instructions {
+        let seg = match config.edits.get(&SegmentKind::ChatInstructions) {
+            Some(body) => Some(chat_instructions_segment_from(body)),
+            None => chat_instructions_segment(),
         };
         if let Some(seg) = seg {
             prompt.push(seg);
@@ -560,6 +580,7 @@ pub fn layer_source(kind: SegmentKind, model: Option<&str>, cwd: &Path) -> Optio
             }
             read_capped(&model_instruction_path(model)?)
         }
+        SegmentKind::ChatInstructions => read_capped(&chat_instruction_path()?),
         SegmentKind::ProjectInstructions => {
             let mut bodies: Vec<String> = Vec::new();
             for dir in cwd.ancestors() {
@@ -670,6 +691,62 @@ pub fn model_instructions_dir() -> Option<PathBuf> {
 /// a file in it. Nothing else is rewritten: a `:` is a legal file name here.
 pub fn model_instruction_file(model: &str) -> String {
     format!("{}.md", model.trim().replace('/', "__"))
+}
+
+/// The one file the Chat instructions layer reads, in the config dir.
+const CHAT_INSTRUCTION_FILE: &str = "CHAT.md";
+
+/// The folder a *Chat* runs in — `~/.nightloom/chat/`, created empty on
+/// first use and never written to by Nightloom.
+const CHAT_DIR: &str = "chat";
+
+/// How a Chat talks, from `~/.nightloom/CHAT.md` (nightshift backlog 102).
+///
+/// One file for the kind, beside the user's `AGENTS.md` and the `models/`
+/// folder: it is standing text about the user — how they want a
+/// conversation, as against a build, to go — and not about a folder or a
+/// model. Read whole under the same cap as the rest; a missing or empty
+/// file is the normal state and emits nothing, so a Chat with no file
+/// costs no prompt. On the subscription engine it is appended after the
+/// CLI's own prompt, which stays underneath (`--bare` would drop the
+/// login with it, measured 2026-09-14) — claude.ai-like *on top of* Claude
+/// Code, not instead of it.
+pub fn chat_instructions_segment() -> Option<Segment> {
+    let content = read_capped(&chat_instruction_path()?)?;
+    Some(chat_instructions_segment_from(&content))
+}
+
+/// The Chat segment around a given body — the file's, or a chat's own text
+/// in its place. One function for both so the wrapper cannot drift.
+fn chat_instructions_segment_from(body: &str) -> Segment {
+    let content = truncate(body.to_string());
+    Segment::new(
+        SegmentKind::ChatInstructions,
+        "chat-instructions",
+        format!("<chat-instructions>\n{content}\n</chat-instructions>"),
+    )
+}
+
+/// Where [`chat_instructions_segment`] reads from, exposed so a shell can
+/// name the file it edits.
+pub fn chat_instruction_path() -> Option<PathBuf> {
+    Some(crate::project::config_dir()?.join(CHAT_INSTRUCTION_FILE))
+}
+
+/// The neutral, empty directory a Chat is rooted in — `~/.nightloom/chat/`
+/// (nightshift backlog 102). A Chat has no working folder: an unfiled
+/// chat used to run in whatever directory the app was launched from,
+/// which was accidental, and a Chat in a project must not read the
+/// project's tree as its own. One fixed directory rather than a fresh
+/// temporary one per chat because the CLI keeps its session files per
+/// cwd, and `--resume` on the next turn has to find them where the last
+/// turn left them. Created here so the caller can hand it to a process as
+/// a cwd that exists; `None` on a machine with no config directory, where
+/// the caller falls back as it always did.
+pub fn chat_dir() -> Option<PathBuf> {
+    let dir = crate::project::config_dir()?.join(CHAT_DIR);
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir)
 }
 
 /// An index of the project's shared notes — the state every conversation in
@@ -1078,6 +1155,7 @@ mod tests {
             project_instructions: false,
             user_memory: false,
             model: None,
+            chat_instructions: false,
             project: None,
             knowledge: None,
             cwd,
@@ -1938,6 +2016,69 @@ the body text",
         .unwrap();
         assert_eq!(text, "Be terse.");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The Chat instructions layer (nightshift backlog 102) is a switch:
+    /// off, nothing is read; on, the chat's own text is wrapped as the
+    /// file would be and sits after the model's file and before the
+    /// project's rules. Through the override path, so the test owns no
+    /// file under the config dir; `without` turns it off by kind like the
+    /// rest.
+    #[test]
+    fn chat_instructions_are_a_switch_between_the_model_and_the_project() {
+        let dir = temp_dir("chat-layer");
+        let mut edits = BTreeMap::new();
+        edits.insert(
+            SegmentKind::ChatInstructions,
+            "Talk, don't build.".to_string(),
+        );
+        edits.insert(SegmentKind::ModelInstructions, "Short.".to_string());
+        edits.insert(SegmentKind::ProjectInstructions, "The rules.".to_string());
+        let config = PromptConfig {
+            chat_instructions: true,
+            model: Some("test-model-chat".into()),
+            project_instructions: true,
+            edits,
+            ..bare(dir.clone())
+        };
+        let on = assemble(&config);
+        let kinds: Vec<SegmentKind> = on.segments().iter().map(|s| s.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                SegmentKind::ModelInstructions,
+                SegmentKind::ChatInstructions,
+                SegmentKind::ProjectInstructions
+            ]
+        );
+        let chat = &on.segments()[1];
+        assert_eq!(chat.name, "chat-instructions");
+        assert_eq!(
+            chat.text,
+            "<chat-instructions>\nTalk, don't build.\n</chat-instructions>"
+        );
+
+        let off = assemble(&PromptConfig {
+            chat_instructions: false,
+            ..config.clone()
+        });
+        assert!(
+            !off.segments()
+                .iter()
+                .any(|s| s.kind == SegmentKind::ChatInstructions)
+        );
+        let switched = assemble(&config.without(&[SegmentKind::ChatInstructions]));
+        assert!(
+            !switched
+                .segments()
+                .iter()
+                .any(|s| s.kind == SegmentKind::ChatInstructions)
+        );
+        assert!(SegmentKind::EDITABLE.contains(&SegmentKind::ChatInstructions));
+        assert_eq!(
+            chat_instruction_path().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()),
+            crate::project::config_dir().map(|_| "CHAT.md".to_string())
+        );
     }
 
     /// The file reaches the prompt for the model it is named after and no

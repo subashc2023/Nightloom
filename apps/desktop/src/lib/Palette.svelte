@@ -155,8 +155,8 @@
         });
     rows.push({
       id: "engine",
-      label: "Engine: Provider ⇄ Claude Code",
-      meta: agent ? "on Claude Code — back to an API key" : "on an API key — to your subscription",
+      label: "Engine: Provider ⇄ Subscription",
+      meta: agent ? "on the subscription — back to an API key" : "on an API key — to your subscription",
       icon: "term",
       key: `${mod}E`,
       group: "Model",
@@ -260,14 +260,27 @@
         group: "Go",
         run: () => go(() => runMenuCommand("projects")),
       },
+      // The two kinds (nightshift backlog 102, 2026-09-16): ⌘N a Claude
+      // Code chat, ⌥⌘N a Chat. No plain "New chat" row — the sidebar's
+      // wide button is that, and it makes the project's default kind.
       {
-        id: "new_chat",
-        label: "New chat",
-        meta: "",
+        id: "new_build",
+        label: "New Claude Code chat",
+        meta: "the project folder · all tools · Ask / Auto · plans",
         icon: "chat",
         key: `${mod}N`,
         group: "Go",
-        run: () => go(() => runMenuCommand("new_chat")),
+        run: () => go(() => runMenuCommand("new_build")),
+        disabled: app.busy,
+      },
+      {
+        id: "new_talk",
+        label: "New Chat",
+        meta: "reads only · Nightloom's tools · the web · no folder",
+        icon: "chat",
+        key: isMac ? "⌥⌘N" : "Ctrl+Alt+N",
+        group: "Go",
+        run: () => go(() => runMenuCommand("new_talk")),
         disabled: app.busy,
       },
       // The two other kinds (nightshift backlog 059, 2026-09-15), one

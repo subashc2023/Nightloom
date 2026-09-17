@@ -3,7 +3,7 @@
 //! `nightloom_core::Session`.
 
 use chrono::{DateTime, Utc};
-use nightloom_core::{ChatMode, ContentBlock, ForkedFrom, SessionEvent};
+use nightloom_core::{ChatKind, ChatMode, ContentBlock, ForkedFrom, SessionEvent};
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
@@ -50,6 +50,11 @@ pub struct SessionSummary {
     /// an `Ephemeral` chat has no log and so is never in a listing.
     #[serde(default, skip_serializing_if = "is_normal")]
     pub mode: ChatMode,
+    /// What the chat is for (nightshift backlog 102, 2026-09-16): `Build`
+    /// for every log written before kinds existed. A picker marks a `Chat`
+    /// row the way it marks an incognito one.
+    #[serde(default, skip_serializing_if = "is_build")]
+    pub kind: ChatKind,
     /// The chat this one was forked from, when it was (2026-09-15,
     /// nightshift backlog 062): the parent's id and the cut. A picker
     /// shows the row with a "from <parent>" line; the parent may since
@@ -60,6 +65,10 @@ pub struct SessionSummary {
 
 fn is_normal(mode: &ChatMode) -> bool {
     *mode == ChatMode::Normal
+}
+
+fn is_build(kind: &ChatKind) -> bool {
+    *kind == ChatKind::Build
 }
 
 impl SessionSummary {
@@ -190,6 +199,8 @@ enum Peek {
         #[serde(default)]
         mode: ChatMode,
         #[serde(default)]
+        kind: ChatKind,
+        #[serde(default)]
         forked_from: Option<ForkedFrom>,
     },
     UserMessage {
@@ -249,6 +260,10 @@ struct Summarizing {
     /// and absent from every cache entry written before the field existed.
     #[serde(default)]
     mode: ChatMode,
+    /// From the first line too; `Build` until a creation event says
+    /// otherwise (nightshift backlog 102).
+    #[serde(default)]
+    kind: ChatKind,
     /// From the first line too; `None` for every chat that is not a fork.
     #[serde(default)]
     forked_from: Option<ForkedFrom>,
@@ -260,10 +275,12 @@ impl Summarizing {
             Peek::SessionCreated {
                 id,
                 mode,
+                kind,
                 forked_from,
             } => {
                 self.id = Some(id);
                 self.mode = mode;
+                self.kind = kind;
                 self.forked_from = forked_from;
             }
             Peek::UserMessage { text } => {
@@ -296,6 +313,7 @@ impl Summarizing {
             first_user: self.first_user.clone(),
             title: self.title.clone(),
             mode: self.mode,
+            kind: self.kind,
             forked_from: self.forked_from.clone(),
         }
     }
@@ -380,8 +398,9 @@ const LISTING_FILE: &str = ".listing.json";
 /// is discarded rather than migrated: it is derived data. 2 since the mode
 /// (2026-09-15): an entry without it would read as normal for a log that is
 /// not, which is the one thing the listing must not get wrong. 3 since the
-/// fork line (2026-09-15, later the same day), on the same reasoning.
-const LISTING_VERSION: u32 = 3;
+/// fork line (2026-09-15, later the same day), on the same reasoning. 4
+/// since the kind (2026-09-16, nightshift backlog 102), likewise.
+const LISTING_VERSION: u32 = 4;
 
 impl Listing {
     fn read(dir: &Path) -> BTreeMap<String, Cached> {
@@ -417,11 +436,13 @@ fn peek_at(event: &SessionEvent) -> Option<Peek> {
         SessionEvent::SessionCreated {
             id,
             mode,
+            kind,
             forked_from,
             ..
         } => Some(Peek::SessionCreated {
             id: id.clone(),
             mode: *mode,
+            kind: *kind,
             forked_from: forked_from.clone(),
         }),
         SessionEvent::UserMessage { text, .. } => Some(Peek::UserMessage { text: text.clone() }),
@@ -890,6 +911,7 @@ mod tests {
             first_user: Some("can you help me rename a function\neverywhere".into()),
             title: None,
             mode: ChatMode::Normal,
+            kind: ChatKind::Build,
             forked_from: None,
         };
         assert_eq!(s.label(60), "can you help me rename a function everywhere");

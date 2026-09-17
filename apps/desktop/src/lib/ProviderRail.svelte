@@ -2,7 +2,10 @@
   import {
     app,
     applyDraft,
+    chatKind,
     currentModelId,
+    KIND_LINES,
+    kindLabel,
     loadContextLimits,
     openModelInstructions,
     pickerModels,
@@ -265,14 +268,27 @@
       !app.prompts.some((p) => p.id === app.draft.promptId),
   );
 
+  /**
+   * The open chat's kind (nightshift backlog 102): Claude Code · Chat on
+   * the subscription engine, Build · Chat on the provider engine. Read
+   * from the log, or the pending kind before the first message; fixed at
+   * creation (blocker 143's default), so the rail states it and does not
+   * switch it — the New chat ▾ menu is where it is chosen. A Chat runs in
+   * the neutral folder whatever the row below says the project's is.
+   */
+  const kind = $derived(chatKind(app.events));
+  const isChat = $derived(kind === "chat");
+
   // The long-form explanations live on the control they explain — as the
   // `?` beside each one now, where they used to be tooltips.
   const workspaceTitle = $derived(
-    app.project
-      ? `Set by the project ${app.project.name}. A project is its folder — leave the project to point the tools elsewhere.`
-      : app.connection
-        ? `${app.connection.workspace}\n\nThe file tools refuse paths outside this folder. bash is not confined.`
-        : "The folder the file tools are rooted at. Defaults to where the app was launched.",
+    isChat
+      ? "A Chat has no folder: it runs in a neutral, empty directory (~/.nightloom/chat), whatever the project's folder is. Start a Claude Code chat for the folder."
+      : app.project
+        ? `Set by the project ${app.project.name}. A project is its folder — leave the project to point the tools elsewhere.`
+        : app.connection
+          ? `${app.connection.workspace}\n\nThe file tools refuse paths outside this folder. bash is not confined.`
+          : "The folder the file tools are rooted at. Defaults to where the app was launched.",
   );
 
   const hasReach = $derived(
@@ -329,7 +345,7 @@
           Provider
           <span class="ns-pill grey"><Icon name="key" size={11} />your API key</span>
         </span>
-        <span class="ed">Your key, per token. Nightloom's loop and tools.</span>
+        <span class="ed">Your own key, billed per token. Nightloom runs the loop: tools, approval gate, context editing.</span>
       </span>
     </button>
     <button
@@ -343,13 +359,25 @@
       <span class="radio"></span>
       <span class="ebody">
         <span class="et">
-          Claude Code
-          <span class="ns-pill grey"><Icon name="term" size={11} />your subscription</span>
+          Subscription
+          <span class="ns-pill grey"><Icon name="term" size={11} />your Claude plan</span>
         </span>
-        <span class="ed">The signed-in CLI on your plan. Its own loop and tools.</span>
+        <span class="ed">The signed-in <code>claude</code> CLI, billed to your plan. Its own loop, tools, permissions and history — a Claude Code or a Chat kind, below.</span>
       </span>
     </button>
   </div>
+
+  <!-- The kind (nightshift backlog 102, boards 8a/8b): stated, not
+       switched — fixed at creation (blocker 143's default), chosen in the
+       sidebar's New chat ▾ menu or with ⌘N / ⌥⌘N. -->
+  <div class="row kind-row">
+    <span class="lbl">Kind</span>
+    <span class="kind-name">{kindLabel(kind, app.connection?.engine ?? app.draft.engine)}</span>
+    <Hint
+      text="Claude Code — the project folder, all tools, approval as set below, plan mode within reach. Chat — read-only tools plus Nightloom's own (search chats, notes), the web, its own Chat instructions layer, no working directory. Presets over the same dials: change any of them for this chat and the kind stays. Fixed when the chat is made — the New chat ▾ menu, ⌘N for Claude Code, ⌥⌘N for a Chat."
+    />
+  </div>
+  <p class="kind-line">{KIND_LINES[kind]}{#if isChat} — the dials below follow and stay yours{/if}</p>
 
   <div class="status" title={app.connection?.workspace ?? ""}>
     {#if app.connecting}
@@ -829,29 +857,35 @@
     <section class="sect">
       <div class="sect-h">
         <span class="ns-k">Workspace</span>
-        {#if app.project}<span class="sub">set by the project</span>{/if}
+        {#if isChat}<span class="sub">none on a Chat</span>{:else if app.project}<span class="sub">set by the project</span>{/if}
       </div>
       <div class="row">
         <span class="lbl">Folder</span>
         <span class="fld-wrap">
-          {#if app.project}<span class="lock"><Icon name="lock" size={12} /></span>{/if}
-          <input
-            class="path"
-            class:tail={!!app.project}
-            class:locked={!!app.project}
-            type="text"
-            value={app.project
-              ? (app.project.root ?? app.connection?.workspace ?? "")
-              : app.draft.workspace}
-            oninput={(e) => {
-              if (!app.project) app.draft.workspace = e.currentTarget.value;
-            }}
-            onchange={apply}
-            placeholder="launch folder"
-            title={workspaceTitle}
-            disabled={locked || !!app.project}
-            readonly={!!app.project}
-          />
+          {#if isChat}
+            <!-- A Chat has no folder (backlog 102): the neutral directory,
+                 stated rather than offered as a field. -->
+            <span class="path locked dim-path" title={workspaceTitle}>no folder — a Chat runs in a neutral, empty directory</span>
+          {:else}
+            {#if app.project}<span class="lock"><Icon name="lock" size={12} /></span>{/if}
+            <input
+              class="path"
+              class:tail={!!app.project}
+              class:locked={!!app.project}
+              type="text"
+              value={app.project
+                ? (app.project.root ?? app.connection?.workspace ?? "")
+                : app.draft.workspace}
+              oninput={(e) => {
+                if (!app.project) app.draft.workspace = e.currentTarget.value;
+              }}
+              onchange={apply}
+              placeholder="launch folder"
+              title={workspaceTitle}
+              disabled={locked || !!app.project}
+              readonly={!!app.project}
+            />
+          {/if}
         </span>
         <Hint text={workspaceTitle} />
       </div>
@@ -1250,6 +1284,38 @@
   }
   .path.locked {
     padding-left: 26px;
+  }
+  /* A Chat's folder row (backlog 102): the sentence where the field is,
+     in the field's shape, dimmed. */
+  .dim-path {
+    font-family: inherit;
+    color: var(--dim);
+    border: 1px solid var(--line2);
+    border-radius: 6px;
+    padding: 5px 8px;
+    font-size: 11.5px;
+    width: 100%;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+  }
+  .dim-path.locked {
+    padding-left: 8px;
+  }
+  /* The kind row under the engine cards (backlog 102): the name in the
+     ink, the one-line gloss under it in the dim. */
+  .kind-row {
+    padding: 8px 0 0;
+  }
+  .kind-name {
+    flex: 1;
+    font-size: 12.5px;
+  }
+  .kind-line {
+    margin: 2px 0 8px 64px;
+    font-size: 11.5px;
+    line-height: 1.4;
+    color: var(--dim);
   }
   /* rtl keeps the tail of a long path visible — the leaf folder is the part
      worth reading, and it is the part ltr clips. Only on the read-only

@@ -6,7 +6,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use nightloom_core::{ChatMode, Effect, Tool};
+use nightloom_core::{ChatKind, ChatMode, Effect, Tool};
 use nightloom_core::{
     DocumentInput, ImageInput, ProviderError, SegmentKind, Session, SessionEvent, SystemPrompt,
     Thinking, WireView,
@@ -62,6 +62,11 @@ struct AppState {
     /// answer (`session_mode`) — and a project switch resets it, since the
     /// pending kind was chosen for the list the user was looking at.
     pending_mode: tokio::sync::Mutex<ChatMode>,
+    /// What the next chat is for, on the same terms as `pending_mode`
+    /// (nightshift backlog 102, 2026-09-16): Claude Code or Chat, chosen
+    /// at New chat and honoured at the first message; read only while
+    /// there is no chat, reset with the mode on a project switch.
+    pending_kind: tokio::sync::Mutex<ChatKind>,
     /// Swapped per turn. Shared with [`WindowApprover`], which has to wait on
     /// whichever token is current at the moment it asks.
     cancel: Arc<std::sync::Mutex<CancellationToken>>,
@@ -162,6 +167,11 @@ struct PromptBuilt {
     /// after it must get them back — the same reconnect comparison as
     /// `off`, for the same reason.
     mode: ChatMode,
+    /// The kind of chat the connection was built for (nightshift backlog
+    /// 102): a Chat's engine has the read-only tools, no folder and the
+    /// Chat instructions; the Build chat opened after it needs its folder
+    /// and tools back — the same reconnect comparison as `mode`.
+    kind: ChatKind,
 }
 
 /// The registry, plus the project currently open.
@@ -658,6 +668,11 @@ struct ChatSpec {
     /// in `build_chat`, and subagents and reviewers inherit it with the
     /// rest of the spec, so the promise holds one level down.
     mode: ChatMode,
+    /// What the open chat is for (`Session::kind`), read at connect time
+    /// like `mode` (nightshift backlog 102). A Chat keeps the readers and
+    /// drops every writer as an incognito chat does, and carries the Chat
+    /// instructions layer; its `workspace` is the neutral folder.
+    chat_kind: ChatKind,
 }
 
 impl ChatSpec {
@@ -718,6 +733,10 @@ fn build_chat(
         // `~/.nightloom/models/`. Gated like user memory: it is the same
         // kind of standing text, about the user rather than the folder.
         model: spec.preamble.then(|| chat.model.clone()),
+        // How a Chat talks (nightshift backlog 102): on for that kind and
+        // gated like the model's file, since it is the same kind of
+        // standing text about the user.
+        chat_instructions: spec.preamble && spec.chat_kind == ChatKind::Chat,
         // Gated on the preamble like every other discovered layer: `--bare`
         // and its desktop equivalent mean "nothing but what I typed".
         project: spec.preamble.then(|| spec.project.clone()).flatten(),
@@ -823,8 +842,11 @@ fn build_chat(
         let bench = reviewers(app, policy, spec, &model, mcp_tools);
         chat.enable_reviews(bench, spec.root());
         // Last, over everything above: a chat that writes nothing keeps
-        // the readers and drops every writer, whoever supplied it.
-        if spec.mode.writes_nothing() {
+        // the readers and drops every writer, whoever supplied it. A Chat
+        // (nightshift backlog 102) draws the same line for a different
+        // reason — it has no folder to write into — and keeps `remember`,
+        // which `reads_only` counts as a reader of the conversation.
+        if spec.mode.writes_nothing() || spec.chat_kind == ChatKind::Chat {
             chat.tools.retain(|t| reads_only(t.as_ref()));
         }
     }
@@ -952,6 +974,7 @@ async fn connect(
     // project in name only. A project with no folder of its own gets the
     // stand-in one inside its store, so this has a path either way.
     let active = state.active().await;
+    let chat_kind = session_kind(&state).await;
     let workspace = match &active {
         Some(project) => project.workspace_dir(),
         None => workspace
@@ -959,6 +982,13 @@ async fn connect(
             .filter(|p| p.is_dir())
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
     };
+    // A Chat has no working folder (nightshift backlog 102): whatever the
+    // project or the rail said, it is rooted in the neutral directory —
+    // the file tools, the AGENTS.md walk and the environment line all
+    // read from there. The project's notes index still comes along below,
+    // since the chat is filed under the project even if it is not about
+    // the project's tree.
+    let workspace = chat_workspace(chat_kind, workspace);
 
     // Every project's chats plus the unfiled ones, named as the picker names
     // them, with the sidebar's directory as the default scope. The registry
@@ -1018,6 +1048,7 @@ async fn connect(
         layers_off: layers_off(&state).await,
         layer_edits: layer_edits(&state).await,
         mode: session_mode(&state).await,
+        chat_kind,
     };
     let mcp = ensure_mcp(&state, &spec.workspace, spec.tools).await;
     let mcp_tools = state
@@ -1090,6 +1121,7 @@ async fn connect(
         cwd: Some(spec.workspace),
         agent: None,
         mode: spec.mode,
+        kind: spec.chat_kind,
     };
     Ok(info)
 }
@@ -1137,6 +1169,32 @@ fn mode_of(session: Option<&Session>, pending: ChatMode) -> ChatMode {
     session.map(Session::mode).unwrap_or(pending)
 }
 
+/// What the open chat is for, or — with no chat open — what the next one
+/// will be (`AppState::pending_kind`); `session_mode`'s twin (nightshift
+/// backlog 102). `connect` and `connect_agent` root and equip the engine
+/// for it, and `prompt_layers` reports it beside the built one.
+async fn session_kind(state: &AppState) -> ChatKind {
+    let pending = *state.pending_kind.lock().await;
+    kind_of(state.session.lock().await.as_ref(), pending)
+}
+
+/// The pure half of [`session_kind`], like [`mode_of`].
+fn kind_of(session: Option<&Session>, pending: ChatKind) -> ChatKind {
+    session.map(Session::kind).unwrap_or(pending)
+}
+
+/// Where a chat of `kind` runs: the folder the caller resolved for a Build
+/// chat, the neutral directory (`prompt::chat_dir`, `~/.nightloom/chat/`)
+/// for a Chat — falling back to the caller's folder only on a machine with
+/// no config directory to make one in, which is the machine every other
+/// standing file is already missing on.
+fn chat_workspace(kind: ChatKind, resolved: PathBuf) -> PathBuf {
+    match kind {
+        ChatKind::Build => resolved,
+        ChatKind::Chat => nightloom_service::prompt::chat_dir().unwrap_or(resolved),
+    }
+}
+
 /// The session the next turn records into, created now if there is none
 /// (nightshift backlog 061, 2026-09-15).
 ///
@@ -1150,22 +1208,20 @@ fn mode_of(session: Option<&Session>, pending: ChatMode) -> ChatMode {
 fn ensure_session<'a>(
     session: &'a mut Option<Session>,
     mode: ChatMode,
+    kind: ChatKind,
     log_dir: &Path,
 ) -> Result<&'a mut Session, String> {
     if session.is_none() {
-        *session = Some(start_session(mode, log_dir).map_err(|e| e.to_string())?);
+        *session = Some(start_session(mode, kind, log_dir).map_err(|e| e.to_string())?);
     }
     Ok(session.as_mut().expect("session ensured above"))
 }
 
-/// A chat in `mode`: an ordinary log, a log marked incognito on its first
-/// line, or no log at all (`Session::ephemeral`).
-fn start_session(mode: ChatMode, log_dir: &Path) -> std::io::Result<Session> {
-    match mode {
-        ChatMode::Normal => Session::with_log(log_dir),
-        ChatMode::Incognito => Session::incognito(log_dir),
-        ChatMode::Ephemeral => Ok(Session::ephemeral()),
-    }
+/// A chat in `mode` of `kind`: an ordinary log, a log marked incognito on
+/// its first line, or no log at all (`Session::ephemeral`), each with the
+/// kind on the same line (nightshift backlog 102).
+fn start_session(mode: ChatMode, kind: ChatKind, log_dir: &Path) -> std::io::Result<Session> {
+    Session::start(log_dir, mode, kind)
 }
 
 /// The default binary, matching the CLI's `--agent-binary`.
@@ -1239,6 +1295,7 @@ async fn connect_agent(
     // folder, or a chat filed under a project would be running somewhere
     // else entirely.
     let active = state.active().await;
+    let kind = session_kind(&state).await;
     let workspace = match &active {
         Some(project) => project.workspace_dir(),
         None => workspace
@@ -1246,6 +1303,11 @@ async fn connect_agent(
             .filter(|p| p.is_dir())
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
     };
+    // A Chat runs in the neutral directory whatever the project or the
+    // rail said (nightshift backlog 102; `chat_workspace`): the CLI's cwd,
+    // its per-cwd session files and its auto memory all land there, and
+    // the project's tree is not read as the chat's own.
+    let workspace = chat_workspace(kind, workspace);
 
     let mut spec = AgentSpec::new(workspace.clone());
     spec.binary = binary
@@ -1312,6 +1374,10 @@ async fn connect_agent(
             // the file is named after the alias, and a chat on the CLI's
             // default model (no alias) reads none.
             model: preamble.then(|| spec.model.clone()).flatten(),
+            // The Chat instructions ride the preamble switch like the
+            // model's file (nightshift backlog 102); appended after the
+            // CLI's own prompt, which stays underneath a Chat.
+            chat_instructions: preamble && kind == ChatKind::Chat,
             project: preamble
                 .then(|| {
                     active.as_ref().map(|p| ProjectContext {
@@ -1426,6 +1492,9 @@ async fn connect_agent(
     // the measured read-only list for either non-normal mode, and no CLI
     // session file for an ephemeral one (`AgentSpec::apply_mode`).
     spec.apply_mode(mode);
+    // And the kind's own narrowing (nightshift backlog 102): a Chat gets
+    // the same five read-only tools; the folder was chosen above.
+    spec.apply_kind(kind);
 
     // Probed rather than assumed. A missing or unrunnable binary is the
     // overwhelmingly likely first failure on this engine, and finding out at
@@ -1498,6 +1567,7 @@ async fn connect_agent(
         cwd: Some(workspace),
         agent: Some(prompt),
         mode,
+        kind,
     };
     Ok(info)
 }
@@ -1679,16 +1749,21 @@ async fn rename_session(
 async fn new_session(
     state: State<'_, AppState>,
     mode: Option<ChatMode>,
+    kind: Option<ChatKind>,
 ) -> Result<serde_json::Value, String> {
     let mode = mode.unwrap_or_default();
+    // Absent is a Build chat — the caller that predates kinds, and the
+    // sidebar's plain button when the frontend has not said otherwise.
+    let kind = kind.unwrap_or_default();
     *state.session.lock().await = None;
     *state.pending_mode.lock().await = mode;
+    *state.pending_kind.lock().await = kind;
     // A new chat is a new conversation on the agent too. Left set, the next
     // turn would resume the previous chat's history behind an empty
     // transcript — the same lie in the other direction from the one
     // `SessionEvent::AgentSession` exists to prevent.
     adopt_agent_session(&state, None).await;
-    Ok(serde_json::json!({ "mode": mode }))
+    Ok(serde_json::json!({ "mode": mode, "kind": kind }))
 }
 
 /// Point the agent at `resume` (or at nothing), if the agent engine is live.
@@ -1770,8 +1845,9 @@ async fn send(
 
     let log_dir = state.log_dir().await;
     let pending = *state.pending_mode.lock().await;
+    let pending_kind = *state.pending_kind.lock().await;
     let mut session_guard = state.session.lock().await;
-    let session = ensure_session(&mut session_guard, pending, &log_dir)?;
+    let session = ensure_session(&mut session_guard, pending, pending_kind, &log_dir)?;
 
     let cancel = CancellationToken::new();
     *state.cancel.lock().unwrap() = cancel.clone();
@@ -1855,8 +1931,9 @@ async fn send_agent(
 
     let log_dir = state.log_dir().await;
     let pending = *state.pending_mode.lock().await;
+    let pending_kind = *state.pending_kind.lock().await;
     let mut session_guard = state.session.lock().await;
-    let session = ensure_session(&mut session_guard, pending, &log_dir)?;
+    let session = ensure_session(&mut session_guard, pending, pending_kind, &log_dir)?;
     // Sampled before the first append of the turn. See `send`: an agent turn
     // records into the same log through `Recorder`, so it can seal it the same
     // way, and this window has no stderr for the notice to go to either.
@@ -2947,6 +3024,10 @@ struct PromptLayersInfo {
     /// has no writers, and the normal chat opened after it needs them back.
     mode: ChatMode,
     built_mode: ChatMode,
+    /// The fourth pair (nightshift backlog 102): the open chat's kind and
+    /// the kind the engine was built for.
+    kind: ChatKind,
+    built_kind: ChatKind,
 }
 
 #[tauri::command]
@@ -2954,6 +3035,7 @@ async fn prompt_layers(state: State<'_, AppState>) -> Result<PromptLayersInfo, S
     let off = layers_off(&state).await;
     let edits = layer_edits(&state).await;
     let mode = session_mode(&state).await;
+    let kind = session_kind(&state).await;
     let built = state.prompt.lock().await;
     Ok(PromptLayersInfo {
         off,
@@ -2962,6 +3044,8 @@ async fn prompt_layers(state: State<'_, AppState>) -> Result<PromptLayersInfo, S
         built_edits: built.edits.clone(),
         mode,
         built_mode: built.mode,
+        kind,
+        built_kind: built.kind,
     })
 }
 
@@ -2988,8 +3072,9 @@ async fn set_prompt_layers(
 ) -> Result<Vec<SessionEvent>, String> {
     let log_dir = state.log_dir().await;
     let pending = *state.pending_mode.lock().await;
+    let pending_kind = *state.pending_kind.lock().await;
     let mut session_guard = state.session.lock().await;
-    let session = ensure_session(&mut session_guard, pending, &log_dir)?;
+    let session = ensure_session(&mut session_guard, pending, pending_kind, &log_dir)?;
     session.record_prompt_layers(off);
     Ok(session.events().to_vec())
 }
@@ -3015,8 +3100,9 @@ async fn set_prompt_layer_text(
     }
     let log_dir = state.log_dir().await;
     let pending = *state.pending_mode.lock().await;
+    let pending_kind = *state.pending_kind.lock().await;
     let mut session_guard = state.session.lock().await;
-    let session = ensure_session(&mut session_guard, pending, &log_dir)?;
+    let session = ensure_session(&mut session_guard, pending, pending_kind, &log_dir)?;
     let mut edits = session.prompt_layer_edits().clone();
     match text.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()) {
         Some(text) => {
@@ -3631,6 +3717,7 @@ async fn open_project(
     // the next chat in the new project is an ordinary one until they say
     // otherwise (nightshift backlog 061).
     *state.pending_mode.lock().await = ChatMode::Normal;
+    *state.pending_kind.lock().await = ChatKind::Build;
     adopt_agent_session(&state, None).await;
     // After the guard is dropped, and before the counts are read: a project
     // opened for the first time since the move has its chats and notes still
@@ -3645,6 +3732,7 @@ async fn close_project(state: State<'_, AppState>) -> Result<(), String> {
     state.workspaces.lock().await.active = None;
     *state.session.lock().await = None;
     *state.pending_mode.lock().await = ChatMode::Normal;
+    *state.pending_kind.lock().await = ChatKind::Build;
     adopt_agent_session(&state, None).await;
     Ok(())
 }
@@ -3685,6 +3773,7 @@ async fn forget_project(
     if closed {
         *state.session.lock().await = None;
         *state.pending_mode.lock().await = ChatMode::Normal;
+        *state.pending_kind.lock().await = ChatKind::Build;
     }
     Ok(())
 }
@@ -3726,6 +3815,11 @@ enum NoteScope {
     /// fixed-file scopes do, so the editor can open on a model that has no
     /// file yet.
     Models,
+    /// `~/.nightloom/CHAT.md` — how a *Chat* talks (nightshift backlog
+    /// 102, 2026-09-16), read whole into the preamble of a chat of that
+    /// kind and no Build chat's. Same shape as `Memory`: one file, no
+    /// listing, emptied rather than deleted.
+    Chat,
 }
 
 impl NoteScope {
@@ -3734,12 +3828,23 @@ impl NoteScope {
     /// never-lose-work rule forbids: the reversible form is emptying the
     /// text, which `save_note` already does.
     fn is_fixed_file(self) -> bool {
-        matches!(self, Self::Instructions | Self::Memory)
+        self.fixed_name().is_some()
+    }
+
+    /// The one file a fixed-file scope names; `None` for a folder scope.
+    fn fixed_name(self) -> Option<&'static str> {
+        match self {
+            Self::Instructions | Self::Memory => Some(AGENTS_MD),
+            Self::Chat => Some(CHAT_MD),
+            Self::Project | Self::Knowledge | Self::Models => None,
+        }
     }
 }
 
-/// The one file the fixed-file scopes name.
+/// The one file the instructions and memory scopes name.
 const AGENTS_MD: &str = "AGENTS.md";
+/// The one file the `chat` scope names (`prompt::chat_instruction_path`).
+const CHAT_MD: &str = "CHAT.md";
 
 impl Default for NoteScope {
     /// What a frontend that predates the vault meant by every note call.
@@ -3773,6 +3878,8 @@ async fn scope_dir(state: &AppState, scope: NoteScope) -> Result<PathBuf, String
             .ok_or_else(|| "no user config directory to keep user memory in".to_string()),
         NoteScope::Models => nightloom_service::prompt::model_instructions_dir()
             .ok_or_else(|| "no user config directory to keep model instructions in".to_string()),
+        NoteScope::Chat => project::config_dir()
+            .ok_or_else(|| "no user config directory to keep the Chat instructions in".to_string()),
     }
 }
 
@@ -3780,8 +3887,10 @@ async fn scope_dir(state: &AppState, scope: NoteScope) -> Result<PathBuf, String
 /// bug, and answering it with a file in the workspace root would turn the
 /// instructions scope into a second, unindexed docspace.
 fn check_fixed_name(scope: NoteScope, name: &str) -> Result<(), String> {
-    if scope.is_fixed_file() && name.trim() != AGENTS_MD {
-        return Err(format!("{scope:?} names only {AGENTS_MD}, not {name}"));
+    if let Some(fixed) = scope.fixed_name()
+        && name.trim() != fixed
+    {
+        return Err(format!("{scope:?} names only {fixed}, not {name}"));
     }
     Ok(())
 }
@@ -3811,7 +3920,9 @@ async fn read_note(
     // the editor opens on it so the user can write the first line. A model's
     // file is the same case — "+ add for this model" opens the editor on a
     // name nothing has written yet.
-    if scope.is_fixed_file() && !dir.join(AGENTS_MD).is_file() {
+    if let Some(fixed) = scope.fixed_name()
+        && !dir.join(fixed).is_file()
+    {
         return Ok(String::new());
     }
     if scope == NoteScope::Models && !dir.join(name.trim()).is_file() {
@@ -3841,9 +3952,9 @@ async fn delete_note(
     name: String,
 ) -> Result<(), String> {
     let scope = scope.unwrap_or_default();
-    if scope.is_fixed_file() {
+    if let Some(fixed) = scope.fixed_name() {
         return Err(format!(
-            "{AGENTS_MD} is not deleted from here — empty it instead"
+            "{fixed} is not deleted from here — empty it instead"
         ));
     }
     project::delete_note(&scope_dir(&state, scope).await?, &name)
@@ -3972,6 +4083,14 @@ async fn knowledge_info() -> Result<Option<KnowledgeInfo>, String> {
 #[tauri::command]
 fn model_instructions_dir() -> Option<String> {
     nightloom_service::prompt::model_instructions_dir().map(|d| d.display().to_string())
+}
+
+/// Where the Chat instructions live (`~/.nightloom/CHAT.md`, nightshift
+/// backlog 102), so Settings can name the file; `None` on a machine with no
+/// user config directory.
+#[tauri::command]
+fn chat_instructions_path() -> Option<String> {
+    nightloom_service::prompt::chat_instruction_path().map(|p| p.display().to_string())
 }
 
 /// Point the vault at a folder, or back at the default with `None`.
@@ -4670,8 +4789,16 @@ fn mac_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     let settings = MenuItemBuilder::with_id("settings", "Settings…")
         .accelerator("CmdOrCtrl+,")
         .build(app)?;
-    let new_chat = MenuItemBuilder::with_id("new_chat", "New Chat")
+    // The two kinds of chat (nightshift backlog 102, 2026-09-16, his
+    // review of boards 8a/8b): ⌘N is a Claude Code chat — the folder, every
+    // tool — and ⌥⌘N a Chat, reads only and no folder. ⌥⌘N was free:
+    // blocker 035's table and the app carry no Option chord. The sidebar's
+    // wide button makes the project's default kind; these two are fixed.
+    let new_chat = MenuItemBuilder::with_id("new_build", "New Claude Code Chat")
         .accelerator("CmdOrCtrl+N")
+        .build(app)?;
+    let new_talk = MenuItemBuilder::with_id("new_talk", "New Chat")
+        .accelerator("CmdOrCtrl+Alt+N")
         .build(app)?;
     // The two other kinds of chat (nightshift backlog 059, 2026-09-15),
     // beside the ordinary one wherever it is offered. ⌘⇧N for the default
@@ -4753,6 +4880,7 @@ fn mac_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
 
     let file = SubmenuBuilder::new(app, "File")
         .item(&new_chat)
+        .item(&new_talk)
         .item(&new_incognito)
         .item(&new_ephemeral)
         .separator()
@@ -4963,6 +5091,7 @@ fn main() {
                 agent: tokio::sync::Mutex::new(None),
                 session: tokio::sync::Mutex::new(None),
                 pending_mode: tokio::sync::Mutex::new(ChatMode::Normal),
+                pending_kind: tokio::sync::Mutex::new(ChatKind::Build),
                 cancel,
                 workspaces: tokio::sync::Mutex::new(Workspaces {
                     registry: Registry::load(),
@@ -5073,6 +5202,7 @@ fn main() {
             mark_applied,
             knowledge_info,
             model_instructions_dir,
+            chat_instructions_path,
             set_knowledge_dir,
             knowledge_graph,
             dream_status,
@@ -5220,7 +5350,7 @@ mod tests {
         );
 
         // The first turn creates the log, in that kind.
-        let created = ensure_session(&mut session, pending, &dir).unwrap();
+        let created = ensure_session(&mut session, pending, ChatKind::Build, &dir).unwrap();
         let id = created.id.clone();
         let files = files_in(&dir);
         assert_eq!(files.len(), 1, "the first turn creates exactly one log");
@@ -5237,7 +5367,7 @@ mod tests {
             ChatMode::Incognito
         );
         // A second turn records into the same log rather than a new one.
-        let again = ensure_session(&mut session, pending, &dir).unwrap();
+        let again = ensure_session(&mut session, pending, ChatKind::Build, &dir).unwrap();
         assert_eq!(again.id, id);
         assert_eq!(files_in(&dir).len(), 1);
     }
@@ -5247,7 +5377,7 @@ mod tests {
         let dir = empty_log_dir("pending-kinds");
         // Normal: an unmarked log.
         let mut normal = None;
-        let s = ensure_session(&mut normal, ChatMode::Normal, &dir).unwrap();
+        let s = ensure_session(&mut normal, ChatMode::Normal, ChatKind::Build, &dir).unwrap();
         assert_eq!(s.mode(), ChatMode::Normal);
         let text = std::fs::read_to_string(dir.join(format!("{}.jsonl", s.id))).unwrap();
         assert!(
@@ -5256,7 +5386,7 @@ mod tests {
         );
         // Ephemeral: no log at all, and `session_mode` still says so.
         let mut ephemeral = None;
-        let s = ensure_session(&mut ephemeral, ChatMode::Ephemeral, &dir).unwrap();
+        let s = ensure_session(&mut ephemeral, ChatMode::Ephemeral, ChatKind::Build, &dir).unwrap();
         assert_eq!(s.mode(), ChatMode::Ephemeral);
         assert!(s.log_path().is_none());
         assert_eq!(files_in(&dir).len(), 1, "an ephemeral chat added no file");
@@ -5266,6 +5396,29 @@ mod tests {
         );
         // No session and nothing pending is an ordinary chat, as before.
         assert_eq!(mode_of(None, ChatMode::Normal), ChatMode::Normal);
+    }
+
+    /// The kind rides beside the mode (nightshift backlog 102): pending
+    /// while there is no chat, on the first line once there is, and a
+    /// Chat's folder is the neutral one whatever was resolved for it.
+    #[test]
+    fn the_pending_kind_decides_what_the_first_turn_is_for() {
+        let dir = empty_log_dir("pending-chat-kind");
+        let mut session: Option<Session> = None;
+        assert_eq!(kind_of(session.as_ref(), ChatKind::Chat), ChatKind::Chat);
+        assert_eq!(kind_of(None, ChatKind::Build), ChatKind::Build);
+        let s = ensure_session(&mut session, ChatMode::Normal, ChatKind::Chat, &dir).unwrap();
+        assert_eq!(s.kind(), ChatKind::Chat);
+        let text = std::fs::read_to_string(dir.join(format!("{}.jsonl", s.id))).unwrap();
+        assert!(text.lines().next().unwrap().contains("\"kind\":\"chat\""));
+        // Once the log exists its first line answers, whatever is pending.
+        assert_eq!(kind_of(session.as_ref(), ChatKind::Build), ChatKind::Chat);
+
+        // A Build chat keeps the folder resolved for it. The Chat branch
+        // is not driven here: `chat_dir` creates the neutral folder under
+        // the real config dir, which a test must not touch.
+        let resolved = dir.clone();
+        assert_eq!(chat_workspace(ChatKind::Build, resolved.clone()), resolved);
     }
 
     // ---- Edits on the Claude Code engine (nightshift backlog 062) ----

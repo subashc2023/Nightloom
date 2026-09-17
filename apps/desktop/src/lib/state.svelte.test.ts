@@ -10,6 +10,9 @@ import {
   newChatLabel,
   newChatSelected,
   newSession,
+  chatKind,
+  defaultKind,
+  kindLabel,
   planUsageFromTurn,
   promptLayerEdits,
   promptLayersOff,
@@ -32,8 +35,9 @@ import * as api from "./api";
 // else in `./api` is the real module, since nothing here invokes it.
 vi.mock("./api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./api")>()),
-  newSession: vi.fn(async (mode?: "normal" | "incognito" | "ephemeral") => ({
+  newSession: vi.fn(async (mode?: "normal" | "incognito" | "ephemeral", kind?: "build" | "chat") => ({
     mode: mode ?? "normal",
+    kind: kind ?? "build",
   })),
   listSessions: vi.fn(async () => []),
   transcript: vi.fn(async () => []),
@@ -502,8 +506,43 @@ describe("newSession — a state, not a file", () => {
     expect(app.pendingMode).toBe("incognito");
     expect(newChatSelected()).toBe(true);
     expect(newChatLabel()).toBe(`New chat ${MODE_GLYPH.incognito}`);
-    // The backend was told, so its own pending kind matches.
-    expect(api.newSession).toHaveBeenCalledWith("incognito");
+    // The backend was told, so its own pending kind matches — the mode
+    // and, unfiled, the default kind: a Chat (nightshift backlog 102).
+    expect(api.newSession).toHaveBeenCalledWith("incognito", "chat");
+  });
+
+  // The second axis (nightshift backlog 102): Claude Code · Chat, chosen at
+  // New chat like the mode, pending until the creation line answers.
+  it("records the kind, defaults it from the project's folder, and the log's line wins", async () => {
+    app.project = null;
+    expect(defaultKind()).toBe("chat");
+    await newSession(undefined, "build");
+    expect(app.pendingKind).toBe("build");
+    expect(chatKind(app.events)).toBe("build");
+    expect(api.newSession).toHaveBeenLastCalledWith(undefined, "build");
+
+    app.project = { id: "p", name: "P", root: "/tmp/p" } as never;
+    expect(defaultKind()).toBe("build");
+    await newSession("incognito");
+    expect(app.pendingKind).toBe("build");
+    expect(api.newSession).toHaveBeenLastCalledWith("incognito", "build");
+    app.project = { id: "q", name: "Q", root: null } as never;
+    expect(defaultKind()).toBe("chat");
+    await newSession();
+    expect(app.pendingKind).toBe("chat");
+    app.project = null;
+
+    // Once a chat is open its creation line is the answer, whatever is
+    // pending; a line with no kind is a build chat, as every old log is.
+    expect(chatKind([{ event: "session_created", id: "x", at: AT, kind: "chat" }])).toBe("chat");
+    expect(chatKind([{ event: "session_created", id: "x", at: AT }])).toBe("build");
+
+    // His naming: the build kind is Claude Code on the subscription
+    // engine and Build on the provider engine; Chat is Chat on both.
+    expect(kindLabel("build", "claude-code")).toBe("Claude Code");
+    expect(kindLabel("build", "provider")).toBe("Build");
+    expect(kindLabel("chat", "claude-code")).toBe("Chat");
+    expect(kindLabel("chat", null)).toBe("Chat");
   });
 
   it("is an ordinary chat when no kind is given, and the button is plain", async () => {

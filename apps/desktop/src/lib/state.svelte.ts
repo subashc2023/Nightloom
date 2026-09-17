@@ -36,6 +36,7 @@ import type {
   ApprovalDecision,
   ApprovalRequest,
   BlockerList,
+  ChatKind,
   ChatMode,
   DocumentInput,
   ImageInput,
@@ -456,6 +457,14 @@ export const app = $state({
    * and creates from its own copy; this one is for what is drawn.
    */
   pendingMode: "normal" as ChatMode,
+  /**
+   * What the next chat is for, on the same terms as `pendingMode`
+   * (nightshift backlog 102): set by `newSession`, read by `chatKind`
+   * while the transcript has no creation line, reset on a project switch.
+   * Starts as the default kind for no project — a Chat — and `initialize`
+   * and the project switch set it from `defaultKind()`.
+   */
+  pendingKind: "chat" as ChatKind,
   /** Source of truth for the transcript (re-synced from the backend after each turn). */
   events: [] as SessionEvent[],
   /** In-progress assistant turn built from turn-events; null when idle. */
@@ -743,6 +752,16 @@ export function runMenuCommand(id: string): void {
     case "new_chat":
       void newSession();
       break;
+    // The two kinds (nightshift backlog 102, 2026-09-16): ⌘N a Claude
+    // Code chat, ⌥⌘N a Chat, fixed rather than "the default and the
+    // other" so the File menu can name them. `new_chat` above stays the
+    // project's default kind for the wide button, ⌘K and the Welcome strip.
+    case "new_build":
+      void newSession(undefined, "build");
+      break;
+    case "new_talk":
+      void newSession(undefined, "chat");
+      break;
     // The two other kinds (nightshift backlog 059, 2026-09-15), offered
     // wherever New chat is: the sidebar's split button, ⌘K, the Welcome
     // strip, the File menu.
@@ -1020,6 +1039,15 @@ export async function init(): Promise<void> {
       // A project whose folder vanished must not stop the app launching.
       saveLastProject(null);
     }
+  }
+  // No chat is open at launch, so the next one is of the default kind
+  // (nightshift backlog 102) — said to the backend before the engine is
+  // built, since `connect` roots a Chat in the neutral folder.
+  app.pendingKind = defaultKind();
+  try {
+    await api.newSession(undefined, app.pendingKind);
+  } catch {
+    // The first New chat click sends it again.
   }
   await refreshSessions();
   await refreshKnowledge();
@@ -1422,6 +1450,16 @@ export async function useProject(id: string | null): Promise<void> {
   // The pending kind was chosen for the list just left; the backend reset
   // its copy in `open_project` / `close_project` (nightshift backlog 061).
   app.pendingMode = "normal";
+  // The kind follows the list too (nightshift backlog 102): Claude Code in
+  // a project with a folder, Chat unfiled or in a folderless project. The
+  // backend reset its copy to build, so it is told — the same call the
+  // button makes, on a chat that is already closed.
+  app.pendingKind = defaultKind();
+  try {
+    await api.newSession(undefined, app.pendingKind);
+  } catch {
+    // The first New chat click sends it again.
+  }
   app.error = null;
   // Switching projects from the Nightshift page stays on it — the page
   // follows the open project (round 2, point 12); everywhere else it is a
@@ -1675,6 +1713,24 @@ export function openModelInstructions(model: string, from: "rail" | "settings"):
   app.leftTab = tab;
 }
 
+/** The one file the Chat instructions layer reads (nightshift backlog 102). */
+export const CHAT_INSTRUCTIONS_FILE = "CHAT.md";
+
+/**
+ * Open the editor on the Chat instructions — `~/.nightloom/CHAT.md`, how
+ * a Chat talks (nightshift backlog 102) — the way `openModelInstructions`
+ * opens a model's file; `closeNote` brings Settings back to the pane the
+ * card sits on.
+ */
+export function openChatInstructions(from: "rail" | "settings"): void {
+  const tab = app.leftTab;
+  app.showRail = false;
+  app.showSettings = false;
+  app.noteFrom = from;
+  showNote("chat", CHAT_INSTRUCTIONS_FILE);
+  app.leftTab = tab;
+}
+
 export async function saveNote(
   scope: NoteScope,
   name: string,
@@ -1710,7 +1766,7 @@ export async function saveNote(
   // re-connect is a no-op on the prompt, which is cheaper than working out
   // which it was.
   if (
-    (scope === "instructions" || scope === "memory" || scope === "models") &&
+    (scope === "instructions" || scope === "memory" || scope === "models" || scope === "chat") &&
     app.connection
   ) {
     await applyDraft();
@@ -2868,13 +2924,19 @@ export async function refreshSessions(): Promise<void> {
  * the Context page's caveat and the reconnect that strips the engine's
  * writers all see the pending kind through it.
  */
-export async function newSession(mode?: ChatMode): Promise<void> {
+export async function newSession(mode?: ChatMode, kind?: ChatKind): Promise<void> {
   if (app.busy) return;
+  // The kind is the second axis (nightshift backlog 102): absent means the
+  // project's default — Claude Code where there is a folder, Chat where
+  // there is none — never the backend's `build`, so the wide button and
+  // the privacy rows make the kind the sidebar's dot shows.
+  const wanted = kind ?? defaultKind();
   try {
-    await api.newSession(mode);
+    await api.newSession(mode, wanted);
     app.activeSessionId = null;
     app.events = [];
     app.pendingMode = mode ?? "normal";
+    app.pendingKind = wanted;
     app.error = null;
     app.agentTurn = null;
     app.agentInit = null;
@@ -2900,6 +2962,46 @@ export function chatMode(events: SessionEvent[]): ChatMode {
   }
   return app.pendingMode;
 }
+
+/**
+ * What the open chat is for (nightshift backlog 102), projected from the
+ * log as `chatMode` is — the creation line's `kind`, `build` when it
+ * carries none — and the pending kind while there is no chat yet.
+ */
+export function chatKind(events: SessionEvent[]): ChatKind {
+  for (const e of events) {
+    if (e.event === "session_created") return e.kind ?? "build";
+  }
+  return app.pendingKind;
+}
+
+/**
+ * The kind a New chat makes when nothing said otherwise (backlog 102's
+ * definition of done): Claude Code in a project with a folder of its own,
+ * Chat unfiled or in a project that has none — a folderless project is
+ * notes and chats only, which is what a Chat is for.
+ */
+export function defaultKind(): ChatKind {
+  return app.project?.root ? "build" : "chat";
+}
+
+/**
+ * What a kind is called on screen, per engine (his naming, 2026-09-16):
+ * on the subscription engine the build kind *is* Claude Code and the other
+ * is Chat; on the provider engine (blocker 139's default: the dial on
+ * both) the pair reads Build · Chat. `engine` is the connection's
+ * `engine` field, or the draft's when nothing is connected yet.
+ */
+export function kindLabel(kind: ChatKind, engine: string | null | undefined): string {
+  if (kind === "chat") return "Chat";
+  return engine === "claude-code" ? "Claude Code" : "Build";
+}
+
+/** One line on what a kind means, for the places that offer it. */
+export const KIND_LINES: Record<ChatKind, string> = {
+  build: "the project folder · all tools · Ask / Auto · plans",
+  chat: "reads only · Nightloom's tools · the web · no folder",
+};
 
 /**
  * The sidebar's New chat button is the selected item while no chat is open
@@ -3823,14 +3925,19 @@ export function promoteLayerText(layer: EditableLayer, text: string): boolean {
 export async function syncPromptLayers(): Promise<void> {
   if (!app.connection || app.busy || app.connecting) return;
   try {
-    const { off, built, edits, built_edits, mode, built_mode } = await api.promptLayers();
+    const { off, built, edits, built_edits, mode, built_mode, kind, built_kind } =
+      await api.promptLayers();
     // The mode is the third pair (2026-09-15): an incognito chat's engine
     // was built with no writers, and the ordinary chat opened after it
-    // needs them back — and the other way round.
+    // needs them back — and the other way round. The kind is the fourth
+    // (nightshift backlog 102): a Chat's engine has no folder and the
+    // read-only tools, and the Claude Code chat opened after it needs
+    // both back.
     if (
       !sameLayers(off, built) ||
       !sameEdits(edits ?? {}, built_edits ?? {}) ||
-      (mode ?? "normal") !== (built_mode ?? "normal")
+      (mode ?? "normal") !== (built_mode ?? "normal") ||
+      (kind ?? "build") !== (built_kind ?? "build")
     ) {
       await applyDraft();
     }

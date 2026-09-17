@@ -36,11 +36,14 @@ export interface DreamModelPill {
 /** What the rail is on right now, in one clause, for the first row. */
 export function railNow(d: ConnectionDraft): string {
   return d.engine === "claude-code"
-    ? `Claude Code · ${d.agentModel.trim() || "the CLI's default"} · the subscription`
+    ? `Subscription · ${d.agentModel.trim() || "the CLI's default"} · your plan`
     : `${providerLabel(d.provider)} · ${d.model || "its default"} · its API key`;
 }
 
-/** The rows: the rail's connection, Claude Code, then each provider. */
+/** The rows: the rail's connection, the subscription engine, then each
+ *  provider. His naming (2026-09-16, backlog 102): the engine that runs
+ *  on the plan is the subscription engine; Claude Code names its build
+ *  kind. */
 export function dreamEngineRows(providers: ProviderInfo[], draft: ConnectionDraft): DreamEngineRow[] {
   return [
     {
@@ -52,9 +55,9 @@ export function dreamEngineRows(providers: ProviderInfo[], draft: ConnectionDraf
     },
     {
       value: CLAUDE_CODE,
-      name: "Claude Code",
-      bills: "the subscription",
-      sub: "the signed-in CLI; no API key",
+      name: "Subscription",
+      bills: "your Claude plan",
+      sub: "the signed-in claude CLI; no API key",
       warn: false,
     },
     ...providers.map((p) => ({

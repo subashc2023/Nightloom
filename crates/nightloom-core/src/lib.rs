@@ -24,8 +24,8 @@ pub use provider::{
     Usage,
 };
 pub use session::{
-    ChatMode, Checkpoint, ForkedFrom, LoadReport, Session, SessionCost, SessionEvent, SourcedBlock,
-    SourcedMessage, elision_marker, orphan_marker,
+    ChatKind, ChatMode, Checkpoint, ForkedFrom, LoadReport, Session, SessionCost, SessionEvent,
+    SourcedBlock, SourcedMessage, elision_marker, orphan_marker,
 };
 pub use todo::{TodoItem, TodoStatus};
 pub use tool::{Effect, Tool};

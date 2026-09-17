@@ -16,7 +16,7 @@
   import RightRail from "./RightRail.svelte";
   import { toggleTranscriptPref, transcript } from "./transcriptPrefs.svelte";
   import { isMac } from "./platform";
-  import { openSession } from "./state.svelte";
+  import { chatKind, kindLabel, openSession } from "./state.svelte";
   import { forkLine } from "./edit";
 
   /**
@@ -227,7 +227,6 @@
   const annotation = $derived.by(() => {
     if (!app.connection) return "";
     const parts: string[] = [];
-    if (app.connection.engine === "claude-code") parts.push("subscription");
     parts.push(`thinking ${app.connection.thinking}`);
     if (app.connection.tools) parts.push("tools");
     return parts.join(" · ");
@@ -325,7 +324,12 @@
     >
       <span class="dot" class:unknown={!app.connection}></span>
       {#if app.connection}
-        <span class="model-name">{app.connection.provider} · {app.connection.model}</span>
+        <span class="model-name"
+          >{kindLabel(chatKind(app.events), app.connection.engine)} · {app.connection.model}</span
+        >
+        <span class="annotation"
+          >· {app.connection.engine === "claude-code" ? "subscription" : app.connection.provider}</span
+        >
         {#if annotation}<span class="annotation">· {annotation}</span>{/if}
       {:else}
         <span class="annotation">not connected</span>

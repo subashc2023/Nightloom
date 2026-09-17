@@ -534,7 +534,7 @@
         // Named engine when the cap is the engine's, so a file that was
         // fine on the API path yesterday reads as a different limit and
         // not a broken one.
-        const where = cap === MAX_AGENT_DOCUMENT_BASE64 ? " on Claude Code" : "";
+        const where = cap === MAX_AGENT_DOCUMENT_BASE64 ? " on the subscription engine" : "";
         addToast(
           `${describe(file)} is too large — the limit${where} is ${cap / 1024 / 1024} MB once base64-encoded (about ${Math.round(encodedLimit(cap) / 1024 / 1024)} MB of file)`,
         );
@@ -817,7 +817,7 @@
         autocapitalize="off"
         spellcheck="false"
         aria-label="The wrap-up message for this chat"
-        title="What Wrap up now sends. Edits are kept for this chat only; the default is in Settings → Claude Code."
+        title="What Wrap up now sends. Edits are kept for this chat only; the default is in Settings → Subscription."
         value={wrapUpText}
         oninput={(e) => {
           noteActivity();

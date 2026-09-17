@@ -117,6 +117,10 @@
     e: "engine",
     z: "undo_app",
     y: "redo_app",
+    // Ctrl+N is a new Claude Code chat (nightshift backlog 102,
+    // 2026-09-16); Ctrl+Alt+N a new Chat, in `onShortcut` below since
+    // this table is for bare chords. On macOS the File menu carries both.
+    n: "new_build",
   };
   const SHIFT_KEYS: Record<string, string> = {
     s: "model_sonnet",
@@ -131,7 +135,17 @@
     z: "redo_app",
   };
   function onShortcut(e: KeyboardEvent): boolean {
-    if (e.altKey) return false;
+    // Ctrl+Alt+N is a new Chat on Windows and Linux (nightshift backlog
+    // 102); on macOS ⌥⌘N arrives from the File menu. The one Option chord
+    // in the app — blocker 035's table has none — so every other Alt
+    // chord is still the platform's.
+    if (e.altKey) {
+      if (!isMac && e.ctrlKey && !e.shiftKey && e.code === "KeyN") {
+        runMenuCommand("new_talk");
+        return true;
+      }
+      return false;
+    }
     // Undo and redo (nightshift backlog 064): app-level only when the
     // focus is not in a text box, whose own history the key belongs to —
     // so the handler steps aside there and lets the box have it. ⌘Y is

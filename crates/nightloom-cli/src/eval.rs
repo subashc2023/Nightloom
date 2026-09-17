@@ -131,6 +131,9 @@ fn build_chat(
         // Off for the same reason as user memory: a file the developer wrote
         // for this model on this machine is not part of the fixture.
         model: None,
+        // No kinds on the CLI: an eval is a build chat, and the Chat file
+        // is the developer's own too.
+        chat_instructions: false,
         cwd: workspace.to_path_buf(),
         custom: None,
         // A chat's own text for a layer is read from a chat's log, which the

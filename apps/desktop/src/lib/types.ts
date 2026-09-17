@@ -290,8 +290,12 @@ export interface ProjectInfo {
  * and deletes, but its names are ids rather than titles — see
  * `modelInstructionFile` in catalog.ts. A missing file reads as empty text,
  * like the fixed files, so the editor can open on a model that has none yet.
+ *
+ * `chat` is `~/.nightloom/CHAT.md` — the Chat instructions (nightshift
+ * backlog 102): how a chat of the Chat kind talks. One fixed file like
+ * `memory`, reached through the same editor from Settings.
  */
-export type NoteScope = "project" | "knowledge" | "instructions" | "memory" | "models";
+export type NoteScope = "project" | "knowledge" | "instructions" | "memory" | "models" | "chat";
 
 /** What one dream did, flattened for a toast. `git` arrives as a finished
  *  sentence — one clause per folder the pass touched — because the frontend
@@ -571,6 +575,19 @@ export interface CompactResult {
  */
 export type ChatMode = "normal" | "incognito" | "ephemeral";
 
+/**
+ * What a chat is *for* (nightshift backlog 102, 2026-09-16), the axis
+ * orthogonal to `ChatMode` and fixed at birth like it (blocker 143's
+ * default). `build` is every chat before the field existed: the project
+ * folder, every tool, approval as set — on the subscription engine the UI
+ * calls it *Claude Code*, on the provider engine *Build*. `chat` is the
+ * conversational one — the read-only tools plus Nightloom's own, the web,
+ * no working folder (it runs in `~/.nightloom/chat/`), and the Chat
+ * instructions layer (`~/.nightloom/CHAT.md`). Absent on the wire means
+ * `build`.
+ */
+export type ChatKind = "build" | "chat";
+
 export interface SessionMeta {
   id: string;
   path: string;
@@ -585,6 +602,8 @@ export interface SessionMeta {
   /** Absent for a normal chat; `incognito` marks the row. An ephemeral chat
    *  has no log and is never in a listing. */
   mode?: ChatMode;
+  /** Absent for a build chat; `chat` marks the row (nightshift backlog 102). */
+  kind?: ChatKind;
   /** The chat this one was forked from, when it was (nightshift backlog
    *  062): the parent's id and the position in the parent's log the fork
    *  was cut at. The row shows "from <parent>"; see `forkLine` in edit.ts. */
@@ -698,7 +717,7 @@ export type ContentBlock =
     };
 
 export type SessionEvent =
-  | { event: "session_created"; id: string; at: string; mode?: ChatMode; forked_from?: ForkedFrom }
+  | { event: "session_created"; id: string; at: string; mode?: ChatMode; kind?: ChatKind; forked_from?: ForkedFrom }
   // `images` and `documents` are absent, not empty, on messages logged
   // without any — including every message logged before attachments existed.
   | {
@@ -971,6 +990,9 @@ export type PromptLayer =
   | "environment"
   | "user_memory"
   | "model_instructions"
+  /** How a Chat talks — `~/.nightloom/CHAT.md`, read into a chat of the
+   *  Chat kind and no other (nightshift backlog 102). Both engines. */
+  | "chat_instructions"
   | "project_instructions"
   | "project_notes"
   | "knowledge"
@@ -993,10 +1015,15 @@ export interface CliMemoryFile {
  * 057): the three that are a file the user wrote. The indexes, the identity
  * and environment, and the engine note are not text a user edits.
  */
-export type EditableLayer = "user_memory" | "model_instructions" | "project_instructions";
+export type EditableLayer =
+  | "user_memory"
+  | "model_instructions"
+  | "chat_instructions"
+  | "project_instructions";
 export const EDITABLE_LAYERS: readonly EditableLayer[] = [
   "user_memory",
   "model_instructions",
+  "chat_instructions",
   "project_instructions",
 ];
 
@@ -1017,6 +1044,11 @@ export interface PromptLayersInfo {
    *  pair, compared like the other two (2026-09-15). */
   mode: ChatMode;
   built_mode: ChatMode;
+  /** The fourth pair (nightshift backlog 102): a Chat's engine has the
+   *  read-only tools, no folder and the Chat instructions; a Build chat
+   *  opened after it needs its folder and tools back. */
+  kind: ChatKind;
+  built_kind: ChatKind;
 }
 
 /** What `editContext` changed: both projections, plus how many items moved. */

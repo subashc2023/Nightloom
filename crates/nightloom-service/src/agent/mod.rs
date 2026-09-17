@@ -40,7 +40,7 @@ pub use record::{Recorder, SUBAGENT_CLOSE, SUBAGENT_OPEN, carry_transcript, suba
 pub use translate::{AgentOutcome, Translator};
 
 use crate::{TurnEvent, TurnInput};
-use nightloom_core::ChatMode;
+use nightloom_core::{ChatKind, ChatMode};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
@@ -552,6 +552,27 @@ impl AgentSpec {
             // The read-only list above leaves nothing that would pause
             // anyway; this makes the fact explicit rather than incidental.
             self.ask = None;
+        }
+    }
+
+    /// Shape the spec for a chat of `kind` (nightshift backlog 102,
+    /// 2026-09-16). `Build` changes nothing. `Chat` confines the CLI to
+    /// [`READ_ONLY_TOOLS`] exactly as [`apply_mode`](Self::apply_mode)
+    /// does for a chat that writes nothing — the same five, the same
+    /// "no tools stays no tools" — and nothing else: the folder is the
+    /// caller's to choose (`workspace` is set at construction, and a Chat's
+    /// is the neutral one from `prompt::chat_dir`), and the Chat
+    /// instructions travel in the prompt. Narrows, never widens, so the
+    /// order it is applied in relative to `apply_mode` does not matter.
+    pub fn apply_kind(&mut self, kind: ChatKind) {
+        if kind != ChatKind::Chat {
+            return;
+        }
+        match &self.tools {
+            Some(t) if t.is_empty() => {}
+            _ => {
+                self.tools = Some(READ_ONLY_TOOLS.iter().map(|t| (*t).to_string()).collect());
+            }
         }
     }
 
@@ -1850,6 +1871,27 @@ mod tests {
     /// `--tools` with five names, never `--disallowedTools` — and does not
     /// ask for `--no-session-persistence`; an ephemeral one does both. The
     /// rail's "no tools" is left alone by either.
+    /// A Chat (nightshift backlog 102) gets the same five read-only tools
+    /// an incognito chat does, keeps "no tools" as no tools, and a Build
+    /// chat is untouched; the folder is not the method's business.
+    #[test]
+    fn a_chat_kind_narrows_to_the_read_only_tools_and_build_changes_nothing() {
+        let mut s = spec();
+        s.apply_kind(ChatKind::Build);
+        assert!(!s.args("hi").iter().any(|x| x == "--tools"));
+
+        s.apply_kind(ChatKind::Chat);
+        let a = s.args("hi");
+        let i = a.iter().position(|x| x == "--tools").expect("--tools");
+        assert_eq!(&a[i + 1..i + 6], READ_ONLY_TOOLS);
+        assert_eq!(s.workspace, spec().workspace);
+
+        let mut none = spec();
+        none.tools = Some(Vec::new());
+        none.apply_kind(ChatKind::Chat);
+        assert_eq!(none.tools.as_deref(), Some(&[][..]));
+    }
+
     #[test]
     fn incognito_is_the_read_only_tool_list_and_ephemeral_adds_no_persistence() {
         let mut s = spec();

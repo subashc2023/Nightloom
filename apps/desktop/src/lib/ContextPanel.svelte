@@ -127,6 +127,12 @@
       engines: "both",
     },
     {
+      kind: "chat_instructions",
+      label: "Chat instructions",
+      gloss: "How a Chat talks — ~/.nightloom/CHAT.md, read by chats of the Chat kind only; edited in Settings → Model instructions.",
+      engines: "both",
+    },
+    {
       kind: "project_instructions",
       label: "Project instructions",
       gloss: "The project's AGENTS.md — every one between the drive's root and the workspace, outermost first.",
@@ -1152,7 +1158,7 @@
               % of the window{app.activeSessionId ? ", for this chat" : " (the default)"} — the CLI's own
               auto-compact is off; past this mark the composer's notice asks for the wrap-up (the model
               writes HANDOFF.md, stops, and gives a start prompt for a linked new chat). The default,
-              {handoffDefaultPct}%, and the wrap-up's text are in Settings → Claude Code.
+              {handoffDefaultPct}%, and the wrap-up's text are in Settings → Subscription.
             </span>
           </label>
         {:else if items.length === 0}

@@ -35,7 +35,7 @@
  *    wrap up now, it just sends that"): finish what is half-done, write
  *    `HANDOFF.md` at the top of the project, and end with a start prompt
  *    for the new chat in a fenced block tagged `start-prompt`. The
- *    default text is editable in Settings → Claude Code; the copy sent is
+ *    default text is editable in Settings → Subscription; the copy sent is
  *    editable per chat on the notice.
  * 5. **Wrapped.** When that turn ends the last `start-prompt` block of the
  *    reply is kept, and the composer offers *Continue in a new chat ·

@@ -79,8 +79,13 @@ on the rail-refresh path, and once per project in the picker. See
 
 ## Agent mode (`connect_agent` / `send_agent`)
 
-The Claude Code engine, reached from the rail's Provider / Claude Code switch:
-turns run through the signed-in CLI and are billed to a subscription rather than
+~~The Claude Code engine, reached from the rail's Provider / Claude Code switch~~
+**Renamed 2026-09-16 (nightshift backlog 102, his naming): the *subscription
+engine*, reached from the rail's Provider / Subscription cards. "Claude Code"
+now names that engine's build *kind* — see "Chat kinds" below. Every
+"Claude Code engine" in the sections that follow reads as the subscription
+engine; the identifiers (`claude-code`, `connect_agent`, `AGENT`) are unchanged.**
+Turns run through the signed-in CLI and are billed to a subscription rather than
 an API key.
 
 **`Some` in `AppState.agent` is what "agent mode" means** — `connect` clears it
@@ -370,6 +375,51 @@ arrive as `menu` events that `zoom.ts` listens for itself — not through
 `runMenuCommand`; `App.svelte`'s `onShortcut` binds them on Windows and
 Linux, and ⌘⇧= (the literal ⌘+ on a US layout, no menu item) everywhere.
 ⌘0 was free to take: blocker 035's "0" is a bare key inside the ⌘P palette.
+
+## Chat kinds — Claude Code · Chat (2026-09-16, nightshift backlog 102)
+
+A chat has two axes now, both fixed at its birth and both on the creation
+line: the **mode** (normal · incognito · ephemeral, backlog 059) and the
+**kind** (`ChatKind`, `kind` on `session_created`; absent means `build`, so
+every older log reads as one). The kind is a preset over dials Nightloom
+already owns — the tool set, the working folder, one instructions layer —
+and never a second surface (blocker 040):
+
+- **Build** — on the subscription engine called *Claude Code*, on the
+  provider engine *Build* (blocker 139's default: the dial on both). The
+  project folder, every tool, approval as set, plans within reach: today's
+  chat, untouched.
+- **Chat** — the conversational one. The five read-only tools
+  (`AgentSpec::apply_kind`, the same list incognito uses) plus Nightloom's
+  MCP tools, the web, thinking on; **no working folder**: `chat_workspace`
+  roots it in `prompt::chat_dir()` = `~/.nightloom/chat/`, an empty
+  directory created on first use, whatever the project or the rail said —
+  an unfiled chat used to run in the app's launch cwd, which was
+  accidental. The CLI's per-cwd session files and auto memory land there,
+  which is why it is one fixed folder and not a temp dir per chat
+  (`--resume` has to find them). Its **Chat instructions** layer
+  (`SegmentKind::ChatInstructions`, `~/.nightloom/CHAT.md`, the `chat`
+  note scope, editable and switchable like the model's file) sits after the
+  model's file and before the project's rules; on the subscription engine
+  it is appended after the CLI's own prompt, which stays underneath
+  (`--bare` would drop the login), so a Chat there is claude.ai-like *on
+  top of* Claude Code.
+
+**Choosing it.** `AppState::pending_kind` beside `pending_mode`, the same
+rules: `new_session(mode, kind)` records it, the first message creates the
+log in it (`ensure_session`), a project switch resets it and the frontend
+sends the project's default back (`defaultKind()`: Claude Code where the
+project has a folder, Chat unfiled or in a folderless project). The
+sidebar's **New chat ▾** menu reads *Claude Code · Chat* — each row starts
+a chat of that kind, a dot on the default — then *Incognito · Ephemeral*,
+which start one of the default kind; no row reads "New chat" (his review
+of board 8a). **⌘N** is a new Claude Code chat and **⌥⌘N** a new Chat
+(File menu `new_build` / `new_talk`; Ctrl+N and Ctrl+Alt+N in
+`onShortcut` elsewhere — the only Alt chord in the app). `new_chat` — the
+wide button, the Welcome strip — makes the default kind. Fixed at creation
+(blocker 143's default): the rail *states* the kind under the engine cards
+and shows "no folder" in its Workspace row on a Chat, and switches nothing.
+`prompt_layers` reports `kind` / `built_kind` as the fourth reconnect pair.
 
 ## Settings keys and the remembered pane (2026-09-16, nightshift backlog 109)
 

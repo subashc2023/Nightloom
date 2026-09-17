@@ -226,6 +226,9 @@ fn build_chat(args: &ChatArgs, mcp_tools: &[Arc<dyn Tool>]) -> Result<Chat> {
         // rather than what was typed: `connect` fills in the provider's
         // default when `--model` is absent.
         model: on.then(|| chat.model.clone()),
+        // The CLI has no chat kinds (nightshift backlog 102): every run is a
+        // build chat in the folder it was started from.
+        chat_instructions: false,
         cwd: cwd.clone(),
         custom: args.system.clone(),
         // A chat's own text for a layer is read from a chat's log, which the

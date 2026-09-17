@@ -53,6 +53,15 @@ pub enum SegmentKind {
     /// about *how one model talks*, which does not belong in a file every
     /// other model also reads.
     ModelInstructions,
+    /// How a *Chat* — the conversational kind of chat (nightshift backlog
+    /// 102, 2026-09-16) — talks: one file in the config dir, beside the
+    /// user's memory and the models' folder, read into a Chat's prompt
+    /// and no Build chat's. Its own kind because it is the layer that
+    /// makes a Chat a Chat on the subscription engine, where the CLI's
+    /// coding prompt stays underneath; on the provider engine it sits in
+    /// the same ladder position, after the model's file and before the
+    /// project's rules.
+    ChatInstructions,
     /// The short gloss the Claude Code bridge appends after the layers above,
     /// saying how their names (`read_file`, `@kb/`) read on an engine that
     /// has its own tools. Its own kind rather than a [`SegmentKind::Custom`]
@@ -78,25 +87,27 @@ impl SegmentKind {
     /// offers as switches. Excludes [`SegmentKind::Custom`]: the shell's own
     /// text is chosen by the shell's own control (a dropdown, a flag), not by
     /// a layer switch, and offering it twice would leave the two disagreeing.
-    pub const LAYERS: [SegmentKind; 8] = [
+    pub const LAYERS: [SegmentKind; 9] = [
         SegmentKind::Identity,
         SegmentKind::Environment,
         SegmentKind::UserMemory,
         SegmentKind::ModelInstructions,
+        SegmentKind::ChatInstructions,
         SegmentKind::ProjectInstructions,
         SegmentKind::ProjectNotes,
         SegmentKind::Knowledge,
         SegmentKind::EngineNote,
     ];
 
-    /// The kinds whose text a chat may replace with its own — the three
+    /// The kinds whose text a chat may replace with its own — the four
     /// that are a file the user wrote, in ladder order. The two indexes are
     /// listings the shell computes, the identity and environment are the
     /// harness's, and the engine note is the bridge's: none of those is a
     /// text a user edits, so a chat's override for them is not a thing.
-    pub const EDITABLE: [SegmentKind; 3] = [
+    pub const EDITABLE: [SegmentKind; 4] = [
         SegmentKind::UserMemory,
         SegmentKind::ModelInstructions,
+        SegmentKind::ChatInstructions,
         SegmentKind::ProjectInstructions,
     ];
 }

@@ -10,6 +10,9 @@
     enableNightshift,
     MODE_GLYPH,
     MODE_LINES,
+    KIND_LINES,
+    defaultKind,
+    kindLabel,
     newChatLabel,
     newChatSelected,
     newSession,
@@ -23,7 +26,7 @@
   import { forkLine } from "./edit";
   import { isMac } from "./platform";
   import { untrack } from "svelte";
-  import type { ChatMode, NightshiftInfo, NightshiftRow, SessionHit, SessionMeta } from "./types";
+  import type { ChatKind, ChatMode, NightshiftInfo, NightshiftRow, SessionHit, SessionMeta } from "./types";
   import { relativeTime } from "./time";
   import { sameMorning } from "./nightshift";
   import NotesPanel from "./NotesPanel.svelte";
@@ -40,18 +43,32 @@
   let deleting = $state<SessionMeta | null>(null);
   let menu = $state(false);
   // The New chat button's other half (nightshift backlog 059, 2026-09-15):
-  // the three kinds of chat, one line each, in the project menu's popover
-  // shape — never a modal.
+  // the kinds of chat, one line each, in the project menu's popover shape
+  // — never a modal. Two axes since backlog 102 (2026-09-16, his review
+  // of boards 8a/8b): the kind rows — Claude Code · Chat — each start a
+  // chat of that kind, with a dot on the project's default; the privacy
+  // rows below start one of the default kind. No row reads "New chat":
+  // the wide button is that.
   let kinds = $state(false);
   const mod = isMac ? "⌘" : "Ctrl+";
+  const alt = isMac ? "⌥⌘" : "Ctrl+Alt+";
+  const KIND_ROWS: { kind: ChatKind; key: string }[] = [
+    { kind: "build", key: `${mod}N` },
+    { kind: "chat", key: `${alt}N` },
+  ];
   const KINDS: { mode: ChatMode; label: string; key: string }[] = [
-    { mode: "normal", label: "New chat", key: `${mod}N` },
     { mode: "incognito", label: "Incognito", key: `${mod}⇧N` },
     { mode: "ephemeral", label: "Ephemeral", key: "" },
   ];
+  /** The engine the kind is named for: the connection's, else the draft's. */
+  const engine = $derived(app.connection?.engine ?? app.draft.engine);
   function startKind(mode: ChatMode) {
     kinds = false;
     void newSession(mode === "normal" ? undefined : mode);
+  }
+  function startOfKind(kind: ChatKind) {
+    kinds = false;
+    void newSession(undefined, kind);
   }
 
   function confirmDelete() {
@@ -363,7 +380,7 @@
       </button>
       <button
         class="new-chat more"
-        title="Incognito or ephemeral chat"
+        title="A Claude Code chat or a Chat; incognito or ephemeral"
         aria-label="Other kinds of chat"
         aria-expanded={kinds}
         onclick={() => (kinds = !kinds)}
@@ -374,7 +391,18 @@
       {#if kinds}
         <button class="scrim" aria-label="Close" onclick={() => (kinds = false)}></button>
         <div class="kinds" role="menu">
-          <div class="kinds-head">New chat</div>
+          <div class="kinds-head">New chat · kind</div>
+          {#each KIND_ROWS as k (k.kind)}
+            <button class="kind" role="menuitem" onclick={() => startOfKind(k.kind)}>
+              <span class="kind-glyph" aria-hidden="true">{defaultKind() === k.kind ? "●" : "○"}</span>
+              <span class="kind-text">
+                <span class="kind-name">{kindLabel(k.kind, engine)}{#if defaultKind() === k.kind} <span class="kind-tag">default here</span>{/if}</span>
+                <span class="kind-line">{KIND_LINES[k.kind]}</span>
+              </span>
+              <span class="kind-key">{k.key}</span>
+            </button>
+          {/each}
+          <div class="kind-sep"></div>
           {#each KINDS as k (k.mode)}
             <button class="kind" role="menuitem" onclick={() => startKind(k.mode)}>
               <span class="kind-glyph" aria-hidden="true">{MODE_GLYPH[k.mode] || "▢"}</span>
@@ -475,7 +503,7 @@
                      parent's name as its own row shows it, or that the
                      parent is gone. -->
                 <span class="meta"
-                  >{s.id.slice(0, 8)}{#if s.mode === "incognito"} · incognito{/if} · {relativeTime(s.modified)}{#if forkLine(s, app.sessions)} · <span class="from" title="Forked from that chat; the parent is unchanged">{forkLine(s, app.sessions)}</span>{/if}</span
+                  >{s.id.slice(0, 8)}{#if s.kind === "chat"} · chat{/if}{#if s.mode === "incognito"} · incognito{/if} · {relativeTime(s.modified)}{#if forkLine(s, app.sessions)} · <span class="from" title="Forked from that chat; the parent is unchanged">{forkLine(s, app.sessions)}</span>{/if}</span
                 >
               </button>
               <button
@@ -1000,6 +1028,18 @@
     font-size: 11px;
     color: var(--dim);
     flex: none;
+  }
+  /* The kind rows (backlog 102): a dot for the project's default, a tag
+     saying so, and a rule between the two axes. */
+  .kind-tag {
+    font-size: 0.7rem;
+    color: var(--dim);
+    margin-left: 4px;
+  }
+  .kind-sep {
+    height: 1px;
+    background: var(--line2);
+    margin: 4px 6px;
   }
   .new-chat:hover:not(:disabled) {
     border-color: var(--accent);
