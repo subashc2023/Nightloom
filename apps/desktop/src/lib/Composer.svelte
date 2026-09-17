@@ -92,15 +92,58 @@
   /**
    * How tall the box may grow before it scrolls inside itself (item 039 in
    * the nightshift repo). Unset, it is 40% of the column, so the transcript
-   * keeps the other 60% however long the draft; the handle on the top edge
-   * sets it by hand, and the setting is kept per machine. The floating
+   * keeps the other 60% however long the draft; ~~the handle on the top edge
+   * sets it by hand~~ the setting is kept per machine. The floating
    * composer on the new-chat page has no transcript to balance against and
    * keeps a fixed cap.
+   *
+   * Since 2026-09-16 (nightshift backlog 111) the handle sets the box's
+   * *height*, not its cap: "there isn't a way of making the text box
+   * bigger while I'm in a chat" — with a short draft the box was sized to
+   * its text and a drag on the cap changed nothing he could see. Dragged
+   * to a height, the box is that tall with an empty draft (a floor,
+   * `floorPx`, kept per chat under `nightloom.composer.height.<key>`);
+   * text still grows it past the floor up to the cap, which is raised to
+   * reach the floor where it must be. A drag *down* below what the draft
+   * needs still lowers the cap, as it did — so the drag puts the edge
+   * where the pointer is either way, and only typing moves it after.
+   * Double-click clears both. ⌥⌘↑ / ⌥⌘↓ in the box do the same by a line.
    */
   const FLOATING_MAX = 200; // ~8 rows
   const CAP_FRACTION = 0.4;
   const CAP_MIN = 72;
   const CAP_KEY = "nightloom.composer.max";
+  const HEIGHT_KEY = "nightloom.composer.height.";
+  /** No shorter than one line of text plus the box's own padding. */
+  const FLOOR_MIN = 26;
+
+  function loadHeight(k: string): number | null {
+    try {
+      const raw = localStorage.getItem(HEIGHT_KEY + k);
+      const n = raw === null ? NaN : Number(raw);
+      return Number.isFinite(n) && n >= FLOOR_MIN ? n : null;
+    } catch {
+      return null;
+    }
+  }
+  function saveHeight(k: string, n: number | null): void {
+    try {
+      if (n === null) localStorage.removeItem(HEIGHT_KEY + k);
+      else localStorage.setItem(HEIGHT_KEY + k, String(Math.round(n)));
+    } catch {
+      // best-effort
+    }
+  }
+
+  /** The height set by hand for the open chat, or null for auto-grow alone. */
+  let floorPx = $state<number | null>(null);
+  // The chat's own floor comes in with its draft. A height set on the
+  // pending chat's key stays on that key (the next new chat in the
+  // project finds it) rather than following the draft to the chat its
+  // first message creates: the move lives in `state.svelte.ts`.
+  $effect(() => {
+    floorPx = loadHeight(key);
+  });
 
   function loadCap(): number | null {
     try {
@@ -133,31 +176,72 @@
   function maxHeight(): number {
     if (floating) return FLOATING_MAX;
     const auto = Math.round(columnHeight() * CAP_FRACTION);
-    return Math.max(CAP_MIN, capPx ?? auto);
+    // The cap never sits under the floor: a box dragged to 300px is 300px.
+    return Math.max(CAP_MIN, capPx ?? auto, floorPx ?? 0);
+  }
+
+  /** The height the draft alone asks for — `autogrow` before the clamp. */
+  function textHeight(): number {
+    if (!ta) return 0;
+    const was = ta.style.height;
+    ta.style.height = "auto";
+    const need = ta.scrollHeight;
+    ta.style.height = was;
+    return need;
+  }
+
+  /** The tallest the box may be dragged: most of the column, never all. */
+  function dragLimit(): number {
+    return Math.round(columnHeight() * 0.85);
   }
 
   /**
-   * The handle. Dragging up raises the cap and the box grows into it as far
-   * as the draft needs; dragging down lowers it and the box scrolls sooner.
-   * Double-click returns to the 40% rule.
+   * Put the box's edge at `px` (backlog 111): the floor for this chat,
+   * and — where the draft needs more than that — the cap too, which is
+   * what the drag did before (039) and is still how a long draft is made
+   * to scroll sooner. Saved on the pointer's release, not per move.
+   */
+  function setHeight(px: number) {
+    const next = Math.min(dragLimit(), Math.max(FLOOR_MIN, Math.round(px)));
+    floorPx = next;
+    const need = textHeight();
+    // Only a draft of two lines or more lowers the cap: an empty box is a
+    // hair taller than the smallest floor, and must not cap every chat at
+    // three lines because this one was dragged shut.
+    if (need > next && need >= 2 * lineHeight()) capPx = Math.max(CAP_MIN, next);
+    // A cap left under the new edge by an earlier drag down would stop
+    // the text growing the box past it; back to the 40% rule instead.
+    else if (capPx !== null && capPx < next) capPx = null;
+    autogrow();
+  }
+
+  function persistHeight() {
+    saveHeight(key, floorPx);
+    saveCap(capPx);
+  }
+
+  /**
+   * The handle. ~~Dragging up raises the cap and the box grows into it as far
+   * as the draft needs; dragging down lowers it and the box scrolls sooner.~~
+   * Since backlog 111 the drag moves the box's edge itself, from where it
+   * is now: up makes the box taller whatever the draft, down shorter (the
+   * draft scrolls inside). Double-click returns to automatic — the 40%
+   * rule and the box sized to its text.
    */
   function handleDown(e: PointerEvent) {
     if (e.button !== 0 || !ta) return;
     e.preventDefault();
     const startY = e.clientY;
-    const startCap = maxHeight();
-    const limit = Math.round(columnHeight() * 0.85);
+    const startH = ta.offsetHeight;
     const target = e.currentTarget as HTMLElement;
     target.setPointerCapture(e.pointerId);
     dragging = true;
     const move = (ev: PointerEvent) => {
-      const next = Math.min(limit, Math.max(CAP_MIN, startCap + (startY - ev.clientY)));
-      capPx = next;
-      autogrow();
+      setHeight(startH + (startY - ev.clientY));
     };
     const up = () => {
       dragging = false;
-      saveCap(capPx);
+      persistHeight();
       target.removeEventListener("pointermove", move);
       target.removeEventListener("pointerup", up);
       target.removeEventListener("pointercancel", up);
@@ -168,9 +252,23 @@
   }
 
   function handleReset() {
+    floorPx = null;
     capPx = null;
-    saveCap(null);
+    persistHeight();
     autogrow();
+  }
+
+  /** One line of the box's text, for ⌥⌘↑ / ⌥⌘↓. */
+  function lineHeight(): number {
+    const lh = ta ? parseFloat(getComputedStyle(ta).lineHeight) : NaN;
+    return Number.isFinite(lh) && lh > 0 ? lh : 22;
+  }
+
+  /** Grow or shrink the box by a line from the keyboard (backlog 111). */
+  function stepHeight(dir: 1 | -1) {
+    if (!ta || floating) return;
+    setHeight(ta.offsetHeight + dir * lineHeight());
+    persistHeight();
   }
 
   // The four image types every provider we speak to accepts.
@@ -199,9 +297,12 @@
   function autogrow() {
     if (!ta) return;
     const max = maxHeight();
+    // The floor (backlog 111) is the docked box's; the floating one keeps
+    // sizing to its text.
+    const min = floating ? 0 : Math.min(max, floorPx ?? 0);
     ta.style.maxHeight = max + "px";
     ta.style.height = "auto";
-    ta.style.height = Math.min(ta.scrollHeight, max) + "px";
+    ta.style.height = Math.max(min, Math.min(ta.scrollHeight, max)) + "px";
   }
 
   // A resized window moves the 40% line.
@@ -328,6 +429,16 @@
   }
 
   function onkeydown(e: KeyboardEvent) {
+    // ⌥⌘↑ / ⌥⌘↓ (⌥Ctrl elsewhere) make the box a line taller or shorter
+    // (backlog 111) — the keyboard's version of the handle. Before the
+    // picker's own arrows, which are the bare keys. Free: `App.svelte`'s
+    // handler steps aside for every ⌥ chord, the transcript's ⌥↑ / ⌥↓ have
+    // no ⌘, and blocker 035's set names neither.
+    if (e.altKey && (e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+      e.preventDefault();
+      stepHeight(e.key === "ArrowUp" ? 1 : -1);
+      return;
+    }
     if (ghost && e.key === "Tab" && !e.shiftKey) {
       e.preventDefault();
       acceptGhost();
@@ -617,7 +728,10 @@
       role="separator"
       aria-orientation="horizontal"
       aria-label="Composer height"
-      title={capPx === null ? "Drag to set how tall the message box may grow (double-click: automatic, 40% of the column)" : `Message box may grow to ${capPx}px — double-click for automatic`}
+      aria-valuenow={floorPx ?? undefined}
+      title={floorPx === null && capPx === null
+        ? "Drag to resize · double-click to reset (⌥⌘↑ / ⌥⌘↓ by a line)"
+        : `Drag to resize · double-click to reset — ${floorPx === null ? "automatic" : `${floorPx}px`} for this chat${capPx === null ? "" : `, grows to ${capPx}px`}`}
       onpointerdown={handleDown}
       ondblclick={handleReset}
     ></div>
@@ -864,13 +978,16 @@
     background: var(--paper);
     padding: 12px 20px 22px;
   }
-  /* The drag handle sits on the top edge, over the border. */
+  /* The drag handle sits on the top edge, over the border. The grip mark
+     is the sidebar's (`Grip.svelte`, laid flat): a short bar, accent on
+     hover; since backlog 111 the hover also draws a line the width of the
+     edge, so the place to drag is findable, and the strip is taller. */
   .handle {
     position: absolute;
-    top: -4px;
+    top: -6px;
     left: 0;
     right: 0;
-    height: 9px;
+    height: 13px;
     cursor: row-resize;
     touch-action: none;
     display: flex;
@@ -878,13 +995,28 @@
     align-items: center;
     z-index: 2;
   }
+  .handle::before {
+    content: "";
+    position: absolute;
+    left: 20px;
+    right: 20px;
+    top: 6px;
+    height: 1px;
+    background: transparent;
+    transition: background 0.12s;
+  }
   .handle::after {
     content: "";
+    position: relative;
     width: 36px;
     height: 3px;
     border-radius: 2px;
     background: var(--line2);
     transition: background 0.12s;
+  }
+  .handle:hover::before,
+  .handle.dragging::before {
+    background: var(--accent);
   }
   .handle:hover::after,
   .handle.dragging::after {
