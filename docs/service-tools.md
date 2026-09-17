@@ -284,9 +284,32 @@ whitespace (a fetched code sample being the common case), and that links keep
 their URLs **resolved against the landed URL** so the next call has somewhere to
 go.
 
-Where it gives up it says so — a page that extracts to nothing is assembled by
-JavaScript, and reporting that is the difference between the model trying the
-site's API and trying the same URL three more times.
+Where it gives up it says so — a page that extracts to nothing ~~is assembled
+by JavaScript~~ **beyond its `<title>` is a JavaScript shell (2026-09-17,
+nightshift backlog 125)**, and reporting that is the difference between the
+model trying the site's API and trying the same URL three more times.
+
+**The shell guard discounts the title, and the user agent declares a bot
+(2026-09-17, nightshift backlog 125).** Measured on Obsidian's help site (an
+Obsidian Publish app): the HTML is a 2.9 KB shell whose only text is the
+45-character `<title>`; the guard fired under 40 characters of *any* text, so
+the tool returned a success holding a title, twice, and the model worked out
+for itself that the page was empty. Now `shell_verdict` compares the extracted
+text against the `<title>` rendered the way the extractor renders it (entities
+decoded, whitespace collapsed) and calls the page a shell when fewer than 40
+characters remain beyond it and the HTML is over 2 KB; the verdict still
+quotes the title, since it is the one thing the shell does say. The same
+measurement showed the site serving the **pre-rendered article** (6.1 KB) to
+any user agent with `bot` in it — `Googlebot`, `Claude-User`, `Nightloom/0.1.0
+(bot)` — and the shell to `curl`, to a Chrome string, and to the bare
+`Nightloom/0.1.0` this tool used until then; the project URL alone, without
+`bot`, got the shell too. So the agent is now `Nightloom/<version>
+(+https://github.com/subashc2023/Nightloom; bot)`: a declared bot is what a
+prerender-for-crawlers site keys on, and it is also the honest name for a
+program fetching one page a model asked for. It is not a crawler — one URL per
+call, no link-following — which is the one assumption a site may make of a
+`bot` that does not hold here. The choice is Swaraag's (nightshift blocker
+192); this is the default taken.
 
 Two whitespace rules are pinned by tests because both are invisible in the markup
 and very visible in the output: inserting a space the source did not have turns

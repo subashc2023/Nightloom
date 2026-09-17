@@ -403,11 +403,18 @@ fn engine_note_segment(knowledge: Option<&KnowledgeContext>) -> Segment {
     // and spent two turns before the prefixed name worked (nightshift
     // backlog 046 pass 2). "This project" is said out loud for the same
     // reason — the same turn searched every project when asked about one.
+    // The fetch sentence names the fallback (2026-09-17, nightshift backlog
+    // 125): "use fetch_page, not WebFetch" sent a whole-page read to the
+    // tool that, on a site pre-rendering for crawlers, got a JavaScript
+    // shell where the CLI's WebFetch got the article, and the model spent
+    // two calls deducing the switch the note now states.
     text.push_str(
         " Nightloom's own tools are the MCP tools named mcp__nightloom__fetch_page, \
          mcp__nightloom__search_chats, mcp__nightloom__read_chat and \
-         mcp__nightloom__remember (ToolSearch them by those full names). For a whole \
-         page use fetch_page, not WebFetch. To find or quote another chat use \
+         mcp__nightloom__remember (ToolSearch them by those full names). For the whole \
+         text of a page use fetch_page (WebFetch summarises and truncates); if \
+         fetch_page reports a JavaScript shell or returns only a title, use WebFetch on \
+         that URL instead of retrying. To find or quote another chat use \
          search_chats then read_chat — as you would reach for a web search: not every \
          turn, but whenever the message points outside this chat (an earlier decision, \
          'as we discussed', a name you have no context for), and before asking the user \

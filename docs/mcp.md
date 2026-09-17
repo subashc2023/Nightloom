@@ -155,6 +155,20 @@ invalid params (`-32602`), an unknown method is method-not-found (`-32601`).
 And a line that is not JSON costs a line on stderr, never the session, the same
 rule the client's reader applies to a server.
 
+**Which fetch, and the fallback (2026-09-17, nightshift backlog 125).** The
+`initialize` instructions, the engine note (`prompt.rs`) and `fetch_page`'s own
+description said "for a whole page use fetch_page, not WebFetch". On a site
+that pre-renders for crawlers and serves a JavaScript shell to everyone else
+(Obsidian's help site, measured), that sent the model to the fetch that got the
+title where the CLI's `WebFetch` got the article, and the model spent two calls
+deducing the switch. All three now say when each is the right one: `fetch_page`
+for the whole text (`WebFetch` summarises and truncates); if `fetch_page`
+reports a JavaScript shell or returns only a title, `WebFetch` on the same URL
+instead of a retry. And the shell verdict itself, on this engine only, ends
+with that sentence (`FetchPage::call` appends it to an error carrying
+`tools::SHELL_PHRASE`): the inner tool cannot name `WebFetch`, because on the
+API engine there is none.
+
 `--project <id>` names the open project: its session directory is the default
 search scope and its name is what `remember` stamps as `source`; without it,
 the unfiled chats and no source. An id the registry does not know is an error

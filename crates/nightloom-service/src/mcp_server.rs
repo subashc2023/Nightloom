@@ -107,7 +107,16 @@ const UNFILED_NAME: &str = "Unfiled chats";
 /// The three sentences the engine note carries as well; here because a host
 /// that surfaces server instructions gets them even when Nightloom's own
 /// prompt layer is switched off for the chat.
-const INSTRUCTIONS: &str = "Nightloom's tools. For a whole page use fetch_page, not WebFetch. \
+///
+/// The fetch sentence says *when* each fetch is the right one rather than
+/// "fetch_page, not WebFetch" (its wording until 2026-09-17, nightshift
+/// backlog 125): on a site that pre-renders for crawlers and serves a
+/// JavaScript shell to everyone else, the CLI's `WebFetch` got the article
+/// where `fetch_page` got the title, and a flat preference sent the model to
+/// the wrong tool first and left it to deduce the fallback.
+const INSTRUCTIONS: &str = "Nightloom's tools. For the whole text of a page use fetch_page \
+     (WebFetch summarises and truncates); if fetch_page reports the page as a JavaScript \
+     shell or returns only its title, use WebFetch on that URL instead of retrying. \
      To find or quote one of the user's other chats use search_chats, then read_chat — when \
      the message points outside this chat (an earlier decision, 'as we discussed', a name you \
      have no context for), not on every turn; recent chats rank first. context_status says \
@@ -323,8 +332,28 @@ impl Tool for ContextStatusTool {
 /// never has to make: there, `web_fetch` is the only fetch; here it sits
 /// beside the CLI's `WebFetch`, and a model choosing between two fetches by
 /// name will take the built-in one unless told why not to.
+///
+/// One thing *is* added on this engine (2026-09-17, nightshift backlog
+/// 125): when the fetch reports a JavaScript shell, the error names
+/// `WebFetch` as the next call. The inner tool cannot — on the API engine
+/// there is no `WebFetch` — and the measured case (Obsidian Publish) is one
+/// where the CLI's fetch was served the article the shell stands in for.
 #[derive(Default)]
 struct FetchPage(Fetch);
+
+/// The sentence added to a shell verdict here and nowhere else.
+const SHELL_ENGINE_HINT: &str = " On this engine, try WebFetch on the same URL: sites that \
+     pre-render for crawlers have served it the article where this tool got the shell.";
+
+/// A shell verdict from the inner fetch, with [`SHELL_ENGINE_HINT`] on the
+/// end; any other error as it was.
+fn with_engine_hint(err: String) -> String {
+    if err.contains(crate::tools::SHELL_PHRASE) {
+        format!("{err}{SHELL_ENGINE_HINT}")
+    } else {
+        err
+    }
+}
 
 #[async_trait::async_trait]
 impl Tool for FetchPage {
@@ -337,7 +366,9 @@ impl Tool for FetchPage {
         ToolDef {
             name: "fetch_page".into(),
             description: format!(
-                "The whole page, not a summary; use this, not WebFetch, to read an article. {}",
+                "The whole page, not a summary; use this, not WebFetch, to read an article — \
+                 unless it reports the page as a JavaScript shell or returns only a title, \
+                 when WebFetch on the same URL may be served the article. {}",
                 inner.description
             ),
             input_schema: inner.input_schema,
@@ -345,7 +376,7 @@ impl Tool for FetchPage {
     }
 
     async fn call(&self, input: Value, cancel: &CancellationToken) -> Result<String, String> {
-        self.0.call(input, cancel).await
+        self.0.call(input, cancel).await.map_err(with_engine_hint)
     }
 }
 
@@ -687,6 +718,24 @@ mod tests {
         );
         s.record_title("Rewinding");
         (config, project.id)
+    }
+
+    /// A shell verdict gains the one sentence this engine can add — the
+    /// CLI's `WebFetch` as the next call — and every other error is left
+    /// exactly as the fetch wrote it (nightshift backlog 125).
+    #[test]
+    fn a_shell_verdict_names_webfetch_and_other_errors_are_untouched() {
+        let shell = format!(
+            "https://x.example/p returned 2.8 KB of HTML whose only readable text is its \
+             title, \"P\". The page is almost certainly {}, which this tool does not run.",
+            crate::tools::SHELL_PHRASE
+        );
+        let hinted = with_engine_hint(shell.clone());
+        assert!(hinted.starts_with(&shell), "{hinted}");
+        assert!(hinted.contains("try WebFetch on the same URL"), "{hinted}");
+
+        let other = "https://x.example/p returned 404 Not Found".to_string();
+        assert_eq!(with_engine_hint(other.clone()), other);
     }
 
     /// The server on one end of a pipe, and the client's read and write

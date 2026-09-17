@@ -28,10 +28,12 @@
 //! model, not by a browser: what matters is that `<script>` bulk never
 //! reaches the context, that structure survives as headings and list markers,
 //! and that links keep their URLs so the next call has somewhere to go.
-//! Where it gives up it says so — a page that extracts to nothing is almost
-//! always rendered by JavaScript, and reporting that is the difference
-//! between the model trying the site's API and the model trying the same URL
-//! three more times.
+//! Where it gives up it says so — a page that extracts to nothing *beyond
+//! its title* (since 2026-09-17; before, to nothing at all, which a shell
+//! with a title passed) is almost always rendered by JavaScript, and
+//! reporting that is the difference between the model trying the site's
+//! API and the model trying the same URL three more times. The user agent
+//! declares a bot for the same class of page: see [`UA`].
 //!
 //! **Search is a curated table behind a key, and is simply absent without
 //! one.** There is no vendor-neutral search API, so something has to be
@@ -74,7 +76,41 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 /// still has to not be downloaded to be thrown away.
 const MAX_DOWNLOAD: usize = 4 * 1024 * 1024;
 
-const UA: &str = concat!("Nightloom/", env!("CARGO_PKG_VERSION"));
+/// What the fetch calls itself, and the word `bot` in it is the point.
+///
+/// Sites built as JavaScript apps (Obsidian Publish was the measured one,
+/// nightshift backlog 125) serve two things from one URL: a 2.9 KB shell
+/// whose only text is the `<title>` to anything that looks like a browser
+/// or a plain client — `curl`, Chrome, and the bare `Nightloom/0.1.0` this
+/// was until 2026-09-17 all got the shell — and the pre-rendered article to
+/// anything they take for a crawler. Measured on the same URL: `Googlebot`,
+/// `Claude-User`, `Nightloom/0.1.0 (bot)` and this string got 6.1 KB of
+/// article; the project URL alone, without `bot`, got the shell. So the
+/// browser-like direction is the wrong one for exactly the pages this tool
+/// cannot otherwise read, and a declared bot is also the honest answer to
+/// "what is this request": a program fetching one page a model asked for.
+/// It is not a crawler — one URL per call, no link-following — and that is
+/// the one thing a site may assume of a `bot` that is not true here.
+/// The choice is Swaraag's (nightshift blocker 192); this is the default.
+const UA: &str = concat!(
+    "Nightloom/",
+    env!("CARGO_PKG_VERSION"),
+    " (+https://github.com/subashc2023/Nightloom; bot)"
+);
+
+/// A page smaller than this is not called a shell: a genuinely short page
+/// — a redirect stub, a bare "moved" notice — is served as what it is.
+const SHELL_MIN_HTML: usize = 2000;
+
+/// Text a page must have beyond its `<title>` to be reported as content.
+/// Was the whole-text threshold until 2026-09-17: a title of 45 characters
+/// passed it, and the model was handed a success holding nothing else.
+const SHELL_MIN_TEXT: usize = 40;
+
+/// The phrase every shell verdict carries, so a caller wrapping this tool
+/// for another engine can recognise the case and add what that engine has
+/// (`mcp_server::FetchPage` names the CLI's `WebFetch`).
+pub(crate) const SHELL_PHRASE: &str = "assembled in the browser by JavaScript";
 
 const ACCEPT: &str =
     "text/html,application/xhtml+xml,application/json;q=0.9,text/plain;q=0.8,*/*;q=0.5";
@@ -216,14 +252,8 @@ impl Tool for Fetch {
             Body::Html => {
                 let html = String::from_utf8_lossy(&bytes);
                 let text = html_to_text(&html, &landed);
-                if text.trim().len() < 40 && bytes.len() > 2000 {
-                    return Err(format!(
-                        "{landed} returned {} of HTML with no readable text in it. The page \
-                         is almost certainly assembled in the browser by JavaScript, which \
-                         this tool does not run. Look for the site's API, a documentation \
-                         mirror, or a direct link to the content instead of retrying this URL.",
-                        size(bytes.len())
-                    ));
+                if let Some(verdict) = shell_verdict(&html, &text) {
+                    return Err(format!("{landed} returned {verdict}"));
                 }
                 text
             }
@@ -262,6 +292,57 @@ fn explain(kind: Body, bytes: &[u8]) -> String {
     } else {
         format!("\n{clip}")
     }
+}
+
+/// The reason an HTML page is a JavaScript shell rather than content, or
+/// `None` when it is content. The string is the tail of the error, after
+/// "`<url>` returned".
+///
+/// A shell is a page with plenty of markup and next to no text *beyond its
+/// title*. The title is discounted because a JavaScript app's shell carries
+/// one — it is what the tab shows while the app loads — and until
+/// 2026-09-17 that alone was enough to pass the guard: Obsidian Publish's
+/// shell extracts to exactly its 45-character title, the threshold was 40
+/// characters of anything, and the model was handed a success holding a
+/// title twice before it worked out for itself that the page was empty
+/// (nightshift backlog 121, then 125). The title is still reported, because
+/// it is the one thing the shell does say — that this was the right URL.
+fn shell_verdict(html: &str, text: &str) -> Option<String> {
+    if html.len() <= SHELL_MIN_HTML {
+        return None;
+    }
+    let text = text.trim();
+    let title = html_title(html);
+    let beyond = match &title {
+        Some(t) => text.strip_prefix(t.as_str()).unwrap_or(text).trim(),
+        None => text,
+    };
+    if beyond.len() >= SHELL_MIN_TEXT {
+        return None;
+    }
+    let what = match &title {
+        Some(t) if !t.is_empty() => {
+            format!("whose only readable text is its title, \"{t}\"")
+        }
+        _ => "with no readable text in it".to_string(),
+    };
+    Some(format!(
+        "{} of HTML {what}. The page is almost certainly {SHELL_PHRASE}, which this \
+         tool does not run. Look for the site's API, a documentation mirror, or a \
+         direct link to the content instead of retrying this URL.",
+        size(html.len())
+    ))
+}
+
+/// The `<title>` as [`html_to_text`] would render it, so the two compare
+/// exactly; `None` when the page has none.
+fn html_title(html: &str) -> Option<String> {
+    let lower = html.to_ascii_lowercase();
+    let open = lower.find("<title")?;
+    let start = lower[open..].find('>')? + open + 1;
+    let end = lower[start..].find("</title")? + start;
+    let decoded = decode_entities(&html[start..end]);
+    Some(decoded.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
 /// What a body is, once its content type and its first bytes agree.
@@ -1611,6 +1692,118 @@ mod tests {
             Some("bare")
         );
         assert_eq!(attribute(r#" rel="next""#, "href"), None);
+    }
+
+    // --- shells ------------------------------------------------------------
+
+    /// The Obsidian Publish shape (nightshift backlog 125): a `<title>`, a
+    /// deferred app script, a spinner, a few KB of preload links, and no
+    /// body text at all. The padding stands in for the stylesheet links
+    /// that put the real page over 2 KB.
+    fn app_shell(title: &str) -> String {
+        let preload: String = (0..12)
+            .map(|n| {
+                format!(
+                    "<link rel=\"preload\" href=\"https://publish-01.example/access/\
+                     f786db9fac45774fa4f0d8112e232d67/{n}.css\" as=\"style\" \
+                     onload=\"this.onload=null;this.rel='stylesheet'\">"
+                )
+            })
+            .collect();
+        format!(
+            "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"/>\
+             <style class=\"preload\">html,body{{margin:0;height:100%}}</style>\
+             <base href=\"https://publish.example\">\
+             <script defer=\"defer\" src=\"/app.js?5e3dc6f6\"></script>\
+             <title>{title}</title>{preload}</head>\
+             <body class=\"theme-light\"><div class=\"preload\"><div class=\"spinner\">\
+             </div></div><script>window.preload={{}}</script></body></html>"
+        )
+    }
+
+    /// The bug that filed the item: the title alone was 45 characters, the
+    /// guard fired under 40, and the model got a success holding a title.
+    #[test]
+    fn a_title_only_shell_is_reported_as_one_not_as_content() {
+        let title = "Collaborate on a shared vault - Obsidian Help";
+        let html = app_shell(title);
+        assert!(html.len() > SHELL_MIN_HTML, "{}", html.len());
+        let text = extract(&html);
+        assert_eq!(text, title, "the extractor sees exactly the title");
+        assert!(
+            text.len() >= SHELL_MIN_TEXT,
+            "the old guard would have passed it"
+        );
+
+        let verdict = shell_verdict(&html, &text).expect("a shell");
+        assert!(verdict.contains(SHELL_PHRASE), "{verdict}");
+        assert!(
+            verdict.contains(title),
+            "the title is still told: {verdict}"
+        );
+        assert!(
+            verdict.contains("instead of retrying this URL"),
+            "{verdict}"
+        );
+    }
+
+    /// The same shell with the article in it is content, whatever its title.
+    #[test]
+    fn a_page_with_text_beyond_its_title_is_content() {
+        let title = "Collaborate on a shared vault - Obsidian Help";
+        let html = app_shell(title).replace(
+            "<div class=\"spinner\">",
+            "<p>All collaborators must have an active Sync subscription to access a \
+             shared vault.</p><div class=\"spinner\">",
+        );
+        let text = extract(&html);
+        assert!(text.starts_with(title), "{text}");
+        assert_eq!(shell_verdict(&html, &text), None);
+    }
+
+    /// A small page is never a shell: the markup has to outweigh the text
+    /// before the tool calls it one, as it did before.
+    #[test]
+    fn a_short_page_is_served_as_what_it_is() {
+        let html = "<html><head><title>Moved</title></head><body>See /v2/</body></html>";
+        assert!(html.len() <= SHELL_MIN_HTML);
+        assert_eq!(shell_verdict(html, &extract(html)), None);
+    }
+
+    /// The pre-2026-09-17 case still holds: no title, no text, lots of markup.
+    #[test]
+    fn a_shell_without_a_title_is_still_a_shell() {
+        let html = app_shell("").replace("<title></title>", "");
+        assert_eq!(html_title(&html), None);
+        let verdict = shell_verdict(&html, &extract(&html)).expect("a shell");
+        assert!(verdict.contains("no readable text"), "{verdict}");
+        assert!(verdict.contains(SHELL_PHRASE), "{verdict}");
+    }
+
+    /// The title is discounted only if it is compared as the extractor
+    /// renders it — entities decoded, whitespace collapsed, case of the tag
+    /// ignored — or a title with an `&amp;` in it would count as text.
+    #[test]
+    fn the_title_is_matched_as_the_extractor_renders_it() {
+        let html =
+            app_shell("  Sync &amp; Share\n   - Obsidian&nbsp;Help ").replace("<title>", "<TITLE>");
+        let title = html_title(&html).unwrap();
+        assert_eq!(title, "Sync & Share - Obsidian Help");
+        let text = extract(&html);
+        assert_eq!(text, title);
+        assert!(shell_verdict(&html, &text).is_some());
+    }
+
+    /// The user agent declares a bot, because that is what a site that
+    /// pre-renders for crawlers looks for (the measurements in the item).
+    #[test]
+    fn the_user_agent_declares_a_bot() {
+        assert!(UA.starts_with("Nightloom/"), "{UA}");
+        assert!(UA.contains("bot"), "{UA}");
+        assert!(
+            UA.contains("+https://"),
+            "a URL to find out who is asking: {UA}"
+        );
     }
 
     // --- paging ------------------------------------------------------------
