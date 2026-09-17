@@ -336,8 +336,23 @@
   // through, what it added marked — rather than as the plain text. Per
   // turn index, this screen only; a click on the mark flips it.
   let diffOpen = $state<Record<number, boolean>>({});
-  function toggleDiff(index: number): void {
-    diffOpen[index] = !diffOpen[index];
+  // The toggle keeps the reader's place (backlog 115): the diff view is a
+  // different height from the rendered text even for a one-word change —
+  // struck and added spans, and the source's lines against the markdown's
+  // headings and lists — so whatever is under the cursor is held there.
+  // That is the mark itself, except when the view is at the foot, where
+  // the message's bottom edge is held (his "the latest part of the
+  // message stays at the bottom"); on a reply the mark sits under the
+  // message, so the two agree there anyway.
+  function toggleDiff(index: number, mark: HTMLElement | null = null): void {
+    const anchor = pinned && atBottom() ? null : mark;
+    void keepPlace(
+      index,
+      () => {
+        diffOpen[index] = !diffOpen[index];
+      },
+      anchor,
+    );
   }
   let editorEl = $state<HTMLTextAreaElement | null>(null);
   // A reply's editor is one textarea per text block (backlog 066); the
@@ -370,9 +385,15 @@
    * logic does not take the write for the user's own scroll. A turn no
    * longer on screen after the change (a fork switched the chat) is left
    * alone. The webview has no scroll anchoring of its own to do this.
+   * `anchor` names another element whose bottom edge to hold instead —
+   * the `edited` mark under the cursor (backlog 115).
    */
-  async function keepPlace(index: number, change: () => void | Promise<void>): Promise<void> {
-    const el = viewport?.querySelector<HTMLElement>(`[data-turn="${index}"]`) ?? null;
+  async function keepPlace(
+    index: number,
+    change: () => void | Promise<void>,
+    anchor: HTMLElement | null = null,
+  ): Promise<void> {
+    const el = anchor ?? viewport?.querySelector<HTMLElement>(`[data-turn="${index}"]`) ?? null;
     const before = el?.getBoundingClientRect().bottom ?? null;
     await change();
     await tick();
@@ -774,7 +795,7 @@
                 type="button"
                 aria-pressed={!!diffOpen[item.index]}
                 title={diffOpen[item.index] ? "Edited — show the current text" : "Edited — show the edit as a diff"}
-                onclick={() => toggleDiff(item.index)}>edited</button
+                onclick={(e) => toggleDiff(item.index, e.currentTarget)}>edited</button
               >
             {/if}
             <!-- The time moved to the foot (backlog 123): one place is
@@ -1015,7 +1036,7 @@
                   type="button"
                   aria-pressed={!!diffOpen[item.index]}
                   title={diffOpen[item.index] ? "Edited — show the current text" : "Edited — show the edit as a diff"}
-                  onclick={() => toggleDiff(item.index)}>edited</button
+                  onclick={(e) => toggleDiff(item.index, e.currentTarget)}>edited</button
                 >
               </div>
             {/if}
