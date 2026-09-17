@@ -38,3 +38,32 @@ describe("a shell's undrawn output", () => {
     expect(Array.from(got[0] as Uint8Array)).toEqual([65, 66]);
   });
 });
+
+/**
+ * A shell's xterm outlives its component's mount (113's scrollback,
+ * 2026-09-17): the store keeps the instance, a re-mount takes it back,
+ * and only the shell's own close disposes it.
+ */
+describe("a shell's instance across mounts", () => {
+  it("is kept until the shell closes, then disposed once", async () => {
+    const { closeShell, keepLive, liveCount, liveShell, term } = await import("./terminal.svelte");
+    const id = 21;
+    term.shells.push({ id, shell: "zsh", title: "zsh", cwd: "/w", pid: 1, exit: null });
+    term.active = id;
+    let disposed = 0;
+    let removed = 0;
+    // No DOM in this suite: the host is the one call the store makes.
+    const host = { remove: () => removed++ } as unknown as HTMLElement;
+    keepLive(id, { host, xterm: {}, fit: {}, exitWritten: false, dispose: () => disposed++ });
+    // A re-mount finds the same instance; nothing was disposed by the
+    // unmount in between (the component only detaches the host).
+    expect(liveShell(id)?.host).toBe(host);
+    expect(liveCount()).toBe(1);
+    expect(disposed).toBe(0);
+    closeShell(id);
+    expect(disposed).toBe(1);
+    expect(liveShell(id)).toBeUndefined();
+    expect(removed).toBe(1);
+    expect(term.shells.some((s) => s.id === id)).toBe(false);
+  });
+});

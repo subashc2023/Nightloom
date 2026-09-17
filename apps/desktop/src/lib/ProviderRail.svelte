@@ -373,6 +373,25 @@
       await setChatFolders(chatFolders(app.events).filter((f) => f !== path));
     }
   }
+  /**
+   * The post-turn entrance (backlog 143, pass 2): a read the CLI refused
+   * outside every tree — the hook never pauses a `Read`, the prompt host
+   * denies it and the turn's result names it — is listed here with the
+   * same two grants, so the next turn can read there. Granting reconnects,
+   * which clears the list; dismissing just clears it.
+   */
+  const refused = $derived((app.connection?.refused ?? []).filter((r) => !folders.some((f) => f.path === r)));
+  async function grantRefused(path: string, scope: "chat" | "project") {
+    if (scope === "chat") {
+      await setChatFolders([...chatFolders(app.events), path]);
+    } else {
+      await setProjectFolders([...(app.project?.extra_folders ?? []), path]);
+    }
+    if (app.connection) app.connection.refused = (app.connection.refused ?? []).filter((r) => r !== path);
+  }
+  function dismissRefused(path: string) {
+    if (app.connection) app.connection.refused = (app.connection.refused ?? []).filter((r) => r !== path);
+  }
 
   async function pickSwitchFolder() {
     const picked = await api.pickFolder("Folder for this Claude Code chat", app.project?.root ?? undefined);
@@ -1065,6 +1084,19 @@
           {:else}
             <span class="dim fold-none">{isChat ? "none — a Chat sees no folder" : "none beyond the folder above"}</span>
           {/each}
+          {#each refused as r (r)}
+            <!-- A folder the model was refused a read in last turn (backlog
+                 143, pass 2): offered for the grant after the fact. -->
+            <div class="fold-item fold-refused" title="The model tried to read here last turn and was refused: it is outside every folder this chat can see. Grant it and ask again.">
+              <span class="fold-path">{r}</span>
+              <span class="fold-src">refused</span>
+              <button class="fold-x" title="Forget this" aria-label="Dismiss {r}" onclick={() => dismissRefused(r)}>×</button>
+            </div>
+            <div class="fold-add">
+              <button class="ns-btn" disabled={locked} onclick={() => void grantRefused(r, "chat")}>Allow for this chat</button>
+              {#if app.project}<button class="ns-btn" disabled={locked} onclick={() => void grantRefused(r, "project")}>…for the project</button>{/if}
+            </div>
+          {/each}
           {#if !isChat}
             <div class="fold-add">
               <button class="ns-btn" disabled={locked} onclick={() => void addFolder("chat")}>Add a folder for this chat…</button>
@@ -1640,6 +1672,9 @@
   }
   .fold-none {
     font-size: 11.5px;
+  }
+  .fold-refused .fold-src {
+    color: var(--error);
   }
   .fold-add {
     display: flex;

@@ -3,6 +3,7 @@
   import {
     activateTab,
     app,
+    asideOf,
     closePrompts,
     dropContent,
     droppedContent,
@@ -29,6 +30,9 @@
   import { term } from "./lib/terminal.svelte";
   import TabStrip from "./lib/TabStrip.svelte";
   import AsideView from "./lib/AsideView.svelte";
+  import AsideCard from "./lib/AsideCard.svelte";
+  import AttachmentLayer from "./lib/AttachmentLayer.svelte";
+  import AttachmentView from "./lib/AttachmentView.svelte";
   import { isMac } from "./lib/platform";
   import { toggleTranscriptPref } from "./lib/transcriptPrefs.svelte";
   import { thinkingToggleDead } from "./lib/activity";
@@ -133,9 +137,59 @@
   /** The split's geometry: the left pane's width, saved as a pane pref. */
   let splitWidth = $state(0);
   const SPLIT_MIN = 280;
+  /**
+   * The aside side panel (nightshift backlog 141 pass 2): the floating
+   * card dragged to the window's right edge lands here, a third column
+   * beside the panes — not a pane (no strip, never focused, outside the
+   * tab model's walks), the same card drawn static with a thin head of
+   * its own. It shows the thread of `app.asidePanel`'s chat from where
+   * it lives (`asideOf`), and closes itself when that thread ends (its
+   * ×), when a tab opens for the same thread (one second view at a time),
+   * or when the chat is deleted; *back* puts the card under the passage.
+   */
+  const PANEL_W = 360;
+  const panelPx = $derived(app.asidePanel ? PANEL_W : 0);
   const leftPx = $derived(
-    Math.max(SPLIT_MIN, Math.min(splitWidth - SPLIT_MIN, paneWidth("split", Math.round(splitWidth / 2)))),
+    Math.max(
+      SPLIT_MIN,
+      Math.min(splitWidth - panelPx - SPLIT_MIN, paneWidth("split", Math.round((splitWidth - panelPx) / 2))),
+    ),
   );
+  const panelAside = $derived(app.asidePanel ? asideOf(app.asidePanel) : null);
+  const panelChat = $derived.by(() => {
+    const id = app.asidePanel;
+    if (!id) return "";
+    const s = app.sessions.find((x) => x.id === id);
+    return s?.title ?? s?.first_user ?? id.slice(0, 8);
+  });
+  $effect(() => {
+    const id = app.asidePanel;
+    if (!id) return;
+    const gone = !asideOf(id) || (app.sessions.length > 0 && !app.sessions.some((x) => x.id === id));
+    const inTab = tabs.allTabs(app.tabs).some((t) => t.content.kind === "aside" && t.content.session === id);
+    if (gone || inTab) app.asidePanel = null;
+  });
+  /** The right edge lights while an aside's card is dragged: the drop
+   *  makes the panel. Above the panes' halves, so it wins there. */
+  const asideDragging = $derived(app.draggingContent?.kind === "aside");
+  let overEdge = $state(false);
+  function onEdgeDragOver(e: DragEvent) {
+    if (!asideDragging) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+    overEdge = true;
+  }
+  function onEdgeDrop(e: DragEvent) {
+    overEdge = false;
+    const content = droppedContent(e);
+    if (!content || content.kind !== "aside") return;
+    e.preventDefault();
+    e.stopPropagation();
+    app.draggingContent = null;
+    dropHalf = null;
+    app.asidePanel = content.session;
+  }
 
   /**
    * A tab dragged over a pane's content: which half, for the *open beside*
@@ -443,9 +497,8 @@
         class="split"
         class:two={app.tabs.panes.length > 1}
         bind:clientWidth={splitWidth}
-        style:grid-template-columns={app.tabs.panes.length > 1
-          ? `${leftPx}px minmax(0, 1fr)`
-          : "minmax(0, 1fr)"}
+        style:grid-template-columns={(app.tabs.panes.length > 1 ? `${leftPx}px minmax(0, 1fr)` : "minmax(0, 1fr)") +
+          (app.asidePanel ? ` ${PANEL_W}px` : "")}
       >
         {#each app.tabs.panes as pane, i (pane.id)}
           {@const t = tabs.activeTab(pane)}
@@ -531,6 +584,13 @@
                 <AsideView session={t.content.session} />
                 {#if focused}<FindBar bind:this={findBar} />{/if}
               </div>
+            {:else if t.content.kind === "attachment"}
+              <!-- An attachment kept as a tab (backlog 145 pass 2): the
+                   floating tab dropped on a strip or a half. -->
+              <div class="content">
+                <AttachmentView content={t.content} />
+                {#if focused}<FindBar bind:this={findBar} />{/if}
+              </div>
             {:else if liveTab?.id === t.id}
               <div class="content">
                 {#if blank}
@@ -578,7 +638,38 @@
             {/if}
           </section>
         {/each}
+        {#if app.asidePanel && panelAside}
+          <!-- The aside side panel (backlog 141 pass 2): the card, static,
+               beside the panes; its head is the panel's chrome. -->
+          <aside class="aside-panel" aria-label="aside side panel">
+            <div class="aside-panel-head">
+              <span class="aside-panel-title" title="The chat this side conversation is beside">Aside · {panelChat}</span>
+              <span class="spacer"></span>
+              <button
+                class="ns-btn ghost small"
+                title="Put the card back in the chat, under its passage (Escape in the panel does the same); the thread stays"
+                onclick={() => (app.asidePanel = null)}>back</button
+              >
+            </div>
+            <AsideCard aside={panelAside} placement={null} panel session={app.asidePanel} />
+          </aside>
+        {/if}
+        {#if asideDragging}
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div
+            class="aside-edge"
+            class:over={overEdge}
+            ondragover={onEdgeDragOver}
+            ondragleave={() => (overEdge = false)}
+            ondrop={onEdgeDrop}
+          >
+            <span>side panel</span>
+          </div>
+        {/if}
       </div>
+      <!-- The floating attachment tab (backlog 145): over the panes,
+           under the dialogs. -->
+      <AttachmentLayer />
       {#if app.toasts.length > 0}
         <div class="toasts">
           {#each app.toasts as t (t.id)}
@@ -718,6 +809,56 @@
     min-height: 0;
     display: grid;
     grid-template-rows: minmax(0, 1fr);
+    /* The aside side panel and the right-edge drop zone (backlog 141
+       pass 2) are placed in this frame. */
+    position: relative;
+  }
+  .aside-panel {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    border-left: 1px solid var(--line);
+    background: var(--sheet);
+  }
+  .aside-panel-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 36px;
+    padding: 0 8px 0 12px;
+    border-bottom: 1px solid var(--line);
+    font-size: 12px;
+    color: var(--dim);
+  }
+  .aside-panel-head .spacer {
+    flex: 1;
+  }
+  .aside-panel-title {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  /* The drop zone at the window's right edge while an aside's card is
+     dragged: a narrow strip, lit as the halves are, over the panes. */
+  .aside-edge {
+    position: absolute;
+    top: 36px;
+    right: 0;
+    bottom: 0;
+    width: 64px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(224, 164, 88, 0.12);
+    border: 1px dashed var(--accent);
+    color: var(--accent);
+    font-size: 12px;
+    writing-mode: vertical-rl;
+    z-index: 9;
+  }
+  .aside-edge.over {
+    background: rgba(224, 164, 88, 0.24);
   }
   .pane {
     position: relative;

@@ -24,6 +24,7 @@
  */
 import type { Aside, AsideTurn } from "./state.svelte";
 import type { AsideQuote } from "./asideQuote";
+import type { AsideAnchor } from "./asideCard";
 
 export const ASIDES_KEY = "nightloom.asides";
 let loadedSeq = 0;
@@ -40,6 +41,9 @@ interface StoredTurn {
 interface StoredAside {
   quote: AsideQuote | null;
   turns: StoredTurn[];
+  /** The passage's place (backlog 141), so a restored thread's card opens
+   *  under its passage again; absent for a composer aside. */
+  anchor?: AsideAnchor;
 }
 
 function storeTurn(t: AsideTurn): StoredTurn | null {
@@ -53,7 +57,7 @@ function storeAside(a: Aside): StoredAside | null {
   if (a.draft) return null;
   const turns = a.turns.map(storeTurn).filter((t): t is StoredTurn => t !== null);
   if (turns.length === 0) return null;
-  return { quote: a.quote, turns };
+  return a.anchor ? { quote: a.quote, turns, anchor: a.anchor } : { quote: a.quote, turns };
 }
 
 /**
@@ -73,6 +77,18 @@ export function serializeAsides(map: ReadonlyMap<string, Aside>): string {
     out = JSON.stringify(Object.fromEntries(entries));
   }
   return out;
+}
+
+function isAnchor(v: unknown): v is AsideAnchor {
+  if (v === null || typeof v !== "object") return false;
+  const a = v as Record<string, unknown>;
+  return (
+    typeof a.turn === "number" &&
+    typeof a.block === "number" &&
+    typeof a.start === "number" &&
+    typeof a.end === "number" &&
+    (a.side === "below" || a.side === "above")
+  );
 }
 
 function isQuote(v: unknown): v is AsideQuote {
@@ -111,7 +127,7 @@ export function loadAsides(storage: Pick<Storage, "getItem">): Map<string, Aside
         });
       }
       if (turns.length === 0) continue;
-      out.set(k, { quote, draft: false, turns });
+      out.set(k, { quote, draft: false, turns, anchor: isAnchor(a.anchor) ? a.anchor : null });
     }
   } catch {
     // A broken store reads as no threads; the next save rewrites it.

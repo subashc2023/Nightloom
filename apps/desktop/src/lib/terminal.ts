@@ -11,6 +11,25 @@ import type { Segment } from "./state.svelte";
 import type { SessionEvent } from "./types";
 import { shortToolName } from "./activity";
 
+/**
+ * A shell's xterm and the element it draws in, kept by the store across
+ * the component's mounts (backlog 113's scrollback, 2026-09-17): the dock
+ * draws in whichever pane `term.pane` names, so a drag to another pane
+ * unmounts `TerminalShell` there and mounts it here — and a fresh xterm
+ * per mount lost the drawn scrollback. The component takes the instance
+ * back instead and re-attaches the host. `dispose` is the xterm's, called
+ * only when the shell itself goes. Typed loosely so the store never
+ * imports xterm.
+ */
+export interface LiveShell<X = unknown, F = unknown> {
+  host: HTMLElement;
+  xterm: X;
+  fit: F;
+  /** The "[zsh exit 0 — …]" line was written: once, not per mount. */
+  exitWritten: boolean;
+  dispose: () => void;
+}
+
 /** What `terminal_open` answers, plus what the events add. */
 export interface ShellRow {
   id: number;

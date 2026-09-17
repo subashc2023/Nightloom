@@ -922,12 +922,22 @@ pub struct LoadReport {
     /// because it is the one entry that may never have finished being
     /// written, which makes discarding it recovery rather than loss.
     pub torn_tail: bool,
+    /// The creation line named a `mode` or `kind` this build does not
+    /// know, and was read *closed* — the mode as incognito, the kind as
+    /// a Chat (review 2026-09-17 FC-c, nightshift backlog 134). Reached by
+    /// a rollback after a newer build shipped a value; the alternative,
+    /// a damaged line and the defaults, opened an incognito chat as a
+    /// normal one.
+    pub closed_creation: bool,
 }
 
 impl LoadReport {
     /// Whether the log read back exactly as written.
     pub fn is_clean(&self) -> bool {
-        self.unknown_events == 0 && self.damaged_lines == 0 && !self.torn_tail
+        self.unknown_events == 0
+            && self.damaged_lines == 0
+            && !self.torn_tail
+            && !self.closed_creation
     }
 
     /// One line for a shell to show, or `None` when there is nothing to say.
@@ -958,16 +968,72 @@ impl LoadReport {
         if self.torn_tail {
             parts.push("an unfinished final entry".to_string());
         }
-        let mut out = format!("session log: {} could not be read", parts.join(" and "));
+        let mut out = if parts.is_empty() {
+            String::from(
+                "session log: its first line names a mode or kind this version does not know",
+            )
+        } else {
+            format!("session log: {} could not be read", parts.join(" and "))
+        };
         if self.unknown_events > 0 || self.damaged_lines > 0 {
             out.push_str(
                 "; they keep their place in the log, but anything they hid or undid \
                  is no longer being applied",
             );
         }
+        if self.closed_creation {
+            out.push_str(
+                "; the chat is opened as incognito and read-only, which is the reading \
+                 that gives nothing away",
+            );
+        }
         out.push('.');
         Some(out)
     }
+}
+
+/// A creation line whose `mode` or `kind` this build does not know, read
+/// closed (review 2026-09-17 FC-c, nightshift backlog 134): the line is
+/// re-read with the two fields as plain strings; a value this build knows
+/// maps to itself, an unknown mode reads as incognito and an unknown kind
+/// as a Chat — the answers that give nothing away — and the chat's own id
+/// is kept. `None` when the line is not a creation line at all. The
+/// store's listing reads such a line the same way (`store::peek`), so the
+/// sidebar and the open chat agree.
+fn closed_creation(text: &str) -> Option<SessionEvent> {
+    #[derive(Deserialize)]
+    struct Loose {
+        event: String,
+        id: String,
+        at: DateTime<Utc>,
+        #[serde(default)]
+        mode: Option<String>,
+        #[serde(default)]
+        kind: Option<String>,
+        #[serde(default)]
+        forked_from: Option<ForkedFrom>,
+    }
+    let loose: Loose = serde_json::from_str(text).ok()?;
+    if loose.event != "session_created" {
+        return None;
+    }
+    let mode = match loose.mode {
+        None => ChatMode::Normal,
+        Some(m) => {
+            serde_json::from_value(serde_json::Value::String(m)).unwrap_or(ChatMode::Incognito)
+        }
+    };
+    let kind = match loose.kind {
+        None => ChatKind::Build,
+        Some(k) => serde_json::from_value(serde_json::Value::String(k)).unwrap_or(ChatKind::Chat),
+    };
+    Some(SessionEvent::SessionCreated {
+        id: loose.id,
+        at: loose.at,
+        mode,
+        kind,
+        forked_from: loose.forked_from,
+    })
 }
 
 /// The point at which a session stopped reaching its log, and why.
@@ -1408,6 +1474,17 @@ impl Session {
                     report.torn_tail = true;
                     repair = Some(Repair::TruncateTo(start as u64));
                 }
+                // A creation line with a mode or kind this build does not
+                // know is read closed rather than held as damaged: the
+                // defaults a damaged first line falls to (normal, build)
+                // are the one reading that must not be reached by accident.
+                Err(_)
+                    if events.is_empty()
+                        && let Some(created) = closed_creation(text) =>
+                {
+                    report.closed_creation = true;
+                    events.push(created);
+                }
                 Err(_) => {
                     report.damaged_lines += 1;
                     events.push(SessionEvent::Unknown);
@@ -1420,11 +1497,21 @@ impl Session {
             repair = Some(Repair::Separator);
         }
 
+        // A log whose creation line could not be read at all keeps the
+        // id its file is named by (backlog 134): a fresh uuid here was a
+        // handle nothing else — the listing, the ask directory, the CLI's
+        // session record — would ever match. A stem that is not there
+        // (a log opened by a path with no name) still mints one.
         let id = events
             .iter()
             .find_map(|e| match e {
                 SessionEvent::SessionCreated { id, .. } => Some(id.clone()),
                 _ => None,
+            })
+            .or_else(|| {
+                path.file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .filter(|s| !s.is_empty())
             })
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         Ok(Self {
@@ -5349,6 +5436,64 @@ mod tests {
             2,
             "parent and the incognito fork only"
         );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A creation line naming a mode or kind this build does not know
+    /// (review 2026-09-17 FC-c, backlog 134) opens *closed* — incognito,
+    /// a Chat, the chat's own id — and the report says so; a known value
+    /// beside an unknown one keeps its meaning; and a creation line that
+    /// is damaged outright keeps the file's stem as the id rather than
+    /// minting one nothing else would match.
+    #[test]
+    fn an_unknown_mode_or_kind_on_the_creation_line_opens_closed_and_is_reported() {
+        let dir = std::env::temp_dir().join(format!("nightloom-closed-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut s = Session::start(&dir, ChatMode::Normal, ChatKind::Build).unwrap();
+        s.record_user("hello");
+        let id = s.id.clone();
+        let path = s.log_path().unwrap().to_path_buf();
+        drop(s);
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let (first, rest) = raw.split_once('\n').unwrap();
+        let mut v: serde_json::Value = serde_json::from_str(first).unwrap();
+        v["mode"] = serde_json::Value::String("vaulted".into());
+        v["kind"] = serde_json::Value::String("agentic".into());
+        std::fs::write(&path, format!("{v}\n{rest}")).unwrap();
+
+        let loaded = Session::load(&path).unwrap();
+        assert_eq!(loaded.id, id, "the chat's own id, not a fresh one");
+        assert_eq!(loaded.mode(), ChatMode::Incognito);
+        assert_eq!(loaded.kind(), ChatKind::Chat);
+        assert!(loaded.mode().writes_nothing() && loaded.mode().unread_by_others());
+        assert_eq!(loaded.events().len(), 2, "the message after it is intact");
+        let report = loaded.load_report();
+        assert!(report.closed_creation);
+        assert_eq!(report.damaged_lines, 0);
+        assert!(!report.is_clean());
+        let line = report.summary().unwrap();
+        assert!(
+            line.contains("does not know") && line.contains("incognito"),
+            "{line}"
+        );
+
+        // A known mode beside an unknown kind keeps its meaning.
+        let mut v: serde_json::Value = serde_json::from_str(first).unwrap();
+        v["mode"] = serde_json::Value::String("ephemeral".into());
+        v["kind"] = serde_json::Value::String("agentic".into());
+        std::fs::write(&path, format!("{v}\n{rest}")).unwrap();
+        let loaded = Session::load(&path).unwrap();
+        assert_eq!(loaded.mode(), ChatMode::Ephemeral);
+        assert_eq!(loaded.kind(), ChatKind::Chat);
+
+        // Damaged outright: the file's stem is the id.
+        std::fs::write(&path, format!("{{\"event\":\"session_created\",\n{rest}")).unwrap();
+        let loaded = Session::load(&path).unwrap();
+        assert_eq!(loaded.id, path.file_stem().unwrap().to_string_lossy());
+        assert_eq!(loaded.load_report().damaged_lines, 1);
+        assert!(!loaded.load_report().closed_creation);
 
         std::fs::remove_dir_all(&dir).ok();
     }

@@ -136,13 +136,32 @@ when it returns), `TerminalDock.svelte` the pane. The dock mounts in every
 pane's `.pane-dock` slot in `App.svelte` and draws under the pane it was
 opened from — one dock for the window (blocker 189).
 
+## The xterm outlives its mount (2026-09-17, backlog 113's scrollback)
+
+The dock draws in whichever pane `term.pane` names, so a drag of the
+terminal to another pane (12b, `TERM_DRAG`) unmounts every `TerminalShell`
+there and mounts them here — and a fresh xterm per mount showed an empty
+grid where the scrollback had been, though the pty and its shell were
+untouched. Now the instance is the store's: `TerminalShell` builds its
+xterm once, into a `.term-host` element of its own, with everything that
+belongs to the instance wired then (the key handler, `onData`, `onResize`,
+the sink, the focus listeners), and hands it to `keepLive`; a later mount
+takes it back with `liveShell` and only appends the host to its container
+and refits (`LiveShell` in `terminal.ts`, typed loosely so the store never
+imports xterm). The unmount detaches the host and nothing else; `closeShell`
+and `restartShell` dispose it with the shell. The exit line is written once
+per shell (`exitWritten`), not once per mount. The same mechanism carries
+the dock's hide and show (backlog 137 FE6), which already kept the
+component; a move now costs the grid one refit and no output.
+
 ## Not yet
 
-- **Dragging the terminal into the other pane** (board 12b): the tab drag
+- ~~**Dragging the terminal into the other pane** (board 12b): the tab drag
   (`TAB_DRAG`) carries chat and note tabs only; a terminal tab needs its
   own drag type, the dock and strip drop zones lit on the other pane, and
   the store's `pane` moved on drop — the shells keep running through it,
-  since the pty is the window's.
+  since the pty is the window's.~~ Built 2026-09-17 (12b: `TERM_DRAG`, the
+  whole-pane zone); the scrollback across the move, above.
 - The "into a tab" control (a terminal as a full-height tab of the pane).
 - The title is the process's short name (`npm`, not `npm run dev`); the
   arguments would need `proc_pidinfo` / `/proc/<pid>/cmdline`.

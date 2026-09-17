@@ -1024,7 +1024,27 @@ fn move_tree(from: &Path, to: &Path, label: &str, moved: &mut usize, skipped: &m
             continue;
         };
         let target = to.join(&name);
-        if source.is_dir() {
+        // The entry's own type, not what it points at (review 2026-09-17
+        // FC-f, nightshift backlog 134): `is_dir` follows a symlink, and a
+        // link to a directory elsewhere would have had *that* directory's
+        // files moved into the project. A link is moved whole — `rename`
+        // moves the link, not its target — or, across volumes, left where
+        // it is and named in `skipped`, since a copy would follow it.
+        let Ok(kind) = entry.file_type() else {
+            skipped.push(format!("{label}/{name}"));
+            continue;
+        };
+        if kind.is_symlink() {
+            if target.symlink_metadata().is_ok() {
+                skipped.push(format!("{label}/{name}"));
+            } else if fs::rename(&source, &target).is_ok() {
+                *moved += 1;
+            } else {
+                skipped.push(format!("{label}/{name}"));
+            }
+            continue;
+        }
+        if kind.is_dir() {
             if fs::create_dir_all(&target).is_err() {
                 skipped.push(format!("{label}/{name}/"));
                 continue;
@@ -1593,6 +1613,38 @@ mod tests {
             "old"
         );
         fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A symlinked directory in the old notes folder is moved as a link
+    /// (review 2026-09-17 FC-f, backlog 134), never followed: the files it
+    /// points at stay where they are, and the link still points at them.
+    /// Unix only: the symlink call is.
+    #[cfg(unix)]
+    #[test]
+    fn migration_moves_a_symlink_whole_and_never_follows_it() {
+        let dir = temp_dir("migrate-symlink");
+        let elsewhere = temp_dir("migrate-symlink-target");
+        fs::write(elsewhere.join("secret.md"), "not the project's").unwrap();
+        let legacy = dir.join(DOT_DIR);
+        fs::create_dir_all(legacy.join(NOTES_DIR)).unwrap();
+        fs::write(legacy.join(NOTES_DIR).join("plan.md"), "# plan").unwrap();
+        std::os::unix::fs::symlink(&elsewhere, legacy.join(NOTES_DIR).join("linked")).unwrap();
+
+        let moved = migrate(&dir);
+        assert_eq!(moved.notes, 2, "the note and the link itself");
+        assert!(moved.skipped.is_empty(), "{:?}", moved.skipped);
+        let linked = dir.join(AGENTS_DIR).join("linked");
+        assert!(linked.symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(fs::read_link(&linked).unwrap(), elsewhere);
+        // The target's files were not moved: still there, and not copied
+        // into the project as its own.
+        assert_eq!(
+            fs::read_to_string(elsewhere.join("secret.md")).unwrap(),
+            "not the project's"
+        );
+        assert!(!legacy.join(NOTES_DIR).exists());
+        fs::remove_dir_all(&dir).ok();
+        fs::remove_dir_all(&elsewhere).ok();
     }
 
     #[test]

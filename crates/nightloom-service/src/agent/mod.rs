@@ -34,8 +34,10 @@ mod protocol;
 mod record;
 mod translate;
 
-pub use ask::{Answer, AskDir, AskGate, DeferredCall, PlanThen};
-pub use protocol::RateLimitInfo;
+pub use ask::{
+    Answer, AskDir, AskGate, DeferredCall, FolderGrant, GrantScope, PlanThen, outside_folder,
+};
+pub use protocol::{DeniedCall, RateLimitInfo};
 pub use record::{Recorder, SUBAGENT_CLOSE, SUBAGENT_OPEN, carry_transcript, subagent_block};
 pub use translate::{AgentOutcome, Translator};
 
@@ -412,6 +414,43 @@ pub struct AgentSpec {
 /// CLI's matcher takes the JavaScript pattern, Bash was refused and Read
 /// ran in the same turn.
 pub const CHAT_POLICY_MATCHER: &str = "^(?!(Read|Glob|Grep|WebFetch|WebSearch|mcp__)).*";
+
+/// The names [`CHAT_POLICY_MATCHER`]'s lookahead lets through — the same
+/// list, as words, for narrowing the Ask hook beside it.
+const CHAT_POLICY_KEPT: [&str; 6] = ["Read", "Glob", "Grep", "WebFetch", "WebSearch", "mcp__"];
+
+/// The Ask hook's matcher under the Chat policy (nightshift backlog 147):
+/// the alternatives of `matcher` the policy does not refuse. The CLI runs
+/// every `PreToolUse` entry that matches a call, so with both hooks on
+/// `Bash` the window showed an approval prompt for a call the policy had
+/// already refused — an answer that could not matter, and a turn waiting
+/// on it. Narrowed, the Ask hook pauses only what a Chat may still run
+/// (the web, Nightloom's own server); empty when nothing of the matcher
+/// survives (the plan exit's), and then no Ask entry is registered.
+fn ask_matcher_under_chat_policy(matcher: &str) -> String {
+    matcher
+        .split('|')
+        .filter(|alt| CHAT_POLICY_KEPT.iter().any(|kept| alt.starts_with(kept)))
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
+/// The deny hook's command line. Single-quoted for the POSIX shell the CLI
+/// runs hooks through on macOS and Linux. On Windows, `cmd.exe`'s `echo`
+/// prints the rest of its line verbatim and its single quotes would be
+/// printed too, so the reply goes unquoted — safe because the reply has
+/// none of `cmd`'s metacharacters (`&|<>^%`; pinned by a test) —
+/// `inferred`, not measured on a Windows machine (backlog 147).
+fn chat_policy_command(reply: &str) -> String {
+    #[cfg(windows)]
+    {
+        format!("echo {reply}")
+    }
+    #[cfg(not(windows))]
+    {
+        format!("echo '{reply}'")
+    }
+}
 
 /// What the model reads when the policy refuses a call — the hook's
 /// `permissionDecisionReason`, delivered as the tool's error result.
@@ -794,9 +833,18 @@ impl AgentSpec {
         // the Ask hook and the memory switch share a JSON object.
         let mut settings = serde_json::Map::new();
         if let Some(ask) = &self.ask {
+            // Under the Chat policy the Ask hook pauses only what the
+            // policy leaves (backlog 147): a call both hooks match would
+            // show a prompt whose answer cannot matter.
+            let matcher = if self.chat_policy {
+                ask_matcher_under_chat_policy(ask.mode.matcher())
+            } else {
+                ask.mode.matcher().to_string()
+            };
             if ask.mode != AskMode::Aside
+                && !matcher.is_empty()
                 && let Ok(serde_json::Value::Object(hook)) = serde_json::from_str::<serde_json::Value>(
-                    &ask::settings_json_matching(&ask.hook, &ask.dir, ask.mode.matcher()),
+                    &ask::settings_json_matching(&ask.hook, &ask.dir, &matcher),
                 )
             {
                 settings.extend(hook);
@@ -819,7 +867,7 @@ impl AgentSpec {
             .to_string();
             let entry = serde_json::json!({
                 "matcher": CHAT_POLICY_MATCHER,
-                "hooks": [{ "type": "command", "command": format!("echo '{reply}'") }]
+                "hooks": [{ "type": "command", "command": chat_policy_command(&reply) }]
             });
             let hooks = settings
                 .entry("hooks")
@@ -1049,6 +1097,20 @@ impl ClaudeCodeAgent {
     /// forward.
     pub fn set_resume(&mut self, id: Option<String>) {
         self.spec.resume = id.filter(|s| !s.is_empty());
+    }
+
+    /// Let every later process of this connection read `dir` — the card's
+    /// *Allow, and this folder…* (nightshift backlog 143, pass 2), taken
+    /// mid-turn so the resume that carries the allow already has it
+    /// (measured 2026-09-17: a `--resume … --add-dir` reads the folder
+    /// with no second prompt). Once; a folder already granted is not
+    /// sent twice. The shell rebuilds `add_dirs` from the project and the
+    /// log at every connect, so this holds until then and the record
+    /// takes over.
+    pub fn grant_dir(&mut self, dir: PathBuf) {
+        if !self.spec.add_dirs.contains(&dir) {
+            self.spec.add_dirs.push(dir);
+        }
     }
 
     /// Make the next turn a fork of the session pointed at: the CLI mints
@@ -1711,6 +1773,26 @@ mod tests {
         assert_eq!(a[0], "-p");
     }
 
+    /// The card's grant (backlog 143, pass 2): a folder granted mid-turn is
+    /// on the very next argv — the resume's — once, however often it is
+    /// granted.
+    #[test]
+    fn a_granted_dir_is_on_the_next_argv_once() {
+        let mut s = AgentSpec::new(PathBuf::from("/w"));
+        s.add_dirs = vec![PathBuf::from("/vault")];
+        let mut agent = ClaudeCodeAgent::new(s);
+        agent.grant_dir(PathBuf::from("/elsewhere"));
+        agent.grant_dir(PathBuf::from("/elsewhere"));
+        agent.grant_dir(PathBuf::from("/vault"));
+        let a = agent.spec.resume_args();
+        let joined = a.join(" ");
+        assert!(
+            joined.contains("--add-dir /vault --add-dir /elsewhere"),
+            "{a:?}"
+        );
+        assert_eq!(joined.matches("--add-dir").count(), 2, "{a:?}");
+    }
+
     /// A turn with attachments drops the prompt from argv and says where
     /// it is coming from instead. The first argument is still `-p`: the
     /// stdin shape is print mode too, not an interactive session that
@@ -2020,10 +2102,14 @@ mod tests {
         assert_eq!(pre.len(), 1);
         assert_eq!(pre[0]["matcher"], CHAT_POLICY_MATCHER);
         let command = pre[0]["hooks"][0]["command"].as_str().unwrap();
-        assert!(command.starts_with("echo '"), "{command}");
-        let reply: serde_json::Value =
-            serde_json::from_str(command.trim_start_matches("echo '").trim_end_matches('\''))
-                .unwrap();
+        assert!(command.starts_with("echo "), "{command}");
+        let reply: serde_json::Value = serde_json::from_str(
+            command
+                .trim_start_matches("echo ")
+                .trim_start_matches('\'')
+                .trim_end_matches('\''),
+        )
+        .unwrap();
         assert_eq!(reply["hookSpecificOutput"]["permissionDecision"], "deny");
         assert_eq!(
             reply["hookSpecificOutput"]["permissionDecisionReason"],
@@ -2043,7 +2129,11 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
         let pre = v["hooks"]["PreToolUse"].as_array().unwrap();
         assert_eq!(pre.len(), 2, "{v}");
-        assert_eq!(pre[0]["matcher"], ask::MATCHER);
+        // Narrowed beside the policy (backlog 147): see the next test.
+        assert_eq!(
+            pre[0]["matcher"],
+            ask_matcher_under_chat_policy(ask::MATCHER)
+        );
         assert_eq!(pre[1]["matcher"], CHAT_POLICY_MATCHER);
         assert_eq!(v["autoMemoryEnabled"], false);
 
@@ -2061,6 +2151,66 @@ mod tests {
         // The matcher itself is JavaScript's (a negative lookahead the
         // `regex` crate cannot compile); the CLI was measured reading it —
         // Bash refused, Read run, in one turn (the report's step 11).
+    }
+
+    /// Under the Chat policy the Ask hook no longer names a withdrawn
+    /// tool (nightshift backlog 147): the CLI runs every matching entry,
+    /// so a `Bash` both hooks matched would raise a prompt the policy's
+    /// deny had already settled. The plan exit's matcher, all withdrawn,
+    /// registers no Ask entry at all. And the deny's echo carries nothing
+    /// `cmd.exe` would read as its own, so the unquoted Windows form holds.
+    #[test]
+    fn under_the_chat_policy_the_ask_hook_names_only_what_the_policy_leaves() {
+        let narrowed = ask_matcher_under_chat_policy(ask::MATCHER);
+        assert_eq!(narrowed, "WebFetch|WebSearch|mcp__.*");
+        for withdrawn in [
+            "Bash",
+            "Write",
+            "Edit",
+            "MultiEdit",
+            "NotebookEdit",
+            "ExitPlanMode",
+        ] {
+            assert!(!narrowed.split('|').any(|t| t == withdrawn), "{withdrawn}");
+        }
+        assert_eq!(ask_matcher_under_chat_policy(ask::EXIT_PLAN_MATCHER), "");
+
+        let mut s = spec();
+        s.apply_kind(ChatKind::Build);
+        s.apply_kind_policy(ChatKind::Chat, ChatKind::Build);
+        s.ask = Some(AskSpec {
+            hook: vec!["/app/nightloom-desktop".into(), "--permission-hook".into()],
+            dir: PathBuf::from("/logs/ask/chat-1"),
+            mode: AskMode::Ask,
+        });
+        let a = s.args("hi");
+        let i = a.iter().position(|x| x == "--settings").unwrap();
+        let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
+        let pre = v["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(pre.len(), 2, "{v}");
+        assert_eq!(pre[0]["matcher"], "WebFetch|WebSearch|mcp__.*");
+        assert_eq!(pre[1]["matcher"], CHAT_POLICY_MATCHER);
+        // The one resume that leaves plan mode: only the deny is registered.
+        s.ask.as_mut().unwrap().mode = AskMode::ExitingToAuto;
+        let a = s.args("hi");
+        let i = a.iter().position(|x| x == "--settings").unwrap();
+        let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
+        let pre = v["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(pre.len(), 1, "{v}");
+        assert_eq!(pre[0]["matcher"], CHAT_POLICY_MATCHER);
+        // Without the policy, the matcher is untouched.
+        let mut plain = spec();
+        plain.ask = s.ask.clone();
+        plain.ask.as_mut().unwrap().mode = AskMode::Ask;
+        assert_eq!(matcher_of(&plain.args("hi")), ask::MATCHER);
+
+        let command = pre[0]["hooks"][0]["command"].as_str().unwrap();
+        let reply = command.trim_start_matches("echo ").trim_matches('\'');
+        assert!(
+            !reply.contains(['&', '|', '<', '>', '^', '%']),
+            "cmd.exe would read one of these as its own: {reply}"
+        );
+        assert!(!reply.contains('\''), "{reply}");
     }
 
     #[test]

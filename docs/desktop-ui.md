@@ -757,6 +757,19 @@ rule): Escape, Cancel, a click on a chat and a project switch all leave the form
 with the name, the instructions and a picked folder still in it, marked
 `● draft`; only Create and Discard (behind `ConfirmDialog`) clear it. ⌘↵ creates.
 
+**The layout, his four asks (2026-09-17, nightshift backlog 103; blocker
+233's board A).** Before a name is typed the folder row reads the projects
+folder with a trailing `/` — where the slug will go — never "…"
+(`resolve_new_project_path("")` already answered the folder; the row now
+shows it). The Name label and its text are centred in the column, the
+input capped at 28rem. The Instructions box is a third of its old height
+(four lines) with a resize corner that pulls it down, and no longer grows
+to fill the column. Under its hint, a second *Cancel · Create* pair,
+right-aligned, Create filled in the accent (`ns-btn accent`); the header's
+pair stays, and both do exactly the same thing. Board B — the pair in the
+footer band beside the Open-project sentence — is the alternative the
+blocker names.
+
 **Open project…** (`openProjectFolder`, `create_project` → `Registry::add`) is
 the old flow renamed: pick a folder, it becomes a project named after the
 folder; pick one already registered and it opens rather than duplicating, since
@@ -1210,6 +1223,40 @@ has no thumbnail, and a chip that guessed wrong would render a broken `<img>`. T
 transcript lists an attached PDF by name for the same reason a turn shows its
 images — a caption asking about a file the transcript never mentions reads as a
 question about nothing.
+
+**An attachment opens in front (2026-09-17, nightshift backlog 145).**
+~~The transcript lists an attached PDF by name~~ — the thumbnail and the
+PDF chip in a user bubble are buttons now: a click opens the attachment
+in a **floating tab** — a tab in the workspace's one floating slot
+(`Workspace.floating`, `tabs.ts`: `openFloating` replaces, `closeFloating`;
+the content `{kind: "attachment", session, turn, index, media, name}`
+addresses the event in the chat's log and the attachment in it, so the
+bytes are read from the log and copied nowhere) drawn by
+`AttachmentLayer.svelte` over the panes: a scrim, a centred card
+(`fitRect` in `attachmentView.ts`: the image's natural size, never
+enlarged, fit inside the viewport less 40px, a 240px floor) that zooms
+up from the thumbnail (a Web Animation from `zoomTransform(thumb, card)`
+— translate the corners, scale the sides — to none, 200 ms, ease-out;
+none under reduced motion). An image shows fit-to-screen and at its own
+size on a second click (the card takes the viewport less its margins
+and scrolls); a PDF shows in an `<embed>` of its data URL (no viewer
+outside the app). It closes on the scrim, ×, or Escape — caught on the
+window's capture phase from anywhere but a text field (138's rule), so
+the window never sees it. One floating tab at a time; a tab whose bytes
+are gone (a rewound log, another chat brought forward) closes itself.
+**Kept (pass 2):** the card's head drags with the same `CONTENT_DRAG`
+descriptor; a drop on a strip or a pane's half goes through
+`dropContent`, which sees the floating tab's own content and *keeps* it
+— `keepFloating` moves the tab into the strip at the index (or
+activates the tab already holding it), `keepFloatingBeside` makes the
+second pane — and the slot empties; the tab then draws as
+`AttachmentView.svelte` in its pane (the image fit, its own size on a
+click; the PDF filling it), or a card when its chat is not the open one
+(*Open the chat*, a chat tab beside), or a line when the log no longer
+has it. A deleted chat takes its attachment tabs and the floating one
+(`dropChat`). The strip titles it by name, glyph `read` for an image and
+`download` for a file. The model's own file cards (078) do not open this
+way yet — blocker 226.
 
 **`disable_drag_drop_handler()` on the window in `build_window` is
 load-bearing**: it defaults to on, and Tauri's OS-level handler then swallows file
@@ -2084,3 +2131,19 @@ the one running a turn no longer waits the turn out (`rename_session` /
 `delete_session` `try_lock`, told the open chat's id; the running chat is
 refused with a sentence), and the held nightshift launch's `caffeinate`
 carries `-w <pid>` so a crash cannot leave the Mac unable to sleep.
+
+**The rest of the eleven, sorted (2026-09-17 later, backlog 136 pass 2).**
+The rule is the review's: a command that only *reads* takes a `try_lock`
+and refuses at once, naming the open chat's turn; a command that must
+*write* waits, so the write lands on the finished turn instead of being
+lost to a toast. Readers: `transcript` ("the open chat is running a turn —
+the transcript is what is on screen, and it refreshes when the turn ends";
+every caller keeps `app.events`) and `cli_prompt_snapshot` (the Context
+popover's CLI-prompt card; it shows nothing for the moment and asks again
+on its next open). Writers, left queued as today (blocker 206's default):
+`new_session` (⌘N), `open_session`, `open_project`, `close_project`,
+`forget_project`, `set_prompt_layers`, `set_prompt_layer_text` — each sets
+or appends to the session the turn holds, and a queued one runs against the
+finished turn with nothing lost. What a queued ⌘N still lacks is a visible
+tie to the keypress; that is a front-end gate per control ("…when the turn
+ends"), the tab flow's files.

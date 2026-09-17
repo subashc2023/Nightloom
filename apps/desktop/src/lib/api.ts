@@ -14,6 +14,7 @@ import type {
   ConnectResult,
   DocumentInput,
   DreamReport,
+  FolderGrant,
   ImageInput,
   ImportSummary,
   Item,
@@ -216,8 +217,18 @@ export function approveCall(
   reason?: string,
   answer?: unknown,
   then?: "ask" | "auto",
+  grant?: FolderGrant,
 ): Promise<null> {
-  return invoke("approve_call", { id, name, decision, reason, answer, then });
+  return invoke("approve_call", {
+    id,
+    name,
+    decision,
+    reason,
+    answer,
+    then,
+    grantDir: grant?.dir,
+    grantScope: grant?.scope,
+  });
 }
 
 export function listSessions(): Promise<SessionMeta[]> {

@@ -11,7 +11,7 @@
 
 use super::ask::DeferredCall;
 use super::protocol::{
-    ApiMessage, Block, Delta, Line, RateLimitInfo, ResultLine, StreamEv, SystemLine,
+    ApiMessage, Block, Delta, DeniedCall, Line, RateLimitInfo, ResultLine, StreamEv, SystemLine,
 };
 use crate::TurnEvent;
 use nightloom_core::Usage;
@@ -47,6 +47,13 @@ pub struct AgentOutcome {
     /// disk still holds the call, and the turn is not over until a
     /// `--resume` runs it or refuses it — see [`super::ask`].
     pub deferred: Option<DeferredCall>,
+    /// The calls the CLI refused on permission during the turn (nightshift
+    /// backlog 143, pass 2): under Ask, a read outside the folders the
+    /// chat may see is one — the prompt host denies it rather than pausing
+    /// (see [`super::ask::PromptTool`]) and the model is told; this is how
+    /// the shell learns which folder, so the rail can offer the grant. As
+    /// the last `result` line listed them.
+    pub denied: Vec<DeniedCall>,
 }
 
 /// Feeds lines in, gets [`TurnEvent`]s out, accumulates an [`AgentOutcome`].
@@ -286,6 +293,10 @@ impl Translator {
         } else {
             None
         };
+        // The same rule for the refusals: the last result line's list is
+        // the turn's, and a deferral's line (empty on the measured shape)
+        // is followed by the resume's, which carries the whole turn's.
+        self.outcome.denied = r.permission_denials;
         // The `result` line repeats the turn's totals, which `message_delta`
         // has already been reporting per round. Adding them again would
         // double every figure in the gauge, so it is read only when no
@@ -646,6 +657,32 @@ mod tests {
         let (_, two) = drive(&[RESULT_DEFERRED, RESULT]);
         assert!(two.deferred.is_none(), "the last result line wins");
         assert_eq!(two.text, "hello");
+    }
+
+    /// Verbatim from the 2026-09-17 measurement with a denying prompt
+    /// host (nightshift `remainders-report-2026-09-17.md`, m143-3), the
+    /// usage trimmed: a read outside the working directories under Ask
+    /// ends the turn normally and names the refused call here.
+    const RESULT_DENIED: &str = r#"{"type":"result","subtype":"success","is_error":false,"duration_ms":4489,"num_turns":3,"result":"denied by the test host","stop_reason":"end_turn","session_id":"622c001b-584c-4eae-ac58-9ec6b07a1cc7","total_cost_usd":0.0071,"permission_denials":[{"tool_name":"Read","tool_use_id":"toolu_01Lm3HWyuxzs8mJZDetcpE5H","tool_input":{"file_path":"/elsewhere/hello.txt"}}]}"#;
+
+    /// The refused calls ride out on the outcome (backlog 143, pass 2),
+    /// and a plain result carries none.
+    #[test]
+    fn a_result_carries_the_calls_the_permission_check_refused() {
+        let (_, outcome) = drive(&[INIT, RESULT_DENIED]);
+        assert_eq!(outcome.denied.len(), 1);
+        assert_eq!(outcome.denied[0].tool_name, "Read");
+        assert_eq!(
+            outcome.denied[0].tool_use_id,
+            "toolu_01Lm3HWyuxzs8mJZDetcpE5H"
+        );
+        assert_eq!(
+            outcome.denied[0].tool_input["file_path"],
+            "/elsewhere/hello.txt"
+        );
+        assert!(!outcome.is_error);
+        let (_, plain) = drive(&[RESULT]);
+        assert!(plain.denied.is_empty());
     }
 
     /// The resume stream opens with the result of a call this translator

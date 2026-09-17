@@ -281,8 +281,10 @@ turn rather than racing it; Stop cancels it) and returns the answer, the
 CLI's cost estimate and the cache read — recorded nowhere, not in the log
 and not in the CLI's files (the protocol and the measurements are in
 [service-agent.md](service-agent.md#ask-aside-a-side-question-on-the-warm-cache-2026-09-16-nightshift-backlog-081)).
-`app.aside` holds one at a time; `Transcript.svelte` draws it at the foot
-as a dashed card — `aside · not in the chat`, the question, `asking…` then
+`app.aside` holds one at a time; ~~`Transcript.svelte` draws it at the foot
+as a dashed card~~ (since 2026-09-17, backlog 141, it is the floating card
+`AsideCard.svelte`, under the passage or above the composer — the
+paragraph below) — `aside · not in the chat`, the question, `asking…` then
 the answer, `N read from cache`, × — cleared by its × or a chat switch. A
 chat with no CLI session yet is refused with a sentence.
 
@@ -307,15 +309,18 @@ messages (`.user-text`) and a pill floats over the selection — **Ask aside
 selection must sit in the same prose block of the same live turn: thinking,
 tool results, a subagent's text and a selection across two messages get no
 pill, nor does a rewound or removed message, the API engine, or a running
-turn. The pill (or the chord) opens the aside card at the foot as a *draft*:
-the quote above (`about its 3rd reply` / `about your 1st message`, replies
-counted as drawn — a run is one reply), a one-line box (Enter asks, Escape
-closes), Ask aside / Cancel; the composer is untouched. What is sent is
+turn. The pill (or the chord) opens the aside card ~~at the foot~~ (under
+the passage since 2026-09-17, backlog 141) as a *draft*:
+~~the quote above~~ (the passage is marked in place since 141 and not
+quoted again; the chip still says `about its 3rd reply` / `about your 1st
+message`, replies counted as drawn — a run is one reply), a one-line box
+(Enter asks, Escape closes), Ask aside / Cancel; the composer is untouched. What is sent is
 `asideQuestion` (`asideQuote.ts`): *"The user selected this passage in the
 transcript, from your 3rd reply, quoted exactly:"*, the passage between
 triple quotes, then the typed question — one string to the same `ask_aside`,
 so the backend and its measurements are 081's and nothing enters the log.
-The answered card keeps the quote above the question and the answer.
+~~The answered card keeps the quote above the question and the answer.~~
+(141: the mark stays on the passage while the card is open instead.)
 `app.aside` gained `quote`, `draft` and `seq` (`Aside` in
 `state.svelte.ts`); `draftAside(quote)` opens the draft, `askAside(q,
 quote)` sends. The pill is `position: fixed` at the selection rectangle,
@@ -365,6 +370,72 @@ the message in a cache-creation block, and that grew 5,358 → 5,640 → 6,056
 tokens — about **140 tokens per quoted exchange**, four characters a token,
 at cache-write price, beside a 30,516-token prefix read from cache. Part 2
 (the card dragged out into a tab) waits on backlog 099.
+
+**The card floats at the selection (2026-09-17, nightshift backlog 141;
+blocker 162 answered *popover at the selection*).** The foot card is gone.
+Highlight a passage and click the pill: the passage stays **marked** in
+the transcript (the CSS Custom Highlight API's `::highlight(aside-passage)`
+where the webview has it — WebKit since Safari 17.2 — else each text node
+of the range wrapped in a `<mark class="aside-passage">`, undone before
+the next render; the accent at 30 % over the sheet, not a literal yellow)
+and a small card opens right under it; the view does not move. The card
+is `AsideCard.svelte`, drawn once as the last child of the transcript's
+scrolled column (`.inner`, now `position: relative`), `position: absolute`
+in that frame so it scrolls with the message it is about: a head row with
+a drag grip, the `aside · not in the chat` chip, `about its 3rd reply`,
+the cache chip, **Copy** (the answer, or the thread as `> question` /
+answer pairs) and ×; then the question box (a draft), then his question in
+a bubble, the answer streaming under the moon (128), a `stopped here` mark,
+the follow-up box (130). Escape closes it from inside the card and from
+anywhere in the window that is not another text field, stopped at the
+card so it never reaches the window (138's rule). One card at a time: a
+second passage's pill replaces the first (through 201's confirm when the
+first has answers). The passage's place is the thread's **anchor**
+(`AsideAnchor { turn, block, start, end, side }` in `asideCard.ts`: the
+turn, which prose block of it — a reply has one `.markdown` per text
+segment between tool calls — character offsets into that block's text,
+and the side the card opens on, chosen once so a growing answer never
+flips the card over the text); offsets survive the log's re-sync at a
+turn's end, where a `Range` would not, and they are saved with the thread
+(`asides.ts`, 137). The geometry is pure (`chooseSide`, `placeCard`, tested
+in `asideCard.test.ts`): below the passage when a 240px card fits between
+it and the viewport's foot, else above when it fits there, else the side
+with more room; the card's left edge at the selection's, 440px wide or
+the column's width, and its `max-height` the room on its side so a long
+answer scrolls inside the card. `Transcript.svelte` re-measures after
+every render that can move the text (the thread, the log's identity, the
+items) and on a `ResizeObserver` of the column and the card. A passage
+that cannot be found again (rewound, edited, a restored thread whose text
+changed) and a **composer aside** (no passage; blocker 225, default taken)
+get the other home: the same card pinned above the composer — `position:
+sticky; bottom: 8px` at the column's end, so it stays while he scrolls up
+to read. Nothing sent to the model changed (`asideQuestion`,
+`asideFollowUp` as before). `draftAside(quote, anchor)` takes the anchor;
+`askAside` keeps the draft's. The card hides while its thread shows in a
+tab (`asideInTab`, 130 part 2) and its head row is the drag source as
+before.
+
+**The card dragged out: a tab, or the side panel (2026-09-17, nightshift
+backlog 141 pass 2).** The head row's grip dragged onto a tab strip makes
+the aside tab of backlog 130 part 2 (P's `AsideView`, the card hidden
+meanwhile, back when the tab closes). Dragged to the **window's right
+edge** — a 64px zone that lights only while an aside descriptor is in
+flight (`app.draggingContent.kind === "aside"`), above the panes' halves
+— it lands in the **side panel**: `app.asidePanel` names the chat, and
+`App.svelte` draws a third 360px grid column beside the panes with a thin
+head (`Aside · <chat>`, a *back* button) and the same `AsideCard` in its
+`panel` mode (static, full height, no shadow). The panel is not a pane:
+no strip, never focused, outside the tab model's walks. It is a second
+view of the thread where it lives (`asideOf`), so a follow-up typed there
+is the same `followUpAside`; with another chat open it reads as it was
+with the aside tab's line (the backend forks the open chat). While the
+panel shows the open chat's thread the transcript hides its card
+(`asideInTab` counts the panel) but **keeps the passage marked** — the
+panel is about it. *Back* or Escape in the panel puts the card back under
+the passage with the thread intact; the card's × ends the thread and the
+panel closes with it; a tab opened for the same thread closes the panel
+(one second view at a time); a deleted chat closes it. Not persisted, as
+the workspace is not.
 
 The `AutoApprove` policy lives in `AppState`, **not** in `connect` — the rail
 re-connects on every knob change, and rebuilding the policy there would silently
@@ -527,7 +598,16 @@ note at the tail are free (31–33k read, under 1.2k written). So:
     on the API engine `KindPolicy` over the window's approver. A refused
     call reaches the model as an `is_error` tool result with the reason
     and the turn ends normally (measured, step 10). The Context popover's
-    Tools card strikes the refused tools through.
+    Tools card strikes the refused tools through. **Beside the Ask hook
+    (2026-09-17 later, backlog 147):** the CLI runs every `PreToolUse`
+    entry a call matches, so with approval on the Ask hook is registered
+    on `ask_matcher_under_chat_policy` — its matcher less every name the
+    policy refuses, `WebFetch|WebSearch|mcp__.*` — and a withdrawn `Bash`
+    raises no prompt whose answer could not matter; the plan exit's
+    resume, all withdrawn, registers the deny alone. On Windows the deny's
+    `echo` is unquoted (`cmd.exe` prints its line verbatim; the reply has
+    no `cmd` metacharacters, pinned by a test) — `inferred`, not measured
+    on a Windows machine.
   - **Chat → Claude Code** on a chat **born** as a Chat: the tools were
     never declared, so the declaration changes once and the prefix is
     re-written — the confirm line names the figure (`kindSwitchCost`:
@@ -571,9 +651,50 @@ engine the tool descriptions name them (`Root::path_hint`). A Chat (by
 declaration) sees no folder and offers no row. What the model is told about
 `.ipynb` files: nothing special — both engines read them as JSON text.
 
-Pass 2 (not built): the approval prompt's *Allow this folder — for this chat
+~~Pass 2 (not built): the approval prompt's *Allow this folder — for this chat
 · for the project* entrance on a path outside the trees, and the search
-panel's scope (default: extra folders are not searched).
+panel's scope (default: extra folders are not searched).~~ Built later the
+same day, below.
+
+### The two entrances "when I give it permission" (2026-09-17, backlog 143, pass 2)
+
+Measured on the CLI first (nightshift `remainders-report-2026-09-17.md`,
+`external`): a folder given by `--add-dir` on a `--resume` is readable at
+once, with no second prompt, and a read outside every tree under Ask is a
+*permission refusal* the `result` line lists in `permission_denials` as
+`{tool_name, tool_use_id, tool_input}`. The hook (`ask::MATCHER`) pauses the
+writers, the web and the prompt tools — never `Read`, `Glob` or `Grep` — so
+the two cases take two entrances:
+
+- **A write outside the trees, on the card.** The deferred call arrives on
+  the `tool-approval` event with `outside`: the nearest existing folder on
+  the path the call named (`agent::outside_folder`; `file_path`,
+  `notebook_path`, `path` — a `Bash` call names none and gets no offer).
+  The card shows the path under *outside the folders this chat can see*
+  with *Allow, and let this chat see <leaf>* · *…let the project see it*.
+  Either is an ordinary allow plus a grant (`approve_call`'s `grant_dir`,
+  `grant_scope`; `Answer::Allow { grant }`): the folder joins the agent's
+  `--add-dir`s before the resume that runs the call (`ClaudeCodeAgent::grant_dir`),
+  a project grant is written to the registry there and then, a chat grant
+  is recorded on the log (`record_folders`) once the turn lands — and the
+  turn's result carries the rail's refreshed list (`AgentTurn::folders`).
+- **A read outside the trees, after the turn.** The prompt host denies it
+  at once (blocker 071: no process sits open on a person), the model is
+  told, and the `result` line names the call. `AgentOutcome::denied` carries
+  the list out; the shell keeps each refused folder outside every tree
+  (`AgentTurn::refused`, each once) and the rail's Folders row lists it as
+  *refused* with *Allow for this chat* · *…for the project* and an × to
+  forget it. A grant reconnects and the folder moves up into the list; the
+  next turn reads there.
+
+Deferring reads through the hook too (a process exit and resume per read
+outside the trees) would put the read on the card as well; not taken —
+nightshift blocker 232, default *not yet*.
+
+**The search panel's scope** (`search_everywhere`): chats are searched by
+log directory and notes by the project's notes folder and the vault; an
+extra folder is code, not the docspace, and is never searched. The default
+the item named, confirmed rather than changed — no switch for it.
 
 ## Settings keys and the remembered pane (2026-09-16, nightshift backlog 109)
 

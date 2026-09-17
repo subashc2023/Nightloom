@@ -3,15 +3,9 @@
   import { onDestroy, tick, untrack } from "svelte";
   import {
     app,
-    asideAsking,
     asideInTab,
-    endContentDrag,
-    startContentDrag,
-    askAside,
     denialReason,
-    dismissAside,
     draftAside,
-    followUpAside,
     liveFlags,
     removeBlock,
     removeTurn,
@@ -45,7 +39,16 @@
   import { wordDiff } from "./textdiff";
   import { continuedFlags } from "./runs";
   import { quoteLabel, samePassage, selectionText, type AsideQuote } from "./asideQuote";
-  import { renderMarkdown } from "./markdown";
+  import {
+    PREFERRED_CARD_HEIGHT,
+    chooseSide,
+    markRange,
+    offsetsOf,
+    placeCard,
+    rangeFromOffsets,
+    type AsideAnchor,
+    type Placement,
+  } from "./asideCard";
   import { isMac } from "./platform";
   import { fmtShare, fmtTokens, shareOf, sizeTitle, turnSizes } from "./tokens";
   import { cacheState } from "./cache";
@@ -61,6 +64,8 @@
     Usage,
   } from "./types";
   import AssistantMessage from "./AssistantMessage.svelte";
+  import AsideCard from "./AsideCard.svelte";
+  import { openAttachment } from "./attachments.svelte";
   import ApprovalPrompt from "./ApprovalPrompt.svelte";
   import Icon from "./Icon.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
@@ -945,9 +950,13 @@
   // ---- Ask aside about a highlighted passage (nightshift backlog 107) ----
   //
   // Select words in a reply or in one of his messages and a small pill
-  // floats over the selection: *Ask aside*. It opens the aside card
+  // floats over the selection: *Ask aside*. ~~It opens the aside card
   // (backlog 081) at the foot as a question box with the passage quoted
-  // above it; what he types is sent with the passage, framed as a
+  // above it~~ — since backlog 141 (2026-09-17, blocker 162 answered) it
+  // marks the passage in place and opens the floating card
+  // (`AsideCard.svelte`) right under it, inside this scrolled column, so
+  // the view does not move and the passage is not quoted twice; what he
+  // types is sent with the passage, framed as a
   // selection (`asideQuote.ts`), through the same backend — off the warm
   // cache, recorded nowhere. A passage is a selection whose both ends sit
   // in the same prose block (`.markdown` for a reply, `.user-text` for his
@@ -964,8 +973,6 @@
   // the native menu — grepped 2026-09-16).
   const PILL_HEIGHT = 30;
   let asidePill = $state<{ quote: AsideQuote; top: number; left: number } | null>(null);
-  let asideBox = $state<HTMLTextAreaElement | null>(null);
-  let asideDraft = $state("");
   // A turn starting, or the engine changing, takes the pill down without
   // waiting for the next selection change.
   $effect(() => {
@@ -1002,7 +1009,9 @@
   }
 
   /** The selection as a passage, or null when it is not one. */
-  function passageOf(sel: Selection | null): { quote: AsideQuote; range: Range } | null {
+  function passageOf(
+    sel: Selection | null,
+  ): { quote: AsideQuote; range: Range; turn: number; prose: Element } | null {
     if (!sel || sel.isCollapsed || sel.rangeCount === 0) return null;
     const a = proseEnd(sel.anchorNode);
     const b = proseEnd(sel.focusNode);
@@ -1014,7 +1023,28 @@
     // quotes each equation as its `$…$` source instead.
     const text = selectionText(sel.getRangeAt(0));
     if (!text) return null;
-    return { quote: { text, role: a.role, ordinal: ordinals[a.turn] ?? 1 }, range: sel.getRangeAt(0) };
+    return { quote: { text, role: a.role, ordinal: ordinals[a.turn] ?? 1 }, range: sel.getRangeAt(0), turn: a.turn, prose: a.prose };
+  }
+
+  /** The prose blocks of a turn, in document order — a reply has one
+   *  `.markdown` per text segment between its tool calls. */
+  function proseBlocks(turn: number): Element[] {
+    if (!viewport) return [];
+    return Array.from(viewport.querySelectorAll(`[data-turn="${turn}"] .markdown, [data-turn="${turn}"] .user-text`));
+  }
+
+  /** Where the passage is, as the card remembers it (backlog 141): the
+   *  turn, the prose block's index, character offsets into its text, and
+   *  the side the card opens on — chosen once from the room around the
+   *  selection, so a growing answer never flips the card over the text. */
+  function anchorOf(p: { range: Range; turn: number; prose: Element }): AsideAnchor | null {
+    if (!viewport) return null;
+    const block = proseBlocks(p.turn).indexOf(p.prose);
+    if (block < 0) return null;
+    const { start, end } = offsetsOf(p.prose, p.range);
+    if (end <= start) return null;
+    const side = chooseSide(p.range.getBoundingClientRect(), viewport.getBoundingClientRect(), PREFERRED_CARD_HEIGHT);
+    return { turn: p.turn, block, start, end, side };
   }
 
   function placePill() {
@@ -1046,6 +1076,13 @@
     asidePill = { quote: p.quote, top, left };
   }
 
+  /** The anchor for the selection the pill is over, read at the click —
+   *  the selection is still live then (the pill's mousedown keeps it). */
+  function anchorOfSelection(): AsideAnchor | null {
+    const p = passageOf(document.getSelection());
+    return p ? anchorOf(p) : null;
+  }
+
   /** A new passage's question would replace an answered thread on the
    *  card (backlog 137, blocker 201): the thread is written nowhere else
    *  but the card, so it is asked about first, in the dialog's shape. */
@@ -1054,25 +1091,28 @@
     !!app.aside && !app.aside.draft && app.aside.turns.some((t) => t.partial.trim().length > 0),
   );
 
+  let replacingAnchor: AsideAnchor | null = null;
   async function askAboutSelection(): Promise<void> {
     const pill = asidePill;
     if (!pill) return;
+    const anchor = anchorOfSelection();
     document.getSelection()?.removeAllRanges();
     asidePill = null;
     if (asideHasAnswers) {
       replacingAside = pill.quote;
+      replacingAnchor = anchor;
       return;
     }
-    await openAsideDraft(pill.quote);
+    await openAsideDraft(pill.quote, anchor);
   }
 
-  async function openAsideDraft(quote: AsideQuote): Promise<void> {
-    draftAside(quote);
-    asideDraft = "";
+  async function openAsideDraft(quote: AsideQuote, anchor: AsideAnchor | null): Promise<void> {
+    draftAside(quote, anchor);
     await tick();
-    // The card is at the foot; bring it up and put the caret in its box.
-    toBottom();
-    asideBox?.focus({ preventScroll: true });
+    // The card is under the passage (or above the composer); the view
+    // stays where it is and the caret goes to the card's box.
+    await placeAsideCard();
+    asideCard?.focusBox();
   }
 
   function asideChord(e: KeyboardEvent): void {
@@ -1083,41 +1123,121 @@
     void askAboutSelection();
   }
 
-  function submitAsideDraft(): void {
-    const q = asideDraft.trim();
-    const quote = app.aside?.quote ?? null;
-    if (!q || !quote || !app.aside?.draft) return;
-    asideDraft = "";
-    void askAside(q, quote);
+  // ~~`submitAsideDraft`, `asideBoxKeys`, the follow-up box~~ — the
+  // card's own since backlog 141 (`AsideCard.svelte`); the question and
+  // follow-up boxes, Enter, Escape and the Follow up button live there.
+
+  // ---- The floating card's place and the passage's mark (backlog 141) ----
+  //
+  // The card is drawn once, at the column's end, `position: absolute`
+  // in this scrolled column (`.inner`, `position: relative`) so it moves
+  // with the message it is about. Its place is measured, not styled: the
+  // anchor's offsets are turned back into a `Range` in the turn's prose
+  // block, the passage is marked (`markRange`: the CSS Custom Highlight
+  // API in this webview, wrapped `<mark>`s elsewhere), and `placeCard`
+  // gives the card's top, left, width and the room it may take before it
+  // scrolls inside. Re-done after every render that can move the text —
+  // the log re-syncing at a turn's end (the reply is new DOM), a chat
+  // switch bringing a stashed thread back — and on any size change of
+  // the column or the card (a `ResizeObserver` each), and the window.
+  // A passage that cannot be found again (rewound, edited, a restored
+  // thread whose text changed) gets the composer's home instead
+  // (blocker 225): no mark, the card pinned above the composer.
+  let inner = $state<HTMLDivElement | null>(null);
+  let asideCard = $state<AsideCard | null>(null);
+  let asidePlace = $state<Placement | null>(null);
+  let asideRange: Range | null = null;
+  let unmarkAside: (() => void) | null = null;
+
+  const asideShown = $derived(!!app.aside && !asideInTab(app.activeSessionId));
+  /** The thread in the side panel beside this chat (141 pass 2): the
+   *  card is the panel's, but the passage stays marked here — the panel
+   *  is about it, and the mark is what says so. */
+  const asideBeside = $derived(!!app.aside && app.asidePanel === app.activeSessionId);
+
+  function clearAsideMark(): void {
+    unmarkAside?.();
+    unmarkAside = null;
+    asideRange = null;
   }
 
-  function asideBoxKeys(e: KeyboardEvent): void {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      submitAsideDraft();
-    } else if (e.key === "Escape") {
-      e.preventDefault();
-      dismissAside();
-    }
+  /** Find the passage again and mark it; null when it is gone. */
+  function anchorAside(anchor: AsideAnchor): Range | null {
+    const prose = proseBlocks(anchor.turn)[anchor.block] ?? null;
+    if (!prose) return null;
+    return rangeFromOffsets(prose, anchor.start, anchor.end);
   }
 
-  // A follow-up in the aside's own thread (backlog 130): the reply box
-  // under the last answer. Enter asks, Shift-Enter is a newline; the box
-  // is this screen's, like the passage draft's — the thread itself is
-  // kept per chat in `state.svelte.ts`.
-  let followDraft = $state("");
-  function submitFollowUp(): void {
-    const q = followDraft.trim();
-    if (!q || !app.aside || app.aside.draft || asideAsking(app.aside)) return;
-    followDraft = "";
-    void followUpAside(q);
-  }
-  function followKeys(e: KeyboardEvent): void {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      submitFollowUp();
+  /** Measure and place: called after the DOM is current. */
+  async function placeAsideCard(): Promise<void> {
+    await tick();
+    const a = app.aside;
+    const anchor = a?.anchor ?? null;
+    if ((!asideShown && !asideBeside) || !a || !anchor || !viewport || !inner) {
+      clearAsideMark();
+      asidePlace = null;
+      return;
     }
+    // The mark is redone only when the range is not the one marked — a
+    // re-render replaced the text, or the thread changed. A range whose
+    // text nodes were removed does not disconnect: the browser collapses
+    // it onto the parent that stayed, so `collapsed` is the tell (seen in
+    // the harness — the mark went empty and the card sat at the top).
+    if (!asideRange || asideRange.collapsed || !asideRange.startContainer.isConnected) {
+      clearAsideMark();
+      const r = anchorAside(anchor);
+      if (!r) {
+        asidePlace = null;
+        return;
+      }
+      asideRange = r;
+      unmarkAside = markRange(r);
+    }
+    if (!asideShown) {
+      // Marked for the panel; no card here.
+      asidePlace = null;
+      return;
+    }
+    const el = asideCard?.element() ?? null;
+    const height = el?.offsetHeight ?? PREFERRED_CARD_HEIGHT;
+    asidePlace = placeCard(
+      asideRange.getBoundingClientRect(),
+      inner.getBoundingClientRect(),
+      viewport.getBoundingClientRect(),
+      height,
+      anchor.side,
+    );
   }
+
+  // What can move the passage or change the card: the thread (its
+  // presence, its anchor), a tab taking it, and the log's identity (the
+  // re-sync at a turn's end replaces every reply's DOM).
+  $effect(() => {
+    void app.aside;
+    void app.aside?.anchor;
+    void app.aside?.draft;
+    void asideShown;
+    void asideBeside;
+    void app.events;
+    void items.length;
+    untrack(() => void placeAsideCard());
+  });
+  // A card that grows (the answer streaming in), a column that changes
+  // shape (a reply completing above, the sidebar folded) or a viewport
+  // that does (the window resized — the column's height is its content's,
+  // so the window's change shows only on the viewport) re-measures.
+  $effect(() => {
+    const host = inner;
+    const view = viewport;
+    if (!host || !view || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => untrack(() => void placeAsideCard()));
+    ro.observe(host);
+    ro.observe(view);
+    const card = asideCard?.element();
+    if (card) ro.observe(card);
+    return () => ro.disconnect();
+  });
+  onDestroy(clearAsideMark);
 </script>
 
 <svelte:document onselectionchange={placePill} />
@@ -1134,7 +1254,7 @@
   tabindex="-1"
   onkeydown={viewportKeys}
 >
-  <div class="inner">
+  <div class="inner" bind:this={inner}>
     {#if continuedFrom}
       <div class="continued">
         <span class="continued-ic"><Icon name="branch" size={14} /></span>
@@ -1228,24 +1348,53 @@
             </div>
           {:else}
             <div class="user-bubble">
+              <!-- A click on an attachment opens it in front (nightshift
+                   backlog 145): the floating tab zooms up from the
+                   thumbnail's rect, so the rect and the image's decoded
+                   size go with the click. The address is the event's
+                   index and the attachment's; the bytes stay in the log. -->
               {#if item.images.length > 0}
                 <div class="user-images">
                   {#each item.images as img, j (j)}
-                    <img
-                      class="user-image"
-                      src={`data:${img.media_type};base64,${img.data}`}
-                      alt="attachment"
-                    />
+                    <button
+                      class="user-image-btn"
+                      title="Open in front"
+                      onclick={(e) => {
+                        const el = e.currentTarget.querySelector("img");
+                        if (!app.activeSessionId) return;
+                        openAttachment(
+                          { kind: "attachment", session: app.activeSessionId, turn: item.index, index: j, media: "image", name: "image" },
+                          e.currentTarget.getBoundingClientRect(),
+                          el && el.naturalWidth > 0 ? { width: el.naturalWidth, height: el.naturalHeight } : null,
+                        );
+                      }}
+                    >
+                      <img
+                        class="user-image"
+                        src={`data:${img.media_type};base64,${img.data}`}
+                        alt="attachment"
+                      />
+                    </button>
                   {/each}
                 </div>
               {/if}
               {#if item.documents.length > 0}
                 <div class="user-files">
                   {#each item.documents as doc, j (j)}
-                    <span class="user-file" title={doc.media_type}>
+                    <button
+                      class="user-file"
+                      title="{doc.media_type} — open in front"
+                      onclick={(e) => {
+                        if (!app.activeSessionId) return;
+                        openAttachment(
+                          { kind: "attachment", session: app.activeSessionId, turn: item.index, index: j, media: "document", name: doc.name },
+                          e.currentTarget.getBoundingClientRect(),
+                        );
+                      }}
+                    >
                       <span class="user-file-ext">PDF</span>
                       {doc.name}
-                    </span>
+                    </button>
                   {/each}
                 </div>
               {/if}
@@ -1433,19 +1582,21 @@
     {/each}
     <!-- The aside (nightshift backlog 081): a side question answered off the
          chat's warm cache and recorded nowhere — not in this log, not in
-         the CLI's files. Drawn at the foot, dashed, so it never reads as
-         a turn; its × is the only way it leaves, short of a chat switch.
-         About a passage (backlog 107): the highlighted text sits above the
-         question as a quote, and a card opened from a selection is first
-         the question box itself — the quote, a one-line box, Ask aside.
-         Since backlog 128 the card reads as a turn does: his question in
-         his bubble's face, the moon while nothing has arrived, the answer
-         streaming in under it in the reply's face; × mid-stream stops it
-         and keeps what had arrived, marked. -->
-    <!-- Agent P's one hunk (nightshift backlog 130 part 2, 2026-09-17):
-         the card hides while the thread is showing in a tab of its own
-         (`asideInTab`), and its head row drags — onto a strip or a
-         pane's half — to make that tab. The thread never moves. -->
+         the CLI's files. ~~Drawn at the foot, dashed, so it never reads as
+         a turn~~ — since backlog 141 (2026-09-17) it is the floating card
+         at the column's end below (`AsideCard.svelte`), placed under the
+         marked passage, or pinned above the composer when there is no
+         passage (blocker 225); its × is the only way it leaves, short of a
+         chat switch. ~~About a passage (backlog 107): the highlighted text
+         sits above the question as a quote~~ — the passage is marked in
+         the transcript instead and not quoted again. Since backlog 128 the
+         card reads as a turn does: his question in his bubble's face, the
+         moon while nothing has arrived, the answer streaming in under it
+         in the reply's face; × mid-stream stops it and keeps what had
+         arrived, marked. The card hides while the thread is showing in a
+         tab of its own (`asideInTab`, backlog 130 part 2), and its head
+         row drags — onto a strip or a pane's half — to make that tab. The
+         thread never moves. -->
     {#if replacingAside}
       <ConfirmDialog
         title="Start a new aside about this passage?"
@@ -1457,134 +1608,16 @@
         confirmLabel="Replace"
         onconfirm={() => {
           const q = replacingAside;
+          const anchor = replacingAnchor;
           replacingAside = null;
-          if (q) void openAsideDraft(q);
+          replacingAnchor = null;
+          if (q) void openAsideDraft(q, anchor);
         }}
-        onclose={() => (replacingAside = null)}
+        onclose={() => {
+          replacingAside = null;
+          replacingAnchor = null;
+        }}
       />
-    {/if}
-    {#if app.aside && !asideInTab(app.activeSessionId)}
-      {@const asking = asideAsking(app.aside)}
-      {@const last = app.aside.turns[app.aside.turns.length - 1] ?? null}
-      <div class="aside" role="note" aria-label="aside, not part of the chat">
-        <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div
-          class="aside-head"
-          draggable={app.activeSessionId !== null && !app.aside.draft}
-          title={app.activeSessionId !== null && !app.aside.draft ? "Drag onto a tab strip to open this aside as a tab" : undefined}
-          ondragstart={(e) => {
-            if (app.activeSessionId === null || app.aside?.draft) return;
-            startContentDrag(e, { kind: "aside", session: app.activeSessionId });
-          }}
-          ondragend={endContentDrag}
-        >
-          <span class="ns-chip mono">aside · not in the chat</span>
-          {#if app.aside.quote}
-            <span class="ns-chip mono">about {quoteLabel(app.aside.quote, "card")}</span>
-          {/if}
-          {#if last && last.answer !== null && last.cacheRead > 0}
-            <span class="ns-chip mono">{last.cacheRead.toLocaleString()} read from cache</span>
-          {/if}
-          <span class="spacer"></span>
-          <button
-            class="ns-btn ghost small"
-            title={app.aside.draft
-              ? "Close without asking"
-              : asking
-                ? "Stop the answer here; what has arrived stays"
-                : "Dismiss the aside"}
-            onclick={dismissAside}>×</button
-          >
-        </div>
-        {#if app.aside.quote}
-          <blockquote class="aside-quote" title="The passage you highlighted, sent with the question exactly as selected">{app.aside.quote.text}</blockquote>
-        {/if}
-        {#if app.aside.draft}
-          <textarea
-            class="aside-box"
-            bind:this={asideBox}
-            bind:value={asideDraft}
-            rows="1"
-            placeholder="Ask about this passage… (Enter asks, Escape closes)"
-            aria-label="Your question about the highlighted passage"
-            onkeydown={asideBoxKeys}
-            autocorrect="off"
-            autocapitalize="off"
-            spellcheck="false"
-          ></textarea>
-          <div class="aside-row">
-            <button
-              class="ns-btn small"
-              disabled={!asideDraft.trim()}
-              title="Ask this about the passage, off the chat's context: no changes, recorded nowhere"
-              onclick={submitAsideDraft}
-            >
-              Ask aside
-            </button>
-            <button class="ns-btn ghost small" onclick={dismissAside}>Cancel</button>
-          </div>
-        {:else}
-          {#each app.aside.turns as turn (turn.seq)}
-            <!-- Two voices (backlog 128): his question drawn as his turn
-                 is — the bubble of backlog 126, at the right — the answer
-                 in the reply's face under it. -->
-            <div class="aside-turn">
-              <div class="user-bubble aside-q"><div class="user-text">{turn.question}</div></div>
-            </div>
-            {#if turn.partial}
-              <!-- Through the reply renderer, as it streams: the answer is
-                   markdown with equations, and it read raw (his report,
-                   2026-09-17). -->
-              <div class="aside-a markdown">{@html renderMarkdown(turn.partial)}</div>
-            {/if}
-            {#if turn.cancelled}
-              <div class="aside-mark">stopped here</div>
-            {/if}
-            {#if turn.error}
-              <div class="aside-err">{turn.error}</div>
-            {/if}
-            {#if turn === asking}
-              <!-- The same moon a turn waits with (backlog 049): it rolls
-                   where the answer will be, and stays under the text while
-                   the text is still arriving, as the reply's does. -->
-              <div class="waiting aside-wait" role="status" aria-label="Waiting for the answer">
-                <span class="roll" aria-hidden="true"><Icon name="moon" size={16} /></span>
-                <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
-              </div>
-            {/if}
-          {/each}
-          {#if last && !asking && !onClaudeCode}
-            <!-- The thread outlives an engine switch (backlog 137); a
-                 follow-up needs the engine the aside runs on. -->
-            <div class="aside-mark">Follow up on the Claude Code engine</div>
-          {:else if last && !asking}
-            <!-- The follow-up box (backlog 130): the thread continues
-                 here, still beside the chat — each follow-up carries the
-                 exchanges above it, and nothing enters the log. -->
-            <textarea
-              class="aside-box"
-              bind:value={followDraft}
-              rows="1"
-              placeholder="Follow up in the aside… (Enter asks)"
-              aria-label="A follow-up in the aside"
-              onkeydown={followKeys}
-              autocorrect="off"
-              autocapitalize="off"
-              spellcheck="false"
-            ></textarea>
-            <div class="aside-row">
-              <button
-                class="ns-btn small"
-                disabled={!followDraft.trim()}
-                title="Continue the aside: the exchanges above go with this question, off the chat's context; recorded nowhere"
-                onclick={submitFollowUp}
-              >
-                Follow up
-              </button>
-            </div>
-          {/if}
-        {/if}
-      </div>
     {/if}
     <!-- `shown` is the live turn, or its ghost for the moment between the
          turn's end and the re-synced log (backlog 131), so the reply never
@@ -1615,6 +1648,12 @@
     {/each}
     {#if app.error}
       <div class="error-banner">{app.error}</div>
+    {/if}
+    <!-- The floating aside card (backlog 141): the column's last child,
+         absolute under the passage when there is one, stuck above the
+         composer otherwise. -->
+    {#if asideShown && app.aside}
+      <AsideCard bind:this={asideCard} aside={app.aside} placement={asidePlace} />
     {/if}
   </div>
 </div>
@@ -1652,6 +1691,8 @@
     display: flex;
     flex-direction: column;
     gap: 26px;
+    /* The floating aside card (backlog 141) is placed in this frame. */
+    position: relative;
   }
   /* The board's continued-from row: dashed, the branch mark, the earlier
      chat's name in the ink, a link to open it. */
@@ -1959,6 +2000,20 @@
     border-radius: 8px;
     display: block;
   }
+  /* The thumbnail is a button since backlog 145 (a click opens it in
+     front); the button is invisible, the image is the control. */
+  .user-image-btn {
+    padding: 0;
+    border: none;
+    background: none;
+    cursor: zoom-in;
+    display: block;
+    border-radius: 8px;
+  }
+  .user-image-btn:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
   /* Nothing to render of a PDF, so the turn shows what was attached rather
      than nothing at all — a caption asking about a file the transcript does
      not mention reads as a question about nothing. */
@@ -1980,6 +2035,16 @@
     border-radius: 8px;
     font-size: 0.8rem;
     word-break: break-all;
+    /* A button since backlog 145 (a click opens the PDF in front), in
+       the chip's own face. */
+    background: none;
+    color: inherit;
+    font-family: inherit;
+    cursor: pointer;
+    text-align: left;
+  }
+  .user-file:hover {
+    border-color: var(--line2);
   }
   .user-file-ext {
     font-size: 0.62rem;
@@ -2012,84 +2077,20 @@
     white-space: pre-wrap;
     word-break: break-word;
   }
-  /* The aside card (backlog 081): dashed, dim, outside the turns. */
-  .aside {
-    margin: 8px 0;
-    padding: 8px 10px;
-    border: 1px dashed var(--line2);
-    border-radius: 10px;
-    color: var(--dim);
-    font-size: 0.85rem;
+  /* ~~The aside card (backlog 081): dashed, dim, outside the turns~~ — its
+     rules moved to `AsideCard.svelte` with the card (backlog 141,
+     2026-09-17). What stays here is the passage's mark: the CSS Custom
+     Highlight API's pseudo-element, and the `<mark>` fallback for a
+     webview without it — the accent at low alpha, not a literal yellow
+     on a dark sheet. */
+  :global(::highlight(aside-passage)) {
+    background-color: color-mix(in srgb, var(--accent) 30%, transparent);
+    color: inherit;
   }
-  .aside-head {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .aside-head .spacer {
-    flex: 1;
-  }
-  /* His question in his own bubble (backlog 128, the face of 126): the
-     `.user-bubble` rules above, at the right as his turns sit. */
-  .aside-turn {
-    display: flex;
-    justify-content: flex-end;
-    margin-top: 8px;
-  }
-  .aside-q {
-    color: var(--ink);
-  }
-  /* The answer in the reply's face — the same face and size
-     `AssistantMessage` gives its `.markdown` — not the card's dim 0.85rem. */
-  .aside-a {
-    margin: 8px 0 0;
-    max-width: 640px;
-    font-family: var(--transcript-font, var(--sans));
-    font-size: var(--transcript-size, 16px);
-    line-height: 1.55;
-    color: var(--ink);
-    word-break: break-word;
-  }
-  .aside-wait {
-    margin-top: 8px;
-  }
-  .aside-mark {
-    margin-top: 4px;
-    font-style: italic;
-  }
-  .aside-err {
-    margin-top: 6px;
-    color: var(--error);
-  }
-  /* About a passage (backlog 107): the quote, the draft's box and row,
-     and the pill that floats over the selection. */
-  .aside-quote {
-    margin: 6px 0 0;
-    padding: 4px 10px;
-    border-left: 3px solid var(--line2);
-    color: var(--ink2);
-    white-space: pre-wrap;
-    word-break: break-word;
-    max-height: 9em;
-    overflow-y: auto;
-  }
-  .aside-box {
-    display: block;
-    width: 100%;
-    box-sizing: border-box;
-    margin-top: 8px;
-    padding: 6px 8px;
-    border: 1px solid var(--line2);
-    border-radius: 6px;
-    background: var(--sheet);
-    color: var(--ink);
-    font: inherit;
-    resize: none;
-  }
-  .aside-row {
-    display: flex;
-    gap: 6px;
-    margin-top: 6px;
+  :global(mark.aside-passage) {
+    background-color: color-mix(in srgb, var(--accent) 30%, transparent);
+    color: inherit;
+    border-radius: 2px;
   }
   .aside-pill {
     position: fixed;

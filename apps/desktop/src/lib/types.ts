@@ -159,6 +159,13 @@ export interface AgentTurnResult {
   } | null;
   notices: string[];
   is_error: boolean;
+  /** Folders outside every tree the chat may see that the CLI refused a
+   *  read in this turn (backlog 143, pass 2), each once: the rail offers
+   *  each for a grant. */
+  refused: string[];
+  /** The rail's folder list, refreshed, when the approval card granted a
+   *  folder this turn; null otherwise. */
+  folders: FolderInfo[] | null;
 }
 
 /** A reviewer as the rail shows it: the name the model asks for, and the
@@ -833,9 +840,20 @@ export interface ApprovalRequest {
   name: string;
   input: unknown;
   effect: Effect;
+  /** The folder the call reaches for outside every folder the chat may
+   *  see (nightshift backlog 143, pass 2): the card offers to grant it,
+   *  for this chat or the project. Only on a Claude Code deferred call. */
+  outside?: string;
 }
 
 export type ApprovalDecision = "allow" | "always" | "deny";
+
+/** The approval card's folder grant (backlog 143, pass 2): the folder and
+ *  who keeps it — the chat's log, or the project's registry. */
+export interface FolderGrant {
+  dir: string;
+  scope: "chat" | "project";
+}
 
 /**
  * One question of the CLI's `AskUserQuestion` tool, as its `input.questions`

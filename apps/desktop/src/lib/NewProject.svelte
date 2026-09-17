@@ -50,8 +50,13 @@
 
   const nameGiven = $derived(d.name.trim() !== "");
   const noSlug = $derived(nameGiven && resolved !== null && resolved.slug === "");
-  /** What the folder row shows: the picked folder, else the resolved path. */
-  const shownPath = $derived(d.pickedPath ?? (resolved?.path || ""));
+  /** What the folder row shows: the picked folder, else the resolved path,
+   *  else — before a name is typed, or with one that makes no slug — the
+   *  projects folder itself with a trailing slash, where the slug will go
+   *  (backlog 103: it read "…" until the first keystroke). */
+  const shownPath = $derived(
+    d.pickedPath ?? (resolved?.path || (resolved?.folder ? `${resolved.folder}/` : "")),
+  );
   const canCreate = $derived(nameGiven && (d.pickedPath !== null || (resolved !== null && resolved.slug !== "")));
   const reason = $derived.by(() => {
     if (!nameGiven) return "Made under the projects folder when you click Create.";
@@ -110,7 +115,9 @@
 
   <div class="body">
     <div class="col">
-      <label class="field">
+      <!-- The name centred, label and text (backlog 103): the one thing the
+           form is really asking for, in the middle of the column. -->
+      <label class="field centred">
         <span class="lab">Name</span>
         <!-- svelte-ignore a11y_autofocus -->
         <input
@@ -129,7 +136,7 @@
         <span class="lab">Folder</span>
         <div class="folder" class:picked={d.pickedPath !== null} class:bad={noSlug}>
           <Icon name="folder" size={13} />
-          <code class="path">{shownPath || (nameGiven ? "—" : "…")}</code>
+          <code class="path">{shownPath || "—"}</code>
           <button class="ghost small" title="Use a folder you already have instead" onclick={() => void pickNewProjectFolder()}>Change…</button>
           {#if d.pickedPath !== null}
             <button class="ghost small" title="Back to a folder made under the projects folder" onclick={() => (app.newProjectDraft.pickedPath = null)}>Use the projects folder</button>
@@ -138,7 +145,9 @@
         <p class="hint" class:bad={noSlug}>{reason}</p>
       </div>
 
-      <label class="field grow">
+      <!-- A third of its old height (backlog 103), resizable downward by
+           its own corner; the box no longer grows to fill the column. -->
+      <label class="field">
         <span class="lab">Instructions <span class="opt">optional</span></span>
         <textarea
           value={d.instructions}
@@ -153,6 +162,21 @@
           the Notes tab.
         </p>
       </label>
+
+      <!-- The same two buttons as the header's, under Instructions (backlog
+           103, his "have it in both spots"; blocker 233's board A): Create
+           filled in the accent. Both pairs do exactly the same thing. -->
+      <div class="foot-actions">
+        <button class="ns-btn" title="Back to the chat; what is typed stays (Esc)" onclick={closeNewProject}>Cancel</button>
+        <button
+          class="ns-btn accent"
+          disabled={!canCreate || creating || app.busy}
+          title="Make the folder and open the project ({mod}↵)"
+          onclick={() => void create()}
+        >
+          {creating ? "Creating…" : "Create"}
+        </button>
+      </div>
     </div>
   </div>
 
@@ -292,9 +316,20 @@
     flex-direction: column;
     gap: 0.35rem;
   }
-  .field.grow {
-    flex: 1;
-    min-height: 10rem;
+  .field.centred {
+    align-items: center;
+    text-align: center;
+  }
+  .field.centred .name {
+    width: 100%;
+    max-width: 28rem;
+    text-align: center;
+  }
+  .foot-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+    padding-top: 0.2rem;
   }
   .lab {
     font-size: 0.68rem;
@@ -362,9 +397,9 @@
     font-size: 0.72rem;
   }
   textarea {
-    flex: 1;
-    min-height: 8rem;
-    resize: none;
+    height: 6.2rem;
+    min-height: 3.4rem;
+    resize: vertical;
     background: var(--bg);
     color: var(--text);
     border: 1px solid var(--border);

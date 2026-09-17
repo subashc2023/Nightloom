@@ -76,7 +76,9 @@
           ? `${title(t)} — a project`
           : c.kind === "aside"
             ? `${title(t)} — a side conversation, not in the chat`
-            : title(t);
+            : c.kind === "attachment"
+              ? `${title(t)} — an attachment of a message, kept as a tab`
+              : title(t);
     const state = needsYou(t) ? " · waiting on you" : running(t) ? " · a turn is running" : "";
     return `${base}${state} — ${isMac ? "⌘W" : "Ctrl+W"} closes`;
   }

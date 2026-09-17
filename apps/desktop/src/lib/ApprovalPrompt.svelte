@@ -6,7 +6,7 @@
   import { renderMarkdown } from "./markdown";
   import { inputFields } from "./toolinput";
   import Icon from "./Icon.svelte";
-  import type { ApprovalRequest, AskQuestion } from "./types";
+  import type { ApprovalRequest, AskQuestion, FolderGrant } from "./types";
 
   let { req }: { req: ApprovalRequest } = $props();
 
@@ -65,6 +65,7 @@
     answer?: unknown,
     then?: "ask" | "auto",
     fallback?: string,
+    grant?: FolderGrant,
   ) {
     if (!deferred) {
       void resolveApproval(
@@ -83,7 +84,19 @@
       // with a take-back, like one typed there.
       enqueueMessage(draftKey(app.activeSessionId, app.project?.id, app.pendingMode), route.enqueue, []);
     }
-    void resolveApproval(req.id, req.name, decision, route.reason, answer, then);
+    void resolveApproval(req.id, req.name, decision, route.reason, answer, then, grant);
+  }
+
+  // The folder entrance (nightshift backlog 143, pass 2): a call whose path
+  // is outside every folder the chat may see arrives with that folder, and
+  // the card offers to grant it with the allow — for this chat (on its
+  // log) or for the project (every chat in it). The resume that runs the
+  // call already has the grant, so the next read there asks nothing.
+  const outside = $derived(kind === "call" && req.outside ? req.outside : null);
+  const outsideLeaf = $derived(outside ? (outside.split(/[\\/]/).filter(Boolean).pop() ?? outside) : "");
+  function allowAndGrant(scope: "chat" | "project") {
+    if (!outside) return;
+    decide("allow", undefined, undefined, undefined, { dir: outside, scope });
   }
 
   // The permission card's strip says `⏎ allow · esc deny`; the other two
@@ -526,6 +539,26 @@
       {/if}
 
       {@render noteField()}
+      {#if outside}
+        <div class="arg outside">
+          <div class="key">outside the folders this chat can see</div>
+          <div class="outside-line">
+            <span class="outside-path" title={outside}>{outside}</span>
+            <button
+              class="ns-btn"
+              title="Allow this call, and let this chat read and edit {outside} from now on (recorded on the chat's log)"
+              onclick={() => allowAndGrant("chat")}>Allow, and let this chat see {outsideLeaf}</button
+            >
+            {#if app.project}
+              <button
+                class="ns-btn"
+                title="Allow this call, and let every chat in the project {app.project.name} read and edit {outside}"
+                onclick={() => allowAndGrant("project")}>…let the project see it</button
+              >
+            {/if}
+          </div>
+        </div>
+      {/if}
       <div class="actions">
         <button class="ns-btn accent" onclick={() => decide("allow")}>Allow</button>
         <button
@@ -823,6 +856,27 @@
   }
   .why.open {
     max-height: none;
+  }
+  /* The folder offer (backlog 143, pass 2): the path, then the two grants
+     on one wrapping line under it. */
+  .outside-line {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+    min-width: 0;
+  }
+  .outside-path {
+    flex: 1 1 100%;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    direction: rtl;
+    text-align: left;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--ink);
   }
   .more {
     background: transparent;

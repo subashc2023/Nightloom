@@ -249,6 +249,25 @@ pub(super) struct ResultLine {
     pub stop_reason: Option<String>,
     #[serde(default)]
     pub deferred_tool_use: Option<super::ask::DeferredCall>,
+    /// The calls the CLI's permission check refused during the turn — a
+    /// read outside the working directories under Ask, which the prompt
+    /// host denies at once (see `ask::PromptTool`). Measured 2026-09-17
+    /// on the headless shape and with a denying prompt host alike:
+    /// `[{"tool_name":"Read","tool_use_id":"toolu_…","tool_input":
+    /// {"file_path":"…"}}]`. Read for nightshift backlog 143's post-turn
+    /// entrance: the folder the model was refused is offered for a grant.
+    #[serde(default)]
+    pub permission_denials: Vec<DeniedCall>,
+}
+
+/// One refused call, as the `result` line's `permission_denials` names it.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct DeniedCall {
+    pub tool_name: String,
+    #[serde(default)]
+    pub tool_use_id: String,
+    #[serde(default)]
+    pub tool_input: serde_json::Value,
 }
 
 /// The plan's rate-limit window, as the CLI reports it.

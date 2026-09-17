@@ -20,6 +20,7 @@ import {
   decodeBase64,
   droppedMarker,
   trimPending,
+  type LiveShell,
   type ShellRow,
 } from "./terminal";
 
@@ -105,6 +106,38 @@ function deliver(id: number, bytes: Uint8Array) {
     q.dropped += trimmed.dropped;
     pending.set(id, q);
   }
+}
+
+// ---- the instances ---------------------------------------------------------
+
+/** Each shell's xterm, kept across its component's mounts (113's
+ *  scrollback): a move of the dock to another pane, or the dock hiding
+ *  and showing, re-attaches the same instance rather than drawing a new
+ *  one over an empty grid. Disposed only with the shell. */
+const lives = new Map<number, LiveShell>();
+
+/** The instance a mounting component takes back, if the shell has one. */
+export function liveShell(id: number): LiveShell | undefined {
+  return lives.get(id);
+}
+
+/** A component's freshly built instance, kept for its next mount. */
+export function keepLive(id: number, live: LiveShell): void {
+  lives.set(id, live);
+}
+
+/** The shell is gone: its instance with it. */
+function dropLive(id: number): void {
+  const live = lives.get(id);
+  if (!live) return;
+  lives.delete(id);
+  live.host.remove();
+  live.dispose();
+}
+
+/** For the suite: how many instances the store holds. */
+export function liveCount(): number {
+  return lives.size;
 }
 
 /** For the suite: what a shell holds undrawn. */
@@ -253,6 +286,7 @@ export function closeShell(id: number): void {
   term.shells.splice(i, 1);
   sinks.delete(id);
   pending.delete(id);
+  dropLive(id);
   void api.terminalClose(id).catch(() => {});
   if (term.active === id) {
     const next = term.shells[Math.min(i, term.shells.length - 1)];
@@ -302,6 +336,7 @@ export async function restartShell(id: number): Promise<void> {
     void api.terminalClose(old.id).catch(() => {});
     sinks.delete(old.id);
     pending.delete(old.id);
+    dropLive(old.id);
     term.shells.splice(i, 1, row);
     term.active = row.id;
     term.focusTick++;

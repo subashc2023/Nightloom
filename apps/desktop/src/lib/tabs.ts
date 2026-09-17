@@ -36,6 +36,17 @@
  * button — blocker 193) and an aside thread (backlog 130 part 2: a
  * chat's side conversation, viewed in a tab of its own — blocker 194)
  * are contents too, one per project and one per chat.
+ *
+ * An **attachment** (nightshift backlog 145, 2026-09-17) — an image or a
+ * PDF he sent with a message — is a content too, addressed into the
+ * chat's log (the event's index and the attachment's index in it; the
+ * bytes are read from the log, never copied here). It opens in the
+ * workspace's one **floating slot** (`floating`): a tab drawn in a layer
+ * over the panes rather than in a strip, zooming up from its thumbnail,
+ * closed by a click outside, × or Escape; dragged onto a strip or a
+ * pane's half it becomes an ordinary tab and the slot empties. The slot
+ * holds one tab at most — opening another replaces it — and its tab is
+ * in no strip, so `allTabs` and the walks never see it.
  */
 import type { NoteScope } from "./types";
 import type { IconName } from "./icons";
@@ -47,7 +58,8 @@ export type TabContent =
   | { kind: "graph" }
   | { kind: "new-project" }
   | { kind: "project"; id: string }
-  | { kind: "aside"; session: string };
+  | { kind: "aside"; session: string }
+  | { kind: "attachment"; session: string; turn: number; index: number; media: "image" | "document"; name: string };
 
 export type TabKind = TabContent["kind"];
 
@@ -75,6 +87,9 @@ export interface Workspace {
   panes: Pane[];
   /** The pane the sidebar and the keys act on. Always one of `panes`. */
   focused: string;
+  /** The floating tab (backlog 145), when one is up; absent or null
+   *  otherwise. Optional so an older workspace shape still reads. */
+  floating?: Tab | null;
 }
 
 export const MAX_PANES = 2;
@@ -123,6 +138,19 @@ export function parseContentDrag(json: string | null | undefined): TabContent | 
         const a = c as { session?: unknown };
         return typeof a.session === "string" ? { kind: "aside", session: a.session } : null;
       }
+      case "attachment": {
+        const a = c as { session?: unknown; turn?: unknown; index?: unknown; media?: unknown; name?: unknown };
+        if (typeof a.session !== "string" || typeof a.turn !== "number" || typeof a.index !== "number") return null;
+        if (a.media !== "image" && a.media !== "document") return null;
+        return {
+          kind: "attachment",
+          session: a.session,
+          turn: a.turn,
+          index: a.index,
+          media: a.media,
+          name: typeof a.name === "string" ? a.name : a.media === "image" ? "image" : "file",
+        };
+      }
       default:
         return null;
     }
@@ -149,6 +177,9 @@ export function sameContent(a: TabContent, b: TabContent): boolean {
   if (a.kind === "note" && b.kind === "note") return a.scope === b.scope && a.name === b.name;
   if (a.kind === "project" && b.kind === "project") return a.id === b.id;
   if (a.kind === "aside" && b.kind === "aside") return a.session === b.session;
+  if (a.kind === "attachment" && b.kind === "attachment") {
+    return a.session === b.session && a.turn === b.turn && a.index === b.index && a.media === b.media;
+  }
   // The singletons carry nothing but their kind.
   return isSingleton(a);
 }
@@ -284,6 +315,63 @@ export function insertAt(ws: Workspace, pane: Pane, content: TabContent, index: 
   return tab;
 }
 
+// ---- The floating slot (backlog 145) ----
+
+/** Put `content` in the floating slot, replacing whatever was there. */
+export function openFloating(ws: Workspace, content: TabContent): Tab {
+  const tab = makeTab(content);
+  ws.floating = tab;
+  return tab;
+}
+
+export function closeFloating(ws: Workspace): Tab | null {
+  const was = ws.floating ?? null;
+  ws.floating = null;
+  return was;
+}
+
+/**
+ * Keep the floating tab: into `pane`'s strip at `index` (a drop on a
+ * strip) — the tab already holding the same content there is activated
+ * instead, as `insertAt` does — and the slot empties. Null when nothing
+ * floats.
+ */
+export function keepFloating(ws: Workspace, pane: Pane, index: number): Tab | null {
+  const f = ws.floating;
+  if (!f) return null;
+  ws.floating = null;
+  const existing = findTab(pane, f.content);
+  if (existing) {
+    ws.focused = pane.id;
+    pane.active = existing.id;
+    return existing;
+  }
+  pane.tabs.splice(Math.max(0, Math.min(index, pane.tabs.length)), 0, f);
+  pane.active = f.id;
+  ws.focused = pane.id;
+  return f;
+}
+
+/**
+ * Keep the floating tab beside: a second pane on `side` holding it when
+ * there is one pane (a drop on a pane's half), else the last tab of the
+ * pane on that side. Null when nothing floats.
+ */
+export function keepFloatingBeside(ws: Workspace, side: "left" | "right"): Tab | null {
+  const f = ws.floating;
+  if (!f) return null;
+  if (ws.panes.length < MAX_PANES) {
+    ws.floating = null;
+    const pane = makePane([f]);
+    if (side === "left") ws.panes.unshift(pane);
+    else ws.panes.push(pane);
+    ws.focused = pane.id;
+    return f;
+  }
+  const pane = side === "left" ? ws.panes[0] : ws.panes[ws.panes.length - 1];
+  return keepFloating(ws, pane, pane.tabs.length);
+}
+
 export interface Closed {
   /** The tab removed; undefined when `tabId` was not found. */
   removed?: Tab;
@@ -413,8 +501,13 @@ export function dropChat(ws: Workspace, session: string): Closed[] {
   const out: Closed[] = [];
   for (const t of allTabs(ws)) {
     const c = t.content;
-    if ((c.kind === "chat" || c.kind === "aside") && c.session === session) out.push(close(ws, t.id));
+    if ((c.kind === "chat" || c.kind === "aside" || c.kind === "attachment") && c.session === session) {
+      out.push(close(ws, t.id));
+    }
   }
+  // The floating tab (backlog 145) goes with its chat too.
+  const f = ws.floating;
+  if (f && f.content.kind === "attachment" && f.content.session === session) ws.floating = null;
   return out;
 }
 
@@ -475,6 +568,8 @@ export function tabTitle(
       const s = sessions.find((x) => x.id === content.session);
       return s?.title ?? s?.first_user ?? content.session.slice(0, 8);
     }
+    case "attachment":
+      return content.name;
   }
 }
 
@@ -492,6 +587,8 @@ export function tabGlyph(content: TabContent): IconName {
       return "folder";
     case "aside":
       return "think";
+    case "attachment":
+      return content.media === "image" ? "read" : "download";
     case "chat":
       return "chat";
   }

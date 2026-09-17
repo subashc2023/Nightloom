@@ -999,11 +999,28 @@ to itself, an unknown mode reads as **incognito** (kept and listed, written
 nothing, read by nothing) and an unknown kind as the read-only **chat** —
 the answers that give nothing away — and the chat keeps its own id. The
 index folds the same closed reading, so the log is a record with no terms.
-What is not done here: `Session::load` itself (nightloom-core) still turns
+~~What is not done here: `Session::load` itself (nightloom-core) still turns
 the line into `Unknown` and mints a fresh uuid for the id — the shell then
 opens such a chat under a name that matches no file; the `#[serde(other)]`
 catch-all on the two enums is the fix there (a patch note in the day's
-report, the core file being another agent's today).
+report, the core file being another agent's today).~~ Done later the same
+day (pass 2): `Session::load` reads a first line that fails the strict
+parse through the same closed reading (`closed_creation` in `session.rs` —
+the chat's own id, its `at`, its `forked_from`, an unknown mode as
+incognito, an unknown kind as a Chat) and **reports it**:
+`LoadReport::closed_creation`, which `is_clean()` counts and `summary()`
+names ("its first line names a mode or kind this version does not know …
+opened as incognito and read-only"), so the shell's open-chat notice says
+why. Not a `#[serde(other)]` variant: a third value on `ChatMode` and
+`ChatKind` would have reached every `== ChatKind::Chat` in the shell and
+the front end's unions for a state that should never be seen as its own —
+the closed reading maps it to the values every reader already handles. A
+creation line damaged outright keeps the file's stem as the id instead of
+a fresh uuid, so the ask directory and the listing still match it.
+`project::move_tree` (the same review, FC-f) reads each entry's own type
+before deciding: a symlink is renamed whole (the link, not its target) or,
+across volumes, left and named in `skipped` — never followed into another
+folder's files.
 
 Two smaller things from the same review: the `context_status` file the MCP
 tool reads is refreshed from the chat's own log *before* each turn

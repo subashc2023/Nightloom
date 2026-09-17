@@ -220,14 +220,92 @@ pub enum Answer {
     /// `plan_then` is the card's pick on an approved plan (backlog 085)
     /// and nothing else's: it never reaches the decision file, it tells
     /// the shell which position the chat takes after the resume.
+    ///
+    /// `grant` is the card's *Allow, and this folder…* on a call that
+    /// named a path outside every folder the chat may see (nightshift
+    /// backlog 143, pass 2): the folder joins the chat's `--add-dir`s for
+    /// the resume that carries this allow and every process after it —
+    /// measured 2026-09-17, a `--resume … --add-dir` reads the folder
+    /// without a second prompt — and, for a grant to the chat, is recorded
+    /// on the log when the turn lands. Like `plan_then`, never in the
+    /// decision file: the CLI's hook has nothing to do with it.
     Allow {
         updated_input: Option<Value>,
         plan_then: Option<PlanThen>,
+        grant: Option<FolderGrant>,
     },
     /// Run it, and every later call to the same tool in this chat.
     AllowForChat { updated_input: Option<Value> },
     /// Refuse it; the reason is what the model reads.
     Deny { reason: String },
+}
+
+/// A folder granted from the approval card (backlog 143, pass 2): the
+/// folder the refused path was in, and who keeps the grant.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FolderGrant {
+    pub dir: PathBuf,
+    pub scope: GrantScope,
+}
+
+/// Who keeps a folder granted from the card. `Chat` is recorded on the
+/// chat's log by the shell once the turn lands (the log is the turn's
+/// while it runs); `Project` is already in the registry by the time the
+/// answer arrives — the window writes it first, since the registry is not
+/// the turn's to hold — so the shell only adds the `--add-dir`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GrantScope {
+    Chat,
+    Project,
+}
+
+impl GrantScope {
+    /// The card's word: `chat` or `project`. Anything else is no grant.
+    pub fn parse(word: &str) -> Option<Self> {
+        match word.trim() {
+            "chat" => Some(Self::Chat),
+            "project" => Some(Self::Project),
+            _ => None,
+        }
+    }
+}
+
+/// The argument names the CLI's path-taking tools use: `Read`, `Write`,
+/// `Edit` and `MultiEdit` take `file_path`; `Glob`, `Grep` and `LS` take
+/// `path`; the notebook tools take `notebook_path`. `Bash` names no path
+/// the shell could read, so a shell command outside the trees is a plain
+/// permission prompt, never a folder offer.
+const PATH_KEYS: [&str; 3] = ["file_path", "notebook_path", "path"];
+
+/// The folder a call was reaching for outside every tree the chat may see
+/// (nightshift backlog 143, pass 2) — `None` when the call names no path,
+/// a relative one, or a path inside one of `trees`. The offer is the
+/// nearest directory that exists on the way up: the path itself when it
+/// is a folder (a `Glob` over one), else its parent, else further up —
+/// a grant on a folder that is not there is not a tree the tools can be
+/// rooted at (`extra_folders` drops those). Read for both entrances: the
+/// deferred call the card shows, and a refused read the `result` line
+/// reports after the turn.
+pub fn outside_folder(input: &Value, trees: &[PathBuf]) -> Option<PathBuf> {
+    let raw = PATH_KEYS
+        .iter()
+        .find_map(|k| input.get(k).and_then(Value::as_str))?;
+    let path = Path::new(raw.trim());
+    // "Has a root" rather than `is_absolute`, which on Windows also wants
+    // a drive: a path the CLI resolved against its cwd has one either way.
+    if !path.has_root() {
+        return None;
+    }
+    if trees.iter().any(|t| path.starts_with(t)) {
+        return None;
+    }
+    let mut dir = path;
+    loop {
+        if dir.is_dir() {
+            return Some(dir.to_path_buf());
+        }
+        dir = dir.parent()?;
+    }
 }
 
 /// The decision file, as written and as read.
@@ -641,6 +719,7 @@ mod tests {
             &Answer::Allow {
                 updated_input: Some(updated.clone()),
                 plan_then: None,
+                grant: None,
             },
         )
         .unwrap();
@@ -674,6 +753,7 @@ mod tests {
                 &Answer::Allow {
                     updated_input: None,
                     plan_then: None,
+                    grant: None,
                 },
             )
             .unwrap();
@@ -822,6 +902,7 @@ mod tests {
             Answer::Allow {
                 updated_input: None,
                 plan_then: None,
+                grant: None,
             }
         ));
         assert!(gate.answer(
@@ -904,6 +985,7 @@ mod tests {
                 &Answer::Allow {
                     updated_input: Some(plan.input.clone()),
                     plan_then: Some(PlanThen::Auto),
+                    grant: None,
                 },
             )
             .unwrap();
@@ -929,5 +1011,46 @@ mod tests {
         let v: Value = serde_json::from_str(&s).unwrap();
         assert_eq!(v["hooks"]["PreToolUse"][0]["matcher"], "ExitPlanMode");
         assert_eq!(EXIT_PLAN_MATCHER, EXIT_PLAN_TOOL);
+    }
+
+    /// The folder offer (backlog 143, pass 2): a file outside the trees
+    /// offers its folder, a folder itself, a missing file the nearest
+    /// folder that exists; inside a tree, relative, or no path — nothing.
+    #[test]
+    fn a_call_outside_the_trees_offers_the_nearest_existing_folder() {
+        let outside = scratch();
+        let sub = outside.join("nb");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("a.ipynb"), "{}").unwrap();
+        let home = scratch();
+        std::fs::create_dir_all(&home).unwrap();
+        let trees = vec![home.clone()];
+        let s = |p: &Path| p.to_string_lossy().into_owned();
+        assert_eq!(
+            outside_folder(&json!({"file_path": s(&sub.join("a.ipynb"))}), &trees),
+            Some(sub.clone())
+        );
+        assert_eq!(
+            outside_folder(&json!({"path": s(&sub)}), &trees),
+            Some(sub.clone())
+        );
+        assert_eq!(
+            outside_folder(
+                &json!({"notebook_path": s(&sub.join("gone").join("b.ipynb"))}),
+                &trees
+            ),
+            Some(sub.clone())
+        );
+        assert_eq!(
+            outside_folder(&json!({"file_path": s(&home.join("x.py"))}), &trees),
+            None
+        );
+        assert_eq!(
+            outside_folder(&json!({"file_path": "src/x.py"}), &trees),
+            None
+        );
+        assert_eq!(outside_folder(&json!({"command": "ls /"}), &trees), None);
+        std::fs::remove_dir_all(&outside).unwrap();
+        std::fs::remove_dir_all(&home).unwrap();
     }
 }

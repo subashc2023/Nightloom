@@ -293,6 +293,13 @@ struct ApprovalRequest<'a> {
     name: &'a str,
     input: &'a serde_json::Value,
     effect: nightloom_core::Effect,
+    /// The folder the call reaches for outside every tree the chat may
+    /// see (nightshift backlog 143, pass 2) — the card then offers *Allow,
+    /// and let this chat · the project see it*. Only the Claude Code
+    /// engine's deferred calls carry one; the API engine's file tools
+    /// refuse such a path themselves, before any prompt.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    outside: Option<PathBuf>,
 }
 
 impl WindowApprover {
@@ -330,6 +337,7 @@ impl Approver for WindowApprover {
                     name: call.name,
                     input: call.input,
                     effect: call.effect,
+                    outside: None,
                 },
             )
             .is_err()
@@ -454,6 +462,17 @@ fn extra_folders(
         }
     }
     out
+}
+
+/// Every tree a Claude Code chat's tools may open without a prompt: the
+/// working directory and each `--add-dir` (the vault, the extra folders,
+/// a folder the card granted this turn). What a path is measured against
+/// to be *outside* (backlog 143, pass 2).
+fn agent_trees(agent: &ClaudeCodeAgent) -> Vec<PathBuf> {
+    let spec = agent.spec();
+    let mut trees = vec![spec.workspace.clone()];
+    trees.extend(spec.add_dirs.iter().cloned());
+    trees
 }
 
 /// The agent engine as the rail shows it.
@@ -2127,12 +2146,27 @@ async fn open_session(
     Ok(events)
 }
 
+/// The open chat's events, as the window re-syncs them after a turn.
+///
+/// A reader, so it does not queue behind a running turn (review 2026-09-17
+/// FD4, nightshift backlog 136): the turn holds `session` from its first
+/// append to its last, and a `transcript` that waited on it resolved a
+/// whole turn later with a result the window had already streamed. Refused
+/// at once instead, naming the reason; every caller keeps what is on screen
+/// and asks again when the turn ends. Only the readers take this shape —
+/// a command that must write the log (a layer switch, a folder grant, ⌘N)
+/// still waits, so the write lands on the finished turn rather than being
+/// lost to a toast.
 #[tauri::command]
 async fn transcript(state: State<'_, AppState>) -> Result<Vec<SessionEvent>, String> {
-    Ok(state
-        .session
-        .lock()
-        .await
+    let Ok(guard) = state.session.try_lock() else {
+        return Err(
+            "the open chat is running a turn — the transcript is what is on screen, and it \
+             refreshes when the turn ends"
+                .into(),
+        );
+    };
+    Ok(guard
         .as_ref()
         .map(|s| s.events().to_vec())
         .unwrap_or_default())
@@ -2213,6 +2247,13 @@ struct AgentTurn {
     plan: Option<nightloom_service::agent::RateLimitInfo>,
     notices: Vec<String>,
     is_error: bool,
+    /// Folders outside every tree the chat may see that the CLI refused
+    /// a read in this turn (nightshift backlog 143, pass 2), each once —
+    /// the rail offers each for a grant, for the chat or the project.
+    refused: Vec<String>,
+    /// The rail's folder list, refreshed, when the approval card granted
+    /// a folder this turn; absent otherwise (the connect's list stands).
+    folders: Option<Vec<FolderInfo>>,
 }
 
 /// Run one user turn on the agent engine, streaming the same `turn-event`s
@@ -2355,6 +2396,18 @@ async fn send_agent(
     // deferring. Kept as one turn rather than ended at the deferral so the
     // log's pairing holds: the deferred `tool_use` gets its real result
     // from the resume, not an orphan marker and then a duplicate.
+    //
+    // The folder entrance (nightshift backlog 143, pass 2): a deferred call
+    // whose path is outside every tree the chat may see — the working
+    // directory and each `--add-dir` — is shown with that folder, and the
+    // card's *Allow, and let this chat · the project see it* comes back as
+    // a grant on the answer. The grant reaches the process at once
+    // (`grant_dir`: the resume that carries the allow already has the
+    // `--add-dir`, measured 2026-09-17); who keeps it is settled here for
+    // the project (the registry is not the turn's to hold, so it is
+    // written now) and after the turn for the chat (the log is).
+    let mut granted_to_chat: Vec<PathBuf> = Vec::new();
+    let mut granted_any = false;
     while let Ok(outcome) = &result
         && let Some(call) = outcome.deferred.clone()
     {
@@ -2363,6 +2416,7 @@ async fn send_agent(
         };
         let session_id = outcome.session_id.clone();
         let rx = state.ask.wait(&call.id);
+        let outside = nightloom_service::agent::outside_folder(&call.input, &agent_trees(agent));
         let _ = app.emit(
             "tool-approval",
             ApprovalRequest {
@@ -2370,6 +2424,7 @@ async fn send_agent(
                 name: &call.name,
                 input: &call.input,
                 effect: nightloom_core::Effect::Mutating,
+                outside,
             },
         );
         let answer = tokio::select! {
@@ -2415,6 +2470,37 @@ async fn send_agent(
         if let Some(id) = &session_id {
             agent.set_resume(Some(id.clone()));
         }
+        if let nightloom_service::agent::Answer::Allow {
+            grant: Some(grant), ..
+        } = &answer
+        {
+            use nightloom_service::agent::GrantScope;
+            agent.grant_dir(grant.dir.clone());
+            granted_any = true;
+            match grant.scope {
+                GrantScope::Chat => granted_to_chat.push(grant.dir.clone()),
+                GrantScope::Project => {
+                    let mut guard = state.workspaces.lock().await;
+                    let written = guard.active.clone().map(|p| {
+                        let mut list = p.extra_folders.clone();
+                        list.push(grant.dir.clone());
+                        guard.registry.set_extra_folders(&p.id, list)
+                    });
+                    match written {
+                        Some(Ok(project)) => guard.active = Some(project),
+                        Some(Err(e)) => {
+                            let _ = app.emit("turn-notice", format!("folder not granted: {e}"));
+                        }
+                        None => {
+                            // No project to keep it: the chat keeps it
+                            // instead, which is the nearest thing to what
+                            // was asked and still on a log.
+                            granted_to_chat.push(grant.dir.clone());
+                        }
+                    }
+                }
+            }
+        }
         // An approved plan (backlog 085): the card's pick says where the
         // chat goes next, and the agent shapes this one resume for it —
         // `plan` mode still for Ask, `auto` with the narrow hook for Auto
@@ -2453,10 +2539,50 @@ async fn send_agent(
             if let Some(id) = &outcome.session_id {
                 session.record_agent_session(AGENT, id);
             }
+            // The card's grants to the chat (backlog 143, pass 2), on the
+            // log now that the turn has landed — the whole list, as
+            // `set_chat_folders` writes it, so a reload reads the same.
+            if !granted_to_chat.is_empty() {
+                let mut list: Vec<PathBuf> = session.folders().to_vec();
+                list.append(&mut granted_to_chat);
+                session.record_folders(list);
+            }
             if !sealed_before && let Some(failure) = session.write_failure() {
                 let _ = app.emit("turn-notice", failure.summary());
             }
             agent.follow_on(&outcome);
+            // The reads the CLI refused outside the trees (backlog 143,
+            // pass 2): the hook never sees a `Read`, so the prompt host
+            // denied it and the `result` line named it. Each folder once,
+            // for the rail to offer the grant after the fact; a call the
+            // card already granted this turn is not offered again.
+            let trees = agent_trees(agent);
+            let mut refused: Vec<String> = Vec::new();
+            for d in &outcome.denied {
+                if let Some(dir) = nightloom_service::agent::outside_folder(&d.tool_input, &trees) {
+                    let shown = dir.to_string_lossy().into_owned();
+                    if !refused.contains(&shown) {
+                        refused.push(shown);
+                    }
+                }
+            }
+            // The rail's list, refreshed, when a grant landed this turn —
+            // it otherwise reads it at connect, and no reconnect happened.
+            let folders = if granted_any {
+                let active = state.active().await;
+                Some(
+                    extra_folders(active.as_ref(), Some(&*session))
+                        .iter()
+                        .map(|(path, source)| FolderInfo {
+                            path: path.to_string_lossy().into_owned(),
+                            source: (*source).into(),
+                            alias: None,
+                        })
+                        .collect(),
+                )
+            } else {
+                None
+            };
             let context_limit = outcome
                 .model
                 .as_deref()
@@ -2505,6 +2631,8 @@ async fn send_agent(
                 plan: outcome.rate_limit,
                 notices: outcome.notices,
                 is_error: outcome.is_error,
+                refused,
+                folders,
             })
         }
         Err(e) => {
@@ -3694,13 +3822,23 @@ async fn cli_prompt_snapshot(
     state: State<'_, AppState>,
 ) -> Result<Option<CliPromptSnapshot>, String> {
     use nightloom_service::agent::cli_session;
-    let id = match state.session.lock().await.as_ref() {
+    // A reader (backlog 136, as `transcript`): the turn holds `session`,
+    // and the Context popover asking mid-turn would sit until it ended.
+    let Ok(guard) = state.session.try_lock() else {
+        return Err(
+            "the open chat is running a turn — the prompt snapshot reads its log; open \
+             the popover again when the turn ends"
+                .into(),
+        );
+    };
+    let id = match guard.as_ref() {
         Some(s) => match s.agent_session() {
             Some((agent, id)) if agent == AGENT => id.to_string(),
             _ => return Ok(None),
         },
         None => return Ok(None),
     };
+    drop(guard);
     let cwd = match state.prompt.lock().await.cwd.clone() {
         Some(cwd) => cwd,
         None => return Ok(None),
@@ -5309,6 +5447,7 @@ fn cancel(state: State<'_, AppState>) {
 /// handed to the model, which is the point — it is what lets it try something
 /// else instead of repeating the same call.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 fn approve_call(
     state: State<'_, AppState>,
     id: String,
@@ -5317,18 +5456,34 @@ fn approve_call(
     reason: Option<String>,
     answer: Option<serde_json::Value>,
     then: Option<String>,
+    grant_dir: Option<String>,
+    grant_scope: Option<String>,
 ) -> Result<(), String> {
     // A call the CLI deferred (nightshift backlog 084) is answered on its
     // own gate, and "always" there is a rule for this chat, not the
     // process-wide policy: `agent::ask::Answer::AllowForChat`. `answer` is
     // the `updatedInput` a question or a plan sends back with an allow;
-    // `then` is the plan card's pick, `ask` or `auto` (backlog 085).
+    // `then` is the plan card's pick, `ask` or `auto` (backlog 085);
+    // `grant_dir` and `grant_scope` (`chat` or `project`) are the card's
+    // *Allow, and let … see this folder* on a call outside the trees
+    // (backlog 143, pass 2) — the turn takes the grant from the answer.
     if state.ask.has(&id) {
-        use nightloom_service::agent::{Answer, PlanThen};
+        use nightloom_service::agent::{Answer, FolderGrant, GrantScope, PlanThen};
+        let grant = match (
+            grant_dir,
+            grant_scope.as_deref().and_then(GrantScope::parse),
+        ) {
+            (Some(dir), Some(scope)) if !dir.trim().is_empty() => Some(FolderGrant {
+                dir: PathBuf::from(dir.trim()),
+                scope,
+            }),
+            _ => None,
+        };
         let answer = match decision.as_str() {
             "allow" => Answer::Allow {
                 updated_input: answer,
                 plan_then: then.as_deref().and_then(PlanThen::parse),
+                grant,
             },
             "always" => Answer::AllowForChat {
                 updated_input: answer,

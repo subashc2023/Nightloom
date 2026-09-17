@@ -106,16 +106,28 @@ mod tests {
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(stdout.contains("PASS_LOCK: held"), "{stdout}");
         drop(held);
-        let out = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "pass_lock::tests::helper_try_take_from_env",
-                "--nocapture",
-            ])
-            .env("NIGHTLOOM_PASS_LOCK_DIR", &config)
-            .output()
-            .unwrap();
-        let stdout = String::from_utf8_lossy(&out.stdout);
+        // The other tests in this binary spawn processes too (the centre
+        // tests run git); a fork on another thread between our drop and
+        // the child's exec inherits the lock's fd and holds it for that
+        // instant (2026-09-17: 1 run in 3 read "held" here). Ask again
+        // for up to two seconds rather than read one instant as the answer.
+        let mut stdout = String::new();
+        for _ in 0..20 {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "pass_lock::tests::helper_try_take_from_env",
+                    "--nocapture",
+                ])
+                .env("NIGHTLOOM_PASS_LOCK_DIR", &config)
+                .output()
+                .unwrap();
+            stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+            if stdout.contains("PASS_LOCK: free") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
         assert!(stdout.contains("PASS_LOCK: free"), "{stdout}");
         let _ = fs::remove_dir_all(&config);
     }

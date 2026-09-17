@@ -29,6 +29,7 @@ import { LIST_SCOPE, NEW_CHAT_SCOPE, UndoHistory } from "./undo";
 import { chatName, notifyNeedsYou, notifyTurnEnd } from "./notify";
 import { RESUME_TEXT, SleepWatch, loadSleepPrefs, pushPowerPrefs, type Woke } from "./sleep";
 import { asideFollowUp, asideQuestion, type AsideQuote } from "./asideQuote";
+import type { AsideAnchor } from "./asideCard";
 import { loadAsides } from "./asides";
 import { SEARCH_COLUMN_MAX, searchGrowth } from "./search.svelte";
 import * as tabs from "./tabs";
@@ -59,6 +60,7 @@ import type {
   ChatKind,
   ChatMode,
   DocumentInput,
+  FolderGrant,
   FolderInfo,
   ImageInput,
   ItemList,
@@ -413,6 +415,10 @@ export interface Connection {
    *  each with its source and, on the API engine, its `@alias`. Optional so
    *  a fixture built before the field existed still types. */
   folders?: FolderInfo[];
+  /** Folders outside every tree that the CLI refused a read in during the
+   *  last turn (backlog 143, pass 2) — the rail offers each for a grant.
+   *  Cleared by the next connect (a grant reconnects) or the next turn. */
+  refused?: string[];
 }
 
 /** One exchange of the open chat's aside (backlog 081; streamed since
@@ -444,6 +450,11 @@ export interface Aside {
   /** The exchanges in order; the last one is the live one. Empty only
    *  while a draft. */
   turns: AsideTurn[];
+  /** Where the passage is in the transcript (backlog 141): the floating
+   *  card opens under it and the text stays marked. Null for a composer
+   *  aside, which has no passage; the card then sits above the composer
+   *  (blocker 225). */
+  anchor: AsideAnchor | null;
 }
 
 /** The aside's live exchange — the last turn while it is still asking. */
@@ -759,6 +770,15 @@ export const app = $state({
   /** The terminal dock's strip being dragged between panes (backlog 113's
    *  12b): the halves light *dock here* and a drop moves `term.pane`. */
   draggingTerm: false,
+  /**
+   * The chat whose aside thread shows in the side panel (backlog 141
+   * pass 2): the floating card dragged to the window's right edge. Not a
+   * pane — `App.svelte` draws it as a third column beside the panes —
+   * and, like an aside tab, a second view of the thread where it lives
+   * (`asideOf`), never a copy; the transcript hides its card meanwhile
+   * (`asideInTab`). In memory only, as the workspace is.
+   */
+  asidePanel: null as string | null,
   /**
    * The search-everywhere panel (nightshift backlog 117, with 106's second
    * half): whether it is showing in the sidebar's column, the query and
@@ -2602,6 +2622,7 @@ async function showContentOf(c: TabContent): Promise<void> {
       return;
     case "project":
     case "aside":
+    case "attachment":
       return;
   }
 }
@@ -2616,7 +2637,7 @@ async function showContentOf(c: TabContent): Promise<void> {
  * while a turn runs, with the toast (blocker 182).
  */
 export async function openContent(content: TabContent, how: tabs.LandHow = "new"): Promise<void> {
-  if (content.kind === "project" || content.kind === "aside") {
+  if (content.kind === "project" || content.kind === "aside" || content.kind === "attachment") {
     const t = tabs.land(app.tabs, tabs.focusedPane(app.tabs), content, how);
     await activateTab(t.id);
     return;
@@ -2651,6 +2672,26 @@ export async function dropContent(
   }
   const ws = app.tabs;
   let tab: tabs.Tab;
+  // The floating tab dropped (backlog 145 pass 2): kept where it lands —
+  // the same tab moves into the strip or a new pane, and the slot
+  // empties — rather than a second tab made beside it.
+  const floating = ws.floating;
+  if (floating && tabs.sameContent(floating.content, content)) {
+    let kept: tabs.Tab | null;
+    if ("index" in target) {
+      const pane = tabs.paneById(ws, target.pane);
+      if (!pane) return;
+      kept = tabs.keepFloating(ws, pane, target.index);
+    } else if (ws.panes.length < tabs.MAX_PANES) {
+      kept = tabs.keepFloatingBeside(ws, target.side);
+    } else {
+      const pane = tabs.paneById(ws, target.pane);
+      if (!pane) return;
+      kept = tabs.keepFloating(ws, pane, pane.tabs.length);
+    }
+    if (kept) await activateTab(kept.id);
+    return;
+  }
   if ("index" in target) {
     const pane = tabs.paneById(ws, target.pane);
     if (!pane) return;
@@ -2689,10 +2730,11 @@ export function focusPane(paneId: string): void {
   if (c.kind === "chat") {
     // The live chat in front: the view follows it; a card stays a card.
     if (c.session === app.activeSessionId && app.view !== "chat") leaveNote();
-  } else if (c.kind !== "project" && c.kind !== "aside") {
+  } else if (c.kind !== "project" && c.kind !== "aside" && c.kind !== "attachment") {
     // A note or one of the whole-centre pages (backlog 140): the view
-    // follows the pane, as it did for a note. A project card and an
-    // aside are drawn from the tab alone; nothing global follows them.
+    // follows the pane, as it did for a note. A project card, an aside
+    // and an attachment (backlog 145) are drawn from the tab alone;
+    // nothing global follows them.
     void showContentOf(c);
   }
 }
@@ -2844,11 +2886,13 @@ export function droppedContent(e: DragEvent): TabContent | null {
 
 /**
  * Whether a chat's aside thread is showing in a tab of its own (backlog
- * 130 part 2): the transcript hides its card while one is, and shows it
- * again when the tab closes — the thread itself never moves (blocker 194).
+ * 130 part 2) or in the side panel (backlog 141 pass 2): the transcript
+ * hides its card while one is, and shows it again when the tab or the
+ * panel closes — the thread itself never moves (blocker 194).
  */
 export function asideInTab(session: string | null): boolean {
   if (session === null) return false;
+  if (app.asidePanel === session) return true;
   return tabs.allTabs(app.tabs).some((t) => t.content.kind === "aside" && t.content.session === session);
 }
 
@@ -4400,6 +4444,13 @@ async function sendAgent(
       app.connection.contextLimit = res.context_limit;
     }
     if (app.connection && res.model) app.connection.model = res.model;
+    // The folder entrance's two halves (backlog 143, pass 2): a grant the
+    // approval card made refreshes the rail's list; a read the CLI refused
+    // outside the trees is offered there for a grant after the fact.
+    if (app.connection) {
+      if (res.folders) app.connection.folders = res.folders;
+      app.connection.refused = res.refused ?? [];
+    }
     for (const notice of res.notices) addToast(notice);
   } catch (e) {
     failed = String(e);
@@ -4470,7 +4521,10 @@ export async function askAside(question: string, quote: AsideQuote | null = null
   // A running exchange is replaced (one at a time, as before): cancelled
   // on the backend so its process does not run on behind the new card.
   if (asideAsking(app.aside)) void api.cancelAside().catch(() => {});
-  app.aside = { quote, draft: false, turns: [turn] };
+  // A draft opened from a selection keeps its anchor (backlog 141): the
+  // question is asked under the passage. A composer aside has none.
+  const anchor = quote && app.aside?.draft ? app.aside.anchor : null;
+  app.aside = { quote, draft: false, turns: [turn], anchor };
   await runAside(turn, sent);
 }
 
@@ -4556,10 +4610,12 @@ function findAsideTurn(seq: number): AsideTurn | null {
  * (backlog 107): the quote is shown, nothing is sent until he asks. A
  * running or answered aside is replaced — one at a time, as before.
  */
-export function draftAside(quote: AsideQuote): void {
+export function draftAside(quote: AsideQuote, anchor: AsideAnchor | null = null): void {
   if (app.connection?.engine !== "claude-code") return;
   if (asideAsking(app.aside)) void api.cancelAside().catch(() => {});
-  app.aside = { quote, draft: true, turns: [] };
+  // One floating card at a time (backlog 141): a second passage replaces
+  // the first's card — the anchor is the new passage's.
+  app.aside = { quote, draft: true, turns: [], anchor };
 }
 
 /**
@@ -4693,6 +4749,7 @@ export async function resolveApproval(
   reason?: string,
   answer?: unknown,
   then?: "ask" | "auto",
+  grant?: FolderGrant,
 ): Promise<void> {
   const i = app.pendingApprovals.findIndex((r) => r.id === id);
   if (i < 0) return;
@@ -4711,7 +4768,7 @@ export async function resolveApproval(
     saveLastConnection({ ...app.draft });
   }
   try {
-    await api.approveCall(id, name, decision, reason, answer, then);
+    await api.approveCall(id, name, decision, reason, answer, then, grant);
   } catch (e) {
     addToast(String(e));
   }

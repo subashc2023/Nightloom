@@ -4,16 +4,20 @@ import {
   activeTab,
   allTabs,
   close,
+  closeFloating,
   dropChat,
   dropProject,
   emptyWorkspace,
   focusedPane,
   insertAt,
+  keepFloating,
+  keepFloatingBeside,
   land,
   liveTab,
   makeTab,
   move,
   openBeside,
+  openFloating,
   parseContentDrag,
   split,
   step,
@@ -57,6 +61,8 @@ function label(c: TabContent): string {
       return `project:${c.id}`;
     case "aside":
       return `aside:${c.session}`;
+    case "attachment":
+      return c.name;
     default:
       return c.kind;
   }
@@ -337,5 +343,64 @@ describe("drops from outside (backlog 140 pass 2)", () => {
       parseContentDrag(JSON.stringify({ kind: "shell", cmd: "rm" })),
     ).toBeNull();
     expect(parseContentDrag("")).toBeNull();
+  });
+});
+
+describe("the floating slot (backlog 145)", () => {
+  const img: TabContent = { kind: "attachment", session: "a", turn: 3, index: 0, media: "image", name: "image" };
+  const pdf: TabContent = { kind: "attachment", session: "a", turn: 3, index: 1, media: "document", name: "paper.pdf" };
+
+  it("holds one tab at most; opening another replaces it; it is in no strip", () => {
+    const w = ws(chat("a"));
+    const t1 = openFloating(w, img);
+    expect(w.floating).toBe(t1);
+    const t2 = openFloating(w, pdf);
+    expect(w.floating).toBe(t2);
+    expect(allTabs(w).map((t) => t.id)).not.toContain(t2.id);
+    expect(closeFloating(w)).toBe(t2);
+    expect(w.floating).toBeNull();
+    expect(closeFloating(w)).toBeNull();
+  });
+
+  it("kept onto a strip: an ordinary tab at the index, the slot empty", () => {
+    const w = ws(chat("a"), chat("b"));
+    const f = openFloating(w, pdf);
+    const kept = keepFloating(w, w.panes[0], 1);
+    expect(kept).toBe(f);
+    expect(w.floating).toBeNull();
+    expect(order(w)).toEqual([["a", "paper.pdf", "b"]]);
+    expect(activeTab(w.panes[0]).id).toBe(f.id);
+    // The same attachment again: the tab there is activated, not doubled.
+    openFloating(w, pdf);
+    expect(keepFloating(w, w.panes[0], 0)?.id).toBe(f.id);
+    expect(order(w)).toEqual([["a", "paper.pdf", "b"]]);
+    expect(keepFloating(w, w.panes[0], 0)).toBeNull();
+  });
+
+  it("kept beside: a second pane with one pane, the far pane's end with two", () => {
+    const w = ws(chat("a"));
+    const f = openFloating(w, img);
+    expect(keepFloatingBeside(w, "right")).toBe(f);
+    expect(order(w)).toEqual([["a"], ["image"]]);
+    expect(w.focused).toBe(w.panes[1].id);
+    const g = openFloating(w, pdf);
+    expect(keepFloatingBeside(w, "left")).toBe(g);
+    expect(order(w)).toEqual([["a", "paper.pdf"], ["image"]]);
+    expect(w.floating).toBeNull();
+  });
+
+  it("a deleted chat takes its attachment tabs and the floating one", () => {
+    const w = ws(chat("a"), img, chat("b"));
+    openFloating(w, pdf);
+    dropChat(w, "a");
+    expect(order(w)).toEqual([["b"]]);
+    expect(w.floating).toBeNull();
+  });
+
+  it("titles by the attachment's name and parses the descriptor", () => {
+    expect(tabTitle(pdf, [])).toBe("paper.pdf");
+    expect(parseContentDrag(JSON.stringify(img))).toEqual(img);
+    expect(parseContentDrag(JSON.stringify({ kind: "attachment", session: "a", turn: 1, index: 0, media: "gif" }))).toBeNull();
+    expect(parseContentDrag(JSON.stringify({ kind: "attachment", session: "a", turn: "1", index: 0, media: "image" }))).toBeNull();
   });
 });
