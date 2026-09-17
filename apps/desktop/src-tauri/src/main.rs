@@ -36,6 +36,8 @@ mod nightshift;
 mod power;
 /// The phone page over the tailnet (nightshift backlog 091, Shape B).
 mod remote;
+/// The terminal pane's shells (nightshift backlog 113).
+mod terminal;
 
 struct AppState {
     chat: tokio::sync::Mutex<Option<Chat>>,
@@ -2935,6 +2937,17 @@ struct AsideResult {
     notices: Vec<String>,
 }
 
+/// A piece of an aside's answer as it streams (nightshift backlog 128):
+/// the card draws the text as it arrives, the way a reply's does, instead
+/// of waiting for the whole of it. `seq` is the card's own number, so a
+/// delta from an aside that was cancelled or replaced is dropped by the
+/// window rather than typed into the next one.
+#[derive(Serialize, Clone)]
+struct AsideDelta {
+    seq: u64,
+    text: String,
+}
+
 /// Ask a side question of the open chat without adding to it (nightshift
 /// backlog 081) — the CLI's interactive `/btw`, which `-p` refuses, done as
 /// a throwaway fork of the chat's session on its warm cache
@@ -2950,11 +2963,18 @@ struct AsideResult {
 /// an aside that is still parked behind a turn — the wait is raced
 /// against it — as well as one that is running; and into `cancel` once
 /// the agent is held, as before, so Stop still ends a running aside.
+///
+/// Streaming (nightshift backlog 128): each text delta is also forwarded
+/// to the window as an `aside-delta` event carrying `seq`, the way a
+/// turn's events go out as `turn-event`; the answer is still collected
+/// here so the result is whole for the card's final state.
 #[tauri::command]
 async fn ask_aside(
+    app: AppHandle,
     state: State<'_, AppState>,
     power: State<'_, power::Holder>,
     text: String,
+    seq: u64,
 ) -> Result<AsideResult, String> {
     let cancel = CancellationToken::new();
     *state.aside_cancel.lock().unwrap() = cancel.clone();
@@ -2972,6 +2992,13 @@ async fn ask_aside(
     let mut on_event = |e: TurnEvent| {
         if let TurnEvent::TextDelta { text } = &e {
             answer.push_str(text);
+            let _ = app.emit(
+                "aside-delta",
+                AsideDelta {
+                    seq,
+                    text: text.clone(),
+                },
+            );
         }
     };
     let outcome = agent
@@ -5057,6 +5084,28 @@ fn mac_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
         .build(app)?;
     let import = MenuItemBuilder::with_id("import_claude", "Import from claude.ai…").build(app)?;
 
+    // Tabs (nightshift backlog 099, 2026-09-17; board 9d): ⌘T a new tab,
+    // ⌘W the tab — *in place of* the predefined Close Window, which the OS
+    // performed itself before its id could reach the webview; the window
+    // now closes from its traffic light only (blocker 183). ⌘⇧] / ⌘⇧[
+    // step across both panes; Open Beside splits the active tab off into
+    // a second pane, no key. All forwarded like the rest; `runMenuCommand`
+    // acts on each. ⌘T was free; ⌘⇧T is the thinking toggle, bound in the
+    // window and untouched.
+    let new_tab = MenuItemBuilder::with_id("new_tab", "New Tab")
+        .accelerator("CmdOrCtrl+T")
+        .build(app)?;
+    let close_tab = MenuItemBuilder::with_id("close_tab", "Close Tab")
+        .accelerator("CmdOrCtrl+W")
+        .build(app)?;
+    let next_tab = MenuItemBuilder::with_id("next_tab", "Next Tab")
+        .accelerator("CmdOrCtrl+Shift+]")
+        .build(app)?;
+    let prev_tab = MenuItemBuilder::with_id("prev_tab", "Previous Tab")
+        .accelerator("CmdOrCtrl+Shift+[")
+        .build(app)?;
+    let split_tab = MenuItemBuilder::with_id("split_tab", "Open Beside").build(app)?;
+
     // The chat-surface redesign's set (nightshift blocker 035, 2026-09-13):
     // the popover, the two palettes, the engine toggle, and one key per core
     // model. Forwarded like the four above; `runMenuCommand` acts on each.
@@ -5128,7 +5177,8 @@ fn mac_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
         .item(&add_project)
         .item(&import)
         .separator()
-        .close_window()
+        .item(&new_tab)
+        .item(&close_tab)
         .build()?;
 
     // Undo and Redo are ours since 2026-09-15 (nightshift backlog 064),
@@ -5169,6 +5219,10 @@ fn mac_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
         .item(&projects)
         .separator()
         .item(&engine)
+        .separator()
+        .item(&next_tab)
+        .item(&prev_tab)
+        .item(&split_tab)
         .separator()
         .item(&zoom_in)
         .item(&zoom_out)
@@ -5367,6 +5421,9 @@ fn main() {
             // The phone page's host and relay (nightshift backlog 091): the
             // listener itself is off until Settings → Remote switches it on.
             remote::Remote::install(app.handle());
+            // The terminal pane's shells (nightshift backlog 113): none
+            // open until the window asks; every one dies with the app.
+            app.manage(terminal::Terminals::default());
             // Last, and that ordering is load-bearing rather than tidiness:
             // the webview starts loading the moment the window exists and its
             // first paint calls straight into `providers` and `list_sessions`,
@@ -5475,6 +5532,11 @@ fn main() {
             remote::remote_stop,
             remote::remote_set_keep_awake,
             remote::remote_token,
+            terminal::terminal_open,
+            terminal::terminal_write,
+            terminal::terminal_resize,
+            terminal::terminal_close,
+            terminal::terminal_list,
             nightshift::nightshift_projects,
             nightshift::nightshift_project,
             nightshift::nightshift_enable,

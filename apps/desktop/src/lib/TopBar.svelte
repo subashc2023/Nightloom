@@ -13,6 +13,7 @@
   import { cacheState } from "./cache";
   import RightRail from "./RightRail.svelte";
   import NotificationCentre from "./NotificationCentre.svelte";
+  import TerminalButton from "./TerminalButton.svelte";
   import { chatKind, kindLabel, openSession } from "./state.svelte";
   import { forkLine } from "./edit";
 
@@ -31,6 +32,26 @@
    * the chip reads the kind and the engine alone (blocker 141). This bar
    * is what is about the *chat*: its name, its kind, how full its window
    * is, the plan, what it has cost.
+   *
+   * Folds by priority (nightshift backlog 129, 2026-09-17; the rule his
+   * review of the tabs boards stated for 099 — "shortening the number of
+   * elements rather than just truncating all of them"): the bar is a CSS
+   * container, and as *its own* width runs out — a narrow window, a pane
+   * of a split, ⌘= at 150–200% — the chips shed their words in three
+   * steps rather than clipping at the right edge. Step 1 (under 1000px):
+   * the gauges lose their labels — the context gauge's `of 200k`, the plan
+   * chip's `plan` and `· stale` (the colour and the title still say it).
+   * Step 2 (under 860px): the spend chip folds into the gauge's hover, the
+   * gauge drops its percentage, the plan chip its week. Step 3 (under
+   * 700px): the token count folds into the gauge's hover too — both
+   * gauges are bars alone, every value in their titles — and the kind
+   * chip drops the engine. What survives last is his priority order: the
+   * plan's 5h bar, the context bar, the kind. Nothing is removed outright:
+   * every folded figure is in the hover of the chip it folded into, and
+   * the rail (⌘M) and the Context page (⌘⇧C) have all of it. A container
+   * query, not a media query, so the zoom factor (backlog 108) is
+   * invisible to it: at 200% the bar is half as many CSS pixels wide and
+   * folds as a half-width bar would.
    */
 
   const session = $derived(app.sessions.find((s) => s.id === app.activeSessionId) ?? null);
@@ -213,6 +234,18 @@
 
   const openTasks = $derived(currentTodos().filter((t) => t.status !== "completed").length);
 
+  /** The chip's second word: `subscription` on the Claude Code engine,
+   *  the provider's name on the other. Folds at step 3 (backlog 129). */
+  const engineName = $derived(
+    app.connection?.engine === "claude-code" ? "subscription" : (app.connection?.provider ?? ""),
+  );
+  /** The spend, for the gauge's hover once its chip has folded (backlog
+   *  129, step 2) — carried always, so the hover reads the same at every
+   *  width. */
+  const spendTail = $derived(
+    spend ? ` · spent ${spend.complete ? "" : "at least "}${spend.text}` : "",
+  );
+
   // The popovers: the model one opens from the model chip (or ⌘M, or the
   // ⌘K palette — which is why the flags are app state), the context one
   // from the gauge chip (or ⌘⇧C). The rail closes on Escape, on a click
@@ -261,7 +294,7 @@
       <span class="title" {title}>{title}</span>
     {/if}
     {#if crumb}
-      <span class="crumb ns-mono">{crumb}</span>
+      <span class="crumb ns-mono fold3" title={app.activeSessionId ?? ""}>{crumb}</span>
     {/if}
     {#if modeText}
       <span class="mode {mode}" title={modeTitle}
@@ -289,16 +322,16 @@
       class="ns-chip model"
       class:open={app.showRail}
       bind:this={chipEl}
-      title="Model and tasks — click to open (⌘M)"
+      title={app.connection
+        ? `${kindLabel(chatKind(app.events), app.connection.engine)} · ${engineName} — model and tasks, click to open (⌘M)`
+        : "Model and tasks — click to open (⌘M)"}
       aria-expanded={app.showRail}
       onclick={toggleRail}
     >
       <span class="dot" class:unknown={!app.connection}></span>
       {#if app.connection}
         <span class="model-name"
-          >{kindLabel(chatKind(app.events), app.connection.engine)} · {app.connection.engine === "claude-code"
-            ? "subscription"
-            : app.connection.provider}</span
+          >{kindLabel(chatKind(app.events), app.connection.engine)}<span class="fold3"> · {engineName}</span></span
         >
       {:else}
         <span class="annotation">not connected</span>
@@ -316,8 +349,8 @@
         aria-expanded={app.showContext}
         title={gauge
           ? gauge.limit
-            ? `${gauge.used.toLocaleString()} of ${gauge.limit.toLocaleString()} context tokens — click to itemise (⌘⇧C)`
-            : `${gauge.used.toLocaleString()} context tokens — window size unknown for this model — click to itemise (⌘⇧C)`
+            ? `${gauge.used.toLocaleString()} of ${gauge.limit.toLocaleString()} context tokens (${Math.round((gauge.ratio ?? 0) * 100)}%)${spendTail} — click to itemise (⌘⇧C)`
+            : `${gauge.used.toLocaleString()} context tokens — window size unknown for this model${spendTail} — click to itemise (⌘⇧C)`
           : "What the next request carries — click to open (⌘⇧C)"}
         onclick={toggleContext}
       >
@@ -325,8 +358,11 @@
           {#if gauge.ratio != null}
             <div class="bar"><div class="fill" style:width="{gauge.ratio * 100}%"></div></div>
           {/if}
+          <!-- The fold classes (backlog 129): `fold1` goes first as the
+               bar narrows, `fold3` last; the count itself folds only when
+               a bar is left to stand for it. -->
           <span class="figure">
-            {tokens(gauge.used)}{#if gauge.limit}<span class="of">of {tokens(gauge.limit)}</span><span class="pct">· {Math.round((gauge.ratio ?? 0) * 100)}%</span>{:else}<span class="of">tokens</span>{/if}
+            <span class:fold3={gauge.ratio != null}>{tokens(gauge.used)}</span>{#if gauge.limit}<span class="of fold1">of {tokens(gauge.limit)}</span><span class="pct fold2">· {Math.round((gauge.ratio ?? 0) * 100)}%</span>{:else}<span class="of fold1">tokens</span>{/if}
           </span>
         {:else}
           <span class="figure sans">Context</span>
@@ -340,16 +376,16 @@
     {#if plan}
       <div class="ns-chip mono plan" class:stale={plan.stale} title={planTitle}>
         <span class="figure">
-          <span class="of">plan</span>
-          <span class="pct">5h</span>
+          <span class="of fold1">plan</span>
+          <span class="pct fold3">5h</span>
           <div class="bar"><div class="fill plan-fill" style:width="{Math.min(plan.five_hour ?? 0, 100)}%"></div></div>
-          <span>{plan.five_hour}%</span>
+          <span class="fold3">{plan.five_hour}%</span>
           {#if plan.seven_day != null}
-            <span class="pct">· wk</span>
-            <div class="bar"><div class="fill plan-fill" style:width="{Math.min(plan.seven_day, 100)}%"></div></div>
-            <span>{plan.seven_day}%</span>
+            <span class="pct fold2">· wk</span>
+            <div class="bar fold2"><div class="fill plan-fill" style:width="{Math.min(plan.seven_day, 100)}%"></div></div>
+            <span class="fold2">{plan.seven_day}%</span>
           {/if}
-          {#if plan.stale}<span class="of">· stale</span>{/if}
+          {#if plan.stale}<span class="of fold1">· stale</span>{/if}
         </span>
       </div>
     {/if}
@@ -360,7 +396,7 @@
 
     {#if spend}
       <div
-        class="ns-chip mono spend"
+        class="ns-chip mono spend fold2"
         class:partial={!spend.complete}
         title={spend.complete
           ? "Session cost so far, summed from each exchange at the price in force when it ran"
@@ -386,6 +422,9 @@
         {app.busy ? "…" : "Compact"}
       </button>
     {/if}
+    <!-- New terminal (nightshift backlog 113, agent M's hunk): a shell
+         docked under the chat, at the right end of the chips (board 12a). -->
+    <TerminalButton />
     <!-- The bell (nightshift backlog 069, agent I's hunk): what waits on
          him, five kinds; the Nightshift header carries the same one. -->
     <NotificationCentre />
@@ -404,6 +443,15 @@
 <style>
   .topbar {
     position: relative;
+    /* The bar is a CSS container (backlog 129): the fold rules below
+       fire on its own width, whatever the zoom. Containment makes it a
+       stacking context, so it is lifted a step over `.content` — which
+       follows it in the DOM — or the rail popover would paint under the
+       transcript. Under the overlays (20), the find bar (10 is inside
+       `.content`, whose own context this does not enter) and the toasts. */
+    container-type: inline-size;
+    container-name: topbar;
+    z-index: 1;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -431,12 +479,17 @@
   .crumb {
     font-size: 11.5px;
     color: var(--dim);
+    /* The id and the mode keep their width; the title is what ellipsizes
+       (backlog 129) — before, both shrank in proportion and at 200% the
+       title went to nothing while the id stayed. */
+    flex-shrink: 0;
   }
   /* The mode mark: the crumb's size, a shade brighter so it reads as a
      state and not as an id. */
   .mode {
     font-size: 11.5px;
     color: var(--text);
+    flex-shrink: 0;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -463,6 +516,35 @@
     align-items: center;
     gap: 8px;
     flex-shrink: 0;
+  }
+  /* The three folds (backlog 129), by the bar's own width. Step 1: the
+     gauges' words. Step 2: the spend chip, the gauge's percentage, the
+     plan chip's week. Step 3: the counts — bars alone — and the chip's
+     engine; the bars narrow a little so a 200% bar in a 1440px window
+     keeps room for the title. Every folded figure is in a hover. */
+  @container topbar (max-width: 1000px) {
+    .fold1 {
+      display: none;
+    }
+  }
+  @container topbar (max-width: 860px) {
+    .fold2 {
+      display: none;
+    }
+  }
+  @container topbar (max-width: 700px) {
+    .fold3 {
+      display: none;
+    }
+    .bar {
+      width: 44px;
+    }
+    .model {
+      max-width: 200px;
+    }
+    .right {
+      gap: 6px;
+    }
   }
 
   .model {

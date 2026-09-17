@@ -23,6 +23,14 @@ tauri-plugin-dialog = "2"
 # Rust through the OS notification centre; the webview has no Notification
 # API of its own, so this is the one way to reach it.
 tauri-plugin-notification = "2"
+# The terminal pane (nightshift backlog 113, blocker 187): a pseudo-terminal
+# for his login shell, read on a thread and streamed to xterm.js in the
+# webview. `base64` carries the pty's bytes inside a JSON event — a string
+# cannot hold a byte cut mid-character; `libc` reads the foreground process
+# group for the strip's title. Both were already in the lockfile.
+portable-pty = "0.9"
+base64 = "0.22"
+libc = "0.2"
 # The Refresh-now banner (nightshift backlog 116, blocker 169) needs its
 # click back, which the plugin's `show()` discards; this is the plugin's own
 # macOS backend, already in the lockfile, held synchronously for that one

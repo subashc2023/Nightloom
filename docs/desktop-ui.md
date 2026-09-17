@@ -1885,3 +1885,77 @@ desktop's `main.rs` (`centre_proposals`, `centre_dream_commits`,
 `centre_dream_diff`, `centre_revert_file`, `build_stamp`, `tidy_memory`).
 Not built: a per-row mute, a notice for a capture's outcome on its own,
 and anything sent off the machine (blocker 078 still binds).
+
+## The top bar folds by priority (nightshift backlog 129, 2026-09-17)
+
+`TopBar.svelte` is a CSS container (`container-name: topbar`); three
+`@container` rules fire on the bar's own width, so ⌘= zoom (backlog 108)
+and a half-width pane fold it the same way. Under 1000px the gauges lose
+their words (`of 200k`, `plan`, `· stale`); under 860px the spend chip
+folds into the context gauge's hover, the gauge drops its percentage and
+the plan chip its week; under 700px the counts fold too — both gauges are
+bars alone, 44px — the kind chip drops `· subscription` and the short id
+after the title folds. Every folded figure is in a hover (the gauge's
+title carries tokens, percentage and spend at every width); the rail (⌘M)
+and Context (⌘⇧C) hold all of it. The title is the one thing on the left
+that ellipsizes. Containment makes the bar a stacking context, so it has
+`z-index: 1` to keep the rail popover over the transcript. His rule
+(review of the tabs boards): drop elements by priority, never truncate
+them all; the plan's 5h bar, the context bar and the kind survive last.
+
+## Tabs and panes (nightshift backlog 099, 2026-09-17; blockers 140, 142, 182, 183)
+
+The centre is one or two **panes** side by side, each with a strip of
+**tabs**; a tab is a chat or a note. The model is `tabs.ts` (plain
+objects, tested); the one workspace is `app.tabs`; `App.svelte` draws the
+panes and `TabStrip.svelte` a strip.
+
+**Two directions, nothing else.** *Activation* — a tab clicked, ⌘⇧] /
+⌘⇧[, a close landing its neighbour — calls the same `openSession` /
+`newSession` / `showNote` the sidebar always has (`activateTab`).
+*Reflection* — an effect in `App.svelte` on `app.view`,
+`app.activeSessionId` and `app.openNote` — records what the centre now
+shows into the focused pane's active tab (`reflectTabs`): the tab already
+holding it is activated, else the active tab is retargeted (a plain
+click *replaces*, blocker 140), or a new tab is opened beside it when
+`app.openNext` is `"new"` (⌘-click on a chat or note row, ⌘T). So every
+opener — the sidebar, ⌘K, the search panel, the hand-off card, the
+phone's `remote-send` — lands in a tab without knowing tabs exist, and a
+new chat's tab retargets to its session on the first message.
+
+**A pane draws by its own active tab.** A note tab is `NoteView` with the
+note as a prop — live in either pane, reading and saving under its own
+scope and name. A chat tab whose chat is the open one (`liveTab`) is the
+transcript and composer; the top bar sits over that pane. Any other chat
+tab is a card naming the chat with *Open here*: the backend holds one
+session (`AppState.session`), so one chat is live at a time until a
+session per tab exists (blocker 182). Switching to another chat's tab,
+⌘T, and closing the live tab are refused with a toast while a turn runs;
+a note beside a streaming chat works. A mousedown in a pane focuses it
+(`focusPane`): a note in front becomes the open note, a chat card stays
+a card.
+
+**Rules.** A pane never has zero tabs — the last tab of one of two panes
+closes the pane, the last tab of the last pane becomes a new-chat tab;
+⌘W never closes the window (blocker 183). At most two panes. Closing
+lands the right neighbour, else the left. The sidebar's rows carry ▭
+when open in a tab that is not the live one. `useProject` resets the
+workspace; a deleted chat's or note's tabs go with it. Nothing is
+persisted across a relaunch. `closeNote()` (the note view's ← Chat)
+closes the focused pane's note tab; `leaveNote()` is the old view-level
+body the chat openers call.
+
+**Keys and menus.** ⌘T `new_tab`, ⌘W `close_tab` (File; the predefined
+Close Window is gone — the traffic light closes), ⌘⇧] `next_tab`, ⌘⇧[
+`prev_tab`, Open Beside `split_tab` (View); the same chords in
+`App.svelte` off macOS. A tab's right-click menu: Close · Close others ·
+Open beside / Move to the other pane. Middle-click closes.
+
+**Drag.** A tab dragged onto a strip reorders or moves (`moveTab`); onto
+a pane's content, the *open beside* half lights and a drop splits
+(`splitTab`, one pane) or moves (two panes). The divider is the composer's
+`Grip`; the left pane's width is `app.layout.panes.split`.
+
+**The terminal's dock.** Each pane ends in `<div class="pane-dock"
+data-pane={pane.id}>`, under the composer, empty until backlog 113's
+terminal mounts into it.

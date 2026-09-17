@@ -159,7 +159,15 @@
   <div class="list">
     {#each notes as n (n.name)}
       <div class="item" class:active={isOpen(scope, n.name)}>
-        <button class="row" onclick={() => showNote(scope, n.name)}>
+        <button
+          class="row"
+          onclick={(e) => {
+            // ⌘-click opens the note in a new tab (nightshift backlog
+            // 099, blocker 140); a plain click replaces the active one.
+            if (e.metaKey || e.ctrlKey) app.openNext = "new";
+            showNote(scope, n.name);
+          }}
+        >
           <span class="name">{n.name}</span>
           {#if n.summary}<span class="summary">{n.summary}</span>{/if}
           <span class="meta">{size(n.bytes)} · {relativeTime(n.modified)}</span>

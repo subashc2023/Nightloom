@@ -323,6 +323,49 @@ re-measured on `selectionchange` and on the transcript's scroll, hidden
 when the rectangle is wholly out of the viewport, and its mousedown is
 swallowed so the click keeps the selection.
 
+**The aside streams, and reads as two voices (2026-09-17, nightshift backlog
+128).** `ask_aside` collected the CLI's text deltas and returned the answer
+whole, so the card sat on `asking…` and then filled at once — and the
+question and the answer were one block in the card's dim face. Now
+`ask_aside` takes the card's `seq` and forwards each `TextDelta` to the
+window as an `aside-delta` event (`AsideDelta { seq, text }`, the way a
+turn's events go out as `turn-event`) while still collecting; `init()`
+listens and appends to the live exchange's `partial`, dropping a delta whose
+`seq` is not the live one's (cancelled or replaced). The card: his question
+in his own bubble (the 126 face, at the right), the transcript's moon
+(backlog 049's `.waiting` row) where the answer will be, the partial text
+rendered as markdown as it lands with the moon under it, then the whole
+answer in the reply's face (`--transcript-font`, `--transcript-size`) and
+the cache chip. × mid-stream calls `cancel_aside` and keeps the card with
+what had arrived and a `stopped here` mark; the next × dismisses; × before
+any text dismisses at once, as before. `Aside` is now `{ quote, draft,
+turns }` with `AsideTurn { seq, question, partial, answer, error,
+cancelled, cacheRead }` — a thread, for backlog 130's follow-ups; the
+composer's `askAside(text)` and `draftAside(quote)` are unchanged, and
+nothing sent or recorded changed.
+
+**The aside as a conversation, part 1 (2026-09-17, nightshift backlog
+130).** Under the last answer the card has a reply box (Enter asks, a
+**Follow up** button). The CLI's aside is single-shot — a fresh throwaway
+fork each time with no memory of the last aside — so `followUpAside(q)`
+sends `asideFollowUp(quote, prior, q)` (`asideQuote.ts`): the 107 framing
+generalised — the passage first when there is one, then each earlier
+question and its answer *as he saw it* (a stopped answer's partial text)
+between triple quotes, then the new question; the chat's context is the
+fork's as before, and nothing enters the log or the CLI's files. The new
+exchange is appended to `app.aside.turns` and streams like the first. The
+thread is per chat: `switchAside` in `newSession`, `continueSession` and
+`openSession` stashes the leaving chat's `Aside` under its id in a plain
+map and takes the opened chat's back (the drafts pattern, backlog 065;
+never persisted), and an exchange still streaming when the chat is left
+finishes into the stashed thread (`findAsideTurn` looks there too). The
+cost of the growing quote, measured on Haiku (`claude -p`, the framing as
+the prompt, 1 → 3 → 6 quoted exchanges of a 90-word answer): the CLI puts
+the message in a cache-creation block, and that grew 5,358 → 5,640 → 6,056
+tokens — about **140 tokens per quoted exchange**, four characters a token,
+at cache-write price, beside a 30,516-token prefix read from cache. Part 2
+(the card dragged out into a tab) waits on backlog 099.
+
 The `AutoApprove` policy lives in `AppState`, **not** in `connect` — the rail
 re-connects on every knob change, and rebuilding the policy there would silently
 forget every "always allow" the user granted.

@@ -28,7 +28,9 @@ import { EDITABLE_LAYERS } from "./types";
 import { LIST_SCOPE, NEW_CHAT_SCOPE, UndoHistory } from "./undo";
 import { chatName, notifyNeedsYou, notifyTurnEnd } from "./notify";
 import { RESUME_TEXT, SleepWatch, loadSleepPrefs, pushPowerPrefs, type Woke } from "./sleep";
-import { asideQuestion, type AsideQuote } from "./asideQuote";
+import { asideFollowUp, asideQuestion, type AsideQuote } from "./asideQuote";
+import * as tabs from "./tabs";
+import type { TabContent, Workspace } from "./tabs";
 import {
   buildNotices,
   dailyDue,
@@ -50,6 +52,7 @@ import type {
   PlanUsage,
   ApprovalDecision,
   ApprovalRequest,
+  AsideDelta,
   BlockerList,
   ChatKind,
   ChatMode,
@@ -402,19 +405,41 @@ export interface Connection {
   agent: AgentInfo | null;
 }
 
-/** The open chat's aside (backlog 081, the passage form backlog 107) — see
- *  `app.aside`. */
-export interface Aside {
+/** One exchange of the open chat's aside (backlog 081; streamed since
+ *  backlog 128; a thread of them since backlog 130) — see `app.aside`. */
+export interface AsideTurn {
+  /** Tells this exchange's deltas and result from a cancelled or replaced
+   *  one's: the backend echoes it on every `aside-delta`. */
   seq: number;
   /** His question as typed — not the framed string the backend gets. */
   question: string;
-  /** The highlighted passage the question is about, if any. */
+  /** The answer as it streams (backlog 128): what has arrived so far,
+   *  drawn as it lands; equal to `answer` once that is set. */
+  partial: string;
+  /** The whole answer, once the backend's result is in; null while asking. */
+  answer: string | null;
+  error: string | null;
+  /** × pressed mid-stream: the partial text stays on the card, marked. */
+  cancelled: boolean;
+  cacheRead: number;
+}
+
+/** The open chat's aside (backlog 081, the passage form backlog 107) — see
+ *  `app.aside`. */
+export interface Aside {
+  /** The highlighted passage the thread is about, if any. */
   quote: AsideQuote | null;
   /** Opened from a selection and not yet asked: the card is the question box. */
   draft: boolean;
-  answer: string | null;
-  error: string | null;
-  cacheRead: number;
+  /** The exchanges in order; the last one is the live one. Empty only
+   *  while a draft. */
+  turns: AsideTurn[];
+}
+
+/** The aside's live exchange — the last turn while it is still asking. */
+export function asideAsking(a: Aside | null): AsideTurn | null {
+  const t = a?.turns[a.turns.length - 1] ?? null;
+  return t && t.answer === null && t.error === null && !t.cancelled ? t : null;
 }
 
 export const app = $state({
@@ -653,7 +678,9 @@ export const app = $state({
    *  what he highlighted in the transcript, and a card opened from a
    *  selection starts as a `draft` — the quote shown, the question box
    *  waiting under it, nothing sent yet. `seq` tells one aside from the
-   *  next when an answer lands late. */
+   *  next when an answer lands late. Since backlog 128 the answer streams
+   *  into the card (`partial`) and since 130 the card is a thread of
+   *  exchanges (`turns`, each with its own `seq`). */
   aside: null as Aside | null,
   /** Observations awaiting the next dream — the badge on the Dream button. */
   dreamPending: 0,
@@ -694,6 +721,27 @@ export const app = $state({
   palette: loadPalette() as Palette,
   /** Sidebar width and collapse, pane widths on the Nightshift screens. */
   layout: loadLayout(),
+  /**
+   * The tabs and panes (nightshift backlog 099, 2026-09-17): one or two
+   * panes side by side, each with its strip of tabs, each tab a chat or
+   * a note. A navigation layer over the fields above — `view`,
+   * `activeSessionId`, `events`, `openNote` stay the one open chat and
+   * note, and `reflectTabs` records what they show into the focused
+   * pane's active tab, while activating a tab opens its content through
+   * the same `openSession` / `showNote` the sidebar calls. Not persisted:
+   * the app opens, as it always has, on one new-chat tab.
+   */
+  tabs: tabs.emptyWorkspace() as Workspace,
+  /**
+   * How the next chat or note shown lands in the focused pane: `replace`
+   * takes over the active tab (a plain click, blocker 140), `new` opens a
+   * tab beside it (⌘-click, ⌘T), `beside` the other pane (Open beside).
+   * Read once by `reflectTabs` and reset.
+   */
+  openNext: "replace" as "replace" | "new" | "beside",
+  /** The tab being dragged, while one is: the strips and the panes' drop
+   *  halves read it, since `dataTransfer` is unreadable during `dragover`. */
+  draggingTab: null as string | null,
   /**
    * The search-everywhere panel (nightshift backlog 117, with 106's second
    * half): whether it is showing in the sidebar's column, the query and
@@ -808,6 +856,13 @@ let initialized = false;
 let compactedThisTurn = false;
 
 /**
+ * Panels that may take a menu command before `runMenuCommand`'s own
+ * switch: each is asked in turn and answers true to keep the command
+ * (nightshift backlog 113 — the terminal pane's ⌘T / ⌘W while focused).
+ */
+export const menuInterceptors: Array<(id: string) => boolean> = [];
+
+/**
  * A click in the macOS menu bar (`mac_menu` in `main.rs`), which is where
  * that platform's window commands live because its frame is native and there
  * is no bar of ours to hang them on.
@@ -822,6 +877,11 @@ let compactedThisTurn = false;
  * nobody asked.
  */
 export function runMenuCommand(id: string): void {
+  // A panel with the focus may take a command first (the terminal pane,
+  // nightshift backlog 113: ⌘T, ⌘W, ⌘⇧], ⌘⇧[ act on its shells while it
+  // has the keyboard — board 12c). Registered by the panel's own module,
+  // so this file imports nothing of it.
+  for (const take of menuInterceptors) if (take(id)) return;
   switch (id) {
     case "settings":
       // Settings takes the popover's place rather than stacking on it
@@ -851,6 +911,24 @@ export function runMenuCommand(id: string): void {
       break;
     case "new_ephemeral":
       void newSession("ephemeral");
+      break;
+    // Tabs (nightshift backlog 099, 2026-09-17): ⌘T, ⌘W, ⌘⇧], ⌘⇧[ and
+    // Open beside, from the macOS menu; `App.svelte` binds the chords
+    // elsewhere.
+    case "new_tab":
+      void newTab();
+      break;
+    case "close_tab":
+      void closeTab();
+      break;
+    case "next_tab":
+      void stepTab(1);
+      break;
+    case "prev_tab":
+      void stepTab(-1);
+      break;
+    case "split_tab":
+      void splitActiveTab();
       break;
     case "new_project":
       showNewProject();
@@ -1027,6 +1105,13 @@ export async function init(): Promise<void> {
   if (initialized) return;
   initialized = true;
   await listen<TurnEvent>("turn-event", (e) => applyTurnEvent(e.payload));
+  // The aside's answer as it streams (nightshift backlog 128): a delta
+  // for the live exchange is appended; one for a cancelled or replaced
+  // exchange (its `seq` differs) is dropped.
+  await listen<AsideDelta>("aside-delta", (e) => {
+    const t = findAsideTurn(e.payload.seq);
+    if (t && t.answer === null && !t.cancelled) t.partial += e.payload.text;
+  });
   await listen<string>("turn-notice", (e) => addToast(e.payload));
   // The Mac came back from sleep (nightshift backlog 101): `sleepWatch`
   // matches it against the turn that was running, and the keep-awake
@@ -1719,7 +1804,8 @@ export async function useKnowledgeDir(dir: string | null): Promise<void> {
     return;
   }
   // The open note may not exist in the new vault.
-  if (app.openNote?.scope === "knowledge") closeNote();
+  if (app.openNote?.scope === "knowledge") leaveNote();
+  dropNoteTabs("knowledge");
   await refreshNotes();
   await applyDraft();
 }
@@ -1749,6 +1835,9 @@ export async function useProject(id: string | null): Promise<void> {
   saveLastProject(app.project?.id ?? null);
   app.activeSessionId = null;
   app.events = [];
+  // The tabs were the list just left too (backlog 099): a workspace is a
+  // project's, as an editor's is a folder's.
+  app.tabs = tabs.emptyWorkspace();
   // The pending kind was chosen for the list just left; the backend reset
   // its copy in `open_project` / `close_project` (nightshift backlog 061).
   app.pendingMode = "normal";
@@ -1970,7 +2059,24 @@ export function showGraph(): void {
   app.leftTab = "notes";
 }
 
+/**
+ * The note view's way out — ← Chat, Save from the rail or Settings,
+ * Close for now on a proposal. With tabs (nightshift backlog 099) a note
+ * is a tab, so this closes the focused pane's note tab and lands its
+ * neighbour; `leaveNote` below is the view-level half, which the chat
+ * openers call themselves (a chat opened from the sidebar *replaces* the
+ * note tab rather than closing it, blocker 140).
+ */
 export function closeNote(): void {
+  const front = tabs.activeTab(tabs.focusedPane(app.tabs));
+  if (front.content.kind === "note") {
+    void closeTab(front.id);
+    return;
+  }
+  leaveNote();
+}
+
+export function leaveNote(): void {
   app.view = "chat";
   app.openNote = null;
   app.proposalReview = null;
@@ -2083,7 +2189,8 @@ export async function deleteNote(scope: NoteScope, name: string): Promise<void> 
     addToast(String(e));
     return;
   }
-  if (app.openNote?.scope === scope && app.openNote.name === name) closeNote();
+  if (app.openNote?.scope === scope && app.openNote.name === name) leaveNote();
+  dropNoteTabs(scope, name);
   await refreshNotes();
   await refreshProjects();
 }
@@ -2315,6 +2422,206 @@ export async function useEngine(engine: Engine): Promise<void> {
   app.suggestion = null;
   app.aside = null;
   await applyDraft();
+}
+
+
+// ---- tabs and panes (nightshift backlog 099) ----
+
+/**
+ * What the centre shows now, as tab content: the open note when the view
+ * is the note, else the open chat (null while it is a new, unsent one).
+ * Null on the views that are not tabs — the graph, Nightshift, the New
+ * project form — which take the whole centre as they always have.
+ */
+export function shownContent(): TabContent | null {
+  if (app.view === "note") return app.openNote ? { kind: "note", ...app.openNote } : null;
+  if (app.view === "chat") return { kind: "chat", session: app.activeSessionId };
+  return null;
+}
+
+/**
+ * Record what the centre now shows into the focused pane's active tab —
+ * the reflection half of the tab model. Called from an effect in
+ * `App.svelte` on every change of the view, the open chat or the open
+ * note, so every existing opener (the sidebar, the palette, the search
+ * panel, the hand-off card, the phone's `remote-send`) lands in a tab
+ * without knowing tabs exist. The tab already holding the content is
+ * activated; else the active tab is retargeted, or a new one opened
+ * beside it when the click carried ⌘ (`app.openNext`).
+ */
+let activating = 0;
+export function reflectTabs(): void {
+  // A tab being activated is already in front; the changes its opener
+  // makes on the way are not a new landing.
+  if (activating > 0) return;
+  const content = shownContent();
+  if (!content) return;
+  const how = app.openNext;
+  app.openNext = "replace";
+  const ws = app.tabs;
+  if (how === "beside") {
+    tabs.openBeside(ws, content, "new");
+    return;
+  }
+  tabs.land(ws, tabs.focusedPane(ws), content, how);
+}
+
+/**
+ * Show a tab's content: the activation half. A chat tab opens its chat
+ * (or the new-chat state), a note tab its note; a chat other than the open
+ * one is refused while a turn runs — the backend holds one session, and
+ * `openSession` says no (blocker 182) — so the click lands nothing and a
+ * toast says why. The tab is made active first, so the reflection finds
+ * it in front and has nothing to change.
+ */
+export async function activateTab(tabId: string): Promise<void> {
+  const tab = tabs.tabById(app.tabs, tabId);
+  if (!tab) return;
+  const c = tab.content;
+  if (c.kind === "chat" && c.session !== app.activeSessionId && app.busy) {
+    addToast("A turn is running in the open chat — another chat opens when it ends");
+    return;
+  }
+  tabs.activate(app.tabs, tabId);
+  activating += 1;
+  try {
+    if (c.kind === "note") {
+      if (app.view !== "note" || app.openNote?.scope !== c.scope || app.openNote?.name !== c.name) {
+        showNote(c.scope, c.name);
+      }
+      return;
+    }
+    if (c.session === app.activeSessionId) {
+      if (app.view !== "chat") leaveNote();
+      return;
+    }
+    if (c.session === null) await newSession();
+    else await openSession(c.session);
+  } finally {
+    activating -= 1;
+  }
+}
+
+/**
+ * Focus a pane without changing its tab (a click inside it). A note in
+ * front becomes the open note, so the Notes list and ⌘S follow it; a chat
+ * in front that is not the open one stays a card — focus alone must not
+ * swap the backend's session under a running turn.
+ */
+export function focusPane(paneId: string): void {
+  const ws = app.tabs;
+  if (ws.focused === paneId) return;
+  const pane = tabs.paneById(ws, paneId);
+  if (!pane) return;
+  ws.focused = paneId;
+  const c = tabs.activeTab(pane).content;
+  if (c.kind === "note") {
+    if (app.openNote?.scope !== c.scope || app.openNote?.name !== c.name || app.view !== "note") {
+      showNote(c.scope, c.name);
+    }
+  } else if (c.session === app.activeSessionId && app.view === "note") {
+    leaveNote();
+  }
+}
+
+/** ⌘T: a new chat in a new tab beside the active one. */
+export async function newTab(): Promise<void> {
+  if (app.busy) {
+    addToast("A turn is running in the open chat — a new chat opens when it ends");
+    return;
+  }
+  app.openNext = "new";
+  const front = tabs.activeTab(tabs.focusedPane(app.tabs));
+  // Already on the new-chat page: the reflection would find the same
+  // content and do nothing, and the key would seem dead. Open a second
+  // pane's worth of nothing? No — the one new chat is the one new chat.
+  if (front.content.kind === "chat" && front.content.session === null && app.view === "chat") {
+    app.openNext = "replace";
+    return;
+  }
+  await newSession();
+  if (app.error) app.openNext = "replace";
+}
+
+/**
+ * ⌘W: close a tab — the focused pane's active one when none is named.
+ * A running turn's chat cannot be left (the neighbour could not be
+ * opened under it), so that one tab waits; every other closes at once,
+ * and a background chat's turn keeps running. The neighbour that lands
+ * is shown through `activateTab`.
+ */
+export async function closeTab(tabId?: string): Promise<void> {
+  const ws = app.tabs;
+  const id = tabId ?? tabs.activeTab(tabs.focusedPane(ws)).id;
+  const tab = tabs.tabById(ws, id);
+  if (!tab) return;
+  const live = tabs.liveTab(ws, app.activeSessionId);
+  if (app.busy && live?.id === id) {
+    addToast("This chat's turn is running — stop it or wait, then close the tab");
+    return;
+  }
+  const r = tabs.close(ws, id);
+  if (r.show) await activateTab(r.show.id);
+}
+
+/** ⌘⇧] / ⌘⇧[: the next or previous tab, across both panes, wrapping. */
+export async function stepTab(dir: 1 | -1): Promise<void> {
+  const next = tabs.step(app.tabs, dir);
+  if (next) await activateTab(next.id);
+}
+
+/** A tab dropped on a strip: reorder, or move into the other pane. */
+export async function moveTab(tabId: string, toPaneId: string, index: number): Promise<void> {
+  if (!tabs.move(app.tabs, tabId, toPaneId, index)) return;
+  await activateTab(tabId);
+}
+
+/**
+ * Open beside: a second pane holding the tab (a drag to a pane's half,
+ * or the menu item on the active tab). With two panes already the tab
+ * moves to the other one. A pane's only tab cannot be split off — the
+ * model refuses — and the toast says so.
+ */
+export async function splitTab(tabId: string, side: "left" | "right" = "right"): Promise<void> {
+  const ws = app.tabs;
+  if (ws.panes.length >= tabs.MAX_PANES) {
+    const from = tabs.paneOf(ws, tabId);
+    const other = from ? tabs.otherPane(ws, from.id) : undefined;
+    if (other) await moveTab(tabId, other.id, other.tabs.length);
+    return;
+  }
+  if (!tabs.split(ws, tabId, side)) {
+    addToast("A pane keeps at least one tab — open something else here first");
+    return;
+  }
+  await activateTab(tabId);
+}
+
+export async function splitActiveTab(): Promise<void> {
+  await splitTab(tabs.activeTab(tabs.focusedPane(app.tabs)).id);
+}
+
+/** A deleted chat's tabs go with it; the focused pane lands its neighbour. */
+function dropChatTabs(session: string): void {
+  for (const r of tabs.dropChat(app.tabs, session)) {
+    if (r.show) void activateTab(r.show.id);
+  }
+}
+
+/** A deleted note's tabs, or every vault note's when the vault moves. */
+function dropNoteTabs(scope: NoteScope, name?: string): void {
+  const gone = tabs
+    .allTabs(app.tabs)
+    .filter((t) => t.content.kind === "note" && t.content.scope === scope && (name === undefined || t.content.name === name));
+  for (const t of gone) {
+    const r = tabs.close(app.tabs, t.id);
+    if (r.show) void activateTab(r.show.id);
+  }
+}
+
+/** The pane a tab is drawn in, for the strip's drag handlers. */
+export function paneOfTab(tabId: string): string | null {
+  return tabs.paneOf(app.tabs, tabId)?.id ?? null;
 }
 
 // ---- nightshift ----
@@ -3237,6 +3544,8 @@ export async function newSession(mode?: ChatMode, kind?: ChatKind): Promise<void
   const wanted = kind ?? defaultKind();
   try {
     await api.newSession(mode, wanted);
+    // The aside thread stays with the chat being left (backlog 130).
+    switchAside(null);
     app.activeSessionId = null;
     app.events = [];
     app.pendingMode = mode ?? "normal";
@@ -3245,8 +3554,7 @@ export async function newSession(mode?: ChatMode, kind?: ChatKind): Promise<void
     app.agentTurn = null;
     app.agentInit = null;
     app.suggestion = null;
-    app.aside = null;
-    closeNote();
+    leaveNote();
   } catch (e) {
     app.error = String(e);
   }
@@ -3354,13 +3662,14 @@ export async function continueChat(): Promise<void> {
   try {
     const start = handoff.startPrompt;
     const res = await api.continueSession();
+    // The aside thread stays with the chat being left (backlog 130).
+    switchAside(res.session);
     app.events = res.events;
     app.activeSessionId = res.session;
     app.error = null;
     app.agentTurn = null;
     app.agentInit = null;
     app.suggestion = null;
-    app.aside = null;
     resetHandoff();
     if (start) {
       setDraftText(res.session, start);
@@ -3368,7 +3677,7 @@ export async function continueChat(): Promise<void> {
       handoff.noStartPromptChat = res.session;
       addToast("The wrap-up reply had no start-prompt block — the new chat's box is empty; say what to read first.");
     }
-    closeNote();
+    leaveNote();
   } catch (e) {
     addToast(String(e));
     return;
@@ -3380,14 +3689,16 @@ export async function openSession(id: string): Promise<void> {
   if (app.busy) return;
   try {
     app.events = await api.openSession(id);
+    // The aside thread stays with the chat being left and the opened
+    // chat's comes back (backlog 130).
+    switchAside(id);
     app.activeSessionId = id;
     app.error = null;
     // The plan window and estimate belong to the chat you just left.
     app.agentTurn = null;
     app.agentInit = null;
     app.suggestion = null;
-    app.aside = null;
-    closeNote();
+    leaveNote();
   } catch (e) {
     app.error = String(e);
   }
@@ -3424,6 +3735,7 @@ export async function deleteSession(id: string): Promise<void> {
       app.activeSessionId = null;
       app.events = [];
     }
+    dropChatTabs(full);
   } catch (e) {
     addToast(String(e));
     await refreshSessions();
@@ -3675,23 +3987,86 @@ export async function askAside(question: string, quote: AsideQuote | null = null
   // apart. The backend is 081's, untouched.
   const sent = quote ? asideQuestion(quote, q) : q;
   const seq = ++asideSeq;
-  app.aside = { seq, question: q, quote, draft: false, answer: null, error: null, cacheRead: 0 };
+  const turn: AsideTurn = { seq, question: q, partial: "", answer: null, error: null, cancelled: false, cacheRead: 0 };
+  // A running exchange is replaced (one at a time, as before): cancelled
+  // on the backend so its process does not run on behind the new card.
+  if (asideAsking(app.aside)) void api.cancelAside().catch(() => {});
+  app.aside = { quote, draft: false, turns: [turn] };
+  await runAside(turn, sent);
+}
+
+/**
+ * Run one exchange of the aside to its end (backlog 128): the deltas land
+ * through the `aside-delta` listener in `init` while this awaits the
+ * result; the result's text then stands in for the partial, so the card
+ * shows the whole answer even where a delta was lost. A turn cancelled
+ * from the card keeps its partial text and ignores the late result.
+ */
+async function runAside(turn: AsideTurn, sent: string): Promise<void> {
+  const live = () => findAsideTurn(turn.seq);
   try {
-    const res = await api.askAside(sent);
-    if (app.aside?.seq !== seq) return; // dismissed or replaced meanwhile
-    app.aside = {
-      seq,
-      question: q,
-      quote,
-      draft: false,
-      answer: res.answer,
-      error: res.is_error ? (res.notices.join("; ") || "the aside failed") : null,
-      cacheRead: res.cache_read,
-    };
+    const res = await api.askAside(sent, turn.seq);
+    const t = live();
+    if (!t || t.cancelled) return; // dismissed, replaced or cancelled meanwhile
+    t.answer = res.answer;
+    t.partial = res.answer;
+    t.error = res.is_error ? (res.notices.join("; ") || "the aside failed") : null;
+    t.cacheRead = res.cache_read;
   } catch (e) {
-    if (app.aside?.seq === seq)
-      app.aside = { seq, question: q, quote, draft: false, answer: null, error: String(e), cacheRead: 0 };
+    const t = live();
+    if (t && !t.cancelled) t.error = String(e);
   }
+}
+
+/**
+ * A follow-up in the aside's own thread (nightshift backlog 130): the
+ * card's reply box. The CLI's aside is single-shot, so the thread so far
+ * — each earlier question and the answer as he saw it, the passage first
+ * when there is one — travels inside the new question (`asideFollowUp`),
+ * and the chat's context is the fork's as before. The new exchange is
+ * appended to the card; nothing enters the chat or the CLI's files.
+ */
+export async function followUpAside(question: string): Promise<void> {
+  const q = question.trim();
+  const a = app.aside;
+  if (!q || !a || a.draft || asideAsking(a) || app.connection?.engine !== "claude-code") return;
+  const prior = a.turns.filter((t) => t.partial.trim()).map((t) => ({ question: t.question, answer: t.partial }));
+  const sent = asideFollowUp(a.quote, prior, q);
+  const turn: AsideTurn = { seq: ++asideSeq, question: q, partial: "", answer: null, error: null, cancelled: false, cacheRead: 0 };
+  a.turns.push(turn);
+  await runAside(turn, sent);
+}
+
+/**
+ * The aside thread of each chat left open (backlog 130): a chat switch
+ * used to clear the card; now the thread is kept under the chat's id, the
+ * way drafts are kept (backlog 065), and comes back when the chat does —
+ * never written anywhere. A plain map, read once per switch. An exchange
+ * still streaming when the chat is left keeps streaming into the stashed
+ * thread (`findAsideTurn` looks here too), so the answer is whole when
+ * he returns.
+ */
+const asideStash = new Map<string, Aside>();
+
+/** Stash the open chat's thread and take the next chat's, if any. */
+function switchAside(next: string | null): void {
+  const from = app.activeSessionId;
+  if (from !== null) {
+    if (app.aside) asideStash.set(from, app.aside);
+    else asideStash.delete(from);
+  }
+  app.aside = next === null ? null : (asideStash.get(next) ?? null);
+}
+
+/** The exchange with `seq`, on the card or in a stashed thread. */
+function findAsideTurn(seq: number): AsideTurn | null {
+  const on = app.aside?.turns.find((t) => t.seq === seq);
+  if (on) return on;
+  for (const a of asideStash.values()) {
+    const t = a.turns.find((t) => t.seq === seq);
+    if (t) return t;
+  }
+  return null;
 }
 
 /**
@@ -3701,19 +4076,28 @@ export async function askAside(question: string, quote: AsideQuote | null = null
  */
 export function draftAside(quote: AsideQuote): void {
   if (app.connection?.engine !== "claude-code") return;
-  const a = app.aside;
-  if (a && !a.draft && a.answer === null && a.error === null) void api.cancelAside().catch(() => {});
-  app.aside = { seq: ++asideSeq, question: "", quote, draft: true, answer: null, error: null, cacheRead: 0 };
+  if (asideAsking(app.aside)) void api.cancelAside().catch(() => {});
+  app.aside = { quote, draft: true, turns: [] };
 }
 
 /**
  * The card's ×. An aside still `asking…` is cancelled on the backend too
  * (whole-project review F13, `cancel_aside`): before this it was only
  * hidden, and the CLI ran its `--max-turns 2` out behind the card.
+ * Mid-stream (backlog 128) the card stays, with what had arrived and a
+ * mark that it was cut short — his reading is not thrown away with the
+ * process; the next × dismisses. Nothing had arrived: the card goes at
+ * once, as before.
  */
 export function dismissAside(): void {
-  const a = app.aside;
-  if (a && !a.draft && a.answer === null && a.error === null) void api.cancelAside().catch(() => {});
+  const t = asideAsking(app.aside);
+  if (t) {
+    void api.cancelAside().catch(() => {});
+    if (t.partial.trim()) {
+      t.cancelled = true;
+      return;
+    }
+  }
   app.aside = null;
 }
 

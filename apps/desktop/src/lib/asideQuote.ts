@@ -56,6 +56,39 @@ export function asideQuestion(q: AsideQuote, typed: string): string {
   ].join("\n");
 }
 
+/** One earlier exchange of the aside, for a follow-up's framing. */
+export interface AsidePrior {
+  question: string;
+  /** The answer as he saw it — the whole of it, or what had arrived when
+   *  he stopped it. */
+  answer: string;
+}
+
+/**
+ * The string a follow-up sends (nightshift backlog 130). The CLI's aside
+ * is single-shot — a fresh throwaway fork of the chat each time, with no
+ * memory of the last aside — so the side conversation so far travels
+ * inside the question, quoted the way the passage does: each earlier
+ * question and answer between triple quotes, the passage first when there
+ * is one, then what he typed now. The chat's own context is the fork's;
+ * nothing here is written anywhere. The quote grows with the thread; the
+ * cost of that is measured in the 130 report.
+ */
+const FENCE = '"""';
+export function asideFollowUp(q: AsideQuote | null, prior: AsidePrior[], typed: string): string {
+  const question = typed.trim() || "Go on.";
+  const fence = (text: string) => [FENCE, text.replace(/\s+$/, "").replace(/^\n+/, ""), FENCE];
+  const out: string[] = ["This is a side conversation beside the chat, not part of it."];
+  if (q) {
+    out.push(`It is about this passage the user selected in the transcript, from ${quoteLabel(q)}, quoted exactly:`, "", ...fence(q.text), "");
+  }
+  prior.forEach((p, i) => {
+    out.push(i === 0 ? "Earlier in the side conversation, the user asked:" : "Then the user asked:", "", ...fence(p.question), "", "and you answered:", "", ...fence(p.answer), "");
+  });
+  out.push("Now the user asks:", "", question);
+  return out.join("\n");
+}
+
 /**
  * Whether a selection's two ends make a passage: both inside a prose
  * block of the same turn. `a` and `b` are the ends as the transcript

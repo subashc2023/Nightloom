@@ -18,6 +18,7 @@
   import Icon from "./Icon.svelte";
   import Kbd from "./Kbd.svelte";
   import { isMac } from "./platform";
+  import { openTerminalFromBar, terminalCwd } from "./terminal.svelte";
 
   /**
    * The two keyboard overlays of the 2026-09-13 redesign (canvas row 5,
@@ -226,6 +227,18 @@
         group: "Panels",
         run: () => go(() => runMenuCommand("context")),
         disabled: !app.connection,
+      },
+      // New terminal (nightshift backlog 113, board 12c's ⌘K row): a shell
+      // in the project's folder, docked under the chat; dim without one.
+      {
+        id: "terminal",
+        label: "New terminal",
+        meta: terminalCwd() ? "a shell in the project folder" : "no folder — this chat has none",
+        icon: "term",
+        key: "⌃`",
+        group: "Panels",
+        run: () => go(() => void openTerminalFromBar()),
+        disabled: !terminalCwd(),
       },
       // The two transcript toggles (nightshift backlog 052, 2026-09-14):
       // what the open transcript shows of a reply's working. The label

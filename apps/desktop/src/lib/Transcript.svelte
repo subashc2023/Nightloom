@@ -3,10 +3,12 @@
   import { tick, untrack } from "svelte";
   import {
     app,
+    asideAsking,
     askAside,
     denialReason,
     dismissAside,
     draftAside,
+    followUpAside,
     liveFlags,
     removeBlock,
     removeTurn,
@@ -1041,6 +1043,24 @@
       dismissAside();
     }
   }
+
+  // A follow-up in the aside's own thread (backlog 130): the reply box
+  // under the last answer. Enter asks, Shift-Enter is a newline; the box
+  // is this screen's, like the passage draft's — the thread itself is
+  // kept per chat in `state.svelte.ts`.
+  let followDraft = $state("");
+  function submitFollowUp(): void {
+    const q = followDraft.trim();
+    if (!q || !app.aside || app.aside.draft || asideAsking(app.aside)) return;
+    followDraft = "";
+    void followUpAside(q);
+  }
+  function followKeys(e: KeyboardEvent): void {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      submitFollowUp();
+    }
+  }
 </script>
 
 <svelte:document onselectionchange={placePill} />
@@ -1360,19 +1380,33 @@
          a turn; its × is the only way it leaves, short of a chat switch.
          About a passage (backlog 107): the highlighted text sits above the
          question as a quote, and a card opened from a selection is first
-         the question box itself — the quote, a one-line box, Ask aside. -->
+         the question box itself — the quote, a one-line box, Ask aside.
+         Since backlog 128 the card reads as a turn does: his question in
+         his bubble's face, the moon while nothing has arrived, the answer
+         streaming in under it in the reply's face; × mid-stream stops it
+         and keeps what had arrived, marked. -->
     {#if app.aside}
+      {@const asking = asideAsking(app.aside)}
+      {@const last = app.aside.turns[app.aside.turns.length - 1] ?? null}
       <div class="aside" role="note" aria-label="aside, not part of the chat">
         <div class="aside-head">
           <span class="ns-chip mono">aside · not in the chat</span>
           {#if app.aside.quote}
             <span class="ns-chip mono">about {quoteLabel(app.aside.quote, "card")}</span>
           {/if}
-          {#if app.aside.answer !== null && app.aside.cacheRead > 0}
-            <span class="ns-chip mono">{app.aside.cacheRead.toLocaleString()} read from cache</span>
+          {#if last && last.answer !== null && last.cacheRead > 0}
+            <span class="ns-chip mono">{last.cacheRead.toLocaleString()} read from cache</span>
           {/if}
           <span class="spacer"></span>
-          <button class="ns-btn ghost small" title={app.aside.draft ? "Close without asking" : "Dismiss the aside"} onclick={dismissAside}>×</button>
+          <button
+            class="ns-btn ghost small"
+            title={app.aside.draft
+              ? "Close without asking"
+              : asking
+                ? "Stop the answer here; what has arrived stays"
+                : "Dismiss the aside"}
+            onclick={dismissAside}>×</button
+          >
         </div>
         {#if app.aside.quote}
           <blockquote class="aside-quote" title="The passage you highlighted, sent with the question exactly as selected">{app.aside.quote.text}</blockquote>
@@ -1402,15 +1436,60 @@
             <button class="ns-btn ghost small" onclick={dismissAside}>Cancel</button>
           </div>
         {:else}
-          <div class="aside-q">{app.aside.question}</div>
-          {#if app.aside.error}
-            <div class="aside-err">{app.aside.error}</div>
-          {:else if app.aside.answer === null}
-            <div class="aside-wait">asking…</div>
-          {:else}
-            <!-- Through the reply renderer: the answer is markdown with
-                 equations, and it read raw (his report, 2026-09-17). -->
-            <div class="aside-a markdown">{@html renderMarkdown(app.aside.answer)}</div>
+          {#each app.aside.turns as turn (turn.seq)}
+            <!-- Two voices (backlog 128): his question drawn as his turn
+                 is — the bubble of backlog 126, at the right — the answer
+                 in the reply's face under it. -->
+            <div class="aside-turn">
+              <div class="user-bubble aside-q"><div class="user-text">{turn.question}</div></div>
+            </div>
+            {#if turn.partial}
+              <!-- Through the reply renderer, as it streams: the answer is
+                   markdown with equations, and it read raw (his report,
+                   2026-09-17). -->
+              <div class="aside-a markdown">{@html renderMarkdown(turn.partial)}</div>
+            {/if}
+            {#if turn.cancelled}
+              <div class="aside-mark">stopped here</div>
+            {/if}
+            {#if turn.error}
+              <div class="aside-err">{turn.error}</div>
+            {/if}
+            {#if turn === asking}
+              <!-- The same moon a turn waits with (backlog 049): it rolls
+                   where the answer will be, and stays under the text while
+                   the text is still arriving, as the reply's does. -->
+              <div class="waiting aside-wait" role="status" aria-label="Waiting for the answer">
+                <span class="roll" aria-hidden="true"><Icon name="moon" size={16} /></span>
+                <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              </div>
+            {/if}
+          {/each}
+          {#if last && !asking}
+            <!-- The follow-up box (backlog 130): the thread continues
+                 here, still beside the chat — each follow-up carries the
+                 exchanges above it, and nothing enters the log. -->
+            <textarea
+              class="aside-box"
+              bind:value={followDraft}
+              rows="1"
+              placeholder="Follow up in the aside… (Enter asks)"
+              aria-label="A follow-up in the aside"
+              onkeydown={followKeys}
+              autocorrect="off"
+              autocapitalize="off"
+              spellcheck="false"
+            ></textarea>
+            <div class="aside-row">
+              <button
+                class="ns-btn small"
+                disabled={!followDraft.trim()}
+                title="Continue the aside: the exchanges above go with this question, off the chat's context; recorded nowhere"
+                onclick={submitFollowUp}
+              >
+                Follow up
+              </button>
+            </div>
           {/if}
         {/if}
       </div>
@@ -1858,18 +1937,32 @@
   .aside-head .spacer {
     flex: 1;
   }
-  .aside-q {
-    margin-top: 6px;
-    color: var(--ink);
-    white-space: pre-wrap;
+  /* His question in his own bubble (backlog 128, the face of 126): the
+     `.user-bubble` rules above, at the right as his turns sit. */
+  .aside-turn {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 8px;
   }
+  .aside-q {
+    color: var(--ink);
+  }
+  /* The answer in the reply's face — the same face and size
+     `AssistantMessage` gives its `.markdown` — not the card's dim 0.85rem. */
   .aside-a {
-    margin: 6px 0 0;
+    margin: 8px 0 0;
+    max-width: 640px;
+    font-family: var(--transcript-font, var(--sans));
+    font-size: var(--transcript-size, 16px);
+    line-height: 1.55;
     color: var(--ink);
     word-break: break-word;
   }
   .aside-wait {
-    margin-top: 6px;
+    margin-top: 8px;
+  }
+  .aside-mark {
+    margin-top: 4px;
     font-style: italic;
   }
   .aside-err {

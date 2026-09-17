@@ -170,10 +170,12 @@ export function sendAgent(
 /**
  * A side question on the open chat's warm cache, kept out of it (nightshift
  * backlog 081): the CLI's `/btw`, done as a throwaway fork. Rejects with a
- * sentence when the chat has no Claude Code session yet.
+ * sentence when the chat has no Claude Code session yet. `seq` is the
+ * card's number, echoed on each `aside-delta` event while the answer
+ * streams (nightshift backlog 128).
  */
-export function askAside(text: string): Promise<AsideResult> {
-  return invoke("ask_aside", { text });
+export function askAside(text: string, seq: number): Promise<AsideResult> {
+  return invoke("ask_aside", { text, seq });
 }
 
 /**
@@ -671,6 +673,29 @@ export function setPowerPrefs(prefs: { keepAwake: boolean; keepDisplayAwake: boo
  *  Actual Size. `zoom.ts` keeps the factor; Rust only sets it. */
 export function setZoom(factor: number): Promise<null> {
   return invoke("set_zoom", { factor });
+}
+
+/** The terminal pane's shells (nightshift backlog 113; `terminal.rs`). A
+ *  shell is a pty in `cwd` running the login shell; its output arrives as
+ *  `terminal-data` events (base64), its end as `terminal-exit`, and the
+ *  foreground command's name as `terminal-title`. */
+export interface ShellInfo {
+  id: number;
+  pid: number | null;
+  shell: string;
+  cwd: string;
+}
+export function terminalOpen(cwd: string, cols: number, rows: number): Promise<ShellInfo> {
+  return invoke("terminal_open", { cwd, cols, rows });
+}
+export function terminalWrite(id: number, data: string): Promise<null> {
+  return invoke("terminal_write", { id, data });
+}
+export function terminalResize(id: number, cols: number, rows: number): Promise<null> {
+  return invoke("terminal_resize", { id, cols, rows });
+}
+export function terminalClose(id: number): Promise<null> {
+  return invoke("terminal_close", { id });
 }
 
 /** Where the per-model instruction files live (`~/.nightloom/models`);

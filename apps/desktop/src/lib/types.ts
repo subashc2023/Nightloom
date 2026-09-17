@@ -990,6 +990,13 @@ export interface AsideResult {
   notices: string[];
 }
 
+/** A piece of an aside's answer as it streams (nightshift backlog 128),
+ *  the `aside-delta` event: `seq` names the card it belongs to. */
+export interface AsideDelta {
+  seq: number;
+  text: string;
+}
+
 /** One MCP server as the CLI's init line lists it: `connected`, `pending`,
  *  `needs-auth`, or `failed` with an error. */
 export interface McpServer {

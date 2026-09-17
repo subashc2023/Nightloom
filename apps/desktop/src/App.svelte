@@ -1,12 +1,19 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import {
+    activateTab,
     app,
     closePrompts,
+    focusPane,
     init,
     inTextField,
+    moveTab,
+    paneWidth,
+    reflectTabs,
     runMenuCommand,
     runToastAction,
+    setPaneWidth,
+    splitTab,
     syncUndoMenu,
     setSidebarWidth,
     sidebarColumn,
@@ -15,6 +22,8 @@
     SIDEBAR_MAX,
     SIDEBAR_MIN,
   } from "./lib/state.svelte";
+  import * as tabs from "./lib/tabs";
+  import TabStrip from "./lib/TabStrip.svelte";
   import { isMac } from "./lib/platform";
   import { toggleTranscriptPref } from "./lib/transcriptPrefs.svelte";
   import { thinkingToggleDead } from "./lib/activity";
@@ -36,6 +45,7 @@
   import NewProject from "./lib/NewProject.svelte";
   import Palette from "./lib/Palette.svelte";
   import NightshiftSurface from "./lib/NightshiftSurface.svelte";
+  import TerminalDock from "./lib/TerminalDock.svelte";
   import Icon from "./lib/Icon.svelte";
 
   onMount(() => {
@@ -76,6 +86,84 @@
     void app.undoTick;
     void syncUndoMenu();
   });
+
+  /**
+   * The tab model's reflection (nightshift backlog 099): whenever the view,
+   * the open chat or the open note changes, the focused pane's active tab
+   * is made to hold it — see `reflectTabs`. Untracked inside, since it
+   * writes the workspace this component also draws.
+   */
+  $effect(() => {
+    void app.view;
+    void app.activeSessionId;
+    void app.openNote;
+    untrack(() => reflectTabs());
+  });
+
+  /**
+   * The views that are tabs — a chat, a note — against the ones that take
+   * the whole centre as they always have: the graph, Nightshift, the New
+   * project form. The panes draw only for the first kind.
+   */
+  const tabbed = $derived(app.view === "chat" || app.view === "note");
+  /** The tab whose chat is the open one; its pane draws the transcript. */
+  const liveTab = $derived(tabs.liveTab(app.tabs, app.activeSessionId));
+  /**
+   * The pane that carries the top bar: the bar describes the open chat, so
+   * it sits over the pane showing it, and over the focused pane when no
+   * pane does (both showing notes, say — the chat is open underneath).
+   */
+  const barPane = $derived(
+    (liveTab ? tabs.paneOf(app.tabs, liveTab.id)?.id : undefined) ?? app.tabs.focused,
+  );
+  /** The split's geometry: the left pane's width, saved as a pane pref. */
+  let splitWidth = $state(0);
+  const SPLIT_MIN = 280;
+  const leftPx = $derived(
+    Math.max(SPLIT_MIN, Math.min(splitWidth - SPLIT_MIN, paneWidth("split", Math.round(splitWidth / 2)))),
+  );
+
+  /**
+   * A tab dragged over a pane's content: which half, for the *open beside*
+   * zone (board 9e). The strip takes drops of its own; this is the rest of
+   * the pane.
+   */
+  let dropHalf = $state<{ pane: string; side: "left" | "right" } | null>(null);
+  function onPaneDragOver(e: DragEvent, paneId: string) {
+    if (!app.draggingTab) return;
+    // Over the strip the strip answers (it stops the event); this guard
+    // is for a strip that has not — a synthetic event, say.
+    if (e.target instanceof Element && e.target.closest(".tab-strip")) return;
+    const el = e.currentTarget as HTMLElement;
+    const r = el.getBoundingClientRect();
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+    const side = e.clientX < r.left + r.width / 2 ? "left" : "right";
+    if (dropHalf?.pane !== paneId || dropHalf.side !== side) dropHalf = { pane: paneId, side };
+  }
+  function onPaneDragLeave(e: DragEvent) {
+    const el = e.currentTarget as HTMLElement;
+    if (e.relatedTarget instanceof Node && el.contains(e.relatedTarget)) return;
+    dropHalf = null;
+  }
+  function onPaneDrop(e: DragEvent, paneId: string) {
+    if (e.target instanceof Element && e.target.closest(".tab-strip")) return;
+    const id = e.dataTransfer?.getData(tabs.TAB_DRAG) || app.draggingTab;
+    const half = dropHalf;
+    dropHalf = null;
+    if (!id) return;
+    e.preventDefault();
+    app.draggingTab = null;
+    const from = tabs.paneOf(app.tabs, id);
+    if (app.tabs.panes.length < tabs.MAX_PANES) {
+      // One pane: a drop on either half opens the second pane on that side.
+      void splitTab(id, half?.side ?? "right");
+    } else if (from && from.id !== paneId) {
+      // Two panes: a drop on the other pane's content moves the tab there.
+      const to = tabs.paneById(app.tabs, paneId);
+      if (to) void moveTab(id, paneId, to.tabs.length);
+    }
+  }
 
   /**
    * A conversation with nothing in it yet gets the launcher instead of an
@@ -220,6 +308,23 @@
       void findBar?.show();
       return true;
     }
+    // Tabs (nightshift backlog 099): ⌘T, ⌘W, ⌘⇧], ⌘⇧[ are File and View
+    // menu items on macOS and arrive as `menu` events; bound here for the
+    // other platforms only, physical keys.
+    if (!isMac && primary) {
+      if (!e.shiftKey && e.code === "KeyT") {
+        runMenuCommand("new_tab");
+        return true;
+      }
+      if (!e.shiftKey && e.code === "KeyW") {
+        runMenuCommand("close_tab");
+        return true;
+      }
+      if (e.shiftKey && (e.code === "BracketRight" || e.code === "BracketLeft")) {
+        runMenuCommand(e.code === "BracketRight" ? "next_tab" : "prev_tab");
+        return true;
+      }
+    }
     if (isMac || !e.ctrlKey) return false;
     const k = e.key.toLowerCase();
     const id = e.shiftKey ? SHIFT_KEYS[k] : KEYS[k];
@@ -285,45 +390,130 @@
       </div>
     {/if}
     <div class="main">
-      {#if app.view !== "nightshift"}
-        <TopBar />
+      {#if tabbed}
+        <!-- The panes (nightshift backlog 099): one or two, each with its
+             strip of tabs; a chat or a note per tab. A pane draws by its
+             own active tab — a note live in either pane, the open chat
+             where its tab is, any other chat as a card — and the focused
+             pane (the accent rule on its active tab) is what the sidebar
+             and the keys act on. The composer's grip is the divider. -->
+        <div
+          class="split"
+          class:two={app.tabs.panes.length > 1}
+          bind:clientWidth={splitWidth}
+          style:grid-template-columns={app.tabs.panes.length > 1
+            ? `${leftPx}px minmax(0, 1fr)`
+            : "minmax(0, 1fr)"}
+        >
+          {#each app.tabs.panes as pane, i (pane.id)}
+            {@const t = tabs.activeTab(pane)}
+            {@const focused = pane.id === app.tabs.focused}
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <section
+              class="pane"
+              class:focused
+              data-pane={pane.id}
+              onmousedowncapture={() => focusPane(pane.id)}
+              ondragover={(e) => onPaneDragOver(e, pane.id)}
+              ondragleave={onPaneDragLeave}
+              ondrop={(e) => onPaneDrop(e, pane.id)}
+            >
+              {#if i === 1}
+                <div class="split-grip">
+                  <Grip
+                    width={leftPx}
+                    min={SPLIT_MIN}
+                    max={Math.max(SPLIT_MIN, splitWidth - SPLIT_MIN)}
+                    edge="left"
+                    onchange={(w) => setPaneWidth("split", w)}
+                  />
+                </div>
+              {/if}
+              <TabStrip {pane} />
+              {#if barPane === pane.id}
+                <TopBar />
+              {/if}
+              {#if t.content.kind === "note"}
+                <div class="content">
+                  <NoteView note={t.content} />
+                  {#if focused}<FindBar bind:this={findBar} />{/if}
+                </div>
+              {:else if liveTab?.id === t.id}
+                <div class="content">
+                  {#if blank}
+                    <Welcome />
+                  {:else}
+                    <Transcript />
+                  {/if}
+                  <!-- ⌘F's find bar (nightshift backlog 106), over whichever
+                       view is showing: it searches and lights its parent's
+                       text from outside, so it sits here beside the views
+                       rather than in any of them. -->
+                  {#if focused}<FindBar bind:this={findBar} />{/if}
+                </div>
+                {#if !blank}
+                  <Composer />
+                {/if}
+              {:else}
+                <!-- A chat that is not the open one (blocker 182): the
+                     backend holds one session, so this tab is a card until
+                     it is brought forward. -->
+                <div class="content">
+                  <div class="tab-card">
+                    <div class="tab-card-title">{tabs.tabTitle(t.content, app.sessions)}</div>
+                    <p>
+                      Not the open chat. One chat is live at a time — its transcript is
+                      in the other pane's tab, or under a note.
+                    </p>
+                    <button class="ns-btn small" onclick={() => void activateTab(t.id)} disabled={app.busy}
+                      >{app.busy ? "Opens when the running turn ends" : "Open here"}</button
+                    >
+                  </div>
+                  {#if focused}<FindBar bind:this={findBar} />{/if}
+                </div>
+              {/if}
+              <!-- The terminal's dock (wave 3, agent M; backlog 113): a
+                   terminal for this pane mounts here, under the composer,
+                   keyed by `data-pane`. The dock draws only under the pane
+                   it was opened from (`term.pane`); the first pane's
+                   instance carries ⌃`. -->
+              <div class="pane-dock" data-pane={pane.id}><TerminalDock pane={pane.id} /></div>
+              {#if dropHalf?.pane === pane.id}
+                <div class="split-zone {dropHalf.side}" aria-hidden="true">
+                  <span>{app.tabs.panes.length > 1 ? "move here" : "open beside"}</span>
+                </div>
+              {/if}
+            </section>
+          {/each}
+        </div>
+      {:else}
+        {#if app.view !== "nightshift"}
+          <TopBar />
+        {/if}
+        <div class="content">
+          {#if app.view === "graph"}
+            <GraphView />
+          {:else if app.view === "nightshift"}
+            <NightshiftSurface />
+          {:else if app.view === "new-project"}
+            <NewProject />
+          {/if}
+          <FindBar bind:this={findBar} />
+        </div>
       {/if}
-      <div class="content">
-        {#if app.view === "note"}
-          <NoteView />
-        {:else if app.view === "graph"}
-          <GraphView />
-        {:else if app.view === "nightshift"}
-          <NightshiftSurface />
-        {:else if app.view === "new-project"}
-          <NewProject />
-        {:else if blank}
-          <Welcome />
-        {:else}
-          <Transcript />
-        {/if}
-        <!-- ⌘F's find bar (nightshift backlog 106), over whichever view
-             is showing: it searches and lights its parent's text from
-             outside, so it sits here beside the views rather than in
-             any of them. -->
-        <FindBar bind:this={findBar} />
-        {#if app.toasts.length > 0}
-          <div class="toasts">
-            {#each app.toasts as t (t.id)}
-              <!-- A toast with an action (backlog 066: "Removed from
-                   context · Undo") takes the pointer; the rest stay
-                   inert, as they were. -->
-              <div class="toast" class:actionable={!!t.action}>
-                {t.text}{#if t.action}<span class="toast-sep"> · </span><button
-                    class="toast-action"
-                    onclick={() => runToastAction(t.id)}>{t.action.label}</button>{/if}
-              </div>
-            {/each}
-          </div>
-        {/if}
-      </div>
-      {#if app.view === "chat" && !blank}
-        <Composer />
+      {#if app.toasts.length > 0}
+        <div class="toasts">
+          {#each app.toasts as t (t.id)}
+            <!-- A toast with an action (backlog 066: "Removed from
+                 context · Undo") takes the pointer; the rest stay
+                 inert, as they were. -->
+            <div class="toast" class:actionable={!!t.action}>
+              {t.text}{#if t.action}<span class="toast-sep"> · </span><button
+                  class="toast-action"
+                  onclick={() => runToastAction(t.id)}>{t.action.label}</button>{/if}
+            </div>
+          {/each}
+        </div>
       {/if}
     </div>
     <!-- A click on the overlay itself — outside the modal — closes it. The
@@ -429,14 +619,104 @@
   .side-grip :global(.grip.dragging::after) {
     background: var(--accent);
   }
-  .app.collapsed :global(header.topbar) {
+  /* Room for the sidebar's expand button (top-left) on whatever sits at
+     the top of the centre: the first pane's tab strip when the views are
+     tabs, the bar itself on the graph and the New project form. */
+  .app.collapsed :global(.main > header.topbar),
+  .app.collapsed :global(.split > .pane:first-child .tab-strip) {
     padding-left: 44px;
   }
   .main {
+    position: relative;
     display: flex;
     flex-direction: column;
     min-width: 0;
     overflow: hidden;
+  }
+  /* The panes (backlog 099): a grid of one or two columns; the divider is
+     the second pane's own left edge, so the columns stay two. */
+  .split {
+    flex: 1;
+    min-height: 0;
+    display: grid;
+    grid-template-rows: minmax(0, 1fr);
+  }
+  .pane {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .split.two .pane + .pane {
+    border-left: 1px solid var(--line);
+  }
+  .split-grip {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 7px;
+    display: flex;
+    z-index: 5;
+  }
+  .split-grip :global(.grip) {
+    height: 100%;
+    margin: 0;
+  }
+  .split-grip :global(.grip::after) {
+    height: 100%;
+    background: transparent;
+  }
+  .split-grip :global(.grip:hover::after),
+  .split-grip :global(.grip.dragging::after) {
+    background: var(--accent);
+  }
+  /* A chat tab that is not the open one (blocker 182). */
+  .tab-card {
+    margin: auto;
+    max-width: 380px;
+    padding: 20px 24px;
+    text-align: center;
+    color: var(--dim);
+    font-size: 13px;
+  }
+  .tab-card-title {
+    font-family: var(--serif);
+    font-size: 18px;
+    color: var(--ink);
+    margin-bottom: 8px;
+  }
+  .tab-card p {
+    margin: 0 0 14px;
+  }
+  /* The terminal's dock under a pane (agent M mounts into it). */
+  .pane-dock:empty {
+    display: none;
+  }
+  /* The *open beside* zone while a tab is dragged over a pane's half
+     (board 9e). */
+  .split-zone {
+    position: absolute;
+    top: 36px;
+    bottom: 0;
+    width: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(224, 164, 88, 0.12);
+    border: 1px dashed var(--accent);
+    color: var(--accent);
+    font-size: 13px;
+    pointer-events: none;
+    z-index: 8;
+  }
+  .split-zone.left {
+    left: 0;
+  }
+  .split-zone.right {
+    right: 0;
   }
   .content {
     position: relative;

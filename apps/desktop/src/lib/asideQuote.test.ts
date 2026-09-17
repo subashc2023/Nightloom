@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { asideQuestion, quoteLabel, samePassage } from "./asideQuote";
+import { asideFollowUp, asideQuestion, quoteLabel, samePassage } from "./asideQuote";
 
 // The aside about a highlighted passage (nightshift backlog 107): the
 // passage rides inside the one string the aside sends, framed as a
@@ -61,5 +61,49 @@ describe("samePassage", () => {
     expect(samePassage(null, { turn: 3, prose })).toBe(false);
     expect(samePassage({ turn: 3, prose }, null)).toBe(false);
     expect(samePassage(null, null)).toBe(false);
+  });
+});
+
+describe("asideFollowUp (backlog 130)", () => {
+  it("quotes one earlier exchange, then the new question", () => {
+    const s = asideFollowUp(null, [{ question: "why?", answer: "Because the cache is warm.\n" }], " and then? ");
+    expect(s).toBe(
+      [
+        "This is a side conversation beside the chat, not part of it.",
+        "Earlier in the side conversation, the user asked:",
+        "",
+        '"""',
+        "why?",
+        '"""',
+        "",
+        "and you answered:",
+        "",
+        '"""',
+        "Because the cache is warm.",
+        '"""',
+        "",
+        "Now the user asks:",
+        "",
+        "and then?",
+      ].join("\n"),
+    );
+  });
+
+  it("puts the passage first, and numbers the later exchanges as 'then'", () => {
+    const s = asideFollowUp(
+      { text: "the cache is warm", role: "user", ordinal: 2 },
+      [
+        { question: "q1", answer: "a1" },
+        { question: "q2", answer: "a2" },
+      ],
+      "q3",
+    );
+    expect(s.startsWith(["This is a side conversation beside the chat, not part of it.", "It is about this passage the user selected in the transcript, from the user's 2nd message, quoted exactly:", "", '"""', "the cache is warm", '"""', "", "Earlier in the side conversation, the user asked:"].join("\n"))).toBe(true);
+    expect(s).toContain(["", "Then the user asked:", "", '"""', "q2", '"""', "", "and you answered:", "", '"""', "a2", '"""', "", "Now the user asks:", "", "q3"].join("\n"));
+    expect(s.match(/and you answered:/g)).toHaveLength(2);
+  });
+
+  it("defaults an empty follow-up to Go on.", () => {
+    expect(asideFollowUp(null, [], "  ").endsWith("Now the user asks:\n\nGo on.")).toBe(true);
   });
 });

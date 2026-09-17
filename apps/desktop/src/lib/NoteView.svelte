@@ -36,6 +36,15 @@
    * `plan.md`, and switching between them must reload rather than look like
    * the same note.
    */
+  /**
+   * The note this view shows, when it is a pane's tab rather than the
+   * centre's one open note (nightshift backlog 099): a note beside a chat
+   * reads and saves as the open one does, keyed by its own scope and
+   * name. Absent — every caller before tabs — the view follows
+   * `app.openNote` as it always has.
+   */
+  let { note = null }: { note?: { scope: NoteScope; name: string } | null } = $props();
+
   let loaded: string | null = null;
   let text = $state("");
   let saved = $state("");
@@ -44,7 +53,7 @@
   let preview = $state(false);
 
   const dirty = $derived(text !== saved);
-  const open = $derived(app.openNote);
+  const open = $derived(note ?? app.openNote);
   const isVault = $derived(open?.scope === "knowledge");
   /**
    * Proposal mode: the dream suggested a replacement for this fixed file,
@@ -157,7 +166,7 @@
       // Guarded on the note still being the open one: the graph is a round
       // trip, and clicking through two links quickly would otherwise leave
       // the first note's backlinks under the second.
-      if (app.openNote?.name !== name) return;
+      if (open?.name !== name) return;
       backlinks = graph.edges
         .filter((e) => e.to === index)
         .map((e) => graph.notes[e.from]?.name)

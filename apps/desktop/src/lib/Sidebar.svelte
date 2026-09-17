@@ -23,6 +23,7 @@
     toggleSidebar,
   } from "./state.svelte";
   import * as api from "./api";
+  import * as tabs from "./tabs";
   import { hasDraft, newDraftKey } from "./drafts.svelte";
   import { forkLine } from "./edit";
   import { findChord } from "./find";
@@ -86,6 +87,14 @@
   // long chat that has moved on keeps describing where it started; renaming
   // it automatically would mean guessing when a conversation has drifted,
   // which the user can see and the app cannot.
+
+  /** The row's tab glyph (backlog 099, board 9a): the chat is open in some
+   *  tab other than the live one — the live one is the highlighted row. */
+  function inTab(id: string): boolean {
+    if (id === app.activeSessionId) return false;
+    return tabs.allTabs(app.tabs).some((t) => t.content.kind === "chat" && t.content.session === id);
+  }
+
   let renaming = $state<string | null>(null);
   let draft = $state("");
 
@@ -463,13 +472,19 @@
             {:else}
               <button
                 class="session-row"
-                onclick={() => void openSession(s.id)}
+                onclick={(e) => {
+                  // ⌘-click opens the chat in a new tab (nightshift
+                  // backlog 099, blocker 140); a plain click replaces the
+                  // active tab, as it replaced the centre before tabs.
+                  if (e.metaKey || e.ctrlKey) app.openNext = "new";
+                  void openSession(s.id);
+                }}
                 ondblclick={() =>
                   startRename(s.id, s.title ?? s.first_user ?? "")}
                 disabled={app.busy}
               >
                 <span class="snippet"
-                  >{#if s.mode === "incognito"}<span class="mark" title="Incognito: writes nothing, unread by other chats">{MODE_GLYPH.incognito}</span> {/if}{#if hasDraft(s.id)}<span class="mark draft" title="has a draft">✎</span> {/if}{s.title ?? s.first_user ?? "empty session"}</span
+                  >{#if inTab(s.id)}<span class="mark tab" title="Open in a tab">▭</span> {/if}{#if s.mode === "incognito"}<span class="mark" title="Incognito: writes nothing, unread by other chats">{MODE_GLYPH.incognito}</span> {/if}{#if hasDraft(s.id)}<span class="mark draft" title="has a draft">✎</span> {/if}{s.title ?? s.first_user ?? "empty session"}</span
                 >
                 <!-- A fork says where it came from (backlog 062): the
                      parent's name as its own row shows it, or that the
@@ -936,6 +951,12 @@
      row and not part of the title. */
   .mark.draft {
     font-size: 0.8em;
+  }
+  /* The tab glyph (backlog 099): the chat is open in a tab that is not
+     the live one. */
+  .mark.tab {
+    font-size: 0.75em;
+    color: var(--accent);
   }
   /* The kinds menu: the project menu's popover, under the split button. */
   .kinds {
