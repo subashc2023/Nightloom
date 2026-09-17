@@ -686,6 +686,127 @@
     enterLen = len;
   });
 
+  // ---- The reply's completion (nightshift backlog 131, 2026-09-17) ----
+  //
+  // A turn ends in two flushes: `app.live` is cleared at once, and the log
+  // is re-synced after an IPC round trip. Between them the reply was not
+  // in the DOM at all. Measured in the harness with a reader at the
+  // reply's first lines (`scrollTop` 340, the reply 3,000px tall): the
+  // content shrank to the viewport's height, the browser clamped
+  // `scrollTop` to 0, and that clamp raised a scroll event which `onscroll`
+  // read as the user reaching the foot — `pinned` went true again, and
+  // the re-sync then scrolled to the bottom (3080). His "jumps either up
+  // or down": the clamp up, then the pin down.
+  //
+  // So the reply stays drawn: the last live segments are kept as a ghost
+  // — the same component instance, the same array, so nothing re-renders
+  // — until the re-synced events land, and the swap from ghost to record
+  // happens in one flush. Across that swap the reader's place is held by
+  // whatever element sits under the viewport's top edge, found again in
+  // the new DOM by its text (the recorded reply is not the live one's
+  // elements: it gains the model header above and the footer below, and
+  // on Claude Code may be several messages). A pinned reader is left to
+  // the follow-the-bottom effect above, which lands at the foot as before.
+  interface Shown {
+    segments: Segment[];
+    since: number | null;
+  }
+  let ghost = $state<Shown | null>(null);
+  let ghostKey: string | null = null;
+  let ghostTimer = 0;
+  let lastLive: Shown | null = null;
+  const shown = $derived<Shown | null>(
+    app.live ? { segments: app.live.segments, since: liveSince } : ghost,
+  );
+
+  function dropGhost(anchored: boolean): void {
+    clearTimeout(ghostTimer);
+    ghostTimer = 0;
+    if (!ghost) return;
+    const hold = anchored && !pinned ? readingAnchor() : null;
+    ghost = null;
+    if (hold) void tick().then(() => holdAnchor(hold));
+  }
+
+  $effect.pre(() => {
+    const live = app.live;
+    const since = liveSince;
+    untrack(() => {
+      if (live) {
+        lastLive = { segments: live.segments, since };
+        ghostKey = sessionKey;
+        if (ghost) dropGhost(false);
+        return;
+      }
+      if (!lastLive || lastLive.segments.length === 0 || ghostKey !== sessionKey) {
+        lastLive = null;
+        return;
+      }
+      ghost = lastLive;
+      lastLive = null;
+      // The re-sync can fail (its catch keeps the local view); the ghost
+      // must not outlive that. Two seconds is past any IPC wait.
+      ghostTimer = window.setTimeout(() => dropGhost(true), 2000);
+    });
+  });
+
+  // The re-synced log replaces `app.events` whole (a new array, whatever
+  // its length), which is the moment to swap. Before the DOM updates, so
+  // the anchor is measured against the ghost and the swap is one flush.
+  $effect.pre(() => {
+    void app.events;
+    void app.events.length;
+    const key = sessionKey;
+    untrack(() => {
+      if (!ghost) return;
+      dropGhost(key === ghostKey);
+    });
+  });
+
+  /**
+   * What he is reading: the first element with text inside the live reply
+   * in the top half of the viewport — the reply is what changes shape,
+   * and with its first lines under a half-visible user bubble it is the
+   * lines he holds, not the bubble (measured: the model header pushed
+   * them 24px with the bubble held). None of the reply there: the first
+   * element with text under the top edge, whatever it is. The live reply
+   * is the one `.assistant` not inside a recorded turn. By tag, the start
+   * of its text, and where its top was.
+   */
+  function readingAnchor(): { tag: string; text: string; top: number } | null {
+    if (!viewport) return null;
+    const vp = viewport.getBoundingClientRect();
+    const x = vp.left + vp.width / 2;
+    let first: { tag: string; text: string; top: number } | null = null;
+    for (let dy = 2; dy < vp.height / 2; dy += 12) {
+      const el = document.elementFromPoint(x, vp.top + dy);
+      if (!el || el === viewport || !viewport.contains(el)) continue;
+      const text = (el.textContent ?? "").trim();
+      if (!text) continue;
+      const hit = { tag: el.tagName, text: text.slice(0, 160), top: el.getBoundingClientRect().top };
+      if (el.closest(".assistant") && !el.closest("[data-turn]")) return hit;
+      first ??= hit;
+    }
+    return first;
+  }
+
+  /** Move the viewport so the anchor's element is back where it was — the
+   *  nearest same-tag element with the same text start, since a paragraph
+   *  can be repeated. Nothing matched: the view is left alone. */
+  function holdAnchor(hold: { tag: string; text: string; top: number }): void {
+    if (!viewport) return;
+    let best: number | null = null;
+    for (const el of viewport.querySelectorAll<HTMLElement>(hold.tag)) {
+      if ((el.textContent ?? "").trim().slice(0, 160) !== hold.text) continue;
+      const delta = el.getBoundingClientRect().top - hold.top;
+      if (best === null || Math.abs(delta) < Math.abs(best)) best = delta;
+    }
+    if (best === null || Math.abs(best) < 1) return;
+    scrollingSelf = true;
+    viewport.scrollTop += best;
+    requestAnimationFrame(() => (scrollingSelf = false));
+  }
+
   // ---- The message navigator (nightshift backlog 065) ----
   //
   // The strip's model is a projection of the log (`navigator.ts`); what
@@ -1294,8 +1415,11 @@
         {/if}
       </div>
     {/if}
-    {#if app.live}
-      {#if app.live.segments.length === 0}
+    <!-- `shown` is the live turn, or its ghost for the moment between the
+         turn's end and the re-synced log (backlog 131), so the reply never
+         leaves the DOM under a reader. -->
+    {#if shown}
+      {#if shown.segments.length === 0}
         <!-- Between send and the first streamed event there is nothing to
              render, and a blank row read as "nothing happened" (his words,
              backlog 049). So something moves: the moon rolls a short way
@@ -1308,9 +1432,9 @@
         </div>
       {:else}
         <AssistantMessage
-          segs={app.live.segments}
+          segs={shown.segments}
           streaming
-          since={liveSince}
+          since={shown.since}
           approvals={app.pendingApprovals}
         />
       {/if}

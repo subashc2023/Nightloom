@@ -1314,6 +1314,24 @@ layout a relaunch redoes. The first turn of a pending chat is the one key change
 that is not a switch — `"new"` becomes the created id while the same transcript
 is on screen — and the entry moves with the key rather than being restored.
 
+**The reply's completion keeps the reader's place (nightshift backlog 131,
+2026-09-17).** A turn ends in two flushes — `app.live` cleared at once, the
+log re-synced after an IPC round trip — and between them the reply was not in
+the DOM. Measured in a harness with a reader at the reply's first lines: the
+content shrank to the viewport, the browser clamped `scrollTop` to 0, and the
+clamp's scroll event was read by the follow-the-bottom rule as the user
+reaching the foot, so `pinned` went true again and the re-sync scrolled to the
+bottom. Now the last live segments stay drawn as a *ghost* — the same
+`AssistantMessage` instance over the same array — until the re-synced events
+land (or 2 s, should the re-sync fail), and the ghost is swapped for the
+recorded reply in one flush from an `$effect.pre`. Across the swap the element
+he is reading is held: the first element with text inside the live reply in the
+top half of the viewport (the reply is what changes shape — it gains the model
+header and the footer, and on Claude Code becomes a run of messages), else the
+first under the top edge; found again in the new DOM by tag and the start of
+its text, nearest to where it was. A pinned reader is left to the pin effect
+and lands at the foot as before.
+
 **Navigator (`src/lib/navigator.ts`, `src/lib/Navigator.svelte`).** The strip
 at the transcript's right edge, from his screenshot of LibreChat's rail (their
 `client/src/components/Chat/Messages/MessageNav.tsx`, read 2026-09-15; the
