@@ -43,6 +43,7 @@
 
   let view = $state<WireView | null>(null);
   let loading = $state(false);
+  let waitingOnTurn = $state(false);
   let error = $state<string | null>(null);
   let working = $state(false);
 
@@ -395,6 +396,16 @@
       cliMemory = null;
       return;
     }
+    // A running turn holds the chat and session for its whole length
+    // (`send` in main.rs), and `context_view` needs both — so the request
+    // would only sit on the lock until the reply ends. Say so instead; the
+    // effect below re-reads the moment `busy` clears. Keep the last view if
+    // there is one: it is what the running request carried.
+    if (app.busy && !view) {
+      waitingOnTurn = true;
+      return;
+    }
+    waitingOnTurn = false;
     loading = true;
     error = null;
     try {
@@ -558,7 +569,13 @@
     {:else if error}
       <p class="note err">{error}</p>
     {:else if !view}
-      <p class="note">{loading ? "Reading…" : "Nothing yet."}</p>
+      <p class="note">
+        {waitingOnTurn
+          ? "A turn is running — the context shows when the reply ends."
+          : loading
+            ? "Reading…"
+            : "Nothing yet."}
+      </p>
     {:else if mode === "session"}
       {#if !init}
         <p class="note">
