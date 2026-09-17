@@ -1231,6 +1231,26 @@ alone. A row whose chat has a non-empty draft carries a small `✎` (the incogni
 mark's style, titled "has a draft"), and the New chat button carries one for the
 pending draft.
 
+**An open edit is per chat too (nightshift backlog 122, 2026-09-16).** The
+in-place editor's state (`editing` in `Transcript.svelte`: the turn, the
+draft, the cache line as it read when the editor opened) was one value for
+the whole transcript. It survived a chat switch by accident — nothing cleared
+it — which also meant the other chat's message at the same index showed the
+editor with this chat's draft in it, and on the way back the textarea
+re-mounted at its minimum height until the first keystroke (his "majorly
+condenses the text box"). The transcript's key-change effect now stashes the
+open edit under the chat it belongs to and restores the switched-to chat's,
+if it has one, in a plain map beside the scroll entries; so an edit draft
+survives a switch away and back, stays with its chat, and is dropped by
+Save, Send, Cancel, Escape or a turn starting, as before. Not persisted: it
+is an edit in progress, not a composer draft. A `use:grow` action sizes the
+editor's textarea to its text the moment it mounts, however it came to
+mount. And the editor keeps the reader's place: opening it, Cancel, Save and
+Send each measure the message's bottom edge before the change and move the
+viewport by however much it moved after (`keepPlace`), and the textarea is
+focused with `preventScroll` — a bare `focus()` scrolled the top of a long
+message into view, which is what "Cancel scrolls me up to the top" was.
+
 **Scroll (`src/lib/scroll.svelte.ts`).** `{ top, pinned }` per chat key, in a
 plain map — nothing draws from it, and a reactive map would re-run effects on
 every frame. `Transcript.svelte` writes it from its scroll handler, one write per

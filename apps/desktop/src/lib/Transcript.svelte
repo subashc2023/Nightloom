@@ -1,6 +1,6 @@
 <script lang="ts">
   import { exactTime, relativeTimeLong } from "./time";
-  import { tick } from "svelte";
+  import { tick, untrack } from "svelte";
   import {
     app,
     denialReason,
@@ -359,18 +359,46 @@
       : "Rewind to here: this turn and everything after it stop counting. Files written by tools are not reverted.",
   );
 
+  /**
+   * Keep the reader's place across a change that resizes a message
+   * (nightshift backlog 122 and 115): the turn's bottom edge is measured,
+   * the change made, and after the DOM has settled the viewport is moved
+   * by however much that edge moved. The foot rather than the top, since
+   * the controls that start these changes — the pencil, Cancel, the
+   * `edited` mark — sit at the foot, and "the latest part of the message
+   * stays at the bottom" was his words. Under `scrollingSelf`, so the pin
+   * logic does not take the write for the user's own scroll. A turn no
+   * longer on screen after the change (a fork switched the chat) is left
+   * alone. The webview has no scroll anchoring of its own to do this.
+   */
+  async function keepPlace(index: number, change: () => void | Promise<void>): Promise<void> {
+    const el = viewport?.querySelector<HTMLElement>(`[data-turn="${index}"]`) ?? null;
+    const before = el?.getBoundingClientRect().bottom ?? null;
+    await change();
+    await tick();
+    if (before === null || !el?.isConnected || !viewport) return;
+    const delta = el.getBoundingClientRect().bottom - before;
+    if (Math.abs(delta) < 1) return;
+    scrollingSelf = true;
+    viewport.scrollTop += delta;
+    requestAnimationFrame(() => (scrollingSelf = false));
+  }
+
   function beginEdit(item: Item) {
     const text = item.kind === "user" ? item.text : item.kind === "assistant" ? textOf(item.segs) : "";
     const parts =
       item.kind === "assistant"
         ? editParts(app.events, item.index, (b) => `${b.name} ${toolInputSummary(b.input)}`.trim())
         : undefined;
-    editing = editReduce(editing, { type: "begin", index: item.index, text, parts });
-    editCacheLine = editLine(cacheState(app.events, Date.now()));
-    void tick().then(() => {
+    void keepPlace(item.index, () => {
+      editing = editReduce(editing, { type: "begin", index: item.index, text, parts });
+      editCacheLine = editLine(cacheState(app.events, Date.now()));
+    }).then(() => {
       const first = editorEl ?? editorEls.find((el) => el);
-      first?.focus();
-      autogrow();
+      // Not `focus()` bare: that scrolls the textarea's top edge into view,
+      // which on a long message is a jump to its top (backlog 122). The
+      // place was kept above; the caret needs no scroll.
+      first?.focus({ preventScroll: true });
     });
   }
   function textOf(segs: Segment[]): string {
@@ -387,17 +415,39 @@
       e.style.height = `${Math.min(e.scrollHeight, 420)}px`;
     }
   }
+  /**
+   * The editor's textarea sized to its text the moment it mounts (backlog
+   * 122). `autogrow` used to run only from `beginEdit`, so a textarea that
+   * mounted any other way — an edit draft restored on switching back to
+   * its chat — sat at its minimum height until the first keystroke; his
+   * "the second I click back into the chat it majorly condenses the text
+   * box". An action rather than an effect, since it is about the one
+   * element and needs no dependency.
+   */
+  function grow(node: HTMLTextAreaElement) {
+    autogrow(node);
+  }
+  function cancelEdit(): void {
+    if (!editing) return;
+    void keepPlace(editing.index, () => {
+      editing = editReduce(editing, { type: "cancel" });
+    });
+  }
   async function commitSave() {
     if (!editing || !editButtons(editing).save) return;
-    const ok = editing.parts
-      ? await saveReplyEdit(editing.index, editChanges(editing))
-      : await saveEdit(editing.index, editing.draft);
-    if (ok) editing = editReduce(editing, { type: "done" });
+    const { index, draft, parts } = editing;
+    const changes = editChanges(editing);
+    await keepPlace(index, async () => {
+      const ok = parts ? await saveReplyEdit(index, changes) : await saveEdit(index, draft);
+      if (ok) editing = editReduce(editing, { type: "done" });
+    });
   }
   async function commitSend(item: Item) {
     if (!editing || !editButtons(editing).send || item.kind !== "user") return;
     const { index, draft } = editing;
-    editing = editReduce(editing, { type: "done" });
+    await keepPlace(index, () => {
+      editing = editReduce(editing, { type: "done" });
+    });
     await sendEdit(index, draft, item.images, item.documents);
   }
   function editorKeys(e: KeyboardEvent, item: Item) {
@@ -406,7 +456,7 @@
     // Shift-Enter sends into a fork, Escape cancels.
     if (e.key === "Escape") {
       e.preventDefault();
-      editing = editReduce(editing, { type: "cancel" });
+      cancelEdit();
     } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
       if (e.shiftKey) void commitSend(item);
@@ -520,6 +570,16 @@
     });
   }
 
+  // An open editor is per chat too (nightshift backlog 122). `editing` was
+  // one value for the whole transcript: a switch away left it set, so the
+  // other chat's message at the same index showed the editor with this
+  // chat's draft in it, and a switch back re-mounted the textarea. Now the
+  // switch stashes the open edit under the chat it belongs to and restores
+  // the switched-to chat's, if it has one — the draft survives the switch,
+  // as it did by accident before, and stays with its chat. A plain map,
+  // read once per switch, like the scroll entries.
+  const editStash = new Map<string, { editing: EditState; line: string }>();
+
   $effect(() => {
     const key = sessionKey;
     const from = lastKey;
@@ -527,6 +587,17 @@
     if (from === NEW_SCROLL_KEY && key !== NEW_SCROLL_KEY) {
       moveScroll(from, key);
       return;
+    }
+    if (from !== null && from !== key) {
+      // Untracked: this effect is about the key, and a keystroke in the
+      // editor must not re-run the scroll restore below.
+      untrack(() => {
+        if (editing) editStash.set(from, { editing, line: editCacheLine });
+        else editStash.delete(from);
+        const back = editStash.get(key) ?? null;
+        editing = back?.editing ?? null;
+        editCacheLine = back?.line ?? "";
+      });
     }
     const entry = recallScroll(key);
     pinned = entry?.pinned ?? true;
@@ -728,6 +799,7 @@
             <div class="editor">
               <textarea
                 bind:this={editorEl}
+                use:grow
                 value={editing.draft}
                 oninput={(e) => {
                   editing = editReduce(editing, { type: "draft", text: (e.target as HTMLTextAreaElement).value });
@@ -759,7 +831,7 @@
                 </button>
                 <button
                   class="ns-btn ghost small"
-                  onclick={() => (editing = editReduce(editing, { type: "cancel" }))}
+                  onclick={cancelEdit}
                 >
                   Cancel
                 </button>
@@ -881,6 +953,7 @@
                 {#if part.kind === "text"}
                   <textarea
                     bind:this={editorEls[p]}
+                    use:grow
                     value={part.draft}
                     oninput={(e) => {
                       const el = e.target as HTMLTextAreaElement;
@@ -909,7 +982,7 @@
                 </button>
                 <button
                   class="ns-btn ghost small"
-                  onclick={() => (editing = editReduce(editing, { type: "cancel" }))}
+                  onclick={cancelEdit}
                 >
                   Cancel
                 </button>
