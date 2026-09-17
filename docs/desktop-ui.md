@@ -836,6 +836,35 @@ the reply's words follow it; the reply footer's figure is what the turn
 added to the window (`48k`, the bar's own number), the reply's `N out` and
 the tool results in its title.
 
+### Runs of replies drawn as one (nightshift backlog 121, 2026-09-16)
+
+On the Claude Code engine a turn that spans several CLI processes — the
+deferred-call resumes of backlog 084, the CLI's own multi-message turns —
+records as several consecutive `assistant_message` events, and the transcript
+drew each with its own `OPUS` header, activity block, footer line and tool
+row, with the list's 26px gap between: his screenshot of three replies each
+holding one folded `1 tool call` box, "big spaces between each of the tool
+calls". The log is right and is untouched — each message keeps its own id,
+edit, remove and rewind — only the drawing merges.
+
+`src/lib/runs.ts` — `continuedFlags(items)`: a reply that follows a reply
+from the same model, with nothing between them, is a *continuation*. A user
+message, a compaction, a change of model, or a change in whether the turn was
+superseded by a rewind starts a new run. `Transcript.svelte` computes the
+flags in step with its items and, for a continuation, passes
+`headed={false}` to `AssistantMessage` (no model header) and adds
+`.run-cont`, which pulls the turn up through the list's gap to the activity
+block's own 6px. So a run reads as one reply: one header, the blocks back
+to back, one text run at the end — and the reply's final text block is
+always drawn whole; nothing in a run hides or replaces the answer.
+
+The reply's Edit and Remove moved onto the footer row (`Copy · 850 · 38
+minutes ago · ✎ · ⊖`) as `AssistantMessage`'s `onedit` / `onremoveturn`
+props, hidden until the reply is hovered as the tool rows were; they were a
+row of their own below, three rows per message. The per-message token figure
+of backlog 090 stays per message, on that one row. Restore for a removed
+reply stays a row under its placeholder.
+
 ### Thinking the model kept to itself (nightshift backlog 097, 2026-09-16)
 
 A thinking block can arrive with no text. The Claude 5 family defaults

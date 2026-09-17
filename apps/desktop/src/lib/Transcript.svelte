@@ -36,6 +36,7 @@
   import { forkLine } from "./edit";
   import { parseSubagentBlock } from "./subagent";
   import { wordDiff } from "./textdiff";
+  import { continuedFlags } from "./runs";
   import { fmtShare, fmtTokens, shareOf, sizeTitle, turnSizes } from "./tokens";
   import { cacheState } from "./cache";
   import { moveScroll, recallScroll, rememberScroll, scrollKey, NEW_SCROLL_KEY } from "./scroll.svelte";
@@ -296,6 +297,21 @@
   // gauge already scales by. Null window: the figure, no bar.
   const sizes = $derived(turnSizes(app.events, liveFlags(app.events)));
   const windowLimit = $derived(app.connection?.contextLimit ?? null);
+
+  // Runs of replies (nightshift backlog 121): a reply that follows a reply
+  // from the same model with nothing between them is drawn as a
+  // continuation — no header, the gap collapsed — so a turn the CLI
+  // recorded as several messages reads as one reply. Per item, in step
+  // with `items`; the log and every per-message control are untouched.
+  const continued = $derived(
+    continuedFlags(
+      items.map((it) => ({
+        kind: it.kind,
+        model: it.kind === "assistant" ? it.footer.model : undefined,
+        superseded: it.superseded,
+      })),
+    ),
+  );
 
   // When the live turn was sent, for its `working · 41 s` row (backlog
   // 096): both send paths push the optimistic `user_message` just before
@@ -962,6 +978,7 @@
           class="assistant-turn"
           class:superseded={item.superseded}
           class:removed={item.removed}
+          class:run-cont={continued[i]}
           data-turn={item.index}
         >
           {#if editing?.index === item.index}
@@ -1011,6 +1028,9 @@
             </div>
           {:else}
             {@const editable = !item.superseded && !app.busy && !item.removed}
+            <!-- The reply's own Edit and Remove ride its footer row since
+                 backlog 121 (they were a row of their own below); Restore
+                 for a removed reply stays a row under the placeholder. -->
             <AssistantMessage
               segs={item.segs}
               footer={item.footer}
@@ -1022,6 +1042,9 @@
               originals={item.originals ?? null}
               diff={!!diffOpen[item.index]}
               clock={now}
+              headed={!continued[i]}
+              onedit={editable && item.editable ? () => beginEdit(item) : null}
+              onremoveturn={editable ? () => void removeTurn(item.index) : null}
             />
             {#if item.original !== null && item.removed}
               <details class="original">
@@ -1050,27 +1073,6 @@
                 onclick={() => void restoreTurn(item.index)}
               >
                 <Icon name="refresh" size={14} />
-              </button>
-            </span>
-          {:else if !item.superseded && !app.busy && !item.removed && editing?.index !== item.index}
-            <span class="turn-tools assistant-tools" title={controlsTitle}>
-              {#if item.editable}
-                <button
-                  class="tool-btn"
-                  title="Edit this reply in place; the original stays in the log"
-                  aria-label="Edit this reply"
-                  onclick={() => beginEdit(item)}
-                >
-                  <Icon name="pencil" size={14} />
-                </button>
-              {/if}
-              <button
-                class="tool-btn"
-                title="Remove this reply from the context. Its tool calls stay; it stays in the log."
-                aria-label="Remove this reply from the context"
-                onclick={() => void removeTurn(item.index)}
-              >
-                <Icon name="minus" size={14} />
               </button>
             </span>
           {/if}
@@ -1263,6 +1265,12 @@
     display: flex;
     flex-direction: column;
     gap: 4px;
+  }
+  /* A continuation of the reply before it (backlog 121; `.continued` is
+     the "Continued from" row above): pulled up through the list's 26px gap
+     to the activity block's own 6px, so a run reads as one reply. */
+  .assistant-turn.run-cont {
+    margin-top: -20px;
   }
   .edited-mark {
     font-family: var(--sans);

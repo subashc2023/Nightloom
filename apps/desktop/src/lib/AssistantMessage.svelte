@@ -147,6 +147,9 @@
     originals = null,
     diff = false,
     clock = Date.now(),
+    headed = true,
+    onedit = null,
+    onremoveturn = null,
   }: {
     segs: Segment[];
     footer?: Footer | null;
@@ -179,6 +182,16 @@
     /** The transcript's clock (ms since epoch), ticking while the chat is
      *  open, so the footer's `37 minutes ago` keeps up (backlog 123). */
     clock?: number;
+    /** Draw the model header. False for a reply that continues the one
+     *  before it (nightshift backlog 121): same model, nothing between —
+     *  one header for the run, the blocks back to back. */
+    headed?: boolean;
+    /** Edit this reply in place, from the pencil in the footer row (the
+     *  transcript's `beginEdit`); null when the reply cannot be edited. */
+    onedit?: (() => void) | null;
+    /** Remove this whole reply from the context, from the footer row;
+     *  null when the turn cannot be acted on. */
+    onremoveturn?: (() => void) | null;
   } = $props();
 
   // Per-block clicks, keyed by the block's stable id (`segmentIds`) rather
@@ -392,7 +405,7 @@
 
 
 <div class="assistant">
-  {#if footer}
+  {#if footer && headed}
     <span class="ns-k">{footer.model}</span>
   {/if}
   {#each groups as g (g.kind === "activity" ? g.key : `one:${g.i}`)}
@@ -647,6 +660,34 @@
         <!-- When the reply landed (backlog 123): in words, the exact
              moment on hover, as Claude Code's footer does. -->
         <span class="meta when" title={exactTime(footer.at)}>{relativeTimeLong(footer.at, clock)}</span>
+      {/if}
+      {#if onedit || onremoveturn}
+        <!-- The turn's own controls on the same row (backlog 121): they
+             were a row of their own under the footer, three rows per
+             message in a run of one-call replies. Hidden until the reply
+             is hovered, as the transcript's tool rows are. -->
+        <span class="footer-tools" title={controlsTitle}>
+          {#if onedit}
+            <button
+              class="tool-btn"
+              title="Edit this reply in place; the original stays in the log"
+              aria-label="Edit this reply"
+              onclick={() => onedit?.()}
+            >
+              <Icon name="pencil" size={14} />
+            </button>
+          {/if}
+          {#if onremoveturn}
+            <button
+              class="tool-btn"
+              title="Remove this reply from the context. Its tool calls stay; it stays in the log."
+              aria-label="Remove this reply from the context"
+              onclick={() => onremoveturn?.()}
+            >
+              <Icon name="minus" size={14} />
+            </button>
+          {/if}
+        </span>
       {/if}
     </div>
   {/if}
@@ -1168,6 +1209,18 @@
   .meta.when {
     font-family: var(--sans);
     cursor: default;
+  }
+  /* The footer's pencil and remove (backlog 121): hidden until the reply
+     is hovered or one has the focus, the tool rows' rule. */
+  .footer-tools {
+    display: inline-flex;
+    gap: 2px;
+    opacity: 0;
+    transition: opacity 0.12s;
+  }
+  .assistant:hover .footer-tools,
+  .footer-tools:focus-within {
+    opacity: 1;
   }
   .share-bar {
     display: inline-block;
