@@ -1,7 +1,28 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import Icon from "./Icon.svelte";
-  import { app, addToast, askAside, send, cancelTurn, continueChat, contextUsed, turnWasStopped } from "./state.svelte";
+  import Kbd from "./Kbd.svelte";
+  import {
+    app,
+    addToast,
+    applyDraft,
+    askAside,
+    cacheHitRate,
+    cancelTurn,
+    continueChat,
+    contextUsed,
+    pickerModels,
+    send,
+    switchModel,
+    switchModelAt,
+    turnWasStopped,
+  } from "./state.svelte";
+  import { AGENT_MODELS, MODEL_KEYS, thinkingSupport } from "./catalog";
+  import { effortDefaultLabel } from "./effortDefaults";
+  import { cacheLine, cacheState, nextTickMs, remainingText } from "./cache";
+  import { HIDDEN_THINKING_TITLE, thinkingToggleDead } from "./activity";
+  import { toggleTranscriptPref, transcript } from "./transcriptPrefs.svelte";
+  import { isMac } from "./platform";
   import {
     RE_ASK,
     abortWrapUp,
@@ -707,6 +728,287 @@
     const line = t.split("\n").find((l) => l.trim()) ?? "";
     return line.length > 120 ? line.slice(0, 117) + "…" : line;
   }
+
+  /*
+   * The model and effort pickers, in the box (nightshift backlog 112, his
+   * pick of board 10's direction A, 2026-09-16): two small buttons beside
+   * Attach, each opening a menu above itself — the Claude app's idiom of
+   * the model under the text. The top bar's chip names the kind and the
+   * engine only since blocker 141; the model's name lives here.
+   *
+   * Both buttons read and write `app.draft`, the same fields the rail's
+   * pills are bound to, and call the same `applyDraft` — so the rail's
+   * copies and these cannot disagree; there is one record. The model rows
+   * go through `switchModel` / `switchModelAt`, which are what ⌘⇧S/O/F/H
+   * and ⌘⇧1…9 already run, so a click and its key do the same thing. On
+   * the subscription engine the second button is Effort (backlog 076's
+   * segment, with backlog 100's `default · high`); on the provider engine
+   * it is the rail's Thinking segment, since that engine has no `--effort`
+   * and the chip's `thinking …` tail is gone from the top bar.
+   */
+  const agentMode = $derived(app.draft.engine === "claude-code");
+  const locked = $derived(app.busy || app.connecting);
+  const mod = isMac ? "⌘" : "Ctrl+";
+  const shift = isMac ? "⇧" : "Shift+";
+  const AGENT_PILLS = AGENT_MODELS.filter(Boolean);
+  /** The same list `switchModelAt` counts, so row n's cap is ⌘⇧n. */
+  const models = $derived(pickerModels());
+  function agentKey(alias: string): string | null {
+    const k = MODEL_KEYS.find((m) => m.alias === alias);
+    return k ? `${mod}${shift}${k.key}` : null;
+  }
+  /** What the button names: the connection's model (the alias, or
+   *  `default` for the CLI's own), else the draft's while not connected. */
+  const modelLabel = $derived(
+    app.connection?.model || (agentMode ? app.draft.agentModel.trim() || "default" : app.draft.model.trim() || "model"),
+  );
+  const modelTitle = $derived.by(() => {
+    const ran = app.agentTurn?.model ? ` — last turn ran ${app.agentTurn.model}` : "";
+    return agentMode
+      ? `Model — ${mod}${shift}F / O / S / H pick an alias from anywhere; ${mod}M opens the rail${ran}`
+      : `Model — ${mod}${shift}1…9 pick from the picker anywhere; ${mod}M opens the rail`;
+  });
+  /** The CLI's effort levels (backlog 076), *default* (no flag) first. */
+  const EFFORTS = ["", "low", "medium", "high", "xhigh", "max"];
+  const effortDefaultText = $derived(effortDefaultLabel("claude-code", app.draft.agentModel));
+  const effortLabel = $derived(app.draft.agentEffort || `default · ${effortDefaultText}`);
+  function pickEffort(e: string) {
+    if (e === app.draft.agentEffort) return;
+    app.draft.agentEffort = e;
+    void applyDraft();
+  }
+  const thinkingSup = $derived(thinkingSupport(app.draft.provider, app.draft.model));
+  /** `effort: low` → `low`, `budget…` → `budget`: the rail's short form. */
+  function seg(label: string): string {
+    return label.replace(/^effort:\s*/, "").replace(/…$/, "");
+  }
+  const thinkingLabel = $derived(
+    seg(thinkingSup.choices.find((c) => c.value === app.draft.thinkingMode)?.label ?? app.draft.thinkingMode),
+  );
+  function pickThinking(v: string) {
+    if (v === app.draft.thinkingMode) return;
+    app.draft.thinkingMode = v;
+    void applyDraft();
+  }
+  /** The rail, on its Model section — the menus' last row, and *other…*. */
+  function openRail() {
+    app.showContext = false;
+    app.railScrollTo = "model";
+    app.showRail = true;
+  }
+
+  interface MenuRow {
+    id: string;
+    label: string;
+    /** The dim clause after the label. */
+    detail?: string;
+    /** The chord that does the same from anywhere, as a key cap. */
+    cap?: string | null;
+    on?: boolean;
+    run: () => void;
+  }
+  const modelRows = $derived.by((): MenuRow[] => {
+    const rows: MenuRow[] = [];
+    if (agentMode) {
+      const cur = app.draft.agentModel.trim();
+      rows.push({ id: "default", label: "default", detail: "whatever the CLI defaults to", on: cur === "", run: () => void switchModel("") });
+      for (const a of AGENT_PILLS) {
+        rows.push({
+          id: a,
+          label: a,
+          detail: a === cur ? "current · the CLI resolves it" : undefined,
+          cap: agentKey(a),
+          on: cur === a,
+          run: () => void switchModel(a),
+        });
+      }
+      // A full id typed into the rail's field: named here, changed there.
+      const other = cur !== "" && !AGENT_PILLS.includes(cur);
+      rows.push({ id: "other", label: other ? cur : "other…", detail: other ? "a full id — the rail's field" : "a full id, typed in the rail", on: other, run: openRail });
+    } else {
+      models.forEach((m, i) =>
+        rows.push({
+          id: m,
+          label: m,
+          cap: i < 9 ? `${mod}${shift}${i + 1}` : null,
+          on: m === app.draft.model,
+          run: () => void switchModelAt(i + 1),
+        }),
+      );
+      if (models.length === 0) rows.push({ id: "none", label: "no models in the picker", detail: "type an id in the rail", run: openRail });
+    }
+    rows.push({ id: "rail", label: "Model and tasks…", detail: "the rail", cap: `${mod}M`, run: openRail });
+    return rows;
+  });
+  const effortRows = $derived.by((): MenuRow[] =>
+    agentMode
+      ? EFFORTS.map((e) => ({
+          id: e || "default",
+          label: e || "default",
+          detail: e
+            ? `--effort ${e}`
+            : effortDefaultText === "?"
+              ? "no flag · the model's own, which the docs do not name for this model"
+              : `· ${effortDefaultText} — no flag, the model's own`,
+          on: e === app.draft.agentEffort,
+          run: () => pickEffort(e),
+        }))
+      : thinkingSup.choices.map((c) => ({
+          id: c.value,
+          label: seg(c.label),
+          detail: c.value === "budget" ? `${app.draft.budget} tokens — the amount is set in the rail` : undefined,
+          on: c.value === app.draft.thinkingMode,
+          run: () => pickThinking(c.value),
+        })),
+  );
+
+  /**
+   * One menu open at a time. It closes on a pick, on ⎋ (focus back on its
+   * button), on Tab, and on a click anywhere else — the top bar's rule for
+   * its popover. ↑↓ move through the rows, ↵ or Space pick the focused one
+   * (the rows are buttons, so the keys are the browser's). Opening puts
+   * the focus on the current row, so the keyboard lands where the pick is.
+   */
+  let menu = $state<"model" | "effort" | null>(null);
+  let menuEl = $state<HTMLElement | null>(null);
+  let modelBtn = $state<HTMLElement | null>(null);
+  let effortBtn = $state<HTMLElement | null>(null);
+  const menuRows = $derived(menu === "model" ? modelRows : menu === "effort" ? effortRows : []);
+  function menuButton(): HTMLElement | null {
+    return menu === "model" ? modelBtn : menu === "effort" ? effortBtn : null;
+  }
+  function openMenu(which: "model" | "effort") {
+    menu = menu === which ? null : which;
+    if (!menu) return;
+    requestAnimationFrame(() => {
+      const rows = menuEl?.querySelectorAll<HTMLElement>("[role=menuitemradio]") ?? [];
+      const i = Math.max(0, menuRows.findIndex((r) => r.on));
+      rows[i]?.focus();
+    });
+  }
+  function closeMenu(back: "button" | "box" | null) {
+    const btn = menuButton();
+    menu = null;
+    if (back === "button") btn?.focus();
+    else if (back === "box") ta?.focus();
+  }
+  function runRow(r: MenuRow) {
+    closeMenu("box");
+    r.run();
+  }
+  function onMenuKey(e: KeyboardEvent) {
+    const rows = Array.from(menuEl?.querySelectorAll<HTMLElement>("[role=menuitemradio]") ?? []);
+    const at = rows.indexOf(document.activeElement as HTMLElement);
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const n = rows.length;
+      if (n === 0) return;
+      const next = e.key === "ArrowDown" ? (at + 1) % n : (at - 1 + n) % n;
+      rows[next]?.focus();
+    } else if (e.key === "Home" || e.key === "End") {
+      e.preventDefault();
+      rows[e.key === "Home" ? 0 : rows.length - 1]?.focus();
+    } else if ((e.key === "Enter" || e.key === " ") && at >= 0) {
+      // Picked here rather than left to the button's own key-to-click,
+      // so the row goes on keydown on every platform and the ↵ never
+      // reaches the box under the menu.
+      e.preventDefault();
+      rows[at].click();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      closeMenu("button");
+    } else if (e.key === "Tab") {
+      closeMenu(null);
+    }
+  }
+  function onMenuDocClick(e: MouseEvent) {
+    const t = e.target as Node;
+    if (menuEl?.contains(t) || menuButton()?.contains(t)) return;
+    menu = null;
+  }
+  $effect(() => {
+    if (!menu) return;
+    document.addEventListener("mousedown", onMenuDocClick, true);
+    return () => document.removeEventListener("mousedown", onMenuDocClick, true);
+  });
+  // A chat or engine switch under an open menu closes it: the rows it
+  // drew were the old one's.
+  $effect(() => {
+    void key;
+    void agentMode;
+    menu = null;
+  });
+
+  /*
+   * The bottom row (backlog 112, direction C): thinking · tools · cache
+   * under the box, moved whole from the top bar. The two are the
+   * transcript toggles of backlog 052 — every thinking block open or a
+   * pill, every tool call the full block or one line — with their ⌘⇧T /
+   * ⌘⇧B, which `App.svelte` still binds; the chip is the cache's share and
+   * backlog 063's timer. Docked only: the floating box has no transcript
+   * to fold and no turn to have cached.
+   */
+  const shiftKey = isMac ? "⌘⇧" : "Ctrl+Shift+";
+  // What a prior turn's thinking costs (nightshift backlog 066, measured
+  // 2026-09-16 on his account, CLI 2.1.263): on Haiku 4.5 the thinking of
+  // an earlier turn is sent and billed with every later request; on Opus 5
+  // one turn could not separate it (nightshift blocker 079). There is no
+  // thinking editor; this is the one place the transcript says what the
+  // folded block costs.
+  const THINKING_COST_NOTE =
+    ". A prior turn's thinking is still sent and billed on later turns (measured on Haiku 4.5 via Claude Code; unverified on Opus 5).";
+  // The chip reads disabled when the toggle has nothing to open (nightshift
+  // backlog 097, 2026-09-16): every recorded thinking block is empty, or
+  // nothing has thought yet and the Claude Code engine is on a model that
+  // omits its thinking. ⌘⇧T and the palette row gate on the same function.
+  const thinkingDead = $derived(thinkingToggleDead(app.events, app.connection));
+
+  const cached = $derived(cacheHitRate());
+  /**
+   * The prompt-cache timer (nightshift backlog 063, 2026-09-15): when the
+   * last turn's cache entry expires, read off the log — each turn records
+   * when its request was sent and the lifetime of the cache it left, on
+   * both engines — so reopening a chat shows the countdown it had. The
+   * clock is a chain of timeouts aligned to when the text would change
+   * (once a minute, once a second under two minutes; `nextTickMs`), so it
+   * wakes as rarely as the display allows and never shows a value a
+   * second stale. The toast on the crossing to cold is the top bar's
+   * still, whichever view is up — this chain only draws.
+   */
+  let now = $state(Date.now());
+  const cache = $derived(floating ? null : cacheState(app.events, now));
+  $effect(() => {
+    if (floating) return;
+    const warmUntil = cacheState(app.events, Date.now())?.warmUntil ?? null;
+    if (warmUntil == null) return;
+    now = Date.now();
+    let id: ReturnType<typeof setTimeout> | null = null;
+    const tick = () => {
+      const t = Date.now();
+      now = t;
+      const wait = nextTickMs(warmUntil - t);
+      if (wait == null) return;
+      id = setTimeout(tick, wait);
+    };
+    const first = nextTickMs(warmUntil - Date.now());
+    if (first != null) id = setTimeout(tick, first);
+    return () => {
+      if (id != null) clearTimeout(id);
+    };
+  });
+  const cacheShareTitle = "Share of the last request's prompt served from cache.";
+  const cacheTitle = $derived.by(() => {
+    if (!cache) return "";
+    const engine = app.connection?.engine === "claude-code" ? "claude-code" : "api";
+    if (!cache.warm) {
+      return "The last turn's prompt cache has expired, so the next turn re-reads the whole history either way and editing it now costs nothing extra.";
+    }
+    const what = `Time left on the last turn's prompt cache (${cache.ttl}), counted from when its request was sent: until it expires an edit to the history re-writes the cache, and after it the next turn pays for the whole history whether or not you edited it.`;
+    return engine === "claude-code"
+      ? `${what} On this engine you are on the subscription, so "free" means an edit costs no more usage than an unedited turn would — whether cache reads are discounted against the plan's limit is not documented.`
+      : what;
+  });
 </script>
 
 <div
@@ -927,6 +1229,50 @@
       <button class="ns-btn ghost small" disabled={!app.connection} onclick={() => picker?.click()}>
         <Icon name="plus" />Attach
       </button>
+      <!-- The model and effort buttons (backlog 112, board 10's A): each
+           opens its menu above; the top bar's chip no longer names the
+           model (blocker 141). Disabled while a turn runs or a connect is
+           in flight, as the rail's pills are. -->
+      <span class="pick-wrap">
+        <button
+          class="pick-btn"
+          class:open={menu === "model"}
+          bind:this={modelBtn}
+          disabled={locked || !app.connection}
+          aria-haspopup="menu"
+          aria-expanded={menu === "model"}
+          title={modelTitle}
+          onclick={() => openMenu("model")}
+        >
+          <span class="pick-dot" class:unknown={!app.connection}></span>
+          <span class="pick-name">{modelLabel}</span>
+          <span class="pick-chev" aria-hidden="true"><Icon name="chev" size={11} /></span>
+        </button>
+        {#if menu === "model"}
+          {@render pickMenu("Model", agentMode ? "an alias the CLI resolves" : `${models.length} in the picker · Settings picks which`)}
+        {/if}
+      </span>
+      <span class="pick-wrap">
+        <button
+          class="pick-btn"
+          class:open={menu === "effort"}
+          bind:this={effortBtn}
+          disabled={locked || !app.connection}
+          aria-haspopup="menu"
+          aria-expanded={menu === "effort"}
+          title={agentMode
+            ? "Effort (--effort) — how hard the model thinks per turn; default sends no flag and leaves it to the model. Kept on this chat."
+            : `Thinking — ${thinkingSup.note}`}
+          onclick={() => openMenu("effort")}
+        >
+          <span class="pick-k">{agentMode ? "effort" : "thinking"}</span>
+          <span class="pick-name">{agentMode ? effortLabel : thinkingLabel}</span>
+          <span class="pick-chev" aria-hidden="true"><Icon name="chev" size={11} /></span>
+        </button>
+        {#if menu === "effort"}
+          {@render pickMenu(agentMode ? "Effort" : "Thinking", agentMode ? "--effort · kept on this chat" : "kept on this chat")}
+        {/if}
+      </span>
       <span class="ns-chip mono keys">{app.busy ? "↵ queue" : "↵ to send"} · ⇧↵ newline</span>
       <span class="spacer"></span>
       {#if app.busy}
@@ -961,6 +1307,60 @@
       {/if}
     </div>
   </div>
+  {#if !floating}
+    <!-- The bottom row (backlog 112, board 10's C): the two transcript
+         toggles (backlog 052) and the cache chip (063), under the box,
+         right-aligned as drawn. A click on any single block still
+         overrides its toggle; flipping the toggle clears those clicks.
+         Remembered across relaunch; thinking off and tools on is how the
+         transcript read before them. -->
+    <div class="bottom-row">
+      <button
+        class="ns-chip bottom-toggle"
+        class:on={transcript.thinking}
+        aria-pressed={transcript.thinking}
+        disabled={thinkingDead}
+        title={thinkingDead
+          ? HIDDEN_THINKING_TITLE + " The toggle has nothing to open in this chat."
+          : (transcript.thinking
+              ? `Thinking shown in every reply — click to fold it to a pill (${shiftKey}T)`
+              : `Thinking folded to a pill — click to show it in every reply (${shiftKey}T)`) +
+            THINKING_COST_NOTE}
+        onclick={() => toggleTranscriptPref("thinking")}
+      >
+        <span class="bottom-mark" aria-hidden="true">✦</span>thinking
+      </button>
+      <button
+        class="ns-chip bottom-toggle"
+        class:on={transcript.tools}
+        aria-pressed={transcript.tools}
+        title={transcript.tools
+          ? `Tool calls shown in full — click to fold each to one line (${shiftKey}B)`
+          : `Tool calls folded to one line each — click to show them in full (${shiftKey}B)`}
+        onclick={() => toggleTranscriptPref("tool")}
+      >
+        <span class="bottom-mark" aria-hidden="true">⚒</span>tools
+      </button>
+      <!-- One chip for the cache (his ask, 2026-09-16): the share of the
+           last request served from it, then the timer from backlog 063 —
+           how long it stays warm, or `cold`. A chat whose last turn
+           predates the timer's fields shows the share alone, and the
+           title says why. Nothing before the first turn. -->
+      {#if cached != null || cache}
+        <div
+          class="ns-chip mono bottom-cache"
+          class:cold={cache ? !cache.warm : false}
+          title={cache
+            ? `${cacheShareTitle} ${cacheTitle}`
+            : `${cacheShareTitle} No timer for this chat: its last turn was made before the cache lifetime was recorded (2026-09-15); the next turn will show one.`}
+        >
+          {#if cached != null}{Math.round(cached * 100)}% cached{:else}cache{/if}{#if cache}
+            <span class="bottom-cache-when" aria-label={cacheLine(cache)}>· {remainingText(cache.remainingMs) ?? "cold"}</span>
+          {/if}
+        </div>
+      {/if}
+    </div>
+  {/if}
   {#if !app.connection}
     <div class="hint">connect a provider to start</div>
   {:else if dragDepth > 0}
@@ -972,7 +1372,225 @@
   {/if}
 </div>
 
+<!-- The menu over a picker button (backlog 112): a head, the rows with
+     the current one lit and each chord as a key cap, the rail's row last.
+     Drawn from `menuRows`, so the model and effort menus are one piece
+     of markup and one set of keys. -->
+{#snippet pickMenu(head: string, sub: string)}
+  <div class="pick-menu" role="menu" tabindex="-1" aria-label={head} bind:this={menuEl} onkeydown={onMenuKey}>
+    <div class="pick-head"><span>{head}</span><span class="pick-sub">{sub}</span></div>
+    {#each menuRows as r (r.id)}
+      {#if r.id === "rail"}<div class="pick-sep"></div>{/if}
+      <button
+        type="button"
+        class="pick-row"
+        class:on={r.on}
+        role="menuitemradio"
+        aria-checked={r.on ?? false}
+        tabindex="-1"
+        onclick={() => runRow(r)}
+      >
+        <span class="pick-row-label">{r.label}</span>
+        {#if r.detail}<span class="pick-row-detail">{r.detail}</span>{/if}
+        {#if r.cap}<span class="pick-row-cap"><Kbd keys={r.cap} /></span>{/if}
+      </button>
+    {/each}
+  </div>
+{/snippet}
+
 <style>
+  /* The in-box pickers (backlog 112, board 10's A): small text buttons
+     beside Attach, a menu above each. `.pick-wrap` is the menu's frame. */
+  .pick-wrap {
+    position: relative;
+    display: inline-flex;
+    min-width: 0;
+  }
+  .pick-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 8px;
+    border-radius: 6px;
+    border: 1px solid transparent;
+    background: transparent;
+    font-family: var(--sans);
+    font-size: 12px;
+    color: var(--ink2);
+    white-space: nowrap;
+    cursor: pointer;
+    max-width: 240px;
+    min-width: 0;
+  }
+  .pick-btn:hover:not(:disabled),
+  .pick-btn.open {
+    background: var(--well);
+    color: var(--ink);
+    border-color: var(--line2);
+  }
+  .pick-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .pick-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--done);
+    flex: none;
+  }
+  .pick-dot.unknown {
+    background: var(--dim);
+  }
+  .pick-k {
+    color: var(--dim);
+  }
+  .pick-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+  }
+  .pick-chev {
+    display: inline-flex;
+    color: var(--dim);
+    flex: none;
+  }
+  .pick-chev :global(svg) {
+    width: 11px;
+    height: 11px;
+  }
+  .pick-menu {
+    position: absolute;
+    z-index: 70;
+    bottom: calc(100% + 8px);
+    left: 0;
+    min-width: 230px;
+    max-width: 360px;
+    max-height: 60vh;
+    overflow-y: auto;
+    background: var(--sheet);
+    border: 1px solid var(--line2);
+    border-radius: 10px;
+    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
+    padding: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    font-family: var(--sans);
+  }
+  .pick-head {
+    font-size: 10.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--dim);
+    padding: 5px 8px 3px;
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+    white-space: nowrap;
+  }
+  .pick-sub {
+    text-transform: none;
+    letter-spacing: 0;
+    font-size: 11px;
+  }
+  .pick-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    border: none;
+    background: transparent;
+    font-family: var(--sans);
+    font-size: 12.5px;
+    color: var(--ink);
+    text-align: left;
+    white-space: nowrap;
+    cursor: pointer;
+    min-width: 0;
+  }
+  .pick-row:hover,
+  .pick-row:focus-visible {
+    background: var(--well);
+    outline: none;
+  }
+  .pick-row.on {
+    background: var(--accent-soft);
+    color: var(--accent-ink);
+  }
+  .pick-row-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+  }
+  .pick-row-detail {
+    font-size: 11px;
+    color: var(--dim);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+  }
+  .pick-row-cap {
+    margin-left: auto;
+    padding-left: 16px;
+    display: inline-flex;
+    flex: none;
+  }
+  .pick-sep {
+    height: 1px;
+    background: var(--line);
+    margin: 4px 2px;
+  }
+
+  /* The bottom row (backlog 112, board 10's C): the card's width, the
+     chips on the right. The toggles are the top bar's, styled as they
+     were there: off is the dimmed chip, on the accent mark. */
+  .bottom-row {
+    max-width: 760px;
+    margin: 8px auto 0;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 6px;
+  }
+  .bottom-toggle {
+    cursor: pointer;
+    font-family: var(--sans);
+    color: var(--dim);
+    gap: 5px;
+  }
+  .bottom-mark {
+    font-size: 11px;
+    opacity: 0.55;
+  }
+  .bottom-toggle.on {
+    color: var(--ink);
+  }
+  .bottom-toggle.on .bottom-mark {
+    color: var(--accent);
+    opacity: 1;
+  }
+  .bottom-toggle:hover {
+    border-color: var(--accent);
+    color: var(--ink);
+  }
+  .bottom-toggle:disabled,
+  .bottom-toggle:disabled:hover {
+    cursor: default;
+    opacity: 0.5;
+    border-color: transparent;
+    color: var(--dim);
+  }
+  .bottom-cache {
+    font-variant-numeric: tabular-nums;
+    color: var(--ink2);
+  }
+  /* Only the timer half dims when cold; the share is still a fact. */
+  .bottom-cache.cold .bottom-cache-when {
+    color: var(--dim);
+  }
+
   .composer {
     position: relative;
     background: var(--paper);
