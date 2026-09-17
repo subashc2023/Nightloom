@@ -28,6 +28,21 @@ import { EDITABLE_LAYERS } from "./types";
 import { LIST_SCOPE, NEW_CHAT_SCOPE, UndoHistory } from "./undo";
 import { chatName, notifyNeedsYou, notifyTurnEnd } from "./notify";
 import { RESUME_TEXT, SleepWatch, loadSleepPrefs, pushPowerPrefs, type Woke } from "./sleep";
+import { asideQuestion, type AsideQuote } from "./asideQuote";
+import {
+  buildNotices,
+  dailyDue,
+  loadDailyPrefs,
+  loadDismissed,
+  loadLastDaily,
+  loadSeenStamp,
+  saveDailyPrefs,
+  saveDismissed,
+  saveLastDaily,
+  saveSeenStamp,
+  type DailyPrefs,
+  type Notice,
+} from "./centre";
 import type {
   AgentInfo,
   AgentInit,
@@ -377,6 +392,21 @@ export interface Connection {
   agent: AgentInfo | null;
 }
 
+/** The open chat's aside (backlog 081, the passage form backlog 107) — see
+ *  `app.aside`. */
+export interface Aside {
+  seq: number;
+  /** His question as typed — not the framed string the backend gets. */
+  question: string;
+  /** The highlighted passage the question is about, if any. */
+  quote: AsideQuote | null;
+  /** Opened from a selection and not yet asked: the card is the question box. */
+  draft: boolean;
+  answer: string | null;
+  error: string | null;
+  cacheRead: number;
+}
+
 export const app = $state({
   providers: [] as ProviderInfo[],
   /** Web-search backends and which one has a key (settings modal edits this). */
@@ -609,8 +639,12 @@ export const app = $state({
   /** The open chat's aside (nightshift backlog 081): a side question and
    *  its answer, shown at the foot of the transcript and recorded nowhere;
    *  `answer` null while it is being asked. Cleared by a chat switch or
-   *  its own ×. */
-  aside: null as { question: string; answer: string | null; error: string | null; cacheRead: number } | null,
+   *  its own ×. Since backlog 107 it may be *about a passage*: `quote` is
+   *  what he highlighted in the transcript, and a card opened from a
+   *  selection starts as a `draft` — the quote shown, the question box
+   *  waiting under it, nothing sent yet. `seq` tells one aside from the
+   *  next when an answer lands late. */
+  aside: null as Aside | null,
   /** Observations awaiting the next dream — the badge on the Dream button. */
   dreamPending: 0,
   /** A dream is running; the button becomes its progress line. */
@@ -619,6 +653,28 @@ export const app = $state({
   dreamActivity: "",
   /** Auto-dream and the dream model, Settings → Knowledge. */
   dreamPrefs: loadDreamPrefs(),
+  /**
+   * The notification centre and the daily pass (nightshift backlog 069).
+   * The notices are derived from their sources on every `refreshCentre`;
+   * only `dismissed`, the daily switch and the last run's stamp are kept.
+   */
+  centre: {
+    open: false,
+    notices: [] as Notice[],
+    dismissed: loadDismissed(),
+    daily: loadDailyPrefs() as DailyPrefs,
+    /** ms since the epoch, or null when no daily pass has run. */
+    lastDaily: loadLastDaily(),
+    /** A daily pass is in flight (capture → dream → tidy). */
+    dailyRunning: false,
+    /** What the last daily pass said, one line, for the Settings card. */
+    dailyLast: "" as string,
+    /** The rows every project reports — the morning and blocker sources —
+     *  read here so the bell works off the Nightshift page. */
+    rows: [] as NightshiftRow[],
+    /** The build stamp seen at the last refresh (`loadSeenStamp` at start). */
+    seenStamp: loadSeenStamp(),
+  },
   /** Session logs with something new since the last capture — the count on
    *  the Capture button. Always shown: the chat open right now is one. */
   capturePending: 0,
@@ -952,6 +1008,12 @@ export async function init(): Promise<void> {
   // switches reach Rust once at start-up.
   await listen<Woke>("system-woke", (e) => sleepWatch.woke(e.payload));
   void pushPowerPrefs();
+  // The daily pass (nightshift backlog 069): a minute clock while the app
+  // is open, and a look on wake — a pass missed while the Mac slept happens
+  // now — and one at start-up, below, for a pass missed while it was closed.
+  await listen<Woke>("system-woke", () => void maybeDailyPass());
+  startDailyClock();
+  void refreshCentre().then(() => maybeDailyPass());
   // The dream's own channel: a running chat and a running dream must not
   // interleave in the transcript, so its events never reach applyTurnEvent.
   // All the panel wants from them is a sign of life.
@@ -973,6 +1035,8 @@ export async function init(): Promise<void> {
   // emits this, and only that project's row and morning page are worth
   // re-reading — a change event for anything else could not reach here.
   await listen<NightshiftChange>("nightshift-change", (e) => {
+    // The bell's morning and blocker counts follow the watched root.
+    void refreshCentre();
     if (e.payload.project_id === app.nightshift.selected) {
       void refreshNightshiftRow(e.payload.project_id);
       void refreshNightshiftReview(e.payload.paths);
@@ -1363,9 +1427,11 @@ export async function runDream(): Promise<void> {
     app.dreaming = false;
     app.dreamActivity = "";
   }
-  // The pass writes notes and consumes the inbox; both surfaces follow.
+  // The pass writes notes and consumes the inbox; both surfaces follow —
+  // and the bell, which lists what the dream proposed and changed.
   await refreshNotes();
   await refreshDreamStatus();
+  void refreshCentre();
 }
 
 /**
@@ -1400,6 +1466,181 @@ export async function stopDream(): Promise<void> {
   } catch (e) {
     addToast(String(e));
   }
+}
+
+// ---- the notification centre and the daily pass (nightshift backlog 069) ----
+
+/**
+ * Re-derive the bell's list from its sources: every project's proposals,
+ * the dream's commits, the Nightshift rows, the build stamp. Four cheap
+ * reads (directories and `git log`), so it runs after every pass, on the
+ * panel opening, and on a Nightshift change. With the macOS banner on, a
+ * notice that was not there at the previous refresh posts one — never on
+ * the first refresh of a window, which would announce the whole backlog.
+ */
+let centreSeen: Set<string> | null = null;
+export async function refreshCentre(): Promise<void> {
+  const [proposals, commits, rows, stamp] = await Promise.all([
+    api.centreProposals().catch(() => []),
+    api.centreDreamCommits(10).catch(() => []),
+    api.nightshiftProjects().catch(() => [] as NightshiftRow[]),
+    api.buildStamp().catch(() => null),
+  ]);
+  app.centre.rows = rows;
+  app.centre.notices = buildNotices({
+    proposals,
+    commits,
+    rows,
+    read: app.nightshift.read,
+    stamp,
+    seenStamp: app.centre.seenStamp,
+    dismissed: app.centre.dismissed,
+  });
+  // A first run has no stamp on record: the one seen now becomes it, so
+  // the next roll is the first release the bell announces.
+  if (stamp?.exe_modified && !app.centre.seenStamp) {
+    app.centre.seenStamp = stamp.exe_modified;
+    saveSeenStamp(stamp.exe_modified);
+  }
+  const ids = new Set(app.centre.notices.map((n) => n.id));
+  if (centreSeen && app.centre.daily.notifyMac) {
+    const fresh = app.centre.notices.filter((n) => !centreSeen!.has(n.id));
+    if (fresh.length > 0) {
+      const body =
+        fresh.length === 1 ? fresh[0].title : `${fresh[0].title} — and ${fresh.length - 1} more`;
+      api.notify("Nightloom — to review", body).catch(() => {});
+    }
+  }
+  centreSeen = ids;
+}
+
+/** The bell's count: everything listed. */
+export function centreCount(): number {
+  return app.centre.notices.length;
+}
+
+/** Take a notice off the list. The thing it names is untouched — a
+ *  dismissed proposal is still pending under Notes, a dismissed blocker
+ *  still open — and comes back only as a different notice (a new page, a
+ *  changed count). */
+export function dismissNotice(id: string): void {
+  if (!app.centre.dismissed.includes(id)) app.centre.dismissed = [...app.centre.dismissed, id];
+  saveDismissed(app.centre.dismissed);
+  app.centre.notices = app.centre.notices.filter((n) => n.id !== id);
+  // A release notice is dismissed by recording the stamp as seen.
+  if (id.startsWith("release:")) {
+    const stamp = id.slice("release:".length);
+    app.centre.seenStamp = stamp;
+    saveSeenStamp(stamp);
+  }
+}
+
+/**
+ * Open a notice's review — always the existing flow, reached from the
+ * panel: a proposal opens `NoteView` in proposal mode (switching to the
+ * project first when it is not the open one), a morning page or the
+ * blockers open the Nightshift Review tab on that project. A dream's notes
+ * are reviewed in the panel itself (`NotificationCentre.svelte` shows the
+ * diff and the per-file Revert), and a release has nothing to open.
+ */
+export async function openNotice(n: Notice): Promise<void> {
+  app.centre.open = false;
+  if (n.project && app.project?.id !== n.project.id) {
+    await useProject(n.project.id);
+  }
+  if (n.kind === "proposal" && n.proposal) {
+    await refreshProposals();
+    reviewProposal(n.proposal.project ? "instructions" : "memory", n.proposal.entry.id);
+    return;
+  }
+  if (n.kind === "morning" || n.kind === "blocker") {
+    showNightshift();
+    app.nightshift.tab = "review";
+    app.nightshift.reviewTab = n.kind === "morning" ? "morning" : "blockers";
+  }
+}
+
+/** Put one file a dream changed back as it was before that dream, as a
+ *  commit; the notice stays until dismissed, so the other files can follow. */
+export async function revertDreamFile(n: Notice, file: string): Promise<boolean> {
+  if (!n.commit) return false;
+  try {
+    addToast(await api.centreRevertFile(n.commit.repo, n.commit.hash, file));
+  } catch (e) {
+    addToast(`revert failed: ${String(e)}`);
+    return false;
+  }
+  await refreshNotes();
+  return true;
+}
+
+export function setDailyPrefs(p: DailyPrefs): void {
+  app.centre.daily = p;
+  saveDailyPrefs(p);
+}
+
+/**
+ * The daily pass: capture → dream → tidy, on the connection `passTargetFor`
+ * chooses (so it runs on either engine), under the same one-at-a-time lock
+ * as the buttons. Nothing is spent when there is nothing to read: an empty
+ * set of logs skips the capture, an empty inbox skips the dream, and the
+ * tidy is directory work. The run is stamped as it starts, not as it ends,
+ * so a pass that fails is not retried every minute until the hour comes
+ * round — the next day's hour, or the *Run now* button, is the retry.
+ */
+export async function runDailyPass(): Promise<void> {
+  if (app.centre.dailyRunning || app.dreaming || app.capturing) return;
+  app.centre.dailyRunning = true;
+  const started = Date.now();
+  app.centre.lastDaily = started;
+  saveLastDaily(started);
+  const said: string[] = [];
+  try {
+    await refreshCaptureStatus();
+    if (app.capturePending > 0) {
+      await runCapture();
+      said.push(`captured from ${app.capturePending} chat${app.capturePending === 1 ? "" : "s"}`);
+    } else {
+      said.push("nothing new to capture");
+    }
+    await refreshDreamStatus();
+    if (app.dreamPending > 0) {
+      const pending = app.dreamPending;
+      await runDream();
+      said.push(`dreamed ${pending} observation${pending === 1 ? "" : "s"}`);
+    } else {
+      said.push("nothing to dream");
+    }
+    try {
+      const tidy = await api.tidyMemory(true);
+      const moved = tidy.reduce((n, t) => n + t.report.movable, 0);
+      said.push(
+        moved > 0
+          ? `archived ${moved} struck line${moved === 1 ? "" : "s"} older than 30 days`
+          : "nothing old enough to archive",
+      );
+    } catch (e) {
+      said.push(`tidy failed: ${String(e)}`);
+    }
+  } finally {
+    app.centre.dailyRunning = false;
+  }
+  const when = new Date(started);
+  app.centre.dailyLast = `${when.toLocaleDateString()} ${when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} — ${said.join(", ")}`;
+  addToast(`daily pass: ${said.join(", ")}`);
+  await refreshCentre();
+}
+
+/** Run the daily pass if its hour has come and it has not run since. */
+export async function maybeDailyPass(): Promise<void> {
+  if (!dailyDue(app.centre.daily, app.centre.lastDaily, new Date())) return;
+  await runDailyPass();
+}
+
+let dailyClock: ReturnType<typeof setInterval> | null = null;
+function startDailyClock(): void {
+  if (dailyClock) return;
+  dailyClock = setInterval(() => void maybeDailyPass(), 60_000);
 }
 
 /**
@@ -2253,6 +2494,8 @@ export function markMorningRead(name: string): void {
   } catch {
     // best-effort
   }
+  // The page's notice leaves the bell (nightshift backlog 069).
+  app.centre.notices = app.centre.notices.filter((n) => n.id !== `morning:${id}:${name}`);
 }
 
 export async function loadShifts(): Promise<void> {
@@ -3361,25 +3604,55 @@ async function sendAgent(
  * the question nor the answer is in the log or the CLI's session. One at a
  * time; a running turn is waited for on the backend's lock.
  */
-export async function askAside(question: string): Promise<void> {
+let asideSeq = 0;
+export async function askAside(question: string, quote: AsideQuote | null = null): Promise<void> {
   const q = question.trim();
-  if (!q || app.connection?.engine !== "claude-code") return;
-  app.aside = { question: q, answer: null, error: null, cacheRead: 0 };
+  if ((!q && !quote) || app.connection?.engine !== "claude-code") return;
+  // About a passage (backlog 107): the highlighted text rides inside the
+  // one string the backend takes, framed as a selection and quoted
+  // exactly (`asideQuestion`); the card keeps his words and the quote
+  // apart. The backend is 081's, untouched.
+  const sent = quote ? asideQuestion(quote, q) : q;
+  const seq = ++asideSeq;
+  app.aside = { seq, question: q, quote, draft: false, answer: null, error: null, cacheRead: 0 };
   try {
-    const res = await api.askAside(q);
-    if (app.aside?.question !== q) return; // dismissed or replaced meanwhile
+    const res = await api.askAside(sent);
+    if (app.aside?.seq !== seq) return; // dismissed or replaced meanwhile
     app.aside = {
+      seq,
       question: q,
+      quote,
+      draft: false,
       answer: res.answer,
       error: res.is_error ? (res.notices.join("; ") || "the aside failed") : null,
       cacheRead: res.cache_read,
     };
   } catch (e) {
-    if (app.aside?.question === q) app.aside = { question: q, answer: null, error: String(e), cacheRead: 0 };
+    if (app.aside?.seq === seq)
+      app.aside = { seq, question: q, quote, draft: false, answer: null, error: String(e), cacheRead: 0 };
   }
 }
 
+/**
+ * Open the aside card as a question box about a highlighted passage
+ * (backlog 107): the quote is shown, nothing is sent until he asks. A
+ * running or answered aside is replaced — one at a time, as before.
+ */
+export function draftAside(quote: AsideQuote): void {
+  if (app.connection?.engine !== "claude-code") return;
+  const a = app.aside;
+  if (a && !a.draft && a.answer === null && a.error === null) void api.cancelAside().catch(() => {});
+  app.aside = { seq: ++asideSeq, question: "", quote, draft: true, answer: null, error: null, cacheRead: 0 };
+}
+
+/**
+ * The card's ×. An aside still `asking…` is cancelled on the backend too
+ * (whole-project review F13, `cancel_aside`): before this it was only
+ * hidden, and the CLI ran its `--max-turns 2` out behind the card.
+ */
 export function dismissAside(): void {
+  const a = app.aside;
+  if (a && !a.draft && a.answer === null && a.error === null) void api.cancelAside().catch(() => {});
   app.aside = null;
 }
 

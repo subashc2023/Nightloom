@@ -293,10 +293,35 @@ now keeps its token in `AppState.aside_cancel` as well as in `cancel`, and
 behind a turn on the agent lock (the wait is raced against the token; the
 command rejects with "the aside was cancelled") or while its CLI runs (the
 turn's interrupt, an answer marked interrupted). Stop still ends a running
-aside as before, and `cancel_aside` never touches a turn. The card's ×
+aside as before, and `cancel_aside` never touches a turn. ~~The card's ×
 should call it when the aside is still `asking…` (the wiring is with the
 chat Svelte's owner; until then × hides a running aside and the CLI runs
-its `--max-turns 2` out).
+its `--max-turns 2` out).~~ Wired 2026-09-16 (backlog 107): `dismissAside`
+calls `cancelAside()` when the card is still `asking…`, and so does
+opening a new aside over a running one.
+
+**Ask aside about a highlighted passage (2026-09-16, nightshift backlog
+107).** Select words in a reply's prose (`.markdown`) or in one of your own
+messages (`.user-text`) and a pill floats over the selection — **Ask aside
+⌘⇧A** (Ctrl+Shift+A elsewhere; the chord was free). Both ends of the
+selection must sit in the same prose block of the same live turn: thinking,
+tool results, a subagent's text and a selection across two messages get no
+pill, nor does a rewound or removed message, the API engine, or a running
+turn. The pill (or the chord) opens the aside card at the foot as a *draft*:
+the quote above (`about its 3rd reply` / `about your 1st message`, replies
+counted as drawn — a run is one reply), a one-line box (Enter asks, Escape
+closes), Ask aside / Cancel; the composer is untouched. What is sent is
+`asideQuestion` (`asideQuote.ts`): *"The user selected this passage in the
+transcript, from your 3rd reply, quoted exactly:"*, the passage between
+triple quotes, then the typed question — one string to the same `ask_aside`,
+so the backend and its measurements are 081's and nothing enters the log.
+The answered card keeps the quote above the question and the answer.
+`app.aside` gained `quote`, `draft` and `seq` (`Aside` in
+`state.svelte.ts`); `draftAside(quote)` opens the draft, `askAside(q,
+quote)` sends. The pill is `position: fixed` at the selection rectangle,
+re-measured on `selectionchange` and on the transcript's scroll, hidden
+when the rectangle is wholly out of the viewport, and its mousedown is
+swallowed so the click keeps the selection.
 
 The `AutoApprove` policy lives in `AppState`, **not** in `connect` — the rail
 re-connects on every knob change, and rebuilding the policy there would silently

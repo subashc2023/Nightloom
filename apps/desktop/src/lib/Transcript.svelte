@@ -3,8 +3,10 @@
   import { tick, untrack } from "svelte";
   import {
     app,
+    askAside,
     denialReason,
     dismissAside,
+    draftAside,
     liveFlags,
     removeBlock,
     removeTurn,
@@ -37,6 +39,8 @@
   import { parseSubagentBlock } from "./subagent";
   import { wordDiff } from "./textdiff";
   import { continuedFlags } from "./runs";
+  import { quoteLabel, samePassage, type AsideQuote } from "./asideQuote";
+  import { isMac } from "./platform";
   import { fmtShare, fmtTokens, shareOf, sizeTitle, turnSizes } from "./tokens";
   import { cacheState } from "./cache";
   import { moveScroll, recallScroll, rememberScroll, scrollKey, NEW_SCROLL_KEY } from "./scroll.svelte";
@@ -563,6 +567,9 @@
       pinned = atBottom();
     }
     scheduleScrollWork();
+    // The Ask aside pill is fixed to the selection's rectangle, which a
+    // scroll moves — into the viewport as well as out of it (backlog 107).
+    if (asidePill || document.getSelection()?.isCollapsed === false) placePill();
   }
 
   $effect(() => {
@@ -769,7 +776,150 @@
     const line = forkLine(session, app.sessions) ?? "from an earlier chat";
     return { id: session.forked_from.session, name: line.replace(/^from /, "") };
   });
+
+  // ---- Ask aside about a highlighted passage (nightshift backlog 107) ----
+  //
+  // Select words in a reply or in one of his messages and a small pill
+  // floats over the selection: *Ask aside*. It opens the aside card
+  // (backlog 081) at the foot as a question box with the passage quoted
+  // above it; what he types is sent with the passage, framed as a
+  // selection (`asideQuote.ts`), through the same backend — off the warm
+  // cache, recorded nowhere. A passage is a selection whose both ends sit
+  // in the same prose block (`.markdown` for a reply, `.user-text` for his
+  // message) of the same live turn: thinking, tool results, a subagent's
+  // text and anything spanning two messages get no pill. Claude Code
+  // engine and an idle chat only, as the composer's own Ask aside is.
+  //
+  // The pill is `position: fixed` at the selection rectangle's top edge,
+  // re-measured on the document's `selectionchange` and on this scroll,
+  // and its mousedown is swallowed so the click does not collapse the
+  // selection it is about. ⌘⇧A (Ctrl+Shift+A elsewhere) is the same click
+  // from the keyboard, inert without a qualifying selection; the chord
+  // was free (no KeyA in `App.svelte`'s tables, no such accelerator in
+  // the native menu — grepped 2026-09-16).
+  const PILL_HEIGHT = 30;
+  let asidePill = $state<{ quote: AsideQuote; top: number; left: number } | null>(null);
+  let asideBox = $state<HTMLTextAreaElement | null>(null);
+  let asideDraft = $state("");
+  // A turn starting, or the engine changing, takes the pill down without
+  // waiting for the next selection change.
+  $effect(() => {
+    if (app.busy || !onClaudeCode) asidePill = null;
+  });
+
+  // Per turn index, the message's 1-based place among the live messages
+  // of its kind — "your 3rd reply" in the framing. Rewound and removed
+  // messages do not count: the CLI's history no longer has them. A reply
+  // is counted as drawn (backlog 121): a run of the model's messages with
+  // nothing between them is one reply to him, so it is one here too.
+  const ordinals = $derived.by(() => {
+    const out: Record<number, number> = {};
+    let user = 0;
+    let assistant = 0;
+    items.forEach((it, i) => {
+      if (it.superseded || it.removed || it.kind === "compaction") return;
+      if (it.kind === "user") out[it.index] = ++user;
+      else out[it.index] = continued[i] ? assistant : ++assistant;
+    });
+    return out;
+  });
+
+  function proseEnd(node: Node | null): { turn: number; prose: Element; role: "assistant" | "user" } | null {
+    if (!node || !viewport) return null;
+    const el = node.nodeType === Node.ELEMENT_NODE ? (node as Element) : node.parentElement;
+    const prose = el?.closest(".markdown, .user-text") ?? null;
+    if (!prose || !viewport.contains(prose)) return null;
+    const turnEl = prose.closest<HTMLElement>("[data-turn]");
+    if (!turnEl) return null;
+    const turn = Number(turnEl.dataset.turn);
+    if (!Number.isFinite(turn)) return null;
+    return { turn, prose, role: prose.classList.contains("user-text") ? "user" : "assistant" };
+  }
+
+  /** The selection as a passage, or null when it is not one. */
+  function passageOf(sel: Selection | null): { quote: AsideQuote; range: Range } | null {
+    if (!sel || sel.isCollapsed || sel.rangeCount === 0) return null;
+    const a = proseEnd(sel.anchorNode);
+    const b = proseEnd(sel.focusNode);
+    if (!samePassage(a, b) || !a) return null;
+    const item = items.find((it) => it.index === a.turn);
+    if (!item || item.superseded || item.removed || item.kind === "compaction") return null;
+    const text = sel.toString();
+    if (!text.trim()) return null;
+    return { quote: { text, role: a.role, ordinal: ordinals[a.turn] ?? 1 }, range: sel.getRangeAt(0) };
+  }
+
+  function placePill() {
+    if (!viewport || !onClaudeCode || app.busy) {
+      asidePill = null;
+      return;
+    }
+    const p = passageOf(document.getSelection());
+    if (!p) {
+      asidePill = null;
+      return;
+    }
+    const r = p.range.getBoundingClientRect();
+    const vp = viewport.getBoundingClientRect();
+    // No rectangle, or one scrolled wholly out of the viewport: no pill —
+    // it would float over text it is not about.
+    if ((r.width === 0 && r.height === 0) || r.bottom < vp.top || r.top > vp.bottom) {
+      asidePill = null;
+      return;
+    }
+    // Above the selection, or below it when the top is off the viewport
+    // (then no lower than the viewport's foot); centred on it, kept
+    // inside the viewport's width.
+    const above = r.top - PILL_HEIGHT - 4 >= vp.top;
+    const top = above
+      ? r.top - PILL_HEIGHT - 4
+      : Math.max(vp.top + 4, Math.min(r.bottom + 4, vp.bottom - PILL_HEIGHT - 4));
+    const left = Math.min(Math.max(r.left + r.width / 2, vp.left + 70), vp.right - 70);
+    asidePill = { quote: p.quote, top, left };
+  }
+
+  async function askAboutSelection(): Promise<void> {
+    const pill = asidePill;
+    if (!pill) return;
+    draftAside(pill.quote);
+    asideDraft = "";
+    document.getSelection()?.removeAllRanges();
+    asidePill = null;
+    await tick();
+    // The card is at the foot; bring it up and put the caret in its box.
+    toBottom();
+    asideBox?.focus({ preventScroll: true });
+  }
+
+  function asideChord(e: KeyboardEvent): void {
+    const primary = isMac ? e.metaKey : e.ctrlKey;
+    if (!primary || !e.shiftKey || e.altKey || e.code !== "KeyA") return;
+    if (!asidePill) return;
+    e.preventDefault();
+    void askAboutSelection();
+  }
+
+  function submitAsideDraft(): void {
+    const q = asideDraft.trim();
+    const quote = app.aside?.quote ?? null;
+    if (!q || !quote || !app.aside?.draft) return;
+    asideDraft = "";
+    void askAside(q, quote);
+  }
+
+  function asideBoxKeys(e: KeyboardEvent): void {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      submitAsideDraft();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      dismissAside();
+    }
+  }
 </script>
+
+<svelte:document onselectionchange={placePill} />
+<svelte:window onkeydown={asideChord} />
 
 <!-- The viewport takes ⌥↑ / ⌥↓ (backlog 065); it is a scroll region, not
      a control, and the lint has no role for that. -->
@@ -1082,24 +1232,59 @@
     <!-- The aside (nightshift backlog 081): a side question answered off the
          chat's warm cache and recorded nowhere — not in this log, not in
          the CLI's files. Drawn at the foot, dashed, so it never reads as
-         a turn; its × is the only way it leaves, short of a chat switch. -->
+         a turn; its × is the only way it leaves, short of a chat switch.
+         About a passage (backlog 107): the highlighted text sits above the
+         question as a quote, and a card opened from a selection is first
+         the question box itself — the quote, a one-line box, Ask aside. -->
     {#if app.aside}
       <div class="aside" role="note" aria-label="aside, not part of the chat">
         <div class="aside-head">
           <span class="ns-chip mono">aside · not in the chat</span>
+          {#if app.aside.quote}
+            <span class="ns-chip mono">about {quoteLabel(app.aside.quote, "card")}</span>
+          {/if}
           {#if app.aside.answer !== null && app.aside.cacheRead > 0}
             <span class="ns-chip mono">{app.aside.cacheRead.toLocaleString()} read from cache</span>
           {/if}
           <span class="spacer"></span>
-          <button class="ns-btn ghost small" title="Dismiss the aside" onclick={dismissAside}>×</button>
+          <button class="ns-btn ghost small" title={app.aside.draft ? "Close without asking" : "Dismiss the aside"} onclick={dismissAside}>×</button>
         </div>
-        <div class="aside-q">{app.aside.question}</div>
-        {#if app.aside.error}
-          <div class="aside-err">{app.aside.error}</div>
-        {:else if app.aside.answer === null}
-          <div class="aside-wait">asking…</div>
+        {#if app.aside.quote}
+          <blockquote class="aside-quote" title="The passage you highlighted, sent with the question exactly as selected">{app.aside.quote.text}</blockquote>
+        {/if}
+        {#if app.aside.draft}
+          <textarea
+            class="aside-box"
+            bind:this={asideBox}
+            bind:value={asideDraft}
+            rows="1"
+            placeholder="Ask about this passage… (Enter asks, Escape closes)"
+            aria-label="Your question about the highlighted passage"
+            onkeydown={asideBoxKeys}
+            autocorrect="off"
+            autocapitalize="off"
+            spellcheck="false"
+          ></textarea>
+          <div class="aside-row">
+            <button
+              class="ns-btn small"
+              disabled={!asideDraft.trim()}
+              title="Ask this about the passage, off the chat's context: no changes, recorded nowhere"
+              onclick={submitAsideDraft}
+            >
+              Ask aside
+            </button>
+            <button class="ns-btn ghost small" onclick={dismissAside}>Cancel</button>
+          </div>
         {:else}
-          <pre class="aside-a">{app.aside.answer}</pre>
+          <div class="aside-q">{app.aside.question}</div>
+          {#if app.aside.error}
+            <div class="aside-err">{app.aside.error}</div>
+          {:else if app.aside.answer === null}
+            <div class="aside-wait">asking…</div>
+          {:else}
+            <pre class="aside-a">{app.aside.answer}</pre>
+          {/if}
         {/if}
       </div>
     {/if}
@@ -1134,6 +1319,20 @@
 </div>
 {#if showNav}
   <Navigator ticks={navTicks} active={navActive} onjump={jumpTo} ontop={toTop} onbottom={toBottom} />
+{/if}
+<!-- The Ask aside pill over a selection (backlog 107). Its mousedown is
+     swallowed so the click keeps the selection it is about. -->
+{#if asidePill}
+  <button
+    class="ns-btn small aside-pill"
+    style:top="{asidePill.top}px"
+    style:left="{asidePill.left}px"
+    title="Ask aside about the highlighted passage: a side question on this text, answered from the chat's context, recorded nowhere"
+    onmousedown={(e) => e.preventDefault()}
+    onclick={() => void askAboutSelection()}
+  >
+    Ask aside <kbd class="aside-key">{isMac ? "⌘⇧A" : "Ctrl+Shift+A"}</kbd>
+  </button>
 {/if}
 
 <style>
@@ -1544,6 +1743,49 @@
   .aside-err {
     margin-top: 6px;
     color: var(--error);
+  }
+  /* About a passage (backlog 107): the quote, the draft's box and row,
+     and the pill that floats over the selection. */
+  .aside-quote {
+    margin: 6px 0 0;
+    padding: 4px 10px;
+    border-left: 3px solid var(--line2);
+    color: var(--ink2);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 9em;
+    overflow-y: auto;
+  }
+  .aside-box {
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+    margin-top: 8px;
+    padding: 6px 8px;
+    border: 1px solid var(--line2);
+    border-radius: 6px;
+    background: var(--sheet);
+    color: var(--ink);
+    font: inherit;
+    resize: none;
+  }
+  .aside-row {
+    display: flex;
+    gap: 6px;
+    margin-top: 6px;
+  }
+  .aside-pill {
+    position: fixed;
+    transform: translateX(-50%);
+    z-index: 10;
+    padding: 5px 10px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+    white-space: nowrap;
+  }
+  .aside-key {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--dim);
   }
   .waiting {
     display: flex;
