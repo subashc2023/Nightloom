@@ -354,6 +354,11 @@ mod tests {
         }
         git(&dir, &["config", "user.email", "t@example.com"], None).unwrap();
         git(&dir, &["config", "user.name", "t"], None).unwrap();
+        // Git for Windows defaults `core.autocrlf=true`, so a checkout
+        // rewrote `one\n` as `one\r\n` and the revert test's exact compare
+        // failed on every CI push (runs 16596f5 through b6a9c07). The
+        // fixture pins the repo's own setting; the product does what git does.
+        git(&dir, &["config", "core.autocrlf", "false"], None).unwrap();
         Some(dir)
     }
 
