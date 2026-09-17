@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { app, asideAsking, asideOf, dismissAside, followUpAside } from "./state.svelte";
+  import { app, asideAsking, asideOf, askAside, dismissAside, followUpAside } from "./state.svelte";
   import { quoteLabel } from "./asideQuote";
   import { renderMarkdown } from "./markdown";
   import Icon from "./Icon.svelte";
@@ -28,6 +28,23 @@
     const s = app.sessions.find((x) => x.id === session);
     return s?.title ?? s?.first_user ?? session.slice(0, 8);
   });
+
+  // A draft dragged into the tab before anything was asked (backlog 148):
+  // the box is here, the send is the card's own `askAside`, which reads the
+  // open chat's aside — so it asks only while this tab's chat is the open one.
+  let askDraft = $state("");
+  function submitAsk() {
+    const q = askDraft.trim();
+    if (!q || !open || !aside || !aside.draft) return;
+    askDraft = "";
+    void askAside(q, aside.quote);
+  }
+  function askKeys(e: KeyboardEvent) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      submitAsk();
+    }
+  }
 
   let followDraft = $state("");
   function submitFollowUp() {
@@ -78,7 +95,24 @@
       <blockquote class="aside-view-quote" title="The passage he highlighted, sent with the question exactly as selected">{aside.quote.text}</blockquote>
     {/if}
     {#if aside.draft}
-      <p class="aside-view-hint">A question about the passage is being typed in the chat.</p>
+      {#if open}
+        <textarea
+          class="aside-view-box"
+          bind:value={askDraft}
+          rows="2"
+          placeholder={aside.quote ? "Ask about the passage… (Enter asks)" : "Ask aside… (Enter asks)"}
+          aria-label="Your question about the highlighted passage"
+          onkeydown={askKeys}
+          autocorrect="off"
+          autocapitalize="off"
+          spellcheck="false"
+        ></textarea>
+        <div class="aside-view-row">
+          <button class="ns-btn small" disabled={!askDraft.trim()} title="Ask this about the passage, off the chat's context: no changes, recorded nowhere" onclick={submitAsk}>Ask aside</button>
+        </div>
+      {:else}
+        <p class="aside-view-hint">Nothing asked yet — open the chat to ask about the passage.</p>
+      {/if}
     {:else}
       <div class="aside-view-turns">
         {#each aside.turns as turn (turn.seq)}

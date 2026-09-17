@@ -65,7 +65,10 @@
   /** The chat the thread belongs to: the panel's, else the open one. */
   const owner = $derived(panel ? session : app.activeSessionId);
   const readOnly = $derived(panel && session !== app.activeSessionId);
-  const draggable = $derived(owner !== null && !aside.draft);
+  // A draft drags too (backlog 148, his ask on 5847cca): the card sits
+  // under the passage and can cover what he is reading before a word is
+  // typed; the tab and the panel draw the question box for a draft.
+  const draggable = $derived(owner !== null);
 
   // The body follows the answer as the transcript follows a reply: a card
   // taller than its room scrolls inside, and the newest text — the

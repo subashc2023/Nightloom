@@ -413,7 +413,11 @@ to read. Nothing sent to the model changed (`asideQuestion`,
 `asideFollowUp` as before). `draftAside(quote, anchor)` takes the anchor;
 `askAside` keeps the draft's. The card hides while its thread shows in a
 tab (`asideInTab`, 130 part 2) and its head row is the drag source as
-before.
+before — **from the moment it opens, a draft included** (2026-09-17,
+nightshift backlog 148: the card can cover what he is reading before a
+word is typed). A draft dragged into a tab or the panel shows the question
+box there and sends through the same `askAside`, which reads the open
+chat's aside, so the box asks only while that chat is the open one.
 
 **The card dragged out: a tab, or the side panel (2026-09-17, nightshift
 backlog 141 pass 2).** The head row's grip dragged onto a tab strip makes
