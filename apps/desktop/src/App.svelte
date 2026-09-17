@@ -200,6 +200,14 @@
   /** Something a pane's half takes: a tab, a content descriptor from
    *  outside (backlog 140 pass 2), or the terminal dock (113's 12b). */
   const dragging = $derived(!!app.draggingTab || !!app.draggingContent || app.draggingTerm);
+  // A drop on the strip (inside the pane) is the strip's, so the pane's
+  // drop handler never ran and the zone drawn on the way there stayed
+  // (his report, 2026-09-17 16:40 on 5847cca). Whatever ends the drag —
+  // a drop anywhere, Escape, a drag out of the window — clears the flags
+  // above, and the zone follows them.
+  $effect(() => {
+    if (!dragging) dropHalf = null;
+  });
   /** The zone's caption: what the drop will do here. */
   function zoneLabel(paneId: string): string {
     if (app.draggingTerm) return term.pane === paneId ? "the terminal is here" : "dock the terminal here";
@@ -224,9 +232,9 @@
     dropHalf = null;
   }
   function onPaneDrop(e: DragEvent, paneId: string) {
-    if (e.target instanceof Element && e.target.closest(".tab-strip")) return;
     const half = dropHalf;
     dropHalf = null;
+    if (e.target instanceof Element && e.target.closest(".tab-strip")) return;
     // The terminal dock (backlog 113's 12b, blocker 189): one dock, moved
     // under this pane; the shells run on, the pty is the window's.
     if (e.dataTransfer?.types.includes(tabs.TERM_DRAG) || app.draggingTerm) {
