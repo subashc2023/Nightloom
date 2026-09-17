@@ -1620,10 +1620,14 @@
     gap: 6px;
   }
   .user-bubble {
-    background: var(--sheet);
-    border: 1px solid var(--line2);
-    border-radius: 10px 10px 2px 10px;
-    padding: 12px 16px;
+    /* A rounded, borderless tint, the way claude.ai draws the user's turn
+       (nightshift backlog 126): the old 1px line and near-square corner
+       read as a box. The tint is the sheet lifted a step toward the ink so
+       it holds on every palette without a token of its own. */
+    background: color-mix(in srgb, var(--sheet) 88%, var(--ink));
+    border: 1px solid transparent;
+    border-radius: 18px;
+    padding: 12px 18px;
     max-width: 560px;
     /* The reply's face, one size down: the two sides of a conversation in
        one type, with the question a little quieter than the answer. */
