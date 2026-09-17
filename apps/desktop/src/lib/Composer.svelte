@@ -1404,7 +1404,11 @@
   .pick-wrap {
     position: relative;
     display: inline-flex;
-    min-width: 0;
+    /* Never the thing that gives way: on the Welcome screen's narrower
+       composer the row squeezed these to a dot and "effort d.." while the
+       key hint kept its width (his report, 2026-09-17). The hint yields
+       instead, below. */
+    flex: none;
   }
   .pick-btn {
     display: inline-flex;
@@ -1785,6 +1789,7 @@
     display: flex;
     align-items: center;
     gap: 8px;
+    container-type: inline-size;
   }
   .spacer {
     flex: 1;
@@ -1792,6 +1797,14 @@
   .keys {
     font-size: 11px;
     padding: 2px 8px;
+    flex: none;
+  }
+  /* The key hint is decoration; when the row cannot hold Attach, both
+     pickers, the hint and Send, the hint goes first. */
+  @container (max-width: 600px) {
+    .keys {
+      display: none;
+    }
   }
   textarea {
     width: 100%;
