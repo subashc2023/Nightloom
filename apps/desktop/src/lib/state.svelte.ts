@@ -1473,6 +1473,18 @@ export async function refreshDreamStatus(): Promise<void> {
  */
 export async function refreshPlanUsage(live = false): Promise<void> {
   try {
+    // A turn that brought its own rate-limit figure is the account's
+    // number at that moment (source `turn`); a live `/usage` within the
+    // minute would only repeat it. Past that, ask the CLI.
+    const held0 = app.planUsage;
+    if (
+      live &&
+      held0?.source === "turn" &&
+      held0.sampled_at_ms != null &&
+      Date.now() - held0.sampled_at_ms < 60_000
+    ) {
+      return;
+    }
     const fresh = await (live ? api.planUsageRefresh() : api.planUsage());
     // A file older than the turn-sourced reading already held is not an
     // update: the turn's figure was the account's at that moment.
@@ -4740,8 +4752,12 @@ async function sendAgent(
     await settleTurnView(pendingKey);
     void refreshSessions();
     void refreshNotes();
-    // The plan chip follows the turn (nightshift backlog 073).
-    void refreshPlanUsage();
+    // The plan chip follows the turn (nightshift backlog 073) — through
+    // the CLI's own `/usage` when the turn brought no figure of its own
+    // (his ask, 2026-09-18: "whenever the response finishes hit /usage so
+    // the number reflects that"); zero tokens, a few seconds, in the
+    // background.
+    void refreshPlanUsage(true);
     // The hand-off reads the gauge's pair at each turn's end (backlog 086),
     // and the log, for the start prompt in the wrap-up's own reply (pass 2).
     noteAgentTurnEnd(
