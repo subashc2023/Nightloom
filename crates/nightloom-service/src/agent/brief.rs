@@ -71,6 +71,37 @@ pub const BRIEF_MATCHER: &str = "Agent|Task";
 pub const BRIEF_OPEN: &str = "<nightloom-subagent-brief>";
 const BRIEF_CLOSE: &str = "</nightloom-subagent-brief>";
 
+/// How many subagents one turn may spawn (2026-09-17 ~20:40, his report:
+/// a research turn spun up fourteen and "it's gonna kill my usage very
+/// quickly"). The hook counts spawns in [`SPAWNS_FILE`] and refuses past
+/// this with [`spawn_cap_reason`]; [`reset_spawns`] zeroes the count when
+/// a turn starts (not when a deferred call resumes — that is the same
+/// turn). A per-chat setting for the number is nightshift backlog 164.
+pub const SPAWN_CAP: usize = 6;
+/// The per-turn spawn count, beside the brief.
+pub const SPAWNS_FILE: &str = "subagent-spawns.txt";
+
+/// The refusal the model reads when the cap is reached — his wording.
+pub fn spawn_cap_reason(cap: usize) -> String {
+    format!(
+        "Nightloom's limit is {cap} subagents in one turn, and this turn has spawned {cap}. \
+         Wait for the running ones to finish and use their reports; if what is left is \
+         small enough, do it yourself. The limit is set beside \"Subagents run on auto\"."
+    )
+}
+
+/// Zero the turn's spawn count. Called when a turn starts.
+pub fn reset_spawns(dir: &Path) {
+    let _ = std::fs::remove_file(dir.join(SPAWNS_FILE));
+}
+
+fn spawns(dir: &Path) -> usize {
+    std::fs::read_to_string(dir.join(SPAWNS_FILE))
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0)
+}
+
 /// The sentence at the top of the brief, so the child knows what the
 /// block is and what it is not.
 const BRIEF_LEAD: &str = "You are a subagent of a chat running in Nightloom. What follows reached the \
@@ -167,6 +198,13 @@ pub fn decide(dir: &Path, stdin_json: &str) -> HookReply {
     let Ok(input) = serde_json::from_str::<HookInput>(stdin_json) else {
         return HookReply::pass();
     };
+    // The cap first, before the brief: a torn brief must not lift it.
+    let n = spawns(dir);
+    if n >= SPAWN_CAP {
+        return HookReply::deny(spawn_cap_reason(SPAWN_CAP));
+    }
+    let _ = std::fs::create_dir_all(dir);
+    let _ = std::fs::write(dir.join(SPAWNS_FILE), (n + 1).to_string());
     let brief = std::fs::read_to_string(dir.join(BRIEF_FILE)).unwrap_or_default();
     if brief.trim().is_empty() {
         return HookReply::pass();
@@ -206,6 +244,28 @@ pub fn run_hook(args: &[String]) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_seventh_spawn_of_a_turn_is_refused_and_a_new_turn_starts_over() {
+        let dir = std::env::temp_dir().join(format!("nightloom-spawn-cap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        super::write(
+            &dir,
+            "<nightloom-subagent-brief>x</nightloom-subagent-brief>",
+        )
+        .unwrap();
+        let call = r#"{"tool_name":"Agent","tool_input":{"prompt":"go"}}"#;
+        for _ in 0..super::SPAWN_CAP {
+            assert_eq!(super::decide(&dir, call).decision(), "allow");
+        }
+        let r = super::decide(&dir, call);
+        assert_eq!(r.decision(), "deny");
+        assert!(r.reason().is_some_and(|s| s.contains("do it yourself")));
+        super::reset_spawns(&dir);
+        assert_eq!(super::decide(&dir, call).decision(), "allow");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
     use nightloom_core::Segment;
     use serde_json::json;

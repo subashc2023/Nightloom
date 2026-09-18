@@ -424,11 +424,26 @@ pub struct AgentSpec {
 /// month is refused too — measured on 2.1.263 (step 11 of the report): the
 /// CLI's matcher takes the JavaScript pattern, Bash was refused and Read
 /// ran in the same turn.
-pub const CHAT_POLICY_MATCHER: &str = "^(?!(Read|Glob|Grep|WebFetch|WebSearch|mcp__)).*";
+///
+/// `ToolSearch` added 2026-09-17 (nightshift backlog 149, measured
+/// `m149/t5-policy.jsonl`): on 2.1.263 the CLI defers `WebSearch` and
+/// `WebFetch` and the model loads them through `ToolSearch` first; the
+/// policy refused that call, and the model recovered by calling
+/// `WebSearch` directly — a wasted round and an error result in every
+/// Chat that searches. `ToolSearch` loads a schema and touches nothing.
+pub const CHAT_POLICY_MATCHER: &str = "^(?!(Read|Glob|Grep|WebFetch|WebSearch|ToolSearch|mcp__)).*";
 
 /// The names [`CHAT_POLICY_MATCHER`]'s lookahead lets through — the same
 /// list, as words, for narrowing the Ask hook beside it.
-const CHAT_POLICY_KEPT: [&str; 6] = ["Read", "Glob", "Grep", "WebFetch", "WebSearch", "mcp__"];
+const CHAT_POLICY_KEPT: [&str; 7] = [
+    "Read",
+    "Glob",
+    "Grep",
+    "WebFetch",
+    "WebSearch",
+    "ToolSearch",
+    "mcp__",
+];
 
 /// The Ask hook's matcher under the Chat policy (nightshift backlog 147):
 /// the alternatives of `matcher` the policy does not refuse. The CLI runs
@@ -1266,6 +1281,10 @@ impl ClaudeCodeAgent {
         on_event: &mut (dyn FnMut(TurnEvent) + Send),
     ) -> Result<AgentOutcome, AgentError> {
         let input = input.into();
+        // A fresh turn, a fresh spawn count for the Agent hook's cap.
+        if let Some(brief) = &self.spec.brief {
+            brief::reset_spawns(&brief.dir);
+        }
         let translator = match &self.refused {
             Some((session, call)) if self.spec.resume.as_deref() == Some(session) => {
                 Translator::resuming(call)
@@ -1317,6 +1336,29 @@ impl ClaudeCodeAgent {
             self.drive(&spec, Some(input), Translator::new(), cancel, on_event)
                 .await,
         )
+    }
+
+    /// One turn under a spec the caller shaped — a council seat
+    /// (`council::seat_spec`; nightshift backlog 149, 2026-09-17): the
+    /// chat's spec re-pointed at another model, forked from the chat's
+    /// session, its events into the caller's own sink. Nothing of the
+    /// agent changes, as for an aside; `&self` is read only, so N of
+    /// these run at once over one agent.
+    pub async fn run_with(
+        &self,
+        spec: &AgentSpec,
+        input: impl Into<TurnInput>,
+        cancel: &CancellationToken,
+        on_event: &mut (dyn FnMut(TurnEvent) + Send),
+    ) -> Result<AgentOutcome, AgentError> {
+        self.drive(
+            spec,
+            Some(input.into()),
+            Translator::new(),
+            cancel,
+            on_event,
+        )
+        .await
     }
 
     /// One CLI process, whichever shape: a prompt on argv, attachments on
