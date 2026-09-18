@@ -53,7 +53,7 @@
 
 use super::ask::{HookReply, shell_quote};
 use nightloom_core::{SegmentKind, SystemPrompt};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -98,6 +98,312 @@ pub fn spawn_cap_reason(cap: usize) -> String {
 /// Zero the turn's spawn count. Called when a turn starts.
 pub fn reset_spawns(dir: &Path) {
     let _ = std::fs::remove_file(dir.join(SPAWNS_FILE));
+}
+
+// ---- the family of limits (nightshift backlog 165, 2026-09-18) ---------------
+
+/// The subagent limits, each a setting with a default, written into the
+/// chat's directory as [`LIMITS_FILE`] so the hook (a separate process
+/// per `Agent` call) reads them without settings plumbing.
+///
+/// Three are the CLI's own and are *passed*, never re-implemented
+/// (`external`, read from the 2.1.263 bundle's strings on 2026-09-18):
+/// `concurrent` is `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` (the CLI's
+/// default 20; past it the Agent call is refused with *Concurrent
+/// subagent limit reached. You can run N subagents at once. Do not
+/// retry…* and counted under `subagent_stats.refused.concurrency_limit`);
+/// `depth` is `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` (default 3, a
+/// GrowthBook value `tengu_hazel_trellis` when unset; *Subagent nesting
+/// limit reached (depth d of D)…*, `refused.depth_limit`); the budget is
+/// `--max-budget-usd`, already the rail's *Budget* field
+/// (`AgentSpec::max_budget_usd`; *Budget limit reached ($x spent of the $y
+/// maximum). New agents cannot be started…*, `refused.budget`, and the
+/// turn ends `error_max_budget_usd`). The other three are Nightloom's
+/// hook: `per_turn` (the 6 of `a4a681f`), `per_day` (a running count per
+/// chat across turns, zeroed when the date changes), and the usage-aware
+/// pair — at `slow_at` percent of the five-hour window the per-turn cap
+/// drops to `slow_to`; at `stop_at` every spawn is refused with the reset
+/// time in the reason. The percent is the freshest of the desktop's
+/// gauge (`plan_usage::read`: the Claude app's sample and the CLI's cache
+/// file, which `claude -p "/usage"` refreshes for zero tokens — 166's
+/// reading) and the last `rate_limit_event` this chat's turns carried
+/// ([`USAGE_FILE`], written by the translator as each arrives).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SubagentLimits {
+    #[serde(default = "d_per_turn")]
+    pub per_turn: usize,
+    #[serde(default = "d_concurrent")]
+    pub concurrent: usize,
+    #[serde(default = "d_depth")]
+    pub depth: usize,
+    #[serde(default = "d_per_day")]
+    pub per_day: usize,
+    #[serde(default = "d_slow_at")]
+    pub slow_at: u8,
+    #[serde(default = "d_slow_to")]
+    pub slow_to: usize,
+    #[serde(default = "d_stop_at")]
+    pub stop_at: u8,
+}
+
+fn d_per_turn() -> usize {
+    SPAWN_CAP
+}
+fn d_concurrent() -> usize {
+    20
+}
+fn d_depth() -> usize {
+    3
+}
+fn d_per_day() -> usize {
+    30
+}
+fn d_slow_at() -> u8 {
+    70
+}
+fn d_slow_to() -> usize {
+    2
+}
+fn d_stop_at() -> u8 {
+    90
+}
+
+impl Default for SubagentLimits {
+    fn default() -> Self {
+        Self {
+            per_turn: d_per_turn(),
+            concurrent: d_concurrent(),
+            depth: d_depth(),
+            per_day: d_per_day(),
+            slow_at: d_slow_at(),
+            slow_to: d_slow_to(),
+            stop_at: d_stop_at(),
+        }
+    }
+}
+
+impl SubagentLimits {
+    /// The CLI's own limits, as the environment the process is spawned
+    /// with. The budget rides as a flag (`--max-budget-usd`), not here.
+    pub fn env(&self) -> Vec<(&'static str, String)> {
+        vec![
+            (
+                "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS",
+                self.concurrent.to_string(),
+            ),
+            (
+                "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH",
+                self.depth.to_string(),
+            ),
+        ]
+    }
+
+    /// The per-turn cap in force at a window reading: lowered to
+    /// `slow_to` from `slow_at` percent. `None` for no reading.
+    pub fn turn_cap_at(&self, five_hour_pct: Option<u8>) -> usize {
+        match five_hour_pct {
+            Some(p) if p >= self.slow_at => self.per_turn.min(self.slow_to),
+            _ => self.per_turn,
+        }
+    }
+}
+
+/// The limits, beside the brief.
+pub const LIMITS_FILE: &str = "subagent-limits.json";
+/// The per-chat, per-day spawn count: `YYYY-MM-DD n`.
+pub const DAY_SPAWNS_FILE: &str = "subagent-spawns-day.txt";
+/// The freshest wire reading of the window: `<five-hour %> <resets-at unix
+/// seconds or -> <sampled-at unix ms>`.
+pub const USAGE_FILE: &str = "subagent-usage.txt";
+
+pub fn write_limits(dir: &Path, limits: &SubagentLimits) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    std::fs::write(
+        dir.join(LIMITS_FILE),
+        serde_json::to_string_pretty(limits).unwrap_or_default(),
+    )
+}
+
+/// The chat's limits, or the defaults when none were written (a chat
+/// older than the file, a directory the hook cannot read).
+pub fn read_limits(dir: &Path) -> SubagentLimits {
+    std::fs::read_to_string(dir.join(LIMITS_FILE))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+/// The window as a turn's `rate_limit_event` reported it, for the hook.
+pub fn write_usage(dir: &Path, five_hour_pct: u8, resets_at: Option<i64>, at_ms: i64) {
+    let _ = std::fs::create_dir_all(dir);
+    let resets = resets_at
+        .map(|r| r.to_string())
+        .unwrap_or_else(|| "-".into());
+    let _ = std::fs::write(
+        dir.join(USAGE_FILE),
+        format!("{five_hour_pct} {resets} {at_ms}\n"),
+    );
+}
+
+/// One reading of the five-hour window: percent, reset time, when taken.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WindowReading {
+    pub five_hour_pct: u8,
+    pub resets_at: Option<i64>,
+    pub sampled_at_ms: i64,
+}
+
+fn read_usage_file(dir: &Path) -> Option<WindowReading> {
+    let s = std::fs::read_to_string(dir.join(USAGE_FILE)).ok()?;
+    let mut it = s.split_whitespace();
+    let pct: u8 = it.next()?.parse().ok()?;
+    let resets_at = it.next().and_then(|r| r.parse::<i64>().ok());
+    let sampled_at_ms: i64 = it.next()?.parse().ok()?;
+    Some(WindowReading {
+        five_hour_pct: pct,
+        resets_at,
+        sampled_at_ms,
+    })
+}
+
+/// A reading still worth acting on: its window has not reset since, and
+/// it is not older than a window (a stale 92% would refuse spawns into a
+/// fresh window forever). Pure over its inputs.
+pub fn current(reading: Option<WindowReading>, now_ms: i64) -> Option<WindowReading> {
+    const WINDOW_MS: i64 = 5 * 60 * 60 * 1000;
+    let r = reading?;
+    if let Some(reset) = r.resets_at
+        && reset * 1000 <= now_ms
+    {
+        return None;
+    }
+    (now_ms - r.sampled_at_ms <= WINDOW_MS).then_some(r)
+}
+
+/// The freshest of the two readings, or none. Pure over its inputs.
+pub fn freshest(
+    wire: Option<WindowReading>,
+    gauge: Option<WindowReading>,
+) -> Option<WindowReading> {
+    match (wire, gauge) {
+        (Some(w), Some(g)) => Some(if w.sampled_at_ms >= g.sampled_at_ms {
+            w
+        } else {
+            g
+        }),
+        (w, g) => w.or(g),
+    }
+}
+
+/// The desktop's gauge as a reading (`plan_usage`), when it has the
+/// five-hour figure.
+fn gauge_reading() -> Option<WindowReading> {
+    let u = crate::plan_usage::read();
+    let pct = u.five_hour?;
+    let resets_at = u
+        .five_hour_resets_at
+        .as_deref()
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|d| d.timestamp());
+    Some(WindowReading {
+        five_hour_pct: pct,
+        resets_at,
+        sampled_at_ms: u.sampled_at_ms.unwrap_or(0),
+    })
+}
+
+/// `HH:MM` local for the reason, or "when it resets".
+fn reset_words(resets_at: Option<i64>) -> String {
+    match resets_at.and_then(|r| chrono::DateTime::from_timestamp(r, 0)) {
+        Some(t) => {
+            let local = t.with_timezone(&chrono::Local);
+            format!("at {}", local.format("%H:%M"))
+        }
+        None => "when the window resets".to_string(),
+    }
+}
+
+/// The refusal when the window is past `stop_at` — the reset time in it,
+/// so the parent can say when rather than retry.
+pub fn window_stop_reason(pct: u8, stop_at: u8, resets_at: Option<i64>) -> String {
+    format!(
+        "Nightloom refuses new subagents while the plan's five-hour window is at {pct}% \
+         (the limit is {stop_at}%). It resets {}. Until then do the work yourself with \
+         your own tools, or tell the user what is left and stop; do not retry the spawn.",
+        reset_words(resets_at)
+    )
+}
+
+/// The per-turn refusal when the cap was lowered by the window.
+pub fn slowed_cap_reason(cap: usize, pct: u8, slow_at: u8) -> String {
+    format!(
+        "Nightloom's limit is {cap} subagents in this turn while the plan's five-hour \
+         window is at {pct}% (it is lowered from the usual cap past {slow_at}%), and this \
+         turn has spawned {cap}. Wait for the running ones to finish and use their reports; \
+         if what is left is small enough, do it yourself."
+    )
+}
+
+/// The per-chat, per-day refusal.
+pub fn day_cap_reason(cap: usize) -> String {
+    format!(
+        "Nightloom's limit is {cap} subagents in this chat today, and this chat has spawned \
+         {cap}. Use the reports you have; do what is left yourself, or ask the user to \
+         raise the limit or continue in a new chat."
+    )
+}
+
+/// Take one spawn of the chat's daily allowance, or say it is spent.
+/// The same lock as [`claim_spawn`]; the count restarts when the date
+/// (local) changes, so the file holds the date it counts.
+fn claim_day_spawn(dir: &Path, cap: usize, today: &str) -> Result<(), usize> {
+    use std::io::{Read as _, Seek as _, Write as _};
+    let _ = std::fs::create_dir_all(dir);
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(dir.join(DAY_SPAWNS_FILE))
+    else {
+        return Ok(());
+    };
+    if file.lock().is_err() {
+        return Ok(());
+    }
+    let mut have = String::new();
+    let _ = file.read_to_string(&mut have);
+    let mut it = have.split_whitespace();
+    let n: usize = match (it.next(), it.next()) {
+        (Some(d), Some(n)) if d == today => n.parse().unwrap_or(0),
+        _ => 0,
+    };
+    if n >= cap {
+        return Err(n);
+    }
+    let _ = file.set_len(0);
+    let _ = file.seek(std::io::SeekFrom::Start(0));
+    let _ = file.write_all(format!("{today} {}", n + 1).as_bytes());
+    Ok(())
+}
+
+/// The hook's verdict on one spawn, pure over what it read: the window
+/// first (a stop needs no count), then the turn's cap at that window,
+/// then the day's. `Ok(cap)` is the per-turn cap in force.
+pub fn window_verdict(
+    limits: &SubagentLimits,
+    reading: Option<WindowReading>,
+) -> Result<usize, String> {
+    if let Some(r) = reading
+        && r.five_hour_pct >= limits.stop_at
+    {
+        return Err(window_stop_reason(
+            r.five_hour_pct,
+            limits.stop_at,
+            r.resets_at,
+        ));
+    }
+    Ok(limits.turn_cap_at(reading.map(|r| r.five_hour_pct)))
 }
 
 /// Take one spawn of the turn's allowance, or say how many were taken.
@@ -235,13 +541,40 @@ struct HookInput {
 /// policy's own `deny` on it still stands, since the CLI runs every
 /// matching entry and any deny wins (measured, backlog 147).
 pub fn decide(dir: &Path, stdin_json: &str) -> HookReply {
+    decide_with(dir, stdin_json, gauge_reading())
+}
+
+/// [`decide`] with the desktop's gauge reading passed in, so the suite
+/// runs against a fixed window rather than this machine's files.
+pub fn decide_with(dir: &Path, stdin_json: &str, gauge: Option<WindowReading>) -> HookReply {
     let Ok(input) = serde_json::from_str::<HookInput>(stdin_json) else {
         return HookReply::pass();
     };
-    // The cap first, before the brief: a torn brief must not lift it. The
-    // claim is under a file lock, since the turn's hooks run at once.
-    if claim_spawn(dir, SPAWN_CAP).is_err() {
-        return HookReply::deny(spawn_cap_reason(SPAWN_CAP));
+    // The caps first, before the brief: a torn brief must not lift them.
+    // The claims are under a file lock, since the turn's hooks run at once.
+    // Order (backlog 165): the window (a stop needs no count), the turn's
+    // cap at that window, the chat's day.
+    let limits = read_limits(dir);
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let reading = freshest(
+        current(read_usage_file(dir), now_ms),
+        current(gauge, now_ms),
+    );
+    let cap = match window_verdict(&limits, reading) {
+        Ok(cap) => cap,
+        Err(reason) => return HookReply::deny(reason),
+    };
+    if claim_spawn(dir, cap).is_err() {
+        return HookReply::deny(match reading {
+            Some(r) if cap < limits.per_turn => {
+                slowed_cap_reason(cap, r.five_hour_pct, limits.slow_at)
+            }
+            _ => spawn_cap_reason(cap),
+        });
+    }
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    if claim_day_spawn(dir, limits.per_day, &today).is_err() {
+        return HookReply::deny(day_cap_reason(limits.per_day));
     }
     let brief = std::fs::read_to_string(dir.join(BRIEF_FILE)).unwrap_or_default();
     if brief.trim().is_empty() {
@@ -294,13 +627,13 @@ mod tests {
         .unwrap();
         let call = r#"{"tool_name":"Agent","tool_input":{"prompt":"go"}}"#;
         for _ in 0..super::SPAWN_CAP {
-            assert_eq!(super::decide(&dir, call).decision(), "allow");
+            assert_eq!(super::decide_with(&dir, call, None).decision(), "allow");
         }
-        let r = super::decide(&dir, call);
+        let r = super::decide_with(&dir, call, None);
         assert_eq!(r.decision(), "deny");
         assert!(r.reason().is_some_and(|s| s.contains("do it yourself")));
         super::reset_spawns(&dir);
-        assert_eq!(super::decide(&dir, call).decision(), "allow");
+        assert_eq!(super::decide_with(&dir, call, None).decision(), "allow");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -329,7 +662,7 @@ mod tests {
                 let gate = gate.clone();
                 std::thread::spawn(move || {
                     gate.wait();
-                    super::decide(&dir, call).decision() == "allow"
+                    super::decide_with(&dir, call, None).decision() == "allow"
                 })
             })
             .collect();
@@ -482,5 +815,176 @@ mod tests {
         );
         assert_eq!(entry["hooks"][0]["type"], "command");
         assert_eq!(json!(BRIEF_MATCHER), "Agent|Task");
+    }
+
+    // The family of limits (nightshift backlog 165).
+    fn limits_dir(tag: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("nightloom-165-{tag}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        super::write(
+            &dir,
+            "<nightloom-subagent-brief>x</nightloom-subagent-brief>",
+        )
+        .unwrap();
+        dir
+    }
+    const CALL: &str = r#"{"tool_name":"Agent","tool_input":{"prompt":"go"}}"#;
+
+    #[test]
+    fn limits_round_trip_and_a_partial_file_keeps_the_defaults() {
+        let dir = limits_dir("rt");
+        let l = super::SubagentLimits {
+            per_turn: 4,
+            stop_at: 95,
+            ..Default::default()
+        };
+        super::write_limits(&dir, &l).unwrap();
+        assert_eq!(super::read_limits(&dir), l);
+        std::fs::write(dir.join(super::LIMITS_FILE), r#"{"per_day": 5}"#).unwrap();
+        let back = super::read_limits(&dir);
+        assert_eq!(back.per_day, 5);
+        assert_eq!(back.per_turn, super::SPAWN_CAP);
+        assert_eq!(back.concurrent, 20);
+        assert_eq!(back.depth, 3);
+        assert_eq!(
+            super::read_limits(Path::new("/nonexistent/x")),
+            super::SubagentLimits::default()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_clis_own_limits_go_out_as_environment() {
+        let l = super::SubagentLimits {
+            concurrent: 4,
+            depth: 2,
+            ..Default::default()
+        };
+        assert_eq!(
+            l.env(),
+            vec![
+                ("CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS", "4".to_string()),
+                ("CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH", "2".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_window_slows_then_stops_with_the_reset_time_in_the_reason() {
+        let l = super::SubagentLimits::default();
+        let r = |pct| {
+            Some(super::WindowReading {
+                five_hour_pct: pct,
+                resets_at: Some(1789714200),
+                sampled_at_ms: 1,
+            })
+        };
+        assert_eq!(super::window_verdict(&l, None), Ok(6));
+        assert_eq!(super::window_verdict(&l, r(69)), Ok(6));
+        assert_eq!(super::window_verdict(&l, r(70)), Ok(2));
+        assert_eq!(super::window_verdict(&l, r(89)), Ok(2));
+        let stop = super::window_verdict(&l, r(90)).unwrap_err();
+        assert!(
+            stop.contains("90%") && stop.contains("It resets at ") && stop.contains("do not retry")
+        );
+        let none = super::window_verdict(
+            &l,
+            Some(super::WindowReading {
+                five_hour_pct: 95,
+                resets_at: None,
+                sampled_at_ms: 1,
+            }),
+        )
+        .unwrap_err();
+        assert!(none.contains("when the window resets"));
+        // The fresher reading wins, whichever side it came from.
+        let wire = super::WindowReading {
+            five_hour_pct: 10,
+            resets_at: None,
+            sampled_at_ms: 5,
+        };
+        let gauge = super::WindowReading {
+            five_hour_pct: 80,
+            resets_at: None,
+            sampled_at_ms: 9,
+        };
+        assert_eq!(super::freshest(Some(wire), Some(gauge)), Some(gauge));
+        assert_eq!(super::freshest(Some(wire), None), Some(wire));
+        assert_eq!(super::freshest(None, None), None);
+        // A reading whose window has reset, or one older than a window, is no reading.
+        let now = 10_000_000_000i64;
+        let past = super::WindowReading {
+            five_hour_pct: 92,
+            resets_at: Some(now / 1000 - 1),
+            sampled_at_ms: now - 1,
+        };
+        assert_eq!(super::current(Some(past), now), None);
+        let old = super::WindowReading {
+            five_hour_pct: 92,
+            resets_at: None,
+            sampled_at_ms: now - 6 * 3600 * 1000,
+        };
+        assert_eq!(super::current(Some(old), now), None);
+        let fresh = super::WindowReading {
+            five_hour_pct: 92,
+            resets_at: None,
+            sampled_at_ms: now - 1000,
+        };
+        assert_eq!(super::current(Some(fresh), now), Some(fresh));
+    }
+
+    #[test]
+    fn at_a_simulated_92_percent_window_the_spawn_is_refused_and_at_75_the_turn_holds_two() {
+        let dir = limits_dir("window");
+        let now = chrono::Utc::now().timestamp_millis();
+        super::write_usage(&dir, 92, Some(now / 1000 + 3600), now);
+        let r = super::decide_with(&dir, CALL, None);
+        assert_eq!(r.decision(), "deny");
+        assert!(
+            r.reason()
+                .is_some_and(|s| s.contains("92%") && s.contains("It resets at "))
+        );
+        // The gauge, fresher, says 75: the cap is two, and the third is refused in those words.
+        let gauge = Some(super::WindowReading {
+            five_hour_pct: 75,
+            resets_at: None,
+            sampled_at_ms: now + 1,
+        });
+        assert_eq!(super::decide_with(&dir, CALL, gauge).decision(), "allow");
+        assert_eq!(super::decide_with(&dir, CALL, gauge).decision(), "allow");
+        let third = super::decide_with(&dir, CALL, gauge);
+        assert_eq!(third.decision(), "deny");
+        assert!(
+            third
+                .reason()
+                .is_some_and(|s| s.contains("75%") && s.contains("lowered"))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_chats_daily_count_runs_across_turns_and_restarts_with_the_date() {
+        let dir = limits_dir("day");
+        super::write_limits(
+            &dir,
+            &super::SubagentLimits {
+                per_day: 3,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(super::decide_with(&dir, CALL, None).decision(), "allow");
+        assert_eq!(super::decide_with(&dir, CALL, None).decision(), "allow");
+        super::reset_spawns(&dir); // a new turn: the day's count stands
+        assert_eq!(super::decide_with(&dir, CALL, None).decision(), "allow");
+        let r = super::decide_with(&dir, CALL, None);
+        assert_eq!(r.decision(), "deny");
+        assert!(r.reason().is_some_and(|s| s.contains("in this chat today")));
+        // Another date in the file: the count restarts.
+        std::fs::write(dir.join(super::DAY_SPAWNS_FILE), "2000-01-01 3").unwrap();
+        super::reset_spawns(&dir);
+        assert_eq!(super::decide_with(&dir, CALL, None).decision(), "allow");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

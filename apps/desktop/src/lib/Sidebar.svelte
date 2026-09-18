@@ -394,7 +394,6 @@
           e.preventDefault();
           kinds = !kinds;
         }}
-        disabled={app.busy}
       >
         {newChatLabel()}{#if hasDraft(newDraftKey(app.project?.id, app.pendingMode))} <span class="mark draft" title="has a draft">✎</span>{/if}
       </button>
@@ -404,7 +403,6 @@
         aria-label="Other kinds of chat"
         aria-expanded={kinds}
         onclick={() => (kinds = !kinds)}
-        disabled={app.busy}
       >
         ▾
       </button>
@@ -499,7 +497,6 @@
                 }}
                 ondblclick={() =>
                   startRename(s.id, s.title ?? s.first_user ?? "")}
-                disabled={app.busy}
                 draggable="true"
                 ondragstart={(e) => startContentDrag(e, { kind: "chat", session: s.id })}
                 ondragend={endContentDrag}

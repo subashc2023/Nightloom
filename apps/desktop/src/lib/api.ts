@@ -155,6 +155,7 @@ export function connectAgent(args: AgentConnectArgs): Promise<ConnectResult> {
     effort: args.effort,
     fallbackModel: args.fallbackModel,
     subagentsAuto: args.subagentsAuto,
+    limits: args.limits,
   });
 }
 
@@ -312,6 +313,12 @@ export function newSession(
 
 export function openSession(id: string): Promise<SessionEvent[]> {
   return invoke("open_session", { id });
+}
+
+/** A chat's log read from disk without opening it (backlog 159): the view
+ *  while a turn runs elsewhere. */
+export function peekSession(id: string): Promise<SessionEvent[]> {
+  return invoke("peek_session", { id });
 }
 
 export function transcript(): Promise<SessionEvent[]> {

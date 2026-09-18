@@ -44,6 +44,9 @@ vi.mock("./api", async (importOriginal) => ({
     },
   ]),
   newSession: vi.fn(async () => ({ mode: "normal", kind: "build" })),
+  peekSession: vi.fn(async (id: string) => [
+    { event: "user_message", at: "2026-01-01T00:00:00Z", text: `peeked ${id}` },
+  ]),
   listSessions: vi.fn(async () => []),
   transcript: vi.fn(async () => []),
 }));
@@ -181,7 +184,7 @@ describe("reflection", () => {
 });
 
 describe("activation", () => {
-  it("opens the tab's chat, and refuses another chat while a turn runs", async () => {
+  it("opens the tab's chat, and another chat while a turn runs as a view with the running chat parked", async () => {
     await openSession("a");
     reflectTabs();
     app.openNext = "new";
@@ -192,10 +195,19 @@ describe("activation", () => {
     expect(app.activeSessionId).toBe("a");
     expect(app.tabs.panes[0].active).toBe(ta.id);
     const tb = app.tabs.panes[0].tabs[1];
+    // ~~refused with the toast~~ — since backlog 159 the chat opens as a
+    // view read from disk and the running chat ("a") is parked.
     app.busy = true;
     await activateTab(tb.id);
-    expect(app.activeSessionId).toBe("a");
-    expect(app.toasts.at(-1)?.text).toMatch(/turn is running/);
+    expect(app.activeSessionId).toBe("b");
+    expect(app.parked?.session).toBe("a");
+    expect(app.tabs.panes[0].active).toBe(tb.id);
+    // New chat during the pending chat's own first turn is the one refusal.
+    app.parked = null;
+    app.activeSessionId = null;
+    await newTab();
+    expect(app.toasts.at(-1)?.text).toMatch(/first turn/);
+    app.busy = false;
   });
 
   it("steps across the strip, wrapping", async () => {
@@ -366,10 +378,27 @@ describe("openContent and dropContent", () => {
       { pane: app.tabs.panes[1].id, index: 0 },
     );
     expect(chats(app.tabs)).toEqual([["b", "a", "nightshift"], ["x.md"]]);
-    // Another chat under a running turn is refused with the toast.
+    // ~~Another chat under a running turn is refused with the toast.~~
+    // Since backlog 159 (2026-09-18) it opens as a view of its log read
+    // from disk, the running chat parked with its stream; the tab lands.
     app.busy = true;
+    app.live = { segments: [] };
+    const running = app.activeSessionId;
     await dropContent({ kind: "chat", session: "c" }, { pane, index: 0 });
-    expect(chats(app.tabs)).toEqual([["b", "a", "nightshift"], ["x.md"]]);
-    expect(app.toasts.at(-1)?.text).toMatch(/turn is running/);
+    expect(chats(app.tabs)).toEqual([["c", "b", "a", "nightshift"], ["x.md"]]);
+    expect(app.activeSessionId).toBe("c");
+    expect(app.events.map((e) => (e.event === "user_message" ? e.text : e.event))).toEqual(["peeked c"]);
+    expect(app.parked?.session).toBe(running);
+    expect(app.parked?.live).toEqual({ segments: [] });
+    expect(app.live).toBeNull();
+    // Back to the running chat: its stream comes back, nothing is read.
+    const peeks = vi.mocked(api.peekSession).mock.calls.length;
+    await openContent({ kind: "chat", session: running }, "replace");
+    expect(app.parked).toBeNull();
+    expect(app.activeSessionId).toBe(running);
+    expect(app.live).toEqual({ segments: [] });
+    expect(vi.mocked(api.peekSession).mock.calls.length).toBe(peeks);
+    app.busy = false;
+    app.live = null;
   });
 });

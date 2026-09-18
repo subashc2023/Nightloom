@@ -199,8 +199,16 @@ export interface ConnectionDraft {
   agentFallback: string;
   /** Stop a turn once the CLI's own estimate passes this many dollars. 0 is
    *  no cap, which is the default: under a subscription the estimate is not
-   *  a bill, and a cap on it stops turns for no saving. */
+   *  a bill, and a cap on it stops turns for no saving. It is also the
+   *  CLI's own budget limit on subagents (backlog 165): past it new agents
+   *  cannot start. */
   agentBudget: number;
+  /** The subagent limits (nightshift backlog 165): per turn (Nightloom's
+   *  hook), at once and nesting depth (the CLI's own, passed as
+   *  environment), per chat per day (the hook), and the usage-aware pair —
+   *  at `slowAt` percent of the five-hour window the per-turn cap drops to
+   *  `slowTo`, at `stopAt` every spawn is refused with the reset time. */
+  agentLimits: SubagentLimits;
   provider: string;
   model: string;
   baseUrl: string;
@@ -268,6 +276,7 @@ export function defaultDraft(): ConnectionDraft {
     agentEffort: "",
     agentFallback: "",
     agentBudget: 0,
+    agentLimits: { ...DEFAULT_LIMITS },
     provider: "anthropic",
     model: "",
     baseUrl: "",
@@ -704,6 +713,44 @@ export function savePrefs(prefs: CatalogPrefs): void {
   }
 }
 
+/** The subagent limits, as the backend's `SubagentLimits` spells them. */
+export interface SubagentLimits {
+  per_turn: number;
+  concurrent: number;
+  depth: number;
+  per_day: number;
+  slow_at: number;
+  slow_to: number;
+  stop_at: number;
+}
+
+/** The defaults, the backend's (`brief::SubagentLimits::default`): the
+ *  6 of the first cap; the CLI's own 20 at once and depth 3; 30 a day;
+ *  slow from 70% to 2, stop at 90%. */
+export const DEFAULT_LIMITS: SubagentLimits = Object.freeze({
+  per_turn: 6,
+  concurrent: 20,
+  depth: 3,
+  per_day: 30,
+  slow_at: 70,
+  slow_to: 2,
+  stop_at: 90,
+}) as SubagentLimits;
+
+/** A saved limits object, each field a whole number in range or the default. */
+export function readLimits(v: unknown): SubagentLimits {
+  const out: SubagentLimits = { ...DEFAULT_LIMITS };
+  if (v === null || typeof v !== "object") return out;
+  const m = v as Record<string, unknown>;
+  for (const k of Object.keys(DEFAULT_LIMITS) as (keyof SubagentLimits)[]) {
+    const n = m[k];
+    if (typeof n !== "number" || !Number.isInteger(n) || n < 0) continue;
+    if ((k === "slow_at" || k === "stop_at") && n > 100) continue;
+    out[k] = n;
+  }
+  return out;
+}
+
 export function loadLastConnection(): ConnectionDraft | null {
   try {
     const raw = localStorage.getItem(LAST_KEY);
@@ -722,6 +769,9 @@ export function loadLastConnection(): ConnectionDraft | null {
       // The same rule for the subagent switch (backlog 152): a draft
       // saved before it existed reads as on, its default.
       agentSubagentsAuto: parsed.agentSubagentsAuto !== false,
+      // The limits (backlog 165): a draft from before them, or a field
+      // that is not a whole number, reads as the default for that field.
+      agentLimits: readLimits(parsed.agentLimits),
       approval: parsed.approval !== false,
       web: parsed.web !== false,
       knowledge: parsed.knowledge !== false,

@@ -279,3 +279,17 @@ describe("loadLastConnection", () => {
     expect(loadLastConnection()).toBeNull();
   });
 });
+
+// The subagent limits on the draft (nightshift backlog 165): a saved
+// draft from before them, or a field that is not a whole number in
+// range, reads as that field's default.
+import { DEFAULT_LIMITS, readLimits } from "./catalog";
+
+describe("the subagent limits (backlog 165)", () => {
+  it("defaults each field that is missing or malformed, and keeps the rest", () => {
+    expect(readLimits(undefined)).toEqual(DEFAULT_LIMITS);
+    expect(readLimits({ per_turn: 4, stop_at: 95 })).toEqual({ ...DEFAULT_LIMITS, per_turn: 4, stop_at: 95 });
+    expect(readLimits({ per_turn: 2.5, slow_at: 140, depth: -1, per_day: "9" })).toEqual(DEFAULT_LIMITS);
+    expect(DEFAULT_LIMITS).toEqual({ per_turn: 6, concurrent: 20, depth: 3, per_day: 30, slow_at: 70, slow_to: 2, stop_at: 90 });
+  });
+});

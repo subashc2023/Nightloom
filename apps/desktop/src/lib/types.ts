@@ -101,6 +101,8 @@ export interface AgentConnectArgs {
   subagentsAuto?: boolean;
   /** Stop the turn if the CLI's own cost estimate passes this. */
   budget?: number;
+  /** The subagent limits (backlog 165); omitted is the defaults. */
+  limits?: import("./catalog").SubagentLimits;
   /** Appended to Claude Code's system prompt, after the preamble. */
   system?: string;
   /**
@@ -160,6 +162,16 @@ export interface AgentTurnResult {
       five_hour: { utilization: number | null; resetsAt: number | null } | null;
       seven_day: { utilization: number | null; resetsAt: number | null } | null;
     } | null;
+  } | null;
+  /** The usage limit that stopped the turn (nightshift backlog 164): the
+   *  transcript marks it paused, not failed, and offers a Resume that runs
+   *  after `resets_at`. Null on every other end. */
+  limit: {
+    resets_at: number | null;
+    window: string | null;
+    text: string;
+    /** The spawning calls of the subagents that died on it. */
+    subagents: string[];
   } | null;
   notices: string[];
   is_error: boolean;

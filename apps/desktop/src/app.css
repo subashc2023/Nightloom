@@ -783,3 +783,14 @@ mark.find-hit.find-current {
   background: var(--accent);
   color: var(--paper);
 }
+/* The field holding the current hit (nightshift backlog 162): a textarea
+   cannot hold a mark, so the hit is its selection — painted even while
+   the focus is in the find bar — and the box is ringed. */
+.find-current-field {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+textarea.find-current-field::selection {
+  background: var(--accent);
+  color: var(--paper);
+}

@@ -8,10 +8,13 @@
     collectSegments,
     countLabel,
     currentMark,
+    fieldHit,
+    fieldScrollTop,
     findChord,
     findMatches,
     highlightApi,
     hitRange,
+    isField,
     keepHit,
     markFallback,
     scrollRangeIntoView,
@@ -171,7 +174,9 @@
     const sel = `[data-turn="${turn}"]`;
     for (let i = 0; i < hits.length; i++) {
       const node = segments.nodes[hits[i].start.seg];
-      if (node?.parentElement?.closest(sel)) return i;
+      // A field's hit counts by the field's place (an edit box in the turn).
+      const el = isField(node) ? node.field : node?.parentElement;
+      if (el?.closest(sel)) return i;
     }
     const el = root.querySelector<HTMLElement>(sel);
     if (el) {
@@ -195,10 +200,50 @@
     reveal();
   }
 
+  /** The field holding the current hit, marked `find-current-field` so
+   *  the box itself shows where the hit is (backlog 162). */
+  let litField: Element | null = null;
+  function unlightField() {
+    litField?.classList.remove("find-current-field");
+    litField = null;
+  }
+
+  /**
+   * A hit in an editable field (backlog 162): the range is selected in a
+   * textarea — the selection is the highlight a textarea can show — the
+   * field's own scroll brings the line into its box, and the field is
+   * scrolled into the page like any hit. The focus stays in the bar, so
+   * ⏎ keeps stepping; `preventScroll` on nothing, since nothing is
+   * focused.
+   */
+  function revealField(root: HTMLElement, f: { field: Element; start: number; end: number }) {
+    const el = f.field;
+    if (el instanceof HTMLTextAreaElement) {
+      try {
+        el.setSelectionRange(f.start, f.end);
+      } catch {
+        // A field that cannot take a selection is still scrolled to.
+      }
+      const lh = parseFloat(getComputedStyle(el).lineHeight) || 20;
+      if (el.scrollHeight > el.clientHeight) el.scrollTop = fieldScrollTop(el.value, f.start, lh, el.clientHeight);
+    }
+    el.classList.add("find-current-field");
+    litField = el;
+    const r = root.ownerDocument.createRange();
+    r.selectNode(el);
+    scrollRangeIntoView(r, root);
+  }
+
   /** Scroll the current hit into the middle of its scroller. */
   function reveal() {
     const root = page();
+    unlightField();
     if (!root || current === null) return;
+    const inField = fieldHit(segments, hits[current]);
+    if (inField) {
+      revealField(root, inField);
+      return;
+    }
     let range: Range | null = null;
     if (painter?.mutates) {
       const mark = currentMark(root);
@@ -226,11 +271,25 @@
       });
     }
     observer.observe(root, { childList: true, characterData: true, subtree: true });
+    // A textarea's value changes without a mutation (backlog 162): typing
+    // into the composer under an open search re-runs it the same way.
+    root.addEventListener("input", onFieldInput, true);
+  }
+
+  function onFieldInput(e: Event) {
+    if (e.target === field) return;
+    if (frame) return;
+    frame = requestAnimationFrame(() => {
+      frame = 0;
+      if (open) search(false);
+    });
   }
 
   function unwatch() {
     observer?.disconnect();
     observer = null;
+    page()?.removeEventListener("input", onFieldInput, true);
+    unlightField();
     if (frame) cancelAnimationFrame(frame);
     frame = 0;
   }

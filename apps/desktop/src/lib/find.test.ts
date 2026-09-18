@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
+  addField,
   countLabel,
+  fieldHit,
+  fieldScrollTop,
   findChord,
   findMatches,
   foldCase,
+  isField,
   keepHit,
   stepHit,
+  type Segments,
 } from "./find";
 
 // Find in page (nightshift backlog 106, first half): the case fold, the
@@ -121,5 +126,53 @@ describe("findChord", () => {
     expect(findChord(k("KeyF", true), true)).toBeNull();
     expect(findChord(k("KeyF"), false)).toBeNull();
     expect(findChord(k("KeyF", false, true), true)).toBeNull();
+  });
+});
+
+// The field walker (nightshift backlog 162): the composer's draft, an
+// edit box, a note's textarea and a queued row are searched by value.
+// The DOM walker calls `addField` for each; these pin what it appends,
+// how a hit in one resolves, and that ⏎ walks page text and fields in
+// document order.
+describe("fields searched by value (backlog 162)", () => {
+  // Stand-ins: the segment only holds an element; a text node is read
+  // for its `data` by the painters, which these tests do not run.
+  const el = (name: string) => ({ name }) as unknown as Element;
+  const text = (data: string) => ({ data }) as unknown as Text;
+
+  it("boxes a field's value with block boundaries and skips an empty one", () => {
+    const seg: Segments = { nodes: [], texts: [] };
+    addField(seg, el("empty"), "");
+    expect(seg.texts).toEqual([]);
+    addField(seg, el("draft"), "the draft");
+    expect(seg.texts).toEqual(["the draft", "\n"]);
+    expect(isField(seg.nodes[0])).toBe(true);
+    expect(seg.nodes[1]).toBeNull();
+    // After page text: a boundary first, so a hit never runs into the field.
+    const seg2: Segments = { nodes: [text("page text")], texts: ["page text"] };
+    addField(seg2, el("draft"), "the draft");
+    expect(seg2.texts).toEqual(["page text", "\n", "the draft", "\n"]);
+  });
+
+  it("walks the transcript and the draft in document order, and resolves a field hit to its offsets", () => {
+    const seg: Segments = { nodes: [text("a word in the reply")], texts: ["a word in the reply"] };
+    addField(seg, el("draft"), "typing the word twice: word");
+    addField(seg, el("queued"), "a queued word");
+    const hits = findMatches(seg.texts, "word");
+    expect(hits).toHaveLength(4);
+    expect(fieldHit(seg, hits[0]!)).toBeNull(); // the reply's
+    expect(fieldHit(seg, hits[1]!)).toEqual({ field: el("draft"), start: 11, end: 15 });
+    expect(fieldHit(seg, hits[2]!)).toEqual({ field: el("draft"), start: 23, end: 27 });
+    expect(fieldHit(seg, hits[3]!)).toEqual({ field: el("queued"), start: 9, end: 13 });
+    // A query with a space does not cross from the page into the field.
+    expect(findMatches(seg.texts, "reply typing")).toEqual([]);
+  });
+
+  it("scrolls a textarea so the hit's line is in the middle of its box", () => {
+    expect(fieldScrollTop("one\ntwo\nthree", 0, 20, 100)).toBe(0);
+    expect(fieldScrollTop("one\ntwo\nthree", 4, 20, 100)).toBe(0);
+    const v = Array.from({ length: 40 }, (_, i) => `line ${i}`).join("\n");
+    const at = v.indexOf("line 30");
+    expect(fieldScrollTop(v, at, 20, 100)).toBe(30 * 20 - 50 + 10);
   });
 });

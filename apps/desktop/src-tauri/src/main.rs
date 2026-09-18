@@ -1492,6 +1492,7 @@ async fn connect_agent(
     effort: Option<String>,
     fallback_model: Option<String>,
     subagents_auto: Option<bool>,
+    limits: Option<nightloom_service::agent::brief::SubagentLimits>,
 ) -> Result<ConnectedInfo, String> {
     // Same rule as `connect`: an open project wins over the rail's saved
     // folder, or a chat filed under a project would be running somewhere
@@ -1531,6 +1532,9 @@ async fn connect_agent(
         .map(|m| m.trim().to_string())
         .filter(|m| !m.is_empty());
     spec.max_budget_usd = budget.filter(|b| *b > 0.0);
+    // The subagent limits (backlog 165): the CLI's two as environment at
+    // spawn, Nightloom's four written beside the brief for the hook.
+    spec.subagent_limits = limits;
     spec.safe_mode = safe_mode.unwrap_or(false);
     // Effort and the fallback model (backlog 076), as the rail spelled
     // them; empty is the CLI's default and no fallback.
@@ -2204,6 +2208,19 @@ async fn open_session(
     Ok(events)
 }
 
+/// A chat's log read from disk, opening nothing (nightshift backlog 159,
+/// pass 1): what the window shows while he browses during a turn. Touches
+/// no lock — the turn holds `session` from its first append to its last,
+/// so `open_session` would wait a whole turn — and adopts no session: the
+/// backend's open chat stays the running one until the turn ends, when
+/// the window re-opens whatever is on screen through `open_session`.
+#[tauri::command]
+async fn peek_session(state: State<'_, AppState>, id: String) -> Result<Vec<SessionEvent>, String> {
+    let path = store::find_by_prefix(&state.log_dir().await, &id).map_err(|e| e.to_string())?;
+    let session = Session::load(path).map_err(|e| e.to_string())?;
+    Ok(session.events().to_vec())
+}
+
 /// The open chat's events, as the window re-syncs them after a turn.
 ///
 /// A reader, so it does not queue behind a running turn (review 2026-09-17
@@ -2312,6 +2329,10 @@ struct AgentTurn {
     /// The plan window. Present only on an OAuth run, which makes it the one
     /// honest signal that this turn was billed to the plan and not to a key.
     plan: Option<nightloom_service::agent::RateLimitInfo>,
+    /// The usage limit that stopped the turn (nightshift backlog 164):
+    /// the transcript marks the turn *paused by the limit* and offers a
+    /// Resume that runs after `resets_at`. `None` on every other end.
+    limit: Option<nightloom_service::agent::LimitHit>,
     notices: Vec<String>,
     is_error: bool,
     /// Folders outside every tree the chat may see that the CLI refused
@@ -2779,6 +2800,7 @@ async fn send_agent(
                 cost_usd: outcome.cost_usd,
                 rounds: outcome.rounds,
                 plan: outcome.rate_limit,
+                limit: outcome.limit,
                 notices: outcome.notices,
                 is_error: outcome.is_error,
                 refused,
@@ -6293,6 +6315,7 @@ fn main() {
             rename_session,
             new_session,
             open_session,
+            peek_session,
             transcript,
             send,
             send_agent,

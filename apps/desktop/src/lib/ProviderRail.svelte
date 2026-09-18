@@ -862,6 +862,33 @@
           />
         </label>
       {/if}
+      <!-- The subagent limits (nightshift backlog 165): the family behind
+           the first cap of 6. Two are the CLI's own (at once, depth) and
+           go out as its environment; the rest are Nightloom's hook, read
+           from the chat's directory at each spawn. Kept on the connection;
+           a reconnect applies them. -->
+      <div class="row limits">
+        <span class="lbl">Subagent limits</span>
+        <Hint
+          text="Per turn: how many subagents one reply may spawn (Nightloom's hook; the seventh is refused in words). At once and depth: Claude Code's own concurrency and nesting caps, passed to it. Per day: a running count for this chat across turns. Slow at / to: past this share of the 5-hour window, the per-turn cap drops to this number. Stop at: past this share every spawn is refused with the reset time. The window is the freshest of the gauge and the last turn's own reading."
+        />
+      </div>
+      <div class="limits-grid">
+        {#each [["per_turn", "per turn"], ["concurrent", "at once"], ["depth", "depth"], ["per_day", "per day"], ["slow_at", "slow at %"], ["slow_to", "to"], ["stop_at", "stop at %"]] as [k, label] (k)}
+          <label class="limit">
+            <span class="limit-k">{label}</span>
+            <input
+              type="number"
+              min="0"
+              max={k === "slow_at" || k === "stop_at" ? 100 : undefined}
+              step="1"
+              bind:value={app.draft.agentLimits[k as keyof typeof app.draft.agentLimits]}
+              onchange={apply}
+              disabled={locked}
+            />
+          </label>
+        {/each}
+      </div>
       {#if !(app.draft.approval && app.draft.agentAsk)}
         <!-- Said rather than implied: the switch above is the familiar one
              and the gate behind it is not. Nightloom's approval prompt gates
@@ -1491,6 +1518,24 @@
   }
   select,
   input[type="text"],
+  /* The subagent limits (backlog 165): seven small numbers in a grid. */
+  .limits-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.25rem 0.4rem;
+    margin: 0 0 0.5rem;
+  }
+  .limit {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    font-size: 0.72rem;
+    color: var(--muted);
+  }
+  .limit input[type="number"] {
+    width: 100%;
+    min-width: 0;
+  }
   input[type="number"] {
     background: var(--paper);
     color: var(--ink);

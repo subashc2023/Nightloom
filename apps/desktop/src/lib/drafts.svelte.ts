@@ -66,6 +66,24 @@
  * and when a turn starts, and reads it back on mount, on the switch back
  * and when the turn ends. In memory only for now — it is not in the
  * localStorage entry, so a relaunch is the one thing that drops it.
+ *
+ * The draft history (nightshift backlog 158, 2026-09-18): an 11k-character
+ * draft was queued during a turn, taken back into the box (↑ in an empty
+ * box takes back the newest held message — silently), and then replaced
+ * by a paste that carried a screenshot instead of the words. Nothing in
+ * the store was wrong; the store simply held only the newest text. So
+ * every composer key keeps a ring of the last `HISTORY_PER_KEY` texts of
+ * `HISTORY_MIN_CHARS` or more that *left the box*: a send, a queue, and a
+ * replacement that dropped more than half of what was there in one change
+ * (a select-all paste, a cut — never a keystroke, which keeps all but one
+ * character). A second store, `nightloom.draft-history`, written the same
+ * way as the drafts; `HISTORY_TOTAL_MAX` across every key, oldest dropped
+ * first. It follows `moveDraft` as the draft does. A send never erases it.
+ *
+ * And a held message is never dropped by the app (only by his ×): a queued
+ * message whose send failed goes back into the box when the box is empty,
+ * and to the head of the queue when it is not (`requeueFront`) — before
+ * 158 it was dropped in the second case.
  */
 import type { Attachment, ChatMode } from "./types";
 import type { EditState } from "./edit";
@@ -96,6 +114,14 @@ export const UNFILED = "unfiled";
 
 const KEY = "nightloom.drafts";
 const SAVE_DELAY_MS = 400;
+/** The draft history's store (backlog 158). */
+const HISTORY_KEY = "nightloom.draft-history";
+/** A text shorter than this is not worth a ring slot. */
+export const HISTORY_MIN_CHARS = 200;
+/** Snapshots kept per composer key, newest first. */
+export const HISTORY_PER_KEY = 10;
+/** Characters of text across every key's ring; the oldest go first. */
+export const HISTORY_TOTAL_MAX = 200 * 1024;
 /** Base64 chars; ~384 KB of file. */
 export const PERSIST_ATTACHMENT_MAX = 512 * 1024;
 /** Base64 chars across every persisted attachment. */
@@ -312,7 +338,11 @@ export function hasDraft(key: string): boolean {
 
 export function setDraftText(key: string, text: string): void {
   if (!drafts[key] && !text) return;
-  draftFor(key).text = text;
+  const d = draftFor(key);
+  // A change that drops more than half of what was there (a select-all
+  // paste, a cut) is a replacement; the old words go to the ring first.
+  if (d.text.length >= HISTORY_MIN_CHARS && retained(d.text, text) * 2 < d.text.length) recordDraft(key, d.text);
+  d.text = text;
   schedule();
 }
 
@@ -340,6 +370,7 @@ export function setDraftAttachments(key: string, attachments: Attachment[]): voi
 export function clearDraft(key: string): void {
   const d = drafts[key];
   if (!d) return;
+  recordDraft(key, d.text);
   if (d.queue.length === 0) {
     delete drafts[key];
   } else {
@@ -353,8 +384,20 @@ export function clearDraft(key: string): void {
 export function enqueueMessage(key: string, text: string, attachments: Attachment[]): QueuedMessage {
   const q: QueuedMessage = { id: nextQueueId(), text, attachments };
   draftFor(key).queue.push(q);
+  recordDraft(key, text);
   schedule();
   return q;
+}
+
+/**
+ * A held message back at the head of the queue (backlog 158): what a
+ * failed send does with the words it took when the box already holds
+ * others. It keeps its row id, so the strip shows the same row again.
+ */
+export function requeueFront(key: string, q: QueuedMessage): void {
+  if (!q.text && q.attachments.length === 0) return;
+  draftFor(key).queue.unshift(q);
+  schedule();
 }
 
 /** The oldest held message, removed: what goes as the next turn. */
@@ -414,6 +457,157 @@ export function moveDraft(from: string, to: string): void {
   }
   delete drafts[from];
   schedule();
+  moveHistory(from, to);
+}
+
+// ---- the draft history, per chat (backlog 158) ------------------------------
+
+/** One text that left a box, and when. */
+export interface DraftSnapshot {
+  text: string;
+  /** ISO time. */
+  at: string;
+}
+
+/** Read the history store. A malformed entry costs that entry. */
+export function loadDraftHistory(
+  storage: Pick<Storage, "getItem"> = localStorage,
+): Record<string, DraftSnapshot[]> {
+  const out: Record<string, DraftSnapshot[]> = {};
+  try {
+    const raw = storage.getItem(HISTORY_KEY);
+    if (!raw) return out;
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed === null || typeof parsed !== "object") return out;
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!Array.isArray(v)) continue;
+      const ring: DraftSnapshot[] = [];
+      for (const s of v) {
+        if (s === null || typeof s !== "object") continue;
+        const m = s as Record<string, unknown>;
+        if (typeof m.text !== "string" || !m.text) continue;
+        ring.push({ text: m.text, at: typeof m.at === "string" ? m.at : "" });
+      }
+      if (ring.length > 0) out[k] = ring.slice(0, HISTORY_PER_KEY);
+    }
+  } catch {
+    // A broken store reads as no history; the next save rewrites it.
+  }
+  return out;
+}
+
+/**
+ * The history as it is written: `HISTORY_PER_KEY` per key, and past
+ * `HISTORY_TOTAL_MAX` characters overall the oldest snapshots across every
+ * key go first. Pure, for the test.
+ */
+export function serializeDraftHistory(map: Record<string, DraftSnapshot[]>): string {
+  const all: { k: string; s: DraftSnapshot }[] = [];
+  for (const [k, ring] of Object.entries(map)) for (const s of ring.slice(0, HISTORY_PER_KEY)) all.push({ k, s });
+  // Newest first overall; the budget is spent from the newest down.
+  all.sort((a, b) => (a.s.at < b.s.at ? 1 : a.s.at > b.s.at ? -1 : 0));
+  let budget = HISTORY_TOTAL_MAX;
+  const out: Record<string, DraftSnapshot[]> = {};
+  for (const { k, s } of all) {
+    if (s.text.length > budget) continue;
+    budget -= s.text.length;
+    (out[k] ??= []).push({ text: s.text, at: s.at });
+  }
+  return JSON.stringify(out);
+}
+
+export function saveDraftHistory(
+  map: Record<string, DraftSnapshot[]>,
+  storage: Pick<Storage, "setItem"> = localStorage,
+): void {
+  try {
+    storage.setItem(HISTORY_KEY, serializeDraftHistory(map));
+  } catch {
+    // best-effort
+  }
+}
+
+export const draftHistory: Record<string, DraftSnapshot[]> = $state(
+  typeof localStorage === "undefined" ? {} : loadDraftHistory(),
+);
+
+let historyTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleHistory(): void {
+  if (historyTimer !== null) clearTimeout(historyTimer);
+  historyTimer = setTimeout(flushDraftHistory, SAVE_DELAY_MS);
+}
+
+/** Write the history now. On the debounce and when the page goes away. */
+export function flushDraftHistory(): void {
+  if (historyTimer !== null) clearTimeout(historyTimer);
+  historyTimer = null;
+  if (typeof localStorage === "undefined") return;
+  saveDraftHistory(draftHistory);
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("pagehide", flushDraftHistory);
+}
+
+/** A key's ring, newest first; empty when none. Never inserts. */
+export function historyFor(key: string): DraftSnapshot[] {
+  return draftHistory[key] ?? [];
+}
+
+/**
+ * How many characters of `before` survive in `after` at its two ends:
+ * the common prefix plus the common suffix, never more than either
+ * length. A keystroke anywhere keeps all but one; a select-all paste
+ * keeps none.
+ */
+export function retained(before: string, after: string): number {
+  const max = Math.min(before.length, after.length);
+  let p = 0;
+  while (p < max && before[p] === after[p]) p++;
+  let s = 0;
+  while (s < max - p && before[before.length - 1 - s] === after[after.length - 1 - s]) s++;
+  return p + s;
+}
+
+/**
+ * A text into the key's ring, newest first — when it is long enough and
+ * not what the ring already has on top (a queue followed by a clear
+ * offers the same words twice). Ten per key.
+ */
+export function recordDraft(key: string, text: string, at: string = new Date().toISOString()): void {
+  if (text.length < HISTORY_MIN_CHARS) return;
+  const ring = (draftHistory[key] ??= []);
+  if (ring.some((s) => s.text === text)) return;
+  ring.unshift({ text, at });
+  if (ring.length > HISTORY_PER_KEY) ring.length = HISTORY_PER_KEY;
+  scheduleHistory();
+}
+
+/**
+ * A snapshot back into the box, in front of anything typed there (the
+ * take-back's rule): nothing on either side is lost. The ring keeps it —
+ * a restore is not a use.
+ */
+export function restoreDraft(key: string, index: number): DraftSnapshot | null {
+  const s = historyFor(key)[index];
+  if (!s) return null;
+  const d = draftFor(key);
+  d.text = d.text ? `${s.text}\n${d.text}` : s.text;
+  schedule();
+  return s;
+}
+
+/** The pending chat's ring follows its draft to the chat it made. */
+function moveHistory(from: string, to: string): void {
+  const src = draftHistory[from];
+  if (!src) return;
+  const dst = (draftHistory[to] ??= []);
+  for (const s of src) if (!dst.some((x) => x.text === s.text)) dst.push(s);
+  dst.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
+  if (dst.length > HISTORY_PER_KEY) dst.length = HISTORY_PER_KEY;
+  delete draftHistory[from];
+  scheduleHistory();
 }
 
 // ---- the in-place edit, per chat (backlog 137) ------------------------------

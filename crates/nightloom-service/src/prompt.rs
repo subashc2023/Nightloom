@@ -424,6 +424,20 @@ fn engine_note_segment(knowledge: Option<&KnowledgeContext>) -> Segment {
          folder, if you have it, is the CLI's — read it, but keep what should last in the \
          vault.",
     );
+    // The limit rule (nightshift backlog 164, 2026-09-18): a subagent
+    // that died on the plan's usage limit was relaunched from scratch on
+    // "continue" and paid its whole search again (his screenshot: 9 calls
+    // redone). Its transcript is on disk up to the moment it died, and
+    // the CLI's own SendMessage continues a spawned agent by id with its
+    // context intact.
+    text.push_str(
+        " A subagent that stopped on the usage limit ('You've hit your session limit') is \
+         resumed, not relaunched: when the window has reset, continue it with SendMessage \
+         by its id or name so it keeps its context; if that fails, read its transcript \
+         (this session's subagents folder under ~/.claude/projects, agent-<id>.jsonl, the \
+         .meta.json beside it naming the call that spawned it) and take up from its last \
+         result rather than repeating the search.",
+    );
     text.push_str("\n</engine-note>");
     Segment::new(SegmentKind::EngineNote, "engine-note", text)
 }

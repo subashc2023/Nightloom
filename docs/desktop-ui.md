@@ -1491,6 +1491,75 @@ not the queue, take-back order and the newest by default, drop and the empty
 entry, the handover with the pending chat and the persistence round-trip, a
 queued attachment over the cap kept out of the store with its text in.
 
+## The draft history, and a queue never dropped (nightshift backlog 158, 2026-09-18)
+
+An 11k-character draft was queued during a turn, then gone: taken back into
+the box (↑ in an empty box takes back the newest held message, silently —
+the CLI's rule from 089) and replaced by a paste that carried a screenshot
+rather than the words. The chat logs of that evening hold no such message,
+so it was not sent; it was overwritten, and the store held only the newest
+text. Two changes:
+
+- **The draft history** (`draftHistory`, `nightloom.draft-history` in
+  localStorage): per composer key, the last `HISTORY_PER_KEY` (10) texts of
+  `HISTORY_MIN_CHARS` (200) or more that *left the box* — a send
+  (`clearDraft`), a queue (`enqueueMessage`), or a replacement that dropped
+  more than half of what was there in one change (`setDraftText`, judged by
+  `retained`: the common prefix plus suffix; a keystroke keeps all but one
+  character, a select-all paste keeps none). Deduplicated against the ring;
+  `HISTORY_TOTAL_MAX` (200 KB) across every key, the oldest snapshot
+  anywhere dropped first. The pending chat's ring follows `moveDraft`. The
+  composer shows a *drafts · N* picker beside the effort picker once the
+  ring has an entry, never locked during a turn; the menu lists each by
+  first line, time and length, and a click (`restoreDraft`) puts the text
+  back in front of whatever is typed, leaving the ring as it was.
+- **A held message the app never drops**: a queued message whose send
+  failed used to go back into the box only when the box was empty, and
+  nowhere otherwise. Now it goes to the head of the queue (`requeueFront`)
+  when the box holds new words.
+
+Tests: `drafts.test.ts` §158 — sent, queued and replaced texts recorded,
+short ones and keystrokes not; `retained`; ten per key and restore;
+following `moveDraft`; the persistence round-trip and the cap; a queue moved
+whole onto an existing one; the failed send re-queued at the head; queue →
+take back → send with the ring still holding the words.
+
+## Browsing while a turn runs (nightshift backlog 159, pass 1, 2026-09-18)
+
+~~A chat other than the open one, and New chat, were refused while a turn
+ran (blocker 182's default).~~ Since 159 pass 1 the turn keeps running in
+the background and he may look elsewhere (`src/lib/browse.ts` is the pure
+half; `peekSession`, `park`, `unpark`, `settleTurnView` in `state.svelte.ts`):
+
+- Opening another chat during a turn **parks** the running chat —
+  `app.parked` holds its id, events, live stream, pending kind — and shows
+  the other chat's log read from disk by the new reader `peek_session`
+  (no lock: the turn holds `state.session` for its whole length, so
+  `open_session` would wait a turn). The stream keeps landing in the parked
+  live state (`liveHost` in `applyTurnEvent`), so coming back (`unpark`)
+  shows the reply where it got to, still streaming. The running chat's tab
+  keeps the moon (`TabStrip.running`).
+- A message typed in the viewed chat queues there (the drafts are per
+  chat already) with the toast *A turn is running in ‹chat› — this sends
+  when that ends*; the composer's Stop names the chat it stops.
+- At the turn's end with a chat parked (`settlePlan`): nothing recorded
+  is copied into the view; the pending chat's draft still follows the chat
+  its first turn made; the backend is re-opened on the chat on screen
+  (`open_session`, or `new_session` for New chat) before the composer
+  drains, so what goes next goes where he is looking. The hand-off's
+  gauge reading is attributed to the chat that ran.
+- The one refusal left: New chat while the running turn is the *pending*
+  chat's own first — the pending draft key is one slot per project and
+  kind, and a second pending draft under it would be moved into the chat
+  the running turn makes (blocker 270).
+- Still one live turn (pass 2, blocker 182) and the nine commands that wait
+  on the lock (pass 3).
+
+Tests: `browse.test.ts` (the host of a stream event, the four settle
+plans, the toast, the state's appender with a chat parked);
+`state.tabs.test.ts` (a tab and a drop under a running turn open as a view
+with the running chat parked; the return; the New-chat refusal).
+
 ## The plan chip on a Claude Code chat (nightshift backlog 073, 2026-09-16)
 
 His two most-run CLI commands were `/usage` and `/context`; neither exists in
@@ -2147,3 +2216,43 @@ or appends to the session the turn holds, and a queued one runs against the
 finished turn with nothing lost. What a queued ⌘N still lacks is a visible
 tie to the keypress; that is a front-end gate per control ("…when the turn
 ends"), the tab flow's files.
+
+## The subagent limits (nightshift backlog 165, 2026-09-18)
+
+The one cap of `a4a681f` (six spawns per turn, refused in words by the
+Agent hook) became a family, each a setting with a default on the rail's
+*Subagent limits* row (`app.draft.agentLimits`, `catalog.ts`
+`SubagentLimits` / `DEFAULT_LIMITS`, sent at connect as `limits` →
+`AgentSpec::subagent_limits`, `brief::SubagentLimits` in the service):
+
+- **per turn** (6) — Nightloom's hook, as before.
+- **at once** (20) and **depth** (3) — the CLI's own limits, *passed* as
+  its environment at spawn (`CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`,
+  `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH`; `external`, read from the 2.1.263
+  bundle's strings). The CLI refuses past them in its own words ("Concurrent
+  subagent limit reached… Do not retry"; "Subagent nesting limit reached
+  (depth d of D)…") and counts the refusals in its result JSON under
+  `subagent_stats.refused.{concurrency_limit, depth_limit}`. The third
+  native limit, `refused.budget`, is the rail's existing *Budget* field
+  (`--max-budget-usd`).
+- **per day** (30) — a running count per chat across turns
+  (`subagent-spawns-day.txt`, `YYYY-MM-DD n`, restarting with the date).
+- **slow at % / to** (70 → 2) and **stop at %** (90) — the usage-aware
+  pair. The hook reads the freshest of two readings of the five-hour
+  window: the desktop's gauge (`plan_usage::read` — the Claude app's sample
+  and the CLI's cache file, which `claude -p "/usage"` refreshes for zero
+  tokens, 166's finding) and the last `rate_limit_event` this chat's turns
+  carried (`subagent-usage.txt`, written by the translator's `usage_sink`).
+  A reading whose window has reset, or older than a window, is no reading.
+  Past *slow at* the per-turn cap drops to *to* and the refusal says so;
+  past *stop at* every spawn is refused with the reset time in the reason.
+
+The limits ride to the hook as `subagent-limits.json` beside the brief,
+written when the connection is pointed at a chat (`set_ask_dir`), so a
+per-chat override is a file away (blocker 272). The Running-tasks header
+shows the caps in force: *3 of 6 · window 74% · slowed*.
+
+Tests: `brief.rs` (round trip and partial file, the environment, slow then
+stop with the reset time and the freshest/current rules, a simulated 92%
+window refusing and 75% holding a turn to two, the day count across turns
+and its restart); `catalog.test.ts` (`readLimits`).

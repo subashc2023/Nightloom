@@ -23,6 +23,18 @@ import {
   hasEdit,
   shiftQueue,
   takeBackQueued,
+  HISTORY_MIN_CHARS,
+  HISTORY_PER_KEY,
+  HISTORY_TOTAL_MAX,
+  draftHistory,
+  flushDraftHistory,
+  historyFor,
+  loadDraftHistory,
+  recordDraft,
+  requeueFront,
+  restoreDraft,
+  retained,
+  serializeDraftHistory,
 } from "./drafts.svelte";
 import type { Attachment } from "./types";
 
@@ -37,7 +49,126 @@ function png(id: number, chars = 10): Attachment {
 
 beforeEach(() => {
   for (const k of Object.keys(drafts)) delete drafts[k];
+  for (const k of Object.keys(draftHistory)) delete draftHistory[k];
   localStorage.clear();
+});
+
+// The draft history and the never-dropped queue (nightshift backlog 158):
+// an 11k draft was queued during a turn, taken back, then replaced by a
+// paste. The ring keeps every long text that leaves a box; a queue moves
+// whole; a failed send never drops what it took.
+describe("the draft history (backlog 158)", () => {
+  const long = (seed: string) => `${seed} ${"x".repeat(HISTORY_MIN_CHARS)}`;
+
+  it("keeps a sent text, a queued text and a replaced text; not a short one, not a keystroke", () => {
+    setDraftText("s1", long("sent"));
+    clearDraft("s1");
+    expect(historyFor("s1").map((s) => s.text)).toEqual([long("sent")]);
+
+    setDraftText("s1", long("queued"));
+    enqueueMessage("s1", long("queued"), []);
+    clearDraft("s1"); // the same words again: one entry, not two
+    expect(historyFor("s1").map((s) => s.text)).toEqual([long("queued"), long("sent")]);
+
+    // Typed, then replaced by a paste that carried nothing (⌘A, ⌘V of a
+    // screenshot): the words go to the ring before the box empties.
+    setDraftText("s1", long("typed"));
+    setDraftText("s1", long("typed") + "!"); // a keystroke: not a snapshot
+    setDraftText("s1", "");
+    expect(historyFor("s1")[0]!.text).toBe(long("typed") + "!");
+    expect(historyFor("s1")).toHaveLength(3);
+
+    setDraftText("s1", "short");
+    clearDraft("s1");
+    expect(historyFor("s1")).toHaveLength(3);
+  });
+
+  it("retained counts the ends that survive a change", () => {
+    expect(retained("abcdef", "abcXef")).toBe(5);
+    expect(retained("abcdef", "abcde")).toBe(5);
+    expect(retained("abcdef", "")).toBe(0);
+    expect(retained("abcdef", "zzz")).toBe(0);
+    expect(retained("abc", "abc")).toBe(3);
+  });
+
+  it("holds ten per key, newest first, and a restore puts one back in front of the box", () => {
+    for (let i = 0; i < HISTORY_PER_KEY + 3; i++) recordDraft("k", long(`v${i}`), `2026-09-18T00:00:${String(i).padStart(2, "0")}Z`);
+    const ring = historyFor("k");
+    expect(ring).toHaveLength(HISTORY_PER_KEY);
+    expect(ring[0]!.text).toBe(long(`v${HISTORY_PER_KEY + 2}`));
+    setDraftText("k", "typed meanwhile");
+    expect(restoreDraft("k", 1)?.text).toBe(long(`v${HISTORY_PER_KEY + 1}`));
+    expect(readDraft("k").text).toBe(`${long(`v${HISTORY_PER_KEY + 1}`)}\ntyped meanwhile`);
+    expect(historyFor("k")).toHaveLength(HISTORY_PER_KEY); // a restore is not a use
+    expect(restoreDraft("k", 99)).toBeNull();
+  });
+
+  it("follows moveDraft to the chat the pending draft made", () => {
+    const pending = newDraftKey("p1");
+    recordDraft(pending, long("early"), "2026-09-18T00:00:01Z");
+    recordDraft("chat9", long("late"), "2026-09-18T00:00:02Z");
+    setDraftText(pending, "words");
+    moveDraft(pending, "chat9");
+    expect(historyFor(pending)).toEqual([]);
+    expect(historyFor("chat9").map((s) => s.text)).toEqual([long("late"), long("early")]);
+  });
+
+  it("persists across a reload and caps the store by dropping the oldest across keys", () => {
+    recordDraft("a", long("one"), "2026-09-18T00:00:01Z");
+    flushDraftHistory();
+    const back = loadDraftHistory();
+    expect(back.a?.map((s) => s.text)).toEqual([long("one")]);
+
+    const big = "y".repeat(HISTORY_TOTAL_MAX / 2 + 1);
+    const map = {
+      a: [{ text: `1${big}`, at: "2026-09-18T00:00:03Z" }],
+      b: [{ text: `2${big}`, at: "2026-09-18T00:00:02Z" }],
+      c: [{ text: `3${big}`, at: "2026-09-18T00:00:01Z" }],
+    };
+    const kept = JSON.parse(serializeDraftHistory(map)) as Record<string, { text: string }[]>;
+    expect(Object.keys(kept)).toEqual(["a"]);
+    expect(loadDraftHistory({ getItem: () => "nonsense{" })).toEqual({});
+  });
+});
+
+describe("a held message is never dropped by the app (backlog 158)", () => {
+  it("moveDraft carries a whole queue, and appends it after one already under the target", () => {
+    const pending = newDraftKey("p1");
+    enqueueMessage(pending, "first held", []);
+    enqueueMessage(pending, "second held", [png(1)]);
+    enqueueMessage("chat1", "already here", []);
+    moveDraft(pending, "chat1");
+    expect(readDraft(pending).queue).toEqual([]);
+    expect(readDraft("chat1").queue.map((q) => q.text)).toEqual(["already here", "first held", "second held"]);
+    expect(readDraft("chat1").queue[2]!.attachments).toHaveLength(1);
+    // And to a chat with no entry at all.
+    moveDraft("chat1", "chat2");
+    expect(readDraft("chat2").queue.map((q) => q.text)).toEqual(["already here", "first held", "second held"]);
+    expect(drafts.chat1).toBeUndefined();
+  });
+
+  it("a failed send's words go back to the head of the queue when the box holds others", () => {
+    enqueueMessage("c", "held", []);
+    const q = shiftQueue("c")!;
+    setDraftText("c", "typed while it ran");
+    requeueFront("c", q);
+    expect(readDraft("c").queue.map((x) => x.text)).toEqual(["held"]);
+    expect(readDraft("c").text).toBe("typed while it ran");
+    // An empty message is not a row.
+    requeueFront("c", { id: 9, text: "", attachments: [] });
+    expect(readDraft("c").queue).toHaveLength(1);
+  });
+
+  it("queue, take back: the words are in the box; send: the ring still holds them", () => {
+    const text = "held ".repeat(HISTORY_MIN_CHARS);
+    enqueueMessage("d", text, []);
+    takeBackQueued("d");
+    expect(readDraft("d").text).toBe(text);
+    expect(readDraft("d").queue).toEqual([]);
+    clearDraft("d");
+    expect(readDraft("d").text).toBe("");
+    expect(historyFor("d")[0]!.text).toBe(text);
+  });
 });
 
 // The pending chat's key is per project and per kind (nightshift backlog

@@ -32,6 +32,15 @@
   /** Newest first: the latest turn's agents at the top. */
   const rows = $derived([...app.subagents].reverse());
   const running = $derived(app.subagents.filter(subagentRunning).length);
+  /** The caps in force (backlog 165): this turn's spawns of the per-turn
+   *  cap — lowered past `slow_at` of the window — and the window itself. */
+  function capsLine(): string {
+    const l = app.draft.agentLimits;
+    const pct = app.planUsage?.five_hour ?? null;
+    const cap = pct !== null && pct >= l.slow_at ? Math.min(l.per_turn, l.slow_to) : l.per_turn;
+    const window = pct === null ? "" : ` · window ${pct}%${pct >= l.stop_at ? " · spawns refused" : pct >= l.slow_at ? " · slowed" : ""}`;
+    return ` · ${rows.length} of ${cap}${window}`;
+  }
 
   function elapsed(r: SubagentRow): string {
     const ms = r.duration_ms > 0 ? r.duration_ms : Math.max(0, (subagentRunning(r) ? now : r.updatedAt) - r.startedAt);
@@ -89,7 +98,7 @@
       {#if rows.length === 0}
         no subagents in this chat yet
       {:else}
-        {rows.length} agent{rows.length === 1 ? "" : "s"}{running > 0 ? ` · ${running} running` : " · all done"}
+        {rows.length} agent{rows.length === 1 ? "" : "s"}{running > 0 ? ` · ${running} running` : " · all done"}{capsLine()}
       {/if}
     </span>
     <span class="spacer"></span>

@@ -32,6 +32,8 @@ import { asideFollowUp, asideQuestion, type AsideQuote } from "./asideQuote";
 import type { AsideAnchor } from "./asideCard";
 import { loadAsides } from "./asides";
 import { loadCouncilPrefs, type CouncilPrefs, type CouncilRequest } from "./council";
+import { limitPauseFrom, resumeDelayMs, resumeMessage, type LimitPause } from "./limit";
+import { liveHost, settlePlan, type Parked } from "./browse";
 import { SEARCH_COLUMN_MAX, searchGrowth } from "./search.svelte";
 import * as tabs from "./tabs";
 import type { TabContent, Workspace } from "./tabs";
@@ -697,6 +699,22 @@ export const app = $state({
    * that is false.
    */
   agentTurn: null as AgentTurnResult | null,
+  /**
+   * The last turn paused by the plan's usage limit (nightshift backlog
+   * 164): the transcript's card with its Resume. Kept until a turn runs
+   * in that chat again; `limitResumeAt` is the scheduled resume's time
+   * while one waits for the window.
+   */
+  limitPause: null as LimitPause | null,
+  limitResumeAt: null as number | null,
+  /**
+   * The running chat, set aside while he looks at another during its turn
+   * (nightshift backlog 159, pass 1; `browse.ts`). Null when the chat on
+   * screen is the one running, or nothing runs. The stream keeps landing
+   * in its `live`; the turn's end drops it and re-aligns the backend to
+   * the chat on screen.
+   */
+  parked: null as Parked<Segment> | null,
   /**
    * The plan's five-hour and seven-day percentages for the top bar's plan
    * chip on the Claude Code engine (nightshift backlog 073). Read from two
@@ -2488,6 +2506,7 @@ async function applyAgentDraft(): Promise<void> {
       ask: d.agentAsk,
       plan: d.agentPlan,
       subagentsAuto: d.agentSubagentsAuto,
+      limits: d.agentLimits,
       promptSuggestions: suggestions.enabled,
       effort: d.agentEffort.trim() || undefined,
       fallbackModel: d.agentFallback.trim() || undefined,
@@ -2611,8 +2630,14 @@ export async function activateTab(tabId: string): Promise<void> {
   const tab = tabs.tabById(app.tabs, tabId);
   if (!tab) return;
   const c = tab.content;
-  if (c.kind === "chat" && c.session !== app.activeSessionId && app.busy) {
-    addToast("A turn is running in the open chat — another chat opens when it ends");
+  // ~~A chat other than the open one is refused while a turn runs~~ —
+  // since backlog 159 it opens as a view (`peekSession`), the running
+  // chat parked; New chat during the pending chat's first turn is the
+  // one refusal, in `newSession`, which keeps the tab in front only if
+  // the view changed.
+  const wasNewRefused = c.kind === "chat" && c.session === null && app.busy && (app.parked ? app.parked.session : app.activeSessionId) === null && !app.parked;
+  if (wasNewRefused) {
+    addToast("This chat is having its first turn — New chat opens when it ends");
     return;
   }
   tabs.activate(app.tabs, tabId);
@@ -2684,10 +2709,10 @@ export async function openContent(content: TabContent, how: tabs.LandHow = "new"
     await activateTab(t.id);
     return;
   }
-  if (content.kind === "chat" && content.session !== app.activeSessionId && app.busy) {
-    addToast("A turn is running in the open chat — another chat opens when it ends");
-    return;
-  }
+  // ~~A chat other than the open one is refused while a turn runs~~ —
+  // since backlog 159 (2026-09-18) it opens as a view of its log, the
+  // running chat parked (`peekSession`); only New chat during the pending
+  // chat's own first turn is refused, in `newSession`.
   app.openNext = how;
   await showContentOf(content);
   // The reflection is idempotent; run it here too so an opener that
@@ -2708,10 +2733,6 @@ export async function dropContent(
   content: TabContent,
   target: { pane: string; index: number } | { side: "left" | "right"; pane: string },
 ): Promise<void> {
-  if (content.kind === "chat" && content.session !== app.activeSessionId && app.busy) {
-    addToast("A turn is running in the open chat — another chat opens when it ends");
-    return;
-  }
   const ws = app.tabs;
   let tab: tabs.Tab;
   // The floating tab dropped (backlog 145 pass 2): kept where it lands —
@@ -2783,8 +2804,11 @@ export function focusPane(paneId: string): void {
 
 /** ⌘T: a new chat in a new tab beside the active one. */
 export async function newTab(): Promise<void> {
-  if (app.busy) {
-    addToast("A turn is running in the open chat — a new chat opens when it ends");
+  // ~~Refused while a turn runs~~ — since backlog 159 New chat opens as a
+  // view, the running chat parked; the one refusal is the pending
+  // chat's own first turn (one pending slot per project and kind).
+  if (app.busy && !app.parked && app.activeSessionId === null) {
+    addToast("This chat is having its first turn — New chat opens when it ends");
     return;
   }
   app.openNext = "new";
@@ -3870,7 +3894,10 @@ export async function refreshSessions(): Promise<void> {
  * writers all see the pending kind through it.
  */
 export async function newSession(mode?: ChatMode, kind?: ChatKind): Promise<void> {
-  if (app.busy) return;
+  if (app.busy) {
+    peekNew(mode, kind);
+    return;
+  }
   // The kind is the second axis (nightshift backlog 102): absent means the
   // project's default — Claude Code where there is a folder, Chat where
   // there is none — never the backend's `build`, so the wide button and
@@ -4197,8 +4224,131 @@ export async function continueChat(): Promise<void> {
   void refreshSessions();
 }
 
+/** The running chat's name, for the toast that says where the turn is. */
+export function runningChatName(): string {
+  const id = app.parked ? app.parked.session : app.activeSessionId;
+  if (id === null) return "the new chat";
+  const s = app.sessions.find((x) => x.id === id);
+  return s ? chatName(s.title, s.first_user) : "another chat";
+}
+
+/** Set the running chat aside: its log, its stream, its pending kind. */
+function park(): void {
+  if (app.parked) return;
+  app.parked = {
+    session: app.activeSessionId,
+    pendingMode: app.pendingMode,
+    pendingKind: app.pendingKind,
+    events: app.events,
+    live: app.live,
+    liveUsage: app.liveUsage,
+  };
+  app.live = null;
+  app.liveUsage = null;
+}
+
+/** The running chat back on screen, its reply where it got to. */
+function unpark(): void {
+  const p = app.parked;
+  if (!p) return;
+  app.parked = null;
+  switchAside(p.session);
+  app.activeSessionId = p.session;
+  app.pendingMode = p.pendingMode;
+  app.pendingKind = p.pendingKind;
+  app.events = p.events;
+  app.live = p.live;
+  app.liveUsage = p.liveUsage;
+  app.liveVersion++;
+  app.error = null;
+  leaveNote();
+}
+
+/**
+ * Another chat on screen while a turn runs (backlog 159, pass 1): its log
+ * read from disk, the running chat parked; the running chat asked for
+ * again comes back with its stream.
+ */
+async function peekSession(id: string): Promise<void> {
+  if (id === app.activeSessionId) {
+    if (app.view !== "chat") leaveNote();
+    app.openNext = "replace";
+    return;
+  }
+  if (app.parked && id === app.parked.session) {
+    unpark();
+    return;
+  }
+  try {
+    const events = await api.peekSession(id);
+    park();
+    switchAside(id);
+    app.activeSessionId = id;
+    app.events = events;
+    app.error = null;
+    app.suggestion = null;
+    leaveNote();
+  } catch (e) {
+    app.error = String(e);
+    app.openNext = "replace";
+  }
+}
+
+/** New chat on screen while a turn runs: refused only while the running
+ *  turn is the pending chat's own first (one pending slot per project
+ *  and kind — see `browse.ts`). */
+function peekNew(mode?: ChatMode, kind?: ChatKind): void {
+  const running = app.parked ? app.parked.session : app.activeSessionId;
+  if (running === null) {
+    if (app.parked) {
+      unpark();
+      return;
+    }
+    addToast("This chat is having its first turn — New chat opens when it ends");
+    app.openNext = "replace";
+    return;
+  }
+  park();
+  switchAside(null);
+  app.activeSessionId = null;
+  app.events = [];
+  app.pendingMode = mode ?? "normal";
+  app.pendingKind = kind ?? defaultKind();
+  app.error = null;
+  app.suggestion = null;
+  leaveNote();
+}
+
+/**
+ * The turn's end, for the view (backlog 065, 159): the log re-synced and
+ * the pending chat's draft moved to the chat it made — or, when he
+ * browsed away, the running chat's record left on disk and the backend
+ * re-opened on the chat on screen, so what the composer drains next goes
+ * where he is looking. The plan is `settlePlan`'s, which the suite pins.
+ */
+async function settleTurnView(pendingKey: string | null): Promise<void> {
+  const parked = app.parked;
+  app.parked = null;
+  try {
+    const events = await api.transcript();
+    const first = events[0];
+    const made = first && first.event === "session_created" ? first.id : null;
+    const plan = settlePlan({ parked, viewed: app.activeSessionId, made, pendingKey });
+    if (plan.moveDraft) moveDraft(plan.moveDraft[0], plan.moveDraft[1]);
+    if (plan.adopt) app.events = events;
+    if (plan.activeSessionId !== undefined) app.activeSessionId = plan.activeSessionId;
+    if (plan.realign?.kind === "open") app.events = await api.openSession(plan.realign.id);
+    else if (plan.realign?.kind === "new") await api.newSession(app.pendingMode, app.pendingKind);
+  } catch {
+    // keep the locally-built view if re-sync fails
+  }
+}
+
 export async function openSession(id: string): Promise<void> {
-  if (app.busy) return;
+  if (app.busy) {
+    await peekSession(id);
+    return;
+  }
   // A ⌘-click's "open in a new tab" (`app.openNext`, backlog 099) is
   // consumed by the tab reflection, which runs only when the open changes
   // the view or the chat. Opening the chat already in front changes
@@ -4322,6 +4472,46 @@ export async function remoteSend(chat: string | null, text: string): Promise<"se
   return "sent";
 }
 
+/**
+ * Resume a turn the usage limit paused (nightshift backlog 164): sends the
+ * continue that names the subagents that died. Before the window has
+ * reset it is scheduled for the reset plus a margin — never into a window
+ * that is still exhausted — and `app.limitResumeAt` says so on the card;
+ * a second click while it waits cancels. A chat switch under a scheduled
+ * resume leaves it: it sends into the chat that was paused only if that
+ * chat is still the open one when the time comes, else it is dropped
+ * with a toast, since a turn cannot start in a chat that is not open.
+ */
+let limitTimer: ReturnType<typeof setTimeout> | null = null;
+export function resumeAfterLimit(): void {
+  const p = app.limitPause;
+  if (!p) return;
+  if (limitTimer !== null) {
+    clearTimeout(limitTimer);
+    limitTimer = null;
+    app.limitResumeAt = null;
+    return;
+  }
+  const go = () => {
+    limitTimer = null;
+    app.limitResumeAt = null;
+    if (app.limitPause !== p) return;
+    if (app.busy || !app.connection || app.activeSessionId !== p.session) {
+      addToast("The paused chat is not open or is busy — open it and press Resume again.");
+      return;
+    }
+    app.limitPause = null;
+    void send(resumeMessage(p));
+  };
+  const delay = resumeDelayMs(p);
+  if (delay === 0) {
+    go();
+    return;
+  }
+  app.limitResumeAt = Date.now() + delay;
+  limitTimer = setTimeout(go, delay);
+}
+
 /** The chat as a banner names it (nightshift backlog 079): the open
  *  session's title, else the first message of the turn just sent. */
 function bannerChat(): string {
@@ -4403,18 +4593,8 @@ export async function send(
     // (or died with the turn), so the prompts can no longer decide anything.
     app.pendingApprovals = [];
     app.busy = false;
-    try {
-      app.events = await api.transcript();
-      // Sessions are created lazily on first send; pick up the id.
-      const first = app.events[0];
-      if (first && first.event === "session_created") {
-        // The pending chat's draft follows the chat it made (backlog 065).
-        if (pendingKey !== null && app.activeSessionId === null) moveDraft(pendingKey, first.id);
-        app.activeSessionId = first.id;
-      }
-    } catch {
-      // keep the locally-built view if re-sync fails
-    }
+    // Sessions are created lazily on first send; the id is picked up here.
+    await settleTurnView(pendingKey);
     void refreshSessions();
     // The turn may have written to the docspace, and the sidebar showing a
     // note the model just left is the visible half of "shared knowledge".
@@ -4494,6 +4674,9 @@ async function sendAgent(
       council ?? undefined,
     );
     app.agentTurn = res;
+    // The turn stopped by the usage limit (backlog 164): marked paused,
+    // not failed, with its Resume; any other end clears an old mark.
+    app.limitPause = limitPauseFrom(res, app.activeSessionId);
     // The plan chip from this turn's own rate-limit event when the CLI
     // sent one with figures (nightshift backlog 073), else from the files
     // in `finally`.
@@ -4529,24 +4712,27 @@ async function sendAgent(
     // answer nothing.
     app.pendingApprovals = [];
     app.busy = false;
-    try {
-      app.events = await api.transcript();
-      const first = app.events[0];
-      if (first && first.event === "session_created") {
-        // The pending chat's draft follows the chat it made (backlog 065).
-        if (pendingKey !== null && app.activeSessionId === null) moveDraft(pendingKey, first.id);
-        app.activeSessionId = first.id;
-      }
-    } catch {
-      // keep the locally-built view if re-sync fails
-    }
+    // The chat the turn ran in, and its context reading, taken before the
+    // view settles: he may be looking at another chat (backlog 159), and
+    // the hand-off's gauge is the running chat's, not the viewed one's.
+    const ranIn = app.parked ? app.parked.session : app.activeSessionId;
+    const parkedUsed = app.parked?.liveUsage
+      ? app.parked.liveUsage.input_tokens + app.parked.liveUsage.output_tokens
+      : null;
+    const browsed = app.parked !== null;
+    await settleTurnView(pendingKey);
     void refreshSessions();
     void refreshNotes();
     // The plan chip follows the turn (nightshift backlog 073).
     void refreshPlanUsage();
     // The hand-off reads the gauge's pair at each turn's end (backlog 086),
     // and the log, for the start prompt in the wrap-up's own reply (pass 2).
-    noteAgentTurnEnd(app.activeSessionId, contextUsed(), app.connection?.contextLimit ?? null, app.events);
+    noteAgentTurnEnd(
+      browsed ? ranIn : app.activeSessionId,
+      browsed ? parkedUsed : contextUsed(),
+      app.connection?.contextLimit ?? null,
+      browsed ? null : app.events,
+    );
     // Last, once the turn is fully over: was it sleep that ended it
     // (nightshift backlog 101)? The CLI reports a mid-turn network death
     // as its `result` line with `is_error`, not as a rejected send, so
@@ -4893,8 +5079,10 @@ function closeThinking(segments: Segment[]): void {
 
 /** Exported for the tests of what a turn's events do to the state. */
 export function applyTurnEvent(ev: TurnEvent): void {
+  // The running chat's live state, parked or on screen (backlog 159).
+  const host = liveHost(app);
   if (ev.type === "usage") {
-    app.liveUsage = ev.usage;
+    host.liveUsage = ev.usage;
     return;
   }
   if (ev.type === "compacted") {
@@ -4905,9 +5093,9 @@ export function applyTurnEvent(ev: TurnEvent): void {
     // Noted here, acted on when `send` settles: a dream that started while
     // the turn was still re-syncing would race the transcript for nothing.
     compactedThisTurn = true;
-    if (app.live) {
-      closeThinking(app.live.segments);
-      app.live.segments.push({
+    if (host.live) {
+      closeThinking(host.live.segments);
+      host.live.segments.push({
         kind: "notice",
         text: "context compacted — earlier turns replaced by a summary",
       });
@@ -4921,8 +5109,8 @@ export function applyTurnEvent(ev: TurnEvent): void {
     const i = app.pendingApprovals.findIndex((r) => r.id === ev.tool_use_id);
     if (i >= 0) app.pendingApprovals.splice(i, 1);
   }
-  if (!app.live) return;
-  const segments = app.live.segments;
+  if (!host.live) return;
+  const segments = host.live.segments;
   switch (ev.type) {
     case "text_delta":
     case "thinking_delta":

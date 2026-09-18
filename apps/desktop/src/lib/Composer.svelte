@@ -10,6 +10,7 @@
     cacheHitRate,
     cancelTurn,
     continueChat,
+    runningChatName,
     contextUsed,
     pickerModels,
     send,
@@ -43,15 +44,20 @@
   } from "./handoff.svelte";
   import { fmtTokens } from "./tokens";
   import { ghostFor } from "./suggestions.svelte";
+  import { queuedElsewhereToast } from "./browse";
   import {
     addAttachment,
     clearDraft,
     draftKey,
     dropQueued,
     enqueueMessage,
+    historyFor,
     nextAttachmentId,
+    nextQueueId,
     readDraft,
     removeAttachment,
+    requeueFront,
+    restoreDraft,
     setDraftAttachments,
     setDraftText,
     shiftQueue,
@@ -669,10 +675,20 @@
         abortWrapUp(chat);
         return;
       }
-      if (!readDraft(key).text) setDraftText(key, typed);
-      setDraftAttachments(key, chips.concat(readDraft(key).attachments));
+      if (!readDraft(key).text) {
+        setDraftText(key, typed);
+        setDraftAttachments(key, chips.concat(readDraft(key).attachments));
+      } else if (typed || chips.length > 0) {
+        // The box holds new words: the failed message goes back to the
+        // head of the queue rather than nowhere (backlog 158).
+        requeueFront(key, { id: nextQueueId(), text: typed, attachments: chips });
+      }
       return;
     }
+    // A turn the usage limit paused (backlog 164): the queue waits for
+    // the Resume rather than sending the next message into the same
+    // exhausted window.
+    if (app.limitPause) return;
     await drain();
   }
 
@@ -695,12 +711,15 @@
     await dispatch(q.text, q.attachments, wrapUp);
   }
 
-  /** Hold what is in the box for the next turn (the turn is running). */
+  /** Hold what is in the box for the next turn (the turn is running). In
+   *  a chat that is not the running one (backlog 159), the toast says
+   *  where the turn is; the message goes here when it ends. */
   function enqueue(): void {
     const t = text.trim();
     if (!t && attachments.length === 0) return;
     enqueueMessage(key, text, attachments.slice());
     clearDraft(key);
+    if (app.parked) addToast(queuedElsewhereToast(runningChatName()));
     requestAnimationFrame(autogrow);
   }
 
@@ -917,15 +936,45 @@
    * (the rows are buttons, so the keys are the browser's). Opening puts
    * the focus on the current row, so the keyboard lands where the pick is.
    */
-  let menu = $state<"model" | "effort" | null>(null);
+  /**
+   * The draft history (nightshift backlog 158): the last ten texts that
+   * left this box — sent, queued, or replaced by a paste — newest first,
+   * each a row of its first line and when; a click puts it back in front
+   * of whatever is typed. Kept per composer key in `drafts.svelte.ts`.
+   */
+  const history = $derived(historyFor(key));
+  const historyRows = $derived.by((): MenuRow[] =>
+    history.map((s, i) => ({
+      id: `${s.at}:${i}`,
+      label: firstLine(s.text) || "(no first line)",
+      detail: `${whenLabel(s.at)} · ${s.text.length.toLocaleString()} chars`,
+      run: () => {
+        restoreDraft(key, i);
+        requestAnimationFrame(autogrow);
+      },
+    })),
+  );
+  function whenLabel(at: string): string {
+    const t = Date.parse(at);
+    if (Number.isNaN(t)) return "earlier";
+    const d = new Date(t);
+    const sameDay = d.toDateString() === new Date().toDateString();
+    const hm = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    return sameDay ? hm : `${d.toLocaleDateString([], { month: "short", day: "numeric" })} ${hm}`;
+  }
+
+  let menu = $state<"model" | "effort" | "history" | null>(null);
   let menuEl = $state<HTMLElement | null>(null);
   let modelBtn = $state<HTMLElement | null>(null);
   let effortBtn = $state<HTMLElement | null>(null);
-  const menuRows = $derived(menu === "model" ? modelRows : menu === "effort" ? effortRows : []);
+  let historyBtn = $state<HTMLElement | null>(null);
+  const menuRows = $derived(
+    menu === "model" ? modelRows : menu === "effort" ? effortRows : menu === "history" ? historyRows : [],
+  );
   function menuButton(): HTMLElement | null {
-    return menu === "model" ? modelBtn : menu === "effort" ? effortBtn : null;
+    return menu === "model" ? modelBtn : menu === "effort" ? effortBtn : menu === "history" ? historyBtn : null;
   }
-  function openMenu(which: "model" | "effort") {
+  function openMenu(which: "model" | "effort" | "history") {
     menu = menu === which ? null : which;
     if (!menu) return;
     requestAnimationFrame(() => {
@@ -1097,7 +1146,7 @@
       {#each queue as q, i (q.id)}
         <div class="queue-row" role="listitem">
           <span class="queue-n mono">{i + 1}</span>
-          <span class="queue-text" title={q.text}>{#if handoffHere && q.id === handoff.queuedId}<span class="ns-chip mono" title="Put here by Nightloom: the window crossed this chat's hand-off mark while you were away. × takes it back.">wrap-up · queued while you were away</span> {/if}{firstLine(q.text) || "(no text)"}{#if q.attachments.length > 0} <span class="ns-chip mono">{q.attachments.length} {q.attachments.length === 1 ? "file" : "files"}</span>{/if}</span>
+          <span class="queue-text" title={q.text} data-find-text={q.text}>{#if handoffHere && q.id === handoff.queuedId}<span class="ns-chip mono" title="Put here by Nightloom: the window crossed this chat's hand-off mark while you were away. × takes it back.">wrap-up · queued while you were away</span> {/if}{firstLine(q.text) || "(no text)"}{#if q.attachments.length > 0} <span class="ns-chip mono">{q.attachments.length} {q.attachments.length === 1 ? "file" : "files"}</span>{/if}</span>
           <button class="ns-btn ghost small" title="Back into the message box" onclick={() => takeBack(q.id)}>take back</button>
           <button class="remove" title="drop this message" aria-label="drop queued message {i + 1}" onclick={() => dropQueued(key, q.id)}>×</button>
         </div>
@@ -1321,6 +1370,29 @@
           {@render pickMenu(agentMode ? "Effort" : "Thinking", agentMode ? "--effort · kept on this chat" : "kept on this chat")}
         {/if}
       </span>
+      <!-- Earlier drafts (nightshift backlog 158): the ring of texts that
+           left this box. Shown only once there is one; never locked, since
+           a lost draft is wanted most while a turn runs. -->
+      {#if history.length > 0}
+        <span class="pick-wrap">
+          <button
+            class="pick-btn"
+            class:open={menu === "history"}
+            bind:this={historyBtn}
+            aria-haspopup="menu"
+            aria-expanded={menu === "history"}
+            title="Earlier drafts of this box — the last ten texts that were sent, queued, or replaced by a paste. Click one to put it back."
+            onclick={() => openMenu("history")}
+          >
+            <span class="pick-k">drafts</span>
+            <span class="pick-name">{history.length}</span>
+            <span class="pick-chev" aria-hidden="true"><Icon name="chev" size={11} /></span>
+          </button>
+          {#if menu === "history"}
+            {@render pickMenu("Earlier drafts", "newest first · a click puts one back in the box")}
+          {/if}
+        </span>
+      {/if}
       <span class="ns-chip mono keys">{app.busy ? "↵ queue" : "↵ to send"} · ⇧↵ newline</span>
       <span class="spacer"></span>
       {#if app.busy}
@@ -1330,7 +1402,7 @@
           onclick={enqueue}
           disabled={!text.trim() && attachments.length === 0}>Queue</button
         >
-        <button class="ns-btn danger small" onclick={() => void cancelTurn()}>Stop</button>
+        <button class="ns-btn danger small" title={app.parked ? `Stop the turn running in ${runningChatName()}` : "Stop this turn"} onclick={() => void cancelTurn()}>Stop</button>
       {:else}
         {#if app.connection?.engine === "claude-code" && app.events.length > 0}
           <!-- Ask aside (nightshift backlog 081): the typed question goes

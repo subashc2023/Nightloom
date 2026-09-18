@@ -166,11 +166,72 @@ export function findChord(
 
 // ---- The DOM half ---------------------------------------------------------
 
+/**
+ * An editable field the search reads by value (nightshift backlog 162):
+ * a `<textarea>` — the composer's draft, an open in-place edit, a note's
+ * box — or an element carrying `data-find-text` (a queued message's row,
+ * which shows its first line and holds the whole text there). A textarea's
+ * value is not a text node, so the walker used to skip it, and ⌘F on a
+ * long draft found nothing. The value is searched as it stands (never
+ * rendered into a hidden element); a hit in one is shown by selecting the
+ * range in the textarea and scrolling the field into view, not by a
+ * highlight, which a textarea cannot hold.
+ */
+export interface Field {
+  field: Element;
+  value: string;
+}
+
 /** The visible text of a subtree: the nodes, and their text in the same
- *  order. A `null` node is a block boundary, its text "\n". */
+ *  order. A `null` node is a block boundary, its text "\n"; a `Field` is
+ *  an editable field's value. */
 export interface Segments {
-  nodes: (Text | null)[];
+  nodes: (Text | Field | null)[];
   texts: string[];
+}
+
+export function isField(n: Text | Field | null): n is Field {
+  return n !== null && typeof n === "object" && "field" in n;
+}
+
+/** The attribute a row sets to be searched by its whole text rather than
+ *  the part it shows (the queue strip). */
+export const FIND_TEXT_ATTR = "data-find-text";
+
+/**
+ * Append a field's value as its own segment, boxed by block boundaries so
+ * a hit never runs from the page into the field or out of it. An empty
+ * value adds nothing. Pure, for the test.
+ */
+export function addField(seg: Segments, field: Element, value: string): void {
+  if (value.length === 0) return;
+  if (seg.nodes.length > 0 && seg.nodes[seg.nodes.length - 1] !== null) {
+    seg.nodes.push(null);
+    seg.texts.push("\n");
+  }
+  seg.nodes.push({ field, value });
+  seg.texts.push(value);
+  seg.nodes.push(null);
+  seg.texts.push("\n");
+}
+
+/** A hit that lies in one field: the field and the offsets into its
+ *  value. Null for a hit in the page's text. */
+export function fieldHit(seg: Segments, hit: Hit): { field: Element; start: number; end: number } | null {
+  const a = seg.nodes[hit.start.seg];
+  if (!isField(a) || hit.end.seg !== hit.start.seg) return null;
+  return { field: a.field, start: hit.start.off, end: hit.end.off };
+}
+
+/**
+ * Where a textarea should scroll so the line holding `offset` sits in the
+ * middle of its box: the line's top (hard line breaks only — a wrapped
+ * long line lands near enough) less half the box. Never negative.
+ */
+export function fieldScrollTop(value: string, offset: number, lineHeight: number, clientHeight: number): number {
+  let line = 0;
+  for (let i = 0; i < offset && i < value.length; i++) if (value.charCodeAt(i) === 10) line++;
+  return Math.max(0, line * lineHeight - clientHeight / 2 + lineHeight / 2);
 }
 
 /** Elements whose start ends the run of inline text before them. */
@@ -209,7 +270,6 @@ const BLOCK_TAGS = new Set([
 const SKIP_TAGS = new Set([
   "SCRIPT",
   "STYLE",
-  "TEXTAREA",
   "INPUT",
   "SELECT",
   "NOSCRIPT",
@@ -236,7 +296,13 @@ export function collectSegments(
     NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT,
     {
       acceptNode(n) {
-        if (n.nodeType === Node.TEXT_NODE) return NodeFilter.FILTER_ACCEPT;
+        if (n.nodeType === Node.TEXT_NODE) {
+          // The text under a `data-find-text` row is the part it shows;
+          // the row's whole text is searched instead (backlog 162).
+          return n.parentElement?.closest(`[${FIND_TEXT_ATTR}]`)
+            ? NodeFilter.FILTER_REJECT
+            : NodeFilter.FILTER_ACCEPT;
+        }
         const el = n as Element;
         if (SKIP_TAGS.has(el.tagName.toUpperCase()) || exclude(el))
           return NodeFilter.FILTER_REJECT;
@@ -255,12 +321,18 @@ export function collectSegments(
       },
     },
   );
+  const seg: Segments = { nodes, texts };
   for (let n = walker.nextNode(); n; n = walker.nextNode()) {
     if (n.nodeType === Node.TEXT_NODE) {
       const t = n as Text;
       if (t.data.length === 0) continue;
       nodes.push(t);
       texts.push(t.data);
+    } else if ((n as Element).tagName.toUpperCase() === "TEXTAREA") {
+      // Searched by value (backlog 162): the composer, an edit, a note.
+      addField(seg, n as Element, (n as HTMLTextAreaElement).value);
+    } else if ((n as Element).hasAttribute(FIND_TEXT_ATTR)) {
+      addField(seg, n as Element, (n as Element).getAttribute(FIND_TEXT_ATTR) ?? "");
     } else if (
       BLOCK_TAGS.has((n as Element).tagName.toUpperCase()) &&
       nodes.length > 0 &&
@@ -278,7 +350,8 @@ export function collectSegments(
 export function hitRange(seg: Segments, hit: Hit): Range | null {
   const a = seg.nodes[hit.start.seg];
   const b = seg.nodes[hit.end.seg];
-  if (!a || !b) return null;
+  // A field's hit is no DOM range: it is shown by the field's selection.
+  if (!a || !b || isField(a) || isField(b)) return null;
   const r = a.ownerDocument.createRange();
   r.setStart(a, hit.start.off);
   r.setEnd(b, hit.end.off);
@@ -351,7 +424,7 @@ export function markFallback(root: () => Element | null): Highlighter {
         const h = hits[i];
         for (let s = h.end.seg; s >= h.start.seg; s--) {
           const node = seg.nodes[s];
-          if (!node) continue;
+          if (!node || isField(node)) continue;
           const from = s === h.start.seg ? h.start.off : 0;
           const to = s === h.end.seg ? h.end.off : node.data.length;
           if (to <= from) continue;

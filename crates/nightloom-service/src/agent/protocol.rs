@@ -195,6 +195,21 @@ pub(super) struct TurnLine {
     /// The `task` call that spawned this, or `None` for the main thread.
     #[serde(default)]
     pub parent_tool_use_id: Option<String>,
+    /// A request the API refused, as the CLI's own log records it
+    /// (nightshift backlog 164; `external`, read from
+    /// `~/.claude/projects/…/agent-ad35855f8406e281e.jsonl` on 2.1.263):
+    /// `"error":"rate_limit"`, `"apiErrorStatus":429`, and `quotaLimits`
+    /// with `status: "rejected"` and the window's `resetsAt`, beside a
+    /// synthetic assistant message whose text is *You've hit your session
+    /// limit · resets 11:50pm (America/Los_Angeles)*. Whether the
+    /// stream-json line carries the same top-level fields is unmeasured,
+    /// so the translator reads all three signals and any one suffices.
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default, rename = "apiErrorStatus")]
+    pub api_error_status: Option<u16>,
+    #[serde(default, rename = "quotaLimits")]
+    pub quota_limits: Option<RateLimitInfo>,
 }
 
 #[derive(Debug, Deserialize)]

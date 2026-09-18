@@ -59,9 +59,13 @@
     return hasDraft(c.session ?? newDraftKey(app.project?.id, app.pendingMode));
   }
 
-  /** The chat's turn runs, or waits on him — only the live tab can. */
+  /** The chat's turn runs, or waits on him. ~~Only the live tab can~~ —
+   *  since backlog 159 the running chat may be parked behind another on
+   *  screen, and its tab keeps the mark. */
   function running(t: tabs.Tab): boolean {
-    return live?.id === t.id && app.busy;
+    if (!app.busy) return false;
+    if (app.parked) return t.content.kind === "chat" && t.content.session === app.parked.session;
+    return live?.id === t.id;
   }
   function needsYou(t: tabs.Tab): boolean {
     return live?.id === t.id && app.pendingApprovals.length > 0;

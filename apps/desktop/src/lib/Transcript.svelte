@@ -16,8 +16,10 @@
     saveReplyEdit,
     sendEdit,
     openSession,
+    resumeAfterLimit,
   } from "./state.svelte";
   import type { Segment, ToolCallView } from "./state.svelte";
+  import { pauseLabel, resetLabel, resumeDelayMs } from "./limit";
   import {
     REMOVED_PLACEHOLDER,
     blockEdits,
@@ -1662,6 +1664,33 @@
     {#if app.error}
       <div class="error-banner">{app.error}</div>
     {/if}
+    <!-- A turn paused by the usage limit (nightshift backlog 164): not
+         failed — the mark says when the window opens, and one Resume
+         continues the turn then (scheduled if pressed early, never into
+         an exhausted window), naming the subagents that died so they are
+         resumed rather than relaunched. -->
+    {#if app.limitPause && app.limitPause.session === app.activeSessionId && !app.busy}
+      {@const pause = app.limitPause}
+      <div class="limit-card" role="status">
+        <div class="limit-head">
+          <span class="ns-chip mono">{pauseLabel(pause)}</span>
+          {#if pause.subagents.length > 0}
+            <span class="limit-sub">{pause.subagents.length === 1 ? "one subagent" : `${pause.subagents.length} subagents`} died on it · resumed, not relaunched</span>
+          {/if}
+        </div>
+        <div class="limit-text">{pause.text}</div>
+        <div class="limit-actions">
+          {#if app.limitResumeAt !== null}
+            <span class="limit-sub">will resume at {resetLabel({ resetsAtMs: app.limitResumeAt })}</span>
+            <button class="ns-btn ghost small" onclick={resumeAfterLimit}>Cancel</button>
+          {:else}
+            <button class="ns-btn accent small" disabled={!app.connection} title={resumeDelayMs(pause) === 0 ? "Continue the turn now" : `Continue the turn when the window resets, at ${resetLabel(pause)}`} onclick={resumeAfterLimit}>
+              {resumeDelayMs(pause) === 0 ? "Resume" : `Resume at ${resetLabel(pause)}`}
+            </button>
+          {/if}
+        </div>
+      </div>
+    {/if}
     <!-- The floating aside card (backlog 141): the column's last child,
          absolute under the passage when there is one, stuck above the
          composer otherwise. -->
@@ -2188,6 +2217,31 @@
     .dots {
       display: inline-flex;
     }
+  }
+  /* The limit card (backlog 164): a pause, drawn like a notice and not
+     like the error banner above it. */
+  .limit-card {
+    border: 1px dashed var(--line);
+    border-radius: 8px;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.82rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+  .limit-head,
+  .limit-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+  .limit-sub {
+    color: var(--muted);
+  }
+  .limit-text {
+    color: var(--muted);
+    white-space: pre-wrap;
   }
   .error-banner {
     color: var(--failed);

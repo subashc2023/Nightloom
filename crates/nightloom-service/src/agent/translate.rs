@@ -12,10 +12,11 @@
 use super::ask::DeferredCall;
 use super::protocol::{
     ApiMessage, Block, Delta, DeniedCall, Line, RateLimitInfo, ResultLine, StreamEv, SystemLine,
-    TaskUsage,
+    TaskUsage, TurnLine,
 };
 use crate::TurnEvent;
 use nightloom_core::Usage;
+use serde::Serialize;
 use std::collections::HashMap;
 
 /// What the turn produced beyond its rendered events.
@@ -38,6 +39,12 @@ pub struct AgentOutcome {
     pub rounds: Option<u32>,
     /// The plan window, when the run authenticated with OAuth.
     pub rate_limit: Option<RateLimitInfo>,
+    /// The turn was stopped by the plan's usage limit (nightshift backlog
+    /// 164): a 429 the CLI reports as a synthetic assistant message. `Some`
+    /// makes the turn *paused by the limit*, resumable after `resets_at`,
+    /// rather than failed. Read from any of three signals — see
+    /// `TurnLine::error` in `protocol.rs`.
+    pub limit: Option<LimitHit>,
     /// Retries and other things worth saying out loud once.
     pub notices: Vec<String>,
     /// The CLI reported the turn itself as failed.
@@ -57,6 +64,24 @@ pub struct AgentOutcome {
     pub denied: Vec<DeniedCall>,
 }
 
+/// The usage limit that stopped a turn (nightshift backlog 164).
+#[derive(Debug, Default, Clone, PartialEq, Serialize)]
+pub struct LimitHit {
+    /// Unix seconds at which the window rolls over, when the CLI said.
+    pub resets_at: Option<i64>,
+    /// `five_hour`, `seven_day`, when the CLI said.
+    pub window: Option<String>,
+    /// The CLI's own sentence, for the transcript's mark.
+    pub text: String,
+    /// The spawning calls of the subagents that died on it, each once, in
+    /// the order they died — a resume names them so the parent continues
+    /// them rather than relaunching.
+    pub subagents: Vec<String>,
+}
+
+/// The CLI's synthetic message for a refused request, as it begins.
+pub const LIMIT_TEXT_PREFIX: &str = "You've hit your";
+
 /// Feeds lines in, gets [`TurnEvent`]s out, accumulates an [`AgentOutcome`].
 #[derive(Debug, Default)]
 pub struct Translator {
@@ -68,6 +93,9 @@ pub struct Translator {
     /// 152): what [`TurnEvent::SubagentStatus`] is drawn from, kept whole
     /// so every emission carries the row entire.
     subagents: HashMap<String, SubagentLedger>,
+    /// Where each `rate_limit_event`'s five-hour figure is written for the
+    /// Agent hook (backlog 165, `brief::USAGE_FILE`); `None` writes nothing.
+    pub usage_sink: Option<std::path::PathBuf>,
     outcome: AgentOutcome,
 }
 
@@ -203,11 +231,47 @@ impl Translator {
         };
         match parsed {
             Line::StreamEvent { event } => self.stream_event(event),
-            Line::Assistant(t) => self.blocks(t.message, t.parent_tool_use_id),
+            Line::Assistant(t) => {
+                self.limit_on(&t);
+                self.blocks(t.message, t.parent_tool_use_id)
+            }
             Line::User(t) => self.blocks(t.message, t.parent_tool_use_id),
             Line::System(s) => self.system(s),
             Line::Result(r) => self.result(r),
             Line::RateLimitEvent { rate_limit_info } => {
+                if let Some(dir) = &self.usage_sink {
+                    let fh = rate_limit_info
+                        .unified_windows
+                        .as_ref()
+                        .and_then(|w| w.five_hour.as_ref())
+                        .and_then(|f| f.utilization.map(|u| (u, f.resets_at)))
+                        .or_else(|| {
+                            (rate_limit_info.window.as_deref() == Some("five_hour"))
+                                .then_some(())
+                                .and_then(|_| {
+                                    rate_limit_info
+                                        .utilization
+                                        .map(|u| (u, rate_limit_info.resets_at))
+                                })
+                        });
+                    if let Some((u, resets_at)) = fh {
+                        let pct = (u * 100.0).round().clamp(0.0, 100.0) as u8;
+                        super::brief::write_usage(
+                            dir,
+                            pct,
+                            resets_at,
+                            chrono::Utc::now().timestamp_millis(),
+                        );
+                    }
+                }
+                if rate_limit_info.status.as_deref() == Some("rejected") {
+                    let hit = self.outcome.limit.get_or_insert_with(LimitHit::default);
+                    hit.resets_at = hit.resets_at.or(rate_limit_info.resets_at);
+                    hit.window = hit
+                        .window
+                        .clone()
+                        .or_else(|| rate_limit_info.window.clone());
+                }
                 self.outcome.rate_limit = Some(rate_limit_info);
                 Vec::new()
             }
@@ -430,6 +494,39 @@ impl Translator {
             SystemLine::Other => {}
         }
         Vec::new()
+    }
+
+    /// A refused request on an assistant line (backlog 164): the CLI's
+    /// `error: "rate_limit"` / `apiErrorStatus: 429`, or its synthetic
+    /// sentence as the line's text. The window and its reset from
+    /// `quotaLimits` when present. A subagent's line names its spawning
+    /// call, so a resume can name the children that died.
+    fn limit_on(&mut self, t: &TurnLine) {
+        let text = t.message.content.iter().find_map(|b| match b {
+            Block::Text { text }
+                if text.starts_with(LIMIT_TEXT_PREFIX) && text.contains("limit") =>
+            {
+                Some(text.clone())
+            }
+            _ => None,
+        });
+        let flagged = t.error.as_deref() == Some("rate_limit") || t.api_error_status == Some(429);
+        if !flagged && text.is_none() {
+            return;
+        }
+        let hit = self.outcome.limit.get_or_insert_with(LimitHit::default);
+        if let Some(q) = &t.quota_limits {
+            hit.resets_at = hit.resets_at.or(q.resets_at);
+            hit.window = hit.window.clone().or_else(|| q.window.clone());
+        }
+        if hit.text.is_empty() {
+            hit.text = text.unwrap_or_else(|| "You've hit your usage limit".to_string());
+        }
+        if let Some(parent) = &t.parent_tool_use_id
+            && !hit.subagents.contains(parent)
+        {
+            hit.subagents.push(parent.clone());
+        }
     }
 
     fn result(&mut self, r: ResultLine) -> Vec<TurnEvent> {
@@ -1057,5 +1154,51 @@ mod tests {
         let plan = outcome.rate_limit.expect("plan window");
         assert_eq!(plan.utilization, None);
         assert!(plan.unified_windows.is_none());
+    }
+
+    // The usage limit (nightshift backlog 164). The shapes are the CLI's
+    // own log of 2026-09-18 02:30Z (`external`, 2.1.263): the synthetic
+    // assistant message with `error: "rate_limit"`, `apiErrorStatus: 429`
+    // and `quotaLimits.status: "rejected"`; the same sentence on a
+    // subagent's line with its spawning call; and a `rate_limit_event`
+    // carrying `status: "rejected"` (inferred from the stream's known
+    // statuses — nobody has caught one live).
+    const LIMIT_MAIN_429: &str = r#"{"type":"assistant","message":{"id":"9cd2b807","model":"<synthetic>","role":"assistant","stop_reason":"stop_sequence","content":[{"type":"text","text":"You've hit your session limit · resets 11:50pm (America/Los_Angeles)"}],"usage":{"input_tokens":0,"output_tokens":0}},"parent_tool_use_id":null,"error":"rate_limit","isApiErrorMessage":true,"apiErrorStatus":429,"quotaLimits":{"status":"rejected","resetsAt":1789714200,"rateLimitType":"five_hour","overageStatus":"rejected","isUsingOverage":false},"session_id":"0a35e04d"}"#;
+    const LIMIT_CHILD_TEXT: &str = r#"{"type":"assistant","message":{"id":"9cd2b808","model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"You've hit your session limit · resets 11:50pm (America/Los_Angeles)"}],"usage":{"input_tokens":0,"output_tokens":0}},"parent_tool_use_id":"toolu_01LgezcY45B8rbkKB4rGMVzE","session_id":"0a35e04d"}"#;
+    const LIMIT_EVENT_REJECTED: &str = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1789714200,"rateLimitType":"five_hour","overageStatus":"rejected","isUsingOverage":false}}"#;
+    const RESULT_LIMIT: &str = r#"{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":4,"result":"","session_id":"0a35e04d","usage":{"input_tokens":10,"output_tokens":1}}"#;
+
+    #[test]
+    fn a_429_on_the_main_thread_marks_the_turn_paused_by_the_limit_with_its_reset() {
+        let (_, outcome) = drive(&[LIMIT_MAIN_429, RESULT_LIMIT]);
+        let hit = outcome.limit.expect("the limit");
+        assert_eq!(hit.resets_at, Some(1789714200));
+        assert_eq!(hit.window.as_deref(), Some("five_hour"));
+        assert!(hit.text.starts_with("You've hit your session limit"));
+        assert!(hit.subagents.is_empty());
+        assert!(outcome.is_error, "the CLI still reports the turn as failed");
+    }
+
+    #[test]
+    fn a_childs_limit_sentence_names_its_spawning_call_once_and_the_event_supplies_the_reset() {
+        let (_, outcome) = drive(&[
+            LIMIT_CHILD_TEXT,
+            LIMIT_CHILD_TEXT,
+            LIMIT_EVENT_REJECTED,
+            RESULT_LIMIT,
+        ]);
+        let hit = outcome.limit.expect("the limit");
+        assert_eq!(
+            hit.subagents,
+            vec!["toolu_01LgezcY45B8rbkKB4rGMVzE".to_string()]
+        );
+        assert_eq!(hit.resets_at, Some(1789714200));
+        assert!(hit.text.starts_with("You've hit your"));
+    }
+
+    #[test]
+    fn an_ordinary_turn_has_no_limit() {
+        let (_, outcome) = drive(&[RATE_LIMIT_263, RESULT]);
+        assert!(outcome.limit.is_none());
     }
 }

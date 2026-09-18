@@ -41,7 +41,7 @@ pub use ask::{
 pub use brief::BriefSpec;
 pub use protocol::{DeniedCall, RateLimitInfo};
 pub use record::{Recorder, SUBAGENT_CLOSE, SUBAGENT_OPEN, carry_transcript, subagent_block};
-pub use translate::{AgentOutcome, Translator};
+pub use translate::{AgentOutcome, LimitHit, Translator};
 
 use crate::{TurnEvent, TurnInput};
 use nightloom_core::{ChatKind, ChatMode};
@@ -337,6 +337,10 @@ pub struct AgentSpec {
     pub fork_session: bool,
     /// Hard ceiling on what one turn may spend.
     pub max_budget_usd: Option<f64>,
+    /// The subagent limits (nightshift backlog 165): the CLI's own two go
+    /// out as environment at spawn, Nightloom's four are written beside
+    /// the brief for the Agent hook. `None` is the defaults.
+    pub subagent_limits: Option<brief::SubagentLimits>,
     /// `--max-turns <n>`: how many model rounds one turn may take. `None`
     /// is the CLI's default (unbounded). An aside sends 2
     /// ([`AgentSpec::aside`]): its answering round, plus one in case the
@@ -627,6 +631,7 @@ impl AgentSpec {
             resume: None,
             fork_session: false,
             max_budget_usd: None,
+            subagent_limits: None,
             max_turns: None,
             use_subscription: true,
             add_dirs: Vec::new(),
@@ -1204,6 +1209,8 @@ impl ClaudeCodeAgent {
         if let Some(brief) = &mut self.spec.brief {
             brief.dir = dir;
             let _ = brief::write(&brief.dir, &brief.text);
+            // The limits beside it, for the hook (backlog 165).
+            let _ = brief::write_limits(&brief.dir, &self.spec.subagent_limits.unwrap_or_default());
         }
     }
 
@@ -1285,12 +1292,19 @@ impl ClaudeCodeAgent {
         if let Some(brief) = &self.spec.brief {
             brief::reset_spawns(&brief.dir);
         }
-        let translator = match &self.refused {
+        let mut translator = match &self.refused {
             Some((session, call)) if self.spec.resume.as_deref() == Some(session) => {
                 Translator::resuming(call)
             }
             _ => Translator::new(),
         };
+        // The window as each `rate_limit_event` reports it, written beside
+        // the brief for the Agent hook's usage-aware cap (backlog 165).
+        if let Some(brief) = &self.spec.brief
+            && !brief.dir.as_os_str().is_empty()
+        {
+            translator.usage_sink = Some(brief.dir.clone());
+        }
         self.drive(&self.spec, Some(input), translator, cancel, on_event)
             .await
     }
@@ -1406,6 +1420,11 @@ impl ClaudeCodeAgent {
         if !spec.auto_compact {
             // The belt to the setting's braces (`AgentSpec::auto_compact`).
             cmd.env("DISABLE_AUTO_COMPACT", "1");
+        }
+        // The CLI's own subagent limits (backlog 165): concurrency and
+        // nesting depth are environment, read by the CLI at each spawn.
+        for (k, v) in spec.subagent_limits.unwrap_or_default().env() {
+            cmd.env(k, v);
         }
 
         let mut child = cmd.spawn().map_err(|source| AgentError::Spawn {
