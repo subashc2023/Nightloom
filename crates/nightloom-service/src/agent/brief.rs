@@ -155,17 +155,20 @@ fn d_concurrent() -> usize {
 fn d_depth() -> usize {
     3
 }
+// ~~30 a day; slow from 70% to 2; stop at 90%~~ — his answer to blocker
+// 271 (2026-09-18): "No limit on how many a chat can spawn in a day.
+// Maybe the 6 at once drop to 4. Stop at 85%." Zero is no day cap.
 fn d_per_day() -> usize {
-    30
+    0
 }
 fn d_slow_at() -> u8 {
     70
 }
 fn d_slow_to() -> usize {
-    2
+    4
 }
 fn d_stop_at() -> u8 {
-    90
+    85
 }
 
 impl Default for SubagentLimits {
@@ -576,7 +579,8 @@ pub fn decide_with(dir: &Path, stdin_json: &str, gauge: Option<WindowReading>) -
         });
     }
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-    if claim_day_spawn(dir, limits.per_day, &today).is_err() {
+    // A day cap of zero is no cap (his answer to blocker 271).
+    if limits.per_day > 0 && claim_day_spawn(dir, limits.per_day, &today).is_err() {
         return HookReply::deny(day_cap_reason(limits.per_day));
     }
     let brief = std::fs::read_to_string(dir.join(BRIEF_FILE)).unwrap_or_default();
@@ -885,11 +889,12 @@ mod tests {
         };
         assert_eq!(super::window_verdict(&l, None), Ok(6));
         assert_eq!(super::window_verdict(&l, r(69)), Ok(6));
-        assert_eq!(super::window_verdict(&l, r(70)), Ok(2));
-        assert_eq!(super::window_verdict(&l, r(89)), Ok(2));
-        let stop = super::window_verdict(&l, r(90)).unwrap_err();
+        // His numbers (blocker 271): to 4 at 70, stop at 85.
+        assert_eq!(super::window_verdict(&l, r(70)), Ok(4));
+        assert_eq!(super::window_verdict(&l, r(84)), Ok(4));
+        let stop = super::window_verdict(&l, r(85)).unwrap_err();
         assert!(
-            stop.contains("90%") && stop.contains("It resets at ") && stop.contains("do not retry")
+            stop.contains("85%") && stop.contains("It resets at ") && stop.contains("do not retry")
         );
         let none = super::window_verdict(
             &l,
@@ -938,7 +943,7 @@ mod tests {
     }
 
     #[test]
-    fn at_a_simulated_92_percent_window_the_spawn_is_refused_and_at_75_the_turn_holds_two() {
+    fn at_a_simulated_92_percent_window_the_spawn_is_refused_and_at_75_the_turn_holds_four() {
         let dir = limits_dir("window");
         let now = chrono::Utc::now().timestamp_millis();
         super::write_usage(&dir, 92, Some(now / 1000 + 3600), now);
@@ -948,14 +953,16 @@ mod tests {
             r.reason()
                 .is_some_and(|s| s.contains("92%") && s.contains("It resets at "))
         );
-        // The gauge, fresher, says 75: the cap is two, and the third is refused in those words.
+        // The gauge, fresher, says 75: the cap is four (blocker 271, his
+        // number), and the fifth is refused in those words.
         let gauge = Some(super::WindowReading {
             five_hour_pct: 75,
             resets_at: None,
             sampled_at_ms: now + 1,
         });
-        assert_eq!(super::decide_with(&dir, CALL, gauge).decision(), "allow");
-        assert_eq!(super::decide_with(&dir, CALL, gauge).decision(), "allow");
+        for _ in 0..4 {
+            assert_eq!(super::decide_with(&dir, CALL, gauge).decision(), "allow");
+        }
         let third = super::decide_with(&dir, CALL, gauge);
         assert_eq!(third.decision(), "deny");
         assert!(

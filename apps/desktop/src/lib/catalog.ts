@@ -725,16 +725,18 @@ export interface SubagentLimits {
 }
 
 /** The defaults, the backend's (`brief::SubagentLimits::default`): the
- *  6 of the first cap; the CLI's own 20 at once and depth 3; 30 a day;
- *  slow from 70% to 2, stop at 90%. */
+ *  6 of the first cap; the CLI's own 20 at once and depth 3; no day cap
+ *  (0); slow from 70% to 4, stop at 85% (blocker 271, his answer). */
 export const DEFAULT_LIMITS: SubagentLimits = Object.freeze({
   per_turn: 6,
   concurrent: 20,
   depth: 3,
-  per_day: 30,
+  // His answer to blocker 271 (2026-09-18): no day cap (0), slow to 4,
+  // stop at 85 — ~~30 · 2 · 90~~.
+  per_day: 0,
   slow_at: 70,
-  slow_to: 2,
-  stop_at: 90,
+  slow_to: 4,
+  stop_at: 85,
 }) as SubagentLimits;
 
 /** A saved limits object, each field a whole number in range or the default. */
