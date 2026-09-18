@@ -612,9 +612,16 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    flex-shrink: 0;
+    /* ~~flex-shrink: 0~~ — with the cluster unshrinkable its width was its
+       content's, so `flex-wrap` on it never had a bound to wrap at and the
+       last chip still ran off the edge at 175% (his screenshot, 2026-09-18,
+       after 20392bd). Bounded to the bar, it shrinks and wraps its chips. */
+    flex-shrink: 1;
+    min-width: 0;
+    max-width: 100%;
     flex-wrap: wrap;
     justify-content: flex-end;
+    row-gap: 4px;
   }
   /* The three folds (backlog 129), by the bar's own width. Step 1: the
      gauges' words. Step 2: the spend chip, the gauge's percentage, the
