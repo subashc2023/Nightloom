@@ -89,7 +89,13 @@ pub struct CouncilTrialArgs {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ArmMetrics {
     arm: String,
-    /// The letter the answer was filed under.
+    /// ~~The letter the answer was filed under.~~ Never written since
+    /// 2026-09-18 (the review): `metrics.json` sits beside the answers and
+    /// was carrying the arm-to-letter map in plain JSON, and the run-end
+    /// table printed it to the terminal — the "sealed" key was sealed
+    /// nowhere. The map lives in `key.sealed.json` alone; the tally reads
+    /// it there. Kept as a field so an older `metrics.json` still parses.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     label: String,
     model: String,
     words: usize,
@@ -466,9 +472,6 @@ pub async fn run(args: CouncilTrialArgs) -> Result<()> {
         let (arm, text) = &answers[arm_index];
         fs::write(dir.join(format!("answer-{label}.md")), text)?;
         key.insert(label.clone(), serde_json::Value::String(arm.clone()));
-        if let Some(m) = arm_metrics.iter_mut().find(|m| &m.arm == arm) {
-            m.label = label;
-        }
     }
     fs::write(
         dir.join("key.sealed.json"),
@@ -480,6 +483,9 @@ pub async fn run(args: CouncilTrialArgs) -> Result<()> {
         format!(
             "# Judge — {run_id}\n\n\
              Read answer-{}.md blind, in any order. Do not open key.sealed.json until this file is filled.\n\n\
+             One thing to know while judging (nightshift blocker 256): the single turn was sent the \
+             message bare, as you would send it; the council's members were told to search and to \
+             cite. An answer with a Sources table is not, by that alone, the better one.\n\n\
              pick: \n\
              why: \n\n\
              Optional — a claim you wanted that only one answer had (letter and the claim):\n\
@@ -500,7 +506,7 @@ pub async fn run(args: CouncilTrialArgs) -> Result<()> {
         serde_json::to_string_pretty(&metrics)?,
     )?;
     eprintln!();
-    print_metrics(&metrics);
+    print_metrics(&metrics, None);
     eprintln!(
         "\nwritten: {}\n  answer-{}.md · judge.md (fill `pick:` with a letter) · key.sealed.json (open after)",
         dir.display(),
@@ -655,48 +661,69 @@ fn section_lines(text: &str, number: &str) -> usize {
     n
 }
 
-fn print_metrics(m: &Metrics) {
-    eprintln!(
+/// The run's figures as lines. `key` is the arm-to-letter map from
+/// `key.sealed.json`, given only once the run is judged: without it the
+/// per-arm rows are withheld — an arm's name beside its word count, on
+/// the terminal he judges from, is the blind broken (the review of
+/// 2026-09-18). The council's own seat lines are not arms and stay.
+fn metrics_lines(
+    m: &Metrics,
+    key: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Vec<String> {
+    let mut out = vec![format!(
         "run {} — {} chars, mode {}",
         m.run_id,
         m.dump_chars,
         m.mode.label()
-    );
-    eprintln!(
-        "{:<11} {:<3} {:<28} {:>6} {:>8} {:>7} {:>8} {:>8} {:>7} {:>5}",
-        "arm", "as", "model", "words", "in", "out", "cache-r", "cost$", "secs", "calls"
-    );
-    for a in &m.arms {
-        eprintln!(
-            "{:<11} {:<3} {:<28} {:>6} {:>8} {:>7} {:>8} {:>8} {:>7} {:>5}{}",
-            a.arm,
-            a.label,
-            a.model.chars().take(28).collect::<String>(),
-            a.words,
-            a.usage.input_tokens,
-            a.usage.output_tokens,
-            a.usage.cache_read_tokens.unwrap_or(0),
-            a.cost_usd
-                .map(|c| format!("{c:.2}"))
-                .unwrap_or_else(|| "-".into()),
-            a.wall_ms / 1000,
-            a.tool_uses,
-            a.error
-                .as_ref()
-                .map(|e| format!("  ERROR {e}"))
-                .unwrap_or_default()
-        );
+    )];
+    match key {
+        None => out.push(
+            "per-arm rows (words, tokens, cost, calls) print with --tally once judge.md is filled — not before, so the letters stay blind"
+                .to_string(),
+        ),
+        Some(key) => {
+            out.push(format!(
+                "{:<11} {:<3} {:<28} {:>6} {:>8} {:>7} {:>8} {:>8} {:>7} {:>5}",
+                "arm", "as", "model", "words", "in", "out", "cache-r", "cost$", "secs", "calls"
+            ));
+            for a in &m.arms {
+                let letter = key
+                    .iter()
+                    .find(|(_, v)| v.as_str() == Some(a.arm.as_str()))
+                    .map(|(k, _)| k.as_str())
+                    .unwrap_or("?");
+                out.push(format!(
+                    "{:<11} {:<3} {:<28} {:>6} {:>8} {:>7} {:>8} {:>8} {:>7} {:>5}{}",
+                    a.arm,
+                    letter,
+                    a.model.chars().take(28).collect::<String>(),
+                    a.words,
+                    a.usage.input_tokens,
+                    a.usage.output_tokens,
+                    a.usage.cache_read_tokens.unwrap_or(0),
+                    a.cost_usd
+                        .map(|c| format!("{c:.2}"))
+                        .unwrap_or_else(|| "-".into()),
+                    a.wall_ms / 1000,
+                    a.tool_uses,
+                    a.error
+                        .as_ref()
+                        .map(|e| format!("  ERROR {e}"))
+                        .unwrap_or_default()
+                ));
+            }
+        }
     }
     if let Some(c) = &m.council {
-        eprintln!(
+        out.push(format!(
             "council: overlap shared-by-all {:.0}% of {} cited; section 3 has {} lines; chair cited {} source(s) the single turn did not",
             c.overlap.shared_by_all * 100.0,
             c.overlap.union,
             c.section3_lines,
             c.chair_sources_not_in_single.len()
-        );
+        ));
         for s in &c.seats {
-            eprintln!(
+            out.push(format!(
                 "  seat {} {:<8} {:>5} words {:>3} searches {:>3} cited {:>3} seen {:>8} in {:>6} out {:>5}s{}",
                 s.label,
                 s.model,
@@ -711,14 +738,28 @@ fn print_metrics(m: &Metrics) {
                     .as_ref()
                     .map(|e| format!("  ERROR {e}"))
                     .unwrap_or_default()
-            );
+            ));
         }
+    }
+    out
+}
+
+fn print_metrics(m: &Metrics, key: Option<&serde_json::Map<String, serde_json::Value>>) {
+    for line in metrics_lines(m, key) {
+        eprintln!("{line}");
     }
 }
 
 /// Sum the judged runs under `dir`: wins per arm, and the metric means.
 fn tally(dir: &Path) -> Result<()> {
-    let mut runs: Vec<(String, Option<String>, Metrics)> = Vec::new(); // (run, picked arm, metrics)
+    // (run, picked arm, metrics, the key when the run is judged)
+    type Judged = (
+        String,
+        Option<String>,
+        Metrics,
+        Option<serde_json::Map<String, serde_json::Value>>,
+    );
+    let mut runs: Vec<Judged> = Vec::new();
     for entry in fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
         let entry = entry?;
         let run = entry.path();
@@ -736,10 +777,12 @@ fn tally(dir: &Path) -> Result<()> {
             .ok()
             .and_then(|j| pick_of(&j))
             .and_then(|letter| key.get(&letter).and_then(|v| v.as_str()).map(String::from));
+        let judged_key = pick.as_ref().and_then(|_| key.as_object().cloned());
         runs.push((
             entry.file_name().to_string_lossy().into_owned(),
             pick,
             metrics,
+            judged_key,
         ));
     }
     if runs.is_empty() {
@@ -801,8 +844,15 @@ fn tally(dir: &Path) -> Result<()> {
         );
     }
     println!();
-    for (run, pick, _) in &runs {
+    for (run, pick, metrics, key) in &runs {
         println!("  {run}: {}", pick.as_deref().unwrap_or("(not judged)"));
+        // The per-arm rows with their letters, for a judged run only —
+        // the run itself printed none (the blind, 2026-09-18).
+        if let Some(key) = key {
+            for line in metrics_lines(metrics, Some(key)).into_iter().skip(1) {
+                println!("    {line}");
+            }
+        }
     }
     println!(
         "\nThe design's reading (§6, blocker 245): the council earns its build at ≥ 7 of 10 picks *and* more picks than in_context; ≤ 3 of 10 stops it; between, run ten more."
@@ -843,6 +893,62 @@ mod tests {
         assert_eq!(section_lines(t, "3."), 2);
         assert_eq!(section_lines(t, "1."), 2);
         assert_eq!(section_lines(t, "5."), 0);
+    }
+
+    /// The blind (the review of 2026-09-18): what a run prints and writes
+    /// before he judges carries no arm-to-letter map — the arm rows are
+    /// withheld from the terminal, and `metrics.json` serialises no
+    /// `label` — while the tally, given the key, prints each arm under
+    /// its letter.
+    #[test]
+    fn an_unjudged_run_prints_no_letters_and_metrics_json_holds_no_map() {
+        let arm = |name: &str, words: usize| ArmMetrics {
+            arm: name.into(),
+            label: String::new(),
+            model: "opus".into(),
+            words,
+            sources: vec![],
+            usage: Usage::default(),
+            cost_usd: None,
+            wall_ms: 1000,
+            tool_uses: 1,
+            error: None,
+        };
+        let m = Metrics {
+            run_id: "r1".into(),
+            dump_from: "d".into(),
+            dump_chars: 10,
+            mode: CouncilMode::Answer,
+            arms: vec![
+                arm("single", 100),
+                arm("council", 300),
+                arm("in_context", 200),
+            ],
+            council: None,
+        };
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(!json.contains("\"label\""), "{json}");
+        let blind = metrics_lines(&m, None).join("\n");
+        for word in ["single", "council", "in_context", " A ", " B ", " C "] {
+            assert!(
+                !blind.contains(&format!("{word:<11} ")),
+                "{word} in {blind}"
+            );
+        }
+        assert!(!blind.contains("300"), "{blind}");
+        assert!(blind.contains("--tally"), "{blind}");
+        let key: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(r#"{"A":"council","B":"single","C":"in_context"}"#).unwrap();
+        let shown = metrics_lines(&m, Some(&key)).join("\n");
+        assert!(shown.contains("council     A  "), "{shown}");
+        assert!(shown.contains("single      B  "), "{shown}");
+        assert!(shown.contains("in_context  C  "), "{shown}");
+        // An older metrics.json that still carries a label parses.
+        let old: ArmMetrics = serde_json::from_str(
+            r#"{"arm":"single","label":"B","model":"opus","words":1,"sources":[],"usage":{"input_tokens":0,"output_tokens":0},"cost_usd":null,"wall_ms":1,"tool_uses":0}"#,
+        )
+        .unwrap();
+        assert_eq!(old.label, "B");
     }
 
     #[test]

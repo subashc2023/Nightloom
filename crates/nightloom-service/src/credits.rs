@@ -2,14 +2,19 @@
 //! blocker 244, 2026-09-17).
 //!
 //! He asked for his OpenRouter credits inside Nightloom, and for the other
-//! providers "not exposed" said plainly rather than a guess. Measured
+//! providers "not exposed" said plainly rather than a guess. ~~Measured
 //! against the live endpoints with his stored keys (`external`, one call
-//! each, the report has the shapes): OpenRouter's `GET /api/v1/credits`
-//! answers `{"data":{"total_credits":…,"total_usage":…}}` for a key, so
-//! the remainder is the difference; Anthropic's, OpenAI's, Gemini's and
+//! each, the report has the shapes)~~ — struck 2026-09-18 (the review):
+//! nothing here was called with his key; the build report says so
+//! itself ("the reply shape is from OpenRouter's reference, `external`,
+//! unverified here"). So, `external` and unverified until the Cost pane's
+//! first open: OpenRouter's `GET /api/v1/credits` is documented to answer
+//! `{"data":{"total_credits":…,"total_usage":…}}` for a key, so the
+//! remainder is the difference; Anthropic's, OpenAI's, Gemini's and
 //! Groq's public APIs offer an ordinary key no balance — their consoles
 //! do, behind a login — so those rows say `not exposed` and nothing is
-//! fetched.
+//! fetched. The parser tolerates missing fields; a wrong shape lands as
+//! an `error` row with the reason, never a number.
 
 use serde::{Deserialize, Serialize};
 

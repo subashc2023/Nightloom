@@ -82,11 +82,16 @@ pub const SPAWN_CAP: usize = 6;
 pub const SPAWNS_FILE: &str = "subagent-spawns.txt";
 
 /// The refusal the model reads when the cap is reached — his wording.
+/// ~~"The limit is set beside \"Subagents run on auto\""~~ — struck
+/// 2026-09-18 (the review of `a4a681f`): no such setting exists; the cap
+/// is this constant until backlog 165 builds the per-chat number, and a
+/// sentence naming a control that is not there is one the parent repeats
+/// to him.
 pub fn spawn_cap_reason(cap: usize) -> String {
     format!(
         "Nightloom's limit is {cap} subagents in one turn, and this turn has spawned {cap}. \
          Wait for the running ones to finish and use their reports; if what is left is \
-         small enough, do it yourself. The limit is set beside \"Subagents run on auto\"."
+         small enough, do it yourself."
     )
 }
 
@@ -95,11 +100,46 @@ pub fn reset_spawns(dir: &Path) {
     let _ = std::fs::remove_file(dir.join(SPAWNS_FILE));
 }
 
-fn spawns(dir: &Path) -> usize {
-    std::fs::read_to_string(dir.join(SPAWNS_FILE))
-        .ok()
-        .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(0)
+/// Take one spawn of the turn's allowance, or say how many were taken.
+///
+/// One hook process runs per `Agent` call, and a turn that fans out puts
+/// its calls in one assistant message, which the CLI runs — hooks
+/// included — at once. The first shape (2026-09-17, `a4a681f`) read the
+/// count and wrote it back with no lock, so fourteen hooks at once each
+/// read 0 and wrote 1, and the cap held only for a model that spawned one
+/// at a time — the opposite of the report that raised it (the review of
+/// 2026-09-18). So: the file is opened, locked exclusively for the
+/// read-and-write (`File::lock`, an advisory lock the other hooks wait
+/// on), and released with the handle. A directory or file that cannot be
+/// opened counts as no spawns taken: the brief still goes in, the cap
+/// does not bind — the failure is logged nowhere the model reads, and a
+/// refusal for a bookkeeping error would be worse than an uncounted
+/// spawn.
+fn claim_spawn(dir: &Path, cap: usize) -> Result<(), usize> {
+    use std::io::{Read as _, Seek as _, Write as _};
+    let _ = std::fs::create_dir_all(dir);
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(dir.join(SPAWNS_FILE))
+    else {
+        return Ok(());
+    };
+    if file.lock().is_err() {
+        return Ok(());
+    }
+    let mut have = String::new();
+    let _ = file.read_to_string(&mut have);
+    let n: usize = have.trim().parse().unwrap_or(0);
+    if n >= cap {
+        return Err(n);
+    }
+    let _ = file.set_len(0);
+    let _ = file.seek(std::io::SeekFrom::Start(0));
+    let _ = file.write_all((n + 1).to_string().as_bytes());
+    Ok(())
 }
 
 /// The sentence at the top of the brief, so the child knows what the
@@ -198,13 +238,11 @@ pub fn decide(dir: &Path, stdin_json: &str) -> HookReply {
     let Ok(input) = serde_json::from_str::<HookInput>(stdin_json) else {
         return HookReply::pass();
     };
-    // The cap first, before the brief: a torn brief must not lift it.
-    let n = spawns(dir);
-    if n >= SPAWN_CAP {
+    // The cap first, before the brief: a torn brief must not lift it. The
+    // claim is under a file lock, since the turn's hooks run at once.
+    if claim_spawn(dir, SPAWN_CAP).is_err() {
         return HookReply::deny(spawn_cap_reason(SPAWN_CAP));
     }
-    let _ = std::fs::create_dir_all(dir);
-    let _ = std::fs::write(dir.join(SPAWNS_FILE), (n + 1).to_string());
     let brief = std::fs::read_to_string(dir.join(BRIEF_FILE)).unwrap_or_default();
     if brief.trim().is_empty() {
         return HookReply::pass();
@@ -263,6 +301,50 @@ mod tests {
         assert!(r.reason().is_some_and(|s| s.contains("do it yourself")));
         super::reset_spawns(&dir);
         assert_eq!(super::decide(&dir, call).decision(), "allow");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The case he reported (a research turn spawning fourteen at once):
+    /// the hooks run concurrently, and exactly `SPAWN_CAP` of them are
+    /// allowed — the claim is under the file lock, so no two read the
+    /// same count (the review of 2026-09-18; before it, all fourteen read
+    /// 0). Threads stand in for the hook processes: `File::lock` is per
+    /// open handle, so separate opens in one process contend as separate
+    /// processes do.
+    #[test]
+    fn fourteen_spawns_at_once_get_exactly_the_cap() {
+        let dir =
+            std::env::temp_dir().join(format!("nightloom-spawn-race-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        super::write(
+            &dir,
+            "<nightloom-subagent-brief>x</nightloom-subagent-brief>",
+        )
+        .unwrap();
+        let call = r#"{"tool_name":"Agent","tool_input":{"prompt":"go"}}"#;
+        let gate = std::sync::Arc::new(std::sync::Barrier::new(14));
+        let handles: Vec<_> = (0..14)
+            .map(|_| {
+                let dir = dir.clone();
+                let gate = gate.clone();
+                std::thread::spawn(move || {
+                    gate.wait();
+                    super::decide(&dir, call).decision() == "allow"
+                })
+            })
+            .collect();
+        let allowed = handles
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .filter(|ok| *ok)
+            .count();
+        assert_eq!(allowed, super::SPAWN_CAP);
+        assert_eq!(
+            std::fs::read_to_string(dir.join(super::SPAWNS_FILE))
+                .unwrap()
+                .trim(),
+            super::SPAWN_CAP.to_string()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

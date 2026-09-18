@@ -32,9 +32,14 @@
 //!   backlog 075's `<subagent>` blocks), and one `<council>` block carries
 //!   the seat map, the overlap and the areas as JSON — so the log stays
 //!   valid on a provider replay and a reader that knows the markers folds
-//!   them (nightshift blocker 253). The chat's CLI session holds only the
-//!   chair's turn; the next ordinary turn is not made heavier by the
-//!   seats (design §4e).
+//!   them (nightshift blocker 253). ~~The chat's CLI session holds only
+//!   the chair's turn; the next ordinary turn is not made heavier by the
+//!   seats (design §4e).~~ — struck 2026-09-18 (the review): the chair
+//!   prompt is the turn's wire text, so the CLI session's user message
+//!   for a council turn *is* the dump plus every member's anonymised
+//!   answer, and every later request carries them (cached, but held).
+//!   What the CLI session never holds is the named seat blocks and the
+//!   JSON record — those are the log's alone.
 //!
 //! Refused this pass: a seat on the API engine ([`SeatEngine::Api`] is
 //! named so a roster can say it, and [`CouncilRequest::validate`] rejects
@@ -317,10 +322,16 @@ pub fn normalise_source(raw: &str) -> Option<String> {
     if lower.starts_with("10.") && lower.contains('/') {
         return Some(format!("doi.org/{lower}"));
     }
+    // `doi:10.…` is the bare DOI with a scheme, not a host (the review of
+    // 2026-09-18: it read as the host-less path `10.…/…` and never
+    // matched the same DOI cited bare or as a `doi.org` URL).
+    if let Some(doi) = lower.strip_prefix("doi:") {
+        let doi = doi.trim_start_matches('/');
+        return (doi.starts_with("10.") && doi.contains('/')).then(|| format!("doi.org/{doi}"));
+    }
     let rest = lower
         .strip_prefix("https://")
-        .or_else(|| lower.strip_prefix("http://"))
-        .or_else(|| lower.strip_prefix("doi:"))?;
+        .or_else(|| lower.strip_prefix("http://"))?;
     let rest = rest.strip_prefix("www.").unwrap_or(rest);
     let rest = rest.split(['?', '#']).next().unwrap_or(rest);
     let mut rest = rest.trim_end_matches('/').to_string();
@@ -670,7 +681,18 @@ struct SeatLedger {
     model: Option<String>,
 }
 
+/// The Running-tasks key of seat `index` in the run seeded `seed`.
+/// ~~`council-seat-<index>`~~ — the same key on every council turn of a
+/// chat, so the window's row from the last council turn was overwritten
+/// in place and kept its old turn number: the chip showed nothing for the
+/// second council turn (the review of 2026-09-18). The seed is the run's
+/// (the clock), so each council turn's seats are new rows.
+pub fn seat_key(seed: u64, index: usize) -> String {
+    format!("council-seat-{seed:x}-{index}")
+}
+
 fn status_of(
+    seed: u64,
     index: usize,
     seat: &Seat,
     ledger: &SeatLedger,
@@ -678,8 +700,8 @@ fn status_of(
     started: Instant,
 ) -> TurnEvent {
     TurnEvent::SubagentStatus {
-        tool_use_id: format!("council-seat-{index}"),
-        task_id: format!("council-seat-{index}"),
+        tool_use_id: seat_key(seed, index),
+        task_id: seat_key(seed, index),
         subagent_type: SEAT_TASK_TYPE.into(),
         description: format!("Seat {} · {}", index + 1, seat.model),
         prompt: String::new(),
@@ -702,7 +724,7 @@ fn status_of(
 /// fork, for `carry_transcript`. `on_event(seat_index, event)` gets every
 /// seat's stream — text, calls, results — and, in between, a
 /// [`TurnEvent::SubagentStatus`] row per seat (type [`SEAT_TASK_TYPE`],
-/// key `council-seat-<index>`) each time its standing changes. A seat
+/// key [`seat_key`]) each time its standing changes. A seat
 /// that fails or is cancelled is a result with `error` set; the caller's
 /// chair is told and never waits.
 #[allow(clippy::too_many_arguments)]
@@ -756,7 +778,14 @@ pub async fn run_seats(
         started[i] = Instant::now();
         on_event(
             i,
-            status_of(i, &request.seats[i], &ledgers[i], "running", started[i]),
+            status_of(
+                seed,
+                i,
+                &request.seats[i],
+                &ledgers[i],
+                "running",
+                started[i],
+            ),
         );
     }
     let handle = |i: usize,
@@ -806,7 +835,14 @@ pub async fn run_seats(
         if changed {
             on_event(
                 i,
-                status_of(i, &request.seats[i], &ledgers[i], "running", started[i]),
+                status_of(
+                    seed,
+                    i,
+                    &request.seats[i],
+                    &ledgers[i],
+                    "running",
+                    started[i],
+                ),
             );
         }
     };
@@ -872,7 +908,7 @@ pub async fn run_seats(
         } else {
             "completed"
         };
-        on_event(i, status_of(i, seat, l, status, started[i]));
+        on_event(i, status_of(seed, i, seat, l, status, started[i]));
         results.push(SeatResult {
             seat: seat.clone(),
             index: i,
@@ -1262,6 +1298,16 @@ mod tests {
             normalise_source("https://example.com/").as_deref(),
             Some("example.com")
         );
+        // The same DOI, three spellings, one key (the review of 2026-09-18).
+        assert_eq!(
+            normalise_source("doi:10.1145/3597503.3639121").as_deref(),
+            Some("doi.org/10.1145/3597503.3639121")
+        );
+        assert_eq!(
+            normalise_source("DOI:10.1145/3597503.3639121."),
+            normalise_source("https://doi.org/10.1145/3597503.3639121")
+        );
+        assert_eq!(normalise_source("doi:nothing"), None);
         assert_eq!(normalise_source("not a url"), None);
         assert_eq!(normalise_source(""), None);
     }
@@ -1466,6 +1512,117 @@ mod tests {
         ]);
         assert_eq!(anon[0].label, "A");
         assert_eq!(anon[0].text, "a");
+    }
+
+    /// The parallel path, on a stand-in CLI (the shape `agent/mod.rs`'s
+    /// stop tests use): two seats at once, the Fable one answers with a
+    /// `WebFetch` and a sourced line, the Opus one dies (exit 3, no
+    /// result line). The dead seat is a result with `error`, not a wait
+    /// and not a failed turn; the live one's text, sources and search
+    /// count are read; the status rows go out under a key that carries
+    /// the run's seed (the review of 2026-09-18 — before it, every council
+    /// turn's seats reused `council-seat-<index>`); and the chair's
+    /// anonymised view says the dead member did not answer.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_seats_lands_a_dead_seat_as_an_error_and_keys_rows_by_run() {
+        let dir = std::env::temp_dir().join(format!("nightloom-council-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // The stand-in reads `--model` off argv and plays its part.
+        let script = dir.join("claude-stand-in");
+        std::fs::write(
+            &script,
+            r##"#!/bin/sh
+model=""
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--model" ]; then model="$2"; fi
+  shift
+done
+if [ "$model" = "opus" ]; then
+  printf '%s\n' '{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"claude-opus-5","permissionMode":"dontAsk","session_id":"dead-1"}'
+  exit 3
+fi
+printf '%s\n' '{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"claude-fable-5-1","permissionMode":"dontAsk","session_id":"live-1"}'
+printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_f1","name":"WebFetch","input":{"url":"https://example.org/paper/"}}]},"parent_tool_use_id":null}'
+printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"the page","is_error":false,"tool_use_id":"toolu_f1"}]},"parent_tool_use_id":null}'
+printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Found it (https://example.org/paper)."}]},"parent_tool_use_id":null}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"Found it (https://example.org/paper).","num_turns":2,"session_id":"live-1","usage":{"input_tokens":50,"output_tokens":7}}'
+exit 0
+"##,
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut chat = AgentSpec::new(&dir);
+        chat.binary = script.to_string_lossy().into_owned();
+        let agent = ClaudeCodeAgent::new(chat.clone());
+        let request = CouncilRequest {
+            seats: vec![seat("opus"), seat("fable")],
+            mode: CouncilMode::Answer,
+            areas: vec![],
+        };
+        let cancel = CancellationToken::new();
+        let mut rows: Vec<(usize, String, String)> = Vec::new(); // (seat, key, status)
+        let mut sink = |i: usize, e: TurnEvent| {
+            if let TurnEvent::SubagentStatus {
+                tool_use_id,
+                status,
+                subagent_type,
+                ..
+            } = e
+            {
+                assert_eq!(subagent_type, SEAT_TASK_TYPE);
+                rows.push((i, tool_use_id, status));
+            }
+        };
+        let results = run_seats(
+            &agent, &chat, None, &request, "the dump", 7, &cancel, &mut sink,
+        )
+        .await;
+        assert_eq!(results.len(), 2);
+        let dead = &results[0];
+        assert_eq!(dead.seat.model, "opus");
+        assert!(dead.error.is_some(), "{dead:?}");
+        assert!(dead.text.is_empty());
+        let live = &results[1];
+        assert_eq!(live.seat.model, "fable");
+        assert_eq!(live.error, None, "{live:?}");
+        assert_eq!(live.text, "Found it (https://example.org/paper).");
+        assert_eq!(live.searches, 1);
+        assert_eq!(live.tool_uses, 1);
+        assert_eq!(live.model.as_deref(), Some("claude-fable-5-1"));
+        assert_eq!(
+            live.sources.cited.iter().cloned().collect::<Vec<_>>(),
+            vec!["example.org/paper".to_string()]
+        );
+        assert!(!live.forked, "no session to fork");
+        // The labels are a permutation of A and B.
+        let mut labels = vec![dead.label.clone(), live.label.clone()];
+        labels.sort();
+        assert_eq!(labels, vec!["A".to_string(), "B".to_string()]);
+        // The rows: keyed by the run, ending failed / completed.
+        assert_eq!(rows.iter().find(|r| r.0 == 0).unwrap().1, seat_key(7, 0));
+        assert_eq!(rows.iter().find(|r| r.0 == 1).unwrap().1, seat_key(7, 1));
+        assert_ne!(seat_key(7, 0), seat_key(8, 0), "a new run, new rows");
+        let last_status = |seat: usize| rows.iter().rev().find(|r| r.0 == seat).unwrap().2.clone();
+        assert_eq!(last_status(0), "failed");
+        assert_eq!(last_status(1), "completed");
+        // The chair is told the dead member did not answer, by label only.
+        let anon = anonymised(&results);
+        let missing: Vec<&Anonymised> = anon.iter().filter(|a| a.missing.is_some()).collect();
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].label, dead.label);
+        let prompt = chair_prompt(CouncilMode::Answer, "the dump", &anon, &[]);
+        assert!(prompt.contains(&format!("(Member {} did not answer:", dead.label)));
+        assert!(
+            !prompt.contains("opus") && !prompt.contains("fable"),
+            "{prompt}"
+        );
+        // The record excludes the dead seat from the overlap and keeps its error.
+        let record = CouncilRecord::new(CouncilMode::Answer, &results, &[], "## 5. Gaps\nnone\n");
+        assert_eq!(record.overlap.union, 1);
+        assert!(record.seats.iter().any(|s| s.error.is_some()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
