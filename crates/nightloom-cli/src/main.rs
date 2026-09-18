@@ -1,6 +1,7 @@
 mod agent;
 mod capture;
 mod chat;
+mod council_trial;
 mod dream;
 mod eval;
 mod import;
@@ -49,6 +50,10 @@ enum Command {
     Dream(dream::DreamArgs),
     /// Read the session logs since their watermarks into the memory inbox
     Capture(capture::CaptureArgs),
+    /// The council experiment (nightshift backlog 149): one dump answered
+    /// three ways — one turn, the council, one turn playing a council —
+    /// filed blind for you to judge; `--tally <dir>` sums the judged runs
+    CouncilTrial(council_trial::CouncilTrialArgs),
     /// Serve search_chats, read_chat, remember and fetch_page over MCP on
     /// stdio, for `claude -p --mcp-config`. Hidden: nothing to see if run
     /// by hand (see `mcp_serve.rs`).
@@ -78,6 +83,7 @@ async fn main() -> Result<()> {
         Some(Command::Knowledge(args)) => knowledge::run(args),
         Some(Command::Dream(args)) => dream::run(args).await,
         Some(Command::Capture(args)) => capture::run(args).await,
+        Some(Command::CouncilTrial(args)) => council_trial::run(args).await,
         Some(Command::McpServe(args)) => mcp_serve::run(args).await,
         Some(Command::PermissionHook { dir }) => {
             nightloom_service::agent::ask::run_hook(&[dir]).map_err(Into::into)

@@ -58,6 +58,8 @@
     takeBackQueued,
   } from "./drafts.svelte";
   import type { Attachment } from "./types";
+  import CouncilPopover from "./CouncilPopover.svelte";
+  import type { CouncilPrefs } from "./council";
 
   /**
    * `floating` drops the docked chrome (top border, panel fill) for the
@@ -641,10 +643,20 @@
    * since a second send would most likely fail the same way and bury the
    * error.
    */
-  async function dispatch(typed: string, chips: Attachment[], wrapUp = false): Promise<void> {
+  async function dispatch(
+    typed: string,
+    chips: Attachment[],
+    wrapUp = false,
+    council: CouncilPrefs | null = null,
+  ): Promise<void> {
     const chat = app.activeSessionId;
     const { images, documents } = split(chips);
-    await send(typed.trim(), images, documents);
+    await send(
+      typed.trim(),
+      images,
+      documents,
+      council ? { seats: council.seats, mode: council.mode, areas: [] } : null,
+    );
     // send() reports failures on app.error instead of throwing, and a turn
     // that never reached the model should not cost the user its attachments
     // — or, since 2026-09-15, its words. Both go back under the key of the
@@ -722,6 +734,42 @@
     requestAnimationFrame(autogrow);
     await dispatch(typed, pending);
   }
+
+  /**
+   * The council (nightshift backlog 149, blocker 243): the popover's
+   * *Send to the council* sends what is in the box as a council turn —
+   * the seats it names run first, the chat's model chairs. Text and
+   * attachments as a plain send; not while a turn runs (the queue holds
+   * plain messages only).
+   */
+  let councilOpen = $state(false);
+  let councilBtn = $state<HTMLElement | null>(null);
+  let councilWrap = $state<HTMLElement | null>(null);
+  async function submitCouncil(prefs: CouncilPrefs) {
+    councilOpen = false;
+    const t = text.trim();
+    if ((!t && attachments.length === 0) || !app.connection || app.busy) return;
+    noteActivity();
+    const pending = attachments.slice();
+    const typed = text;
+    clearDraft(key);
+    requestAnimationFrame(autogrow);
+    await dispatch(typed, pending, false, prefs);
+  }
+  function onCouncilDocClick(e: MouseEvent) {
+    const t = e.target as Node;
+    if (councilWrap?.contains(t)) return;
+    councilOpen = false;
+  }
+  $effect(() => {
+    if (!councilOpen) return;
+    document.addEventListener("mousedown", onCouncilDocClick, true);
+    return () => document.removeEventListener("mousedown", onCouncilDocClick, true);
+  });
+  $effect(() => {
+    void key;
+    councilOpen = false;
+  });
 
   /** The first line of a held message, for its row. */
   function firstLine(t: string): string {
@@ -1299,6 +1347,33 @@
             Ask aside
           </button>
         {/if}
+        {#if app.connection?.engine === "claude-code"}
+          <!-- The council (nightshift backlog 149): the popover's roster
+               and mode for this turn, then Send to the council. -->
+          <span class="council-wrap" bind:this={councilWrap}>
+            <button
+              class="ns-btn ghost small"
+              class:on={councilOpen}
+              bind:this={councilBtn}
+              title="Send this message to a council: several models answer it independently, then this chat's model chairs their answers"
+              aria-haspopup="dialog"
+              aria-expanded={councilOpen}
+              onclick={() => (councilOpen = !councilOpen)}
+            >
+              Council
+            </button>
+            {#if councilOpen}
+              <CouncilPopover
+                disabled={!app.connection || (!text.trim() && attachments.length === 0)}
+                onsend={(p) => void submitCouncil(p)}
+                onclose={() => {
+                  councilOpen = false;
+                  councilBtn?.focus();
+                }}
+              />
+            {/if}
+          </span>
+        {/if}
         <button
           class="ns-btn accent send"
           onclick={() => void submit()}
@@ -1401,6 +1476,15 @@
 {/snippet}
 
 <style>
+  /* The council button's frame (backlog 149): the popover hangs off it. */
+  .council-wrap {
+    position: relative;
+    display: inline-flex;
+    flex: none;
+  }
+  .council-wrap .ns-btn.on {
+    color: var(--accent-ink);
+  }
   /* The in-box pickers (backlog 112, board 10's A): small text buttons
      beside Attach, a menu above each. `.pick-wrap` is the menu's frame. */
   .pick-wrap {

@@ -310,6 +310,17 @@ impl<'a> Recorder<'a> {
         }
     }
 
+    /// A block of the caller's own, after whatever prose has streamed so
+    /// far (nightshift backlog 149, 2026-09-17): the council's seat blocks
+    /// and its record, appended to the chair's message before `finish` so
+    /// they are blocks of that message and not text merged into its reply.
+    /// The prose is closed first, so the order in the log is the order of
+    /// events.
+    pub fn push_block(&mut self, block: ContentBlock) {
+        self.flush_prose();
+        self.blocks.push(block);
+    }
+
     /// Close the turn: the final assistant message, plus a result for any
     /// call left open.
     ///

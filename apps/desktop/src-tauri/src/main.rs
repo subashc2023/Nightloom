@@ -2282,6 +2282,15 @@ async fn send(
     outcome.map_err(|e| e.to_string())
 }
 
+/// One seat's stream event during a council turn (nightshift backlog 149):
+/// `council-event`, beside the chat's own `turn-event`, so the window draws
+/// the seats' progress without the recorder or the live reply seeing it.
+#[derive(Serialize, Clone)]
+struct CouncilEvent<'a> {
+    seat: usize,
+    event: &'a TurnEvent,
+}
+
 /// What one agent turn spent and where it went.
 ///
 /// Separate from [`TurnOutcome`] because almost none of it is the same
@@ -2337,7 +2346,12 @@ async fn send_agent(
     text: String,
     images: Option<Vec<ImageInput>>,
     documents: Option<Vec<DocumentInput>>,
+    council: Option<nightloom_service::council::CouncilRequest>,
 ) -> Result<AgentTurn, String> {
+    use nightloom_service::council;
+    if let Some(c) = &council {
+        c.validate().map_err(|e| e.to_string())?;
+    }
     let mut agent_guard = state.agent.lock().await;
     let agent = agent_guard
         .as_mut()
@@ -2360,6 +2374,67 @@ async fn send_agent(
         images: images.unwrap_or_default(),
         documents: documents.unwrap_or_default(),
     };
+    // The log keeps the message as typed, whatever the wire carries.
+    let typed = input.text.clone();
+
+    let cancel = CancellationToken::new();
+    *state.cancel.lock().unwrap() = cancel.clone();
+
+    // A council turn (nightshift backlog 149, 2026-09-17;
+    // `nightloom_service::council`): the seats run first, in parallel,
+    // each a fork of this chat's CLI session under its own model, their
+    // streams to the window as `council-event` and their standing as the
+    // Running-tasks rows — the recorder sees none of it. Then the chair
+    // is *this* turn: the chat's own model, warm, over the answers
+    // anonymised and shuffled, and its reply is the chat's reply. The
+    // seats' answers and the record go into the chair's message as folded
+    // blocks once it has landed. If no seat answered, the turn goes as an
+    // ordinary one and says so.
+    let mut council_run: Option<(council::CouncilRequest, Vec<council::SeatResult>)> = None;
+    let mut council_notices: Vec<String> = Vec::new();
+    if let Some(mut request) = council {
+        if request.areas.is_empty() {
+            request.areas = council::areas_for_next(session);
+        }
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(1);
+        let mut on_seat = |seat: usize, e: TurnEvent| {
+            if matches!(e, TurnEvent::SubagentStatus { .. }) {
+                let _ = app.emit("turn-event", &e);
+            } else {
+                let _ = app.emit("council-event", CouncilEvent { seat, event: &e });
+            }
+        };
+        let results = council::run_seats(
+            agent,
+            agent.spec(),
+            Some(&*session),
+            &request,
+            &typed,
+            seed,
+            &cancel,
+            &mut on_seat,
+        )
+        .await;
+        let answered = results.iter().filter(|r| r.error.is_none()).count();
+        for r in results.iter().filter(|r| r.error.is_some()) {
+            council_notices.push(format!(
+                "council seat {} ({}) did not answer: {}",
+                r.index + 1,
+                r.seat.model,
+                r.error.as_deref().unwrap_or("")
+            ));
+        }
+        if answered == 0 {
+            council_notices.push("no council seat answered; answered as an ordinary turn".into());
+        } else {
+            let answers = council::anonymised(&results);
+            input.text = council::chair_prompt(request.mode, &typed, &answers, &request.areas);
+            council_run = Some((request, results));
+        }
+    }
     // An ephemeral chat's CLI session cannot be resumed (measured: see
     // `AgentSpec::no_session_persistence`), so what the CLI is sent from the
     // second turn on is the conversation Nightloom holds in memory, rendered
@@ -2374,11 +2449,7 @@ async fn send_agent(
     // text as typed; the note is on the wire only, where the API engine's
     // projection puts the same one.
     let switch_note = session.kind_switch_note();
-    session.record_user_with_attachments(
-        input.text.clone(),
-        input.images.clone(),
-        input.documents.clone(),
-    );
+    session.record_user_with_attachments(typed, input.images.clone(), input.documents.clone());
     if let Some(carried) = carried {
         input.text = carried;
     }
@@ -2416,8 +2487,8 @@ async fn send_agent(
         }
     }
 
-    let cancel = CancellationToken::new();
-    *state.cancel.lock().unwrap() = cancel.clone();
+    // (The cancel token is made above, before the council's seats, so a
+    // Stop reaches them too.)
 
     // Seeded from the last turn rather than from the rail, because what the
     // rail holds may be an alias. `sonnet` is not in the limits or pricing
@@ -2579,6 +2650,27 @@ async fn send_agent(
         if plan_then.is_some() {
             agent.plan_exited();
         }
+    }
+
+    // The council's blocks (backlog 149), whichever way the chair ended:
+    // each seat's answer under its label with the map revealed, then the
+    // record — the overlap, the areas for next time — as the last block of
+    // the chair's message. The chair's own text names the gaps that become
+    // those areas; a chair that failed leaves none.
+    if let Some((request, results)) = &council_run {
+        for r in results {
+            recorder.push_block(nightloom_core::ContentBlock::Text {
+                text: council::seat_block(r),
+            });
+        }
+        let chair_text = result.as_ref().map(|o| o.text.as_str()).unwrap_or("");
+        let record = council::CouncilRecord::new(request.mode, results, &request.areas, chair_text);
+        recorder.push_block(nightloom_core::ContentBlock::Text {
+            text: council::council_block(&record),
+        });
+    }
+    if let Ok(o) = &mut result {
+        o.notices.extend(council_notices);
     }
 
     match result {
@@ -4294,6 +4386,81 @@ async fn refresh_usage_ledger() -> Result<nightloom_service::usage::UsageSummary
 /// is estimated: a machine with neither file answers `source: "none"`.
 /// The frontend asks at turn end and on connect, never on a timer faster
 /// than the sample changes.
+/// One row of Settings → Council's table (nightshift backlog 149, blocker
+/// 244): a council turn as its chat's `<council>` record names it.
+#[derive(Serialize)]
+struct CouncilTurnRow {
+    session: String,
+    title: String,
+    at: String,
+    mode: nightloom_service::council::CouncilMode,
+    seats: Vec<String>,
+    tokens: u64,
+    cost_usd: Option<f64>,
+    shared_by_all: f64,
+    fired: bool,
+}
+
+/// The recent council turns of this store's chats, newest first: the
+/// newest `limit` records, read from the newest chats' logs on the
+/// blocking pool (a council record is a block of a reply, so the logs
+/// are opened; the listing alone cannot say which chats held one).
+#[tauri::command]
+async fn council_turns(
+    state: State<'_, AppState>,
+    limit: usize,
+) -> Result<Vec<CouncilTurnRow>, String> {
+    use nightloom_core::{ContentBlock, SessionEvent};
+    use nightloom_service::council::parse_council_block;
+    let dir = state.log_dir().await;
+    blocking(move || -> Result<Vec<CouncilTurnRow>, String> {
+        let mut rows = Vec::new();
+        let list = store::list(&dir).map_err(|e| e.to_string())?;
+        for summary in list.iter().take(200) {
+            let Ok(session) = nightloom_core::Session::load(&summary.path) else {
+                continue;
+            };
+            let title = summary.label(60);
+            for e in session.events() {
+                let SessionEvent::AssistantMessage { blocks, .. } = e else {
+                    continue;
+                };
+                for b in blocks {
+                    let ContentBlock::Text { text } = b else {
+                        continue;
+                    };
+                    let Some(r) = parse_council_block(text) else {
+                        continue;
+                    };
+                    let usage = r.total_usage();
+                    rows.push(CouncilTurnRow {
+                        session: summary.id.clone(),
+                        title: title.clone(),
+                        at: r.at.to_rfc3339(),
+                        mode: r.mode,
+                        seats: r.seats.iter().map(|s| s.model.clone()).collect(),
+                        tokens: usage.input_tokens + usage.output_tokens,
+                        cost_usd: r.total_cost(),
+                        shared_by_all: r.overlap.shared_by_all,
+                        fired: r.fired,
+                    });
+                }
+            }
+        }
+        rows.sort_by(|a, b| b.at.cmp(&a.at));
+        rows.truncate(limit.max(1));
+        Ok(rows)
+    })
+    .await
+}
+
+/// What each provider says is left on its key (backlog 149, blocker 244):
+/// OpenRouter's credits endpoint; the rest `not exposed`.
+#[tauri::command]
+async fn provider_credits() -> Result<Vec<nightloom_service::credits::ProviderCredit>, String> {
+    Ok(nightloom_service::credits::provider_credits().await)
+}
+
 #[tauri::command]
 async fn plan_usage() -> Result<nightloom_service::plan_usage::PlanUsage, String> {
     tokio::task::spawn_blocking(nightloom_service::plan_usage::read)
@@ -6129,6 +6296,8 @@ fn main() {
             transcript,
             send,
             send_agent,
+            council_turns,
+            provider_credits,
             ask_aside,
             cancel_aside,
             cancel,

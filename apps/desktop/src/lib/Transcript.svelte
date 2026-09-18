@@ -36,6 +36,7 @@
   import { toolInputSummary } from "./transcriptPrefs.svelte";
   import { forkLine } from "./edit";
   import { parseSubagentBlock } from "./subagent";
+  import { councilOfTurn, rosterLabel } from "./council";
   import { wordDiff } from "./textdiff";
   import { continuedFlags } from "./runs";
   import { quoteLabel, samePassage, selectionText, type AsideQuote } from "./asideQuote";
@@ -1407,6 +1408,18 @@
                   {/each}
                 </div>
               {:else if item.text}<div class="user-text">{item.text}</div>{/if}
+              {#if !item.removed}
+                {@const council = councilOfTurn(app.events, item.index)}
+                {#if council}
+                  <!-- The council chip (nightshift backlog 149): this
+                       message went to the seats the reply's record names. -->
+                  <span
+                    class="ns-chip mono council-chip"
+                    title="Sent to a council of {council.seats.length}: {rosterLabel(council.seats)} · {council.mode} pass"
+                    >council · {council.seats.length}</span
+                  >
+                {/if}
+              {/if}
             </div>
             {#if item.original !== null && item.removed}
               <details class="original">
@@ -1960,6 +1973,12 @@
   .editor-row {
     display: flex;
     gap: 6px;
+  }
+  .council-chip {
+    display: inline-block;
+    margin-top: 6px;
+    font-size: 10.5px;
+    color: var(--dim);
   }
   .user-bubble {
     /* A rounded, borderless tint, the way claude.ai draws the user's turn

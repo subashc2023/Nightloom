@@ -31,6 +31,7 @@ import { RESUME_TEXT, SleepWatch, loadSleepPrefs, pushPowerPrefs, type Woke } fr
 import { asideFollowUp, asideQuestion, type AsideQuote } from "./asideQuote";
 import type { AsideAnchor } from "./asideCard";
 import { loadAsides } from "./asides";
+import { loadCouncilPrefs, type CouncilPrefs, type CouncilRequest } from "./council";
 import { SEARCH_COLUMN_MAX, searchGrowth } from "./search.svelte";
 import * as tabs from "./tabs";
 import type { TabContent, Workspace } from "./tabs";
@@ -4352,6 +4353,7 @@ export async function send(
   text: string,
   images: ImageInput[] = [],
   documents: DocumentInput[] = [],
+  council: CouncilRequest | null = null,
 ): Promise<void> {
   if (!app.connection || app.busy) return;
   stopped = false;
@@ -4361,7 +4363,7 @@ export async function send(
   history.clear(chatScope());
   app.undoTick++;
   if (app.connection.engine === "claude-code") {
-    return sendAgent(text, images, documents);
+    return sendAgent(text, images, documents, council);
   }
   // The pending chat's draft key, taken now: it names the project and the
   // kind this send is making a chat in (nightshift backlog 094).
@@ -4445,6 +4447,7 @@ async function sendAgent(
   text: string,
   images: ImageInput[] = [],
   documents: DocumentInput[] = [],
+  council: CouncilRequest | null = null,
 ): Promise<void> {
   // ~~The hand-off's wrap-up rides this message when the window has crossed
   // the chat's threshold (nightshift backlog 086); `withWrapUp` also moves
@@ -4465,7 +4468,20 @@ async function sendAgent(
     ...(documents.length > 0 ? { documents } : {}),
     at: new Date().toISOString(),
   });
-  app.live = { segments: [] };
+  // A council turn (nightshift backlog 149): the seats run first, each a
+  // row in Running tasks (their `subagent_status` rows arrive on the
+  // ordinary `turn-event`), and the chair's reply streams as the turn's
+  // own. The live message says so until the chair's first word.
+  app.live = {
+    segments: council
+      ? [
+          {
+            kind: "notice",
+            text: `Council: ${council.seats.length} seats answering in parallel (${council.seats.map((s) => s.model).join(" + ")}) — each is a row in Running tasks; the chair replies when they return.`,
+          },
+        ]
+      : [],
+  };
   app.liveUsage = null;
   app.turnSeq += 1;
   app.busy = true;
@@ -4475,6 +4491,7 @@ async function sendAgent(
       text,
       images.length > 0 ? images : undefined,
       documents.length > 0 ? documents : undefined,
+      council ?? undefined,
     );
     app.agentTurn = res;
     // The plan chip from this turn's own rate-limit event when the CLI
@@ -4629,6 +4646,21 @@ export async function followUpAside(question: string): Promise<void> {
  */
 export const asideStash: Map<string, Aside> =
   typeof localStorage === "undefined" ? new Map() : loadAsides(localStorage);
+
+/**
+ * The council roster and mode each chat last used (nightshift backlog
+ * 149, blocker 239): the Settings default until the popover changes it
+ * for a chat, then that chat's, for the life of the window — the drafts
+ * pattern, never persisted. The pending chat (no id yet) shares one slot.
+ */
+const councilByChat: Map<string, CouncilPrefs> = new Map();
+const PENDING_COUNCIL = "\u0000pending";
+export function councilFor(chat: string | null): CouncilPrefs {
+  return councilByChat.get(chat ?? PENDING_COUNCIL) ?? loadCouncilPrefs();
+}
+export function setCouncilFor(chat: string | null, prefs: CouncilPrefs): void {
+  councilByChat.set(chat ?? PENDING_COUNCIL, structuredClone(prefs));
+}
 
 /** Stash the open chat's thread and take the next chat's, if any. */
 function switchAside(next: string | null): void {

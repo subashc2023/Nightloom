@@ -11,6 +11,8 @@ import type {
   ChatMode,
   CompactResult,
   ConnectArgs,
+  CouncilTurnRow,
+  ProviderCredit,
   ConnectResult,
   DocumentInput,
   DreamReport,
@@ -65,6 +67,7 @@ import type {
   TurnResult,
   WireView,
 } from "./types";
+import type { CouncilRequest } from "./council";
 
 // All backend errors reject with a plain string.
 
@@ -165,8 +168,27 @@ export function sendAgent(
   text: string,
   images?: ImageInput[],
   documents?: DocumentInput[],
+  council?: CouncilRequest,
 ): Promise<AgentTurnResult> {
-  return invoke("send_agent", { text, images, documents });
+  return invoke("send_agent", { text, images, documents, council });
+}
+
+/**
+ * The recent council turns across the chats of the open project
+ * (nightshift backlog 149): each chat's `<council>` records, newest first,
+ * for Settings → Council's table.
+ */
+export function councilTurns(limit = 30): Promise<CouncilTurnRow[]> {
+  return invoke("council_turns", { limit });
+}
+
+/**
+ * What each provider says is left on its key (backlog 149, blocker 244):
+ * OpenRouter's credits endpoint where a key is stored; the others say
+ * `not exposed`.
+ */
+export function providerCredits(): Promise<ProviderCredit[]> {
+  return invoke("provider_credits");
 }
 
 /**

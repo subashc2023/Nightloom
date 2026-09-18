@@ -1036,6 +1036,35 @@ export type TurnEvent =
    *  keyed by the spawning call. The Running-tasks panel's row. */
   | ({ type: "subagent_status" } & SubagentStatus);
 
+
+/**
+ * One row of Settings → Council's table (nightshift backlog 149): a
+ * council turn as its `<council>` record and its chat name it.
+ */
+export interface CouncilTurnRow {
+  session: string;
+  title: string;
+  at: string;
+  mode: "answer" | "disproof";
+  seats: string[];
+  tokens: number;
+  cost_usd: number | null;
+  shared_by_all: number;
+  fired: boolean;
+}
+
+/** A provider's remaining credit, where its API exposes one (backlog 149). */
+export interface ProviderCredit {
+  kind: string;
+  /** `available`, `not exposed`, `no key`, or `error`. */
+  status: string;
+  /** Dollars left, when `available`. */
+  remaining_usd?: number | null;
+  /** Dollars used on the key, when the endpoint says. */
+  used_usd?: number | null;
+  detail?: string | null;
+}
+
 /** One subagent as the translator keeps it (backlog 152). `tokens` is the
  *  CLI's own figure — the latest round's whole request and response, the
  *  Claude app's number; `usage` the sum over the child's rounds. */

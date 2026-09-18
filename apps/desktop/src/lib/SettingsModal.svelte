@@ -56,7 +56,15 @@
     type ModelEntry,
     type ModelSection,
   } from "./catalog";
-  import type { Note, ProviderInfo, RemoteStatus, SearchBackendInfo, UsageSummary } from "./types";
+  import type { CouncilTurnRow, Note, ProviderCredit, ProviderInfo, RemoteStatus, SearchBackendInfo, UsageSummary } from "./types";
+  import {
+    MAX_SEATS as COUNCIL_MAX_SEATS,
+    MIN_SEATS as COUNCIL_MIN_SEATS,
+    loadCouncilPrefs,
+    saveCouncilPrefs,
+    type CouncilMode,
+    type CouncilPrefs,
+  } from "./council";
   import { relativeTime } from "./time";
   import { dreamEngineRows, dreamModelPills, dreamSentence } from "./dreamRows";
   import { loadNotifyPrefs, notifyUsageRefreshed, saveNotifyPrefs, type NotifyPrefs } from "./notify";
@@ -739,6 +747,65 @@
     }
   }
 
+  /*
+   * The council (nightshift backlog 149, blockers 239 and 244): the
+   * default roster and mode every chat's popover starts from, and the
+   * table of recent council turns; the provider-credits row lives on the
+   * Cost pane. The default is in localStorage (`council.ts`); a chat's
+   * own roster is the window's, in `state.svelte.ts`.
+   */
+  let council = $state<CouncilPrefs>(loadCouncilPrefs());
+  const councilModels = AGENT_MODELS.filter((m) => m !== "");
+  function keepCouncil(): void {
+    saveCouncilPrefs(council);
+  }
+  function councilSetModel(i: number, model: string): void {
+    council.seats[i] = { ...council.seats[i], model };
+    keepCouncil();
+  }
+  function councilRemove(i: number): void {
+    if (council.seats.length <= COUNCIL_MIN_SEATS) return;
+    council.seats.splice(i, 1);
+    keepCouncil();
+  }
+  function councilAdd(): void {
+    if (council.seats.length >= COUNCIL_MAX_SEATS) return;
+    const last = council.seats[council.seats.length - 1];
+    council.seats.push({ model: last?.model ?? "opus", engine: "subscription" });
+    keepCouncil();
+  }
+  function councilSetMode(mode: CouncilMode): void {
+    council.mode = mode;
+    keepCouncil();
+  }
+  let councilTurns = $state<CouncilTurnRow[] | null>(null);
+  let councilTurnsError = $state<string | null>(null);
+  async function refreshCouncilTurns(): Promise<void> {
+    try {
+      councilTurns = await api.councilTurns(30);
+      councilTurnsError = null;
+    } catch (e) {
+      councilTurnsError = String(e);
+      councilTurns = [];
+    }
+  }
+  let credits = $state<ProviderCredit[] | null>(null);
+  let creditsBusy = $state(false);
+  async function refreshCredits(): Promise<void> {
+    creditsBusy = true;
+    try {
+      credits = await api.providerCredits();
+    } catch (e) {
+      credits = [{ kind: "credits", status: "error", detail: String(e) }];
+    } finally {
+      creditsBusy = false;
+    }
+  }
+  $effect(() => {
+    if (selected === "council" && councilTurns === null) void refreshCouncilTurns();
+    if (selected === "cost" && credits === null) void refreshCredits();
+  });
+
   /**
    * The nav's groups in order, each with its panes (nightshift backlog
    * 109): ⌘1…⌘8 is the group — its first pane, or the next pane of the
@@ -754,7 +821,7 @@
   const groups = $derived.by(() => [
     { title: "Usage", panes: ["usage"] },
     { title: "Cost", panes: ["cost"] },
-    { title: "Subscription", panes: ["claude-code"] },
+    { title: "Subscription", panes: ["claude-code", "council"] },
     { title: "Knowledge", panes: ["knowledge", "models"] },
     { title: "Projects", panes: ["projects"] },
     { title: "Providers", panes: app.providers.map((p) => p.kind) },
@@ -923,6 +990,14 @@
     >
       <span class="nav-label">Subscription</span>
       <span class="st">hand-off {handoffDefaultPct}%</span>
+    </button>
+    <button
+      class="nav-item"
+      class:active={selected === "council"}
+      onclick={() => select("council")}
+    >
+      <span class="nav-label">Council</span>
+      <span class="st">{council.seats.length} seats · {council.mode}</span>
     </button>
     <div class="nav-title">Knowledge<Kbd keys={keyOf(3)} dim /></div>
     <button
@@ -1545,6 +1620,140 @@
         </section>
 
       {/if}
+      <!-- Provider credits (nightshift backlog 149, blocker 244): what
+           each key has left, where the provider's API says. -->
+      <section class="card">
+        <div class="ch"><span class="t">Provider credits</span><span class="spacer"></span><button class="ns-btn ghost small" disabled={creditsBusy} onclick={() => void refreshCredits()}>{creditsBusy ? "Asking…" : "Refresh"}</button></div>
+        {#if credits === null}
+          <p class="note small">Asking the providers…</p>
+        {:else}
+          <div class="usage-table">
+            <table>
+              <thead><tr><th class="l">provider</th><th class="l">status</th><th>remaining</th><th>used</th><th class="l">note</th></tr></thead>
+              <tbody>
+                {#each credits as c (c.kind)}
+                  <tr>
+                    <td class="l"><code>{c.kind}</code></td>
+                    <td class="l">{c.status}</td>
+                    <td>{c.remaining_usd != null ? usd(c.remaining_usd) : "–"}</td>
+                    <td>{c.used_usd != null ? usd(c.used_usd) : "–"}</td>
+                    <td class="l">{c.detail ?? ""}</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+          <p class="note small">
+            OpenRouter's API reports credits bought and used; Anthropic's,
+            OpenAI's, Gemini's and Groq's show a balance only in their consoles.
+            The subscription engine has no balance — its window is on the Usage page.
+          </p>
+        {/if}
+      </section>
+    </div>
+  {:else if selected === "council"}
+    <!-- The council's pane (nightshift backlog 149): the default roster
+         and mode, and the table of recent council turns. -->
+    <div class="pane">
+      <div class="pane-head">
+        <h2 class="pane-title">Council</h2>
+        <span class="slug">several models answer one message; this chat's model chairs</span>
+        <span class="spacer"></span>
+        <button class="close" title="Close" aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+      </div>
+      <p class="note">
+        The <em>Council</em> button beside Send (Claude Code engine) sends one
+        message to several <em>seats</em> — member processes, each on its own
+        model, each with its own searches, none seeing another — and then the
+        chat's own model <em>chairs</em>: it reads the answers with the names
+        hidden and the order shuffled and writes the reply in four sections
+        (agreed · disputed, with each side's evidence · found by one member
+        only · its answer, attributed). The seats' answers fold under the
+        reply with the map. Every seat here runs on your subscription — usage,
+        not dollars; the figures below are the CLI's API-equivalent estimate.
+      </p>
+
+      <section class="card">
+        <div class="ch"><span class="t">Default roster</span><span class="dim small">what the popover starts from; a chat remembers its own</span></div>
+        <div class="council-seats">
+          {#each council.seats as seat, i (i)}
+            <div class="council-seat-row">
+              <span class="dim small">seat {i + 1}</span>
+              <select value={seat.model} aria-label="default seat {i + 1} model" onchange={(e) => councilSetModel(i, e.currentTarget.value)}>
+                {#each councilModels as m (m)}
+                  <option value={m}>{m}</option>
+                {/each}
+              </select>
+              <span class="dim small">subscription</span>
+              <button
+                class="ns-btn ghost small"
+                disabled={council.seats.length <= COUNCIL_MIN_SEATS}
+                title={council.seats.length <= COUNCIL_MIN_SEATS ? `A council needs ${COUNCIL_MIN_SEATS} seats` : "Remove"}
+                onclick={() => councilRemove(i)}>×</button
+              >
+            </div>
+          {/each}
+          <div class="council-seat-row">
+            <button class="ns-btn ghost small" disabled={council.seats.length >= COUNCIL_MAX_SEATS} onclick={councilAdd}>+ seat</button>
+          </div>
+        </div>
+        <p class="note small">
+          The design's default is Opus + Fable + Opus: two copies of one model
+          each take a different angle before searching. A seat on the chat's
+          own model forks the chat's session and reads its cache; a seat on
+          another model starts cold with the same history. Seats on an API
+          key (an outside model such as GPT-6) are designed, not built.
+        </p>
+      </section>
+
+      <section class="card">
+        <div class="ch"><span class="t">Mode</span></div>
+        <div class="council-seat-row" role="radiogroup" aria-label="Default mode">
+          <button class="ns-chip" class:on={council.mode === "answer"} role="radio" aria-checked={council.mode === "answer"} onclick={() => councilSetMode("answer")}>answer</button>
+          <button class="ns-chip" class:on={council.mode === "disproof"} role="radio" aria-checked={council.mode === "disproof"} onclick={() => councilSetMode("disproof")}>disproof</button>
+        </div>
+        <p class="note small">
+          <em>answer</em>: a research dump; each seat answers its questions with
+          sources. <em>disproof</em>: an idea; each seat searches for what already
+          exists and what contradicts it and returns a hits table with a
+          where-I-looked list — no seat and no chair scores novelty or says
+          "new"; that judgement stays yours. When every seat cites at least
+          half of the same sources, the next council turn on that chat assigns
+          each seat an area from the chair's <em>Gaps</em> section.
+        </p>
+      </section>
+
+      <section class="card">
+        <div class="ch"><span class="t">Recent council turns</span><span class="spacer"></span><button class="ns-btn ghost small" onclick={() => void refreshCouncilTurns()}>Refresh</button></div>
+        {#if councilTurnsError}
+          <div class="error">{councilTurnsError}</div>
+        {:else if councilTurns === null}
+          <p class="note small">Reading the chats…</p>
+        {:else if councilTurns.length === 0}
+          <p class="note small">None yet in this project's chats.</p>
+        {:else}
+          <div class="usage-table">
+            <table>
+              <thead>
+                <tr><th class="l">chat</th><th class="l">when</th><th class="l">seats</th><th>tokens</th><th>est. $</th><th>overlap</th></tr>
+              </thead>
+              <tbody>
+                {#each councilTurns as t (t.session + t.at)}
+                  <tr>
+                    <td class="l">{t.title || t.session.slice(0, 8)}</td>
+                    <td class="l">{relativeTime(t.at)}</td>
+                    <td class="l">{t.seats.join(" + ")} · {t.mode}</td>
+                    <td>{t.tokens.toLocaleString()}</td>
+                    <td>{t.cost_usd != null ? t.cost_usd.toFixed(2) : "–"}</td>
+                    <td>{Math.round(t.shared_by_all * 100)}%{t.fired ? " ↑" : ""}</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+          <p class="note small">Tokens are the seats' sum (the chair's are the chat's own turn); ↑ marks a turn whose overlap set areas for the next.</p>
+        {/if}
+      </section>
     </div>
   {:else if selected === "projects"}
     <div class="pane">
@@ -2450,6 +2659,29 @@
   }
   /* The usage pane's spend table: models down, windows across, mono
      figures right-aligned so the decimal points line up. */
+  .council-seats {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .council-seat-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .council-seat-row select {
+    font: inherit;
+    font-size: 12px;
+    background: var(--bg);
+    color: var(--ink);
+    border: 1px solid var(--line2);
+    border-radius: 6px;
+    padding: 2px 6px;
+  }
+  .council-seat-row .ns-chip.on {
+    color: var(--accent-ink);
+    border-color: var(--accent);
+  }
   .usage-table {
     overflow-x: auto;
   }

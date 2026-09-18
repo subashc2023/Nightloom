@@ -2,6 +2,8 @@
   import type { Segment } from "./state.svelte";
   import type { ApprovalRequest, Usage } from "./types";
   import { renderMarkdown } from "./markdown";
+  import CouncilBlocks from "./CouncilBlocks.svelte";
+  import { parseCouncilRecord, parseCouncilSeat } from "./council";
   import { wordDiff } from "./textdiff";
   import { exactTime, relativeTimeLong } from "./time";
   import { compactJson } from "./toolinput";
@@ -562,7 +564,13 @@
         {/if}
       </div>
     {:else if g.seg.kind === "text"}
-      {#if diff && originals?.[g.i] != null}
+      {@const councilSeat = parseCouncilSeat(g.seg.text)}
+      {@const councilRecord = councilSeat ? null : parseCouncilRecord(g.seg.text)}
+      {#if councilSeat || councilRecord}
+        <!-- The council's blocks (nightshift backlog 149): a seat's answer
+             folded under its map line, the record as the sources table. -->
+        <CouncilBlocks seat={councilSeat} record={councilRecord} />
+      {:else if diff && originals?.[g.i] != null}
         {@const before = originals[g.i]!}
         <!-- The edit as a diff over the markdown source (backlog 105): the
              source is what he edited, and a mark inside rendered HTML would
