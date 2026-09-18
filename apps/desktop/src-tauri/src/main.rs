@@ -4490,6 +4490,19 @@ async fn plan_usage() -> Result<nightloom_service::plan_usage::PlanUsage, String
         .map_err(|e| format!("reading the plan usage failed: {e}"))
 }
 
+/// The plan's figure refreshed through the CLI's print-mode `/usage` when
+/// the files are over a minute old (nightshift backlog 166, blocker 264):
+/// exact, zero tokens, ~12 s. The front end calls it every five minutes
+/// while the Claude Code engine is connected.
+#[tauri::command]
+async fn plan_usage_refresh() -> Result<nightloom_service::plan_usage::PlanUsage, String> {
+    tokio::task::spawn_blocking(|| {
+        nightloom_service::plan_usage::read_fresh(std::time::Duration::from_secs(60))
+    })
+    .await
+    .map_err(|e| format!("refreshing the plan usage failed: {e}"))
+}
+
 /// Point new projects at a folder, or back at the default with `None`.
 ///
 /// **Moves nothing.** The projects already made are registered by their own
@@ -6360,6 +6373,7 @@ fn main() {
             usage_ledger,
             refresh_usage_ledger,
             plan_usage,
+            plan_usage_refresh,
             resolve_new_project_path,
             new_project,
             open_project,

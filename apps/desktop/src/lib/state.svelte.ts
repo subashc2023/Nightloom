@@ -1212,6 +1212,7 @@ export async function init(): Promise<void> {
   // now — and one at start-up, below, for a pass missed while it was closed.
   await listen<Woke>("system-woke", () => void maybeDailyPass());
   startDailyClock();
+  startPlanUsageClock();
   // The Refresh-now banner's click (nightshift backlog 116): Rust has
   // already brought the window forward; this opens Settings on Usage.
   await listen("usage-banner-clicked", () => {
@@ -1470,9 +1471,9 @@ export async function refreshDreamStatus(): Promise<void> {
  * the end of every agent turn, which is as often as the figure can have
  * moved on Nightloom's account of it.
  */
-export async function refreshPlanUsage(): Promise<void> {
+export async function refreshPlanUsage(live = false): Promise<void> {
   try {
-    const fresh = await api.planUsage();
+    const fresh = await (live ? api.planUsageRefresh() : api.planUsage());
     // A file older than the turn-sourced reading already held is not an
     // update: the turn's figure was the account's at that moment.
     const held = app.planUsage;
@@ -1882,6 +1883,22 @@ let dailyClock: ReturnType<typeof setInterval> | null = null;
 function startDailyClock(): void {
   if (dailyClock) return;
   dailyClock = setInterval(() => void maybeDailyPass(), 60_000);
+}
+
+/**
+ * The plan gauge refreshed through the CLI's print-mode `/usage` every five
+ * minutes while the Claude Code engine is connected (backlog 166, blocker
+ * 264, his yes 2026-09-18): the exact figure for zero tokens, so the chip
+ * and the subagent limits (165) never act on a stale file. Started with the
+ * daily clock; a provider connection makes each tick a no-op.
+ */
+export const PLAN_USAGE_LIVE_EVERY_MS = 5 * 60_000;
+let planUsageClock: ReturnType<typeof setInterval> | null = null;
+function startPlanUsageClock(): void {
+  if (planUsageClock) return;
+  planUsageClock = setInterval(() => {
+    if (app.connection?.engine === "claude-code" && !app.busy) void refreshPlanUsage(true);
+  }, PLAN_USAGE_LIVE_EVERY_MS);
 }
 
 /**

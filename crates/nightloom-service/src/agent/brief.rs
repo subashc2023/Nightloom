@@ -298,7 +298,10 @@ pub fn freshest(
 /// The desktop's gauge as a reading (`plan_usage`), when it has the
 /// five-hour figure.
 fn gauge_reading() -> Option<WindowReading> {
-    let u = crate::plan_usage::read();
+    // Fresh through print-mode `/usage` when the files are over a minute
+    // old (blocker 264, his yes 2026-09-18): a fan-out's first hook pays
+    // ~12 s, the rest of the burst reuse it (one refresh a minute).
+    let u = crate::plan_usage::read_fresh(std::time::Duration::from_secs(60));
     let pct = u.five_hour?;
     let resets_at = u
         .five_hour_resets_at

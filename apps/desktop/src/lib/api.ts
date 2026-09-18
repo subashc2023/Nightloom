@@ -601,6 +601,13 @@ export function planUsage(): Promise<PlanUsage> {
   return invoke("plan_usage");
 }
 
+/** The figure refreshed through the CLI's print-mode `/usage` when the
+ *  files are over a minute old (backlog 166, blocker 264): exact, zero
+ *  tokens, ~12 s on the backend. */
+export function planUsageRefresh(): Promise<PlanUsage> {
+  return invoke("plan_usage_refresh");
+}
+
 /** The folder a name would get, for the form's live path row. */
 export function resolveNewProjectPath(name: string): Promise<NewProjectPath> {
   return invoke("resolve_new_project_path", { name });
