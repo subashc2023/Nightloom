@@ -13,6 +13,8 @@
   } from "./state.svelte";
   import { cacheState } from "./cache";
   import RightRail from "./RightRail.svelte";
+  import { portal, anchorBelow } from "./portal";
+  const POP_WIDTH = 340;
   import NotificationCentre from "./NotificationCentre.svelte";
   import TerminalButton from "./TerminalButton.svelte";
   import { chatKind, kindLabel, openSession } from "./state.svelte";
@@ -297,6 +299,24 @@
     app.showContext = false;
     app.showRail = !app.showRail;
   }
+  // The card's place, from the chip's rectangle, refreshed while it is
+  // open on resize and on scroll (backlog 163).
+  let popPos = $state({ top: 0, left: 0 });
+  function placePop(): void {
+    if (!chipEl) return;
+    const r = chipEl.getBoundingClientRect();
+    popPos = anchorBelow(r, POP_WIDTH, window.innerWidth);
+  }
+  $effect(() => {
+    if (!app.showRail) return;
+    placePop();
+    window.addEventListener("resize", placePop);
+    window.addEventListener("scroll", placePop, true);
+    return () => {
+      window.removeEventListener("resize", placePop);
+      window.removeEventListener("scroll", placePop, true);
+    };
+  });
   function toggleContext() {
     app.showRail = false;
     app.showContext = !app.showContext;
@@ -470,7 +490,15 @@
   </div>
 
   {#if app.showRail}
-    <div class="popover" bind:this={popEl}>
+    <!-- Portalled to body and placed by the chip's rectangle (backlog 163):
+         inside the bar's stacking context it painted under the Welcome
+         page's floating composer and off its chip. -->
+    <div
+      class="popover"
+      bind:this={popEl}
+      use:portal
+      style="top: {popPos.top}px; left: {popPos.left}px"
+    >
       <RightRail />
     </div>
   {/if}
@@ -693,9 +721,8 @@
   }
 
   .popover {
-    position: absolute;
-    top: calc(100% - 1px);
-    right: 20px;
+    position: fixed;
+    /* top and left are set inline from the chip's rectangle (backlog 163). */
     /* 340 × 780 since the 2026-09-13 redesign (was 300 × 560): the Model
        pane became cards, pills and a radio list, which want the width, and
        the height shows the Provider pane's first four sections unscrolled. */
@@ -708,7 +735,9 @@
     border-radius: 10px;
     box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
     overflow: hidden;
-    z-index: 30;
+    /* Above the composer's menus (70) and the overlays; under the toasts
+       (100). Portalled, so the bar's context no longer caps it. */
+    z-index: 80;
   }
   /* The context popover: the same card, its own head, and the panel that
      was the rail's third tab. Shorter than the model popover — a list, not
