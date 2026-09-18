@@ -128,8 +128,64 @@ pub(super) enum SystemLine {
         #[serde(default)]
         message: String,
     },
+    /// A subagent's life, as the CLI narrates it beside the child's own
+    /// lines (2026-09-17, nightshift backlog 152; verbatim keys on 2.1.263,
+    /// `152-evidence-2026-09-17/ma.jsonl` and 104's `m1.jsonl`):
+    /// `task_started` once, with the spawning call's id, the agent type,
+    /// the description and the task's `prompt`; `task_progress` after each
+    /// of the child's tool calls, with `usage {total_tokens, tool_uses,
+    /// duration_ms}` and `last_tool_name`; `task_notification` when it
+    /// ends, with `status` and the final `usage`. `task_updated` and
+    /// `background_tasks_changed` carry nothing these do not and stay in
+    /// `Other`. `total_tokens` is **the latest round's whole request and
+    /// response** (input + cache read + cache write + output; arithmetic
+    /// on `m1.jsonl`: 26,104 + 1,178 + 10 + 157 = 27,449), not a sum over
+    /// rounds — the same figure the `Agent` result's `<usage>` trailer
+    /// and, by its numbers, the Claude app's Running tasks show.
+    #[serde(rename = "task_started")]
+    TaskStarted {
+        #[serde(default)]
+        task_id: String,
+        #[serde(default)]
+        tool_use_id: String,
+        #[serde(default)]
+        description: String,
+        #[serde(default)]
+        subagent_type: String,
+        #[serde(default)]
+        is_backgrounded: bool,
+        #[serde(default)]
+        prompt: String,
+    },
+    #[serde(rename = "task_progress")]
+    TaskProgress {
+        #[serde(default)]
+        tool_use_id: String,
+        #[serde(default)]
+        usage: TaskUsage,
+    },
+    #[serde(rename = "task_notification")]
+    TaskNotification {
+        #[serde(default)]
+        tool_use_id: String,
+        #[serde(default)]
+        status: String,
+        #[serde(default)]
+        usage: TaskUsage,
+    },
     #[serde(other)]
     Other,
+}
+
+/// The CLI's own accounting of a subagent, on its task lines.
+#[derive(Debug, Default, Clone, Copy, Deserialize)]
+pub(super) struct TaskUsage {
+    #[serde(default)]
+    pub total_tokens: u64,
+    #[serde(default)]
+    pub tool_uses: u32,
+    #[serde(default)]
+    pub duration_ms: u64,
 }
 
 /// An `assistant` or `user` line: one API message, possibly a subagent's.
@@ -147,6 +203,20 @@ pub(super) struct ApiMessage {
     /// array carries anything this translator acts on.
     #[serde(default)]
     pub content: Vec<Block>,
+    /// The API message's id, model and usage, read for a **subagent's**
+    /// line only (backlog 152): every block of one round arrives as its
+    /// own `assistant` line carrying the same `id` and the same `usage`,
+    /// so the id is what keeps a round from being summed once per block.
+    /// That usage is the round's `message_start` figure — the prompt side
+    /// (`input_tokens`, the two cache counts) is final, `output_tokens` is
+    /// the placeholder (1–4 on every measured line), so a child's output
+    /// is read off the CLI's `total_tokens` instead ([`super::translate`]).
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub usage: Option<RawUsage>,
 }
 
 #[derive(Debug, Deserialize)]

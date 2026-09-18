@@ -12,6 +12,7 @@
 use super::ask::DeferredCall;
 use super::protocol::{
     ApiMessage, Block, Delta, DeniedCall, Line, RateLimitInfo, ResultLine, StreamEv, SystemLine,
+    TaskUsage,
 };
 use crate::TurnEvent;
 use nightloom_core::Usage;
@@ -63,7 +64,115 @@ pub struct Translator {
     /// Claude Code's `tool_result` block does not, so the pairing has to be
     /// remembered from the call that opened it.
     pending: HashMap<String, String>,
+    /// One ledger per subagent, keyed by the spawning call's id (backlog
+    /// 152): what [`TurnEvent::SubagentStatus`] is drawn from, kept whole
+    /// so every emission carries the row entire.
+    subagents: HashMap<String, SubagentLedger>,
     outcome: AgentOutcome,
+}
+
+/// A subagent's accounting, as the stream lets it be kept (2026-09-17,
+/// nightshift backlog 152). Two sources, and what each is good for:
+///
+/// - The child's own `assistant` lines carry `message.usage` — the round's
+///   `message_start` figure, so the **prompt side is final** (`input`, the
+///   cache read, the cache write) and **`output_tokens` is a placeholder**
+///   (1–4 on every measured line, whatever the reply). One line per block,
+///   the same `message.id` and usage on each, so a round is summed once
+///   by its id.
+/// - The CLI's `task_progress` (after each of the child's tool calls) and
+///   `task_notification` (at its end) carry `total_tokens` = the latest
+///   round's whole request and response, `tool_uses` and `duration_ms`.
+///
+/// So a round's output is `total_tokens − that round's prompt` once a
+/// task line has reported it (arithmetic on 104's `m1.jsonl`: 26,271 −
+/// 26,114 = 157; the final round 28,127 − 27,821 = 306), and `usage` sums
+/// the rounds. `tokens` is the CLI's figure itself — the Claude app's
+/// number, kept as it is. A round the CLI never reported (a child killed
+/// mid-round) keeps output 0, which is a floor, not a claim.
+#[derive(Debug, Default, Clone)]
+struct SubagentLedger {
+    task_id: String,
+    subagent_type: String,
+    description: String,
+    prompt: String,
+    status: String,
+    background: bool,
+    model: Option<String>,
+    tokens: u64,
+    tool_uses: u32,
+    duration_ms: u64,
+    /// The rounds seen: `(message id, the round's prompt tokens, its
+    /// output as derived, its prompt usage)`.
+    rounds: Vec<Round>,
+}
+
+#[derive(Debug, Clone)]
+struct Round {
+    id: String,
+    prompt_tokens: u64,
+    output_tokens: u64,
+    usage: Usage,
+}
+
+impl SubagentLedger {
+    /// The sum over rounds, output from the CLI's totals.
+    fn usage(&self) -> Usage {
+        let mut sum = Usage::default();
+        for r in &self.rounds {
+            let mut u = r.usage;
+            u.output_tokens = r.output_tokens;
+            sum.add(u);
+        }
+        sum
+    }
+
+    /// A new round of the child's, by message id; `false` when the line
+    /// is another block of a round already counted.
+    fn round(&mut self, id: &str, usage: Usage) -> bool {
+        if self.rounds.iter().any(|r| r.id == id) {
+            return false;
+        }
+        self.rounds.push(Round {
+            id: id.to_string(),
+            prompt_tokens: usage.input_tokens,
+            output_tokens: 0,
+            usage: Usage {
+                output_tokens: 0,
+                ..usage
+            },
+        });
+        true
+    }
+
+    /// The CLI's figures for the latest round; its output is what the
+    /// total says beyond the round's prompt.
+    fn task(&mut self, t: TaskUsage) {
+        self.tokens = t.total_tokens;
+        self.tool_uses = t.tool_uses;
+        self.duration_ms = t.duration_ms;
+        if let Some(last) = self.rounds.last_mut() {
+            last.output_tokens = t.total_tokens.saturating_sub(last.prompt_tokens);
+        }
+    }
+
+    fn event(&self, tool_use_id: &str) -> TurnEvent {
+        TurnEvent::SubagentStatus {
+            tool_use_id: tool_use_id.to_string(),
+            task_id: self.task_id.clone(),
+            subagent_type: self.subagent_type.clone(),
+            description: self.description.clone(),
+            prompt: self.prompt.clone(),
+            status: self.status.clone(),
+            background: self.background,
+            model: self.model.clone(),
+            tokens: self.tokens,
+            tool_uses: self.tool_uses,
+            duration_ms: self.duration_ms,
+            usage: self.usage(),
+            rounds: self.rounds.len() as u32,
+        }
+    }
 }
 
 impl Translator {
@@ -156,6 +265,23 @@ impl Translator {
     /// (`protocol::Block::Text`); a top-level line's are still dropped.
     fn blocks(&mut self, message: ApiMessage, nested: Option<String>) -> Vec<TurnEvent> {
         let mut out = Vec::new();
+        // A child's round, once per message id (backlog 152): the status
+        // event goes out ahead of the round's blocks, so a panel has the
+        // model and the count before the calls land under it.
+        if let Some(parent) = &nested
+            && let (Some(id), Some(raw)) = (&message.id, &message.usage)
+        {
+            let ledger = self.subagents.entry(parent.clone()).or_default();
+            if ledger.status.is_empty() {
+                ledger.status = "running".into();
+            }
+            if ledger.model.is_none() {
+                ledger.model = message.model.clone();
+            }
+            if ledger.round(id, raw.to_usage()) {
+                out.push(ledger.event(parent));
+            }
+        }
         for block in message.content {
             let event = match block {
                 Block::ToolUse { id, name, input } => {
@@ -261,6 +387,45 @@ impl Translator {
                     name: tool_name,
                     reason: message,
                 }];
+            }
+            SystemLine::TaskStarted {
+                task_id,
+                tool_use_id,
+                description,
+                subagent_type,
+                is_backgrounded,
+                prompt,
+            } => {
+                let ledger = self.subagents.entry(tool_use_id.clone()).or_default();
+                ledger.task_id = task_id;
+                ledger.description = description;
+                ledger.subagent_type = subagent_type;
+                ledger.background = is_backgrounded;
+                ledger.prompt = prompt;
+                ledger.status = "running".into();
+                return vec![ledger.event(&tool_use_id)];
+            }
+            SystemLine::TaskProgress { tool_use_id, usage } => {
+                let ledger = self.subagents.entry(tool_use_id.clone()).or_default();
+                if ledger.status.is_empty() {
+                    ledger.status = "running".into();
+                }
+                ledger.task(usage);
+                return vec![ledger.event(&tool_use_id)];
+            }
+            SystemLine::TaskNotification {
+                tool_use_id,
+                status,
+                usage,
+            } => {
+                let ledger = self.subagents.entry(tool_use_id.clone()).or_default();
+                ledger.task(usage);
+                ledger.status = if status.is_empty() {
+                    "completed".into()
+                } else {
+                    status
+                };
+                return vec![ledger.event(&tool_use_id)];
             }
             SystemLine::Other => {}
         }
@@ -512,6 +677,132 @@ mod tests {
 
     /// A result whose call was never seen still renders, rather than being
     /// dropped: a missing chip is harder to diagnose than a vague one.
+    /// A subagent's accounting (backlog 152), on the lines of 104's
+    /// `m1.jsonl` (2.1.263, one Haiku child, three tool calls; the blocks'
+    /// inputs and the task prompt trimmed, every figure verbatim): the
+    /// status event goes out on `task_started`, once per new round of the
+    /// child's (never per block), and on each task line; the prompt side
+    /// is summed from the rounds, the output read off the CLI's totals,
+    /// the CLI's own `total_tokens` kept as `tokens`.
+    #[test]
+    fn a_subagents_rounds_and_task_lines_keep_one_ledger() {
+        const L: [&str; 13] = [
+            r#"{"type":"system","subtype":"task_started","task_id":"a12828ee3ef35acd0","tool_use_id":"toolu_014fzZSdzNmXkngw9uEk2cBb","description":"Call mcp__nightloom__context_status and report result","subagent_type":"general-purpose","is_backgrounded":true,"prompt":"Call the MCP tool `mcp__nightloom__conte"}"#,
+            r#"{"type":"assistant","message":{"model":"claude-haiku-4-5-20251001","id":"msg_011Cf8mdP6osvLZuoFSfWRFz","role":"assistant","content":[{"type":"thinking","thinking":"","signature":"x"}],"usage":{"input_tokens":10,"cache_creation_input_tokens":26104,"cache_read_input_tokens":0,"output_tokens":4,"cache_creation":{"ephemeral_5m_input_tokens":26104,"ephemeral_1h_input_tokens":0}}},"parent_tool_use_id":"toolu_014fzZSdzNmXkngw9uEk2cBb"}"#,
+            r#"{"type":"assistant","message":{"model":"claude-haiku-4-5-20251001","id":"msg_011Cf8mdP6osvLZuoFSfWRFz","role":"assistant","content":[{"type":"tool_use","id":"toolu_01PdAuMAK2o1GcSNBxhzybV1","name":"ToolSearch","input":{}}],"usage":{"input_tokens":10,"cache_creation_input_tokens":26104,"cache_read_input_tokens":0,"output_tokens":4,"cache_creation":{"ephemeral_5m_input_tokens":26104,"ephemeral_1h_input_tokens":0}}},"parent_tool_use_id":"toolu_014fzZSdzNmXkngw9uEk2cBb"}"#,
+            r#"{"type":"system","subtype":"task_progress","task_id":"a12828ee3ef35acd0","tool_use_id":"toolu_014fzZSdzNmXkngw9uEk2cBb","description":"Call mcp__nightloom__context_status and report result","subagent_type":"general-purpose","usage":{"total_tokens":26271,"tool_uses":1,"duration_ms":1915},"last_tool_name":"ToolSearch"}"#,
+            r#"{"type":"assistant","message":{"model":"claude-haiku-4-5-20251001","id":"msg_011Cf8mdX91TEHFsDoeJnJHH","role":"assistant","content":[{"type":"thinking","thinking":"","signature":"x"}],"usage":{"input_tokens":10,"cache_creation_input_tokens":1178,"cache_read_input_tokens":26104,"output_tokens":4,"cache_creation":{"ephemeral_5m_input_tokens":1178,"ephemeral_1h_input_tokens":0}}},"parent_tool_use_id":"toolu_014fzZSdzNmXkngw9uEk2cBb"}"#,
+            r#"{"type":"assistant","message":{"model":"claude-haiku-4-5-20251001","id":"msg_011Cf8mdX91TEHFsDoeJnJHH","role":"assistant","content":[{"type":"tool_use","id":"toolu_01KWcRpPJ7T7wkNKe4d2o2uW","name":"ToolSearch","input":{}}],"usage":{"input_tokens":10,"cache_creation_input_tokens":1178,"cache_read_input_tokens":26104,"output_tokens":4,"cache_creation":{"ephemeral_5m_input_tokens":1178,"ephemeral_1h_input_tokens":0}}},"parent_tool_use_id":"toolu_014fzZSdzNmXkngw9uEk2cBb"}"#,
+            r#"{"type":"system","subtype":"task_progress","task_id":"a12828ee3ef35acd0","tool_use_id":"toolu_014fzZSdzNmXkngw9uEk2cBb","description":"Call mcp__nightloom__context_status and report result","subagent_type":"general-purpose","usage":{"total_tokens":27449,"tool_uses":2,"duration_ms":3987},"last_tool_name":"ToolSearch"}"#,
+            r#"{"type":"assistant","message":{"model":"claude-haiku-4-5-20251001","id":"msg_011Cf8mdgJAU21up3eurddBB","role":"assistant","content":[{"type":"thinking","thinking":"","signature":"x"}],"usage":{"input_tokens":10,"cache_creation_input_tokens":315,"cache_read_input_tokens":27282,"output_tokens":2,"cache_creation":{"ephemeral_5m_input_tokens":315,"ephemeral_1h_input_tokens":0}}},"parent_tool_use_id":"toolu_014fzZSdzNmXkngw9uEk2cBb"}"#,
+            r#"{"type":"assistant","message":{"model":"claude-haiku-4-5-20251001","id":"msg_011Cf8mdgJAU21up3eurddBB","role":"assistant","content":[{"type":"tool_use","id":"toolu_01H6m8s2MyxdCZGoCNfGAVgD","name":"mcp__nightloom__context_status","input":{}}],"usage":{"input_tokens":10,"cache_creation_input_tokens":315,"cache_read_input_tokens":27282,"output_tokens":2,"cache_creation":{"ephemeral_5m_input_tokens":315,"ephemeral_1h_input_tokens":0}}},"parent_tool_use_id":"toolu_014fzZSdzNmXkngw9uEk2cBb"}"#,
+            r#"{"type":"system","subtype":"task_progress","task_id":"a12828ee3ef35acd0","tool_use_id":"toolu_014fzZSdzNmXkngw9uEk2cBb","description":"Call mcp__nightloom__context_status and report result","subagent_type":"general-purpose","usage":{"total_tokens":27729,"tool_uses":3,"duration_ms":5190},"last_tool_name":"mcp__nightloom__context_status"}"#,
+            r#"{"type":"assistant","message":{"model":"claude-haiku-4-5-20251001","id":"msg_011Cf8mdmMWfBGXtDVuF78U2","role":"assistant","content":[{"type":"thinking","thinking":"","signature":"x"}],"usage":{"input_tokens":10,"cache_creation_input_tokens":214,"cache_read_input_tokens":27597,"output_tokens":1,"cache_creation":{"ephemeral_5m_input_tokens":214,"ephemeral_1h_input_tokens":0}}},"parent_tool_use_id":"toolu_014fzZSdzNmXkngw9uEk2cBb"}"#,
+            r#"{"type":"assistant","message":{"model":"claude-haiku-4-5-20251001","id":"msg_011Cf8mdmMWfBGXtDVuF78U2","role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input_tokens":10,"cache_creation_input_tokens":214,"cache_read_input_tokens":27597,"output_tokens":1,"cache_creation":{"ephemeral_5m_input_tokens":214,"ephemeral_1h_input_tokens":0}}},"parent_tool_use_id":"toolu_014fzZSdzNmXkngw9uEk2cBb"}"#,
+            r#"{"type":"system","subtype":"task_notification","task_id":"a12828ee3ef35acd0","tool_use_id":"toolu_014fzZSdzNmXkngw9uEk2cBb","status":"completed","usage":{"total_tokens":28127,"tool_uses":3,"duration_ms":8767}}"#,
+        ];
+        let (events, outcome) = drive(&L);
+        let statuses: Vec<&TurnEvent> = events
+            .iter()
+            .filter(|e| matches!(e, TurnEvent::SubagentStatus { .. }))
+            .collect();
+        // started + 4 rounds + 3 progress + 1 notification.
+        assert_eq!(statuses.len(), 9, "{statuses:#?}");
+        let TurnEvent::SubagentStatus {
+            tool_use_id,
+            task_id,
+            subagent_type,
+            description,
+            prompt,
+            status,
+            background,
+            model,
+            tokens,
+            tool_uses,
+            rounds,
+            ..
+        } = statuses[0]
+        else {
+            unreachable!()
+        };
+        assert_eq!(tool_use_id, "toolu_014fzZSdzNmXkngw9uEk2cBb");
+        assert_eq!(task_id, "a12828ee3ef35acd0");
+        assert_eq!(subagent_type, "general-purpose");
+        assert!(description.starts_with("Call mcp__nightloom__context_status"));
+        assert!(prompt.starts_with("Call the MCP tool"));
+        assert_eq!(status, "running");
+        assert!(background);
+        assert_eq!((model, *tokens, *tool_uses, *rounds), (&None, 0, 0, 0));
+        // The first round: the model known, the prompt side summed, no
+        // output yet — the CLI has not said.
+        let TurnEvent::SubagentStatus {
+            model,
+            usage,
+            rounds,
+            tokens,
+            ..
+        } = statuses[1]
+        else {
+            unreachable!()
+        };
+        assert_eq!(model.as_deref(), Some("claude-haiku-4-5-20251001"));
+        assert_eq!(
+            (usage.input_tokens, usage.output_tokens, *rounds, *tokens),
+            (26114, 0, 1, 0)
+        );
+        assert_eq!(usage.cache_write_tokens, Some(26104));
+        // After the first task_progress: the CLI's total, and the round's
+        // output as what the total says beyond its prompt.
+        let TurnEvent::SubagentStatus {
+            usage,
+            tokens,
+            tool_uses,
+            duration_ms,
+            ..
+        } = statuses[2]
+        else {
+            unreachable!()
+        };
+        assert_eq!((*tokens, *tool_uses, *duration_ms), (26271, 1, 1915));
+        assert_eq!(usage.output_tokens, 157);
+        // The end: four rounds summed, the output from each total, the
+        // status the CLI's.
+        let TurnEvent::SubagentStatus {
+            status,
+            usage,
+            tokens,
+            tool_uses,
+            duration_ms,
+            rounds,
+            ..
+        } = statuses[8]
+        else {
+            unreachable!()
+        };
+        assert_eq!(status, "completed");
+        assert_eq!(
+            (*tokens, *tool_uses, *duration_ms, *rounds),
+            (28127, 3, 8767, 4)
+        );
+        assert_eq!(usage.input_tokens, 26114 + 27292 + 27607 + 27821);
+        assert_eq!(usage.output_tokens, 157 + 157 + 122 + 306);
+        assert_eq!(usage.cache_read_tokens, Some(26104 + 27282 + 27597));
+        assert_eq!(usage.cache_write_tokens, Some(26104 + 1178 + 315 + 214));
+        assert_eq!(usage.cache_write_5m_tokens, Some(26104 + 1178 + 315 + 214));
+        // The child's blocks still go out nested, after the round's status.
+        let i_status = events
+            .iter()
+            .position(|e| matches!(e, TurnEvent::SubagentStatus { rounds: 1, .. }))
+            .unwrap();
+        let i_call = events
+            .iter()
+            .position(|e| matches!(e, TurnEvent::Subagent { event, .. } if matches!(**event, TurnEvent::ToolCall { .. })))
+            .unwrap();
+        assert!(i_status < i_call);
+        // The main thread's own usage is untouched by the child's.
+        assert_eq!(outcome.usage, Usage::default());
+    }
+
     #[test]
     fn orphan_tool_result_still_renders() {
         let (events, _) = drive(&[TOOL_RESULT_ERR]);

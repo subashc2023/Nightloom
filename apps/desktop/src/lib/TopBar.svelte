@@ -9,6 +9,7 @@
     liveFlags,
     MODE_GLYPH,
     sessionCost,
+    subagentsOfTurn,
   } from "./state.svelte";
   import { cacheState } from "./cache";
   import RightRail from "./RightRail.svelte";
@@ -245,6 +246,23 @@
   const spendTail = $derived(
     spend ? ` · spent ${spend.complete ? "" : "at least "}${spend.text}` : "",
   );
+  /**
+   * The latest turn's subagents (nightshift backlog 152): the agents chip
+   * — `2 agents · 41k` while any runs, `2 agents · done · 41k` after —
+   * opening the Running-tasks panel, and the gauge's "+ subagents" line
+   * in its hover, so the window figure is not read as the whole.
+   */
+  const agents = $derived(subagentsOfTurn());
+  const agentsTail = $derived(
+    agents.rows.length > 0
+      ? ` · + subagents: ${agents.tokens.toLocaleString()} tokens (${agents.rows.length}, not in the window)`
+      : "",
+  );
+  function toggleTasks() {
+    app.showRail = false;
+    app.showContext = false;
+    app.showTasks = !app.showTasks;
+  }
 
   // The popovers: the model one opens from the model chip (or ⌘M, or the
   // ⌘K palette — which is why the flags are app state), the context one
@@ -349,8 +367,8 @@
         aria-expanded={app.showContext}
         title={gauge
           ? gauge.limit
-            ? `${gauge.used.toLocaleString()} of ${gauge.limit.toLocaleString()} context tokens (${Math.round((gauge.ratio ?? 0) * 100)}%)${spendTail} — click to itemise (⌘⇧C)`
-            : `${gauge.used.toLocaleString()} context tokens — window size unknown for this model${spendTail} — click to itemise (⌘⇧C)`
+            ? `${gauge.used.toLocaleString()} of ${gauge.limit.toLocaleString()} context tokens (${Math.round((gauge.ratio ?? 0) * 100)}%)${spendTail}${agentsTail} — click to itemise (⌘⇧C)`
+            : `${gauge.used.toLocaleString()} context tokens — window size unknown for this model${spendTail}${agentsTail} — click to itemise (⌘⇧C)`
           : "What the next request carries — click to open (⌘⇧C)"}
         onclick={toggleContext}
       >
@@ -367,6 +385,27 @@
         {:else}
           <span class="figure sans">Context</span>
         {/if}
+      </button>
+    {/if}
+
+    <!-- The agents chip (nightshift backlog 152): the latest turn's
+         subagents and their tokens, opening the Running-tasks panel. Shown
+         while any runs and kept, quieter, once all are done, so a finished
+         agent's transcript stays a click away until the next turn. -->
+    {#if agents.rows.length > 0}
+      <button
+        class="ns-chip mono agents"
+        class:live={agents.running > 0}
+        class:open={app.showTasks}
+        aria-expanded={app.showTasks}
+        title="{agents.rows.length} subagent{agents.rows.length === 1 ? '' : 's'} this turn{agents.running > 0 ? `, ${agents.running} running` : ', all done'} · {agents.tokens.toLocaleString()} tokens (the CLI's figure per agent, not in the context gauge) — click for the Running-tasks panel"
+        onclick={toggleTasks}
+      >
+        <span class="figure">
+          <span>{agents.rows.length} agent{agents.rows.length === 1 ? "" : "s"}</span>
+          {#if agents.running === 0}<span class="of fold1">· done</span>{/if}
+          <span class="of">· {tokens(agents.tokens)}</span>
+        </span>
       </button>
     {/if}
 
@@ -584,6 +623,21 @@
   }
   .gauge.open,
   .gauge:hover {
+    border-color: var(--accent);
+    color: var(--ink);
+  }
+  /* The agents chip (backlog 152): the live blue while a child runs,
+     the gauge's grey once all are done. */
+  .agents {
+    cursor: pointer;
+    color: var(--ink2);
+  }
+  .agents.live {
+    color: var(--live);
+    border-color: var(--live-soft);
+  }
+  .agents.open,
+  .agents:hover {
     border-color: var(--accent);
     color: var(--ink);
   }

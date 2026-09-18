@@ -29,6 +29,7 @@
 //! [`Provider`]: nightloom_core::Provider
 
 pub mod ask;
+pub mod brief;
 pub mod cli_session;
 mod protocol;
 mod record;
@@ -37,6 +38,7 @@ mod translate;
 pub use ask::{
     Answer, AskDir, AskGate, DeferredCall, FolderGrant, GrantScope, PlanThen, outside_folder,
 };
+pub use brief::BriefSpec;
 pub use protocol::{DeniedCall, RateLimitInfo};
 pub use record::{Recorder, SUBAGENT_CLOSE, SUBAGENT_OPEN, carry_transcript, subagent_block};
 pub use translate::{AgentOutcome, Translator};
@@ -389,6 +391,15 @@ pub struct AgentSpec {
     /// older positions, `auto` and `bypassPermissions`
     /// ([`AgentSpec::headless_permission_mode`]).
     pub ask: Option<AskSpec>,
+    /// The subagent brief (nightshift backlog 152, 2026-09-17): a second
+    /// `PreToolUse` hook, on the `Agent` tool, that prepends the chat's
+    /// project instructions and engine note to every subagent's task
+    /// through `updatedInput` — measured to reach the child ([`brief`]).
+    /// Registered in every position, since the CLI's subagent gets none
+    /// of `--append-system-prompt` in any of them; not under the Chat
+    /// policy (which refuses `Agent`) and not on an aside. `None` is no
+    /// brief: no preamble, or a caller that is not a chat.
+    pub brief: Option<BriefSpec>,
     /// The chat is a Chat by *policy* while its declaration stays Claude
     /// Code's (nightshift backlog 144, 2026-09-17): every tool the CLI
     /// would list stays listed — narrowing the list re-writes the whole
@@ -506,6 +517,14 @@ pub struct AskSpec {
     pub dir: PathBuf,
     /// Which position the hook serves.
     pub mode: AskMode,
+    /// *Subagents run on auto* (nightshift backlog 152, 2026-09-17): a
+    /// subagent's call the hook would pause for is allowed instead when
+    /// this is on, refused in words when off — never deferred, which the
+    /// CLI drops at that depth ([`ask::decide`]). Written into the chat's
+    /// `rules.json` each time the directory is pointed at the chat
+    /// ([`ClaudeCodeAgent::set_ask_dir`]), since the hook reads only the
+    /// directory. Default on (blocker 247).
+    pub subagents_auto: bool,
 }
 
 /// The permission mode the hook is registered under (backlog 085).
@@ -599,6 +618,7 @@ impl AgentSpec {
             mcp_config: None,
             no_session_persistence: false,
             ask: None,
+            brief: None,
             chat_policy: false,
             extra_args: Vec::new(),
         }
@@ -748,6 +768,9 @@ impl AgentSpec {
         if let Some(ask) = &mut spec.ask {
             ask.mode = AskMode::Aside;
         }
+        // No brief either: the aside is one question on the warm cache,
+        // and its settings carry no hook (the test below pins that).
+        spec.brief = None;
         Some(spec)
     }
 
@@ -878,6 +901,26 @@ impl AgentSpec {
                     .or_insert_with(|| serde_json::Value::Array(Vec::new()));
                 if let serde_json::Value::Array(pre) = pre {
                     pre.push(entry);
+                }
+            }
+        }
+        // The subagent brief's hook (backlog 152), a third `PreToolUse`
+        // entry in the same array, on `Agent|Task` alone: every position
+        // but the Chat policy's (which refuses the call) gets it, once the
+        // shell has pointed it at the chat's directory.
+        if let Some(brief) = &self.brief
+            && !self.chat_policy
+            && !brief.dir.as_os_str().is_empty()
+        {
+            let hooks = settings
+                .entry("hooks")
+                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+            if let serde_json::Value::Object(hooks) = hooks {
+                let pre = hooks
+                    .entry("PreToolUse")
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+                if let serde_json::Value::Array(pre) = pre {
+                    pre.push(brief::hook_entry(&brief.hook, &brief.dir));
                 }
             }
         }
@@ -1127,9 +1170,25 @@ impl ClaudeCodeAgent {
     /// Point the Ask position's files at `dir` — the open chat's ask
     /// directory, which the shell knows only once the chat exists. A
     /// no-op on a connection that is not asking.
+    ///
+    /// Also writes the *Subagents run on auto* switch into the chat's
+    /// rules there (backlog 152): the hook is another process and reads
+    /// only the directory, so the rail's position has to be on disk
+    /// before the turn's first subagent call. Best-effort — a directory
+    /// that cannot be written (a test's placeholder path) leaves the
+    /// file as it was, and an absent field reads as the default.
+    ///
+    /// The subagent brief's file goes to the same directory (backlog 152)
+    /// — in every position, since a subagent gets no preamble in any of
+    /// them — written only when it changed.
     pub fn set_ask_dir(&mut self, dir: PathBuf) {
         if let Some(ask) = &mut self.spec.ask {
-            ask.dir = dir;
+            ask.dir = dir.clone();
+            let _ = AskDir::new(&ask.dir).set_subagents_auto(ask.subagents_auto);
+        }
+        if let Some(brief) = &mut self.spec.brief {
+            brief.dir = dir;
+            let _ = brief::write(&brief.dir, &brief.text);
         }
     }
 
@@ -2121,6 +2180,7 @@ mod tests {
             hook: vec!["/app/nightloom-desktop".into(), "--permission-hook".into()],
             dir: PathBuf::from("/logs/ask/chat-1"),
             mode: AskMode::Ask,
+            subagents_auto: true,
         });
         s.auto_memory = false;
         let a = s.args("hi");
@@ -2182,6 +2242,7 @@ mod tests {
             hook: vec!["/app/nightloom-desktop".into(), "--permission-hook".into()],
             dir: PathBuf::from("/logs/ask/chat-1"),
             mode: AskMode::Ask,
+            subagents_auto: true,
         });
         let a = s.args("hi");
         let i = a.iter().position(|x| x == "--settings").unwrap();
@@ -2237,6 +2298,7 @@ mod tests {
             hook: vec!["hook".into()],
             dir: PathBuf::from("/x"),
             mode: AskMode::Ask,
+            subagents_auto: true,
         });
         s.apply_mode(ChatMode::Ephemeral);
         let a = s.args("hi");
@@ -2273,6 +2335,7 @@ mod tests {
             hook: vec!["/app/nightloom-desktop".into(), "--permission-hook".into()],
             dir: PathBuf::from("/logs/ask/chat-1"),
             mode: AskMode::Ask,
+            subagents_auto: true,
         });
         let a = s.args("hi");
         let i = a.iter().position(|x| x == "--permission-mode").unwrap();
@@ -2326,6 +2389,7 @@ mod tests {
             hook: vec!["/app/nightloom-desktop".into(), "--permission-hook".into()],
             dir: PathBuf::from("/logs/ask/chat-1"),
             mode: AskMode::Ask,
+            subagents_auto: true,
         });
         let a = s.args("hi");
         assert_eq!(a.iter().filter(|x| *x == "--settings").count(), 1, "{a:?}");
@@ -2393,6 +2457,7 @@ mod tests {
             hook: vec!["hook".into()],
             dir: PathBuf::from("/placeholder"),
             mode: AskMode::Ask,
+            subagents_auto: true,
         });
         let mut agent = ClaudeCodeAgent::new(s);
         agent.set_ask_dir(PathBuf::from("/logs/ask/chat-2"));
@@ -2403,6 +2468,105 @@ mod tests {
         let a = agent.spec().args("hi");
         let i = a.iter().position(|x| x == "--settings").unwrap();
         assert!(a[i + 1].contains("/logs/ask/chat-2"), "{}", a[i + 1]);
+    }
+
+    /// The subagent brief's hook (backlog 152) is a `PreToolUse` entry on
+    /// `Agent|Task` in the one `--settings` JSON: registered in the Auto
+    /// position (no Ask hook) and beside the Ask hook's entry alike, only
+    /// once the shell has pointed it at the chat's directory, never under
+    /// the Chat policy, never on an aside; and pointing it writes the
+    /// brief file.
+    #[test]
+    fn the_brief_hook_rides_every_position_but_the_chat_policy_and_asides() {
+        let dir = std::env::temp_dir().join(format!("nightloom-152b-{}", uuid::Uuid::new_v4()));
+        let brief = BriefSpec {
+            hook: vec!["hook".into(), "--subagent-hook".into()],
+            dir: PathBuf::new(),
+            text: "<nightloom-subagent-brief>\nx\n</nightloom-subagent-brief>".into(),
+        };
+        let entries = |a: &[String]| -> Vec<serde_json::Value> {
+            let Some(i) = a.iter().position(|x| x == "--settings") else {
+                return Vec::new();
+            };
+            let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
+            v["hooks"]["PreToolUse"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        };
+        let brief_entries = |a: &[String]| {
+            entries(a)
+                .into_iter()
+                .filter(|e| e["matcher"] == brief::BRIEF_MATCHER)
+                .count()
+        };
+        // Auto position, brief set but not yet pointed: nothing registered.
+        let mut s = spec();
+        s.permission_mode = Some("auto".into());
+        s.brief = Some(brief.clone());
+        assert_eq!(brief_entries(&s.args("hi")), 0);
+        // Pointed: one entry, the command quoted, and the file written.
+        let mut agent = ClaudeCodeAgent::new(s);
+        agent.set_ask_dir(dir.clone());
+        assert_eq!(
+            std::fs::read_to_string(dir.join(brief::BRIEF_FILE)).unwrap(),
+            brief.text
+        );
+        let a = agent.spec().args("hi");
+        assert_eq!(brief_entries(&a), 1);
+        assert_eq!(entries(&a).len(), 1, "no Ask hook in Auto");
+        let cmd = entries(&a)[0]["hooks"][0]["command"].clone();
+        assert_eq!(cmd, format!("'hook' '--subagent-hook' '{}'", dir.display()));
+        // Ask position: beside the Ask hook's entry, the Ask one first.
+        let mut s = asking(AskMode::Ask);
+        s.brief = Some(brief.clone());
+        let mut agent = ClaudeCodeAgent::new(s);
+        agent.set_ask_dir(dir.clone());
+        let a = agent.spec().args("hi");
+        let e = entries(&a);
+        assert_eq!(e.len(), 2, "{e:?}");
+        assert_eq!(e[0]["matcher"], ask::MATCHER);
+        assert_eq!(e[1]["matcher"], brief::BRIEF_MATCHER);
+        // The aside of that chat carries no hook at all.
+        let mut s = asking(AskMode::Ask);
+        s.brief = Some(brief.clone());
+        s.resume = Some("sid".into());
+        let aside = s.aside().unwrap();
+        assert!(aside.brief.is_none());
+        // Under the Chat policy the entry is withheld: Agent is refused
+        // there, and a brief for a call that never runs is noise.
+        let mut s = spec();
+        s.chat_policy = true;
+        s.brief = Some(BriefSpec {
+            dir: dir.clone(),
+            ..brief.clone()
+        });
+        let a = s.args("hi");
+        assert_eq!(brief_entries(&a), 0);
+        assert_eq!(entries(&a).len(), 1, "the policy's own entry stays");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Pointing the ask directory at a chat writes the *Subagents run on
+    /// auto* switch into its rules (backlog 152), so the hook — another
+    /// process — reads the rail's position; and flipping it rewrites.
+    #[test]
+    fn the_ask_dir_carries_the_subagent_switch() {
+        let dir = std::env::temp_dir().join(format!("nightloom-152-{}", uuid::Uuid::new_v4()));
+        let mut s = spec();
+        s.ask = Some(AskSpec {
+            hook: vec!["hook".into()],
+            dir: PathBuf::from("/placeholder"),
+            mode: AskMode::Ask,
+            subagents_auto: false,
+        });
+        let mut agent = ClaudeCodeAgent::new(s);
+        agent.set_ask_dir(dir.clone());
+        assert!(!AskDir::new(&dir).subagents_auto());
+        agent.spec.ask.as_mut().unwrap().subagents_auto = true;
+        agent.set_ask_dir(dir.clone());
+        assert!(AskDir::new(&dir).subagents_auto());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A deferred resume is `-p` with no prompt and no input format — the
@@ -2432,6 +2596,7 @@ mod tests {
             hook: vec!["hook".into(), "--permission-hook".into()],
             dir: PathBuf::from("/logs/ask/chat-3"),
             mode,
+            subagents_auto: true,
         });
         s
     }

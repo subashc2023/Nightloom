@@ -59,7 +59,11 @@ export type TabContent =
   | { kind: "new-project" }
   | { kind: "project"; id: string }
   | { kind: "aside"; session: string }
-  | { kind: "attachment"; session: string; turn: number; index: number; media: "image" | "document"; name: string };
+  | { kind: "attachment"; session: string; turn: number; index: number; media: "image" | "document"; name: string }
+  /** A subagent's transcript (nightshift backlog 152): the Running-tasks
+   *  panel's *View transcript*, drawn from the chat's row for the `Agent`
+   *  call `toolUseId`; `name` is the task's description, for the strip. */
+  | { kind: "subagent"; session: string; toolUseId: string; name: string };
 
 export type TabKind = TabContent["kind"];
 
@@ -138,6 +142,16 @@ export function parseContentDrag(json: string | null | undefined): TabContent | 
         const a = c as { session?: unknown };
         return typeof a.session === "string" ? { kind: "aside", session: a.session } : null;
       }
+      case "subagent": {
+        const a = c as { session?: unknown; toolUseId?: unknown; name?: unknown };
+        if (typeof a.session !== "string" || typeof a.toolUseId !== "string") return null;
+        return {
+          kind: "subagent",
+          session: a.session,
+          toolUseId: a.toolUseId,
+          name: typeof a.name === "string" ? a.name : "subagent",
+        };
+      }
       case "attachment": {
         const a = c as { session?: unknown; turn?: unknown; index?: unknown; media?: unknown; name?: unknown };
         if (typeof a.session !== "string" || typeof a.turn !== "number" || typeof a.index !== "number") return null;
@@ -179,6 +193,9 @@ export function sameContent(a: TabContent, b: TabContent): boolean {
   if (a.kind === "aside" && b.kind === "aside") return a.session === b.session;
   if (a.kind === "attachment" && b.kind === "attachment") {
     return a.session === b.session && a.turn === b.turn && a.index === b.index && a.media === b.media;
+  }
+  if (a.kind === "subagent" && b.kind === "subagent") {
+    return a.session === b.session && a.toolUseId === b.toolUseId;
   }
   // The singletons carry nothing but their kind.
   return isSingleton(a);
@@ -501,7 +518,10 @@ export function dropChat(ws: Workspace, session: string): Closed[] {
   const out: Closed[] = [];
   for (const t of allTabs(ws)) {
     const c = t.content;
-    if ((c.kind === "chat" || c.kind === "aside" || c.kind === "attachment") && c.session === session) {
+    if (
+      (c.kind === "chat" || c.kind === "aside" || c.kind === "attachment" || c.kind === "subagent") &&
+      c.session === session
+    ) {
       out.push(close(ws, t.id));
     }
   }
@@ -570,6 +590,8 @@ export function tabTitle(
     }
     case "attachment":
       return content.name;
+    case "subagent":
+      return `Agent · ${content.name}`;
   }
 }
 
@@ -589,6 +611,8 @@ export function tabGlyph(content: TabContent): IconName {
       return "think";
     case "attachment":
       return content.media === "image" ? "read" : "download";
+    case "subagent":
+      return "think";
     case "chat":
       return "chat";
   }

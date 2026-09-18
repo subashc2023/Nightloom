@@ -827,6 +827,80 @@ measured runs: the old recording of the child's six calls with full
 results was ~3.7 KB and ~14.9 KB; the narrative block 2.0 KB and 1.9 KB —
 the child's results are summarised to a line each, its words kept whole.
 
+## Subagents made whole: auto under Ask, the preamble at depth, the running tasks (2026-09-17, nightshift backlog 152)
+
+Three gaps a subagent had under Nightloom, measured on 2.1.263 in
+nightshift `152-report-2026-09-17.md` (streams in `152-evidence-2026-09-17/`).
+
+**A subagent's call under Ask.** The Ask hook runs for a subagent's
+calls too, with `agent_id` and `agent_type` on its input; a `defer` from
+that depth is dropped by the CLI — no `deferred_tool_use`, the parent
+reads "Subagent completed but returned no output" (measured 2026-09-16,
+nightshift `084-subagent-under-ask-2026-09-16.md`). So a subagent's call
+was **denied in words** (`ask::SUBAGENT_DENIED`), never deferred, and
+under Ask a subagent could read but not write, run or fetch. Since
+2026-09-17 the chat's rules carry a switch, *Subagents run on auto*
+(`rules.json` `subagents_auto`, the rail's checkbox under the approval
+segment for the Ask and Plan positions, `AskSpec::subagents_auto`,
+written by `set_ask_dir` before each turn): **on**, `decide` answers
+`allow` for a call carrying `agent_id`; **off**, the denial as before.
+Measured (M-A): an `allow` from the hook at depth runs the call — the
+child's `Write` created the file, `permission_denials: []`. On by default
+(blocker 247): a subagent's calls are the parent's, and no card is ever
+shown for the parent's `Agent` call either. A standing "allow for this
+chat" rule still covers a subagent's call first; the hook still sees
+every subagent call, so the log is whole. The hook's input names the
+parent's tool **`Agent`** (the init line's `tools` still lists `Task`).
+
+**The preamble reaching a subagent.** A non-fork subagent starts with
+"the agent's own prompt plus environment details … not the Claude Code
+system prompt" (`external`, the sub-agents doc), so nothing in
+`--append-system-prompt` reached it: 104's M2a child said `NO CODE WORD`.
+Since 2026-09-17 a second `PreToolUse` hook, on `Agent|Task`
+(`agent/brief.rs`; `nightloom-desktop --subagent-hook <dir>`), answers
+`allow` with `updatedInput` = the call's input with `prompt` prefixed by
+the chat's **brief** — `<chat dir>/subagent-brief.txt`, written by
+`set_ask_dir` before each turn, composed by `brief::compose` from the
+preamble's project-instructions and engine-note segments plus the
+extra-folders note (the indexes, the standing instructions, the Chat
+instructions, the library prompt and the ask-note are cut; the module
+doc says why). Measured (M-B, then M-C with this binary): the
+`task_started` line's `prompt` begins with the brief, the child's first
+`user` line carries it, and a child asked for a code word only the brief
+named answered it. Registered in every position — not under the Chat
+policy, whose own entry refuses `Agent` (any deny stands), and not on an
+aside — and only once the shell has pointed the directory; a task that
+already begins with the brief's tag is not briefed twice.
+
+**The running tasks: a subagent's tokens, tool uses and transcript.** The
+gauge omitted a subagent's tokens (104 §1: the translator summed the main
+thread's `message_delta` alone, and no `stream_event` carries
+`parent_tool_use_id`). What the stream has instead, on 2.1.263: the
+child's `assistant` lines carry `message.id`, `message.model` and
+`message.usage` — the round's `message_start` figure, one line per block
+with the same id and usage, so the **prompt side is final and
+`output_tokens` is a placeholder** (1–4 on every measured line); and the
+CLI's own `system/task_started` (`tool_use_id`, `task_id`,
+`subagent_type`, `description`, `prompt`, `is_backgrounded`),
+`task_progress` after each of the child's tool calls and
+`task_notification` at its end, each with `usage {total_tokens,
+tool_uses, duration_ms}`. **`total_tokens` is the latest round's whole
+request and response**, not a sum (arithmetic on 104's `m1.jsonl`:
+26,104 + 1,178 + 10 + 157 = 27,449), and it is the figure the `Agent`
+result's `<usage>` trailer and the Claude app's panel show. The
+translator keeps one `SubagentLedger` per spawning call: a round per
+message id (its prompt usage), the CLI's figures from the task lines, and
+each round's output as `total_tokens − that round's prompt` once a task
+line reported it — so `usage` is a true sum over rounds (`m1.jsonl`:
+26,114 + 27,292 + 27,607 + 27,821 prompt, 157 + 157 + 122 + 306 output),
+`tokens` the CLI's own number kept as it is. It emits
+`TurnEvent::SubagentStatus` — the row whole — on `task_started`, on each
+new round, and on each task line; the desktop's panel is in
+[desktop.md](desktop.md#running-tasks-the-subagents-rows-the-agents-chip-the-transcript-tab-2026-09-17-nightshift-backlog-152).
+The main thread's `usage` is untouched by a child's. The CLI also writes
+each child's own JSONL, `~/.claude/projects/<cwd>/<session>/subagents/agent-<task_id>.jsonl`
+(`external`, seen twice); not read — the stream has everything above.
+
 ## Effort and a fallback model (2026-09-16, nightshift backlog 076)
 
 Two flags on `AgentSpec`, each only when set, passed through as the rail
@@ -1126,3 +1200,17 @@ form, a plan is a card — so a choice that is theirs should be asked, not
 guessed. The CLI lists those tools only when a prompt tool is named (084's
 M1), but its own descriptions assume a terminal. Auto and Off send no note;
 switching the engine-note layer off in Context drops this too.
+
+### The subagent-note (2026-09-17, nightshift backlog 152)
+
+With tools on, `connect_agent` appends a `<subagent-note>` paragraph after
+the ask-note, in every approval position (under the same engine-note
+switch): a subagent starts with none of the conversation; Nightloom puts
+the project's instructions and the engine note in front of its task
+automatically (the brief hook — see *Subagents made whole* above) or, when
+there is no brief, it is handed nothing of the preamble and the task must
+carry the vault alias, the project's rules and which tools to use; either
+way the task must say what to do, what to read, where to write and what to
+report; and under Ask a child's calls run or are refused by the switch,
+never paused, so approvals are the parent's to make. His fallback, kept
+beside the mechanism.

@@ -841,6 +841,27 @@
           <p class="note">{APPROVAL_LINE[approvalPosition]}</p>
         {/if}
       </div>
+      {#if app.draft.approval && app.draft.agentAsk}
+        <!-- Subagents under Ask and Plan (nightshift backlog 152): a
+             subagent cannot pause for the card — the CLI drops a pause from
+             that depth (measured 2026-09-16) — so its calls either run or
+             are refused in words. On, they run; the parent's own calls
+             still pause. Per chat: written into the chat's ask rules
+             before each turn. -->
+        <label class="swq sub">
+          <span class="t">Subagents run on auto</span>
+          <Hint
+            text="A subagent the model spawns (its Agent tool) cannot pause for the card, so under Ask and Plan its calls either run unasked or are refused. On: they run, and the panel under the top bar's agents chip shows what each one did. Off: a subagent's write, command or fetch is refused with a sentence the parent repeats to you; the parent can make the call itself and be asked. The parent's own calls pause either way."
+          />
+          <input
+            type="checkbox"
+            class="sw"
+            bind:checked={app.draft.agentSubagentsAuto}
+            onchange={apply}
+            disabled={locked}
+          />
+        </label>
+      {/if}
       {#if !(app.draft.approval && app.draft.agentAsk)}
         <!-- Said rather than implied: the switch above is the familiar one
              and the gate behind it is not. Nightloom's approval prompt gates

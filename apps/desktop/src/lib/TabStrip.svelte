@@ -78,7 +78,9 @@
             ? `${title(t)} — a side conversation, not in the chat`
             : c.kind === "attachment"
               ? `${title(t)} — an attachment of a message, kept as a tab`
-              : title(t);
+              : c.kind === "subagent"
+                ? `${title(t)} — a subagent's transcript: its calls, results and words`
+                : title(t);
     const state = needsYou(t) ? " · waiting on you" : running(t) ? " · a turn is running" : "";
     return `${base}${state} — ${isMac ? "⌘W" : "Ctrl+W"} closes`;
   }

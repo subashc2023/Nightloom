@@ -151,6 +151,7 @@ export function connectAgent(args: AgentConnectArgs): Promise<ConnectResult> {
     promptSuggestions: args.promptSuggestions,
     effort: args.effort,
     fallbackModel: args.fallbackModel,
+    subagentsAuto: args.subagentsAuto,
   });
 }
 

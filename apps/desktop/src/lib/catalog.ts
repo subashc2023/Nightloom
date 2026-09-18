@@ -180,6 +180,11 @@ export interface ConnectionDraft {
    *  Approve picks Ask or Auto for the rest of the chat. Implies `agentAsk`;
    *  only meaningful with `approval` on. */
   agentPlan: boolean;
+  /** *Subagents run on auto* (backlog 152, 2026-09-17): under Ask or
+   *  Plan, a subagent's calls run without a prompt — the CLI drops a
+   *  pause from that depth, so the only other position is a refusal in
+   *  words. On by default (blocker 247); only meaningful with `agentAsk`. */
+  agentSubagentsAuto: boolean;
   /** `--effort` on the agent engine (backlog 076): `low`, `medium`, `high`,
    *  `xhigh` or `max`, sent as spelled — or empty, the rail's *default*
    *  position, which sends no flag and leaves the level to the CLI. Empty
@@ -259,6 +264,7 @@ export function defaultDraft(): ConnectionDraft {
     agentSafeMode: false,
     agentAsk: false,
     agentPlan: false,
+    agentSubagentsAuto: true,
     agentEffort: "",
     agentFallback: "",
     agentBudget: 0,
@@ -713,6 +719,9 @@ export function loadLastConnection(): ConnectionDraft | null {
       // absent value means on, so only an explicit false turns them off.
       preamble: parsed.preamble !== false,
       sidecar: parsed.sidecar !== false,
+      // The same rule for the subagent switch (backlog 152): a draft
+      // saved before it existed reads as on, its default.
+      agentSubagentsAuto: parsed.agentSubagentsAuto !== false,
       approval: parsed.approval !== false,
       web: parsed.web !== false,
       knowledge: parsed.knowledge !== false,

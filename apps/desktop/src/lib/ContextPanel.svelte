@@ -14,6 +14,7 @@
     editContextItems,
     setPromptLayer,
     setPromptLayerText,
+    subagentsOfTurn,
   } from "./state.svelte";
   import { EDITABLE_LAYERS } from "./types";
   import { reconsider, setThreshold, threshold } from "./handoff.svelte";
@@ -1175,6 +1176,18 @@
             its system prompt. The gauge in the bar is the usage the CLI
             reports after each turn.
           </p>
+          <!-- The subagents' share (backlog 152): said beside the window
+               figure, never added to it — a child's context is its own. -->
+          {@const agents = subagentsOfTurn()}
+          {#if agents.rows.length > 0}
+            <p class="note small">
+              + subagents: {agents.tokens.toLocaleString()} tokens ({agents.rows.length}
+              agent{agents.rows.length === 1 ? "" : "s"} this turn{agents.running > 0 ? `, ${agents.running} running` : ""}) —
+              each agent's latest request and reply as the CLI counts it, not in
+              the window figure above; the Running-tasks chip in the bar lists
+              them.
+            </p>
+          {/if}
           <!-- The hand-off (backlog 086): where the wrap-up is asked. -->
           <label class="threshold">
             <span class="gloss">

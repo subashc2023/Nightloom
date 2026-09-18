@@ -19,6 +19,7 @@ import {
   openBeside,
   openFloating,
   parseContentDrag,
+  sameContent,
   split,
   step,
   tabTitle,
@@ -402,5 +403,35 @@ describe("the floating slot (backlog 145)", () => {
     expect(parseContentDrag(JSON.stringify(img))).toEqual(img);
     expect(parseContentDrag(JSON.stringify({ kind: "attachment", session: "a", turn: 1, index: 0, media: "gif" }))).toBeNull();
     expect(parseContentDrag(JSON.stringify({ kind: "attachment", session: "a", turn: "1", index: 0, media: "image" }))).toBeNull();
+  });
+});
+
+describe("a subagent's transcript as a tab (backlog 152)", () => {
+  const sub: TabContent = { kind: "subagent", session: "a", toolUseId: "toolu_1", name: "Survey the crate" };
+
+  it("is keyed by chat and call, titled by the task, and goes with its chat", () => {
+    expect(tabTitle(sub, [])).toBe("Agent · Survey the crate");
+    expect(sameContent(sub, { ...sub, name: "renamed" })).toBe(true);
+    expect(sameContent(sub, { ...sub, toolUseId: "toolu_2" })).toBe(false);
+    expect(sameContent(sub, { ...sub, session: "b" })).toBe(false);
+    const w = ws(chat("a"), chat("b"));
+    land(w, w.panes[0], sub, "new");
+    expect(order(w)).toEqual([["a", "subagent", "b"]]);
+    // The same agent again lands on its tab rather than a second one.
+    land(w, w.panes[0], { ...sub, name: "renamed" }, "new");
+    expect(order(w)).toEqual([["a", "subagent", "b"]]);
+    dropChat(w, "a");
+    expect(order(w)).toEqual([["b"]]);
+  });
+
+  it("parses the descriptor and refuses one without its call", () => {
+    expect(parseContentDrag(JSON.stringify(sub))).toEqual(sub);
+    expect(parseContentDrag(JSON.stringify({ kind: "subagent", session: "a", toolUseId: "t" }))).toEqual({
+      kind: "subagent",
+      session: "a",
+      toolUseId: "t",
+      name: "subagent",
+    });
+    expect(parseContentDrag(JSON.stringify({ kind: "subagent", session: "a" }))).toBeNull();
   });
 });

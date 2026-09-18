@@ -260,6 +260,33 @@ it as the reply's prose. `AssistantMessage.svelte` draws `children` as one
 indented `<details>` row under the call — `▸ subagent · 3 calls · 120 words
 so far` — opening to the child's rows (nested subagents recurse).
 
+### Running tasks: the subagents' rows, the agents chip, the transcript tab (2026-09-17, nightshift backlog 152)
+
+A `subagent_status` turn event (the whole row each time; the protocol and
+the arithmetic are in
+[service-agent.md](service-agent.md#subagents-made-whole-auto-under-ask-the-preamble-at-depth-the-running-tasks-2026-09-17-nightshift-backlog-152))
+is upserted into `app.subagents` by `tool_use_id` — the `SubagentRow`:
+the translator's figures plus `turn` (`app.turnSeq`, counted per send),
+`startedAt`/`updatedAt` and its own `segments`, which the `subagent`
+event fills through the same `applyToSegments` as the live call's
+`children`, so the row's transcript outlives the post-turn re-sync. The
+rows are the open chat's, cleared with `agentInit` on a chat switch.
+`subagentsOfTurn()` reads the latest turn's rows for the top bar's
+**agents chip** (`TopBar.svelte`: `2 agents · 41k` in the live blue while
+any runs, `2 agents · done · 41k` after, until the next send) and for the
+gauge's hover and the Context page's "+ subagents: N tokens" line — said
+beside the window figure, never added to it. The chip opens
+`RunningTasks.svelte` on the Settings overlay (`app.showTasks`): a table,
+newest first — agent type and description, model, state, elapsed (the
+CLI's `duration_ms`, the clock until it reports one), tokens (the CLI's
+figure; the hover sums the rounds), tool uses — and *View transcript*,
+which opens a tab of kind `subagent` (`tabs.ts`: keyed by chat and call,
+titled `Agent · <description>`, closed with its chat) drawn by
+`SubagentView.svelte` from the row: the task it was given (the brief in
+front when the hook put it there), each call with its input and whole
+result, each thought, the child's words. A tab whose chat was left says
+so; the collapsed row in the transcript still has the narrative.
+
 ### Effort and the fallback model on the rail (2026-09-16, nightshift backlog 076)
 
 Under the Model section of the Claude Code pane: **Effort**, a five-way

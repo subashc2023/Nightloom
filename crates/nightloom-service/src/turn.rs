@@ -111,6 +111,41 @@ pub enum TurnEvent {
         parent_tool_use_id: String,
         event: Box<TurnEvent>,
     },
+    /// A subagent's standing, whole, each time it changes (2026-09-17,
+    /// nightshift backlog 152): the CLI's `task_started`,
+    /// `task_progress` and `task_notification` lines, and each new round
+    /// of the child's own messages, keyed by the spawning call's id. A
+    /// shell replaces its row by `tool_use_id` — the Running-tasks panel
+    /// (type, model, running or done, elapsed, tokens, tool uses) and the
+    /// gauge's "+ subagents" line. Claude Code engine only.
+    SubagentStatus {
+        /// The spawning `Agent` call — the key.
+        tool_use_id: String,
+        /// The CLI's own id for the task (`agent-<id>.jsonl` on disk).
+        task_id: String,
+        subagent_type: String,
+        description: String,
+        /// The task the child was given, as the CLI reports it —
+        /// with the brief in front when the hook put it there.
+        prompt: String,
+        /// `running`, `completed`, `failed`, or whatever the CLI's
+        /// `task_notification.status` said.
+        status: String,
+        background: bool,
+        /// The child's model, from its first message.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        /// The CLI's figure: the latest round's whole request and
+        /// response — what the Claude app's panel shows.
+        tokens: u64,
+        tool_uses: u32,
+        duration_ms: u64,
+        /// The translator's sum over the child's rounds: the prompt side
+        /// from each round's message, the output from the CLI's totals.
+        usage: Usage,
+        /// Rounds seen so far — the child's API calls.
+        rounds: u32,
+    },
 }
 
 /// One MCP server as the CLI's init line lists it (see

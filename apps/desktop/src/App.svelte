@@ -33,6 +33,8 @@
   import AsideCard from "./lib/AsideCard.svelte";
   import AttachmentLayer from "./lib/AttachmentLayer.svelte";
   import AttachmentView from "./lib/AttachmentView.svelte";
+  import SubagentView from "./lib/SubagentView.svelte";
+  import RunningTasks from "./lib/RunningTasks.svelte";
   import { isMac } from "./lib/platform";
   import { toggleTranscriptPref } from "./lib/transcriptPrefs.svelte";
   import { thinkingToggleDead } from "./lib/activity";
@@ -599,6 +601,13 @@
                 <AttachmentView content={t.content} />
                 {#if focused}<FindBar bind:this={findBar} />{/if}
               </div>
+            {:else if t.content.kind === "subagent"}
+              <!-- A subagent's transcript (backlog 152): the Running-tasks
+                   panel's View transcript, drawn from the chat's row. -->
+              <div class="content">
+                <SubagentView content={t.content} />
+                {#if focused}<FindBar bind:this={findBar} />{/if}
+              </div>
             {:else if liveTab?.id === t.id}
               <div class="content">
                 {#if blank}
@@ -707,6 +716,12 @@
     {#if app.showContext}
       <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
       <div class="settings-overlay" onmousedown={(e) => { if (e.target === e.currentTarget) app.showContext = false; }}><ContextPanel /></div>
+    {/if}
+    <!-- Running tasks (nightshift backlog 152): the open chat's subagents,
+         on the same overlay, from the top bar's agents chip. -->
+    {#if app.showTasks}
+      <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+      <div class="settings-overlay" onmousedown={(e) => { if (e.target === e.currentTarget) app.showTasks = false; }}><RunningTasks /></div>
     {/if}
     <Palette />
     {#if app.showPrompts}

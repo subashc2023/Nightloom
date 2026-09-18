@@ -95,6 +95,10 @@ export interface AgentConnectArgs {
   effort?: string;
   /** `--fallback-model <alias>`; omitted is no fallback. */
   fallbackModel?: string;
+  /** *Subagents run on auto* under Ask and Plan (nightshift backlog 152):
+   *  a subagent's call the hook would pause for runs instead when true,
+   *  is refused in words when false. Omitted is on. */
+  subagentsAuto?: boolean;
   /** Stop the turn if the CLI's own cost estimate passes this. */
   budget?: number;
   /** Appended to Claude Code's system prompt, after the preamble. */
@@ -1026,7 +1030,31 @@ export type TurnEvent =
    *  the id of the `Agent` call that spawned it (nightshift backlog 075);
    *  `event` is the child's text, thinking, call or result as the main
    *  thread's would be, and nests under that call's row. */
-  | { type: "subagent"; parent_tool_use_id: string; event: TurnEvent };
+  | { type: "subagent"; parent_tool_use_id: string; event: TurnEvent }
+  /** A subagent's standing, whole, each time it changes (nightshift
+   *  backlog 152): the CLI's task lines and each new round of the child's,
+   *  keyed by the spawning call. The Running-tasks panel's row. */
+  | ({ type: "subagent_status" } & SubagentStatus);
+
+/** One subagent as the translator keeps it (backlog 152). `tokens` is the
+ *  CLI's own figure — the latest round's whole request and response, the
+ *  Claude app's number; `usage` the sum over the child's rounds. */
+export interface SubagentStatus {
+  tool_use_id: string;
+  task_id: string;
+  subagent_type: string;
+  description: string;
+  prompt: string;
+  /** `running`, `completed`, `failed`, … as the CLI says. */
+  status: string;
+  background: boolean;
+  model?: string;
+  tokens: number;
+  tool_uses: number;
+  duration_ms: number;
+  usage: Usage;
+  rounds: number;
+}
 
 /** An aside's answer (nightshift backlog 081): the model's text, off the
  *  chat's warm cache, recorded nowhere. */

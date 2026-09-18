@@ -32,8 +32,11 @@
 //! **The protocol is two files in a per-chat directory**, and the hook
 //! reads them in this order:
 //!
-//! 1. `rules.json` — `{"allow": ["Bash", …]}`, the tools "Allow for this
-//!    chat" has granted. A match answers `allow` without pausing.
+//! 1. `rules.json` — `{"allow": ["Bash", …], "subagents_auto": true}`:
+//!    the tools "Allow for this chat" has granted (a match answers `allow`
+//!    without pausing), and the *Subagents run on auto* switch (nightshift
+//!    backlog 152, 2026-09-17), which decides a subagent's call — see
+//!    [`decide`].
 //! 2. `decision.json` — one answer, for one call: `{"tool_use_id": …,
 //!    "decision": "allow" | "deny", "updated_input"?: …, "reason"?: …}`.
 //!    Honoured only when its `tool_use_id` is the call the CLI is asking
@@ -164,10 +167,18 @@ pub const EXIT_PLAN_MATCHER: &str = "ExitPlanMode";
 /// of every plan-mode turn was "Run Write?" for the plan file.
 pub const PLAN_MODE_PASS: [&str; 4] = ["Write", "Edit", "MultiEdit", "NotebookEdit"];
 
-/// What a subagent's call is refused with under Ask. Written for the model
-/// that reads it: what it may do instead, so the refusal reaches the user
-/// as a sentence in the parent's reply rather than as silence.
+/// What a subagent's call is refused with under Ask when *Subagents run
+/// on auto* is off. Written for the model that reads it: what it may do
+/// instead, so the refusal reaches the user as a sentence in the parent's
+/// reply rather than as silence.
 pub const SUBAGENT_DENIED: &str = "this call needs the user's approval, which a subagent cannot ask for under Nightloom's Ask position — make the call from the main conversation, or report what you would have done";
+
+/// Whether a subagent's calls run unasked under Ask when the rules say
+/// nothing — a `rules.json` written before the switch existed, or none
+/// yet. On: a subagent's calls are the parent's, which the user let run
+/// by never being asked about the `Agent` call either (nightshift blocker
+/// 247 has the default).
+pub const SUBAGENTS_AUTO_DEFAULT: bool = true;
 
 /// Where the chat goes once a plan is approved — the pick on the card
 /// (backlog 085, the design's `then Ask | Auto`).
@@ -323,6 +334,11 @@ struct Decision {
 struct Rules {
     #[serde(default)]
     allow: Vec<String>,
+    /// The *Subagents run on auto* switch (backlog 152): `None` reads as
+    /// [`SUBAGENTS_AUTO_DEFAULT`], so a rules file from before the field
+    /// existed is not a chat that chose off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    subagents_auto: Option<bool>,
 }
 
 /// One chat's ask directory, from Nightloom's side.
@@ -387,6 +403,28 @@ impl AskDir {
     /// The tools this chat has granted.
     pub fn allowed(&self) -> Vec<String> {
         read_rules(&self.dir).allow
+    }
+
+    /// Record the *Subagents run on auto* switch for this chat (backlog
+    /// 152). Written before each turn from the rail's position, so the
+    /// hook — a separate process that sees only this directory — reads
+    /// the chat's current choice. Idempotent: an unchanged value is not
+    /// rewritten, so the hook never races a rename it did not need.
+    pub fn set_subagents_auto(&self, on: bool) -> std::io::Result<()> {
+        let mut rules = read_rules(&self.dir);
+        if rules.subagents_auto == Some(on) {
+            return Ok(());
+        }
+        std::fs::create_dir_all(&self.dir)?;
+        rules.subagents_auto = Some(on);
+        write_atomic(&self.dir.join(RULES_FILE), &serde_json::to_vec(&rules)?)
+    }
+
+    /// Whether this chat's subagents run unasked under Ask.
+    pub fn subagents_auto(&self) -> bool {
+        read_rules(&self.dir)
+            .subagents_auto
+            .unwrap_or(SUBAGENTS_AUTO_DEFAULT)
     }
 
     /// Drop a decision nobody resumed with — a Stop while the prompt was
@@ -522,17 +560,26 @@ impl HookReply {
 
 /// The hook's whole decision, pure: the CLI's stdin line and the directory
 /// in, the reply out. Order: plan mode's editing tools stand aside, then a
-/// standing rule, then a subagent's call is refused in words, then the
-/// one-shot decision for this very call (consumed), then defer.
+/// standing rule, then a subagent's call is allowed or refused in words by
+/// the chat's switch, then the one-shot decision for this very call
+/// (consumed), then defer.
 ///
-/// **A subagent's call is denied, never deferred** (2026-09-16, measured in
+/// **A subagent's call is never deferred** (2026-09-16, measured in
 /// nightshift `notes/runner-design/084-subagent-under-ask-2026-09-16.md`):
 /// a `defer` from inside a subagent is dropped by the CLI — no
 /// `deferred_tool_use`, nothing to resume — and the parent reads "no
-/// output" and often asserts the work was done. A denial with a reason is
-/// text the subagent reports, the parent sees, and the user sees in the
-/// parent's reply. A standing "allow for this chat" rule still covers it,
-/// checked first; whether it should is blocker 100's question.
+/// output" and often asserts the work was done. So the switch has two
+/// positions and no third (nightshift backlog 152, 2026-09-17): with
+/// *Subagents run on auto* on — the default, blocker 247 — the call is
+/// **allowed**, which the CLI honours at depth exactly as at the top
+/// (measured, `152-report-2026-09-17.md` M-A: the child's `Write` ran and
+/// the file exists); off, it is **denied with a reason** — text the
+/// subagent reports, the parent sees, and the user sees in the parent's
+/// reply. ~~A subagent's call is denied, never deferred~~ — that was the
+/// only position until the switch. A standing "allow for this chat" rule
+/// still covers it, checked first; whether it should is blocker 100's
+/// question. The hook still sees every subagent call either way (the
+/// item's "not to do": never bypass the hook).
 pub fn decide(dir: &Path, stdin_json: &str) -> HookReply {
     let input: HookInput = match serde_json::from_str(stdin_json) {
         Ok(i) => i,
@@ -547,11 +594,16 @@ pub fn decide(dir: &Path, stdin_json: &str) -> HookReply {
     if input.permission_mode == "plan" && PLAN_MODE_PASS.contains(&input.tool_name.as_str()) {
         return HookReply::pass();
     }
-    if read_rules(dir).allow.contains(&input.tool_name) {
+    let rules = read_rules(dir);
+    if rules.allow.contains(&input.tool_name) {
         return HookReply::allow(None);
     }
     if input.agent_id.as_deref().is_some_and(|id| !id.is_empty()) {
-        return HookReply::deny(SUBAGENT_DENIED.into());
+        return if rules.subagents_auto.unwrap_or(SUBAGENTS_AUTO_DEFAULT) {
+            HookReply::allow(None)
+        } else {
+            HookReply::deny(SUBAGENT_DENIED.into())
+        };
     }
     let path = dir.join(DECISION_FILE);
     let decision: Option<Decision> = std::fs::read(&path)
@@ -618,7 +670,7 @@ pub fn settings_json_matching(hook: &[String], dir: &Path, matcher: &str) -> Str
     .to_string()
 }
 
-fn shell_quote(word: &str) -> String {
+pub(super) fn shell_quote(word: &str) -> String {
     format!("'{}'", word.replace('\'', "'\\''"))
 }
 
@@ -789,24 +841,46 @@ mod tests {
         assert_eq!(reply.reason(), Some("the user declined this call"));
     }
 
-    /// A subagent's call carries `agent_id`; it is refused in words, never
-    /// deferred (the CLI drops a subagent's defer, measured 2026-09-16),
-    /// and a standing rule still covers it.
+    /// A subagent's call carries `agent_id`; it is never deferred (the CLI
+    /// drops a subagent's defer, measured 2026-09-16). With *Subagents run
+    /// on auto* on — the default, and what an older rules file reads as —
+    /// it is allowed (backlog 152); off, it is refused in words; and a
+    /// standing rule covers it either way.
     #[test]
-    fn a_subagents_call_is_denied_with_a_reason_not_deferred() {
+    fn a_subagents_call_follows_the_switch_and_is_never_deferred() {
         let dir = scratch();
+        let ask = AskDir::new(&dir);
         let from_subagent = STDIN.replacen(
             r#""permission_mode":"acceptEdits""#,
             r#""permission_mode":"acceptEdits","agent_id":"ae0b73db3d9ffbc33","agent_type":"general-purpose""#,
             1,
         );
+        // No rules file at all: the default, on.
+        assert!(ask.subagents_auto());
+        assert_eq!(decide(&dir, &from_subagent), HookReply::allow(None));
+        // A rules file from before the switch existed reads the same.
+        std::fs::write(dir.join(RULES_FILE), r#"{"allow":[]}"#).unwrap();
+        assert_eq!(decide(&dir, &from_subagent), HookReply::allow(None));
+        // The top-level shape of the same call still defers.
+        assert_eq!(decide(&dir, STDIN), HookReply::defer());
+        // Off: denied with the reason, and the file says so.
+        ask.set_subagents_auto(false).unwrap();
+        assert!(!ask.subagents_auto());
         let reply = decide(&dir, &from_subagent);
         assert_eq!(reply.decision(), "deny");
         assert_eq!(reply.reason(), Some(SUBAGENT_DENIED));
-        // The top-level shape of the same call still defers.
         assert_eq!(decide(&dir, STDIN), HookReply::defer());
-        AskDir::new(&dir).allow_tool("Write").unwrap();
+        // A standing rule still covers the subagent's call with the
+        // switch off, and survives the switch being written.
+        ask.allow_tool("Write").unwrap();
         assert_eq!(decide(&dir, &from_subagent).decision(), "allow");
+        ask.set_subagents_auto(true).unwrap();
+        assert_eq!(ask.allowed(), vec!["Write".to_string()]);
+        assert!(ask.subagents_auto());
+        let bash = from_subagent.replace(r#""tool_name":"Write""#, r#""tool_name":"Bash""#);
+        assert_eq!(decide(&dir, &bash), HookReply::allow(None));
+        ask.set_subagents_auto(false).unwrap();
+        assert_eq!(decide(&dir, &bash).decision(), "deny");
     }
 
     /// "Allow for this chat" is a rule that outlives the decision: the

@@ -1491,6 +1491,7 @@ async fn connect_agent(
     prompt_suggestions: Option<bool>,
     effort: Option<String>,
     fallback_model: Option<String>,
+    subagents_auto: Option<bool>,
 ) -> Result<ConnectedInfo, String> {
     // Same rule as `connect`: an open project wins over the rail's saved
     // folder, or a chat filed under a project would be running somewhere
@@ -1616,6 +1617,9 @@ async fn connect_agent(
         !off.contains(&SegmentKind::EngineNote),
     );
     spec.append_system_prompt = prompt.render_flat();
+    // What the subagent brief takes beyond the preamble's own segments
+    // (nightshift backlog 152): the extra-folders note, when there is one.
+    let mut brief_notes: Vec<String> = Vec::new();
     // The model is told which extra folders it may open, by their real
     // paths — the CLI's tools take absolute paths, and a grant the model
     // does not know about is one it never uses (backlog 143). Under the
@@ -1631,11 +1635,19 @@ async fn connect_agent(
              working directory.\n</extra-folders>",
             list.join("; ")
         );
+        brief_notes.push(note.clone());
         spec.append_system_prompt = Some(match spec.append_system_prompt.take() {
             Some(s) => format!("{s}\n\n{note}"),
             None => note,
         });
     }
+    // The subagent brief (nightshift backlog 152, 2026-09-17): the
+    // project's instructions and the engine note, prepended to every
+    // subagent's task by a hook on the `Agent` tool — the child gets none
+    // of `--append-system-prompt` otherwise (measured; `agent::brief`).
+    // Composed here, beside the preamble it is cut from; registered below
+    // with the tools, since a subagent is one.
+    let brief_text = nightloom_service::agent::brief::compose(&prompt, &brief_notes);
     if tools {
         // Headless has no way to ask, so the window's approval prompt does
         // not run here: it gates calls the engine is about to run, and this
@@ -1672,6 +1684,37 @@ async fn connect_agent(
             spec.append_system_prompt = Some(match spec.append_system_prompt.take() {
                 Some(s) => format!("{s}\n\n{note}"),
                 None => note.to_string(),
+            });
+        }
+        // What a subagent must be told (nightshift backlog 152, his
+        // fallback, kept whether or not the brief hook is registered): a
+        // child starts with nothing of this conversation. The paragraph
+        // says what Nightloom hands it and what the parent's task must
+        // carry; under Ask, that a child's calls run or are refused by
+        // the switch, never paused. Under the engine-note switch.
+        if !off.contains(&SegmentKind::EngineNote) {
+            let handed = if brief_text.is_some() {
+                "Nightloom puts the project's instructions and the engine note above in \
+                 front of its task automatically; everything else it needs must be in \
+                 the task you write"
+            } else {
+                "it is handed nothing of this preamble, so its task must carry what it \
+                 needs of it — the vault alias and directory, the project's rules, \
+                 which of Nightloom's tools to use"
+            };
+            let note = format!(
+                "<subagent-note>\nA subagent you spawn (the Agent tool) starts with none \
+                 of this conversation: {handed}: what to do, which files or vault notes \
+                 to read, where to write, and what to report back. Under the Ask \
+                 position a subagent cannot pause for the person's approval — its calls \
+                 either run unasked (the chat's Subagents-run-on-auto switch, on by \
+                 default) or are refused with a reason it will repeat to you — so give \
+                 a subagent only work you would let run, and make the calls that need \
+                 an approval yourself.\n</subagent-note>"
+            );
+            spec.append_system_prompt = Some(match spec.append_system_prompt.take() {
+                Some(s) => format!("{s}\n\n{note}"),
+                None => note,
             });
         }
         // Nightloom's own tools on this engine — search_chats, read_chat,
@@ -1711,6 +1754,21 @@ async fn connect_agent(
                     } else {
                         nightloom_service::agent::AskMode::Ask
                     },
+                    // *Subagents run on auto* (nightshift backlog 152): the
+                    // rail's switch, on unless it said off; written into
+                    // the chat's rules by `set_ask_dir` before each turn.
+                    subagents_auto: subagents_auto
+                        .unwrap_or(nightloom_service::agent::ask::SUBAGENTS_AUTO_DEFAULT),
+                });
+            }
+            // The brief's hook is the same binary with another flag;
+            // `send_agent` points it at the chat's directory with the ask
+            // files, and the file is written there (backlog 152).
+            if let Some(text) = brief_text.clone() {
+                spec.brief = Some(nightloom_service::agent::BriefSpec {
+                    hook: vec![exe.to_string_lossy().into_owned(), "--subagent-hook".into()],
+                    dir: PathBuf::new(),
+                    text,
                 });
             }
             spec.mcp_config = Some(
@@ -5950,6 +6008,17 @@ fn main() {
     if argv.first().map(String::as_str) == Some("--permission-hook") {
         if let Err(e) = nightloom_service::agent::ask::run_hook(&argv[1..]) {
             eprintln!("nightloom-desktop --permission-hook: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    // `nightloom-desktop --subagent-hook <dir>`: the `PreToolUse` hook on
+    // the `Agent` tool that puts the chat's brief in front of every
+    // subagent's task (2026-09-17, nightshift backlog 152;
+    // `agent::brief::run_hook`). Same reason for living here.
+    if argv.first().map(String::as_str) == Some("--subagent-hook") {
+        if let Err(e) = nightloom_service::agent::brief::run_hook(&argv[1..]) {
+            eprintln!("nightloom-desktop --subagent-hook: {e}");
             std::process::exit(1);
         }
         return;
