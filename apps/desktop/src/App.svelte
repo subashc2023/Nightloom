@@ -58,7 +58,7 @@
   import NightshiftSurface from "./lib/NightshiftSurface.svelte";
   import TerminalDock from "./lib/TerminalDock.svelte";
   import Icon from "./lib/Icon.svelte";
-  import { externalHref } from "./lib/links";
+  import { externalHref } from "./lib/extlink";
   import * as api from "./lib/api";
   import { addToast } from "./lib/state.svelte";
 
@@ -72,7 +72,8 @@
     // with no way back). Capture phase, so it runs before any renderer's
     // own handler and before the webview navigates.
     const onLink = (e: MouseEvent) => {
-      const url = externalHref(e.target, window.location.origin);
+      const a = e.target instanceof Element ? e.target.closest("a") : null;
+      const url = externalHref(a?.getAttribute("href") ?? null, window.location.origin);
       if (!url) return;
       e.preventDefault();
       e.stopPropagation();
