@@ -1714,6 +1714,8 @@
     display: flex;
     align-items: center;
     justify-content: flex-end;
+    /* Wraps, never clips (2026-09-18, the same screenshots). */
+    flex-wrap: wrap;
     gap: 6px;
   }
   .bottom-toggle {
@@ -1946,7 +1948,11 @@
   .row {
     display: flex;
     align-items: center;
-    gap: 8px;
+    /* Wraps rather than clips (his screenshots at ⌘+ zoom, 2026-09-18:
+       "Ask a…" cut at the window's edge): what does not fit — Ask aside,
+       Council, Send — drops to a second line. */
+    flex-wrap: wrap;
+    gap: 6px 8px;
     container-type: inline-size;
   }
   .spacer {

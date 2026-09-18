@@ -16,7 +16,6 @@
   import { portal, anchorBelow } from "./portal";
   const POP_WIDTH = 340;
   import NotificationCentre from "./NotificationCentre.svelte";
-  import TerminalButton from "./TerminalButton.svelte";
   import { chatKind, kindLabel, openSession } from "./state.svelte";
   import { forkLine } from "./edit";
 
@@ -184,20 +183,42 @@
     if (!u || u.source === "none" || u.five_hour == null) return null;
     return u;
   });
+  // The reading's age, ticking (his ask 2026-09-18: "add like a '5min
+  // ago' in the bar at the top"): `age_seconds` is fixed at the read, so
+  // the clock here runs from `sampled_at_ms` every 30 s.
+  let now = $state(Date.now());
+  $effect(() => {
+    const t = setInterval(() => (now = Date.now()), 30_000);
+    return () => clearInterval(t);
+  });
+  const planAgeSeconds = $derived.by(() => {
+    if (!plan) return null;
+    if (plan.sampled_at_ms != null) return Math.max(0, (now - plan.sampled_at_ms) / 1000);
+    return plan.age_seconds;
+  });
+  const planAgeMark = $derived.by(() => {
+    const a = planAgeSeconds;
+    if (a == null) return "?";
+    if (a < 90) return "now";
+    if (a < 3600) return `${Math.round(a / 60)}m`;
+    return `${Math.round(a / 3600)}h`;
+  });
   const planTitle = $derived.by(() => {
     if (!plan) return "";
     const age =
-      plan.age_seconds == null
+      planAgeSeconds == null
         ? "age unknown"
-        : plan.age_seconds < 90
+        : planAgeSeconds < 90
           ? "sampled just now"
-          : `sampled ${Math.round(plan.age_seconds / 60)} min ago`;
+          : `sampled ${Math.round(planAgeSeconds / 60)} min ago`;
     const where =
       plan.source === "turn"
         ? "this chat's last turn (the CLI's rate-limit event)"
         : plan.source === "desktop"
           ? "the Claude app's sample"
-          : "the CLI's /usage cache";
+          : plan.source === "cli-usage"
+            ? "the CLI's /usage, run live (zero tokens)"
+            : "the CLI's /usage cache";
     const when = (iso: string | null) => {
       if (!iso) return "reset time unknown";
       const d = new Date(iso);
@@ -445,6 +466,7 @@
             <span class="fold2">{plan.seven_day}%</span>
           {/if}
           {#if plan.stale}<span class="of fold1">· stale</span>{/if}
+          <span class="of fold1 plan-age">· {planAgeMark}</span>
         </span>
       </div>
     {/if}
@@ -483,7 +505,9 @@
     {/if}
     <!-- New terminal (nightshift backlog 113, agent M's hunk): a shell
          docked under the chat, at the right end of the chips (board 12a). -->
-    <TerminalButton />
+    <!-- ~~<TerminalButton />~~ — the sidebar's foot beside Settings since
+         2026-09-18 (his words: "move the terminal button to the bottom row
+         … right next to the settings button; that might save some space"). -->
     <!-- The bell (nightshift backlog 069, agent I's hunk): what waits on
          him, five kinds; the Nightshift header carries the same one. -->
     <NotificationCentre />
@@ -527,6 +551,12 @@
     border-bottom: 1px solid var(--line);
     padding: 0 20px;
     min-height: 52px;
+    /* Past the three folds the bar wraps to a second line rather than
+       clipping its last chip (his screenshot at ⌘+ zoom, 2026-09-18:
+       "≥$0.0" cut at the edge — the gauge grew a week bar after 129
+       measured the folds). `min-height`, so a one-line bar is unchanged. */
+    flex-wrap: wrap;
+    row-gap: 4px;
   }
   .left {
     display: flex;
@@ -583,6 +613,8 @@
     align-items: center;
     gap: 8px;
     flex-shrink: 0;
+    flex-wrap: wrap;
+    justify-content: flex-end;
   }
   /* The three folds (backlog 129), by the bar's own width. Step 1: the
      gauges' words. Step 2: the spend chip, the gauge's percentage, the

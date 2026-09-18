@@ -249,6 +249,10 @@
   .aside-view-box {
     max-width: 760px;
     resize: vertical;
+    /* The composer's rule (2026-09-16): a sliver of horizontal overflow
+       drew a full scrollbar thumb across the empty box — his screenshot
+       of an aside dragged into a tab, 2026-09-18 (backlog 170). */
+    overflow-x: hidden;
     padding: 8px 10px;
     border: 1px solid var(--line2);
     border-radius: 8px;

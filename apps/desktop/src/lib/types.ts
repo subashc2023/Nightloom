@@ -496,7 +496,7 @@ export interface PlanUsage {
   seven_day_resets_at: string | null;
   /** `turn` is the frontend's own: the last agent turn's `rate_limit_event`
    *  (see `AgentTurnResult.plan.unifiedWindows`), fresher than any file. */
-  source: "desktop" | "cli-cache" | "none" | "turn";
+  source: "desktop" | "cli-cache" | "cli-usage" | "none" | "turn";
 }
 
 export interface UsageSummary {

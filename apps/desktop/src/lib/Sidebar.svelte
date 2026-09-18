@@ -26,6 +26,7 @@
   import * as api from "./api";
   import * as tabs from "./tabs";
   import { hasDraft, newDraftKey } from "./drafts.svelte";
+  import TerminalButton from "./TerminalButton.svelte";
   import { forkLine } from "./edit";
   import { findChord } from "./find";
   import { findBar } from "./search";
@@ -622,6 +623,8 @@
   {/if}
 
   <div class="side-foot">
+    <!-- New terminal, moved here from the top bar (2026-09-18, his words). -->
+    <TerminalButton variant="foot" />
     <button class="foot-btn" onclick={() => (app.showSettings = true)}>
       <Icon name="gear" />
       <span>Settings</span>

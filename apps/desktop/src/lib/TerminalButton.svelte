@@ -10,6 +10,12 @@
   import { openTerminalFromBar, term, terminalCwd } from "./terminal.svelte";
   import { shortCwd } from "./terminal";
 
+  /** `bar` (the top bar's chip, the original) or `foot` — a row in the
+   *  sidebar's foot beside Settings, where it lives since 2026-09-18 (his
+   *  words: "move the terminal button to the bottom row … right next to
+   *  the settings button; that might save some space"). */
+  let { variant = "bar" }: { variant?: "bar" | "foot" } = $props();
+
   const cwd = $derived(terminalCwd());
   const home = $derived.by(() => {
     const m = /^(\/Users\/[^/]+|\/home\/[^/]+)(\/|$)/.exec(cwd ?? "");
@@ -24,19 +30,66 @@
   );
 </script>
 
-<button
-  class="ns-btn ghost small term-open"
-  class:term-open-on={term.open}
-  {title}
-  aria-label="New terminal"
-  disabled={!cwd}
-  onclick={() => void openTerminalFromBar()}
->
-  <Icon name="term" size={13} />
-  <span class="term-open-label">Terminal</span>
-</button>
+{#if variant === "foot"}
+  <button
+    class="term-foot"
+    class:term-open-on={term.open}
+    {title}
+    aria-label="New terminal"
+    disabled={!cwd}
+    onclick={() => void openTerminalFromBar()}
+  >
+    <Icon name="term" size={13} />
+    <span>Terminal</span>
+    <span class="term-spacer"></span>
+    <span class="term-kbd">⌃`</span>
+  </button>
+{:else}
+  <button
+    class="ns-btn ghost small term-open"
+    class:term-open-on={term.open}
+    {title}
+    aria-label="New terminal"
+    disabled={!cwd}
+    onclick={() => void openTerminalFromBar()}
+  >
+    <Icon name="term" size={13} />
+    <span class="term-open-label">Terminal</span>
+  </button>
+{/if}
 
 <style>
+  /* The foot row, drawn like the sidebar's Settings row (`.foot-btn`). */
+  .term-foot {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 18px;
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid var(--line);
+    color: var(--dim);
+    font-size: 12.5px;
+    font-family: inherit;
+    cursor: pointer;
+    text-align: left;
+  }
+  .term-foot:hover:not(:disabled) {
+    color: var(--ink);
+  }
+  .term-foot:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .term-spacer {
+    flex: 1;
+  }
+  .term-kbd {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--dim);
+  }
   .term-open {
     display: inline-flex;
     align-items: center;
