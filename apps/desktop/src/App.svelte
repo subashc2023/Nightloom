@@ -58,12 +58,28 @@
   import NightshiftSurface from "./lib/NightshiftSurface.svelte";
   import TerminalDock from "./lib/TerminalDock.svelte";
   import Icon from "./lib/Icon.svelte";
+  import { externalHref } from "./lib/links";
+  import * as api from "./lib/api";
+  import { addToast } from "./lib/state.svelte";
 
   onMount(() => {
     void init();
     // The stored zoom back on the window, and the View menu's zoom items
     // (nightshift backlog 108).
     void initZoom();
+    // Every outside link in rendered text opens in the system browser
+    // (his report, 2026-09-18: a reply's link took over the whole window
+    // with no way back). Capture phase, so it runs before any renderer's
+    // own handler and before the webview navigates.
+    const onLink = (e: MouseEvent) => {
+      const url = externalHref(e.target, window.location.origin);
+      if (!url) return;
+      e.preventDefault();
+      e.stopPropagation();
+      api.openUrl(url).catch((err) => addToast(`Could not open the link: ${String(err)}`));
+    };
+    document.addEventListener("click", onLink, true);
+    return () => document.removeEventListener("click", onLink, true);
   });
 
   /**
