@@ -607,11 +607,19 @@
     font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
     -webkit-text-size-adjust: 100%;
     overscroll-behavior: none;
+    /* The page never scrolls sideways (his report, 2026-09-18: "on the
+       phone version you're able to scroll sideways"): anything wider than
+       the screen — a long URL, a code block, a table — scrolls inside its
+       own box below, and the body clips the rest. */
+    width: 100%;
+    overflow-x: hidden;
   }
   .page {
     display: flex;
     flex-direction: column;
     height: 100dvh;
+    width: 100%;
+    overflow-x: hidden;
     padding-top: env(safe-area-inset-top, 0px);
     box-sizing: border-box;
   }
@@ -671,6 +679,7 @@
   main {
     flex: 1;
     overflow-y: auto;
+    overflow-x: hidden;
     -webkit-overflow-scrolling: touch;
   }
   .list {
@@ -726,6 +735,9 @@
   }
   .msg {
     max-width: 100%;
+    /* A flex item's default `min-width: auto` lets a wide child (a code
+       block) push the column past the screen; zero lets it shrink. */
+    min-width: 0;
     word-wrap: break-word;
     overflow-wrap: anywhere;
   }
@@ -803,8 +815,18 @@
   .md :global(p) {
     margin: 0 0 0.6em;
   }
+  .md :global(table) {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+  }
+  .md :global(img) {
+    max-width: 100%;
+    height: auto;
+  }
   .md :global(pre) {
     overflow-x: auto;
+    max-width: 100%;
     background: #1a1b1f;
     padding: 8px 10px;
     border-radius: 8px;
