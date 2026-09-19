@@ -292,18 +292,82 @@ pub struct Remote {
     awake: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
 }
 
+/// The switch as last set, on disk, so a relaunch brings the listener back
+/// (his ask, 2026-09-18: "make sure the phone section is still on" after
+/// the update installs — until now the listener lived only in memory and
+/// every relaunch left the phone unable to connect, backlog 154's likely
+/// cause). `~/.nightloom/remote.json`.
+#[derive(Debug, Clone, Default, Serialize, serde::Deserialize)]
+struct Persisted {
+    on: bool,
+    port: u16,
+    keep_awake: bool,
+}
+
+fn persisted_path() -> Option<std::path::PathBuf> {
+    let home = std::env::var("HOME").ok().filter(|h| !h.is_empty())?;
+    Some(
+        std::path::PathBuf::from(home)
+            .join(nightloom_service::project::DOT_DIR)
+            .join("remote.json"),
+    )
+}
+
+fn read_persisted() -> Persisted {
+    persisted_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+fn write_persisted(p: &Persisted) {
+    let Some(path) = persisted_path() else { return };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(t) = serde_json::to_string_pretty(p) {
+        let _ = std::fs::write(path, t);
+    }
+}
+
 impl Remote {
     /// Build the host, attach the relay, and manage the state. Called once
-    /// from `setup`, after `AppState` is managed.
+    /// from `setup`, after `AppState` is managed. Then, off the setup
+    /// thread, the listener comes back up if the switch was on when the
+    /// app last ran; a failure (no Tailscale yet, the port taken) is
+    /// logged and the card shows the listener off, as before.
     pub fn install(app: &AppHandle) {
         let host = DesktopHost::new(app.clone());
         host.attach();
+        let saved = read_persisted();
         app.manage(Remote {
             host,
             server: tokio::sync::Mutex::new(None),
-            port: Mutex::new(DEFAULT_PORT),
-            keep_awake: Mutex::new(false),
+            port: Mutex::new(if saved.port > 0 {
+                saved.port
+            } else {
+                DEFAULT_PORT
+            }),
+            keep_awake: Mutex::new(saved.keep_awake),
             awake: Mutex::new(None),
+        });
+        if saved.on {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let remote = app.state::<Remote>();
+                match start_listener(&app, &remote, None).await {
+                    Ok(st) => eprintln!("remote: listener back up at {:?}", st.address),
+                    Err(e) => eprintln!("remote: could not bring the listener back: {e}"),
+                }
+            });
+        }
+    }
+
+    fn persist(&self, on: bool) {
+        write_persisted(&Persisted {
+            on,
+            port: self.port(),
+            keep_awake: self.keep_awake(),
         });
     }
 
@@ -440,6 +504,17 @@ pub async fn remote_start(
     remote: State<'_, Remote>,
     port: Option<u16>,
 ) -> Result<RemoteStatus, String> {
+    let st = start_listener(&app, &remote, port).await?;
+    remote.persist(true);
+    Ok(st)
+}
+
+/// The start itself, shared by the command and the relaunch.
+async fn start_listener(
+    app: &AppHandle,
+    remote: &Remote,
+    port: Option<u16>,
+) -> Result<RemoteStatus, String> {
     let port = port.unwrap_or_else(|| remote.port());
     if port == 0 {
         return Err("the port must be between 1 and 65535".into());
@@ -459,9 +534,9 @@ pub async fn remote_start(
             t
         }
     };
-    let bound = rebind(&remote, IpAddr::V4(ip), port, token).await?;
-    remote.apply_awake(&app, remote.keep_awake());
-    status(&remote, Some(bound)).await
+    let bound = rebind(remote, IpAddr::V4(ip), port, token).await?;
+    remote.apply_awake(app, remote.keep_awake());
+    status(remote, Some(bound)).await
 }
 
 /// Start the listener at `ip:port` with `token`, in place of the one
@@ -523,6 +598,7 @@ pub async fn remote_stop(
         server.stop().await;
     }
     remote.apply_awake(&app, false);
+    remote.persist(false);
     status(&remote, None).await
 }
 
@@ -537,6 +613,7 @@ pub async fn remote_set_keep_awake(
     *remote.keep_awake.lock().unwrap_or_else(|p| p.into_inner()) = on;
     let bound = remote.server.lock().await.as_ref().map(Server::addr);
     remote.apply_awake(&app, on && bound.is_some());
+    remote.persist(bound.is_some());
     status(&remote, bound).await
 }
 
