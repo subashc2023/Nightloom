@@ -388,6 +388,8 @@ where
                             // reported separately.
                             cache_read_tokens: u["input_tokens_details"]["cached_tokens"].as_u64(),
                             cache_write_tokens: None,
+                            cache_write_5m_tokens: None,
+                            cache_write_1h_tokens: None,
                         });
                         // "completed", or the incomplete reason (e.g.
                         // "max_output_tokens") when the response was cut off.
@@ -966,6 +968,8 @@ mod tests {
                 reasoning_tokens: Some(448),
                 cache_read_tokens: Some(1024),
                 cache_write_tokens: None,
+                cache_write_5m_tokens: None,
+                cache_write_1h_tokens: None,
             }
         );
     }

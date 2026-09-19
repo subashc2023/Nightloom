@@ -7,8 +7,8 @@ Crate `nightloom-desktop`: a Tauri 2 shell over `nightloom-service` with a Svelt
 
 `src-tauri/src/main.rs` exposes `providers` / `set_api_key` / `clear_api_key` /
 `list_models` / `connect` / `list_sessions` / `new_session` / `open_session` /
-`transcript` / `send` / `cancel` / `compact` / `rewind` / `context_view` /
-`edit_context` / `delete_session` / `approve_call` / `pick_folder` /
+`transcript` / `send` / `cancel` / `compact` / `rewind` / `unrewind` / `context_view` /
+`edit_context` / `prompt_layers` / `set_prompt_layers` / `set_prompt_layer_text` / `prompt_layer_file` / `delete_session` / `restore_session` / `set_undo_menu` / `approve_call` / `pick_folder` /
 `list_projects` / `active_project` / `create_project` / `open_project` /
 `close_project` / `rename_project` / `forget_project` / `list_notes` /
 `read_note` / `save_note` / `delete_note` (each taking a `scope`) /
@@ -19,14 +19,21 @@ State is managed: `Chat` + the active `Session` in tokio mutexes, plus a
 swap-per-turn `CancellationToken`. `send` forwards `TurnEvent`s as `turn-event`
 window events and retry stalls as `turn-notice`.
 
-`delete_session` drops the active session's open log handle before removing the
-file — required on Windows.
+`delete_session` drops the active session's open log handle before ~~removing the
+file~~ moving it to `<logs>/trash/` (review round 1, 2026-09-13: a delete in the
+UI is reversible; the listing never descends into subdirectories, so the row is
+gone and the log is not) — dropping the handle first is required on Windows.
 
 `connect` is a thin wrapper over `build_chat(app, policy, spec)`, and `ChatSpec`
 keeps everything the UI asked for. That exists so a subagent is built from the
 same description as the window's own chat instead of a half-copied subset, which
 is how the two would otherwise drift into different tools or a different
-workspace.
+workspace. It also carries `chats: ChatDirs` — the sidebar's log directory plus
+every registered project's and the unfiled one, named — for the `search_chats` /
+`read_chat` tools, taken at connect time so a project added later is reachable
+after the next reconnect. `Option`, and `None` for a reviewer, for the reason
+`knowledge` is cleared there: a second vendor's critic has no business in the
+user's transcripts.
 
 `connect` takes an explicit `workspace`: it roots the file tools **and** is where
 the preamble looks for project instructions and the git branch. A GUI process's
@@ -72,8 +79,13 @@ on the rail-refresh path, and once per project in the picker. See
 
 ## Agent mode (`connect_agent` / `send_agent`)
 
-The Claude Code engine, reached from the rail's Provider / Claude Code switch:
-turns run through the signed-in CLI and are billed to a subscription rather than
+~~The Claude Code engine, reached from the rail's Provider / Claude Code switch~~
+**Renamed 2026-09-16 (nightshift backlog 102, his naming): the *subscription
+engine*, reached from the rail's Provider / Subscription cards. "Claude Code"
+now names that engine's build *kind* — see "Chat kinds" below. Every
+"Claude Code engine" in the sections that follow reads as the subscription
+engine; the identifiers (`claude-code`, `connect_agent`, `AGENT`) are unchanged.**
+Turns run through the signed-in CLI and are billed to a subscription rather than
 an API key.
 
 **`Some` in `AppState.agent` is what "agent mode" means** — `connect` clears it
@@ -83,23 +95,44 @@ describes.
 
 It is a command of its own rather than a `provider` value on `connect`, because
 almost none of that call's arguments mean anything here (no base URL, no thinking
-mode, no preamble or sidecar, no MCP, no reviewers), and an entry point whose
-arguments are mostly inert is the shape that invites a knob to be silently
-ignored.
+mode, no sidecar, no MCP, no reviewers), and an entry point whose arguments are
+mostly inert is the shape that invites a knob to be silently ignored. The
+preamble is the one layer that crosses (2026-09-14): it goes in
+`--append-system-prompt` ahead of the library prompt, without identity or
+environment — see [service-agent.md](service-agent.md#what---append-system-prompt-carries).
 
 Three things follow, each stated in the UI rather than left to be discovered:
 
-- **Nightloom's approval gate does not run.** It gates calls its own engine is
+- **Nightloom's approval gate does not run** ~~.~~ **— unless the chat is in
+  the Ask position (2026-09-16, nightshift backlog 084).** It gates calls its own engine is
   about to execute, and this engine executes its own, so the switch maps to the
-  CLI's `dontAsk` / `bypassPermissions` and the rail says which.
-- **Rewind, compaction and the context panel are withheld.** They change what the
+  CLI's ~~`dontAsk`~~ `auto` / `bypassPermissions` and the rail says which.
+  (`auto` since 2026-09-14, nightshift blocker 045: the CLI's classifier
+  decides each call and, headless, denies what it cannot approve rather than
+  waiting; `dontAsk` with a fresh install's empty allowlist refused every
+  write, command and fetch.) With **Ask me** on under *Restrict permissions*
+  (`agentAsk` on the draft, `ask` on `connect_agent`), the CLI runs in Manual
+  mode with this binary as its `PreToolUse` hook and pauses on each call a
+  person should decide; the transcript then asks — see "The Ask position"
+  below.
+- **Rewind, compaction and ~~the context panel~~ context edits are withheld.** They change what the
   *log* projects onto the next request, and here nothing projects, so each would
   alter what the window shows and nothing about the conversation.
   `not_in_agent_mode` is the backstop under the hidden controls, since the two
-  have to agree and only one of them is checkable.
-- **Attachments are refused at the composer**, not at send, because Claude Code
-  takes a prompt on argv: a chip sitting in the box is a promise the send would
-  have to break.
+  have to agree and only one of them is checkable. `context_view` stopped
+  refusing on 2026-09-14: it returns the bridged segments the flag carries
+  (kept as built, `PromptBuilt`, rather than re-parsed from the string) with no
+  messages, since the layers Nightloom appends are ours to show even though the
+  history is not. `set_prompt_layers` is allowed too — it changes what the next
+  connect appends, which this engine does read.
+- **Attachments attach as on the API engine** (since 2026-09-14). They reach the
+  CLI on stdin as one `stream-json` user line rather than on argv — see
+  [service-agent.md](service-agent.md) §"How attachments reach the engine" — and
+  the log records them the same way on both engines. One cap differs: a PDF over
+  20 MiB encoded is refused at attach on this engine (32 MiB on the API path),
+  because past ~23 MiB the CLI drops the document silently and the model answers
+  as if none was sent; the toast names the engine so the lower limit reads as a
+  different limit, not a broken one.
 
 `connect_agent` probes `--version`, so a missing binary fails at connect with
 something the rail can show rather than as a process error on the user's first
@@ -130,6 +163,311 @@ by the call id, which `approve_call` completes. The wait is raced against the
 turn's cancellation token, because a dismissed prompt or a closed window would
 otherwise park the turn forever.
 
+### The Ask position on the Claude Code engine (2026-09-16, nightshift backlog 084)
+
+The same `tool-approval` event and the same `pendingApprovals` list carry a
+call the CLI **deferred** — the protocol is in
+[service-agent.md](service-agent.md#the-ask-position-the-defer-hook-and-the-decision-file-2026-09-16-nightshift-backlog-084).
+On this side:
+
+- `connect_agent` takes `ask`; with it (and approval on) the spec gets an
+  `AskSpec` whose hook is `current_exe() --permission-hook`, the MCP server is
+  started with `--ask` so the prompt tool the CLI insists on exists, and the
+  rail's `permission_mode` reads `default (ask)`.
+- `send_agent` points the agent at `<log dir>/ask/<chat id>/` before the turn,
+  then loops: a `deferred` outcome emits the `tool-approval` event, waits on
+  `AppState.ask` (an `AskGate`, raced with Stop), writes the answer for the
+  hook, and resumes into the same `Recorder` — one Nightloom turn, however
+  many CLI processes. Stop while a prompt is up refuses the call on disk so
+  the next turn's hook delivers the refusal and no later "allow for this
+  chat" can run it unasked.
+- `approve_call` answers the deferred gate first when the id is one of its
+  calls: `allow`, `always` (a rule in the chat's `rules.json` — not the
+  process-wide policy), `deny` with the reason; the new optional `answer` is
+  the `updatedInput` a question or a plan sends back.
+- `ApprovalPrompt.svelte` renders three shapes on this engine, inline under
+  the paused call in the live turn (the design's placement): the permission
+  prompt with **Allow · Allow for this chat · Deny** and the reason field
+  always shown; the question form for `AskUserQuestion` (radio rows, checkbox
+  rows for `multiSelect`, an "Other" text, *Answer* / *Skip — let it
+  decide*); the plan card for `ExitPlanMode` (*Approve* / *Keep planning*
+  with an optional note). The API engine's prompt is unchanged.
+- Reads inside the working directory never pause; a read outside it goes to
+  the prompt tool and is refused with a sentence the model can act on.
+
+**Pass 2 (2026-09-16 afternoon, the approved design boards 2a–2d).** The three
+cards share one **note field** above their buttons, empty by default, and one
+rule for where its text goes (`askNote.ts`, `routeNote`): with the *refusing*
+button — Deny, Skip, Keep planning — the note is the deny reason the hook hands
+the model, read before its next step; with the *accepting* button — Allow,
+Allow for this chat, Answer, Approve — nothing the model reads can ride with
+the call (an allow's reason is shown to the user only), so the note is held as
+the next message in the composer's queue (backlog 089) under the chat's draft
+key and goes when the turn ends, takeable back until then. The field's `?`
+says so on hover; nothing arms. The permission card's field takes ⏎ for Allow
+and esc for Deny, as its key strip says; the other two take no keys. A chevron
+in every header folds the card to its one-line row (`? Claude asks · 2
+questions · 1 of 2 still open · waits until you answer`); it stays inline at
+the foot of the paused turn (blocker 118's default). The question form is
+capped at a third of the transcript viewport and the plan card at two thirds,
+each scrolling inside; the edge at the card's foot drags a height that is kept
+per chat and kind in `localStorage` (`nightloom.ask.height.<chat id>.<kind>`),
+double-click forgets it. Three kinds of text read as three: the call's
+arguments are code (`mono`, the `.val` block); the model's reason — the
+`description` field the Bash tool's input carries — is plain model text in the
+transcript's face, six lines by default with a *more*; the plan is rendered
+markdown in the same face with a rule between it and the note; the note is the
+one input, drawn with the composer's field border and focus ring. The plan
+card's actions are **Approve** (accent) and **Keep planning** (outline) side by
+side, the *then Ask | Auto* pick a small selector at the right. The API
+engine's prompt is unchanged.
+
+### The Plan position (2026-09-16, nightshift backlog 085)
+
+Plan mode on the same hook — the protocol and the measured edges are in
+[service-agent.md](service-agent.md#the-plan-position-plan-mode-under-the-same-hook-2026-09-16-nightshift-backlog-085).
+On this side:
+
+- The rail's Behaviour section on the Claude Code engine shows one
+  **Approval** segment, `Auto · Ask · Plan · Off` (the design's control, in
+  the thinking-segments idiom), over the same three draft fields the two
+  switches it replaces were bound to: `approval` (Off = off), `agentAsk`,
+  `agentPlan`. Plan implies Ask. The API engine's *Ask before writing* switch
+  is unchanged.
+- `connect_agent` takes `plan`; with it (and approval on) the `AskSpec` is
+  `AskMode::Plan` and the rail's `permission_mode` reads `plan (ask)`.
+- The plan card gains a `then Ask | Auto` pick beside **Approve** (Ask
+  first) and names the CLI's plan file. `resolveApproval` passes the pick as
+  `then`; `approve_call` puts it on `Answer::Allow.plan_then`; `send_agent`
+  calls `plan_approved(then)` before the resume and `plan_exited()` after,
+  so the chat leaves plan mode as Ask or Auto. The rail flips its own switch
+  in `resolveApproval` at the same moment (saved like any rail change, no
+  reconnect — the backend's agent already holds the new position).
+- **Keep planning** is a `deny` whose reason is the note typed, or "keep
+  planning: the user wants changes to the plan".
+
+### Subagents under their call (2026-09-16, nightshift backlog 075)
+
+A `subagent` turn event (`{parent_tool_use_id, event}`; the protocol is in
+[service-agent.md](service-agent.md#subagents-their-words-and-calls-under-the-call-that-spawned-them-2026-09-16-nightshift-backlog-075))
+is applied to the `children` of the call it names — found by id at any
+depth (`findCall`) — through the same `applyToSegments` the live reply
+uses, so a child's text, thinking and calls accumulate as the main thread's
+do. From the log, `Transcript.svelte` recognises the recorder's marked text
+block (`subagent.ts`), attaches its narrative as one text segment to the
+parent call in this message or an earlier one of the turn, and never counts
+it as the reply's prose. `AssistantMessage.svelte` draws `children` as one
+indented `<details>` row under the call — `▸ subagent · 3 calls · 120 words
+so far` — opening to the child's rows (nested subagents recurse).
+
+### Running tasks: the subagents' rows, the agents chip, the transcript tab (2026-09-17, nightshift backlog 152)
+
+A `subagent_status` turn event (the whole row each time; the protocol and
+the arithmetic are in
+[service-agent.md](service-agent.md#subagents-made-whole-auto-under-ask-the-preamble-at-depth-the-running-tasks-2026-09-17-nightshift-backlog-152))
+is upserted into `app.subagents` by `tool_use_id` — the `SubagentRow`:
+the translator's figures plus `turn` (`app.turnSeq`, counted per send),
+`startedAt`/`updatedAt` and its own `segments`, which the `subagent`
+event fills through the same `applyToSegments` as the live call's
+`children`, so the row's transcript outlives the post-turn re-sync. The
+rows are the open chat's, cleared with `agentInit` on a chat switch.
+`subagentsOfTurn()` reads the latest turn's rows for the top bar's
+**agents chip** (`TopBar.svelte`: `2 agents · 41k` in the live blue while
+any runs, `2 agents · done · 41k` after, until the next send) and for the
+gauge's hover and the Context page's "+ subagents: N tokens" line — said
+beside the window figure, never added to it. The chip opens
+`RunningTasks.svelte` on the Settings overlay (`app.showTasks`): a table,
+newest first — agent type and description, model, state, elapsed (the
+CLI's `duration_ms`, the clock until it reports one), tokens (the CLI's
+figure; the hover sums the rounds), tool uses — and *View transcript*,
+which opens a tab of kind `subagent` (`tabs.ts`: keyed by chat and call,
+titled `Agent · <description>`, closed with its chat) drawn by
+`SubagentView.svelte` from the row: the task it was given (the brief in
+front when the hook put it there), each call with its input and whole
+result, each thought, the child's words. A tab whose chat was left says
+so; the collapsed row in the transcript still has the narrative.
+
+### Effort and the fallback model on the rail (2026-09-16, nightshift backlog 076)
+
+Under the Model section of the Claude Code pane: **Effort**, a five-way
+segment `low · medium · high · xhigh · max` (`high` on by default), and
+**Fallback model**, the alias pills with `none` first. Draft fields
+`agentEffort` and `agentFallback`, saved with the rest of the rail;
+`connect_agent` takes `effort` and `fallback_model` and the spec sends the
+flags (the protocol section in
+[service-agent.md](service-agent.md#effort-and-a-fallback-model-2026-09-16-nightshift-backlog-076)).
+The Context page's *This session* foot line ends `· effort high · no
+fallback` (or `· fallback sonnet`).
+
+### Ask aside (2026-09-16, nightshift backlog 081)
+
+On the Claude Code engine the composer has an **Ask aside** button beside
+Send (text only, idle only): the typed question goes to `ask_aside`, which
+runs `ClaudeCodeAgent::ask_aside` under the agent's lock (so it waits for a
+turn rather than racing it; Stop cancels it) and returns the answer, the
+CLI's cost estimate and the cache read — recorded nowhere, not in the log
+and not in the CLI's files (the protocol and the measurements are in
+[service-agent.md](service-agent.md#ask-aside-a-side-question-on-the-warm-cache-2026-09-16-nightshift-backlog-081)).
+`app.aside` holds one at a time; ~~`Transcript.svelte` draws it at the foot
+as a dashed card~~ (since 2026-09-17, backlog 141, it is the floating card
+`AsideCard.svelte`, under the passage or above the composer — the
+paragraph below) — `aside · not in the chat`, the question, `asking…` then
+the answer, `N read from cache`, × — cleared by its × or a chat switch. A
+chat with no CLI session yet is refused with a sentence.
+
+**Cancelling an aside (2026-09-16, whole-project review F13).** Stop is
+drawn only while a turn runs, so a running aside had no button. `ask_aside`
+now keeps its token in `AppState.aside_cancel` as well as in `cancel`, and
+`cancel_aside` (`api.cancelAside()`) cancels it — while it is still parked
+behind a turn on the agent lock (the wait is raced against the token; the
+command rejects with "the aside was cancelled") or while its CLI runs (the
+turn's interrupt, an answer marked interrupted). Stop still ends a running
+aside as before, and `cancel_aside` never touches a turn. ~~The card's ×
+should call it when the aside is still `asking…` (the wiring is with the
+chat Svelte's owner; until then × hides a running aside and the CLI runs
+its `--max-turns 2` out).~~ Wired 2026-09-16 (backlog 107): `dismissAside`
+calls `cancelAside()` when the card is still `asking…`, and so does
+opening a new aside over a running one.
+
+**Ask aside about a highlighted passage (2026-09-16, nightshift backlog
+107).** Select words in a reply's prose (`.markdown`) or in one of your own
+messages (`.user-text`) and a pill floats over the selection — **Ask aside
+⌘⇧A** (Ctrl+Shift+A elsewhere; the chord was free). Both ends of the
+selection must sit in the same prose block of the same live turn: thinking,
+tool results, a subagent's text and a selection across two messages get no
+pill, nor does a rewound or removed message, the API engine, or a running
+turn. The pill (or the chord) opens the aside card ~~at the foot~~ (under
+the passage since 2026-09-17, backlog 141) as a *draft*:
+~~the quote above~~ (the passage is marked in place since 141 and not
+quoted again; the chip still says `about its 3rd reply` / `about your 1st
+message`, replies counted as drawn — a run is one reply), a one-line box
+(Enter asks, Escape closes), Ask aside / Cancel; the composer is untouched. What is sent is
+`asideQuestion` (`asideQuote.ts`): *"The user selected this passage in the
+transcript, from your 3rd reply, quoted exactly:"*, the passage between
+triple quotes, then the typed question — one string to the same `ask_aside`,
+so the backend and its measurements are 081's and nothing enters the log.
+~~The answered card keeps the quote above the question and the answer.~~
+(141: the mark stays on the passage while the card is open instead.)
+`app.aside` gained `quote`, `draft` and `seq` (`Aside` in
+`state.svelte.ts`); `draftAside(quote)` opens the draft, `askAside(q,
+quote)` sends. The pill is `position: fixed` at the selection rectangle,
+re-measured on `selectionchange` and on the transcript's scroll, hidden
+when the rectangle is wholly out of the viewport, and its mousedown is
+swallowed so the click keeps the selection.
+
+**The aside streams, and reads as two voices (2026-09-17, nightshift backlog
+128).** `ask_aside` collected the CLI's text deltas and returned the answer
+whole, so the card sat on `asking…` and then filled at once — and the
+question and the answer were one block in the card's dim face. Now
+`ask_aside` takes the card's `seq` and forwards each `TextDelta` to the
+window as an `aside-delta` event (`AsideDelta { seq, text }`, the way a
+turn's events go out as `turn-event`) while still collecting; `init()`
+listens and appends to the live exchange's `partial`, dropping a delta whose
+`seq` is not the live one's (cancelled or replaced). The card: his question
+in his own bubble (the 126 face, at the right), the transcript's moon
+(backlog 049's `.waiting` row) where the answer will be, the partial text
+rendered as markdown as it lands with the moon under it, then the whole
+answer in the reply's face (`--transcript-font`, `--transcript-size`) and
+the cache chip. × mid-stream calls `cancel_aside` and keeps the card with
+what had arrived and a `stopped here` mark; the next × dismisses; × before
+any text dismisses at once, as before. `Aside` is now `{ quote, draft,
+turns }` with `AsideTurn { seq, question, partial, answer, error,
+cancelled, cacheRead }` — a thread, for backlog 130's follow-ups; the
+composer's `askAside(text)` and `draftAside(quote)` are unchanged, and
+nothing sent or recorded changed.
+
+**The aside as a conversation, part 1 (2026-09-17, nightshift backlog
+130).** Under the last answer the card has a reply box (Enter asks, a
+**Follow up** button). The CLI's aside is single-shot — a fresh throwaway
+fork each time with no memory of the last aside — so `followUpAside(q)`
+sends `asideFollowUp(quote, prior, q)` (`asideQuote.ts`): the 107 framing
+generalised — the passage first when there is one, then each earlier
+question and its answer *as he saw it* (a stopped answer's partial text)
+between triple quotes, then the new question; the chat's context is the
+fork's as before, and nothing enters the log or the CLI's files. The new
+exchange is appended to `app.aside.turns` and streams like the first. The
+thread is per chat: `switchAside` in `newSession`, `continueSession` and
+`openSession` stashes the leaving chat's `Aside` under its id in a plain
+map and takes the opened chat's back (the drafts pattern, backlog 065;
+never persisted), and an exchange still streaming when the chat is left
+finishes into the stashed thread (`findAsideTurn` looks there too). The
+cost of the growing quote, measured on Haiku (`claude -p`, the framing as
+the prompt, 1 → 3 → 6 quoted exchanges of a 90-word answer): the CLI puts
+the message in a cache-creation block, and that grew 5,358 → 5,640 → 6,056
+tokens — about **140 tokens per quoted exchange**, four characters a token,
+at cache-write price, beside a 30,516-token prefix read from cache. Part 2
+(the card dragged out into a tab) waits on backlog 099.
+
+**The card floats at the selection (2026-09-17, nightshift backlog 141;
+blocker 162 answered *popover at the selection*).** The foot card is gone.
+Highlight a passage and click the pill: the passage stays **marked** in
+the transcript (the CSS Custom Highlight API's `::highlight(aside-passage)`
+where the webview has it — WebKit since Safari 17.2 — else each text node
+of the range wrapped in a `<mark class="aside-passage">`, undone before
+the next render; the accent at 30 % over the sheet, not a literal yellow)
+and a small card opens right under it; the view does not move. The card
+is `AsideCard.svelte`, drawn once as the last child of the transcript's
+scrolled column (`.inner`, now `position: relative`), `position: absolute`
+in that frame so it scrolls with the message it is about: a head row with
+a drag grip, the `aside · not in the chat` chip, `about its 3rd reply`,
+the cache chip, **Copy** (the answer, or the thread as `> question` /
+answer pairs) and ×; then the question box (a draft), then his question in
+a bubble, the answer streaming under the moon (128), a `stopped here` mark,
+the follow-up box (130). Escape closes it from inside the card and from
+anywhere in the window that is not another text field, stopped at the
+card so it never reaches the window (138's rule). One card at a time: a
+second passage's pill replaces the first (through 201's confirm when the
+first has answers). The passage's place is the thread's **anchor**
+(`AsideAnchor { turn, block, start, end, side }` in `asideCard.ts`: the
+turn, which prose block of it — a reply has one `.markdown` per text
+segment between tool calls — character offsets into that block's text,
+and the side the card opens on, chosen once so a growing answer never
+flips the card over the text); offsets survive the log's re-sync at a
+turn's end, where a `Range` would not, and they are saved with the thread
+(`asides.ts`, 137). The geometry is pure (`chooseSide`, `placeCard`, tested
+in `asideCard.test.ts`): below the passage when a 240px card fits between
+it and the viewport's foot, else above when it fits there, else the side
+with more room; the card's left edge at the selection's, 440px wide or
+the column's width, and its `max-height` the room on its side so a long
+answer scrolls inside the card. `Transcript.svelte` re-measures after
+every render that can move the text (the thread, the log's identity, the
+items) and on a `ResizeObserver` of the column and the card. A passage
+that cannot be found again (rewound, edited, a restored thread whose text
+changed) and a **composer aside** (no passage; blocker 225, default taken)
+get the other home: the same card pinned above the composer — `position:
+sticky; bottom: 8px` at the column's end, so it stays while he scrolls up
+to read. Nothing sent to the model changed (`asideQuestion`,
+`asideFollowUp` as before). `draftAside(quote, anchor)` takes the anchor;
+`askAside` keeps the draft's. The card hides while its thread shows in a
+tab (`asideInTab`, 130 part 2) and its head row is the drag source as
+before — **from the moment it opens, a draft included** (2026-09-17,
+nightshift backlog 148: the card can cover what he is reading before a
+word is typed). A draft dragged into a tab or the panel shows the question
+box there and sends through the same `askAside`, which reads the open
+chat's aside, so the box asks only while that chat is the open one.
+
+**The card dragged out: a tab, or the side panel (2026-09-17, nightshift
+backlog 141 pass 2).** The head row's grip dragged onto a tab strip makes
+the aside tab of backlog 130 part 2 (P's `AsideView`, the card hidden
+meanwhile, back when the tab closes). Dragged to the **window's right
+edge** — a 64px zone that lights only while an aside descriptor is in
+flight (`app.draggingContent.kind === "aside"`), above the panes' halves
+— it lands in the **side panel**: `app.asidePanel` names the chat, and
+`App.svelte` draws a third 360px grid column beside the panes with a thin
+head (`Aside · <chat>`, a *back* button) and the same `AsideCard` in its
+`panel` mode (static, full height, no shadow). The panel is not a pane:
+no strip, never focused, outside the tab model's walks. It is a second
+view of the thread where it lives (`asideOf`), so a follow-up typed there
+is the same `followUpAside`; with another chat open it reads as it was
+with the aside tab's line (the backend forks the open chat). While the
+panel shows the open chat's thread the transcript hides its card
+(`asideInTab` counts the panel) but **keeps the passage marked** — the
+panel is about it. *Back* or Escape in the panel puts the card back under
+the passage with the thread intact; the card's × ends the thread and the
+panel closes with it; a tab opened for the same thread closes the panel
+(one second view at a time); a deleted chat closes it. Not persisted, as
+the workspace is not.
+
 The `AutoApprove` policy lives in `AppState`, **not** in `connect` — the rail
 re-connects on every knob change, and rebuilding the policy there would silently
 forget every "always allow" the user granted.
@@ -140,6 +478,273 @@ refusal is recognised in the logged `is_error` result. That recognition is a
 prefix match on `approval.rs::denial_message` — the one place the two sides are
 coupled by a string rather than a type, and it degrades to plain error rendering
 if the wording changes.
+
+## Sleep-safe turns (2026-09-16, nightshift backlog 101)
+
+Two halves, because a closed lid on battery sleeps a MacBook whatever any
+process asks.
+
+**Keep awake.** `power.rs` holds one `caffeinate` child for as long as at
+least one `power::Guard` is alive, reference-counted across whatever runs at
+once: `send`, `send_agent`, `compact`, `ask_aside`, `dream` and `capture`
+each take a guard as they start and drop it with the function — on success,
+on error, on Stop — so no path can leak it. The flags are his own habit,
+`-i -s` always and `-d` by the display switch, plus `-w <Nightloom's pid>`
+so a Nightloom that dies without dropping its guards releases the assertion
+anyway. A child rather than IOKit's `IOPMAssertionCreateWithName` because the
+bundle is not sandboxed and `nightshift.rs` already spawns `caffeinate -i`
+from the signed app for a held launch; IOKit would be a `core-foundation`
+dependency and unsafe FFI for the same assertion. With a turn running,
+`pmset -g assertions` lists `pid N(caffeinate)` under `PreventUserIdleSystemSleep`,
+`PreventSystemSleep` and (display on) `PreventUserIdleDisplaySleep`; none
+when idle. Off macOS the holder is a counter and spawns nothing.
+
+**Resume on wake.** Tauri 2 has no wake event and an
+`NSWorkspaceDidWakeNotification` observer would be a new `objc2` dependency,
+so `power::watch_wake` polls: every 30 s it compares the wall clock with the
+tick before, and a gap more than a minute past the poll is a sleep (tokio's
+timer is monotonic and macOS does not advance it during sleep — the same fact
+the Nightshift launch timer rests on). It emits `system-woke` with the sleep's
+bounds. The window (`sleep.ts`, `state.svelte.ts`) pairs that with the turn
+that was running. **The error does not fall inside the sleep**: the `claude -p`
+process and the webview are frozen, not ended, so the CLI's stream error (its
+`result` line with `is_error`, or a rejected send) surfaces only after the
+wake. The rule (`sleptThrough`) is therefore: a turn that started before the
+sleep, was not stopped by him, and ended in an error between one poll before
+the wake was noticed and five minutes after it. The two reports arrive in
+either order and `SleepWatch` matches whichever comes second. On a match,
+with the switch on, `"continue — the previous turn was cut off while the Mac
+was asleep; pick up where it stopped."` is sent to the same chat as a turn of
+its own — the transcript line and the instruction in one — and a toast says
+so; with *ask* set, the toast carries **Resume** and letting it time out is
+*leave it*. Both engines the same way: the CLI's session file holds every
+completed step, and the provider path records the partial reply before it
+surfaces the error, so "continue" is the next turn on what already happened.
+
+**Settings.** Four switches in `localStorage` under `nightloom.sleep`
+(`sleep.ts`, the `notify.ts` idiom): keep awake, display too, resume after
+sleep, ask first — all on but *ask*. The keep-awake pair reaches Rust through
+`set_power_prefs` at start-up and on each change; a change while a turn runs
+restarts the child with the new flags.
+
+## Zoom (2026-09-16, nightshift backlog 108)
+
+⌘= (⌘+) / ⌘− / ⌘0 scale the whole window in Chrome's steps — 50 · 67 · 75
+· 90 · 100 · 110 · 125 · 150 · 175 · 200 % — with a toast saying the
+percentage. The mechanism is the webview's own page zoom: the `set_zoom`
+command calls `WebviewWindow::set_zoom`, which on macOS is
+`WKWebView.pageZoom` (11+; wry 0.55's `zoom`), the same thing Chrome's ⌘+
+does, every CSS pixel scaled. The transcript font setting (backlog 051) is a
+separate knob on top and untouched. `zoom.ts` keeps the factor in
+`localStorage` under `nightloom.zoom` and re-applies it at start-up, since
+the webview forgets it between launches; if the command ever fails, the same
+factor goes on as CSS `zoom` on `<html>` (WebKit and Chromium both honour it)
+and `zoomMechanism()` says which path ran. On macOS the three are View-menu
+items (Zoom In · Zoom Out · Actual Size, `CmdOrCtrl+=` / `-` / `0`) and
+arrive as `menu` events that `zoom.ts` listens for itself — not through
+`runMenuCommand`; `App.svelte`'s `onShortcut` binds them on Windows and
+Linux, and ⌘⇧= (the literal ⌘+ on a US layout, no menu item) everywhere.
+⌘0 was free to take: blocker 035's "0" is a bare key inside the ⌘P palette.
+
+## Chat kinds — Claude Code · Chat (2026-09-16, nightshift backlog 102)
+
+A chat has two axes now, both fixed at its birth and both on the creation
+line: the **mode** (normal · incognito · ephemeral, backlog 059) and the
+**kind** (`ChatKind`, `kind` on `session_created`; absent means `build`, so
+every older log reads as one). The kind is a preset over dials Nightloom
+already owns — the tool set, the working folder, one instructions layer —
+and never a second surface (blocker 040):
+
+- **Build** — on the subscription engine called *Claude Code*, on the
+  provider engine *Build* (blocker 139's default: the dial on both). The
+  project folder, every tool, approval as set, plans within reach: today's
+  chat, untouched.
+- **Chat** — the conversational one. The five read-only tools
+  (`AgentSpec::apply_kind`, the same list incognito uses) plus Nightloom's
+  MCP tools, the web, thinking on; **no working folder**: `chat_workspace`
+  roots it in `prompt::chat_dir()` = `~/.nightloom/chat/`, an empty
+  directory created on first use, whatever the project or the rail said —
+  an unfiled chat used to run in the app's launch cwd, which was
+  accidental. The CLI's per-cwd session files and auto memory land there,
+  which is why it is one fixed folder and not a temp dir per chat
+  (`--resume` has to find them). Its **Chat instructions** layer
+  (`SegmentKind::ChatInstructions`, `~/.nightloom/CHAT.md`, the `chat`
+  note scope, editable and switchable like the model's file) sits after the
+  model's file and before the project's rules; on the subscription engine
+  it is appended after the CLI's own prompt, which stays underneath
+  (`--bare` would drop the login), so a Chat there is claude.ai-like *on
+  top of* Claude Code.
+
+**Choosing it.** `AppState::pending_kind` beside `pending_mode`, the same
+rules: `new_session(mode, kind)` records it, the first message creates the
+log in it (`ensure_session`), a project switch resets it and the frontend
+sends the project's default back (`defaultKind()`: Claude Code where the
+project has a folder, Chat unfiled or in a folderless project). The
+sidebar's **New chat ▾** menu reads *Claude Code · Chat* — each row starts
+a chat of that kind, a dot on the default — then *Incognito · Ephemeral*,
+which start one of the default kind; no row reads "New chat" (his review
+of board 8a). **⌘N** is a new Claude Code chat and **⌥⌘N** a new Chat
+(File menu `new_build` / `new_talk`; Ctrl+N and Ctrl+Alt+N in
+`onShortcut` elsewhere — the only Alt chord in the app). `new_chat` — the
+wide button, the Welcome strip — makes the default kind. ~~Fixed at creation
+(blocker 143's default): the rail *states* the kind under the engine cards
+and shows "no folder" in its Workspace row on a Chat, and switches nothing.~~
+Switchable since 2026-09-17 (the next section).
+`prompt_layers` reports `kind` / `built_kind` as the fourth reconnect pair.
+
+## Switching a chat's kind (2026-09-17, nightshift backlog 144; blocker 143 answered *switchable*)
+
+The Kind row in the rail is the same two-row picker the New chat ▾ menu
+has, the dot on the kind the chat is now; picking the other kind shows a
+one-line confirm and takes effect on the **next turn**. The transcript
+stays one chat.
+
+**What a switch changes — a policy, not the head of the request.** His
+design, after the measurements (`nightshift notes/runner-design/143-report-2026-09-17.md`,
+all `external`, CLI 2.1.263): the declared tool list and the system prompt
+lead every request, so changing them re-writes the whole cached prefix (0
+read, 23k written on the next turn — `--tools`, `--disallowedTools` and
+`--append-system-prompt` all do it), while a refusal at call time and a
+note at the tail are free (31–33k read, under 1.2k written). So:
+
+- The log gets a `kind` event (`SessionEvent::Kind`, latest live one wins
+  like a title; `Session::kind()` reads it, `born_kind()` the creation
+  line). A rewind past a switch restores the kind before it — unlike the
+  mode, which stays on the creation line, because a rewind is an honest
+  answer to "what could the model do at that turn" and the kind is a
+  fact about turns.
+- **`Session::declared_kind()`** is what the request is *built* for:
+  `Build` once the chat was born one or has ever been switched to one over
+  the live events. `connect` / `connect_agent` build the tool list, the
+  Chat instructions layer and the folder from it (`ChatSpec::declared_kind`,
+  `AgentSpec::apply_kind(declared)`, `chat_workspace(declared, …)`), and
+  enforce `kind()` over it:
+  - **Claude Code → Chat** — the tools stay declared, the folder stays
+    (blocker 210, default *stay*), and the writers are refused when
+    called: on the CLI a `PreToolUse` hook registered in the one
+    `--settings` JSON (`AgentSpec::chat_policy`, matcher
+    `CHAT_POLICY_MATCHER` — everything but the five read-only tools and
+    Nightloom's server, a JavaScript negative lookahead the CLI's matcher
+    accepts; the reply an `echo` of a deny carrying `CHAT_POLICY_REASON`),
+    on the API engine `KindPolicy` over the window's approver. A refused
+    call reaches the model as an `is_error` tool result with the reason
+    and the turn ends normally (measured, step 10). The Context popover's
+    Tools card strikes the refused tools through. **Beside the Ask hook
+    (2026-09-17 later, backlog 147):** the CLI runs every `PreToolUse`
+    entry a call matches, so with approval on the Ask hook is registered
+    on `ask_matcher_under_chat_policy` — its matcher less every name the
+    policy refuses, `WebFetch|WebSearch|mcp__.*` — and a withdrawn `Bash`
+    raises no prompt whose answer could not matter; the plan exit's
+    resume, all withdrawn, registers the deny alone. On Windows the deny's
+    `echo` is unquoted (`cmd.exe` prints its line verbatim; the reply has
+    no `cmd` metacharacters, pinned by a test) — `inferred`, not measured
+    on a Windows machine.
+  - **Chat → Claude Code** on a chat **born** as a Chat: the tools were
+    never declared, so the declaration changes once and the prefix is
+    re-written — the confirm line names the figure (`kindSwitchCost`:
+    `contextUsed()`); from then on the declaration stays `Build` and both
+    directions are free. The row asks for a folder when the project has
+    none (`pick_folder`; `workspace` on the `kind` event, read by
+    `Session::kind_workspace()`); the project's folder otherwise.
+  - The next user message carries a **`<kind-switch>` note** at its head
+    (`ChatKind::switch_note`): on the API engine the projection puts it
+    on the first user message after the switch, tagged as the switch
+    event's block; on the CLI `send_agent` asks `kind_switch_note()`
+    before recording the turn and prepends it to the prompt. Once per
+    switch, never repeated, and nothing when the kind was switched and
+    switched back before a message.
+- The CLI's session file is **not moved**: `--resume <id>` from another
+  folder finds the file under the folder the chat was born in and appends
+  there, each line with its own `cwd` (measured, steps 2–3). The spec's
+  fear that the resume would say "No conversation found" was the
+  ephemeral case (`--no-session-persistence`), not the folder.
+- Auto memory and `CLAUDE.md` are per folder (backlog 088): a switch that
+  changes the folder — only Chat → Claude Code on a born Chat — changes
+  what the CLI loads; the confirm line says so.
+
+Not chosen: declaring the full set on every Chat so that direction is
+free too (blocker 211, default no — ~7k tokens on every Chat turn).
+
+## Extra folders a chat may see (2026-09-17, nightshift backlog 143, pass 1)
+
+The rail's Workspace section gains a **Folders** row under the Folder row:
+every extra folder the connection was granted (`ConnectedInfo::folders` —
+path, source `project` · `this chat`, and on the API engine the `@alias`),
+each with an × that takes it back the way it came, and two buttons — *Add a
+folder for this chat…* (a `folders` event on the log, `set_chat_folders`)
+and *…for the project* (`set_project_folders`, the registry). Either
+reconnects, so the grant holds from the next turn. The Context popover's
+Layers tab leads with a **Folders this chat can see** card: the working
+directory, then each extra with its source and alias. On the CLI engine
+the appended prompt gains an `<extra-folders>` note naming each folder by
+its absolute path (the CLI's tools take paths, not aliases); on the API
+engine the tool descriptions name them (`Root::path_hint`). A Chat (by
+declaration) sees no folder and offers no row. What the model is told about
+`.ipynb` files: nothing special — both engines read them as JSON text.
+
+~~Pass 2 (not built): the approval prompt's *Allow this folder — for this chat
+· for the project* entrance on a path outside the trees, and the search
+panel's scope (default: extra folders are not searched).~~ Built later the
+same day, below.
+
+### The two entrances "when I give it permission" (2026-09-17, backlog 143, pass 2)
+
+Measured on the CLI first (nightshift `remainders-report-2026-09-17.md`,
+`external`): a folder given by `--add-dir` on a `--resume` is readable at
+once, with no second prompt, and a read outside every tree under Ask is a
+*permission refusal* the `result` line lists in `permission_denials` as
+`{tool_name, tool_use_id, tool_input}`. The hook (`ask::MATCHER`) pauses the
+writers, the web and the prompt tools — never `Read`, `Glob` or `Grep` — so
+the two cases take two entrances:
+
+- **A write outside the trees, on the card.** The deferred call arrives on
+  the `tool-approval` event with `outside`: the nearest existing folder on
+  the path the call named (`agent::outside_folder`; `file_path`,
+  `notebook_path`, `path` — a `Bash` call names none and gets no offer).
+  The card shows the path under *outside the folders this chat can see*
+  with *Allow, and let this chat see <leaf>* · *…let the project see it*.
+  Either is an ordinary allow plus a grant (`approve_call`'s `grant_dir`,
+  `grant_scope`; `Answer::Allow { grant }`): the folder joins the agent's
+  `--add-dir`s before the resume that runs the call (`ClaudeCodeAgent::grant_dir`),
+  a project grant is written to the registry there and then, a chat grant
+  is recorded on the log (`record_folders`) once the turn lands — and the
+  turn's result carries the rail's refreshed list (`AgentTurn::folders`).
+- **A read outside the trees, after the turn.** The prompt host denies it
+  at once (blocker 071: no process sits open on a person), the model is
+  told, and the `result` line names the call. `AgentOutcome::denied` carries
+  the list out; the shell keeps each refused folder outside every tree
+  (`AgentTurn::refused`, each once) and the rail's Folders row lists it as
+  *refused* with *Allow for this chat* · *…for the project* and an × to
+  forget it. A grant reconnects and the folder moves up into the list; the
+  next turn reads there.
+
+Deferring reads through the hook too (a process exit and resume per read
+outside the trees) would put the read on the card as well; not taken —
+nightshift blocker 232, default *not yet*.
+
+**The search panel's scope** (`search_everywhere`): chats are searched by
+log directory and notes by the project's notes folder and the vault; an
+extra folder is code, not the docspace, and is never searched. The default
+the item named, confirmed rather than changed — no switch for it.
+
+## Settings keys and the remembered pane (2026-09-16, nightshift backlog 109)
+
+No "Settings" section existed before this line; the modal is `SettingsModal.svelte`.
+While it is open, ~~**⌘1…⌘7** is a nav *group* — Providers · Claude Code · Web
+search · Knowledge · Projects · Usage · Appearance~~ **⌘1…⌘8 is a nav group —
+Usage · Cost · Subscription · Knowledge · Projects · Providers · Web search ·
+Appearance since 2026-09-16 evening (nightshift backlog 127, his order; ⌘6
+now steps through the providers)**, a `Kbd` chip on each group
+title — landing on the group's first pane, or on its next pane when already in
+it (~~⌘1~~ ⌘6 again steps through the providers); **⌘] / ⌘[** walk every pane in nav
+order. Groups rather than panes because the panes number past nine. The modal's
+own window handler takes the chords; `App.svelte`'s `onShortcut` stands aside
+from ⌘-digit and ⌘-bracket while `app.showSettings`, so the provider and model
+digits (blockers 043/044) are back the moment it closes. The pane he left is
+kept in module state with the time it closed; reopening within two minutes
+(`REMEMBER_PANE_MS`) lands on it, later on the default (the rail's provider), and
+an explicit `settingsOpenOn` still wins. The Palette row prints the palette's
+name — "Slate & copper" — not its letter, which read as a key.
 
 ## Projects
 
@@ -170,7 +775,12 @@ that require choosing a folder first would be a worse app.
 
 `pick_folder` drives the native dialog **from Rust** (`tauri-plugin-dialog`), so
 the webview needs no filesystem permission in its capability set and no matching
-npm package — it can ask, and it gets back a path the user chose. `reveal` is a
+npm package — it can ask, and it gets back a path the user chose. `notify`
+posts a banner the same way (`tauri-plugin-notification`, added 2026-09-16 for
+the turn-end notification of nightshift backlog 079, blocker 106): the frontend
+decides whether — the window's focus and the Settings switch — and Rust only
+posts; macOS shows it only for a bundled, signed app, so a `cargo tauri dev`
+build posts into nothing. `reveal` is a
 per-OS spawn (`explorer` / `open` / `xdg-open`) and is **not** a tool: nothing the
 model asks for opens a window on the user's desktop.
 
@@ -184,6 +794,15 @@ drops the connections.
 The rail lists each server with its tool count, and a server that failed to start
 is shown as unavailable rather than hidden — its tools are simply missing
 otherwise, and a model told nothing will confidently explain why it cannot help.
+
+The binary is also an MCP *server*: `nightloom-desktop --mcp-serve [--project
+<id>]`, checked at the top of `main` before Tauri builds anything, runs
+`nightloom_service::mcp_server` on stdin and stdout and exits at EOF — no
+window, no app state. It exists so the Claude Code engine can be handed
+Nightloom's `search_chats`, `read_chat`, `remember` and `fetch_page` through
+`--mcp-config`, naming `current_exe()` as the command: the one binary the app
+can always find, where the CLI is usually not on PATH. What the server does and
+how a call is judged is in [mcp.md](mcp.md), *The server*.
 
 Reviewers for the `review` tool come from `tools::bench` — the same table the CLI
 uses — built from the window's own `ChatSpec` with the kind and model swapped in
@@ -207,6 +826,45 @@ consulted before the environment, which matters more here than for providers
 because a GUI process started from a shortcut usually inherits no environment at
 all.
 
+## Keychain prompts on macOS, and the dev-build signature
+
+**Symptom (2026-09-11):** every `cargo tauri dev` rebuild made macOS ask for
+the login password once per stored key — five to fifteen dialogs — and
+"Always Allow" never held. **Cause:** a plain dev build is ad-hoc,
+linker-signed, and its code identity is a per-build hash
+(`Identifier=nightloom_desktop-<hash>`, designated requirement `cdhash
+H"…"`). The keychain stores "Always Allow" against the requesting app's code
+identity, so each rebuild is, to the keychain, a new application. Measured
+with user interaction disabled (`SecKeychainSetUserInteractionAllowed(false)`,
+which turns a would-be dialog into `errSecAuthFailed`): an item created by one
+ad-hoc build is refused to the next; an item created by a build signed with a
+developer certificate and a fixed identifier is readable by every later build
+signed the same way, and still refused to an ad-hoc one.
+
+**Fix:** `.cargo/config.toml` sets a `runner` for the two `*-apple-darwin`
+targets — `scripts/macos-sign-and-run.sh` — so `cargo run` (which is what
+`tauri dev` executes) signs `nightloom-desktop` with the first "Apple
+Development" identity in the keychain and the identifier
+`app.nightloom.desktop` before starting it. The designated requirement is then
+`identifier "app.nightloom.desktop" and anchor apple generic and certificate
+leaf[subject.CN] = "<identity>" …`, the same for every build, so one "Always
+Allow" per key holds for good. The script skips a binary that already carries
+that signature, leaves every other binary (the CLI, test executables) alone
+unless `NIGHTLOOM_SIGN_ALL=1`, and never fails a run: no identity means an
+ad-hoc run and a line on stderr saying the keychain will ask again.
+`scripts/macos-build-signed.sh` does the same for `cargo tauri build` through
+Tauri's `APPLE_SIGNING_IDENTITY`, so the installed `Nightloom.app` shares the
+grant. Linux and Windows never see the runner table. The first launch after
+this change asks once more per key — the old grants name the old hashes — and
+that round is the last.
+
+Not done on purpose: consolidating the per-key items into one keychain entry
+(would cut that final round to one click, but changes the stored format and
+needs a migration that itself reads every item), and creating items with an
+"any application" ACL (`security add-generic-password -A`'s mode — no dialogs
+ever, at the cost of any process as the user reading the keys silently).
+Both are decisions for the owner, not a build script.
+
 ## Rewind, context, cost, todos
 
 **Rewind**: the `rewind` command returns the resulting transcript rather than an
@@ -216,6 +874,46 @@ updating its own copy optimistically. It needs no guard against a turn in flight
 cutting the log out from under a reply being recorded — but the control is hidden
 while busy, because a queued rewind that fires after the next turn lands would be
 a surprise.
+
+**Undo's commands** (nightshift backlog 064, 2026-09-15): `unrewind { of }`
+lifts a rewind (`Session::unrewind`) and, on Claude Code, records and resumes
+the id in force before it; `restore_message { index }` is `remove_message`'s
+inverse — `unelide`, and on Claude Code a third CLI copy with the turn put
+back from the original (`restore_on_cli` / `restore_cli_file`, over
+`CliSession::restore`); `restore_session { id }` moves a log back out of
+`<logs>/trash/`; `set_undo_menu { undo, redo, text_field }` retitles and
+enables the macOS Edit menu's Undo and Redo, which are the app's own items
+now (`undo_app` / `redo_app`, forwarded like every custom item). The
+frontend's stack is `src/lib/undo.ts`; [desktop-ui.md](desktop-ui.md) lists
+what is undoable.
+
+**Edit, remove, fork** (`edit_message { index, text, mode: "save" | "send" }`,
+`remove_message { index }`, `fork_session { upto }`, 2026-09-15, nightshift
+backlog 062): each returns the transcript and the id of the chat now open
+(`MessageEdit`), on `rewind`'s contract. `save` records an `Edit` marker;
+`send` is `fork_session` — the parent forked before the turn
+(`Session::fork_from`), the fork made the open session, and the UI then
+sends the text as its next turn; `remove_message` is the context panel's
+`Elide`, reached from the transcript. On the Claude Code engine all three,
+and `rewind`, first copy the CLI's session file with the change made under
+a new id (`edit_on_cli`, over `agent::cli_session`; `CliChange` says whether
+there was a copy to resume, nothing to change, or nothing left), then record
+the marker, then record the copy's id as the chat's `AgentSession` and
+`set_resume` it — the copy first, so a refusal (an unmeasured CLI version, a
+turn the CLI never saw) leaves the log as it was. `not_in_agent_mode` is
+lifted for exactly these four; `compact` and `edit_context` keep it. A turn
+is addressed on the CLI side by how many live user turns follow it
+(`turns_after`) and by its projected text (`cli_target`), never by its log
+index — and, since 2026-09-15 (nightshift backlog 066), a *block* of a
+reply by its count among the reply's text blocks or by its call id
+(`cli_block` → `cli_session::Block`). `edit_message` takes an optional
+`block` (an index into the reply's `blocks`; `Session::edit_block`,
+`CliSession::rewrite_block`), and **`remove_block { index, block }` /
+`restore_block { index, block }`** remove and restore one block — a text
+block, or a tool call together with its result (`Session::elide_block`,
+`CliSession::remove_block` / `restore_block`), on `remove_message`'s and
+`restore_message`'s terms. The desktop test drives the same sequence against a synthesised
+CLI file and checks the original is byte-identical afterwards.
 
 **Context** (`ContextPanel.svelte`, the rail's third tab): the `WireView`, one
 row per block, each with its estimated size, a share-of-total bar and a
@@ -227,6 +925,28 @@ log — the preamble and sidecar live on the `Chat`, the conversation on the
 deadlock. With no session yet it views an empty one rather than erroring:
 sessions are created lazily by `send`, so that is the ordinary state at launch,
 and an empty session still has a preamble worth showing.
+
+`set_prompt_layers` records the chat's switched-off layers
+(`SessionEvent::PromptLayers`) and returns the transcript; it writes the log and
+nothing else, since the UI reconnects afterwards the way a rail knob does and
+`connect` / `connect_agent` read the set back off the open session
+(`layers_off`). It creates the session if the chat has none yet, as `send`
+would: the exclusion is a fact about the chat, and a chat has to exist to have
+it. `prompt_layers` returns the open chat's set beside the one the live engine
+was built with (`PromptBuilt.off`), which is how the UI knows a reconnect is due
+after opening another chat — and since 2026-09-15 (nightshift backlog 057) the
+chat's own texts beside the ones the engine was built with (`edits`,
+`built_edits`; `PromptBuilt.edits`), compared on the same terms.
+
+`set_prompt_layer_text` records the chat's own text for one of the three
+editable layers (`SessionEvent::PromptLayers.edits`), or drops it with `text`
+absent, on exactly `set_prompt_layers`' terms: the log only, the session
+created if need be, the UI reconnects, allowed on Claude Code. The text is the
+file's *body*; `assemble` wraps it. `prompt_layer_file` returns what that layer
+reads from disk right now — the seed for an edit — by the model id and the
+workspace the live prompt was built with (`PromptBuilt.model`, `.cwd`), through
+`nightloom_service::layer_source`: the same reads the prompt makes, not the
+segment's text with its wrapper stripped.
 
 `edit_context` returns the new view **and** the new transcript, for the same
 reason `rewind` returns a transcript: an elision changes every projection off the
@@ -253,7 +973,11 @@ same figure reaches the model through the sidecar.
 (mirrors `Session::live_flags`; it returns flags over the whole array rather than
 a filtered list, because superseded turns are still rendered), `currentTodos`,
 and the ticker. `links.ts::resolveNote` is a fourth, mirroring
-`knowledge::resolve_link`.
+`knowledge::resolve_link`. Since 2026-09-15 three more, in `edit.ts`:
+`editTexts`, `elideFlags` and `isEditable`, mirroring `Session::edit_texts`,
+`elide_flags` and `is_editable`; and since backlog 066 `blockEdits`,
+`blockElisions` and `replyText`, mirroring `Session::block_edits`,
+`block_elisions` and `reply_text`.
 
 ## Importing from claude.ai
 

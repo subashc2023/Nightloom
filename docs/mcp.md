@@ -116,3 +116,90 @@ A server that fails to start costs one line and takes nothing else down:
 `connect_all` returns a `ServerReport` per server. Failing a whole connection
 because one of five servers is misconfigured would make MCP too brittle to leave
 switched on.
+
+## The server — `nightloom_service::mcp_server`
+
+The mirror image, and it lives in the service crate rather than here because
+what it serves is the service's tools: `search_chats`, `read_chat`, `remember`
+and `fetch_page` (the API engine's `web_fetch` under a name that says what it
+is for) — **and, since 2026-09-16, `context_status`** (nightshift backlog
+073: the window's fill and the plan's usage, for the model to read; five
+tools, ~~four~~). It exists for the Claude Code engine, which owns its own
+loop and tool set and so cannot be handed a `Vec<Box<dyn Tool>>` the way
+`Chat` is; passed to `claude -p` as `--mcp-config`, the ~~four~~ five reach
+the model there as `mcp__nightloom__search_chats` and so on. The server is a
+subcommand of both binaries — `nightloom mcp-serve [--project <id>]` and
+`nightloom-desktop --mcp-serve [--project <id>]` — so the desktop can name
+`current_exe()` in the config it hands over and never has to find a CLI that
+is usually not on PATH. **Flags, corrected 2026-09-16** (the section above
+was written for `--project` alone; `mcp_server::parse_args` is the
+authority): `--no-remember` (2026-09-15; the four without `remember`, for a
+chat whose memory switch is off), `--dream <json>` (below), and `--ask`
+(2026-09-16, nightshift backlog 084: serves a sixth tool, `ask`, the Ask
+position's permission-prompt tool, withheld from the model's own list —
+[service-agent.md](service-agent.md) "The Ask position").
+
+The wire is the one the client above speaks: newline-delimited JSON-RPC 2.0 on
+stdio, `initialize` (capabilities `tools`, an `instructions` string saying which
+tool to reach for), `tools/list` (each `ToolDef` as `name` / `description` /
+`inputSchema`), `tools/call`, `ping`. The client's message types are not reused
+because it has none — it works in `serde_json::Value`s, and so does this. Each
+request is answered on its own task with one writer under a mutex, so a
+`fetch_page` on a slow origin does not stall a `search_chats` beside it.
+
+Two distinctions the client draws from its side are kept on this one. A tool
+that **ran and failed** comes back as a result with `isError: true` and the
+tool's message as its text, which the model reads and reacts to; a JSON-RPC
+error is for a request the server could not serve at all — an unknown tool is
+invalid params (`-32602`), an unknown method is method-not-found (`-32601`).
+And a line that is not JSON costs a line on stderr, never the session, the same
+rule the client's reader applies to a server.
+
+**Which fetch, and the fallback (2026-09-17, nightshift backlog 125).** The
+`initialize` instructions, the engine note (`prompt.rs`) and `fetch_page`'s own
+description said "for a whole page use fetch_page, not WebFetch". On a site
+that pre-renders for crawlers and serves a JavaScript shell to everyone else
+(Obsidian's help site, measured), that sent the model to the fetch that got the
+title where the CLI's `WebFetch` got the article, and the model spent two calls
+deducing the switch. All three now say when each is the right one: `fetch_page`
+for the whole text (`WebFetch` summarises and truncates); if `fetch_page`
+reports a JavaScript shell or returns only a title, `WebFetch` on the same URL
+instead of a retry. And the shell verdict itself, on this engine only, ends
+with that sentence (`FetchPage::call` appends it to an error carrying
+`tools::SHELL_PHRASE`): the inner tool cannot name `WebFetch`, because on the
+API engine there is none.
+
+`--project <id>` names the open project: its session directory is the default
+search scope and its name is what `remember` stamps as `source`; without it,
+the unfiled chats and no source. An id the registry does not know is an error
+at startup rather than a fall-through — a server quietly searching the wrong
+chats is the failure nobody would notice. The `ChatDirs` is built as the
+desktop's `connect` builds it, every project's sessions plus the unfiled ones,
+from the config dir the registry lives under (`capture::session_dirs`).
+
+**A dream's server (2026-09-16, nightshift backlog 070).** Started with
+`--dream <json>` — `nightloom mcp-serve --dream …`, `nightloom-desktop
+--mcp-serve --dream …` — the server serves **one** tool, `propose_instructions`,
+and none of the ~~four~~ five: the JSON (`mcp_server::DreamServe`: the store the
+proposal is filed beside, the `ProposalTarget`, the path of the always-loaded
+file) is what `dream::run_on_agent` builds per target, and the tool is the same
+`ProposeInstructions::new(..).against(read_capped(file))` the API engine's
+dream gets, so the proposal file is the same file. `initialize` says so in its
+instructions; `remember` and the readers are unknown here, not hidden, since a
+dream on this engine must not read the other chats or write to the inbox it is
+draining. It needs no config dir and reads no registry. Documented with the
+rest of the pass in [service-agent.md](service-agent.md) "Dreams and captures
+on this engine".
+
+**There is no approval layer.** On the API engine each of these calls goes
+through `approval`; here the CLI's own permission system judges an
+`mcp__nightloom__*` call like any other, and a gate of ours in front of theirs
+would prompt twice — or, headless, deny once. A standing grant goes in
+`~/.claude/settings.json`, under `permissions.allow`, as `"mcp__nightloom__*"`
+(the way `mcp__openalex__*` already is on this machine), or per tool. Of the
+~~four~~ five (2026-09-16), `search_chats`, `read_chat` and `context_status`
+are read-only: the user's own logs and the turn's own figures, on
+this machine, and nothing changes. `remember` appends one line to the memory
+inbox — `Effect::Session` on the API engine, and the argument in `remember.rs`
+for why that write needs no gate holds here too. `fetch_page` leaves the
+machine and is the one to think about before allowlisting.

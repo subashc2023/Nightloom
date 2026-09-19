@@ -222,8 +222,18 @@ fn build_chat(args: &ChatArgs, mcp_tools: &[Arc<dyn Tool>]) -> Result<Chat> {
         knowledge: (on && args.tools)
             .then(|| vault.clone().map(|dir| KnowledgeContext { dir }))
             .flatten(),
+        // The model's own file, by the id the chat is actually running on
+        // rather than what was typed: `connect` fills in the provider's
+        // default when `--model` is absent.
+        model: on.then(|| chat.model.clone()),
+        // The CLI has no chat kinds (nightshift backlog 102): every run is a
+        // build chat in the folder it was started from.
+        chat_instructions: false,
         cwd: cwd.clone(),
         custom: args.system.clone(),
+        // A chat's own text for a layer is read from a chat's log, which the
+        // CLI does not keep; the files are what it sends.
+        edits: Default::default(),
     });
     chat.thinking = args.thinking.clone().unwrap_or(Thinking::Default);
     chat.max_tokens = args.max_tokens;
@@ -418,6 +428,7 @@ fn prompt_summary(system: &SystemPrompt) -> Option<String> {
             SegmentKind::Identity => parts.push("identity".into()),
             SegmentKind::Environment => parts.push("environment".into()),
             SegmentKind::UserMemory => parts.push("user memory".into()),
+            SegmentKind::ModelInstructions => parts.push("model instructions".into()),
             SegmentKind::ProjectInstructions => {
                 // Collapse the walk's files into one count, in place.
                 project += 1;

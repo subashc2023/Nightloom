@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- The phone page (nightshift backlog 091, Shape B). viewport-fit=cover
+         so the safe areas are the page's to pad; the apple-* tags make
+         Add to Home Screen a full-screen app with the icon and no Safari
+         chrome; the manifest does the same on Android. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#111214" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Nightloom" />
+    <link rel="apple-touch-icon" href="/remote/icon-256.png" />
+    <link rel="icon" href="/remote/icon-128.png" />
+    <link rel="manifest" href="/remote/manifest.webmanifest" />
+    <title>Nightloom</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/remote/main.ts"></script>
+  </body>
+</html>

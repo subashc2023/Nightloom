@@ -4,11 +4,19 @@
     app,
     addToast,
     closeNote,
+    dismissProposal,
+    mirrorDraft,
+    noteDraftKey,
     revealFolder,
     saveNote,
     showNote,
+    stageProposal,
+    unstageProposal,
   } from "./state.svelte";
   import { renderMarkdown } from "./markdown";
+  import { unifiedDiff } from "./diff";
+  import DiffView from "./DiffView.svelte";
+  import ConfirmDialog from "./ConfirmDialog.svelte";
   import {
     hrefTarget,
     linkTitle,
@@ -17,6 +25,7 @@
     resolveLink,
   } from "./links";
   import type { NoteResolution } from "./links";
+  import { modelOfInstructionFile } from "./catalog";
   import type { NoteScope } from "./types";
 
   /**
@@ -28,6 +37,15 @@
    * `plan.md`, and switching between them must reload rather than look like
    * the same note.
    */
+  /**
+   * The note this view shows, when it is a pane's tab rather than the
+   * centre's one open note (nightshift backlog 099): a note beside a chat
+   * reads and saves as the open one does, keyed by its own scope and
+   * name. Absent — every caller before tabs — the view follows
+   * `app.openNote` as it always has.
+   */
+  let { note = null }: { note?: { scope: NoteScope; name: string } | null } = $props();
+
   let loaded: string | null = null;
   let text = $state("");
   let saved = $state("");
@@ -36,8 +54,50 @@
   let preview = $state(false);
 
   const dirty = $derived(text !== saved);
-  const open = $derived(app.openNote);
+  const open = $derived(note ?? app.openNote);
   const isVault = $derived(open?.scope === "knowledge");
+  /**
+   * Proposal mode: the dream suggested a replacement for this fixed file,
+   * and the pane shows it as a diff against the saved text instead of the
+   * editor. Only while the review is for the open scope — `showNote` clears
+   * it on the way to any other note. The buffer is untouched until *Load
+   * into editor*, which makes the proposed text a draft and nothing more.
+   */
+  const reviewing = $derived(
+    app.proposalReview && open && app.proposalReview.scope === open.scope
+      ? app.proposalReview
+      : null,
+  );
+  const proposalDiff = $derived(
+    reviewing
+      ? unifiedDiff(saved === "" ? null : saved, reviewing.entry.proposal.text, open?.name ?? "AGENTS.md")
+      : "",
+  );
+  /** Dismiss asks first: the badge goes with it, and a click must not lose
+   *  something the user has not read (the never-lose-work rule). */
+  let confirmDismiss = $state(false);
+  /** A model's own instruction file: named after the id, read whole. */
+  const isModel = $derived(open?.scope === "models");
+  const modelId = $derived(isModel && open ? modelOfInstructionFile(open.name) : "");
+  /**
+   * The note whose text is in the buffer — set by `load` only once that
+   * note's content is in `text` and `saved`, and cleared while a load is in
+   * flight. Deliberately *not* derived from `open`: the selection changes a
+   * tick before the buffer does, and an effect keyed on it wrote the
+   * previous note's unsaved text as a draft under the next note's name.
+   */
+  let bufferKey = $state<string | null>(null);
+
+  /**
+   * Mirror the buffer into `app.noteDrafts` while it differs from the saved
+   * text, and drop the entry once it matches again — so an edit typed and
+   * then undone leaves no draft behind.
+   */
+  $effect(() => {
+    const key = bufferKey;
+    if (!key) return;
+    mirrorDraft(key, text, saved);
+  });
 
   /**
    * Links out of the note as it currently reads — from the buffer rather than
@@ -75,6 +135,7 @@
   });
 
   async function load(target: { scope: NoteScope; name: string } | null) {
+    bufferKey = null;
     text = "";
     saved = "";
     error = null;
@@ -83,8 +144,13 @@
     loading = true;
     try {
       const content = await api.readNote(target.scope, target.name);
-      text = content;
+      const key = noteDraftKey(target.scope, target.name);
       saved = content;
+      // A draft left on this note takes the buffer; the file stays the
+      // saved baseline, so the ● and the Revert button say what differs.
+      const draft = app.noteDrafts[key];
+      text = draft !== undefined && draft !== content ? draft : content;
+      bufferKey = key;
     } catch (e) {
       error = String(e);
     } finally {
@@ -101,7 +167,7 @@
       // Guarded on the note still being the open one: the graph is a round
       // trip, and clicking through two links quickly would otherwise leave
       // the first note's backlinks under the second.
-      if (app.openNote?.name !== name) return;
+      if (open?.name !== name) return;
       backlinks = graph.edges
         .filter((e) => e.to === index)
         .map((e) => graph.notes[e.from]?.name)
@@ -119,7 +185,55 @@
       saved = pending;
       addToast(`Saved ${target.name}`);
       if (target.scope === "knowledge") void loadBacklinks(target.name);
+      // Opened from the popover or Settings: Save is the way back, as it is
+      // for the prompt library (nightshift blocker 042), so the surface that
+      // opened the file is what shows the result.
+      if (app.noteFrom) closeNote();
     }
+  }
+
+  /** The folder this note is in. The models folder is not in app state —
+   *  nothing else needs it — so it is asked for when the button is pressed. */
+  async function showFolder() {
+    if (!isModel) return revealFolder(folder);
+    try {
+      await revealFolder((await api.modelInstructionsDir()) ?? undefined);
+    } catch (e) {
+      addToast(String(e));
+    }
+  }
+
+  /** Drop the draft: the buffer goes back to the last saved text. A
+   *  proposal that was loaded is no longer what a Save would apply. */
+  function revert() {
+    if (!dirty) return;
+    text = saved;
+    if (bufferKey) unstageProposal(bufferKey);
+  }
+
+  /**
+   * Load the proposal into the buffer as a draft. `stageProposal` writes
+   * the draft entry and remembers which proposal it was; the buffer takes
+   * the same text so ● draft, Revert and Save behave exactly as for typed
+   * text. The file is not written here or anywhere but Save.
+   */
+  function loadProposal() {
+    const r = reviewing;
+    if (!r || !open) return;
+    if (r.entry.proposal.text === saved) {
+      addToast("The proposal matches the file as saved — nothing to load");
+      app.proposalReview = null;
+      return;
+    }
+    stageProposal(r.scope, r.entry, saved);
+    text = r.entry.proposal.text;
+  }
+
+  async function confirmDismissal() {
+    const r = reviewing;
+    confirmDismiss = false;
+    if (!r) return;
+    if (await dismissProposal(r.scope, r.entry.id)) addToast("Proposal dismissed — kept under proposals/dismissed");
   }
 
   /**
@@ -184,25 +298,35 @@
 
 <div class="note">
   <header>
-    <button class="back" onclick={closeNote}>← Chat</button>
+    <button class="back" onclick={closeNote}>
+      {app.noteFrom === "rail" ? "← Model" : app.noteFrom === "settings" ? "← Settings" : "← Chat"}
+    </button>
     <span class="scope" class:vault={isVault}>
-      {isVault ? "knowledge" : "project"}
+      {open?.scope ?? "project"}
     </span>
     <span class="title">{open?.name ?? "no note"}</span>
-    {#if dirty}<span class="dirty" title="Unsaved changes">●</span>{/if}
+    {#if reviewing}<span class="proposed" title="The dream proposed a replacement; nothing is applied until you load it and save">proposed change</span>{/if}
+    {#if dirty}<span class="dirty" title="Unsaved changes — kept as a draft until you save or revert">● draft</span>{/if}
     <span class="spacer"></span>
+    {#if dirty}
+      <button
+        class="ghost revert"
+        title="Discard the draft and go back to the last saved version"
+        onclick={revert}>Revert</button
+      >
+    {/if}
     <button
       class="ghost"
       class:on={preview}
       onclick={() => (preview = !preview)}
-      disabled={!open}
+      disabled={!open || !!reviewing}
     >
       {preview ? "Edit" : "Preview"}
     </button>
     <button
       class="ghost"
       title="Show the folder"
-      onclick={() => void revealFolder(folder)}>Folder</button
+      onclick={() => void showFolder()}>Folder</button
     >
     <button class="save" onclick={() => void commit()} disabled={!dirty}>
       Save
@@ -213,6 +337,37 @@
     <p class="err">{error}</p>
   {:else if loading}
     <p class="err quiet">Reading…</p>
+  {:else if reviewing}
+    <!-- The proposal: why, the diff, three ways out. The editor and its
+         buffer are behind this, untouched, until Load into editor. -->
+    <div class="review">
+      <div class="why">
+        <span class="label">why</span>
+        <p>{reviewing.entry.proposal.why}</p>
+        <span class="when">
+          proposed by the dream · {new Date(reviewing.entry.proposal.at).toLocaleString()}
+          {#if app.proposals[reviewing.scope].length > 1}
+            · {app.proposals[reviewing.scope].length - 1} older pending
+          {/if}
+        </span>
+      </div>
+      <DiffView text={proposalDiff} leftLabel="as saved" rightLabel="proposed" />
+      <div class="actions">
+        <button
+          class="load"
+          title="Put the proposed text in the editor as a draft — Revert drops it, Save applies it"
+          onclick={loadProposal}>Load into editor</button
+        >
+        <button
+          class="ghost revert"
+          title="Turn the proposal down — it is moved aside, not deleted"
+          onclick={() => (confirmDismiss = true)}>Dismiss</button
+        >
+        <button class="ghost" title="Close for now; the badge stays" onclick={closeNote}
+          >Keep for later</button
+        >
+      </div>
+    </div>
   {:else if preview}
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -224,13 +379,19 @@
       {/if}
     </div>
   {:else}
+    <!-- Named, so the field has an accessible name when it is empty (an
+         unnamed empty textarea is invisible to assistive tech and to the
+         driving tools alike — the prompt library's fields had the same fix). -->
     <textarea
       class="pane"
+      aria-label="Note text"
       bind:value={text}
       spellcheck="false"
       placeholder={isVault
         ? "Yours, and readable from every project. Link another note with [[name]]."
-        : "Anything here is read by every chat in this project."}
+        : isModel
+          ? `How you want ${modelId} in particular to behave. Empty means no file.`
+          : "Anything here is read by every chat in this project."}
     ></textarea>
   {/if}
 
@@ -267,7 +428,24 @@
   {/if}
 
   <footer>
-    {#if isVault}
+    {#if open?.scope === "instructions"}
+      Standing instructions for <strong>{app.project?.name ?? "this project"}</strong
+      >. Read <em>whole</em> into every chat's system prompt — keep it short and
+      specific; anything that is only sometimes relevant belongs in a note
+      below, which the model reads on demand. Saving re-connects the open chat.
+    {:else if open?.scope === "memory"}
+      How you want the model to behave, in every project and in chats with no
+      project. Read <em>whole</em> into every chat's system prompt — keep it
+      short; facts and decisions worth keeping belong in the knowledge base,
+      which the model reads on demand. Saving re-connects the open chat.
+    {:else if isModel}
+      Instructions for <strong>{modelId}</strong> and no other model, in every
+      project. Read <em>whole</em> into the system prompt of a chat on that
+      model, after your memory and before the project's instructions — for
+      what you want of this model in particular; what applies to every model
+      belongs in Memory. An empty file is the same as none. Saving re-connects
+      the open chat.
+    {:else if isVault}
       Yours, across every project — the model sees this file's name and first
       line in its system prompt and reads the rest with the file tools, at
       <code>@kb/{open?.name ?? ""}</code>.
@@ -278,6 +456,17 @@
     {/if}
   </footer>
 </div>
+
+{#if confirmDismiss && reviewing}
+  <ConfirmDialog
+    title="Dismiss this proposal?"
+    lead="The proposed text is moved to proposals/dismissed and the badge goes; the file is not touched either way."
+    facts={[["for", reviewing.scope === "memory" ? "your memory" : `${app.project?.name ?? "this project"}'s instructions`]]}
+    confirmLabel="Dismiss"
+    onconfirm={() => void confirmDismissal()}
+    onclose={() => (confirmDismiss = false)}
+  />
+{/if}
 
 <style>
   .note {
@@ -333,7 +522,67 @@
   }
   .dirty {
     color: var(--accent);
-    font-size: 0.6rem;
+    font-size: 0.7rem;
+    letter-spacing: 0.02em;
+  }
+  /* The review's marker, in the scope chip's shape so the header reads
+     "instructions · AGENTS.md · proposed change". */
+  .proposed {
+    font-size: 0.62rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    border-radius: 5px;
+    padding: 0.1rem 0.35rem;
+    flex-shrink: 0;
+  }
+  .review {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+  }
+  .why {
+    flex-shrink: 0;
+    padding: 0.7rem 1.2rem 0.6rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+  .why p {
+    margin: 0;
+    font-size: 0.82rem;
+    line-height: 1.5;
+    color: var(--text);
+  }
+  .why .when {
+    font-size: 0.68rem;
+    color: var(--dim);
+  }
+  .actions {
+    flex-shrink: 0;
+    display: flex;
+    gap: 0.5rem;
+    padding: 0.55rem 1.2rem;
+    border-top: 1px solid var(--border);
+    background: var(--panel);
+  }
+  .load {
+    background: transparent;
+    border: 1px solid var(--accent);
+    border-radius: 7px;
+    color: var(--accent);
+    font-family: inherit;
+    font-size: 0.76rem;
+    padding: 0.25rem 0.55rem;
+    cursor: pointer;
+  }
+  .load:hover {
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
   }
   .spacer {
     flex: 1;
@@ -358,6 +607,16 @@
   .ghost.on {
     color: var(--accent);
     border-color: var(--accent);
+  }
+  /* Revert discards typing: a red outline says so without a dialog (his
+     call, 2026-09-14 — the draft is the safety net, not a confirmation). */
+  .ghost.revert {
+    color: var(--failed);
+    border-color: #7a3d3f;
+  }
+  .ghost.revert:hover:not(:disabled) {
+    color: var(--failed);
+    border-color: var(--failed);
   }
   .ghost:disabled,
   .save:disabled {

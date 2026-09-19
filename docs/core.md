@@ -101,8 +101,13 @@ replay.
 
 A system prompt is an ordered `Vec<Segment>` (`SystemPrompt`), not a string. Each
 `Segment` carries a `SegmentKind` (Identity / Environment / ProjectInstructions /
-ProjectNotes / Knowledge / UserMemory / Custom), a name, its text, and a
-`cache_anchor` flag. `Knowledge` is the index of the user's knowledge vault —
+ProjectNotes / Knowledge / UserMemory / ModelInstructions / EngineNote / Custom),
+a name, its text, and a `cache_anchor` flag. `EngineNote` (2026-09-14) is the
+Claude Code bridge's gloss on the names in the layers above it — its own kind
+rather than a `Custom` segment named "engine-note", because a chat switches
+layers off *by kind* and the note is one a user may drop while the library
+prompt, which is `Custom`, is not. `SegmentKind::LAYERS` is the eight kinds a
+chat can switch off, in ladder order. `Knowledge` is the index of the user's knowledge vault —
 about *them* rather than about this folder, which is what keeps it apart from
 `ProjectNotes`; both reach the model as an index and never as content.
 
@@ -133,11 +138,32 @@ Cache fields are `Option` because "this host does not report caching" and
 "nothing was cached" are different facts, and only the first must not render as a
 0% hit rate.
 
+`cache_write_5m_tokens` / `cache_write_1h_tokens` (2026-09-15, nightshift
+backlog 063) split `cache_write_tokens` by the lifetime the entry was written
+with — Anthropic's `usage.cache_creation` object, read at the adapter boundary
+and by the Claude Code translator. The split is what says *when the entry
+expires*; the total only says that one was written. `Usage::cache_write_ttl()`
+reads it (an hour outranks five minutes, since the API puts the longer
+breakpoint earlier in the prompt), and `Usage::cache_ttl(default)` is the rule
+every engine records by: the write's own lifetime when the split names one; the
+engine's `default` when the request only touched the cache — a read refreshes
+the entry it hit for its original lifetime, and a write with no split is a
+write at the engine's usual one; `None` when it touched none, so a host that
+reports no caching gets no timer rather than a wrong one. `CacheTtl` is the
+lifetime, serialized as the API's own `5m` / `1h`. `Provider::cache_ttl()` is
+where an adapter states its default: the Anthropic adapter says five minutes,
+because that is what its `cache_control: {type: ephemeral}` with no `ttl` gets;
+everything else inherits `None`.
+
 ## The session log (`session.rs`)
 
 Append-only event log (`SessionEvent`), persisted as JSONL. **The event log is
 the source of truth**; the provider message list (`Session::messages()`) and any
 UI rendering are projections of it.
+
+Five markers supersede without mutating — `Rewind` / `Unrewind`, `Compaction`,
+`Elide` / `Unelide`, and since 2026-09-15 `Edit` — and one line can name a lineage
+(`SessionCreated.forked_from`); all under "Markers over mutations" below.
 
 Tool results are recorded as individual `SessionEvent::ToolResult` events; the
 projection coalesces consecutive ones into the single user message providers
@@ -205,6 +231,23 @@ that was itself a `Rewind` or `Elide` is not being honoured, so content the user
 hid is back on the wire, and `LoadReport::summary()` is the one sentence both
 shells say about it.
 
+### The chat's mode is on its first line (`ChatMode`, 2026-09-15)
+
+`SessionEvent::SessionCreated` carries `mode: ChatMode` — `normal`, `incognito`
+or `ephemeral` — written only when not normal, so every log before the field
+and every ordinary log after is byte-identical. It is on the creation line and
+not on an event of its own because it cannot change: a chat that was ordinary
+for ten turns has already been indexed and captured, so "incognito from here"
+would be a promise nobody downstream could keep, and every reader that has to
+skip such a log reads the first line first anyway. `Session::mode()` projects
+it off the raw events (a rewind cuts at a user message and never reaches index
+0). `Session::incognito(dir)` is `with_log` marked; `Session::ephemeral()` is
+in memory and marked, distinct from `Session::new()`, which stays `normal`
+because a capture turn or a dream turn is not a chat the user asked to forget;
+`with_log_in_mode(dir, Ephemeral)` is refused as a confusion of the two. What
+each mode drops is the service's and the shells' business —
+[service-data.md](service-data.md) "What is and is not written".
+
 ## Markers over mutations
 
 Everything that supersedes conversation state leaves the log append-only and
@@ -229,6 +272,30 @@ find out which turn you wanted back after the turn that spoiled it. `messages()`
 deliberately do **not**, because the tokens were spent and a bill that shrank on
 rewind would be fiction. Files written by tools are not reverted, and both shells
 say so at the moment of rewinding.
+
+### Unrewind (`SessionEvent::Unrewind { of }`, `Session::unrewind`, 2026-09-15)
+
+The undo of a rewind (nightshift backlog 064). `of` names a `Rewind` in the
+log, and that rewind no longer applies: what it superseded counts again,
+the markers in its range included — an elision, an edit, a narrower rewind
+recorded after `to` were only ever superseded by it. A **marker on
+`Unelide`'s terms rather than the rewind line struck from the file**, and
+for the reason every marker here is one: the log is append-only, and
+deleting a line would renumber every event after it and re-aim every
+`Elide`, `Edit` and later `Rewind` that carries an index — the trap
+`Unknown` holds its position to avoid. It would also erase the fact that
+the rewind happened, which is information. Redoing a rewind is a fresh
+`Rewind`, never a resurrection of the lifted one.
+
+`live_flags` rebuilds the flags with every lifted rewind left out, rather
+than un-clearing one rewind's range, so what remains is exactly the union
+of the rewinds still standing: a rewind lifted while a *wider* one still
+covers it changes nothing visible until that one is lifted too. A lifted
+rewind stays lifted even when a later rewind's range runs over the
+`Unrewind` line — markers are never live, and a marker's effect does not
+depend on its own liveness. `unrewind` refuses a second lift of the same
+marker (a line that says nothing) and a target that is not a rewind. The
+desktop's `liveFlags` mirrors the rebuild, as it mirrors the rest.
 
 ### Elision (`SessionEvent::Elide` / `Unelide`, `Session::elide`, `is_elidable`, `elide_flags()`)
 
@@ -255,6 +322,116 @@ invalidates every cached prefix past that point, so the next turn pays full pric
 for the remainder. Usually a good trade against a 40k-token tool result, but a
 cost, and both shells say so at the moment of removing.
 
+### Edit (`SessionEvent::Edit { target, text }`, `Session::edit`, `is_editable`, `edit_texts()`, 2026-09-15)
+
+His "edit and save" (nightshift backlog 062): the turn at `target` says
+`text` from here on, in this chat. A **marker on exactly `Elide`'s terms** —
+the original stays in the log for a UI to unfold, the latest live marker on
+an index wins, and a rewind that supersedes the marker puts the original
+back on the wire — and content replacement only, never structural: a user
+message keeps its attachments, an assistant reply keeps its thinking (signed
+as it is; the API ignores earlier turns' thinking and was measured to accept
+a reply whose text changed under a kept thinking block), ~~and the first text
+block takes the new text with any further text block going. `is_editable`
+refuses a reply that carries a `tool_use` — the call was made *because of*
+the text beside it, and a history where the reasoning changed and the call
+did not is one no provider was asked to accept — and refuses a tool result
+outright; removal (`Elide`) is the answer for both~~ — **superseded
+2026-09-15 (nightshift backlog 066), see "One block of a reply" below** —
+and `is_editable` refuses a tool result outright, since it is not the
+user's to reword; removal (`Elide`) is the answer there, since it swaps
+content and keeps structure. Blank text is refused (an empty text block is
+rejected on the wire; removal is what "say nothing here" means), and so is
+a target currently elided: elision outranks the edit in the projection, so
+editing under the marker would record something invisible.
+
+Costs what an elision costs: the cached prefix past the target is gone on
+the next request. The desktop says so beside the editor, from the cache
+timer.
+
+### One block of a reply (`Edit.block`, `Elide.block` / `Unelide.block`, `Session::edit_block`, `elide_block`, `unelide_block`, `block_edits()`, `block_elisions()`, `reply_text()`, 2026-09-15)
+
+His "edit things out" of a reply (nightshift backlog 066): "if Claude
+continually makes a shit suggestion … I might want to remove it and
+replace it with a line that says 'I won't ask you about ___'", and "keep
+the start of it but don't need the rest". A reply is several blocks —
+thinking, text, tool calls, text — and the three markers now carry an
+optional **`block`**, an index into the reply's `blocks`, that aims them at
+one block rather than the event:
+
+- **`Edit { target, block: Some(n), text }`** — text block `n` says `text`;
+  every other block stays where it was, calls included. `is_editable` now
+  accepts any reply with a text block in it; the old refusal ("the call was
+  made because of the text beside it") has nothing left to guard once a
+  call and the text beside it are never reworded together. `Session::edit`
+  on a reply is its first text block; `edit_block` takes any. `block_edits()`
+  is the per-reply map (block → latest live text); `edit_texts()` now reads
+  `None` for every reply and keeps serving user messages. A line written
+  before the field existed (`block` absent) reads as the reply's first text
+  block, which is what it meant — ~~with any further text block going~~ the
+  other text blocks stay now, the one projection change for an old log.
+- **`Elide { targets: [reply], block: Some(n) }`** — that block is removed
+  from the projection: a text block, or a `tool_use` **with the result that
+  answers it**. The pair is the whole of the structural argument above,
+  kept: the marker names the call, the projection drops the result by its
+  `tool_use_id` (`removed_calls`), and a result is refused on its own
+  ("goes with its call; remove the call instead"), so no marker can produce
+  the orphan every provider rejects. A `ReasoningRef` standing directly
+  before a removed call goes with it (OpenAI Responses replays a reasoning
+  item only with the item it led to). Thinking is refused: the API leaves
+  earlier turns' thinking out on its own side, so removing it would change
+  nothing the model reads and cost a cache prefix for it. A block of a
+  reply removed *whole* is refused until the reply is restored; a whole
+  removal on top of a pair removal keeps the pair gone.
+- Removed blocks project **nothing** — no marker — unless the reply would
+  be left with no text and no call, when it says the elision marker sized
+  by what went (an empty assistant message is rejected on the wire). A
+  reply whose every text block is gone still carries its calls. Two
+  assistant messages can end up adjacent when a round's only result is
+  gone; Anthropic combines consecutive same-role turns (`external`, the
+  API reference), and the same shape resumed on the CLI (the "drop
+  outright" copy in [service-agent.md](service-agent.md)).
+- `elide_flags()` is untouched by block markers — they leave the event's
+  own flag alone — and `block_elisions()` is their per-reply set.
+  `reply_text(index)` is the reply's text as it reads now (edits applied,
+  removed blocks left out, calls leaving no mark), which is what the
+  desktop compares against Claude Code's file to find the same reply.
+- Absent on every line written before, and left out of the line when
+  absent, so a whole-event marker and a user-message edit are the lines
+  they always were; a fork carries the block on its re-aimed marker.
+
+### Forks (`Session::fork_from(dir, upto)`, `SessionEvent::SessionCreated.forked_from`, `ForkedFrom`, 2026-09-15)
+
+His "edit and send": a new log that begins as this one did, up to and not
+including event `upto`, whose creation line carries `forked_from: {session,
+index}` — the parent's id and the parent's own numbering of the first event
+the fork does not have. On the creation line and not an event of its own
+for the reason the mode is: decided at birth, never changed, and a listing
+wants it before it reads a second byte. Absent on every log that is not a
+fork, so nothing else changes shape.
+
+The fork carries the parent's **live events only, renumbered**: rewound
+turns are not part of the conversation the fork continues, and the markers
+that address by index — `Elide`, `Unelide`, `Edit` — are re-aimed at the
+copied positions, or dropped when everything they named is past the cut.
+Not copied: the `Title` (the fork is named from what it becomes; the
+listing's "from" line carries the lineage), and any `AgentSession` handle
+(the agent history it names runs past the cut; the shell that forks on that
+engine records the fork's own). `upto` must be a live user message, on
+`rewind`'s argument. The mode is inherited — an incognito fork is incognito,
+and an ephemeral parent forks to another chat with no log. The parent is
+never touched: it keeps the turn being replaced and everything after it.
+
+**Added 2026-09-16 (nightshift backlog 086; the section above predates
+it).** `ForkedFrom` gained an optional `reason`, written only as
+`"handoff"`, for the second way to make a fork:
+`Session::continued_from(dir)` — a fresh chat that continues a full one
+from `HANDOFF.md`. Nothing is carried (the point is an empty window), so
+`index` is the parent's whole length, the mode is the parent's, and the
+parent is untouched. Absent — and left off the line — on an edit-and-send
+fork, which is what the field's absence has always meant; a parser written
+from the paragraph above still parses, but a fork can now carry zero events.
+
 ## Recorded, never re-derived
 
 ### Cost (`SessionEvent::AssistantMessage.cost`, `Session::cost()`)
@@ -267,6 +444,26 @@ from today's table would restate history every time a vendor moves a rate.
 `SessionCost.unpriced_exchanges` is not a rounding detail: a session run entirely
 on an unpriced model sums to `0.0`, and rendering that as "$0.00" would claim it
 was free rather than unknown.
+
+### The request's start and its cache lifetime (`SessionEvent::AssistantMessage.sent_at` / `.cache_ttl`, `Session::record_assistant_timed`, 2026-09-15)
+
+Two optional fields on the usage-bearing event (nightshift backlog 063), both
+`#[serde(default)]` and skipped when absent, so every log before them and every
+line written without them is byte-identical to before. `sent_at` is when the
+request that produced the message went out — the origin of its prompt cache's
+lifetime, which the API measures from the *start* of the request that wrote or
+last read the entry, not its end: `at` is the end, and a round that streamed
+four minutes leaves one on a five-minute entry. `cache_ttl` is how long the
+entry lives from there, resolved once by `Usage::cache_ttl` above. Fields on
+this event rather than an event of their own because the start and the usage
+that names the lifetime belong to one request, and a second event would be a
+second thing a rewind has to supersede in step; recorded rather than re-derived
+because the engine's default lifetime is a fact about the engine that ran the
+turn, and the log is the only place that still knows which one did. The
+projection that turns them into a countdown lives in the desktop
+([desktop-ui.md](desktop-ui.md) "The prompt-cache timer"); the core records and
+never reads them. An import records neither: it is history, and any entry it
+had is long gone.
 
 ### Session titles (`SessionEvent::Title`, `Session::title()`)
 
@@ -285,6 +482,43 @@ that no longer counts.
 A rename is an ordinary append — the old name stays in the log and the projection
 takes the latest — which is what makes both shells' rename five lines rather than
 a mutation path of its own.
+
+### Prompt layers per chat (`SessionEvent::PromptLayers { off, edits }`, `Session::prompt_layers_off()`, `Session::prompt_layer_edits()`)
+
+Which system-prompt layers this chat has switched off, as a list of
+`SegmentKind`s (2026-09-14, nightshift backlog 048). Latest wins like a title;
+empty, or no event at all, means every layer is on. `record_prompt_layers`
+normalizes the set to ladder order without repeats and is a no-op when the set
+is unchanged, so a shell that re-sends the current set on every reconnect does
+not fill the log with it.
+
+A log event rather than a field on the shell's connection, because the
+exclusion is a fact about the *chat*: a blind test that must not see the
+project's instructions is still that test when the chat is reopened tomorrow or
+the rail switches engines under it, and the log is where facts about the chat
+live. Kinds rather than names, because a layer is switched off as a category —
+every `AGENTS.md` on the walk, not one of them — and a name is a path that
+changes with the workspace. Not part of the message projection: the shell reads
+it at connect time and assembles the prompt without those layers
+(`PromptConfig::without`), so nothing replays it as a turn. A `Compaction`
+leaves it alone, a `Rewind` past it restores the earlier set — the same two
+rules as a title, for the same reasons.
+
+**`edits` (2026-09-15, nightshift backlog 057)** is the chat's own text per
+layer — a `BTreeMap<SegmentKind, String>` holding the *body* the shell
+assembles in place of the file's, for the three kinds in
+`SegmentKind::EDITABLE` (user memory, model instructions, project
+instructions). The same event as the off set rather than a sibling: the two
+are one fact about the chat with one latest-wins rule, one rewind rule and one
+reconnect comparison. `record_prompt_layer_edits` replaces the map whole
+(dropping an override is recording the map without it), keeps only editable
+kinds and non-blank text — an empty override is not "send nothing", the switch
+is — and carries the off set forward; `record_prompt_layers` carries the edits
+forward likewise, so flipping a switch never loses an edit. The field is
+`#[serde(default)]` and skipped when empty, so a log written before it existed
+reads as no override and a log written today with no edit is byte-identical to
+yesterday's. `SegmentKind` derives `Ord` and `Hash` for the map's sake; the
+derived order is declaration order, not the ladder.
 
 ## Attachments
 
@@ -369,6 +603,13 @@ logged.
 `messages_sourced` **is** the projection and `messages_with_sidecar` is it with
 the tags dropped — one implementation rather than two, since a view that itemized
 a different list from the one the engine sends would be worse than no view.
+
+A `WireSegment` carries its **whole text** where a `WireBlock` carries a
+preview, and the asymmetry is deliberate (2026-09-14): a tool result is the item
+a reader pages past, the system prompt is the item they came to read, and every
+layer is capped at assembly so the sum is tens of kilobytes at the outside.
+`WireView::system_text` is `render_flat()` of the same prompt — "as sent",
+rendered by the one join rule rather than re-joined by a shell.
 
 Sizes are **estimates and say so**: there is no tokenizer here (every vendor
 tokenizes differently, and only one offers a counting endpoint), so `Size.tokens`
