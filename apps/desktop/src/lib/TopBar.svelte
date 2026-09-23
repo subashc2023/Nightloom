@@ -320,13 +320,20 @@
     app.showContext = false;
     app.showRail = !app.showRail;
   }
-  // The card's place, from the chip's rectangle, refreshed while it is
-  // open on resize and on scroll (backlog 163).
+  // The card's place, refreshed while it is open on resize and on scroll
+  // (backlog 163). ~~From the chip's rectangle~~ — since 2026-09-22 from the
+  // bar's (nightshift backlog 180, his word: "it used to be on the right
+  // hand side. i think i liked that more"): once the bar wrapped (20392bd)
+  // the chip sat mid-window and the card followed it. Back to the pre-163
+  // spot — 20 px in from the bar's right end, hanging from its foot — with
+  // 163's portal and z-order kept, so the Welcome page's bug stays fixed.
+  let barEl = $state<HTMLElement | null>(null);
   let popPos = $state({ top: 0, left: 0 });
   function placePop(): void {
-    if (!chipEl) return;
-    const r = chipEl.getBoundingClientRect();
-    popPos = anchorBelow(r, POP_WIDTH, window.innerWidth);
+    const el = barEl ?? chipEl;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    popPos = anchorBelow({ left: r.left, right: r.right - 20, bottom: r.bottom - 1 }, POP_WIDTH, window.innerWidth, 0);
   }
   $effect(() => {
     if (!app.showRail) return;
@@ -347,7 +354,7 @@
   // bottom row since backlog 112.
 </script>
 
-<header class="topbar">
+<header class="topbar" bind:this={barEl}>
   <div class="left">
     {#if title}
       <span class="title" {title}>{title}</span>
