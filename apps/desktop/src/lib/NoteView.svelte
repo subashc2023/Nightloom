@@ -267,12 +267,19 @@
     if (!r || !target || accepting || proposed === saved) return;
     const next = proposed;
     const hadDraft = dirty;
+    const heldKey = bufferKey;
     accepting = true;
     const ok = await acceptProposal(r.scope, r.entry, next);
     accepting = false;
     if (!ok) return;
-    saved = next;
-    if (!hadDraft) text = next;
+    // The save and the re-connect are round trips: if another note took
+    // the buffer meanwhile, its text is not ours to overwrite (review of
+    // 1285561): writing it would put AGENTS.md's text under that note's
+    // name and drop that note's draft.
+    if (bufferKey === heldKey) {
+      saved = next;
+      if (!hadDraft) text = next;
+    }
     addToast(`Accepted — saved ${target.name}`);
     if (app.noteFrom) closeNote();
   }
