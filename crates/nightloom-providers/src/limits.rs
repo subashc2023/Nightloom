@@ -229,6 +229,7 @@ const GROQ: &[(&str, u64)] = &[
 /// for it: that is the router's ceiling, not the window of whichever model it
 /// picks for a given request, so `None` is the truthful answer.
 const OPENROUTER: &[(&str, u64)] = &[
+    ("anthropic/claude-fable-5-1", 1_000_000),
     ("anthropic/claude-fable-5", 1_000_000),
     ("anthropic/claude-opus-5", 1_000_000),
     ("anthropic/claude-sonnet-5", 1_000_000),

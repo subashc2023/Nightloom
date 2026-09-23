@@ -258,6 +258,8 @@ const GROQ: &[(&str, Price)] = &[
 /// native rate when read), so a row here disagreeing with the native table
 /// above is the expected outcome and not a transcription error.
 const OPENROUTER: &[(&str, Price)] = &[
+    // Backlog 188 (night review, finding 5): 5.1's own row here too.
+    ("anthropic/claude-fable-5-1", pcw(10.0, 50.0, 0.25, 12.5)),
     ("anthropic/claude-fable-5", pcw(10.0, 50.0, 1.0, 12.5)),
     ("anthropic/claude-opus-5", pcw(5.0, 25.0, 0.5, 6.25)),
     ("anthropic/claude-sonnet-5", pcw(2.0, 10.0, 0.2, 2.5)),
@@ -408,6 +410,9 @@ mod tests {
         );
         let five = price(ProviderKind::Anthropic, "claude-fable-5").unwrap();
         assert_eq!(five.cache_read, Some(1.0));
+        // Through OpenRouter too (night review, finding 5).
+        let or = price(ProviderKind::Openrouter, "anthropic/claude-fable-5-1").unwrap();
+        assert_eq!(or.cache_read, Some(0.25));
     }
 
     #[test]
