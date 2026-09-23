@@ -37,10 +37,14 @@ export type ClipEntry =
 export const CLIP_MAX = 20;
 /** A longer text is kept whole in memory and cut to this in the store. */
 export const CLIP_TEXT_PERSIST_MAX = 50_000;
-/** An image's base64 past this is not written to the store. */
-export const CLIP_IMAGE_PERSIST_MAX = 512 * 1024;
-/** The whole store's budget; past it the oldest rows are left out. */
-export const CLIP_TOTAL_MAX = 3 * 1024 * 1024;
+/** An image's base64 past this is not written to the store (kept in memory
+ *  until relaunch). ~~512 KB~~ — 128 KB since the review of 2026-09-22: a
+ *  pasted screenshot is also a draft chip, and the two stores share one
+ *  ~5 MB localStorage quota; the drafts must never be the ones that fail. */
+export const CLIP_IMAGE_PERSIST_MAX = 128 * 1024;
+/** The whole store's budget; past it the oldest rows are left out. ~~3 MB~~ —
+ *  512 KB since the same review, for the same reason. */
+export const CLIP_TOTAL_MAX = 512 * 1024;
 
 const STORE_KEY = "nightloom.clip-ring";
 const SAVE_DELAY_MS = 400;
