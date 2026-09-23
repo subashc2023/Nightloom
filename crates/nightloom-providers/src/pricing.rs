@@ -159,6 +159,11 @@ pub fn matched_row(kind: ProviderKind, model: &str) -> Option<&'static str> {
 /// `cache_control: {type: ephemeral}` with no `ttl`, and 5 minutes is that
 /// field's default.
 const ANTHROPIC: &[(&str, Price)] = &[
+    // Fable 5.1 (nightshift backlog 188, 2026-09-22): $10 / $50 like Fable 5,
+    // but cache reads $0.25 (0.025x), 5-minute writes $12.50 — `external`, the
+    // Claude API skill bundled with Claude Code 2.1.280. Before this row the id
+    // matched `claude-fable-5` by prefix and its cache reads were priced 4x.
+    ("claude-fable-5-1", pcw(10.0, 50.0, 0.25, 12.5)),
     ("claude-fable-5", pcw(10.0, 50.0, 1.0, 12.5)),
     // Opus 5.5 (nightshift backlog 178, 2026-09-22): $4 / $20, cache reads
     // $0.20 (0.05x), 5-minute writes $5 — `external`, the Claude API skill
@@ -390,6 +395,19 @@ mod tests {
         let p = p(1.0, 2.0);
         let cost = p.cost(&usage(1_000, 0, Some(900), None));
         assert!((cost - 1_000.0 / 1e6).abs() < 1e-12, "{cost}");
+    }
+
+    #[test]
+    fn fable_5_1_has_its_own_price_not_fable_5s_by_prefix() {
+        // Backlog 188: before its row, `claude-fable-5-1` matched
+        // `claude-fable-5` by prefix and its cache reads cost $1, not $0.25.
+        let p = price(ProviderKind::Anthropic, "claude-fable-5-1").unwrap();
+        assert_eq!(
+            (p.input, p.output, p.cache_read, p.cache_write),
+            (10.0, 50.0, Some(0.25), Some(12.5))
+        );
+        let five = price(ProviderKind::Anthropic, "claude-fable-5").unwrap();
+        assert_eq!(five.cache_read, Some(1.0));
     }
 
     #[test]

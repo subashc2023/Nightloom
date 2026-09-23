@@ -121,7 +121,9 @@ pub fn matched_row(kind: ProviderKind, model: &str) -> Option<&'static str> {
 /// are not symmetric: understating costs an early compaction, overstating
 /// walks the model into a hard 400 mid-conversation. 200k encoded.
 const ANTHROPIC: &[(&str, u64)] = &[
-    // 1M by default.
+    // 1M by default. Fable 5.1 (backlog 188): 1M, its own row as 178 did
+    // for Opus 5.5.
+    ("claude-fable-5-1", 1_000_000),
     ("claude-fable-5", 1_000_000),
     // Documented as 1M but 404s without account access, so unverifiable
     // here; the row costs nothing and pays off for keys that do have it.

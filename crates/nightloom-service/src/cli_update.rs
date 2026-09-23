@@ -502,9 +502,9 @@ mod tests {
         assert_eq!(table_rows("claude-opus-5-5"), (true, true));
         // A dated snapshot of a known row is known.
         assert_eq!(table_rows("claude-opus-5-20260901"), (true, true));
-        // Fable 5.1 and a hypothetical Opus 5.6 prefix-match their family
-        // rows (the price would read Fable 5's), but have none of their own.
-        assert_eq!(table_rows("claude-fable-5-1"), (false, false));
+        // Fable 5.1 has had its own rows since backlog 188; a hypothetical
+        // Opus 5.6 prefix-matches its family row but has none of its own.
+        assert_eq!(table_rows("claude-fable-5-1"), (true, true));
         assert_eq!(table_rows("claude-opus-5-6"), (false, false));
         assert_eq!(table_rows("claude-unknown-9"), (false, false));
     }
