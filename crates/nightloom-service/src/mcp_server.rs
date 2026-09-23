@@ -214,7 +214,7 @@ pub fn tools_in(
     if remember {
         tools.push(Box::new(Remember::new(config.to_path_buf(), source)));
     }
-    tools.push(Box::new(FetchPage::default()));
+    tools.push(Box::new(FetchPage::in_dir(config.join(FETCHED_DIR))));
     tools.push(Box::new(ContextStatusTool {
         config: config.to_path_buf(),
     }));
@@ -378,8 +378,49 @@ impl Tool for ContextStatusTool {
 /// `WebFetch` as the next call. The inner tool cannot — on the API engine
 /// there is no `WebFetch` — and the measured case (Obsidian Publish) is one
 /// where the CLI's fetch was served the article the shell stands in for.
-#[derive(Default)]
-struct FetchPage(Fetch);
+///
+/// **Read by pointer (2026-09-22, nightshift backlog 165, pass 2).** Until
+/// then the reply was the page 16 KiB at a time, and an agent read a long
+/// document whole by paging — Stuart 9's six subagents took 2.7 M
+/// characters of pages into their contexts that way, and each later
+/// request re-read all of it. Now the whole text is saved to a file
+/// under the config dir ([`FETCHED_DIR`], named by a hash of the URL) and
+/// the reply is a pointer: the header, the path, an outline (every
+/// heading with its line number and character offset) and the first
+/// [`FETCH_HEAD`] characters. The rest is asked for by section —
+/// `offset`/`length` here (a second call reads the saved file, no second
+/// fetch for an hour), or the CLI's `Read` on the path with a line range.
+/// A PDF, refused before, is saved and its text extracted with poppler's
+/// `pdftotext -layout` when it is installed (page breaks are the outline);
+/// never the page images.
+struct FetchPage {
+    inner: Fetch,
+    /// Where pages are saved.
+    dir: PathBuf,
+}
+
+/// The folder under the config dir that fetched pages are saved to.
+pub const FETCHED_DIR: &str = "fetched";
+/// How much of the text the first reply carries.
+pub const FETCH_HEAD: usize = 6_000;
+/// The most one call returns, whatever `length` asks (the old whole
+/// window).
+pub const FETCH_MAX_LENGTH: usize = 16_000;
+/// A saved page younger than this answers an `offset` call without a
+/// second fetch.
+const FETCH_CACHE_SECS: u64 = 60 * 60;
+/// How many outline entries at most: past this, a page's headings are
+/// its own text to read.
+const OUTLINE_MAX: usize = 80;
+
+impl FetchPage {
+    fn in_dir(dir: PathBuf) -> Self {
+        Self {
+            inner: Fetch::default(),
+            dir,
+        }
+    }
+}
 
 /// The sentence added to a shell verdict here and nowhere else.
 const SHELL_ENGINE_HINT: &str = " On this engine, try WebFetch on the same URL: sites that \
@@ -395,28 +436,239 @@ fn with_engine_hint(err: String) -> String {
     }
 }
 
+/// A stable file name for a URL: FNV-1a over its bytes, hex. Not a
+/// security boundary — a name the second call finds the first call's
+/// file by.
+pub fn page_file_stem(url: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in url.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{h:016x}")
+}
+
+/// One outline entry: a heading (or a PDF page), where it is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutlineEntry {
+    pub line: usize,
+    pub offset: usize,
+    pub text: String,
+}
+
+/// The outline of a saved text: markdown headings (`html_to_text` writes
+/// `#`s for `<h1>`–`<h6>`) with their 1-based line and 0-based character
+/// offset; for a PDF's text, its page breaks (`pdftotext` writes a form
+/// feed between pages). Capped at [`OUTLINE_MAX`].
+pub fn outline(text: &str) -> Vec<OutlineEntry> {
+    let mut out = Vec::new();
+    let mut offset = 0usize;
+    let mut page = 1usize;
+    for (i, line) in text.split('\n').enumerate() {
+        let trimmed = line.trim_start();
+        if let Some(rest) = trimmed.strip_prefix('#')
+            && let Some(title) = rest.trim_start_matches('#').strip_prefix(' ')
+        {
+            let level = trimmed.len() - rest.len() + rest.len() - rest.trim_start_matches('#').len();
+            let title: String = title.chars().take(90).collect();
+            out.push(OutlineEntry {
+                line: i + 1,
+                offset,
+                text: format!("{} {}", "#".repeat(level), title.trim()),
+            });
+        } else if line.contains('\u{c}') {
+            page += 1;
+            let first: String = line.replace('\u{c}', "").trim().chars().take(60).collect();
+            out.push(OutlineEntry {
+                line: i + 1,
+                offset,
+                text: format!("page {page}{}", if first.is_empty() { String::new() } else { format!(" · {first}") }),
+            });
+        }
+        if out.len() >= OUTLINE_MAX {
+            break;
+        }
+        offset += line.chars().count() + 1;
+    }
+    out
+}
+
+/// The pointer reply: header, the saved path with the text's size, the
+/// outline, the window from `offset` of up to `length` characters, and
+/// how to read the rest. Pure over its inputs.
+pub fn pointer_reply(
+    header: &str,
+    path: &Path,
+    text: &str,
+    offset: usize,
+    length: usize,
+) -> Result<String, String> {
+    let total = text.chars().count();
+    let lines = text.split('\n').count();
+    if offset > 0 && offset >= total {
+        return Err(format!(
+            "offset {offset} is past the end of the page, which is {total} characters long \
+             (saved at {})",
+            path.display()
+        ));
+    }
+    let length = length.clamp(1, FETCH_MAX_LENGTH);
+    let start = text.char_indices().nth(offset).map(|(i, _)| i).unwrap_or(0);
+    let rest = &text[start..];
+    let shown: String = rest.chars().take(length).collect();
+    let end = offset + shown.chars().count();
+    let mut out = format!(
+        "{header} — {total} characters, {lines} lines, saved to {}\n",
+        path.display()
+    );
+    if offset == 0 {
+        let o = outline(text);
+        if !o.is_empty() {
+            out.push_str("\nOutline (line · character offset):\n");
+            for e in &o {
+                out.push_str(&format!("  L{} · c{}  {}\n", e.line, e.offset, e.text));
+            }
+        }
+    }
+    if offset > 0 {
+        out.push_str(&format!("\n(characters {offset}–{end} of {total})\n"));
+    }
+    out.push('\n');
+    out.push_str(&shown);
+    if end < total {
+        out.push_str(&format!(
+            "\n\n… (showing characters {offset}–{end} of {total}). Read the section you need, \
+             not the whole: fetch_page again with offset=<character> and length (up to \
+             {FETCH_MAX_LENGTH}) from the outline above, or Read {} with offset/limit in lines.",
+            path.display()
+        ));
+    }
+    Ok(out)
+}
+
+/// `pdftotext`, wherever Homebrew or a package put it; `None` when it is
+/// not installed.
+fn pdftotext_binary() -> Option<PathBuf> {
+    for candidate in ["/opt/homebrew/bin/pdftotext", "/usr/local/bin/pdftotext", "/usr/bin/pdftotext"] {
+        let p = PathBuf::from(candidate);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|d| d.join("pdftotext"))
+        .find(|p| p.is_file())
+}
+
+/// A PDF's text through `pdftotext -layout`, or why not.
+async fn pdf_text(binary: &Path, pdf: &Path, txt: &Path) -> Result<String, String> {
+    let out = tokio::process::Command::new(binary)
+        .arg("-layout")
+        .arg(pdf)
+        .arg(txt)
+        .output()
+        .await
+        .map_err(|e| format!("pdftotext could not run: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "pdftotext failed ({}): {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    std::fs::read_to_string(txt).map_err(|e| format!("cannot read the extracted text: {e}"))
+}
+
 #[async_trait::async_trait]
 impl Tool for FetchPage {
     fn effect(&self) -> Effect {
-        self.0.effect()
+        self.inner.effect()
     }
 
     fn def(&self) -> ToolDef {
-        let inner = self.0.def();
         ToolDef {
             name: "fetch_page".into(),
-            description: format!(
-                "The whole page, not a summary; use this, not WebFetch, to read an article — \
-                 unless it reports the page as a JavaScript shell or returns only a title, \
-                 when WebFetch on the same URL may be served the article. {}",
-                inner.description
-            ),
-            input_schema: inner.input_schema,
+            description: "The whole page, saved to a file and read by pointer; use this, not \
+                 WebFetch, to read an article — unless it reports the page as a JavaScript \
+                 shell or returns only a title, when WebFetch on the same URL may be served \
+                 the article. The reply is the page's outline (each heading with its line and \
+                 character offset), the first 6,000 characters, and the path the whole text \
+                 was saved to. Read the section you need rather than the whole document: call \
+                 again with offset (a character position from the outline) and length (up to \
+                 16,000), or Read the saved file with offset/limit in lines. A PDF is saved \
+                 and its text extracted the same way (never its page images). This call \
+                 leaves the machine: the URL is sent to whoever serves it, so do not put \
+                 anything from the workspace in a query string."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "url": { "type": "string", "description": "Absolute http or https URL to fetch." },
+                    "offset": { "type": "integer", "description": "Character position to start from (from the outline); 0 is the head. A call with an offset reads the saved copy, no second fetch." },
+                    "length": { "type": "integer", "description": "How many characters to return, up to 16000; the first call returns 6000." }
+                },
+                "required": ["url"]
+            }),
         }
     }
 
     async fn call(&self, input: Value, cancel: &CancellationToken) -> Result<String, String> {
-        self.0.call(input, cancel).await.map_err(with_engine_hint)
+        let url = input["url"].as_str().unwrap_or("").trim().to_string();
+        if url.is_empty() {
+            return Err("url is empty".into());
+        }
+        let offset = input["offset"].as_u64().unwrap_or(0) as usize;
+        let length = input["length"]
+            .as_u64()
+            .map(|n| n as usize)
+            .unwrap_or(if offset == 0 { FETCH_HEAD } else { FETCH_MAX_LENGTH });
+        let stem = page_file_stem(&url);
+        let txt = self.dir.join(format!("{stem}.txt"));
+        let head = self.dir.join(format!("{stem}.head"));
+        // A saved copy answers a call for a later section without a
+        // second fetch.
+        let cached = std::fs::metadata(&txt)
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age.as_secs() < FETCH_CACHE_SECS);
+        if offset > 0 && cached
+            && let Ok(text) = std::fs::read_to_string(&txt)
+        {
+            let header = std::fs::read_to_string(&head)
+                .unwrap_or_else(|_| format!("fetched {url} (saved copy)"));
+            return pointer_reply(header.trim(), &txt, &text, offset, length);
+        }
+        let fetched = self
+            .inner
+            .fetch(&url, cancel)
+            .await
+            .map_err(with_engine_hint)?;
+        let header = fetched.header();
+        std::fs::create_dir_all(&self.dir).map_err(|e| format!("cannot save the page: {e}"))?;
+        let text = match fetched.body {
+            crate::tools::FetchedBody::Text(text) => text,
+            crate::tools::FetchedBody::Pdf(bytes) => {
+                let pdf = self.dir.join(format!("{stem}.pdf"));
+                std::fs::write(&pdf, &bytes).map_err(|e| format!("cannot save the PDF: {e}"))?;
+                let Some(binary) = pdftotext_binary() else {
+                    return Err(format!(
+                        "{} served a PDF ({} bytes), saved to {}. No text extractor is installed \
+                         on this machine (poppler's pdftotext), so its text cannot be read here; \
+                         tell the user the PDF is saved at that path and that `brew install \
+                         poppler` lets Nightloom read PDFs.",
+                        fetched.landed,
+                        bytes.len(),
+                        pdf.display()
+                    ));
+                };
+                pdf_text(&binary, &pdf, &txt).await?
+            }
+        };
+        let _ = std::fs::write(&txt, &text);
+        let _ = std::fs::write(&head, &header);
+        pointer_reply(&header, &txt, &text, offset, length)
     }
 }
 
@@ -732,6 +984,97 @@ mod tests {
     use crate::observe;
     use nightloom_core::{ContentBlock, Session, Usage};
     use std::fs;
+
+    // Read by pointer (nightshift backlog 165, pass 2, 2026-09-22).
+
+    /// The outline: headings with their 1-based line and 0-based character
+    /// offset (characters, not bytes — the offsets are what `offset` takes),
+    /// a PDF's page breaks the same way, and a cap.
+    #[test]
+    fn the_outline_lists_headings_and_pdf_pages_by_line_and_character() {
+        let text = "# Title\nIntro — with a dash.\n## Part one\nbody\n### Sub\nmore\n";
+        let o = outline(text);
+        assert_eq!(
+            o.iter().map(|e| (e.line, e.offset, e.text.as_str())).collect::<Vec<_>>(),
+            vec![(1, 0, "# Title"), (3, 29, "## Part one"), (5, 46, "### Sub")]
+        );
+        // The dash is one character and three bytes: offsets count characters.
+        assert_eq!(text.chars().nth(29), Some('#'));
+        let pdf = "first page\ntext\n\u{c}Second page starts here\nmore\n\u{c}\n";
+        let o = outline(pdf);
+        assert_eq!(
+            o.iter().map(|e| (e.line, e.text.as_str())).collect::<Vec<_>>(),
+            vec![(3, "page 2 · Second page starts here"), (5, "page 3")]
+        );
+        let many: String = (0..200).map(|i| format!("# h{i}\n")).collect();
+        assert_eq!(outline(&many).len(), OUTLINE_MAX);
+        assert!(outline("no headings\nat all\n").is_empty());
+    }
+
+    /// The reply: the head with the outline and the saved path, a later
+    /// section without the outline, the cap on `length`, and the end.
+    #[test]
+    fn the_pointer_reply_carries_the_path_the_outline_and_one_window() {
+        let path = Path::new("/tmp/fetched/abc.txt");
+        let body: String = (0..40).map(|i| format!("## Section {i}\n{}\n", "x".repeat(500))).collect();
+        let head = pointer_reply("fetched https://e.x/p (text/html)", path, &body, 0, FETCH_HEAD).unwrap();
+        assert!(head.starts_with("fetched https://e.x/p (text/html) — "), "{head}");
+        assert!(head.contains("saved to /tmp/fetched/abc.txt"));
+        assert!(head.contains("Outline (line · character offset):\n  L1 · c0  ## Section 0\n"));
+        assert!(head.contains("L3 · c514  ## Section 1"));
+        assert!(head.contains("showing characters 0–6000 of"), "{head}");
+        assert!(head.contains("Read /tmp/fetched/abc.txt with offset/limit"));
+        // Well under the old 16 KiB window: the outline plus the head.
+        assert!(head.len() < 6_000 + 3_000, "{}", head.len());
+        let later = pointer_reply("h", path, &body, 514, 100).unwrap();
+        assert!(!later.contains("Outline"));
+        assert!(later.contains("(characters 514–614 of"));
+        assert!(later.contains("## Section 1\n"));
+        let capped = pointer_reply("h", path, &body, 0, 1_000_000).unwrap();
+        assert!(capped.contains(&format!("showing characters 0–{FETCH_MAX_LENGTH} of")));
+        let end = pointer_reply("h", path, "short", 0, FETCH_HEAD).unwrap();
+        assert!(end.ends_with("\n\nshort"), "{end}");
+        assert!(pointer_reply("h", path, "short", 9, 10).unwrap_err().contains("past the end"));
+        assert_eq!(page_file_stem("https://e.x/p"), page_file_stem("https://e.x/p"));
+        assert_ne!(page_file_stem("https://e.x/p"), page_file_stem("https://e.x/q"));
+    }
+
+    /// The measurement for the 165 pass-2 report, on the network and on a
+    /// PDF Stuart 9's agents read: `cargo test -p nightloom-service --
+    /// --ignored measure_read_by_pointer --nocapture`. Prints before/after.
+    #[tokio::test]
+    #[ignore]
+    async fn measure_read_by_pointer_on_a_real_page_and_a_real_pdf() {
+        let dir = std::env::temp_dir().join(format!("nightloom-165-measure-{}", uuid::Uuid::new_v4()));
+        let tool = FetchPage::in_dir(dir.clone());
+        let cancel = CancellationToken::new();
+        let url = "https://plato.stanford.edu/entries/scientific-underdetermination/";
+        let reply = tool.call(json!({ "url": url }), &cancel).await.unwrap();
+        let saved = fs::read_to_string(dir.join(format!("{}.txt", page_file_stem(url)))).unwrap();
+        println!(
+            "PAGE {url}\n  whole text {} chars ({} calls of 16 KiB before)\n  first reply {} chars; outline entries {}",
+            saved.chars().count(),
+            saved.len().div_ceil(16 * 1024),
+            reply.chars().count(),
+            outline(&saved).len()
+        );
+        let later = tool.call(json!({ "url": url, "offset": 20000, "length": 4000 }), &cancel).await.unwrap();
+        println!("  a section call (offset 20000, length 4000): {} chars, from the saved copy", later.chars().count());
+        let pdf = Path::new("/Users/swaraagsistla/.claude/projects/-Users-swaraagsistla-Documents-ComputerScience-Nightloom-projects-Value-Generalization/0a35e04d-4fed-4a67-bfcb-79b476f208c6/tool-results/webfetch-1789698329528-z3ehym.pdf");
+        if pdf.is_file() && let Some(bin) = pdftotext_binary() {
+            let txt = dir.join("z3ehym.txt");
+            let text = pdf_text(&bin, pdf, &txt).await.unwrap();
+            let reply = pointer_reply("fetched (pdf)", &txt, &text, 0, FETCH_HEAD).unwrap();
+            println!(
+                "PDF {} bytes\n  extracted text {} chars, {} pages\n  first reply {} chars",
+                fs::metadata(pdf).unwrap().len(),
+                text.chars().count(),
+                text.matches('\u{c}').count() + 1,
+                reply.chars().count()
+            );
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     /// A config dir with one registered project that has one logged chat.
     /// Returns the config dir and the project's id.

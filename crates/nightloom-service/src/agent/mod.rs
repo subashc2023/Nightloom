@@ -925,11 +925,14 @@ impl AgentSpec {
             }
         }
         // The subagent brief's hook (backlog 152), a third `PreToolUse`
-        // entry in the same array, on `Agent|Task` alone: every position
-        // but the Chat policy's (which refuses the call) gets it, once the
-        // shell has pointed it at the chat's directory.
+        // entry in the same array. ~~On `Agent|Task` alone: every position
+        // but the Chat policy's (which refuses the call)~~ — since pass 2
+        // of backlog 165 (2026-09-22) the entry matches every tool and is
+        // registered in every position, the Chat policy's and a council
+        // seat's included: the same hook enforces the message's budget on
+        // each call, and only a spawn goes on to the brief (which the
+        // policy's own deny still wins over, backlog 147's measurement).
         if let Some(brief) = &self.brief
-            && !self.chat_policy
             && !brief.dir.as_os_str().is_empty()
         {
             let hooks = settings
@@ -1288,9 +1291,16 @@ impl ClaudeCodeAgent {
         on_event: &mut (dyn FnMut(TurnEvent) + Send),
     ) -> Result<AgentOutcome, AgentError> {
         let input = input.into();
-        // A fresh turn, a fresh spawn count for the Agent hook's cap.
+        // A fresh turn, a fresh spawn count for the Agent hook's cap —
+        // and, since pass 2 of backlog 165, the message's budget ledger
+        // started from the window reading on hand (or continued, for the
+        // chair of a council whose seats just ran).
         if let Some(brief) = &self.spec.brief {
-            brief::reset_spawns(&brief.dir);
+            brief::begin_turn(
+                &brief.dir,
+                &self.spec.subagent_limits.unwrap_or_default(),
+                brief::TurnPhase::Turn,
+            );
         }
         let mut translator = match &self.refused {
             Some((session, call)) if self.spec.resume.as_deref() == Some(session) => {
@@ -2594,8 +2604,10 @@ mod tests {
         s.resume = Some("sid".into());
         let aside = s.aside().unwrap();
         assert!(aside.brief.is_none());
-        // Under the Chat policy the entry is withheld: Agent is refused
-        // there, and a brief for a call that never runs is noise.
+        // ~~Under the Chat policy the entry is withheld~~ — since pass 2
+        // of backlog 165 it rides there too, beside the policy's own: the
+        // hook is the budget's on every tool, and the policy's deny on
+        // `Agent` still wins (backlog 147's measurement).
         let mut s = spec();
         s.chat_policy = true;
         s.brief = Some(BriefSpec {
@@ -2603,8 +2615,8 @@ mod tests {
             ..brief.clone()
         });
         let a = s.args("hi");
-        assert_eq!(brief_entries(&a), 0);
-        assert_eq!(entries(&a).len(), 1, "the policy's own entry stays");
+        assert_eq!(brief_entries(&a), 1);
+        assert_eq!(entries(&a).len(), 2, "the policy's own entry and the budget's");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -2256,3 +2256,64 @@ Tests: `brief.rs` (round trip and partial file, the environment, slow then
 stop with the reset time and the freshest/current rules, a simulated 92%
 window refusing and 75% holding a turn to two, the day count across turns
 and its restart); `catalog.test.ts` (`readLimits`).
+
+### Pass 2 — the budget enforced mid-flight, and the council under it (2026-09-22)
+
+The Stuart 9 diagnosis (nightshift `stuart9-usage-diagnosis-2026-09-22.md`):
+six subagents took the window from under 50 % to 100 % in eight minutes, and
+the limits above only looked at the window *when a subagent was launched*.
+His answers (blockers 278–280): **35 %** of the window a message, **4** at
+once, subagents on **the chat's own model** with Sonnet as a switch.
+
+- **The budget (`budget_pct`, 35).** The one hook process (`--subagent-hook`)
+  is registered on **every tool** now (`BRIEF_MATCHER` is `.*`) and in every
+  position — the Chat policy's and a council seat's included — so it sees each
+  call of the main thread, its subagents and the seats (measured on 2.1.263:
+  the hook's stdin for a subagent's `Read` carries `agent_id` and
+  `agent_type`, and its deny reached the child). A message's ledger,
+  `turn-budget.json` beside the brief (`TurnBudget`), starts with
+  `begin_turn` — the window reading on hand, no `/usage` run, so no latency
+  on the turn; when none is on hand the first hook reading pins the start,
+  which can only understate the spend — and every hook call records the
+  latest reading under the file lock (`note_reading`). `budget_verdict`
+  refuses a call once the window is past `stop_at`, or once latest − start
+  reaches the budget, with words that say to stop and report (a reply needs
+  no tool) and not to retry. The window reading is the freshest of the turn's
+  own `rate_limit_event`s (the wire file, seconds old during a turn) and the
+  gauge, refreshed through `/usage` when over two minutes old — under a
+  **cross-process** throttle now (`plan_usage::read_fresh_shared`: a stamp
+  and a lock file in the temp dir, one run a minute machine-wide, and a hook
+  that finds the lock held uses the stamp rather than waiting). How far a
+  burst can overshoot: the gauge moved 40 → 41 % in 3½ minutes under two
+  agents' turns (sampled every ~23 s), and Stuart 9's six moved it ~6.5
+  points a minute; with 4 at once (~4.4 points a minute at that rate) and a
+  reading at most ~2 minutes old, the overshoot past 35 % is bounded by
+  roughly 9 points, typically far less since the wire reading refreshes on
+  every response.
+- **Fewer at once:** `concurrent` 20 → 4 (the CLI's environment, as before).
+- **The subagents' model (`model`, `chat` | `sonnet`):** the rail's *Subagents
+  use* select; the hook sets the spawn's `model` input to `sonnet` unless the
+  parent asked for `haiku`.
+- **The meter:** the Tauri command `turn_budget(session)` reads the ledger
+  (by session id — the running turn holds the session lock); the front end
+  polls it every 5 s while busy and once at the turn's end
+  (`app.turnBudget`, `budget.ts`). Shown as `spent 4% of 35%` on the top
+  bar's agents chip (`stopped · 35% of 35%` in red once refused), in the
+  Running-tasks header's caps line, and — as a patch note in the pass-2
+  report, since `Composer.svelte` was another builder's that day — beside
+  Queue and Stop. The hover says what the numbers are and that they are
+  account-wide.
+- **The council under the same budget:** `seat_spec` keeps the brief (its
+  hook is the budget's; the policy still refuses `Agent`), `run_seats`
+  starts the ledger in phase `seats` and marks `seats-done`, and the chair's
+  `run_turn` continues it (a `seats-done` older than ten minutes is not
+  continued); `send_agent` points the ask directory *before* the seats. The
+  popover shows the line *Budget: 35% of the 5-hour window for this message
+  — the seats and the chair together · window now 21%, 35% before the 85%
+  stop line* above *Send to the council*.
+
+Tests: `brief.rs` (the verdict's two lines and the zero budget; the chair's
+continuation; every tool judged through the hook with the ledger's latest
+never moving back; the Sonnet switch); `plan_usage.rs` (the stamp);
+`council.rs` (the seat keeps the brief); `agent/mod.rs` (the entry rides the
+Chat policy); `catalog.test.ts`, `budget.test.ts`.

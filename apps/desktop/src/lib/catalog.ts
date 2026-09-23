@@ -722,14 +722,28 @@ export interface SubagentLimits {
   slow_at: number;
   slow_to: number;
   stop_at: number;
+  /** Pass 2 (2026-09-22): the share of the 5-hour window one message —
+   *  the main thread plus every subagent and council seat — may spend
+   *  before every further tool call is refused with "stop and report".
+   *  Blocker 278, his answer: 35. */
+  budget_pct: number;
+  /** Pass 2: the model subagents run on. Blocker 280: the chat's own. */
+  model: SubagentModel;
 }
 
+/** `chat` leaves a spawn's model as the parent wrote it; `sonnet` sets it
+ *  (unless the parent asked for haiku). */
+export type SubagentModel = "chat" | "sonnet";
+export const SUBAGENT_MODELS: readonly SubagentModel[] = ["chat", "sonnet"];
+
 /** The defaults, the backend's (`brief::SubagentLimits::default`): the
- *  6 of the first cap; the CLI's own 20 at once and depth 3; no day cap
- *  (0); slow from 70% to 4, stop at 85% (blocker 271, his answer). */
+ *  6 of the first cap; ~~the CLI's own 20 at once~~ 4 at once (blocker
+ *  279) and depth 3; no day cap (0); slow from 70% to 4, stop at 85%
+ *  (blocker 271, his answer); 35% of the window a message (278); the
+ *  chat's own model (280). */
 export const DEFAULT_LIMITS: SubagentLimits = Object.freeze({
   per_turn: 6,
-  concurrent: 20,
+  concurrent: 4,
   depth: 3,
   // His answer to blocker 271 (2026-09-18): no day cap (0), slow to 4,
   // stop at 85 — ~~30 · 2 · 90~~.
@@ -737,17 +751,25 @@ export const DEFAULT_LIMITS: SubagentLimits = Object.freeze({
   slow_at: 70,
   slow_to: 4,
   stop_at: 85,
+  budget_pct: 35,
+  model: "chat",
 }) as SubagentLimits;
 
-/** A saved limits object, each field a whole number in range or the default. */
+/** A saved limits object, each number a whole number in range or the
+ *  default; the model one of the two words or the default. */
 export function readLimits(v: unknown): SubagentLimits {
   const out: SubagentLimits = { ...DEFAULT_LIMITS };
   if (v === null || typeof v !== "object") return out;
   const m = v as Record<string, unknown>;
   for (const k of Object.keys(DEFAULT_LIMITS) as (keyof SubagentLimits)[]) {
+    if (k === "model") {
+      const s = m[k];
+      if (s === "chat" || s === "sonnet") out.model = s;
+      continue;
+    }
     const n = m[k];
     if (typeof n !== "number" || !Number.isInteger(n) || n < 0) continue;
-    if ((k === "slow_at" || k === "stop_at") && n > 100) continue;
+    if ((k === "slow_at" || k === "stop_at" || k === "budget_pct") && n > 100) continue;
     out[k] = n;
   }
   return out;

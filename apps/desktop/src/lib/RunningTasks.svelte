@@ -19,6 +19,7 @@
    */
   import { app, openContent, subagentRunning, type SubagentRow } from "./state.svelte";
   import { fmtTokens } from "./tokens";
+  import { budgetChip, budgetTitle } from "./budget";
   import Icon from "./Icon.svelte";
 
   /** A ticking clock for the elapsed column while any child runs. */
@@ -33,13 +34,15 @@
   const rows = $derived([...app.subagents].reverse());
   const running = $derived(app.subagents.filter(subagentRunning).length);
   /** The caps in force (backlog 165): this turn's spawns of the per-turn
-   *  cap — lowered past `slow_at` of the window — and the window itself. */
+   *  cap — lowered past `slow_at` of the window — the window itself, and
+   *  (pass 2) the message's budget meter: `spent 4% of 35%`. */
   function capsLine(): string {
     const l = app.draft.agentLimits;
     const pct = app.planUsage?.five_hour ?? null;
     const cap = pct !== null && pct >= l.slow_at ? Math.min(l.per_turn, l.slow_to) : l.per_turn;
     const window = pct === null ? "" : ` · window ${pct}%${pct >= l.stop_at ? " · spawns refused" : pct >= l.slow_at ? " · slowed" : ""}`;
-    return ` · ${rows.length} of ${cap}${window}`;
+    const budget = app.turnBudget ? ` · ${budgetChip(app.turnBudget)}` : "";
+    return ` · ${rows.length} of ${cap}${window}${budget}`;
   }
 
   function elapsed(r: SubagentRow): string {
@@ -94,9 +97,9 @@
 <div class="modal" role="dialog" aria-label="Running tasks">
   <div class="pane-head">
     <h2 class="pane-title">Running tasks</h2>
-    <span class="slug">
+    <span class="slug" title={budgetTitle(app.turnBudget)}>
       {#if rows.length === 0}
-        no subagents in this chat yet
+        no subagents in this chat yet{app.turnBudget ? ` · ${budgetChip(app.turnBudget)}` : ""}
       {:else}
         {rows.length} agent{rows.length === 1 ? "" : "s"}{running > 0 ? ` · ${running} running` : " · all done"}{capsLine()}
       {/if}

@@ -169,6 +169,32 @@ with that sentence (`FetchPage::call` appends it to an error carrying
 `tools::SHELL_PHRASE`): the inner tool cannot name `WebFetch`, because on the
 API engine there is none.
 
+**Read by pointer (2026-09-22, nightshift backlog 165, pass 2).** Until then
+`fetch_page` returned the page 16 KiB at a time (the inner tool's window), and
+an agent that wanted a long document paged it whole into its context: the
+Stuart 9 diagnosis counted 2.7 M characters of pages across six subagents,
+each re-read by every later request. Now the whole text is **saved** — under
+the config dir at `fetched/<hash of the URL>.txt` (`FETCHED_DIR`,
+`page_file_stem`) — and the reply is a **pointer**: the header, the path with
+the text's size, an **outline** (every markdown heading `html_to_text` wrote
+for an `<h1>`–`<h6>`, with its 1-based line and 0-based character offset;
+`outline`, capped at 80) and the first **6,000 characters** (`FETCH_HEAD`).
+The rest is asked for by section: `offset` (a character position from the
+outline) and `length` (up to 16,000, `FETCH_MAX_LENGTH`) — a call with an
+offset reads the saved copy for an hour, no second fetch — or the CLI's
+`Read` on the path with a line range. A **PDF**, refused before ("ask the user
+to attach it"), is saved beside it and its text extracted with poppler's
+`pdftotext -layout` when that is installed (`/opt/homebrew/bin` and PATH are
+looked in); the form feeds between pages are its outline (`page 3 · first
+words`), never the page images. Without `pdftotext` the reply says where the
+PDF was saved and what to install. Measured on Stuart 9's own documents
+(`mcp_server::tests::measure_read_by_pointer…`, `--ignored`): the SEP entry
+on underdetermination, 83,163 characters (6 windows before; 65,684 characters
+actually taken in 4), is a 7,602-character reply with an 18-entry outline; a
+449 KB PDF that cost 714,966 characters as page images is 160,023 characters
+of text in 42 pages and an 8,839-character reply. `pointer_reply` and
+`outline` are pure and pinned.
+
 `--project <id>` names the open project: its session directory is the default
 search scope and its name is what `remember` stamps as `source`; without it,
 the unfiled chats and no source. An id the registry does not know is an error

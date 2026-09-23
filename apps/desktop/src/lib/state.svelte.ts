@@ -103,6 +103,7 @@ import type {
   SessionEvent,
   SessionMeta,
   TodoItem,
+  TurnBudget,
   TurnEvent,
   Usage,
 } from "./types";
@@ -726,6 +727,14 @@ export const app = $state({
    * the chat on screen.
    */
   parked: null as Parked<Segment> | null,
+  /**
+   * The running message's budget ledger (nightshift backlog 165, pass 2):
+   * the hook's `turn-budget.json`, read every `TURN_BUDGET_EVERY_MS`
+   * while a Claude Code turn runs and once as it ends, for the meter on
+   * the agents chip, the composer's busy row and Running tasks. Null
+   * before a chat's first turn.
+   */
+  turnBudget: null as TurnBudget | null,
   /**
    * The plan's five-hour and seven-day percentages for the top bar's plan
    * chip on the Claude Code engine (nightshift backlog 073). Read from two
@@ -1916,6 +1925,39 @@ function startDailyClock(): void {
  * daily clock; a provider connection makes each tick a no-op.
  */
 export const PLAN_USAGE_LIVE_EVERY_MS = 5 * 60_000;
+
+/**
+ * The message's budget meter (nightshift backlog 165, pass 2): the ledger
+ * the hook writes on every tool call, read every five seconds while a
+ * Claude Code turn runs (a file read, no `/usage`), and once as the turn
+ * ends so the final figure stays on the chip.
+ */
+export const TURN_BUDGET_EVERY_MS = 5_000;
+let budgetPoll: ReturnType<typeof setInterval> | null = null;
+export async function readTurnBudget(session: string | null): Promise<void> {
+  if (!session || app.connection?.engine !== "claude-code") return;
+  try {
+    app.turnBudget = await api.turnBudget(session);
+  } catch {
+    // A failed read keeps the last ledger.
+  }
+}
+function startBudgetPoll(session: string | null): void {
+  if (budgetPoll) clearInterval(budgetPoll);
+  budgetPoll = null;
+  app.turnBudget = null;
+  if (!session || app.connection?.engine !== "claude-code") return;
+  void readTurnBudget(session);
+  budgetPoll = setInterval(() => {
+    if (!app.busy) {
+      if (budgetPoll) clearInterval(budgetPoll);
+      budgetPoll = null;
+      return;
+    }
+    void readTurnBudget(session);
+  }, TURN_BUDGET_EVERY_MS);
+}
+
 let planUsageClock: ReturnType<typeof setInterval> | null = null;
 function startPlanUsageClock(): void {
   if (planUsageClock) return;
@@ -4736,6 +4778,9 @@ async function sendAgent(
   app.liveUsage = null;
   app.turnSeq += 1;
   app.busy = true;
+  // The budget meter (backlog 165, pass 2) follows this chat's ledger
+  // while the turn runs; a chat not yet created has no directory to read.
+  startBudgetPoll(app.activeSessionId);
   let failed: string | null = null;
   try {
     const res = await api.sendAgent(
@@ -4792,6 +4837,9 @@ async function sendAgent(
       : null;
     const browsed = app.parked !== null;
     await settleTurnView(pendingKey);
+    // The meter's final figure, now that the chat exists and the hook's
+    // last write is in (backlog 165, pass 2).
+    void readTurnBudget(ranIn ?? app.activeSessionId);
     void refreshSessions();
     void refreshNotes();
     // The plan chip follows the turn (nightshift backlog 073) — through

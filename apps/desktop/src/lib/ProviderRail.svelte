@@ -27,6 +27,7 @@
   import {
     AGENT_MODELS,
     MODEL_KEYS,
+    SUBAGENT_MODELS,
     formatWindow,
     modelsFor,
     providerLabel,
@@ -870,25 +871,36 @@
       <div class="row limits">
         <span class="lbl">Subagent limits</span>
         <Hint
-          text="Per turn: how many subagents one reply may spawn (Nightloom's hook; the seventh is refused in words). At once and depth: Claude Code's own concurrency and nesting caps, passed to it. Per day: a running count for this chat across turns. Slow at / to: past this share of the 5-hour window, the per-turn cap drops to this number. Stop at: past this share every spawn is refused with the reset time. The window is the freshest of the gauge and the last turn's own reading."
+          text="Per turn: how many subagents one reply may spawn (Nightloom's hook; the seventh is refused in words). At once and depth: Claude Code's own concurrency and nesting caps, passed to it. Per day: a running count for this chat across turns. Slow at / to: past this share of the 5-hour window, the per-turn cap drops to this number. Stop at: past this share every spawn — and, mid-flight, every tool call — is refused with the reset time. Budget: the share of the 5-hour window one message may spend, counting the main thread, every subagent and every council seat; past it every further tool call is refused with 'stop and report', and the chip in the top bar shows the spend as it runs. The window is the freshest of the gauge and the turn's own readings. Subagents use: the chat's own model, or Sonnet for read-heavy scans."
         />
       </div>
       <div class="limits-grid">
-        {#each [["per_turn", "per turn"], ["concurrent", "at once"], ["depth", "depth"], ["per_day", "per day"], ["slow_at", "slow at %"], ["slow_to", "to"], ["stop_at", "stop at %"]] as [k, label] (k)}
+        {#each [["per_turn", "per turn"], ["concurrent", "at once"], ["depth", "depth"], ["per_day", "per day"], ["slow_at", "slow at %"], ["slow_to", "to"], ["stop_at", "stop at %"], ["budget_pct", "budget %"]] as [k, label] (k)}
           <label class="limit">
             <span class="limit-k">{label}</span>
             <input
               type="number"
               min="0"
-              max={k === "slow_at" || k === "stop_at" ? 100 : undefined}
+              max={k === "slow_at" || k === "stop_at" || k === "budget_pct" ? 100 : undefined}
               step="1"
-              bind:value={app.draft.agentLimits[k as keyof typeof app.draft.agentLimits]}
+              bind:value={app.draft.agentLimits[k as "per_turn" | "concurrent" | "depth" | "per_day" | "slow_at" | "slow_to" | "stop_at" | "budget_pct"]}
               onchange={apply}
               disabled={locked}
             />
           </label>
         {/each}
       </div>
+      <!-- The subagents' model (backlog 165, pass 2; blocker 280, his
+           answer: the chat's own). Applied by the hook as the spawn's
+           `model` input, so it holds for every subagent of the chat. -->
+      <label class="row limits-model">
+        <span class="lbl">Subagents use</span>
+        <select class="limits-model-select" bind:value={app.draft.agentLimits.model} onchange={apply} disabled={locked} aria-label="subagents use">
+          {#each SUBAGENT_MODELS as m (m)}
+            <option value={m}>{m === "chat" ? "the chat's model" : "Sonnet 5 · read-heavy scans"}</option>
+          {/each}
+        </select>
+      </label>
       {#if !(app.draft.approval && app.draft.agentAsk)}
         <!-- Said rather than implied: the switch above is the familiar one
              and the gate behind it is not. Nightloom's approval prompt gates
@@ -1535,6 +1547,15 @@
   .limit input[type="number"] {
     width: 100%;
     min-width: 0;
+  }
+  /* The subagents' model (backlog 165, pass 2): one select on its row. */
+  .limits-model {
+    margin: 0 0 0.5rem;
+  }
+  .limits-model-select {
+    flex: 1;
+    min-width: 0;
+    font-size: 12px;
   }
   input[type="number"] {
     background: var(--paper);

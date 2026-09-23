@@ -316,7 +316,12 @@ pub fn read_fresh(max_age: std::time::Duration) -> PlanUsage {
             }
         }
     };
-    let after = read();
+    with_sample(sample, read(), chrono::Utc::now().timestamp_millis())
+}
+
+/// The run's figure over the files' when it is newer, with the reset
+/// times the files hold (the run's text has none machine-shaped).
+fn with_sample(sample: Option<Sample>, after: PlanUsage, now_ms: i64) -> PlanUsage {
     match sample {
         Some(s)
             if after
@@ -324,12 +329,13 @@ pub fn read_fresh(max_age: std::time::Duration) -> PlanUsage {
                 .map(|t| s.sampled_at_ms > t)
                 .unwrap_or(true) =>
         {
+            let age_ms = (now_ms - s.sampled_at_ms).max(0);
             PlanUsage {
                 five_hour: s.five_hour,
                 seven_day: s.seven_day.or(after.seven_day),
                 sampled_at_ms: Some(s.sampled_at_ms),
-                age_seconds: Some(0.0),
-                stale: false,
+                age_seconds: Some(age_ms as f64 / 1000.0),
+                stale: age_ms as u128 > STALE_AFTER.as_millis(),
                 five_hour_resets_at: after.five_hour_resets_at,
                 seven_day_resets_at: after.seven_day_resets_at,
                 source: "cli-usage".into(),
@@ -337,6 +343,102 @@ pub fn read_fresh(max_age: std::time::Duration) -> PlanUsage {
         }
         _ => after,
     }
+}
+
+// ---- the cross-process throttle (nightshift backlog 165, pass 2) -----------
+
+/// The last `/usage` run any process on this machine made: `<sampled-at
+/// unix ms> <five-hour %> <seven-day % or ->`, in the temp directory.
+/// The subagent hook is a fresh process per tool call, so
+/// [`LAST_REFRESH`] (a static) could not collapse a burst of hooks to
+/// one run; this file and [`REFRESH_LOCK`] do.
+pub const REFRESH_STAMP: &str = "nightloom-usage-stamp.txt";
+/// The lock a refreshing process holds; another that finds it held
+/// reads the stamp instead of waiting.
+pub const REFRESH_LOCK: &str = "nightloom-usage-refresh.lock";
+
+fn stamp_path() -> PathBuf {
+    std::env::temp_dir().join(REFRESH_STAMP)
+}
+
+/// `<at ms> <5h> <7d|->` → a sample, or none for a torn line.
+pub fn parse_stamp(line: &str) -> Option<Sample> {
+    let mut it = line.split_whitespace();
+    let at: i64 = it.next()?.parse().ok()?;
+    let five: u8 = it.next()?.parse().ok()?;
+    let week = it.next().and_then(|w| w.parse::<u8>().ok());
+    Some(Sample {
+        five_hour: Some(five),
+        seven_day: week,
+        sampled_at_ms: at,
+        five_hour_resets_at: None,
+        seven_day_resets_at: None,
+        source: "cli-usage",
+    })
+}
+
+pub fn format_stamp(s: &Sample) -> String {
+    format!(
+        "{} {} {}\n",
+        s.sampled_at_ms,
+        s.five_hour.unwrap_or(0),
+        s.seven_day.map(|w| w.to_string()).unwrap_or_else(|| "-".into())
+    )
+}
+
+fn read_stamp(path: &Path) -> Option<Sample> {
+    parse_stamp(&std::fs::read_to_string(path).ok()?)
+}
+
+/// [`read_fresh`] for a process that is one of many — the subagent hook
+/// (backlog 165, pass 2). The files when their newest sample is within
+/// `max_age`; else the stamp of the last run any process made, when
+/// within [`REFRESH_MIN_GAP`]; else one run under the lock, stamped for
+/// the others. A process that finds the lock held does not wait the ~12
+/// s: it uses the stamp however old, else the files. So a burst of hooks
+/// after a quiet minute costs one `/usage`, and none of them stalls.
+pub fn read_fresh_shared(max_age: std::time::Duration) -> PlanUsage {
+    let first = read();
+    let fresh_enough = first
+        .age_seconds
+        .map(|a| a <= max_age.as_secs_f64())
+        .unwrap_or(false);
+    if fresh_enough {
+        return first;
+    }
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let stamp = stamp_path();
+    let gap_ms = REFRESH_MIN_GAP.as_millis() as i64;
+    if let Some(s) = read_stamp(&stamp)
+        && now_ms - s.sampled_at_ms <= gap_ms
+    {
+        return with_sample(Some(s), first, now_ms);
+    }
+    let Ok(lock) = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(std::env::temp_dir().join(REFRESH_LOCK))
+    else {
+        return read_fresh(max_age);
+    };
+    if lock.try_lock().is_err() {
+        // Someone else is running it: what there is, now.
+        return with_sample(read_stamp(&stamp), first, now_ms);
+    }
+    // Under the lock, the stamp may have just been written by the holder
+    // before us.
+    if let Some(s) = read_stamp(&stamp)
+        && now_ms - s.sampled_at_ms <= gap_ms
+    {
+        return with_sample(Some(s), first, now_ms);
+    }
+    let sample = run_usage_command(now_ms);
+    if let Some(s) = &sample {
+        let _ = std::fs::write(&stamp, format_stamp(s));
+    }
+    drop(lock);
+    with_sample(sample, read(), now_ms)
 }
 
 fn home() -> Option<PathBuf> {
@@ -358,6 +460,43 @@ pub fn read() -> PlanUsage {
 
 #[cfg(test)]
 mod tests {
+    /// The cross-process stamp (backlog 165, pass 2): a run's sample round
+    /// trips through the one line every hook reads, a torn line is none,
+    /// and the merged reading carries the stamp's real age — a two-minute
+    /// stamp is not reported as taken now.
+    #[test]
+    fn the_refresh_stamp_round_trips_and_keeps_its_age() {
+        let s = super::Sample {
+            five_hour: Some(21),
+            seven_day: Some(67),
+            sampled_at_ms: 1_000_000,
+            five_hour_resets_at: None,
+            seven_day_resets_at: None,
+            source: "cli-usage",
+        };
+        let line = super::format_stamp(&s);
+        assert_eq!(line, "1000000 21 67\n");
+        assert_eq!(super::parse_stamp(&line), Some(s.clone()));
+        assert_eq!(super::parse_stamp("1000000 21 -").map(|s| s.seven_day), Some(None));
+        assert_eq!(super::parse_stamp("torn"), None);
+        let files = super::PlanUsage {
+            five_hour: Some(19),
+            sampled_at_ms: Some(500_000),
+            five_hour_resets_at: Some("2026-09-23T05:59:59Z".into()),
+            ..super::PlanUsage::default()
+        };
+        let merged = super::with_sample(Some(s.clone()), files.clone(), 1_120_000);
+        assert_eq!((merged.five_hour, merged.source.as_str()), (Some(21), "cli-usage"));
+        assert_eq!(merged.age_seconds, Some(120.0));
+        assert_eq!(merged.five_hour_resets_at.as_deref(), Some("2026-09-23T05:59:59Z"));
+        // A stamp older than the files yields to them.
+        let newer = super::PlanUsage {
+            sampled_at_ms: Some(2_000_000),
+            ..files
+        };
+        assert_eq!(super::with_sample(Some(s), newer, 2_000_001).five_hour, Some(19));
+    }
+
     /// Runs the real CLI (zero tokens, ~12 s): `cargo test -- --ignored live_usage`.
     #[test]
     #[ignore]

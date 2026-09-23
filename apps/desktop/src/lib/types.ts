@@ -499,6 +499,31 @@ export interface PlanUsage {
   source: "desktop" | "cli-cache" | "cli-usage" | "none" | "turn";
 }
 
+/**
+ * One message's budget ledger (nightshift backlog 165, pass 2,
+ * 2026-09-22): `turn-budget.json` in the chat's ask directory, started
+ * when the turn (or a council's seats) begins with the window reading on
+ * hand and updated by the subagent hook on every tool call of the main
+ * thread, its subagents and the seats. The meter in the top bar, the
+ * composer and Running tasks reads it (`turnBudget`, polled while busy).
+ * Account-wide figures: another chat's spend shows here too.
+ */
+export interface TurnBudget {
+  started_at_ms: number;
+  budget_pct: number;
+  stop_at: number;
+  start_pct: number | null;
+  latest_pct: number | null;
+  latest_at_ms: number | null;
+  resets_at: number | null;
+  /** `seats` while a council's seats run, `seats-done`, `turn`. */
+  phase: string;
+  /** The refusal, once the hook has refused a call under this ledger. */
+  stopped: string | null;
+  /** How many hook calls the ledger has seen. */
+  calls: number;
+}
+
 export interface UsageSummary {
   /** False with `reason` when the collector has never run on this machine. */
   available: boolean;

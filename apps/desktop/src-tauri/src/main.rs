@@ -2401,6 +2401,21 @@ async fn send_agent(
     let cancel = CancellationToken::new();
     *state.cancel.lock().unwrap() = cancel.clone();
 
+    // The Ask position's files live beside the chat's log, per chat
+    // (`agent::ask`): `<log dir>/ask/<chat id>/`. An ephemeral chat has no
+    // log and no Ask (`AgentSpec::apply_mode` drops it), so nothing to
+    // point at is the expected case there. Pointed *before* the council's
+    // seats since 2026-09-22 (nightshift backlog 165, pass 2): the seats
+    // start the message's budget ledger in this directory, so it has to
+    // be the chat's — on a chat's first turn it was still empty here.
+    let ask_dir = session
+        .log_path()
+        .and_then(|p| p.file_stem().map(|s| s.to_os_string()))
+        .map(|stem| log_dir.join("ask").join(stem));
+    if let Some(dir) = &ask_dir {
+        agent.set_ask_dir(dir.clone());
+    }
+
     // A council turn (nightshift backlog 149, 2026-09-17;
     // `nightloom_service::council`): the seats run first, in parallel,
     // each a fork of this chat's CLI session under its own model, their
@@ -2477,17 +2492,7 @@ async fn send_agent(
     if let Some(note) = switch_note {
         input.text = format!("{note}\n\n{}", input.text);
     }
-    // The Ask position's files live beside the chat's log, per chat
-    // (`agent::ask`): `<log dir>/ask/<chat id>/`. An ephemeral chat has no
-    // log and no Ask (`AgentSpec::apply_mode` drops it), so nothing to
-    // point at is the expected case there.
-    let ask_dir = session
-        .log_path()
-        .and_then(|p| p.file_stem().map(|s| s.to_os_string()))
-        .map(|stem| log_dir.join("ask").join(stem));
-    if let Some(dir) = &ask_dir {
-        agent.set_ask_dir(dir.clone());
-    }
+    // (The ask directory was pointed above, before the council's seats.)
     // The `context_status` file describes this chat before the turn, not
     // whichever chat wrote it last (review 2026-09-17 FC-d, backlog 134):
     // its own newest reading from the log, or no file at all for a chat
@@ -4483,6 +4488,25 @@ async fn provider_credits() -> Result<Vec<nightloom_service::credits::ProviderCr
     Ok(nightloom_service::credits::provider_credits().await)
 }
 
+/// The message's budget ledger for the live meter (nightshift backlog
+/// 165, pass 2): `turn-budget.json` in the chat's ask directory, written
+/// by the hook on every tool call. By session id rather than through the
+/// session lock, which the running turn holds. `None` before a chat's
+/// first turn or when the file is unreadable.
+#[tauri::command]
+async fn turn_budget(
+    state: State<'_, AppState>,
+    session: String,
+) -> Result<Option<nightloom_service::agent::brief::TurnBudget>, String> {
+    if session.is_empty() || session.contains('/') || session.contains("..") {
+        return Ok(None);
+    }
+    let dir = state.log_dir().await.join("ask").join(session);
+    tokio::task::spawn_blocking(move || nightloom_service::agent::brief::read_turn_budget(&dir))
+        .await
+        .map_err(|e| format!("reading the turn budget failed: {e}"))
+}
+
 #[tauri::command]
 async fn plan_usage() -> Result<nightloom_service::plan_usage::PlanUsage, String> {
     tokio::task::spawn_blocking(nightloom_service::plan_usage::read)
@@ -6374,6 +6398,7 @@ fn main() {
             refresh_usage_ledger,
             plan_usage,
             plan_usage_refresh,
+            turn_budget,
             resolve_new_project_path,
             new_project,
             open_project,

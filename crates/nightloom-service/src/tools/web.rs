@@ -190,8 +190,65 @@ impl Tool for Fetch {
 
     async fn call(&self, input: Value, cancel: &CancellationToken) -> Result<String, String> {
         let raw = str_arg(&input, "url")?;
-        let url = parse_url(&raw)?;
         let offset = input["offset"].as_u64().unwrap_or(0) as usize;
+        let fetched = self.fetch(&raw, cancel).await?;
+        let header = fetched.header();
+        let body = match fetched.body {
+            FetchedBody::Text(text) => text,
+            FetchedBody::Pdf(bytes) => {
+                return Err(format!(
+                    "{} served a PDF ({}). This tool returns text and cannot read \
+                     one, but a PDF can be attached to the conversation directly — ask the \
+                     user to attach it and you will be able to read it in full.",
+                    fetched.landed,
+                    size(bytes.len())
+                ));
+            }
+        };
+        Ok(format!("{header}\n\n{}", window(&body, offset)?))
+    }
+}
+
+/// What a fetch brought back, before any windowing: the text of a page,
+/// or a PDF's bytes for a caller that can extract them
+/// (`mcp_server::FetchPage` since 2026-09-22, nightshift backlog 165).
+pub struct Fetched {
+    /// Where the request landed, after redirects.
+    pub landed: Url,
+    /// The URL as asked, when a redirect moved it; `None` otherwise.
+    pub redirected_from: Option<Url>,
+    /// The content type as served, or the kind sniffed.
+    pub described: String,
+    pub body: FetchedBody,
+}
+
+pub enum FetchedBody {
+    /// Readable text: HTML reduced, or a text type as sent.
+    Text(String),
+    /// A PDF, as served — this tool has no reader; a caller may.
+    Pdf(Vec<u8>),
+}
+
+impl Fetched {
+    /// `fetched <url> (<type>[; redirected from <url>])`.
+    pub fn header(&self) -> String {
+        let mut header = format!("fetched {} ({}", self.landed, self.described);
+        if let Some(from) = &self.redirected_from {
+            header.push_str(&format!("; redirected from {from}"));
+        }
+        header.push(')');
+        header
+    }
+}
+
+impl Fetch {
+    /// The fetch itself: the request, the capped download, the status,
+    /// the classification and the HTML reduction — everything `call`
+    /// does before it windows the text. A PDF comes back as bytes rather
+    /// than the refusal `call` gives, so a caller with an extractor can
+    /// read it.
+    pub async fn fetch(&self, raw: &str, cancel: &CancellationToken) -> Result<Fetched, String> {
+        let url = parse_url(raw)?;
 
         let response = super::interruptible(
             cancel,
@@ -241,31 +298,24 @@ impl Tool for Fetch {
                     size(bytes.len())
                 ));
             }
-            Body::Pdf => {
-                return Err(format!(
-                    "{landed} served a PDF ({}). This tool returns text and cannot read \
-                     one, but a PDF can be attached to the conversation directly — ask the \
-                     user to attach it and you will be able to read it in full.",
-                    size(bytes.len())
-                ));
-            }
+            Body::Pdf => FetchedBody::Pdf(bytes),
             Body::Html => {
                 let html = String::from_utf8_lossy(&bytes);
                 let text = html_to_text(&html, &landed);
                 if let Some(verdict) = shell_verdict(&html, &text) {
                     return Err(format!("{landed} returned {verdict}"));
                 }
-                text
+                FetchedBody::Text(text)
             }
-            Body::Text => String::from_utf8_lossy(&bytes).into_owned(),
+            Body::Text => FetchedBody::Text(String::from_utf8_lossy(&bytes).into_owned()),
         };
-
-        let mut header = format!("fetched {landed} ({}", describe(kind, &content_type));
-        if landed.as_str() != url.as_str() {
-            header.push_str(&format!("; redirected from {url}"));
-        }
-        header.push(')');
-        Ok(format!("{header}\n\n{}", window(&body, offset)?))
+        let redirected_from = (landed.as_str() != url.as_str()).then_some(url);
+        Ok(Fetched {
+            described: describe(kind, &content_type),
+            landed,
+            redirected_from,
+            body,
+        })
     }
 }
 

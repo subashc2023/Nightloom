@@ -61,8 +61,20 @@ use std::path::{Path, PathBuf};
 /// The brief's file name inside the chat's directory.
 pub const BRIEF_FILE: &str = "subagent-brief.txt";
 
-/// The hook's matcher: the tool's current name and its older one.
-pub const BRIEF_MATCHER: &str = "Agent|Task";
+/// The hook's matcher. ~~`Agent|Task` — the tool's current name and its
+/// older one~~ — **every tool since 2026-09-22 (nightshift backlog 165,
+/// pass 2):** the one hook process now also enforces the turn's budget
+/// ([`budget_verdict`]) on every call of the main thread, its subagents
+/// and a council's seats, and only an `Agent`/`Task` call goes on to the
+/// brief and the spawn caps ([`is_spawn`]). A JavaScript pattern, as the
+/// Chat policy's is (`agent/mod.rs`, measured on 2.1.263).
+pub const BRIEF_MATCHER: &str = ".*";
+
+/// Whether a hook call is a spawn (the `Agent` tool; `Task` is its older
+/// name, still what the init line lists).
+pub fn is_spawn(tool_name: &str) -> bool {
+    tool_name == "Agent" || tool_name == "Task"
+}
 
 /// The brief's opening tag — also the mark [`decide`] looks for at the
 /// top of a task, so a task that already carries a brief (a nested
@@ -144,13 +156,54 @@ pub struct SubagentLimits {
     pub slow_to: usize,
     #[serde(default = "d_stop_at")]
     pub stop_at: u8,
+    /// Pass 2 (2026-09-22): how much of the five-hour window one message
+    /// — the main thread plus every subagent and council seat it starts
+    /// — may spend before every further tool call is refused with "stop
+    /// and report" ([`budget_verdict`]). Blocker 278, his answer: 35.
+    #[serde(default = "d_budget_pct")]
+    pub budget_pct: u8,
+    /// Pass 2: the model subagents run on — the chat's own, or Sonnet for
+    /// read-heavy scans. Blocker 280, his answer: the chat's own.
+    #[serde(default)]
+    pub model: SubagentModel,
+}
+
+/// Which model a spawned subagent runs on (backlog 165, pass 2). `Chat`
+/// leaves the call's `model` as the parent wrote it (usually absent, so
+/// the CLI's inherit); `Sonnet` sets it to `sonnet` unless the parent
+/// asked for `haiku`, which is cheaper still.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SubagentModel {
+    #[default]
+    Chat,
+    Sonnet,
+}
+
+impl SubagentModel {
+    /// The `model` the spawn's input should carry, given what the parent
+    /// wrote; `None` leaves the input alone.
+    pub fn for_spawn(self, asked: Option<&str>) -> Option<&'static str> {
+        match (self, asked) {
+            (Self::Chat, _) => None,
+            (Self::Sonnet, Some("haiku")) => None,
+            (Self::Sonnet, Some("sonnet")) => None,
+            (Self::Sonnet, _) => Some("sonnet"),
+        }
+    }
 }
 
 fn d_per_turn() -> usize {
     SPAWN_CAP
 }
+// ~~20, the CLI's own default~~ — 4 since 2026-09-22 (blocker 279, his
+// answer): six at once burned the window faster than any gauge could
+// react (the Stuart 9 diagnosis).
 fn d_concurrent() -> usize {
-    20
+    4
+}
+fn d_budget_pct() -> u8 {
+    35
 }
 fn d_depth() -> usize {
     3
@@ -181,6 +234,8 @@ impl Default for SubagentLimits {
             slow_at: d_slow_at(),
             slow_to: d_slow_to(),
             stop_at: d_stop_at(),
+            budget_pct: d_budget_pct(),
+            model: SubagentModel::default(),
         }
     }
 }
@@ -301,10 +356,24 @@ pub fn freshest(
 /// The desktop's gauge as a reading (`plan_usage`), when it has the
 /// five-hour figure.
 fn gauge_reading() -> Option<WindowReading> {
-    // Fresh through print-mode `/usage` when the files are over a minute
-    // old (blocker 264, his yes 2026-09-18): a fan-out's first hook pays
-    // ~12 s, the rest of the burst reuse it (one refresh a minute).
-    let u = crate::plan_usage::read_fresh(std::time::Duration::from_secs(60));
+    // Fresh through print-mode `/usage` when the files are over ~two
+    // minutes old (blocker 264, his yes 2026-09-18; pass 2 widened 60 s
+    // to 120 s and made the throttle cross-process): every hook is its
+    // own process, so the one-a-minute rule lives in a stamp and a lock
+    // in the temp directory (`plan_usage::read_fresh_shared`), and a hook
+    // that finds the lock held reads the stamp rather than waiting ~12 s.
+    reading_of(crate::plan_usage::read_fresh_shared(
+        std::time::Duration::from_secs(120),
+    ))
+}
+
+/// The gauge's files alone as a reading — no refresh, no latency. What a
+/// turn's start is measured from ([`begin_turn`]).
+fn gauge_on_hand() -> Option<WindowReading> {
+    reading_of(crate::plan_usage::read())
+}
+
+fn reading_of(u: crate::plan_usage::PlanUsage) -> Option<WindowReading> {
     let pct = u.five_hour?;
     let resets_at = u
         .five_hour_resets_at
@@ -348,6 +417,254 @@ pub fn slowed_cap_reason(cap: usize, pct: u8, slow_at: u8) -> String {
          turn has spawned {cap}. Wait for the running ones to finish and use their reports; \
          if what is left is small enough, do it yourself."
     )
+}
+
+/// The refusal of any tool call once the window is past `stop_at`
+/// (pass 2): not a spawn this time — the call itself.
+pub fn window_stop_all_reason(pct: u8, stop_at: u8, resets_at: Option<i64>) -> String {
+    format!(
+        "Nightloom refuses further tool calls: the plan's five-hour window is at {pct}% \
+         (the stop line is {stop_at}%). It resets {}. Stop now and report to the user, in \
+         your reply, what you have and what is left; do not retry this or any other call.",
+        reset_words(resets_at)
+    )
+}
+
+/// The refusal once this message has spent its share of the window.
+pub fn budget_spent_reason(spent: u8, budget: u8, pct: u8, start: u8) -> String {
+    format!(
+        "Nightloom refuses further tool calls: this message has spent {spent}% of the plan's \
+         five-hour window (from {start}% to {pct}%), and its budget is {budget}% per message. \
+         Stop now and report to the user, in your reply, what you have and what is left — a \
+         reply needs no tool; do not retry this or any other call."
+    )
+}
+
+// ---- the per-message budget (nightshift backlog 165, pass 2, 2026-09-22) ----
+
+/// The turn's budget ledger, beside the brief: written when a turn
+/// starts ([`begin_turn`]) with the window reading on hand, updated by
+/// every hook call ([`note_reading`]) with the latest reading, and read
+/// by the desktop for the live meter (`turn_budget`).
+pub const TURN_BUDGET_FILE: &str = "turn-budget.json";
+
+/// A seats phase older than this is not continued by the chair: a
+/// council cancelled between its seats and its chair leaves a file the
+/// next ordinary turn must not inherit.
+const SEATS_CONTINUE_MS: i64 = 10 * 60 * 1000;
+
+/// One message's budget ledger. `start_pct` is the window when the
+/// message began — the freshest reading on hand at that moment, no
+/// refresh — and is pinned by the first hook reading when none was on
+/// hand (a late pin understates the spend, never overstates it).
+/// `phase` is `seats` while a council's seats run, `seats-done` between
+/// them and the chair, `turn` otherwise.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct TurnBudget {
+    pub started_at_ms: i64,
+    pub budget_pct: u8,
+    pub stop_at: u8,
+    #[serde(default)]
+    pub start_pct: Option<u8>,
+    #[serde(default)]
+    pub latest_pct: Option<u8>,
+    #[serde(default)]
+    pub latest_at_ms: Option<i64>,
+    #[serde(default)]
+    pub resets_at: Option<i64>,
+    #[serde(default)]
+    pub phase: String,
+    /// The refusal, once the hook has refused a call under this ledger.
+    #[serde(default)]
+    pub stopped: Option<String>,
+    /// How many hook calls this ledger has seen (the meter's "calls").
+    #[serde(default)]
+    pub calls: u64,
+}
+
+impl TurnBudget {
+    /// Window percent spent so far by this message: latest minus start,
+    /// never negative (the account's figure can only rise within a
+    /// window; a reset in between reads as zero).
+    pub fn spent_pct(&self) -> Option<u8> {
+        Some(self.latest_pct?.saturating_sub(self.start_pct?))
+    }
+}
+
+/// Which start a turn is: a council's seats, or a turn proper (the
+/// chair's included, which continues a `seats-done` ledger).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnPhase {
+    Seats,
+    Turn,
+}
+
+pub fn read_turn_budget(dir: &Path) -> Option<TurnBudget> {
+    let s = std::fs::read_to_string(dir.join(TURN_BUDGET_FILE)).ok()?;
+    serde_json::from_str(&s).ok()
+}
+
+fn write_turn_budget(dir: &Path, b: &TurnBudget) {
+    let _ = std::fs::create_dir_all(dir);
+    let path = dir.join(TURN_BUDGET_FILE);
+    let tmp = path.with_extension("json.tmp");
+    if std::fs::write(&tmp, serde_json::to_string_pretty(b).unwrap_or_default()).is_ok() {
+        let _ = std::fs::rename(&tmp, &path);
+    }
+}
+
+/// Start a message's ledger from the reading on hand, pure over its
+/// inputs: `have` is the file as it was. A `Turn` start continues a
+/// `seats-done` ledger younger than [`SEATS_CONTINUE_MS`] (the chair of
+/// a council whose seats just ran); everything else starts afresh.
+pub fn start_turn_budget(
+    have: Option<TurnBudget>,
+    limits: &SubagentLimits,
+    reading: Option<WindowReading>,
+    now_ms: i64,
+    phase: TurnPhase,
+) -> TurnBudget {
+    if phase == TurnPhase::Turn
+        && let Some(h) = have
+        && h.phase == "seats-done"
+        && now_ms - h.started_at_ms <= SEATS_CONTINUE_MS
+    {
+        return TurnBudget {
+            phase: "turn".into(),
+            ..h
+        };
+    }
+    TurnBudget {
+        started_at_ms: now_ms,
+        budget_pct: limits.budget_pct,
+        stop_at: limits.stop_at,
+        start_pct: reading.map(|r| r.five_hour_pct),
+        latest_pct: reading.map(|r| r.five_hour_pct),
+        latest_at_ms: reading.map(|r| r.sampled_at_ms),
+        resets_at: reading.and_then(|r| r.resets_at),
+        phase: match phase {
+            TurnPhase::Seats => "seats",
+            TurnPhase::Turn => "turn",
+        }
+        .into(),
+        stopped: None,
+        calls: 0,
+    }
+}
+
+/// The reading on hand for a turn's start: the chat's wire file and the
+/// gauge's files, whichever is fresher and still current — no `/usage`
+/// run, so no latency on the turn.
+pub fn reading_on_hand(dir: &Path, now_ms: i64) -> Option<WindowReading> {
+    freshest(
+        current(read_usage_file(dir), now_ms),
+        current(gauge_on_hand(), now_ms),
+    )
+}
+
+/// A turn begins: the spawn count zeroed and the budget ledger started
+/// (or, for a chair, continued). Called by `run_turn` and, for a
+/// council's seats, by `council::run_seats`.
+pub fn begin_turn(dir: &Path, limits: &SubagentLimits, phase: TurnPhase) {
+    if dir.as_os_str().is_empty() {
+        return;
+    }
+    reset_spawns(dir);
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let b = start_turn_budget(
+        read_turn_budget(dir),
+        limits,
+        reading_on_hand(dir, now_ms),
+        now_ms,
+        phase,
+    );
+    write_turn_budget(dir, &b);
+}
+
+/// The seats have finished: the chair's `run_turn` continues this ledger.
+pub fn finish_seats(dir: &Path) {
+    if let Some(b) = read_turn_budget(dir) {
+        write_turn_budget(
+            dir,
+            &TurnBudget {
+                phase: "seats-done".into(),
+                ..b
+            },
+        );
+    }
+}
+
+/// The hook's verdict on one call under the ledger, pure: the window's
+/// stop line first (a reading past it refuses everything), then the
+/// message's own budget. `None` reading: nothing to judge by, allowed.
+pub fn budget_verdict(b: &TurnBudget, reading: Option<WindowReading>) -> Result<(), String> {
+    let Some(r) = reading else {
+        return Ok(());
+    };
+    if r.five_hour_pct >= b.stop_at {
+        return Err(window_stop_all_reason(
+            r.five_hour_pct,
+            b.stop_at,
+            r.resets_at,
+        ));
+    }
+    if let Some(start) = b.start_pct {
+        let spent = r.five_hour_pct.saturating_sub(start);
+        if b.budget_pct > 0 && spent >= b.budget_pct {
+            return Err(budget_spent_reason(
+                spent,
+                b.budget_pct,
+                r.five_hour_pct,
+                start,
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Record a hook's reading in the ledger under the file lock (the
+/// turn's hooks run at once), pin the start if none was on hand, judge
+/// the call, and write the refusal into the ledger when there is one.
+/// No ledger (a chat older than the file, a turn started elsewhere):
+/// allowed, nothing written.
+fn note_reading(dir: &Path, reading: Option<WindowReading>) -> Result<(), String> {
+    use std::io::{Read as _, Seek as _, Write as _};
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(dir.join(TURN_BUDGET_FILE))
+    else {
+        return Ok(());
+    };
+    if file.lock().is_err() {
+        return Ok(());
+    }
+    let mut have = String::new();
+    let _ = file.read_to_string(&mut have);
+    let Ok(mut b) = serde_json::from_str::<TurnBudget>(&have) else {
+        return Ok(());
+    };
+    b.calls += 1;
+    if let Some(r) = reading {
+        if b.start_pct.is_none() {
+            b.start_pct = Some(r.five_hour_pct);
+        }
+        // The latest is the newest reading seen, never an older one a
+        // slower hook brings in after a faster one.
+        if b.latest_at_ms.is_none_or(|t| r.sampled_at_ms >= t) {
+            b.latest_pct = Some(r.five_hour_pct);
+            b.latest_at_ms = Some(r.sampled_at_ms);
+            b.resets_at = r.resets_at.or(b.resets_at);
+        }
+    }
+    let verdict = budget_verdict(&b, reading);
+    if let Err(reason) = &verdict {
+        b.stopped = Some(reason.clone());
+    }
+    let _ = file.set_len(0);
+    let _ = file.seek(std::io::SeekFrom::Start(0));
+    let _ = file.write_all(serde_json::to_string_pretty(&b).unwrap_or_default().as_bytes());
+    verdict
 }
 
 /// The per-chat, per-day refusal.
@@ -533,6 +850,8 @@ pub fn write(dir: &Path, text: &str) -> std::io::Result<()> {
 #[derive(Debug, Deserialize)]
 struct HookInput {
     #[serde(default)]
+    tool_name: String,
+    #[serde(default)]
     tool_input: Value,
 }
 
@@ -566,6 +885,15 @@ pub fn decide_with(dir: &Path, stdin_json: &str, gauge: Option<WindowReading>) -
         current(read_usage_file(dir), now_ms),
         current(gauge, now_ms),
     );
+    // Pass 2: the message's budget, on every call of every process in
+    // the turn — the main thread's, a subagent's, a council seat's. The
+    // ledger takes the reading either way (the live meter reads it).
+    if let Err(reason) = note_reading(dir, reading) {
+        return HookReply::deny(reason);
+    }
+    if !is_spawn(&input.tool_name) {
+        return HookReply::pass();
+    }
     let cap = match window_verdict(&limits, reading) {
         Ok(cap) => cap,
         Err(reason) => return HookReply::deny(reason),
@@ -584,20 +912,28 @@ pub fn decide_with(dir: &Path, stdin_json: &str, gauge: Option<WindowReading>) -
         return HookReply::deny(day_cap_reason(limits.per_day));
     }
     let brief = std::fs::read_to_string(dir.join(BRIEF_FILE)).unwrap_or_default();
-    if brief.trim().is_empty() {
-        return HookReply::pass();
-    }
     let Value::Object(mut fields) = input.tool_input else {
         return HookReply::pass();
     };
-    let Some(Value::String(prompt)) = fields.get("prompt") else {
-        return HookReply::pass();
-    };
-    if prompt.trim_start().starts_with(BRIEF_OPEN) {
+    let mut changed = false;
+    if !brief.trim().is_empty()
+        && let Some(Value::String(prompt)) = fields.get("prompt")
+        && !prompt.trim_start().starts_with(BRIEF_OPEN)
+    {
+        let briefed = format!("{}\n\n{prompt}", brief.trim_end());
+        fields.insert("prompt".into(), Value::String(briefed));
+        changed = true;
+    }
+    // The subagents' model (pass 2, blocker 280): the switch on the rail
+    // sets the spawn's `model` input, which the Agent tool takes.
+    let asked = fields.get("model").and_then(Value::as_str);
+    if let Some(model) = limits.model.for_spawn(asked) {
+        fields.insert("model".into(), Value::String(model.into()));
+        changed = true;
+    }
+    if !changed {
         return HookReply::pass();
     }
-    let briefed = format!("{}\n\n{prompt}", brief.trim_end());
-    fields.insert("prompt".into(), Value::String(briefed));
     HookReply::allow(Some(Value::Object(fields)))
 }
 
@@ -821,7 +1157,132 @@ mod tests {
             "'/Applications/Night loom.app/Contents/MacOS/nightloom-desktop' '--subagent-hook' '/tmp/ask/chat-1'"
         );
         assert_eq!(entry["hooks"][0]["type"], "command");
-        assert_eq!(json!(BRIEF_MATCHER), "Agent|Task");
+        // ~~`Agent|Task`~~ — every tool since pass 2 of backlog 165; the
+        // spawn branch is chosen by the call's name instead.
+        assert_eq!(json!(BRIEF_MATCHER), ".*");
+        assert!(is_spawn("Agent") && is_spawn("Task") && !is_spawn("Read"));
+    }
+
+    // The per-message budget (nightshift backlog 165, pass 2, 2026-09-22).
+
+    fn reading(pct: u8, at_ms: i64) -> Option<super::WindowReading> {
+        Some(super::WindowReading {
+            five_hour_pct: pct,
+            // An hour ahead: a reading whose window has reset is no reading.
+            resets_at: Some(chrono::Utc::now().timestamp() + 3600),
+            sampled_at_ms: at_ms,
+        })
+    }
+
+    /// The verdict, pure: the stop line refuses everything; the budget
+    /// refuses once latest − start reaches it; no start (nothing on hand
+    /// when the turn began) and no reading judge nothing.
+    #[test]
+    fn the_budget_verdict_stops_at_the_line_and_at_the_message_share() {
+        let l = super::SubagentLimits::default();
+        let b = super::start_turn_budget(None, &l, reading(21, 1), 1_000, super::TurnPhase::Turn);
+        assert_eq!((b.start_pct, b.budget_pct, b.stop_at, b.phase.as_str()), (Some(21), 35, 85, "turn"));
+        assert_eq!(super::budget_verdict(&b, None), Ok(()));
+        assert_eq!(super::budget_verdict(&b, reading(55, 2)), Ok(()));
+        let spent = super::budget_verdict(&b, reading(56, 2)).unwrap_err();
+        assert!(spent.contains("spent 35%") && spent.contains("from 21% to 56%") && spent.contains("do not retry"), "{spent}");
+        let line = super::budget_verdict(&b, reading(85, 2)).unwrap_err();
+        assert!(line.contains("stop line is 85%") && line.contains("It resets at "), "{line}");
+        // A budget of zero is no budget; the stop line still holds.
+        let none = super::start_turn_budget(None, &super::SubagentLimits { budget_pct: 0, ..l }, reading(21, 1), 1_000, super::TurnPhase::Turn);
+        assert_eq!(super::budget_verdict(&none, reading(84, 2)), Ok(()));
+        // No reading on hand at the start: nothing to judge until one is pinned.
+        let blind = super::start_turn_budget(None, &l, None, 1_000, super::TurnPhase::Turn);
+        assert_eq!(blind.start_pct, None);
+        assert_eq!(super::budget_verdict(&blind, reading(99 - 15, 2)), Ok(()));
+    }
+
+    /// The chair continues the seats' ledger (its start is the message's
+    /// start, before the seats spent), an ordinary turn after a stale one
+    /// does not, and a fresh `seats` start is never a continuation.
+    #[test]
+    fn a_chair_continues_its_seats_ledger_and_nothing_else_does() {
+        let l = super::SubagentLimits::default();
+        let seats = super::start_turn_budget(None, &l, reading(20, 1), 1_000, super::TurnPhase::Seats);
+        assert_eq!(seats.phase, "seats");
+        let done = super::TurnBudget { phase: "seats-done".into(), latest_pct: Some(30), ..seats.clone() };
+        let chair = super::start_turn_budget(Some(done.clone()), &l, reading(30, 2), 5_000, super::TurnPhase::Turn);
+        assert_eq!((chair.phase.as_str(), chair.start_pct, chair.started_at_ms), ("turn", Some(20), 1_000));
+        let stale = super::start_turn_budget(Some(done.clone()), &l, reading(30, 2), 1_000 + 11 * 60 * 1000, super::TurnPhase::Turn);
+        assert_eq!((stale.phase.as_str(), stale.start_pct), ("turn", Some(30)));
+        let again = super::start_turn_budget(Some(done), &l, reading(30, 2), 5_000, super::TurnPhase::Seats);
+        assert_eq!((again.phase.as_str(), again.start_pct), ("seats", Some(30)));
+        let plain = super::start_turn_budget(Some(chair), &l, reading(31, 3), 9_000, super::TurnPhase::Turn);
+        assert_eq!((plain.start_pct, plain.started_at_ms), (Some(31), 9_000));
+    }
+
+    /// Through the hook: a `Read` (not a spawn) is allowed under budget,
+    /// refused past it with the ledger recording the refusal, and a start
+    /// no reading was on hand for is pinned by the first reading. The
+    /// ledger's latest never goes backwards under a slower hook.
+    #[test]
+    fn every_tool_call_is_judged_by_the_budget_and_the_ledger_keeps_the_latest() {
+        let dir = limits_dir("budget");
+        let now = chrono::Utc::now().timestamp_millis();
+        let l = super::SubagentLimits::default();
+        super::write_limits(&dir, &l).unwrap();
+        super::write_usage(&dir, 40, Some(now / 1000 + 3600), now);
+        super::begin_turn(&dir, &l, super::TurnPhase::Turn);
+        let read = r#"{"tool_name":"Read","tool_input":{"file_path":"/x"}}"#;
+        assert_eq!(super::decide_with(&dir, read, None).decision(), "pass");
+        let b = super::read_turn_budget(&dir).unwrap();
+        assert_eq!((b.start_pct, b.latest_pct, b.calls, b.spent_pct()), (Some(40), Some(40), 1, Some(0)));
+        // The gauge, fresher, says 60: twenty spent of thirty-five, allowed.
+        assert_eq!(super::decide_with(&dir, read, reading(60, now + 1)).decision(), "pass");
+        assert_eq!(super::read_turn_budget(&dir).unwrap().spent_pct(), Some(20));
+        // An older reading a slower hook brings in does not move it back.
+        assert_eq!(super::decide_with(&dir, read, reading(50, now - 5)).decision(), "pass");
+        assert_eq!(super::read_turn_budget(&dir).unwrap().latest_pct, Some(60));
+        // 75: thirty-five spent — refused, and a spawn is refused the same.
+        let r = super::decide_with(&dir, read, reading(75, now + 2));
+        assert_eq!(r.decision(), "deny");
+        assert!(r.reason().is_some_and(|s| s.contains("spent 35%")));
+        let b = super::read_turn_budget(&dir).unwrap();
+        assert!(b.stopped.as_deref().is_some_and(|s| s.contains("spent 35%")));
+        assert_eq!(super::decide_with(&dir, CALL, reading(75, now + 3)).decision(), "deny");
+        // A new turn starts over from the reading on hand (the wire file's 40).
+        super::begin_turn(&dir, &l, super::TurnPhase::Turn);
+        let b = super::read_turn_budget(&dir).unwrap();
+        assert_eq!((b.start_pct, b.stopped.is_none(), b.calls), (Some(40), true, 0));
+        assert_eq!(super::decide_with(&dir, read, reading(74, now + 4)).decision(), "pass");
+        // No reading on hand at the start: the first hook reading pins it.
+        let _ = std::fs::remove_file(dir.join(super::USAGE_FILE));
+        super::begin_turn(&dir, &l, super::TurnPhase::Turn);
+        // (This machine's own gauge may supply one; either way the ledger exists.)
+        assert!(super::read_turn_budget(&dir).unwrap().start_pct.is_none() || super::gauge_on_hand().is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The subagents' model (blocker 280): `chat` leaves the spawn alone;
+    /// `sonnet` sets the call's `model` unless the parent asked for haiku.
+    #[test]
+    fn the_sonnet_switch_sets_the_spawns_model_and_haiku_is_left_cheaper() {
+        assert_eq!(super::SubagentModel::Chat.for_spawn(None), None);
+        assert_eq!(super::SubagentModel::Chat.for_spawn(Some("opus")), None);
+        assert_eq!(super::SubagentModel::Sonnet.for_spawn(None), Some("sonnet"));
+        assert_eq!(super::SubagentModel::Sonnet.for_spawn(Some("opus")), Some("sonnet"));
+        assert_eq!(super::SubagentModel::Sonnet.for_spawn(Some("haiku")), None);
+        assert_eq!(super::SubagentModel::Sonnet.for_spawn(Some("sonnet")), None);
+        let dir = limits_dir("model");
+        super::write_limits(&dir, &super::SubagentLimits { model: super::SubagentModel::Sonnet, ..Default::default() }).unwrap();
+        let r = super::decide_with(&dir, r#"{"tool_name":"Agent","tool_input":{"prompt":"go","model":"opus"}}"#, None);
+        assert_eq!(r.decision(), "allow");
+        let out = r.hook_specific_output.as_ref().and_then(|o| o.updated_input.clone()).unwrap();
+        assert_eq!(out["model"], "sonnet");
+        assert!(out["prompt"].as_str().unwrap().starts_with(BRIEF_OPEN));
+        // With the brief already on the prompt, the model alone changes the input.
+        let r = super::decide_with(&dir, r#"{"tool_name":"Agent","tool_input":{"prompt":"<nightloom-subagent-brief>x</nightloom-subagent-brief>\n\ngo"}}"#, None);
+        assert_eq!(r.decision(), "allow");
+        let out = r.hook_specific_output.as_ref().and_then(|o| o.updated_input.clone()).unwrap();
+        assert_eq!(out["model"], "sonnet");
+        assert!(out["prompt"].as_str().unwrap().starts_with(BRIEF_OPEN));
+        assert_eq!(out["prompt"].as_str().unwrap().matches(BRIEF_OPEN).count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // The family of limits (nightshift backlog 165).
@@ -852,8 +1313,14 @@ mod tests {
         let back = super::read_limits(&dir);
         assert_eq!(back.per_day, 5);
         assert_eq!(back.per_turn, super::SPAWN_CAP);
-        assert_eq!(back.concurrent, 20);
+        // 4 at once since pass 2 (blocker 279, his answer); 35 % a message
+        // (278); the chat's own model (280).
+        assert_eq!(back.concurrent, 4);
         assert_eq!(back.depth, 3);
+        assert_eq!(back.budget_pct, 35);
+        assert_eq!(back.model, super::SubagentModel::Chat);
+        let json = serde_json::to_string(&super::SubagentLimits::default()).unwrap();
+        assert!(json.contains(r#""model":"chat""#), "{json}");
         assert_eq!(
             super::read_limits(Path::new("/nonexistent/x")),
             super::SubagentLimits::default()

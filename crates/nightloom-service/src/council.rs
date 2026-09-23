@@ -217,7 +217,11 @@ pub fn seat_spec(chat: &AgentSpec, seat: &Seat) -> AgentSpec {
     }
     spec.chat_policy = true;
     spec.max_turns = Some(SEAT_MAX_TURNS);
-    spec.brief = None;
+    // ~~`spec.brief = None`~~ — kept since 2026-09-22 (nightshift backlog
+    // 165, pass 2): the brief's hook is also the budget's, on every tool,
+    // and a seat's calls count against the message's share of the window
+    // like a subagent's. The brief itself never reaches a seat: the
+    // policy refuses `Agent`, so the hook's spawn branch is never taken.
     spec.prompt_suggestions = false;
     spec
 }
@@ -746,6 +750,22 @@ pub async fn run_seats(
         labels[seat] = label(p);
     }
     let forked = chat.resume.is_some();
+    // The message's budget (nightshift backlog 165, pass 2): the seats
+    // are the start of this message, so the ledger starts here with the
+    // window on hand, and the chair's `run_turn` continues it
+    // (`brief::begin_turn`, phase `seats` → `seats-done` → `turn`).
+    let budget_dir = chat
+        .brief
+        .as_ref()
+        .map(|b| b.dir.clone())
+        .filter(|d| !d.as_os_str().is_empty());
+    if let Some(dir) = &budget_dir {
+        crate::agent::brief::begin_turn(
+            dir,
+            &chat.subagent_limits.unwrap_or_default(),
+            crate::agent::brief::TurnPhase::Seats,
+        );
+    }
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(usize, TurnEvent)>();
 
     let runs = request.seats.iter().enumerate().map(|(i, seat)| {
@@ -928,6 +948,9 @@ pub async fn run_seats(
         });
     }
     results.sort_by_key(|r| r.index);
+    if let Some(dir) = &budget_dir {
+        crate::agent::brief::finish_seats(dir);
+    }
     results
 }
 
@@ -1235,7 +1258,8 @@ mod tests {
             .map(|w| w[1].clone())
             .expect("the policy hook");
         assert!(settings.contains("PreToolUse"));
-        assert!(spec.brief.is_none());
+        // The brief stays for its hook's budget half (backlog 165, pass 2).
+        assert_eq!(spec.brief.is_some(), chat.brief.is_some());
         // No session to fork: cold, and `--resume` never sent alone.
         chat.resume = None;
         let cold = seat_spec(&chat, &seat("opus"));

@@ -39,6 +39,7 @@ import type {
   NewProjectPath,
   UsageSummary,
   PlanUsage,
+  TurnBudget,
   CliMemoryFile,
   CliPromptSnapshot,
   EditableLayer,
@@ -606,6 +607,12 @@ export function planUsage(): Promise<PlanUsage> {
  *  tokens, ~12 s on the backend. */
 export function planUsageRefresh(): Promise<PlanUsage> {
   return invoke("plan_usage_refresh");
+}
+
+/** The message's budget ledger for the live meter (backlog 165, pass 2):
+ *  the chat's `turn-budget.json`, or null before its first turn. */
+export function turnBudget(session: string): Promise<TurnBudget | null> {
+  return invoke("turn_budget", { session });
 }
 
 /** The folder a name would get, for the form's live path row. */

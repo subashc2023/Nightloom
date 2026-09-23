@@ -12,6 +12,7 @@
     subagentsOfTurn,
   } from "./state.svelte";
   import { cacheState } from "./cache";
+  import { budgetChip, budgetTitle } from "./budget";
   import RightRail from "./RightRail.svelte";
   import { portal, anchorBelow } from "./portal";
   const POP_WIDTH = 340;
@@ -446,13 +447,16 @@
         class:live={agents.running > 0}
         class:open={app.showTasks}
         aria-expanded={app.showTasks}
-        title="{agents.rows.length} subagent{agents.rows.length === 1 ? '' : 's'} this turn{agents.running > 0 ? `, ${agents.running} running` : ', all done'} · {agents.tokens.toLocaleString()} tokens (the CLI's figure per agent, not in the context gauge) — click for the Running-tasks panel"
+        title="{agents.rows.length} subagent{agents.rows.length === 1 ? '' : 's'} this turn{agents.running > 0 ? `, ${agents.running} running` : ', all done'} · {agents.tokens.toLocaleString()} tokens (the CLI's figure per agent, not in the context gauge) — click for the Running-tasks panel{app.turnBudget ? `\n${budgetTitle(app.turnBudget)}` : ''}"
         onclick={toggleTasks}
       >
         <span class="figure">
           <span>{agents.rows.length} agent{agents.rows.length === 1 ? "" : "s"}</span>
           {#if agents.running === 0}<span class="of fold1">· done</span>{/if}
           <span class="of">· {tokens(agents.tokens)}</span>
+          <!-- The message's budget meter (backlog 165, pass 2): spent of
+               budget, in window percent, as the hook's ledger moves. -->
+          {#if app.turnBudget}<span class="of budget" class:stopped={!!app.turnBudget.stopped}>· {budgetChip(app.turnBudget)}</span>{/if}
         </span>
       </button>
     {/if}
