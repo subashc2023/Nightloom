@@ -466,36 +466,54 @@ const SCRATCH_LOCK: &str = ".lock";
 /// ([`sweep_orphaned_scratch`]).
 struct ScratchDir {
     path: PathBuf,
-    _lock: std::fs::File,
+    /// Held while the folder lives; `None` only inside [`Drop`], which
+    /// lets go of it before removing the folder.
+    lock: Option<std::fs::File>,
 }
 
 impl ScratchDir {
-    /// Sweep the orphans, then make a folder and take its lock *before*
-    /// giving it the name a sweep looks for: a folder visible to another
-    /// server's sweep is always already locked.
+    /// Sweep the orphans, then make the folder and take its lock *before*
+    /// giving the lock file the name a sweep looks for: a lock visible to
+    /// another server's sweep is always already held, and a folder with no
+    /// lock file yet is one a sweep leaves alone.
+    ///
+    /// The lock file is renamed into place, not the folder: Windows will
+    /// not rename a folder while a file inside it is open (CI went red on
+    /// windows-latest at e33c711 when the folder itself was staged and
+    /// renamed with the lock held inside it). Renaming the open file is
+    /// allowed on every platform — std opens files sharing delete access.
     fn create(parent: &Path) -> Result<Self, String> {
         sweep_orphaned_scratch(parent);
         let id = uuid::Uuid::new_v4().simple().to_string();
-        let staging = parent.join(format!(".nightloom-staging-{id}"));
         let path = parent.join(format!("{SCRATCH_FETCH_PREFIX}{id}"));
         let fail = |e: std::io::Error| format!("cannot make a folder for this chat's pages: {e}");
         let mut builder = std::fs::DirBuilder::new();
         builder.recursive(true);
         #[cfg(unix)]
         std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-        builder.create(&staging).map_err(fail)?;
-        let lock = std::fs::File::create(staging.join(SCRATCH_LOCK)).map_err(fail)?;
-        lock.lock().map_err(fail)?;
-        if let Err(e) = std::fs::rename(&staging, &path) {
-            let _ = std::fs::remove_dir_all(&staging);
-            return Err(fail(e));
+        builder.create(&path).map_err(fail)?;
+        let staged = path.join(format!("{SCRATCH_LOCK}.new"));
+        let placed = std::fs::File::create(&staged)
+            .and_then(|lock| lock.lock().map(|()| lock))
+            .and_then(|lock| std::fs::rename(&staged, path.join(SCRATCH_LOCK)).map(|()| lock));
+        match placed {
+            Ok(lock) => Ok(Self {
+                path,
+                lock: Some(lock),
+            }),
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&path);
+                Err(fail(e))
+            }
         }
-        Ok(Self { path, _lock: lock })
     }
 }
 
 impl Drop for ScratchDir {
+    /// Let go of the lock first: Windows cannot finish removing a folder
+    /// while a file in it is still open.
     fn drop(&mut self) {
+        drop(self.lock.take());
         let _ = std::fs::remove_dir_all(&self.path);
     }
 }
@@ -517,6 +535,8 @@ fn sweep_orphaned_scratch(parent: &Path) {
             continue;
         };
         if lock.try_lock().is_ok() {
+            // Closed before the removal, for Windows (see `Drop`).
+            drop(lock);
             let _ = std::fs::remove_dir_all(&dir);
         }
     }
