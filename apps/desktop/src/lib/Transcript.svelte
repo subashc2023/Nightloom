@@ -443,6 +443,20 @@
     requestAnimationFrame(() => (scrollingSelf = false));
   }
 
+  // Copy on his own message (nightshift backlog 181): which turn just
+  // copied, for the check mark's second, and the copy itself.
+  let copiedTurn = $state<number | null>(null);
+  async function copyUserText(index: number, text: string): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(text);
+      copiedTurn = index;
+      setTimeout(() => {
+        if (copiedTurn === index) copiedTurn = null;
+      }, 1200);
+    } catch {
+      // The webview refused the clipboard; nothing to show but the button.
+    }
+  }
   function beginEdit(item: Item) {
     const text = item.kind === "user" ? item.text : item.kind === "assistant" ? textOf(item.segs) : "";
     const parts =
@@ -1434,6 +1448,23 @@
                was sent, in words, the exact moment on hover. The time is
                always drawn; the tools only when the turn can be acted on. -->
           <div class="turn-foot">
+            {#if item.text && editing?.index !== item.index}
+              <!-- Copy his own message (nightshift backlog 181, 2026-09-22):
+                   the text exactly as he typed it, never the rendered or
+                   diffed face. Shown during a turn and on a superseded or
+                   removed message too — copying changes nothing. -->
+              <span class="turn-tools">
+                <button
+                  class="tool-btn"
+                  class:copied={copiedTurn === item.index}
+                  title={copiedTurn === item.index ? "Copied" : "Copy this message"}
+                  aria-label={copiedTurn === item.index ? "Copied" : "Copy this message"}
+                  onclick={() => void copyUserText(item.index, item.text)}
+                >
+                  <Icon name={copiedTurn === item.index ? "check" : "copy"} size={14} />
+                </button>
+              </span>
+            {/if}
             {#if !item.superseded && !app.busy && editing?.index !== item.index}
               <!-- Offered on both engines since 2026-09-15 (backlog 062): on
                    Claude Code each of these rewrites the CLI's history by copy

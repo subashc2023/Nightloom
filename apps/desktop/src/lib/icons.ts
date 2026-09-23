@@ -17,6 +17,7 @@ export const ICONS = {
   play: '<path d="M6 4.5v11l9-5.5z"/>',
   revert: '<path d="M4 8h9a4 4 0 0 1 0 8H8M4 8l3-3M4 8l3 3"/>',
   check: '<path d="m4 10.5 4 4 8-9"/>',
+  copy: '<rect x="7" y="7" width="9" height="10" rx="1.5"/><path d="M13 7V4.5A1.5 1.5 0 0 0 11.5 3h-6A1.5 1.5 0 0 0 4 4.5v8A1.5 1.5 0 0 0 5.5 14H7"/>',
   term: '<path d="M4 6l4 4-4 4M10 14h6"/>',
   cols: '<rect x="3" y="4" width="14" height="12" rx="1.5"/><path d="M10 4v12"/>',
   // The chat-surface redesign (nightshift notes/runner-design/surface-redesign-2026-09-13).
