@@ -107,6 +107,9 @@ const ANTHROPIC: &[(&str, u64)] = &[
     // Documented as 1M but 404s without account access, so unverifiable
     // here; the row costs nothing and pays off for keys that do have it.
     ("claude-mythos-5", 1_000_000),
+    // Opus 5.5 (backlog 178): 1M, the same as Opus 5 — its own row so the
+    // family is explicit rather than inherited by prefix.
+    ("claude-opus-5-5", 1_000_000),
     ("claude-opus-5", 1_000_000),
     ("claude-sonnet-5", 1_000_000),
     ("claude-opus-4-8", 1_000_000),

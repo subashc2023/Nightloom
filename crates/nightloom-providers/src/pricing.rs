@@ -140,6 +140,12 @@ pub fn price(kind: ProviderKind, model: &str) -> Option<Price> {
 /// field's default.
 const ANTHROPIC: &[(&str, Price)] = &[
     ("claude-fable-5", pcw(10.0, 50.0, 1.0, 12.5)),
+    // Opus 5.5 (nightshift backlog 178, 2026-09-22): $4 / $20, cache reads
+    // $0.20 (0.05x), 5-minute writes $5 — `external`, the Claude API skill
+    // bundled with Claude Code 2.1.280 (its write price is derived from the
+    // 1.25x multiplier, "confirm at launch"). Before this row the id matched
+    // `claude-opus-5` by prefix and was priced as Opus 5.
+    ("claude-opus-5-5", pcw(4.0, 20.0, 0.2, 5.0)),
     ("claude-opus-5", pcw(5.0, 25.0, 0.5, 6.25)),
     ("claude-sonnet-5", pcw(2.0, 10.0, 0.2, 2.5)),
     ("claude-opus-4-8", pcw(5.0, 25.0, 0.5, 6.25)),
@@ -364,6 +370,18 @@ mod tests {
         let p = p(1.0, 2.0);
         let cost = p.cost(&usage(1_000, 0, Some(900), None));
         assert!((cost - 1_000.0 / 1e6).abs() < 1e-12, "{cost}");
+    }
+
+    #[test]
+    fn opus_5_5_has_its_own_price_not_opus_5s_by_prefix() {
+        // Backlog 178: before its row, `claude-opus-5-5` matched
+        // `claude-opus-5` by prefix and was billed at $5 / $25.
+        let p = price(ProviderKind::Anthropic, "claude-opus-5-5").unwrap();
+        assert_eq!((p.input, p.output, p.cache_read, p.cache_write), (4.0, 20.0, Some(0.2), Some(5.0)));
+        let five = price(ProviderKind::Anthropic, "claude-opus-5").unwrap();
+        assert_eq!(five.input, 5.0);
+        // A dated Opus 5 snapshot still resolves to Opus 5, not 5.5.
+        assert_eq!(price(ProviderKind::Anthropic, "claude-opus-5-2026-01-15").unwrap().input, 5.0);
     }
 
     #[test]
