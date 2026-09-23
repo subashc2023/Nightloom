@@ -34,10 +34,14 @@ use tokio_util::sync::CancellationToken;
 mod nightshift;
 /// Sleep-safe turns: the power assertion and the wake watcher.
 mod power;
+/// A changed prompt layer waits for the chat's cold moment (backlog 174).
+mod prompt_hold;
 /// The phone page over the tailnet (nightshift backlog 091, Shape B).
 mod remote;
 /// The terminal pane's shells (nightshift backlog 113).
 mod terminal;
+/// Web tabs: a clicked link as a child webview in a pane (backlog 172).
+mod webtab;
 
 struct AppState {
     chat: tokio::sync::Mutex<Option<Chat>>,
@@ -124,8 +128,10 @@ struct AppState {
     /// once it holds the agent, so Stop keeps cancelling it like a turn;
     /// this one is what the aside card's own × cancels — and it works while
     /// the aside is still parked behind a running turn, which `cancel`
-    /// cannot reach.
-    aside_cancel: Arc<std::sync::Mutex<CancellationToken>>,
+    /// cannot reach. ~~One token, swapped per aside~~ — one per exchange
+    /// since backlog 176 (2026-09-23), keyed by its `seq`: several cards
+    /// may be open, and a × must stop its own exchange and no other.
+    aside_cancel: nightloom_service::agent::AsideCancels,
     /// What the live connection's system prompt was built from, written by
     /// `connect` and `connect_agent` and read by `context_view` and
     /// `prompt_layers`. See [`PromptBuilt`] for why it is a field of its own.
@@ -1494,6 +1500,12 @@ async fn connect_agent(
     subagents_auto: Option<bool>,
     limits: Option<nightloom_service::agent::brief::SubagentLimits>,
     fork_mode: Option<bool>,
+    // Nightshift backlog 174: the chat's cache timer reads cold, the
+    // Settings default takes changes then, and *Update now* by layer.
+    holds: State<'_, prompt_hold::Pending>,
+    cold: Option<bool>,
+    auto_layers: Option<bool>,
+    update_now: Option<Vec<SegmentKind>>,
 ) -> Result<ConnectedInfo, String> {
     // Same rule as `connect`: an open project wins over the rail's saved
     // folder, or a chat filed under a project would be running somewhere
@@ -1624,6 +1636,51 @@ async fn connect_agent(
         system.as_deref(),
         !off.contains(&SegmentKind::EngineNote),
     );
+    // A changed layer waits for the chat's cold moment (nightshift backlog
+    // 174, `prompt_hold`): the held text goes out while the cache is warm.
+    let prompt = {
+        let log_dir = state.log_dir().await;
+        let (id, has_cli) = match state.session.lock().await.as_ref() {
+            Some(s) if s.mode() != ChatMode::Ephemeral => (
+                Some(s.id.clone()),
+                s.agent_session().is_some_and(|(a, _)| a == AGENT),
+            ),
+            _ => (None, false),
+        };
+        let file = id.as_deref().map(|id| prompt_hold::file_for(&log_dir, id));
+        let held = file.as_deref().and_then(prompt_hold::load);
+        let r = prompt_hold::resolve(
+            &prompt,
+            held.as_ref(),
+            has_cli,
+            &prompt_hold::Ask {
+                cold: cold.unwrap_or(true),
+                auto: auto_layers.unwrap_or(true),
+                // A layer he switched off or gave its own text is his
+                // click already: taken now, like *Update now*.
+                now: update_now
+                    .unwrap_or_default()
+                    .into_iter()
+                    .chain(off.iter().copied())
+                    .chain(edits.keys().copied())
+                    // The Preamble switch off is every layer at once.
+                    .chain(SegmentKind::LAYERS.iter().copied().filter(|_| !preamble))
+                    .collect(),
+            },
+        );
+        if let Some(f) = &file
+            && let Err(e) = prompt_hold::save(f, &r.hold)
+        {
+            eprintln!("prompt hold not saved at {}: {e}", f.display());
+        }
+        spec.system_prompt_snapshot_off = r.hold.snapshot_off;
+        *holds.view.lock().await = prompt_hold::PendingView {
+            session: id,
+            layers: r.pending,
+        };
+        *holds.file.lock().await = file;
+        r.prompt
+    };
     spec.append_system_prompt = prompt.render_flat();
     // What the subagent brief takes beyond the preamble's own segments
     // (nightshift backlog 152): the extra-folders note, when there is one.
@@ -2303,15 +2360,6 @@ async fn send(
     outcome.map_err(|e| e.to_string())
 }
 
-/// One seat's stream event during a council turn (nightshift backlog 149):
-/// `council-event`, beside the chat's own `turn-event`, so the window draws
-/// the seats' progress without the recorder or the live reply seeing it.
-#[derive(Serialize, Clone)]
-struct CouncilEvent<'a> {
-    seat: usize,
-    event: &'a TurnEvent,
-}
-
 /// What one agent turn spent and where it went.
 ///
 /// Separate from [`TurnOutcome`] because almost none of it is the same
@@ -2418,6 +2466,12 @@ async fn send_agent(
         .map(|stem| log_dir.join("ask").join(stem));
     if let Some(dir) = &ask_dir {
         agent.set_ask_dir(dir.clone());
+        // The chat's id for the window's budget meter and stop card on a
+        // chat's first turn, which it otherwise learns only at the end
+        // (nightshift backlog 192; review 2026-09-23 finding 4).
+        if let Some(id) = dir.file_name() {
+            let _ = app.emit("turn-chat", id.to_string_lossy());
+        }
         // The checkpoint and the fork's command line beside the brief
         // (nightshift backlog 104, pass 3), for a checkpoint helper this
         // turn may spawn.
@@ -2427,13 +2481,27 @@ async fn send_agent(
     // A council turn (nightshift backlog 149, 2026-09-17;
     // `nightloom_service::council`): the seats run first, in parallel,
     // each a fork of this chat's CLI session under its own model, their
-    // streams to the window as `council-event` and their standing as the
-    // Running-tasks rows — the recorder sees none of it. Then the chair
+    // streams and their standing to the window as their Running-tasks
+    // rows — the recorder sees none of it. Then the chair
     // is *this* turn: the chat's own model, warm, over the answers
     // anonymised and shuffled, and its reply is the chat's reply. The
     // seats' answers and the record go into the chair's message as folded
     // blocks once it has landed. If no seat answered, the turn goes as an
     // ordinary one and says so.
+    //
+    // The typed message is on the log *before* the seats run (nightshift
+    // backlog 167): they take minutes, and until it was recorded a quit
+    // or a crash lost it and a reopened chat showed nothing. The replay
+    // an ephemeral chat carries and the kind switch's note are asked
+    // first, as before — neither needs the seats — and put on the wire
+    // after them, around whatever the chair is sent.
+    let carry_head = (session.mode() == ChatMode::Ephemeral).then(|| carry_transcript(session, ""));
+    let switch_note = session.kind_switch_note();
+    session.record_user_with_attachments(
+        typed.clone(),
+        input.images.clone(),
+        input.documents.clone(),
+    );
     let mut council_run: Option<(council::CouncilRequest, Vec<council::SeatResult>)> = None;
     let mut council_notices: Vec<String> = Vec::new();
     if let Some(mut request) = council {
@@ -2444,12 +2512,21 @@ async fn send_agent(
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
             .unwrap_or(1);
+        // A seat's stream goes out as a subagent's does (backlog 169):
+        // keyed by its row, so the row's transcript fills — its searches,
+        // their results, its words — and, with no parent call in the live
+        // message, the chair's reply draws none of it. (It was a
+        // `council-event` nothing listened to.)
         let mut on_seat = |seat: usize, e: TurnEvent| {
-            if matches!(e, TurnEvent::SubagentStatus { .. }) {
-                let _ = app.emit("turn-event", &e);
+            let e = if matches!(e, TurnEvent::SubagentStatus { .. }) {
+                e
             } else {
-                let _ = app.emit("council-event", CouncilEvent { seat, event: &e });
-            }
+                TurnEvent::Subagent {
+                    parent_tool_use_id: council::seat_key(seed, seat),
+                    event: Box::new(e),
+                }
+            };
+            let _ = app.emit("turn-event", &e);
         };
         let results = council::run_seats(
             agent,
@@ -2462,6 +2539,41 @@ async fn send_agent(
             &mut on_seat,
         )
         .await;
+        // Stopped during the seats (backlog 167): the turn ends here, as
+        // Stop ends any turn — no chair is spawned on a cancelled token.
+        // The log gets a reply that says so, with the seats' blocks as far
+        // as they got.
+        if cancel.is_cancelled() {
+            let model = last_model(session)
+                .or_else(|| agent.resolved_model().map(String::from))
+                .or_else(|| agent.spec().model.clone())
+                .unwrap_or_else(|| AGENT.into());
+            let mut recorder = Recorder::new(session, model);
+            recorder.push_block(nightloom_core::ContentBlock::Text {
+                text: council::STOPPED_REPLY.into(),
+            });
+            for r in &results {
+                recorder.push_block(nightloom_core::ContentBlock::Text {
+                    text: council::seat_block(r),
+                });
+            }
+            recorder.finish(Some("end_turn"));
+            if !sealed_before && let Some(failure) = session.write_failure() {
+                let _ = app.emit("turn-notice", failure.summary());
+            }
+            return Ok(AgentTurn {
+                model: None,
+                context_limit: None,
+                cost_usd: None,
+                rounds: None,
+                plan: None,
+                limit: None,
+                notices: vec!["stopped during the council's seats; no chair ran".into()],
+                is_error: false,
+                refused: Vec::new(),
+                folders: None,
+            });
+        }
         let answered = results.iter().filter(|r| r.error.is_none()).count();
         for r in results.iter().filter(|r| r.error.is_some()) {
             council_notices.push(format!(
@@ -2478,24 +2590,26 @@ async fn send_agent(
             input.text = council::chair_prompt(request.mode, &typed, &answers, &request.areas);
             council_run = Some((request, results));
         }
+        // The chair (or the ordinary turn standing in for it) is this
+        // message, so it continues the seats' budget ledger; nothing else
+        // does (backlog 187).
+        agent.arm_chair();
     }
     // An ephemeral chat's CLI session cannot be resumed (measured: see
     // `AgentSpec::no_session_persistence`), so what the CLI is sent from the
     // second turn on is the conversation Nightloom holds in memory, rendered
     // back in front of the message — rendered *before* this turn's message
-    // is recorded, so it holds everything up to it and not the turn itself.
+    // is recorded (above, since backlog 167), so it holds everything up to
+    // it and not the turn itself. `carry_transcript(session, "")` is that
+    // replay's head, exactly what it would put in front of any text.
     // The log keeps the text as typed; only the wire carries the replay.
-    let carried =
-        (session.mode() == ChatMode::Ephemeral).then(|| carry_transcript(session, &input.text));
     // The kind switch's note (nightshift backlog 144), asked before the
     // turn is recorded for the same reason the replay is: it is due on the
     // first message after the switch and on no other. The log keeps the
     // text as typed; the note is on the wire only, where the API engine's
     // projection puts the same one.
-    let switch_note = session.kind_switch_note();
-    session.record_user_with_attachments(typed, input.images.clone(), input.documents.clone());
-    if let Some(carried) = carried {
-        input.text = carried;
+    if let Some(head) = carry_head {
+        input.text = format!("{head}{}", input.text);
     }
     if let Some(note) = switch_note {
         input.text = format!("{note}\n\n{}", input.text);
@@ -3579,8 +3693,9 @@ async fn ask_aside(
     text: String,
     seq: u64,
 ) -> Result<AsideResult, String> {
-    let cancel = CancellationToken::new();
-    *state.aside_cancel.lock().unwrap() = cancel.clone();
+    // Its own token, by `seq` (backlog 176): the entry goes when this ends.
+    let registered = state.aside_cancel.begin(seq);
+    let cancel = registered.token().clone();
     let agent_guard = tokio::select! {
         guard = state.agent.lock() => guard,
         _ = cancel.cancelled() => return Err("the aside was cancelled".to_string()),
@@ -3749,6 +3864,41 @@ async fn prompt_layers(state: State<'_, AppState>) -> Result<PromptLayersInfo, S
         kind,
         built_kind: built.kind,
     })
+}
+
+/// The layers whose file is newer than the text the chat the live
+/// connection was built for holds (nightshift backlog 174): the Context
+/// page's *newer version exists* marks. Empty on the provider engine.
+#[tauri::command]
+async fn prompt_pending(
+    holds: State<'_, prompt_hold::Pending>,
+) -> Result<prompt_hold::PendingView, String> {
+    Ok(holds.view.lock().await.clone())
+}
+
+/// A click on a pending layer's mark: *Update at the next cold moment*
+/// (`cold`), *Keep this version* (`keep`), or back to the Settings default
+/// (`auto`). Written to the chat's hold file at once, so a reconnect —
+/// or a restart — reads it back; *Update now* is a reconnect instead
+/// (`connect_agent`'s `update_now`).
+#[tauri::command]
+async fn set_prompt_layer_choice(
+    holds: State<'_, prompt_hold::Pending>,
+    kind: SegmentKind,
+    choice: prompt_hold::Choice,
+) -> Result<prompt_hold::PendingView, String> {
+    let file = holds.file.lock().await.clone();
+    let Some(file) = file else {
+        return Err("this chat has no held prompt to choose for".into());
+    };
+    let mut hold = prompt_hold::load(&file).unwrap_or_default();
+    prompt_hold::choose(&mut hold, kind, choice);
+    prompt_hold::save(&file, &hold).map_err(|e| e.to_string())?;
+    let mut view = holds.view.lock().await;
+    for layer in view.layers.iter_mut().filter(|l| l.kind == kind) {
+        layer.choice = choice;
+    }
+    Ok(view.clone())
 }
 
 /// Record which prompt layers this chat excludes, returning the transcript.
@@ -4672,18 +4822,19 @@ async fn note_presence(
 
 /// His answer on the card at the 85 % stop line (backlog 189):
 /// `continue` lets this message's calls through to the end of the turn,
-/// `stop` refuses the held call as before.
+/// `stop` refuses the held call as before. Since backlog 192 `continue`
+/// covers the chat while he stays at the Mac, and `wrap` (with `text`,
+/// the instruction) has the chat finish and write its hand-off now.
 #[tauri::command]
 async fn budget_override(
     state: State<'_, AppState>,
     session: String,
     decision: String,
+    text: Option<String>,
 ) -> Result<(), String> {
-    let go_on = match decision.as_str() {
-        "continue" => true,
-        "stop" => false,
-        other => return Err(format!("unknown decision: {other}")),
-    };
+    if !matches!(decision.as_str(), "continue" | "stop" | "wrap") {
+        return Err(format!("unknown decision: {decision}"));
+    }
     let dir = budget_dir(&state, &session)
         .await
         .ok_or_else(|| "no chat to answer for".to_string())?;
@@ -4692,7 +4843,7 @@ async fn budget_override(
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
     tokio::task::spawn_blocking(move || {
-        nightloom_service::agent::brief::write_override(&dir, go_on, now)
+        nightloom_service::agent::brief::write_answer(&dir, &decision, text, now)
     })
     .await
     .map_err(|e| format!("writing the override failed: {e}"))?
@@ -5491,9 +5642,11 @@ fn cancel_dream(state: State<'_, AppState>) {
 /// as one that is running, and never touches the turn: `ask_aside` races
 /// its wait for the agent against this token, and the CLI it spawned gets
 /// the same interrupt a turn gets on Stop.
+/// Since backlog 176 (2026-09-23) it names the exchange (`seq`): several
+/// cards may be open, and only the one clicked stops.
 #[tauri::command]
-fn cancel_aside(state: State<'_, AppState>) {
-    state.aside_cancel.lock().unwrap().cancel();
+fn cancel_aside(state: State<'_, AppState>, seq: u64) {
+    state.aside_cancel.cancel(seq);
 }
 
 // ---- the capture pass ------------------------------------------------------
@@ -6506,6 +6659,10 @@ fn main() {
 
     builder
         .setup(|app| {
+            // The Mac's activity, watched while the app runs: ends a chat's
+            // Continue anyway at the 85 % line after 10 minutes away
+            // (nightshift backlog 192).
+            nightloom_service::agent::brief::spawn_activity_watch();
             // App-data is now the *previous* home for unfiled chats, kept
             // only long enough to move them. A user who has been running this
             // app has a sidebar full of them, and a release that silently
@@ -6548,13 +6705,14 @@ fn main() {
                 mcp: tokio::sync::Mutex::new(None),
                 dreaming: tokio::sync::Mutex::new(()),
                 dream_cancel: Arc::new(std::sync::Mutex::new(CancellationToken::new())),
-                aside_cancel: Arc::new(std::sync::Mutex::new(CancellationToken::new())),
+                aside_cancel: Default::default(),
                 prompt: tokio::sync::Mutex::new(PromptBuilt::default()),
             });
             // The Nightshift file watches, beside `AppState` rather than in it.
             app.manage(nightshift::Watches::default());
             app.manage(nightshift::PendingLaunches::default());
             app.manage(nightshift::Interviews::default());
+            app.manage(prompt_hold::Pending::default());
             // The power assertion's holder and the wake watcher (nightshift
             // backlog 101). The holder has nothing to spawn until a turn
             // takes a guard; the watcher ticks every 30 s for the life of
@@ -6575,7 +6733,8 @@ fn main() {
             build_window(app)?;
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
+        // Wrapped (backlog 172): no app command answers a web tab's page.
+        .invoke_handler(webtab::guard(tauri::generate_handler![
             providers,
             set_api_key,
             clear_api_key,
@@ -6620,6 +6779,8 @@ fn main() {
             prompt_layer_file,
             cli_memory_file,
             cli_prompt_snapshot,
+            prompt_pending,
+            set_prompt_layer_choice,
             continue_session,
             delete_session,
             restore_session,
@@ -6737,7 +6898,12 @@ fn main() {
             nightshift::nightshift_revert,
             nightshift::nightshift_watch,
             nightshift::nightshift_unwatch,
-        ])
+            webtab::web_open,
+            webtab::web_bounds,
+            webtab::web_nav,
+            webtab::web_close,
+            webtab::web_labels,
+        ]))
         .run(tauri::generate_context!())
         .expect("error while running Nightloom");
 }

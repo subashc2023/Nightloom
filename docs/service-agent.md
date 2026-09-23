@@ -1105,8 +1105,14 @@ experiment with `--system-prompt-snapshot on` on both launches answered with the
 *first* text. So on the CLI this was built against, a note written mid-chat is
 in the index of the next turn; on 2.1.265 or later it is in the index of the
 next *conversation*, which is the same rule the API engine already lives by
-(the index is assembled once per `Chat`). Nothing here passes
-`--system-prompt-snapshot`; see the report for the option. The same rule
+(the index is assembled once per `Chat`). ~~Nothing here passes
+`--system-prompt-snapshot`; see the report for the option.~~ **Superseded
+2026-09-23 (nightshift backlog 174):** measured on 2.1.280, a changed flag did
+not reach a resumed chat (the recorded prompt won). A chat now keeps the layer
+texts it holds while its cache is warm (`prompt_hold.rs`, a file per chat under
+`<logs>/prompt-held/`), takes a changed file at its first cold turn or on
+*Update now*, and from that turn on passes `--system-prompt-snapshot off`
+(nightshift blocker 320). The same rule
 governs a layer switched off mid-chat: a new chat drops it at once, a resumed
 one on 2.1.265 or later keeps the recorded prompt until its next compaction, and
 the Context popover says so on this engine rather than pretend.

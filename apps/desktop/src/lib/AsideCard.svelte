@@ -5,12 +5,15 @@
     app,
     askAside,
     asideAsking,
+    asideWaiting,
     dismissAside,
     dropContent,
     endContentDrag,
     followUpAside,
     startContentDrag,
+    unfoldAside,
   } from "./state.svelte";
+  import type { TabContent } from "./tabs";
   import { outcome, startMove } from "./floatingMove";
   import type { Zone } from "./floatingMove";
   import { tick } from "svelte";
@@ -63,18 +66,36 @@
    * a move puts it back where the move began; *back* in the head, or a
    * double-click on the head, sends a moved card home under its passage.
    * The panel's card keeps the native drag onto a strip.
+   *
+   * Several at once (backlog 176, 2026-09-23): each card is one thread
+   * (`aside`, with its `id`), and every action here — ask, follow up, ×,
+   * move, drag out — is that thread's, never "the" aside. The descriptor
+   * a drag makes names the thread, so two aside tabs show two threads.
+   * Only the `front` card claims an Escape pressed elsewhere in the
+   * window, so one Escape closes one card. A `folded` card (blocker 318)
+   * is its head row alone; a click on it opens it again.
    */
   let {
     aside,
     placement,
     panel = false,
     session = null,
+    front = true,
+    footBottom = null,
+    footCount = 1,
   }: {
     aside: Aside;
     placement: Placement | null;
     panel?: boolean;
     /** The panel's chat; the floating card's is always the open one. */
     session?: string | null;
+    /** The card an Escape from elsewhere in the window closes (176). */
+    front?: boolean;
+    /** Several composer cards (176): this one's `bottom` in the sticky
+     *  stack above the composer — the heights of the cards below it —
+     *  and how many share the stack's room. */
+    footBottom?: number | null;
+    footCount?: number;
   } = $props();
 
   let root = $state<HTMLElement | null>(null);
@@ -85,6 +106,9 @@
   let copied = $state(false);
 
   const asking = $derived(asideAsking(aside));
+  /** Another aside is answering first (blocker 317): one at a time. */
+  const waiting = $derived(asideWaiting(aside));
+  const folded = $derived(!panel && aside.folded === true);
   const last = $derived(aside.turns[aside.turns.length - 1] ?? null);
   const onClaudeCode = $derived(app.connection?.engine === "claude-code");
   /** The chat the thread belongs to: the panel's, else the open one. */
@@ -106,7 +130,7 @@
   const pos = $derived(dragPos ?? moved);
 
   function headDown(e: PointerEvent): void {
-    if (!movable || !root) return;
+    if (!movable || !root || folded) return;
     if ((e.target as HTMLElement | null)?.closest("button, a, input, textarea")) return;
     const r = root.getBoundingClientRect();
     const width = r.width;
@@ -139,8 +163,10 @@
   }
   function land(p: { left: number; top: number }, z: Zone | null, width: number): void {
     const session = owner;
-    const a = app.aside;
-    if (!session || !a) return;
+    // This card's thread (backlog 176) — ~~`app.aside`~~, which is only
+    // the front one when several are open.
+    const a = aside;
+    if (!session) return;
     const o = outcome(z);
     if (o.kind === "stay") {
       a.moved = { left: p.left, top: p.top, width };
@@ -148,13 +174,20 @@
     }
     // Snapped: the card's next home is under its passage again.
     a.moved = null;
-    if (o.kind === "panel") app.asidePanel = session;
-    else if (o.kind === "tab") void dropContent({ kind: "aside", session }, { pane: o.pane, index: o.index });
-    else void dropContent({ kind: "aside", session }, { pane: o.pane, side: o.side });
+    if (o.kind === "panel") {
+      app.asidePanel = session;
+      app.asidePanelThread = a.id;
+    } else if (o.kind === "tab") void dropContent(descriptor(session), { pane: o.pane, index: o.index });
+    else void dropContent(descriptor(session), { pane: o.pane, side: o.side });
+  }
+  /** The tab descriptor for this thread (backlog 176): the chat and the
+   *  thread's id, so a second aside tab shows a second thread. */
+  function descriptor(session: string): TabContent {
+    return { kind: "aside", session, thread: aside.id } as TabContent;
   }
   /** Home: under the passage, or above the composer for a composer aside. */
   function goHome(): void {
-    if (app.aside) app.aside.moved = null;
+    aside.moved = null;
   }
 
   // The body follows the answer as the transcript follows a reply: a card
@@ -192,7 +225,7 @@
     const q = askDraft.trim();
     if (!q || !aside.quote || !aside.draft) return;
     askDraft = "";
-    void askAside(q, aside.quote);
+    void askAside(q, aside.quote, aside);
   }
   function askKeys(e: KeyboardEvent): void {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -204,7 +237,7 @@
     const q = followDraft.trim();
     if (!q || aside.draft || asking) return;
     followDraft = "";
-    void followUpAside(q);
+    void followUpAside(q, aside);
   }
   function followKeys(e: KeyboardEvent): void {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -219,20 +252,22 @@
     if (e.key !== "Escape") return;
     e.preventDefault();
     e.stopPropagation();
-    if (panel) app.asidePanel = null;
-    else dismissAside();
+    if (panel) {
+      app.asidePanel = null;
+      app.asidePanelThread = null;
+    } else dismissAside(aside);
   }
   /** Escape elsewhere: ours unless another text field has it. The
    *  panel does not claim it — a panel is furniture, not a popover. */
   function windowKeys(e: KeyboardEvent): void {
-    if (panel || e.key !== "Escape" || e.defaultPrevented) return;
+    if (panel || !front || e.key !== "Escape" || e.defaultPrevented) return;
     const t = e.target as HTMLElement | null;
     if (t && root?.contains(t)) return; // `cardKeys` had it
     const tag = (t?.tagName ?? "").toUpperCase();
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || t?.isContentEditable) return;
     e.preventDefault();
     e.stopPropagation();
-    dismissAside();
+    dismissAside(aside);
   }
 
   /** The last answer as its markdown source; the thread when there are
@@ -260,6 +295,7 @@
   class="aside-card"
   class:floating={placement !== null}
   class:foot={placement === null && !panel}
+  class:folded
   class:panel
   class:above={placement?.side === "above"}
   class:moved={pos !== null}
@@ -275,10 +311,15 @@
     ? `min(${placement ? `${placement.maxHeight}px` : "50vh"}, calc(100vh - ${pos.top + 8}px))`
     : placement
       ? `${placement.maxHeight}px`
-      : undefined}
+      : !panel && footCount > 1
+        ? `max(120px, calc(60vh / ${footCount}))`
+        : undefined}
+  style:bottom={!pos && !placement && !panel && footBottom !== null ? `${footBottom}px` : undefined}
   onkeydown={cardKeys}
 >
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <!-- The strip's click is a pointer convenience; the keyboard has the
+       *open* button a folded head carries. -->
+  <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
   <div
     class="aside-card-head"
     class:movable
@@ -290,11 +331,16 @@
       : undefined}
     ondragstart={(e) => {
       if (!draggable || !panel || owner === null) return;
-      startContentDrag(e, { kind: "aside", session: owner });
+      startContentDrag(e, descriptor(owner));
     }}
     ondragend={endContentDrag}
     onpointerdown={headDown}
     onmousedown={headMouseDown}
+    onclick={(e) => {
+      // A folded card's strip opens it (blocker 318); its × still closes.
+      if (!folded || (e.target as HTMLElement | null)?.closest("button")) return;
+      unfoldAside(aside);
+    }}
     ondblclick={(e) => {
       if (!moved || (e.target as HTMLElement | null)?.closest("button")) return;
       goHome();
@@ -302,6 +348,9 @@
   >
     <span class="aside-card-grip" aria-hidden="true" class:live={draggable}>⋮⋮</span>
     <span class="ns-chip mono">aside · not in the chat</span>
+    {#if folded && asking}
+      <span class="ns-chip mono">{waiting ? "waiting" : "asking…"}</span>
+    {/if}
     {#if aside.quote}
       <span class="ns-chip mono" title="The highlighted passage, sent with the question exactly as selected">about {quoteLabel(aside.quote, "card")}</span>
     {/if}
@@ -309,6 +358,11 @@
       <span class="ns-chip mono">{last.cacheRead.toLocaleString()} read from cache</span>
     {/if}
     <span class="spacer"></span>
+    {#if folded}
+      <button class="ns-btn ghost small" title="Open this card again (the oldest other open card folds)" onclick={() => unfoldAside(aside)}
+        >open</button
+      >
+    {/if}
     {#if moved}
       <button
         class="ns-btn ghost small"
@@ -331,10 +385,11 @@
           : asking
             ? "Stop the answer here; what has arrived stays"
             : "Dismiss the aside — the thread ends") + (panel ? "" : " (Escape)")}
-        onclick={dismissAside}>×</button
+        onclick={() => dismissAside(aside)}>×</button
       >
     {/if}
   </div>
+  {#if !folded}
   <div class="aside-card-body" bind:this={body} onscroll={bodyScrolled}>
     {#if aside.draft}
       <textarea
@@ -358,7 +413,7 @@
         >
           Ask aside
         </button>
-        <button class="ns-btn ghost small" onclick={dismissAside}>Cancel</button>
+        <button class="ns-btn ghost small" onclick={() => dismissAside(aside)}>Cancel</button>
       </div>
     {:else}
       {#each aside.turns as turn (turn.seq)}
@@ -378,6 +433,11 @@
           <div class="aside-card-wait" role="status" aria-label="Waiting for the answer">
             <span class="roll" aria-hidden="true"><Icon name="moon" size={16} /></span>
             <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+            {#if waiting}
+              <!-- Blocker 317: one aside answers at a time; this one is
+                   next in line, not stuck. -->
+              <span class="aside-card-queued">waiting — one aside answers at a time</span>
+            {/if}
           </div>
         {/if}
       {/each}
@@ -412,6 +472,7 @@
       {/if}
     {/if}
   </div>
+  {/if}
 </div>
 
 {#if zone}<MoveZone {zone} />{/if}
@@ -456,6 +517,18 @@
     align-self: flex-end;
     width: min(440px, 100%);
     max-height: 50vh;
+  }
+  /* Folded (blocker 318): the head row alone, a strip that opens on a
+     click. */
+  .aside-card.folded {
+    max-height: none;
+  }
+  .aside-card.folded .aside-card-head {
+    border-bottom: none;
+    cursor: pointer;
+  }
+  .aside-card-queued {
+    font-size: 12px;
   }
   @keyframes aside-card-in {
     from {

@@ -47,6 +47,10 @@
  * pane's half it becomes an ordinary tab and the slot empties. The slot
  * holds one tab at most — opening another replaces it — and its tab is
  * in no strip, so `allTabs` and the walks never see it.
+ *
+ * A **web** tab (nightshift backlog 172) is a page he clicked a link to:
+ * the model holds only its address and title; the page itself is a child
+ * webview the pane places over its content (`webtabs.svelte.ts`).
  */
 import type { NoteScope } from "./types";
 import type { IconName } from "./icons";
@@ -58,12 +62,19 @@ export type TabContent =
   | { kind: "graph" }
   | { kind: "new-project" }
   | { kind: "project"; id: string }
-  | { kind: "aside"; session: string }
+  /** `thread`: which of the chat's aside threads (backlog 176 — several
+   *  are open at once); absent reads as the chat's front thread. */
+  | { kind: "aside"; session: string; thread?: number }
   | { kind: "attachment"; session: string; turn: number; index: number; media: "image" | "document"; name: string }
   /** A subagent's transcript (nightshift backlog 152): the Running-tasks
    *  panel's *View transcript*, drawn from the chat's row for the `Agent`
    *  call `toolUseId`; `name` is the task's description, for the strip. */
-  | { kind: "subagent"; session: string; toolUseId: string; name: string };
+  | { kind: "subagent"; session: string; toolUseId: string; name: string }
+  /** A page he clicked a link to (nightshift backlog 172), drawn by a
+   *  child webview over the pane (`WebView.svelte`). `url` is where the
+   *  page is now — it follows the page's own navigation — and `title`
+   *  the page's title once it has one. Only http(s). */
+  | { kind: "web"; url: string; title?: string };
 
 export type TabKind = TabContent["kind"];
 
@@ -139,8 +150,11 @@ export function parseContentDrag(json: string | null | undefined): TabContent | 
         return typeof p.id === "string" ? { kind: "project", id: p.id } : null;
       }
       case "aside": {
-        const a = c as { session?: unknown };
-        return typeof a.session === "string" ? { kind: "aside", session: a.session } : null;
+        const a = c as { session?: unknown; thread?: unknown };
+        if (typeof a.session !== "string") return null;
+        return typeof a.thread === "number"
+          ? { kind: "aside", session: a.session, thread: a.thread }
+          : { kind: "aside", session: a.session };
       }
       case "subagent": {
         const a = c as { session?: unknown; toolUseId?: unknown; name?: unknown };
@@ -151,6 +165,11 @@ export function parseContentDrag(json: string | null | undefined): TabContent | 
           toolUseId: a.toolUseId,
           name: typeof a.name === "string" ? a.name : "subagent",
         };
+      }
+      case "web": {
+        const w = c as { url?: unknown; title?: unknown };
+        if (typeof w.url !== "string" || !isWebUrl(w.url)) return null;
+        return typeof w.title === "string" ? { kind: "web", url: w.url, title: w.title } : { kind: "web", url: w.url };
       }
       case "attachment": {
         const a = c as { session?: unknown; turn?: unknown; index?: unknown; media?: unknown; name?: unknown };
@@ -173,6 +192,16 @@ export function parseContentDrag(json: string | null | undefined): TabContent | 
   }
 }
 
+/** An http(s) URL — the only kind a web tab holds. */
+export function isWebUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return u.protocol === "http:" || u.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 let seq = 0;
 /** Ids are only ever compared, never shown; a counter is enough and keeps
  *  the suite's expectations readable. */
@@ -190,13 +219,15 @@ export function sameContent(a: TabContent, b: TabContent): boolean {
   if (a.kind === "chat" && b.kind === "chat") return a.session === b.session;
   if (a.kind === "note" && b.kind === "note") return a.scope === b.scope && a.name === b.name;
   if (a.kind === "project" && b.kind === "project") return a.id === b.id;
-  if (a.kind === "aside" && b.kind === "aside") return a.session === b.session;
+  // One tab per thread (backlog 176): two threads of a chat, two tabs.
+  if (a.kind === "aside" && b.kind === "aside") return a.session === b.session && a.thread === b.thread;
   if (a.kind === "attachment" && b.kind === "attachment") {
     return a.session === b.session && a.turn === b.turn && a.index === b.index && a.media === b.media;
   }
   if (a.kind === "subagent" && b.kind === "subagent") {
     return a.session === b.session && a.toolUseId === b.toolUseId;
   }
+  if (a.kind === "web" && b.kind === "web") return a.url === b.url;
   // The singletons carry nothing but their kind.
   return isSingleton(a);
 }
@@ -592,6 +623,14 @@ export function tabTitle(
       return content.name;
     case "subagent":
       return `Agent · ${content.name}`;
+    case "web": {
+      if (content.title?.trim()) return content.title.trim();
+      try {
+        return new URL(content.url).host || content.url;
+      } catch {
+        return content.url;
+      }
+    }
   }
 }
 
@@ -613,6 +652,8 @@ export function tabGlyph(content: TabContent): IconName {
       return content.media === "image" ? "read" : "download";
     case "subagent":
       return "think";
+    case "web":
+      return "ext";
     case "chat":
       return "chat";
   }

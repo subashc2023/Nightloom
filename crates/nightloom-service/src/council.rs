@@ -56,7 +56,7 @@ use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
 use crate::TurnEvent;
-use crate::agent::{AgentSpec, AskMode, ClaudeCodeAgent, carry_transcript};
+use crate::agent::{AgentSpec, AskMode, ClaudeCodeAgent, carry_messages};
 
 /// Fewer than this is not a council.
 pub const MIN_SEATS: usize = 2;
@@ -725,7 +725,7 @@ fn status_of(
 ///
 /// `chat` is the chat's spec (its `resume` is the session the seats fork);
 /// `session` is the chat's log, read only when there is no CLI session to
-/// fork, for `carry_transcript`. `on_event(seat_index, event)` gets every
+/// fork, for `carry_messages`. `on_event(seat_index, event)` gets every
 /// seat's stream — text, calls, results — and, in between, a
 /// [`TurnEvent::SubagentStatus`] row per seat (type [`SEAT_TASK_TYPE`],
 /// key [`seat_key`]) each time its standing changes. A seat
@@ -753,7 +753,8 @@ pub async fn run_seats(
     // The message's budget (nightshift backlog 165, pass 2): the seats
     // are the start of this message, so the ledger starts here with the
     // window on hand, and the chair's `run_turn` continues it
-    // (`brief::begin_turn`, phase `seats` → `seats-done` → `turn`).
+    // (`brief::begin_turn`, phase `seats` → `seats-done` → `turn`) once
+    // the caller has armed it (`ClaudeCodeAgent::arm_chair`, backlog 187).
     let budget_dir = chat
         .brief
         .as_ref()
@@ -775,7 +776,7 @@ pub async fn run_seats(
             (!request.areas.is_empty()).then(|| request.areas[i % request.areas.len()].clone());
         let prompt = member_prompt(request.mode, dump, n - 1, angle, area.as_deref());
         let text = match (forked, session) {
-            (false, Some(s)) => carry_transcript(s, &prompt),
+            (false, Some(s)) => seat_carry(s, dump, &prompt),
             _ => prompt,
         };
         let tx = tx.clone();
@@ -901,7 +902,14 @@ pub async fn run_seats(
                 } else {
                     o.text.clone()
                 };
-                let error = if text.trim().is_empty() {
+                // A seat the Stop interrupted is stopped, whatever it had
+                // written by then (backlog 167): its text stays in its
+                // block, but it is not an answer.
+                let interrupted =
+                    cancel.is_cancelled() && o.notices.iter().any(|n| n.starts_with("interrupted"));
+                let error = if interrupted {
+                    Some("stopped".to_string())
+                } else if text.trim().is_empty() {
                     Some(if cancel.is_cancelled() {
                         "stopped".to_string()
                     } else if o.is_error {
@@ -953,6 +961,27 @@ pub async fn run_seats(
     }
     results
 }
+
+/// What a non-forked seat is sent: the chat's earlier turns carried in
+/// front of its prompt. The caller records the typed message before the
+/// seats run (backlog 167), so the log's last message is `dump` itself,
+/// which the prompt already holds — it is left out of the carry.
+fn seat_carry(session: &Session, dump: &str, prompt: &str) -> String {
+    let mut messages = session.messages();
+    if messages
+        .last()
+        .is_some_and(|m| m.role == nightloom_core::Role::User && m.text().trim() == dump.trim())
+    {
+        messages.pop();
+    }
+    carry_messages(&messages, prompt)
+}
+
+/// The reply a council turn stopped during its seats records (backlog
+/// 167): this line, then each seat's block as far as it got. No chair
+/// ran, so there is no record block — a stopped council is not one of
+/// the council turns its record lists (blocker 323).
+pub const STOPPED_REPLY: &str = "The council was stopped while its seats were answering; no chair ran. The seats' answers, as far as they got:";
 
 /// The answers in label order, for the chair.
 pub fn anonymised(results: &[SeatResult]) -> Vec<Anonymised> {
@@ -1647,6 +1676,93 @@ exit 0
         assert_eq!(record.overlap.union, 1);
         assert!(record.seats.iter().any(|s| s.error.is_some()));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Backlog 167: a Stop while the seats run lands every seat as
+    /// `stopped` — the one that had written something keeps its words in
+    /// its block, but is not an answer — so the caller ends the turn
+    /// rather than running a chair on the cancelled token.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_stop_during_the_seats_lands_every_seat_as_stopped() {
+        let dir = std::env::temp_dir().join(format!("nightloom-council-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("claude-stand-in");
+        std::fs::write(
+            &script,
+            r##"#!/bin/sh
+model=""
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--model" ]; then model="$2"; fi
+  shift
+done
+printf '%s\n' '{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"m","permissionMode":"dontAsk","session_id":"s-1"}'
+if [ "$model" = "fable" ]; then
+  printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Half an answer"}}}'
+fi
+exec sleep 30
+"##,
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut chat = AgentSpec::new(&dir);
+        chat.binary = script.to_string_lossy().into_owned();
+        let agent = ClaudeCodeAgent::new(chat.clone());
+        let request = CouncilRequest {
+            seats: vec![seat("opus"), seat("fable")],
+            mode: CouncilMode::Answer,
+            areas: vec![],
+        };
+        let cancel = CancellationToken::new();
+        let stopper = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+            stopper.cancel();
+        });
+        let mut sink = |_: usize, _: TurnEvent| {};
+        let started = std::time::Instant::now();
+        let results = run_seats(
+            &agent, &chat, None, &request, "the dump", 7, &cancel, &mut sink,
+        )
+        .await;
+        assert!(started.elapsed() < std::time::Duration::from_secs(20));
+        assert!(cancel.is_cancelled());
+        assert_eq!(results.len(), 2);
+        for r in &results {
+            assert_eq!(r.error.as_deref(), Some("stopped"), "{r:?}");
+        }
+        assert_eq!(results[1].text, "Half an answer");
+        assert!(seat_block(&results[1]).contains("error=\"stopped\""));
+        assert!(seat_block(&results[1]).contains("Half an answer"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Backlog 167: the typed message is recorded before the seats run, so
+    /// a seat with no session to fork carries the log without it — its
+    /// own prompt already holds it — and earlier turns as before.
+    #[test]
+    fn a_seat_carries_the_log_without_the_message_just_recorded() {
+        let mut s = Session::new();
+        let prompt = "member prompt ending with the dump";
+        // A first council turn: only the typed message is on the log.
+        s.record_user("what is the dump?");
+        assert_eq!(seat_carry(&s, "what is the dump?", prompt), prompt);
+        // Later: an earlier exchange stays carried, the new message does not.
+        s.record_assistant(
+            "m",
+            vec![nightloom_core::ContentBlock::Text {
+                text: "an earlier answer".into(),
+            }],
+            Some("end_turn".into()),
+            Default::default(),
+        );
+        s.record_user("second question");
+        let out = seat_carry(&s, "second question", prompt);
+        assert!(out.contains("user: what is the dump?"), "{out}");
+        assert!(out.contains("assistant: an earlier answer"), "{out}");
+        assert!(!out.contains("user: second question"), "{out}");
+        assert!(out.ends_with(prompt));
     }
 
     #[test]

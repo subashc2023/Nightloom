@@ -5,7 +5,6 @@
   import { onDestroy, tick, untrack } from "svelte";
   import {
     app,
-    asideInTab,
     denialReason,
     draftAside,
     liveFlags,
@@ -20,6 +19,7 @@
     setCheckpoint,
     openSession,
     resumeAfterLimit,
+    runningChatName,
   } from "./state.svelte";
   import type { Segment, ToolCallView } from "./state.svelte";
   import { checkpointLine, checkpointOwner } from "./checkpoint";
@@ -45,17 +45,8 @@
   import { councilOfTurn, rosterLabel } from "./council";
   import { wordDiff } from "./textdiff";
   import { continuedFlags } from "./runs";
-  import { quoteLabel, samePassage, selectionText, type AsideQuote } from "./asideQuote";
-  import {
-    PREFERRED_CARD_HEIGHT,
-    chooseSide,
-    markRange,
-    offsetsOf,
-    placeCard,
-    rangeFromOffsets,
-    type AsideAnchor,
-    type Placement,
-  } from "./asideCard";
+  import { samePassage, selectionText, type AsideQuote } from "./asideQuote";
+  import { PREFERRED_CARD_HEIGHT, chooseSide, offsetsOf, type AsideAnchor } from "./asideCard";
   import { isMac } from "./platform";
   import { fmtShare, fmtTokens, shareOf, sizeTitle, turnSizes } from "./tokens";
   import { cacheState } from "./cache";
@@ -71,12 +62,12 @@
     Usage,
   } from "./types";
   import AssistantMessage from "./AssistantMessage.svelte";
-  import AsideCard from "./AsideCard.svelte";
+  import AsideLayer from "./AsideLayer.svelte";
   import { openAttachment } from "./attachments.svelte";
   import ApprovalPrompt from "./ApprovalPrompt.svelte";
   import BudgetStopCard from "./BudgetStopCard.svelte";
+  import { afterWrapTurn, wrapAsk } from "./budgetWrap.svelte";
   import Icon from "./Icon.svelte";
-  import ConfirmDialog from "./ConfirmDialog.svelte";
   import Navigator from "./Navigator.svelte";
 
   interface AssistantFooter {
@@ -363,6 +354,11 @@
   // exactly that. Half a minute is enough for a text whose finest unit is
   // a minute; the interval lives as long as the transcript does.
   let now = $state(Date.now());
+  // A Wrap up pressed during a turn that no tool call carried goes as the
+  // next message when the turn ends (nightshift backlog 192).
+  $effect(() => {
+    if (!app.busy && wrapAsk.session) void afterWrapTurn();
+  });
   $effect(() => {
     const t = setInterval(() => (now = Date.now()), 30_000);
     return () => clearInterval(t);
@@ -1108,36 +1104,21 @@
     return p ? anchorOf(p) : null;
   }
 
-  /** A new passage's question would replace an answered thread on the
-   *  card (backlog 137, blocker 201): the thread is written nowhere else
-   *  but the card, so it is asked about first, in the dialog's shape. */
-  let replacingAside = $state<AsideQuote | null>(null);
-  const asideHasAnswers = $derived(
-    !!app.aside && !app.aside.draft && app.aside.turns.some((t) => t.partial.trim().length > 0),
-  );
-
-  let replacingAnchor: AsideAnchor | null = null;
-  async function askAboutSelection(): Promise<void> {
+  /** ~~A new passage's question would replace an answered thread on the
+   *  card (backlog 137, blocker 201): asked about first, in the dialog's
+   *  shape.~~ Struck 2026-09-23 (backlog 176): several asides are open at
+   *  once, so a new passage opens a new card and replaces nothing — there
+   *  is nothing to confirm. */
+  function askAboutSelection(): void {
     const pill = asidePill;
     if (!pill) return;
     const anchor = anchorOfSelection();
     document.getSelection()?.removeAllRanges();
     asidePill = null;
-    if (asideHasAnswers) {
-      replacingAside = pill.quote;
-      replacingAnchor = anchor;
-      return;
-    }
-    await openAsideDraft(pill.quote, anchor);
-  }
-
-  async function openAsideDraft(quote: AsideQuote, anchor: AsideAnchor | null): Promise<void> {
-    draftAside(quote, anchor);
-    await tick();
-    // The card is under the passage (or above the composer); the view
-    // stays where it is and the caret goes to the card's box.
-    await placeAsideCard();
-    asideCard?.focusBox();
+    // The card opens under the passage (or above the composer); the view
+    // stays where it is and the caret goes to the new card's box
+    // (`AsideLayer` focuses it once placed).
+    draftAside(pill.quote, anchor);
   }
 
   function asideChord(e: KeyboardEvent): void {
@@ -1145,124 +1126,24 @@
     if (!primary || !e.shiftKey || e.altKey || e.code !== "KeyA") return;
     if (!asidePill) return;
     e.preventDefault();
-    void askAboutSelection();
+    askAboutSelection();
   }
 
   // ~~`submitAsideDraft`, `asideBoxKeys`, the follow-up box~~ — the
   // card's own since backlog 141 (`AsideCard.svelte`); the question and
   // follow-up boxes, Enter, Escape and the Follow up button live there.
 
-  // ---- The floating card's place and the passage's mark (backlog 141) ----
+  // ---- The floating cards' places and the passages' marks ----
   //
-  // The card is drawn once, at the column's end, `position: absolute`
-  // in this scrolled column (`.inner`, `position: relative`) so it moves
-  // with the message it is about. Its place is measured, not styled: the
-  // anchor's offsets are turned back into a `Range` in the turn's prose
-  // block, the passage is marked (`markRange`: the CSS Custom Highlight
-  // API in this webview, wrapped `<mark>`s elsewhere), and `placeCard`
-  // gives the card's top, left, width and the room it may take before it
-  // scrolls inside. Re-done after every render that can move the text —
-  // the log re-syncing at a turn's end (the reply is new DOM), a chat
-  // switch bringing a stashed thread back — and on any size change of
-  // the column or the card (a `ResizeObserver` each), and the window.
-  // A passage that cannot be found again (rewound, edited, a restored
-  // thread whose text changed) gets the composer's home instead
-  // (blocker 225): no mark, the card pinned above the composer.
+  // ~~The card is drawn once, at the column's end~~ — since backlog 176
+  // (2026-09-23) several cards are open at once, and `AsideLayer.svelte`
+  // draws them all, at the column's end as the one card was (`.inner`,
+  // `position: relative`, is their frame): per card, the passage found
+  // again from its anchor and marked, the card placed with `placeCard`,
+  // `spreadCards` keeping one from covering another (blocker 318), the
+  // composer's cards stacked above the composer (blocker 225). What it
+  // needs from here: the viewport, the column, and `proseBlocks`.
   let inner = $state<HTMLDivElement | null>(null);
-  let asideCard = $state<AsideCard | null>(null);
-  let asidePlace = $state<Placement | null>(null);
-  let asideRange: Range | null = null;
-  let unmarkAside: (() => void) | null = null;
-
-  const asideShown = $derived(!!app.aside && !asideInTab(app.activeSessionId));
-  /** The thread in the side panel beside this chat (141 pass 2): the
-   *  card is the panel's, but the passage stays marked here — the panel
-   *  is about it, and the mark is what says so. */
-  const asideBeside = $derived(!!app.aside && app.asidePanel === app.activeSessionId);
-
-  function clearAsideMark(): void {
-    unmarkAside?.();
-    unmarkAside = null;
-    asideRange = null;
-  }
-
-  /** Find the passage again and mark it; null when it is gone. */
-  function anchorAside(anchor: AsideAnchor): Range | null {
-    const prose = proseBlocks(anchor.turn)[anchor.block] ?? null;
-    if (!prose) return null;
-    return rangeFromOffsets(prose, anchor.start, anchor.end);
-  }
-
-  /** Measure and place: called after the DOM is current. */
-  async function placeAsideCard(): Promise<void> {
-    await tick();
-    const a = app.aside;
-    const anchor = a?.anchor ?? null;
-    if ((!asideShown && !asideBeside) || !a || !anchor || !viewport || !inner) {
-      clearAsideMark();
-      asidePlace = null;
-      return;
-    }
-    // The mark is redone only when the range is not the one marked — a
-    // re-render replaced the text, or the thread changed. A range whose
-    // text nodes were removed does not disconnect: the browser collapses
-    // it onto the parent that stayed, so `collapsed` is the tell (seen in
-    // the harness — the mark went empty and the card sat at the top).
-    if (!asideRange || asideRange.collapsed || !asideRange.startContainer.isConnected) {
-      clearAsideMark();
-      const r = anchorAside(anchor);
-      if (!r) {
-        asidePlace = null;
-        return;
-      }
-      asideRange = r;
-      unmarkAside = markRange(r);
-    }
-    if (!asideShown) {
-      // Marked for the panel; no card here.
-      asidePlace = null;
-      return;
-    }
-    const el = asideCard?.element() ?? null;
-    const height = el?.offsetHeight ?? PREFERRED_CARD_HEIGHT;
-    asidePlace = placeCard(
-      asideRange.getBoundingClientRect(),
-      inner.getBoundingClientRect(),
-      viewport.getBoundingClientRect(),
-      height,
-      anchor.side,
-    );
-  }
-
-  // What can move the passage or change the card: the thread (its
-  // presence, its anchor), a tab taking it, and the log's identity (the
-  // re-sync at a turn's end replaces every reply's DOM).
-  $effect(() => {
-    void app.aside;
-    void app.aside?.anchor;
-    void app.aside?.draft;
-    void asideShown;
-    void asideBeside;
-    void app.events;
-    void items.length;
-    untrack(() => void placeAsideCard());
-  });
-  // A card that grows (the answer streaming in), a column that changes
-  // shape (a reply completing above, the sidebar folded) or a viewport
-  // that does (the window resized — the column's height is its content's,
-  // so the window's change shows only on the viewport) re-measures.
-  $effect(() => {
-    const host = inner;
-    const view = viewport;
-    if (!host || !view || typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(() => untrack(() => void placeAsideCard()));
-    ro.observe(host);
-    ro.observe(view);
-    const card = asideCard?.element();
-    if (card) ro.observe(card);
-    return () => ro.disconnect();
-  });
-  onDestroy(clearAsideMark);
 </script>
 
 <svelte:document onselectionchange={placePill} />
@@ -1672,28 +1553,8 @@
          tab of its own (`asideInTab`, backlog 130 part 2), and its head
          row drags — onto a strip or a pane's half — to make that tab. The
          thread never moves. -->
-    {#if replacingAside}
-      <ConfirmDialog
-        title="Start a new aside about this passage?"
-        lead="The aside thread on the card is written nowhere else; a new passage replaces it. Follow up in the card instead to keep the thread."
-        facts={[
-          ["thread", `${app.aside?.turns.length ?? 0} ${(app.aside?.turns.length ?? 0) === 1 ? "exchange" : "exchanges"}`],
-          ["new passage", quoteLabel(replacingAside, "card")],
-        ]}
-        confirmLabel="Replace"
-        onconfirm={() => {
-          const q = replacingAside;
-          const anchor = replacingAnchor;
-          replacingAside = null;
-          replacingAnchor = null;
-          if (q) void openAsideDraft(q, anchor);
-        }}
-        onclose={() => {
-          replacingAside = null;
-          replacingAnchor = null;
-        }}
-      />
-    {/if}
+    <!-- ~~The replace confirm (blocker 201)~~ — struck 2026-09-23,
+         backlog 176: a new passage opens a new card beside the others. -->
     <!-- `shown` is the live turn, or its ghost for the moment between the
          turn's end and the re-synced log (backlog 131), so the reply never
          leaves the DOM under a reader. -->
@@ -1722,9 +1583,14 @@
       <ApprovalPrompt {req} />
     {/each}
     <!-- A call held at the 85% stop line for his answer (nightshift
-         backlog 189): only in the chat the turn runs in, while it runs. -->
-    {#if app.busy && !app.parked && app.activeSessionId && app.turnBudget?.pending_since_ms}
-      <BudgetStopCard session={app.activeSessionId} />
+         backlog 189): ~~only in the chat the turn runs in~~ — since 192 in
+         the chat on screen whichever it is, naming the running chat when
+         that is another (review 2026-09-23 finding 3), while it runs. -->
+    {#if app.busy && app.budgetSession && app.turnBudget?.pending_since_ms}
+      <BudgetStopCard
+        session={app.budgetSession}
+        elsewhere={app.parked && app.activeSessionId !== app.budgetSession ? runningChatName() : null}
+      />
     {/if}
     {#if app.error}
       <div class="error-banner">{app.error}</div>
@@ -1756,12 +1622,10 @@
         </div>
       </div>
     {/if}
-    <!-- The floating aside card (backlog 141): the column's last child,
-         absolute under the passage when there is one, stuck above the
-         composer otherwise. -->
-    {#if asideShown && app.aside}
-      <AsideCard bind:this={asideCard} aside={app.aside} placement={asidePlace} />
-    {/if}
+    <!-- The floating aside cards (backlog 141; several since 176): the
+         column's last children, absolute under their passages, stuck
+         above the composer when there is none. -->
+    <AsideLayer {viewport} {inner} {proseBlocks} version={items.length} />
   </div>
 </div>
 {#if showNav}

@@ -106,6 +106,71 @@ export function placeCard(sel: Rect, host: Rect, vp: Rect, height: number, side:
   return { top: sel.top - CARD_GAP - shown - host.top, left, width, maxHeight, side };
 }
 
+// ---- Several cards at once (nightshift backlog 176, blocker 318) ----
+
+/** Past this many open cards in a chat, the oldest fold to their head
+ *  row — a title strip that re-expands on a click (blocker 318). */
+export const MAX_OPEN_ASIDES = 3;
+
+/** A placed card, in the host's coordinates. */
+export interface CardBox {
+  top: number;
+  left: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * Keep the floating cards from covering each other (blocker 318's
+ * default): in order of their natural top, a card whose box would
+ * overlap one already placed — horizontally and vertically — is pushed
+ * down to sit `CARD_GAP` under it, so each card stays beside its own
+ * passage and none hides another. Returns the tops, in the input's
+ * order. Pure; a single card is returned as it came.
+ */
+export function spreadCards(boxes: readonly CardBox[]): number[] {
+  const order = boxes.map((_, i) => i).sort((a, b) => boxes[a]!.top - boxes[b]!.top || a - b);
+  const tops = boxes.map((b) => b.top);
+  const placed: CardBox[] = [];
+  for (const i of order) {
+    const b = boxes[i]!;
+    let top = b.top;
+    // Re-check after every push: moving below one card can land on the
+    // next one down.
+    for (let moved = true; moved; ) {
+      moved = false;
+      for (const p of placed) {
+        const across = b.left < p.left + p.width && p.left < b.left + b.width;
+        const along = top < p.top + p.height + CARD_GAP && p.top < top + b.height + CARD_GAP;
+        if (across && along) {
+          top = p.top + p.height + CARD_GAP;
+          moved = true;
+        }
+      }
+    }
+    tops[i] = top;
+    placed.push({ ...b, top });
+  }
+  return tops;
+}
+
+/**
+ * Which cards fold (blocker 318): with more than `max` unfolded, the
+ * oldest unfolded ones — never `keep`, the card just opened or clicked
+ * open — until `max` remain. Takes the cards oldest first; returns the
+ * indices to fold. Pure.
+ */
+export function foldTheOldest(folded: readonly boolean[], keep: number | null, max = MAX_OPEN_ASIDES): number[] {
+  let open = folded.filter((f) => !f).length;
+  const out: number[] = [];
+  for (let i = 0; i < folded.length && open > max; i++) {
+    if (folded[i] || i === keep) continue;
+    out.push(i);
+    open--;
+  }
+  return out;
+}
+
 // ---- The DOM half: offsets and the mark. Not run in the suite. ----
 
 /** A text-node walker in document order under `root`. */
@@ -190,8 +255,13 @@ export function rangeFromOffsets(prose: Node, start: number, end: number): Range
 
 const HIGHLIGHT_NAME = "aside-passage";
 
-type Highlights = { set(name: string, h: unknown): void; delete(name: string): void };
-type HighlightCtor = new (...ranges: Range[]) => unknown;
+type HighlightSet = { add(r: Range): void; delete(r: Range): boolean; size: number };
+type Highlights = {
+  set(name: string, h: unknown): void;
+  get(name: string): HighlightSet | undefined;
+  delete(name: string): void;
+};
+type HighlightCtor = new (...ranges: Range[]) => HighlightSet;
 
 /**
  * Mark the passage: the CSS Custom Highlight API when the webview has it
@@ -205,8 +275,21 @@ export function markRange(range: Range): () => void {
   const css = (globalThis as { CSS?: { highlights?: Highlights } }).CSS;
   const Highlight = (globalThis as { Highlight?: HighlightCtor }).Highlight;
   if (css?.highlights && Highlight) {
-    css.highlights.set(HIGHLIGHT_NAME, new Highlight(range));
-    return () => css.highlights?.delete(HIGHLIGHT_NAME);
+    // One highlight holds every open card's passage (backlog 176): a
+    // second `set` under the name used to unmark the first. Each undo
+    // takes its own range out, and the last one takes the name away.
+    const highlights = css.highlights;
+    let shared = highlights.get(HIGHLIGHT_NAME);
+    if (!shared) {
+      shared = new Highlight();
+      highlights.set(HIGHLIGHT_NAME, shared);
+    }
+    shared.add(range);
+    const mine = shared;
+    return () => {
+      mine.delete(range);
+      if (mine.size === 0 && highlights.get(HIGHLIGHT_NAME) === mine) highlights.delete(HIGHLIGHT_NAME);
+    };
   }
   const doc = range.startContainer.ownerDocument;
   if (!doc) return () => {};

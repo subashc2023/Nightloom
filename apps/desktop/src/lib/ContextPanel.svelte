@@ -3,6 +3,8 @@
   import { copyText } from "./clipRing.svelte";
   import * as api from "./api";
   import Icon from "./Icon.svelte";
+  import LayerVersionMark from "./LayerVersionMark.svelte";
+  import { pendingFor } from "./promptVersions";
   import { fmtTokens } from "./tokens";
   import {
     app,
@@ -873,6 +875,7 @@
           {@const isEditing = canEdit && editing === layer.kind}
           {@const canRead = !isOff && (segs.length > 0 || isEditing)}
           {@const locked = saving || seeding || app.busy || app.connecting}
+          {@const mark = agentEngine ? pendingFor(app.promptPending, layer.kind) : null}
           <section class="card layer" class:off={isOff} class:edited={isEdited && !isOff}>
             <div class="ch">
               <input
@@ -929,6 +932,8 @@
                 </button>
               {/if}
             </div>
+            <!-- Backlog 174: the file changed while this chat ran on the old text. -->
+            {#if mark}<LayerVersionMark pending={mark} />{/if}
             {#if isEdited && !isOff && !isEditing}
               <!-- The override's two ways out, said in words: back to the
                    file, or into the file as a draft the editor shows. -->

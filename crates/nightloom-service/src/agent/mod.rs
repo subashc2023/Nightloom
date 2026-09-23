@@ -41,7 +41,9 @@ pub use ask::{
 };
 pub use brief::BriefSpec;
 pub use protocol::{DeniedCall, RateLimitInfo};
-pub use record::{Recorder, SUBAGENT_CLOSE, SUBAGENT_OPEN, carry_transcript, subagent_block};
+pub use record::{
+    Recorder, SUBAGENT_CLOSE, SUBAGENT_OPEN, carry_messages, carry_transcript, subagent_block,
+};
 pub use translate::{AgentOutcome, LimitHit, Translator};
 
 use crate::{TurnEvent, TurnInput};
@@ -200,6 +202,13 @@ pub struct AgentSpec {
     pub system_prompt: Option<String>,
     /// Added after it instead.
     pub append_system_prompt: Option<String>,
+    /// `--system-prompt-snapshot off`: the CLI renders the prompt from the
+    /// flags on every request instead of reusing the one it recorded on the
+    /// conversation's first. Measured on 2.1.280 (nightshift backlog 174,
+    /// `174-report-2026-09-22.md`): with the record on, a changed
+    /// `--append-system-prompt` never reaches a resumed chat. Set for a chat
+    /// that has taken a newer layer at a cold moment (blocker 320).
+    pub system_prompt_snapshot_off: bool,
     /// Start with the host's customizations off — `CLAUDE.md`, skills,
     /// plugins, hooks, MCP servers, custom agents.
     ///
@@ -639,6 +648,7 @@ impl AgentSpec {
             permission_mode: None,
             system_prompt: None,
             append_system_prompt: None,
+            system_prompt_snapshot_off: false,
             safe_mode: false,
             auto_memory: true,
             auto_compact: true,
@@ -1079,6 +1089,10 @@ impl AgentSpec {
             a.push("--append-system-prompt".into());
             a.push(s.clone());
         }
+        if self.system_prompt_snapshot_off {
+            a.push("--system-prompt-snapshot".into());
+            a.push("off".into());
+        }
         if self.fork_mode {
             // The checkpoint helper's roster entry (backlog 104): a flag,
             // not a settings source, so it stands under safe mode's empty
@@ -1218,6 +1232,11 @@ pub struct ClaudeCodeAgent {
     /// once a turn has landed. (The log side is the recorder's: it drops a
     /// result for a call the turn never opened.)
     refused: Option<(String, DeferredCall)>,
+    /// The seats' budget ledger the next `run_turn` continues, as its
+    /// chair (nightshift backlog 187): set by [`Self::arm_chair`] once the
+    /// caller has decided the chair runs, taken by that one turn. Without
+    /// it a turn starts its own ledger, whatever the seats left behind.
+    chair: std::sync::Mutex<Option<i64>>,
 }
 
 impl ClaudeCodeAgent {
@@ -1226,6 +1245,21 @@ impl ClaudeCodeAgent {
             spec,
             resolved: None,
             refused: None,
+            chair: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// The next `run_turn` is the chair of the council whose seats just
+    /// ran: it continues their budget ledger rather than starting one
+    /// (backlog 187). A no-op when there is no seats ledger to continue.
+    pub fn arm_chair(&self) {
+        let ledger = self
+            .spec
+            .brief
+            .as_ref()
+            .and_then(|b| brief::seats_ledger(&b.dir));
+        if let Ok(mut c) = self.chair.lock() {
+            *c = ledger;
         }
     }
 
@@ -1416,11 +1450,12 @@ impl ClaudeCodeAgent {
         // and, since pass 2 of backlog 165, the message's budget ledger
         // started from the window reading on hand (or continued, for the
         // chair of a council whose seats just ran).
+        let chair = self.chair.lock().ok().and_then(|mut c| c.take());
         if let Some(brief) = &self.spec.brief {
             brief::begin_turn(
                 &brief.dir,
                 &self.spec.subagent_limits.unwrap_or_default(),
-                brief::TurnPhase::Turn,
+                chair.map_or(brief::TurnPhase::Turn, brief::TurnPhase::Chair),
             );
         }
         let mut translator = match &self.refused {
@@ -1859,9 +1894,135 @@ async fn kill_tree(child: &mut tokio::process::Child) {
     let _ = child.kill().await;
 }
 
+/// Each aside's own cancel token, keyed by its exchange number `seq`
+/// (nightshift backlog 176, 2026-09-23). Several aside cards may be open
+/// at once, so the window's × must stop the exchange it was clicked on and
+/// no other. Before this the app kept **one** token, overwritten by every
+/// `ask_aside`: a second question left the first's token unreachable, and
+/// a × then stopped the wrong one. [`AsideCancels::begin`] registers a
+/// fresh token and hands back a guard that removes it when the exchange
+/// ends, however it ends; [`AsideCancels::cancel`] reaches one exchange,
+/// whether it is still waiting for the agent's lock or running.
+#[derive(Default)]
+pub struct AsideCancels {
+    /// `seq` → (registration number, token). The registration number lets
+    /// a guard remove only its own entry.
+    tokens: std::sync::Mutex<std::collections::HashMap<u64, (u64, CancellationToken)>>,
+    next: std::sync::atomic::AtomicU64,
+}
+
+/// An aside's registration in [`AsideCancels`]: its token while it runs,
+/// dropped from the map when the guard goes.
+pub struct AsideCancelGuard<'a> {
+    owner: &'a AsideCancels,
+    seq: u64,
+    reg: u64,
+    token: CancellationToken,
+}
+
+impl AsideCancels {
+    /// Register exchange `seq` and return its guard. A `seq` already
+    /// present (the window never reuses one) is replaced, its old token
+    /// cancelled so nothing is left running unreachable.
+    pub fn begin(&self, seq: u64) -> AsideCancelGuard<'_> {
+        let token = CancellationToken::new();
+        let reg = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let old = self
+            .tokens
+            .lock()
+            .unwrap()
+            .insert(seq, (reg, token.clone()));
+        if let Some((_, old)) = old {
+            old.cancel();
+        }
+        AsideCancelGuard {
+            owner: self,
+            seq,
+            reg,
+            token,
+        }
+    }
+
+    /// Cancel exchange `seq`; false when no such exchange is registered
+    /// (it finished, or never started).
+    pub fn cancel(&self, seq: u64) -> bool {
+        match self.tokens.lock().unwrap().get(&seq) {
+            Some((_, t)) => {
+                t.cancel();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// How many exchanges are registered — waiting or running.
+    pub fn len(&self) -> usize {
+        self.tokens.lock().unwrap().len()
+    }
+
+    /// Whether no exchange is registered.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+impl AsideCancelGuard<'_> {
+    /// The exchange's token, for the wait on the agent and for the CLI.
+    pub fn token(&self) -> &CancellationToken {
+        &self.token
+    }
+}
+
+impl Drop for AsideCancelGuard<'_> {
+    fn drop(&mut self) {
+        let mut map = self.owner.tokens.lock().unwrap();
+        // Only this registration's own entry: a `begin` that replaced it
+        // owns the slot now.
+        if map.get(&self.seq).is_some_and(|(r, _)| *r == self.reg) {
+            map.remove(&self.seq);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two asides at once (backlog 176): × on one stops that one only, and
+    /// an exchange that ended is no longer reachable — its `seq` cancels
+    /// nothing. Before this the app had one token for every aside.
+    #[test]
+    fn a_cancel_stops_the_aside_it_names_and_no_other() {
+        let cancels = AsideCancels::default();
+        let first = cancels.begin(1);
+        let second = cancels.begin(2);
+        assert_eq!(cancels.len(), 2);
+        assert!(cancels.cancel(2));
+        assert!(second.token().is_cancelled());
+        assert!(!first.token().is_cancelled(), "the other aside runs on");
+        drop(second);
+        assert_eq!(cancels.len(), 1);
+        assert!(!cancels.cancel(2), "an ended aside is not reachable");
+        assert!(!first.token().is_cancelled());
+        assert!(cancels.cancel(1));
+        assert!(first.token().is_cancelled());
+        drop(first);
+        assert!(cancels.is_empty());
+    }
+
+    /// A reused `seq` cancels the registration it replaces, and the old
+    /// guard's drop leaves the new one in place.
+    #[test]
+    fn a_replaced_aside_is_cancelled_and_its_guard_leaves_the_new_one() {
+        let cancels = AsideCancels::default();
+        let old = cancels.begin(7);
+        let new = cancels.begin(7);
+        assert!(old.token().is_cancelled());
+        drop(old);
+        assert_eq!(cancels.len(), 1);
+        assert!(cancels.cancel(7));
+        assert!(new.token().is_cancelled());
+    }
 
     fn spec() -> AgentSpec {
         AgentSpec::new("/work")
@@ -1909,6 +2070,26 @@ mod tests {
         let a = s.args("hi");
         let i = a.iter().position(|x| x == "--tools").expect("--tools");
         assert_eq!(a[i + 1], "");
+    }
+
+    /// The record switch (nightshift backlog 174): absent by default, the
+    /// CLI's own default; `off` only when a chat has taken a newer layer.
+    #[test]
+    fn the_prompt_snapshot_goes_off_only_when_asked() {
+        assert!(
+            !spec()
+                .args("hi")
+                .iter()
+                .any(|x| x == "--system-prompt-snapshot")
+        );
+        let mut s = spec();
+        s.system_prompt_snapshot_off = true;
+        let a = s.args("hi");
+        let i = a
+            .iter()
+            .position(|x| x == "--system-prompt-snapshot")
+            .expect("the flag");
+        assert_eq!(a[i + 1], "off");
     }
 
     #[test]

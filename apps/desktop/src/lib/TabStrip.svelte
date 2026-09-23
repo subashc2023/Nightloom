@@ -16,6 +16,7 @@
   import Icon from "./Icon.svelte";
   import TabChooser from "./TabChooser.svelte";
   import { isMac } from "./platform";
+  import { web, webLabel } from "./webtabs.svelte";
 
   /**
    * One pane's strip of tabs (nightshift backlog 099, boards 9a and 9d):
@@ -200,6 +201,7 @@
   ondrop={onDrop}
 >
   {#each pane.tabs as t, i (t.id)}
+    {@const favicon = t.content.kind === "web" ? web.live[webLabel(t.id)]?.favicon : undefined}
     {#if dropAt === i}<span class="tab-drop"></span>{/if}
     <!-- A div, not a button: a button cannot hold the close button, and
          the strip's keys are the window's (⌘⇧] / ⌘⇧[). Focusable so the
@@ -230,7 +232,12 @@
       ondragstart={(e) => onDragStart(e, t)}
       ondragend={onDragEnd}
     >
-      <span class="glyph" aria-hidden="true"><Icon name={tabs.tabGlyph(t.content)} size={12} /></span>
+      <span class="glyph" aria-hidden="true"
+        >{#if favicon}<img class="favicon" src={favicon} alt="" width="12" height="12" referrerpolicy="no-referrer" onerror={(e) => ((e.currentTarget as HTMLImageElement).style.display = "none")} />{:else}<Icon
+            name={tabs.tabGlyph(t.content)}
+            size={12}
+          />{/if}</span
+      >
       <span class="name">{title(t)}</span>
       {#if needsYou(t)}
         <span class="dot needs" title="Waiting on you"></span>
@@ -341,6 +348,12 @@
     display: inline-flex;
     color: var(--dim);
     flex-shrink: 0;
+  }
+  /* A web tab's page icon (backlog 172), in the glyph's square. */
+  .favicon {
+    width: 12px;
+    height: 12px;
+    object-fit: contain;
   }
   .name {
     overflow: hidden;

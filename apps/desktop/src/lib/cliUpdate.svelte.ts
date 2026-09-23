@@ -66,7 +66,8 @@ export function runningNow(): string[] {
   if (app.dreaming) out.push("a dream");
   if (app.capturing) out.push("a capture");
   if (app.centre.dailyRunning) out.push("the daily pass");
-  if (app.aside?.turns.some((t) => t.answer === null && t.error === null && !t.cancelled)) out.push("an aside");
+  // Every open card's thread (backlog 176), not only the front one.
+  if (app.asides.some((a) => a.turns.some((t) => t.answer === null && t.error === null && !t.cancelled))) out.push("an aside");
   if (app.nightshift.interview?.busy) out.push("an interview");
   for (const r of app.centre.rows) if (r.nightshift?.live) out.push(`a Nightshift run in ${r.name}`);
   return out;
@@ -84,7 +85,7 @@ function openChatIds(): string[] {
 }
 
 /** The newest live turn's prefix size: input plus output, the gauge's figure. */
-function prefixTokens(events: SessionEvent[]): number | null {
+export function prefixTokens(events: SessionEvent[]): number | null {
   const live = liveFlags(events);
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i];

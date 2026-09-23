@@ -14,6 +14,7 @@
 </script>
 
 <script lang="ts">
+  import { setLinkPref, web as webTabs } from "./webtabs.svelte";
   import {
     app,
     applyDraft,
@@ -29,6 +30,7 @@
     setDailyPrefs,
     setPalette,
     setPrefs,
+    setAutoLayers,
     useKnowledgeDir,
     useProjectsFolder,
     loadContextLimits,
@@ -1169,6 +1171,37 @@
         </div>
       </section>
 
+      <!-- Where a clicked link opens (nightshift backlog 172). The browser
+           until he picks — pass 0's behaviour; ⌘-click goes to the other
+           place (blocker 315). -->
+      <section class="card">
+        <div class="ch"><span class="t">Links</span></div>
+        <p class="note small">
+          Where a link in a reply, a note or an aside opens when you click it.
+          A Nightloom tab opens beside the chat, with back, forward and Open in
+          browser; ⌘-click opens it in the other place.
+        </p>
+        <div class="type-rows">
+          <div class="type-row">
+            <span class="type-label">Open in</span>
+            <div class="seg" role="radiogroup" aria-label="Links open in">
+              <button
+                class:on={webTabs.pref === "browser"}
+                role="radio"
+                aria-checked={webTabs.pref === "browser"}
+                onclick={() => setLinkPref("browser")}>Your browser</button
+              >
+              <button
+                class:on={webTabs.pref === "tab"}
+                role="radio"
+                aria-checked={webTabs.pref === "tab"}
+                onclick={() => setLinkPref("tab")}>A Nightloom tab</button
+              >
+            </div>
+          </div>
+        </div>
+      </section>
+
       <!-- The turn-end banner (nightshift backlog 079): two switches, one
            per kind. The rule they cannot change is the focus one — a
            window in front is never notified. -->
@@ -1450,6 +1483,19 @@
           cache rewrite for it. Never during a turn or a Nightshift run. The
           CLI's own background updater (<code>autoUpdates</code> in
           <code>~/.claude.json</code>) is left as you set it.
+        </p>
+        <!-- Nightshift backlog 174: a changed memory or instructions file. -->
+        <label class="dream-auto cli-auto">
+          <input type="checkbox" checked={app.layerPrefs.autoAtCold} onchange={(e) => setAutoLayers(e.currentTarget.checked)} />
+          <span>Give running chats a changed memory or instructions file at their next cold moment</span>
+        </label>
+        <p class="note small">
+          On (the default): a chat keeps the text it started with while its
+          cache is warm, and takes the new file with its first message after
+          the cache timer reads cold — the moment the prefix is rewritten
+          anyway. Off: the Context page marks the layer <em>newer version
+          exists</em> and waits for your Update. Either way <em>Update now</em>
+          and <em>Keep this version</em> are on the mark.
         </p>
         {#if cli.result}
           <details class="cli-out">

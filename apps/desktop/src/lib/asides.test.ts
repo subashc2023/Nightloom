@@ -25,23 +25,26 @@ class Mem {
 
 describe("the aside threads across a relaunch (backlog 137)", () => {
   it("keeps each chat's thread — questions, answers, the quote — and drops a draft", () => {
-    const map = new Map<string, Aside>([
+    const map = new Map<string, Aside[]>([
       [
         "a",
-        {
-          quote: { text: "the passage", role: "assistant", ordinal: 2 },
-          draft: false,
-          turns: [turn({}), turn({ seq: 4, question: "and?", partial: "so", answer: "so" })],
-          anchor: { turn: 3, block: 0, start: 12, end: 40, side: "below" },
-        },
+        [
+          {
+            id: 1,
+            quote: { text: "the passage", role: "assistant", ordinal: 2 },
+            draft: false,
+            turns: [turn({}), turn({ seq: 4, question: "and?", partial: "so", answer: "so" })],
+            anchor: { turn: 3, block: 0, start: 12, end: 40, side: "below" },
+          },
+        ],
       ],
-      ["b", { quote: null, draft: true, turns: [], anchor: null }],
+      ["b", [{ id: 2, quote: null, draft: true, turns: [], anchor: null }]],
     ]);
     const s = new Mem();
     saveAsides(map, s);
     const back = loadAsides(s);
     expect([...back.keys()]).toEqual(["a"]);
-    const a = back.get("a")!;
+    const a = back.get("a")![0]!;
     expect(a.quote).toEqual({ text: "the passage", role: "assistant", ordinal: 2 });
     expect(a.draft).toBe(false);
     // The passage's place (backlog 141) comes back with the thread, so the
@@ -58,29 +61,32 @@ describe("the aside threads across a relaunch (backlog 137)", () => {
   });
 
   it("a turn still asking comes back cut short with what had arrived, or not at all", () => {
-    const map = new Map<string, Aside>([
+    const map = new Map<string, Aside[]>([
       [
         "a",
-        {
-          quote: null,
-          draft: false,
-          turns: [turn({ partial: "half an", answer: null }), turn({ question: "empty", partial: "", answer: null })],
-          anchor: null,
-        },
+        [
+          {
+            id: 1,
+            quote: null,
+            draft: false,
+            turns: [turn({ partial: "half an", answer: null }), turn({ question: "empty", partial: "", answer: null })],
+            anchor: null,
+          },
+        ],
       ],
     ]);
     const s = new Mem();
     saveAsides(map, s);
-    const a = loadAsides(s).get("a")!;
+    const a = loadAsides(s).get("a")![0]!;
     expect(a.turns.length).toBe(1);
     expect(a.turns[0]!.answer).toBe("half an");
     expect(a.turns[0]!.cancelled).toBe(true);
   });
 
   it("trims the oldest threads past the cap and survives a broken store", () => {
-    const map = new Map<string, Aside>();
+    const map = new Map<string, Aside[]>();
     for (let i = 0; i < 6; i++) {
-      map.set(`c${i}`, { quote: null, draft: false, turns: [turn({ answer: "x".repeat(200 * 1024), partial: "" })], anchor: null });
+      map.set(`c${i}`, [{ id: i, quote: null, draft: false, turns: [turn({ answer: "x".repeat(200 * 1024), partial: "" })], anchor: null }]);
     }
     const out = serializeAsides(map);
     expect(out.length).toBeLessThanOrEqual(ASIDES_MAX_CHARS);
@@ -89,5 +95,29 @@ describe("the aside threads across a relaunch (backlog 137)", () => {
     const s = new Mem();
     s.setItem("nightloom.asides", "{not json");
     expect(loadAsides(s).size).toBe(0);
+  });
+
+  it("keeps every open thread of a chat, in order, each with its own id (backlog 176)", () => {
+    const two: Aside[] = [
+      { id: 1, quote: { text: "first", role: "assistant", ordinal: 1 }, draft: false, turns: [turn({})], anchor: null },
+      { id: 2, quote: { text: "second", role: "user", ordinal: 2 }, draft: false, turns: [turn({ question: "how" })], anchor: null },
+    ];
+    const s = new Mem();
+    saveAsides(new Map([["a", two]]), s);
+    const back = loadAsides(s).get("a")!;
+    expect(back.map((a) => a.quote?.text)).toEqual(["first", "second"]);
+    expect(back.map((a) => a.turns[0]!.question)).toEqual(["why", "how"]);
+    expect(new Set(back.map((a) => a.id)).size).toBe(2);
+  });
+
+  it("reads a store written before, one thread per chat, as a list of one", () => {
+    const s = new Mem();
+    s.setItem(
+      "nightloom.asides",
+      JSON.stringify({ a: { quote: null, turns: [{ question: "old", answer: "kept", error: null, cancelled: false }] } }),
+    );
+    const back = loadAsides(s).get("a")!;
+    expect(back.length).toBe(1);
+    expect(back[0]!.turns[0]!.answer).toBe("kept");
   });
 });

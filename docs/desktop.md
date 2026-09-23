@@ -415,9 +415,10 @@ answer pairs) and ×; then the question box (a draft), then his question in
 a bubble, the answer streaming under the moon (128), a `stopped here` mark,
 the follow-up box (130). Escape closes it from inside the card and from
 anywhere in the window that is not another text field, stopped at the
-card so it never reaches the window (138's rule). One card at a time: a
+card so it never reaches the window (138's rule). ~~One card at a time: a
 second passage's pill replaces the first (through 201's confirm when the
-first has answers). The passage's place is the thread's **anchor**
+first has answers).~~ Struck 2026-09-23 (backlog 176): several cards are
+open at once and a new passage opens a new card; 201's confirm is gone. The passage's place is the thread's **anchor**
 (`AsideAnchor { turn, block, start, end, side }` in `asideCard.ts`: the
 turn, which prose block of it — a reply has one `.markdown` per text
 segment between tool calls — character offsets into that block's text,
@@ -467,6 +468,44 @@ the passage with the thread intact; the card's × ends the thread and the
 panel closes with it; a tab opened for the same thread closes the panel
 (one second view at a time); a deleted chat closes it. Not persisted, as
 the workspace is not.
+
+**Several asides at once (2026-09-23, nightshift backlog 176; blockers
+317–319, defaults taken).** A chat holds a **list** of aside threads
+(`app.asides`, oldest first; the stash `asideStash` is a list per chat
+and every thread comes back on a chat switch, 137's FE4), each with an
+`id` (`nextAsideId`, per window). `app.aside` survives as the **front**
+thread — the newest — for what reads one card. A new passage's pill
+(`draftAside`) opens a **new card** and replaces nothing — 201's confirm
+is struck in `Transcript.svelte` — and the new card's box takes the caret
+(`app.asideFocus`). Every card action names its thread: `askAside(q,
+quote, draft)` asks a card's draft in place, `followUpAside(q, thread)`,
+`dismissAside(thread)`. The composer's Ask aside continues the newest
+composer thread (no passage) when it has an answer, else opens a new card
+(blocker 319). `AsideLayer.svelte` draws the open chat's cards at the
+column's end, as `Transcript.svelte` drew the one: per card, the passage
+found again and marked (`markRange` now adds each range to **one shared**
+`aside-passage` highlight — a second `set` used to unmark the first), the
+card placed with `placeCard`, then `spreadCards` pushes a card that would
+cover another down below it (blocker 318); a card he moved stays put.
+Composer cards stack above the composer, each `sticky` at the height of
+the ones under it; floating cards are given the room above that stack.
+Past `MAX_OPEN_ASIDES` (3) open cards the oldest **folds** to its head row
+(`foldTheOldest`); a click on the strip, or its *open* button, re-expands
+it and folds the next oldest (`unfoldAside`). Only the front card claims a
+stray Escape. Tabs and the panel address a **thread**: the aside tab
+descriptor carries `thread` (`{ kind: "aside", session, thread }`, one tab
+per thread in `sameContent`), `AsideView` takes it, and
+`app.asidePanelThread` names the panel's; a descriptor without one reads
+as the chat's front thread. **One asks at a time** (blocker 317's
+default): the backend still serialises an aside behind the agent's lock,
+first come first served, so a second question waits and its card says
+*waiting — one aside answers at a time* (`asideWaiting`). The backend's
+single `aside_cancel` token became `AsideCancels` (in
+`nightloom_service::agent`): a token per exchange, keyed by `seq`,
+registered by `ask_aside` and removed when it ends; `cancel_aside(seq)`
+stops that exchange and no other (tested there). The store (`asides.ts`)
+writes a list per chat and reads the old one-thread shape as a list of
+one.
 
 The `AutoApprove` policy lives in `AppState`, **not** in `connect` — the rail
 re-connects on every knob change, and rebuilding the policy there would silently

@@ -3,7 +3,8 @@
  * chat's card and writes every chat's thread to localStorage, debounced,
  * the way `drafts.svelte.ts` writes the drafts. `asides.ts` is the pure
  * part; `state.svelte.ts` holds the map (`asideStash`, loaded from the
- * store at launch) and the card (`app.aside`). Imported for its effect —
+ * store at launch) and the cards (~~`app.aside`~~ `app.asides`, a list
+ * since backlog 176). Imported for its effect —
  * from `Transcript.svelte`, which every window loads.
  */
 import { untrack } from "svelte";
@@ -13,8 +14,8 @@ import { saveAsides } from "./asides";
 const SAVE_DELAY_MS = 400;
 let timer: ReturnType<typeof setTimeout> | null = null;
 
-/** Every thread as it stands: the stash, with the open chat's card over
- *  its entry (the card is the live copy; null means dismissed). */
+/** Every thread as it stands: the stash, with the open chat's cards over
+ *  its entry (the cards are the live copies; none means all dismissed). */
 export function flushAsides(): void {
   if (timer !== null) clearTimeout(timer);
   timer = null;
@@ -22,7 +23,7 @@ export function flushAsides(): void {
   const map = new Map(asideStash);
   const id = app.activeSessionId;
   if (id !== null) {
-    if (app.aside) map.set(id, app.aside);
+    if (app.asides.length > 0) map.set(id, app.asides);
     else map.delete(id);
   }
   saveAsides(map, localStorage);
@@ -39,8 +40,7 @@ if (typeof window !== "undefined") {
       // Read what a save depends on, so a delta, an answer landing, a
       // cancel, a dismiss and a chat switch each schedule one.
       void app.activeSessionId;
-      const a = app.aside;
-      if (a) {
+      for (const a of app.asides) {
         void a.draft;
         for (const t of a.turns) {
           void t.partial;

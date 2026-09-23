@@ -1,5 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { CARD_GAP, CARD_WIDTH, EDGE_MARGIN, MIN_CARD_HEIGHT, chooseSide, placeCard, type Rect } from "./asideCard";
+import {
+  CARD_GAP,
+  CARD_WIDTH,
+  EDGE_MARGIN,
+  MAX_OPEN_ASIDES,
+  MIN_CARD_HEIGHT,
+  chooseSide,
+  foldTheOldest,
+  placeCard,
+  spreadCards,
+  type Rect,
+} from "./asideCard";
 
 // The floating aside card's geometry (nightshift backlog 141): the card
 // opens under the passage and stays on screen; a passage near the
@@ -81,5 +92,32 @@ describe("placeCard", () => {
     const p = placeCard(sel(300, 100), narrow, vp, 120, "below");
     expect(p.left).toBe(0);
     expect(p.width).toBe(300);
+  });
+});
+
+describe("several cards at once (backlog 176, blocker 318)", () => {
+  it("a card that would cover another is pushed below it; apart ones stay", () => {
+    const tops = spreadCards([
+      { top: 100, left: 0, width: 440, height: 200 },
+      { top: 150, left: 20, width: 440, height: 120 },
+      { top: 1000, left: 0, width: 440, height: 100 },
+    ]);
+    expect(tops).toEqual([100, 100 + 200 + CARD_GAP, 1000]);
+  });
+
+  it("a push that lands on the next card pushes again; side-by-side cards are left", () => {
+    const tops = spreadCards([
+      { top: 0, left: 0, width: 200, height: 100 },
+      { top: 50, left: 0, width: 200, height: 100 },
+      { top: 110, left: 0, width: 200, height: 100 },
+      { top: 0, left: 300, width: 200, height: 100 },
+    ]);
+    expect(tops).toEqual([0, 100 + CARD_GAP, 2 * (100 + CARD_GAP), 0]);
+  });
+
+  it("folds the oldest open cards past the cap, never the one kept", () => {
+    expect(foldTheOldest([false, false, false, false], 3, MAX_OPEN_ASIDES)).toEqual([0]);
+    expect(foldTheOldest([false, true, false, false, false], 0, 3)).toEqual([2]);
+    expect(foldTheOldest([false, false], null, 3)).toEqual([]);
   });
 });

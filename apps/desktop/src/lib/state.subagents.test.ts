@@ -72,6 +72,31 @@ describe("the subagent rows", () => {
     expect(app.subagents).toHaveLength(1);
   });
 
+  it("a council seat's stream fills its row and leaves the chair's live message alone (backlog 169)", () => {
+    // The seats' rows and events as `send_agent` sends them: a
+    // `council seat` row keyed `council-seat-<seed>-<index>`, and the
+    // seat's own events as `subagent` keyed by that row.
+    const key = "council-seat-2a-0";
+    app.live = { segments: [{ kind: "notice", text: "Council: 2 seats answering in parallel" }] };
+    const before = JSON.stringify(app.live.segments);
+    applyTurnEvent(status({ tool_use_id: key, task_id: key, subagent_type: "council seat", description: "Seat 1 · opus", background: true }));
+    const seat = (event: TurnEvent): TurnEvent => ({ type: "subagent", parent_tool_use_id: key, event });
+    applyTurnEvent(seat({ type: "tool_call", id: "toolu_s1", name: "WebSearch", input: { query: "council of models" } }));
+    applyTurnEvent(
+      seat({ type: "tool_result", tool_use_id: "toolu_s1", name: "WebSearch", content: "three results", is_error: false }),
+    );
+    applyTurnEvent(seat({ type: "text_delta", text: "The answer, " }));
+    applyTurnEvent(seat({ type: "text_delta", text: "sourced." }));
+    const row = app.subagents.find((r) => r.tool_use_id === key)!;
+    expect(row.segments).toHaveLength(2);
+    const search = row.segments[0];
+    expect(search.kind === "tool" && search.call.name).toBe("WebSearch");
+    expect(search.kind === "tool" && search.call.input).toEqual({ query: "council of models" });
+    expect(search.kind === "tool" && search.call.result?.content).toBe("three results");
+    expect(row.segments[1]).toEqual({ kind: "text", text: "The answer, sourced." });
+    expect(JSON.stringify(app.live!.segments)).toBe(before);
+  });
+
   it("the chip reads the latest turn's rows: count, running, the CLI's tokens summed", () => {
     applyTurnEvent(status({ tokens: 8_785, status: "completed" }));
     app.turnSeq = 8;

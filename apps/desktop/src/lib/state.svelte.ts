@@ -31,13 +31,15 @@ import { chatName, notifyNeedsYou, notifyTurnEnd } from "./notify";
 import { RESUME_TEXT, SleepWatch, loadSleepPrefs, pushPowerPrefs, type Woke } from "./sleep";
 import { asideFollowUp, asideQuestion, type AsideQuote } from "./asideQuote";
 import type { AsideAnchor } from "./asideCard";
-import { loadAsides } from "./asides";
+import { loadAsides, nextAsideId } from "./asides";
+import { MAX_OPEN_ASIDES, foldTheOldest } from "./asideCard";
 import { loadCouncilPrefs, type CouncilPrefs, type CouncilRequest } from "./council";
 import { limitPauseFrom, resumeDelayMs, resumeMessage, type LimitPause } from "./limit";
 import { liveHost, settlePlan, type Parked } from "./browse";
 import { SEARCH_COLUMN_MAX, searchGrowth } from "./search.svelte";
 import * as tabs from "./tabs";
 import { cli, startCliClock } from "./cliUpdate.svelte";
+import { chatIsCold, loadLayerPrefs, reconnectBeforeTurn, saveLayerPrefs } from "./promptVersions";
 import type { TabContent, Workspace } from "./tabs";
 import {
   buildNotices,
@@ -471,6 +473,12 @@ export interface AsideTurn {
 /** The open chat's aside (backlog 081, the passage form backlog 107) — see
  *  `app.aside`. */
 export interface Aside {
+  /** The thread's own id (backlog 176): several are open at once, and a
+   *  tab or the side panel shows the one it names. Per window. */
+  id: number;
+  /** Folded to its head row (blocker 318): past `MAX_OPEN_ASIDES` open
+   *  cards the oldest fold; a click on the strip opens it again. */
+  folded?: boolean;
   /** The highlighted passage the thread is about, if any. */
   quote: AsideQuote | null;
   /** Opened from a selection and not yet asked: the card is the question box. */
@@ -562,6 +570,10 @@ export const app = $state({
   connecting: false,
   /** Last connect failure, shown in the rail until the next attempt. */
   connectError: null as string | null,
+  /** The connected chat's *newer version exists* marks (backlog 174). */
+  promptPending: null as import("./types").PendingView | null,
+  /** Settings: take changed layers at the next cold moment (backlog 174). */
+  layerPrefs: loadLayerPrefs(),
   sessions: [] as SessionMeta[],
   activeSessionId: null as string | null,
   /**
@@ -722,6 +734,10 @@ export const app = $state({
    */
   limitPause: null as LimitPause | null,
   limitResumeAt: null as number | null,
+  /** The chat whose budget ledger `turnBudget` follows (nightshift backlog
+   *  192): the running chat, parked or not, known from its first turn's
+   *  start — the stop card answers for it. */
+  budgetSession: null as string | null,
   /**
    * The running chat, set aside while he looks at another during its turn
    * (nightshift backlog 159, pass 1; `browse.ts`). Null when the chat on
@@ -783,8 +799,17 @@ export const app = $state({
    *  waiting under it, nothing sent yet. `seq` tells one aside from the
    *  next when an answer lands late. Since backlog 128 the answer streams
    *  into the card (`partial`) and since 130 the card is a thread of
-   *  exchanges (`turns`, each with its own `seq`). */
+   *  exchanges (`turns`, each with its own `seq`).
+   *  Since backlog 176 (2026-09-23) a chat holds several threads —
+   *  `asides`, below — and this is the **front** one, the newest: a
+   *  mirror kept by `syncFrontAside` for what reads a single card. */
   aside: null as Aside | null,
+  /** The open chat's aside threads, oldest first (backlog 176): a card
+   *  each, each with its own passage, thread and follow-up box. */
+  asides: [] as Aside[],
+  /** The thread whose question box takes the caret once its card is
+   *  placed (a draft just opened); cleared by the card that took it. */
+  asideFocus: null as number | null,
   /** Observations awaiting the next dream — the badge on the Dream button. */
   dreamPending: 0,
   /** A dream is running; the button becomes its progress line. */
@@ -861,6 +886,9 @@ export const app = $state({
    * (`asideInTab`). In memory only, as the workspace is.
    */
   asidePanel: null as string | null,
+  /** Which of that chat's threads the panel shows (backlog 176); null
+   *  reads as its front thread, as before. */
+  asidePanelThread: null as number | null,
   /**
    * The search-everywhere panel (nightshift backlog 117, with 106's second
    * half): whether it is showing in the sidebar's column, the query and
@@ -1297,6 +1325,12 @@ export async function init(): Promise<void> {
     void resolveApproval(id, name, decision, reason ?? undefined, answer ?? undefined, then ?? undefined);
   });
   await listen("remote-cancel", () => void cancelTurn());
+  // A chat's first turn names its chat as it starts (backlog 192; review
+  // 2026-09-23 finding 4): the budget meter and stop card follow it now,
+  // not only once the turn has ended.
+  await listen<string>("turn-chat", (e) => {
+    if (app.busy && app.budgetSession === null && e.payload) startBudgetPoll(e.payload, budgetTyped);
+  });
   await listen<string>("menu", (e) => runMenuCommand(e.payload));
   // Only the watched project (selectNightshiftProject calls nightshiftWatch)
   // emits this, and only that project's row and morning page are worth
@@ -1989,12 +2023,29 @@ function notePresence(session: string, input: boolean): void {
   if (!input && !looking) return;
   void api.notePresence(session, input).catch(() => {});
 }
-function startBudgetPoll(session: string | null): void {
+/** This turn's message was typed in the window (backlog 192; review
+ *  2026-09-23 finding 3): only then is it his *input* for presence — not
+ *  a message from the phone, not an automatic resume. */
+let turnTyped = true;
+/** Whether the running turn's message was typed here, for its first
+ *  turn's late start of the poll (`turn-chat`). */
+let budgetTyped = true;
+/** `send` for a message he did not type here (the phone, a resume). */
+async function sendUntyped(text: string): Promise<void> {
+  turnTyped = false;
+  try {
+    await send(text);
+  } finally {
+    turnTyped = true;
+  }
+}
+function startBudgetPoll(session: string | null, typed = false): void {
   if (budgetPoll) clearInterval(budgetPoll);
   budgetPoll = null;
   app.turnBudget = null;
+  app.budgetSession = session;
   if (!session || app.connection?.engine !== "claude-code") return;
-  notePresence(session, true);
+  notePresence(session, typed);
   void readTurnBudget(session);
   budgetPoll = setInterval(() => {
     if (!app.busy) {
@@ -2653,7 +2704,7 @@ export async function applyDraft(): Promise<void> {
  * one connect per rail change, the backend's answer read back rather than the
  * draft echoed — and that is what `Connection` is.
  */
-async function applyAgentDraft(): Promise<void> {
+async function applyAgentDraft(updateNow: PromptLayer[] = []): Promise<void> {
   const d = app.draft;
   app.connecting = true;
   app.connectError = null;
@@ -2676,7 +2727,12 @@ async function applyAgentDraft(): Promise<void> {
       promptSuggestions: suggestions.enabled,
       effort: d.agentEffort.trim() || undefined,
       fallbackModel: d.agentFallback.trim() || undefined,
+      // A changed layer waits for this chat's cold moment (backlog 174).
+      cold: chatIsCold(app.events, Date.now()),
+      autoLayers: app.layerPrefs.autoAtCold,
+      updateNow,
     });
+    app.promptPending = await api.promptPending().catch(() => null);
     app.connection = {
       provider: res.provider,
       model: res.model,
@@ -2707,6 +2763,40 @@ async function applyAgentDraft(): Promise<void> {
   } finally {
     app.connecting = false;
   }
+}
+
+/**
+ * Before an agent turn (nightshift backlog 174): reconnect when the engine
+ * was built for another chat, or when this chat's cache is cold and a
+ * *newer version exists* mark is taken then — never on a warm cache.
+ */
+async function layersBeforeTurn(): Promise<void> {
+  const cold = chatIsCold(app.events, Date.now());
+  if (!reconnectBeforeTurn(app.promptPending, app.activeSessionId, cold, app.layerPrefs.autoAtCold)) return;
+  if (app.busy || app.connecting) return;
+  await applyAgentDraft();
+}
+
+/** *Update now* on a mark: the new text goes out with the next message,
+ *  whatever the cache (its cost was shown on the button). */
+export async function updateLayerNow(kind: PromptLayer): Promise<void> {
+  if (app.busy || app.connecting || app.connection?.engine !== "claude-code") return;
+  await applyAgentDraft([kind]);
+}
+
+/** *Update at the next cold moment* / *Keep this version* / the default. */
+export async function chooseLayerVersion(kind: PromptLayer, choice: import("./types").LayerChoice): Promise<void> {
+  try {
+    app.promptPending = await api.setPromptLayerChoice(kind, choice);
+  } catch (e) {
+    addToast(String(e));
+  }
+}
+
+/** Settings: take every changed layer at the next cold moment, or wait for the click. */
+export function setAutoLayers(on: boolean): void {
+  app.layerPrefs.autoAtCold = on;
+  saveLayerPrefs(app.layerPrefs);
 }
 
 /** Switch engines and re-connect. */
@@ -3122,10 +3212,31 @@ export function droppedContent(e: DragEvent): TabContent | null {
  * hides its card while one is, and shows it again when the tab or the
  * panel closes — the thread itself never moves (blocker 194).
  */
-export function asideInTab(session: string | null): boolean {
+export function asideInTab(session: string | null, thread?: number): boolean {
   if (session === null) return false;
-  if (app.asidePanel === session) return true;
-  return tabs.allTabs(app.tabs).some((t) => t.content.kind === "aside" && t.content.session === session);
+  // Several threads per chat (backlog 176): with `thread`, only that
+  // thread's tab or panel counts; a tab or panel naming no thread shows
+  // the chat's front one.
+  const front = asideOf(session)?.id;
+  const shows = (named: number | null | undefined) => thread === undefined || (named ?? front) === thread;
+  if (app.asidePanel === session && shows(app.asidePanelThread)) return true;
+  return tabs
+    .allTabs(app.tabs)
+    .some((t) => t.content.kind === "aside" && t.content.session === session && shows(asideTabThread(t.content)));
+}
+
+/** The thread an aside tab names (backlog 176); absent on a tab made
+ *  before threads had ids. Read loosely so `tabs.ts` may name it or not. */
+export function asideTabThread(content: TabContent): number | undefined {
+  const t = (content as { thread?: unknown }).thread;
+  return typeof t === "number" ? t : undefined;
+}
+
+/** A chat's aside threads, oldest first: the open chat's cards, or a
+ *  stashed chat's list (backlog 176). */
+export function asidesOf(session: string): Aside[] {
+  if (session === app.activeSessionId) return app.asides;
+  return asideStash.get(session) ?? [];
 }
 
 /**
@@ -3133,9 +3244,11 @@ export function asideInTab(session: string | null): boolean {
  * thread of a chat that is not open (read-only there — the backend forks
  * the open chat, so a follow-up needs the chat in front).
  */
-export function asideOf(session: string): Aside | null {
-  if (session === app.activeSessionId) return app.aside;
-  return asideStash.get(session) ?? null;
+export function asideOf(session: string, thread?: number | null): Aside | null {
+  const list = asidesOf(session);
+  // Since backlog 176: the thread named, else the chat's front (newest).
+  if (thread !== undefined && thread !== null) return list.find((a) => a.id === thread) ?? null;
+  return list[list.length - 1] ?? null;
 }
 
 // ---- nightshift ----
@@ -4636,7 +4749,7 @@ export async function remoteSend(chat: string | null, text: string): Promise<"se
   if (!app.connection) throw new Error("no engine is connected on the desktop — connect one there first");
   // Answered before the turn, not after: `send` resolves at the turn's
   // end, and the phone is waiting to hear the message was taken.
-  void send(text);
+  void sendUntyped(text);
   return "sent";
 }
 
@@ -4669,7 +4782,7 @@ export function resumeAfterLimit(): void {
       return;
     }
     app.limitPause = null;
-    void send(resumeMessage(p));
+    void sendUntyped(resumeMessage(p));
   };
   const delay = resumeDelayMs(p);
   if (delay === 0) {
@@ -4803,6 +4916,8 @@ async function sendAgent(
   // blocker 120): the wrap-up is a message of its own, sent from the
   // composer's notice or by the queue; nothing is appended here.
   app.suggestion = null;
+  // A changed layer is taken at the first cold turn (backlog 174).
+  await layersBeforeTurn();
   // Same as `send`: the pending chat's key at the moment of the send
   // (nightshift backlog 094).
   const pendingKey = app.activeSessionId === null ? newDraftKey(app.project?.id, app.pendingMode) : null;
@@ -4835,7 +4950,8 @@ async function sendAgent(
   app.busy = true;
   // The budget meter (backlog 165, pass 2) follows this chat's ledger
   // while the turn runs; a chat not yet created has no directory to read.
-  startBudgetPoll(app.activeSessionId);
+  budgetTyped = turnTyped;
+  startBudgetPoll(app.activeSessionId, turnTyped);
   let failed: string | null = null;
   try {
     const res = await api.sendAgent(
@@ -4925,20 +5041,28 @@ async function sendAgent(
 /**
  * Ask a side question of the open chat without adding to it (backlog 081):
  * the answer comes from the chat's context off its warm cache, and neither
- * the question nor the answer is in the log or the CLI's session. One at a
- * time; a running turn is waited for on the backend's lock.
+ * the question nor the answer is in the log or the CLI's session. ~~One at
+ * a time~~ — several threads may be open since backlog 176 (2026-09-23),
+ * each its own card; the backend's lock still lets **one ask at a time**
+ * (blocker 317's default), so a second question waits, its card marked
+ * (`asideWaiting`), and a running turn is waited for as before.
+ *
+ * `draft` is the card's own draft thread when a passage's question box
+ * asks: that thread becomes the asked one, in place. Without it a quote
+ * opens a new card.
  */
 let asideSeq = 0;
-export async function askAside(question: string, quote: AsideQuote | null = null): Promise<void> {
+export async function askAside(question: string, quote: AsideQuote | null = null, draft: Aside | null = null): Promise<void> {
   const q = question.trim();
   if ((!q && !quote) || app.connection?.engine !== "claude-code") return;
   // From the composer, with an answered thread on the card (backlog 137,
   // blocker 201): the question continues that thread rather than
-  // replacing it — the thread is written nowhere else. A new passage
-  // (a quote) is the transcript's path, which asks before replacing.
-  const on = app.aside;
-  if (!quote && q && on && !on.draft && !asideAsking(on) && on.turns.some((t) => t.partial.trim())) {
-    await followUpAside(q);
+  // replacing it — the thread is written nowhere else. With several open
+  // (backlog 176, blocker 319): the newest composer thread, the one with
+  // no passage; a passage's thread is about its passage, not this.
+  const on = [...app.asides].reverse().find((a) => a.quote === null && !a.draft) ?? null;
+  if (!quote && q && on && !asideAsking(on) && on.turns.some((t) => t.partial.trim())) {
+    await followUpAside(q, on);
     return;
   }
   // About a passage (backlog 107): the highlighted text rides inside the
@@ -4948,14 +5072,67 @@ export async function askAside(question: string, quote: AsideQuote | null = null
   const sent = quote ? asideQuestion(quote, q) : q;
   const seq = ++asideSeq;
   const turn: AsideTurn = { seq, question: q, partial: "", answer: null, error: null, cancelled: false, cacheRead: 0 };
-  // A running exchange is replaced (one at a time, as before): cancelled
-  // on the backend so its process does not run on behind the new card.
-  if (asideAsking(app.aside)) void api.cancelAside().catch(() => {});
-  // A draft opened from a selection keeps its anchor (backlog 141): the
-  // question is asked under the passage. A composer aside has none.
-  const anchor = quote && app.aside?.draft ? app.aside.anchor : null;
-  app.aside = { quote, draft: false, turns: [turn], anchor };
+  // ~~A running exchange is replaced (one at a time): cancelled on the
+  // backend~~ — nothing is replaced since backlog 176: the other cards
+  // keep their threads, and a running one runs on.
+  const own = draft && draft.draft && app.asides.includes(draft) ? draft : null;
+  if (own) {
+    // The card's draft (backlog 141): asked under its passage, in place.
+    own.quote = quote;
+    own.draft = false;
+    own.turns.push(turn);
+  } else {
+    openAsideThread({ id: nextAsideId(), quote, draft: false, turns: [turn], anchor: null });
+  }
   await runAside(turn, sent);
+}
+
+/** A new card for the open chat (backlog 176): appended, the newest, and
+ *  the oldest folded past `MAX_OPEN_ASIDES` (blocker 318). */
+function openAsideThread(a: Aside): Aside {
+  app.asides.push(a);
+  const live = app.asides[app.asides.length - 1]!;
+  foldCrowd(live);
+  syncFrontAside();
+  return live;
+}
+
+/** Fold the oldest open cards past the cap, never `keep` (blocker 318). */
+function foldCrowd(keep: Aside | null): void {
+  const list = app.asides;
+  const idx = keep ? list.indexOf(keep) : -1;
+  for (const i of foldTheOldest(list.map((a) => a.folded === true), idx < 0 ? null : idx, MAX_OPEN_ASIDES)) {
+    list[i]!.folded = true;
+  }
+}
+
+/** A folded card's strip clicked (blocker 318): open, and the oldest other
+ *  open card folds if that makes one too many. */
+export function unfoldAside(a: Aside): void {
+  a.folded = false;
+  foldCrowd(a);
+}
+
+/** `app.aside`, the front thread, kept equal to the newest of `app.asides`
+ *  (backlog 176) for what still reads one card. */
+function syncFrontAside(): void {
+  app.aside = app.asides[app.asides.length - 1] ?? null;
+}
+
+/**
+ * Whether the thread's live exchange is waiting for another aside to
+ * finish (backlog 176, blocker 317): the backend answers one aside at a
+ * time, in the order asked, so an exchange is waiting while an earlier
+ * one — on any card, in any chat — is still asking.
+ */
+export function asideWaiting(a: Aside | null): boolean {
+  const t = asideAsking(a);
+  if (!t) return false;
+  const all = [...app.asides, ...[...asideStash.values()].flat()];
+  return all.some((b) => {
+    const u = asideAsking(b);
+    return u !== null && u.seq < t.seq;
+  });
 }
 
 /**
@@ -4989,9 +5166,10 @@ async function runAside(turn: AsideTurn, sent: string): Promise<void> {
  * and the chat's context is the fork's as before. The new exchange is
  * appended to the card; nothing enters the chat or the CLI's files.
  */
-export async function followUpAside(question: string): Promise<void> {
+export async function followUpAside(question: string, thread: Aside | null = null): Promise<void> {
   const q = question.trim();
-  const a = app.aside;
+  // The card's own thread (backlog 176); the front one when none is named.
+  const a = thread ?? app.aside;
   if (!q || !a || a.draft || asideAsking(a) || app.connection?.engine !== "claude-code") return;
   const prior = a.turns.filter((t) => t.partial.trim()).map((t) => ({ question: t.question, answer: t.partial }));
   const sent = asideFollowUp(a.quote, prior, q);
@@ -5011,7 +5189,7 @@ export async function followUpAside(question: string): Promise<void> {
  * chat is left keeps streaming into the stashed thread (`findAsideTurn`
  * looks here too), so the answer is whole when he returns.
  */
-export const asideStash: Map<string, Aside> =
+export const asideStash: Map<string, Aside[]> =
   typeof localStorage === "undefined" ? new Map() : loadAsides(localStorage);
 
 /**
@@ -5029,38 +5207,49 @@ export function setCouncilFor(chat: string | null, prefs: CouncilPrefs): void {
   councilByChat.set(chat ?? PENDING_COUNCIL, structuredClone(prefs));
 }
 
-/** Stash the open chat's thread and take the next chat's, if any. */
-function switchAside(next: string | null): void {
+/** Stash the open chat's threads and take the next chat's, if any —
+ *  every open thread, not only the front one (backlog 176; 137's FE4).
+ *  Exported for the suite; the chat openers call it. */
+export function switchAside(next: string | null): void {
   const from = app.activeSessionId;
   if (from !== null) {
-    if (app.aside) asideStash.set(from, app.aside);
+    if (app.asides.length > 0) asideStash.set(from, app.asides);
     else asideStash.delete(from);
   }
-  app.aside = next === null ? null : (asideStash.get(next) ?? null);
+  app.asides = next === null ? [] : (asideStash.get(next) ?? []);
+  syncFrontAside();
 }
 
-/** The exchange with `seq`, on the card or in a stashed thread. */
+/** The exchange with `seq`, on a card or in a stashed thread. */
 function findAsideTurn(seq: number): AsideTurn | null {
-  const on = app.aside?.turns.find((t) => t.seq === seq);
-  if (on) return on;
-  for (const a of asideStash.values()) {
+  for (const a of app.asides) {
     const t = a.turns.find((t) => t.seq === seq);
     if (t) return t;
+  }
+  for (const list of asideStash.values()) {
+    for (const a of list) {
+      const t = a.turns.find((t) => t.seq === seq);
+      if (t) return t;
+    }
   }
   return null;
 }
 
 /**
  * Open the aside card as a question box about a highlighted passage
- * (backlog 107): the quote is shown, nothing is sent until he asks. A
- * running or answered aside is replaced — one at a time, as before.
+ * (backlog 107): the quote is shown, nothing is sent until he asks.
+ * ~~A running or answered aside is replaced — one at a time~~ — since
+ * backlog 176 (2026-09-23) a new passage opens a **new card** beside the
+ * others and replaces nothing; the new card's box takes the caret.
+ * Returns the new thread (null off the Claude Code engine).
  */
-export function draftAside(quote: AsideQuote, anchor: AsideAnchor | null = null): void {
-  if (app.connection?.engine !== "claude-code") return;
-  if (asideAsking(app.aside)) void api.cancelAside().catch(() => {});
-  // One floating card at a time (backlog 141): a second passage replaces
-  // the first's card — the anchor is the new passage's.
-  app.aside = { quote, draft: true, turns: [], anchor };
+export function draftAside(quote: AsideQuote, anchor: AsideAnchor | null = null): Aside | null {
+  if (app.connection?.engine !== "claude-code") return null;
+  // ~~One floating card at a time (backlog 141): a second passage
+  // replaces the first's card~~ — each passage its own card (176).
+  const a = openAsideThread({ id: nextAsideId(), quote, draft: true, turns: [], anchor });
+  app.asideFocus = a.id;
+  return a;
 }
 
 /**
@@ -5072,16 +5261,36 @@ export function draftAside(quote: AsideQuote, anchor: AsideAnchor | null = null)
  * process; the next × dismisses. Nothing had arrived: the card goes at
  * once, as before.
  */
-export function dismissAside(): void {
-  const t = asideAsking(app.aside);
+export function dismissAside(thread: Aside | null = null): void {
+  // The card's own thread since backlog 176; the front one when none is
+  // named. Its own exchange is the one cancelled, by `seq`, and no other.
+  const a = thread ?? app.aside;
+  if (!a) return;
+  const t = asideAsking(a);
   if (t) {
-    void api.cancelAside().catch(() => {});
+    void api.cancelAside(t.seq).catch(() => {});
     if (t.partial.trim()) {
       t.cancelled = true;
       return;
     }
+    // Nothing arrived: marked cancelled too, so a late result is dropped.
+    t.cancelled = true;
   }
-  app.aside = null;
+  const i = app.asides.indexOf(a);
+  if (i >= 0) {
+    app.asides.splice(i, 1);
+    syncFrontAside();
+  } else {
+    // A stashed chat's thread (its tab's ×): out of that chat's list.
+    for (const [k, list] of asideStash) {
+      const j = list.indexOf(a);
+      if (j < 0) continue;
+      list.splice(j, 1);
+      if (list.length === 0) asideStash.delete(k);
+    }
+  }
+  if (app.asidePanelThread === a.id) app.asidePanelThread = null;
+  if (app.asideFocus === a.id) app.asideFocus = null;
 }
 
 /**
@@ -5137,7 +5346,7 @@ export async function resumeAfterSleep(chat: string | null = app.activeSessionId
     if (app.activeSessionId !== chat) return;
   }
   if (!app.connection || app.busy) return;
-  await send(RESUME_TEXT);
+  await sendUntyped(RESUME_TEXT);
 }
 
 /** Report a turn's end to `sleepWatch`: when it started (the log's own

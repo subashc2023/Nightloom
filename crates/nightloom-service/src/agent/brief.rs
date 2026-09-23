@@ -489,6 +489,19 @@ pub struct TurnBudget {
     /// record of the override (backlog 189).
     #[serde(default)]
     pub override_at_ms: Option<i64>,
+    /// The deadlines of the calls held right now, one per waiting hook
+    /// (backlog 192; review 2026-09-23 finding 6): `pending_since_ms` is
+    /// cleared only when the last one ends, so the card does not vanish
+    /// under his cursor while a parallel call still waits. A hook killed
+    /// mid-hold leaves its deadline behind, which the window ignores once
+    /// it has passed.
+    #[serde(default)]
+    pub holds: Vec<i64>,
+    /// When his *Wrap up* reached the model (backlog 192): the call that
+    /// carried it was refused with the instruction; the rest of the
+    /// message's calls go on so it can write its hand-off, spawns refused.
+    #[serde(default)]
+    pub wrap_at_ms: Option<i64>,
 }
 
 impl TurnBudget {
@@ -500,17 +513,35 @@ impl TurnBudget {
     }
 }
 
-/// Which start a turn is: a council's seats, or a turn proper (the
-/// chair's included, which continues a `seats-done` ledger).
+/// Which start a turn is: a council's seats, a turn proper, or the
+/// chair of the seats whose ledger started at the given `started_at_ms`.
+/// Only a `Chair` continues a `seats-done` ledger, and only its own
+/// (nightshift backlog 187): a council whose chair never ran — a Stop,
+/// an error — leaves a ledger no ordinary message may inherit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TurnPhase {
     Seats,
     Turn,
+    Chair(i64),
 }
 
+/// The ledger, read under a shared lock: the hook's writers rewrite it in
+/// place under the exclusive lock (truncate, then write), so an unlocked
+/// read could land between the two and see nothing (review 2026-09-23,
+/// finding 1). `None` when there is no ledger or it will not parse.
 pub fn read_turn_budget(dir: &Path) -> Option<TurnBudget> {
-    let s = std::fs::read_to_string(dir.join(TURN_BUDGET_FILE)).ok()?;
-    serde_json::from_str(&s).ok()
+    read_ledger(dir).ok()?
+}
+
+/// [`read_turn_budget`] telling the two failures apart: `Err` when there is
+/// no ledger at all, `Ok(None)` when one is there but did not parse.
+fn read_ledger(dir: &Path) -> Result<Option<TurnBudget>, ()> {
+    use std::io::Read as _;
+    let mut file = std::fs::File::open(dir.join(TURN_BUDGET_FILE)).map_err(|_| ())?;
+    let _ = file.lock_shared();
+    let mut s = String::new();
+    let _ = file.read_to_string(&mut s);
+    Ok(serde_json::from_str(&s).ok())
 }
 
 fn write_turn_budget(dir: &Path, b: &TurnBudget) {
@@ -523,9 +554,10 @@ fn write_turn_budget(dir: &Path, b: &TurnBudget) {
 }
 
 /// Start a message's ledger from the reading on hand, pure over its
-/// inputs: `have` is the file as it was. A `Turn` start continues a
-/// `seats-done` ledger younger than [`SEATS_CONTINUE_MS`] (the chair of
-/// a council whose seats just ran); everything else starts afresh.
+/// inputs: `have` is the file as it was. A `Chair` start continues the
+/// `seats-done` ledger it names, when younger than [`SEATS_CONTINUE_MS`]
+/// (the chair of a council whose seats just ran); everything else — an
+/// ordinary message above all — starts afresh (backlog 187).
 pub fn start_turn_budget(
     have: Option<TurnBudget>,
     limits: &SubagentLimits,
@@ -533,9 +565,10 @@ pub fn start_turn_budget(
     now_ms: i64,
     phase: TurnPhase,
 ) -> TurnBudget {
-    if phase == TurnPhase::Turn
+    if let TurnPhase::Chair(seats_started) = phase
         && let Some(h) = have
         && h.phase == "seats-done"
+        && h.started_at_ms == seats_started
         && now_ms - h.started_at_ms <= SEATS_CONTINUE_MS
     {
         return TurnBudget {
@@ -553,13 +586,15 @@ pub fn start_turn_budget(
         resets_at: reading.and_then(|r| r.resets_at),
         phase: match phase {
             TurnPhase::Seats => "seats",
-            TurnPhase::Turn => "turn",
+            TurnPhase::Turn | TurnPhase::Chair(_) => "turn",
         }
         .into(),
         stopped: None,
         calls: 0,
         pending_since_ms: None,
         override_at_ms: None,
+        holds: Vec::new(),
+        wrap_at_ms: None,
     }
 }
 
@@ -595,6 +630,16 @@ pub fn begin_turn(dir: &Path, limits: &SubagentLimits, phase: TurnPhase) {
         phase,
     );
     write_turn_budget(dir, &b);
+}
+
+/// The seats' ledger a chair about to run should continue: its
+/// `started_at_ms`, when the chat's ledger is a `seats-done` one. The
+/// caller arms the chair with it ([`TurnPhase::Chair`]) only once it has
+/// decided the chair runs (backlog 187).
+pub fn seats_ledger(dir: &Path) -> Option<i64> {
+    read_turn_budget(dir)
+        .filter(|b| b.phase == "seats-done")
+        .map(|b| b.started_at_ms)
 }
 
 /// The seats have finished: the chair's `run_turn` continues this ledger.
@@ -657,21 +702,51 @@ fn share_verdict(b: &TurnBudget, r: WindowReading) -> Result<(), String> {
 // gone. Held rather than refused-then-continued: a refused model stops
 // and ends its reply, leaving nothing for a Continue to let through
 // (blocker 292).
+//
+// **Pass 2 (backlog 192, his answer to blocker 292, 2026-09-22).**
+// ~~Present: the chat open in a focused window within 20 s, or his message
+// within 5 minutes.~~ Present is now his **Mac's** idle time — any key or
+// pointer input within [`AWAY_MS`] (10 minutes), read from the HID
+// system's `HIDIdleTime` ([`mac_idle_ms`], no permission needed) — or his
+// message from the window within 5 minutes; the focused-window look is
+// one input among them, not the gate. ~~Continue lasts to the end of the
+// message.~~ *Continue anyway* now covers **the chat** until he has been
+// away 10 minutes ([`continue_holds`], blocker 312): a global record of
+// the Mac's activity ([`ACTIVITY_FILE`], kept by the desktop every minute
+// and by the hook) says whether he went away since the click. *Stop here*
+// is still this message only, and replaces the chat's Continue. *Wrap up*
+// (new) is this message only: the next call of the chat's own thread is
+// refused with the instruction to finish and write its hand-off, and the
+// rest of the message's calls go on so it can, spawns refused (blocker
+// 311).
 
 /// His answer to a held call, beside the ledger.
 pub const OVERRIDE_FILE: &str = "budget-override.json";
 /// When the window last saw him in this chat, beside the ledger.
 pub const PRESENCE_FILE: &str = "presence.json";
+/// The Mac's activity as observed (backlog 192): one file for every chat,
+/// in Nightloom's config folder, since the Mac's idle time is one figure.
+pub const ACTIVITY_FILE: &str = "mac-activity.json";
 /// How long a held call waits for his answer before it is refused as
 /// before. Under the hook's registered timeout ([`HOOK_TIMEOUT_S`]).
 pub const HOLD_MS: i64 = 5 * 60 * 1000;
-/// An override lasts to the end of the message, and never past this.
+/// ~~An override lasts to the end of the message, and never past this.~~
+/// Since backlog 192: how long a *Stop here* or *Wrap up* names its
+/// message at most; a *Continue* lasts until he is away ([`AWAY_MS`]),
+/// with [`CONTINUE_TTL_MS`] as the backstop.
 pub const OVERRIDE_TTL_MS: i64 = 60 * 60 * 1000;
+/// A chat's *Continue anyway* never outlives this, away or not.
+pub const CONTINUE_TTL_MS: i64 = 24 * 60 * 60 * 1000;
 /// Present: the window saw this chat open and focused this recently
 /// (the front end writes every five seconds while the turn runs) …
 pub const PRESENT_SEEN_MS: i64 = 20 * 1000;
-/// … or his last message in it is this recent.
+/// … or his last message in it is this recent …
 pub const PRESENT_INPUT_MS: i64 = 5 * 60 * 1000;
+/// … or the Mac saw his hand within this (backlog 192, his "present makes
+/// sense"): and this long without it is *away*, which ends a *Continue*.
+pub const AWAY_MS: i64 = 10 * 60 * 1000;
+/// How often the desktop notes the Mac's activity ([`spawn_activity_watch`]).
+pub const ACTIVITY_EVERY_MS: u64 = 60 * 1000;
 /// The hook's timeout on its registration, in seconds: longer than a
 /// hold, so the CLI never cuts a held call off by its own clock. ~~600~~
 /// — 3,600 since 104 pass 3 (2026-09-22): the hook also runs a checkpoint
@@ -685,10 +760,24 @@ pub const HOOK_TIMEOUT_S: u64 = 3_600;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BudgetOverride {
     pub turn: i64,
-    /// `continue` or `stop`.
+    /// `continue`, `stop` or (backlog 192) `wrap`.
     pub decision: String,
     pub at_ms: i64,
     pub expires_at_ms: i64,
+    /// A `wrap`'s instruction to the model, as the window composed it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+}
+
+/// His answer in force for one call (backlog 192).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Answer {
+    /// *Continue anyway*: the chat's calls go on past the line.
+    Continue,
+    /// *Stop here*: this message's calls past the line are refused.
+    Stop,
+    /// *Wrap up*: the instruction the model is to get.
+    Wrap(String),
 }
 
 /// What the window last saw of him in one chat.
@@ -700,9 +789,14 @@ pub struct Presence {
     pub input_at_ms: Option<i64>,
 }
 
-/// Present, pure: the chat open in a focused window within
-/// [`PRESENT_SEEN_MS`], or his message within [`PRESENT_INPUT_MS`].
-pub fn is_present(p: Option<Presence>, now_ms: i64) -> bool {
+/// Present, pure: ~~the chat open in a focused window within
+/// [`PRESENT_SEEN_MS`], or his message within [`PRESENT_INPUT_MS`]~~ —
+/// since backlog 192 also, and first, the Mac's idle time under
+/// [`AWAY_MS`] (`idle_ms`, `None` when it could not be read).
+pub fn is_present(p: Option<Presence>, idle_ms: Option<i64>, now_ms: i64) -> bool {
+    if idle_ms.is_some_and(|i| i < AWAY_MS) {
+        return true;
+    }
     let Some(p) = p else { return false };
     p.seen_at_ms.is_some_and(|t| now_ms - t <= PRESENT_SEEN_MS)
         || p.input_at_ms
@@ -728,24 +822,201 @@ pub fn note_presence(dir: &Path, input: bool, now_ms: i64) -> std::io::Result<()
     std::fs::rename(&tmp, path)
 }
 
+// ---- the Mac's activity (backlog 192) ----
+
+/// What has been observed of the Mac's activity, for every chat.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct Activity {
+    /// The last observation.
+    #[serde(default)]
+    pub observed_at_ms: Option<i64>,
+    /// The latest observation that found him away: idle [`AWAY_MS`] or
+    /// more, the idle time unreadable, or a gap of that long with nobody
+    /// observing (the Mac asleep, the app closed).
+    #[serde(default)]
+    pub away_at_ms: Option<i64>,
+}
+
+/// One observation, pure: `idle_ms` is the Mac's idle time now (`None`
+/// when unreadable, which counts as away — a presence nobody can see is
+/// not vouched for).
+pub fn observe(prev: Option<Activity>, idle_ms: Option<i64>, now_ms: i64) -> Activity {
+    let mut a = prev.unwrap_or_default();
+    let gap = a.observed_at_ms.is_some_and(|t| now_ms - t >= AWAY_MS);
+    if gap || idle_ms.is_none_or(|i| i >= AWAY_MS) {
+        a.away_at_ms = Some(now_ms);
+    }
+    a.observed_at_ms = Some(now_ms.max(a.observed_at_ms.unwrap_or(now_ms)));
+    a
+}
+
+/// A *Continue* clicked at `at_ms` still covers the chat, pure: he has not
+/// been seen away since, and is not away now.
+pub fn continue_holds(at_ms: i64, a: Option<Activity>, idle_ms: Option<i64>, now_ms: i64) -> bool {
+    now_ms - at_ms < CONTINUE_TTL_MS
+        && idle_ms.is_some_and(|i| i < AWAY_MS)
+        && a.and_then(|a| a.away_at_ms).is_none_or(|t| t < at_ms)
+}
+
+pub fn read_activity(path: &Path) -> Option<Activity> {
+    serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
+}
+
+/// Record one observation (a per-process temporary file, then a rename:
+/// the desktop and any number of hooks may write at once, and each writes
+/// what it just saw of the same Mac). Returns what was written.
+pub fn note_activity(path: &Path, idle_ms: Option<i64>, now_ms: i64) -> Activity {
+    let a = observe(read_activity(path), idle_ms, now_ms);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
+    if std::fs::write(&tmp, serde_json::to_string(&a).unwrap_or_default()).is_ok() {
+        let _ = std::fs::rename(&tmp, path);
+    }
+    a
+}
+
+/// Where [`ACTIVITY_FILE`] lives: Nightloom's config folder.
+pub fn activity_path() -> Option<PathBuf> {
+    crate::project::config_dir().map(|d| d.join(ACTIVITY_FILE))
+}
+
+/// Milliseconds since the Mac last saw a key or the pointer: the HID
+/// system's `HIDIdleTime` (nanoseconds), through `ioreg` — no permission,
+/// ~15 ms. `None` off macOS or when it cannot be read.
+pub fn mac_idle_ms() -> Option<i64> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let out = std::process::Command::new("/usr/sbin/ioreg")
+        .args(["-c", "IOHIDSystem", "-d", "4", "-r", "-k", "HIDIdleTime"])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    parse_hid_idle(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// The first `"HIDIdleTime" = <ns>` in `ioreg`'s output, as milliseconds.
+fn parse_hid_idle(text: &str) -> Option<i64> {
+    let line = text.lines().find(|l| l.contains("\"HIDIdleTime\""))?;
+    let ns: i64 = line.rsplit('=').next()?.trim().parse().ok()?;
+    Some(ns / 1_000_000)
+}
+
+/// The desktop's watch on the Mac's activity: an observation every
+/// [`ACTIVITY_EVERY_MS`] for as long as the app runs, so an away stretch
+/// between two turns is seen and ends a chat's *Continue*. Best-effort.
+pub fn spawn_activity_watch() {
+    let Some(path) = activity_path() else { return };
+    let _ = std::thread::Builder::new()
+        .name("mac-activity".into())
+        .spawn(move || {
+            loop {
+                note_activity(&path, mac_idle_ms(), chrono::Utc::now().timestamp_millis());
+                std::thread::sleep(std::time::Duration::from_millis(ACTIVITY_EVERY_MS));
+            }
+        });
+}
+
+/// What the hook senses of the world beyond the chat's directory: the
+/// Mac's idle time and the activity record. The suite passes its own.
+pub struct Senses<'a> {
+    pub idle_ms: &'a dyn Fn() -> Option<i64>,
+    pub activity: Option<PathBuf>,
+}
+
+impl Senses<'static> {
+    pub fn real() -> Self {
+        Senses {
+            idle_ms: &mac_idle_ms,
+            activity: activity_path(),
+        }
+    }
+}
+
+impl Senses<'_> {
+    /// The idle time now, with the observation recorded.
+    fn look(&self, now_ms: i64) -> (Option<i64>, Option<Activity>) {
+        let idle = (self.idle_ms)();
+        let a = self
+            .activity
+            .as_deref()
+            .map(|p| note_activity(p, idle, now_ms));
+        (idle, a)
+    }
+}
+
 pub fn read_override(dir: &Path) -> Option<BudgetOverride> {
     serde_json::from_str(&std::fs::read_to_string(dir.join(OVERRIDE_FILE)).ok()?).ok()
 }
 
-/// The override in force for this ledger, pure: `Some(true)` continue,
-/// `Some(false)` stop, `None` when there is none or it names another
-/// turn, has expired, or says something else. A stale or foreign one
-/// never lets a call through.
-pub fn override_for(b: &TurnBudget, ov: Option<&BudgetOverride>, now_ms: i64) -> Option<bool> {
+/// The answer in force for this ledger, pure. `continue_ok` is
+/// [`continue_holds`] for the record's click (backlog 192: a *Continue* is
+/// the chat's, whatever turn it named). *Stop* and *Wrap* name their
+/// message: another turn's, or one past its expiry, is `None`, as is a
+/// word it does not know. A stale or foreign one never lets a call through.
+pub fn override_for(
+    b: &TurnBudget,
+    ov: Option<&BudgetOverride>,
+    continue_ok: bool,
+    now_ms: i64,
+) -> Option<Answer> {
     let ov = ov?;
+    if ov.decision == "continue" {
+        return continue_ok.then_some(Answer::Continue);
+    }
     if ov.turn != b.started_at_ms || now_ms >= ov.expires_at_ms {
         return None;
     }
     match ov.decision.as_str() {
-        "continue" => Some(true),
-        "stop" => Some(false),
+        "stop" => Some(Answer::Stop),
+        "wrap" => Some(Answer::Wrap(
+            ov.text
+                .clone()
+                .filter(|t| !t.trim().is_empty())
+                .unwrap_or_else(|| WRAP_UP_DEFAULT.to_string()),
+        )),
         _ => None,
     }
+}
+
+/// The answer on file for this ledger, the Mac looked at only when a
+/// *Continue* needs it — and only past the line (`past`), where it matters.
+fn answer_now(
+    dir: &Path,
+    b: &TurnBudget,
+    past: bool,
+    senses: &Senses,
+    now_ms: i64,
+) -> Option<Answer> {
+    let ov = read_override(dir)?;
+    let continue_ok = ov.decision == "continue" && past && {
+        let (idle, a) = senses.look(now_ms);
+        continue_holds(ov.at_ms, a, idle, now_ms)
+    };
+    override_for(b, Some(&ov), continue_ok, now_ms)
+}
+
+/// The instruction a *Wrap up* carries when the window sent none.
+pub const WRAP_UP_DEFAULT: &str = "Finish or save whatever edit is half-done, so every file is in a \
+     coherent state; write a hand-off (HANDOFF.md at the top of the project: what you were doing, \
+     what is done, what is next, the files that matter); then stop.";
+
+/// The refusal that carries his *Wrap up* to the model (backlog 192).
+pub fn wrap_up_reason(text: &str) -> String {
+    format!(
+        "Not run: Swaraag pressed Wrap up — the 5-hour usage window is near its stop line. Do not \
+         start new work or spawn subagents; your next tool calls will run so you can do this:\n\n{}",
+        text.trim()
+    )
+}
+
+/// What a subagent's call gets once the chat is wrapping up.
+pub fn wrap_up_subagent_reason() -> String {
+    "Not run: the chat you report to is wrapping up (Swaraag pressed Wrap up). Stop now and \
+     report what you have."
+        .into()
 }
 
 /// One call's verdict under the ledger (backlog 189).
@@ -758,27 +1029,43 @@ pub enum CallVerdict {
     Deny(String),
     /// Past the stop line in a chat he is present in: wait for him.
     Hold,
+    /// His *Wrap up*, not yet delivered: refuse this call with the
+    /// instruction and mark the ledger (backlog 192).
+    WrapUp(String),
 }
 
-/// [`budget_verdict`] with his override and his presence, pure. Past the
-/// stop line: his *Continue* lets the call on to the message's own share;
-/// his *Stop* refuses; with no answer the call is held when he is present
-/// and it is the chat's own call (a subagent's is refused — its parent's
-/// next call is the one that asks), refused otherwise.
+/// [`budget_verdict`] with his answer and his presence, pure. *Wrap up*
+/// first, at any window: the chat's own next call carries it (`WrapUp`),
+/// later calls go on (spawns are refused by the hook), a subagent's are
+/// refused. Past the stop line: *Continue* lets the call on to the
+/// message's own share; *Stop* refuses; with no answer the call is held
+/// when he is present and it is the chat's own call (a subagent's is
+/// refused — its parent's next call is the one that asks), refused
+/// otherwise.
 pub fn call_verdict(
     b: &TurnBudget,
     reading: Option<WindowReading>,
-    ov: Option<bool>,
+    ans: Option<&Answer>,
     present: bool,
     subagent: bool,
 ) -> CallVerdict {
+    let wrapping = matches!(ans, Some(Answer::Wrap(_)));
+    if let Some(Answer::Wrap(text)) = ans {
+        if subagent {
+            return CallVerdict::Deny(wrap_up_subagent_reason());
+        }
+        if b.wrap_at_ms.is_none() {
+            return CallVerdict::WrapUp(wrap_up_reason(text));
+        }
+    }
     let Some(r) = reading else {
         return CallVerdict::Allow { overridden: false };
     };
     let mut overridden = false;
     if r.five_hour_pct >= b.stop_at {
-        match ov {
-            Some(true) => overridden = true,
+        match ans {
+            Some(Answer::Continue) => overridden = true,
+            _ if wrapping => overridden = true,
             None if present && !subagent => return CallVerdict::Hold,
             _ => {
                 return CallVerdict::Deny(window_stop_all_reason(
@@ -820,14 +1107,29 @@ fn with_ledger<T>(dir: &Path, f: impl FnOnce(&mut TurnBudget) -> T) -> Option<T>
 }
 
 /// His click on the card: `continue` or `stop` for the message the
-/// ledger is on now. Written under the file lock, the ledger's pattern;
-/// the ledger records the override and drops the pending mark. An error
-/// when there is no ledger to name.
+/// ledger is on now. Kept for its callers; [`write_answer`] is the whole.
 pub fn write_override(dir: &Path, go_on: bool, now_ms: i64) -> Result<(), String> {
+    write_answer(dir, if go_on { "continue" } else { "stop" }, None, now_ms)
+}
+
+/// His click on the card or the meter: `continue`, `stop` or `wrap` (with
+/// the instruction), naming the message the ledger is on now. Written
+/// under the file lock, the ledger's pattern; the ledger drops the pending
+/// mark and, on Continue, records the override. An error when there is
+/// no ledger to name or the word is unknown.
+pub fn write_answer(
+    dir: &Path,
+    decision: &str,
+    text: Option<String>,
+    now_ms: i64,
+) -> Result<(), String> {
     use std::io::{Seek as _, Write as _};
+    if !matches!(decision, "continue" | "stop" | "wrap") {
+        return Err(format!("unknown decision: {decision}"));
+    }
     let turn = with_ledger(dir, |b| {
         b.pending_since_ms = None;
-        if go_on {
+        if decision == "continue" {
             b.override_at_ms = Some(now_ms);
         }
         b.started_at_ms
@@ -835,9 +1137,15 @@ pub fn write_override(dir: &Path, go_on: bool, now_ms: i64) -> Result<(), String
     .ok_or_else(|| "no budget ledger for this chat".to_string())?;
     let ov = BudgetOverride {
         turn,
-        decision: if go_on { "continue" } else { "stop" }.into(),
+        decision: decision.into(),
         at_ms: now_ms,
-        expires_at_ms: now_ms + OVERRIDE_TTL_MS,
+        expires_at_ms: now_ms
+            + if decision == "continue" {
+                CONTINUE_TTL_MS
+            } else {
+                OVERRIDE_TTL_MS
+            },
+        text: if decision == "wrap" { text } else { None },
     };
     let mut file = std::fs::OpenOptions::new()
         .create(true)
@@ -852,44 +1160,92 @@ pub fn write_override(dir: &Path, go_on: bool, now_ms: i64) -> Result<(), String
         .map_err(|e| e.to_string())
 }
 
+/// One held call has ended: its deadline leaves the ledger, and the
+/// pending mark goes with the last one (review finding 6).
+fn release_hold(b: &mut TurnBudget, deadline: i64, now_ms: i64) {
+    if let Some(i) = b.holds.iter().position(|d| *d == deadline) {
+        b.holds.remove(i);
+    }
+    b.holds.retain(|d| *d > now_ms);
+    if b.holds.is_empty() {
+        b.pending_since_ms = None;
+    }
+}
+
 /// Wait for his answer to a held call, polling the override every
-/// `poll_ms`, for at most `hold_ms`. A new message starting under the
-/// hold (the ledger's turn changed) or no answer in time: refused as
-/// before, and the ledger records the refusal.
+/// `poll_ms`, for at most `hold_ms` (to `deadline`, the one the ledger
+/// holds for this call). A new message starting under the hold (the
+/// ledger's turn changed), the ledger gone, or no answer in time: refused
+/// as before, and the ledger records the refusal. An unreadable ledger
+/// is waited through, never read as permission (review finding 1).
 fn await_answer(
     dir: &Path,
     turn: i64,
+    deadline: i64,
     reading: WindowReading,
     subagent: bool,
-    hold_ms: i64,
     poll_ms: u64,
+    senses: &Senses,
 ) -> CallVerdict {
-    let until = chrono::Utc::now().timestamp_millis() + hold_ms;
     loop {
         std::thread::sleep(std::time::Duration::from_millis(poll_ms));
         let now = chrono::Utc::now().timestamp_millis();
-        let Some(b) = read_turn_budget(dir) else {
-            return CallVerdict::Allow { overridden: false };
+        let b = match read_ledger(dir) {
+            Err(()) => break,
+            Ok(None) if now < deadline => continue,
+            Ok(None) => break,
+            Ok(Some(b)) => b,
         };
         if b.started_at_ms != turn {
             break;
         }
-        if let Some(go_on) = override_for(&b, read_override(dir).as_ref(), now) {
-            let v = call_verdict(&b, Some(reading), Some(go_on), false, subagent);
-            if let CallVerdict::Deny(reason) = &v {
-                with_ledger(dir, |b| b.stopped = Some(reason.clone()));
+        if let Some(ans) = answer_now(dir, &b, true, senses, now) {
+            let v = call_verdict(&b, Some(reading), Some(&ans), false, subagent);
+            let v = with_ledger(dir, |l| {
+                if l.started_at_ms == turn {
+                    release_hold(l, deadline, now);
+                }
+                match v {
+                    // Another held call may have carried it already.
+                    CallVerdict::WrapUp(reason) if l.wrap_at_ms.is_none() => {
+                        l.wrap_at_ms = Some(now);
+                        CallVerdict::Deny(reason)
+                    }
+                    CallVerdict::WrapUp(_) => CallVerdict::Allow { overridden: true },
+                    CallVerdict::Deny(reason) => {
+                        l.stopped = Some(reason.clone());
+                        CallVerdict::Deny(reason)
+                    }
+                    CallVerdict::Allow { overridden } => {
+                        if overridden {
+                            l.override_at_ms.get_or_insert(now);
+                        }
+                        CallVerdict::Allow { overridden }
+                    }
+                    CallVerdict::Hold => CallVerdict::Hold,
+                }
+            })
+            .unwrap_or_else(|| {
+                CallVerdict::Deny(window_stop_all_reason(
+                    reading.five_hour_pct,
+                    b.stop_at,
+                    reading.resets_at,
+                ))
+            });
+            if v != CallVerdict::Hold {
+                return v;
             }
-            return v;
         }
-        if now >= until {
+        if now >= deadline {
             break;
         }
     }
-    let b = read_turn_budget(dir).unwrap_or_default();
-    let reason = window_stop_all_reason(reading.five_hour_pct, b.stop_at, reading.resets_at);
+    let stop_at = read_turn_budget(dir).map_or(SubagentLimits::default().stop_at, |b| b.stop_at);
+    let reason = window_stop_all_reason(reading.five_hour_pct, stop_at, reading.resets_at);
+    let now = chrono::Utc::now().timestamp_millis();
     with_ledger(dir, |b| {
         if b.started_at_ms == turn {
-            b.pending_since_ms = None;
+            release_hold(b, deadline, now);
             b.stopped = Some(reason.clone());
         }
     });
@@ -901,15 +1257,19 @@ fn await_answer(
 /// the call, and write the refusal into the ledger when there is one.
 /// No ledger (a chat older than the file, a turn started elsewhere):
 /// allowed, nothing written. Since backlog 189 the verdict weighs his
-/// override and his presence, and a held call marks the ledger pending.
+/// override and his presence, and a held call marks the ledger pending;
+/// since 192 it returns the held call's deadline (0 otherwise), a *Wrap
+/// up* is delivered here, and the Mac is looked at only past the line.
 fn note_reading(
     dir: &Path,
     reading: Option<WindowReading>,
     subagent: bool,
     now_ms: i64,
-) -> (CallVerdict, i64) {
+    hold_ms: i64,
+    senses: &Senses,
+) -> (CallVerdict, i64, i64) {
     use std::io::{Read as _, Seek as _, Write as _};
-    let allowed = (CallVerdict::Allow { overridden: false }, 0);
+    let allowed = (CallVerdict::Allow { overridden: false }, 0, 0);
     let Ok(mut file) = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -938,15 +1298,32 @@ fn note_reading(
             b.resets_at = r.resets_at.or(b.resets_at);
         }
     }
-    let ov = override_for(&b, read_override(dir).as_ref(), now_ms);
-    let present = is_present(read_presence(dir), now_ms);
-    let verdict = call_verdict(&b, reading, ov, present, subagent);
+    let past = reading.is_some_and(|r| r.five_hour_pct >= b.stop_at);
+    let ans = answer_now(dir, &b, past, senses, now_ms);
+    // His presence only matters for a call that would otherwise be held.
+    let present = past
+        && ans.is_none()
+        && !subagent
+        && is_present(read_presence(dir), senses.look(now_ms).0, now_ms);
+    let mut verdict = call_verdict(&b, reading, ans.as_ref(), present, subagent);
+    let mut deadline = 0;
     match &verdict {
         CallVerdict::Deny(reason) => b.stopped = Some(reason.clone()),
         CallVerdict::Hold => {
+            deadline = now_ms + hold_ms;
             b.pending_since_ms.get_or_insert(now_ms);
+            b.holds.retain(|d| *d > now_ms);
+            b.holds.push(deadline);
         }
-        CallVerdict::Allow { .. } => {}
+        CallVerdict::WrapUp(reason) => {
+            b.wrap_at_ms = Some(now_ms);
+            verdict = CallVerdict::Deny(reason.clone());
+        }
+        CallVerdict::Allow { overridden } => {
+            if *overridden && ans == Some(Answer::Continue) {
+                b.override_at_ms.get_or_insert(now_ms);
+            }
+        }
     }
     let _ = file.set_len(0);
     let _ = file.seek(std::io::SeekFrom::Start(0));
@@ -955,7 +1332,7 @@ fn note_reading(
             .unwrap_or_default()
             .as_bytes(),
     );
-    (verdict, b.started_at_ms)
+    (verdict, b.started_at_ms, deadline)
 }
 
 /// The per-chat, per-day refusal.
@@ -1178,17 +1555,19 @@ pub fn decide(dir: &Path, stdin_json: &str) -> HookReply {
 /// [`decide`] with the desktop's gauge reading passed in, so the suite
 /// runs against a fixed window rather than this machine's files.
 pub fn decide_with(dir: &Path, stdin_json: &str, gauge: Option<WindowReading>) -> HookReply {
-    decide_holding(dir, stdin_json, gauge, HOLD_MS, 500)
+    decide_holding(dir, stdin_json, gauge, HOLD_MS, 500, &Senses::real())
 }
 
 /// [`decide_with`] with the hold's length and poll interval passed in,
-/// so the suite holds for milliseconds rather than minutes.
+/// so the suite holds for milliseconds rather than minutes — and (backlog
+/// 192) what the hook senses of the Mac, so it runs against a fixed one.
 fn decide_holding(
     dir: &Path,
     stdin_json: &str,
     gauge: Option<WindowReading>,
     hold_ms: i64,
     poll_ms: u64,
+    senses: &Senses,
 ) -> HookReply {
     let Ok(input) = serde_json::from_str::<HookInput>(stdin_json) else {
         return HookReply::pass();
@@ -1209,19 +1588,30 @@ fn decide_holding(
     // Backlog 189: past the stop line, a chat he is present in holds the
     // call for his answer rather than refusing it.
     let subagent = input.agent_id.as_deref().is_some_and(|s| !s.is_empty());
-    let mut verdict = note_reading(dir, reading, subagent, now_ms);
-    if let (CallVerdict::Hold, turn) = &verdict
+    let (mut verdict, turn, deadline) =
+        note_reading(dir, reading, subagent, now_ms, hold_ms, senses);
+    if verdict == CallVerdict::Hold
         && let Some(r) = reading
     {
-        verdict.0 = await_answer(dir, *turn, r, subagent, hold_ms, poll_ms);
+        verdict = await_answer(dir, turn, deadline, r, subagent, poll_ms, senses);
     }
-    let overridden = match verdict.0 {
-        CallVerdict::Deny(reason) => return HookReply::deny(reason),
+    let overridden = match verdict {
+        CallVerdict::Deny(reason) | CallVerdict::WrapUp(reason) => {
+            return HookReply::deny(reason);
+        }
         CallVerdict::Allow { overridden } => overridden,
         CallVerdict::Hold => false,
     };
     if !is_spawn(&input.tool_name) {
         return HookReply::pass();
+    }
+    // A chat wrapping up starts nothing new (backlog 192).
+    if read_turn_budget(dir).is_some_and(|b| b.wrap_at_ms.is_some() && b.started_at_ms == turn) {
+        return HookReply::deny(
+            "Not run: no new subagents while the chat wraps up (Swaraag pressed Wrap up). \
+             Finish the hand-off yourself."
+                .into(),
+        );
     }
     // Under his override the stop line does not refuse the spawn either;
     // the turn's cap at that window still counts.
@@ -1701,7 +2091,7 @@ mod tests {
             &l,
             reading(30, 2),
             5_000,
-            super::TurnPhase::Turn,
+            super::TurnPhase::Chair(1_000),
         );
         assert_eq!(
             (chair.phase.as_str(), chair.start_pct, chair.started_at_ms),
@@ -1712,11 +2102,11 @@ mod tests {
             &l,
             reading(30, 2),
             1_000 + 11 * 60 * 1000,
-            super::TurnPhase::Turn,
+            super::TurnPhase::Chair(1_000),
         );
         assert_eq!((stale.phase.as_str(), stale.start_pct), ("turn", Some(30)));
         let again = super::start_turn_budget(
-            Some(done),
+            Some(done.clone()),
             &l,
             reading(30, 2),
             5_000,
@@ -1731,6 +2121,55 @@ mod tests {
             super::TurnPhase::Turn,
         );
         assert_eq!((plain.start_pct, plain.started_at_ms), (Some(31), 9_000));
+        // A chair armed for another council's seats does not continue these.
+        let other = super::start_turn_budget(
+            Some(done.clone()),
+            &l,
+            reading(30, 2),
+            5_000,
+            super::TurnPhase::Chair(777),
+        );
+        assert_eq!((other.start_pct, other.started_at_ms), (Some(30), 5_000));
+    }
+
+    /// Backlog 187: the seats ran and spent, the chair never did (a Stop,
+    /// an error); an ordinary message a minute later starts its own ledger
+    /// at 0 % spent — through the files, as the turns write them.
+    #[test]
+    fn seats_whose_chair_never_ran_leave_nothing_on_the_next_message() {
+        let dir = std::env::temp_dir().join(format!(
+            "nightloom-187-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let l = super::SubagentLimits::default();
+        // The seats' ledger, as `run_seats` leaves it: started at 20 %,
+        // the seats spent 10, then `finish_seats`.
+        let seats = super::TurnBudget {
+            latest_pct: Some(30),
+            calls: 12,
+            ..super::start_turn_budget(None, &l, reading(20, 1), 1_000, super::TurnPhase::Seats)
+        };
+        super::write_turn_budget(&dir, &seats);
+        super::finish_seats(&dir);
+        assert_eq!(super::seats_ledger(&dir), Some(1_000));
+        // No chair: the next message is an ordinary turn.
+        let have = super::read_turn_budget(&dir);
+        let next =
+            super::start_turn_budget(have, &l, reading(30, 2), 61_000, super::TurnPhase::Turn);
+        assert_eq!(next.spent_pct(), Some(0));
+        assert_eq!(
+            (next.phase.as_str(), next.started_at_ms, next.calls),
+            ("turn", 61_000, 0)
+        );
+        // And through `begin_turn` itself: the seats' ledger is replaced.
+        super::begin_turn(&dir, &l, super::TurnPhase::Turn);
+        let b = super::read_turn_budget(&dir).unwrap();
+        assert_ne!(b.started_at_ms, 1_000);
+        assert_eq!((b.phase.as_str(), b.calls), ("turn", 0));
+        assert_eq!(super::seats_ledger(&dir), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Through the hook: a `Read` (not a spawn) is allowed under budget,
@@ -1800,7 +2239,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // The override when he is present (nightshift backlog 189, 2026-09-22).
+    // The override when he is present (nightshift backlog 189, 2026-09-22;
+    // pass 2, backlog 192).
 
     fn ov(turn: i64, decision: &str, expires_at_ms: i64) -> super::BudgetOverride {
         super::BudgetOverride {
@@ -1808,53 +2248,57 @@ mod tests {
             decision: decision.into(),
             at_ms: 0,
             expires_at_ms,
+            text: None,
         }
     }
 
-    /// The pure check: this turn's Continue lets a call past the line
-    /// through; another turn's (the next message, another chat's ledger),
-    /// an expired one or a word it does not know does not; Stop refuses;
-    /// no answer holds only a present chat's own call; the 35 % share
-    /// still binds under the override.
+    /// The pure check: *Stop* and *Wrap* name their message — another
+    /// turn's, an expired one or a word it does not know is nothing; a
+    /// *Continue* is the chat's, whatever turn it named, while it holds.
+    /// No answer holds only a present chat's own call; the 35 % share
+    /// still binds under the override; a *Wrap* is carried once by the
+    /// chat's own call, refuses a subagent's, and lets later calls on.
     #[test]
     fn the_override_lets_this_turn_through_and_nothing_else() {
+        use super::Answer;
         use super::CallVerdict::*;
         let l = super::SubagentLimits::default();
         let b = super::start_turn_budget(None, &l, reading(60, 1), 1_000, super::TurnPhase::Turn);
         let now = 5_000;
-        let this = ov(1_000, "continue", now + 1);
-        assert_eq!(super::override_for(&b, Some(&this), now), Some(true));
+        let of = |o: super::BudgetOverride, ok: bool| super::override_for(&b, Some(&o), ok, now);
         assert_eq!(
-            super::override_for(&b, Some(&ov(999, "continue", now + 1)), now),
-            None,
-            "another turn"
+            of(ov(1_000, "continue", now + 1), true),
+            Some(Answer::Continue)
         );
+        // Backlog 192: another turn's Continue is still the chat's …
         assert_eq!(
-            super::override_for(&b, Some(&ov(1_000, "continue", now)), now),
-            None,
-            "expired"
+            of(ov(999, "continue", now + 1), true),
+            Some(Answer::Continue)
         );
+        // … until he has been away (`continue_holds` said no).
+        assert_eq!(of(ov(1_000, "continue", now + 1), false), None);
+        assert_eq!(of(ov(1_000, "yes", now + 1), true), None);
+        assert_eq!(of(ov(1_000, "stop", now + 1), true), Some(Answer::Stop));
+        assert_eq!(of(ov(999, "stop", now + 1), true), None, "another turn");
+        assert_eq!(of(ov(1_000, "stop", now), true), None, "expired");
         assert_eq!(
-            super::override_for(&b, Some(&ov(1_000, "yes", now + 1)), now),
-            None
+            of(ov(1_000, "wrap", now + 1), false),
+            Some(Answer::Wrap(super::WRAP_UP_DEFAULT.into()))
         );
-        assert_eq!(
-            super::override_for(&b, Some(&ov(1_000, "stop", now + 1)), now),
-            Some(false)
-        );
-        assert_eq!(super::override_for(&b, None, now), None);
+        assert_eq!(super::override_for(&b, None, true, now), None);
+        let go = Some(&Answer::Continue);
         // 90 %: past the line, 30 spent of 35 — Continue lets it through.
         assert_eq!(
-            super::call_verdict(&b, reading(90, 2), Some(true), false, false),
+            super::call_verdict(&b, reading(90, 2), go, false, false),
             Allow { overridden: true }
         );
-        // The same from a subagent: the parent's turn is overridden.
+        // The same from a subagent: the parent's chat is overridden.
         assert_eq!(
-            super::call_verdict(&b, reading(90, 2), Some(true), false, true),
+            super::call_verdict(&b, reading(90, 2), go, false, true),
             Allow { overridden: true }
         );
         // Stop, or nothing and nobody there: refused as before.
-        for (o, present) in [(Some(false), true), (None, false)] {
+        for (o, present) in [(Some(&Answer::Stop), true), (None, false)] {
             let v = super::call_verdict(&b, reading(90, 2), o, present, false);
             assert!(
                 matches!(&v, Deny(r) if r.contains("stop line is 85%")),
@@ -1876,39 +2320,162 @@ mod tests {
             Allow { overridden: false }
         );
         // The message's 35 % still binds under the override: 95 − 60.
-        let v = super::call_verdict(&b, reading(95, 2), Some(true), true, false);
+        let v = super::call_verdict(&b, reading(95, 2), go, true, false);
         assert!(matches!(&v, Deny(r) if r.contains("spent 35%")), "{v:?}");
+        // Wrap up, at any window: carried by the chat's own call …
+        let wrap = Answer::Wrap("write HANDOFF.md".into());
+        for r in [reading(50, 2), reading(90, 2), None] {
+            let v = super::call_verdict(&b, r, Some(&wrap), true, false);
+            assert!(
+                matches!(&v, WrapUp(t) if t.contains("Wrap up") && t.ends_with("write HANDOFF.md")),
+                "{v:?}"
+            );
+        }
+        // … a subagent's call is told to stop …
+        assert!(matches!(
+            super::call_verdict(&b, reading(90, 2), Some(&wrap), true, true),
+            Deny(r) if r.contains("wrapping up")
+        ));
+        // … and once carried, the chat's calls go on past the line to write it.
+        let mut carried = b.clone();
+        carried.wrap_at_ms = Some(4_000);
+        assert_eq!(
+            super::call_verdict(&carried, reading(90, 2), Some(&wrap), false, false),
+            Allow { overridden: true }
+        );
     }
 
-    /// Presence: seen in a focused window within 20 s, or his message
-    /// within 5 minutes; nothing on file is absent.
+    /// Presence (backlog 192): the Mac's input within 10 minutes, or — as
+    /// before — seen in a focused window within 20 s, or his message within
+    /// 5 minutes; nothing readable and nothing on file is absent.
     #[test]
-    fn presence_is_a_recent_look_or_a_recent_message() {
-        let now = 1_000_000;
+    fn presence_is_the_macs_activity_or_a_recent_look_or_message() {
+        let now = 1_000_000_000;
         let p = |seen: Option<i64>, input: Option<i64>| {
             Some(super::Presence {
                 seen_at_ms: seen,
                 input_at_ms: input,
             })
         };
-        assert!(!super::is_present(None, now));
-        assert!(super::is_present(p(Some(now - 20_000), None), now));
-        assert!(!super::is_present(p(Some(now - 20_001), None), now));
+        let away = super::AWAY_MS;
+        assert!(!super::is_present(None, None, now));
+        // The Mac alone decides it, with nothing from the window.
+        assert!(super::is_present(None, Some(away - 1), now));
+        assert!(!super::is_present(None, Some(away), now));
+        // The window's inputs still count when the Mac says away.
+        assert!(super::is_present(
+            p(Some(now - 20_000), None),
+            Some(away),
+            now
+        ));
+        assert!(!super::is_present(
+            p(Some(now - 20_001), None),
+            Some(away),
+            now
+        ));
         assert!(super::is_present(
             p(Some(now - 60_000), Some(now - 300_000)),
+            None,
             now
         ));
         assert!(!super::is_present(
             p(Some(now - 60_000), Some(now - 300_001)),
+            None,
             now
         ));
     }
 
+    /// `HIDIdleTime` out of `ioreg`'s text, nanoseconds to milliseconds.
+    #[test]
+    fn the_macs_idle_time_is_read_from_ioreg() {
+        let text = "+-o IOHIDSystem  <class IOHIDSystem>\n  |   \"HIDIdleTime\" = 2148615587208\n";
+        assert_eq!(super::parse_hid_idle(text), Some(2_148_615));
+        assert_eq!(super::parse_hid_idle("nothing here"), None);
+    }
+
+    /// A *Continue* lasts while he stays (backlog 192): an observation
+    /// finding him away 10 minutes ends it, and so does a gap of 10 minutes
+    /// nobody observed (the Mac asleep, the app closed); an away stretch
+    /// before the click does not; an unreadable idle time never vouches.
+    #[test]
+    fn a_continue_lasts_until_he_has_been_away_ten_minutes() {
+        let away = super::AWAY_MS;
+        let click = 100 * away;
+        let hold = |a: super::Activity, idle: Option<i64>, now: i64| {
+            super::continue_holds(click, Some(a), idle, now)
+        };
+        // Watched every minute, active: holds for hours.
+        let mut a = super::observe(None, Some(1_000), click - 60_000);
+        for m in 1..=180 {
+            a = super::observe(Some(a), Some(30_000), click + m * 60_000);
+        }
+        assert!(hold(a, Some(30_000), click + 180 * 60_000));
+        // He walks away: the watcher's next look past 10 minutes ends it,
+        // and his return does not bring it back.
+        let t = click + 200 * 60_000;
+        let gone = super::observe(Some(a), Some(away), t);
+        assert!(!hold(gone, Some(away), t));
+        let back = super::observe(Some(gone), Some(2_000), t + 60_000);
+        assert!(!hold(back, Some(2_000), t + 60_000));
+        // A gap nobody observed (asleep): away, even if he is at the keys now.
+        let woke = super::observe(Some(a), Some(1_000), click + 181 * 60_000 + away);
+        assert!(!hold(woke, Some(1_000), click + 181 * 60_000 + away));
+        // Away before the click is not away after it.
+        let before = super::observe(None, Some(away), click - 60_000);
+        let after = super::observe(Some(before), Some(1_000), click + 30_000);
+        assert!(hold(after, Some(1_000), click + 30_000));
+        // Unreadable idle: not vouched for.
+        assert!(!hold(after, None, click + 30_000));
+        let blind = super::observe(Some(after), None, click + 60_000);
+        assert!(!hold(blind, Some(1_000), click + 90_000));
+        // The backstop.
+        assert!(!super::continue_holds(
+            click,
+            None,
+            Some(0),
+            click + super::CONTINUE_TTL_MS
+        ));
+    }
+
+    /// The suite's senses: the Mac's idle time from a cell the test sets,
+    /// the activity record in the test's own directory.
+    fn senses<'a>(idle: &'a dyn Fn() -> Option<i64>, dir: &std::path::Path) -> super::Senses<'a> {
+        super::Senses {
+            idle_ms: idle,
+            activity: Some(dir.join(super::ACTIVITY_FILE)),
+        }
+    }
+
+    /// Wait (bounded) for the ledger to show a held call, then answer it.
+    fn answer_when_held(
+        dir: PathBuf,
+        decision: &'static str,
+        text: Option<String>,
+    ) -> std::thread::JoinHandle<bool> {
+        std::thread::spawn(move || {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            while std::time::Instant::now() < until {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                if super::read_turn_budget(&dir).is_some_and(|b| b.pending_since_ms.is_some()) {
+                    let at = chrono::Utc::now().timestamp_millis();
+                    super::write_answer(&dir, decision, text, at).unwrap();
+                    return true;
+                }
+            }
+            false
+        })
+    }
+
     /// Through the hook, past the line at 90 %: unattended it is refused
-    /// at once; present, the call is held and the ledger says so; his
-    /// Continue lets it (and a spawn) through and is recorded; the next
-    /// message is refused again; another chat's directory never sees it;
-    /// an expired one is refused; Stop refuses a held call.
+    /// without a hold; present, the call is held and the ledger says so;
+    /// his Continue lets it (and a spawn) through and is recorded; since
+    /// backlog 192 it carries to the chat's next message while he stays,
+    /// and ends when he has been away; another chat's directory never sees
+    /// it; Stop refuses a held call. Pass 2 (backlog 192) made it robust:
+    /// ~~the unattended call must return in under 300 ms~~ (it missed that
+    /// under a loaded machine, 2026-09-23) — "not held" is now read from
+    /// the ledger, never from a clock; the held-and-clicked call waits up
+    /// to 20 s for its click rather than racing a 400 ms hold.
     #[test]
     fn a_held_call_goes_on_by_his_click_for_this_message_only() {
         let dir = limits_dir("override");
@@ -1920,41 +2487,37 @@ mod tests {
             super::write_usage(d, 70, Some(now / 1000 + 3600), now);
             super::begin_turn(d, &l, super::TurnPhase::Turn);
         }
-        let read = r#"{"tool_name":"Read","tool_input":{"file_path":"/x"}}"#;
-        let hold = |d: &std::path::Path, stdin: &str, at: i64| {
-            super::decide_holding(d, stdin, reading(90, at), 400, 20)
+        let idle_ms = std::sync::atomic::AtomicI64::new(-1);
+        let idle = || match idle_ms.load(std::sync::atomic::Ordering::SeqCst) {
+            -1 => None,
+            v => Some(v),
         };
-        // Nobody there: refused at once, not held.
+        let s = senses(&idle, &dir);
+        let s_other = senses(&idle, &other);
+        let read = r#"{"tool_name":"Read","tool_input":{"file_path":"/x"}}"#;
+        let hold_for = |d: &std::path::Path, stdin: &str, at: i64, ms: i64, s: &super::Senses| {
+            super::decide_holding(d, stdin, reading(90, at), ms, 5, s)
+        };
+        // Nobody there (the Mac unread, nothing from the window): refused,
+        // and never held — the ledger shows no hold was taken.
+        assert_eq!(hold_for(&dir, read, now + 1, 60_000, &s).decision(), "deny");
+        let b = super::read_turn_budget(&dir).unwrap();
+        assert!(b.holds.is_empty() && b.pending_since_ms.is_none(), "{b:?}");
+        // The Mac idle 10 minutes: away, refused the same way.
+        idle_ms.store(super::AWAY_MS, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(hold_for(&dir, read, now + 2, 60_000, &s).decision(), "deny");
+        assert!(super::read_turn_budget(&dir).unwrap().holds.is_empty());
+        // He is at the Mac, and says nothing: held for the hold, then refused,
+        // and the hold leaves the ledger.
+        idle_ms.store(5_000, std::sync::atomic::Ordering::SeqCst);
         let t = std::time::Instant::now();
-        assert_eq!(hold(&dir, read, now + 1).decision(), "deny");
-        assert!(t.elapsed() < std::time::Duration::from_millis(300));
-        // He is there, and says nothing: held for the hold, then refused.
-        super::note_presence(&dir, false, chrono::Utc::now().timestamp_millis()).unwrap();
-        let t = std::time::Instant::now();
-        assert_eq!(hold(&dir, read, now + 2).decision(), "deny");
-        assert!(t.elapsed() >= std::time::Duration::from_millis(400));
-        assert_eq!(
-            super::read_turn_budget(&dir).unwrap().pending_since_ms,
-            None
-        );
+        assert_eq!(hold_for(&dir, read, now + 3, 100, &s).decision(), "deny");
+        assert!(t.elapsed() >= std::time::Duration::from_millis(100));
+        let b = super::read_turn_budget(&dir).unwrap();
+        assert!(b.pending_since_ms.is_none() && b.holds.is_empty(), "{b:?}");
         // Held, and he clicks Continue while it waits: it goes on.
-        let d2 = dir.clone();
-        let clicker = std::thread::spawn(move || {
-            for _ in 0..50 {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-                if super::read_turn_budget(&d2)
-                    .unwrap()
-                    .pending_since_ms
-                    .is_some()
-                {
-                    let at = chrono::Utc::now().timestamp_millis();
-                    super::write_override(&d2, true, at).unwrap();
-                    return true;
-                }
-            }
-            false
-        });
-        assert_eq!(hold(&dir, read, now + 3).decision(), "pass");
+        let clicker = answer_when_held(dir.clone(), "continue", None);
+        assert_eq!(hold_for(&dir, read, now + 4, 20_000, &s).decision(), "pass");
         assert!(
             clicker.join().unwrap(),
             "the ledger showed the call pending"
@@ -1962,33 +2525,162 @@ mod tests {
         let b = super::read_turn_budget(&dir).unwrap();
         assert!(b.override_at_ms.is_some() && b.pending_since_ms.is_none());
         // The rest of this message goes through without asking — a spawn too.
-        assert_eq!(hold(&dir, read, now + 4).decision(), "pass");
-        assert_ne!(hold(&dir, CALL, now + 5).decision(), "deny");
-        // Another chat's calls: its own directory, no override — refused.
-        assert_eq!(hold(&other, read, now + 6).decision(), "deny");
-        // The next message: a new ledger, the old override names a gone turn.
+        assert_eq!(hold_for(&dir, read, now + 5, 60_000, &s).decision(), "pass");
+        assert_ne!(hold_for(&dir, CALL, now + 6, 60_000, &s).decision(), "deny");
+        // Another chat's calls: its own directory, no override — refused
+        // (away there, so at once).
+        idle_ms.store(-1, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            hold_for(&other, read, now + 7, 60_000, &s_other).decision(),
+            "deny"
+        );
+        // The next message of this chat, him still at the Mac: the chat's
+        // Continue carries (backlog 192), and the ledger records it.
+        idle_ms.store(5_000, std::sync::atomic::Ordering::SeqCst);
         std::thread::sleep(std::time::Duration::from_millis(2));
         super::begin_turn(&dir, &l, super::TurnPhase::Turn);
-        let _ = std::fs::remove_file(dir.join(super::PRESENCE_FILE));
-        assert_eq!(hold(&dir, read, now + 7).decision(), "deny");
-        // Expired: an override naming this turn but past its expiry.
-        let turn = super::read_turn_budget(&dir).unwrap().started_at_ms;
-        std::fs::write(
-            dir.join(super::OVERRIDE_FILE),
-            serde_json::to_string(&ov(turn, "continue", now - 1)).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(hold(&dir, read, now + 8).decision(), "deny");
+        assert_eq!(hold_for(&dir, read, now + 8, 60_000, &s).decision(), "pass");
+        assert!(
+            super::read_turn_budget(&dir)
+                .unwrap()
+                .override_at_ms
+                .is_some()
+        );
+        // He is away 10 minutes: the Continue has ended, and the next call is
+        // refused (nobody there to ask) — and stays ended when he is back:
+        // that call is held again for a new answer.
+        idle_ms.store(super::AWAY_MS, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(hold_for(&dir, read, now + 9, 60_000, &s).decision(), "deny");
+        idle_ms.store(1_000, std::sync::atomic::Ordering::SeqCst);
+        let t = std::time::Instant::now();
+        assert_eq!(hold_for(&dir, read, now + 10, 100, &s).decision(), "deny");
+        assert!(
+            t.elapsed() >= std::time::Duration::from_millis(100),
+            "held, not passed"
+        );
         // Stop here, with him there: refused at once, recorded.
-        super::note_presence(&dir, true, chrono::Utc::now().timestamp_millis()).unwrap();
         super::write_override(&dir, false, chrono::Utc::now().timestamp_millis()).unwrap();
-        assert_eq!(hold(&dir, read, now + 9).decision(), "deny");
+        assert_eq!(
+            hold_for(&dir, read, now + 11, 60_000, &s).decision(),
+            "deny"
+        );
         assert!(super::read_turn_budget(&dir).unwrap().stopped.is_some());
         // The registration gives the hook longer than a hold.
         let entry = super::hook_entry(&["x".into()], &dir);
         assert!(entry["hooks"][0]["timeout"].as_i64().unwrap() * 1000 > super::HOLD_MS);
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&other);
+    }
+
+    /// *Wrap up* (backlog 192) on a held call: the call is refused with his
+    /// instruction, the model's next calls run (past the line) so it can
+    /// write the hand-off, a spawn is refused, a subagent is told to stop;
+    /// from the meter with nothing held, the next call carries it.
+    #[test]
+    fn wrap_up_is_carried_once_then_the_hand_off_may_be_written() {
+        let dir = limits_dir("wrap");
+        let now = chrono::Utc::now().timestamp_millis();
+        let l = super::SubagentLimits::default();
+        super::write_limits(&dir, &l).unwrap();
+        super::write_usage(&dir, 70, Some(now / 1000 + 3600), now);
+        super::begin_turn(&dir, &l, super::TurnPhase::Turn);
+        let idle = || Some(1_000);
+        let s = senses(&idle, &dir);
+        let read = r#"{"tool_name":"Read","tool_input":{"file_path":"/x"}}"#;
+        let write = r#"{"tool_name":"Write","tool_input":{"file_path":"/p/HANDOFF.md"}}"#;
+        let sub = r#"{"tool_name":"Read","tool_input":{},"agent_id":"a1"}"#;
+        let go = |stdin: &str, at: i64| {
+            super::decide_holding(&dir, stdin, reading(90, at), 20_000, 5, &s)
+        };
+        let clicker = answer_when_held(dir.clone(), "wrap", Some("write HANDOFF.md now".into()));
+        let r = go(read, now + 1);
+        assert!(clicker.join().unwrap());
+        assert_eq!(r.decision(), "deny");
+        let words = serde_json::to_string(&r).unwrap();
+        assert!(
+            words.contains("Wrap up") && words.contains("write HANDOFF.md now"),
+            "{words}"
+        );
+        let b = super::read_turn_budget(&dir).unwrap();
+        assert!(b.wrap_at_ms.is_some() && b.pending_since_ms.is_none() && b.holds.is_empty());
+        assert_eq!(go(write, now + 2).decision(), "pass");
+        assert_eq!(go(CALL, now + 3).decision(), "deny");
+        assert_eq!(go(sub, now + 4).decision(), "deny");
+        // The next message: the wrap named the last one; nothing carries.
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        super::begin_turn(&dir, &l, super::TurnPhase::Turn);
+        let b = super::read_turn_budget(&dir).unwrap();
+        assert!(b.wrap_at_ms.is_none());
+        // From the meter, under the line and nothing held: the next call
+        // carries it, the one after runs.
+        super::write_answer(&dir, "wrap", None, chrono::Utc::now().timestamp_millis()).unwrap();
+        let under = |stdin: &str, at: i64| {
+            super::decide_holding(&dir, stdin, reading(50, at), 20_000, 5, &s)
+        };
+        let r = under(read, now + 5);
+        assert_eq!(r.decision(), "deny");
+        assert!(serde_json::to_string(&r).unwrap().contains("HANDOFF.md"));
+        assert_eq!(under(write, now + 6).decision(), "pass");
+        assert!(super::write_answer(&dir, "maybe", None, 0).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Two calls held at once (review finding 6): the card stays until the
+    /// last one ends; a torn ledger mid-hold is waited through, not read as
+    /// permission (finding 1).
+    #[test]
+    fn parallel_holds_keep_the_card_and_a_torn_ledger_never_lets_a_call_through() {
+        let dir = limits_dir("holds");
+        let now = chrono::Utc::now().timestamp_millis();
+        let l = super::SubagentLimits::default();
+        super::write_limits(&dir, &l).unwrap();
+        super::write_usage(&dir, 70, Some(now / 1000 + 3600), now);
+        super::begin_turn(&dir, &l, super::TurnPhase::Turn);
+        let read = r#"{"tool_name":"Read","tool_input":{"file_path":"/x"}}"#;
+        let spawn_hold = |at: i64, ms: i64| {
+            let d = dir.clone();
+            std::thread::spawn(move || {
+                let idle = || Some(1_000);
+                let s = senses(&idle, &d);
+                super::decide_holding(&d, read, reading(90, at), ms, 5, &s)
+                    .decision()
+                    .to_string()
+            })
+        };
+        let holds = || super::read_turn_budget(&dir).map_or(0, |b| b.holds.len());
+        let wait_for = |n: usize| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            while holds() != n && std::time::Instant::now() < until {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            holds() == n
+        };
+        // The long hold first, and only once the ledger shows it, the short.
+        let long = spawn_hold(now + 1, 60_000);
+        assert!(wait_for(1));
+        let short = spawn_hold(now + 2, 100);
+        assert_eq!(short.join().unwrap(), "deny");
+        // The short hold has ended; the long one still waits: the card stays.
+        let b = super::read_turn_budget(&dir).unwrap();
+        assert!(b.pending_since_ms.is_some() && b.holds.len() == 1, "{b:?}");
+        // A torn ledger under the hold: empty for a moment, as a writer's
+        // truncate leaves it, with the long hook polling every 5 ms.
+        {
+            use std::io::Write as _;
+            let path = dir.join(super::TURN_BUDGET_FILE);
+            let good = std::fs::read(&path).unwrap();
+            std::fs::write(&path, b"").unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let mut f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+            f.write_all(&good).unwrap();
+        }
+        // Still held (a torn read let nothing through); Stop ends it.
+        assert!(!long.is_finished(), "a torn ledger ended the hold");
+        super::write_override(&dir, false, chrono::Utc::now().timestamp_millis()).unwrap();
+        assert_eq!(long.join().unwrap(), "deny");
+        let b = super::read_turn_budget(&dir).unwrap();
+        assert!(b.pending_since_ms.is_none() && b.holds.is_empty(), "{b:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The subagents' model (blocker 280): `chat` leaves the spawn alone;

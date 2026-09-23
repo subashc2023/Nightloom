@@ -45,6 +45,8 @@ import type {
   Checkpoint,
   CliMemoryFile,
   CliPromptSnapshot,
+  LayerChoice,
+  PendingView,
   EditableLayer,
   PromptLayer,
   PromptLayersInfo,
@@ -161,6 +163,9 @@ export function connectAgent(args: AgentConnectArgs): Promise<ConnectResult> {
     subagentsAuto: args.subagentsAuto,
     limits: args.limits,
     forkMode: args.forkMode,
+    cold: args.cold,
+    autoLayers: args.autoLayers,
+    updateNow: args.updateNow,
   });
 }
 
@@ -212,10 +217,11 @@ export function askAside(text: string, seq: number): Promise<AsideResult> {
  * Interrupt the aside, if any (review F13, 2026-09-16): the × on the aside
  * card. Reaches an aside still waiting behind a running turn as well as one
  * that is running, and leaves the turn alone; `askAside` then rejects with
- * "the aside was cancelled" or resolves with an interrupted answer.
+ * "the aside was cancelled" or resolves with an interrupted answer. Since
+ * backlog 176 it names the exchange (`seq`): only that one stops.
  */
-export function cancelAside(): Promise<null> {
-  return invoke("cancel_aside");
+export function cancelAside(seq: number): Promise<null> {
+  return invoke("cancel_aside", { seq });
 }
 
 /** The search backends, with which has a key and which one answers. */
@@ -519,6 +525,16 @@ export function cliPromptSnapshot(): Promise<CliPromptSnapshot | null> {
   return invoke("cli_prompt_snapshot");
 }
 
+/** The *newer version exists* marks of the connected chat (backlog 174). */
+export function promptPending(): Promise<PendingView> {
+  return invoke("prompt_pending");
+}
+
+/** A click on a mark: Update at the next cold moment, Keep, or back to the default. */
+export function setPromptLayerChoice(kind: PromptLayer, choice: LayerChoice): Promise<PendingView> {
+  return invoke("set_prompt_layer_choice", { kind, choice });
+}
+
 // ---- projects ----
 
 /**
@@ -641,8 +657,10 @@ export function notePresence(session: string, input = false): Promise<void> {
 
 /** His answer on the card at the stop line (backlog 189): `continue` lets
  *  this message's calls through to the end of the turn; `stop` refuses. */
-export function budgetOverride(session: string, decision: "continue" | "stop"): Promise<void> {
-  return invoke("budget_override", { session, decision });
+export function budgetOverride(session: string, decision: "continue" | "stop" | "wrap", text?: string): Promise<void> {
+  // Backlog 192: `continue` covers the chat while he stays at the Mac;
+  // `wrap` carries `text`, the instruction to finish and hand off now.
+  return invoke("budget_override", { session, decision, text });
 }
 
 /** The chat's checkpoint (nightshift backlog 104): the message helpers

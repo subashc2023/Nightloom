@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { budgetChip, budgetTitle, councilBudgetLine, spentPct, stopCard } from "./budget";
+import { budgetChip, budgetTitle, councilBudgetLine, heldNow, spentPct, stopCard, usageWrapUp } from "./budget";
+import { WRAP_UP } from "./handoff.svelte";
 import type { TurnBudget } from "./types";
 
 // The message's budget meter (nightshift backlog 165, pass 2).
@@ -46,6 +47,33 @@ describe("the budget meter", () => {
     const over = ledger({ latest_pct: 90, start_pct: 70, override_at_ms: 6 });
     expect(budgetChip(over)).toBe("past 85% on your word · spent 20% of 35%");
     expect(budgetTitle(over)).toContain("Continue anyway");
+  });
+
+  // Pass 2 (nightshift backlog 192).
+  it("takes the card down once every hold's deadline has passed, and names the wrap-up", () => {
+    const held = ledger({ latest_pct: 90, start_pct: 70, pending_since_ms: 5, holds: [1_000, 3_000] });
+    expect(heldNow(held, 2_000)).toBe(true);
+    expect(stopCard(held, 2_999)).not.toBeNull();
+    // A hook killed mid-hold leaves its deadline: past it, no card, no "held".
+    expect(heldNow(held, 3_000)).toBe(false);
+    expect(stopCard(held, 3_000)).toBeNull();
+    expect(budgetChip(held, 3_000)).toBe("spent 20% of 35%");
+    // A ledger from before the list reads by the mark alone.
+    expect(heldNow(ledger({ pending_since_ms: 5 }), 1e15)).toBe(true);
+    expect(heldNow(ledger({ holds: [9e15] }), 1)).toBe(false);
+    const wrapping = ledger({ latest_pct: 90, start_pct: 70, wrap_at_ms: 7 });
+    expect(budgetChip(wrapping)).toBe("wrapping up · spent 20% of 35%");
+    expect(budgetTitle(wrapping)).toContain("Wrap up");
+    expect(budgetTitle(ledger({ override_at_ms: 6 }))).toContain("ends after 10 minutes away");
+  });
+
+  it("the usage line's wrap-up is the chat's 086 message with the usage reason", () => {
+    const w = usageWrapUp(WRAP_UP);
+    expect(w.startsWith("The 5-hour usage window is near its stop line")).toBe(true);
+    expect(w).not.toContain("context window is nearly full");
+    expect(w).toContain("HANDOFF.md");
+    // His own edit goes as he wrote it.
+    expect(usageWrapUp("  Save and stop.  ")).toBe("Save and stop.");
   });
 
   it("the council line names the shared budget and the room left", () => {

@@ -20,6 +20,7 @@
   import { app, openContent, subagentRunning, type SubagentRow } from "./state.svelte";
   import { fmtTokens } from "./tokens";
   import { budgetChip, budgetTitle } from "./budget";
+  import { wrapAsk, wrapTarget, wrapUp } from "./budgetWrap.svelte";
   import Icon from "./Icon.svelte";
 
   /** A ticking clock for the elapsed column while any child runs. */
@@ -92,6 +93,24 @@
   function close() {
     app.showTasks = false;
   }
+
+  /** *Wrap up* on the meter (nightshift backlog 192): the running chat
+   *  finishes and writes its hand-off now; with nothing running, the open
+   *  chat gets it as a message. */
+  const wrapFor = $derived(app.turnBudget ? wrapTarget() : null);
+  const wrapAsked = $derived(
+    wrapFor !== null && app.busy && (wrapAsk.session === wrapFor || !!app.turnBudget?.wrap_at_ms),
+  );
+  let wrapping = $state(false);
+  async function wrap(): Promise<void> {
+    if (!wrapFor) return;
+    wrapping = true;
+    try {
+      await wrapUp(wrapFor);
+    } finally {
+      wrapping = false;
+    }
+  }
 </script>
 
 <div class="modal" role="dialog" aria-label="Running tasks">
@@ -105,6 +124,16 @@
       {/if}
     </span>
     <span class="spacer"></span>
+    {#if wrapFor}
+      <button
+        class="ns-btn outline small wrap"
+        disabled={wrapping || wrapAsked}
+        title={app.busy
+          ? "Tell the running chat to finish what is half-done, write its hand-off and stop — its next tool call carries it; no new subagents"
+          : "Send this chat its wrap-up as a message: finish, write the hand-off, stop"}
+        onclick={() => void wrap()}>{wrapAsked ? "Wrapping up…" : "Wrap up"}</button
+      >
+    {/if}
     <button class="close" title="Close" aria-label="Close running tasks" onclick={close}><Icon name="x" size={14} /></button>
   </div>
   <div class="pane">
@@ -195,6 +224,9 @@
   }
   .spacer {
     flex: 1;
+  }
+  .wrap {
+    flex: none;
   }
   .close {
     width: 28px;

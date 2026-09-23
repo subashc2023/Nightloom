@@ -21,6 +21,12 @@
  * was written comes back as cancelled with what had arrived, or not at
  * all if nothing had: nothing can still be asking after a relaunch. A
  * draft card (opened from a selection, nothing asked) is not kept.
+ *
+ * Several threads per chat since backlog 176 (2026-09-23): a chat's entry
+ * is a **list** of threads, oldest first, and each thread carries an `id`
+ * (`nextAsideId`) that tabs and the side panel address it by. A store
+ * written before (one thread object per chat) reads back as a list of one.
+ * Past the cap the oldest *chats* go, as before.
  */
 import type { Aside, AsideTurn } from "./state.svelte";
 import type { AsideQuote } from "./asideQuote";
@@ -28,6 +34,12 @@ import type { AsideAnchor } from "./asideCard";
 
 export const ASIDES_KEY = "nightloom.asides";
 let loadedSeq = 0;
+let lastAsideId = 0;
+/** A new thread's id (backlog 176): unique for the life of the window,
+ *  loaded threads included. Not saved — a relaunch numbers them again. */
+export function nextAsideId(): number {
+  return ++lastAsideId;
+}
 /** Chars of JSON the store may take; past it the oldest threads go. */
 export const ASIDES_MAX_CHARS = 512 * 1024;
 
@@ -65,11 +77,11 @@ function storeAside(a: Aside): StoredAside | null {
  * oldest first), trimmed from the front past the cap so the newest
  * threads are the ones kept. Pure.
  */
-export function serializeAsides(map: ReadonlyMap<string, Aside>): string {
-  const entries: [string, StoredAside][] = [];
-  for (const [k, a] of map) {
-    const s = storeAside(a);
-    if (s) entries.push([k, s]);
+export function serializeAsides(map: ReadonlyMap<string, readonly Aside[]>): string {
+  const entries: [string, StoredAside[]][] = [];
+  for (const [k, list] of map) {
+    const s = list.map(storeAside).filter((a): a is StoredAside => a !== null);
+    if (s.length > 0) entries.push([k, s]);
   }
   let out = JSON.stringify(Object.fromEntries(entries));
   while (out.length > ASIDES_MAX_CHARS && entries.length > 1) {
@@ -98,36 +110,42 @@ function isQuote(v: unknown): v is AsideQuote {
 }
 
 /** Read the store back into threads. A malformed entry costs that entry. */
-export function loadAsides(storage: Pick<Storage, "getItem">): Map<string, Aside> {
-  const out = new Map<string, Aside>();
+function loadAside(v: unknown): Aside | null {
+  if (v === null || typeof v !== "object") return null;
+  const a = v as Record<string, unknown>;
+  const quote = isQuote(a.quote) ? a.quote : null;
+  const turns: AsideTurn[] = [];
+  for (const t of Array.isArray(a.turns) ? a.turns : []) {
+    if (t === null || typeof t !== "object") continue;
+    const m = t as Record<string, unknown>;
+    const question = typeof m.question === "string" ? m.question : "";
+    const answer = typeof m.answer === "string" ? m.answer : "";
+    if (!question && !answer) continue;
+    turns.push({
+      seq: --loadedSeq,
+      question,
+      partial: answer,
+      answer,
+      error: typeof m.error === "string" ? m.error : null,
+      cancelled: m.cancelled === true,
+      cacheRead: 0,
+    });
+  }
+  if (turns.length === 0) return null;
+  return { id: nextAsideId(), quote, draft: false, turns, anchor: isAnchor(a.anchor) ? a.anchor : null };
+}
+
+export function loadAsides(storage: Pick<Storage, "getItem">): Map<string, Aside[]> {
+  const out = new Map<string, Aside[]>();
   try {
     const raw = storage.getItem(ASIDES_KEY);
     if (!raw) return out;
     const parsed = JSON.parse(raw) as unknown;
     if (parsed === null || typeof parsed !== "object") return out;
     for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
-      if (v === null || typeof v !== "object") continue;
-      const a = v as Record<string, unknown>;
-      const quote = isQuote(a.quote) ? a.quote : null;
-      const turns: AsideTurn[] = [];
-      for (const t of Array.isArray(a.turns) ? a.turns : []) {
-        if (t === null || typeof t !== "object") continue;
-        const m = t as Record<string, unknown>;
-        const question = typeof m.question === "string" ? m.question : "";
-        const answer = typeof m.answer === "string" ? m.answer : "";
-        if (!question && !answer) continue;
-        turns.push({
-          seq: --loadedSeq,
-          question,
-          partial: answer,
-          answer,
-          error: typeof m.error === "string" ? m.error : null,
-          cancelled: m.cancelled === true,
-          cacheRead: 0,
-        });
-      }
-      if (turns.length === 0) continue;
-      out.set(k, { quote, draft: false, turns, anchor: isAnchor(a.anchor) ? a.anchor : null });
+      // A list since backlog 176; one thread object before it.
+      const list = (Array.isArray(v) ? v : [v]).map(loadAside).filter((a): a is Aside => a !== null);
+      if (list.length > 0) out.set(k, list);
     }
   } catch {
     // A broken store reads as no threads; the next save rewrites it.
@@ -135,7 +153,7 @@ export function loadAsides(storage: Pick<Storage, "getItem">): Map<string, Aside
   return out;
 }
 
-export function saveAsides(map: ReadonlyMap<string, Aside>, storage: Pick<Storage, "setItem">): void {
+export function saveAsides(map: ReadonlyMap<string, readonly Aside[]>, storage: Pick<Storage, "setItem">): void {
   try {
     storage.setItem(ASIDES_KEY, serializeAsides(map));
   } catch {

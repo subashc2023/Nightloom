@@ -114,6 +114,33 @@ export interface AgentConnectArgs {
    * and vault indexes — ahead of `system`. Same default as `connect`: on.
    */
   preamble?: boolean;
+  /** Nightshift backlog 174: the chat's cache timer reads cold, so a
+   *  pending layer may be taken; omitted is cold. */
+  cold?: boolean;
+  /** The Settings default: take every changed layer at the next cold
+   *  moment. Omitted is on. */
+  autoLayers?: boolean;
+  /** *Update now*, by layer: taken whatever the cache. */
+  updateNow?: PromptLayer[];
+}
+
+/** A click on a *newer version exists* mark (backlog 174). */
+export type LayerChoice = "auto" | "cold" | "keep";
+
+/** A layer whose file is newer than the text the chat holds (backlog 174). */
+export interface PendingLayer {
+  kind: PromptLayer;
+  /** The text the chat holds and is still sent. */
+  held: string;
+  /** The file's text now; empty when the layer is gone. */
+  newer: string;
+  choice: LayerChoice;
+}
+
+/** The pending layers of the chat the live connection was built for. */
+export interface PendingView {
+  session: string | null;
+  layers: PendingLayer[];
 }
 
 /** The agent engine as the rail shows it; see the Rust `AgentInfo`. */
@@ -572,6 +599,10 @@ export interface TurnBudget {
   pending_since_ms?: number | null;
   /** When he pressed *Continue anyway* for this message (backlog 189). */
   override_at_ms?: number | null;
+  /** Deadlines of the calls held right now, one per waiting hook (backlog 192). */
+  holds?: number[];
+  /** When his *Wrap up* reached the model (backlog 192). */
+  wrap_at_ms?: number | null;
 }
 
 /**

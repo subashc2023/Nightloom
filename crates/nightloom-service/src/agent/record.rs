@@ -70,8 +70,15 @@ const CARRY_LIMIT: usize = 200 * 1024;
 /// it, so a caller renders this *before* recording the new user message.
 /// With nothing before it (the first turn) the text goes out untouched.
 pub fn carry_transcript(session: &Session, text: &str) -> String {
+    carry_messages(&session.messages(), text)
+}
+
+/// [`carry_transcript`] over a list of messages rather than a whole log:
+/// a council's seats (nightshift backlog 167) carry the log *without* the
+/// message just recorded, since the seat's own prompt already holds it.
+pub fn carry_messages(messages: &[nightloom_core::Message], text: &str) -> String {
     let mut earlier = String::new();
-    for m in session.messages() {
+    for m in messages {
         let said = m.text();
         if said.trim().is_empty() {
             continue;

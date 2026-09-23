@@ -4,6 +4,7 @@
     activateTab,
     app,
     asideOf,
+    asideTabThread,
     closePrompts,
     dropContent,
     droppedContent,
@@ -34,6 +35,8 @@
   import AttachmentLayer from "./lib/AttachmentLayer.svelte";
   import AttachmentView from "./lib/AttachmentView.svelte";
   import SubagentView from "./lib/SubagentView.svelte";
+  import WebView from "./lib/WebView.svelte";
+  import { closeOrphans, initWebTabs, routeLink } from "./lib/webtabs.svelte";
   import RunningTasks from "./lib/RunningTasks.svelte";
   import { isMac } from "./lib/platform";
   import { toggleTranscriptPref } from "./lib/transcriptPrefs.svelte";
@@ -59,28 +62,36 @@
   import TerminalDock from "./lib/TerminalDock.svelte";
   import Icon from "./lib/Icon.svelte";
   import { externalHref } from "./lib/extlink";
-  import * as api from "./lib/api";
-  import { addToast } from "./lib/state.svelte";
 
   onMount(() => {
     void init();
     // The stored zoom back on the window, and the View menu's zoom items
     // (nightshift backlog 108).
     void initZoom();
-    // Every outside link in rendered text opens in the system browser
+    // ~~Every outside link in rendered text opens in the system browser~~
     // (his report, 2026-09-18: a reply's link took over the whole window
     // with no way back). Capture phase, so it runs before any renderer's
-    // own handler and before the webview navigates.
+    // own handler and before the webview navigates. Since backlog 172
+    // (2026-09-23) this is the router: a web tab beside the chat or the
+    // browser, by the Settings row, ⌘ sending it to the other place.
+    void initWebTabs();
     const onLink = (e: MouseEvent) => {
       const a = e.target instanceof Element ? e.target.closest("a") : null;
       const url = externalHref(a?.getAttribute("href") ?? null, window.location.origin);
       if (!url) return;
       e.preventDefault();
       e.stopPropagation();
-      api.openUrl(url).catch((err) => addToast(`Could not open the link: ${String(err)}`));
+      routeLink(url, isMac ? e.metaKey : e.ctrlKey);
     };
     document.addEventListener("click", onLink, true);
     return () => document.removeEventListener("click", onLink, true);
+  });
+
+  // A web tab's page dies with its tab (backlog 172): any tab change —
+  // ⌘W, ×, a pane closing, a project switch — closes the orphans.
+  $effect(() => {
+    void tabs.allTabs(app.tabs).map((t) => t.id);
+    untrack(() => closeOrphans());
   });
 
   /**
@@ -174,7 +185,8 @@
       Math.min(splitWidth - panelPx - SPLIT_MIN, paneWidth("split", Math.round((splitWidth - panelPx) / 2))),
     ),
   );
-  const panelAside = $derived(app.asidePanel ? asideOf(app.asidePanel) : null);
+  // The thread the panel was given (backlog 176), else the chat's front.
+  const panelAside = $derived(app.asidePanel ? asideOf(app.asidePanel, app.asidePanelThread) : null);
   const panelChat = $derived.by(() => {
     const id = app.asidePanel;
     if (!id) return "";
@@ -184,9 +196,23 @@
   $effect(() => {
     const id = app.asidePanel;
     if (!id) return;
-    const gone = !asideOf(id) || (app.sessions.length > 0 && !app.sessions.some((x) => x.id === id));
-    const inTab = tabs.allTabs(app.tabs).some((t) => t.content.kind === "aside" && t.content.session === id);
-    if (gone || inTab) app.asidePanel = null;
+    const thread = app.asidePanelThread;
+    const gone = !asideOf(id, thread) || (app.sessions.length > 0 && !app.sessions.some((x) => x.id === id));
+    // A tab for the same thread closes the panel (backlog 176: that
+    // thread's tab, not any aside tab of the chat).
+    const shownId = asideOf(id, thread)?.id;
+    const inTab = tabs
+      .allTabs(app.tabs)
+      .some(
+        (t) =>
+          t.content.kind === "aside" &&
+          t.content.session === id &&
+          (asideTabThread(t.content) ?? asideOf(id)?.id) === shownId,
+      );
+    if (gone || inTab) {
+      app.asidePanel = null;
+      app.asidePanelThread = null;
+    }
   });
   /** The right edge lights while an aside's card is dragged: the drop
    *  makes the panel. Above the panes' halves, so it wins there. */
@@ -208,6 +234,7 @@
     app.draggingContent = null;
     dropHalf = null;
     app.asidePanel = content.session;
+    app.asidePanelThread = asideTabThread(content) ?? null;
   }
 
   /**
@@ -609,7 +636,7 @@
               </div>
             {:else if t.content.kind === "aside"}
               <div class="content">
-                <AsideView session={t.content.session} />
+                <AsideView session={t.content.session} thread={asideTabThread(t.content) ?? null} />
                 {#if focused}<FindBar bind:this={findBar} />{/if}
               </div>
             {:else if t.content.kind === "attachment"}
@@ -625,6 +652,15 @@
               <div class="content">
                 <SubagentView content={t.content} />
                 {#if focused}<FindBar bind:this={findBar} />{/if}
+              </div>
+            {:else if t.content.kind === "web"}
+              <!-- A page he clicked a link to (backlog 172): the bar and
+                   the box its child webview is laid over. Keyed by the
+                   tab so a retargeted tab never inherits another's page. -->
+              <div class="content">
+                {#key t.id}
+                  <WebView tabId={t.id} content={t.content} />
+                {/key}
               </div>
             {:else if liveTab?.id === t.id}
               <div class="content">
@@ -683,7 +719,10 @@
               <button
                 class="ns-btn ghost small"
                 title="Put the card back in the chat, under its passage (Escape in the panel does the same); the thread stays"
-                onclick={() => (app.asidePanel = null)}>back</button
+                onclick={() => {
+                  app.asidePanel = null;
+                  app.asidePanelThread = null;
+                }}>back</button
               >
             </div>
             <AsideCard aside={panelAside} placement={null} panel session={app.asidePanel} />

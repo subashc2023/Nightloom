@@ -435,3 +435,51 @@ describe("a subagent's transcript as a tab (backlog 152)", () => {
     expect(parseContentDrag(JSON.stringify({ kind: "subagent", session: "a" }))).toBeNull();
   });
 });
+
+describe("web tabs (nightshift backlog 172)", () => {
+  it("opens beside the chat, keeps the chat's tab, and finds the page again by address", async () => {
+    const t = await import("./tabs");
+    const ws = t.emptyWorkspace();
+    const pane = t.focusedPane(ws);
+    const chat = t.activeTab(pane);
+    chat.content = { kind: "chat", session: "s1" };
+    const page = t.land(ws, pane, { kind: "web", url: "https://example.com/a" }, "new");
+    expect(pane.tabs.map((x) => x.content.kind)).toEqual(["chat", "web"]);
+    expect(pane.active).toBe(page.id);
+    expect(t.findAnywhere(ws, { kind: "web", url: "https://example.com/a" })?.id).toBe(page.id);
+    expect(t.split(ws, page.id, "right")).toBe(true);
+    expect(ws.panes.map((p) => t.activeTab(p).content.kind)).toEqual(["chat", "web"]);
+  });
+  it("is titled by the page, else its host, and carries only http(s) in a drag", async () => {
+    const t = await import("./tabs");
+    expect(t.tabTitle({ kind: "web", url: "https://arxiv.org/abs/1" }, [])).toBe("arxiv.org");
+    expect(t.tabTitle({ kind: "web", url: "https://arxiv.org/abs/1", title: " A paper " }, [])).toBe("A paper");
+    expect(t.parseContentDrag(JSON.stringify({ kind: "web", url: "https://a.b/" }))).toEqual({ kind: "web", url: "https://a.b/" });
+    expect(t.parseContentDrag(JSON.stringify({ kind: "web", url: "tauri://localhost/" }))).toBeNull();
+    expect(t.parseContentDrag(JSON.stringify({ kind: "web", url: "javascript:alert(1)" }))).toBeNull();
+  });
+});
+
+describe("aside threads, several per chat (backlog 176)", () => {
+  it("two threads of one chat are two tabs; the same thread twice is one", () => {
+    const w = ws(chat("a"));
+    const pane = w.panes[0]!;
+    const one: TabContent = { kind: "aside", session: "a", thread: 1 };
+    const two: TabContent = { kind: "aside", session: "a", thread: 2 };
+    land(w, pane, one, "new");
+    land(w, pane, two, "new");
+    expect(allTabs(w).filter((t) => t.content.kind === "aside").length).toBe(2);
+    land(w, pane, { kind: "aside", session: "a", thread: 1 }, "new");
+    expect(allTabs(w).filter((t) => t.content.kind === "aside").length).toBe(2);
+    expect(sameContent(one, two)).toBe(false);
+  });
+
+  it("a dragged descriptor keeps its thread", () => {
+    expect(parseContentDrag(JSON.stringify({ kind: "aside", session: "a", thread: 3 }))).toEqual({
+      kind: "aside",
+      session: "a",
+      thread: 3,
+    });
+    expect(parseContentDrag(JSON.stringify({ kind: "aside", session: "a" }))).toEqual({ kind: "aside", session: "a" });
+  });
+});

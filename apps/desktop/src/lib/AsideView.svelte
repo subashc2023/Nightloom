@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { app, asideAsking, asideOf, askAside, dismissAside, followUpAside } from "./state.svelte";
+  import { app, asideAsking, asideOf, asideWaiting, askAside, dismissAside, followUpAside } from "./state.svelte";
   import { quoteLabel } from "./asideQuote";
   import { renderMarkdown } from "./markdown";
   import Icon from "./Icon.svelte";
@@ -17,10 +17,16 @@
    * another chat's tab would be answered from the wrong context. The
    * thread of a chat that is not open reads as it was, with a line
    * saying where to continue it.
+   *
+   * Several threads per chat since backlog 176 (2026-09-23): the tab
+   * names its `thread`, so two aside tabs show two threads; a tab made
+   * without one shows the chat's front (newest) thread, as before. Every
+   * action is this thread's.
    */
-  let { session }: { session: string } = $props();
+  let { session, thread = null }: { session: string; thread?: number | null } = $props();
 
-  const aside = $derived(asideOf(session));
+  const aside = $derived(asideOf(session, thread));
+  const waiting = $derived(asideWaiting(aside));
   const open = $derived(session === app.activeSessionId);
   const asking = $derived(asideAsking(aside));
   const last = $derived(aside?.turns[aside.turns.length - 1] ?? null);
@@ -37,7 +43,7 @@
     const q = askDraft.trim();
     if (!q || !open || !aside || !aside.draft) return;
     askDraft = "";
-    void askAside(q, aside.quote);
+    void askAside(q, aside.quote, aside);
   }
   function askKeys(e: KeyboardEvent) {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -51,7 +57,7 @@
     const q = followDraft.trim();
     if (!q || !open || !aside || aside.draft || asking) return;
     followDraft = "";
-    void followUpAside(q);
+    void followUpAside(q, aside);
   }
   function followKeys(e: KeyboardEvent) {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -76,7 +82,7 @@
       <button
         class="ns-btn ghost small"
         title={asking ? "Stop the answer here; what has arrived stays" : "Dismiss the aside — the thread ends"}
-        onclick={dismissAside}>×</button
+        onclick={() => dismissAside(aside)}>×</button
       >
     {/if}
   </div>
@@ -129,7 +135,7 @@
           {#if turn === asking}
             <div class="aside-view-wait" role="status" aria-label="Waiting for the answer">
               <span class="roll" aria-hidden="true"><Icon name="moon" size={16} /></span>
-              <span>thinking…</span>
+              <span>{waiting ? "waiting — one aside answers at a time" : "thinking…"}</span>
             </div>
           {/if}
         {/each}
