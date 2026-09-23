@@ -134,7 +134,35 @@ store (the pane, the shells, `newShell` · `closeShell` · `restartShell` ·
 instance per shell (kept mounted while its tab is behind another; refitted
 when it returns), `TerminalDock.svelte` the pane. The dock mounts in every
 pane's `.pane-dock` slot in `App.svelte` and draws under the pane it was
-opened from — one dock for the window (blocker 189).
+opened from — ~~one dock for the window (blocker 189)~~ one dock for the
+window by default, a second by a drag (blocker 155, 2026-09-22, below).
+
+## Two docks (2026-09-22, blocker 155)
+
+His answer: "i think one for the whole window. but lowk, if it's possible
+to also have like an intuitive way to drag it into both such that there
+can be two terminals, that'd be great." So:
+
+- **By default there is one dock.** New terminal, ⌃`, the palette's row
+  and the strip's + add to the dock that is there — the focused pane's if
+  it has one, else the window's (`term.pane`, `targetDock()`).
+- **Drag one shell's tab onto the other pane** (its content or its tab
+  strip): that pane gets a dock of its own with that shell in front. The
+  zone says *a second terminal here*. Each dock has its own strip, its own
+  front shell, its own collapse / hide / close; the height is shared, so
+  the two line up.
+- **Drag the only shell of a dock** onto the other pane: the dock moves
+  (*dock the terminal here*) — what 12b did before.
+- **Drag a shell onto a pane that has a dock**: it joins that strip
+  (*add to this pane's terminal*) — which is how two docks become one.
+- ⌘T / ⌘W / ⌘⇧] / ⌘⇧[ act in the dock whose shell has the keyboard.
+- A pane closing ends its own dock's shells only.
+
+The store: `term.docks` (by pane id: `open`, `collapsed`, `active`),
+`ShellRow.pane` on each shell, `moveShell(id, pane)` for a drop
+(`draggedShell` reads the id off the drag), `dropLabel(pane)` for the
+zone's caption, `term.dragging` the mirror `dragover` reads. The
+xterm-outlives-its-mount mechanism below carries a shell across docks.
 
 ## The xterm outlives its mount (2026-09-17, backlog 113's scrollback)
 
@@ -162,6 +190,8 @@ component; a move now costs the grid one refit and no output.
   the store's `pane` moved on drop — the shells keep running through it,
   since the pty is the window's.~~ Built 2026-09-17 (12b: `TERM_DRAG`, the
   whole-pane zone); the scrollback across the move, above.
+- A second dock is made only by a drag; there is no "New terminal in this
+  pane" command beside the default (his answer asked for the drag).
 - The "into a tab" control (a terminal as a full-height tab of the pane).
 - The title is the process's short name (`npm`, not `npm run dev`); the
   arguments would need `proc_pidinfo` / `/proc/<pid>/cmdline`.

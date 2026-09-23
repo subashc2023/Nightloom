@@ -136,9 +136,11 @@
         if (typeof bytes !== "string") void api.terminalAck(shell.id, bytes.length).catch(() => {});
       }),
     );
-    const onFocus = () => (term.focused = true);
+    // Which dock has the keyboard (blocker 155: there can be two) — read
+    // at the event, since a drag moves the shell to another pane's dock.
+    const onFocus = () => (term.focused = shell.pane ?? null);
     const onBlur = () => {
-      if (term.focused) term.focused = false;
+      if (term.focused === (shell.pane ?? null)) term.focused = null;
     };
     t.textarea?.addEventListener("focus", onFocus);
     t.textarea?.addEventListener("blur", onBlur);
@@ -184,7 +186,12 @@
       // of this container for the next mount to append, and the store
       // disposes it with the shell (`closeShell`, `restartShell`).
       ro.disconnect();
-      live?.host.remove();
+      // Only if it is still ours: with two docks on screen (blocker 155)
+      // the dock the shell moved to could mount it before this one
+      // unmounts, and an unconditional remove would take the host out of
+      // the new dock. A guard — in the harness the old teardown ran first
+      // either way (113 pass 5 report).
+      if (live && live.host.parentElement === container) live.host.remove();
       xterm = null;
       fit = null;
       live = null;
@@ -203,13 +210,14 @@
   });
 
   // Coming to the front: fit to the pane (a hidden grid could not), and
-  // take the focus when the store asked for it.
+  // take the focus when the store asked for it — for this shell's dock.
   $effect(() => {
     void term.focusTick;
     if (!visible) return;
+    const asked = term.focusDock === (shell.pane ?? null);
     requestAnimationFrame(() => {
       refit();
-      if (term.active === shell.id && !shell.exit) xterm?.focus();
+      if (asked && term.docks[shell.pane ?? ""]?.active === shell.id && !shell.exit) xterm?.focus();
     });
   });
 </script>

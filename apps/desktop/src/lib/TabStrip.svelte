@@ -12,7 +12,7 @@
   import { hasDraft, newDraftKey } from "./drafts.svelte";
   import * as tabs from "./tabs";
   import { TAB_DRAG, TERM_DRAG, type Pane } from "./tabs";
-  import { term } from "./terminal.svelte";
+  import { draggedShell } from "./terminal.svelte";
   import Icon from "./Icon.svelte";
   import TabChooser from "./TabChooser.svelte";
   import { isMac } from "./platform";
@@ -146,12 +146,13 @@
   function onDrop(e: DragEvent) {
     const at = dropAt ?? indexAt(e);
     dropAt = null;
-    // The terminal dock (backlog 113's 12b): under this pane now.
+    // A terminal's shell (backlog 113's 12b; blocker 155): into this
+    // pane's dock — a second dock if it has none.
     if (e.dataTransfer?.types.includes(TERM_DRAG) || app.draggingTerm) {
       e.preventDefault();
       e.stopPropagation();
       app.draggingTerm = false;
-      term.pane = pane.id;
+      draggedShell(e, pane.id);
       return;
     }
     // Content from outside (backlog 140 pass 2): a new tab at the slot.

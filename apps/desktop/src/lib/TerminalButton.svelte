@@ -7,7 +7,7 @@
    * folder (12c) — the tooltip says why.
    */
   import Icon from "./Icon.svelte";
-  import { openTerminalFromBar, term, terminalCwd } from "./terminal.svelte";
+  import { anyOpen, dockAt, openTerminalFromBar, targetDock, terminalCwd } from "./terminal.svelte";
   import { shortCwd } from "./terminal";
 
   /** `bar` (the top bar's chip, the original) or `foot` — a row in the
@@ -21,9 +21,13 @@
     const m = /^(\/Users\/[^/]+|\/home\/[^/]+)(\/|$)/.exec(cwd ?? "");
     return m ? m[1] : null;
   });
+  /** The dock a click acts on (blocker 155: the focused pane's, else the
+   *  window's), and whether any dock is on screen. */
+  const target = $derived(dockAt(targetDock()));
+  const lit = $derived(anyOpen());
   const title = $derived(
     cwd
-      ? term.open && !term.collapsed
+      ? target?.open && !target.collapsed
         ? `New terminal (⌃\`) — a second shell in the dock under this chat, in ${shortCwd(cwd, home)}`
         : `New terminal (⌃\`) — a shell in ${shortCwd(cwd, home)}, docked under this chat`
       : "No terminal without a folder — this chat has none",
@@ -33,7 +37,7 @@
 {#if variant === "foot"}
   <button
     class="term-foot"
-    class:term-open-on={term.open}
+    class:term-open-on={lit}
     {title}
     aria-label="New terminal"
     disabled={!cwd}
@@ -47,7 +51,7 @@
 {:else}
   <button
     class="ns-btn ghost small term-open"
-    class:term-open-on={term.open}
+    class:term-open-on={lit}
     {title}
     aria-label="New terminal"
     disabled={!cwd}

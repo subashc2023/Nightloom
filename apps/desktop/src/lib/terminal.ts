@@ -42,6 +42,10 @@ export interface ShellRow {
   pid: number | null;
   /** Set once the shell ended: the code, or the signal that ended it. */
   exit: { code: number | null; signal: string | null } | null;
+  /** The pane (099's) whose dock this shell sits in — set by the store
+   *  when the shell opens, changed by a drag onto another pane (blocker
+   *  155, 2026-09-22: one dock by default, a drag makes a second). */
+  pane?: string;
 }
 
 /** The pane's default height (the boards' 220–260px), its floor, and the

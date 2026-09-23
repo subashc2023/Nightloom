@@ -12,8 +12,11 @@
    * was gone on the next ⌃`, and a `vim` came back blank. Mounted once in every pane's dock slot (`App.svelte`'s
    * `.pane-dock`, agent L's mount point); the one whose `pane` is the
    * store's draws, and the first pane's instance owns the window keys.
-   * One dock for the window (blocker 189), under the pane it was opened
-   * from; it closes with that pane.
+   * One dock for the window by default (blocker 189), under the pane it
+   * was opened from; a shell's tab dragged onto the other pane gives that
+   * pane a dock of its own (blocker 155, his answer 2026-09-22), so each
+   * instance draws the dock keyed by its own pane (`term.docks`) with that
+   * pane's shells. A dock closes with its pane.
    */
   import { onMount } from "svelte";
   import { app, chatKind } from "./state.svelte";
@@ -33,7 +36,9 @@
     saveHeight,
     selectShell,
     setHeight,
+    shellsIn,
     takeMenuCommand,
+    targetDock,
     term,
     toggleCollapsed,
     toggleTerminal,
@@ -58,9 +63,12 @@
     void initTerminalEvents();
   });
 
-  /** Whether this instance is the one that draws: its pane is the dock's
-   *  (or there are no panes to speak of, as in a harness). */
-  const mine = $derived(pane === null || term.pane === null || term.pane === pane);
+  /** The dock this instance draws: its pane's (blocker 155 — one per
+   *  pane that has shells); with no pane to speak of, as in a harness,
+   *  the window's. */
+  const key = $derived(pane ?? targetDock() ?? "");
+  const d = $derived(term.docks[key]);
+  const shells = $derived(shellsIn(key));
   /** The instance that owns the window's keys: the first pane's. */
   const keyed = $derived(pane === null || app.tabs.panes[0]?.id === pane);
 
@@ -119,7 +127,7 @@
    */
   let now = $state(Date.now());
   $effect(() => {
-    if (!app.busy || !term.open) return;
+    if (!app.busy || !d?.open) return;
     const t = setInterval(() => (now = Date.now()), 1000);
     return () => clearInterval(t);
   });
@@ -158,17 +166,18 @@
 
 <svelte:window onkeydown={onKey} />
 
-{#if term.shells.length > 0 && mine}
+{#if d && shells.length > 0}
   <section
     class="term-dock"
-    class:collapsed={term.collapsed}
-    class:hidden={!term.open}
-    style:height={term.collapsed ? "auto" : `${term.height}px`}
+    class:collapsed={d.collapsed}
+    class:hidden={!d.open}
+    style:height={d.collapsed ? "auto" : `${term.height}px`}
     bind:this={dock}
     aria-label="Terminal"
-    aria-hidden={!term.open}
+    aria-hidden={!d.open}
+    data-dock={key}
   >
-    {#if !term.collapsed}
+    {#if !d.collapsed}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
         class="term-grip"
@@ -183,33 +192,39 @@
       ></div>
     {/if}
     <div class="term-strip" role="tablist" aria-label="Shells">
-      {#each term.shells as s (s.id)}
+      {#each shells as s (s.id)}
         {@const label = tabLabel(s)}
         {@const exit = exitLabel(s)}
         <div
           class="term-tab"
-          class:active={s.id === term.active}
+          class:active={s.id === d.active}
           class:running={isRunning(s)}
           class:exited={!!s.exit}
           role="tab"
-          aria-selected={s.id === term.active}
+          aria-selected={s.id === d.active}
           tabindex="-1"
-          title={s.exit ? `${label} ended — click to start a new shell in ${shortCwd(s.cwd, home)}` : `${s.shell} in ${shortCwd(s.cwd, home)} — drag onto the other pane to dock the terminal there`}
+          title={s.exit ? `${label} ended — click to start a new shell in ${shortCwd(s.cwd, home)}` : `${s.shell} in ${shortCwd(s.cwd, home)} — drag onto the other pane for a terminal there`}
           onclick={() => (s.exit ? void restartShell(s.id) : selectShell(s.id))}
           draggable="true"
           ondragstart={(e) => {
-            // Agent P's hunk (nightshift backlog 113's 12b, 2026-09-17):
-            // the dock is one for the window (blocker 189); dragging a
-            // shell tab onto a pane or its strip moves the dock under
-            // that pane. The tab's own type keeps a strip from reading
-            // it as a chat tab; `app.draggingTerm` is the mirror for
+            // Agent P's hunk (nightshift backlog 113's 12b, 2026-09-17),
+            // per shell since blocker 155 (2026-09-22): dragging a shell
+            // tab onto the other pane or its strip puts that shell in
+            // that pane's dock — a second dock if it had none; the only
+            // shell of a dock moves the dock (`moveShell`). The tab's own
+            // type keeps a strip from reading it as a chat tab;
+            // `app.draggingTerm` and `term.dragging` are the mirrors for
             // `dragover`, which cannot read the data.
             if (!e.dataTransfer) return;
             e.dataTransfer.setData(TERM_DRAG, String(s.id));
             e.dataTransfer.effectAllowed = "move";
             app.draggingTerm = true;
+            term.dragging = s.id;
           }}
-          ondragend={() => (app.draggingTerm = false)}
+          ondragend={() => {
+            app.draggingTerm = false;
+            term.dragging = null;
+          }}
           onkeydown={(e) => {
             if (e.key === "Enter" || e.key === " ") {
               e.preventDefault();
@@ -232,7 +247,7 @@
           >
         </div>
       {/each}
-      <button class="term-plus" title="New shell{isMac ? ' (⌘T)' : ''}" aria-label="New shell" onclick={() => void newShell()}>
+      <button class="term-plus" title="New shell{isMac ? ' (⌘T)' : ''}" aria-label="New shell" onclick={() => void newShell(key)}>
         <Icon name="plus" size={12} />
       </button>
       <span class="term-hint mono" title="⌃` opens, focuses, hides the terminal">⌃`</span>
@@ -242,20 +257,20 @@
       <span class="term-spacer"></span>
       <button
         class="term-ctl"
-        title={term.collapsed ? "Expand the terminal" : "Collapse to the strip"}
-        aria-label={term.collapsed ? "Expand the terminal" : "Collapse the terminal"}
-        onclick={toggleCollapsed}
+        title={d.collapsed ? "Expand the terminal" : "Collapse to the strip"}
+        aria-label={d.collapsed ? "Expand the terminal" : "Collapse the terminal"}
+        onclick={() => toggleCollapsed(key)}
       >
-        <Icon name={term.collapsed ? "chev" : "minus"} size={12} />
+        <Icon name={d.collapsed ? "chev" : "minus"} size={12} />
       </button>
-      <button class="term-ctl" title="Hide the pane (⌃`) — the shells keep running" aria-label="Hide the terminal" onclick={hidePane}>
+      <button class="term-ctl" title="Hide the pane (⌃`) — the shells keep running" aria-label="Hide the terminal" onclick={() => hidePane(key)}>
         <Icon name="chevr" size={12} />
       </button>
-      <button class="term-ctl" title="Close the terminal — every shell ends" aria-label="Close the terminal" onclick={closePane}>
+      <button class="term-ctl" title="Close the terminal — every shell in it ends" aria-label="Close the terminal" onclick={() => closePane(key)}>
         <Icon name="x" size={12} />
       </button>
     </div>
-    {#if notice && !term.collapsed}
+    {#if notice && !d.collapsed}
       <div class="term-notice" role="status">
         <Icon name="moon" size={12} />
         <span class="term-notice-name">{notice.name}</span>
@@ -265,9 +280,9 @@
         {#if notice.clock}<span class="term-notice-sep">·</span><span class="mono">{notice.clock}</span>{/if}
       </div>
     {/if}
-    <div class="term-body" class:hidden={term.collapsed}>
-      {#each term.shells as s (s.id)}
-        <TerminalShell shell={s} visible={s.id === term.active && term.open && !term.collapsed} />
+    <div class="term-body" class:hidden={d.collapsed}>
+      {#each shells as s (s.id)}
+        <TerminalShell shell={s} visible={s.id === d.active && d.open && !d.collapsed} />
       {/each}
     </div>
   </section>

@@ -27,7 +27,7 @@
     SIDEBAR_MIN,
   } from "./lib/state.svelte";
   import * as tabs from "./lib/tabs";
-  import { term } from "./lib/terminal.svelte";
+  import { draggedShell, dropLabel } from "./lib/terminal.svelte";
   import TabStrip from "./lib/TabStrip.svelte";
   import AsideView from "./lib/AsideView.svelte";
   import AsideCard from "./lib/AsideCard.svelte";
@@ -229,7 +229,7 @@
   });
   /** The zone's caption: what the drop will do here. */
   function zoneLabel(paneId: string): string {
-    if (app.draggingTerm) return term.pane === paneId ? "the terminal is here" : "dock the terminal here";
+    if (app.draggingTerm) return dropLabel(paneId);
     if (app.draggingContent) return app.tabs.panes.length > 1 ? "open here" : "open beside";
     return app.tabs.panes.length > 1 ? "move here" : "open beside";
   }
@@ -254,12 +254,13 @@
     const half = dropHalf;
     dropHalf = null;
     if (e.target instanceof Element && e.target.closest(".tab-strip")) return;
-    // The terminal dock (backlog 113's 12b, blocker 189): one dock, moved
-    // under this pane; the shells run on, the pty is the window's.
+    // A terminal's shell (backlog 113's 12b; blocker 155, 2026-09-22):
+    // into this pane's dock — a second dock if it has none, the dock
+    // itself if it was its only shell; the shells run on.
     if (e.dataTransfer?.types.includes(tabs.TERM_DRAG) || app.draggingTerm) {
       e.preventDefault();
       app.draggingTerm = false;
-      term.pane = paneId;
+      draggedShell(e, paneId);
       return;
     }
     // Content from outside the strips (backlog 140 pass 2): a second pane
