@@ -2500,7 +2500,10 @@ export async function dismissProposal(scope: ProposalScope, id: string): Promise
   }
   if (app.proposalReview?.entry.id === id) app.proposalReview = null;
   delete app.proposalEdits[id];
-  unstageProposal(`${scope}:${AGENTS_MD}`);
+  // The key `stageProposal` used (nightshift backlog 185): a hand-built
+  // `${scope}:AGENTS.md` missed the project's own key, so a later Save tried
+  // to mark a dismissed proposal applied.
+  unstageProposal(noteDraftKey(scope, AGENTS_MD));
   await refreshProposals();
   return true;
 }

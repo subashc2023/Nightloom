@@ -19,6 +19,7 @@ import * as api from "./api";
 import {
   acceptProposal,
   app,
+  dismissProposal,
   mirrorDraft,
   noteDraftKey,
   reviewProposal,
@@ -181,5 +182,18 @@ describe("Accept on the card (backlog 184)", () => {
     expect(app.noteDrafts[KEY]).toBe("proposed, edited on the card\n");
     expect(app.stagedProposal?.id).toBe(e.id);
     expect(api.saveNote).not.toHaveBeenCalled();
+  });
+});
+
+describe("Dismiss forgets a loaded proposal under the key it was staged with (backlog 185)", () => {
+  it("clears the staged proposal for a project's instructions, so a later Save has nothing to mark applied", async () => {
+    const e = entry("# Lanternfish\n\nUse uv.\n");
+    app.proposals = { instructions: [e], memory: [] };
+    stageProposal("instructions", e, SAVED);
+    expect(app.stagedProposal?.key).toBe(KEY);
+    vi.mocked(api.dismissProposal).mockResolvedValue(undefined as never);
+    await dismissProposal("instructions", e.id);
+    expect(app.stagedProposal).toBeNull();
+    expect(KEY).toBe(noteDraftKey("instructions", "AGENTS.md"));
   });
 });
