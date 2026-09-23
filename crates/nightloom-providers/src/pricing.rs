@@ -377,11 +377,19 @@ mod tests {
         // Backlog 178: before its row, `claude-opus-5-5` matched
         // `claude-opus-5` by prefix and was billed at $5 / $25.
         let p = price(ProviderKind::Anthropic, "claude-opus-5-5").unwrap();
-        assert_eq!((p.input, p.output, p.cache_read, p.cache_write), (4.0, 20.0, Some(0.2), Some(5.0)));
+        assert_eq!(
+            (p.input, p.output, p.cache_read, p.cache_write),
+            (4.0, 20.0, Some(0.2), Some(5.0))
+        );
         let five = price(ProviderKind::Anthropic, "claude-opus-5").unwrap();
         assert_eq!(five.input, 5.0);
         // A dated Opus 5 snapshot still resolves to Opus 5, not 5.5.
-        assert_eq!(price(ProviderKind::Anthropic, "claude-opus-5-2026-01-15").unwrap().input, 5.0);
+        assert_eq!(
+            price(ProviderKind::Anthropic, "claude-opus-5-2026-01-15")
+                .unwrap()
+                .input,
+            5.0
+        );
     }
 
     #[test]
