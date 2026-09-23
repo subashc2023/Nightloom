@@ -1196,6 +1196,14 @@ pub fn run_blocking(args: &[String]) -> Result<(), String> {
 /// incognito chat's scratch folder of fetched pages is removed
 /// (nightshift backlog 186). Only the real server installs the handlers;
 /// tests call [`serve`] and leave the test process's signals alone.
+///
+/// On a signal this **exits the process** once the tools are dropped,
+/// rather than returning. Returning let the runtime drop, and a runtime
+/// waits without limit for its blocking threads — one of which is parked
+/// in the read of stdin, which nothing can cancel — so the server lived
+/// until stdin closed, and with the handlers in place a second signal no
+/// longer killed it either (night review 2026-09-23, finding 2; measured
+/// by `nightloom-cli`'s `tests/mcp_serve_signal.rs`).
 pub async fn serve_stdio(config: PathBuf, args: ServeArgs) -> Result<(), String> {
     let served = serve(config, args, tokio::io::stdin(), tokio::io::stdout());
     #[cfg(unix)]
@@ -1209,11 +1217,14 @@ pub async fn serve_stdio(config: PathBuf, args: ServeArgs) -> Result<(), String>
             return served.await;
         };
         tokio::select! {
-            result = served => result,
-            _ = term.recv() => Ok(()),
-            _ = int.recv() => Ok(()),
-            _ = hup.recv() => Ok(()),
+            result = served => return result,
+            _ = term.recv() => {}
+            _ = int.recv() => {}
+            _ = hup.recv() => {}
         }
+        // `select!` has dropped `served` — the tools, and with them an
+        // incognito chat's scratch folder, are gone. Leave now: see above.
+        std::process::exit(0);
     }
     #[cfg(not(unix))]
     served.await

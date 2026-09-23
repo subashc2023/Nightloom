@@ -15,6 +15,13 @@ import {
   waitLine,
 } from "./cliUpdate";
 import { buildNotices } from "./centre";
+// Imported here, not inside the hooks: the first import of the app's state
+// transforms most of the app, and under a busy machine that alone ran past
+// the 10 s hook limit (nightshift backlog 168, 2026-09-23 — 2 timeouts seen
+// by another builder, 1 reproduced here with the file run alone). Module
+// loading at collection is not timed; the tests then measure the flow.
+import { app, refreshCentre } from "./state.svelte";
+import { checkCli, cli, setAutoUpdate, tickCli, updateNow, updateWhenCold } from "./cliUpdate.svelte";
 import type { CliStatus, CliUpdateResult, SessionEvent } from "./types";
 
 // The backend as far as the update flow reaches it: the check, the update,
@@ -171,12 +178,10 @@ describe("the update flow", () => {
     } as unknown as SessionEvent,
   ];
 
-  beforeEach(async () => {
+  beforeEach(() => {
     calls.length = 0;
     checkAnswer = status();
     peeked = [];
-    const { app } = await import("./state.svelte");
-    const { cli } = await import("./cliUpdate.svelte");
     app.busy = false;
     app.activeSessionId = null;
     app.events = [];
@@ -190,8 +195,6 @@ describe("the update flow", () => {
   });
 
   it("waits for a turn and a warm cache, then updates and the notice clears", async () => {
-    const { app, refreshCentre } = await import("./state.svelte");
-    const { cli, checkCli, updateWhenCold, tickCli } = await import("./cliUpdate.svelte");
     await checkCli(true);
     await refreshCentre();
     expect(app.centre.notices.map((n) => n.kind)).toEqual(["cli"]);
@@ -222,8 +225,6 @@ describe("the update flow", () => {
   });
 
   it("does nothing by itself with the switch off, and updates at a cold moment with it on", async () => {
-    const { app } = await import("./state.svelte");
-    const { cli, checkCli, tickCli, setAutoUpdate } = await import("./cliUpdate.svelte");
     await checkCli(true);
     peeked = [];
     await tickCli();
@@ -240,8 +241,6 @@ describe("the update flow", () => {
   });
 
   it("Now never runs under a turn", async () => {
-    const { app } = await import("./state.svelte");
-    const { checkCli, updateNow } = await import("./cliUpdate.svelte");
     await checkCli(true);
     app.busy = true;
     await updateNow();

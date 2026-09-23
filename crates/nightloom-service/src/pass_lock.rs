@@ -22,6 +22,7 @@
 
 use std::fs::{self, File};
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 /// The lock file's name under the config folder.
 pub const LOCK_FILE: &str = "pass.lock";
@@ -56,9 +57,32 @@ pub fn try_take(config: &Path) -> Result<Option<PassLock>, String> {
     }
 }
 
-/// Take the lock, or the sentence for the pass that lost.
+/// How long [`take`] keeps asking before it calls the lock held, and how
+/// often. Any `Command` spawn in this process forks, and until the child
+/// execs it holds a copy of every open fd — a just-released lock's
+/// included — so a pass that starts right after another one ends can read
+/// the lock as held for that instant. Under CPU load the instant is long
+/// enough to see: the capture test's second pass was refused that way
+/// (nightshift backlog 168, 2026-09-23, 1 run in 2 under 12 busy
+/// processes). Re-asking for half a second covers it; a pass that loses
+/// to a real one waits that long before its sentence (blocker 303).
+const RE_ASK_FOR: Duration = Duration::from_millis(500);
+const RE_ASK_EVERY: Duration = Duration::from_millis(50);
+
+/// Take the lock, or the sentence for the pass that lost — after asking
+/// again for [`RE_ASK_FOR`], so a fork's instant is not read as another
+/// Nightloom's pass. Blocks for at most that long.
 pub fn take(config: &Path) -> Result<PassLock, String> {
-    try_take(config)?.ok_or_else(|| HELD_ELSEWHERE.to_string())
+    let deadline = Instant::now() + RE_ASK_FOR;
+    loop {
+        if let Some(lock) = try_take(config)? {
+            return Ok(lock);
+        }
+        if Instant::now() >= deadline {
+            return Err(HELD_ELSEWHERE.to_string());
+        }
+        std::thread::sleep(RE_ASK_EVERY);
+    }
 }
 
 #[cfg(test)]
@@ -79,15 +103,35 @@ mod tests {
     /// other thread at that instant read as still held (seen: 1 run in 3).
     /// Harmless in the app (the pass holds the lock across its own
     /// spawns anyway); in the suite it made the two tests race.
+    ///
+    /// Both halves re-ask for up to two seconds after the release — the
+    /// same-process re-take and the other process's take — rather than
+    /// read one instant as the answer. The re-take was one read until
+    /// nightshift backlog 168 (2026-09-23): under a 12-process CPU load the
+    /// fork-to-exec window is wide enough that it read "held" in 2 runs of 2.
     #[test]
     fn a_second_taker_and_another_process_are_refused_until_the_first_lets_go() {
         let config = temp_config("second");
         let first = take(&config).unwrap();
+        let asked = Instant::now();
         assert_eq!(take(&config).unwrap_err(), HELD_ELSEWHERE);
+        assert!(
+            asked.elapsed() >= RE_ASK_FOR,
+            "a held lock is asked again before the sentence"
+        );
         assert!(try_take(&config).unwrap().is_none());
         drop(first);
-        let again = take(&config).unwrap();
-        drop(again);
+        // Another thread's fork may still hold the released lock for an
+        // instant (see above): ask again for up to two seconds.
+        let mut again = take(&config);
+        for _ in 0..20 {
+            if again.is_ok() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            again = take(&config);
+        }
+        drop(again.unwrap());
         let _ = fs::remove_dir_all(&config);
 
         // The lock is a process's, not a handle's: another *process* must
