@@ -472,13 +472,29 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    flex-wrap: wrap;
+    /* One row, always (nightshift backlog 191): a moved card adds *back*,
+       and wrapping pushed × onto a line of its own. The chips give way
+       with an ellipsis; the grip and the buttons never shrink. */
+    flex-wrap: nowrap;
+    min-width: 0;
     padding: 8px 8px 6px 10px;
     border-bottom: 1px solid var(--line);
     cursor: default;
   }
   .aside-card-head .spacer {
     flex: 1;
+  }
+  .aside-card-head > .ns-chip {
+    display: block;
+    min-width: 0;
+    flex-shrink: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .aside-card-head > .aside-card-grip,
+  .aside-card-head > .ns-btn {
+    flex-shrink: 0;
   }
   .aside-card-grip {
     color: var(--dim);
