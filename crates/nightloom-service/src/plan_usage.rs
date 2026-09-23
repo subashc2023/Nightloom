@@ -382,7 +382,9 @@ pub fn format_stamp(s: &Sample) -> String {
         "{} {} {}\n",
         s.sampled_at_ms,
         s.five_hour.unwrap_or(0),
-        s.seven_day.map(|w| w.to_string()).unwrap_or_else(|| "-".into())
+        s.seven_day
+            .map(|w| w.to_string())
+            .unwrap_or_else(|| "-".into())
     )
 }
 
@@ -433,6 +435,19 @@ pub fn read_fresh_shared(max_age: std::time::Duration) -> PlanUsage {
     {
         return with_sample(Some(s), first, now_ms);
     }
+    // A failed or timed-out run writes no stamp, so without this every
+    // later hook — every tool call — would run `/usage` again and wait on
+    // it (review of 44ab834). The lock file keeps the last attempt's time;
+    // an attempt within the gap is not repeated.
+    let attempt_path = std::env::temp_dir().join(REFRESH_LOCK);
+    if std::fs::read_to_string(&attempt_path)
+        .ok()
+        .and_then(|s| s.trim().parse::<i64>().ok())
+        .is_some_and(|t| now_ms - t <= gap_ms)
+    {
+        return with_sample(read_stamp(&stamp), first, now_ms);
+    }
+    let _ = std::fs::write(&attempt_path, now_ms.to_string());
     let sample = run_usage_command(now_ms);
     if let Some(s) = &sample {
         let _ = std::fs::write(&stamp, format_stamp(s));
@@ -477,7 +492,10 @@ mod tests {
         let line = super::format_stamp(&s);
         assert_eq!(line, "1000000 21 67\n");
         assert_eq!(super::parse_stamp(&line), Some(s.clone()));
-        assert_eq!(super::parse_stamp("1000000 21 -").map(|s| s.seven_day), Some(None));
+        assert_eq!(
+            super::parse_stamp("1000000 21 -").map(|s| s.seven_day),
+            Some(None)
+        );
         assert_eq!(super::parse_stamp("torn"), None);
         let files = super::PlanUsage {
             five_hour: Some(19),
@@ -486,15 +504,24 @@ mod tests {
             ..super::PlanUsage::default()
         };
         let merged = super::with_sample(Some(s.clone()), files.clone(), 1_120_000);
-        assert_eq!((merged.five_hour, merged.source.as_str()), (Some(21), "cli-usage"));
+        assert_eq!(
+            (merged.five_hour, merged.source.as_str()),
+            (Some(21), "cli-usage")
+        );
         assert_eq!(merged.age_seconds, Some(120.0));
-        assert_eq!(merged.five_hour_resets_at.as_deref(), Some("2026-09-23T05:59:59Z"));
+        assert_eq!(
+            merged.five_hour_resets_at.as_deref(),
+            Some("2026-09-23T05:59:59Z")
+        );
         // A stamp older than the files yields to them.
         let newer = super::PlanUsage {
             sampled_at_ms: Some(2_000_000),
             ..files
         };
-        assert_eq!(super::with_sample(Some(s), newer, 2_000_001).five_hour, Some(19));
+        assert_eq!(
+            super::with_sample(Some(s), newer, 2_000_001).five_hour,
+            Some(19)
+        );
     }
 
     /// Runs the real CLI (zero tokens, ~12 s): `cargo test -- --ignored live_usage`.

@@ -469,7 +469,8 @@ pub fn outline(text: &str) -> Vec<OutlineEntry> {
         if let Some(rest) = trimmed.strip_prefix('#')
             && let Some(title) = rest.trim_start_matches('#').strip_prefix(' ')
         {
-            let level = trimmed.len() - rest.len() + rest.len() - rest.trim_start_matches('#').len();
+            let level =
+                trimmed.len() - rest.len() + rest.len() - rest.trim_start_matches('#').len();
             let title: String = title.chars().take(90).collect();
             out.push(OutlineEntry {
                 line: i + 1,
@@ -482,7 +483,14 @@ pub fn outline(text: &str) -> Vec<OutlineEntry> {
             out.push(OutlineEntry {
                 line: i + 1,
                 offset,
-                text: format!("page {page}{}", if first.is_empty() { String::new() } else { format!(" · {first}") }),
+                text: format!(
+                    "page {page}{}",
+                    if first.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" · {first}")
+                    }
+                ),
             });
         }
         if out.len() >= OUTLINE_MAX {
@@ -549,7 +557,11 @@ pub fn pointer_reply(
 /// `pdftotext`, wherever Homebrew or a package put it; `None` when it is
 /// not installed.
 fn pdftotext_binary() -> Option<PathBuf> {
-    for candidate in ["/opt/homebrew/bin/pdftotext", "/usr/local/bin/pdftotext", "/usr/bin/pdftotext"] {
+    for candidate in [
+        "/opt/homebrew/bin/pdftotext",
+        "/usr/local/bin/pdftotext",
+        "/usr/bin/pdftotext",
+    ] {
         let p = PathBuf::from(candidate);
         if p.is_file() {
             return Some(p);
@@ -622,7 +634,11 @@ impl Tool for FetchPage {
         let length = input["length"]
             .as_u64()
             .map(|n| n as usize)
-            .unwrap_or(if offset == 0 { FETCH_HEAD } else { FETCH_MAX_LENGTH });
+            .unwrap_or(if offset == 0 {
+                FETCH_HEAD
+            } else {
+                FETCH_MAX_LENGTH
+            });
         let stem = page_file_stem(&url);
         let txt = self.dir.join(format!("{stem}.txt"));
         let head = self.dir.join(format!("{stem}.head"));
@@ -633,7 +649,8 @@ impl Tool for FetchPage {
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.elapsed().ok())
             .is_some_and(|age| age.as_secs() < FETCH_CACHE_SECS);
-        if offset > 0 && cached
+        if offset > 0
+            && cached
             && let Ok(text) = std::fs::read_to_string(&txt)
         {
             let header = std::fs::read_to_string(&head)
@@ -995,15 +1012,23 @@ mod tests {
         let text = "# Title\nIntro — with a dash.\n## Part one\nbody\n### Sub\nmore\n";
         let o = outline(text);
         assert_eq!(
-            o.iter().map(|e| (e.line, e.offset, e.text.as_str())).collect::<Vec<_>>(),
-            vec![(1, 0, "# Title"), (3, 29, "## Part one"), (5, 46, "### Sub")]
+            o.iter()
+                .map(|e| (e.line, e.offset, e.text.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (1, 0, "# Title"),
+                (3, 29, "## Part one"),
+                (5, 46, "### Sub")
+            ]
         );
         // The dash is one character and three bytes: offsets count characters.
         assert_eq!(text.chars().nth(29), Some('#'));
         let pdf = "first page\ntext\n\u{c}Second page starts here\nmore\n\u{c}\n";
         let o = outline(pdf);
         assert_eq!(
-            o.iter().map(|e| (e.line, e.text.as_str())).collect::<Vec<_>>(),
+            o.iter()
+                .map(|e| (e.line, e.text.as_str()))
+                .collect::<Vec<_>>(),
             vec![(3, "page 2 · Second page starts here"), (5, "page 3")]
         );
         let many: String = (0..200).map(|i| format!("# h{i}\n")).collect();
@@ -1016,9 +1041,21 @@ mod tests {
     #[test]
     fn the_pointer_reply_carries_the_path_the_outline_and_one_window() {
         let path = Path::new("/tmp/fetched/abc.txt");
-        let body: String = (0..40).map(|i| format!("## Section {i}\n{}\n", "x".repeat(500))).collect();
-        let head = pointer_reply("fetched https://e.x/p (text/html)", path, &body, 0, FETCH_HEAD).unwrap();
-        assert!(head.starts_with("fetched https://e.x/p (text/html) — "), "{head}");
+        let body: String = (0..40)
+            .map(|i| format!("## Section {i}\n{}\n", "x".repeat(500)))
+            .collect();
+        let head = pointer_reply(
+            "fetched https://e.x/p (text/html)",
+            path,
+            &body,
+            0,
+            FETCH_HEAD,
+        )
+        .unwrap();
+        assert!(
+            head.starts_with("fetched https://e.x/p (text/html) — "),
+            "{head}"
+        );
         assert!(head.contains("saved to /tmp/fetched/abc.txt"));
         assert!(head.contains("Outline (line · character offset):\n  L1 · c0  ## Section 0\n"));
         assert!(head.contains("L3 · c514  ## Section 1"));
@@ -1034,9 +1071,19 @@ mod tests {
         assert!(capped.contains(&format!("showing characters 0–{FETCH_MAX_LENGTH} of")));
         let end = pointer_reply("h", path, "short", 0, FETCH_HEAD).unwrap();
         assert!(end.ends_with("\n\nshort"), "{end}");
-        assert!(pointer_reply("h", path, "short", 9, 10).unwrap_err().contains("past the end"));
-        assert_eq!(page_file_stem("https://e.x/p"), page_file_stem("https://e.x/p"));
-        assert_ne!(page_file_stem("https://e.x/p"), page_file_stem("https://e.x/q"));
+        assert!(
+            pointer_reply("h", path, "short", 9, 10)
+                .unwrap_err()
+                .contains("past the end")
+        );
+        assert_eq!(
+            page_file_stem("https://e.x/p"),
+            page_file_stem("https://e.x/p")
+        );
+        assert_ne!(
+            page_file_stem("https://e.x/p"),
+            page_file_stem("https://e.x/q")
+        );
     }
 
     /// The measurement for the 165 pass-2 report, on the network and on a
@@ -1045,7 +1092,8 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn measure_read_by_pointer_on_a_real_page_and_a_real_pdf() {
-        let dir = std::env::temp_dir().join(format!("nightloom-165-measure-{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("nightloom-165-measure-{}", uuid::Uuid::new_v4()));
         let tool = FetchPage::in_dir(dir.clone());
         let cancel = CancellationToken::new();
         let url = "https://plato.stanford.edu/entries/scientific-underdetermination/";
@@ -1058,10 +1106,23 @@ mod tests {
             reply.chars().count(),
             outline(&saved).len()
         );
-        let later = tool.call(json!({ "url": url, "offset": 20000, "length": 4000 }), &cancel).await.unwrap();
-        println!("  a section call (offset 20000, length 4000): {} chars, from the saved copy", later.chars().count());
-        let pdf = Path::new("/Users/swaraagsistla/.claude/projects/-Users-swaraagsistla-Documents-ComputerScience-Nightloom-projects-Value-Generalization/0a35e04d-4fed-4a67-bfcb-79b476f208c6/tool-results/webfetch-1789698329528-z3ehym.pdf");
-        if pdf.is_file() && let Some(bin) = pdftotext_binary() {
+        let later = tool
+            .call(
+                json!({ "url": url, "offset": 20000, "length": 4000 }),
+                &cancel,
+            )
+            .await
+            .unwrap();
+        println!(
+            "  a section call (offset 20000, length 4000): {} chars, from the saved copy",
+            later.chars().count()
+        );
+        let pdf = Path::new(
+            "/Users/swaraagsistla/.claude/projects/-Users-swaraagsistla-Documents-ComputerScience-Nightloom-projects-Value-Generalization/0a35e04d-4fed-4a67-bfcb-79b476f208c6/tool-results/webfetch-1789698329528-z3ehym.pdf",
+        );
+        if pdf.is_file()
+            && let Some(bin) = pdftotext_binary()
+        {
             let txt = dir.join("z3ehym.txt");
             let text = pdf_text(&bin, pdf, &txt).await.unwrap();
             let reply = pointer_reply("fetched (pdf)", &txt, &text, 0, FETCH_HEAD).unwrap();

@@ -556,10 +556,15 @@ pub fn start_turn_budget(
 /// gauge's files, whichever is fresher and still current — no `/usage`
 /// run, so no latency on the turn.
 pub fn reading_on_hand(dir: &Path, now_ms: i64) -> Option<WindowReading> {
+    // No older than the hook's own refresh (two minutes): an hours-old
+    // start would count other chats' spend since then against this
+    // message, and could refuse its first call; with none, the first hook
+    // reading pins the start, which only understates (review of 44ab834).
     freshest(
         current(read_usage_file(dir), now_ms),
         current(gauge_on_hand(), now_ms),
     )
+    .filter(|r| now_ms - r.sampled_at_ms <= 120_000)
 }
 
 /// A turn begins: the spawn count zeroed and the budget ledger started
@@ -663,7 +668,11 @@ fn note_reading(dir: &Path, reading: Option<WindowReading>) -> Result<(), String
     }
     let _ = file.set_len(0);
     let _ = file.seek(std::io::SeekFrom::Start(0));
-    let _ = file.write_all(serde_json::to_string_pretty(&b).unwrap_or_default().as_bytes());
+    let _ = file.write_all(
+        serde_json::to_string_pretty(&b)
+            .unwrap_or_default()
+            .as_bytes(),
+    );
     verdict
 }
 
@@ -866,7 +875,18 @@ struct HookInput {
 /// policy's own `deny` on it still stands, since the CLI runs every
 /// matching entry and any deny wins (measured, backlog 147).
 pub fn decide(dir: &Path, stdin_json: &str) -> HookReply {
-    decide_with(dir, stdin_json, gauge_reading())
+    // Every tool call runs this hook since pass 2, so a `/usage` refresh
+    // (seconds, blocking the call) is paid only when the chat's own wire
+    // reading is older than the refresh's two minutes; a fresher one wins
+    // in `freshest` anyway (review of 44ab834).
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let wire_fresh = read_usage_file(dir).is_some_and(|r| now_ms - r.sampled_at_ms <= 120_000);
+    let gauge = if wire_fresh {
+        gauge_on_hand()
+    } else {
+        gauge_reading()
+    };
+    decide_with(dir, stdin_json, gauge)
 }
 
 /// [`decide`] with the desktop's gauge reading passed in, so the suite
@@ -1181,15 +1201,32 @@ mod tests {
     fn the_budget_verdict_stops_at_the_line_and_at_the_message_share() {
         let l = super::SubagentLimits::default();
         let b = super::start_turn_budget(None, &l, reading(21, 1), 1_000, super::TurnPhase::Turn);
-        assert_eq!((b.start_pct, b.budget_pct, b.stop_at, b.phase.as_str()), (Some(21), 35, 85, "turn"));
+        assert_eq!(
+            (b.start_pct, b.budget_pct, b.stop_at, b.phase.as_str()),
+            (Some(21), 35, 85, "turn")
+        );
         assert_eq!(super::budget_verdict(&b, None), Ok(()));
         assert_eq!(super::budget_verdict(&b, reading(55, 2)), Ok(()));
         let spent = super::budget_verdict(&b, reading(56, 2)).unwrap_err();
-        assert!(spent.contains("spent 35%") && spent.contains("from 21% to 56%") && spent.contains("do not retry"), "{spent}");
+        assert!(
+            spent.contains("spent 35%")
+                && spent.contains("from 21% to 56%")
+                && spent.contains("do not retry"),
+            "{spent}"
+        );
         let line = super::budget_verdict(&b, reading(85, 2)).unwrap_err();
-        assert!(line.contains("stop line is 85%") && line.contains("It resets at "), "{line}");
+        assert!(
+            line.contains("stop line is 85%") && line.contains("It resets at "),
+            "{line}"
+        );
         // A budget of zero is no budget; the stop line still holds.
-        let none = super::start_turn_budget(None, &super::SubagentLimits { budget_pct: 0, ..l }, reading(21, 1), 1_000, super::TurnPhase::Turn);
+        let none = super::start_turn_budget(
+            None,
+            &super::SubagentLimits { budget_pct: 0, ..l },
+            reading(21, 1),
+            1_000,
+            super::TurnPhase::Turn,
+        );
         assert_eq!(super::budget_verdict(&none, reading(84, 2)), Ok(()));
         // No reading on hand at the start: nothing to judge until one is pinned.
         let blind = super::start_turn_budget(None, &l, None, 1_000, super::TurnPhase::Turn);
@@ -1203,16 +1240,48 @@ mod tests {
     #[test]
     fn a_chair_continues_its_seats_ledger_and_nothing_else_does() {
         let l = super::SubagentLimits::default();
-        let seats = super::start_turn_budget(None, &l, reading(20, 1), 1_000, super::TurnPhase::Seats);
+        let seats =
+            super::start_turn_budget(None, &l, reading(20, 1), 1_000, super::TurnPhase::Seats);
         assert_eq!(seats.phase, "seats");
-        let done = super::TurnBudget { phase: "seats-done".into(), latest_pct: Some(30), ..seats.clone() };
-        let chair = super::start_turn_budget(Some(done.clone()), &l, reading(30, 2), 5_000, super::TurnPhase::Turn);
-        assert_eq!((chair.phase.as_str(), chair.start_pct, chair.started_at_ms), ("turn", Some(20), 1_000));
-        let stale = super::start_turn_budget(Some(done.clone()), &l, reading(30, 2), 1_000 + 11 * 60 * 1000, super::TurnPhase::Turn);
+        let done = super::TurnBudget {
+            phase: "seats-done".into(),
+            latest_pct: Some(30),
+            ..seats.clone()
+        };
+        let chair = super::start_turn_budget(
+            Some(done.clone()),
+            &l,
+            reading(30, 2),
+            5_000,
+            super::TurnPhase::Turn,
+        );
+        assert_eq!(
+            (chair.phase.as_str(), chair.start_pct, chair.started_at_ms),
+            ("turn", Some(20), 1_000)
+        );
+        let stale = super::start_turn_budget(
+            Some(done.clone()),
+            &l,
+            reading(30, 2),
+            1_000 + 11 * 60 * 1000,
+            super::TurnPhase::Turn,
+        );
         assert_eq!((stale.phase.as_str(), stale.start_pct), ("turn", Some(30)));
-        let again = super::start_turn_budget(Some(done), &l, reading(30, 2), 5_000, super::TurnPhase::Seats);
+        let again = super::start_turn_budget(
+            Some(done),
+            &l,
+            reading(30, 2),
+            5_000,
+            super::TurnPhase::Seats,
+        );
         assert_eq!((again.phase.as_str(), again.start_pct), ("seats", Some(30)));
-        let plain = super::start_turn_budget(Some(chair), &l, reading(31, 3), 9_000, super::TurnPhase::Turn);
+        let plain = super::start_turn_budget(
+            Some(chair),
+            &l,
+            reading(31, 3),
+            9_000,
+            super::TurnPhase::Turn,
+        );
         assert_eq!((plain.start_pct, plain.started_at_ms), (Some(31), 9_000));
     }
 
@@ -1231,30 +1300,55 @@ mod tests {
         let read = r#"{"tool_name":"Read","tool_input":{"file_path":"/x"}}"#;
         assert_eq!(super::decide_with(&dir, read, None).decision(), "pass");
         let b = super::read_turn_budget(&dir).unwrap();
-        assert_eq!((b.start_pct, b.latest_pct, b.calls, b.spent_pct()), (Some(40), Some(40), 1, Some(0)));
+        assert_eq!(
+            (b.start_pct, b.latest_pct, b.calls, b.spent_pct()),
+            (Some(40), Some(40), 1, Some(0))
+        );
         // The gauge, fresher, says 60: twenty spent of thirty-five, allowed.
-        assert_eq!(super::decide_with(&dir, read, reading(60, now + 1)).decision(), "pass");
+        assert_eq!(
+            super::decide_with(&dir, read, reading(60, now + 1)).decision(),
+            "pass"
+        );
         assert_eq!(super::read_turn_budget(&dir).unwrap().spent_pct(), Some(20));
         // An older reading a slower hook brings in does not move it back.
-        assert_eq!(super::decide_with(&dir, read, reading(50, now - 5)).decision(), "pass");
+        assert_eq!(
+            super::decide_with(&dir, read, reading(50, now - 5)).decision(),
+            "pass"
+        );
         assert_eq!(super::read_turn_budget(&dir).unwrap().latest_pct, Some(60));
         // 75: thirty-five spent — refused, and a spawn is refused the same.
         let r = super::decide_with(&dir, read, reading(75, now + 2));
         assert_eq!(r.decision(), "deny");
         assert!(r.reason().is_some_and(|s| s.contains("spent 35%")));
         let b = super::read_turn_budget(&dir).unwrap();
-        assert!(b.stopped.as_deref().is_some_and(|s| s.contains("spent 35%")));
-        assert_eq!(super::decide_with(&dir, CALL, reading(75, now + 3)).decision(), "deny");
+        assert!(
+            b.stopped
+                .as_deref()
+                .is_some_and(|s| s.contains("spent 35%"))
+        );
+        assert_eq!(
+            super::decide_with(&dir, CALL, reading(75, now + 3)).decision(),
+            "deny"
+        );
         // A new turn starts over from the reading on hand (the wire file's 40).
         super::begin_turn(&dir, &l, super::TurnPhase::Turn);
         let b = super::read_turn_budget(&dir).unwrap();
-        assert_eq!((b.start_pct, b.stopped.is_none(), b.calls), (Some(40), true, 0));
-        assert_eq!(super::decide_with(&dir, read, reading(74, now + 4)).decision(), "pass");
+        assert_eq!(
+            (b.start_pct, b.stopped.is_none(), b.calls),
+            (Some(40), true, 0)
+        );
+        assert_eq!(
+            super::decide_with(&dir, read, reading(74, now + 4)).decision(),
+            "pass"
+        );
         // No reading on hand at the start: the first hook reading pins it.
         let _ = std::fs::remove_file(dir.join(super::USAGE_FILE));
         super::begin_turn(&dir, &l, super::TurnPhase::Turn);
         // (This machine's own gauge may supply one; either way the ledger exists.)
-        assert!(super::read_turn_budget(&dir).unwrap().start_pct.is_none() || super::gauge_on_hand().is_some());
+        assert!(
+            super::read_turn_budget(&dir).unwrap().start_pct.is_none()
+                || super::gauge_on_hand().is_some()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1265,23 +1359,52 @@ mod tests {
         assert_eq!(super::SubagentModel::Chat.for_spawn(None), None);
         assert_eq!(super::SubagentModel::Chat.for_spawn(Some("opus")), None);
         assert_eq!(super::SubagentModel::Sonnet.for_spawn(None), Some("sonnet"));
-        assert_eq!(super::SubagentModel::Sonnet.for_spawn(Some("opus")), Some("sonnet"));
+        assert_eq!(
+            super::SubagentModel::Sonnet.for_spawn(Some("opus")),
+            Some("sonnet")
+        );
         assert_eq!(super::SubagentModel::Sonnet.for_spawn(Some("haiku")), None);
         assert_eq!(super::SubagentModel::Sonnet.for_spawn(Some("sonnet")), None);
         let dir = limits_dir("model");
-        super::write_limits(&dir, &super::SubagentLimits { model: super::SubagentModel::Sonnet, ..Default::default() }).unwrap();
-        let r = super::decide_with(&dir, r#"{"tool_name":"Agent","tool_input":{"prompt":"go","model":"opus"}}"#, None);
+        super::write_limits(
+            &dir,
+            &super::SubagentLimits {
+                model: super::SubagentModel::Sonnet,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let r = super::decide_with(
+            &dir,
+            r#"{"tool_name":"Agent","tool_input":{"prompt":"go","model":"opus"}}"#,
+            None,
+        );
         assert_eq!(r.decision(), "allow");
-        let out = r.hook_specific_output.as_ref().and_then(|o| o.updated_input.clone()).unwrap();
+        let out = r
+            .hook_specific_output
+            .as_ref()
+            .and_then(|o| o.updated_input.clone())
+            .unwrap();
         assert_eq!(out["model"], "sonnet");
         assert!(out["prompt"].as_str().unwrap().starts_with(BRIEF_OPEN));
         // With the brief already on the prompt, the model alone changes the input.
-        let r = super::decide_with(&dir, r#"{"tool_name":"Agent","tool_input":{"prompt":"<nightloom-subagent-brief>x</nightloom-subagent-brief>\n\ngo"}}"#, None);
+        let r = super::decide_with(
+            &dir,
+            r#"{"tool_name":"Agent","tool_input":{"prompt":"<nightloom-subagent-brief>x</nightloom-subagent-brief>\n\ngo"}}"#,
+            None,
+        );
         assert_eq!(r.decision(), "allow");
-        let out = r.hook_specific_output.as_ref().and_then(|o| o.updated_input.clone()).unwrap();
+        let out = r
+            .hook_specific_output
+            .as_ref()
+            .and_then(|o| o.updated_input.clone())
+            .unwrap();
         assert_eq!(out["model"], "sonnet");
         assert!(out["prompt"].as_str().unwrap().starts_with(BRIEF_OPEN));
-        assert_eq!(out["prompt"].as_str().unwrap().matches(BRIEF_OPEN).count(), 1);
+        assert_eq!(
+            out["prompt"].as_str().unwrap().matches(BRIEF_OPEN).count(),
+            1
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

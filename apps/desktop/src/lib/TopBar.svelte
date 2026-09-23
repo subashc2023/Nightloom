@@ -730,6 +730,11 @@
   .pct {
     color: var(--dim);
   }
+  /* The budget meter once the hook has refused (backlog 165 pass 2; the
+     class was set with no rule until the review of 44ab834). */
+  .of.budget.stopped {
+    color: var(--failed);
+  }
   .bar {
     width: 56px;
     height: 4px;

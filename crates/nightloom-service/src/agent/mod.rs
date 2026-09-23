@@ -2616,7 +2616,11 @@ mod tests {
         });
         let a = s.args("hi");
         assert_eq!(brief_entries(&a), 1);
-        assert_eq!(entries(&a).len(), 2, "the policy's own entry and the budget's");
+        assert_eq!(
+            entries(&a).len(),
+            2,
+            "the policy's own entry and the budget's"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
