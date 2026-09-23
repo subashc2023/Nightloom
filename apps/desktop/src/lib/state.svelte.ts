@@ -5,6 +5,7 @@ import { suggestions } from "./suggestions.svelte";
 import { isMac } from "./platform";
 import { UNFILED, draftKey, enqueueMessage, moveDraft, newDraftKey, setDraftText } from "./drafts.svelte";
 import {
+  CURATED,
   defaultDraft,
   isProviderVisible,
   loadLastConnection,
@@ -36,6 +37,7 @@ import { limitPauseFrom, resumeDelayMs, resumeMessage, type LimitPause } from ".
 import { liveHost, settlePlan, type Parked } from "./browse";
 import { SEARCH_COLUMN_MAX, searchGrowth } from "./search.svelte";
 import * as tabs from "./tabs";
+import { cli, startCliClock } from "./cliUpdate.svelte";
 import type { TabContent, Workspace } from "./tabs";
 import {
   buildNotices,
@@ -1233,6 +1235,9 @@ export async function init(): Promise<void> {
   await listen<Woke>("system-woke", () => void maybeDailyPass());
   startDailyClock();
   startPlanUsageClock();
+  // Claude Code's version (nightshift backlog 182): a check shortly after
+  // launch and every six hours; an Update waits for a cold moment.
+  startCliClock();
   // The Refresh-now banner's click (nightshift backlog 116): Rust has
   // already brought the window forward; this opens Settings on Usage.
   await listen("usage-banner-clicked", () => {
@@ -1761,6 +1766,8 @@ export async function refreshCentre(): Promise<void> {
     stamp,
     seenStamp: app.centre.seenStamp,
     dismissed: app.centre.dismissed,
+    cli: cli.status,
+    curated: CURATED.anthropic ?? [],
   });
   // A first run has no stamp on record: the one seen now becomes it, so
   // the next roll is the first release the bell announces.

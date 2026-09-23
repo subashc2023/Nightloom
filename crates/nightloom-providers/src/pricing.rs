@@ -128,6 +128,26 @@ pub fn price(kind: ProviderKind, model: &str) -> Option<Price> {
         .map(|(_, price)| *price)
 }
 
+/// The id of the row [`price`] reads for `model`, or `None` (nightshift
+/// backlog 182). The prefix rule hides a new model inside its family —
+/// `claude-opus-5-6` reads Opus 5's row — so a caller that must say
+/// "Nightloom has no price for this yet" compares the row with the id.
+pub fn matched_row(kind: ProviderKind, model: &str) -> Option<&'static str> {
+    let model = model.to_ascii_lowercase();
+    let table = match kind {
+        ProviderKind::Anthropic => ANTHROPIC,
+        ProviderKind::Openai | ProviderKind::OpenaiChat => OPENAI,
+        ProviderKind::Gemini => GEMINI,
+        ProviderKind::Groq => GROQ,
+        ProviderKind::Openrouter => OPENROUTER,
+    };
+    table
+        .iter()
+        .filter(|(id, _)| model.starts_with(id))
+        .max_by_key(|(id, _)| id.len())
+        .map(|(id, _)| *id)
+}
+
 // ---------------------------------------------------------------------------
 // Provenance: read 2026-08-18 from openrouter.ai/api/v1/models and
 // models.dev/api.json. USD per million tokens. Models present in `limits.rs`

@@ -1,9 +1,10 @@
 <script lang="ts">
   /**
    * The bell and its panel (nightshift backlog 069): what waits on him,
-   * five kinds with counts — proposals to a project's or his own
+   * six kinds with counts — proposals to a project's or his own
    * instructions, notes a dream changed, morning pages unread, blockers
-   * open, a release installed — each opening its existing review, each
+   * open, a release installed, a newer Claude Code (backlog 182) — each
+   * opening its existing review or offering its action, each
    * dismissable. Sits in the top bar of the chat view and the Nightshift
    * header alike. Plain text and buttons by tonight's UI standard (blocker
    * 082); the list is `app.centre.notices`, derived in `state.svelte.ts`.
@@ -22,6 +23,7 @@
   import { relativeTime } from "./time";
   import DiffView from "./DiffView.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
+  import CliUpdateActions from "./CliUpdateActions.svelte";
 
   const count = $derived(centreCount());
   const counts = $derived(countsOf(app.centre.notices));
@@ -154,6 +156,7 @@
                   {#if n.at}<span class="centre-when" title={n.at}>{relativeTime(n.at)}</span>{/if}
                 </div>
                 {#if n.detail}<div class="centre-detail">{n.detail}</div>{/if}
+                {#if n.kind === "cli"}<CliUpdateActions />{/if}
                 <div class="centre-actions">
                   {#if n.kind === "proposal"}
                     <button class="ns-btn small" onclick={() => void openNotice(n)}>Review the diff</button>

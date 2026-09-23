@@ -479,6 +479,47 @@ export interface KnowledgeInfo {
  * have cost — priced by `usage-rates.json` on the dedup basis (one count
  * per API message id, what the API would bill). Dates are UTC.
  */
+/** A model a newer Claude Code release adds, from its release notes
+ *  (nightshift backlog 182), and whether Nightloom's own price and
+ *  context-window tables have its row. See `cli_update.rs`. */
+export interface CliNewModel {
+  id: string;
+  /** "Opus 5.5". */
+  name: string;
+  /** The release that added it. */
+  version: string;
+  has_price: boolean;
+  has_window: boolean;
+}
+
+/** One version check (backlog 182): `claude --version` against the release
+ *  feed. A failed lookup leaves `latest` null and says why in `error`. */
+export interface CliStatus {
+  binary: string;
+  installed: string | null;
+  latest: string | null;
+  /** "latest" or "stable". */
+  channel: string;
+  behind: boolean;
+  new_models: CliNewModel[];
+  notes_read: boolean;
+  /** RFC 3339. */
+  checked_at: string;
+  error: string | null;
+  /** Set when DISABLE_UPDATES turns the CLI's updater off: nothing is offered. */
+  updates_disabled: string | null;
+}
+
+/** What a run of `claude update` did (backlog 182). */
+export interface CliUpdateResult {
+  ok: boolean;
+  before: string | null;
+  after: string | null;
+  /** The updater's last lines. */
+  output: string;
+  seconds: number;
+}
+
 /**
  * The plan's own five-hour and seven-day percentages (nightshift backlog
  * 073, 2026-09-16), read from the Claude desktop app's sample file and the

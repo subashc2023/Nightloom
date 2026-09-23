@@ -8,7 +8,8 @@
  * pass; `NotificationCentre.svelte` draws the list. Nothing here touches
  * the store, so every rule below is pinned by `centre.test.ts`.
  */
-import type { BuildStamp, DreamCommit, NightshiftRow, ProjectRef, ProposalNotice } from "./types";
+import type { BuildStamp, CliStatus, DreamCommit, NightshiftRow, ProjectRef, ProposalNotice } from "./types";
+import { cliNoticeDetail, cliNoticeId, cliNoticeTitle, offersUpdate } from "./cliUpdate";
 
 // ---- the daily switch ----
 
@@ -112,7 +113,7 @@ export const RECENT_PASS_MS = 12 * 60 * 60 * 1000;
 
 // ---- the notices ----
 
-export type NoticeKind = "proposal" | "dream" | "morning" | "blocker" | "release";
+export type NoticeKind = "proposal" | "dream" | "morning" | "blocker" | "release" | "cli";
 
 /** One row of the panel. `id` is stable for as long as the thing it names
  *  is unchanged, which is what "dismissed" is keyed on. */
@@ -128,6 +129,8 @@ export interface Notice {
   proposal?: ProposalNotice;
   /** The commit, for a `dream` notice. */
   commit?: DreamCommit;
+  /** The version check, for a `cli` notice (nightshift backlog 182). */
+  cli?: CliStatus;
 }
 
 export const KIND_LABEL: Record<NoticeKind, string> = {
@@ -136,9 +139,10 @@ export const KIND_LABEL: Record<NoticeKind, string> = {
   morning: "Morning pages",
   blocker: "Blockers",
   release: "Releases",
+  cli: "Claude Code",
 };
 
-export const KIND_ORDER: NoticeKind[] = ["proposal", "dream", "morning", "blocker", "release"];
+export const KIND_ORDER: NoticeKind[] = ["proposal", "dream", "morning", "blocker", "release", "cli"];
 
 export interface NoticeSources {
   proposals: ProposalNotice[];
@@ -151,6 +155,12 @@ export interface NoticeSources {
   /** The stamp last seen by this window, or null on a first run. */
   seenStamp: string | null;
   dismissed: string[];
+  /** The newest Claude Code version check (backlog 182); a notice while it
+   *  offers an update. */
+  cli?: CliStatus | null;
+  /** The Anthropic ids the provider engine's picker lists, for naming a
+   *  new model it lacks. */
+  curated?: string[];
 }
 
 export function proposalNoticeId(p: ProposalNotice): string {
@@ -229,6 +239,17 @@ export function buildNotices(s: NoticeSources): Notice[] {
       project: null,
     });
   }
+  if (s.cli && offersUpdate(s.cli)) {
+    out.push({
+      kind: "cli",
+      id: cliNoticeId(s.cli),
+      title: cliNoticeTitle(s.cli),
+      detail: cliNoticeDetail(s.cli, s.curated ?? []),
+      at: s.cli.checked_at,
+      project: null,
+      cli: s.cli,
+    });
+  }
   const rank = new Map(KIND_ORDER.map((k, i) => [k, i]));
   return out
     .filter((n) => !dismissed.has(n.id))
@@ -237,7 +258,7 @@ export function buildNotices(s: NoticeSources): Notice[] {
 
 /** How many of each kind, for the panel's headings and the bell's count. */
 export function countsOf(notices: Notice[]): Record<NoticeKind, number> {
-  const c: Record<NoticeKind, number> = { proposal: 0, dream: 0, morning: 0, blocker: 0, release: 0 };
+  const c: Record<NoticeKind, number> = { proposal: 0, dream: 0, morning: 0, blocker: 0, release: 0, cli: 0 };
   for (const n of notices) c[n.kind]++;
   return c;
 }

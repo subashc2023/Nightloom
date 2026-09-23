@@ -4527,6 +4527,54 @@ async fn plan_usage_refresh() -> Result<nightloom_service::plan_usage::PlanUsage
     .map_err(|e| format!("refreshing the plan usage failed: {e}"))
 }
 
+/// The CLI a version check or an update is about: the connected chat's
+/// resolved binary when the front end passes it, else `claude` resolved
+/// the way a connect resolves it.
+fn cli_binary(binary: Option<String>) -> std::path::PathBuf {
+    let b = binary
+        .filter(|b| !b.trim().is_empty())
+        .unwrap_or_else(|| "claude".to_string());
+    std::path::PathBuf::from(nightloom_service::resolve_binary(&b))
+}
+
+/// Claude Code's version against the release feed, with the models the
+/// newer release adds (nightshift backlog 182). Zero tokens:
+/// `claude --version` and two GETs. The front end asks at launch and
+/// every six hours, never while a turn runs.
+#[tauri::command]
+async fn cli_version_check(
+    binary: Option<String>,
+) -> Result<nightloom_service::cli_update::CliStatus, String> {
+    Ok(nightloom_service::cli_update::check(&cli_binary(binary)).await)
+}
+
+/// One `claude update` at a time, whatever asks.
+static CLI_UPDATING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Run the CLI's own updater (nightshift backlog 182). The front end calls
+/// it only at a cold moment — no turn running and every open chat's cache
+/// expired — or on "now" after showing what it costs.
+#[tauri::command]
+async fn cli_update(
+    binary: Option<String>,
+) -> Result<nightloom_service::cli_update::UpdateResult, String> {
+    use std::sync::atomic::Ordering;
+    if CLI_UPDATING.swap(true, Ordering::SeqCst) {
+        return Err("an update of Claude Code is already running".into());
+    }
+    let bin = cli_binary(binary);
+    let r = tokio::task::spawn_blocking(move || {
+        nightloom_service::cli_update::run_update(
+            &bin,
+            None,
+            std::time::Duration::from_secs(10 * 60),
+        )
+    })
+    .await;
+    CLI_UPDATING.store(false, Ordering::SeqCst);
+    r.map_err(|e| format!("running claude update failed: {e}"))
+}
+
 /// Point new projects at a folder, or back at the default with `None`.
 ///
 /// **Moves nothing.** The projects already made are registered by their own
@@ -6398,6 +6446,8 @@ fn main() {
             refresh_usage_ledger,
             plan_usage,
             plan_usage_refresh,
+            cli_version_check,
+            cli_update,
             turn_budget,
             resolve_new_project_path,
             new_project,

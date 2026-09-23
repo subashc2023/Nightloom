@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AsideResult,
+  CliStatus,
+  CliUpdateResult,
   AgentConnectArgs,
   AgentTurnResult,
   ApprovalDecision,
@@ -607,6 +609,19 @@ export function planUsage(): Promise<PlanUsage> {
  *  tokens, ~12 s on the backend. */
 export function planUsageRefresh(): Promise<PlanUsage> {
   return invoke("plan_usage_refresh");
+}
+
+/** Claude Code's version against the release feed, with the models the
+ *  newer release adds (nightshift backlog 182). Zero tokens. `binary` is
+ *  the connected chat's resolved CLI, or null for `claude` resolved. */
+export function cliVersionCheck(binary: string | null): Promise<CliStatus> {
+  return invoke("cli_version_check", { binary });
+}
+
+/** Run `claude update` (backlog 182) — only at a cold moment, or on "now"
+ *  after its cost was shown. */
+export function cliUpdate(binary: string | null): Promise<CliUpdateResult> {
+  return invoke("cli_update", { binary });
 }
 
 /** The message's budget ledger for the live meter (backlog 165, pass 2):

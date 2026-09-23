@@ -69,6 +69,25 @@ fn longest_prefix(table: &[(&str, u64)], model: &str) -> Option<u64> {
         .map(|(_, limit)| *limit)
 }
 
+/// The id of the row [`context_limit`] reads for `model`, or `None`
+/// (nightshift backlog 182) — as `pricing::matched_row`, so a model the
+/// table lacks is named rather than read as its family's window.
+pub fn matched_row(kind: ProviderKind, model: &str) -> Option<&'static str> {
+    let model = model.to_ascii_lowercase();
+    let table = match kind {
+        ProviderKind::Anthropic => ANTHROPIC,
+        ProviderKind::Openai | ProviderKind::OpenaiChat => OPENAI,
+        ProviderKind::Gemini => GEMINI,
+        ProviderKind::Groq => GROQ,
+        ProviderKind::Openrouter => OPENROUTER,
+    };
+    table
+        .iter()
+        .filter(|(id, _)| model.starts_with(id))
+        .max_by_key(|(id, _)| id.len())
+        .map(|(id, _)| *id)
+}
+
 // ---------------------------------------------------------------------------
 // Provenance: every number below was read on 2026-08-18 from the vendor's own
 // management endpoint (Anthropic /v1/models, Gemini /v1beta/models, Groq

@@ -107,7 +107,7 @@ describe("the notices", () => {
     expect(n[3].id).toBe("morning:p1:2026-09-16.md");
     expect(n[4].id).toBe("blocker:p1:2");
     expect(n[5].title).toBe("A release was installed (0.1.0)");
-    expect(countsOf(n)).toEqual({ proposal: 2, dream: 1, morning: 1, blocker: 1, release: 1 });
+    expect(countsOf(n)).toEqual({ proposal: 2, dream: 1, morning: 1, blocker: 1, release: 1, cli: 0 });
   });
 
   it("leaves out dismissed ids, read pages, and a release on a first run", () => {

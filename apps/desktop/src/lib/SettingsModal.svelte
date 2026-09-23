@@ -69,6 +69,9 @@
   import { dreamEngineRows, dreamModelPills, dreamSentence } from "./dreamRows";
   import { loadNotifyPrefs, notifyUsageRefreshed, saveNotifyPrefs, type NotifyPrefs } from "./notify";
   import { loadSleepPrefs, saveSleepPrefs, type SleepPrefs } from "./sleep";
+  import { checkCli, cli, curatedAnthropic, setAutoUpdate } from "./cliUpdate.svelte";
+  import { cliNoticeDetail } from "./cliUpdate";
+  import CliUpdateActions from "./CliUpdateActions.svelte";
   import {
     WRAP_UP,
     defaultMessage as handoffDefaultMessage,
@@ -1402,6 +1405,58 @@
           />
           <span>Ask first (a Resume toast) instead of resuming automatically</span>
         </label>
+      </section>
+
+      <!-- Claude Code's version (nightshift backlog 182): the check the
+           bell's notice comes from, the same Update / Now… buttons, and
+           the switch that updates by itself at a cold moment. -->
+      <section class="card">
+        <div class="ch">
+          <span class="t">Claude Code version</span>
+          <span class="spacer"></span>
+          <button
+            class="ns-btn ghost small"
+            disabled={cli.checking || cli.updating}
+            title="claude --version against the release feed — no tokens"
+            onclick={() => void checkCli(true)}>{cli.checking ? "Checking…" : "Check now"}</button
+          >
+        </div>
+        {#if cli.status}
+          <p class="note small">
+            Installed <strong>{cli.status.installed ?? "unknown"}</strong>{" "}
+            {#if cli.status.latest}· newest on the {cli.status.channel} channel <strong>{cli.status.latest}</strong>{" "}{/if}
+            · checked {relativeTime(cli.status.checked_at)}{cli.status.latest && !cli.status.behind ? " — up to date" : ""}.
+          </p>
+          <p class="note small remote-mono">{cli.status.binary}</p>
+          {#if cli.status.error}<p class="note small">{cli.status.error}</p>{/if}
+          {#if cli.status.updates_disabled}
+            <p class="note small">Updates are switched off for the CLI ({cli.status.updates_disabled}), so Nightloom offers none.</p>
+          {:else if cli.status.behind}
+            <p class="note small">{cliNoticeDetail(cli.status, curatedAnthropic())}</p>
+          {/if}
+        {:else}
+          <p class="note small">{cli.error ?? "Not checked yet — the first check runs shortly after launch, then every six hours."}</p>
+        {/if}
+        <CliUpdateActions />
+        <label class="dream-auto cli-auto">
+          <input type="checkbox" checked={cli.prefs.auto} onchange={(e) => setAutoUpdate(e.currentTarget.checked)} />
+          <span>Keep Claude Code up to date</span>
+        </label>
+        <p class="note small">
+          Off (the default): a newer release shows in the bell and here, and
+          waits for your Update. On: Nightloom runs <code>claude update</code>
+          by itself at the first cold moment after a release — no turn
+          running and every open chat's cache expired, so no chat pays a
+          cache rewrite for it. Never during a turn or a Nightshift run. The
+          CLI's own background updater (<code>autoUpdates</code> in
+          <code>~/.claude.json</code>) is left as you set it.
+        </p>
+        {#if cli.result}
+          <details class="cli-out">
+            <summary>The last update's output</summary>
+            <pre>{cli.result.output || "(none)"}</pre>
+          </details>
+        {/if}
       </section>
     </div>
   {:else if selected === "usage"}
@@ -2824,6 +2879,26 @@
     font-size: 13px;
     color: var(--ink);
     cursor: pointer;
+  }
+  .cli-auto {
+    margin-top: 8px;
+  }
+  .cli-out summary {
+    font-size: 12px;
+    color: var(--dim);
+    cursor: pointer;
+  }
+  .cli-out pre {
+    font-family: var(--mono, ui-monospace, monospace);
+    font-size: 11px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    max-height: 200px;
+    overflow: auto;
+    background: var(--well);
+    border-radius: 6px;
+    padding: 6px 8px;
+    margin: 4px 0 0;
   }
   .daily-hour {
     margin-left: 6px;
