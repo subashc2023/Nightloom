@@ -1393,7 +1393,6 @@
           {/if}
         </span>
       {/if}
-      <span class="ns-chip mono keys">{app.busy ? "↵ queue" : "↵ to send"} · ⇧↵ newline</span>
       <span class="spacer"></span>
       {#if app.busy}
         <button
@@ -1958,18 +1957,9 @@
   .spacer {
     flex: 1;
   }
-  .keys {
-    font-size: 11px;
-    padding: 2px 8px;
-    flex: none;
-  }
-  /* The key hint is decoration; when the row cannot hold Attach, both
-     pickers, the hint and Send, the hint goes first. */
-  @container (max-width: 600px) {
-    .keys {
-      display: none;
-    }
-  }
+  /* ~~The key hint (↵ to send · ⇧↵ newline)~~ — deleted 2026-09-22 on his
+     word (nightshift backlog 177): it pushed Council and Send onto a second
+     line; the Queue button says Enter queues during a turn. */
   textarea {
     width: 100%;
     background: transparent;
