@@ -7,6 +7,7 @@
     reviewProposal,
     runMenuCommand,
     switchModelAt,
+    toggleSidebar,
     undoLabel,
     usable,
     useProject,
@@ -272,6 +273,21 @@
         key: `${mod}P`,
         group: "Go",
         run: () => go(() => runMenuCommand("projects")),
+      },
+      // Search everywhere (nightshift backlog 117, board 11c "from ⌘K"):
+      // the panel in the sidebar's column; a collapsed sidebar reopens.
+      {
+        id: "search_everywhere",
+        label: "Search chats…",
+        meta: "this project · all chats · notes",
+        icon: "search",
+        key: isMac ? "⌥⌘F" : "Ctrl+Alt+F",
+        group: "Go",
+        run: () =>
+          go(() => {
+            if (app.layout.sidebarCollapsed) toggleSidebar();
+            app.search.open = true;
+          }),
       },
       // The two kinds (nightshift backlog 102, 2026-09-16): ⌘N a Claude
       // Code chat, ⌥⌘N a Chat. No plain "New chat" row — the sidebar's

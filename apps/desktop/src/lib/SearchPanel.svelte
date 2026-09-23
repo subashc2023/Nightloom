@@ -11,6 +11,7 @@
   import Icon from "./Icon.svelte";
   import { relativeTime } from "./time";
   import { SEARCH_CHORD_LABEL } from "./find";
+  import { foldToFit } from "./fold";
   import { growForSearch, shrinkAfterSearch } from "./search.svelte";
   import {
     countLine,
@@ -54,6 +55,38 @@
   let searching = $state(false);
   let folded = $state<Record<string, boolean>>({});
   let seq = 0;
+
+  // The scope row folds by measurement (backlog 183): ~~an `@container
+  // (max-width: 330px)` rule~~, which WebKit under page zoom queries at
+  // the width × the zoom, so it tightened a zoom step late. Level 1 is
+  // the tighter labels; `data-fold` mirrors what `foldToFit` wrote so the
+  // attribute is dynamic markup and Svelte keeps the rule.
+  //
+  // The key line along the foot folds the same way (measured 2026-09-23:
+  // at 100 % it needs a 365 px column and was cut off below that, the
+  // chord and "esc close" first): level 1 drops "in the chat", level 2
+  // the chord at the right as well.
+  const SCOPE_FOLD_MAX = 1;
+  const FOOT_FOLD_MAX = 2;
+  let scopeRow = $state<HTMLDivElement | null>(null);
+  let footRow = $state<HTMLDivElement | null>(null);
+  let scopeFold = $state("0");
+  let footFold = $state("0");
+  function refold(): void {
+    const row = scopeRow;
+    if (row) scopeFold = String(foldToFit(row, () => [...row.querySelectorAll(".search-scope button")], SCOPE_FOLD_MAX));
+    const foot = footRow;
+    if (foot) footFold = String(foldToFit(foot, () => [...foot.children], FOOT_FOLD_MAX));
+  }
+  $effect(() => {
+    const row = scopeRow;
+    const foot = footRow;
+    if (!row || !foot || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => refold());
+    ro.observe(row);
+    ro.observe(foot);
+    return () => ro.disconnect();
+  });
 
   const rows = $derived(flatten(app.search.result));
   const count = $derived(app.search.result ? countLine(app.search.result, app.search.scope) : null);
@@ -242,15 +275,17 @@
 
   <!-- The scope. His note on board 11a: a little wider and bigger than
        drawn — 13px and 5px 14px against the board's 12px and 3px 10px. -->
-  <div class="search-scope" role="radiogroup" aria-label="Where to search">
-    {#each SCOPES as s (s.scope)}
-      <button
-        role="radio"
-        aria-checked={app.search.scope === s.scope}
-        class:on={app.search.scope === s.scope}
-        onclick={() => setScope(s.scope)}
-      >{s.label}</button>
-    {/each}
+  <div class="search-scope-row" bind:this={scopeRow} data-fold={scopeFold}>
+    <div class="search-scope" role="radiogroup" aria-label="Where to search">
+      {#each SCOPES as s (s.scope)}
+        <button
+          role="radio"
+          aria-checked={app.search.scope === s.scope}
+          class:on={app.search.scope === s.scope}
+          onclick={() => setScope(s.scope)}
+        >{s.label}</button>
+      {/each}
+    </div>
   </div>
 
   {#if searching}
@@ -278,7 +313,7 @@
   {:else}
     {#if count}
       <div class="search-count">
-        {count.text}
+        <span class="text">{count.text}</span>
         <span class="spacer"></span>
         {#if count.narrow}<span class="narrow">narrow it</span>{/if}
         <span>{count.elapsed}</span>
@@ -346,10 +381,10 @@
     </div>
   {/if}
 
-  <div class="search-foot">
+  <div class="search-foot" bind:this={footRow} data-fold={footFold}>
     <span><span class="k">↑↓</span> preview</span>
     <span><span class="k">↵</span> open</span>
-    <span><span class="k">⌘G</span> next in the chat</span>
+    <span><span class="k">⌘G</span> next<span class="fold1"> in the chat</span></span>
     <span><span class="k">esc</span> close</span>
     <span class="k right">{SEARCH_CHORD_LABEL}</span>
   </div>
@@ -363,8 +398,9 @@
     flex: 1;
     font-family: var(--sans);
     /* The scope row is sized to the column (backlog 138): the panel no
-       longer forces 380px, so under ~330px the three labels tighten. */
-    container-type: inline-size;
+       longer forces 380px, so in a narrow column the three labels tighten
+       — ~~under ~330px, by a container query~~ by measurement since
+       2026-09-23 (backlog 183, `refoldScope`). */
   }
   .search-head {
     display: flex;
@@ -432,12 +468,18 @@
     color: var(--ink);
     background: var(--well);
   }
+  /* The row the fold measures: its padding is the scope's old margin, so
+     `foldToFit` reads the right edge the buttons must stay inside. */
+  .search-scope-row {
+    padding: 10px 14px 0;
+    min-width: 0;
+    overflow: hidden;
+  }
   .search-scope {
     display: inline-flex;
     align-items: center;
     gap: 2px;
     padding: 3px;
-    margin: 10px 14px 0;
     width: fit-content;
     background: var(--paper);
     border: 1px solid var(--line);
@@ -463,11 +505,9 @@
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
   }
   /* After the base rule, so the narrow case wins the cascade. */
-  @container (max-width: 330px) {
-    .search-scope button {
-      padding: 5px 9px;
-      font-size: 12.5px;
-    }
+  .search-scope-row[data-fold="1"] .search-scope button {
+    padding: 5px 9px;
+    font-size: 12.5px;
   }
   .search-count {
     display: flex;
@@ -477,6 +517,20 @@
     font-family: var(--mono);
     font-size: 11px;
     color: var(--dim);
+  }
+  /* One line at any width (measured 2026-09-23: at a 300 px column the
+     count wrapped, "0.2 s" broken over two lines): the sentence gives
+     way with an ellipsis, the time and "narrow it" keep their width. */
+  .search-count {
+    white-space: nowrap;
+  }
+  .search-count .text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .search-count > span:not(.text, .spacer) {
+    flex: none;
   }
   .search-count .spacer {
     flex: 1;
@@ -658,5 +712,11 @@
   }
   .search-foot .right {
     margin-left: auto;
+  }
+  .search-foot:is([data-fold="1"], [data-fold="2"]) .fold1 {
+    display: none;
+  }
+  .search-foot[data-fold="2"] .right {
+    display: none;
   }
 </style>

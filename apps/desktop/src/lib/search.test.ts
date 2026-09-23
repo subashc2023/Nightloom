@@ -173,18 +173,20 @@ describe("labels", () => {
 });
 
 describe("the chord", () => {
-  it("is the search key with shift, and nothing else on that key", () => {
+  // ~~the search key with shift~~ 2026-09-23: ⌘⌥F (blocker 164 answered).
+  it("is ⌘⌥F, and ⌘F on the same key stays the bar", () => {
+    expect(SEARCH_KEY).toBe("KeyF");
     expect(
-      findChord({ code: SEARCH_KEY, shiftKey: true, altKey: false }, true),
+      findChord({ code: SEARCH_KEY, shiftKey: false, altKey: true }, true),
     ).toBe("everywhere");
     expect(
       findChord({ code: SEARCH_KEY, shiftKey: false, altKey: false }, true),
-    ).toBeNull();
+    ).toBe("open");
     expect(
       findChord({ code: SEARCH_KEY, shiftKey: true, altKey: true }, true),
     ).toBeNull();
     expect(
-      findChord({ code: SEARCH_KEY, shiftKey: true, altKey: false }, false),
+      findChord({ code: SEARCH_KEY, shiftKey: false, altKey: true }, false),
     ).toBeNull();
   });
 

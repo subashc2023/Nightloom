@@ -2156,7 +2156,9 @@ each shell's host element in the store and re-append it on mount).
 
 ## Search everywhere in the sidebar's column (nightshift backlog 117; 138, 2026-09-17)
 
-⌘⇧E, the sidebar's search box, or ⌘K → *Search chats…* opens the panel in
+⌥⌘F (~~⌘⇧E~~ until 2026-09-23: blocker 164 answered "command option F";
+Ctrl+Alt+F elsewhere), the sidebar's search box, or ⌘K → *Search chats…*
+opens the panel in
 the sidebar's column (blocker 153: a panel, not a page): the field, the
 scope *this project · all chats · notes*, the count line, the hits grouped
 by chat with the passage, who said it and when. ↑↓ previews the chat
@@ -2170,8 +2172,10 @@ frame the panel opens — it grows up to 80px past the sidebar's own width,
 never past 380, eased over 160 ms, and comes back the same way on close
 (`searchGrowth`, a tween the panel drives on mount and unmount;
 `sidebarColumn()` adds it to the sidebar's width; blocker 202 holds "same
-width" and "the full 380" as one-line alternatives). Under ~330px the scope
-row tightens. And there is a way out from anywhere: **esc closes the panel
+width" and "the full 380" as one-line alternatives). In a narrow column the
+scope row tightens (~~under ~330px, a container query~~ since 2026-09-23
+by measurement, `fold.ts`, backlog 183: WebKit under ⌘+ zoom queried the
+container a zoom step late). And there is a way out from anywhere: **esc closes the panel
 wherever the focus is** — a result row, a fold chevron, the transcript —
 not only from its field (before, an esc after any click reached the window,
 and macOS took it as *leave full screen*); another text field's esc stays
@@ -2180,13 +2184,13 @@ head closes it by mouse; the field's own × clears the query and shows only
 while there is one.
 
 **⌘F's bar's right end (backlog 139, 2026-09-17; blocker 203):** the
-"search all chats ⌘⇧E" text link after the bar's × — a second thing in a
+"search all chats ⌘⇧E" (now ⌥⌘F) text link after the bar's × — a second thing in a
 second voice, tacked on after the bar's last control — is now a glyph
 button in the bar's own shape (the sidebar's search glass, 22px like ‹ › ×)
 placed *before* the ×, so the × is the last thing again; the words and the
-chord live in its tooltip ("Search all chats for this (⌘⇧E)"), and a small
+chord live in its tooltip ("Search all chats for this (⌥⌘F)"), and a small
 accent dot at its corner says the panel still holds results to go back to
-("Back to the results (⌘⇧E)"). The boards for the three shapes considered
+("Back to the results (⌥⌘F)"). The boards for the three shapes considered
 are `notes/runner-design/139-boards-2026-09-17.md` in the Nightshift repo.
 
 **The file card's Open refuses what the OS would run (nightshift backlog

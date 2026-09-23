@@ -92,6 +92,13 @@ describe("stepHit and keepHit", () => {
     expect(stepHit(0, 1, 0)).toBeNull();
   });
 
+  // His note on board 11b (backlog 117, 2026-09-16): the bar the panel
+  // hands off to loops — at 1/4, ↑ goes to 4/4, and at 4/4, ↓ to 1/4.
+  it("loops the bar's count at the ends: 1 of 4, ↑ → 4 of 4", () => {
+    expect(countLabel(stepHit(0, -1, 4), 4)).toBe("4 of 4");
+    expect(countLabel(stepHit(3, 1, 4), 4)).toBe("1 of 4");
+  });
+
   it("keeps the ordinal across a page change where it can", () => {
     expect(keepHit(4, 10)).toBe(4);
     expect(keepHit(4, 3)).toBe(2);
@@ -122,10 +129,12 @@ describe("findChord", () => {
     expect(findChord(k("KeyH"), true)).toBeNull();
   });
 
-  it("leaves ⌘⇧F to the search-everywhere half, and bare or ⌥ keys alone", () => {
+  // ~~⌥ keys alone~~ 2026-09-23: ⌘⌥F is search everywhere (blocker 164).
+  it("leaves ⌘⇧F (the Fable switch) and bare keys alone; ⌘⌥F is everywhere", () => {
     expect(findChord(k("KeyF", true), true)).toBeNull();
     expect(findChord(k("KeyF"), false)).toBeNull();
-    expect(findChord(k("KeyF", false, true), true)).toBeNull();
+    expect(findChord(k("KeyF", false, true), true)).toBe("everywhere");
+    expect(findChord(k("KeyG", false, true), true)).toBeNull();
   });
 });
 

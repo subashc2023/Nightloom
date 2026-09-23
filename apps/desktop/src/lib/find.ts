@@ -139,15 +139,20 @@ export function countLabel(current: number | null, count: number): string {
  * binding on it would open the panel and switch the model at once). ⌘⇧E —
  * "everywhere" — is free on every platform. `SEARCH_CHORD_LABEL` is what
  * the bar's link, the panel's footer and the docs print.
+ * ~~`SEARCH_KEY = "KeyE"`, ⌘⇧E~~ — 2026-09-23: blocker 164 answered
+ * "maybe command option F?" (2026-09-22), so the panel is ⌘⌥F: the F of
+ * find with ⌥, free on every platform (no menu item carries it; App's
+ * one Option chord is Ctrl+Alt+N). ⌘⇧F stays the Fable switch. Printed
+ * "⌥⌘F", the macOS order the app already uses for "⌥⌘N".
  */
-export const SEARCH_KEY = "KeyE";
-export const SEARCH_CHORD_LABEL = "⌘⇧E";
+export const SEARCH_KEY = "KeyF";
+export const SEARCH_CHORD_LABEL = "⌥⌘F";
 
 /**
  * Which of the bar's chords a key event is, or null. ⌘F opens (or refocuses)
  * the bar; ⌘G / ⌘⇧G step, the browsers' convention beside ⏎ / ⇧⏎ in the
- * field; `SEARCH_KEY` with ⇧ is "everywhere", the search panel (backlog
- * 117). Physical keys, so a layout cannot move them; `primary` is ⌘ on
+ * field; ~~`SEARCH_KEY` with ⇧~~ ⌘⌥F (2026-09-23, blocker 164) is
+ * "everywhere", the search panel (backlog 117). Physical keys, so a layout cannot move them; `primary` is ⌘ on
  * macOS and Ctrl elsewhere, decided by the caller. None of the four is a
  * menu item, so macOS cannot double-fire them. ~~⌘⇧F stays free: the
  * search-everywhere half (backlog 117) is drawn first.~~ 2026-09-16: ⌘⇧F
@@ -157,10 +162,11 @@ export function findChord(
   e: { code: string; shiftKey: boolean; altKey: boolean },
   primary: boolean,
 ): "open" | "next" | "prev" | "everywhere" | null {
-  if (!primary || e.altKey) return null;
+  if (!primary) return null;
+  // ⌘⌥F, no ⇧: the panel. Any other Option chord is the platform's.
+  if (e.altKey) return e.code === SEARCH_KEY && !e.shiftKey ? "everywhere" : null;
   if (e.code === "KeyF") return e.shiftKey ? null : "open";
   if (e.code === "KeyG") return e.shiftKey ? "prev" : "next";
-  if (e.code === SEARCH_KEY) return e.shiftKey ? "everywhere" : null;
   return null;
 }
 
