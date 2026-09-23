@@ -349,6 +349,42 @@ impl CliSession {
             .collect()
     }
 
+    /// The uuid of the last node of the turn `from_last` turns before the
+    /// newest — the leaf a checkpoint fork resumes at (nightshift backlog
+    /// 104, pass 3): `--resume-session-at <uuid>` keeps everything through
+    /// that node and nothing after, so a fork from it starts after that
+    /// turn's reply (measured on 2.1.263, survey M3, at a reply's uuid).
+    /// The node is the turn's last **assistant** node on the main chain
+    /// before the next prompt — the reply's final text — not the last node
+    /// of any kind: on 2.1.280 a `prompt_snapshot` attachment follows the
+    /// reply (measured in the pass-3 report, the chat `db0e7666`), and the
+    /// only form measured to resume is a reply's uuid. A turn with no reply
+    /// yet gives its last node, the prompt or its attachments.
+    pub fn turn_leaf_uuid(&self, from_last: usize) -> Result<String, CliSessionError> {
+        let prompt = self.prompt_from_last(from_last)?;
+        let chain = self.chain();
+        let Some(start) = chain.iter().position(|&i| i == prompt) else {
+            return Err(CliSessionError::Locate(
+                "that turn's prompt is not on Claude Code's main chain".into(),
+            ));
+        };
+        let mut last = prompt;
+        let mut reply = None;
+        for &i in &chain[start + 1..] {
+            if self.lines[i].is_user_prompt() {
+                break;
+            }
+            last = i;
+            if self.lines[i].kind() == Some("assistant") {
+                reply = Some(i);
+            }
+        }
+        self.lines[reply.unwrap_or(last)]
+            .uuid()
+            .map(str::to_string)
+            .ok_or_else(|| CliSessionError::Locate("the turn's last node has no uuid".into()))
+    }
+
     /// How many prompts the user typed on the main chain.
     pub fn prompt_count(&self) -> usize {
         self.prompts().len()
@@ -1055,6 +1091,33 @@ mod tests {
         // Untouched lines are byte-identical bar the id.
         let expected = fixture().replace(SID, "22222222-2222-2222-2222-222222222222");
         assert_eq!(out, expected);
+    }
+
+    /// The checkpoint's leaf (backlog 104, pass 3): the last node of the
+    /// turn on the main chain — the first turn's reply text `s2`, the
+    /// second's final text `s6` (past its tool call and result) — and a
+    /// turn the file does not have is the usual refusal.
+    #[test]
+    fn a_turns_leaf_is_its_replys_last_node() {
+        let s = CliSession::parse(&fixture()).unwrap();
+        assert_eq!(s.turn_leaf_uuid(1).unwrap(), "s2");
+        assert_eq!(s.turn_leaf_uuid(0).unwrap(), "s6");
+        assert!(s.turn_leaf_uuid(2).is_err());
+        // The shape 2.1.280 writes (measured): a `prompt_snapshot`
+        // attachment after the reply, the next prompt hanging off it. The
+        // leaf is still the reply, not the attachment; and a turn with no
+        // reply yet gives its last node.
+        let lines = [
+            user("u1", None, json!("first")),
+            attachment("a1", "u1", "prompt_snapshot"),
+            assistant("s1", "a1", "msg_1", json!({"type": "text", "text": "one"})),
+            attachment("a2", "s1", "prompt_snapshot"),
+            user("u2", Some("a2"), json!("second")),
+            attachment("a3", "u2", "total_tokens_reminder"),
+        ];
+        let s = CliSession::parse(&(lines.join("\n") + "\n")).unwrap();
+        assert_eq!(s.turn_leaf_uuid(1).unwrap(), "s1");
+        assert_eq!(s.turn_leaf_uuid(0).unwrap(), "a3");
     }
 
     #[test]

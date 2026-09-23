@@ -31,6 +31,7 @@
 pub mod ask;
 pub mod brief;
 pub mod cli_session;
+pub mod fork;
 mod protocol;
 mod record;
 mod translate;
@@ -417,6 +418,20 @@ pub struct AgentSpec {
     /// (nightshift `143-report-2026-09-17.md`, steps 8–11). Set by
     /// [`apply_kind_policy`](Self::apply_kind_policy).
     pub chat_policy: bool,
+    /// Fork mode (nightshift backlog 104, pass 3, 2026-09-22; blocker 288,
+    /// his answer: "per-chat switch, on"). **On by default.** On, the turn
+    /// carries two things: `CLAUDE_CODE_FORK_SUBAGENT=1` — in the one
+    /// `--settings` JSON's `env` and in the process environment, the two
+    /// spellings the survey's M2c measured together — which lets the model
+    /// spawn `subagent_type: "fork"`, a subagent that starts with the whole
+    /// conversation at cache-read cost (M2c: wrote 406, read 34,989, against
+    /// 26,104 written for a fresh spawn); and `--agents` with the
+    /// `checkpoint` roster entry ([`fork::agents_json`]), the helper that
+    /// forks from the chat's checkpoint instead, which the brief hook runs
+    /// ([`fork`]). Both change the Agent tool's description, so flipping
+    /// the switch on a running chat re-writes its cached prefix once; on
+    /// from the first turn it costs nothing more.
+    pub fork_mode: bool,
     /// Passed through verbatim, last, so a caller can reach a flag this
     /// struct has not grown a field for.
     pub extra_args: Vec<String>,
@@ -640,6 +655,7 @@ impl AgentSpec {
             ask: None,
             brief: None,
             chat_policy: false,
+            fork_mode: true,
             extra_args: Vec::new(),
         }
     }
@@ -792,6 +808,95 @@ impl AgentSpec {
         // and its settings carry no hook (the test below pins that).
         spec.brief = None;
         Some(spec)
+    }
+
+    /// The spec for a **checkpoint fork** (nightshift backlog 104, pass 3;
+    /// the module doc of [`fork`] has the design): a second CLI process on
+    /// the chat's session, forked (`--fork-session`) from a chosen message
+    /// — the hook appends `--resume-session-at <uuid>` — that does a
+    /// helper's long task and reports. `None` without a session to fork or
+    /// with fork mode off.
+    ///
+    /// Everything that shapes the cached prefix stays as the chat has it,
+    /// as for an aside: the fork exists to read the checkpoint's prefix
+    /// from the cache, not to re-write it. What differs: the fork keeps no
+    /// session file of its own (its report is the deliverable); under Ask
+    /// or Plan it runs as an aside does — `dontAsk`, no Ask hook — since a
+    /// deferral from a side process would park it on a card nobody's turn
+    /// is waiting for; the brief hook stays, so its calls are judged by the
+    /// message's budget and its own spawns by the caps; `--max-turns` is
+    /// left to the budget.
+    pub fn checkpoint_fork(&self) -> Option<AgentSpec> {
+        self.resume.as_ref()?;
+        if !self.fork_mode {
+            return None;
+        }
+        let mut spec = self.clone();
+        spec.fork_session = true;
+        spec.no_session_persistence = true;
+        if let Some(ask) = &mut spec.ask {
+            ask.mode = AskMode::Aside;
+            spec.permission_mode = Some("dontAsk".into());
+        }
+        Some(spec)
+    }
+
+    /// The checkpoint fork's command line, written beside the brief for
+    /// the hook ([`fork::ForkSpec`]): `-p ""` in front for the task, the
+    /// environment the turn runs with. The uuid is not here — the hook
+    /// reads the checkpoint file and appends `--resume-session-at`.
+    pub fn fork_spec(&self) -> Option<fork::ForkSpec> {
+        let spec = self.checkpoint_fork()?;
+        Some(fork::ForkSpec {
+            binary: spec.binary.clone(),
+            workspace: spec.workspace.clone(),
+            argv: spec.argv(Shape::Prompt("")),
+            env: spec
+                .env_set()
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect(),
+            env_remove: spec.env_removed().iter().map(|k| k.to_string()).collect(),
+        })
+    }
+
+    /// The variables a turn's process is given, beyond what it inherits
+    /// ([`Self::env_removed`] is the other half). Shared by [`ClaudeCodeAgent::drive`]
+    /// and the fork's spec, so the two processes run alike.
+    pub fn env_set(&self) -> Vec<(&'static str, String)> {
+        let mut env: Vec<(&'static str, String)> = Vec::new();
+        if !self.auto_compact {
+            // The belt to the setting's braces (`AgentSpec::auto_compact`).
+            env.push(("DISABLE_AUTO_COMPACT", "1".into()));
+        }
+        // The CLI's own subagent limits (backlog 165): concurrency and
+        // nesting depth are environment, read by the CLI at each spawn.
+        env.extend(self.subagent_limits.unwrap_or_default().env());
+        if self.fork_mode {
+            // Fork subagents (backlog 104): the environment spelling beside
+            // the `--settings` one, as the survey's M2c ran it.
+            env.push(("CLAUDE_CODE_FORK_SUBAGENT", "1".into()));
+        }
+        env
+    }
+
+    /// The variables kept out of a turn's process.
+    pub fn env_removed(&self) -> &'static [&'static str] {
+        if self.use_subscription {
+            // Claude Code prefers an API key over the subscription whenever
+            // one is set, silently. `CLAUDECODE` and `CLAUDE_CODE_ENTRYPOINT`
+            // are set when Nightloom itself was launched from a Claude Code
+            // session; inherited they make the child think it is a nested
+            // run of its own.
+            &[
+                "ANTHROPIC_API_KEY",
+                "ANTHROPIC_AUTH_TOKEN",
+                "CLAUDECODE",
+                "CLAUDE_CODE_ENTRYPOINT",
+            ]
+        } else {
+            &[]
+        }
     }
 
     /// The three shapes differ in the first arguments only. A prompt goes
@@ -953,6 +1058,15 @@ impl AgentSpec {
         if !self.auto_compact {
             settings.insert("autoCompactEnabled".into(), serde_json::Value::Bool(false));
         }
+        if self.fork_mode {
+            // Fork mode (backlog 104): the settings spelling of the switch,
+            // in the same one JSON, beside the environment spelling
+            // (`env_set`) — the survey's M2c ran both and got the fork.
+            settings.insert(
+                "env".into(),
+                serde_json::json!({ "CLAUDE_CODE_FORK_SUBAGENT": "1" }),
+            );
+        }
         if !settings.is_empty() {
             a.push("--settings".into());
             a.push(serde_json::Value::Object(settings).to_string());
@@ -964,6 +1078,13 @@ impl AgentSpec {
         if let Some(s) = &self.append_system_prompt {
             a.push("--append-system-prompt".into());
             a.push(s.clone());
+        }
+        if self.fork_mode {
+            // The checkpoint helper's roster entry (backlog 104): a flag,
+            // not a settings source, so it stands under safe mode's empty
+            // `--setting-sources` too (measured in the pass-3 report).
+            a.push("--agents".into());
+            a.push(fork::agents_json());
         }
         if self.safe_mode {
             // Not `--safe-mode`: see the field doc's table — that flag
@@ -1418,22 +1539,14 @@ impl ClaudeCodeAgent {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        if spec.use_subscription {
-            cmd.env_remove("ANTHROPIC_API_KEY");
-            cmd.env_remove("ANTHROPIC_AUTH_TOKEN");
-            // Set when Nightloom itself was launched from a Claude Code
-            // session; inherited they make the child think it is a nested
-            // run of its own.
-            cmd.env_remove("CLAUDECODE");
-            cmd.env_remove("CLAUDE_CODE_ENTRYPOINT");
+        // The environment, spelled once for this process and for the
+        // checkpoint fork's (`AgentSpec::env_removed` / `env_set`, backlog
+        // 104): the key kept out so the subscription is what pays, the
+        // compaction switch, the CLI's own subagent limits, fork mode.
+        for k in spec.env_removed() {
+            cmd.env_remove(k);
         }
-        if !spec.auto_compact {
-            // The belt to the setting's braces (`AgentSpec::auto_compact`).
-            cmd.env("DISABLE_AUTO_COMPACT", "1");
-        }
-        // The CLI's own subagent limits (backlog 165): concurrency and
-        // nesting depth are environment, read by the CLI at each spawn.
-        for (k, v) in spec.subagent_limits.unwrap_or_default().env() {
+        for (k, v) in spec.env_set() {
             cmd.env(k, v);
         }
 
@@ -2275,6 +2388,9 @@ mod tests {
             (ChatKind::Build, ChatKind::Chat),
         ] {
             let mut s = spec();
+            // Fork mode's own `env` entry aside (backlog 104), which rides
+            // the same JSON: off here so the policy is what is tested.
+            s.fork_mode = false;
             s.apply_kind_policy(kind, declared);
             assert!(!s.chat_policy, "{kind:?} over {declared:?}");
             assert!(!s.args("hi").iter().any(|x| x == "--settings"));
@@ -2482,7 +2598,92 @@ mod tests {
         // The default — a dream's or a capture's shape (review F4,
         // 2026-09-16) — leaves compaction to the CLI: no `--settings` at all.
         assert!(spec().auto_compact);
-        assert!(!spec().args("hi").iter().any(|x| x == "--settings"));
+        // — once fork mode's `env` entry (backlog 104), which is on by
+        // default and rides the same JSON, is off.
+        let mut plain = spec();
+        plain.fork_mode = false;
+        assert!(!plain.args("hi").iter().any(|x| x == "--settings"));
+    }
+
+    /// Fork mode (backlog 104, pass 3): on by default, it puts
+    /// `CLAUDE_CODE_FORK_SUBAGENT=1` in the one `--settings` JSON's `env`
+    /// and in the process environment, and the `checkpoint` roster entry
+    /// on `--agents`; off, none of the three. The checkpoint fork's spec
+    /// keeps the prefix (model, tools, MCP, prompt, roster), forks the
+    /// session with no file of its own, runs as an aside under Ask, and
+    /// its written command line has the task slot empty and no uuid.
+    #[test]
+    fn fork_mode_rides_the_settings_env_and_the_agents_roster() {
+        let on = spec();
+        assert!(on.fork_mode);
+        let a = on.args("hi");
+        let i = a.iter().position(|x| x == "--settings").unwrap();
+        let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
+        assert_eq!(v["env"]["CLAUDE_CODE_FORK_SUBAGENT"], "1");
+        let j = a.iter().position(|x| x == "--agents").unwrap();
+        let roster: serde_json::Value = serde_json::from_str(&a[j + 1]).unwrap();
+        assert!(roster[fork::CHECKPOINT_AGENT]["description"].is_string());
+        assert!(
+            on.env_set()
+                .iter()
+                .any(|(k, v)| *k == "CLAUDE_CODE_FORK_SUBAGENT" && v == "1")
+        );
+        let mut off = spec();
+        off.fork_mode = false;
+        let a = off.args("hi");
+        assert!(!a.iter().any(|x| x == "--agents"), "{a:?}");
+        assert!(!a.iter().any(|x| x == "--settings"), "{a:?}");
+        assert!(
+            !off.env_set()
+                .iter()
+                .any(|(k, _)| *k == "CLAUDE_CODE_FORK_SUBAGENT")
+        );
+        // The removed keys are the subscription's guard, on both paths.
+        assert!(on.env_removed().contains(&"ANTHROPIC_API_KEY"));
+
+        // No session, no fork; fork mode off, no fork.
+        assert!(spec().checkpoint_fork().is_none());
+        let mut s = asking(AskMode::Ask);
+        s.resume = Some("sess-3".into());
+        s.model = Some("opus".into());
+        s.fork_mode = false;
+        assert!(s.checkpoint_fork().is_none());
+        s.fork_mode = true;
+        s.brief = Some(BriefSpec {
+            hook: vec!["hook".into()],
+            dir: PathBuf::from("/chat"),
+            text: "brief".into(),
+        });
+        let f = s.checkpoint_fork().unwrap();
+        assert!(f.fork_session && f.no_session_persistence);
+        assert_eq!(f.ask.as_ref().unwrap().mode, AskMode::Aside);
+        assert!(f.brief.is_some(), "the budget hook rides in the fork");
+        assert_eq!(f.max_turns, None);
+        let fa = f.args("task");
+        for (flag, value) in [
+            ("--resume", "sess-3"),
+            ("--model", "opus"),
+            ("--permission-mode", "dontAsk"),
+            ("--permission-prompt-tool", ask::PROMPT_TOOL),
+        ] {
+            let i = fa.iter().position(|x| x == flag).unwrap();
+            assert_eq!(fa[i + 1], value, "{flag}");
+        }
+        assert!(fa.iter().any(|x| x == "--fork-session"));
+        assert!(fa.iter().any(|x| x == "--agents"), "the roster stays");
+        assert!(
+            !fa.iter().any(|x| x == "--resume-session-at"),
+            "the hook adds the uuid"
+        );
+        // The chat's own spec is as it was.
+        assert!(!s.fork_session && !s.no_session_persistence);
+        assert_eq!(s.ask.as_ref().unwrap().mode, AskMode::Ask);
+
+        let fs = s.fork_spec().unwrap();
+        assert_eq!(&fs.argv[..2], ["-p", ""]);
+        assert_eq!(fs.workspace, s.workspace);
+        assert!(fs.env.iter().any(|(k, _)| k == "CLAUDE_CODE_FORK_SUBAGENT"));
+        assert!(fs.env_remove.iter().any(|k| k == "ANTHROPIC_API_KEY"));
     }
 
     /// A call refused by a Stop is remembered against its session until a

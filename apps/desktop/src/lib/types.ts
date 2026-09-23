@@ -99,6 +99,10 @@ export interface AgentConnectArgs {
    *  a subagent's call the hook would pause for runs instead when true,
    *  is refused in words when false. Omitted is on. */
   subagentsAuto?: boolean;
+  /** Fork mode (nightshift backlog 104, pass 3; blocker 288): the model may
+   *  spawn a `fork` helper (the whole chat at cache-read cost) and the
+   *  `checkpoint` helper (a fork from the chat's checkpoint). Omitted is on. */
+  forkMode?: boolean;
   /** Stop the turn if the CLI's own cost estimate passes this. */
   budget?: number;
   /** The subagent limits (backlog 165); omitted is the defaults. */
@@ -568,6 +572,22 @@ export interface TurnBudget {
   pending_since_ms?: number | null;
   /** When he pressed *Continue anyway* for this message (backlog 189). */
   override_at_ms?: number | null;
+}
+
+/**
+ * The message helpers fork from (nightshift backlog 104, pass 3): the
+ * backend's `fork::Checkpoint`. `index` is the log event the checkpoint
+ * was set on; a fork starts after the exchange that message belongs to.
+ * `uuid` is the CLI's message id once resolved (null until the CLI's file
+ * holds the turn). Set automatically at the first exchange, moved by
+ * "fork from here".
+ */
+export interface Checkpoint {
+  index: number;
+  uuid?: string | null;
+  resolved_in?: string | null;
+  set_by: "auto" | "user";
+  at_ms: number;
 }
 
 export interface UsageSummary {

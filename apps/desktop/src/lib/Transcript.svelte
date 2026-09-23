@@ -17,10 +17,12 @@
     saveEdit,
     saveReplyEdit,
     sendEdit,
+    setCheckpoint,
     openSession,
     resumeAfterLimit,
   } from "./state.svelte";
   import type { Segment, ToolCallView } from "./state.svelte";
+  import { checkpointLine, checkpointOwner } from "./checkpoint";
   import { pauseLabel, resetLabel, resumeDelayMs } from "./limit";
   import {
     REMOVED_PLACEHOLDER,
@@ -414,6 +416,9 @@
       ? "Rewind to here: this turn and everything after it stop counting. Conversation only — files stay as they are; git is the undo."
       : "Rewind to here: this turn and everything after it stop counting. Files written by tools are not reverted.",
   );
+  // The user messages' log indexes, ascending, for the checkpoint's owner
+  // (nightshift backlog 104): the exchange helpers fork from.
+  const userIndexes = $derived(items.filter((it) => it.kind === "user").map((it) => it.index));
 
   /**
    * Keep the reader's place across a change that resizes a message
@@ -1512,7 +1517,28 @@
                   >
                     <Icon name="minus" size={14} />
                   </button>
+                  {#if app.connection?.engine === "claude-code" && checkpointOwner(userIndexes, app.checkpoint) !== item.index}
+                    <!-- "Fork from here" (nightshift backlog 104, pass 3):
+                         helpers fork from the end of this exchange — this
+                         message and its reply — instead of the first one. -->
+                    <button
+                      class="tool-btn"
+                      title="Fork helpers from here: a long-research helper starts with the chat up to the end of this exchange, at cache-read cost, and none of the later turns."
+                      aria-label="Fork helpers from here"
+                      onclick={() => void setCheckpoint(item.index)}
+                    >
+                      <Icon name="branch" size={14} />
+                    </button>
+                  {/if}
                 {/if}
+              </span>
+            {/if}
+            {#if app.checkpoint && checkpointOwner(userIndexes, app.checkpoint) === item.index}
+              <!-- The checkpoint's marker (backlog 104): on the exchange
+                   helpers fork from, always drawn, not only on hover. -->
+              <span class="checkpoint-mark" title={checkpointLine(app.checkpoint, true)}>
+                <Icon name="branch" size={12} />
+                {checkpointLine(app.checkpoint, false)}
               </span>
             {/if}
             <span class="when" title={exactTime(item.at)}>{relativeTimeLong(item.at, now)}</span>
@@ -1861,6 +1887,17 @@
     height: 22px;
   }
   .when {
+    font-family: var(--sans);
+    font-size: 11px;
+    color: var(--dim);
+    cursor: default;
+  }
+  /* The checkpoint's marker (backlog 104): the foot's dim 11px, with the
+     branch glyph, on the exchange helpers fork from. */
+  .checkpoint-mark {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
     font-family: var(--sans);
     font-size: 11px;
     color: var(--dim);

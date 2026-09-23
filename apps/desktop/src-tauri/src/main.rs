@@ -1493,6 +1493,7 @@ async fn connect_agent(
     fallback_model: Option<String>,
     subagents_auto: Option<bool>,
     limits: Option<nightloom_service::agent::brief::SubagentLimits>,
+    fork_mode: Option<bool>,
 ) -> Result<ConnectedInfo, String> {
     // Same rule as `connect`: an open project wins over the rail's saved
     // folder, or a chat filed under a project would be running somewhere
@@ -1535,6 +1536,9 @@ async fn connect_agent(
     // The subagent limits (backlog 165): the CLI's two as environment at
     // spawn, Nightloom's four written beside the brief for the hook.
     spec.subagent_limits = limits;
+    // Fork mode (nightshift backlog 104, pass 3; blocker 288): the rail's
+    // per-chat switch, on unless it said off.
+    spec.fork_mode = fork_mode.unwrap_or(true);
     spec.safe_mode = safe_mode.unwrap_or(false);
     // Effort and the fallback model (backlog 076), as the rail spelled
     // them; empty is the CLI's default and no fallback.
@@ -2414,6 +2418,10 @@ async fn send_agent(
         .map(|stem| log_dir.join("ask").join(stem));
     if let Some(dir) = &ask_dir {
         agent.set_ask_dir(dir.clone());
+        // The checkpoint and the fork's command line beside the brief
+        // (nightshift backlog 104, pass 3), for a checkpoint helper this
+        // turn may spawn.
+        sync_checkpoint(session, agent, dir);
     }
 
     // A council turn (nightshift backlog 149, 2026-09-17;
@@ -2727,6 +2735,13 @@ async fn send_agent(
                 let _ = app.emit("turn-notice", failure.summary());
             }
             agent.follow_on(&outcome);
+            // The checkpoint again, now that the CLI's file holds this turn
+            // (backlog 104): the first exchange sets it, and its uuid
+            // resolves here rather than at the next send, so the
+            // transcript's marker shows at once.
+            if let Some(dir) = &ask_dir {
+                sync_checkpoint(session, agent, dir);
+            }
             // The reads the CLI refused outside the trees (backlog 143,
             // pass 2): the hook never sees a `Read`, so the prompt host
             // denied it and the `result` line named it. Each folder once,
@@ -4514,6 +4529,125 @@ async fn budget_dir(state: &State<'_, AppState>, session: &str) -> Option<PathBu
         return None;
     }
     Some(state.log_dir().await.join("ask").join(session))
+}
+
+/// The checkpoint helpers fork from (nightshift backlog 104, pass 3), kept
+/// current before and after each turn of a chat: set automatically at the
+/// end of the chat's first exchange when none is set (blocker 289), its
+/// uuid read from the CLI's session file once that file holds the turn —
+/// and again whenever the chat's CLI session changed (an edit fork, a
+/// rewind) — and the fork's command line written beside it for the hook
+/// (`agent::fork`). Best-effort: nothing here may fail a turn.
+fn sync_checkpoint(session: &Session, agent: &ClaudeCodeAgent, dir: &Path) {
+    use nightloom_service::agent::fork;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let mut cp = match fork::read_checkpoint(dir) {
+        Some(cp) => cp,
+        None => match auto_checkpoint_index(session) {
+            Some(index) => fork::Checkpoint {
+                index,
+                uuid: None,
+                resolved_in: None,
+                set_by: fork::CheckpointSetBy::Auto,
+                at_ms: now,
+            },
+            None => return,
+        },
+    };
+    let current = agent.spec().resume.clone();
+    if cp.uuid.is_none() || cp.resolved_in != current {
+        cp.uuid = current
+            .as_deref()
+            .and_then(|id| checkpoint_uuid(session, &agent.spec().workspace, id, cp.index));
+        cp.resolved_in = cp.uuid.as_ref().and(current);
+    }
+    let _ = fork::write_checkpoint(dir, &cp);
+    if let Some(spec) = agent.spec().fork_spec() {
+        let _ = fork::write_fork_spec(dir, &spec);
+    }
+}
+
+/// The automatic checkpoint (blocker 289): the reply that closes the
+/// chat's first exchange — the end of its general context, the preamble
+/// plus his opening brief and its answer. `None` until that reply exists.
+fn auto_checkpoint_index(session: &Session) -> Option<usize> {
+    let live = session.live_events();
+    let first = live
+        .iter()
+        .position(|(_, e)| matches!(e, SessionEvent::UserMessage { .. }))?;
+    live[first..]
+        .iter()
+        .find(|(_, e)| matches!(e, SessionEvent::AssistantMessage { .. }))
+        .map(|(i, _)| *i)
+}
+
+/// The uuid a fork from the checkpoint at log `index` resumes at: the last
+/// node of that exchange's turn in the CLI session `id`'s file, found the
+/// way the edit code finds a turn (`turns_after` → `from_last`).
+fn checkpoint_uuid(session: &Session, workspace: &Path, id: &str, index: usize) -> Option<String> {
+    let from_last = turns_after(session, index).ok()?;
+    let projects = cli_session::projects_dir()?;
+    let path = cli_session::find(&projects, workspace, id).ok()?;
+    let text = std::fs::read_to_string(path).ok()?;
+    CliSession::parse(&text)
+        .ok()?
+        .turn_leaf_uuid(from_last)
+        .ok()
+}
+
+/// The chat's checkpoint (backlog 104), for the transcript's marker.
+#[tauri::command]
+async fn checkpoint(
+    state: State<'_, AppState>,
+    session: String,
+) -> Result<Option<nightloom_service::agent::fork::Checkpoint>, String> {
+    let Some(dir) = budget_dir(&state, &session).await else {
+        return Ok(None);
+    };
+    tokio::task::spawn_blocking(move || nightloom_service::agent::fork::read_checkpoint(&dir))
+        .await
+        .map_err(|e| format!("reading the checkpoint failed: {e}"))
+}
+
+/// "Fork from here" (backlog 104): helpers fork from the end of the
+/// exchange the message at `index` belongs to. Written now; the uuid is
+/// resolved at once when this is the open chat, else before its next turn.
+#[tauri::command]
+async fn set_checkpoint(
+    state: State<'_, AppState>,
+    session: String,
+    index: usize,
+) -> Result<nightloom_service::agent::fork::Checkpoint, String> {
+    use nightloom_service::agent::fork;
+    let dir = budget_dir(&state, &session)
+        .await
+        .ok_or_else(|| "no chat to set a checkpoint on".to_string())?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let cp = fork::Checkpoint {
+        index,
+        uuid: None,
+        resolved_in: None,
+        set_by: fork::CheckpointSetBy::User,
+        at_ms: now,
+    };
+    fork::write_checkpoint(&dir, &cp).map_err(|e| format!("writing the checkpoint failed: {e}"))?;
+    let agent = state.agent.lock().await;
+    let open = state.session.lock().await;
+    if let (Some(agent), Some(open)) = (agent.as_ref(), open.as_ref())
+        && open
+            .log_path()
+            .and_then(|p| p.file_stem())
+            .is_some_and(|s| s.to_string_lossy() == session)
+    {
+        sync_checkpoint(open, agent, &dir);
+    }
+    Ok(fork::read_checkpoint(&dir).unwrap_or(cp))
 }
 
 /// The window saw him in this chat (nightshift backlog 189): open in a
@@ -6508,6 +6642,8 @@ fn main() {
             turn_budget,
             note_presence,
             budget_override,
+            checkpoint,
+            set_checkpoint,
             resolve_new_project_path,
             new_project,
             open_project,

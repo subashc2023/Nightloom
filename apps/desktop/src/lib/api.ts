@@ -42,6 +42,7 @@ import type {
   UsageSummary,
   PlanUsage,
   TurnBudget,
+  Checkpoint,
   CliMemoryFile,
   CliPromptSnapshot,
   EditableLayer,
@@ -159,6 +160,7 @@ export function connectAgent(args: AgentConnectArgs): Promise<ConnectResult> {
     fallbackModel: args.fallbackModel,
     subagentsAuto: args.subagentsAuto,
     limits: args.limits,
+    forkMode: args.forkMode,
   });
 }
 
@@ -641,6 +643,18 @@ export function notePresence(session: string, input = false): Promise<void> {
  *  this message's calls through to the end of the turn; `stop` refuses. */
 export function budgetOverride(session: string, decision: "continue" | "stop"): Promise<void> {
   return invoke("budget_override", { session, decision });
+}
+
+/** The chat's checkpoint (nightshift backlog 104): the message helpers
+ *  fork from, or null before the chat's first exchange. */
+export function checkpoint(session: string): Promise<Checkpoint | null> {
+  return invoke("checkpoint", { session });
+}
+
+/** "Fork from here" (backlog 104): helpers fork from the end of the
+ *  exchange the message at `index` belongs to. */
+export function setCheckpoint(session: string, index: number): Promise<Checkpoint> {
+  return invoke("set_checkpoint", { session, index });
 }
 
 /** The folder a name would get, for the form's live path row. */

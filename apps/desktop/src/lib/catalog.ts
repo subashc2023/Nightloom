@@ -186,6 +186,12 @@ export interface ConnectionDraft {
    *  pause from that depth, so the only other position is a refusal in
    *  words. On by default (blocker 247); only meaningful with `agentAsk`. */
   agentSubagentsAuto: boolean;
+  /** Fork mode (nightshift backlog 104, pass 3; blocker 288, his answer:
+   *  "per-chat switch, on"): the model may spawn a `fork` helper — the
+   *  whole chat so far at cache-read cost, for a short side task — and the
+   *  `checkpoint` helper, a fork from the chat's checkpoint for long
+   *  research. On by default. */
+  agentForkMode: boolean;
   /** `--effort` on the agent engine (backlog 076): `low`, `medium`, `high`,
    *  `xhigh` or `max`, sent as spelled — or empty, the rail's *default*
    *  position, which sends no flag and leaves the level to the CLI. Empty
@@ -274,6 +280,7 @@ export function defaultDraft(): ConnectionDraft {
     agentAsk: false,
     agentPlan: false,
     agentSubagentsAuto: true,
+    agentForkMode: true,
     agentEffort: "",
     agentFallback: "",
     agentBudget: 0,
@@ -794,6 +801,8 @@ export function loadLastConnection(): ConnectionDraft | null {
       // The same rule for the subagent switch (backlog 152): a draft
       // saved before it existed reads as on, its default.
       agentSubagentsAuto: parsed.agentSubagentsAuto !== false,
+      // And for fork mode (backlog 104): on unless the draft said off.
+      agentForkMode: parsed.agentForkMode !== false,
       // The limits (backlog 165): a draft from before them, or a field
       // that is not a whole number, reads as the default for that field.
       agentLimits: readLimits(parsed.agentLimits),

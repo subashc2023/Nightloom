@@ -673,8 +673,13 @@ pub const PRESENT_SEEN_MS: i64 = 20 * 1000;
 /// … or his last message in it is this recent.
 pub const PRESENT_INPUT_MS: i64 = 5 * 60 * 1000;
 /// The hook's timeout on its registration, in seconds: longer than a
-/// hold, so the CLI never cuts a held call off by its own clock.
-pub const HOOK_TIMEOUT_S: u64 = 600;
+/// hold, so the CLI never cuts a held call off by its own clock. ~~600~~
+/// — 3,600 since 104 pass 3 (2026-09-22): the hook also runs a checkpoint
+/// fork to completion ([`super::fork`]), capped at [`super::fork::FORK_WALL_MS`]
+/// (45 min), and a hook the CLI times out "doesn't block the tool call"
+/// (`external`, the hooks reference) — the spawn would then run a second
+/// time as a fresh helper, after the fork had already done the work.
+pub const HOOK_TIMEOUT_S: u64 = 3_600;
 
 /// The click's record: `turn` is the ledger's `started_at_ms`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1241,10 +1246,30 @@ fn decide_holding(
     if limits.per_day > 0 && claim_day_spawn(dir, limits.per_day, &today).is_err() {
         return HookReply::deny(day_cap_reason(limits.per_day));
     }
-    let brief = std::fs::read_to_string(dir.join(BRIEF_FILE)).unwrap_or_default();
     let Value::Object(mut fields) = input.tool_input else {
         return HookReply::pass();
     };
+    // A checkpoint fork (backlog 104, pass 3; `super::fork`): the spawn
+    // asked for the `checkpoint` helper, and the chat's directory holds
+    // its command line and a resolved checkpoint. The hook runs the fork
+    // — a second CLI process on the chat's session, from that message —
+    // and answers the spawn with `deny` carrying the report, which is the
+    // Agent call's result as the model reads it (blocker 287; the hooks
+    // reference gives a hook no other way to supply one — blocker 296).
+    // Counted as a spawn by the caps above, as it should be. Anything
+    // missing — no spec, no uuid yet, a binary that will not start — and
+    // the spawn goes on as a fresh helper under the roster's own prompt,
+    // briefed like any other.
+    if super::fork::is_checkpoint_spawn(&fields)
+        && let Some(Value::String(task)) = fields.get("prompt")
+        && let Some(fs) = super::fork::read_fork_spec(dir)
+        && let Some(cp) = super::fork::read_checkpoint(dir)
+        && let Some(uuid) = cp.uuid.as_deref()
+        && let Ok(out) = super::fork::run_fork(dir, &fs, uuid, task, super::fork::FORK_WALL_MS)
+    {
+        return HookReply::deny(super::fork::report(&out));
+    }
+    let brief = std::fs::read_to_string(dir.join(BRIEF_FILE)).unwrap_or_default();
     let mut changed = false;
     if !brief.trim().is_empty()
         && let Some(Value::String(prompt)) = fields.get("prompt")
@@ -1467,6 +1492,119 @@ mod tests {
             std::fs::read_to_string(dir.join(BRIEF_FILE)).unwrap(),
             "other"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A checkpoint spawn (backlog 104, pass 3): with the chat's fork
+    /// command line and a resolved checkpoint on disk, the hook runs the
+    /// fork — a fake CLI here, echoing its argv and printing a `result`
+    /// line — and answers `deny` with the report as the reason; the task
+    /// reaches the fork as written (no brief: it has the context), after
+    /// the chat's own arguments, with the uuid last. Before either file
+    /// exists, or while the uuid is unresolved, the spawn goes through as
+    /// a fresh helper, briefed like any other.
+    #[test]
+    #[cfg(unix)]
+    fn a_checkpoint_spawn_runs_the_fork_and_denies_with_its_report() {
+        use super::super::fork::{self, Checkpoint, CheckpointSetBy, ForkSpec};
+        let dir = scratch();
+        write(&dir, &compose(&preamble(), &[]).unwrap()).unwrap();
+        let stdin = STDIN.replace(
+            r#""subagent_type":"general-purpose""#,
+            r#""subagent_type":"checkpoint""#,
+        );
+        // No fork spec yet: a fresh helper, briefed.
+        let reply = super::decide_with(&dir, &stdin, None);
+        assert_eq!(reply.decision(), "allow");
+        assert!(
+            reply.updated_input().unwrap()["prompt"]
+                .as_str()
+                .unwrap()
+                .starts_with(BRIEF_OPEN)
+        );
+        let fake = dir.join("fake-claude.sh");
+        let args_file = dir.join("args.txt");
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$FORK_ARGS\"\n\
+             echo '{\"type\":\"result\",\"result\":\"Code word A: APPLE\",\"session_id\":\"fork-9\",\"num_turns\":1,\"is_error\":false,\"usage\":{\"cache_read_input_tokens\":35034,\"cache_creation_input_tokens\":231}}'\n",
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        fork::write_fork_spec(
+            &dir,
+            &ForkSpec {
+                binary: fake.to_string_lossy().into_owned(),
+                workspace: dir.clone(),
+                argv: vec![
+                    "-p".into(),
+                    String::new(),
+                    "--resume".into(),
+                    "sess-1".into(),
+                    "--fork-session".into(),
+                ],
+                env: vec![("FORK_ARGS".into(), args_file.to_string_lossy().into_owned())],
+                env_remove: vec![],
+            },
+        )
+        .unwrap();
+        // A checkpoint whose uuid is not resolved yet: still a fresh helper.
+        let mut cp = Checkpoint {
+            index: 1,
+            uuid: None,
+            resolved_in: None,
+            set_by: CheckpointSetBy::Auto,
+            at_ms: 1,
+        };
+        fork::write_checkpoint(&dir, &cp).unwrap();
+        assert_eq!(super::decide_with(&dir, &stdin, None).decision(), "allow");
+        assert!(!args_file.exists(), "no fork ran");
+        // Resolved: the fork runs and its report is the call's result.
+        cp.uuid = Some("s2".into());
+        cp.resolved_in = Some("sess-1".into());
+        fork::write_checkpoint(&dir, &cp).unwrap();
+        let reply = super::decide_with(&dir, &stdin, None);
+        assert_eq!(reply.decision(), "deny");
+        let reason = reply
+            .hook_specific_output
+            .as_ref()
+            .and_then(|o| o.permission_decision_reason.clone())
+            .unwrap();
+        assert!(reason.starts_with(fork::REPORT_LEAD), "{reason}");
+        assert!(reason.ends_with("Code word A: APPLE"), "{reason}");
+        assert!(
+            reason.contains("cache read 35034 / written 231"),
+            "{reason}"
+        );
+        let args = std::fs::read_to_string(&args_file).unwrap();
+        assert_eq!(
+            args.lines().collect::<Vec<_>>(),
+            [
+                "-p",
+                "Reply with the code word if your task text states one.",
+                "--resume",
+                "sess-1",
+                "--fork-session",
+                "--resume-session-at",
+                "s2"
+            ]
+        );
+        // The stream is kept under the chat's directory.
+        assert_eq!(
+            std::fs::read_dir(dir.join(fork::FORKS_DIR))
+                .unwrap()
+                .count(),
+            2,
+            "the stream and the stderr file"
+        );
+        // A fork subagent (`fork`) or a general-purpose one is not this
+        // path: briefed and allowed as before.
+        let plain = STDIN.replace(
+            r#""subagent_type":"general-purpose""#,
+            r#""subagent_type":"fork""#,
+        );
+        assert_eq!(super::decide_with(&dir, &plain, None).decision(), "allow");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

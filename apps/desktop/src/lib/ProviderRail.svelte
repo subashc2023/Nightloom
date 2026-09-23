@@ -901,6 +901,24 @@
           {/each}
         </select>
       </label>
+      <!-- Fork mode (nightshift backlog 104, pass 3; blocker 288, his
+           answer: "per-chat switch, on"). On, the turn carries
+           CLAUDE_CODE_FORK_SUBAGENT=1 and the `checkpoint` roster entry;
+           the model picks a helper by task. Per chat, on the connection. -->
+      <label class="swq sub">
+        <span class="t">Helpers fork from this chat</span>
+        <Hint
+          text="On: the model picks a helper by task. A short side task forks from the end of the chat (subagent_type fork — the whole conversation at cache-read cost, its steps kept out of this chat). Long research forks from the chat's checkpoint — the message that ends the general context, set at the first exchange and moved by 'fork from here' on any message — so the helper starts with the instructions and the opening exchange and none of the later turns. Either way the report lands as the Agent call's result. Off: every helper starts fresh from its task text and the brief. Flipping this on a running chat re-writes its cached prefix once."
+        />
+        <input
+          type="checkbox"
+          class="sw"
+          bind:checked={app.draft.agentForkMode}
+          onchange={apply}
+          disabled={locked}
+          aria-label="Helpers fork from this chat"
+        />
+      </label>
       {#if !(app.draft.approval && app.draft.agentAsk)}
         <!-- Said rather than implied: the switch above is the familiar one
              and the gate behind it is not. Nightloom's approval prompt gates

@@ -106,6 +106,7 @@ import type {
   SessionMeta,
   TodoItem,
   TurnBudget,
+  Checkpoint,
   TurnEvent,
   Usage,
 } from "./types";
@@ -737,6 +738,13 @@ export const app = $state({
    * before a chat's first turn.
    */
   turnBudget: null as TurnBudget | null,
+  /**
+   * The open chat's checkpoint (nightshift backlog 104, pass 3): the
+   * message helpers fork from, read when a chat opens and as each turn
+   * ends, set by "fork from here" on a message. Null before the chat's
+   * first exchange.
+   */
+  checkpoint: null as Checkpoint | null,
   /**
    * The plan's five-hour and seven-day percentages for the top bar's plan
    * chip on the Claude Code engine (nightshift backlog 073). Read from two
@@ -1949,6 +1957,30 @@ export async function readTurnBudget(session: string | null): Promise<void> {
     // A failed read keeps the last ledger.
   }
 }
+/** The chat's checkpoint (backlog 104), for the transcript's marker. */
+export async function readCheckpoint(session: string | null): Promise<void> {
+  if (!session || app.connection?.engine !== "claude-code") {
+    app.checkpoint = null;
+    return;
+  }
+  try {
+    app.checkpoint = await api.checkpoint(session);
+  } catch {
+    app.checkpoint = null;
+  }
+}
+/** "Fork from here" (backlog 104): helpers fork from the end of the
+ *  exchange the message at `index` belongs to. */
+export async function setCheckpoint(index: number): Promise<void> {
+  const session = app.activeSessionId;
+  if (!session) return;
+  try {
+    app.checkpoint = await api.setCheckpoint(session, index);
+    addToast("helpers now fork from here");
+  } catch (e) {
+    addToast(String(e));
+  }
+}
 /** He is here (backlog 189): this running chat is the one open, in a
  *  focused window. The hook holds a call past the stop line for his
  *  answer only then, or within five minutes of his message. */
@@ -2640,6 +2672,7 @@ async function applyAgentDraft(): Promise<void> {
       plan: d.agentPlan,
       subagentsAuto: d.agentSubagentsAuto,
       limits: d.agentLimits,
+      forkMode: d.agentForkMode,
       promptSuggestions: suggestions.enabled,
       effort: d.agentEffort.trim() || undefined,
       fallbackModel: d.agentFallback.trim() || undefined,
@@ -4496,6 +4529,8 @@ export async function openSession(id: string): Promise<void> {
     switchAside(id);
     app.activeSessionId = id;
     app.error = null;
+    // The chat's checkpoint, for the transcript's marker (backlog 104).
+    void readCheckpoint(id);
     // The plan window and estimate belong to the chat you just left.
     app.agentTurn = null;
     app.agentInit = null;
@@ -4860,6 +4895,9 @@ async function sendAgent(
     // The meter's final figure, now that the chat exists and the hook's
     // last write is in (backlog 165, pass 2).
     void readTurnBudget(ranIn ?? app.activeSessionId);
+    // The checkpoint the first exchange set, or its uuid now resolved
+    // (backlog 104) — for the chat in view.
+    if (!app.parked) void readCheckpoint(app.activeSessionId);
     void refreshSessions();
     void refreshNotes();
     // The plan chip follows the turn (nightshift backlog 073) — through
