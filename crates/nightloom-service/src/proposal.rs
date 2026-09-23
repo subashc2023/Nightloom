@@ -174,6 +174,25 @@ fn stamp(at: DateTime<Utc>) -> String {
     at.format("%Y-%m-%dT%H-%M-%S%.3fZ").to_string()
 }
 
+/// The file a new proposal goes to under `dir`, and the moment it is
+/// stamped with: `at`'s millisecond when that name is free, else the next
+/// free one. A name already taken is a record — a held proposal, an offer
+/// — and a newcomer must never write over it. Two proposals in one
+/// millisecond are not a thing a pass does, but the tests do it, and CI's
+/// Linux runner showed the second silently replacing the first (nightshift
+/// backlog 119 pass 2, 2026-09-22; `24790ac` had papered over the same
+/// collision in the dream-server test with a sleep).
+fn fresh_path(dir: &Path, at: DateTime<Utc>) -> (PathBuf, DateTime<Utc>) {
+    let mut at = at;
+    loop {
+        let path = dir.join(format!("{}.json", stamp(at)));
+        if !path.exists() {
+            return (path, at);
+        }
+        at += chrono::Duration::milliseconds(1);
+    }
+}
+
 /// A handle is a file stem, nothing more: anything that could leave the
 /// proposals folder is refused rather than resolved.
 fn check_id(id: &str) -> Result<(), String> {
@@ -489,14 +508,16 @@ impl Tool for ProposeInstructions {
                  note, background.md) and are read on demand",
                 added.join(", ")
             );
+            // This turn's held record is rewritten in place; a first one
+            // takes a name nothing else has, and its stamp with it.
+            let (path, at) = match slot.held.clone() {
+                Some(path) => (path, now),
+                None => fresh_path(&dir_in(&self.store).join(HELD_DIR), now),
+            };
+            proposal.at = at;
             proposal.held = Some(Held {
-                at: now,
+                at,
                 why: why.clone(),
-            });
-            let path = slot.held.clone().unwrap_or_else(|| {
-                dir_in(&self.store)
-                    .join(HELD_DIR)
-                    .join(format!("{}.json", stamp(now)))
             });
             write_at(&path, &proposal)?;
             slot.held = Some(path);
@@ -509,10 +530,11 @@ impl Tool for ProposeInstructions {
         }
 
         let replaced = slot.written.is_some();
-        let path = slot
-            .written
-            .clone()
-            .unwrap_or_else(|| dir_in(&self.store).join(format!("{}.json", stamp(now))));
+        let (path, at) = match slot.written.clone() {
+            Some(path) => (path, now),
+            None => fresh_path(&dir_in(&self.store), now),
+        };
+        proposal.at = at;
         write_at(&path, &proposal)?;
         slot.written = Some(path);
         Ok(format!(
@@ -557,6 +579,32 @@ mod tests {
         assert_eq!(ProposalTarget::User.store_in(config), PathBuf::from("/cfg"));
         assert_eq!(project().described(), "Lanternfish's instructions");
         assert_eq!(ProposalTarget::User.described(), "your memory");
+    }
+
+    /// A name the millisecond stamp already gave to a record is taken, and
+    /// the next proposal gets the next millisecond's — the file and its
+    /// `at` together. Pinned without a clock: CI's Linux runner wrote two
+    /// held records in one millisecond and kept one (backlog 119 pass 2).
+    #[test]
+    fn a_second_file_in_the_same_millisecond_takes_the_next_one() {
+        use chrono::TimeZone;
+        let dir = test_dir("proposal-stamp");
+        let at = Utc.with_ymd_and_hms(2026, 9, 22, 18, 0, 0).unwrap()
+            + chrono::Duration::milliseconds(123);
+
+        let (first, first_at) = fresh_path(&dir, at);
+        assert_eq!(first_at, at);
+        assert_eq!(first.file_name().unwrap(), "2026-09-22T18-00-00.123Z.json");
+        std::fs::write(&first, "{}").unwrap();
+
+        let (second, second_at) = fresh_path(&dir, at);
+        assert_eq!(second.file_name().unwrap(), "2026-09-22T18-00-00.124Z.json");
+        assert_eq!(second_at, at + chrono::Duration::milliseconds(1));
+        std::fs::write(&second, "{}").unwrap();
+
+        let (third, third_at) = fresh_path(&dir, at);
+        assert_eq!(third.file_name().unwrap(), "2026-09-22T18-00-00.125Z.json");
+        assert_eq!(third_at, at + chrono::Duration::milliseconds(2));
     }
 
     #[tokio::test]

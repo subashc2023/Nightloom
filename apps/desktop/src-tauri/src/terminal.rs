@@ -253,7 +253,11 @@ impl Flow {
         self.room.notify_one();
     }
 
-    #[cfg(test)]
+    // Gated like its one caller (the pty tests, `cfg(all(test, unix))`):
+    // on Windows the test build has no reader for it, and dead code fails
+    // the desktop job's clippy under `-D warnings` (nightshift backlog
+    // 119 pass 2 — red on every push from ac53018 to ee0dfc6).
+    #[cfg(all(test, unix))]
     fn outstanding(&self) -> usize {
         *self.inflight.lock().unwrap_or_else(|p| p.into_inner())
     }
