@@ -510,7 +510,9 @@ mod tests {
     }
 
     /// A stand-in CLI: prints the version in its state file, and `update`
-    /// writes the new one there — the seam every run goes through.
+    /// writes the new one there — the seam every run goes through. A `/bin/sh`
+    /// script, so it and the tests that run it are Unix-only.
+    #[cfg(unix)]
     fn fake_cli(dir: &Path, version: &str, update_exit: i32) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         std::fs::create_dir_all(dir).unwrap();
@@ -536,6 +538,7 @@ mod tests {
         bin
     }
 
+    #[cfg(unix)]
     fn scratch(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!(
             "nightloom-cli-update-{name}-{}",
@@ -546,6 +549,7 @@ mod tests {
         d
     }
 
+    #[cfg(unix)]
     #[test]
     fn an_update_reports_both_versions_and_runs_under_the_given_home() {
         let d = scratch("ok");
@@ -566,6 +570,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_failed_update_is_not_ok() {
         let d = scratch("fail");
