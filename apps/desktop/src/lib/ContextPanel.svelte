@@ -875,7 +875,7 @@
           {@const isEditing = canEdit && editing === layer.kind}
           {@const canRead = !isOff && (segs.length > 0 || isEditing)}
           {@const locked = saving || seeding || app.busy || app.connecting}
-          {@const mark = agentEngine ? pendingFor(app.promptPending, layer.kind) : null}
+          {@const mark = agentEngine ? pendingFor(app.promptPending, layer.kind, app.activeSessionId) : null}
           <section class="card layer" class:off={isOff} class:edited={isEdited && !isOff}>
             <div class="ch">
               <input

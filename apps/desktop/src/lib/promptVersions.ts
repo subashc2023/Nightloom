@@ -29,6 +29,11 @@ export function takenAtCold(layer: PendingLayer, auto: boolean): boolean {
  * Reconnect before the turn? When the connection was built for another
  * chat than the one sending (its holds are not this chat's), and when the
  * chat is cold and a mark is waiting for exactly that.
+ *
+ * "Another chat" includes New chat on a connection built for an existing
+ * one: that connection carries the old chat's held texts, which the CLI
+ * would record as the new chat's own for good (batch review 2026-09-23,
+ * finding 2). Connecting with no chat takes the fresh prompt whole.
  */
 export function reconnectBeforeTurn(
   view: PendingView | null,
@@ -37,13 +42,22 @@ export function reconnectBeforeTurn(
   auto: boolean,
 ): boolean {
   if (!view) return false;
-  if (activeSessionId !== null && view.session !== activeSessionId) return true;
+  if (view.session !== activeSessionId) return true;
   return cold && view.layers.some((l) => takenAtCold(l, auto));
 }
 
-/** The pending entry for one layer, if its file is newer. */
-export function pendingFor(view: PendingView | null, kind: PromptLayer): PendingLayer | null {
-  return view?.layers.find((l) => l.kind === kind) ?? null;
+/**
+ * The pending entry for one layer, if its file is newer — only while the
+ * connection is the open chat's: the marks of the chat it was built for
+ * are not this chat's (batch review 2026-09-23, finding 3).
+ */
+export function pendingFor(
+  view: PendingView | null,
+  kind: PromptLayer,
+  activeSessionId: string | null,
+): PendingLayer | null {
+  if (!view || activeSessionId === null || view.session !== activeSessionId) return null;
+  return view.layers.find((l) => l.kind === kind) ?? null;
 }
 
 // ---- the Settings default ----

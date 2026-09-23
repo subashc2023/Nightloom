@@ -62,6 +62,36 @@ export function overlaps(a: Box, b: Box): boolean {
 }
 
 /** The HTML that floats over panes: while any of it overlaps a web tab's
- *  page, the page is hidden so the dialog or menu can be seen and used. */
+ *  page, the page is hidden so the dialog or menu can be seen and used.
+ *  A toast (each one, not their column) and an aside card moved over the
+ *  panes are on the list since batch review 2026-09-23, finding 4: a toast
+ *  such as "press Wrap up again" was drawn under the page, unseen. */
 export const OVERLAY_SELECTOR =
-  '.settings-overlay, [role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"]';
+  '.settings-overlay, [role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"], .toast, .aside-card.moved';
+
+/**
+ * A web tab's page is created by an async call, and its tab can close —
+ * or go to the back — before that call returns (⌘W right after the click):
+ * a close sent then found no page, and the page appeared a moment later
+ * with no tab to close it (batch review 2026-09-23, finding 5). So the
+ * calls that create, hide and close a label's page run one after another,
+ * each once the one before has settled, whichever way it ended.
+ */
+export class PageQueue {
+  private tail = new Map<string, Promise<void>>();
+
+  /** Run `step` for `label` after its earlier steps; returns its promise. */
+  run<T>(label: string, step: () => Promise<T>): Promise<T> {
+    const prev = this.tail.get(label) ?? Promise.resolve();
+    const p = prev.then(step);
+    const settled = p.then(
+      () => {},
+      () => {},
+    );
+    this.tail.set(label, settled);
+    void settled.then(() => {
+      if (this.tail.get(label) === settled) this.tail.delete(label);
+    });
+    return p;
+  }
+}

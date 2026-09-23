@@ -2771,6 +2771,11 @@ async function applyAgentDraft(updateNow: PromptLayer[] = []): Promise<void> {
  * *newer version exists* mark is taken then — never on a warm cache.
  */
 async function layersBeforeTurn(): Promise<void> {
+  // A New chat's first turn hands its connection to the chat it created
+  // (`bind_new_chat` in Rust): read that back rather than reconnect for it.
+  if (app.promptPending && app.promptPending.session === null && app.activeSessionId !== null) {
+    app.promptPending = await api.promptPending().catch(() => app.promptPending);
+  }
   const cold = chatIsCold(app.events, Date.now());
   if (!reconnectBeforeTurn(app.promptPending, app.activeSessionId, cold, app.layerPrefs.autoAtCold)) return;
   if (app.busy || app.connecting) return;
@@ -2786,8 +2791,12 @@ export async function updateLayerNow(kind: PromptLayer): Promise<void> {
 
 /** *Update at the next cold moment* / *Keep this version* / the default. */
 export async function chooseLayerVersion(kind: PromptLayer, choice: import("./types").LayerChoice): Promise<void> {
+  // The chat whose Context page was clicked; Rust refuses it when the
+  // connection belongs to another (batch review 2026-09-23, finding 3).
+  const session = app.activeSessionId;
+  if (session === null) return;
   try {
-    app.promptPending = await api.setPromptLayerChoice(kind, choice);
+    app.promptPending = await api.setPromptLayerChoice(session, kind, choice);
   } catch (e) {
     addToast(String(e));
   }

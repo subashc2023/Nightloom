@@ -1640,12 +1640,17 @@ async fn connect_agent(
     // 174, `prompt_hold`): the held text goes out while the cache is warm.
     let prompt = {
         let log_dir = state.log_dir().await;
-        let (id, has_cli) = match state.session.lock().await.as_ref() {
+        // `chat` is the chat this connection is built for, whatever its
+        // mode; `id` is the one whose hold is kept (an ephemeral chat
+        // keeps nothing on disk).
+        let (chat, id, has_cli) = match state.session.lock().await.as_ref() {
             Some(s) if s.mode() != ChatMode::Ephemeral => (
+                Some(s.id.clone()),
                 Some(s.id.clone()),
                 s.agent_session().is_some_and(|(a, _)| a == AGENT),
             ),
-            _ => (None, false),
+            Some(s) => (Some(s.id.clone()), None, false),
+            None => (None, None, false),
         };
         let file = id.as_deref().map(|id| prompt_hold::file_for(&log_dir, id));
         let held = file.as_deref().and_then(prompt_hold::load);
@@ -1674,8 +1679,11 @@ async fn connect_agent(
             eprintln!("prompt hold not saved at {}: {e}", f.display());
         }
         spec.system_prompt_snapshot_off = r.hold.snapshot_off;
+        // New chat: the first turn creates the chat and writes this hold
+        // under its id (`Pending::bind_new_chat`, from `send_agent`).
+        *holds.unsaved.lock().await = chat.is_none().then(|| r.hold.clone());
         *holds.view.lock().await = prompt_hold::PendingView {
-            session: id,
+            session: chat,
             layers: r.pending,
         };
         *holds.file.lock().await = file;
@@ -2411,11 +2419,13 @@ struct AgentTurn {
 /// with its attachments intact if the rail is switched. How they reach the
 /// CLI is the agent's business (`ClaudeCodeAgent::run_turn`: a stdin line
 /// rather than argv, for that one turn).
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn send_agent(
     app: AppHandle,
     state: State<'_, AppState>,
     power: State<'_, power::Holder>,
+    holds: State<'_, prompt_hold::Pending>,
     text: String,
     images: Option<Vec<ImageInput>>,
     documents: Option<Vec<DocumentInput>>,
@@ -2437,7 +2447,19 @@ async fn send_agent(
     let pending = *state.pending_mode.lock().await;
     let pending_kind = *state.pending_kind.lock().await;
     let mut session_guard = state.session.lock().await;
+    let created = session_guard.is_none();
     let session = ensure_session(&mut session_guard, pending, pending_kind, &log_dir)?;
+    // A connection built on New chat now belongs to the chat this turn
+    // created; what it sends is that chat's hold (nightshift backlog 174).
+    if created {
+        holds
+            .bind_new_chat(
+                &session.id,
+                (session.mode() != ChatMode::Ephemeral)
+                    .then(|| prompt_hold::file_for(&log_dir, &session.id)),
+            )
+            .await;
+    }
     // Sampled before the first append of the turn. See `send`: an agent turn
     // records into the same log through `Recorder`, so it can seal it the same
     // way, and this window has no stderr for the notice to go to either.
@@ -3881,24 +3903,17 @@ async fn prompt_pending(
 /// (`auto`). Written to the chat's hold file at once, so a reconnect —
 /// or a restart — reads it back; *Update now* is a reconnect instead
 /// (`connect_agent`'s `update_now`).
+///
+/// `session` is the chat whose Context page was clicked; refused when the
+/// connection was built for another one (`Pending::choose_for`).
 #[tauri::command]
 async fn set_prompt_layer_choice(
     holds: State<'_, prompt_hold::Pending>,
+    session: String,
     kind: SegmentKind,
     choice: prompt_hold::Choice,
 ) -> Result<prompt_hold::PendingView, String> {
-    let file = holds.file.lock().await.clone();
-    let Some(file) = file else {
-        return Err("this chat has no held prompt to choose for".into());
-    };
-    let mut hold = prompt_hold::load(&file).unwrap_or_default();
-    prompt_hold::choose(&mut hold, kind, choice);
-    prompt_hold::save(&file, &hold).map_err(|e| e.to_string())?;
-    let mut view = holds.view.lock().await;
-    for layer in view.layers.iter_mut().filter(|l| l.kind == kind) {
-        layer.choice = choice;
-    }
-    Ok(view.clone())
+    holds.choose_for(&session, kind, choice).await
 }
 
 /// Record which prompt layers this chat excludes, returning the transcript.
@@ -6065,7 +6080,10 @@ fn notify_usage_refreshed(app: AppHandle, title: String, body: String) -> Result
                     if action != "default" {
                         return;
                     }
-                    if let Some(w) = app.get_webview_window("main") {
+                    // The window, not the webview window: once a web tab's
+                    // page is a child of it (backlog 172) tauri no longer
+                    // answers `get_webview_window` for it.
+                    if let Some(w) = app.get_window("main") {
                         let _ = w.unminimize();
                         let _ = w.show();
                         let _ = w.set_focus();
@@ -6096,9 +6114,14 @@ fn set_power_prefs(power: State<'_, power::Holder>, prefs: power::Prefs) {
 /// Chrome's ⌘+ does, every CSS pixel scaled. The factor is the frontend's
 /// (`zoom.ts` keeps it in localStorage and re-applies it at start-up, since
 /// the webview forgets it between launches); Rust only sets it.
+///
+/// The main *webview*, not the webview window: tauri answers
+/// `get_webview_window` only while the window holds a single webview, so
+/// with a web tab open (backlog 172) that lookup found nothing and ⌘+/⌘−
+/// failed with "no main window" (batch review 2026-09-23, finding 1).
 #[tauri::command]
 fn set_zoom(app: AppHandle, factor: f64) -> Result<(), String> {
-    app.get_webview_window("main")
+    app.get_webview("main")
         .ok_or_else(|| "no main window".to_string())?
         .set_zoom(factor)
         .map_err(|e| e.to_string())
@@ -7628,5 +7651,25 @@ mod tests {
             assert_eq!(launchable(&bin), Some("marked executable"));
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Batch review 2026-09-23, finding 1: with a web tab's page added to
+    /// the window (backlog 172), tauri's `get_webview_window` lookup
+    /// returns `None` — it requires the window's only webview to share its
+    /// label — so zoom and the usage banner's click silently failed. The
+    /// window and the main webview are looked up on their own; this keeps
+    /// the combined lookup out of the crate.
+    #[test]
+    fn no_lookup_of_the_main_webview_window_while_web_tabs_exist() {
+        let banned = ["get_webview", "_window("].concat();
+        for (name, text) in [
+            ("main.rs", include_str!("main.rs")),
+            ("webtab.rs", include_str!("webtab.rs")),
+        ] {
+            assert!(
+                !text.contains(&banned),
+                "{name} looks up the main webview window, which a web tab hides"
+            );
+        }
     }
 }

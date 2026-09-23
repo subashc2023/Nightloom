@@ -54,6 +54,12 @@ describe("reconnectBeforeTurn", () => {
     expect(reconnectBeforeTurn(view(null, []), null, true, true)).toBe(false);
     expect(reconnectBeforeTurn(null, "a", true, true)).toBe(false);
   });
+  // Batch review 2026-09-23, finding 2: New chat on a connection built for
+  // chat A would send A's held texts, warm or cold, marks or none.
+  it("reconnects a new chat whose connection was built for another chat", () => {
+    expect(reconnectBeforeTurn(view("a", []), null, false, true)).toBe(true);
+    expect(reconnectBeforeTurn(view("a", [layer("keep")]), null, true, false)).toBe(true);
+  });
 });
 
 describe("the words", () => {
@@ -74,7 +80,14 @@ describe("the words", () => {
     expect(choicesFor(layer("keep"), true)).toEqual([{ choice: "auto", label: "Update at the next cold moment" }]);
   });
   it("finds a layer's mark", () => {
-    expect(pendingFor(view("a", [layer("auto")]), "user_memory")?.held).toBe("old");
-    expect(pendingFor(view("a", [layer("auto")]), "knowledge")).toBeNull();
+    expect(pendingFor(view("a", [layer("auto")]), "user_memory", "a")?.held).toBe("old");
+    expect(pendingFor(view("a", [layer("auto")]), "knowledge", "a")).toBeNull();
+  });
+  // Batch review 2026-09-23, finding 3: chat B's Context page must not show
+  // (and so cannot edit) chat A's marks.
+  it("shows no mark of a chat other than the open one", () => {
+    expect(pendingFor(view("a", [layer("auto")]), "user_memory", "b")).toBeNull();
+    expect(pendingFor(view("a", [layer("auto")]), "user_memory", null)).toBeNull();
+    expect(pendingFor(null, "user_memory", "a")).toBeNull();
   });
 });

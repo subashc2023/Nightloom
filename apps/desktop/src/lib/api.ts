@@ -531,8 +531,8 @@ export function promptPending(): Promise<PendingView> {
 }
 
 /** A click on a mark: Update at the next cold moment, Keep, or back to the default. */
-export function setPromptLayerChoice(kind: PromptLayer, choice: LayerChoice): Promise<PendingView> {
-  return invoke("set_prompt_layer_choice", { kind, choice });
+export function setPromptLayerChoice(session: string, kind: PromptLayer, choice: LayerChoice): Promise<PendingView> {
+  return invoke("set_prompt_layer_choice", { session, kind, choice });
 }
 
 // ---- projects ----

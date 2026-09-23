@@ -18,7 +18,7 @@
   import { app } from "./state.svelte";
   import { currentZoom, zoomMechanism } from "./zoom";
   import { OVERLAY_SELECTOR, overlaps } from "./extlink";
-  import { noteOpened, openInBrowser, web, webLabel } from "./webtabs.svelte";
+  import { openInBrowser, openPage, placePage, web, webLabel } from "./webtabs.svelte";
 
   let { tabId, content }: { tabId: string; content: { kind: "web"; url: string; title?: string } } = $props();
 
@@ -79,13 +79,12 @@
         last = key;
         if (!opened && !hide) {
           opened = true;
-          noteOpened(me);
-          invoke("web_open", { label: me, url: content.url, x, y, w, h, vh }).catch((err) => {
+          openPage(me, { url: content.url, x, y, w, h, vh }).catch((err) => {
             failed = String(err);
             last = "";
           });
         } else if (opened) {
-          invoke("web_bounds", { label: me, x, y, w, h, vh, visible: !hide }).catch(() => {});
+          placePage(me, { x, y, w, h, vh, visible: !hide });
         }
       }
       frame = requestAnimationFrame(tick);
@@ -100,7 +99,7 @@
       document.removeEventListener("drop", onDragEnd, true);
       // To the back, not closed: the tab may come forward again, the page
       // where he left it.
-      if (opened) invoke("web_bounds", { label: me, x: 0, y: 0, w: 1, h: 1, vh: 0, visible: false }).catch(() => {});
+      if (opened) placePage(me, { x: 0, y: 0, w: 1, h: 1, vh: 0, visible: false });
     };
   });
 </script>

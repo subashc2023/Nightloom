@@ -86,6 +86,64 @@ pub struct PendingView {
 pub struct Pending {
     pub view: tokio::sync::Mutex<PendingView>,
     pub file: tokio::sync::Mutex<Option<PathBuf>>,
+    /// The hold of a connection built before its chat existed (New chat):
+    /// what its first turn sends, kept until that turn creates the chat
+    /// and [`Pending::bind_new_chat`] writes it under the chat's id.
+    pub unsaved: tokio::sync::Mutex<Option<Hold>>,
+}
+
+impl Pending {
+    /// The connection was built for no chat and a turn has just created
+    /// one (`send_agent`): from now on it is that chat's connection. Its
+    /// hold — exactly the layer texts the first turn sends, which the CLI
+    /// records as the chat's snapshot — is written under the chat's id
+    /// (`file` is `None` for an ephemeral chat, which keeps nothing).
+    ///
+    /// Without this the chat had no hold file until its next connect, which
+    /// adopted the file's text *then* as "held" — a layer changed between
+    /// the two turns was never marked (batch review 2026-09-23, finding 2).
+    /// Nothing happens when the connection already belongs to a chat.
+    pub async fn bind_new_chat(&self, session: &str, file: Option<PathBuf>) {
+        let mut view = self.view.lock().await;
+        if view.session.is_some() {
+            return;
+        }
+        let hold = self.unsaved.lock().await.take();
+        if let (Some(f), Some(h)) = (&file, &hold)
+            && let Err(e) = save(f, h)
+        {
+            eprintln!("prompt hold not saved at {}: {e}", f.display());
+        }
+        view.session = Some(session.to_string());
+        *self.file.lock().await = file;
+    }
+
+    /// A click on a mark of `session`'s layer `kind`, written to that
+    /// chat's hold file. Refused when the live connection was built for
+    /// another chat: its hold file is not this chat's, and the mark he
+    /// clicked described the other chat's text (batch review 2026-09-23,
+    /// finding 3).
+    pub async fn choose_for(
+        &self,
+        session: &str,
+        kind: SegmentKind,
+        choice: Choice,
+    ) -> Result<PendingView, String> {
+        let mut view = self.view.lock().await;
+        if view.session.as_deref() != Some(session) {
+            return Err("the marks shown were another chat's — reopen the Context page".into());
+        }
+        let Some(file) = self.file.lock().await.clone() else {
+            return Err("this chat has no held prompt to choose for".into());
+        };
+        let mut hold = load(&file).unwrap_or_default();
+        choose(&mut hold, kind, choice);
+        save(&file, &hold).map_err(|e| e.to_string())?;
+        for layer in view.layers.iter_mut().filter(|l| l.kind == kind) {
+            layer.choice = choice;
+        }
+        Ok(view.clone())
+    }
 }
 
 /// What the shell asked for at this connect.
@@ -449,6 +507,69 @@ mod tests {
         hold.snapshot_off = true;
         save(&path, &hold).unwrap();
         assert_eq!(json(&load(&path).unwrap()), json(&hold));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("nightloom-hold-{name}-{}", std::process::id()))
+    }
+
+    /// Batch review 2026-09-23, finding 2: the first turn of a new chat
+    /// writes the hold it sent under the new chat's id, so the next connect
+    /// marks a layer changed in between instead of adopting it silently.
+    #[tokio::test]
+    async fn a_new_chat_keeps_what_its_first_turn_sent() {
+        let dir = scratch("bind");
+        let holds = Pending::default();
+        // Connected on New chat: no chat, the fresh prompt whole.
+        let first = resolve(&prompt("v1"), None, false, &Ask::default());
+        *holds.unsaved.lock().await = Some(first.hold.clone());
+        let path = file_for(&dir, "new-chat");
+        holds.bind_new_chat("new-chat", Some(path.clone())).await;
+        assert_eq!(holds.view.lock().await.session.as_deref(), Some("new-chat"));
+        assert_eq!(holds.file.lock().await.as_deref(), Some(path.as_path()));
+        let saved = load(&path).expect("the first turn's hold is on disk");
+        assert_eq!(json(&saved), json(&first.hold));
+        // The file changes before the second turn, cache warm: marked, and
+        // the flag still carries what the CLI recorded.
+        let r = resolve(&prompt("v2"), Some(&saved), true, &Ask::default());
+        assert_eq!(r.pending.len(), 1);
+        assert_eq!(flat(&r), prompt("v1").render_flat().unwrap());
+
+        // A connection that already belongs to a chat is left alone.
+        let other = file_for(&dir, "other");
+        holds.bind_new_chat("other", Some(other.clone())).await;
+        assert_eq!(holds.view.lock().await.session.as_deref(), Some("new-chat"));
+        assert!(load(&other).is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Batch review 2026-09-23, finding 3: a click on another chat's mark
+    /// is refused and its hold file untouched.
+    #[tokio::test]
+    async fn a_choice_lands_only_on_the_chat_the_connection_holds() {
+        let dir = scratch("choose");
+        let path = file_for(&dir, "a");
+        save(&path, &held("old")).unwrap();
+        let holds = Pending::default();
+        *holds.view.lock().await = PendingView {
+            session: Some("a".into()),
+            layers: resolve(&prompt("new"), Some(&held("old")), true, &Ask::default()).pending,
+        };
+        *holds.file.lock().await = Some(path.clone());
+
+        let refused = holds
+            .choose_for("b", SegmentKind::UserMemory, Choice::Keep)
+            .await;
+        assert!(refused.is_err());
+        assert!(load(&path).unwrap().kept.is_empty(), "a's file untouched");
+
+        let view = holds
+            .choose_for("a", SegmentKind::UserMemory, Choice::Keep)
+            .await
+            .unwrap();
+        assert_eq!(view.layers[0].choice, Choice::Keep);
+        assert!(load(&path).unwrap().kept.contains(&SegmentKind::UserMemory));
         std::fs::remove_dir_all(&dir).ok();
     }
 }

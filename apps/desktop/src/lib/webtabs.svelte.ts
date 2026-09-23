@@ -12,7 +12,7 @@ import { listen } from "@tauri-apps/api/event";
 import * as api from "./api";
 import * as tabs from "./tabs";
 import { app, activateTab, addToast } from "./state.svelte";
-import { LINK_PREF_KEY, linkRoute, parseLinkPref, type LinkPref } from "./extlink";
+import { LINK_PREF_KEY, PageQueue, linkRoute, parseLinkPref, type LinkPref } from "./extlink";
 
 function loadPref(): LinkPref {
   try {
@@ -81,6 +81,28 @@ export function noteOpened(label: string): void {
   opened.add(label);
 }
 
+/** Each label's create / hide / close calls, one at a time. */
+const pages = new PageQueue();
+
+/** Create (or show again) the page of web tab `label` at the pane rectangle. */
+export function openPage(
+  label: string,
+  args: { url: string; x: number; y: number; w: number; h: number; vh: number },
+): Promise<void> {
+  noteOpened(label);
+  return pages.run(label, () => invoke<void>("web_open", { label, ...args }));
+}
+
+/** Move the page of `label` to the pane rectangle, or hide it (its tab
+ *  went to the back, a dialog is over it, a drag is on) — after any create
+ *  in flight has landed, so a page never appears after its hide. */
+export function placePage(
+  label: string,
+  args: { x: number; y: number; w: number; h: number; vh: number; visible: boolean },
+): void {
+  pages.run(label, () => invoke("web_bounds", { label, ...args })).catch(() => {});
+}
+
 /**
  * Close every webview no tab holds any more — its tab was closed (⌘W, ×,
  * a pane closing, a project switch resetting the workspace). Called from
@@ -97,7 +119,9 @@ export function closeOrphans(): void {
     if (live.has(label)) continue;
     opened.delete(label);
     delete web.live[label];
-    invoke("web_close", { label }).catch(() => {});
+    // After its `web_open` settles: a page still being created when its
+    // tab closed would otherwise outlive the close.
+    pages.run(label, () => invoke("web_close", { label })).catch(() => {});
   }
 }
 
