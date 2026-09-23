@@ -27,8 +27,10 @@ export const COLD_TICK_MS = 60_000;
 
 export interface CliPrefs {
   /** Settings → "Keep Claude Code up to date": update by itself at the
-   *  first cold moment after a release. Off by default — he never chose to
-   *  turn the CLI's own updater back on. */
+   *  first cold moment after a release. ~~Off by default~~ — **on** since
+   *  2026-09-22, his answer to blocker 291: "Yeah turn on 291 updater. Only
+   *  when cache is cold if possible." Only an explicit `false` turns it off;
+   *  the CLI's own `autoUpdates` stays off (it cannot wait for a cold cache). */
   auto: boolean;
   /** When the last check answered, ms epoch. */
   lastCheck: number | null;
@@ -39,12 +41,12 @@ export interface CliPrefs {
 }
 
 export function parseCliPrefs(raw: string | null): CliPrefs {
-  const d: CliPrefs = { auto: false, lastCheck: null, autoFailedFor: null };
+  const d: CliPrefs = { auto: true, lastCheck: null, autoFailedFor: null };
   if (!raw) return d;
   try {
     const v = JSON.parse(raw);
     return {
-      auto: v?.auto === true,
+      auto: v?.auto !== false,
       lastCheck: typeof v?.lastCheck === "number" && Number.isFinite(v.lastCheck) ? v.lastCheck : null,
       autoFailedFor: typeof v?.autoFailedFor === "string" ? v.autoFailedFor : null,
     };

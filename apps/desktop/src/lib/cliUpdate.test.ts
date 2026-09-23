@@ -139,10 +139,11 @@ describe("the cold moment", () => {
 });
 
 describe("the switch and the cadence", () => {
-  it("is off by default and survives a broken store", () => {
-    expect(parseCliPrefs(null)).toEqual({ auto: false, lastCheck: null, autoFailedFor: null });
-    expect(parseCliPrefs("{bad")).toEqual({ auto: false, lastCheck: null, autoFailedFor: null });
-    expect(parseCliPrefs('{"auto":"yes","lastCheck":5}')).toEqual({ auto: false, lastCheck: 5, autoFailedFor: null });
+  it("is on by default (blocker 291) and survives a broken store", () => {
+    // On by default (blocker 291); only an explicit false turns it off.
+    expect(parseCliPrefs(null)).toEqual({ auto: true, lastCheck: null, autoFailedFor: null });
+    expect(parseCliPrefs("{bad")).toEqual({ auto: true, lastCheck: null, autoFailedFor: null });
+    expect(parseCliPrefs('{"auto":false,"lastCheck":5}')).toEqual({ auto: false, lastCheck: 5, autoFailedFor: null });
     expect(parseCliPrefs('{"auto":true}').auto).toBe(true);
   });
   it("checks every six hours", () => {

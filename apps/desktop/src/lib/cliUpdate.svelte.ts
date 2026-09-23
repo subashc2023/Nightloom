@@ -10,7 +10,7 @@
  *   running and every open chat's cache expired, looked at once a minute.
  *   **Now** skips the cache wait after its cost is shown, never the
  *   running-turn one.
- * - **Keep Claude Code up to date** (Settings, off by default) does the
+ * - **Keep Claude Code up to date** (Settings, on by default since blocker 291) does the
  *   same wait by itself whenever a check finds a newer release.
  *
  * "Running" is everything that drives the CLI or a model: a turn (the
