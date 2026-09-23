@@ -195,6 +195,28 @@ actually taken in 4), is a 7,602-character reply with an 18-entry outline; a
 of text in 42 pages and an 8,839-character reply. `pointer_reply` and
 `outline` are pure and pinned.
 
+**Where the pages are kept (2026-09-23, nightshift backlog 186).** Until then
+nothing deleted a saved page, and an incognito chat's fetches were saved like
+any other, each file named by its URL's hash with the URL in its `.head` —
+which broke incognito's "writes nothing". Now an **ordinary** chat's pages are
+**pruned at every fresh fetch** (`prune_fetched`): a page older than a week
+(`FETCH_KEEP_SECS`) goes, then the oldest go until the rest fit in 500 MB
+(`FETCH_KEEP_BYTES`); a page's `.txt`, `.head` and `.pdf` go together. A chat
+that **writes nothing** (`--no-remember`, the desktop's `mode.writes_nothing()`:
+incognito and ephemeral) gets a `FetchPage` that saves under the system
+temporary directory instead, in a `nightloom-fetched-<uuid>` folder of its own
+(mode 0700), made at its first fetch and **removed when the server's tools are
+dropped** — at the end of stdin, which is how the CLI ends a session, or at
+SIGTERM/SIGINT/SIGHUP, which `serve_stdio` turns into a clean return (both
+binaries serve through it). A server killed outright cannot clean up, so the
+folder holds a `.lock` its server keeps locked while it lives; the next scratch
+folder made by any server sweeps every one whose lock is free
+(`sweep_orphaned_scratch`). Nothing from such a chat is written under the config
+dir. Pinned by `mcp_server::tests::an_incognito_fetch_leaves_nothing…`,
+`a_killed_servers_scratch_folder_is_swept…`, `saved_pages_are_pruned…` and
+`an_ordinary_fetch_prunes_stale_pages_before_saving` (a loopback page server,
+no network).
+
 `--project <id>` names the open project: its session directory is the default
 search scope and its name is what `remember` stamps as `source`; without it,
 the unfiled chats and no source. An id the registry does not know is an error

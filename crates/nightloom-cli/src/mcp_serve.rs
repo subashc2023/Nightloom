@@ -55,7 +55,7 @@ pub async fn run(args: McpServeArgs) -> Result<()> {
             ask: args.ask,
         },
     };
-    mcp_server::serve(config, serve_args, tokio::io::stdin(), tokio::io::stdout())
+    mcp_server::serve_stdio(config, serve_args)
         .await
         .map_err(anyhow::Error::msg)
 }

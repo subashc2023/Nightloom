@@ -73,6 +73,7 @@
 //! and the cost of serving them in order would be exactly the stall
 //! `tools::blocking` exists to avoid.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -214,7 +215,15 @@ pub fn tools_in(
     if remember {
         tools.push(Box::new(Remember::new(config.to_path_buf(), source)));
     }
-    tools.push(Box::new(FetchPage::in_dir(config.join(FETCHED_DIR))));
+    // A chat that writes nothing keeps its pages out of the config dir
+    // (nightshift backlog 186): a scratch folder removed when this server
+    // ends. `remember` false is exactly that chat (`mode.writes_nothing()`
+    // in the desktop).
+    if remember {
+        tools.push(Box::new(FetchPage::in_dir(config.join(FETCHED_DIR))));
+    } else {
+        tools.push(Box::new(FetchPage::scratch_in(std::env::temp_dir())));
+    }
     tools.push(Box::new(ContextStatusTool {
         config: config.to_path_buf(),
     }));
@@ -393,10 +402,174 @@ impl Tool for ContextStatusTool {
 /// A PDF, refused before, is saved and its text extracted with poppler's
 /// `pdftotext -layout` when it is installed (page breaks are the outline);
 /// never the page images.
+///
+/// **Where they are kept (2026-09-23, nightshift backlog 186).** An
+/// ordinary chat's pages go under [`FETCHED_DIR`] and are pruned at every
+/// fresh fetch: older than [`FETCH_KEEP_SECS`] (a week), then oldest first
+/// past [`FETCH_KEEP_BYTES`] (500 MB) — before, nothing ever deleted them.
+/// An incognito or ephemeral chat's server (`--no-remember`, a chat that
+/// "writes nothing and no other chat can read") saves nothing under the
+/// config dir: its pages go to a folder of its own in the system temporary
+/// directory, made at its first fetch and removed when the server ends
+/// ([`ScratchDir`]).
 struct FetchPage {
     inner: Fetch,
     /// Where pages are saved.
-    dir: PathBuf,
+    store: FetchStore,
+}
+
+/// Where a [`FetchPage`] saves pages.
+enum FetchStore {
+    /// An ordinary chat's: `<config>/fetched/`, pruned at every fetch.
+    Kept(PathBuf),
+    /// A chat that writes nothing: a folder of this server's own under
+    /// `parent` (the system temporary directory), made on first use.
+    Scratch {
+        parent: PathBuf,
+        dir: std::sync::Mutex<Option<ScratchDir>>,
+    },
+}
+
+impl FetchStore {
+    /// The folder to save into, made if it is a scratch folder not yet made.
+    fn dir(&self) -> Result<PathBuf, String> {
+        match self {
+            FetchStore::Kept(dir) => Ok(dir.clone()),
+            FetchStore::Scratch { parent, dir } => {
+                let mut slot = dir.lock().unwrap_or_else(|e| e.into_inner());
+                if slot.is_none() {
+                    *slot = Some(ScratchDir::create(parent)?);
+                }
+                Ok(slot.as_ref().map(|s| s.path.clone()).unwrap_or_default())
+            }
+        }
+    }
+}
+
+/// How long an ordinary chat's saved page is kept.
+pub const FETCH_KEEP_SECS: u64 = 7 * 24 * 60 * 60;
+/// The most the saved pages may take together before the oldest go.
+pub const FETCH_KEEP_BYTES: u64 = 500 * 1024 * 1024;
+/// A chat that writes nothing: the name its scratch folder starts with, in
+/// the system temporary directory.
+pub const SCRATCH_FETCH_PREFIX: &str = "nightloom-fetched-";
+/// The lock file inside a scratch folder, held for the life of the server
+/// that owns it.
+const SCRATCH_LOCK: &str = ".lock";
+
+/// An incognito chat's fetch folder: removed when dropped, which is when
+/// the server's tools are — at the end of its stdin, or at a termination
+/// signal ([`serve_stdio`]). A server killed outright cannot clean up, so
+/// its folder carries a lock file the server holds while it lives
+/// (`File::lock`, released by the OS at exit however the process ends), and
+/// the next scratch folder made anywhere sweeps every one whose lock is free
+/// ([`sweep_orphaned_scratch`]).
+struct ScratchDir {
+    path: PathBuf,
+    _lock: std::fs::File,
+}
+
+impl ScratchDir {
+    /// Sweep the orphans, then make a folder and take its lock *before*
+    /// giving it the name a sweep looks for: a folder visible to another
+    /// server's sweep is always already locked.
+    fn create(parent: &Path) -> Result<Self, String> {
+        sweep_orphaned_scratch(parent);
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        let staging = parent.join(format!(".nightloom-staging-{id}"));
+        let path = parent.join(format!("{SCRATCH_FETCH_PREFIX}{id}"));
+        let fail = |e: std::io::Error| format!("cannot make a folder for this chat's pages: {e}");
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        builder.create(&staging).map_err(fail)?;
+        let lock = std::fs::File::create(staging.join(SCRATCH_LOCK)).map_err(fail)?;
+        lock.lock().map_err(fail)?;
+        if let Err(e) = std::fs::rename(&staging, &path) {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(fail(e));
+        }
+        Ok(Self { path, _lock: lock })
+    }
+}
+
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+/// Remove every scratch folder under `parent` whose owner is gone — its
+/// lock can be taken. A folder with no lock file is not ours to judge and
+/// is left. Best effort: an error is a folder left for the next sweep.
+fn sweep_orphaned_scratch(parent: &Path) {
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if !name.to_string_lossy().starts_with(SCRATCH_FETCH_PREFIX) {
+            continue;
+        }
+        let dir = entry.path();
+        let Ok(lock) = std::fs::File::open(dir.join(SCRATCH_LOCK)) else {
+            continue;
+        };
+        if lock.try_lock().is_ok() {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+}
+
+/// Prune an ordinary chat's saved pages: every page older than `max_age`,
+/// then the oldest until the rest fit in `max_bytes`. A page is its files
+/// together — `<stem>.txt`, `.head`, `.pdf` — aged by the newest of them,
+/// so a page is never half-deleted. Best effort; returns how many pages
+/// went.
+pub fn prune_fetched(
+    dir: &Path,
+    now: std::time::SystemTime,
+    max_age: std::time::Duration,
+    max_bytes: u64,
+) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    // stem -> (newest modification, total bytes, files)
+    let mut pages: HashMap<String, (std::time::SystemTime, u64, Vec<PathBuf>)> = HashMap::new();
+    for entry in entries.flatten() {
+        let Ok(meta) = entry.metadata() else { continue };
+        if !meta.is_file() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let stem = name.split('.').next().unwrap_or("").to_string();
+        let modified = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+        let page = pages
+            .entry(stem)
+            .or_insert((std::time::UNIX_EPOCH, 0, Vec::new()));
+        page.0 = page.0.max(modified);
+        page.1 += meta.len();
+        page.2.push(entry.path());
+    }
+    let mut pages: Vec<_> = pages.into_values().collect();
+    pages.sort_by_key(|p| p.0);
+    let mut total: u64 = pages.iter().map(|p| p.1).sum();
+    let mut removed = 0;
+    for (modified, bytes, files) in pages {
+        let stale = now.duration_since(modified).is_ok_and(|age| age > max_age);
+        if !stale && total <= max_bytes {
+            // Sorted oldest first: nothing after this one is stale either.
+            break;
+        }
+        for f in files {
+            let _ = std::fs::remove_file(f);
+        }
+        total = total.saturating_sub(bytes);
+        removed += 1;
+    }
+    removed
 }
 
 /// The folder under the config dir that fetched pages are saved to.
@@ -414,10 +587,23 @@ const FETCH_CACHE_SECS: u64 = 60 * 60;
 const OUTLINE_MAX: usize = 80;
 
 impl FetchPage {
+    /// An ordinary chat's fetch: pages kept in `dir`, pruned at each fetch.
     fn in_dir(dir: PathBuf) -> Self {
         Self {
             inner: Fetch::default(),
-            dir,
+            store: FetchStore::Kept(dir),
+        }
+    }
+
+    /// A chat that writes nothing: pages in a scratch folder of this
+    /// server's own under `parent`, removed when the tool is dropped.
+    fn scratch_in(parent: PathBuf) -> Self {
+        Self {
+            inner: Fetch::default(),
+            store: FetchStore::Scratch {
+                parent,
+                dir: std::sync::Mutex::new(None),
+            },
         }
     }
 }
@@ -640,8 +826,9 @@ impl Tool for FetchPage {
                 FETCH_MAX_LENGTH
             });
         let stem = page_file_stem(&url);
-        let txt = self.dir.join(format!("{stem}.txt"));
-        let head = self.dir.join(format!("{stem}.head"));
+        let dir = self.store.dir()?;
+        let txt = dir.join(format!("{stem}.txt"));
+        let head = dir.join(format!("{stem}.head"));
         // A saved copy answers a call for a later section without a
         // second fetch.
         let cached = std::fs::metadata(&txt)
@@ -663,11 +850,19 @@ impl Tool for FetchPage {
             .await
             .map_err(with_engine_hint)?;
         let header = fetched.header();
-        std::fs::create_dir_all(&self.dir).map_err(|e| format!("cannot save the page: {e}"))?;
+        if let FetchStore::Kept(_) = self.store {
+            prune_fetched(
+                &dir,
+                std::time::SystemTime::now(),
+                std::time::Duration::from_secs(FETCH_KEEP_SECS),
+                FETCH_KEEP_BYTES,
+            );
+        }
+        std::fs::create_dir_all(&dir).map_err(|e| format!("cannot save the page: {e}"))?;
         let text = match fetched.body {
             crate::tools::FetchedBody::Text(text) => text,
             crate::tools::FetchedBody::Pdf(bytes) => {
-                let pdf = self.dir.join(format!("{stem}.pdf"));
+                let pdf = dir.join(format!("{stem}.pdf"));
                 std::fs::write(&pdf, &bytes).map_err(|e| format!("cannot save the PDF: {e}"))?;
                 let Some(binary) = pdftotext_binary() else {
                     return Err(format!(
@@ -992,7 +1187,36 @@ pub fn run_blocking(args: &[String]) -> Result<(), String> {
         None => return Err("no user config directory — there are no chats to serve".to_string()),
     };
     let runtime = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
-    runtime.block_on(serve(config, args, tokio::io::stdin(), tokio::io::stdout()))
+    runtime.block_on(serve_stdio(config, args))
+}
+
+/// [`serve`] on this process's stdin and stdout, ended by their close *or*
+/// by a termination signal (SIGTERM, SIGINT, SIGHUP) — either way the tools
+/// are dropped rather than the process torn down around them, so an
+/// incognito chat's scratch folder of fetched pages is removed
+/// (nightshift backlog 186). Only the real server installs the handlers;
+/// tests call [`serve`] and leave the test process's signals alone.
+pub async fn serve_stdio(config: PathBuf, args: ServeArgs) -> Result<(), String> {
+    let served = serve(config, args, tokio::io::stdin(), tokio::io::stdout());
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let (Ok(mut term), Ok(mut int), Ok(mut hup)) = (
+            signal(SignalKind::terminate()),
+            signal(SignalKind::interrupt()),
+            signal(SignalKind::hangup()),
+        ) else {
+            return served.await;
+        };
+        tokio::select! {
+            result = served => result,
+            _ = term.recv() => Ok(()),
+            _ = int.recv() => Ok(()),
+            _ = hup.recv() => Ok(()),
+        }
+    }
+    #[cfg(not(unix))]
+    served.await
 }
 
 #[cfg(test)]
@@ -1084,6 +1308,161 @@ mod tests {
             page_file_stem("https://e.x/p"),
             page_file_stem("https://e.x/q")
         );
+    }
+
+    // Where fetched pages are kept (nightshift backlog 186, 2026-09-23).
+
+    /// A one-page HTTP server on loopback serving `body` as text/plain to
+    /// every request; returns its base URL. The fetch allows loopback.
+    async fn one_page_server(body: &'static str) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = [0u8; 4096];
+                let _ = sock.read(&mut buf).await;
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = sock.write_all(reply.as_bytes()).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    /// The path a pointer reply says the page was saved to.
+    fn saved_path(reply: &str) -> PathBuf {
+        let after = reply.split("saved to ").nth(1).expect(reply);
+        PathBuf::from(after.lines().next().unwrap().trim())
+    }
+
+    /// An incognito chat's server (`remember` false) saves its fetches
+    /// outside the config dir, and the folder is gone once the server's
+    /// tools are dropped — which is what the end of the chat is.
+    #[tokio::test]
+    async fn an_incognito_fetch_leaves_nothing_under_the_config_dir_after_the_chat_closes() {
+        let (config, id) = fixture("incognito-fetch");
+        let base = one_page_server("A page an incognito chat read.\n# Heading\nBody.\n").await;
+        let tools = tools_in(&config, Some(&id), false).unwrap();
+        let fetch = tools.iter().find(|t| t.def().name == "fetch_page").unwrap();
+        let reply = fetch
+            .call(
+                json!({ "url": format!("{base}/secret") }),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let saved = saved_path(&reply);
+        assert!(saved.is_file(), "{reply}");
+        assert!(!saved.starts_with(&config), "{}", saved.display());
+        let scratch = saved.parent().unwrap().to_path_buf();
+        assert!(
+            scratch
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(SCRATCH_FETCH_PREFIX)
+        );
+        // A second section is read from the scratch copy, as before.
+        let again = fetch
+            .call(
+                json!({ "url": format!("{base}/secret"), "offset": 5 }),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(saved_path(&again), saved);
+        assert!(!config.join(FETCHED_DIR).exists());
+        drop(tools);
+        assert!(!scratch.exists(), "{} survived the chat", scratch.display());
+        assert!(!config.join(FETCHED_DIR).exists());
+        let _ = fs::remove_dir_all(&config);
+    }
+
+    /// A server killed outright cannot remove its folder; the next scratch
+    /// folder made sweeps every one whose owner's lock is free, and leaves
+    /// a live server's alone.
+    #[test]
+    fn a_killed_servers_scratch_folder_is_swept_and_a_live_ones_is_not() {
+        let parent = crate::tools::test_dir("mcp-scratch-sweep");
+        let live = ScratchDir::create(&parent).unwrap();
+        fs::write(live.path.join("a.txt"), "live").unwrap();
+        let orphan = parent.join(format!("{SCRATCH_FETCH_PREFIX}dead"));
+        fs::create_dir_all(&orphan).unwrap();
+        fs::write(orphan.join(SCRATCH_LOCK), "").unwrap();
+        fs::write(orphan.join("b.txt"), "left by a killed server").unwrap();
+        let unrelated = parent.join("something-else");
+        fs::create_dir_all(&unrelated).unwrap();
+        let next = ScratchDir::create(&parent).unwrap();
+        assert!(!orphan.exists());
+        assert!(live.path.join("a.txt").is_file());
+        assert!(unrelated.is_dir());
+        let (live_path, next_path) = (live.path.clone(), next.path.clone());
+        drop(live);
+        drop(next);
+        assert!(!live_path.exists() && !next_path.exists());
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    fn aged(path: &Path, bytes: usize, days: u64) {
+        fs::write(path, "x".repeat(bytes)).unwrap();
+        let t = std::time::SystemTime::now() - std::time::Duration::from_secs(days * 86_400);
+        fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(t)
+            .unwrap();
+    }
+
+    /// Pruning: past the age every page goes; past the cap the oldest go
+    /// first; a page's files go together.
+    #[test]
+    fn saved_pages_are_pruned_by_age_then_oldest_first_past_the_cap() {
+        let dir = crate::tools::test_dir("mcp-fetched-prune");
+        aged(&dir.join("old.txt"), 10, 8);
+        aged(&dir.join("old.head"), 5, 8);
+        aged(&dir.join("mid.txt"), 100, 3);
+        aged(&dir.join("mid.pdf"), 100, 3);
+        aged(&dir.join("new.txt"), 100, 1);
+        let week = std::time::Duration::from_secs(FETCH_KEEP_SECS);
+        let now = std::time::SystemTime::now();
+        assert_eq!(prune_fetched(&dir, now, week, 1_000), 1);
+        assert!(!dir.join("old.txt").exists() && !dir.join("old.head").exists());
+        assert!(dir.join("mid.txt").exists() && dir.join("new.txt").exists());
+        // 300 bytes kept against a 150-byte cap: the older page goes whole.
+        assert_eq!(prune_fetched(&dir, now, week, 150), 1);
+        assert!(!dir.join("mid.txt").exists() && !dir.join("mid.pdf").exists());
+        assert!(dir.join("new.txt").exists());
+        assert_eq!(prune_fetched(&dir, now, week, 150), 0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// And it happens at the next fetch of an ordinary chat, not only when
+    /// called.
+    #[tokio::test]
+    async fn an_ordinary_fetch_prunes_stale_pages_before_saving() {
+        let dir = crate::tools::test_dir("mcp-fetched-prune-on-fetch");
+        aged(&dir.join("stale.txt"), 10, 8);
+        aged(&dir.join("stale.head"), 10, 8);
+        aged(&dir.join("recent.txt"), 10, 2);
+        let base = one_page_server("An ordinary page.\n").await;
+        let tool = FetchPage::in_dir(dir.clone());
+        let reply = tool
+            .call(
+                json!({ "url": format!("{base}/p") }),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(saved_path(&reply).starts_with(&dir));
+        assert!(!dir.join("stale.txt").exists() && !dir.join("stale.head").exists());
+        assert!(dir.join("recent.txt").exists());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     /// The measurement for the 165 pass-2 report, on the network and on a
