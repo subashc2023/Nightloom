@@ -247,6 +247,10 @@
     }
   }
   .aside-view-box {
+    /* Never shrink below its rows (nightshift backlog 179, 2026-09-22): a
+       textarea is a scroll container, so in a scrolling flex column its
+       minimum height is 0 and a long answer squashed it to a sliver. */
+    flex-shrink: 0;
     max-width: 760px;
     resize: vertical;
     /* The composer's rule (2026-09-16): a sliver of horizontal overflow
