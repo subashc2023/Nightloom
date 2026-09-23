@@ -479,6 +479,10 @@ export interface Aside {
    *  aside, which has no passage; the card then sits above the composer
    *  (blocker 225). */
   anchor: AsideAnchor | null;
+  /** Where he moved the floating card, in window px (backlog 156): kept
+   *  while the thread is open, never saved — a relaunch puts the card back
+   *  under its passage. Absent or null: the card is at its home. */
+  moved?: { left: number; top: number; width: number } | null;
 }
 
 /** The aside's live exchange — the last turn while it is still asking. */
@@ -685,6 +689,13 @@ export const app = $state({
    * proposal.
    */
   stagedProposal: null as null | { key: string; scope: ProposalScope; id: string },
+  /**
+   * His edits to a proposal's proposed side on the review card (nightshift
+   * backlog 184), by proposal id, while they differ from the dream's text —
+   * kept here rather than in the card so leaving it (Keep for later, another
+   * note, a tab switch) loses nothing. Dropped on Accept and on Dismiss.
+   */
+  proposalEdits: {} as Record<string, string>,
   /** Live model lists fetched from provider APIs, per provider kind. */
   modelLists: {} as Record<string, string[]>,
   /** Fetch status per provider kind (settings modal UI). */
@@ -2393,11 +2404,41 @@ export function noteDraftKey(scope: NoteScope, name: string, projectId: string |
  * Save any edit takes — which, seeing `stagedProposal`, records the
  * proposal as applied afterwards.
  */
-export function stageProposal(scope: ProposalScope, entry: ProposalEntry, saved: string): void {
+export function stageProposal(
+  scope: ProposalScope,
+  entry: ProposalEntry,
+  saved: string,
+  // The proposed side as the card shows it — his edits on the card
+  // included (backlog 184); the dream's text when there are none.
+  text: string = entry.proposal.text,
+): void {
   const key = noteDraftKey(scope, AGENTS_MD);
-  mirrorDraft(key, entry.proposal.text, saved);
+  mirrorDraft(key, text, saved);
   app.stagedProposal = { key, scope, id: entry.id };
   app.proposalReview = null;
+}
+
+/**
+ * Accept on the proposal card (nightshift backlog 184): save the proposed
+ * side — the dream's text, or his edit of it — to the file in one click,
+ * through the same `saveNote` the header's Save takes, so the proposal is
+ * filed as applied with the text actually saved and the open chat is
+ * re-connected. A draft typed in the editor is not touched; a different
+ * proposal staged there stays staged.
+ */
+export async function acceptProposal(scope: ProposalScope, entry: ProposalEntry, text: string): Promise<boolean> {
+  const key = noteDraftKey(scope, AGENTS_MD);
+  const before = app.stagedProposal;
+  app.stagedProposal = { key, scope, id: entry.id };
+  const ok = await saveNote(scope, AGENTS_MD, text);
+  if (!ok) {
+    app.stagedProposal = before;
+    return false;
+  }
+  if (before && before.id !== entry.id) app.stagedProposal = before;
+  delete app.proposalEdits[entry.id];
+  if (app.proposalReview?.entry.id === entry.id) app.proposalReview = null;
+  return true;
 }
 
 /** The buffer went back to the saved text: the proposal is no longer what
@@ -2416,6 +2457,7 @@ export async function dismissProposal(scope: ProposalScope, id: string): Promise
     return false;
   }
   if (app.proposalReview?.entry.id === id) app.proposalReview = null;
+  delete app.proposalEdits[id];
   unstageProposal(`${scope}:${AGENTS_MD}`);
   await refreshProposals();
   return true;

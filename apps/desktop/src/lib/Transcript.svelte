@@ -1,4 +1,6 @@
 <script lang="ts">
+  // Every Copy button goes through the in-app clipboard ring (backlog 173).
+  import { copyText } from "./clipRing.svelte";
   import { exactTime, relativeTimeLong } from "./time";
   import { onDestroy, tick, untrack } from "svelte";
   import {
@@ -448,7 +450,7 @@
   let copiedTurn = $state<number | null>(null);
   async function copyUserText(index: number, text: string): Promise<void> {
     try {
-      await navigator.clipboard.writeText(text);
+      await copyText(text);
       copiedTurn = index;
       setTimeout(() => {
         if (copiedTurn === index) copiedTurn = null;

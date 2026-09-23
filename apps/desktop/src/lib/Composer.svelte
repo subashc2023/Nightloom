@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { untrack } from "svelte";
+  import { tick, untrack } from "svelte";
   import Icon from "./Icon.svelte";
   import Kbd from "./Kbd.svelte";
   import {
@@ -65,6 +65,8 @@
   } from "./drafts.svelte";
   import type { Attachment } from "./types";
   import CouncilPopover from "./CouncilPopover.svelte";
+  import ClipPanel from "./ClipPanel.svelte";
+  import { clips, recordImage, recordText } from "./clipRing.svelte";
   import type { CouncilPrefs } from "./council";
 
   /**
@@ -457,7 +459,69 @@
     ta?.focus();
   }
 
+  /*
+   * The in-app clipboard history (nightshift backlog 173): ⌘⇧V (Ctrl+Shift+V
+   * elsewhere) opens the ring over the box — what was copied, pasted or
+   * sent in Nightloom, newest first (`clipRing.svelte.ts`). ↑↓ move, ↵ or a
+   * click pastes — a text at the caret, an image as a chip again — and Esc
+   * or a second ⌘⇧V closes. Picking is not a use: the ring's order stays.
+   */
+  let clipOpen = $state(false);
+  let clipIndex = $state(0);
+  $effect(() => {
+    void key;
+    clipOpen = false;
+  });
+  function pickClip(i: number): void {
+    const c = clips.ring[i];
+    clipOpen = false;
+    if (!c) return;
+    if (c.kind === "image") {
+      addAttachment(key, { id: nextAttachmentId(), kind: "image", name: c.name, media_type: c.media_type, data: c.data });
+      ta?.focus();
+      return;
+    }
+    const start = ta?.selectionStart ?? text.length;
+    const end = ta?.selectionEnd ?? start;
+    setDraftText(key, text.slice(0, start) + c.text + text.slice(end));
+    const caret = start + c.text.length;
+    void tick().then(() => {
+      if (!ta) return;
+      ta.focus();
+      ta.selectionStart = ta.selectionEnd = caret;
+      autogrow();
+    });
+  }
+
   function onkeydown(e: KeyboardEvent) {
+    if ((e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey && (e.code === "KeyV" || e.key.toLowerCase() === "v")) {
+      e.preventDefault();
+      clipOpen = !clipOpen;
+      clipIndex = 0;
+      return;
+    }
+    if (clipOpen) {
+      const n = clips.ring.length;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        clipOpen = false;
+        return;
+      }
+      if (n > 0 && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+        e.preventDefault();
+        clipIndex = (clipIndex + (e.key === "ArrowDown" ? 1 : n - 1)) % n;
+        return;
+      }
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        if (n > 0) pickClip(clipIndex);
+        else clipOpen = false;
+        return;
+      }
+      // Anything else types as usual and closes the list.
+      clipOpen = false;
+    }
     // ⌥⌘↑ / ⌥⌘↓ (⌥Ctrl elsewhere) make the box a line taller or shorter
     // (backlog 111) — the keyboard's version of the handle. Before the
     // picker's own arrows, which are the bare keys. Free: `App.svelte`'s
@@ -549,7 +613,9 @@
       : MAX_DOCUMENT_BASE64;
   }
 
-  async function accept(files: Iterable<File>): Promise<void> {
+  /** Attach what can be attached; the chips made, for the paste to record. */
+  async function accept(files: Iterable<File>): Promise<Attachment[]> {
+    const added: Attachment[] = [];
     for (const file of files) {
       const kind = kindOf(file.type);
       if (!kind) {
@@ -573,26 +639,35 @@
         const data = await readBase64(file);
         // Under the key of the moment the file was dropped: a read can
         // outlive a chat switch, and the chip belongs where it was pasted.
-        addAttachment(key, {
+        const chip: Attachment = {
           id: nextAttachmentId(),
           kind,
           name: describe(file),
           media_type: file.type,
           data,
-        });
+        };
+        addAttachment(key, chip);
+        added.push(chip);
       } catch (e) {
         addToast(`${describe(file)}: ${String(e)}`);
       }
     }
+    return added;
   }
 
   function onpaste(e: ClipboardEvent) {
+    const pastedText = e.clipboardData?.getData("text/plain") ?? "";
+    // Into the in-app clipboard ring (backlog 173): the text, and below
+    // each image the paste attached.
+    if (pastedText) recordText("pasted", pastedText);
     const files = Array.from(e.clipboardData?.files ?? []);
     if (files.length === 0) return;
     // Only swallow the paste when it carries no text of its own; some sources
     // put a screenshot and its caption on the clipboard together.
-    if (!e.clipboardData?.getData("text/plain")) e.preventDefault();
-    void accept(files);
+    if (!pastedText) e.preventDefault();
+    void accept(files).then((chips) => {
+      for (const c of chips) if (c.kind === "image") recordImage("pasted", c);
+    });
   }
 
   function ondragenter(e: DragEvent) {
@@ -743,6 +818,9 @@
     if (empty || !app.connection) return;
     // A send is presence, for the hand-off's away rule.
     noteActivity();
+    // What he sent — or queued behind the running turn — is in the ⌘⇧V
+    // list too (blocker 282's default).
+    recordText("sent", text);
     if (app.busy) {
       enqueue();
       return;
@@ -771,6 +849,7 @@
     noteActivity();
     const pending = attachments.slice();
     const typed = text;
+    recordText("sent", typed);
     clearDraft(key);
     requestAnimationFrame(autogrow);
     await dispatch(typed, pending, false, prefs);
@@ -1258,6 +1337,9 @@
       </div>
     </div>
   {/if}
+  {#if clipOpen}
+    <ClipPanel entries={clips.ring} index={clipIndex} onpick={pickClip} />
+  {/if}
   {#if slashOpen}
     <div class="slash" role="listbox" aria-label="Skills and slash commands">
       {#if slashMatches.length === 0}
@@ -1313,6 +1395,7 @@
       }}
       {onpaste}
       {onkeydown}
+      onblur={() => (clipOpen = false)}
     ></textarea>
     <div class="row">
       <input

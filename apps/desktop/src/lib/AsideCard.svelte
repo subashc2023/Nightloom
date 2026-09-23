@@ -1,11 +1,25 @@
 <script lang="ts">
-  import { app, askAside, asideAsking, dismissAside, endContentDrag, followUpAside, startContentDrag } from "./state.svelte";
+  // Every Copy button goes through the in-app clipboard ring (backlog 173).
+  import { copyText } from "./clipRing.svelte";
+  import {
+    app,
+    askAside,
+    asideAsking,
+    dismissAside,
+    dropContent,
+    endContentDrag,
+    followUpAside,
+    startContentDrag,
+  } from "./state.svelte";
+  import { outcome, startMove } from "./floatingMove";
+  import type { Zone } from "./floatingMove";
   import { tick } from "svelte";
   import type { Aside } from "./state.svelte";
   import type { Placement } from "./asideCard";
   import { quoteLabel } from "./asideQuote";
   import { renderMarkdown } from "./markdown";
   import Icon from "./Icon.svelte";
+  import MoveZone from "./MoveZone.svelte";
 
   /**
    * The floating aside card (nightshift backlog 141, 2026-09-17; blocker
@@ -38,6 +52,17 @@
    * backend forks the *open* chat, so a follow-up from another chat's
    * panel would be answered from the wrong context. Escape in the panel
    * puts the card back rather than ending the thread.
+   *
+   * Moving it (backlog 156, 2026-09-22 — his "move it around the screen
+   * freely"): the floating card's head moves the card by pointer
+   * (`floatingMove.ts`), anywhere, and it stays where it is let go — a
+   * nudge of a few pixels included — fixed to the window, the passage
+   * still marked. Only near a tab strip (a tab of its own), the window's
+   * right edge (the side panel) or its left edge (beside) does a zone
+   * light, and a release there does what the old drop did. Escape during
+   * a move puts it back where the move began; *back* in the head, or a
+   * double-click on the head, sends a moved card home under its passage.
+   * The panel's card keeps the native drag onto a strip.
    */
   let {
     aside,
@@ -69,6 +94,68 @@
   // under the passage and can cover what he is reading before a word is
   // typed; the tab and the panel draw the question box for a draft.
   const draggable = $derived(owner !== null);
+  /** The floating card (under a passage or above the composer) moves by
+   *  pointer; the panel's card is furniture and keeps the native drag. */
+  const movable = $derived(draggable && !panel);
+
+  /** Where the card is while the pointer holds it; `aside.moved` once let
+   *  go. The zone the pointer is over, lit while it is. */
+  let dragPos = $state<{ left: number; top: number } | null>(null);
+  let zone = $state<Zone | null>(null);
+  const moved = $derived(panel ? null : (aside.moved ?? null));
+  const pos = $derived(dragPos ?? moved);
+
+  function headDown(e: PointerEvent): void {
+    if (!movable || !root) return;
+    if ((e.target as HTMLElement | null)?.closest("button, a, input, textarea")) return;
+    const r = root.getBoundingClientRect();
+    const width = r.width;
+    startMove(e, {
+      origin: { left: r.left, top: r.top },
+      size: { width: r.width, height: r.height },
+      edges: { left: "beside", right: "panel" },
+      onMove(p, z) {
+        dragPos = p;
+        zone = z;
+      },
+      onDrop(p, z) {
+        dragPos = null;
+        zone = null;
+        land(p, z, width);
+      },
+      onCancel() {
+        // Back to where the move began: `aside.moved` was not touched.
+        dragPos = null;
+        zone = null;
+      },
+    });
+  }
+  /** Keep the page's selection and the box's focus when the head is
+   *  grabbed; the buttons in it still take their clicks. */
+  function headMouseDown(e: MouseEvent): void {
+    if (!movable) return;
+    if ((e.target as HTMLElement | null)?.closest("button, a, input, textarea")) return;
+    e.preventDefault();
+  }
+  function land(p: { left: number; top: number }, z: Zone | null, width: number): void {
+    const session = owner;
+    const a = app.aside;
+    if (!session || !a) return;
+    const o = outcome(z);
+    if (o.kind === "stay") {
+      a.moved = { left: p.left, top: p.top, width };
+      return;
+    }
+    // Snapped: the card's next home is under its passage again.
+    a.moved = null;
+    if (o.kind === "panel") app.asidePanel = session;
+    else if (o.kind === "tab") void dropContent({ kind: "aside", session }, { pane: o.pane, index: o.index });
+    else void dropContent({ kind: "aside", session }, { pane: o.pane, side: o.side });
+  }
+  /** Home: under the passage, or above the composer for a composer aside. */
+  function goHome(): void {
+    if (app.aside) app.aside.moved = null;
+  }
 
   // The body follows the answer as the transcript follows a reply: a card
   // taller than its room scrolls inside, and the newest text — the
@@ -157,7 +244,7 @@
         : (last?.partial ?? "");
     if (!text.trim()) return;
     try {
-      await navigator.clipboard.writeText(text);
+      await copyText(text);
       copied = true;
       setTimeout(() => (copied = false), 1200);
     } catch {
@@ -175,29 +262,43 @@
   class:foot={placement === null && !panel}
   class:panel
   class:above={placement?.side === "above"}
+  class:moved={pos !== null}
+  class:holding={dragPos !== null}
+  class:over-zone={zone !== null}
   role="note"
   aria-label="aside, not part of the chat"
   bind:this={root}
-  style:top={placement ? `${placement.top}px` : undefined}
-  style:left={placement ? `${placement.left}px` : undefined}
-  style:width={placement ? `${placement.width}px` : undefined}
-  style:max-height={placement ? `${placement.maxHeight}px` : undefined}
+  style:top={pos ? `${pos.top}px` : placement ? `${placement.top}px` : undefined}
+  style:left={pos ? `${pos.left}px` : placement ? `${placement.left}px` : undefined}
+  style:width={moved ? `${moved.width}px` : placement ? `${placement.width}px` : undefined}
+  style:max-height={pos
+    ? `min(${placement ? `${placement.maxHeight}px` : "50vh"}, calc(100vh - ${pos.top + 8}px))`
+    : placement
+      ? `${placement.maxHeight}px`
+      : undefined}
   onkeydown={cardKeys}
 >
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class="aside-card-head"
-    {draggable}
+    class:movable
+    draggable={draggable && panel}
     title={draggable
       ? panel
         ? "Drag onto a tab strip for a tab of its own"
-        : "Drag onto a tab strip for a tab of its own, or to the window's right edge for a side panel"
+        : "Drag to move it anywhere — near a tab strip it opens as a tab, at the window's right edge as a side panel, at the left edge beside. Double-click to put it back"
       : undefined}
     ondragstart={(e) => {
-      if (!draggable || owner === null) return;
+      if (!draggable || !panel || owner === null) return;
       startContentDrag(e, { kind: "aside", session: owner });
     }}
     ondragend={endContentDrag}
+    onpointerdown={headDown}
+    onmousedown={headMouseDown}
+    ondblclick={(e) => {
+      if (!moved || (e.target as HTMLElement | null)?.closest("button")) return;
+      goHome();
+    }}
   >
     <span class="aside-card-grip" aria-hidden="true" class:live={draggable}>⋮⋮</span>
     <span class="ns-chip mono">aside · not in the chat</span>
@@ -208,6 +309,13 @@
       <span class="ns-chip mono">{last.cacheRead.toLocaleString()} read from cache</span>
     {/if}
     <span class="spacer"></span>
+    {#if moved}
+      <button
+        class="ns-btn ghost small"
+        title={aside.anchor ? "Put the card back under its passage" : "Put the card back above the composer"}
+        onclick={goHome}>back</button
+      >
+    {/if}
     {#if last && last.partial.trim()}
       <button
         class="ns-btn ghost small"
@@ -306,6 +414,8 @@
   </div>
 </div>
 
+{#if zone}<MoveZone {zone} />{/if}
+
 <style>
   /* The card: the sheet's face, raised over the transcript, dashed as the
      foot card was so it never reads as a turn. */
@@ -380,8 +490,29 @@
     opacity: 1;
     cursor: grab;
   }
-  .aside-card-head[draggable="true"] {
+  .aside-card-head[draggable="true"],
+  .aside-card-head.movable {
     cursor: grab;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  /* Moved (backlog 156): fixed to the window, out of the column's flow,
+     over the panes and their strips. */
+  .aside-card.moved {
+    position: fixed;
+    bottom: auto;
+    z-index: 15;
+    animation: none;
+  }
+  .aside-card.holding {
+    box-shadow: 0 14px 40px rgba(0, 0, 0, 0.4);
+  }
+  .aside-card.holding .aside-card-head {
+    cursor: grabbing;
+  }
+  /* Over a zone the card thins, so the lit zone under it reads. */
+  .aside-card.over-zone {
+    opacity: 0.72;
   }
   .aside-card-body {
     display: flex;

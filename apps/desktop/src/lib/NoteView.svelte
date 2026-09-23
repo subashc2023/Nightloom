@@ -2,6 +2,7 @@
   import * as api from "./api";
   import {
     app,
+    acceptProposal,
     addToast,
     closeNote,
     dismissProposal,
@@ -14,8 +15,7 @@
     unstageProposal,
   } from "./state.svelte";
   import { renderMarkdown } from "./markdown";
-  import { unifiedDiff } from "./diff";
-  import DiffView from "./DiffView.svelte";
+  import ProposalReview from "./ProposalReview.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
   import {
     hrefTarget,
@@ -60,19 +60,42 @@
    * Proposal mode: the dream suggested a replacement for this fixed file,
    * and the pane shows it as a diff against the saved text instead of the
    * editor. Only while the review is for the open scope — `showNote` clears
-   * it on the way to any other note. The buffer is untouched until *Load
-   * into editor*, which makes the proposed text a draft and nothing more.
+   * it on the way to any other note. The buffer is untouched until *Open
+   * in the editor*, which makes the proposed text a draft and nothing more,
+   * or *Accept*, which saves it (backlog 184).
    */
   const reviewing = $derived(
     app.proposalReview && open && app.proposalReview.scope === open.scope
       ? app.proposalReview
       : null,
   );
-  const proposalDiff = $derived(
-    reviewing
-      ? unifiedDiff(saved === "" ? null : saved, reviewing.entry.proposal.text, open?.name ?? "AGENTS.md")
-      : "",
-  );
+  /**
+   * The card's proposed side as it reads now (backlog 184): the dream's
+   * text, or his edit of it. Taken from `app.proposalEdits` when a review
+   * opens, so an edit left behind comes back; mirrored there while it
+   * differs from the dream's text. `proposedFor` is the proposal it
+   * belongs to, set only once `proposed` holds that proposal's text — the
+   * same guard `bufferKey` is for the note buffer.
+   */
+  let proposed = $state("");
+  let proposedFor = $state<string | null>(null);
+  $effect(() => {
+    const r = reviewing;
+    if (!r) {
+      proposedFor = null;
+      return;
+    }
+    if (r.entry.id === proposedFor) return;
+    proposed = app.proposalEdits[r.entry.id] ?? r.entry.proposal.text;
+    proposedFor = r.entry.id;
+  });
+  $effect(() => {
+    const r = reviewing;
+    if (!r || proposedFor !== r.entry.id) return;
+    if (proposed !== r.entry.proposal.text) app.proposalEdits[r.entry.id] = proposed;
+    else delete app.proposalEdits[r.entry.id];
+  });
+  let accepting = $state(false);
   /** Dismiss asks first: the badge goes with it, and a click must not lose
    *  something the user has not read (the never-lose-work rule). */
   let confirmDismiss = $state(false);
@@ -220,13 +243,38 @@
   function loadProposal() {
     const r = reviewing;
     if (!r || !open) return;
-    if (r.entry.proposal.text === saved) {
+    // The proposed side as the card shows it, his edits there included.
+    const next = proposed;
+    if (next === saved) {
       addToast("The proposal matches the file as saved — nothing to load");
       app.proposalReview = null;
       return;
     }
-    stageProposal(r.scope, r.entry, saved);
-    text = r.entry.proposal.text;
+    stageProposal(r.scope, r.entry, saved, next);
+    text = next;
+  }
+
+  /**
+   * Accept on the card (backlog 184): the proposed side, edited or not, is
+   * saved to the file in one click — the header's Save path, so the chat
+   * re-connects and the proposal is filed as applied. A draft already in
+   * the editor stays a draft, now against the new saved text; with none,
+   * the editor shows what was saved.
+   */
+  async function accept() {
+    const r = reviewing;
+    const target = open;
+    if (!r || !target || accepting || proposed === saved) return;
+    const next = proposed;
+    const hadDraft = dirty;
+    accepting = true;
+    const ok = await acceptProposal(r.scope, r.entry, next);
+    accepting = false;
+    if (!ok) return;
+    saved = next;
+    if (!hadDraft) text = next;
+    addToast(`Accepted — saved ${target.name}`);
+    if (app.noteFrom) closeNote();
   }
 
   async function confirmDismissal() {
@@ -305,7 +353,7 @@
       {open?.scope ?? "project"}
     </span>
     <span class="title">{open?.name ?? "no note"}</span>
-    {#if reviewing}<span class="proposed" title="The dream proposed a replacement; nothing is applied until you load it and save">proposed change</span>{/if}
+    {#if reviewing}<span class="proposed" title="The dream proposed a replacement; nothing is applied until you Accept it (or open it in the editor and save)">proposed change</span>{/if}
     {#if dirty}<span class="dirty" title="Unsaved changes — kept as a draft until you save or revert">● draft</span>{/if}
     <span class="spacer"></span>
     {#if dirty}
@@ -338,8 +386,9 @@
   {:else if loading}
     <p class="err quiet">Reading…</p>
   {:else if reviewing}
-    <!-- The proposal: why, the diff, three ways out. The editor and its
-         buffer are behind this, untouched, until Load into editor. -->
+    <!-- The proposal: why, the diff with its proposed side editable, four
+         ways out. The editor and its buffer are behind this, untouched,
+         until Accept or Open in the editor (backlog 184). -->
     <div class="review">
       <div class="why">
         <span class="label">why</span>
@@ -351,12 +400,25 @@
           {/if}
         </span>
       </div>
-      <DiffView text={proposalDiff} leftLabel="as saved" rightLabel="proposed" />
+      <ProposalReview
+        saved={saved}
+        original={reviewing.entry.proposal.text}
+        name={open?.name ?? "AGENTS.md"}
+        bind:proposed
+      />
       <div class="actions">
         <button
+          class="accept"
+          title={proposed === saved
+            ? "The proposed side matches the file as saved — nothing to save"
+            : "Save the proposed side, as it reads now, to the file"}
+          disabled={accepting || proposed === saved}
+          onclick={() => void accept()}>{accepting ? "Saving…" : "Accept"}</button
+        >
+        <button
           class="load"
-          title="Put the proposed text in the editor as a draft — Revert drops it, Save applies it"
-          onclick={loadProposal}>Load into editor</button
+          title="Put the proposed side in the editor as a draft for a longer rework — Revert drops it, Save applies it"
+          onclick={loadProposal}>Open in the editor</button
         >
         <button
           class="ghost revert"
@@ -583,6 +645,26 @@
   }
   .load:hover {
     background: color-mix(in srgb, var(--accent) 12%, transparent);
+  }
+  /* The one-click way out (backlog 184): filled, so it reads as the
+     primary action beside the outlined ones. */
+  .accept {
+    background: var(--accent);
+    border: 1px solid var(--accent);
+    border-radius: 7px;
+    color: var(--bg);
+    font-family: inherit;
+    font-size: 0.76rem;
+    font-weight: 600;
+    padding: 0.25rem 0.75rem;
+    cursor: pointer;
+  }
+  .accept:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--accent) 85%, white);
+  }
+  .accept:disabled {
+    opacity: 0.4;
+    cursor: default;
   }
   .spacer {
     flex: 1;

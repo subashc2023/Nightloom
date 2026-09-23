@@ -1,4 +1,6 @@
 <script lang="ts">
+  // Every Copy button goes through the in-app clipboard ring (backlog 173).
+  import { copyText } from "./clipRing.svelte";
   import type { Segment } from "./state.svelte";
   import type { ApprovalRequest, Usage } from "./types";
   import { renderMarkdown } from "./markdown";
@@ -64,7 +66,7 @@
   let copied = $state(false);
   async function copy(): Promise<void> {
     try {
-      await navigator.clipboard.writeText(textOf());
+      await copyText(textOf());
       copied = true;
       setTimeout(() => (copied = false), 1200);
     } catch {

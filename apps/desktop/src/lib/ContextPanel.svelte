@@ -1,4 +1,6 @@
 <script lang="ts">
+  // Every Copy button goes through the in-app clipboard ring (backlog 173).
+  import { copyText } from "./clipRing.svelte";
   import * as api from "./api";
   import Icon from "./Icon.svelte";
   import { fmtTokens } from "./tokens";
@@ -68,7 +70,7 @@
   async function copy(key: string, text: string | null | undefined): Promise<void> {
     if (!text) return;
     try {
-      await navigator.clipboard.writeText(text);
+      await copyText(text);
       copied = key;
       setTimeout(() => {
         if (copied === key) copied = null;

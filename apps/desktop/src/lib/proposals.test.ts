@@ -17,6 +17,7 @@ vi.mock("./api", async (original) => {
 
 import * as api from "./api";
 import {
+  acceptProposal,
   app,
   mirrorDraft,
   noteDraftKey,
@@ -51,6 +52,8 @@ beforeEach(() => {
   app.proposalReview = null;
   app.proposals = { instructions: [], memory: [] };
   vi.mocked(api.saveNote).mockClear();
+  vi.mocked(api.markApplied).mockClear();
+  app.proposalEdits = {};
 });
 
 describe("a loaded proposal is a draft", () => {
@@ -128,5 +131,55 @@ describe("a staged proposal belongs to its project (backlog 133)", () => {
     expect(noteDraftKey("knowledge", "x.md")).toBe("knowledge:x.md");
     expect(noteDraftKey("project", "notes/a.md")).toBe("A:project:notes/a.md");
     app.project = null;
+  });
+});
+
+describe("Accept on the card (backlog 184)", () => {
+  it("saves the edited proposed side in one call, files it as applied with that text, and closes the review", async () => {
+    const e = entry("# Lanternfish\n\nUse cargo and tokio.\n");
+    app.proposals.instructions = [e];
+    reviewProposal("instructions");
+    const edited = "# Lanternfish\n\nUse cargo and tokio, edited.\n";
+    app.proposalEdits[e.id] = edited;
+    expect(await acceptProposal("instructions", e, edited)).toBe(true);
+    expect(api.saveNote).toHaveBeenCalledTimes(1);
+    expect(api.saveNote).toHaveBeenCalledWith("instructions", "AGENTS.md", edited);
+    expect(api.markApplied).toHaveBeenCalledWith("instructions", e.id, edited);
+    expect(app.proposalReview).toBeNull();
+    expect(app.stagedProposal).toBeNull();
+    expect(app.proposalEdits[e.id]).toBeUndefined();
+  });
+
+  it("a failed save changes nothing: the review, the edit and a staged proposal stay", async () => {
+    const other = entry("other\n", "older");
+    stageProposal("instructions", other, SAVED);
+    const staged = app.stagedProposal;
+    const e = entry("proposed\n");
+    app.proposals.instructions = [e];
+    reviewProposal("instructions");
+    app.proposalEdits[e.id] = "mine\n";
+    vi.mocked(api.saveNote).mockRejectedValueOnce(new Error("disk full"));
+    expect(await acceptProposal("instructions", e, "mine\n")).toBe(false);
+    expect(api.markApplied).not.toHaveBeenCalled();
+    expect(app.proposalReview?.entry).toBe(e);
+    expect(app.proposalEdits[e.id]).toBe("mine\n");
+    expect(app.stagedProposal).toEqual(staged);
+  });
+
+  it("leaves a different proposal staged in the editor staged", async () => {
+    const other = entry("other\n", "older");
+    stageProposal("instructions", other, SAVED);
+    const e = entry("proposed\n");
+    expect(await acceptProposal("instructions", e, "proposed\n")).toBe(true);
+    expect(api.markApplied).toHaveBeenCalledWith("instructions", e.id, "proposed\n");
+    expect(app.stagedProposal?.id).toBe("older");
+  });
+
+  it("Open in the editor carries the card's edit as the draft", () => {
+    const e = entry("proposed\n");
+    stageProposal("instructions", e, SAVED, "proposed, edited on the card\n");
+    expect(app.noteDrafts[KEY]).toBe("proposed, edited on the card\n");
+    expect(app.stagedProposal?.id).toBe(e.id);
+    expect(api.saveNote).not.toHaveBeenCalled();
   });
 });

@@ -1,5 +1,8 @@
 <script lang="ts">
-  import { app, endContentDrag, startContentDrag } from "./state.svelte";
+  import { app, dropContent } from "./state.svelte";
+  import { outcome, startMove } from "./floatingMove";
+  import type { Zone } from "./floatingMove";
+  import MoveZone from "./MoveZone.svelte";
   import { attachmentBytes, closeAttachment, opening } from "./attachments.svelte";
   import { VIEW_MARGIN, ZOOM_MS, fitRect, zoomCss, zoomTransform, type Rect } from "./attachmentView";
   import { escapeClosesPanel } from "./search";
@@ -18,8 +21,12 @@
    * launched. It closes on a click on the scrim, ×, or Escape — caught
    * here on the way down, from anywhere but another text field (backlog
    * 138's rule), so it never reaches the window where macOS leaves full
-   * screen. Its head drags (pass 2): onto a strip or a pane's half the
-   * tab is kept there and the layer closes.
+   * screen. ~~Its head drags (pass 2): onto a strip or a pane's half the
+   * tab is kept there and the layer closes.~~ Its head moves the card by
+   * pointer since backlog 156 (the aside card's `floatingMove.ts`): it
+   * stays where it is let go; near a tab strip it is kept there as a tab,
+   * at the panes' left or right edge it opens beside (what a pane's half
+   * did), and the layer closes. Escape during a move puts it back.
    *
    * One floating tab at a time; the bytes are resolved from the open
    * chat's log each render, so a rewound log closes the tab rather than
@@ -59,7 +66,48 @@
   $effect(() => {
     void tab;
     full = false;
+    at = null;
   });
+
+  /** Where he moved the card (backlog 156); null at its fitted spot. Reset
+   *  with each opening. `holding` while the pointer has it. */
+  let at = $state<{ left: number; top: number } | null>(null);
+  let holding = $state(false);
+  let zone = $state<Zone | null>(null);
+  function headDown(e: PointerEvent): void {
+    const c = content;
+    if (!card || !c) return;
+    if ((e.target as HTMLElement | null)?.closest("button")) return;
+    const r = card.getBoundingClientRect();
+    const before = at;
+    startMove(e, {
+      origin: { left: r.left, top: r.top },
+      size: { width: r.width, height: r.height },
+      edges: { left: "beside", right: "beside" },
+      onMove(p, z) {
+        holding = true;
+        at = p;
+        zone = z;
+      },
+      onDrop(p, z) {
+        holding = false;
+        zone = null;
+        const o = outcome(z);
+        if (o.kind === "stay") {
+          at = p;
+          return;
+        }
+        at = before;
+        if (o.kind === "tab") void dropContent(c, { pane: o.pane, index: o.index });
+        else if (o.kind === "beside") void dropContent(c, { pane: o.pane, side: o.side });
+      },
+      onCancel() {
+        holding = false;
+        zone = null;
+        at = before;
+      },
+    });
+  }
 
   /** The entrance: from the thumbnail's rect to the card's, once. */
   $effect(() => {
@@ -78,7 +126,8 @@
 
   /** Escape on the way down: ours from anywhere but a text field. */
   function windowKeys(e: KeyboardEvent): void {
-    if (!tab || e.key !== "Escape" || e.defaultPrevented) return;
+    // Mid-move, Escape is the move's (it puts the card back), not a close.
+    if (!tab || holding || e.key !== "Escape" || e.defaultPrevented) return;
     if (!escapeClosesPanel(e.target as { tagName?: string; isContentEditable?: boolean } | null, null)) return;
     e.preventDefault();
     e.stopPropagation();
@@ -100,22 +149,24 @@
     <div
       class="attach-card"
       class:full
+      class:holding
       role="dialog"
       aria-modal="true"
       aria-label={bytes.name}
       bind:this={card}
-      style:left={full ? `${VIEW_MARGIN}px` : `${rect.left}px`}
-      style:top={full ? `${VIEW_MARGIN}px` : `${rect.top}px`}
+      style:left={at ? `${at.left}px` : full ? `${VIEW_MARGIN}px` : `${rect.left}px`}
+      style:top={at ? `${at.top}px` : full ? `${VIEW_MARGIN}px` : `${rect.top}px`}
       style:width={full ? `${vp.width - 2 * VIEW_MARGIN}px` : `${rect.width}px`}
       style:height={full ? `${vp.height - 2 * VIEW_MARGIN}px` : `${rect.height}px`}
     >
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
         class="attach-head"
-        draggable="true"
-        title="Drag onto a tab strip to keep this as a tab, or onto a pane's half to open it beside"
-        ondragstart={(e) => content && startContentDrag(e, content)}
-        ondragend={endContentDrag}
+        title="Drag to move it — near a tab strip it is kept there as a tab, at the left or right edge it opens beside"
+        onpointerdown={headDown}
+        onmousedown={(e) => {
+          if (!(e.target as HTMLElement | null)?.closest("button")) e.preventDefault();
+        }}
       >
         <span class="attach-grip" aria-hidden="true">⋮⋮</span>
         <span class="attach-name mono" title={bytes.media_type}>{bytes.name}</span>
@@ -144,6 +195,7 @@
       </div>
     </div>
   </div>
+  {#if zone}<MoveZone {zone} z={40} />{/if}
 {/if}
 
 <style>
@@ -177,6 +229,11 @@
       transition: none;
     }
   }
+  /* Under the pointer (backlog 156): no glide, or it trails the hand. */
+  .attach-card.holding {
+    transition: none;
+    cursor: grabbing;
+  }
   .attach-head {
     display: flex;
     align-items: center;
@@ -188,6 +245,8 @@
     color: var(--dim);
     cursor: grab;
     flex: none;
+    user-select: none;
+    -webkit-user-select: none;
   }
   .attach-head .spacer {
     flex: 1;
