@@ -15,6 +15,7 @@
   import { budgetChip, budgetTitle } from "./budget";
   import RightRail from "./RightRail.svelte";
   import { portal, anchorBelow } from "./portal";
+  import { foldToFit } from "./fold";
   const POP_WIDTH = 340;
   import NotificationCentre from "./NotificationCentre.svelte";
   import { chatKind, kindLabel, openSession } from "./state.svelte";
@@ -55,11 +56,26 @@
    * query, not a media query, so the zoom factor (backlog 108) is
    * invisible to it: at 200% the bar is half as many CSS pixels wide and
    * folds as a half-width bar would.
+   * ~~A container query … invisible to the zoom~~ — wrong in WebKit
+   * (nightshift backlog 183, measured 2026-09-22): under page zoom the
+   * query reads the bar's width × the zoom, so each step fired a zoom
+   * step late and the bar wrapped. The bar now folds by measuring
+   * (`fold.ts`).
+   *
+   * Board d since 2026-09-22 (nightshift backlog 175 pass 2, blocker 274):
+   * no title row — the tab names the chat, and its hover carries the short
+   * id; the context gauge, the plan chip and the spend chip are one gauge
+   * chip — two thin bars (context over plan) and the plan reading's age —
+   * whose click opens a card with every figure and a button to the
+   * itemised Context page (⌘⇧C still opens that page directly). One row,
+   * 44 px, at every zoom from 100 to 200 % in a 1440 px window; what is
+   * left to fold (the kind chip's engine, the agents chip's words) folds by
+   * measurement, and the wrap stays the floor beneath.
    */
 
   const session = $derived(app.sessions.find((s) => s.id === app.activeSessionId) ?? null);
-  const title = $derived(session ? (session.title ?? session.first_user ?? "new chat") : "");
-  const crumb = $derived(app.activeSessionId ? app.activeSessionId.slice(0, 8) : "");
+  // ~~`title` and `crumb` (the name and the short id on the bar's left)~~ —
+  // board d (backlog 175): the tab is the title; the id is in its hover.
 
   /**
    * The chat's mode, projected from its log (nightshift backlog 059): a
@@ -204,22 +220,40 @@
     if (a < 3600) return `${Math.round(a / 60)}m`;
     return `${Math.round(a / 3600)}h`;
   });
-  const planTitle = $derived.by(() => {
-    if (!plan) return "";
-    const age =
-      planAgeSeconds == null
-        ? "age unknown"
-        : planAgeSeconds < 90
-          ? "sampled just now"
-          : `sampled ${Math.round(planAgeSeconds / 60)} min ago`;
-    const where =
-      plan.source === "turn"
+  const planAgeText = $derived(
+    planAgeSeconds == null
+      ? "age unknown"
+      : planAgeSeconds < 90
+        ? "sampled just now"
+        : `sampled ${Math.round(planAgeSeconds / 60)} min ago`,
+  );
+  const planWhere = $derived(
+    !plan
+      ? ""
+      : plan.source === "turn"
         ? "this chat's last turn (the CLI's rate-limit event)"
         : plan.source === "desktop"
           ? "the Claude app's sample"
           : plan.source === "cli-usage"
             ? "the CLI's /usage, run live (zero tokens)"
-            : "the CLI's /usage cache";
+            : "the CLI's /usage cache",
+  );
+  /** A reset time for the gauge card (board d): `21:40` today, `Thu 09:00`
+   *  on another day. */
+  function resetText(iso: string | null): string {
+    if (!iso) return "reset time unknown";
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "reset time unknown";
+    const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+    const today = new Date(now);
+    return d.toDateString() === today.toDateString()
+      ? `resets ${time}`
+      : `resets ${d.toLocaleDateString([], { weekday: "short" })} ${time}`;
+  }
+  const planTitle = $derived.by(() => {
+    if (!plan) return "";
+    const age = planAgeText;
+    const where = planWhere;
     const when = (iso: string | null) => {
       if (!iso) return "reset time unknown";
       const d = new Date(iso);
@@ -297,19 +331,25 @@
   // own outside click — so only Escape is shared here.
   let popEl = $state<HTMLElement | null>(null);
   let chipEl = $state<HTMLElement | null>(null);
+  /** The gauge card (board d, backlog 175): open while true; the bar's
+   *  own, since nothing else opens it (⌘⇧C opens the Context page). */
+  let showGauge = $state(false);
+  let gaugeEl = $state<HTMLElement | null>(null);
+  let gaugePopEl = $state<HTMLElement | null>(null);
   function onDocClick(e: MouseEvent): void {
     const t = e.target as Node;
-    if (popEl?.contains(t) || chipEl?.contains(t)) return;
-    app.showRail = false;
+    if (!(popEl?.contains(t) || chipEl?.contains(t))) app.showRail = false;
+    if (!(gaugePopEl?.contains(t) || gaugeEl?.contains(t))) showGauge = false;
   }
   function onKey(e: KeyboardEvent): void {
     if (e.key === "Escape") {
       app.showRail = false;
       app.showContext = false;
+      showGauge = false;
     }
   }
   $effect(() => {
-    if (!app.showRail && !app.showContext) return;
+    if (!app.showRail && !app.showContext && !showGauge) return;
     document.addEventListener("mousedown", onDocClick, true);
     document.addEventListener("keydown", onKey);
     return () => {
@@ -319,6 +359,7 @@
   });
   function toggleRail() {
     app.showContext = false;
+    showGauge = false;
     app.showRail = !app.showRail;
   }
   // The card's place, refreshed while it is open on resize and on scroll
@@ -346,40 +387,113 @@
       window.removeEventListener("scroll", placePop, true);
     };
   });
-  function toggleContext() {
-    app.showRail = false;
-    app.showContext = !app.showContext;
+  // ~~`toggleContext` (the gauge chip's click)~~ — the chip opens the gauge
+  // card since board d (backlog 175); the card's button is `itemise` below,
+  // and ⌘⇧C toggles the page from `state.svelte.ts`.
+
+  // The gauge card's place: right-aligned under the gauge chip, refreshed
+  // on resize and scroll while open, as the rail's card is.
+  const GAUGE_WIDTH = 320;
+  let gaugePos = $state({ top: 0, left: 0 });
+  function placeGauge(): void {
+    if (!gaugeEl) return;
+    const r = gaugeEl.getBoundingClientRect();
+    gaugePos = anchorBelow({ left: r.left, right: r.right, bottom: r.bottom }, GAUGE_WIDTH, window.innerWidth, 6);
   }
+  $effect(() => {
+    if (!showGauge) return;
+    placeGauge();
+    window.addEventListener("resize", placeGauge);
+    window.addEventListener("scroll", placeGauge, true);
+    return () => {
+      window.removeEventListener("resize", placeGauge);
+      window.removeEventListener("scroll", placeGauge, true);
+    };
+  });
+  function toggleGauge() {
+    app.showRail = false;
+    app.showContext = false;
+    showGauge = !showGauge;
+  }
+  function itemise() {
+    showGauge = false;
+    app.showRail = false;
+    app.showContext = true;
+  }
+
+  // The folds, by measurement (nightshift backlog 183): on every change of
+  // the bar's size — a window resize, a split, ⌘+ — and of what it holds,
+  // step the fold level up from 0 until the bar's items sit on one line.
+  const FOLD_MAX = 3;
+  let rightEl = $state<HTMLElement | null>(null);
+  /** Mirrors what `foldToFit` wrote, so the attribute is dynamic markup
+   *  (a static one would let Svelte prune the fold rules as unused). */
+  let foldAttr = $state("0");
+  function refold(): void {
+    const bar = barEl;
+    if (!bar) return;
+    foldAttr = String(foldToFit(
+      bar,
+      () => [...bar.querySelectorAll(":scope > .left > *, :scope > .right > *")],
+      FOLD_MAX,
+    ));
+  }
+  $effect(() => {
+    const bar = barEl;
+    if (!bar || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => refold());
+    ro.observe(bar);
+    if (rightEl) ro.observe(rightEl);
+    return () => ro.disconnect();
+  });
+  $effect(() => {
+    // What the bar holds; each read registers the dependency.
+    void [
+      agents.rows.length,
+      agents.running,
+      agents.tokens,
+      app.turnBudget,
+      spend,
+      canCompact,
+      modeText,
+      continuedFrom,
+      app.connection,
+      gauge == null,
+      plan == null,
+      planAgeMark,
+      openTasks,
+    ];
+    refold();
+  });
   // ~~The two transcript toggles' key caps, the thinking-cost note (066)
   // and `thinkingDead` (097)~~ — with the toggles, in `Composer.svelte`'s
   // bottom row since backlog 112.
 </script>
 
-<header class="topbar" bind:this={barEl}>
-  <div class="left">
-    {#if title}
-      <span class="title" {title}>{title}</span>
-    {/if}
-    {#if crumb}
-      <span class="crumb ns-mono fold3" title={app.activeSessionId ?? ""}>{crumb}</span>
-    {/if}
-    {#if modeText}
-      <span class="mode {mode}" title={modeTitle}
-        ><span aria-hidden="true">{MODE_GLYPH[mode]}</span> {modeText}</span
-      >
-    {/if}
-    {#if continuedFrom}
-      <button
-        class="continued"
-        title="This chat continues a full one from its HANDOFF.md — click to open the earlier chat"
-        onclick={() => void openSession(continuedFrom.id)}
-      >
-        <span aria-hidden="true">↳</span> continued from {continuedFrom.line}
-      </button>
-    {/if}
-  </div>
+<header class="topbar" bind:this={barEl} data-fold={foldAttr}>
+  <!-- ~~The title and the short id~~ — board d (backlog 175): the tab is
+       the title, its hover the id. The mode mark and "continued from"
+       stay, at the bar's left, when a chat has one. -->
+  {#if modeText || continuedFrom}
+    <div class="left">
+      {#if modeText}
+        <span class="mode {mode}" title={modeTitle}
+          ><span aria-hidden="true">{MODE_GLYPH[mode]}</span><span class="fold2"> {modeText}</span></span
+        >
+      {/if}
+      {#if continuedFrom}
+        <button
+          class="continued"
+          title="This chat continues a full one from its HANDOFF.md — click to open the earlier chat"
+          onclick={() => void openSession(continuedFrom.id)}
+        >
+          <span aria-hidden="true">↳</span><span class="fold1"> continued from {continuedFrom.line}</span>
+        </button>
+      {/if}
+    </div>
+  {/if}
 
-  <div class="right">
+  <div class="right" bind:this={rightEl}>
     <!-- The kind chip (nightshift backlog 102; blocker 141's final form
          since backlog 112): `Claude Code · subscription`, `Chat ·
          subscription`, `Build · anthropic`, `Chat · anthropic` — the kind
@@ -398,7 +512,7 @@
       <span class="dot" class:unknown={!app.connection}></span>
       {#if app.connection}
         <span class="model-name"
-          >{kindLabel(chatKind(app.events), app.connection.engine)}<span class="fold3"> · {engineName}</span></span
+          >{kindLabel(chatKind(app.events), app.connection.engine)}<span class="fold2"> · {engineName}</span></span
         >
       {:else}
         <span class="annotation">not connected</span>
@@ -406,31 +520,42 @@
       {#if openTasks > 0}<span class="badge" title="{openTasks} open tasks">{openTasks}</span>{/if}
     </button>
 
-    <!-- The context gauge is the Context button (review round 1,
-         2026-09-13): it opens the itemised request in its own popover, where
-         the rail's third tab used to be. Before any usage it reads "Context". -->
+    <!-- The gauge chip (board d, nightshift backlog 175 pass 2): the
+         context gauge and the plan chip made one — two thin bars, context
+         (amber, warm and hot as before) over the plan's five hours (the
+         live blue), and the plan reading's age (his "4m", 2026-09-18).
+         ~~Its click opens the Context page~~ — it opens the gauge card with
+         every figure; the card's button and ⌘⇧C open the Context page.
+         Every figure is also in the chip's hover. Before any usage it reads
+         "Context", and with no known window the raw count stands in for
+         the bar. -->
     {#if app.connection}
       <button
         class="ns-chip mono gauge {level}"
-        class:open={app.showContext}
-        aria-expanded={app.showContext}
-        title={gauge
+        class:open={showGauge}
+        class:stale={plan?.stale}
+        aria-expanded={showGauge}
+        bind:this={gaugeEl}
+        title={(gauge
           ? gauge.limit
-            ? `${gauge.used.toLocaleString()} of ${gauge.limit.toLocaleString()} context tokens (${Math.round((gauge.ratio ?? 0) * 100)}%)${spendTail}${agentsTail} — click to itemise (⌘⇧C)`
-            : `${gauge.used.toLocaleString()} context tokens — window size unknown for this model${spendTail}${agentsTail} — click to itemise (⌘⇧C)`
-          : "What the next request carries — click to open (⌘⇧C)"}
-        onclick={toggleContext}
+            ? `Context: ${gauge.used.toLocaleString()} of ${gauge.limit.toLocaleString()} tokens (${Math.round((gauge.ratio ?? 0) * 100)}%)${spendTail}${agentsTail}`
+            : `Context: ${gauge.used.toLocaleString()} tokens — window size unknown for this model${spendTail}${agentsTail}`
+          : "Context: nothing sent yet") +
+          (plan ? `\n${planTitle}` : "") +
+          " — click for the figures (⌘⇧C itemises the context)"}
+        onclick={toggleGauge}
       >
-        {#if gauge}
-          {#if gauge.ratio != null}
-            <div class="bar"><div class="fill" style:width="{gauge.ratio * 100}%"></div></div>
-          {/if}
-          <!-- The fold classes (backlog 129): `fold1` goes first as the
-               bar narrows, `fold3` last; the count itself folds only when
-               a bar is left to stand for it. -->
-          <span class="figure">
-            <span class:fold3={gauge.ratio != null}>{tokens(gauge.used)}</span>{#if gauge.limit}<span class="of fold1">of {tokens(gauge.limit)}</span><span class="pct fold2">· {Math.round((gauge.ratio ?? 0) * 100)}%</span>{:else}<span class="of fold1">tokens</span>{/if}
+        {#if gauge || plan}
+          <span class="bars">
+            {#if gauge?.ratio != null}
+              <span class="gbar ctx"><span class="fill" style:width="{gauge.ratio * 100}%"></span></span>
+            {/if}
+            {#if plan}
+              <span class="gbar"><span class="fill plan-fill" style:width="{Math.min(plan.five_hour ?? 0, 100)}%"></span></span>
+            {/if}
           </span>
+          {#if gauge && gauge.ratio == null}<span class="figure">{tokens(gauge.used)}</span>{/if}
+          {#if plan}<span class="of plan-age">{planAgeMark}</span>{/if}
         {:else}
           <span class="figure sans">Context</span>
         {/if}
@@ -453,7 +578,7 @@
         <span class="figure">
           <span>{agents.rows.length} agent{agents.rows.length === 1 ? "" : "s"}</span>
           {#if agents.running === 0}<span class="of fold1">· done</span>{/if}
-          <span class="of">· {tokens(agents.tokens)}</span>
+          <span class="of fold3">· {tokens(agents.tokens)}</span>
           <!-- The message's budget meter (backlog 165, pass 2): spent of
                budget, in window percent, as the hook's ledger moves. -->
           {#if app.turnBudget}<span class="of budget" class:stopped={!!app.turnBudget.stopped}>· {budgetChip(app.turnBudget)}</span>{/if}
@@ -461,42 +586,11 @@
       </button>
     {/if}
 
-    <!-- The plan chip (nightshift backlog 073): 5h and 7d beside the
-         gauge, bars in the live blue so it never reads as the context
-         gauge. Basic rendering tonight; the Fable board has the shape. -->
-    {#if plan}
-      <div class="ns-chip mono plan" class:stale={plan.stale} title={planTitle}>
-        <span class="figure">
-          <span class="of fold1">plan</span>
-          <span class="pct fold3">5h</span>
-          <div class="bar"><div class="fill plan-fill" style:width="{Math.min(plan.five_hour ?? 0, 100)}%"></div></div>
-          <span class="fold3">{plan.five_hour}%</span>
-          {#if plan.seven_day != null}
-            <span class="pct fold2">· wk</span>
-            <div class="bar fold2"><div class="fill plan-fill" style:width="{Math.min(plan.seven_day, 100)}%"></div></div>
-            <span class="fold2">{plan.seven_day}%</span>
-          {/if}
-          {#if plan.stale}<span class="of fold1">· stale</span>{/if}
-          <span class="of fold1 plan-age">· {planAgeMark}</span>
-        </span>
-      </div>
-    {/if}
-
-    <!-- ~~The two transcript toggles (backlog 052) and the cache chip
-         (063)~~ — the composer's bottom row since backlog 112
-         (2026-09-16), with their titles, keys and the 097 disabled rule. -->
-
-    {#if spend}
-      <div
-        class="ns-chip mono spend fold2"
-        class:partial={!spend.complete}
-        title={spend.complete
-          ? "Session cost so far, summed from each exchange at the price in force when it ran"
-          : "At least this much: some exchanges ran on a model with no verified price"}
-      >
-        {spend.complete ? "" : "≥"}{spend.text}
-      </div>
-    {/if}
+    <!-- ~~The plan chip (backlog 073) and the spend chip~~ — folded into
+         the gauge chip and its card (board d, backlog 175 pass 2,
+         2026-09-22); every figure they showed is in the card and the
+         chip's hover. ~~The two transcript toggles (backlog 052) and the
+         cache chip (063)~~ — the composer's bottom row since backlog 112. -->
 
     <!--
       Compaction and nothing else. The settings gear used to sit beside it and
@@ -537,6 +631,85 @@
       <RightRail />
     </div>
   {/if}
+  {#if showGauge && app.connection}
+    <!-- The gauge card (board d, backlog 175 pass 2): every figure the
+         context gauge, the plan chip and the spend chip carried, portalled
+         and placed under the gauge chip as the rail's card is (163). -->
+    <div
+      class="gauge-card"
+      role="dialog"
+      aria-label="Context and plan"
+      bind:this={gaugePopEl}
+      use:portal
+      style="top: {gaugePos.top}px; left: {gaugePos.left}px; width: {GAUGE_WIDTH}px"
+    >
+      <div class="gc-head">Context and plan</div>
+      <div class="gc-row">
+        <span class="gc-label">Context</span>
+        <span class="gc-val">
+          {#if gauge}
+            {#if gauge.ratio != null}
+              <span class="gc-bar {level}"><span class="fill" style:width="{gauge.ratio * 100}%"></span></span>
+            {/if}
+            <span class="gc-fig"
+              >{gauge.used.toLocaleString()}{" "}{#if gauge.limit}of {gauge.limit.toLocaleString()} · {Math.round(
+                  (gauge.ratio ?? 0) * 100,
+                )}%{:else}tokens — window size unknown{/if}</span
+            >
+            {#if agents.rows.length > 0}
+              <span class="gc-note"
+                >+ subagents: {agents.tokens.toLocaleString()} tokens ({agents.rows.length}, not in the window)</span
+              >
+            {/if}
+          {:else}
+            <span class="gc-fig sans">nothing sent yet</span>
+          {/if}
+        </span>
+      </div>
+      {#if plan}
+        <div class="gc-row">
+          <span class="gc-label">Plan, 5 h</span>
+          <span class="gc-val">
+            <span class="gc-bar"><span class="fill plan-fill" style:width="{Math.min(plan.five_hour ?? 0, 100)}%"></span></span>
+            <span class="gc-fig">{plan.five_hour}% · {resetText(plan.five_hour_resets_at)}</span>
+          </span>
+        </div>
+        {#if plan.seven_day != null}
+          <div class="gc-row">
+            <span class="gc-label">Plan, week</span>
+            <span class="gc-val">
+              <span class="gc-bar"><span class="fill plan-fill" style:width="{Math.min(plan.seven_day, 100)}%"></span></span>
+              <span class="gc-fig">{plan.seven_day}% · {resetText(plan.seven_day_resets_at)}</span>
+            </span>
+          </div>
+        {/if}
+      {/if}
+      {#if spend}
+        <div class="gc-row">
+          <span class="gc-label">Spent</span>
+          <span class="gc-val">
+            <span
+              class="gc-fig"
+              class:partial={!spend.complete}
+              title={spend.complete
+                ? "Session cost so far, summed from each exchange at the price in force when it ran"
+                : "At least this much: some exchanges ran on a model with no verified price"}
+              >{spend.complete ? "" : "at least "}{spend.text}</span
+            >
+          </span>
+        </div>
+      {/if}
+      {#if plan}
+        <p class="gc-foot" class:stale={plan.stale}>
+          Plan {planAgeText.replace(/^sampled /, "read ")} from {planWhere}; account-wide, every surface.{#if plan.stale}
+            Stale: past 20 minutes, may be behind.{/if} Refreshed at each turn end.
+        </p>
+      {/if}
+      <div class="gc-actions">
+        <button class="ns-btn ghost small" onclick={itemise}>Itemise the context <span class="gc-key">⌘⇧C</span></button>
+      </div>
+    </div>
+  {/if}
   <!-- The Context page is no longer a popover here: it opens as a centre
        modal from `App.svelte` (2026-09-15), on the same overlay as
        Settings. The chip above still toggles `app.showContext`. -->
@@ -545,14 +718,13 @@
 <style>
   .topbar {
     position: relative;
-    /* The bar is a CSS container (backlog 129): the fold rules below
-       fire on its own width, whatever the zoom. Containment makes it a
-       stacking context, so it is lifted a step over `.content` — which
-       follows it in the DOM — or the rail popover would paint under the
-       transcript. Under the overlays (20), the find bar (10 is inside
-       `.content`, whose own context this does not enter) and the toasts. */
-    container-type: inline-size;
-    container-name: topbar;
+    /* ~~The bar is a CSS container (backlog 129)~~ — no longer (backlog
+       183, 2026-09-22: under WebKit page zoom a container query reads the
+       width × the zoom); it folds by measurement (`fold.ts`, `data-fold`).
+       It stays a stacking context lifted a step over `.content` — which
+       follows it in the DOM. Under the overlays (20), the find bar (10 is
+       inside `.content`, whose own context this does not enter) and the
+       toasts. */
     z-index: 1;
     display: flex;
     align-items: center;
@@ -561,7 +733,8 @@
     background: var(--paper);
     border-bottom: 1px solid var(--line);
     padding: 0 20px;
-    min-height: 52px;
+    /* ~~52px~~ — 44 px with the title row gone (board d, backlog 175). */
+    min-height: 44px;
     /* Past the three folds the bar wraps to a second line rather than
        clipping its last chip (his screenshot at ⌘+ zoom, 2026-09-18:
        "≥$0.0" cut at the edge — the gauge grew a week bar after 129
@@ -577,21 +750,8 @@
     overflow: hidden;
     white-space: nowrap;
   }
-  .title {
-    font-family: var(--serif);
-    font-size: 18px;
-    color: var(--ink);
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .crumb {
-    font-size: 11.5px;
-    color: var(--dim);
-    /* The id and the mode keep their width; the title is what ellipsizes
-       (backlog 129) — before, both shrank in proportion and at 200% the
-       title went to nothing while the id stayed. */
-    flex-shrink: 0;
-  }
+  /* ~~`.title` and `.crumb`~~ — gone with the title row (board d,
+     backlog 175, 2026-09-22); the tab's hover carries the id. */
   /* The mode mark: the crumb's size, a shade brighter so it reads as a
      state and not as an id. */
   .mode {
@@ -633,35 +793,33 @@
     flex-wrap: wrap;
     justify-content: flex-end;
     row-gap: 4px;
+    /* With no title on the left, the cluster keeps the right end. */
+    margin-left: auto;
   }
-  /* The three folds (backlog 129), by the bar's own width. Step 1: the
-     gauges' words. Step 2: the spend chip, the gauge's percentage, the
-     plan chip's week. Step 3: the counts — bars alone — and the chip's
-     engine; the bars narrow a little so a 200% bar in a 1440px window
-     keeps room for the title. Every folded figure is in a hover. */
-  @container topbar (max-width: 1000px) {
-    .fold1 {
-      display: none;
-    }
+  /* The folds, by measurement (backlog 183; ~~three `@container topbar`
+     steps at 1000 / 860 / 700 px~~, which WebKit's page zoom fired a step
+     late). `refold()` sets `data-fold` to the first level at which the
+     bar's items sit on one line. Level 1: the agents chip's "· done" and
+     "continued from"'s words. Level 2: the kind chip's engine and the mode
+     mark's words. Level 3: the agents chip's token count, and the gauge's
+     bars and the kind chip narrow. Every folded word is in a hover. */
+  .topbar:is([data-fold="1"], [data-fold="2"], [data-fold="3"]) .fold1 {
+    display: none;
   }
-  @container topbar (max-width: 860px) {
-    .fold2 {
-      display: none;
-    }
+  .topbar:is([data-fold="2"], [data-fold="3"]) .fold2 {
+    display: none;
   }
-  @container topbar (max-width: 700px) {
-    .fold3 {
-      display: none;
-    }
-    .bar {
-      width: 44px;
-    }
-    .model {
-      max-width: 200px;
-    }
-    .right {
-      gap: 6px;
-    }
+  .topbar[data-fold="3"] .fold3 {
+    display: none;
+  }
+  .topbar[data-fold="3"] .gbar {
+    width: 36px;
+  }
+  .topbar[data-fold="3"] .model {
+    max-width: 200px;
+  }
+  .topbar[data-fold="3"] .right {
+    gap: 6px;
   }
 
   .model {
@@ -691,8 +849,7 @@
     font-variant-numeric: tabular-nums;
   }
 
-  .gauge,
-  .spend {
+  .gauge {
     font-variant-numeric: tabular-nums;
     color: var(--ink2);
   }
@@ -726,8 +883,7 @@
     display: inline-flex;
     gap: 5px;
   }
-  .of,
-  .pct {
+  .of {
     color: var(--dim);
   }
   /* The budget meter once the hook has refused (backlog 165 pass 2; the
@@ -735,45 +891,136 @@
   .of.budget.stopped {
     color: var(--failed);
   }
-  .bar {
-    width: 56px;
-    height: 4px;
-    border-radius: 2px;
-    background: var(--line2);
-    overflow: hidden;
-  }
+  /* ~~`.bar`, `.plan`, `.plan .figure`, `.spend`~~ — the old gauge's,
+     plan chip's and spend chip's; board d's are `.gbar` and the card's. */
   .fill {
     height: 100%;
     background: var(--accent);
     transition: width 120ms linear;
   }
-  .gauge.warm .fill {
-    background: var(--partial);
-  }
   .gauge.hot {
     color: var(--failed);
-  }
-  .gauge.hot .fill {
-    background: var(--failed);
-  }
-  .plan {
-    font-variant-numeric: tabular-nums;
-    color: var(--ink2);
-  }
-  .plan .figure {
-    align-items: center;
   }
   .plan-fill {
     background: var(--live);
   }
-  .plan.stale {
+  /* The gauge chip (board d): context over plan, two 3 px bars. */
+  .gauge .bars {
+    display: inline-flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .gbar {
+    display: block;
+    width: 48px;
+    height: 3px;
+    border-radius: 2px;
+    background: var(--line2);
+    overflow: hidden;
+  }
+  .gbar .fill,
+  .gc-bar .fill {
+    display: block;
+  }
+  .gauge .plan-age {
+    font-size: 11px;
+  }
+  .gauge.stale .plan-age {
+    font-style: italic;
+  }
+  .gauge.warm .gbar.ctx .fill {
+    background: var(--partial);
+  }
+  .gauge.hot .gbar.ctx .fill {
+    background: var(--failed);
+  }
+  /* The gauge card: the rail card's frame, a label column and a value
+     column; portalled, so fixed to the viewport. */
+  .gauge-card {
+    position: fixed;
+    z-index: 80;
+    box-sizing: border-box;
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    background: var(--sheet);
+    border: 1px solid var(--line2);
+    border-radius: 10px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+    font-size: 12.5px;
+    color: var(--ink2);
+  }
+  .gc-head {
+    font-size: 10.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
     color: var(--dim);
+  }
+  .gc-row {
+    display: grid;
+    grid-template-columns: 72px minmax(0, 1fr);
+    gap: 8px;
+    align-items: start;
+  }
+  .gc-label {
+    color: var(--ink);
+  }
+  .gc-val {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+  .gc-bar {
+    display: block;
+    height: 4px;
+    margin-top: 6px;
+    border-radius: 2px;
+    background: var(--line2);
+    overflow: hidden;
+  }
+  .gc-bar.warm .fill {
+    background: var(--partial);
+  }
+  .gc-bar.hot .fill {
+    background: var(--failed);
+  }
+  .gc-fig {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    font-variant-numeric: tabular-nums;
+  }
+  .gc-fig.sans {
+    font-family: var(--sans);
+    color: var(--dim);
+  }
+  .gc-fig.partial {
+    font-style: italic;
+  }
+  .gc-note {
+    color: var(--dim);
+    font-size: 11.5px;
+  }
+  .gc-foot {
+    margin: 0;
+    color: var(--dim);
+    font-size: 11.5px;
+    line-height: 1.4;
+  }
+  .gc-foot.stale {
+    color: var(--partial);
+  }
+  .gc-actions {
+    display: flex;
+    justify-content: flex-end;
+  }
+  .gc-key {
+    color: var(--dim);
+    margin-left: 4px;
   }
   /* The cache chip's and the toggles' rules went with them to
      `Composer.svelte` (backlog 112). */
-  .spend.partial {
-    font-style: italic;
-  }
 
   .popover {
     position: fixed;

@@ -71,6 +71,16 @@
     return live?.id === t.id && app.pendingApprovals.length > 0;
   }
 
+  /** A chat tab's short id and mode, for its hover (board d, nightshift
+   *  backlog 175 pass 2): the top bar's title row and id went, so the tab
+   *  that names the chat carries them. */
+  function chatTail(c: tabs.TabContent): string {
+    if (c.kind !== "chat" || !c.session) return "";
+    const meta = app.sessions.find((s) => s.id === c.session);
+    const mode = meta?.mode === "incognito" ? " · incognito" : "";
+    return ` · ${c.session.slice(0, 8)}${mode}`;
+  }
+
   function hint(t: tabs.Tab): string {
     const c = t.content;
     const base =
@@ -84,7 +94,7 @@
               ? `${title(t)} — an attachment of a message, kept as a tab`
               : c.kind === "subagent"
                 ? `${title(t)} — a subagent's transcript: its calls, results and words`
-                : title(t);
+                : title(t) + chatTail(c);
     const state = needsYou(t) ? " · waiting on you" : running(t) ? " · a turn is running" : "";
     return `${base}${state} — ${isMac ? "⌘W" : "Ctrl+W"} closes`;
   }

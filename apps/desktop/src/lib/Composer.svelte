@@ -68,6 +68,7 @@
   import ClipPanel from "./ClipPanel.svelte";
   import { clips, recordImage, recordText } from "./clipRing.svelte";
   import type { CouncilPrefs } from "./council";
+  import { foldToFit } from "./fold";
 
   /**
    * `floating` drops the docked chrome (top border, panel fill) for the
@@ -1042,6 +1043,50 @@
     return sameDay ? hm : `${d.toLocaleDateString([], { month: "short", day: "numeric" })} ${hm}`;
   }
 
+  /**
+   * The toolbar row's folds, by measurement (nightshift backlog 190, with
+   * 183's `fold.ts`): his screenshot of the project home, 2026-09-22 —
+   * Send alone on a second row under Attach · model · effort · Council.
+   * Send stays on row one; the other controls shed first. Level 1: the
+   * pickers' key words ("effort", "thinking", "drafts"). Level 2: Attach
+   * to its icon, Ask aside to "Aside". Level 3: the model's and effort's
+   * values ellipsize at 72 px. Level 4, the floor: the pickers give row
+   * one to the actions (Ask aside, Council, Send / Queue, Stop) and take a
+   * row of their own beneath, folded as at level 3. Every shed word is in its button's title.
+   */
+  const ROW_FOLD_MAX = 4;
+  let rowEl = $state<HTMLElement | null>(null);
+  let rowFold = $state("0");
+  function refoldRow(): void {
+    const row = rowEl;
+    if (!row) return;
+    rowFold = String(
+      foldToFit(row, () => [...row.children].filter((e) => !e.classList.contains("spacer")), ROW_FOLD_MAX),
+    );
+  }
+  $effect(() => {
+    const row = rowEl;
+    if (!row || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => refoldRow());
+    ro.observe(row);
+    return () => ro.disconnect();
+  });
+  $effect(() => {
+    // What the row holds; each read registers the dependency.
+    void [
+      modelLabel,
+      effortLabel,
+      thinkingLabel,
+      agentMode,
+      history.length,
+      app.busy,
+      app.parked,
+      app.connection?.engine,
+      app.events.length > 0,
+    ];
+    refoldRow();
+  });
+
   let menu = $state<"model" | "effort" | "history" | null>(null);
   let menuEl = $state<HTMLElement | null>(null);
   let modelBtn = $state<HTMLElement | null>(null);
@@ -1397,7 +1442,7 @@
       {onkeydown}
       onblur={() => (clipOpen = false)}
     ></textarea>
-    <div class="row">
+    <div class="row" bind:this={rowEl} data-fold={rowFold}>
       <input
         bind:this={picker}
         type="file"
@@ -1406,8 +1451,13 @@
         hidden
         onchange={onpick}
       />
-      <button class="ns-btn ghost small" disabled={!app.connection} onclick={() => picker?.click()}>
-        <Icon name="plus" />Attach
+      <button
+        class="ns-btn ghost small attach"
+        title="Attach images or PDFs"
+        disabled={!app.connection}
+        onclick={() => picker?.click()}
+      >
+        <Icon name="plus" /><span class="fold-word">Attach</span>
       </button>
       <!-- The model and effort buttons (backlog 112, board 10's A): each
            opens its menu above; the top bar's chip no longer names the
@@ -1479,12 +1529,12 @@
       <span class="spacer"></span>
       {#if app.busy}
         <button
-          class="ns-btn ghost small"
+          class="ns-btn ghost small act"
           title="Hold this message; it goes when the turn ends"
           onclick={enqueue}
           disabled={!text.trim() && attachments.length === 0}>Queue</button
         >
-        <button class="ns-btn danger small" title={app.parked ? `Stop the turn running in ${runningChatName()}` : "Stop this turn"} onclick={() => void cancelTurn()}>Stop</button>
+        <button class="ns-btn danger small act" title={app.parked ? `Stop the turn running in ${runningChatName()}` : "Stop this turn"} onclick={() => void cancelTurn()}>Stop</button>
       {:else}
         {#if app.connection?.engine === "claude-code" && app.events.length > 0}
           <!-- Ask aside (nightshift backlog 081): the typed question goes
@@ -1493,18 +1543,18 @@
                Not before the first turn: an empty chat has no context to
                ask (the Welcome screen showed it — his report, 2026-09-17). -->
           <button
-            class="ns-btn ghost small"
+            class="ns-btn ghost small act"
             title="Ask this of the chat without adding it to the chat: answered from what is already in context, no changes, recorded nowhere (Claude Code's /btw)"
             disabled={!text.trim() || attachments.length > 0}
             onclick={() => void submitAside()}
           >
-            Ask aside
+            <span class="fold-word">Ask aside</span><span class="short-word">Aside</span>
           </button>
         {/if}
         {#if app.connection?.engine === "claude-code"}
           <!-- The council (nightshift backlog 149): the popover's roster
                and mode for this turn, then Send to the council. -->
-          <span class="council-wrap" bind:this={councilWrap}>
+          <span class="council-wrap act" bind:this={councilWrap}>
             <button
               class="ns-btn ghost small"
               class:on={councilOpen}
@@ -1529,7 +1579,7 @@
           </span>
         {/if}
         <button
-          class="ns-btn accent send"
+          class="ns-btn accent send act"
           onclick={() => void submit()}
           disabled={!app.connection || (!text.trim() && attachments.length === 0)}
         >
@@ -2035,7 +2085,36 @@
        Council, Send — drops to a second line. */
     flex-wrap: wrap;
     gap: 6px 8px;
-    container-type: inline-size;
+    /* ~~container-type: inline-size~~ — no rule queried it, and under
+       WebKit page zoom a container query reads width × zoom (backlog 183);
+       the row folds by measurement (`refoldRow`, 190). */
+  }
+  .short-word {
+    display: none;
+  }
+  .row:is([data-fold="1"], [data-fold="2"], [data-fold="3"], [data-fold="4"]) .pick-k {
+    display: none;
+  }
+  .row:is([data-fold="2"], [data-fold="3"], [data-fold="4"]) .fold-word {
+    display: none;
+  }
+  .row:is([data-fold="2"], [data-fold="3"], [data-fold="4"]) .short-word {
+    display: inline;
+  }
+  .row:is([data-fold="3"], [data-fold="4"]) .pick-name {
+    max-width: 72px;
+  }
+  /* The floor: the actions keep row one, right-aligned by the spacer;
+     a zero-height break (the row's ::after, a full-width flex item) sends
+     the pickers to a row of their own beneath. */
+  .row[data-fold="4"] > :not(.act):not(.spacer) {
+    order: 2;
+  }
+  .row[data-fold="4"]::after {
+    content: "";
+    order: 1;
+    flex-basis: 100%;
+    height: 0;
   }
   .spacer {
     flex: 1;
