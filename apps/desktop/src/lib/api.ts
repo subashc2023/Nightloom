@@ -630,6 +630,19 @@ export function turnBudget(session: string): Promise<TurnBudget | null> {
   return invoke("turn_budget", { session });
 }
 
+/** The window saw him in this chat (backlog 189): open and focused, or
+ *  `input` — he just sent a message. The hook holds a call past the stop
+ *  line for his answer only when he is. */
+export function notePresence(session: string, input = false): Promise<void> {
+  return invoke("note_presence", { session, input });
+}
+
+/** His answer on the card at the stop line (backlog 189): `continue` lets
+ *  this message's calls through to the end of the turn; `stop` refuses. */
+export function budgetOverride(session: string, decision: "continue" | "stop"): Promise<void> {
+  return invoke("budget_override", { session, decision });
+}
+
 /** The folder a name would get, for the form's live path row. */
 export function resolveNewProjectPath(name: string): Promise<NewProjectPath> {
   return invoke("resolve_new_project_path", { name });

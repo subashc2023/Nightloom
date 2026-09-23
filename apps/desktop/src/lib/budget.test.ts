@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { budgetChip, budgetTitle, councilBudgetLine, spentPct } from "./budget";
+import { budgetChip, budgetTitle, councilBudgetLine, spentPct, stopCard } from "./budget";
 import type { TurnBudget } from "./types";
 
 // The message's budget meter (nightshift backlog 165, pass 2).
@@ -31,6 +31,21 @@ describe("the budget meter", () => {
     expect(title).toContain("4% spent of a 35% budget (window 21% → 25%)");
     expect(title).toContain("85% stop line");
     expect(budgetTitle(ledger({ stopped: "why" }))).toContain("Stopped: why");
+  });
+
+  // The override when he is present (nightshift backlog 189).
+  it("says when a call is held for him, and when he let the message past the line", () => {
+    const held = ledger({ latest_pct: 90, start_pct: 70, pending_since_ms: 5 });
+    expect(budgetChip(held)).toBe("held at 85% · waiting for you");
+    expect(budgetTitle(held)).toContain("waiting for your answer in the chat");
+    const card = stopCard(held);
+    expect(card?.title).toBe("Stopped at 85% of the 5-hour window");
+    expect(card?.detail).toBe("the window is at 90% · this message has spent 20% of its 35%");
+    expect(stopCard(ledger())).toBeNull();
+    expect(stopCard(null)).toBeNull();
+    const over = ledger({ latest_pct: 90, start_pct: 70, override_at_ms: 6 });
+    expect(budgetChip(over)).toBe("past 85% on your word · spent 20% of 35%");
+    expect(budgetTitle(over)).toContain("Continue anyway");
   });
 
   it("the council line names the shared budget and the room left", () => {

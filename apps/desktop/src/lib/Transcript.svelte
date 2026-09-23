@@ -72,6 +72,7 @@
   import AsideCard from "./AsideCard.svelte";
   import { openAttachment } from "./attachments.svelte";
   import ApprovalPrompt from "./ApprovalPrompt.svelte";
+  import BudgetStopCard from "./BudgetStopCard.svelte";
   import Icon from "./Icon.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
   import Navigator from "./Navigator.svelte";
@@ -1694,6 +1695,11 @@
     {#each stranded as req (req.id)}
       <ApprovalPrompt {req} />
     {/each}
+    <!-- A call held at the 85% stop line for his answer (nightshift
+         backlog 189): only in the chat the turn runs in, while it runs. -->
+    {#if app.busy && !app.parked && app.activeSessionId && app.turnBudget?.pending_since_ms}
+      <BudgetStopCard session={app.activeSessionId} />
+    {/if}
     {#if app.error}
       <div class="error-banner">{app.error}</div>
     {/if}

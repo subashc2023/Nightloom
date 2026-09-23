@@ -4507,6 +4507,63 @@ async fn turn_budget(
         .map_err(|e| format!("reading the turn budget failed: {e}"))
 }
 
+/// The chat's ask directory by session id, as [`turn_budget`] finds it;
+/// `None` for an id that is not a plain file stem.
+async fn budget_dir(state: &State<'_, AppState>, session: &str) -> Option<PathBuf> {
+    if session.is_empty() || session.contains('/') || session.contains("..") {
+        return None;
+    }
+    Some(state.log_dir().await.join("ask").join(session))
+}
+
+/// The window saw him in this chat (nightshift backlog 189): open in a
+/// focused window, or (`input`) he just sent a message. The budget hook
+/// holds a call past the stop line for his answer only when he is.
+#[tauri::command]
+async fn note_presence(
+    state: State<'_, AppState>,
+    session: String,
+    input: Option<bool>,
+) -> Result<(), String> {
+    let Some(dir) = budget_dir(&state, &session).await else {
+        return Ok(());
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    nightloom_service::agent::brief::note_presence(&dir, input.unwrap_or(false), now)
+        .map_err(|e| format!("noting presence failed: {e}"))
+}
+
+/// His answer on the card at the 85 % stop line (backlog 189):
+/// `continue` lets this message's calls through to the end of the turn,
+/// `stop` refuses the held call as before.
+#[tauri::command]
+async fn budget_override(
+    state: State<'_, AppState>,
+    session: String,
+    decision: String,
+) -> Result<(), String> {
+    let go_on = match decision.as_str() {
+        "continue" => true,
+        "stop" => false,
+        other => return Err(format!("unknown decision: {other}")),
+    };
+    let dir = budget_dir(&state, &session)
+        .await
+        .ok_or_else(|| "no chat to answer for".to_string())?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    tokio::task::spawn_blocking(move || {
+        nightloom_service::agent::brief::write_override(&dir, go_on, now)
+    })
+    .await
+    .map_err(|e| format!("writing the override failed: {e}"))?
+}
+
 #[tauri::command]
 async fn plan_usage() -> Result<nightloom_service::plan_usage::PlanUsage, String> {
     tokio::task::spawn_blocking(nightloom_service::plan_usage::read)
@@ -6449,6 +6506,8 @@ fn main() {
             cli_version_check,
             cli_update,
             turn_budget,
+            note_presence,
+            budget_override,
             resolve_new_project_path,
             new_project,
             open_project,

@@ -563,6 +563,11 @@ export interface TurnBudget {
   stopped: string | null;
   /** How many hook calls the ledger has seen. */
   calls: number;
+  /** Since when a call past the stop line has been held for his answer
+   *  (nightshift backlog 189): the transcript shows *Continue anyway*. */
+  pending_since_ms?: number | null;
+  /** When he pressed *Continue anyway* for this message (backlog 189). */
+  override_at_ms?: number | null;
 }
 
 export interface UsageSummary {

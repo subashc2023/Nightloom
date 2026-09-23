@@ -480,6 +480,15 @@ pub struct TurnBudget {
     /// How many hook calls this ledger has seen (the meter's "calls").
     #[serde(default)]
     pub calls: u64,
+    /// Since when a call past the stop line has been held for his answer
+    /// (nightshift backlog 189): the window shows the *Continue anyway*
+    /// card while this is set. Cleared by the answer or the hold's end.
+    #[serde(default)]
+    pub pending_since_ms: Option<i64>,
+    /// When he pressed *Continue anyway* for this message — the ledger's
+    /// record of the override (backlog 189).
+    #[serde(default)]
+    pub override_at_ms: Option<i64>,
 }
 
 impl TurnBudget {
@@ -549,6 +558,8 @@ pub fn start_turn_budget(
         .into(),
         stopped: None,
         calls: 0,
+        pending_since_ms: None,
+        override_at_ms: None,
     }
 }
 
@@ -613,6 +624,12 @@ pub fn budget_verdict(b: &TurnBudget, reading: Option<WindowReading>) -> Result<
             r.resets_at,
         ));
     }
+    share_verdict(b, r)
+}
+
+/// The message's own share (the 35 %), alone: the brake that still binds
+/// under his override (backlog 189).
+fn share_verdict(b: &TurnBudget, r: WindowReading) -> Result<(), String> {
     if let Some(start) = b.start_pct {
         let spent = r.five_hour_pct.saturating_sub(start);
         if b.budget_pct > 0 && spent >= b.budget_pct {
@@ -627,27 +644,281 @@ pub fn budget_verdict(b: &TurnBudget, reading: Option<WindowReading>) -> Result<
     Ok(())
 }
 
+// ---- the override when he is present (nightshift backlog 189, 2026-09-22) ----
+//
+// Past the stop line every call is refused (blocker 290, kept). In a chat
+// he is present in, a call past the line is **held** instead: the ledger
+// says so (`pending_since_ms`), the window shows *Continue anyway* /
+// *Stop here*, and the click writes [`OVERRIDE_FILE`] naming the ledger's
+// turn (`started_at_ms`) and an expiry. The held hook — and every later
+// call of the same message — reads it and goes on; the message's own
+// share still binds. Another chat has its own directory; the next
+// message starts a new ledger, so the old override names a turn that is
+// gone. Held rather than refused-then-continued: a refused model stops
+// and ends its reply, leaving nothing for a Continue to let through
+// (blocker 292).
+
+/// His answer to a held call, beside the ledger.
+pub const OVERRIDE_FILE: &str = "budget-override.json";
+/// When the window last saw him in this chat, beside the ledger.
+pub const PRESENCE_FILE: &str = "presence.json";
+/// How long a held call waits for his answer before it is refused as
+/// before. Under the hook's registered timeout ([`HOOK_TIMEOUT_S`]).
+pub const HOLD_MS: i64 = 5 * 60 * 1000;
+/// An override lasts to the end of the message, and never past this.
+pub const OVERRIDE_TTL_MS: i64 = 60 * 60 * 1000;
+/// Present: the window saw this chat open and focused this recently
+/// (the front end writes every five seconds while the turn runs) …
+pub const PRESENT_SEEN_MS: i64 = 20 * 1000;
+/// … or his last message in it is this recent.
+pub const PRESENT_INPUT_MS: i64 = 5 * 60 * 1000;
+/// The hook's timeout on its registration, in seconds: longer than a
+/// hold, so the CLI never cuts a held call off by its own clock.
+pub const HOOK_TIMEOUT_S: u64 = 600;
+
+/// The click's record: `turn` is the ledger's `started_at_ms`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BudgetOverride {
+    pub turn: i64,
+    /// `continue` or `stop`.
+    pub decision: String,
+    pub at_ms: i64,
+    pub expires_at_ms: i64,
+}
+
+/// What the window last saw of him in one chat.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct Presence {
+    #[serde(default)]
+    pub seen_at_ms: Option<i64>,
+    #[serde(default)]
+    pub input_at_ms: Option<i64>,
+}
+
+/// Present, pure: the chat open in a focused window within
+/// [`PRESENT_SEEN_MS`], or his message within [`PRESENT_INPUT_MS`].
+pub fn is_present(p: Option<Presence>, now_ms: i64) -> bool {
+    let Some(p) = p else { return false };
+    p.seen_at_ms.is_some_and(|t| now_ms - t <= PRESENT_SEEN_MS)
+        || p.input_at_ms
+            .is_some_and(|t| now_ms - t <= PRESENT_INPUT_MS)
+}
+
+pub fn read_presence(dir: &Path) -> Option<Presence> {
+    serde_json::from_str(&std::fs::read_to_string(dir.join(PRESENCE_FILE)).ok()?).ok()
+}
+
+/// The window saw him: the chat open and focused, or (`input`) he just
+/// sent a message in it.
+pub fn note_presence(dir: &Path, input: bool, now_ms: i64) -> std::io::Result<()> {
+    let mut p = read_presence(dir).unwrap_or_default();
+    p.seen_at_ms = Some(now_ms);
+    if input {
+        p.input_at_ms = Some(now_ms);
+    }
+    std::fs::create_dir_all(dir)?;
+    let path = dir.join(PRESENCE_FILE);
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_string(&p).unwrap_or_default())?;
+    std::fs::rename(&tmp, path)
+}
+
+pub fn read_override(dir: &Path) -> Option<BudgetOverride> {
+    serde_json::from_str(&std::fs::read_to_string(dir.join(OVERRIDE_FILE)).ok()?).ok()
+}
+
+/// The override in force for this ledger, pure: `Some(true)` continue,
+/// `Some(false)` stop, `None` when there is none or it names another
+/// turn, has expired, or says something else. A stale or foreign one
+/// never lets a call through.
+pub fn override_for(b: &TurnBudget, ov: Option<&BudgetOverride>, now_ms: i64) -> Option<bool> {
+    let ov = ov?;
+    if ov.turn != b.started_at_ms || now_ms >= ov.expires_at_ms {
+        return None;
+    }
+    match ov.decision.as_str() {
+        "continue" => Some(true),
+        "stop" => Some(false),
+        _ => None,
+    }
+}
+
+/// One call's verdict under the ledger (backlog 189).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallVerdict {
+    /// Allowed; `overridden` when it is past the stop line on his word.
+    Allow {
+        overridden: bool,
+    },
+    Deny(String),
+    /// Past the stop line in a chat he is present in: wait for him.
+    Hold,
+}
+
+/// [`budget_verdict`] with his override and his presence, pure. Past the
+/// stop line: his *Continue* lets the call on to the message's own share;
+/// his *Stop* refuses; with no answer the call is held when he is present
+/// and it is the chat's own call (a subagent's is refused — its parent's
+/// next call is the one that asks), refused otherwise.
+pub fn call_verdict(
+    b: &TurnBudget,
+    reading: Option<WindowReading>,
+    ov: Option<bool>,
+    present: bool,
+    subagent: bool,
+) -> CallVerdict {
+    let Some(r) = reading else {
+        return CallVerdict::Allow { overridden: false };
+    };
+    let mut overridden = false;
+    if r.five_hour_pct >= b.stop_at {
+        match ov {
+            Some(true) => overridden = true,
+            None if present && !subagent => return CallVerdict::Hold,
+            _ => {
+                return CallVerdict::Deny(window_stop_all_reason(
+                    r.five_hour_pct,
+                    b.stop_at,
+                    r.resets_at,
+                ));
+            }
+        }
+    }
+    match share_verdict(b, r) {
+        Ok(()) => CallVerdict::Allow { overridden },
+        Err(reason) => CallVerdict::Deny(reason),
+    }
+}
+
+/// Open the ledger locked, change it, write it back. `None` when there
+/// is no ledger or it cannot be locked or read.
+fn with_ledger<T>(dir: &Path, f: impl FnOnce(&mut TurnBudget) -> T) -> Option<T> {
+    use std::io::{Read as _, Seek as _, Write as _};
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(dir.join(TURN_BUDGET_FILE))
+        .ok()?;
+    file.lock().ok()?;
+    let mut have = String::new();
+    let _ = file.read_to_string(&mut have);
+    let mut b = serde_json::from_str::<TurnBudget>(&have).ok()?;
+    let out = f(&mut b);
+    let _ = file.set_len(0);
+    let _ = file.seek(std::io::SeekFrom::Start(0));
+    let _ = file.write_all(
+        serde_json::to_string_pretty(&b)
+            .unwrap_or_default()
+            .as_bytes(),
+    );
+    Some(out)
+}
+
+/// His click on the card: `continue` or `stop` for the message the
+/// ledger is on now. Written under the file lock, the ledger's pattern;
+/// the ledger records the override and drops the pending mark. An error
+/// when there is no ledger to name.
+pub fn write_override(dir: &Path, go_on: bool, now_ms: i64) -> Result<(), String> {
+    use std::io::{Seek as _, Write as _};
+    let turn = with_ledger(dir, |b| {
+        b.pending_since_ms = None;
+        if go_on {
+            b.override_at_ms = Some(now_ms);
+        }
+        b.started_at_ms
+    })
+    .ok_or_else(|| "no budget ledger for this chat".to_string())?;
+    let ov = BudgetOverride {
+        turn,
+        decision: if go_on { "continue" } else { "stop" }.into(),
+        at_ms: now_ms,
+        expires_at_ms: now_ms + OVERRIDE_TTL_MS,
+    };
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join(OVERRIDE_FILE))
+        .map_err(|e| e.to_string())?;
+    file.lock().map_err(|e| e.to_string())?;
+    let _ = file.set_len(0);
+    let _ = file.seek(std::io::SeekFrom::Start(0));
+    file.write_all(serde_json::to_string(&ov).unwrap_or_default().as_bytes())
+        .map_err(|e| e.to_string())
+}
+
+/// Wait for his answer to a held call, polling the override every
+/// `poll_ms`, for at most `hold_ms`. A new message starting under the
+/// hold (the ledger's turn changed) or no answer in time: refused as
+/// before, and the ledger records the refusal.
+fn await_answer(
+    dir: &Path,
+    turn: i64,
+    reading: WindowReading,
+    subagent: bool,
+    hold_ms: i64,
+    poll_ms: u64,
+) -> CallVerdict {
+    let until = chrono::Utc::now().timestamp_millis() + hold_ms;
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(poll_ms));
+        let now = chrono::Utc::now().timestamp_millis();
+        let Some(b) = read_turn_budget(dir) else {
+            return CallVerdict::Allow { overridden: false };
+        };
+        if b.started_at_ms != turn {
+            break;
+        }
+        if let Some(go_on) = override_for(&b, read_override(dir).as_ref(), now) {
+            let v = call_verdict(&b, Some(reading), Some(go_on), false, subagent);
+            if let CallVerdict::Deny(reason) = &v {
+                with_ledger(dir, |b| b.stopped = Some(reason.clone()));
+            }
+            return v;
+        }
+        if now >= until {
+            break;
+        }
+    }
+    let b = read_turn_budget(dir).unwrap_or_default();
+    let reason = window_stop_all_reason(reading.five_hour_pct, b.stop_at, reading.resets_at);
+    with_ledger(dir, |b| {
+        if b.started_at_ms == turn {
+            b.pending_since_ms = None;
+            b.stopped = Some(reason.clone());
+        }
+    });
+    CallVerdict::Deny(reason)
+}
+
 /// Record a hook's reading in the ledger under the file lock (the
 /// turn's hooks run at once), pin the start if none was on hand, judge
 /// the call, and write the refusal into the ledger when there is one.
 /// No ledger (a chat older than the file, a turn started elsewhere):
-/// allowed, nothing written.
-fn note_reading(dir: &Path, reading: Option<WindowReading>) -> Result<(), String> {
+/// allowed, nothing written. Since backlog 189 the verdict weighs his
+/// override and his presence, and a held call marks the ledger pending.
+fn note_reading(
+    dir: &Path,
+    reading: Option<WindowReading>,
+    subagent: bool,
+    now_ms: i64,
+) -> (CallVerdict, i64) {
     use std::io::{Read as _, Seek as _, Write as _};
+    let allowed = (CallVerdict::Allow { overridden: false }, 0);
     let Ok(mut file) = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .open(dir.join(TURN_BUDGET_FILE))
     else {
-        return Ok(());
+        return allowed;
     };
     if file.lock().is_err() {
-        return Ok(());
+        return allowed;
     }
     let mut have = String::new();
     let _ = file.read_to_string(&mut have);
     let Ok(mut b) = serde_json::from_str::<TurnBudget>(&have) else {
-        return Ok(());
+        return allowed;
     };
     b.calls += 1;
     if let Some(r) = reading {
@@ -662,9 +933,15 @@ fn note_reading(dir: &Path, reading: Option<WindowReading>) -> Result<(), String
             b.resets_at = r.resets_at.or(b.resets_at);
         }
     }
-    let verdict = budget_verdict(&b, reading);
-    if let Err(reason) = &verdict {
-        b.stopped = Some(reason.clone());
+    let ov = override_for(&b, read_override(dir).as_ref(), now_ms);
+    let present = is_present(read_presence(dir), now_ms);
+    let verdict = call_verdict(&b, reading, ov, present, subagent);
+    match &verdict {
+        CallVerdict::Deny(reason) => b.stopped = Some(reason.clone()),
+        CallVerdict::Hold => {
+            b.pending_since_ms.get_or_insert(now_ms);
+        }
+        CallVerdict::Allow { .. } => {}
     }
     let _ = file.set_len(0);
     let _ = file.seek(std::io::SeekFrom::Start(0));
@@ -673,7 +950,7 @@ fn note_reading(dir: &Path, reading: Option<WindowReading>) -> Result<(), String
             .unwrap_or_default()
             .as_bytes(),
     );
-    verdict
+    (verdict, b.started_at_ms)
 }
 
 /// The per-chat, per-day refusal.
@@ -837,7 +1114,7 @@ pub fn hook_entry(hook: &[String], dir: &Path) -> Value {
     words.push(shell_quote(&dir.to_string_lossy()));
     serde_json::json!({
         "matcher": BRIEF_MATCHER,
-        "hooks": [{ "type": "command", "command": words.join(" ") }]
+        "hooks": [{ "type": "command", "command": words.join(" "), "timeout": HOOK_TIMEOUT_S }]
     })
 }
 
@@ -862,6 +1139,10 @@ struct HookInput {
     tool_name: String,
     #[serde(default)]
     tool_input: Value,
+    /// Set on a subagent's call (measured in 165 pass 2: `agent_id`
+    /// beside `agent_type` on the child's `Read`).
+    #[serde(default)]
+    agent_id: Option<String>,
 }
 
 /// The hook's whole decision, pure: the CLI's stdin line and the chat's
@@ -892,6 +1173,18 @@ pub fn decide(dir: &Path, stdin_json: &str) -> HookReply {
 /// [`decide`] with the desktop's gauge reading passed in, so the suite
 /// runs against a fixed window rather than this machine's files.
 pub fn decide_with(dir: &Path, stdin_json: &str, gauge: Option<WindowReading>) -> HookReply {
+    decide_holding(dir, stdin_json, gauge, HOLD_MS, 500)
+}
+
+/// [`decide_with`] with the hold's length and poll interval passed in,
+/// so the suite holds for milliseconds rather than minutes.
+fn decide_holding(
+    dir: &Path,
+    stdin_json: &str,
+    gauge: Option<WindowReading>,
+    hold_ms: i64,
+    poll_ms: u64,
+) -> HookReply {
     let Ok(input) = serde_json::from_str::<HookInput>(stdin_json) else {
         return HookReply::pass();
     };
@@ -908,15 +1201,32 @@ pub fn decide_with(dir: &Path, stdin_json: &str, gauge: Option<WindowReading>) -
     // Pass 2: the message's budget, on every call of every process in
     // the turn — the main thread's, a subagent's, a council seat's. The
     // ledger takes the reading either way (the live meter reads it).
-    if let Err(reason) = note_reading(dir, reading) {
-        return HookReply::deny(reason);
+    // Backlog 189: past the stop line, a chat he is present in holds the
+    // call for his answer rather than refusing it.
+    let subagent = input.agent_id.as_deref().is_some_and(|s| !s.is_empty());
+    let mut verdict = note_reading(dir, reading, subagent, now_ms);
+    if let (CallVerdict::Hold, turn) = &verdict
+        && let Some(r) = reading
+    {
+        verdict.0 = await_answer(dir, *turn, r, subagent, hold_ms, poll_ms);
     }
+    let overridden = match verdict.0 {
+        CallVerdict::Deny(reason) => return HookReply::deny(reason),
+        CallVerdict::Allow { overridden } => overridden,
+        CallVerdict::Hold => false,
+    };
     if !is_spawn(&input.tool_name) {
         return HookReply::pass();
     }
-    let cap = match window_verdict(&limits, reading) {
-        Ok(cap) => cap,
-        Err(reason) => return HookReply::deny(reason),
+    // Under his override the stop line does not refuse the spawn either;
+    // the turn's cap at that window still counts.
+    let cap = if overridden {
+        limits.turn_cap_at(reading.map(|r| r.five_hour_pct))
+    } else {
+        match window_verdict(&limits, reading) {
+            Ok(cap) => cap,
+            Err(reason) => return HookReply::deny(reason),
+        }
     };
     if claim_spawn(dir, cap).is_err() {
         return HookReply::deny(match reading {
@@ -1350,6 +1660,197 @@ mod tests {
                 || super::gauge_on_hand().is_some()
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // The override when he is present (nightshift backlog 189, 2026-09-22).
+
+    fn ov(turn: i64, decision: &str, expires_at_ms: i64) -> super::BudgetOverride {
+        super::BudgetOverride {
+            turn,
+            decision: decision.into(),
+            at_ms: 0,
+            expires_at_ms,
+        }
+    }
+
+    /// The pure check: this turn's Continue lets a call past the line
+    /// through; another turn's (the next message, another chat's ledger),
+    /// an expired one or a word it does not know does not; Stop refuses;
+    /// no answer holds only a present chat's own call; the 35 % share
+    /// still binds under the override.
+    #[test]
+    fn the_override_lets_this_turn_through_and_nothing_else() {
+        use super::CallVerdict::*;
+        let l = super::SubagentLimits::default();
+        let b = super::start_turn_budget(None, &l, reading(60, 1), 1_000, super::TurnPhase::Turn);
+        let now = 5_000;
+        let this = ov(1_000, "continue", now + 1);
+        assert_eq!(super::override_for(&b, Some(&this), now), Some(true));
+        assert_eq!(
+            super::override_for(&b, Some(&ov(999, "continue", now + 1)), now),
+            None,
+            "another turn"
+        );
+        assert_eq!(
+            super::override_for(&b, Some(&ov(1_000, "continue", now)), now),
+            None,
+            "expired"
+        );
+        assert_eq!(
+            super::override_for(&b, Some(&ov(1_000, "yes", now + 1)), now),
+            None
+        );
+        assert_eq!(
+            super::override_for(&b, Some(&ov(1_000, "stop", now + 1)), now),
+            Some(false)
+        );
+        assert_eq!(super::override_for(&b, None, now), None);
+        // 90 %: past the line, 30 spent of 35 — Continue lets it through.
+        assert_eq!(
+            super::call_verdict(&b, reading(90, 2), Some(true), false, false),
+            Allow { overridden: true }
+        );
+        // The same from a subagent: the parent's turn is overridden.
+        assert_eq!(
+            super::call_verdict(&b, reading(90, 2), Some(true), false, true),
+            Allow { overridden: true }
+        );
+        // Stop, or nothing and nobody there: refused as before.
+        for (o, present) in [(Some(false), true), (None, false)] {
+            let v = super::call_verdict(&b, reading(90, 2), o, present, false);
+            assert!(
+                matches!(&v, Deny(r) if r.contains("stop line is 85%")),
+                "{v:?}"
+            );
+        }
+        // Nothing yet and he is there: held — but a subagent's call is refused.
+        assert_eq!(
+            super::call_verdict(&b, reading(90, 2), None, true, false),
+            Hold
+        );
+        assert!(matches!(
+            super::call_verdict(&b, reading(90, 2), None, true, true),
+            Deny(_)
+        ));
+        // Under the line nothing changes: no hold, no override needed.
+        assert_eq!(
+            super::call_verdict(&b, reading(80, 2), None, true, false),
+            Allow { overridden: false }
+        );
+        // The message's 35 % still binds under the override: 95 − 60.
+        let v = super::call_verdict(&b, reading(95, 2), Some(true), true, false);
+        assert!(matches!(&v, Deny(r) if r.contains("spent 35%")), "{v:?}");
+    }
+
+    /// Presence: seen in a focused window within 20 s, or his message
+    /// within 5 minutes; nothing on file is absent.
+    #[test]
+    fn presence_is_a_recent_look_or_a_recent_message() {
+        let now = 1_000_000;
+        let p = |seen: Option<i64>, input: Option<i64>| {
+            Some(super::Presence {
+                seen_at_ms: seen,
+                input_at_ms: input,
+            })
+        };
+        assert!(!super::is_present(None, now));
+        assert!(super::is_present(p(Some(now - 20_000), None), now));
+        assert!(!super::is_present(p(Some(now - 20_001), None), now));
+        assert!(super::is_present(
+            p(Some(now - 60_000), Some(now - 300_000)),
+            now
+        ));
+        assert!(!super::is_present(
+            p(Some(now - 60_000), Some(now - 300_001)),
+            now
+        ));
+    }
+
+    /// Through the hook, past the line at 90 %: unattended it is refused
+    /// at once; present, the call is held and the ledger says so; his
+    /// Continue lets it (and a spawn) through and is recorded; the next
+    /// message is refused again; another chat's directory never sees it;
+    /// an expired one is refused; Stop refuses a held call.
+    #[test]
+    fn a_held_call_goes_on_by_his_click_for_this_message_only() {
+        let dir = limits_dir("override");
+        let other = limits_dir("override-other");
+        let now = chrono::Utc::now().timestamp_millis();
+        let l = super::SubagentLimits::default();
+        for d in [&dir, &other] {
+            super::write_limits(d, &l).unwrap();
+            super::write_usage(d, 70, Some(now / 1000 + 3600), now);
+            super::begin_turn(d, &l, super::TurnPhase::Turn);
+        }
+        let read = r#"{"tool_name":"Read","tool_input":{"file_path":"/x"}}"#;
+        let hold = |d: &std::path::Path, stdin: &str, at: i64| {
+            super::decide_holding(d, stdin, reading(90, at), 400, 20)
+        };
+        // Nobody there: refused at once, not held.
+        let t = std::time::Instant::now();
+        assert_eq!(hold(&dir, read, now + 1).decision(), "deny");
+        assert!(t.elapsed() < std::time::Duration::from_millis(300));
+        // He is there, and says nothing: held for the hold, then refused.
+        super::note_presence(&dir, false, chrono::Utc::now().timestamp_millis()).unwrap();
+        let t = std::time::Instant::now();
+        assert_eq!(hold(&dir, read, now + 2).decision(), "deny");
+        assert!(t.elapsed() >= std::time::Duration::from_millis(400));
+        assert_eq!(
+            super::read_turn_budget(&dir).unwrap().pending_since_ms,
+            None
+        );
+        // Held, and he clicks Continue while it waits: it goes on.
+        let d2 = dir.clone();
+        let clicker = std::thread::spawn(move || {
+            for _ in 0..50 {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                if super::read_turn_budget(&d2)
+                    .unwrap()
+                    .pending_since_ms
+                    .is_some()
+                {
+                    let at = chrono::Utc::now().timestamp_millis();
+                    super::write_override(&d2, true, at).unwrap();
+                    return true;
+                }
+            }
+            false
+        });
+        assert_eq!(hold(&dir, read, now + 3).decision(), "pass");
+        assert!(
+            clicker.join().unwrap(),
+            "the ledger showed the call pending"
+        );
+        let b = super::read_turn_budget(&dir).unwrap();
+        assert!(b.override_at_ms.is_some() && b.pending_since_ms.is_none());
+        // The rest of this message goes through without asking — a spawn too.
+        assert_eq!(hold(&dir, read, now + 4).decision(), "pass");
+        assert_ne!(hold(&dir, CALL, now + 5).decision(), "deny");
+        // Another chat's calls: its own directory, no override — refused.
+        assert_eq!(hold(&other, read, now + 6).decision(), "deny");
+        // The next message: a new ledger, the old override names a gone turn.
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        super::begin_turn(&dir, &l, super::TurnPhase::Turn);
+        let _ = std::fs::remove_file(dir.join(super::PRESENCE_FILE));
+        assert_eq!(hold(&dir, read, now + 7).decision(), "deny");
+        // Expired: an override naming this turn but past its expiry.
+        let turn = super::read_turn_budget(&dir).unwrap().started_at_ms;
+        std::fs::write(
+            dir.join(super::OVERRIDE_FILE),
+            serde_json::to_string(&ov(turn, "continue", now - 1)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(hold(&dir, read, now + 8).decision(), "deny");
+        // Stop here, with him there: refused at once, recorded.
+        super::note_presence(&dir, true, chrono::Utc::now().timestamp_millis()).unwrap();
+        super::write_override(&dir, false, chrono::Utc::now().timestamp_millis()).unwrap();
+        assert_eq!(hold(&dir, read, now + 9).decision(), "deny");
+        assert!(super::read_turn_budget(&dir).unwrap().stopped.is_some());
+        // The registration gives the hook longer than a hold.
+        let entry = super::hook_entry(&["x".into()], &dir);
+        assert!(entry["hooks"][0]["timeout"].as_i64().unwrap() * 1000 > super::HOLD_MS);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&other);
     }
 
     /// The subagents' model (blocker 280): `chat` leaves the spawn alone;

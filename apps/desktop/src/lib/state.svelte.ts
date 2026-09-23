@@ -1949,11 +1949,20 @@ export async function readTurnBudget(session: string | null): Promise<void> {
     // A failed read keeps the last ledger.
   }
 }
+/** He is here (backlog 189): this running chat is the one open, in a
+ *  focused window. The hook holds a call past the stop line for his
+ *  answer only then, or within five minutes of his message. */
+function notePresence(session: string, input: boolean): void {
+  const looking = typeof document !== "undefined" && document.hasFocus() && !app.parked && app.activeSessionId === session;
+  if (!input && !looking) return;
+  void api.notePresence(session, input).catch(() => {});
+}
 function startBudgetPoll(session: string | null): void {
   if (budgetPoll) clearInterval(budgetPoll);
   budgetPoll = null;
   app.turnBudget = null;
   if (!session || app.connection?.engine !== "claude-code") return;
+  notePresence(session, true);
   void readTurnBudget(session);
   budgetPoll = setInterval(() => {
     if (!app.busy) {
@@ -1961,6 +1970,7 @@ function startBudgetPoll(session: string | null): void {
       budgetPoll = null;
       return;
     }
+    notePresence(session, false);
     void readTurnBudget(session);
   }, TURN_BUDGET_EVERY_MS);
 }
