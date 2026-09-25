@@ -336,6 +336,23 @@ mod tests {
         assert_eq!(remade.lock().await.spec().model.as_deref(), Some("sonnet"));
     }
 
+    /// Backlog 205: the window reconnects with chat B's model when B is
+    /// opened; chat A's running turn stays on A's model, and B's agent is
+    /// B's.
+    #[tokio::test]
+    async fn another_chats_connect_leaves_a_running_turn_on_its_model() {
+        let agents = Agents::default();
+        agents.connect(agent("sonnet"), Some("a"));
+        let a = ready(agents.slot(Some("a")));
+        let turn = a.clone().lock_owned().await;
+        agents.connect(agent("haiku"), Some("b"));
+        let still = ready(agents.slot(Some("a")));
+        assert!(Arc::ptr_eq(&still, &a));
+        assert_eq!(turn.spec().model.as_deref(), Some("sonnet"));
+        let b = ready(agents.slot(Some("b")));
+        assert_eq!(b.lock().await.spec().model.as_deref(), Some("haiku"));
+    }
+
     #[tokio::test]
     async fn new_chats_agent_goes_with_the_chat_it_made() {
         let agents = Agents::default();

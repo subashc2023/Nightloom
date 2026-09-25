@@ -33,6 +33,17 @@ import {
   type Engine,
   type SavedPrompt,
 } from "./catalog";
+import {
+  applyChoice,
+  choiceOf,
+  loadChoices,
+  noteConnected,
+  noteMade,
+  saveChoices,
+  wantedChoice,
+  type ChatChoice,
+  type ChatChoices,
+} from "./chatChoice";
 import { EDITABLE_LAYERS } from "./types";
 import { LIST_SCOPE, NEW_CHAT_SCOPE, UndoHistory } from "./undo";
 import { chatName, notifyNeedsYou, notifyTurnEnd } from "./notify";
@@ -1466,6 +1477,9 @@ export async function init(): Promise<void> {
   await refreshDreamStatus();
   await refreshCaptureStatus();
   await autoConnect();
+  // Each chat's model and engine are put back from here on (backlog 205):
+  // before this the draft is still being read and the launch connect made.
+  chatChoice.ready = true;
   // The tabs he left open (backlog 201), once the lists that decide which
   // survive are read and the engine is connected.
   await restoreTabs();
@@ -2702,6 +2716,73 @@ async function autoConnect(): Promise<void> {
   await applyDraft();
 }
 
+/**
+ * Each chat's model and engine (nightshift backlog 205): every chat's
+ * recorded choice and the New-chat default (`chatChoice.ts`), whether
+ * launch has finished reading the draft (`ready`), and which chat the
+ * draft's choice was last put back for (`shownFor`; undefined before the
+ * first). Exported for the tests.
+ */
+export const chatChoice = {
+  choices: (typeof localStorage === "undefined"
+    ? { default: null, chats: {} }
+    : loadChoices(localStorage)) as ChatChoices,
+  ready: false,
+  shownFor: undefined as string | null | undefined,
+  /** The draft was put back while a turn or connect ran; reconnect after. */
+  reconnect: false,
+};
+
+function saveChatChoices(): void {
+  if (typeof localStorage !== "undefined") saveChoices(localStorage, chatChoice.choices);
+}
+
+/** A connect built for `chat` succeeded with `c` (backlog 205) — recorded
+ *  only while that chat is still the one on screen. */
+function chatConnected(chat: string | null, c: ChatChoice): void {
+  if (app.activeSessionId !== chat) return;
+  noteConnected(chatChoice.choices, chat, c);
+  saveChatChoices();
+}
+
+/**
+ * Put the open chat's model and engine back on the draft when the open
+ * chat has changed since the last time (backlog 205): its own choice, or
+ * the default for a New chat. True when the draft changed and the caller
+ * must reconnect. Only on a change of chat, so a pick made on the rail
+ * while a turn ran is not overwritten when the turn ends. A chat opened
+ * for the first time since this item keeps what it is shown on, recorded
+ * at once, so a later pick elsewhere cannot move it.
+ */
+export function restoreChatChoice(): boolean {
+  if (!chatChoice.ready) return false;
+  const chat = app.activeSessionId;
+  if (chat === chatChoice.shownFor) return false;
+  const wanted = wantedChoice(chatChoice.choices, chat);
+  const engineChanged = wanted !== null && wanted.engine !== app.draft.engine;
+  // While a turn runs on screen the rail may show the chat's model, but
+  // not tear down the connection that turn belongs to: an engine change
+  // waits for the turn's end.
+  if (engineChanged && (app.busy || app.connecting)) return false;
+  chatChoice.shownFor = chat;
+  if (!wanted) return false;
+  if (chat !== null) {
+    noteMade(chatChoice.choices, chat, wanted);
+    saveChatChoices();
+  }
+  if (!applyChoice(app.draft, wanted)) return false;
+  sanitizeThinking(app.draft);
+  if (engineChanged) {
+    // As `useEngine`: the other engine's connection, plan window and
+    // suggestion are not this one's.
+    app.connection = null;
+    app.agentTurn = null;
+    app.agentInit = null;
+    app.suggestion = null;
+  }
+  return true;
+}
+
 /** (Re)connect with the rail's current settings. Called on every rail change. */
 export async function applyDraft(): Promise<void> {
   const d = app.draft;
@@ -2709,6 +2790,9 @@ export async function applyDraft(): Promise<void> {
   if (d.engine === "claude-code") return applyAgentDraft();
   if (!d.provider) return;
   sanitizeThinking(d); // a saved draft may hold a mode this target rejects
+  // The chat this connect is for, and the choice it sends (backlog 205).
+  const chat = app.activeSessionId;
+  const sent = choiceOf(d);
   app.connecting = true;
   app.connectError = null;
   try {
@@ -2747,8 +2831,11 @@ export async function applyDraft(): Promise<void> {
     // under: an open project overrides the workspace the rail saved, so
     // reading it back is what keeps the two from disagreeing.
     app.project = res.project ?? null;
-    if (!d.model.trim()) d.model = res.model; // backend resolved the default
+    // The backend resolved the default — for this chat's draft only: one
+    // opened meanwhile has its own choice on it now (backlog 205).
+    if (!d.model.trim() && app.activeSessionId === chat) d.model = res.model;
     saveLastConnection({ ...d });
+    chatConnected(chat, { ...sent, model: sent.model.trim() || res.model });
   } catch (e) {
     // The backend keeps the previous Chat on failure, so app.connection
     // (if any) is still accurate — just surface the error.
@@ -2769,6 +2856,9 @@ export async function applyDraft(): Promise<void> {
  */
 async function applyAgentDraft(updateNow: PromptLayer[] = []): Promise<void> {
   const d = app.draft;
+  // As `applyDraft` (backlog 205).
+  const chat = app.activeSessionId;
+  const sent = choiceOf(d);
   app.connecting = true;
   app.connectError = null;
   try {
@@ -2816,6 +2906,7 @@ async function applyAgentDraft(updateNow: PromptLayer[] = []): Promise<void> {
     };
     app.project = res.project ?? null;
     saveLastConnection({ ...d });
+    chatConnected(chat, sent);
     void refreshPlanUsage();
   } catch (e) {
     // A failure here is usually the binary: not installed, or not on the
@@ -4816,6 +4907,9 @@ interface TurnCtx {
   /** The window's own name for the turn (A3), sent with it: what its Stop
    *  names until the chat is known. */
   key: string;
+  /** The model and engine it started on (backlog 205): a New chat's first
+   *  turn records them for the chat it makes. */
+  choice?: ChatChoice;
 }
 
 let turnKeys = 0;
@@ -5064,7 +5158,11 @@ async function peekNew(mode?: ChatMode, kind?: ChatKind): Promise<void> {
  * re-opened on the chat on screen, so what the composer drains next goes
  * where he is looking. The plan is `settlePlan`'s, which the suite pins.
  */
-async function settleTurnView(pendingKey: string | null, chat: string | null = null): Promise<void> {
+async function settleTurnView(
+  pendingKey: string | null,
+  chat: string | null = null,
+  choice: ChatChoice | null = null,
+): Promise<void> {
   const parked = app.parked;
   app.parked = null;
   try {
@@ -5078,6 +5176,12 @@ async function settleTurnView(pendingKey: string | null, chat: string | null = n
     const plan = settlePlan({ parked, viewed: app.activeSessionId, made, pendingKey });
     // A New chat's agents, made before its id was known (backlog 160).
     if (made) adoptPending(app.subagents, made);
+    // And the model and engine its first turn ran on (backlog 205), before
+    // the view moves to it and the choice is read back.
+    if (made && choice) {
+      noteMade(chatChoice.choices, made, choice);
+      saveChatChoices();
+    }
     if (plan.moveDraft) moveDraft(plan.moveDraft[0], plan.moveDraft[1]);
     if (plan.adopt) app.events = events;
     if (plan.activeSessionId !== undefined) app.activeSessionId = plan.activeSessionId;
@@ -5320,6 +5424,8 @@ export async function send(
   // The pending chat's draft key, taken now: it names the project and the
   // kind this send is making a chat in (nightshift backlog 094).
   const pendingKey = app.activeSessionId === null ? newDraftKey(app.project?.id, app.pendingMode) : null;
+  // The model and engine this turn runs on (backlog 205).
+  const choice = choiceOf(app.draft);
   app.error = null;
   app.events.push({
     event: "user_message",
@@ -5356,7 +5462,7 @@ export async function send(
     app.pendingApprovals = [];
     app.busy = false;
     // Sessions are created lazily on first send; the id is picked up here.
-    await settleTurnView(pendingKey);
+    await settleTurnView(pendingKey, null, choice);
     void refreshSessions();
     // The turn may have written to the docspace, and the sidebar showing a
     // note the model just left is the visible half of "shared knowledge".
@@ -5431,7 +5537,12 @@ async function sendAgent(
   app.busy = true;
   // This turn, for the background (backlog 159, A2): he may open another
   // chat while it runs, and send there.
-  const turn: TurnCtx = { chat: app.activeSessionId, detached: false, key: newTurnKey() };
+  const turn: TurnCtx = {
+    chat: app.activeSessionId,
+    detached: false,
+    key: newTurnKey(),
+    choice: choiceOf(app.draft),
+  };
   fg = turn;
   // The budget meter (backlog 165, pass 2) follows this chat's ledger
   // while the turn runs; a chat not yet created has no directory to read.
@@ -5509,7 +5620,7 @@ async function sendAgent(
       ? app.parked.liveUsage.input_tokens + app.parked.liveUsage.output_tokens
       : null;
     const browsed = app.parked !== null;
-    await settleTurnView(pendingKey, turn.chat);
+    await settleTurnView(pendingKey, turn.chat, turn.choice ?? null);
     // The meter's final figure, now that the chat exists and the hook's
     // last write is in (backlog 165, pass 2).
     void readTurnBudget(ranIn ?? app.activeSessionId);
@@ -6041,6 +6152,11 @@ export function applyTurnEvent(ev: TurnEvent & { chat?: string }): void {
   // chat's first turn), and a parked one can then go to the background.
   if (ev.chat && fg && fg.chat === null) {
     fg.chat = ev.chat;
+    // The chat it made keeps the model it was made on (backlog 205).
+    if (fg.choice) {
+      noteMade(chatChoice.choices, ev.chat, fg.choice);
+      saveChatChoices();
+    }
     if (app.parked) promoteParked();
     if (fg === null) {
       const moved = eventHost(app.background, ev.chat);
@@ -6523,7 +6639,18 @@ export function promoteLayerText(layer: EditableLayer, text: string): boolean {
  * re-runs it when either ends.
  */
 export async function syncPromptLayers(): Promise<void> {
-  if (!app.connection || app.busy || app.connecting) return;
+  // The open chat's own model and engine first (backlog 205): shown at
+  // once, and a chat switch that changes them reconnects — which also
+  // builds the layers. The reconnect waits while a turn or a connect is
+  // in flight, so a running turn keeps the model it started with.
+  if (restoreChatChoice()) chatChoice.reconnect = true;
+  if (app.busy || app.connecting) return;
+  if (chatChoice.reconnect) {
+    chatChoice.reconnect = false;
+    await applyDraft();
+    return;
+  }
+  if (!app.connection) return;
   try {
     const { off, built, edits, built_edits, mode, built_mode, kind, built_kind } =
       await api.promptLayers();
