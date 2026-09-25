@@ -1,6 +1,7 @@
 <script lang="ts">
   // Every Copy button goes through the in-app clipboard ring (backlog 173).
   import { copyText } from "./clipRing.svelte";
+  import { arrive, launch } from "./sendMotion";
   import {
     app,
     askAside,
@@ -101,6 +102,7 @@
   let root = $state<HTMLElement | null>(null);
   let body = $state<HTMLElement | null>(null);
   let askBox = $state<HTMLTextAreaElement | null>(null);
+  let followBox = $state<HTMLTextAreaElement | null>(null);
   let askDraft = $state("");
   let followDraft = $state("");
   let copied = $state(false);
@@ -224,6 +226,7 @@
   function submitAsk(): void {
     const q = askDraft.trim();
     if (!q || !aside.quote || !aside.draft) return;
+    launch("aside", askBox);
     askDraft = "";
     void askAside(q, aside.quote, aside);
   }
@@ -236,6 +239,7 @@
   function submitFollowUp(): void {
     const q = followDraft.trim();
     if (!q || aside.draft || asking) return;
+    launch("aside", followBox);
     followDraft = "";
     void followUpAside(q, aside);
   }
@@ -417,7 +421,7 @@
       </div>
     {:else}
       {#each aside.turns as turn (turn.seq)}
-        <div class="aside-card-q"><div class="aside-card-qtext">{turn.question}</div></div>
+        <div class="aside-card-q" use:arrive={{ channel: "aside", bubble: ".aside-card-qtext" }}><div class="aside-card-qtext">{turn.question}</div></div>
         {#if turn.partial}
           <div class="aside-card-a markdown">{@html renderMarkdown(turn.partial)}</div>
         {/if}
@@ -450,6 +454,7 @@
       {:else if last && !asking}
         <textarea
           class="aside-card-box"
+          bind:this={followBox}
           bind:value={followDraft}
           rows="1"
           placeholder="Follow up in the aside… (Enter asks)"

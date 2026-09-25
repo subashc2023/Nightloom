@@ -2,6 +2,7 @@
   import { app, asideAsking, asideOf, asideWaiting, askAside, dismissAside, followUpAside } from "./state.svelte";
   import { quoteLabel } from "./asideQuote";
   import { renderMarkdown } from "./markdown";
+  import { arrive, launch } from "./sendMotion";
   import Icon from "./Icon.svelte";
 
   /**
@@ -39,9 +40,12 @@
   // the box is here, the send is the card's own `askAside`, which reads the
   // open chat's aside — so it asks only while this tab's chat is the open one.
   let askDraft = $state("");
+  let askBox = $state<HTMLTextAreaElement | null>(null);
+  let followBox = $state<HTMLTextAreaElement | null>(null);
   function submitAsk() {
     const q = askDraft.trim();
     if (!q || !open || !aside || !aside.draft) return;
+    launch("aside", askBox);
     askDraft = "";
     void askAside(q, aside.quote, aside);
   }
@@ -56,6 +60,7 @@
   function submitFollowUp() {
     const q = followDraft.trim();
     if (!q || !open || !aside || aside.draft || asking) return;
+    launch("aside", followBox);
     followDraft = "";
     void followUpAside(q, aside);
   }
@@ -104,6 +109,7 @@
       {#if open}
         <textarea
           class="aside-view-box"
+          bind:this={askBox}
           bind:value={askDraft}
           rows="2"
           placeholder={aside.quote ? "Ask about the passage… (Enter asks)" : "Ask aside… (Enter asks)"}
@@ -122,7 +128,7 @@
     {:else}
       <div class="aside-view-turns">
         {#each aside.turns as turn (turn.seq)}
-          <div class="aside-view-q"><div class="aside-view-qtext">{turn.question}</div></div>
+          <div class="aside-view-q" use:arrive={{ channel: "aside", bubble: ".aside-view-qtext" }}><div class="aside-view-qtext">{turn.question}</div></div>
           {#if turn.partial}
             <div class="aside-view-a markdown">{@html renderMarkdown(turn.partial)}</div>
           {/if}
@@ -143,6 +149,7 @@
       {#if open && last && !asking}
         <textarea
           class="aside-view-box"
+          bind:this={followBox}
           bind:value={followDraft}
           rows="2"
           placeholder="Follow up in the aside… (Enter asks)"

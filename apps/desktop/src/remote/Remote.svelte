@@ -34,10 +34,12 @@
     type ToolRow,
   } from "./client";
   import { renderMarkdown } from "../lib/markdown";
+  import { arrive, launch } from "../lib/sendMotion";
   import type { ApprovalRequest, AskQuestion, SessionEvent, TurnEvent } from "../lib/types";
 
   // ---- the token and the connection --------------------------------------
   let token = $state<string | null>(null);
+  let box = $state<HTMLTextAreaElement | null>(null);
   let paste = $state("");
   let client = $state<Client | null>(null);
   /** `online` while the event stream is open; `off` after the listener
@@ -285,6 +287,9 @@
         return;
       }
       live = emptyTurn();
+      // It flies up from the box (backlog 194); the box's words are gone
+      // already, but it has not moved.
+      launch("phone", box);
       // Drawn at once rather than after the log's re-read: his message is
       // the one thing on the page he already knows the text of.
       events = [...events, { event: "user_message", text, at: new Date().toISOString() }];
@@ -480,7 +485,7 @@
         <div class="chat-title">{chatLabel}</div>
         {#each rows as r, i (i)}
           {#if r.kind === "user"}
-            <div class="msg user">{r.text}</div>
+            <div class="msg user" use:arrive={{ channel: "phone" }}>{r.text}</div>
           {:else if r.kind === "assistant"}
             <div class="msg reply">
               {#if r.tools.length > 0}<div class="tools">{@render toolRows(r.tools, 0)}</div>{/if}
@@ -578,6 +583,7 @@
 
     <footer class="composer">
       <textarea
+        bind:this={box}
         rows="1"
         placeholder={screen === "chat" ? "Message" : remote.active_chat ? "Message the open chat" : "Message (starts a chat)"}
         bind:value={draft}

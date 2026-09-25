@@ -69,6 +69,7 @@
   import { afterWrapTurn, wrapAsk } from "./budgetWrap.svelte";
   import Icon from "./Icon.svelte";
   import Navigator from "./Navigator.svelte";
+  import { arrive } from "./sendMotion";
 
   interface AssistantFooter {
     model: string;
@@ -738,6 +739,11 @@
   // same index, keeps the element and the class and the animation does not
   // replay (the each is keyed by position). Reduced motion turns it off in
   // the CSS.
+  //
+  // Since backlog 194 (2026-09-25) the motion is `sendMotion.ts`'s: the
+  // floor is the action's `active`, and a turn whose composer recorded a
+  // launch flies in from the box with the accent thread; one with no
+  // launch (the wrap-up, a phone send) keeps the 180 ms rise.
   let enterFrom = $state(Infinity);
   let enterKey: string | null = null;
   let enterLen = 0;
@@ -1175,7 +1181,7 @@
           class="user-turn"
           class:superseded={item.superseded}
           class:removed={item.removed}
-          class:enter={item.index >= enterFrom}
+          use:arrive={{ channel: "chat", active: item.index >= enterFrom, bubble: ".user-bubble", riseWithout: true }}
           data-turn={item.index}
         >
           <div class="user-key">
@@ -2100,15 +2106,12 @@
     color: var(--dim);
     /* A beat after the bubble (backlog 095); `backwards` keeps it unseen
        through the delay, and leaves no fill behind to fight `.superseded`. */
-    animation: enter 180ms ease-out 90ms backwards;
+    animation: enter 180ms ease-out 300ms backwards;
   }
-  /* The sent message's entrance (backlog 095): opacity and a 6px rise,
-     nothing that moves the layout. `ease-out`, since the app has no easing
-     token to reuse. Only the turn just sent carries `.enter` (see the
-     effect above); a chat opened whole does not cascade. */
-  .user-turn.enter {
-    animation: enter 180ms ease-out backwards;
-  }
+  /* The sent message's entrance (backlog 095) moved to `sendMotion.ts`
+     (backlog 194): a flight from the composer, or the same 180 ms rise
+     when nothing launched. The moon above waits 300 ms now, so it comes
+     in as the flight lands rather than under it. */
   @keyframes enter {
     from {
       opacity: 0;
@@ -2120,7 +2123,6 @@
     }
   }
   @media (prefers-reduced-motion: reduce) {
-    .user-turn.enter,
     .waiting {
       animation: none;
     }

@@ -70,6 +70,7 @@
   import { clips, recordImage, recordText } from "./clipRing.svelte";
   import type { CouncilPrefs } from "./council";
   import { foldToFit } from "./fold";
+  import { launch } from "./sendMotion";
 
   /**
    * `floating` drops the docked chrome (top border, panel fill) for the
@@ -796,6 +797,9 @@
   async function drain(explicit = false): Promise<void> {
     if (app.busy || !app.connection) return;
     if (!explicit && hold) return;
+    // The held row is where this message leaves from (backlog 194).
+    const head = queue[0];
+    if (head) launch("chat", document.querySelector(`.queue-row[data-queue-id="${head.id}"] .queue-text`));
     const q = shiftQueue(key);
     if (!q) return;
     // The row Nightloom queued while he was away is the wrap-up going.
@@ -825,6 +829,8 @@
   async function submitAside() {
     const t = text.trim();
     if (!t || attachments.length > 0 || app.busy) return;
+    // The words fly from the box into the aside's card (backlog 194).
+    launch("aside", ta);
     clearDraft(key);
     requestAnimationFrame(autogrow);
     await askAside(t);
@@ -845,6 +851,9 @@
     }
     const pending = attachments.slice();
     const typed = text;
+    // Where the words were, for the send motion (backlog 194): measured
+    // before the box clears.
+    launch("chat", ta);
     clearDraft(key);
     requestAnimationFrame(autogrow);
     await dispatch(typed, pending);
@@ -868,6 +877,7 @@
     const pending = attachments.slice();
     const typed = text;
     recordText("sent", typed);
+    launch("chat", ta);
     clearDraft(key);
     requestAnimationFrame(autogrow);
     await dispatch(typed, pending, false, prefs);
@@ -1286,7 +1296,7 @@
         {/if}
       </div>
       {#each queue as q, i (q.id)}
-        <div class="queue-row" role="listitem">
+        <div class="queue-row" role="listitem" data-queue-id={q.id}>
           <span class="queue-n mono">{i + 1}</span>
           <span class="queue-text" use:tip={q.text} data-find-text={q.text}>{#if handoffHere && q.id === handoff.queuedId}<span class="ns-chip mono" use:tip={"Put here by Nightloom: the window crossed this chat's hand-off mark while you were away. × takes it back."}>wrap-up · queued while you were away</span> {/if}{firstLine(q.text) || "(no text)"}{#if q.attachments.length > 0} <span class="ns-chip mono">{q.attachments.length} {q.attachments.length === 1 ? "file" : "files"}</span>{/if}</span>
           <button class="ns-btn ghost small" use:tip={"Back into the message box"} onclick={() => takeBack(q.id)}>take back</button>
