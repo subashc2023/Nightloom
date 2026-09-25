@@ -63,6 +63,11 @@ export function launch(channel: string, el: Element | null | undefined, at: numb
   pending = { channel, at, x: r.left + pl, y: r.top + pt, w: Math.max(0, r.width - 2 * pl), h: r.height };
 }
 
+/** A fresh launch is waiting on this channel (not consumed). */
+export function hasLaunch(channel: string, at: number = now()): boolean {
+  return !!pending && pending.channel === channel && at - pending.at <= LAUNCH_TTL_MS;
+}
+
 /** For tests and callers that measured already. */
 export function launchAt(l: Launch): void {
   pending = l;
@@ -272,7 +277,17 @@ export function fly(node: HTMLElement, bubble: HTMLElement, l: Launch, hold: num
   };
   const paint = (ms: number) => {
     const to = bubble.getBoundingClientRect();
-    const f = frameAt(ms, from, { x: to.left, y: to.top });
+    // Aim inside the scroll box: if the thread scrolls the bubble past its
+    // edge mid-flight (a fast reply pushing it up), the ghost lands at the
+    // edge rather than flying off the top of the window (walk, chat A).
+    // Only a bubble wholly outside is clamped — a visible one is always
+    // landed on exactly (an aside's scroll box can start below its question).
+    const ty = to.bottom < view.top ? view.top : to.top > view.bottom ? Math.max(view.top, view.bottom - to.height) : to.top;
+    const f = frameAt(ms, from, { x: to.left, y: ty });
+    // Follow the bubble's width: an aside card grows in as the ghost flies,
+    // and a width fixed at the start wrapped the ghost's words onto a
+    // second line that snapped back on landing (194 fix pass).
+    if (to.width > 0) ghost.style.width = `${to.width}px`;
     ghost.style.transform = `translate3d(${f.x}px, ${f.y}px, 0)`;
     ghost.style.opacity = String(f.ghostOpacity);
     ghost.style.backgroundColor = `color-mix(in srgb, ${bg} ${Math.round(f.tint * 100)}%, transparent)`;
@@ -332,10 +347,22 @@ export interface ArriveParams {
   riseWithout?: boolean;
 }
 
-/** A Svelte action on the thread's new bubble. Fires at most once per node. */
+/**
+ * A Svelte action on the thread's new bubble. Fires at most once per node.
+ *
+ * The flight starts one frame after the bubble mounts, not at the mount
+ * (194 fix pass, 2026-09-25). At the mount the thread has not yet scrolled
+ * to its foot — the transcript does that after Svelte's `tick()` — so the
+ * new bubble sits just below the view, `fly` read it as out of view, and a
+ * plain chat got no flight at all: the walk saw the message "already in
+ * place" (app-walk-2026-09-25 part 2). By the next frame the follow-the-
+ * bottom scroll has run, and the rect is where the bubble will be seen.
+ * The node is hidden for that one frame so it does not flash in place.
+ */
 export function arrive(node: HTMLElement, params: ArriveParams) {
   let fired = false;
   let cancel: (() => void) | null = null;
+  let raf = 0;
   const check = (p: ArriveParams) => {
     if (fired || p.active === false) return;
     fired = true;
@@ -347,11 +374,27 @@ export function arrive(node: HTMLElement, params: ArriveParams) {
     }
     const bubble = (p.bubble ? node.querySelector<HTMLElement>(p.bubble) : null) ?? node;
     const w = window as unknown as { __sendMotionHold?: number };
-    cancel = fly(node, bubble, l, typeof w.__sendMotionHold === "number" ? w.__sendMotionHold : null);
+    if (typeof w.__sendMotionHold === "number") {
+      cancel = fly(node, bubble, l, w.__sendMotionHold);
+      return;
+    }
+    node.style.opacity = "0";
+    const go = () => {
+      raf = 0;
+      node.style.opacity = "";
+      cancel = fly(node, bubble, l);
+    };
+    if (typeof requestAnimationFrame === "function") raf = requestAnimationFrame(go);
+    else go();
   };
   check(params);
   return {
     update: (p: ArriveParams) => check(p),
-    destroy: () => cancel?.(),
+    destroy: () => {
+      if (raf) cancelAnimationFrame(raf);
+      raf = 0;
+      node.style.opacity = "";
+      cancel?.();
+    },
   };
 }
