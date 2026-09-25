@@ -39,6 +39,7 @@
   import AttachmentLayer from "./lib/AttachmentLayer.svelte";
   import AttachmentView from "./lib/AttachmentView.svelte";
   import SubagentView from "./lib/SubagentView.svelte";
+  import { agentAsk, deliverDue } from "./lib/subagentAsk.svelte";
   import FileView from "./lib/FileView.svelte";
   import WebView from "./lib/WebView.svelte";
   import { closeOrphans, initWebTabs, routeLink } from "./lib/webtabs.svelte";
@@ -97,6 +98,17 @@
   $effect(() => {
     void tabs.allTabs(app.tabs).map((t) => t.id);
     untrack(() => closeOrphans());
+  });
+
+  // A note held under a running subagent's tab (backlog 157) goes once the
+  // agent has finished and nothing runs on screen — whether or not its tab
+  // is still open. Re-checked when a turn ends or an agent's status moves.
+  $effect(() => {
+    void app.busy;
+    void app.subagents.map((r) => r.status);
+    void Object.keys(app.background).length;
+    void Object.keys(agentAsk.notes).length;
+    untrack(() => void deliverDue());
   });
 
   /**

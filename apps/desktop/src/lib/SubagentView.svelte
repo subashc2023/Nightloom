@@ -15,6 +15,10 @@
   import { compactJson } from "./toolinput";
   import { fmtTokens } from "./tokens";
   import type { TabContent } from "./tabs";
+  import { openSession } from "./state.svelte";
+  import * as api from "./api";
+  import { followUpsOf, type FollowUp } from "./subagentAsk";
+  import { adoptedChat, agentAsk, agentLive, askSubagent, keyOf, setAgentDraft, takeBackNote } from "./subagentAsk.svelte";
 
   let { content }: { content: Extract<TabContent, { kind: "subagent" }> } = $props();
 
@@ -26,6 +30,54 @@
       (r) => r.tool_use_id === content.toolUseId && (r.session === content.session || r.session === null),
     ) ?? null,
   );
+
+  // Talking to it (backlog 157): the box under the run, the notes held
+  // while it runs, and the chat it was adopted into, whose exchanges are
+  // drawn here too — read from that chat's log whenever a turn ends.
+  const key = $derived(keyOf({ tool_use_id: content.toolUseId }));
+  const live = $derived(row ? agentLive(row) : false);
+  const held = $derived(agentAsk.notes[key] ?? []);
+  const adopted = $derived(row ? adoptedChat(row) : null);
+  let followUps = $state<FollowUp[]>([]);
+  $effect(() => {
+    const id = adopted;
+    // Re-read once each turn ends, wherever it ran.
+    if (app.busy) return;
+    if (!id) {
+      followUps = [];
+      return;
+    }
+    let gone = false;
+    api
+      .peekSession(id)
+      .then((events) => {
+        if (!gone) followUps = followUpsOf(events);
+      })
+      .catch(() => {});
+    return () => {
+      gone = true;
+    };
+  });
+  let asking = $state(false);
+  async function ask(): Promise<void> {
+    if (!row || asking) return;
+    const text = (agentAsk.drafts[key] ?? "").trim();
+    if (!text) return;
+    asking = true;
+    // Out of the box once it is held or sent; `askSubagent` keeps it.
+    setAgentDraft(key, "");
+    try {
+      await askSubagent(row, text);
+    } finally {
+      asking = false;
+    }
+  }
+  function onKey(e: KeyboardEvent): void {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      void ask();
+    }
+  }
 
   function callsOf(segs: Segment[]): number {
     return segs.reduce((n, s) => n + (s.kind === "tool" ? 1 + callsOf(s.call.children ?? []) : 0), 0);
@@ -68,6 +120,47 @@
       {@render list(row.segments, 0)}
       <p class="note small">{callsOf(row.segments)} call{callsOf(row.segments) === 1 ? "" : "s"} in all.</p>
     {/if}
+    <section class="talk" aria-label="Talk to this agent">
+      {#if followUps.length > 0}
+        <div class="follow">
+          {#each followUps as f, k (k)}
+            <div class="asked">{f.asked}</div>
+            {#if f.answer}<pre class="words">{f.answer}</pre>{:else}<p class="note small">No answer yet.</p>{/if}
+          {/each}
+        </div>
+      {/if}
+      {#each held as n, k (k)}
+        <div class="held">
+          <span class="held-text">{n.text}</span>
+          <button class="link" title="Put this note back in the box below" onclick={() => takeBackNote(key, k)}>Take back</button>
+        </div>
+      {/each}
+      <p class="note small hint">
+        {#if live}
+          It is still running, and nothing can reach it mid-run: what you write is held and goes as your first
+          question once it has finished (Stop ends it too).
+        {:else if adopted}
+          Your questions go to its own chat, which carries its run; the main chat is not told.
+          <button class="link" onclick={() => adopted && openSession(adopted)}>Open that chat</button>
+        {:else}
+          Ask it something: it answers in a new chat that carries its whole run, and the main chat is not told.
+        {/if}
+      </p>
+      <div class="ask-row">
+        <textarea
+          class="ask"
+          rows="2"
+          placeholder={live ? "A note for when it finishes" : "Ask this agent"}
+          aria-label={live ? "A note for when it finishes" : "Ask this agent"}
+          value={agentAsk.drafts[key] ?? ""}
+          oninput={(e) => setAgentDraft(key, e.currentTarget.value)}
+          onkeydown={onKey}
+        ></textarea>
+        <button class="send" disabled={asking || !(agentAsk.drafts[key] ?? "").trim()} onclick={() => void ask()}>
+          {live ? "Hold" : "Ask"}
+        </button>
+      </div>
+    </section>
   {/if}
 </div>
 
@@ -208,6 +301,87 @@
     word-break: break-word;
     max-height: 32rem;
     overflow: auto;
+  }
+  .talk {
+    margin-top: 22px;
+    padding-top: 14px;
+    border-top: 1px solid var(--line);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .follow {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .asked,
+  .held {
+    align-self: flex-end;
+    max-width: 80%;
+    padding: 6px 12px;
+    border-radius: 14px;
+    background: var(--well);
+    border: 1px solid var(--line);
+    font-size: 13.5px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .held {
+    display: flex;
+    gap: 10px;
+    align-items: baseline;
+    border-style: dashed;
+  }
+  .held-text {
+    flex: 1;
+    min-width: 0;
+  }
+  .hint {
+    margin: 4px 0 0;
+  }
+  .link {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--accent, var(--ink));
+    text-decoration: underline;
+    cursor: pointer;
+    font: inherit;
+    font-size: 12px;
+  }
+  .ask-row {
+    display: flex;
+    gap: 8px;
+    align-items: flex-end;
+  }
+  .ask {
+    flex: 1;
+    min-width: 0;
+    resize: vertical;
+    min-height: 2.6em;
+    padding: 8px 10px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--well);
+    color: var(--ink);
+    font: inherit;
+    font-size: 13.5px;
+  }
+  .send {
+    flex: none;
+    padding: 7px 14px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: var(--well);
+    color: var(--ink);
+    cursor: pointer;
+    font: inherit;
+    font-size: 13px;
+  }
+  .send:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
   .words {
     margin: 4px 0;

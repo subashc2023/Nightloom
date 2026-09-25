@@ -42,6 +42,7 @@
   import { toolInputSummary } from "./transcriptPrefs.svelte";
   import { forkLine } from "./edit";
   import { parseSubagentBlock } from "./subagent";
+  import { splitAdopted } from "./subagentAsk";
   import { councilOfTurn, rosterLabel } from "./council";
   import { wordDiff } from "./textdiff";
   import { continuedFlags } from "./runs";
@@ -1323,7 +1324,18 @@
                     {#if op.kind === "del"}<del>{op.text}</del>{:else if op.kind === "add"}<ins>{op.text}</ins>{:else}{op.text}{/if}
                   {/each}
                 </div>
-              {:else if item.text}<div class="user-text">{item.text}</div>{/if}
+              {:else if item.text}
+                {@const adoptedMsg = splitAdopted(item.text)}
+                {#if adoptedMsg.carried}
+                  <!-- An adopted agent's run (backlog 157): what this chat
+                       was given, folded; his question below it. -->
+                  <details class="adopted-carry">
+                    <summary>Carried from agent “{adoptedMsg.agent ?? "subagent"}” — its task and run, which this chat answers from</summary>
+                    <pre>{adoptedMsg.carried}</pre>
+                  </details>
+                  {#if adoptedMsg.said}<div class="user-text">{adoptedMsg.said}</div>{/if}
+                {:else}<div class="user-text">{item.text}</div>{/if}
+              {/if}
               {#if !item.removed}
                 {@const council = councilOfTurn(app.events, item.index)}
                 {#if council}
@@ -1981,6 +1993,23 @@
   .user-text {
     white-space: pre-wrap;
     word-break: break-word;
+  }
+  .adopted-carry {
+    margin-bottom: 0.4rem;
+    font-size: 12.5px;
+  }
+  .adopted-carry summary {
+    cursor: pointer;
+    opacity: 0.8;
+  }
+  .adopted-carry pre {
+    margin: 0.4rem 0 0;
+    max-height: 24rem;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: var(--mono);
+    font-size: 11.5px;
   }
   .user-images {
     display: flex;
