@@ -30,6 +30,8 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio_util::sync::CancellationToken;
 
+/// The chats the backend holds, one lock per chat (backlog 159, A1).
+mod chats;
 /// Nightshift: the unattended runner's file contract, as commands.
 mod nightshift;
 /// Sleep-safe turns: the power assertion and the wake watcher.
@@ -57,7 +59,22 @@ struct AppState {
     /// into the next `--resume` is the only way this is a conversation at
     /// all.
     agent: tokio::sync::Mutex<Option<ClaudeCodeAgent>>,
-    session: tokio::sync::Mutex<Option<Session>>,
+    /// Whether `agent` is `Some`, readable without its lock (backlog 159,
+    /// A1): a turn holds `agent` for its whole length, and "which engine
+    /// is live" — the context page's question, the conversation-edit
+    /// guard's — must not wait a turn for the answer. Written beside every
+    /// write of `agent` (`connect`, `connect_agent`) and nowhere else.
+    agent_live: std::sync::atomic::AtomicBool,
+    /// The agent must re-point its `--resume` at the open chat before its
+    /// next use (backlog 159, A1): set when the open chat changed while a
+    /// turn held `agent`, so the change did not wait for the turn. Applied
+    /// by [`lock_agent`], cleared by any adoption that reached the agent.
+    agent_readopt: std::sync::atomic::AtomicBool,
+    /// ~~`session: Mutex<Option<Session>>`, the one open chat~~ — replaced
+    /// 2026-09-24 (backlog 159, pass 2 step A1): each chat behind its own
+    /// lock and the open one a focus, so a command about chat B never
+    /// waits on chat A's turn. See [`chats`].
+    chats: chats::Chats,
     /// The kind the next chat will be, while there is no chat
     /// (nightshift backlog 061, 2026-09-15).
     ///
@@ -1143,7 +1160,7 @@ async fn connect(
     let workspace = chat_workspace(declared_kind, workspace);
     // The extra folders (nightshift backlog 143): the project's and the
     // chat's own, each a further named tree the file tools may reach.
-    let granted = extra_folders(active.as_ref(), state.session.lock().await.as_ref());
+    let granted = extra_folders(active.as_ref(), state.chats.lock_focused().await.as_ref());
 
     // Every project's chats plus the unfiled ones, named as the picker names
     // them, with the sidebar's directory as the default scope. The registry
@@ -1285,6 +1302,9 @@ async fn connect(
     // itself is not cheap enough to rebuild casually, but the agent is a
     // spec and a process that has already exited.
     *state.agent.lock().await = None;
+    state
+        .agent_live
+        .store(false, std::sync::atomic::Ordering::SeqCst);
     *state.prompt.lock().await = PromptBuilt {
         off: spec.layers_off,
         edits: spec.layer_edits,
@@ -1305,8 +1325,8 @@ async fn connect(
 /// by the first send.
 async fn layers_off(state: &AppState) -> Vec<SegmentKind> {
     state
-        .session
-        .lock()
+        .chats
+        .lock_focused()
         .await
         .as_ref()
         .map(|s| s.prompt_layers_off().to_vec())
@@ -1317,8 +1337,8 @@ async fn layers_off(state: &AppState) -> Vec<SegmentKind> {
 /// [`layers_off`].
 async fn layer_edits(state: &AppState) -> BTreeMap<SegmentKind, String> {
     state
-        .session
-        .lock()
+        .chats
+        .lock_focused()
         .await
         .as_ref()
         .map(|s| s.prompt_layer_edits().clone())
@@ -1333,7 +1353,7 @@ async fn layer_edits(state: &AppState) -> BTreeMap<SegmentKind, String> {
 /// first message rather than one reconnect after it.
 async fn session_mode(state: &AppState) -> ChatMode {
     let pending = *state.pending_mode.lock().await;
-    mode_of(state.session.lock().await.as_ref(), pending)
+    mode_of(state.chats.lock_focused().await.as_ref(), pending)
 }
 
 /// The mode the shell is in: the open chat's own, else the pending one.
@@ -1349,7 +1369,7 @@ fn mode_of(session: Option<&Session>, pending: ChatMode) -> ChatMode {
 /// for it, and `prompt_layers` reports it beside the built one.
 async fn session_kind(state: &AppState) -> ChatKind {
     let pending = *state.pending_kind.lock().await;
-    kind_of(state.session.lock().await.as_ref(), pending)
+    kind_of(state.chats.lock_focused().await.as_ref(), pending)
 }
 
 /// The pure half of [`session_kind`], like [`mode_of`].
@@ -1365,8 +1385,8 @@ fn kind_of(session: Option<&Session>, pending: ChatKind) -> ChatKind {
 async fn session_declared_kind(state: &AppState) -> ChatKind {
     let pending = *state.pending_kind.lock().await;
     state
-        .session
-        .lock()
+        .chats
+        .lock_focused()
         .await
         .as_ref()
         .map(Session::declared_kind)
@@ -1379,8 +1399,8 @@ async fn session_declared_kind(state: &AppState) -> ChatKind {
 /// when the project's is not wanted. `None` for every other chat.
 async fn session_kind_workspace(state: &AppState) -> Option<PathBuf> {
     state
-        .session
-        .lock()
+        .chats
+        .lock_focused()
         .await
         .as_ref()
         .and_then(|s| s.kind_workspace().map(Path::to_path_buf))
@@ -1412,6 +1432,12 @@ fn chat_workspace(kind: ChatKind, resolved: PathBuf) -> PathBuf {
 /// file: the kind is chosen at the button and honoured at the first
 /// message. The pending mode is left as it was — once the log exists its
 /// first line answers the question, and `session_mode` reads that first.
+///
+/// Since backlog 159 A1 (2026-09-24) the commands go through
+/// [`chats::Chats::focused_or_start`], which makes the chat with the same
+/// [`start_session`] and focuses it; this `Option` form stays as the pure
+/// statement of the rule the tests below pin.
+#[cfg(test)]
 fn ensure_session<'a>(
     session: &'a mut Option<Session>,
     mode: ChatMode,
@@ -1454,7 +1480,8 @@ const AGENT_BINARY: &str = "claude";
 /// context panel's elision is the same marker `remove_message` records,
 /// reached from a view that on this engine itemizes the preamble alone.
 async fn not_in_agent_mode(state: &AppState, what: &str) -> Result<(), String> {
-    if state.agent.lock().await.is_some() {
+    // The flag, not the lock (backlog 159, A1): a turn holds the agent.
+    if state.agent_live.load(std::sync::atomic::Ordering::SeqCst) {
         return Err(format!(
             "cannot {what} on the Claude Code engine: it keeps its own history, and this log is a record of it"
         ));
@@ -1588,7 +1615,7 @@ async fn connect_agent(
     // chat's own, each granted the same way — readable without a prompt,
     // edits under the permission mode (`external`, the CLI's permissions
     // reference, via blocker 050).
-    let granted = extra_folders(active.as_ref(), state.session.lock().await.as_ref());
+    let granted = extra_folders(active.as_ref(), state.chats.lock_focused().await.as_ref());
     spec.add_dirs.extend(granted.iter().map(|(p, _)| p.clone()));
     // Built as segments and rendered from them, so the Context popover can
     // show the same segments the flag carries rather than a re-parse of the
@@ -1643,7 +1670,7 @@ async fn connect_agent(
         // `chat` is the chat this connection is built for, whatever its
         // mode; `id` is the one whose hold is kept (an ephemeral chat
         // keeps nothing on disk).
-        let (chat, id, has_cli) = match state.session.lock().await.as_ref() {
+        let (chat, id, has_cli) = match state.chats.lock_focused().await.as_ref() {
             Some(s) if s.mode() != ChatMode::Ephemeral => (
                 Some(s.id.clone()),
                 Some(s.id.clone()),
@@ -1889,7 +1916,7 @@ async fn connect_agent(
     // with `error_during_execution` — the same failure `follow_on` was
     // taught to avoid on 2026-09-17, reached here by any rail change.
     if !spec.no_session_persistence
-        && let Some(session) = state.session.lock().await.as_ref()
+        && let Some(session) = state.chats.lock_focused().await.as_ref()
         && let Some((agent, id)) = session.agent_session()
         && agent == AGENT
     {
@@ -1949,7 +1976,15 @@ async fn connect_agent(
             .collect(),
     };
     let spec_model = spec.model.clone();
+    // Built with the open chat's resume (above), so nothing is left for
+    // `lock_agent` to re-point.
     *state.agent.lock().await = Some(ClaudeCodeAgent::new(spec));
+    state
+        .agent_readopt
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    state
+        .agent_live
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     *state.chat.lock().await = None;
     *state.prompt.lock().await = PromptBuilt {
         off,
@@ -2166,21 +2201,21 @@ async fn rename_session(
     // means a turn is live, and `active` (the window's open chat) says
     // which: that one is refused with a sentence, any other is a file
     // the turn is not writing.
-    match state.session.try_lock() {
-        Ok(mut session_guard) => {
-            if let Some(open) = session_guard.as_mut().filter(|s| s.id == id) {
+    //
+    // Since backlog 159 A1 (2026-09-24) each chat has its own lock, so
+    // the question is exact: a held chat (open, or running a turn) is
+    // renamed through its one writer, or refused while its turn holds
+    // it; any other chat is a file no one is writing. `active` is no
+    // longer needed to tell which chat runs; kept for the API.
+    let _ = active;
+    if let Some((_, log)) = state.chats.find(&id) {
+        return match log.try_lock() {
+            Ok(mut open) => {
                 open.record_title(title);
-                return Ok(());
+                Ok(())
             }
-        }
-        Err(_) => {
-            if active
-                .as_deref()
-                .is_some_and(|a| a == id || a.starts_with(&id))
-            {
-                return Err("that chat is running a turn — rename it when the turn ends".into());
-            }
-        }
+            Err(_) => Err("that chat is running a turn — rename it when the turn ends".into()),
+        };
     }
 
     let path = store::find_by_prefix(&state.log_dir().await, &id).map_err(|e| e.to_string())?;
@@ -2223,7 +2258,7 @@ async fn new_session(
     // Absent is a Build chat — the caller that predates kinds, and the
     // sidebar's plain button when the frontend has not said otherwise.
     let kind = kind.unwrap_or_default();
-    *state.session.lock().await = None;
+    state.chats.focus_new();
     *state.pending_mode.lock().await = mode;
     *state.pending_kind.lock().await = kind;
     // A new chat is a new conversation on the agent too. Left set, the next
@@ -2240,9 +2275,53 @@ async fn new_session(
 /// commands call this unconditionally instead of each asking which engine is
 /// running.
 async fn adopt_agent_session(state: &AppState, resume: Option<String>) {
-    if let Some(agent) = state.agent.lock().await.as_mut() {
+    // Not `lock().await` (backlog 159, A1): a turn holds the agent for its
+    // length, and opening another chat or New chat must not wait for it.
+    // Held means a turn is running; the agent re-reads the open chat's
+    // resume before its next use instead (`lock_agent`).
+    match state.agent.try_lock() {
+        Ok(mut guard) => {
+            state
+                .agent_readopt
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+            if let Some(agent) = guard.as_mut() {
+                agent.set_resume(resume);
+            }
+        }
+        Err(_) => state
+            .agent_readopt
+            .store(true, std::sync::atomic::Ordering::SeqCst),
+    }
+}
+
+/// The `--resume` a chat's next agent turn continues: the Claude Code
+/// session its log last recorded. What `open_session` adopts.
+fn resume_of(session: &Session) -> Option<String> {
+    session
+        .agent_session()
+        .filter(|(agent, _)| *agent == AGENT)
+        .map(|(_, id)| id.to_string())
+}
+
+/// The agent, locked, pointed at the open chat (backlog 159, A1): when the
+/// open chat changed while a turn held the agent, the adoption was left
+/// for here. Lock order as everywhere: the agent, then a chat.
+async fn lock_agent(state: &AppState) -> tokio::sync::MutexGuard<'_, Option<ClaudeCodeAgent>> {
+    let mut guard = state.agent.lock().await;
+    if state
+        .agent_readopt
+        .swap(false, std::sync::atomic::Ordering::SeqCst)
+        && let Some(agent) = guard.as_mut()
+    {
+        let resume = state
+            .chats
+            .lock_focused()
+            .await
+            .as_ref()
+            .and_then(resume_of);
         agent.set_resume(resume);
     }
+    guard
 }
 
 /// Resolve a session ID (or unique prefix), make it active, and return its
@@ -2259,6 +2338,25 @@ async fn open_session(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<Vec<SessionEvent>, String> {
+    // A focus, not a swap (backlog 159, A1): a chat already held — the
+    // one whose turn is running, most often — is focused as it is, never
+    // loaded a second time (two writers on one log), and its events are
+    // read without waiting for its turn: `try_lock`, and while the turn
+    // holds it, the log on disk, which is what the turn has appended so
+    // far (the window draws the rest from the stream).
+    if let Some(log) = state.chats.focus_held(&id) {
+        let (events, resume) = match log.try_lock() {
+            Ok(session) => (session.events().to_vec(), resume_of(&session)),
+            Err(_) => {
+                let path = store::find_by_prefix(&state.log_dir().await, &id)
+                    .map_err(|e| e.to_string())?;
+                let session = Session::load(path).map_err(|e| e.to_string())?;
+                (session.events().to_vec(), resume_of(&session))
+            }
+        };
+        adopt_agent_session(&state, resume).await;
+        return Ok(events);
+    }
     let path = store::find_by_prefix(&state.log_dir().await, &id).map_err(|e| e.to_string())?;
     let session = Session::load(path).map_err(|e| e.to_string())?;
     if let Some(notice) = session.load_report().summary() {
@@ -2268,11 +2366,8 @@ async fn open_session(
     // Reopening an agent chat resumes the conversation it is a record of.
     // Without this the transcript would scroll back a week and the next turn
     // would begin with a model that had never seen any of it.
-    let resume = session
-        .agent_session()
-        .filter(|(agent, _)| *agent == AGENT)
-        .map(|(_, id)| id.to_string());
-    *state.session.lock().await = Some(session);
+    let resume = resume_of(&session);
+    state.chats.open(session);
     adopt_agent_session(&state, resume).await;
     Ok(events)
 }
@@ -2301,19 +2396,51 @@ async fn peek_session(state: State<'_, AppState>, id: String) -> Result<Vec<Sess
 /// a command that must write the log (a layer switch, a folder grant, ⌘N)
 /// still waits, so the write lands on the finished turn rather than being
 /// lost to a toast.
+///
+/// `turn` (backlog 159, A1): the chat the latest turn ran in rather than
+/// the open one — what the window re-syncs at a turn's end, since he may
+/// have opened another chat (or New chat) while it ran. Empty when no
+/// turn has run, or that chat has no log (ephemeral) and is no longer held.
 #[tauri::command]
-async fn transcript(state: State<'_, AppState>) -> Result<Vec<SessionEvent>, String> {
-    let Ok(guard) = state.session.try_lock() else {
-        return Err(
-            "the open chat is running a turn — the transcript is what is on screen, and it \
-             refreshes when the turn ends"
-                .into(),
-        );
+async fn transcript(
+    state: State<'_, AppState>,
+    turn: Option<bool>,
+) -> Result<Vec<SessionEvent>, String> {
+    const RUNNING: &str = "the chat is running a turn — the transcript is what is on screen, \
+                           and it refreshes when the turn ends";
+    if turn.unwrap_or(false) {
+        let Some(log) = state.chats.last_turn_log() else {
+            // Left and let go since (an idle chat not open is not held):
+            // its log on disk is the whole record.
+            let Some(id) = state.chats.last_turn() else {
+                return Ok(Vec::new());
+            };
+            let Ok(path) = store::find_by_prefix(&state.log_dir().await, &id) else {
+                return Ok(Vec::new());
+            };
+            let session = Session::load(path).map_err(|e| e.to_string())?;
+            return Ok(session.events().to_vec());
+        };
+        let Ok(session) = log.try_lock() else {
+            return Err(RUNNING.into());
+        };
+        return Ok(session.events().to_vec());
+    }
+    let Ok(guard) = state.chats.try_lock_focused() else {
+        return Err(RUNNING.into());
     };
     Ok(guard
         .as_ref()
         .map(|s| s.events().to_vec())
         .unwrap_or_default())
+}
+
+/// The chat the latest turn ran in (backlog 159, A1): its id, for the
+/// window to go back to a New chat's first turn it browsed away from —
+/// the id exists from the turn's start, the window learns it at the end.
+#[tauri::command]
+fn turn_session(state: State<'_, AppState>) -> Option<String> {
+    state.chats.last_turn()
 }
 
 /// Run one user turn, streaming progress as `turn-event` window events.
@@ -2342,8 +2469,12 @@ async fn send(
     let log_dir = state.log_dir().await;
     let pending = *state.pending_mode.lock().await;
     let pending_kind = *state.pending_kind.lock().await;
-    let mut session_guard = state.session.lock().await;
-    let session = ensure_session(&mut session_guard, pending, pending_kind, &log_dir)?;
+    let (mut held, _) = state
+        .chats
+        .lock_or_start(pending, pending_kind, &log_dir)
+        .await?;
+    let session: &mut Session = &mut held;
+    state.chats.mark_turn(&session.id);
 
     let cancel = CancellationToken::new();
     *state.cancel.lock().unwrap() = cancel.clone();
@@ -2435,7 +2566,7 @@ async fn send_agent(
     if let Some(c) = &council {
         c.validate().map_err(|e| e.to_string())?;
     }
-    let mut agent_guard = state.agent.lock().await;
+    let mut agent_guard = lock_agent(&state).await;
     let agent = agent_guard
         .as_mut()
         .ok_or_else(|| "not connected".to_string())?;
@@ -2446,9 +2577,15 @@ async fn send_agent(
     let log_dir = state.log_dir().await;
     let pending = *state.pending_mode.lock().await;
     let pending_kind = *state.pending_kind.lock().await;
-    let mut session_guard = state.session.lock().await;
-    let created = session_guard.is_none();
-    let session = ensure_session(&mut session_guard, pending, pending_kind, &log_dir)?;
+    // The open chat's own lock, held for the turn — no other chat's
+    // (backlog 159, A1): he may open another chat meanwhile and every
+    // command there answers at once.
+    let (mut held, created) = state
+        .chats
+        .lock_or_start(pending, pending_kind, &log_dir)
+        .await?;
+    let session: &mut Session = &mut held;
+    state.chats.mark_turn(&session.id);
     // A connection built on New chat now belongs to the chat this turn
     // created; what it sends is that chat's hold (nightshift backlog 174).
     if created {
@@ -2989,7 +3126,7 @@ async fn compact(
         .ok_or_else(|| "not connected".to_string())?;
     // A compaction is a model call too (nightshift backlog 101).
     let _awake = power.acquire();
-    let mut session_guard = state.session.lock().await;
+    let mut session_guard = state.chats.lock_focused().await;
     let session = session_guard
         .as_mut()
         .ok_or_else(|| "no active session".to_string())?;
@@ -3019,8 +3156,8 @@ async fn compact(
 /// [`edit_on_cli`]; the log gets its `Rewind` marker either way.
 #[tauri::command]
 async fn rewind(state: State<'_, AppState>, to: usize) -> Result<Vec<SessionEvent>, String> {
-    let mut agent_guard = state.agent.lock().await;
-    let mut session_guard = state.session.lock().await;
+    let mut agent_guard = lock_agent(&state).await;
+    let mut session_guard = state.chats.lock_focused().await;
     let session = session_guard
         .as_mut()
         .ok_or_else(|| "no active session".to_string())?;
@@ -3052,8 +3189,8 @@ async fn rewind(state: State<'_, AppState>, to: usize) -> Result<Vec<SessionEven
 /// stood before, or at nothing if there was none.
 #[tauri::command]
 async fn unrewind(state: State<'_, AppState>, of: usize) -> Result<Vec<SessionEvent>, String> {
-    let mut agent_guard = state.agent.lock().await;
-    let mut session_guard = state.session.lock().await;
+    let mut agent_guard = lock_agent(&state).await;
+    let mut session_guard = state.chats.lock_focused().await;
     let session = session_guard
         .as_mut()
         .ok_or_else(|| "no active session".to_string())?;
@@ -3297,8 +3434,8 @@ async fn edit_message(
 ) -> Result<MessageEdit, String> {
     match mode.as_str() {
         "save" => {
-            let mut agent_guard = state.agent.lock().await;
-            let mut session_guard = state.session.lock().await;
+            let mut agent_guard = lock_agent(&state).await;
+            let mut session_guard = state.chats.lock_focused().await;
             let session = session_guard
                 .as_mut()
                 .ok_or_else(|| "no active session".to_string())?;
@@ -3359,8 +3496,8 @@ async fn edit_message(
 /// turn outright and marks a turn with tool calls ([`CliSession::remove`]).
 #[tauri::command]
 async fn remove_message(state: State<'_, AppState>, index: usize) -> Result<MessageEdit, String> {
-    let mut agent_guard = state.agent.lock().await;
-    let mut session_guard = state.session.lock().await;
+    let mut agent_guard = lock_agent(&state).await;
+    let mut session_guard = state.chats.lock_focused().await;
     let session = session_guard
         .as_mut()
         .ok_or_else(|| "no active session".to_string())?;
@@ -3407,8 +3544,8 @@ async fn remove_message(state: State<'_, AppState>, index: usize) -> Result<Mess
 /// every edit here is, so a refusal records nothing.
 #[tauri::command]
 async fn restore_message(state: State<'_, AppState>, index: usize) -> Result<MessageEdit, String> {
-    let mut agent_guard = state.agent.lock().await;
-    let mut session_guard = state.session.lock().await;
+    let mut agent_guard = lock_agent(&state).await;
+    let mut session_guard = state.chats.lock_focused().await;
     let session = session_guard
         .as_mut()
         .ok_or_else(|| "no active session".to_string())?;
@@ -3443,8 +3580,8 @@ async fn remove_block(
     index: usize,
     block: usize,
 ) -> Result<MessageEdit, String> {
-    let mut agent_guard = state.agent.lock().await;
-    let mut session_guard = state.session.lock().await;
+    let mut agent_guard = lock_agent(&state).await;
+    let mut session_guard = state.chats.lock_focused().await;
     let session = session_guard
         .as_mut()
         .ok_or_else(|| "no active session".to_string())?;
@@ -3478,8 +3615,8 @@ async fn restore_block(
     index: usize,
     block: usize,
 ) -> Result<MessageEdit, String> {
-    let mut agent_guard = state.agent.lock().await;
-    let mut session_guard = state.session.lock().await;
+    let mut agent_guard = lock_agent(&state).await;
+    let mut session_guard = state.chats.lock_focused().await;
     let session = session_guard
         .as_mut()
         .ok_or_else(|| "no active session".to_string())?;
@@ -3595,9 +3732,9 @@ fn restore_cli_file(
 /// an ephemeral parent forks to another chat with no log.
 #[tauri::command]
 async fn fork_session(state: State<'_, AppState>, upto: usize) -> Result<MessageEdit, String> {
-    let mut agent_guard = state.agent.lock().await;
+    let mut agent_guard = lock_agent(&state).await;
     let log_dir = state.log_dir().await;
-    let mut session_guard = state.session.lock().await;
+    let session_guard = state.chats.lock_focused().await;
     let parent = session_guard
         .as_ref()
         .ok_or_else(|| "no active session".to_string())?;
@@ -3624,7 +3761,10 @@ async fn fork_session(state: State<'_, AppState>, upto: usize) -> Result<Message
     }
     let events = fork.events().to_vec();
     let id = fork.id.clone();
-    *session_guard = Some(fork);
+    // The new chat is held and focused; the parent's lock goes with the
+    // guard and it is dropped from the held set (backlog 159, A1).
+    drop(session_guard);
+    state.chats.open(fork);
     Ok(MessageEdit {
         events,
         session: id,
@@ -3643,9 +3783,9 @@ async fn fork_session(state: State<'_, AppState>, upto: usize) -> Result<Message
 /// Nightloom's words; the hand-off is the model's file.
 #[tauri::command]
 async fn continue_session(state: State<'_, AppState>) -> Result<MessageEdit, String> {
-    let mut agent_guard = state.agent.lock().await;
+    let mut agent_guard = lock_agent(&state).await;
     let log_dir = state.log_dir().await;
-    let mut session_guard = state.session.lock().await;
+    let session_guard = state.chats.lock_focused().await;
     let parent = session_guard
         .as_ref()
         .ok_or_else(|| "no active session".to_string())?;
@@ -3655,7 +3795,10 @@ async fn continue_session(state: State<'_, AppState>) -> Result<MessageEdit, Str
     }
     let events = next.events().to_vec();
     let id = next.id.clone();
-    *session_guard = Some(next);
+    // The new chat is held and focused; the parent's lock goes with the
+    // guard and it is dropped from the held set (backlog 159, A1).
+    drop(session_guard);
+    state.chats.open(next);
     Ok(MessageEdit {
         events,
         session: id,
@@ -3719,7 +3862,7 @@ async fn ask_aside(
     let registered = state.aside_cancel.begin(seq);
     let cancel = registered.token().clone();
     let agent_guard = tokio::select! {
-        guard = state.agent.lock() => guard,
+        guard = lock_agent(&state) => guard,
         _ = cancel.cancelled() => return Err("the aside was cancelled".to_string()),
     };
     let agent = agent_guard
@@ -3790,7 +3933,8 @@ struct ContextEdit {
 /// CLI's window is reported per turn, not known at connect.
 #[tauri::command]
 async fn context_view(state: State<'_, AppState>) -> Result<WireView, String> {
-    if state.agent.lock().await.is_some() {
+    // The flag, not the lock (backlog 159, A1): a turn holds the agent.
+    if state.agent_live.load(std::sync::atomic::Ordering::SeqCst) {
         let built = state.prompt.lock().await;
         return Ok(WireView::assemble(
             built.agent.as_ref(),
@@ -3803,7 +3947,7 @@ async fn context_view(state: State<'_, AppState>) -> Result<WireView, String> {
     let chat = chat_guard
         .as_ref()
         .ok_or_else(|| "not connected".to_string())?;
-    let session_guard = state.session.lock().await;
+    let session_guard = state.chats.lock_focused().await;
     let Some(session) = session_guard.as_ref() else {
         // Sessions are created lazily by `send`, so "no session yet" is the
         // ordinary state at launch rather than a failure. An empty session
@@ -3831,7 +3975,7 @@ async fn edit_context(
     let chat = chat_guard
         .as_ref()
         .ok_or_else(|| "not connected".to_string())?;
-    let mut session_guard = state.session.lock().await;
+    let mut session_guard = state.chats.lock_focused().await;
     let session = session_guard
         .as_mut()
         .ok_or_else(|| "no active session".to_string())?;
@@ -3940,8 +4084,11 @@ async fn set_prompt_layers(
     let log_dir = state.log_dir().await;
     let pending = *state.pending_mode.lock().await;
     let pending_kind = *state.pending_kind.lock().await;
-    let mut session_guard = state.session.lock().await;
-    let session = ensure_session(&mut session_guard, pending, pending_kind, &log_dir)?;
+    let (mut held, _) = state
+        .chats
+        .lock_or_start(pending, pending_kind, &log_dir)
+        .await?;
+    let session: &mut Session = &mut held;
     session.record_prompt_layers(off);
     Ok(session.events().to_vec())
 }
@@ -3982,8 +4129,11 @@ async fn set_chat_kind(
     let log_dir = state.log_dir().await;
     let pending = *state.pending_mode.lock().await;
     let pending_kind = *state.pending_kind.lock().await;
-    let mut session_guard = state.session.lock().await;
-    let session = ensure_session(&mut session_guard, pending, pending_kind, &log_dir)?;
+    let (mut held, _) = state
+        .chats
+        .lock_or_start(pending, pending_kind, &log_dir)
+        .await?;
+    let session: &mut Session = &mut held;
     session.record_kind(kind, workspace);
     Ok(session.events().to_vec())
 }
@@ -4016,8 +4166,11 @@ async fn set_chat_folders(
     let log_dir = state.log_dir().await;
     let pending = *state.pending_mode.lock().await;
     let pending_kind = *state.pending_kind.lock().await;
-    let mut session_guard = state.session.lock().await;
-    let session = ensure_session(&mut session_guard, pending, pending_kind, &log_dir)?;
+    let (mut held, _) = state
+        .chats
+        .lock_or_start(pending, pending_kind, &log_dir)
+        .await?;
+    let session: &mut Session = &mut held;
     session.record_folders(wanted);
     Ok(session.events().to_vec())
 }
@@ -4068,8 +4221,11 @@ async fn set_prompt_layer_text(
     let log_dir = state.log_dir().await;
     let pending = *state.pending_mode.lock().await;
     let pending_kind = *state.pending_kind.lock().await;
-    let mut session_guard = state.session.lock().await;
-    let session = ensure_session(&mut session_guard, pending, pending_kind, &log_dir)?;
+    let (mut held, _) = state
+        .chats
+        .lock_or_start(pending, pending_kind, &log_dir)
+        .await?;
+    let session: &mut Session = &mut held;
     let mut edits = session.prompt_layer_edits().clone();
     match text.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()) {
         Some(text) => {
@@ -4181,7 +4337,7 @@ async fn cli_prompt_snapshot(
     use nightloom_service::agent::cli_session;
     // A reader (backlog 136, as `transcript`): the turn holds `session`,
     // and the Context popover asking mid-turn would sit until it ended.
-    let Ok(guard) = state.session.try_lock() else {
+    let Ok(guard) = state.chats.try_lock_focused() else {
         return Err(
             "the open chat is running a turn — the prompt snapshot reads its log; open \
              the popover again when the turn ends"
@@ -4254,19 +4410,14 @@ async fn delete_session(
         .unwrap_or_default();
     // As `rename_session`: no wait behind a running turn (FD4). The turn's
     // own chat is refused; another chat's log is not what the turn holds.
-    let was_active = match state.session.try_lock() {
-        Ok(mut session_guard) => {
-            let open = session_guard.as_ref().is_some_and(|s| s.id == full_id);
-            if open {
-                *session_guard = None;
-            }
-            open
-        }
-        Err(_) => {
-            if active.as_deref() == Some(full_id.as_str()) {
-                return Err("that chat is running a turn — delete it when the turn ends".into());
-            }
-            false
+    // Since backlog 159 A1 each chat has its own lock: a held chat whose
+    // turn is running is refused, any other is dropped from the held set
+    // (New chat is open if it was the open one). `active` kept for the API.
+    let _ = active;
+    let was_active = match state.chats.forget(&full_id) {
+        Ok(open) => open,
+        Err(chats::Busy) => {
+            return Err("that chat is running a turn — delete it when the turn ends".into());
         }
     };
     if was_active {
@@ -4802,8 +4953,8 @@ async fn set_checkpoint(
         at_ms: now,
     };
     fork::write_checkpoint(&dir, &cp).map_err(|e| format!("writing the checkpoint failed: {e}"))?;
-    let agent = state.agent.lock().await;
-    let open = state.session.lock().await;
+    let agent = lock_agent(&state).await;
+    let open = state.chats.lock_focused().await;
     if let (Some(agent), Some(open)) = (agent.as_ref(), open.as_ref())
         && open
             .log_path()
@@ -5040,7 +5191,7 @@ async fn open_project(
         guard.active = Some(project.clone());
         project
     };
-    *state.session.lock().await = None;
+    state.chats.focus_new();
     // The pending kind was chosen against the list the user was looking at;
     // the next chat in the new project is an ordinary one until they say
     // otherwise (nightshift backlog 061).
@@ -5058,7 +5209,7 @@ async fn open_project(
 #[tauri::command]
 async fn close_project(state: State<'_, AppState>) -> Result<(), String> {
     state.workspaces.lock().await.active = None;
-    *state.session.lock().await = None;
+    state.chats.focus_new();
     *state.pending_mode.lock().await = ChatMode::Normal;
     *state.pending_kind.lock().await = ChatKind::Build;
     adopt_agent_session(&state, None).await;
@@ -5099,7 +5250,7 @@ async fn forget_project(
         closed
     };
     if closed {
-        *state.session.lock().await = None;
+        state.chats.focus_new();
         *state.pending_mode.lock().await = ChatMode::Normal;
         *state.pending_kind.lock().await = ChatKind::Build;
     }
@@ -6706,7 +6857,9 @@ fn main() {
             app.manage(AppState {
                 chat: tokio::sync::Mutex::new(None),
                 agent: tokio::sync::Mutex::new(None),
-                session: tokio::sync::Mutex::new(None),
+                agent_live: std::sync::atomic::AtomicBool::new(false),
+                agent_readopt: std::sync::atomic::AtomicBool::new(false),
+                chats: chats::Chats::default(),
                 pending_mode: tokio::sync::Mutex::new(ChatMode::Normal),
                 pending_kind: tokio::sync::Mutex::new(ChatKind::Build),
                 cancel,
@@ -6775,6 +6928,7 @@ fn main() {
             open_session,
             peek_session,
             transcript,
+            turn_session,
             send,
             send_agent,
             council_turns,

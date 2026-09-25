@@ -387,16 +387,27 @@ describe("openContent and dropContent", () => {
     await dropContent({ kind: "chat", session: "c" }, { pane, index: 0 });
     expect(chats(app.tabs)).toEqual([["c", "b", "a", "nightshift"], ["x.md"]]);
     expect(app.activeSessionId).toBe("c");
-    expect(app.events.map((e) => (e.event === "user_message" ? e.text : e.event))).toEqual(["peeked c"]);
+    // ~~read from disk (`peekSession`)~~ — since pass 2 step A1
+    // (2026-09-24) opened on the backend too (`openSession` is a focus that
+    // answers during the turn), so the chat on screen is the open chat.
+    expect(app.events.map((e) => (e.event === "user_message" ? e.text : e.event))).toEqual([
+      "session_created",
+      "hello from c",
+    ]);
+    expect(vi.mocked(api.openSession)).toHaveBeenLastCalledWith("c");
     expect(app.parked?.session).toBe(running);
     expect(app.parked?.live).toEqual({ segments: [] });
     expect(app.live).toBeNull();
-    // Back to the running chat: its stream comes back, nothing is read.
+    // Back to the running chat: its stream comes back and its parked log
+    // stays the view; the backend's focus follows it (A1), nothing peeked.
     const peeks = vi.mocked(api.peekSession).mock.calls.length;
+    const parkedEvents = app.parked?.events;
     await openContent({ kind: "chat", session: running }, "replace");
     expect(app.parked).toBeNull();
     expect(app.activeSessionId).toBe(running);
     expect(app.live).toEqual({ segments: [] });
+    expect(app.events).toBe(parkedEvents);
+    expect(vi.mocked(api.openSession)).toHaveBeenLastCalledWith(running);
     expect(vi.mocked(api.peekSession).mock.calls.length).toBe(peeks);
     app.busy = false;
     app.live = null;

@@ -144,21 +144,20 @@ impl Host for DesktopHost {
     async fn state(&self) -> RemoteState {
         let state = self.state_of();
         let project = state.active().await.map(|p| p.name);
-        // A turn holds the session for its length; `try_lock` is the
-        // question "is one running" asked without waiting for the answer.
-        let (busy, active_chat) = match state.session.try_lock() {
-            Ok(guard) => {
-                let id = guard.as_ref().map(|s| s.id.clone());
+        // A turn holds its chat's lock for its length (since backlog 159
+        // A1, each chat has its own); `running` asks which without waiting.
+        // ~~Busy meant the one open chat was locked, and the chat named was
+        // the last one seen open~~ — now busy is any chat running, and the
+        // chat named is the running one while a turn runs (he may have
+        // opened another in the window meanwhile), else the open one.
+        let running = state.chats.running();
+        let (busy, active_chat) = match running.first() {
+            None => {
+                let id = state.chats.focus();
                 *self.last_chat.lock().unwrap_or_else(|p| p.into_inner()) = id.clone();
                 (false, id)
             }
-            Err(_) => (
-                true,
-                self.last_chat
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .clone(),
-            ),
+            Some(id) => (true, Some(id.clone())),
         };
         // Held by a turn reads as connected: a turn cannot run without one.
         let agent = state.agent.try_lock().map(|g| g.is_some()).unwrap_or(true);

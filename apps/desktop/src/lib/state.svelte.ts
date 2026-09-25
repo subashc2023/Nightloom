@@ -31,7 +31,7 @@ import { chatName, notifyNeedsYou, notifyTurnEnd } from "./notify";
 import { RESUME_TEXT, SleepWatch, loadSleepPrefs, pushPowerPrefs, type Woke } from "./sleep";
 import { asideFollowUp, asideQuestion, type AsideQuote } from "./asideQuote";
 import type { AsideAnchor } from "./asideCard";
-import { loadAsides, nextAsideId } from "./asides";
+import { isPrivateChat, loadAsides, markChatMode, nextAsideId } from "./asides";
 import { MAX_OPEN_ASIDES, foldTheOldest } from "./asideCard";
 import { loadCouncilPrefs, type CouncilPrefs, type CouncilRequest } from "./council";
 import { limitPauseFrom, resumeDelayMs, resumeMessage, type LimitPause } from "./limit";
@@ -3238,6 +3238,9 @@ export function registerTerminalHooks(h: TerminalHooks): void {
  *  before a project switch replaces it. Best-effort. */
 export function flushTabs(): void {
   if (tabsOwner === null || typeof localStorage === "undefined") return;
+  // An ephemeral chat still open at the window's close is recorded as
+  // private before its tabs are stored (blocker 217, batch D's patch note).
+  if (app.activeSessionId !== null) markChatMode(app.activeSessionId, chatMode(app.events));
   const counter = terminalHooks;
   saveWorkspaceFor(
     localStorage,
@@ -3266,8 +3269,10 @@ function storedThreads(session: string): Aside[] {
 /** A tab's content as the store keeps it: an aside tab's thread id as the
  *  thread's place (`storedThreads`); -1 for a thread the store will not
  *  keep, which then does not come back. Everything else as it is. */
-function storeTabContent(c: TabContent): TabContent {
-  if (c.kind !== "aside" || c.thread === undefined) return c;
+function storeTabContent(c: TabContent): TabContent | null {
+  if (c.kind !== "aside") return c;
+  if (isPrivateChat(c.session, app.sessions)) return null; // blocker 217
+  if (c.thread === undefined) return c;
   const at = storedThreads(c.session).findIndex((a) => a.id === c.thread);
   return { kind: "aside", session: c.session, thread: at };
 }
@@ -4349,7 +4354,7 @@ export async function refreshSessions(): Promise<void> {
  */
 export async function newSession(mode?: ChatMode, kind?: ChatKind): Promise<void> {
   if (app.busy) {
-    peekNew(mode, kind);
+    await peekNew(mode, kind);
     return;
   }
   // The kind is the second axis (nightshift backlog 102): absent means the
@@ -4701,8 +4706,11 @@ function park(): void {
   app.liveUsage = null;
 }
 
-/** The running chat back on screen, its reply where it got to. */
-function unpark(): void {
+/** The running chat back on screen, its reply where it got to; the
+ *  backend's open chat follows it (backlog 159, A1 — `open_session` is a
+ *  focus now and answers during the turn). A New chat's first turn has
+ *  no id on this side yet; the backend names it (`turn_session`). */
+async function unpark(): Promise<void> {
   const p = app.parked;
   if (!p) return;
   app.parked = null;
@@ -4716,12 +4724,30 @@ function unpark(): void {
   app.liveVersion++;
   app.error = null;
   leaveNote();
+  await refocus(p.session);
+}
+
+/** Point the backend's open chat at the running one again (backlog 159,
+ *  A1). Best-effort: the turn's end re-aligns the backend anyway. */
+async function refocus(session: string | null): Promise<void> {
+  try {
+    const id = session ?? (await api.turnSession());
+    if (id !== null) await api.openSession(id);
+  } catch {
+    // the turn's end re-aligns (`settleTurnView`)
+  }
 }
 
 /**
  * Another chat on screen while a turn runs (backlog 159, pass 1): its log
  * read from disk, the running chat parked; the running chat asked for
  * again comes back with its stream.
+ *
+ * ~~`peek_session`, a reader that opens nothing~~ — since pass 2 step A1
+ * (2026-09-24) the backend holds each chat behind its own lock and
+ * `open_session` is a focus that answers during the turn, so the chat on
+ * screen is the backend's open chat too: the prompt layers, the context
+ * page and the other commands of the open chat act on it at once.
  */
 async function peekSession(id: string): Promise<void> {
   if (id === app.activeSessionId) {
@@ -4730,11 +4756,11 @@ async function peekSession(id: string): Promise<void> {
     return;
   }
   if (app.parked && id === app.parked.session) {
-    unpark();
+    await unpark();
     return;
   }
   try {
-    const events = await api.peekSession(id);
+    const events = await api.openSession(id);
     park();
     switchAside(id);
     app.activeSessionId = id;
@@ -4751,11 +4777,11 @@ async function peekSession(id: string): Promise<void> {
 /** New chat on screen while a turn runs: refused only while the running
  *  turn is the pending chat's own first (one pending slot per project
  *  and kind — see `browse.ts`). */
-function peekNew(mode?: ChatMode, kind?: ChatKind): void {
+async function peekNew(mode?: ChatMode, kind?: ChatKind): Promise<void> {
   const running = app.parked ? app.parked.session : app.activeSessionId;
   if (running === null) {
     if (app.parked) {
-      unpark();
+      await unpark();
       return;
     }
     addToast("This chat is having its first turn — New chat opens when it ends");
@@ -4771,6 +4797,14 @@ function peekNew(mode?: ChatMode, kind?: ChatKind): void {
   app.error = null;
   app.suggestion = null;
   leaveNote();
+  // The backend's open chat is New chat too (backlog 159, A1): it answers
+  // during the turn now, and the kind asked for is the one its first
+  // message makes. Best-effort: the turn's end re-aligns (`settleTurnView`).
+  try {
+    await api.newSession(app.pendingMode, app.pendingKind);
+  } catch {
+    // re-aligned at the turn's end
+  }
 }
 
 /**
@@ -4784,7 +4818,9 @@ async function settleTurnView(pendingKey: string | null): Promise<void> {
   const parked = app.parked;
   app.parked = null;
   try {
-    const events = await api.transcript();
+    // The chat the turn ran in, whichever is open now (backlog 159, A1:
+    // the backend's open chat follows the screen during the turn).
+    const events = await api.transcript(true);
     const first = events[0];
     const made = first && first.event === "session_created" ? first.id : null;
     const plan = settlePlan({ parked, viewed: app.activeSessionId, made, pendingKey });

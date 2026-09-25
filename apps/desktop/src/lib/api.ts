@@ -332,8 +332,15 @@ export function peekSession(id: string): Promise<SessionEvent[]> {
   return invoke("peek_session", { id });
 }
 
-export function transcript(): Promise<SessionEvent[]> {
-  return invoke("transcript");
+/** The open chat's events; with `turn`, those of the chat the latest turn
+ *  ran in (backlog 159, A1 — he may have opened another chat meanwhile). */
+export function transcript(turn?: boolean): Promise<SessionEvent[]> {
+  return invoke("transcript", turn ? { turn } : {});
+}
+
+/** The id of the chat the latest turn ran in (backlog 159, A1). */
+export function turnSession(): Promise<string | null> {
+  return invoke("turn_session");
 }
 
 export function send(
