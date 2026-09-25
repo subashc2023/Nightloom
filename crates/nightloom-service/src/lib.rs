@@ -20,6 +20,7 @@ pub mod import;
 pub mod knowledge;
 pub mod mcp_server;
 pub mod nightshift;
+pub mod note_edit;
 pub mod observe;
 pub mod pass_lock;
 pub mod plan_usage;

@@ -31,6 +31,9 @@
   import NoteEditor from "./NoteEditor.svelte";
   import { clampCaret, loadNoteMode, saveNoteMode, type NoteMode } from "./noteMode";
   import { fieldScrollTop } from "./find";
+  import NoteEditPanel from "./NoteEditPanel.svelte";
+  import { noteEditUi, onLanded, runningTurn } from "./noteEdit.svelte";
+  import { changedLines, splitReply } from "./noteEdit";
 
   /**
    * Which note the editor has loaded, as `scope:name`. A plain variable, not
@@ -136,6 +139,61 @@
     const key = bufferKey;
     if (!key) return;
     mirrorDraft(key, text, saved);
+  });
+
+  /**
+   * Edit with a prompt (nightshift backlog 151). While a rewrite of this
+   * note streams, the note's pane shows the new text as it arrives, the
+   * lines that differ from the old text marked; the buffer keeps the old
+   * text until the reply is whole, so nothing typed or saved is touched by
+   * a reply that stops halfway. When it lands (`onLanded`) the buffer takes
+   * it — saved, or as a draft — and the changed lines stay marked for a few
+   * seconds, or until a click or a key.
+   */
+  const streaming = $derived(bufferKey ? runningTurn(bufferKey) : null);
+  const streamed = $derived.by(() => {
+    const t = streaming;
+    if (!t) return null;
+    const note = splitReply(t.partial ?? "", t.before).note;
+    const lines = note === "" ? [] : note.replace(/\n$/, "").split("\n");
+    const marked = lines.length <= 2000 ? new Set(changedLines(t.before, note)) : new Set<number>();
+    return { lines, marked };
+  });
+  let marks = $state<{ lines: string[]; marked: Set<number> } | null>(null);
+  let marksTimer: ReturnType<typeof setTimeout> | null = null;
+  const MARK_MS = 5000;
+  function clearMarks() {
+    if (marksTimer !== null) clearTimeout(marksTimer);
+    marksTimer = null;
+    marks = null;
+  }
+  $effect(() => {
+    const key = bufferKey;
+    if (!key) return;
+    return onLanded(key, (l) => {
+      text = l.text;
+      if (l.saved) saved = l.text;
+      clearMarks();
+      if (l.marks.length > 0) {
+        marks = { lines: l.text.replace(/\n$/, "").split("\n"), marked: new Set(l.marks) };
+        marksTimer = setTimeout(clearMarks, MARK_MS);
+      }
+    });
+  });
+  $effect(() => () => clearMarks());
+  let streamPane = $state<HTMLDivElement | null>(null);
+  $effect(() => {
+    void streamed?.lines.length;
+    const el = streamPane;
+    if (el) el.scrollTop = el.scrollHeight;
+  });
+  /** The first marked line in view when the marks show. */
+  $effect(() => {
+    const m = marks;
+    const el = streamPane;
+    if (!m || !el) return;
+    const first = el.querySelector(".ln.mark");
+    if (first instanceof HTMLElement) el.scrollTop = Math.max(0, first.offsetTop - el.clientHeight / 3);
   });
 
   /**
@@ -394,6 +452,9 @@
   }
 
   function onkeydown(e: KeyboardEvent) {
+    // A key ends the marks of a landed rewrite, back to the editor — unless
+    // it is typed into the prompt panel, which sits beside the marks.
+    if (marks && !(e.target instanceof HTMLElement && e.target.closest(".panel"))) clearMarks();
     if ((e.ctrlKey || e.metaKey) && e.key === "s") {
       e.preventDefault();
       void commit();
@@ -453,6 +514,13 @@
     </button>
     <button
       class="ghost"
+      class:on={noteEditUi.open}
+      title="Tell a model what changed and it rewrites the whole note to fit, in a small chat on the right. Direct editing stays as it is."
+      onclick={() => (noteEditUi.open = !noteEditUi.open)}
+      disabled={!open}>Edit with a prompt</button
+    >
+    <button
+      class="ghost"
       title="Show the folder"
       onclick={() => void showFolder()}>Folder</button
     >
@@ -461,10 +529,31 @@
     </button>
   </header>
 
+  <div class="body">
+  <div class="main">
   {#if error}
     <p class="err">{error}</p>
   {:else if loading}
     <p class="err quiet">Reading…</p>
+  {:else if streamed || marks}
+    <!-- A rewrite streaming in, or one that just landed with its changed
+         lines marked (backlog 151). Read-only; a click or a key goes back
+         to the editor, which already holds the landed text. -->
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="pane stream"
+      class:live={!!streamed}
+      bind:this={streamPane}
+      onclick={() => {
+        if (!streamed) clearMarks();
+      }}
+    >
+      {#each (streamed ?? marks)?.lines ?? [] as line, i (i)}
+        <div class="ln" class:mark={(streamed ?? marks)?.marked.has(i)}>{line || " "}</div>
+      {/each}
+      {#if streamed}<div class="ln caret">▍</div>{/if}
+    </div>
   {:else if reviewing}
     <!-- The proposal: why, the diff with its proposed side editable, four
          ways out. The editor and its buffer are behind this, untouched,
@@ -587,6 +676,16 @@
       {/if}
     </div>
   {/if}
+  </div>
+  {#if noteEditUi.open && open}
+    <NoteEditPanel
+      scope={open.scope}
+      name={open.name}
+      {text}
+      disabled={loading || !!error || !!reviewing || bufferKey === null}
+    />
+  {/if}
+  </div>
 
   <footer>
     {#if open?.scope === "instructions"}
@@ -635,6 +734,44 @@
     min-height: 0;
     display: flex;
     flex-direction: column;
+  }
+  /* The note beside its prompt panel (backlog 151): the note's column is
+     what every branch below lays out in, as `.note` was before. */
+  .body {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+  }
+  .main {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .stream {
+    font-family: var(--mono);
+    font-size: 0.84rem;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    cursor: default;
+  }
+  .stream .ln {
+    border-radius: 3px;
+    transition: background-color 1.2s ease;
+  }
+  .stream .ln.mark {
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+  }
+  .stream .caret {
+    color: var(--accent);
+    animation: blink 1s steps(2) infinite;
+  }
+  @keyframes blink {
+    to {
+      opacity: 0;
+    }
   }
   header {
     display: flex;

@@ -41,6 +41,8 @@ mod draft_count;
 mod filetab;
 /// Nightshift: the unattended runner's file contract, as commands.
 mod nightshift;
+/// Edit a note by prompt (nightshift backlog 151).
+mod note_edit;
 /// Sleep-safe turns: the power assertion and the wake watcher.
 mod power;
 /// A changed prompt layer waits for the chat's cold moment (backlog 174).
@@ -7202,6 +7204,8 @@ fn main() {
             provider_credits,
             ask_aside,
             cancel_aside,
+            note_edit::edit_note_by_prompt,
+            note_edit::cancel_note_edit,
             cancel,
             compact,
             rewind,
