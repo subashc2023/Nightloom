@@ -10,6 +10,7 @@ import {
   emptyWorkspace,
   focusedPane,
   insertAt,
+  isOwnSlot,
   keepFloating,
   keepFloatingBeside,
   land,
@@ -19,6 +20,7 @@ import {
   openBeside,
   openFloating,
   parseContentDrag,
+  reorder,
   sameContent,
   split,
   step,
@@ -197,6 +199,55 @@ describe("move", () => {
     expect(w.panes).toHaveLength(1);
     expect(order(w)).toEqual([["a", "b"]]);
     expect(activeTab(w.panes[0]).content).toEqual(chat("a"));
+  });
+});
+
+describe("reorder (backlog 195)", () => {
+  it("a drop in its own slot — before it or after it — moves nothing and switches nothing", () => {
+    const w = ws(chat("a"), chat("b"), chat("c"));
+    const pane = w.panes[0];
+    const b = pane.tabs[1].id;
+    expect(isOwnSlot(w, b, pane.id, 1)).toBe(true);
+    expect(isOwnSlot(w, b, pane.id, 2)).toBe(true);
+    expect(isOwnSlot(w, b, pane.id, 0)).toBe(false);
+    expect(reorder(w, b, 1)).toBe(false);
+    expect(move(w, b, pane.id, 2)).toBe(false);
+    expect(order(w)).toEqual([["a", "b", "c"]]);
+    expect(activeTab(pane).content).toEqual(chat("a"));
+  });
+
+  it("reordering another tab leaves the active tab and the focused pane alone", () => {
+    const w = ws(chat("a"), chat("b"), chat("c"));
+    const pane = w.panes[0];
+    expect(reorder(w, pane.tabs[2].id, 0)).toBe(true);
+    expect(order(w)).toEqual([["c", "a", "b"]]);
+    expect(activeTab(pane).content).toEqual(chat("a"));
+    expect(w.focused).toBe(pane.id);
+  });
+
+  it("the open tab reorders and stays the open tab", () => {
+    const w = ws(chat("a"), chat("b"), chat("c"));
+    const pane = w.panes[0];
+    const a = pane.tabs[0].id;
+    expect(move(w, a, pane.id, 2)).toBe(true);
+    expect(order(w)).toEqual([["b", "a", "c"]]);
+    expect(pane.active).toBe(a);
+    expect(reorder(w, a, 3)).toBe(true);
+    expect(order(w)).toEqual([["b", "c", "a"]]);
+    expect(pane.active).toBe(a);
+  });
+
+  it("the active tab moved into the other pane takes the focus with it", () => {
+    const w = ws(chat("a"), chat("b"), chat("c"));
+    split(w, w.panes[0].tabs[2].id, "right");
+    const [left, right] = w.panes;
+    activate(w, left.tabs[0].id);
+    const a = left.tabs[0].id;
+    expect(move(w, a, right.id, 0)).toBe(true);
+    expect(order(w)).toEqual([["b"], ["a", "c"]]);
+    expect(right.active).toBe(a);
+    expect(w.focused).toBe(right.id);
+    expect(activeTab(left).content).toEqual(chat("b"));
   });
 });
 

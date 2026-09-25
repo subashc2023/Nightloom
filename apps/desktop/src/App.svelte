@@ -32,6 +32,8 @@
   import { draggedShell, dropLabel } from "./lib/terminal.svelte";
   import "./lib/tabsKeeper.svelte";
   import TabStrip from "./lib/TabStrip.svelte";
+  import { tabDrag } from "./lib/tabDrag.svelte";
+  import { halfLabel } from "./lib/tabDrag";
   import AsideView from "./lib/AsideView.svelte";
   import AsideCard from "./lib/AsideCard.svelte";
   import AttachmentLayer from "./lib/AttachmentLayer.svelte";
@@ -255,6 +257,14 @@
   // above, and the zone follows them.
   $effect(() => {
     if (!dragging) dropHalf = null;
+  });
+  /** A tab's pointer drag over a pane's half (backlog 195): the zone its
+   *  release would split to or move into — none when it would snap back. */
+  const tabHalf = $derived.by(() => {
+    const t = tabDrag.target;
+    if (!tabDrag.id || t?.kind !== "half" || !tabDrag.plan) return null;
+    const label = halfLabel(tabDrag.plan);
+    return label ? { pane: t.pane, side: t.side, label } : null;
   });
   /** The zone's caption: what the drop will do here. */
   function zoneLabel(paneId: string): string {
@@ -709,6 +719,10 @@
             {#if dropHalf?.pane === pane.id}
               <div class="split-zone {dropHalf.side}" class:whole={app.draggingTerm} aria-hidden="true">
                 <span>{zoneLabel(pane.id)}</span>
+              </div>
+            {:else if tabHalf?.pane === pane.id}
+              <div class="split-zone {tabHalf.side}" aria-hidden="true">
+                <span>{tabHalf.label}</span>
               </div>
             {/if}
           </section>

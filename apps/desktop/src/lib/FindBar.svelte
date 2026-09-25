@@ -1,3 +1,9 @@
+<script lang="ts" module>
+  /** What an unmounted bar hands the next one (backlog 099): open, and
+   *  with what. One bar is mounted at a time — the focused pane's. */
+  const carried = { open: false, query: "" };
+</script>
+
 <script lang="ts">
   import { onDestroy, onMount, tick } from "svelte";
   import Icon from "./Icon.svelte";
@@ -73,15 +79,33 @@
   /** The turn `openWith` asked for and the page has not yet shown. */
   let pendingTurn: number | null = null;
 
-  onMount(() => registerFindBar({ openWith, query: () => (open ? query : "") }));
+  onMount(() => {
+    registerFindBar({ openWith, query: () => (open ? query : "") });
+    // An open search follows the focus (backlog 099's leftover): the bar
+    // is mounted per focused pane and per kind of page, so a click into
+    // the other pane or a tab switch remounted it closed and empty. The
+    // new bar reopens with the query and searches its own page, leaving
+    // the focus where the click put it.
+    if (carried.open) void reopen(carried.query);
+  });
   // The bar leaves with its pane's focus (`{#if focused}` in App.svelte):
   // an open one must take its light and its observer with it, or the
   // highlights stay painted on the page and the observer keeps scheduling
   // searches against a bar that is gone (review E, 2026-09-17).
   onDestroy(() => {
+    carried.open = open;
+    carried.query = query;
     close();
     registerFindBar(null);
   });
+
+  async function reopen(q: string) {
+    query = q;
+    open = true;
+    await tick();
+    watch();
+    if (query) search(true);
+  }
 
   /** The page: the bar's parent. Null before mount and while closed. */
   function page(): HTMLElement | null {

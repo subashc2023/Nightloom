@@ -17,6 +17,8 @@
   import TabChooser from "./TabChooser.svelte";
   import { isMac } from "./platform";
   import { web, webLabel } from "./webtabs.svelte";
+  import { plan, startTabDrag } from "./tabDrag";
+  import { tabDrag } from "./tabDrag.svelte";
 
   /**
    * One pane's strip of tabs (nightshift backlog 099, boards 9a and 9d):
@@ -115,16 +117,89 @@
   let dropAt = $state<number | null>(null);
   let stripEl = $state<HTMLElement | null>(null);
 
-  function onDragStart(e: DragEvent, t: tabs.Tab) {
-    if (!e.dataTransfer) return;
-    e.dataTransfer.setData(TAB_DRAG, t.id);
-    e.dataTransfer.effectAllowed = "move";
-    app.draggingTab = t.id;
+  // ---- a tab dragged: pointer events (nightshift backlog 195) ----
+  //
+  // ~~The tab was `draggable` and moved by WebKit's native drag~~ — since
+  // 195 (2026-09-25) a press past `DRAG_SLOP` px drags a ghost of the tab
+  // (`tabDrag.ts`); a press that never travels is the click it was. The
+  // release reorders (the active tab stays active), moves into the other
+  // pane (the focus follows), splits — or snaps the ghost back, visibly.
+  // The strip's native handlers below stay for what still drags natively
+  // into it: a sidebar row, a note, the aside card, the terminal dock.
+
+  /** The ghost under the pointer: the tab's look, where it was grabbed. */
+  let ghost = $state<{
+    tab: tabs.Tab;
+    width: number;
+    dx: number;
+    dy: number;
+    /** Set while it flies home after a drag that did nothing. */
+    home: { left: number; top: number } | null;
+  } | null>(null);
+  const SNAP_MS = 160;
+
+  /** The slot marker for a tab drag over this strip, when the release
+   *  would land there — none over its own slot, which is a snap. */
+  const dragMark = $derived(
+    tabDrag.id &&
+      tabDrag.target?.kind === "strip" &&
+      tabDrag.target.pane === pane.id &&
+      (tabDrag.plan?.kind === "reorder" || tabDrag.plan?.kind === "move")
+      ? tabDrag.target.index
+      : null,
+  );
+
+  function onTabPointerDown(e: PointerEvent, t: tabs.Tab) {
+    // The × is a button of its own; its click must stay a click.
+    if (e.target instanceof Element && e.target.closest(".close")) return;
+    const el = e.currentTarget as HTMLElement;
+    const r = el.getBoundingClientRect();
+    const grab = { dx: e.clientX - r.left, dy: e.clientY - r.top };
+    startTabDrag(e, {
+      onStart() {
+        ghost = { tab: t, width: r.width, ...grab, home: null };
+        tabDrag.id = t.id;
+        app.draggingTab = t.id;
+      },
+      onMove(p, target) {
+        tabDrag.x = p.x;
+        tabDrag.y = p.y;
+        tabDrag.target = target;
+        tabDrag.plan = plan(app.tabs, t.id, target);
+      },
+      onDrop(target) {
+        const p = plan(app.tabs, t.id, target);
+        endDrag();
+        if (p.kind === "snap") return snapHome(t.id);
+        ghost = null;
+        if (p.kind === "reorder") tabs.reorder(app.tabs, t.id, p.index);
+        else if (p.kind === "move") void moveTab(t.id, p.pane, p.index);
+        else void splitTab(t.id, p.side);
+      },
+      onCancel() {
+        endDrag();
+        snapHome(t.id);
+      },
+    });
   }
-  function onDragEnd() {
+  function endDrag() {
+    tabDrag.id = null;
+    tabDrag.target = null;
+    tabDrag.plan = null;
     app.draggingTab = null;
-    dropAt = null;
   }
+  /** Fly the ghost back to the tab it came from, then drop it. */
+  function snapHome(id: string) {
+    const el = stripEl?.querySelector<HTMLElement>(`[data-tab="${id}"]`);
+    if (!ghost || !el) {
+      ghost = null;
+      return;
+    }
+    const r = el.getBoundingClientRect();
+    ghost.home = { left: r.left, top: r.top };
+    setTimeout(() => (ghost = null), SNAP_MS);
+  }
+
   function indexAt(e: DragEvent): number {
     if (!stripEl) return pane.tabs.length;
     const els = Array.from(stripEl.querySelectorAll<HTMLElement>("[data-tab]"));
@@ -207,7 +282,7 @@
 >
   {#each pane.tabs as t, i (t.id)}
     {@const favicon = t.content.kind === "web" ? web.live[webLabel(t.id)]?.favicon : undefined}
-    {#if dropAt === i}<span class="tab-drop"></span>{/if}
+    {#if dropAt === i || dragMark === i}<span class="tab-drop"></span>{/if}
     <!-- A div, not a button: a button cannot hold the close button, and
          the strip's keys are the window's (⌘⇧] / ⌘⇧[). Focusable so the
          Tab key reaches it; ↵ and Space activate. -->
@@ -220,8 +295,8 @@
       tabindex="0"
       aria-selected={pane.active === t.id}
       data-tab={t.id}
-      draggable="true"
       title={hint(t)}
+      onpointerdown={(e) => onTabPointerDown(e, t)}
       onclick={() => void activateTab(t.id)}
       onkeydown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
@@ -234,8 +309,6 @@
         if (e.button === 1) void closeTab(t.id);
       }}
       oncontextmenu={(e) => openMenu(e, t)}
-      ondragstart={(e) => onDragStart(e, t)}
-      ondragend={onDragEnd}
     >
       <span class="glyph" aria-hidden="true"
         >{#if favicon}<img class="favicon" src={favicon} alt="" width="12" height="12" referrerpolicy="no-referrer" onerror={(e) => ((e.currentTarget as HTMLImageElement).style.display = "none")} />{:else}<Icon
@@ -264,7 +337,7 @@
       </button>
     </div>
   {/each}
-  {#if dropAt === pane.tabs.length}<span class="tab-drop"></span>{/if}
+  {#if dropAt === pane.tabs.length || dragMark === pane.tabs.length}<span class="tab-drop"></span>{/if}
   <!-- The + (backlog 140): a chooser of what the new tab becomes. ⌘T is
        still the one-key new chat and lives in the File menu. -->
   <button
@@ -280,6 +353,22 @@
   <!-- The terminal pane's dock button lives in `App.svelte`'s pane foot,
        not here: the strip is the tabs' and stays the tabs'. -->
 </div>
+{#if ghost}
+  <!-- The dragged tab under the pointer (backlog 195); after a drag that
+       does nothing it flies back to its tab (`home`), then goes. -->
+  <div
+    class="tab-ghost"
+    class:home={ghost.home !== null}
+    aria-hidden="true"
+    style:width="{ghost.width}px"
+    style:left="{ghost.home ? ghost.home.left : tabDrag.x - ghost.dx}px"
+    style:top="{ghost.home ? ghost.home.top : tabDrag.y - ghost.dy}px"
+    style:transition-duration="{SNAP_MS}ms"
+  >
+    <span class="glyph"><Icon name={tabs.tabGlyph(ghost.tab.content)} size={12} /></span>
+    <span class="name">{title(ghost.tab)}</span>
+  </div>
+{/if}
 {#if chooser}
   <TabChooser paneId={pane.id} close={() => (chooser = false)} />
 {/if}
@@ -435,6 +524,30 @@
   .tab-new.open {
     background: var(--well);
     color: var(--ink);
+  }
+  .tab-ghost {
+    position: fixed;
+    z-index: 40;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 32px;
+    padding: 0 10px;
+    box-sizing: border-box;
+    border-radius: 6px 6px 0 0;
+    border-top: 2px solid var(--accent);
+    background: var(--sheet);
+    color: var(--ink);
+    font-size: 12.5px;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+    opacity: 0.92;
+    pointer-events: none;
+    transition-property: none;
+  }
+  .tab-ghost.home {
+    transition-property: left, top, opacity;
+    transition-timing-function: ease-out;
+    opacity: 0.4;
   }
   .tab-drop {
     width: 2px;
