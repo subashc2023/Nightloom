@@ -2149,6 +2149,10 @@ export async function useProject(id: string | null): Promise<void> {
   // comes back at the end (`restoreTabs`), once its lists are read.
   flushTabs();
   tabsOwner = null;
+  // The chat left keeps its asides (backlog 203): without this its cards
+  // stayed on the pending chat and went with the first send into the new
+  // chat, saved under that chat's id too.
+  switchAside(null);
   app.activeSessionId = null;
   app.events = [];
   // The tabs were the list just left too (backlog 099): a workspace is a
@@ -5111,6 +5115,7 @@ export async function deleteSession(id: string): Promise<void> {
   try {
     full = await api.deleteSession(id, app.activeSessionId);
     if (id === app.activeSessionId || full === app.activeSessionId) {
+      switchAside(null); // its asides stay its own (backlog 203), for the undo
       app.activeSessionId = null;
       app.events = [];
     }
@@ -5134,6 +5139,7 @@ export async function deleteSession(id: string): Promise<void> {
     redo: async () => {
       await api.deleteSession(full, app.activeSessionId);
       if (full === app.activeSessionId) {
+        switchAside(null);
         app.activeSessionId = null;
         app.events = [];
       }
@@ -6752,6 +6758,8 @@ export async function sendEdit(
   try {
     const res = await api.editMessage(index, text, "send");
     app.events = res.events;
+    // The fork starts with no asides; the parent keeps its own (backlog 203).
+    switchAside(res.session);
     app.activeSessionId = res.session;
     app.error = null;
     app.agentTurn = null;

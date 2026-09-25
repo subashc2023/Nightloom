@@ -4,12 +4,15 @@ import {
   asideInTab,
   asideOf,
   asideWaiting,
+  asidesOf,
   askAside,
+  deleteSession,
   dismissAside,
   draftAside,
   followUpAside,
   switchAside,
   unfoldAside,
+  useProject,
 } from "./state.svelte";
 import * as api from "./api";
 
@@ -24,6 +27,11 @@ vi.mock("./api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./api")>()),
   askAside: vi.fn(async () => ({ answer: "because", cost: 0, cache_read: 10, is_error: false, notices: [] })),
   cancelAside: vi.fn(async () => null),
+  // What a project switch and a delete call (backlog 203's tests).
+  closeProject: vi.fn(async () => null),
+  newSession: vi.fn(async () => ({ mode: "normal", kind: "build" })),
+  listSessions: vi.fn(async () => []),
+  deleteSession: vi.fn(async (id: string) => id),
 }));
 
 const quote = (n: number) => ({ text: `passage ${n}`, role: "assistant" as const, ordinal: n });
@@ -166,5 +174,60 @@ describe("several aside cards at once (backlog 176)", () => {
     app.activeSessionId = "chat-a";
     expect(app.asides.map((x) => x.id)).toEqual([a.id, b.id]);
     expect(app.aside?.id).toBe(b.id);
+  });
+});
+
+/**
+ * An aside belongs to its chat (backlog 203, 2026-09-25). The app walk saw
+ * two cards of his Stuart 9 chat at the foot of a new chat after a project
+ * switch: `useProject` cleared the open chat without handing its cards
+ * back, so the pending chat kept them, and its first send (which only sets
+ * the new id) carried them into the new chat and saved them there.
+ */
+describe("an aside belongs to its chat (backlog 203)", () => {
+  beforeEach(() => {
+    app.busy = false;
+    app.activeSessionId = "chat-a";
+    app.asides = [];
+    app.aside = null;
+    app.asidePanel = null;
+    app.asidePanelThread = null;
+    app.connection = {
+      provider: "claude-code",
+      model: "default",
+      thinking: "off",
+      tools: false,
+      contextLimit: null,
+      price: null,
+      mcp: [],
+      reviewers: [],
+      workspace: "/tmp",
+      search: null,
+      knowledge: null,
+      engine: "claude-code",
+      agent: null,
+    };
+  });
+
+  it("a project switch leaves the chat's asides with it; the new chat's first send shows none", async () => {
+    const a = draftAside(quote(2), anchor(3))!;
+    await askAside("why?", quote(2), a);
+    await useProject(null);
+    expect(app.activeSessionId).toBeNull();
+    expect(app.asides).toEqual([]);
+    // The first send names the new chat (`session_created`), nothing more.
+    app.activeSessionId = "chat-new";
+    expect(app.asides).toEqual([]);
+    expect(asidesOf("chat-new")).toEqual([]);
+    // The thread is still its own chat's.
+    expect(asidesOf("chat-a").map((x) => x.id)).toEqual([a.id]);
+  });
+
+  it("deleting the open chat leaves the next new chat with no asides", async () => {
+    const a = draftAside(quote(2), anchor(3))!;
+    await deleteSession("chat-a");
+    expect(app.activeSessionId).toBeNull();
+    expect(app.asides).toEqual([]);
+    expect(asidesOf("chat-a").map((x) => x.id)).toEqual([a.id]);
   });
 });
