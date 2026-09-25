@@ -3131,11 +3131,14 @@ async fn send_agent(
             if let Some(model) = &outcome.model {
                 recorder.set_model(model.clone());
             }
-            recorder.finish(if outcome.is_error {
-                Some("error")
-            } else {
-                Some("end_turn")
-            });
+            // The reason rides in the stop reason (backlog 202), so a
+            // reloaded chat still says why the reply stopped.
+            let reason = match (&outcome.api_error, outcome.is_error) {
+                (Some(e), true) => format!("error: {e}"),
+                (None, true) => "error".to_string(),
+                (_, false) => "end_turn".to_string(),
+            };
+            recorder.finish(Some(&reason));
             // Written after the turn rather than before it: an id from a run
             // that then failed to start is a handle to nothing, and the next
             // turn resuming it would fail for a reason nobody could see.

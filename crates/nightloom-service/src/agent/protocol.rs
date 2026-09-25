@@ -210,6 +210,15 @@ pub(super) struct TurnLine {
     pub api_error_status: Option<u16>,
     #[serde(default, rename = "quotaLimits")]
     pub quota_limits: Option<RateLimitInfo>,
+    /// Any API error the CLI turned into a synthetic assistant message, not
+    /// only the limit (nightshift backlog 202; `external`, CLI transcript
+    /// `ece63fa7….jsonl` l.48 on 2.1.282): `"isApiErrorMessage":true`,
+    /// `"error":"unknown"`, model `<synthetic>`, text *API Error: Output
+    /// blocked by content filtering policy*. Whether the stream-json line
+    /// carries the flag is unmeasured, so the translator also reads the
+    /// synthetic model with an `API Error` sentence.
+    #[serde(default, rename = "isApiErrorMessage")]
+    pub is_api_error_message: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -432,8 +441,20 @@ pub(super) struct RawUsage {
     /// the hour being what this engine writes with.
     #[serde(default)]
     cache_creation: Option<CacheCreation>,
-    #[serde(default)]
+    /// `null` on the CLI's synthetic messages (backlog 202, `ece63fa7…`
+    /// l.48), which a bare `Vec` refuses — and a refused line is a line
+    /// the translator never sees.
+    #[serde(default, deserialize_with = "null_as_empty")]
     iterations: Vec<Iteration>,
+}
+
+/// A list field the CLI writes as `null` when it has nothing.
+fn null_as_empty<'de, D, T>(d: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Option::<Vec<T>>::deserialize(d)?.unwrap_or_default())
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]

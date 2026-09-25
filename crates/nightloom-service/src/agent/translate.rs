@@ -62,6 +62,11 @@ pub struct AgentOutcome {
     /// the shell learns which folder, so the rail can offer the grant. As
     /// the last `result` line listed them.
     pub denied: Vec<DeniedCall>,
+    /// The API error the CLI ended the turn with, when it was not the
+    /// usage limit (nightshift backlog 202) — a content-filter block, say.
+    /// The CLI's own sentence, for a notice and the log's stop reason; a
+    /// turn stopped this way otherwise ends silently.
+    pub api_error: Option<String>,
 }
 
 /// The usage limit that stopped a turn (nightshift backlog 164).
@@ -233,6 +238,7 @@ impl Translator {
             Line::StreamEvent { event } => self.stream_event(event),
             Line::Assistant(t) => {
                 self.limit_on(&t);
+                self.api_error_on(&t);
                 self.blocks(t.message, t.parent_tool_use_id)
             }
             Line::User(t) => self.blocks(t.message, t.parent_tool_use_id),
@@ -529,7 +535,43 @@ impl Translator {
         }
     }
 
+    /// Any other API error on the main thread (backlog 202): the CLI's
+    /// synthetic sentence, kept so the turn does not end silently. A
+    /// subagent's error reaches the parent as its tool result instead, and
+    /// the limit is [`Self::limit_on`]'s.
+    fn api_error_on(&mut self, t: &TurnLine) {
+        let limit = t.error.as_deref() == Some("rate_limit") || t.api_error_status == Some(429);
+        if t.parent_tool_use_id.is_some() || limit {
+            return;
+        }
+        let synthetic = t.message.model.as_deref() == Some("<synthetic>");
+        for b in &t.message.content {
+            if let Block::Text { text } = b {
+                let text = text.trim();
+                let flagged =
+                    t.is_api_error_message || (synthetic && text.starts_with("API Error"));
+                if flagged && !text.is_empty() && !text.starts_with(LIMIT_TEXT_PREFIX) {
+                    self.outcome.api_error = Some(text.to_string());
+                }
+            }
+        }
+    }
+
     fn result(&mut self, r: ResultLine) -> Vec<TurnEvent> {
+        // The backstop for an error no assistant line named (backlog 202):
+        // a failed turn the CLI calls a `success` subtype carries its
+        // reason only as `result`. Not a stop (`error_during_execution`)
+        // and not the limit, which say so elsewhere.
+        let plain = r.subtype.as_deref().is_none_or(|s| s == "success");
+        if r.is_error
+            && plain
+            && self.outcome.api_error.is_none()
+            && self.outcome.limit.is_none()
+            && let Some(text) = r.result.as_deref().map(str::trim)
+            && !text.is_empty()
+        {
+            self.outcome.api_error = Some(text.to_string());
+        }
         if let Some(text) = r.result {
             self.outcome.text = text;
         }
@@ -1194,6 +1236,36 @@ mod tests {
         );
         assert_eq!(hit.resets_at, Some(1789714200));
         assert!(hit.text.starts_with("You've hit your"));
+    }
+
+    // A content-filter block (nightshift backlog 202): the CLI's own log line,
+    // verbatim, from `ece63fa7….jsonl` l.48 (`external`, 2.1.282, the app
+    // walk of 2026-09-25). The result line is inferred — its stdout was not
+    // kept — and is the backstop's shape: a `success` subtype that failed.
+    const FILTERED: &str = r#"{"parentUuid":"44538cac-9074-4544-b804-e6dc331ce997","isSidechain":false,"type":"assistant","uuid":"a1f0dc2a-906e-4afb-9a90-16ae356a8730","timestamp":"2026-09-25T10:26:08.884Z","message":{"diagnostics":null,"id":"b2c72f5e-e2ce-466b-808c-0efac1a613f1","container":null,"model":"<synthetic>","role":"assistant","stop_details":null,"stop_reason":"stop_sequence","stop_sequence":"","type":"message","usage":{"output_tokens_details":null,"input_tokens":0,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"server_tool_use":{"web_search_requests":0,"web_fetch_requests":0},"service_tier":null,"cache_creation":{"ephemeral_1h_input_tokens":0,"ephemeral_5m_input_tokens":0},"inference_geo":null,"iterations":null,"speed":null},"content":[{"type":"text","text":"API Error: Output blocked by content filtering policy"}],"context_management":null},"requestId":"req_011CfPzmv4gn9fsKV9ajn69F","error":"unknown","isApiErrorMessage":true,"perTurnEffort":null,"userType":"external","entrypoint":"sdk-cli","cwd":"/Users/swaraagsistla/Documents/ComputerScience/PersonalProjects/Nightloom/projects/Unfiled-chats","sessionId":"ece63fa7-7c73-413e-b7f5-0db54ba3969e","version":"2.1.282","gitBranch":"HEAD"}"#;
+    const RESULT_FILTERED: &str = r#"{"type":"result","subtype":"success","is_error":true,"num_turns":1,"result":"API Error: Output blocked by content filtering policy","session_id":"ece63fa7","usage":{"input_tokens":0,"output_tokens":0}}"#;
+    const FILTER_TEXT: &str = "API Error: Output blocked by content filtering policy";
+
+    #[test]
+    fn a_content_filter_block_is_kept_as_the_turns_api_error_not_a_limit() {
+        let (_, outcome) = drive(&[FILTERED]);
+        assert_eq!(outcome.api_error.as_deref(), Some(FILTER_TEXT));
+        assert!(outcome.limit.is_none());
+    }
+
+    #[test]
+    fn a_failed_success_result_is_the_backstop_for_an_unnamed_api_error() {
+        let (_, outcome) = drive(&[RESULT_FILTERED]);
+        assert_eq!(outcome.api_error.as_deref(), Some(FILTER_TEXT));
+        assert!(outcome.is_error);
+    }
+
+    #[test]
+    fn neither_the_limit_nor_a_good_turn_reads_as_an_api_error() {
+        let (_, limit) = drive(&[LIMIT_MAIN_429, RESULT_LIMIT]);
+        assert!(limit.api_error.is_none());
+        let (_, fine) = drive(&[RESULT]);
+        assert!(fine.api_error.is_none());
     }
 
     #[test]

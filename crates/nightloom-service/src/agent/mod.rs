@@ -1715,11 +1715,19 @@ impl ClaudeCodeAgent {
             // nor the translator's "ended: …" notice for it stands, and
             // the log's stop reason stays what a kill always left it.
             outcome.is_error = false;
+            outcome.api_error = None;
             outcome
                 .notices
                 .retain(|n| n != "ended: error_during_execution");
             outcome.notices.push(stop.into());
             return Ok(outcome);
+        }
+        // An API error the CLI ended the turn with (backlog 202) is said
+        // out loud; the stop reason in the log carries it too.
+        if let Some(e) = &outcome.api_error
+            && !outcome.notices.contains(e)
+        {
+            outcome.notices.push(e.clone());
         }
         // A non-zero exit with nothing translated is a startup failure —
         // an unknown flag, a missing binary path, an unauthenticated CLI —
@@ -3215,6 +3223,37 @@ wait
         assert_eq!(
             outcome.notices,
             vec!["interrupted — Claude Code ended the turn".to_string()],
+            "one notice, one toast"
+        );
+    }
+
+    /// A turn the API's content filter stopped (backlog 202; the synthetic
+    /// line's fields as `ece63fa7….jsonl` l.48 recorded them, trimmed) ends
+    /// with the CLI's sentence as a notice, once, and as the outcome's
+    /// `api_error` for the log's stop reason.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_api_error_the_cli_ends_the_turn_with_becomes_one_notice() {
+        let dir = std::env::temp_dir().join(format!("nightloom-apierr-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut s = AgentSpec::new(&dir);
+        s.binary = stand_in(
+            &dir,
+            r#"printf '%s\n' '{"type":"assistant","message":{"model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"API Error: Output blocked by content filtering policy"}],"usage":{"input_tokens":0,"output_tokens":0}},"parent_tool_use_id":null,"error":"unknown","isApiErrorMessage":true}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":true,"num_turns":1,"result":"API Error: Output blocked by content filtering policy","session_id":"apierr-1"}'
+"#,
+        );
+        let agent = ClaudeCodeAgent::new(s);
+        let outcome = agent
+            .run_turn("go", &CancellationToken::new(), &mut |_| {})
+            .await
+            .unwrap();
+        let text = "API Error: Output blocked by content filtering policy";
+        assert!(outcome.is_error);
+        assert_eq!(outcome.api_error.as_deref(), Some(text));
+        assert_eq!(
+            outcome.notices,
+            vec![text.to_string()],
             "one notice, one toast"
         );
     }

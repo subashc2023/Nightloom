@@ -660,6 +660,11 @@
     <div class="footer">
       <button class="ns-btn ghost small" onclick={() => void copy()}>{copied ? "Copied" : "Copy"}</button>
       <span class="meta" title={footerTitle(footer, size)}>{fmtFigure(footer.usage, size)}{fmtCost(footer.cost)}</span>
+      {#if footer.stop_reason?.startsWith("error: ")}
+        <!-- Why the reply stopped (backlog 202): the API error the CLI
+             ended it with, as the log recorded it. -->
+        <span class="meta stopped">stopped · {footer.stop_reason.slice(7)}</span>
+      {/if}
       {#if fmtShare(share)}
         <!-- The reply's share of the window (backlog 090), the gauge's bar
              scaled to it, once the reply is worth a bar. -->
@@ -1210,6 +1215,10 @@
     font-family: var(--mono);
     font-size: 11px;
     color: var(--dim);
+  }
+  .meta.stopped {
+    font-family: var(--sans);
+    color: var(--failed);
   }
   .meta.share {
     display: inline-flex;
