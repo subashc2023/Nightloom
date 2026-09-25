@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { FLIGHT_MS, LAUNCH_TTL_MS, REVEAL_MS, SETTLE_MS, TOTAL_MS, frameAt, launchAt, takeLaunch } from "./sendMotion";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { FLIGHT_MS, LAUNCH_TTL_MS, REVEAL_MS, SETTLE_MS, TOTAL_MS, arrive, frameAt, launchAt, takeLaunch } from "./sendMotion";
 
 const from = { x: 40, y: 600 };
 const to = { x: 300, y: 200 };
@@ -74,5 +74,60 @@ describe("launch and take", () => {
     launchAt(l);
     expect(takeLaunch("chat", 1000 + LAUNCH_TTL_MS + 1)).toBeNull();
     expect(takeLaunch("chat", 1000)).toBeNull();
+  });
+});
+
+// The 194 fix pass (2026-09-25): in the app the new bubble mounts below the
+// view and the transcript scrolls to it only after `tick()`. The flight must
+// measure after that scroll — a frame later — or a plain chat gets none.
+describe("arrive — measures after the thread's scroll, not at the mount", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("flies a bubble that mounts below the view and is scrolled into it by the next frame", () => {
+    let top = 900; // at the mount: under the 800 px window, as the walk's plain chat was
+    const rect = () => ({ top, bottom: top + 40, left: 300, right: 500, width: 200, height: 40 });
+    const style: Record<string, string> = {};
+    const mkEl = (): Record<string, unknown> => {
+      const el: Record<string, unknown> = {
+        style: {} as Record<string, string>,
+        setAttribute: () => {},
+        removeAttribute: () => {},
+        appendChild: () => {},
+        remove: () => {},
+        querySelectorAll: () => [],
+        classList: { add: () => {} },
+        offsetHeight: 40,
+        offsetWidth: 200,
+      };
+      el.cloneNode = () => mkEl();
+      return el;
+    };
+    const node = {
+      style,
+      parentElement: null,
+      querySelector: () => null,
+      getBoundingClientRect: rect,
+      cloneNode: () => mkEl(),
+    } as unknown as HTMLElement;
+    const appended: unknown[] = [];
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("window", {});
+    vi.stubGlobal("innerHeight", 800);
+    vi.stubGlobal("matchMedia", () => ({ matches: false }));
+    vi.stubGlobal("getComputedStyle", () => ({ overflowY: "visible", backgroundColor: "rgb(1, 2, 3)" }));
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => frames.push(cb));
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    vi.stubGlobal("document", {
+      body: { appendChild: (e: unknown) => appended.push(e) },
+      createElementNS: () => mkEl(),
+    });
+
+    launchAt({ channel: "chat", at: performance.now(), x: 40, y: 760, w: 600, h: 24 });
+    arrive(node, { channel: "chat" });
+    expect(style.opacity).toBe("0"); // hidden for the frame, not flashed in place
+    expect(appended).toHaveLength(0); // nothing measured yet
+    top = 600; // the follow-the-bottom scroll has run
+    frames.shift()!(0);
+    expect(appended.length).toBe(2); // the thread and the ghost: it flies
   });
 });

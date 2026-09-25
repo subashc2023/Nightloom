@@ -69,7 +69,7 @@
   import { afterWrapTurn, wrapAsk } from "./budgetWrap.svelte";
   import Icon from "./Icon.svelte";
   import Navigator from "./Navigator.svelte";
-  import { arrive } from "./sendMotion";
+  import { arrive, hasLaunch } from "./sendMotion";
 
   interface AssistantFooter {
     model: string;
@@ -752,8 +752,13 @@
     const len = app.events.length;
     const live = app.live !== null;
     if (key !== enterKey) {
+      // A new chat's first send mounts this transcript (or moves its key
+      // off "new") with the turn already in it; a launch from the box is
+      // waiting, so that turn flies too (194 fix pass). A plain open or
+      // switch has no fresh launch and loads whole, as before.
+      const fresh = (enterKey === null || enterKey === NEW_SCROLL_KEY) && live && hasLaunch("chat");
       enterKey = key;
-      enterFrom = Infinity;
+      enterFrom = fresh ? 0 : Infinity;
       enterLen = len;
       return;
     }
