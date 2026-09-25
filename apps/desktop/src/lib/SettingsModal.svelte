@@ -70,7 +70,17 @@
   import { relativeTime } from "./time";
   import { dreamEngineRows, dreamModelPills, dreamSentence } from "./dreamRows";
   import { loadNotifyPrefs, notifyUsageRefreshed, saveNotifyPrefs, type NotifyPrefs } from "./notify";
-  import { canonicalPane, groupKey, openingPane, readStamp, refreshUsageAndCost, settingsGroups } from "./settingsUsage";
+  import {
+    COST_PANE,
+    USAGE_COST_GROUP,
+    USAGE_PANE,
+    canonicalPane,
+    groupKey,
+    openingPane,
+    readStamp,
+    refreshUsageAndCost,
+    settingsGroups,
+  } from "./settingsUsage";
   import { loadSleepPrefs, saveSleepPrefs, type SleepPrefs } from "./sleep";
   import { checkCli, cli, curatedAnthropic, setAutoUpdate } from "./cliUpdate.svelte";
   import { cliNoticeDetail } from "./cliUpdate";
@@ -105,10 +115,9 @@
 
   // Opens on the pane a round trip asked for — back from a model's
   // instruction file — else on the pane he left within the last two
-  // minutes (backlog 109), else on the top pane, Usage · Cost (was the
-  // rail's provider until 2026-09-25; `openingPane` says why).
-  // `cost` (backlog 127's second pane, perhaps still remembered) opens the
-  // merged Usage · Cost pane (backlog 153).
+  // minutes (backlog 109), else on the top pane, Usage & Cost → Usage (was
+  // the rail's provider until 2026-09-25; `openingPane` says why). `cost`
+  // is its own tab again (backlog 206), so a remembered Cost reopens there.
   let selected = $state(openingPane(app.settingsOpenOn, recentPane()));
   app.settingsOpenOn = null;
   onDestroy(() => {
@@ -385,19 +394,20 @@
     }
   }
   void refreshUsage();
-  // The Usage · Cost pane (backlog 153; 127's two panes merged) reads the
-  // ledger and asks for a fresh plan sample, the top bar's own reading.
+  // Either Usage & Cost tab (backlog 206) reads the ledger and asks for a
+  // fresh plan sample, the top bar's own reading — the nav rows show a
+  // figure from each, so both are read whichever tab is open.
   $effect(() => {
-    if (selected === "usage") {
+    if (selected === USAGE_PANE || selected === COST_PANE) {
       void refreshUsage();
       void refreshPlanUsage().then(() => (planReadAt = new Date()));
     }
   });
   // The button: run the collector now rather than wait for its six-hourly
-  // turn, and — since backlog 153 merged Usage and Cost — re-read the plan
-  // gauges (the CLI's print-mode `/usage`: zero tokens, ~12 s) and the
-  // provider credits in the same press, so the whole pane is current. The
-  // pane says so while it runs — and, since he pressed it (nightshift
+  // turn, and — since backlog 153, kept by 206's two tabs — re-read the
+  // plan gauges (the CLI's print-mode `/usage`: zero tokens, ~12 s) and the
+  // provider credits in the same press, so both tabs are current whichever
+  // one it was pressed on. The tab says so while it runs — and, since he pressed it (nightshift
   // backlog 116), a native banner when it lands, focused or not, whose
   // click opens this pane. The periodic refresh never posts one: it does
   // not come through here.
@@ -418,7 +428,7 @@
       if (r.usage) {
         usage = r.usage;
         ledgerReadAt = r.ledgerReadAt;
-        usageRefreshNote = "Collector run, plan and credits re-read; the pane is current.";
+        usageRefreshNote = "Collector run, plan and credits re-read; Usage and Cost are both current.";
       } else {
         error = r.error;
         usageRefreshNote = `The collector failed (${r.error}); the plan and the credits were re-read.`;
@@ -834,7 +844,7 @@
   }
   $effect(() => {
     if (selected === "council" && councilTurns === null) void refreshCouncilTurns();
-    if (selected === "usage" && credits === null) void refreshCredits();
+    if (selected === COST_PANE && credits === null) void refreshCredits();
   });
 
   /**
@@ -980,24 +990,32 @@
 <div class="modal">
   <nav class="nav" bind:this={navEl}>
     <div class="nav-h">Settings</div>
-    <!-- Usage · Cost, one pane again since nightshift backlog 153 (127
-         had split it): what the plan has left and where the week went,
-         then what it would have cost. Both read the same ledger. -->
-    <div class="nav-title">Usage · Cost<Kbd keys={keyOf("Usage · Cost")} dim /></div>
+    <!-- Usage & Cost (nightshift backlog 206): one category, two tabs —
+         what the plan has left, then what it would have cost. 153 had made
+         them one page, which squeezed this row's title to "U." beside both
+         figures (walk 2026-09-25 part 3); each tab now carries its own
+         figure, and the title never gives up width to it (`keep`/`fit`). -->
+    <div class="nav-title">{USAGE_COST_GROUP}<Kbd keys={keyOf(USAGE_COST_GROUP)} dim /></div>
     <button
       class="nav-item"
-      class:active={selected === "usage"}
-      onclick={() => select("usage")}
+      class:active={selected === USAGE_PANE}
+      onclick={() => select(USAGE_PANE)}
     >
-      <span class="nav-label">Usage · Cost</span>
-      <span class="st">
-        <span class="dot" class:ok={app.planUsage?.five_hour != null || !!usage?.available}></span>
-        {[
-          app.planUsage?.five_hour != null ? `5h ${app.planUsage.five_hour}%` : null,
-          usage?.available && usage.week ? `${usd(usage.week.usd)} / 7d` : null,
-        ]
-          .filter(Boolean)
-          .join(" · ") || "none"}
+      <span class="nav-label keep">Usage</span>
+      <span class="st fit">
+        <span class="dot" class:ok={app.planUsage?.five_hour != null}></span>
+        <span class="st-t">{app.planUsage?.five_hour != null ? `5h ${app.planUsage.five_hour}%` : "none"}</span>
+      </span>
+    </button>
+    <button
+      class="nav-item"
+      class:active={selected === COST_PANE}
+      onclick={() => select(COST_PANE)}
+    >
+      <span class="nav-label keep">Cost</span>
+      <span class="st fit">
+        <span class="dot" class:ok={!!usage?.available}></span>
+        <span class="st-t">{usage?.available && usage.week ? `${usd(usage.week.usd)} / 7d` : "none"}</span>
       </span>
     </button>
     <!-- The Claude Code engine's own pane (nightshift backlog 086 pass 2):
@@ -1251,7 +1269,58 @@
             checked={notifyPrefs.usageRefresh}
             onchange={(e) => setNotify("usageRefresh", e.currentTarget.checked)}
           />
-          <span>When Usage · Cost → Refresh now finishes — the figures; clicking it opens that page. Never for the automatic refresh</span>
+          <span>When Usage & Cost → Refresh now finishes — the figures; clicking it opens that page. Never for the automatic refresh</span>
+        </label>
+      </section>
+
+      <!-- Sleep-safe turns (nightshift backlog 101): his `caffeinate -dis`
+           made automatic while anything runs, and the turn a closed lid
+           cut off resumed on wake. Here, under Notifications, per blocker
+           129's default (2026-09-25; it sat in the Subscription pane from
+           086 pass 2): the assertion is held for provider turns, dreams,
+           captures and asides too, so the Claude-plan engine's pane was the
+           wrong roof, and this is the pane of per-machine behaviour. -->
+      <section class="card">
+        <div class="ch"><span class="t">Sleep</span></div>
+        <p class="note small">
+          While a turn, dream or capture runs — on either engine — the Mac is
+          kept awake (a caffeinate assertion — see it under pmset -g
+          assertions). A closed lid on battery still sleeps it; on wake, a
+          turn that was cut off is continued.
+        </p>
+        <label class="dream-auto">
+          <input
+            type="checkbox"
+            checked={sleepPrefs.keepAwake}
+            onchange={(e) => setSleep("keepAwake", e.currentTarget.checked)}
+          />
+          <span>Keep the Mac awake while a turn runs</span>
+        </label>
+        <label class="dream-auto">
+          <input
+            type="checkbox"
+            checked={sleepPrefs.keepDisplayAwake}
+            disabled={!sleepPrefs.keepAwake}
+            onchange={(e) => setSleep("keepDisplayAwake", e.currentTarget.checked)}
+          />
+          <span>Keep the display on too</span>
+        </label>
+        <label class="dream-auto">
+          <input
+            type="checkbox"
+            checked={sleepPrefs.resumeAfterSleep}
+            onchange={(e) => setSleep("resumeAfterSleep", e.currentTarget.checked)}
+          />
+          <span>Resume a turn interrupted by sleep</span>
+        </label>
+        <label class="dream-auto">
+          <input
+            type="checkbox"
+            checked={sleepPrefs.resumeAsks}
+            disabled={!sleepPrefs.resumeAfterSleep}
+            onchange={(e) => setSleep("resumeAsks", e.currentTarget.checked)}
+          />
+          <span>Ask first (a Resume toast) instead of resuming automatically</span>
         </label>
       </section>
     </div>
@@ -1306,7 +1375,7 @@
             disabled={remoteBusy}
             onchange={(e) => void remoteRun(() => api.remoteSetKeepAwake(e.currentTarget.checked))}
           />
-          <span>Keep the Mac awake while remote is on (needs the Sleep switch above; a closed lid on battery still sleeps it)</span>
+          <span>Keep the Mac awake while remote is on (needs Palette → Sleep's first switch; a closed lid on battery still sleeps it)</span>
         </label>
         {#if remoteError}<p class="error">{remoteError}</p>{/if}
       </section>
@@ -1434,53 +1503,9 @@
         </p>
       </section>
 
-      <!-- Sleep-safe turns (nightshift backlog 101): his `caffeinate -dis`
-           made automatic while anything runs, and the turn a closed lid
-           cut off resumed on wake. Agent C's card, placed here rather than
-           after Notifications (its blocker 129) once this pane existed. -->
-      <section class="card">
-        <div class="ch"><span class="t">Sleep</span></div>
-        <p class="note small">
-          While a turn, dream or capture runs the Mac is kept awake (a
-          caffeinate assertion — see it under pmset -g assertions). A closed
-          lid on battery still sleeps it; on wake, a turn that was cut off
-          is continued.
-        </p>
-        <label class="dream-auto">
-          <input
-            type="checkbox"
-            checked={sleepPrefs.keepAwake}
-            onchange={(e) => setSleep("keepAwake", e.currentTarget.checked)}
-          />
-          <span>Keep the Mac awake while a turn runs</span>
-        </label>
-        <label class="dream-auto">
-          <input
-            type="checkbox"
-            checked={sleepPrefs.keepDisplayAwake}
-            disabled={!sleepPrefs.keepAwake}
-            onchange={(e) => setSleep("keepDisplayAwake", e.currentTarget.checked)}
-          />
-          <span>Keep the display on too</span>
-        </label>
-        <label class="dream-auto">
-          <input
-            type="checkbox"
-            checked={sleepPrefs.resumeAfterSleep}
-            onchange={(e) => setSleep("resumeAfterSleep", e.currentTarget.checked)}
-          />
-          <span>Resume a turn interrupted by sleep</span>
-        </label>
-        <label class="dream-auto">
-          <input
-            type="checkbox"
-            checked={sleepPrefs.resumeAsks}
-            disabled={!sleepPrefs.resumeAfterSleep}
-            onchange={(e) => setSleep("resumeAsks", e.currentTarget.checked)}
-          />
-          <span>Ask first (a Resume toast) instead of resuming automatically</span>
-        </label>
-      </section>
+      <!-- (The Sleep card of backlog 101 stood here from 086 pass 2 until
+           2026-09-25; it moved to Appearance → Palette, under
+           Notifications, per blocker 129's default — see it there.) -->
 
       <!-- Claude Code's version (nightshift backlog 182): the check the
            bell's notice comes from, the same Update / Now… buttons, and
@@ -1547,17 +1572,20 @@
         {/if}
       </section>
     </div>
-  {:else if selected === "usage"}
-    <!-- Usage · Cost (nightshift backlog 153, 2026-09-24; 127's Usage and
-         Cost panes merged back into one): the gauges above — the plan's
-         two windows, the surfaces and weekly caps — then the dollars — the
-         spend table and the provider credits — then the ledger. One
-         Refresh now re-reads all of it (the 116 banner opens here); each
-         half says when it was read. -->
+  {:else if selected === USAGE_PANE || selected === COST_PANE}
+    <!-- Usage & Cost (nightshift backlog 206, 2026-09-25): two tabs under
+         one nav category, each its own page — his correction of 153's one
+         merged page. Usage: the plan's two windows, the surfaces and the
+         weekly caps. Cost: the spend table, the provider credits, the
+         ledger. Refresh now sits on both and re-reads all of it (153's
+         second half; the 116 banner opens Usage); each card says when it
+         was read. -->
     <div class="pane">
       <div class="pane-head">
-        <h2 class="pane-title">Usage · Cost</h2>
-        <span class="slug">{plan && plan.five_hour != null ? `5h ${plan.five_hour}% · week ${plan.seven_day ?? "?"}%` : "no plan sample"}{usage?.available && usage.week ? ` · ${usd(usage.week.usd)} in 7 days` : ""}</span>
+        <h2 class="pane-title">{selected === USAGE_PANE ? "Usage" : "Cost"}</h2>
+        <span class="slug"
+          >{#if selected === USAGE_PANE}{plan && plan.five_hour != null ? `5h ${plan.five_hour}% · week ${plan.seven_day ?? "?"}%` : "no plan sample"}{:else}{usage?.available && usage.week ? `${usd(usage.week.usd)} in 7 days` : "no ledger yet"}{/if}</span
+        >
         <span class="spacer"></span>
         <button
           class="ns-btn small"
@@ -1570,11 +1598,13 @@
       {#if usageRefreshNote}
         <p class="note small">{usageRefreshNote}</p>
       {/if}
+      {#if selected === USAGE_PANE}
       <p class="note">
-        How much of the plan is used, where the week went, and what it would
-        have cost. The plan's two windows are the top bar's own reading —
-        server-computed, account-wide, every surface. The surfaces, the caps
-        and the spend are from the usage ledger under <code>~/.claude</code>.
+        How much of the plan is used and where the week went. The plan's two
+        windows are the top bar's own reading — server-computed,
+        account-wide, every surface. The surfaces and the caps are from the
+        usage ledger under <code>~/.claude</code>. What it would have cost is
+        the Cost tab.
       </p>
 
       <section class="card">
@@ -1614,7 +1644,7 @@
             The collector is <code>{usage.collector}</code>, run every six hours by
             a LaunchAgent; nothing in Nightloom writes these files. Run
             <code>python3 {usage.collector} update --all</code> once and this
-            pane fills.
+            tab fills.
           </p>
         </section>
       {:else}
@@ -1664,7 +1694,28 @@
             <div class="key-status">No surfaces snapshot yet — the collector records one when the desktop app has fetched its usage page.</div>
           {/if}
         </section>
-
+      {/if}
+      {:else}
+      <p class="note">
+        What Claude Code would have cost, and what each provider key has
+        left. The spend is from the usage ledger under <code>~/.claude</code>;
+        the credits are each provider's own API. How much of the plan is used
+        is the Usage tab.
+      </p>
+      {#if !usage}
+        <p class="note small">Reading the ledger…</p>
+      {:else if !usage.available}
+        <section class="card">
+          <div class="ch"><span class="t">No ledger yet</span></div>
+          <div class="key-status">{usage.reason}</div>
+          <p class="note small">
+            The collector is <code>{usage.collector}</code>, run every six hours by
+            a LaunchAgent; nothing in Nightloom writes these files. Run
+            <code>python3 {usage.collector} update --all</code> once and this
+            tab fills.
+          </p>
+        </section>
+      {:else}
         <section class="card">
           <div class="ch"><span class="t">Spend</span><span class="dim small">dedup basis · API-equivalent · {readStamp(ledgerReadAt)}</span></div>
           <p class="note small">
@@ -1744,7 +1795,7 @@
           <p class="note small">
             OpenRouter's API reports credits bought and used; Anthropic's,
             OpenAI's, Gemini's and Groq's show a balance only in their consoles.
-            The subscription engine has no balance — its windows are the Plan card above.
+            The subscription engine has no balance — its windows are the Usage tab's Plan card.
           </p>
         {/if}
       </section>
@@ -1765,6 +1816,7 @@
             same numbers, to the cent, are <code>claude_usage</code> in a shell.
           </p>
         </section>
+      {/if}
       {/if}
     </div>
   {:else if selected === "council"}
@@ -2579,6 +2631,23 @@
     font-size: 10.5px;
     color: var(--dim);
     flex: none;
+  }
+  /* A row whose title must show in full (backlog 206's tabs): the title
+     keeps its width and the figure beside it gives way, ending in an
+     ellipsis. The plain rule above let a long figure squeeze "Usage ·
+     Cost" to "U." (walk 2026-09-25 part 3). */
+  .nav-label.keep {
+    flex-shrink: 0;
+  }
+  .st.fit {
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+  .st-t {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
   }
   .eye {
     display: inline-flex;
