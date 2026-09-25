@@ -141,7 +141,8 @@ export function sizeTitle(size: TurnSize, kind: "user" | "assistant", limit: num
  * the rule of `nightloom_core::context::estimate_tokens`, which the Context
  * page already uses, counted in code points as Rust's `chars()` counts
  * them. Within ~10–20% for English prose, worse for code and non-Latin
- * text; the exact count (the API engine's count endpoint) is a later batch.
+ * text. On the provider engine past ~500 tokens the figure becomes exact
+ * after a pause (`draftCount.ts`, the provider's count endpoint).
  */
 
 /** Characters per token, as `nightloom_core::context::CHARS_PER_TOKEN`. */
@@ -166,7 +167,26 @@ export function draftEstimate(text: string): { tokens: number; long: string; sho
   return { tokens, long: `~${tokens.toLocaleString("en-US")} tokens`, short: `~${fmtTokens(tokens)}` };
 }
 
-/** The hover sentence for the draft's figure. */
-export function draftEstimateTitle(tokens: number): string {
-  return `About ${tokens.toLocaleString("en-US")} tokens in the message box — an estimate (characters ÷ ${CHARS_PER_TOKEN}), the text only; attachments are not counted. Close for English prose, rougher for code and other scripts.`;
+/**
+ * The hover sentence for the draft's figure. `why`, when given, is one
+ * sentence saying why this estimate is not an exact count (the engine has no
+ * counter; the draft is under the exact threshold; the count failed).
+ */
+export function draftEstimateTitle(tokens: number, why?: string): string {
+  const base = `About ${tokens.toLocaleString("en-US")} tokens in the message box — an estimate (characters ÷ ${CHARS_PER_TOKEN}), the text only; attachments are not counted. Close for English prose, rougher for code and other scripts.`;
+  return why ? `${base} ${why}` : base;
+}
+
+/** From this estimate up, the provider engine asks for an exact count
+ *  (backlog 155's "past ~500 tokens"). */
+export const EXACT_TOKENS_FROM = 500;
+
+/** The composer's figure once the provider has counted: no `~`. */
+export function draftExact(tokens: number): { tokens: number; long: string; short: string } {
+  return { tokens, long: `${tokens.toLocaleString("en-US")} tokens`, short: fmtTokens(tokens) };
+}
+
+/** The hover sentence for an exact figure. */
+export function draftExactTitle(tokens: number, model: string): string {
+  return `${tokens.toLocaleString("en-US")} tokens in the message box — exact, counted by the provider for ${model} after you paused, the text only as one message; attachments, the system prompt and the history are not in it.`;
 }

@@ -34,6 +34,8 @@ use tokio_util::sync::CancellationToken;
 mod agents;
 /// The chats the backend holds, one lock per chat (backlog 159, A1).
 mod chats;
+/// The composer's exact token count on the provider engine (backlog 155).
+mod draft_count;
 /// Nightshift: the unattended runner's file contract, as commands.
 mod nightshift;
 /// Sleep-safe turns: the power assertion and the wake watcher.
@@ -7027,6 +7029,7 @@ fn main() {
             set_search_key,
             list_models,
             context_limits,
+            draft_count::count_draft_tokens,
             connect,
             connect_agent,
             list_sessions,

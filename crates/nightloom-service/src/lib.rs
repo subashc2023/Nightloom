@@ -41,6 +41,7 @@ pub use agent::{
 pub use approval::{Approver, AutoApprove, Decision, PendingCall};
 pub use credentials::{CredentialError, KeySource, provider_key, search_key};
 pub use nightloom_providers::ProviderKind;
+pub use nightloom_providers::count::count_tokens;
 pub use nightloom_providers::limits::context_limit;
 pub use nightloom_providers::models::list_models;
 pub use nightloom_providers::pricing::{Price, price};

@@ -42,7 +42,9 @@
     stayHere,
     threshold,
   } from "./handoff.svelte";
-  import { draftEstimate, draftEstimateTitle, fmtTokens } from "./tokens";
+  import { draftEstimate, draftEstimateTitle, draftExact, draftExactTitle, EXACT_TOKENS_FROM, fmtTokens } from "./tokens";
+  import { exactCounter, type ExactResult } from "./draftCount";
+  import { countDraftTokens } from "./api";
   import { tip } from "./tip";
   import { ghostFor } from "./suggestions.svelte";
   import { queuedElsewhereToast } from "./browse";
@@ -70,6 +72,7 @@
   import { clips, recordImage, recordText } from "./clipRing.svelte";
   import type { CouncilPrefs } from "./council";
   import { foldToFit } from "./fold";
+  import { launch } from "./sendMotion";
 
   /**
    * `floating` drops the docked chrome (top border, panel fill) for the
@@ -107,6 +110,38 @@
     }
     const id = setTimeout(() => (estimate = draftEstimate(t)), 120);
     return () => clearTimeout(id);
+  });
+  /**
+   * The exact count (backlog 155, second half): on the provider engine, a
+   * draft past ~500 tokens is counted by the provider once it has been still
+   * for a moment — never per keystroke. Shown only while it is the count of
+   * the text in the box; any edit falls back to the estimate until the next
+   * pause. The Claude Code engine has no counter and keeps the estimate.
+   */
+  let exact = $state<ExactResult | null>(null);
+  const counter = exactCounter(countDraftTokens, (r) => (exact = r));
+  $effect(() => {
+    counter.update(text ?? "", {
+      engine: app.connection?.engine,
+      provider: app.connection?.provider,
+      model: app.connection?.model,
+    });
+  });
+  $effect(() => () => counter.dispose());
+  /** The figure beside Send and its hover: exact when counted, else the estimate. */
+  const shown = $derived.by(() => {
+    if (!estimate) return null;
+    if (exact && exact.text === text && exact.tokens !== null)
+      return { ...draftExact(exact.tokens), title: draftExactTitle(exact.tokens, exact.model) };
+    let why: string | undefined;
+    if (app.connection?.engine === "claude-code")
+      why = "The Claude Code engine has no count endpoint, so it stays an estimate.";
+    else if (estimate.tokens < EXACT_TOKENS_FROM)
+      why = `From ~${EXACT_TOKENS_FROM} tokens it is counted exactly after you pause.`;
+    else if (exact && exact.text === text && exact.tokens === null)
+      why = "This provider's count was not available, so it stays an estimate.";
+    else why = "Counting exactly once you pause.";
+    return { ...estimate, title: draftEstimateTitle(estimate.tokens, why) };
   });
   const attachments = $derived(draft.attachments);
   /**
@@ -796,6 +831,9 @@
   async function drain(explicit = false): Promise<void> {
     if (app.busy || !app.connection) return;
     if (!explicit && hold) return;
+    // The held row is where this message leaves from (backlog 194).
+    const head = queue[0];
+    if (head) launch("chat", document.querySelector(`.queue-row[data-queue-id="${head.id}"] .queue-text`));
     const q = shiftQueue(key);
     if (!q) return;
     // The row Nightloom queued while he was away is the wrap-up going.
@@ -825,6 +863,8 @@
   async function submitAside() {
     const t = text.trim();
     if (!t || attachments.length > 0 || app.busy) return;
+    // The words fly from the box into the aside's card (backlog 194).
+    launch("aside", ta);
     clearDraft(key);
     requestAnimationFrame(autogrow);
     await askAside(t);
@@ -845,6 +885,9 @@
     }
     const pending = attachments.slice();
     const typed = text;
+    // Where the words were, for the send motion (backlog 194): measured
+    // before the box clears.
+    launch("chat", ta);
     clearDraft(key);
     requestAnimationFrame(autogrow);
     await dispatch(typed, pending);
@@ -868,6 +911,7 @@
     const pending = attachments.slice();
     const typed = text;
     recordText("sent", typed);
+    launch("chat", ta);
     clearDraft(key);
     requestAnimationFrame(autogrow);
     await dispatch(typed, pending, false, prefs);
@@ -1101,6 +1145,7 @@
       app.connection?.engine,
       app.events.length > 0,
       estimate !== null,
+      shown?.long,
     ];
     refoldRow();
   });
@@ -1286,7 +1331,7 @@
         {/if}
       </div>
       {#each queue as q, i (q.id)}
-        <div class="queue-row" role="listitem">
+        <div class="queue-row" role="listitem" data-queue-id={q.id}>
           <span class="queue-n mono">{i + 1}</span>
           <span class="queue-text" use:tip={q.text} data-find-text={q.text}>{#if handoffHere && q.id === handoff.queuedId}<span class="ns-chip mono" use:tip={"Put here by Nightloom: the window crossed this chat's hand-off mark while you were away. × takes it back."}>wrap-up · queued while you were away</span> {/if}{firstLine(q.text) || "(no text)"}{#if q.attachments.length > 0} <span class="ns-chip mono">{q.attachments.length} {q.attachments.length === 1 ? "file" : "files"}</span>{/if}</span>
           <button class="ns-btn ghost small" use:tip={"Back into the message box"} onclick={() => takeBack(q.id)}>take back</button>
@@ -1545,9 +1590,9 @@
         </span>
       {/if}
       <span class="spacer"></span>
-      {#if estimate}
-        <span class="draft-tokens mono act" use:tip={draftEstimateTitle(estimate.tokens)}
-          ><span class="fold-word">{estimate.long}</span><span class="short-word">{estimate.short}</span></span
+      {#if shown}
+        <span class="draft-tokens mono act" use:tip={shown.title}
+          ><span class="fold-word">{shown.long}</span><span class="short-word">{shown.short}</span></span
         >
       {/if}
       {#if app.busy}
