@@ -1,6 +1,6 @@
 import { marked } from "marked";
 import DOMPurify from "dompurify";
-import { math } from "./math";
+import { math, renderMath } from "./math";
 import { tilde } from "./tilde";
 import "katex/dist/katex.min.css";
 
@@ -25,4 +25,13 @@ const ALLOW_MATHML = { ADD_TAGS: ["semantics", "annotation"] };
 export function renderMarkdown(src: string): string {
   const html = marked.parse(src, { async: false, gfm: true });
   return DOMPurify.sanitize(html, ALLOW_MATHML);
+}
+
+/**
+ * One formula as sanitized HTML — the formatted note editor's math widget
+ * (nightshift backlog 150), through the same KaTeX call and the same
+ * sanitizer as a formula inside `renderMarkdown`.
+ */
+export function renderMathHtml(tex: string, display: boolean): string {
+  return DOMPurify.sanitize(renderMath(tex, display), ALLOW_MATHML);
 }

@@ -27,6 +27,10 @@
   import type { NoteResolution } from "./links";
   import { modelOfInstructionFile } from "./catalog";
   import type { NoteScope } from "./types";
+  import { tick } from "svelte";
+  import NoteEditor from "./NoteEditor.svelte";
+  import { clampCaret, loadNoteMode, saveNoteMode, type NoteMode } from "./noteMode";
+  import { fieldScrollTop } from "./find";
 
   /**
    * Which note the editor has loaded, as `scope:name`. A plain variable, not
@@ -52,6 +56,18 @@
   let loading = $state(false);
   let error = $state<string | null>(null);
   let preview = $state(false);
+  /**
+   * Plain (the textarea) or formatted (the CodeMirror editor that draws the
+   * Markdown and math in place) — nightshift backlog 150. One setting for
+   * every note, the last picked (`noteMode.ts`). Both sides bind `text`, so
+   * the draft, Revert and Save are the same whichever is showing.
+   */
+  let mode = $state<NoteMode>(loadNoteMode());
+  /** Where the cursor was, as an offset into `text`: carried across a
+   *  switch between the two sides and back from the preview. */
+  let caret = $state(0);
+  let area = $state<HTMLTextAreaElement | null>(null);
+  let formatted = $state<ReturnType<typeof NoteEditor> | null>(null);
 
   const dirty = $derived(text !== saved);
   const open = $derived(note ?? app.openNote);
@@ -159,6 +175,7 @@
 
   async function load(target: { scope: NoteScope; name: string } | null) {
     bufferKey = null;
+    caret = 0;
     text = "";
     saved = "";
     error = null;
@@ -337,6 +354,45 @@
       : linkTitle(target, found);
   }
 
+  /** Read the cursor off whichever side is showing. */
+  function readCaret() {
+    if (area) caret = area.selectionStart;
+    else if (formatted) caret = formatted.head();
+  }
+
+  /**
+   * Switch plain ↔ formatted. The text is one buffer, so nothing is copied
+   * and nothing can be lost; the cursor is read off the side going away and
+   * put back on the side arriving. From the preview, either choice also
+   * leaves the preview.
+   */
+  async function setMode(next: NoteMode) {
+    readCaret();
+    const was = mode;
+    preview = false;
+    mode = next;
+    if (next !== was) saveNoteMode(next);
+    if (next === "plain") await focusArea();
+  }
+
+  function togglePreview() {
+    readCaret();
+    preview = !preview;
+    if (!preview && mode === "plain") void focusArea();
+  }
+
+  /** The textarea, focused with the cursor where it was and its line in view. */
+  async function focusArea() {
+    await tick();
+    const el = area;
+    if (!el) return;
+    const at = clampCaret(caret, el.value);
+    el.focus({ preventScroll: true });
+    el.setSelectionRange(at, at);
+    const lh = parseFloat(getComputedStyle(el).lineHeight) || 20;
+    if (el.scrollHeight > el.clientHeight) el.scrollTop = fieldScrollTop(el.value, at, lh, el.clientHeight);
+  }
+
   function onkeydown(e: KeyboardEvent) {
     if ((e.ctrlKey || e.metaKey) && e.key === "s") {
       e.preventDefault();
@@ -370,10 +426,27 @@
         onclick={revert}>Revert</button
       >
     {/if}
+    <!-- Plain or formatted (backlog 150): two halves of one chip, the
+         lit half the side that shows when not previewing. -->
+    <span class="modes" role="group" aria-label="Editor">
+      <button
+        class="ghost mode"
+        class:on={!preview && mode === "plain"}
+        title="Plain: the Markdown source as typed"
+        onclick={() => void setMode("plain")}
+        disabled={!open || !!reviewing}>Plain</button
+      ><button
+        class="ghost mode"
+        class:on={!preview && mode === "formatted"}
+        title="Formatted: headings, emphasis, code and math drawn in place, still editable — the cursor's line shows its source"
+        onclick={() => void setMode("formatted")}
+        disabled={!open || !!reviewing}>Formatted</button
+      >
+    </span>
     <button
       class="ghost"
       class:on={preview}
-      onclick={() => (preview = !preview)}
+      onclick={togglePreview}
       disabled={!open || !!reviewing}
     >
       {preview ? "Edit" : "Preview"}
@@ -447,6 +520,21 @@
         {@html renderMarkdown(text)}
       {/if}
     </div>
+  {:else if mode === "formatted"}
+    {#key bufferKey}
+      <NoteEditor
+        bind:this={formatted}
+        bind:value={text}
+        {caret}
+        placeholder={isVault
+          ? "Yours, and readable from every project. Link another note with [[name]]."
+          : isModel
+            ? `How you want ${modelId} in particular to behave. Empty means no file.`
+            : "Anything here is read by every chat in this project."}
+        oncaret={(o) => (caret = o)}
+        onfollow={(t) => void follow(t)}
+      />
+    {/key}
   {:else}
     <!-- Named, so the field has an accessible name when it is empty (an
          unnamed empty textarea is invisible to assistive tech and to the
@@ -454,7 +542,11 @@
     <textarea
       class="pane"
       aria-label="Note text"
+      bind:this={area}
       bind:value={text}
+      onblur={() => {
+        if (area) caret = area.selectionStart;
+      }}
       spellcheck="false"
       placeholder={isVault
         ? "Yours, and readable from every project. Link another note with [[name]]."
@@ -696,6 +788,22 @@
   .ghost.on {
     color: var(--accent);
     border-color: var(--accent);
+  }
+  .modes {
+    display: inline-flex;
+    flex-shrink: 0;
+  }
+  .ghost.mode:first-child {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+  }
+  .ghost.mode:last-child {
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+    margin-left: -1px;
+  }
+  .ghost.mode.on {
+    position: relative;
   }
   /* Revert discards typing: a red outline says so without a dialog (his
      call, 2026-09-14 — the draft is the safety net, not a confirmation). */
