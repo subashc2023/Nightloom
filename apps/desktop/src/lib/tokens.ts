@@ -132,3 +132,41 @@ export function sizeTitle(size: TurnSize, kind: "user" | "assistant", limit: num
   if (size.results) parts.push(`${size.results.toLocaleString()} from its tool results`);
   return `${n} tokens this reply added to the context: ${parts.join(" · ")}${of}`;
 }
+
+/*
+ * The draft's live estimate (nightshift backlog 155, 2026-09-24): "while
+ * I'm writing a prompt, it would be quite nice if I could see in the
+ * corner or something how many tokens I've written so far, especially
+ * when it comes to the longer prompts." Characters over four, rounded up —
+ * the rule of `nightloom_core::context::estimate_tokens`, which the Context
+ * page already uses, counted in code points as Rust's `chars()` counts
+ * them. Within ~10–20% for English prose, worse for code and non-Latin
+ * text; the exact count (the API engine's count endpoint) is a later batch.
+ */
+
+/** Characters per token, as `nightloom_core::context::CHARS_PER_TOKEN`. */
+export const CHARS_PER_TOKEN = 4;
+
+/** Under this estimate the composer shows nothing: a short message is not
+ *  decorated (the item's ~50). */
+export const DRAFT_TOKENS_FROM = 50;
+
+/** The estimate for `text`: code points over four, rounded up. */
+export function estimateTokens(text: string): number {
+  // UTF-16 length less one per surrogate pair = code points, without
+  // spreading a long draft into an array on every update.
+  const pairs = text.match(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g)?.length ?? 0;
+  return Math.ceil((text.length - pairs) / CHARS_PER_TOKEN);
+}
+
+/** The composer's figure for a draft, or null under the threshold. */
+export function draftEstimate(text: string): { tokens: number; long: string; short: string } | null {
+  const tokens = estimateTokens(text);
+  if (tokens < DRAFT_TOKENS_FROM) return null;
+  return { tokens, long: `~${tokens.toLocaleString("en-US")} tokens`, short: `~${fmtTokens(tokens)}` };
+}
+
+/** The hover sentence for the draft's figure. */
+export function draftEstimateTitle(tokens: number): string {
+  return `About ${tokens.toLocaleString("en-US")} tokens in the message box — an estimate (characters ÷ ${CHARS_PER_TOKEN}), the text only; attachments are not counted. Close for English prose, rougher for code and other scripts.`;
+}

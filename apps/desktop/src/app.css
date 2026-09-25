@@ -794,3 +794,56 @@ textarea.find-current-field::selection {
   background: var(--accent);
   color: var(--paper);
 }
+
+/* Nightloom's own tooltip (nightshift backlog 171, `lib/tip.ts`): one pill
+   on `body`, drawn for whichever `use:tip` anchor owns it. A dark rounded
+   pill a step lighter than the sheet, 13px text, wrapped at 320px, line
+   breaks kept; it never takes the pointer, so it never blocks a click.
+   Above every popover (Hint's tip is 90, the top bar's cards 80). */
+.nl-tip {
+  position: fixed;
+  top: -9999px;
+  left: -9999px;
+  z-index: 1000;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  max-width: 320px;
+  padding: 6px 10px;
+  background: var(--well);
+  color: var(--ink);
+  border: 1px solid var(--line2);
+  border-radius: 8px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.4;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  visibility: hidden;
+  opacity: 0;
+  transition:
+    opacity 0.08s ease-out,
+    visibility 0s linear 0.08s;
+}
+.nl-tip.shown {
+  visibility: visible;
+  opacity: 1;
+  transition: opacity 0.08s ease-out;
+}
+.nl-tip-text {
+  min-width: 0;
+}
+.nl-tip-keys {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--dim);
+}
+@media (prefers-reduced-motion: reduce) {
+  .nl-tip,
+  .nl-tip.shown {
+    transition: none;
+  }
+}

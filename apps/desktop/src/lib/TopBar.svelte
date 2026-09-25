@@ -15,6 +15,7 @@
   import { budgetChip, budgetTitle } from "./budget";
   import RightRail from "./RightRail.svelte";
   import { portal, anchorBelow } from "./portal";
+  import { tip } from "./tip";
   import { foldToFit } from "./fold";
   const POP_WIDTH = 340;
   import NotificationCentre from "./NotificationCentre.svelte";
@@ -477,14 +478,14 @@
   {#if modeText || continuedFrom}
     <div class="left">
       {#if modeText}
-        <span class="mode {mode}" title={modeTitle}
+        <span class="mode {mode}" use:tip={modeTitle}
           ><span aria-hidden="true">{MODE_GLYPH[mode]}</span><span class="fold2"> {modeText}</span></span
         >
       {/if}
       {#if continuedFrom}
         <button
           class="continued"
-          title="This chat continues a full one from its HANDOFF.md — click to open the earlier chat"
+          use:tip={"This chat continues a full one from its HANDOFF.md — click to open the earlier chat"}
           onclick={() => void openSession(continuedFrom.id)}
         >
           <span aria-hidden="true">↳</span><span class="fold1"> continued from {continuedFrom.line}</span>
@@ -503,7 +504,7 @@
       class="ns-chip model"
       class:open={app.showRail}
       bind:this={chipEl}
-      title={app.connection
+      use:tip={app.connection
         ? `${kindLabel(chatKind(app.events), app.connection.engine)} · ${engineName} — model and tasks, click to open (⌘M)`
         : "Model and tasks — click to open (⌘M)"}
       aria-expanded={app.showRail}
@@ -517,7 +518,7 @@
       {:else}
         <span class="annotation">not connected</span>
       {/if}
-      {#if openTasks > 0}<span class="badge" title="{openTasks} open tasks">{openTasks}</span>{/if}
+      {#if openTasks > 0}<span class="badge" use:tip={`${openTasks} open tasks`}>{openTasks}</span>{/if}
     </button>
 
     <!-- The gauge chip (board d, nightshift backlog 175 pass 2): the
@@ -536,7 +537,7 @@
         class:stale={plan?.stale}
         aria-expanded={showGauge}
         bind:this={gaugeEl}
-        title={(gauge
+        use:tip={(gauge
           ? gauge.limit
             ? `Context: ${gauge.used.toLocaleString()} of ${gauge.limit.toLocaleString()} tokens (${Math.round((gauge.ratio ?? 0) * 100)}%)${spendTail}${agentsTail}`
             : `Context: ${gauge.used.toLocaleString()} tokens — window size unknown for this model${spendTail}${agentsTail}`
@@ -572,7 +573,7 @@
         class:live={agents.running > 0}
         class:open={app.showTasks}
         aria-expanded={app.showTasks}
-        title="{agents.rows.length} subagent{agents.rows.length === 1 ? '' : 's'} this turn{agents.running > 0 ? `, ${agents.running} running` : ', all done'} · {agents.tokens.toLocaleString()} tokens (the CLI's figure per agent, not in the context gauge) — click for the Running-tasks panel{app.turnBudget ? `\n${budgetTitle(app.turnBudget)}` : ''}"
+        use:tip={`${agents.rows.length} subagent${agents.rows.length === 1 ? '' : 's'} this turn${agents.running > 0 ? `, ${agents.running} running` : ', all done'} · ${agents.tokens.toLocaleString()} tokens (the CLI's figure per agent, not in the context gauge) — click for the Running-tasks panel${app.turnBudget ? `\n${budgetTitle(app.turnBudget)}` : ''}`}
         onclick={toggleTasks}
       >
         <span class="figure">
@@ -601,7 +602,7 @@
     {#if canCompact}
       <button
         class="ns-btn ghost small"
-        title="Replace earlier turns with a model-written summary"
+        use:tip={"Replace earlier turns with a model-written summary"}
         onclick={() => void compactSession()}
         disabled={app.busy}
       >
@@ -691,7 +692,7 @@
             <span
               class="gc-fig"
               class:partial={!spend.complete}
-              title={spend.complete
+              use:tip={spend.complete
                 ? "Session cost so far, summed from each exchange at the price in force when it ran"
                 : "At least this much: some exchanges ran on a model with no verified price"}
               >{spend.complete ? "" : "at least "}{spend.text}</span

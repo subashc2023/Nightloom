@@ -42,7 +42,8 @@
     stayHere,
     threshold,
   } from "./handoff.svelte";
-  import { fmtTokens } from "./tokens";
+  import { draftEstimate, draftEstimateTitle, fmtTokens } from "./tokens";
+  import { tip } from "./tip";
   import { ghostFor } from "./suggestions.svelte";
   import { queuedElsewhereToast } from "./browse";
   import {
@@ -91,6 +92,22 @@
   const key = $derived(draftKey(app.activeSessionId, app.project?.id, app.pendingMode));
   const draft = $derived(readDraft(key));
   const text = $derived(draft.text);
+  /**
+   * The draft's live token estimate (nightshift backlog 155): characters ÷ 4,
+   * shown beside Send from ~50 tokens up. Debounced so a fast typist or a
+   * dictation burst recounts once per pause, not per keystroke; a cleared
+   * box (a send, a chat switch) clears it at once.
+   */
+  let estimate = $state<ReturnType<typeof draftEstimate>>(null);
+  $effect(() => {
+    const t = text;
+    if (!t) {
+      estimate = null;
+      return;
+    }
+    const id = setTimeout(() => (estimate = draftEstimate(t)), 120);
+    return () => clearTimeout(id);
+  });
   const attachments = $derived(draft.attachments);
   /**
    * Messages held while a turn runs (nightshift backlog 089, 2026-09-16).
@@ -1083,6 +1100,7 @@
       app.parked,
       app.connection?.engine,
       app.events.length > 0,
+      estimate !== null,
     ];
     refoldRow();
   });
@@ -1252,7 +1270,7 @@
       aria-orientation="horizontal"
       aria-label="Composer height"
       aria-valuenow={floorPx ?? undefined}
-      title={floorPx === null && capPx === null
+      use:tip={floorPx === null && capPx === null
         ? "Drag to resize · double-click to reset (⌥⌘↑ / ⌥⌘↓ by a line)"
         : `Drag to resize · double-click to reset — ${floorPx === null ? "automatic" : `${floorPx}px`} for this chat${capPx === null ? "" : `, grows to ${capPx}px`}`}
       onpointerdown={handleDown}
@@ -1270,9 +1288,9 @@
       {#each queue as q, i (q.id)}
         <div class="queue-row" role="listitem">
           <span class="queue-n mono">{i + 1}</span>
-          <span class="queue-text" title={q.text} data-find-text={q.text}>{#if handoffHere && q.id === handoff.queuedId}<span class="ns-chip mono" title="Put here by Nightloom: the window crossed this chat's hand-off mark while you were away. × takes it back.">wrap-up · queued while you were away</span> {/if}{firstLine(q.text) || "(no text)"}{#if q.attachments.length > 0} <span class="ns-chip mono">{q.attachments.length} {q.attachments.length === 1 ? "file" : "files"}</span>{/if}</span>
-          <button class="ns-btn ghost small" title="Back into the message box" onclick={() => takeBack(q.id)}>take back</button>
-          <button class="remove" title="drop this message" aria-label="drop queued message {i + 1}" onclick={() => dropQueued(key, q.id)}>×</button>
+          <span class="queue-text" use:tip={q.text} data-find-text={q.text}>{#if handoffHere && q.id === handoff.queuedId}<span class="ns-chip mono" use:tip={"Put here by Nightloom: the window crossed this chat's hand-off mark while you were away. × takes it back."}>wrap-up · queued while you were away</span> {/if}{firstLine(q.text) || "(no text)"}{#if q.attachments.length > 0} <span class="ns-chip mono">{q.attachments.length} {q.attachments.length === 1 ? "file" : "files"}</span>{/if}</span>
+          <button class="ns-btn ghost small" use:tip={"Back into the message box"} onclick={() => takeBack(q.id)}>take back</button>
+          <button class="remove" use:tip={"drop this message"} aria-label="drop queued message {i + 1}" onclick={() => dropQueued(key, q.id)}>×</button>
         </div>
       {/each}
     </div>
@@ -1284,14 +1302,14 @@
           {#if a.kind === "image"}
             <img src={`data:${a.media_type};base64,${a.data}`} alt={a.name} />
           {:else}
-            <span class="file" title={a.name}>
+            <span class="file" use:tip={a.name}>
               <span class="file-ext">PDF</span>
               <span class="file-name">{a.name}</span>
             </span>
           {/if}
           <button
             class="remove"
-            title="remove {a.name}"
+            use:tip={`remove ${a.name}`}
             aria-label="remove {a.name}"
             onclick={() => remove(a.id)}>×</button
           >
@@ -1340,7 +1358,7 @@
         autocapitalize="off"
         spellcheck="false"
         aria-label="The wrap-up message for this chat"
-        title="What Wrap up now sends. Edits are kept for this chat only; the default is in Settings → Subscription."
+        use:tip={"What Wrap up now sends. Edits are kept for this chat only; the default is in Settings → Subscription."}
         value={wrapUpText}
         oninput={(e) => {
           noteActivity();
@@ -1351,9 +1369,9 @@
         {#if !wrapUpQueued}
           <button class="ns-btn accent small" disabled={app.busy || !wrapUpText.trim()} onclick={() => void sendWrapUpNow()}>Wrap up now</button>
         {/if}
-        <button class="ns-btn ghost small" title="No wrap-up; asked again past {reAskPct}%" onclick={stayHere}>Stay here</button>
+        <button class="ns-btn ghost small" use:tip={`No wrap-up; asked again past ${reAskPct}%`} onclick={stayHere}>Stay here</button>
         {#if hasOwnMessage(app.activeSessionId)}
-          <button class="ns-btn ghost small" title="Back to the Settings default for this chat" onclick={() => setMessage(app.activeSessionId, "")}>Reset the message</button>
+          <button class="ns-btn ghost small" use:tip={"Back to the Settings default for this chat"} onclick={() => setMessage(app.activeSessionId, "")}>Reset the message</button>
         {/if}
         <span class="handoff-keys mono">stay past {reAskPct}% and the wrap-up is asked again</span>
       </div>
@@ -1377,7 +1395,7 @@
       </p>
       <div class="handoff-acts">
         <button class="ns-btn accent small" disabled={app.busy} onclick={() => void continueChat()}>Continue in a new chat</button>
-        <button class="ns-btn ghost small" title="Keep going here; asked again past {reAskPct}%" onclick={stayHere}>Stay here</button>
+        <button class="ns-btn ghost small" use:tip={`Keep going here; asked again past ${reAskPct}%`} onclick={stayHere}>Stay here</button>
         <span class="handoff-keys mono">stay past {reAskPct}% and the wrap-up is asked again</span>
       </div>
     </div>
@@ -1416,7 +1434,7 @@
       <button
         type="button"
         class="ghost-line"
-        title="The CLI's predicted next prompt — Tab or click puts it in the box, Esc drops it"
+        use:tip={"The CLI's predicted next prompt — Tab or click puts it in the box, Esc drops it"}
         onmousedown={(e) => e.preventDefault()}
         onclick={acceptGhost}
       >
@@ -1453,7 +1471,7 @@
       />
       <button
         class="ns-btn ghost small attach"
-        title="Attach images or PDFs"
+        use:tip={"Attach images or PDFs"}
         disabled={!app.connection}
         onclick={() => picker?.click()}
       >
@@ -1471,7 +1489,7 @@
           disabled={locked || !app.connection}
           aria-haspopup="menu"
           aria-expanded={menu === "model"}
-          title={modelTitle}
+          use:tip={modelTitle}
           onclick={() => openMenu("model")}
         >
           <span class="pick-dot" class:unknown={!app.connection}></span>
@@ -1490,7 +1508,7 @@
           disabled={locked || !app.connection}
           aria-haspopup="menu"
           aria-expanded={menu === "effort"}
-          title={agentMode
+          use:tip={agentMode
             ? "Effort (--effort) — how hard the model thinks per turn; default sends no flag and leaves it to the model. Kept on this chat."
             : `Thinking — ${thinkingSup.note}`}
           onclick={() => openMenu("effort")}
@@ -1514,7 +1532,7 @@
             bind:this={historyBtn}
             aria-haspopup="menu"
             aria-expanded={menu === "history"}
-            title="Earlier drafts of this box — the last ten texts that were sent, queued, or replaced by a paste. Click one to put it back."
+            use:tip={"Earlier drafts of this box — the last ten texts that were sent, queued, or replaced by a paste. Click one to put it back."}
             onclick={() => openMenu("history")}
           >
             <span class="pick-k">drafts</span>
@@ -1527,14 +1545,19 @@
         </span>
       {/if}
       <span class="spacer"></span>
+      {#if estimate}
+        <span class="draft-tokens mono act" use:tip={draftEstimateTitle(estimate.tokens)}
+          ><span class="fold-word">{estimate.long}</span><span class="short-word">{estimate.short}</span></span
+        >
+      {/if}
       {#if app.busy}
         <button
           class="ns-btn ghost small act"
-          title="Hold this message; it goes when the turn ends"
+          use:tip={"Hold this message; it goes when the turn ends"}
           onclick={enqueue}
           disabled={!text.trim() && attachments.length === 0}>Queue</button
         >
-        <button class="ns-btn danger small act" title={app.parked ? `Stop the turn running in ${runningChatName()}` : "Stop this turn"} onclick={() => void cancelTurn()}>Stop</button>
+        <button class="ns-btn danger small act" use:tip={app.parked ? `Stop the turn running in ${runningChatName()}` : "Stop this turn"} onclick={() => void cancelTurn()}>Stop</button>
       {:else}
         {#if app.connection?.engine === "claude-code" && app.events.length > 0}
           <!-- Ask aside (nightshift backlog 081): the typed question goes
@@ -1544,7 +1567,7 @@
                ask (the Welcome screen showed it — his report, 2026-09-17). -->
           <button
             class="ns-btn ghost small act"
-            title="Ask this of the chat without adding it to the chat: answered from what is already in context, no changes, recorded nowhere (Claude Code's /btw)"
+            use:tip={"Ask this of the chat without adding it to the chat: answered from what is already in context, no changes, recorded nowhere (Claude Code's /btw)"}
             disabled={!text.trim() || attachments.length > 0}
             onclick={() => void submitAside()}
           >
@@ -1559,7 +1582,7 @@
               class="ns-btn ghost small"
               class:on={councilOpen}
               bind:this={councilBtn}
-              title="Send this message to a council: several models answer it independently, then this chat's model chairs their answers"
+              use:tip={"Send this message to a council: several models answer it independently, then this chat's model chairs their answers"}
               aria-haspopup="dialog"
               aria-expanded={councilOpen}
               onclick={() => (councilOpen = !councilOpen)}
@@ -1601,7 +1624,7 @@
         class:on={transcript.thinking}
         aria-pressed={transcript.thinking}
         disabled={thinkingDead}
-        title={thinkingDead
+        use:tip={thinkingDead
           ? HIDDEN_THINKING_TITLE + " The toggle has nothing to open in this chat."
           : (transcript.thinking
               ? `Thinking shown in every reply — click to fold it to a pill (${shiftKey}T)`
@@ -1615,7 +1638,7 @@
         class="ns-chip bottom-toggle"
         class:on={transcript.tools}
         aria-pressed={transcript.tools}
-        title={transcript.tools
+        use:tip={transcript.tools
           ? `Tool calls shown in full — click to fold each to one line (${shiftKey}B)`
           : `Tool calls folded to one line each — click to show them in full (${shiftKey}B)`}
         onclick={() => toggleTranscriptPref("tool")}
@@ -1631,7 +1654,7 @@
         <div
           class="ns-chip mono bottom-cache"
           class:cold={cache ? !cache.warm : false}
-          title={cache
+          use:tip={cache
             ? `${cacheShareTitle} ${cacheTitle}`
             : `${cacheShareTitle} No timer for this chat: its last turn was made before the cache lifetime was recorded (2026-09-15); the next turn will show one.`}
         >
@@ -2118,6 +2141,14 @@
   }
   .spacer {
     flex: 1;
+  }
+  /* The draft's token estimate (backlog 155): dim, small, beside Send. */
+  .draft-tokens {
+    font-size: 11px;
+    color: var(--dim);
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+    cursor: default;
   }
   /* ~~The key hint (↵ to send · ⇧↵ newline)~~ — deleted 2026-09-22 on his
      word (nightshift backlog 177): it pushed Council and Send onto a second
