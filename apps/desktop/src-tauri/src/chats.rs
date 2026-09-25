@@ -265,9 +265,19 @@ impl Chats {
         let (log, created) = {
             let mut inner = self.inner();
             match inner.focus.clone() {
+                // Made here, under the same lock that read the focus as New
+                // chat (A3 review, 2026-09-25): letting go and calling
+                // `focused_or_start` re-read the focus, and a chat opened in
+                // between got this New chat's first message.
                 None => {
-                    drop(inner);
-                    self.focused_or_start(mode, kind, log_dir)?
+                    let session =
+                        crate::start_session(mode, kind, log_dir).map_err(|e| e.to_string())?;
+                    let id = session.id.clone();
+                    let log = Arc::new(AsyncMutex::new(session));
+                    inner.held.insert(id.clone(), log.clone());
+                    inner.focus = Some(id.clone());
+                    inner.made_from_new = Some(id);
+                    (log, true)
                 }
                 Some(id) if inner.made_from_new.as_ref() == Some(&id) => {
                     match inner.held.get(&id) {

@@ -702,6 +702,8 @@ mod tests {
             c.get(format!("{base}/api/not-a-route")),
             c.get(format!("{base}/api/send")),
             c.post(format!("{base}/api/state")),
+            // The phone's per-chat Stop (backlog 159, A3; review 2026-09-25).
+            c.post(format!("{base}/api/chats/abc/cancel")),
         ];
         for r in reqs {
             let r = r.build().unwrap();

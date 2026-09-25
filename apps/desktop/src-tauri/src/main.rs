@@ -6429,20 +6429,25 @@ fn cancel(state: State<'_, AppState>, chat: Option<String>) {
     if let Some(chat) = chat {
         let (token, others) = {
             let map = state.turn_cancels.lock().unwrap_or_else(|p| p.into_inner());
-            (map.get(&chat).cloned(), !map.is_empty())
+            let token = map.get(&chat).cloned();
+            // A turn key with no turn registered yet (backlog 159, A3): the
+            // turn has not reached its registration — a New chat's first
+            // turn stopped at once. Held for it, and never the fallthrough
+            // below, which stops whichever turn registered last: another
+            // chat's. Held *under the map's lock* (A3 review, 2026-09-25):
+            // `send_agent` registers the key and then takes a held Stop,
+            // so a Stop checked before the registration and held after
+            // the take was lost.
+            if token.is_none() && is_turn_key(&chat) {
+                hold_early_stop(&state.early_stops, &chat);
+                return;
+            }
+            (token, !map.is_empty())
         };
         if let Some(token) = token {
             // The turn refuses its own deferred call and lets go of it
             // (`send_agent`); another chat's prompt stays.
             token.cancel();
-            return;
-        }
-        // A turn key with no turn registered yet (backlog 159, A3): the
-        // turn has not reached its registration — a New chat's first turn
-        // stopped at once. Held for it, and never the fallthrough below,
-        // which stops whichever turn registered last: another chat's.
-        if is_turn_key(&chat) {
-            hold_early_stop(&state.early_stops, &chat);
             return;
         }
         // The named chat has no turn registered (it just ended, or has not
