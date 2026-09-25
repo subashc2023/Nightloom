@@ -79,6 +79,34 @@ describe("round trip", () => {
     const saved = snapshot(ws, undefined, (c) => (c.kind === "aside" ? { ...c, thread: 7 } : c));
     expect(saved.panes[0].tabs[1]).toEqual({ kind: "aside", session: "a", thread: 7 });
   });
+
+  it("keeps a tab the mapper refuses off disk (an incognito chat's aside, blocker 217)", () => {
+    const { ws } = sample();
+    const saved = snapshot(ws, undefined, (c) => (c.kind === "aside" ? null : c));
+    expect(saved.panes[0].tabs).toEqual([chat("a"), chat("b")]);
+    // The front (b) keeps the front, at its new place.
+    expect(saved.panes[0].active).toBe(1);
+    expect(JSON.stringify(saved)).not.toContain("aside");
+  });
+
+  it("hands the front to the right neighbour when the front tab is refused, else the left", () => {
+    const { ws } = sample();
+    const left = ws.panes[0];
+    left.active = left.tabs[1].id; // the aside in front
+    expect(snapshot(ws, undefined, (c) => (c.kind === "aside" ? null : c)).panes[0].active).toBe(1); // b
+    left.active = left.tabs[2].id; // b in front, and b refused
+    expect(snapshot(ws, undefined, (c) => (c.kind === "chat" && c.session === "b" ? null : c)).panes[0].active).toBe(1); // the aside, left of it
+  });
+
+  it("stores a pane left empty so the focus still counts it, and the rebuild drops it", () => {
+    const { ws } = sample();
+    const saved = snapshot(ws, undefined, (c) => (c.kind === "note" || c.kind === "web" ? null : c));
+    expect(saved.panes[1].tabs).toEqual([]);
+    expect(saved.focused).toBe(1);
+    const back = rebuild(saved, (c) => c);
+    expect(back?.ws.panes.length).toBe(1);
+    expect(back?.ws.focused).toBe(back?.ws.panes[0].id);
+  });
 });
 
 describe("a dropped target", () => {

@@ -53,19 +53,30 @@ export type SavedWorkspaces = Record<string, SavedWorkspace>;
  * The workspace as stored. `shellsIn` counts a pane's dock's shells;
  * `store` turns a live content into its stored form (an aside tab's
  * thread id, which is per window, into the thread's place in its chat's
- * list — see `state.svelte.ts`).
+ * list — see `state.svelte.ts`), or null to keep the tab off disk: an
+ * incognito or ephemeral chat's aside tab (blocker 217). A pane whose
+ * front tab is kept out stores its right neighbour as the front, else its
+ * left (the close rule); a pane left with none is stored empty, so the
+ * focus index still counts it, and `rebuild` drops it.
  */
 export function snapshot(
   ws: Workspace,
   shellsIn: (paneId: string) => number = () => 0,
-  store: (c: TabContent) => TabContent = (c) => c,
+  store: (c: TabContent) => TabContent | null = (c) => c,
 ): SavedWorkspace {
   const panes = ws.panes.map((p): SavedPane => {
-    const active = Math.max(
+    const front = Math.max(
       0,
       p.tabs.findIndex((t) => t.id === p.active),
     );
-    const out: SavedPane = { tabs: p.tabs.map((t) => store(structuredCloneContent(t.content))), active };
+    const kept: { at: number; content: TabContent }[] = [];
+    p.tabs.forEach((t, at) => {
+      const c = store(structuredCloneContent(t.content));
+      if (c) kept.push({ at, content: c });
+    });
+    let active = kept.findIndex((k) => k.at >= front);
+    if (active < 0) active = Math.max(0, kept.length - 1);
+    const out: SavedPane = { tabs: kept.map((k) => k.content), active };
     const n = shellsIn(p.id);
     if (n > 0) out.shells = n;
     return out;

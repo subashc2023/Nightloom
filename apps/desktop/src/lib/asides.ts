@@ -27,8 +27,17 @@
  * (`nextAsideId`) that tabs and the side panel address it by. A store
  * written before (one thread object per chat) reads back as a list of one.
  * Past the cap the oldest *chats* go, as before.
+ *
+ * An incognito or ephemeral chat's threads are never written (blocker
+ * 217, his "yes" of 2026-09-24; nightshift backlog 059): their answers are
+ * model output about a chat whose promise is that it is written nowhere.
+ * They live in the in-memory stash for the window and a relaunch loses
+ * them, which is the mode's own rule. The keeper passes `skip`
+ * (`isPrivateChat`), so a thread stored before this rule is dropped at the
+ * next save once its chat is known to be private.
  */
 import type { Aside, AsideTurn } from "./state.svelte";
+import type { ChatMode } from "./types";
 import type { AsideQuote } from "./asideQuote";
 import type { AsideAnchor } from "./asideCard";
 
@@ -42,6 +51,36 @@ export function nextAsideId(): number {
 }
 /** Chars of JSON the store may take; past it the oldest threads go. */
 export const ASIDES_MAX_CHARS = 512 * 1024;
+
+/**
+ * The chats seen open in a private mode this window (blocker 217). The
+ * listing names an incognito chat's mode, but an ephemeral chat is never
+ * listed and a new incognito one is not listed until its first turn — so
+ * the keeper records the open chat's mode here while it is open, and the
+ * record outlives the switch away. Memory only.
+ */
+const privateChats = new Set<string>();
+
+/** Note the open chat's mode; a normal one records nothing. */
+export function markChatMode(id: string, mode: ChatMode): void {
+  if (mode !== "normal") privateChats.add(id);
+}
+
+/**
+ * Whether a chat's asides stay off disk: its listing row's mode when it is
+ * listed (a mode is fixed at birth, so the row is the authority), else
+ * whether it was seen open as incognito or ephemeral this window.
+ */
+export function isPrivateChat(id: string, sessions: readonly { id: string; mode?: ChatMode }[]): boolean {
+  const row = sessions.find((s) => s.id === id);
+  if (row) return (row.mode ?? "normal") !== "normal";
+  return privateChats.has(id);
+}
+
+/** For the suite: forget what `markChatMode` recorded. */
+export function resetPrivateChats(): void {
+  privateChats.clear();
+}
 
 interface StoredTurn {
   question: string;
@@ -75,11 +114,16 @@ function storeAside(a: Aside): StoredAside | null {
 /**
  * The store as it is written: threads by chat id, insertion order (the
  * oldest first), trimmed from the front past the cap so the newest
- * threads are the ones kept. Pure.
+ * threads are the ones kept. A chat `skip` names (an incognito or
+ * ephemeral one, blocker 217) is left out. Pure.
  */
-export function serializeAsides(map: ReadonlyMap<string, readonly Aside[]>): string {
+export function serializeAsides(
+  map: ReadonlyMap<string, readonly Aside[]>,
+  skip: (chat: string) => boolean = () => false,
+): string {
   const entries: [string, StoredAside[]][] = [];
   for (const [k, list] of map) {
+    if (skip(k)) continue;
     const s = list.map(storeAside).filter((a): a is StoredAside => a !== null);
     if (s.length > 0) entries.push([k, s]);
   }
@@ -153,9 +197,13 @@ export function loadAsides(storage: Pick<Storage, "getItem">): Map<string, Aside
   return out;
 }
 
-export function saveAsides(map: ReadonlyMap<string, readonly Aside[]>, storage: Pick<Storage, "setItem">): void {
+export function saveAsides(
+  map: ReadonlyMap<string, readonly Aside[]>,
+  storage: Pick<Storage, "setItem">,
+  skip?: (chat: string) => boolean,
+): void {
   try {
-    storage.setItem(ASIDES_KEY, serializeAsides(map));
+    storage.setItem(ASIDES_KEY, serializeAsides(map, skip));
   } catch {
     // best-effort, as the drafts are
   }

@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { ASIDES_MAX_CHARS, loadAsides, saveAsides, serializeAsides } from "./asides";
+import {
+  ASIDES_KEY,
+  ASIDES_MAX_CHARS,
+  isPrivateChat,
+  loadAsides,
+  markChatMode,
+  resetPrivateChats,
+  saveAsides,
+  serializeAsides,
+} from "./asides";
 import type { Aside, AsideTurn } from "./state.svelte";
 
 const turn = (over: Partial<AsideTurn>): AsideTurn => ({
@@ -119,5 +128,54 @@ describe("the aside threads across a relaunch (backlog 137)", () => {
     const back = loadAsides(s).get("a")!;
     expect(back.length).toBe(1);
     expect(back[0]!.turns[0]!.answer).toBe("kept");
+  });
+});
+
+describe("an incognito or ephemeral chat's threads stay off disk (blocker 217)", () => {
+  const thread = (id: number, answer: string): Aside => ({
+    id,
+    quote: null,
+    draft: false,
+    turns: [turn({ answer, partial: answer })],
+    anchor: null,
+  });
+
+  it("writes a normal chat's thread and leaves a private one out", () => {
+    const map = new Map<string, Aside[]>([
+      ["normal", [thread(1, "kept")]],
+      ["secret", [thread(2, "the incognito answer")]],
+    ]);
+    const out = serializeAsides(map, (c) => c === "secret");
+    expect(out).toContain("kept");
+    expect(out).not.toContain("the incognito answer");
+    expect(Object.keys(JSON.parse(out) as object)).toEqual(["normal"]);
+  });
+
+  it("drops a private chat's thread stored before the rule at the next save", () => {
+    const s = new Mem();
+    saveAsides(new Map([["secret", [thread(1, "old")]], ["normal", [thread(2, "mine")]]]), s);
+    const loaded = loadAsides(s);
+    expect([...loaded.keys()]).toEqual(["secret", "normal"]);
+    saveAsides(loaded, s, (c) => c === "secret");
+    expect(s.getItem(ASIDES_KEY)).not.toContain("old");
+    expect([...loadAsides(s).keys()]).toEqual(["normal"]);
+  });
+
+  it("reads a chat's privacy from its listing row, else from what was seen open", () => {
+    resetPrivateChats();
+    const sessions = [{ id: "n" }, { id: "i", mode: "incognito" as const }, { id: "x", mode: "normal" as const }];
+    expect(isPrivateChat("n", sessions)).toBe(false);
+    expect(isPrivateChat("i", sessions)).toBe(true);
+    // An ephemeral chat is never listed: only its being seen open marks it.
+    expect(isPrivateChat("e", sessions)).toBe(false);
+    markChatMode("e", "ephemeral");
+    markChatMode("n2", "normal");
+    expect(isPrivateChat("e", sessions)).toBe(true);
+    expect(isPrivateChat("n2", sessions)).toBe(false);
+    // A listed row is the authority: a mode is fixed at birth.
+    markChatMode("x", "incognito");
+    expect(isPrivateChat("x", sessions)).toBe(false);
+    resetPrivateChats();
+    expect(isPrivateChat("e", sessions)).toBe(false);
   });
 });
