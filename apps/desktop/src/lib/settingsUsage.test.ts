@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  COST_PANE,
+  USAGE_COST_GROUP,
   USAGE_PANE,
   canonicalPane,
   groupKey,
@@ -9,20 +11,24 @@ import {
   settingsGroups,
 } from "./settingsUsage";
 
-describe("the merged Usage · Cost nav (backlog 153)", () => {
+describe("Usage & Cost: two tabs under one category (backlog 206)", () => {
   const groups = settingsGroups(["anthropic", "openai"], ["brave"]);
 
-  it("has one Usage · Cost group at the top and no Cost pane", () => {
-    expect(groups[0]).toEqual({ title: "Usage · Cost", panes: [USAGE_PANE] });
+  it("has one Usage & Cost category at the top with a Usage tab and a Cost tab", () => {
+    expect(groups[0]).toEqual({ title: USAGE_COST_GROUP, panes: [USAGE_PANE, COST_PANE] });
+    expect(USAGE_COST_GROUP).toBe("Usage & Cost");
     const all = groups.flatMap((g) => g.panes);
-    expect(all).not.toContain("cost");
     expect(all.filter((p) => p === USAGE_PANE)).toHaveLength(1);
+    expect(all.filter((p) => p === COST_PANE)).toHaveLength(1);
+    // Neither tab is a category of its own (127's shape), nor one page (153's).
     expect(groups.map((g) => g.title)).not.toContain("Cost");
+    expect(groups.map((g) => g.title)).not.toContain("Usage");
+    expect(groups.map((g) => g.title)).not.toContain("Usage · Cost");
   });
 
-  it("keeps his order after the merge, one ⌘-digit per group", () => {
+  it("keeps his order, one ⌘-digit per category", () => {
     expect(groups.map((g) => g.title)).toEqual([
-      "Usage · Cost",
+      "Usage & Cost",
       "Subscription",
       "Knowledge",
       "Projects",
@@ -47,17 +53,17 @@ describe("the merged Usage · Cost nav (backlog 153)", () => {
     expect(openingPane(undefined, null)).toBe(USAGE_PANE);
     expect(openingPane(null, "knowledge")).toBe("knowledge");
     expect(openingPane("models", "knowledge")).toBe("models");
-    expect(openingPane(null, "cost")).toBe(USAGE_PANE);
+    expect(openingPane(null, "cost")).toBe(COST_PANE);
   });
 
-  it("opens a remembered or requested Cost pane on the merged pane", () => {
-    expect(canonicalPane("cost")).toBe(USAGE_PANE);
+  it("reopens a remembered Cost tab on the Cost tab, not on Usage", () => {
+    expect(canonicalPane("cost")).toBe(COST_PANE);
     expect(canonicalPane("usage")).toBe(USAGE_PANE);
     expect(canonicalPane("remote")).toBe("remote");
   });
 });
 
-describe("Refresh now refreshes both halves (backlog 153)", () => {
+describe("Refresh now refreshes both tabs (backlog 153, kept by 206)", () => {
   const at = new Date(2026, 8, 24, 14, 5);
 
   it("runs the collector, the plan and the credits once each, and stamps the read", async () => {
