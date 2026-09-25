@@ -2559,6 +2559,7 @@ dependencies = [
  "nightloom-core",
  "nightloom-service",
  "notify-rust",
+ "objc2",
  "portable-pty",
  "serde",
  "serde_json",

@@ -18,7 +18,7 @@
   import { app } from "./state.svelte";
   import { currentZoom, zoomMechanism } from "./zoom";
   import { OVERLAY_SELECTOR, overlaps } from "./extlink";
-  import { openInBrowser, openPage, placePage, web, webLabel } from "./webtabs.svelte";
+  import { findInPage, focusPage, openInBrowser, openPage, placePage, web, webLabel } from "./webtabs.svelte";
 
   let { tabId, content }: { tabId: string; content: { kind: "web"; url: string; title?: string } } = $props();
 
@@ -29,6 +29,68 @@
 
   function nav(action: "back" | "forward" | "reload"): void {
     invoke("web_nav", { label, action }).catch(() => {});
+  }
+
+  // Find in the page (pass 2; the guess pass's question 21, default taken:
+  // ⌘F with the page holding the keyboard finds in the page).
+  // The field lives in the bar, in the main page; the page itself is
+  // searched by `web_find`. Enter / ⌘G next, ⇧Enter / ⌘⇧G previous, Esc
+  // closes and hands the keyboard back to the page.
+  let finding = $state(false);
+  let query = $state("");
+  let miss = $state(false);
+  let field: HTMLInputElement | undefined = $state();
+  // The count when this view mounted: an ask from before (another view
+  // of the same tab) is not a fresh ⌘F.
+  let seenAsk: number | null = null;
+
+  $effect(() => {
+    const n = web.findAsked[label] ?? 0;
+    if (seenAsk === null) seenAsk = n;
+    if (n === seenAsk) return;
+    seenAsk = n;
+    finding = true;
+    queueMicrotask(() => {
+      field?.focus();
+      field?.select();
+    });
+  });
+
+  async function findStep(backwards: boolean, fresh = false): Promise<void> {
+    // Typing starts over from the top, so "ab" after "a" is not searched
+    // for only after the "a" already found.
+    if (fresh || !query) await findInPage(label, "", false);
+    if (!query) {
+      miss = false;
+      return;
+    }
+    miss = !(await findInPage(label, query, backwards));
+  }
+
+  function closeFind(): void {
+    finding = false;
+    miss = false;
+    focusPage(label);
+  }
+
+  function onFindKey(e: KeyboardEvent): void {
+    const primary = e.metaKey || e.ctrlKey;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closeFind();
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      void findStep(e.shiftKey);
+    } else if (primary && e.code === "KeyG") {
+      e.preventDefault();
+      void findStep(e.shiftKey);
+    } else if (primary && e.code === "KeyF") {
+      // Already here: select the text again, and keep ⌘F from also
+      // opening the chat's find bar (App.svelte's window handler).
+      e.preventDefault();
+      e.stopPropagation();
+      field?.select();
+    }
   }
 
   onMount(() => {
@@ -118,6 +180,21 @@
       onfocus={(e) => e.currentTarget.select()}
     />
     {#if loading}<span class="spin" title="Loading">…</span>{/if}
+    {#if finding}
+      <input
+        class="find"
+        class:miss
+        bind:this={field}
+        bind:value={query}
+        placeholder="Find in page"
+        aria-label="Find in page"
+        oninput={() => void findStep(false, true)}
+        onkeydown={onFindKey}
+      />
+      <button class="wb" title="Previous match (⇧Enter)" aria-label="Previous match" onclick={() => void findStep(true)}><Icon name="chevl" size={12} /></button>
+      <button class="wb" title="Next match (Enter)" aria-label="Next match" onclick={() => void findStep(false)}><Icon name="chevr" size={12} /></button>
+      <button class="wb" title="Close find (Esc)" aria-label="Close find" onclick={closeFind}>×</button>
+    {/if}
     <button class="wb open" title="Open this page in your browser" onclick={() => openInBrowser(content.url)}>
       <Icon name="ext" size={12} /><span>Open in browser</span>
     </button>
@@ -185,6 +262,23 @@
     outline: none;
     border-color: var(--line2);
     color: var(--ink);
+  }
+  .find {
+    width: 160px;
+    height: 24px;
+    padding: 0 8px;
+    border: 1px solid var(--line2);
+    border-radius: 5px;
+    background: var(--paper);
+    color: var(--ink);
+    font: inherit;
+    font-size: 12px;
+  }
+  .find:focus {
+    outline: none;
+  }
+  .find.miss {
+    border-color: #c0504d;
   }
   .spin {
     color: var(--dim);

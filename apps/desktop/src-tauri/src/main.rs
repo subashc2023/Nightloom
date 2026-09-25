@@ -6661,6 +6661,15 @@ fn mac_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
         .accelerator("CmdOrCtrl+Y")
         .build(app)?;
 
+    // ⌘F as a menu item since backlog 172 pass 2: a web tab's page holding
+    // the keyboard sends an unhandled ⌘F to the menu and nowhere else, so
+    // this is how it finds in the page (`webtab::menu_route`). With the
+    // main page focused the frontend's ⌘F (the find bar, backlog 106) runs
+    // as before and ignores this id.
+    let find = MenuItemBuilder::with_id(webtab::MENU_FIND, "Find…")
+        .accelerator("CmdOrCtrl+F")
+        .build(app)?;
+
     let edit = SubmenuBuilder::with_id(app, EDIT_MENU_ID, "Edit")
         .item(&undo)
         .item(&redo)
@@ -6669,6 +6678,8 @@ fn mac_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
         .copy()
         .paste()
         .select_all()
+        .separator()
+        .item(&find)
         .build()?;
 
     let view = SubmenuBuilder::new(app, "View")
@@ -6771,6 +6782,11 @@ async fn set_undo_menu(
 /// what makes adding an item a one-line change on each side.
 #[cfg(target_os = "macos")]
 fn mac_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
+    // Undo, Redo and Find while a web tab's page has the keyboard act on
+    // the page (backlog 172 pass 2).
+    if webtab::menu_route(app, event.id().0.as_str()) {
+        return;
+    }
     let _ = app.emit("menu", event.id().0.as_str());
 }
 
@@ -7080,6 +7096,8 @@ fn main() {
             webtab::web_nav,
             webtab::web_close,
             webtab::web_labels,
+            webtab::web_focused,
+            webtab::web_find,
         ]))
         .run(tauri::generate_context!())
         .expect("error while running Nightloom");

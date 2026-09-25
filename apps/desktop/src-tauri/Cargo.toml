@@ -40,3 +40,7 @@ libc = "0.2"
 # banner. Nothing else posts through it.
 [target.'cfg(target_os = "macos")'.dependencies]
 notify-rust = "4"
+# Web tabs' keys (backlog 172 pass 2): which page holds the first responder,
+# and Undo/Redo sent to it as AppKit actions. Already in the lockfile (tauri
+# and wry use it); two messages and a class lookup, no feature needed.
+objc2 = "0.6"

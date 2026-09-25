@@ -11,7 +11,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import * as api from "./api";
 import * as tabs from "./tabs";
-import { app, activateTab, addToast } from "./state.svelte";
+import { app, activateTab, addToast, focusPane } from "./state.svelte";
 import { LINK_PREF_KEY, PageQueue, linkRoute, parseLinkPref, type LinkPref } from "./extlink";
 
 function loadPref(): LinkPref {
@@ -27,7 +27,45 @@ export const web = $state({
   pref: loadPref() as LinkPref,
   /** What the pages report that the tab model does not keep, by label. */
   live: {} as Record<string, { loading?: boolean; favicon?: string }>,
+  /** ⌘F pressed while a page had the keyboard, counted per label: the
+   *  page's bar opens its find field on every change (pass 2). */
+  findAsked: {} as Record<string, number>,
 });
+
+/** Find `text` in web tab `label`'s page — the next match, or the one
+ *  before (`backwards`); whether there was one. Empty text clears. */
+export async function findInPage(label: string, text: string, backwards: boolean): Promise<boolean> {
+  try {
+    return await invoke<boolean>("web_find", { label, text, backwards });
+  } catch {
+    return false;
+  }
+}
+
+/** Hand the keyboard back to web tab `label`'s page. */
+export function focusPage(label: string): void {
+  invoke("web_nav", { label, action: "focus" }).catch(() => {});
+}
+
+/**
+ * The main page lost the keyboard: if a web tab's page took it (he
+ * clicked into the page), that tab's pane becomes the focused pane, so ⌘W
+ * — a menu item, handled against the focused pane — closes the page he
+ * is in, not the chat beside it (pass 2).
+ */
+async function followPageFocus(): Promise<void> {
+  let label: string | null = null;
+  try {
+    label = await invoke<string | null>("web_focused");
+  } catch {
+    return;
+  }
+  if (!label) return;
+  const t = tabOfLabel(label);
+  if (!t) return;
+  const pane = tabs.paneOf(app.tabs, t.id);
+  if (pane) focusPane(pane.id);
+}
 
 export function setLinkPref(p: LinkPref): void {
   web.pref = p;
@@ -161,6 +199,14 @@ export async function initWebTabs(): Promise<void> {
     await listen<[string, string]>("web-new-window", (e) => {
       const [, url] = e.payload;
       if (tabs.isWebUrl(url)) void openWebTab(url);
+    });
+    // ⌘F with a page holding the keyboard (webtab.rs, `menu_route`).
+    await listen<string>("web-find", (e) => {
+      const label = e.payload;
+      if (typeof label === "string" && tabOfLabel(label)) web.findAsked[label] = (web.findAsked[label] ?? 0) + 1;
+    });
+    window.addEventListener("blur", () => {
+      if (opened.size > 0) void followPageFocus();
     });
   } catch {
     // No event bridge outside the app.
