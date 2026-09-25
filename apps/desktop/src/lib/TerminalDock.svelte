@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tip";
   /**
    * The terminal pane (nightshift backlog 113, boards 12a–12c): docked
    * under the content, a grip on its top edge, a strip of shells with +
@@ -186,7 +187,7 @@
         aria-orientation="horizontal"
         aria-label="Terminal height"
         aria-valuenow={term.height}
-        title="Drag to resize · double-click to reset"
+        use:tip={"Drag to resize · double-click to reset"}
         onpointerdown={gripDown}
         ondblclick={resetHeight}
       ></div>
@@ -203,7 +204,7 @@
           role="tab"
           aria-selected={s.id === d.active}
           tabindex="-1"
-          title={s.exit ? `${label} ended — click to start a new shell in ${shortCwd(s.cwd, home)}` : `${s.shell} in ${shortCwd(s.cwd, home)} — drag onto the other pane for a terminal there`}
+          use:tip={s.exit ? `${label} ended — click to start a new shell in ${shortCwd(s.cwd, home)}` : `${s.shell} in ${shortCwd(s.cwd, home)} — drag onto the other pane for a terminal there`}
           onclick={() => (s.exit ? void restartShell(s.id) : selectShell(s.id))}
           draggable="true"
           ondragstart={(e) => {
@@ -238,7 +239,7 @@
           {#if exit}<span class="term-exit">{exit}</span>{/if}
           <button
             class="term-x"
-            title="Close this shell{isMac ? ' (⌘W)' : ''}"
+            use:tip={`Close this shell${isMac ? ' (⌘W)' : ''}`}
             aria-label="Close {label}"
             onclick={(e) => {
               e.stopPropagation();
@@ -247,26 +248,26 @@
           >
         </div>
       {/each}
-      <button class="term-plus" title="New shell{isMac ? ' (⌘T)' : ''}" aria-label="New shell" onclick={() => void newShell(key)}>
+      <button class="term-plus" use:tip={`New shell${isMac ? ' (⌘T)' : ''}`} aria-label="New shell" onclick={() => void newShell(key)}>
         <Icon name="plus" size={12} />
       </button>
-      <span class="term-hint mono" title="⌃` opens, focuses, hides the terminal">⌃`</span>
+      <span class="term-hint mono" use:tip={"⌃` opens, focuses, hides the terminal"}>⌃`</span>
       {#if term.cwd}
-        <span class="term-cwd mono" title={term.cwd}>{shortCwd(term.cwd, home)}</span>
+        <span class="term-cwd mono" use:tip={term.cwd}>{shortCwd(term.cwd, home)}</span>
       {/if}
       <span class="term-spacer"></span>
       <button
         class="term-ctl"
-        title={d.collapsed ? "Expand the terminal" : "Collapse to the strip"}
+        use:tip={d.collapsed ? "Expand the terminal" : "Collapse to the strip"}
         aria-label={d.collapsed ? "Expand the terminal" : "Collapse the terminal"}
         onclick={() => toggleCollapsed(key)}
       >
         <Icon name={d.collapsed ? "chev" : "minus"} size={12} />
       </button>
-      <button class="term-ctl" title="Hide the pane (⌃`) — the shells keep running" aria-label="Hide the terminal" onclick={() => hidePane(key)}>
+      <button class="term-ctl" use:tip={"Hide the pane (⌃`) — the shells keep running"} aria-label="Hide the terminal" onclick={() => hidePane(key)}>
         <Icon name="chevr" size={12} />
       </button>
-      <button class="term-ctl" title="Close the terminal — every shell in it ends" aria-label="Close the terminal" onclick={() => closePane(key)}>
+      <button class="term-ctl" use:tip={"Close the terminal — every shell in it ends"} aria-label="Close the terminal" onclick={() => closePane(key)}>
         <Icon name="x" size={12} />
       </button>
     </div>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tip";
   /**
    * The per-turn council control (nightshift backlog 149, blocker 243):
    * a popover above the composer's *Council* button with the roster and
@@ -78,7 +79,7 @@
         <span class="council-engine">subscription</span>
         <button
           class="remove"
-          title={prefs.seats.length <= MIN_SEATS ? `A council needs ${MIN_SEATS} seats` : "Remove this seat"}
+          use:tip={prefs.seats.length <= MIN_SEATS ? `A council needs ${MIN_SEATS} seats` : "Remove this seat"}
           aria-label="remove seat {i + 1}"
           disabled={prefs.seats.length <= MIN_SEATS}
           onclick={() => remove(i)}>×</button

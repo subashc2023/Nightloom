@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tip";
   import {
     app,
     forgetProject,
@@ -84,7 +85,7 @@
             disabled={app.busy}
             onclick={() => void choose(p.id)}
             ondblclick={() => startRename(p.id, p.name)}
-            title={p.root ?? "No folder — notes and chats only"}
+            use:tip={p.root ?? "No folder — notes and chats only"}
             draggable="true"
             ondragstart={(e) => startContentDrag(e, { kind: "project", id: p.id })}
             ondragend={endContentDrag}
@@ -109,20 +110,20 @@
           <div class="actions">
             <button
               class="icon"
-              title="Rename"
+              use:tip={"Rename"}
               aria-label="Rename {p.name}"
               onclick={() => startRename(p.id, p.name)}><Icon name="pencil" size={13} /></button
             >
             <button
               class="icon"
-              title={p.root ? "Show folder" : "Show notes folder"}
+              use:tip={p.root ? "Show folder" : "Show notes folder"}
               aria-label="Show {p.name} folder"
               onclick={() => void revealFolder(p.root ?? p.notes_dir)}><Icon name="ext" size={13} /></button
             >
             <button
               class="icon remove"
               class:confirming={confirming === p.id}
-              title={confirming === p.id
+              use:tip={confirming === p.id
                 ? "Click again — removes it from this list only"
                 : "Remove from list (deletes nothing)"}
               aria-label="Remove {p.name} from the list"

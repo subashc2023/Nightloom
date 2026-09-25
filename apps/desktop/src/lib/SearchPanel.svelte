@@ -5,6 +5,7 @@
 </script>
 
 <script lang="ts">
+  import { tip } from "./tip";
   import { onDestroy, onMount, tick } from "svelte";
   import { addToast, app, openSession, showNote, useProject } from "./state.svelte";
   import * as api from "./api";
@@ -261,14 +262,14 @@
         spellcheck="false"
       />
       {#if app.search.query}
-        <button class="search-clear" title="Clear" aria-label="Clear the search" onclick={() => { app.search.query = ""; field?.focus(); }}>
+        <button class="search-clear" use:tip={"Clear"} aria-label="Clear the search" onclick={() => { app.search.query = ""; field?.focus(); }}>
           <Icon name="x" size={12} />
         </button>
       {/if}
     </div>
     <!-- The way out by mouse (backlog 138): the sidebar comes back, the
          query stays in its box. -->
-    <button class="search-close" title="Close search (esc)" aria-label="Close search" onclick={close}>
+    <button class="search-close" use:tip={"Close search (esc)"} aria-label="Close search" onclick={close}>
       <Icon name="x" size={14} />
     </button>
   </div>
@@ -324,7 +325,7 @@
         {@const k = groupKey(g)}
         <div class="search-grp">
           <div class="search-gh">
-            <button class="chev" class:closed={folded[k]} title={folded[k] ? "Unfold" : "Fold"} aria-expanded={!folded[k]} onclick={() => toggleFold(k)}>
+            <button class="chev" class:closed={folded[k]} use:tip={folded[k] ? "Unfold" : "Fold"} aria-expanded={!folded[k]} onclick={() => toggleFold(k)}>
               <Icon name="chev" size={11} />
             </button>
             <span class="gt">{g.title ?? g.first_user ?? "empty session"}</span>
@@ -353,7 +354,7 @@
         {@const k = groupKey(g)}
         <div class="search-grp">
           <div class="search-gh">
-            <button class="chev" class:closed={folded[k]} title={folded[k] ? "Unfold" : "Fold"} aria-expanded={!folded[k]} onclick={() => toggleFold(k)}>
+            <button class="chev" class:closed={folded[k]} use:tip={folded[k] ? "Unfold" : "Fold"} aria-expanded={!folded[k]} onclick={() => toggleFold(k)}>
               <Icon name="chev" size={11} />
             </button>
             <span class="gt">{g.name}</span>

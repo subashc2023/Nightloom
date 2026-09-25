@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tip";
   import {
     app,
     openProjectFolder,
@@ -133,7 +134,7 @@
        inside it — a button in a button is not HTML); it opens the same
        editor in proposal mode, and nothing is applied until Load and Save. -->
   <div class="item pinned" class:active={isOpen(scope, AGENTS_MD)}>
-    <button class="row" onclick={() => showNote(scope, AGENTS_MD)} title={hint}>
+    <button class="row" onclick={() => showNote(scope, AGENTS_MD)} use:tip={hint}>
       <span class="name">{label}</span>
       <span class="summary">{hint}</span>
       <span class="meta">
@@ -148,7 +149,7 @@
     {#if app.proposals[scope].length > 0}
       <button
         class="proposed"
-        title="The dream proposed a change to this file — review it as a diff"
+        use:tip={"The dream proposed a change to this file — review it as a diff"}
         aria-label="Review the proposed change to {label}"
         onclick={() => reviewProposal(scope)}
         >{app.proposals[scope].length} proposed</button
@@ -182,7 +183,7 @@
         <button
           class="delete"
           class:confirming={confirming === `${scope}:${n.name}`}
-          title={confirming === `${scope}:${n.name}`
+          use:tip={confirming === `${scope}:${n.name}`
             ? "Click again to delete this file"
             : "Delete note"}
           aria-label="Delete {n.name}"
@@ -222,13 +223,13 @@
         {#if app.capturing}
           <button
             class="dream running"
-            title="reading the chats…"
+            use:tip={"reading the chats…"}
             onclick={() => void stopCapture()}>capturing… ✕</button
           >
         {:else}
           <button
             class="dream"
-            title="Read the chats since the last capture into the memory inbox"
+            use:tip={"Read the chats since the last capture into the memory inbox"}
             disabled={app.dreaming}
             onclick={() => void runCapture()}>Capture · {app.capturePending}</button
           >
@@ -240,7 +241,7 @@
         {#if app.dreaming}
           <button
             class="dream running"
-            title={app.dreamActivity
+            use:tip={app.dreamActivity
               ? `dreaming — ${app.dreamActivity}`
               : "dreaming…"}
             onclick={() => void stopDream()}>dreaming… ✕</button
@@ -248,13 +249,13 @@
         {:else if app.dreamPending > 0}
           <button
             class="dream"
-            title="Consolidate remembered observations into the vault"
+            use:tip={"Consolidate remembered observations into the vault"}
             onclick={() => void runDream()}>Dream · {app.dreamPending}</button
           >
         {/if}
         <button
           class="folder"
-          title="Show the link graph — drag it onto a strip for a tab"
+          use:tip={"Show the link graph — drag it onto a strip for a tab"}
           aria-label="Show the link graph"
           class:on={app.view === "graph"}
           onclick={showGraph}
@@ -265,7 +266,7 @@
       {/if}
       <button
         class="folder"
-        title="Show the folder"
+        use:tip={"Show the folder"}
         aria-label="Show the folder"
         onclick={() =>
           void revealFolder(

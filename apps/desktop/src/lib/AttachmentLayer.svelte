@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tip";
   import { app, dropContent } from "./state.svelte";
   import { outcome, startMove } from "./floatingMove";
   import type { Zone } from "./floatingMove";
@@ -162,20 +163,20 @@
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
         class="attach-head"
-        title="Drag to move it — near a tab strip it is kept there as a tab, at the left or right edge it opens beside"
+        use:tip={"Drag to move it — near a tab strip it is kept there as a tab, at the left or right edge it opens beside"}
         onpointerdown={headDown}
         onmousedown={(e) => {
           if (!(e.target as HTMLElement | null)?.closest("button")) e.preventDefault();
         }}
       >
         <span class="attach-grip" aria-hidden="true">⋮⋮</span>
-        <span class="attach-name mono" title={bytes.media_type}>{bytes.name}</span>
+        <span class="attach-name mono" use:tip={bytes.media_type}>{bytes.name}</span>
         <span class="ns-chip mono">{content.media === "image" ? "image" : "PDF"}</span>
         {#if content.media === "image"}
-          <span class="ns-chip mono" title="The image's own size">{natural.width} × {natural.height}</span>
+          <span class="ns-chip mono" use:tip={"The image's own size"}>{natural.width} × {natural.height}</span>
         {/if}
         <span class="spacer"></span>
-        <button class="ns-btn ghost small" title="Close (Escape, or click outside)" onclick={closeAttachment}>×</button>
+        <button class="ns-btn ghost small" use:tip={"Close (Escape, or click outside)"} onclick={closeAttachment}>×</button>
       </div>
       <div class="attach-body" class:scroll={full}>
         {#if content.media === "image"}
@@ -186,7 +187,7 @@
             class:full
             {src}
             alt={bytes.name}
-            title={full ? "Click to fit the screen" : "Click for the image's own size"}
+            use:tip={full ? "Click to fit the screen" : "Click for the image's own size"}
             onclick={() => (full = !full)}
           />
         {:else}

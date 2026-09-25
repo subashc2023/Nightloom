@@ -1,7 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import topBarSrc from "./TopBar.svelte?raw";
 import composerSrc from "./Composer.svelte?raw";
-import { coolTips, placeTip, sendTip, TIP_DELAY_MS, TIP_WARM_MS, tipTimer } from "./tip";
+import appSrc from "../App.svelte?raw";
+import mathSrc from "./math.ts?raw";
+import linksSrc from "./links.ts?raw";
+import noteEditorSrc from "./noteEditor.ts?raw";
+import { coolTips, delegateTarget, placeTip, sendTip, TIP_DELAY_MS, TIP_WARM_MS, tipTimer } from "./tip";
+
+// Every component's source, for the pass-2 lint (backlog 171).
+const components = import.meta.glob("./**/*.svelte", { query: "?raw", import: "default", eager: true }) as Record<
+  string,
+  string
+>;
 
 // Nightshift backlog 171 pass 1: the pill's placement and its timing.
 
@@ -163,4 +173,109 @@ describe("the top bar and the composer", () => {
       expect(src).toContain("use:tip=");
     });
   }
+  it("Composer's Send carries a tip (walk 2026-09-25: the disabled Send showed none)", () => {
+    expect(composerSrc).toMatch(/class="ns-btn accent send act"\s+use:tip=\{sendTip\(/);
+  });
+});
+
+/**
+ * Every native `title=` left in a component's template, as `file:tag`. A
+ * `title=` on a component (`<ConfirmDialog title=…>`, its heading) is a
+ * prop, not a tooltip; on `<embed>`/`<iframe>`/`<object>` it names the
+ * embedded content for a screen reader and WebKit draws no box over it.
+ */
+function nativeTitles(file: string, src: string): string[] {
+  const template = src.replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/g, (m) => " ".repeat(m.length));
+  const out: string[] = [];
+  for (const m of template.matchAll(/\s(title=["{]|\{title\})/g)) {
+    const before = template.slice(0, m.index);
+    const tags = [...before.matchAll(/<([A-Za-z][\w.:-]*)/g)];
+    const tag = tags.length ? tags[tags.length - 1][1] : "?";
+    if (/^[A-Z]/.test(tag) || tag.includes(".") || ["embed", "iframe", "object"].includes(tag)) continue;
+    out.push(`${file}:<${tag}>`);
+  }
+  return out;
+}
+
+describe("no native title= anywhere (171 pass 2)", () => {
+  it("every component uses the pill, not the OS box", () => {
+    const all = { "../App.svelte": appSrc, ...components };
+    expect(Object.keys(all).length).toBeGreaterThan(60);
+    const left = Object.entries(all).flatMap(([f, s]) => nativeTitles(f, s));
+    expect(left).toEqual([]);
+  });
+
+  it("the lint sees a native title and lets a component prop and an embed through", () => {
+    expect(nativeTitles("x", `<button\n  class="a"\n  title={t}>x</button>`)).toEqual(["x:<button>"]);
+    expect(nativeTitles("x", `<button {title}>x</button>`)).toEqual(["x:<button>"]);
+    expect(nativeTitles("x", `<ConfirmDialog title="Delete?" />`)).toEqual([]);
+    expect(nativeTitles("x", `<embed src={s} title={name} />`)).toEqual([]);
+    expect(nativeTitles("x", `<script>const a = '<b title="x">';</script><i>y</i>`)).toEqual([]);
+  });
+
+  it("HTML built as a string carries data-tip, not title", () => {
+    expect(mathSrc).not.toMatch(/\stitle="/);
+    expect(mathSrc).toContain('data-tip="');
+    expect(linksSrc).not.toMatch(/\stitle="/);
+    expect(linksSrc).toContain('data-tip="');
+    expect(noteEditorSrc).not.toMatch(/\.title = /);
+    expect(noteEditorSrc).toContain("el.dataset.tip = ");
+  });
+});
+
+/** Just enough of an element for `delegateTarget`. */
+interface FakeEl {
+  tagName: string;
+  attrs: Record<string, string>;
+  parent: FakeEl | null;
+  getAttribute(n: string): string | null;
+  hasAttribute(n: string): boolean;
+  setAttribute(n: string, v: string): void;
+  removeAttribute(n: string): void;
+  closest(sel: string): FakeEl | null;
+}
+function fakeEl(tagName: string, attrs: Record<string, string>, parent: FakeEl | null = null): FakeEl {
+  const el: FakeEl = {
+    tagName,
+    attrs: { ...attrs },
+    parent,
+    getAttribute: (n: string) => (n in el.attrs ? el.attrs[n] : null),
+    hasAttribute: (n: string) => n in el.attrs,
+    setAttribute: (n: string, v: string) => void (el.attrs[n] = v),
+    removeAttribute: (n: string) => void delete el.attrs[n],
+    closest(_sel: string) {
+      // The selector is always "[data-tip], [title]".
+      for (let e: FakeEl | null = el; e; e = e.parent) if ("data-tip" in e.attrs || "title" in e.attrs) return e;
+      return null;
+    },
+  };
+  return el;
+}
+
+describe("delegateTarget (string-built HTML and stray titles)", () => {
+  it("finds a data-tip ancestor", () => {
+    const a = fakeEl("A", { "data-tip": "notes/x.md" });
+    const inner = fakeEl("SPAN", {}, a);
+    expect(delegateTarget(inner as unknown as EventTarget)).toBe(a);
+  });
+
+  it("moves a stray native title to data-tip so the OS box never shows", () => {
+    const a = fakeEl("A", { href: "https://x", title: "A markdown link title" });
+    expect(delegateTarget(a as unknown as EventTarget)).toBe(a);
+    expect(a.attrs).toEqual({ href: "https://x", "data-tip": "A markdown link title" });
+  });
+
+  it("leaves a frame's title alone and ignores untipped elements", () => {
+    const e = fakeEl("EMBED", { title: "file.pdf" });
+    expect(delegateTarget(e as unknown as EventTarget)).toBeNull();
+    expect(e.attrs.title).toBe("file.pdf");
+    expect(delegateTarget(fakeEl("DIV", {}) as unknown as EventTarget)).toBeNull();
+    expect(delegateTarget(null)).toBeNull();
+  });
+
+  it("an empty title tips nothing but is still removed", () => {
+    const s = fakeEl("SPAN", { title: "" });
+    expect(delegateTarget(s as unknown as EventTarget)).toBeNull();
+    expect(s.attrs.title).toBeUndefined();
+  });
 });

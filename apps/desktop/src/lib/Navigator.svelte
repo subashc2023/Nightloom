@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tip";
   import Icon from "./Icon.svelte";
   import type { Tick } from "./navigator";
 
@@ -46,7 +47,7 @@
 </script>
 
 <div class="nav" bind:this={root} role="navigation" aria-label="Messages" onpointerleave={() => (hover = null)}>
-  <button class="chev" title="Top of the chat" aria-label="Scroll to the top" onclick={ontop}>
+  <button class="chev" use:tip={"Top of the chat"} aria-label="Scroll to the top" onclick={ontop}>
     <span class="up"><Icon name="chev" size={12} /></span>
   </button>
   <div class="ticks" style:--n={ticks.length}>
@@ -64,7 +65,7 @@
       </button>
     {/each}
   </div>
-  <button class="chev" title="Bottom of the chat — and follow the reply again" aria-label="Scroll to the bottom" onclick={onbottom}>
+  <button class="chev" use:tip={"Bottom of the chat — and follow the reply again"} aria-label="Scroll to the bottom" onclick={onbottom}>
     <Icon name="chev" size={12} />
   </button>
   {#if hover && ticks[hover.i]}

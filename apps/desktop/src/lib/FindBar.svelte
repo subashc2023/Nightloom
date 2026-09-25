@@ -5,6 +5,7 @@
 </script>
 
 <script lang="ts">
+  import { tip } from "./tip";
   import { onDestroy, onMount, tick } from "svelte";
   import Icon from "./Icon.svelte";
   import { app, toggleSidebar } from "./state.svelte";
@@ -369,10 +370,10 @@
       spellcheck="false"
     />
     <span class="find-count" class:none={query.length > 0 && hits.length === 0}>{label}</span>
-    <button class="find-btn up" title="Previous match (⇧⏎)" disabled={hits.length === 0} onclick={() => step(-1)}>
+    <button class="find-btn up" use:tip={"Previous match (⇧⏎)"} disabled={hits.length === 0} onclick={() => step(-1)}>
       <Icon name="chev" size={12} />
     </button>
-    <button class="find-btn" title="Next match (⏎)" disabled={hits.length === 0} onclick={() => step(1)}>
+    <button class="find-btn" use:tip={"Next match (⏎)"} disabled={hits.length === 0} onclick={() => step(1)}>
       <Icon name="chev" size={12} />
     </button>
     {#if !app.search.open}
@@ -383,14 +384,14 @@
       <button
         class="find-btn find-all"
         class:kept={!!app.search.result}
-        title={app.search.result ? `Back to the results (${SEARCH_CHORD_LABEL})` : `Search all chats for this (${SEARCH_CHORD_LABEL})`}
+        use:tip={app.search.result ? `Back to the results (${SEARCH_CHORD_LABEL})` : `Search all chats for this (${SEARCH_CHORD_LABEL})`}
         aria-label={app.search.result ? "Back to the search results" : "Search all chats"}
         onclick={toPanel}
       >
         <Icon name="search" size={12} />
       </button>
     {/if}
-    <button class="find-btn" title="Close (⎋)" onclick={close}>
+    <button class="find-btn" use:tip={"Close (⎋)"} onclick={close}>
       <Icon name="x" size={12} />
     </button>
   </div>

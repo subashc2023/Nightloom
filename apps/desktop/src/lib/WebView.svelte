@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tip";
   /**
    * A web tab's view (nightshift backlog 172): a slim bar — back,
    * forward, reload, the address (read-only: selectable and copyable,
@@ -168,18 +169,18 @@
 
 <div class="web">
   <div class="web-bar">
-    <button class="wb" title="Back" aria-label="Back" onclick={() => nav("back")}><Icon name="chevl" size={13} /></button>
-    <button class="wb" title="Forward" aria-label="Forward" onclick={() => nav("forward")}><Icon name="chevr" size={13} /></button>
-    <button class="wb" title="Reload" aria-label="Reload" onclick={() => nav("reload")}><Icon name="refresh" size={12} /></button>
+    <button class="wb" use:tip={"Back"} aria-label="Back" onclick={() => nav("back")}><Icon name="chevl" size={13} /></button>
+    <button class="wb" use:tip={"Forward"} aria-label="Forward" onclick={() => nav("forward")}><Icon name="chevr" size={13} /></button>
+    <button class="wb" use:tip={"Reload"} aria-label="Reload" onclick={() => nav("reload")}><Icon name="refresh" size={12} /></button>
     <input
       class="addr"
       readonly
       value={content.url}
       aria-label="Address"
-      title="The page's address — select to copy"
+      use:tip={"The page's address — select to copy"}
       onfocus={(e) => e.currentTarget.select()}
     />
-    {#if loading}<span class="spin" title="Loading">…</span>{/if}
+    {#if loading}<span class="spin" use:tip={"Loading"}>…</span>{/if}
     {#if finding}
       <input
         class="find"
@@ -191,11 +192,11 @@
         oninput={() => void findStep(false, true)}
         onkeydown={onFindKey}
       />
-      <button class="wb" title="Previous match (⇧Enter)" aria-label="Previous match" onclick={() => void findStep(true)}><Icon name="chevl" size={12} /></button>
-      <button class="wb" title="Next match (Enter)" aria-label="Next match" onclick={() => void findStep(false)}><Icon name="chevr" size={12} /></button>
-      <button class="wb" title="Close find (Esc)" aria-label="Close find" onclick={closeFind}>×</button>
+      <button class="wb" use:tip={"Previous match (⇧Enter)"} aria-label="Previous match" onclick={() => void findStep(true)}><Icon name="chevl" size={12} /></button>
+      <button class="wb" use:tip={"Next match (Enter)"} aria-label="Next match" onclick={() => void findStep(false)}><Icon name="chevr" size={12} /></button>
+      <button class="wb" use:tip={"Close find (Esc)"} aria-label="Close find" onclick={closeFind}>×</button>
     {/if}
-    <button class="wb open" title="Open this page in your browser" onclick={() => openInBrowser(content.url)}>
+    <button class="wb open" use:tip={"Open this page in your browser"} onclick={() => openInBrowser(content.url)}>
       <Icon name="ext" size={12} /><span>Open in browser</span>
     </button>
   </div>

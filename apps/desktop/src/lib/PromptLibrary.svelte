@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tip";
   import { app, closePrompts, deletePrompt, storePrompt, usePrompt } from "./state.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
 
@@ -105,7 +106,7 @@
         onclick={() => pick(p.id)}
       >
         <span class="nav-label">{p.name}</span>
-        {#if app.draft.promptId === p.id}<span class="in-use" title="In use in this chat">●</span>{/if}
+        {#if app.draft.promptId === p.id}<span class="in-use" use:tip={"In use in this chat"}>●</span>{/if}
       </button>
     {/each}
     {#if app.prompts.length === 0}
@@ -117,7 +118,7 @@
     {#if unsaved}
       <button
         class="nav-add"
-        title="Put this chat's system prompt in the library"
+        use:tip={"Put this chat's system prompt in the library"}
         onclick={() => blank(app.draft.system)}
       >
         + From this chat
@@ -147,7 +148,7 @@
       <button
         class="primary"
         disabled={!d.text.trim()}
-        title="Save this entry and make it the chat's system prompt"
+        use:tip={"Save this entry and make it the chat's system prompt"}
         onclick={useIt}
       >
         Save &amp; use in this chat
@@ -155,7 +156,7 @@
       <button disabled={!d.text.trim() || !dirty} onclick={() => save()}>
         Save{dirty && (entry || d.text.trim()) ? " •" : ""}
       </button>
-      {#if dirty}<span class="draft" title="Unsaved — kept if you close">draft</span>{/if}
+      {#if dirty}<span class="draft" use:tip={"Unsaved — kept if you close"}>draft</span>{/if}
       <div class="spacer"></div>
       {#if entry}
         <button class="danger" onclick={() => (confirmDelete = true)}>Delete</button>

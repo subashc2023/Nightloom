@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tip";
   /**
    * A subagent's transcript as a tab (nightshift backlog 152, 2026-09-17):
    * the Running-tasks panel's *View transcript*. Drawn from the chat's row
@@ -132,7 +133,7 @@
       {#each held as n, k (k)}
         <div class="held">
           <span class="held-text">{n.text}</span>
-          <button class="link" title="Put this note back in the box below" onclick={() => takeBackNote(key, k)}>Take back</button>
+          <button class="link" use:tip={"Put this note back in the box below"} onclick={() => takeBackNote(key, k)}>Take back</button>
         </div>
       {/each}
       <p class="note small hint">
@@ -170,7 +171,7 @@
       {#if s.kind === "tool"}
         <details class="call" class:error={!!s.call.result?.is_error} open={depth === 0 && !!s.call.result?.is_error}>
           <summary>
-            <span class="name" title={s.call.name}>{shortToolName(s.call.name)}</span>
+            <span class="name" use:tip={s.call.name}>{shortToolName(s.call.name)}</span>
             <span class="arg">{toolInputSummary(s.call.input)}</span>
             <span class="size">
               {#if s.call.denied}refused{:else if s.call.result}{s.call.result.is_error ? "error · " : ""}{s.call.result.content.length.toLocaleString()} chars{:else}running{/if}

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tip";
   import {
     app,
     closeNewProject,
@@ -102,13 +103,13 @@
     <button class="back" onclick={closeNewProject}>← Chat</button>
     <span class="scope">project</span>
     <span class="title">New project</span>
-    {#if dirty}<span class="dirty" title="Kept if you leave — only Create or Discard drops it">● draft</span>{/if}
+    {#if dirty}<span class="dirty" use:tip={"Kept if you leave — only Create or Discard drops it"}>● draft</span>{/if}
     <span class="spacer"></span>
     {#if dirty}
-      <button class="ghost revert" title="Drop what is typed here" onclick={() => (confirmDiscard = true)}>Discard</button>
+      <button class="ghost revert" use:tip={"Drop what is typed here"} onclick={() => (confirmDiscard = true)}>Discard</button>
     {/if}
-    <button class="ghost" title="Back to the chat; what is typed stays (Esc)" onclick={closeNewProject}>Cancel</button>
-    <button class="save" disabled={!canCreate || creating || app.busy} title="Make the folder and open the project ({mod}↵)" onclick={() => void create()}>
+    <button class="ghost" use:tip={"Back to the chat; what is typed stays (Esc)"} onclick={closeNewProject}>Cancel</button>
+    <button class="save" disabled={!canCreate || creating || app.busy} use:tip={`Make the folder and open the project (${mod}↵)`} onclick={() => void create()}>
       {creating ? "Creating…" : "Create"}
     </button>
   </header>
@@ -137,9 +138,9 @@
         <div class="folder" class:picked={d.pickedPath !== null} class:bad={noSlug}>
           <Icon name="folder" size={13} />
           <code class="path">{shownPath || "—"}</code>
-          <button class="ghost small" title="Use a folder you already have instead" onclick={() => void pickNewProjectFolder()}>Change…</button>
+          <button class="ghost small" use:tip={"Use a folder you already have instead"} onclick={() => void pickNewProjectFolder()}>Change…</button>
           {#if d.pickedPath !== null}
-            <button class="ghost small" title="Back to a folder made under the projects folder" onclick={() => (app.newProjectDraft.pickedPath = null)}>Use the projects folder</button>
+            <button class="ghost small" use:tip={"Back to a folder made under the projects folder"} onclick={() => (app.newProjectDraft.pickedPath = null)}>Use the projects folder</button>
           {/if}
         </div>
         <p class="hint" class:bad={noSlug}>{reason}</p>
@@ -167,11 +168,11 @@
            103, his "have it in both spots"; blocker 233's board A): Create
            filled in the accent. Both pairs do exactly the same thing. -->
       <div class="foot-actions">
-        <button class="ns-btn" title="Back to the chat; what is typed stays (Esc)" onclick={closeNewProject}>Cancel</button>
+        <button class="ns-btn" use:tip={"Back to the chat; what is typed stays (Esc)"} onclick={closeNewProject}>Cancel</button>
         <button
           class="ns-btn accent"
           disabled={!canCreate || creating || app.busy}
-          title="Make the folder and open the project ({mod}↵)"
+          use:tip={`Make the folder and open the project (${mod}↵)`}
           onclick={() => void create()}
         >
           {creating ? "Creating…" : "Create"}

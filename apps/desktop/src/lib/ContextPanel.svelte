@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tip";
   // Every Copy button goes through the in-app clipboard ring (backlog 173).
   import { copyText } from "./clipRing.svelte";
   import * as api from "./api";
@@ -562,7 +563,7 @@
           class:on={mode === "sent"}
           aria-selected={mode === "sent"}
           disabled={!view.system_text}
-          title="The whole system prompt as one string, exactly as the backend renders it for the request"
+          use:tip={"The whole system prompt as one string, exactly as the backend renders it for the request"}
           onclick={() => (mode = "sent")}
         >
           As sent
@@ -572,7 +573,7 @@
             role="tab"
             class:on={mode === "session"}
             aria-selected={mode === "session"}
-            title="What the Claude Code session has, as the CLI reported it at the start of the latest turn: MCP servers, tools, skills, slash commands, agents"
+            use:tip={"What the Claude Code session has, as the CLI reported it at the start of the latest turn: MCP servers, tools, skills, slash commands, agents"}
             onclick={() => (mode = "session")}
           >
             This session
@@ -580,7 +581,7 @@
         {/if}
       </div>
     {/if}
-    <button class="close" title="Close" aria-label="Close context" onclick={close}><Icon name="x" size={14} /></button>
+    <button class="close" use:tip={"Close"} aria-label="Close context" onclick={close}><Icon name="x" size={14} /></button>
   </div>
 
   <div class="pane">
@@ -630,7 +631,7 @@
                   <li class="srow grid" class:bad>
                     <span class="dot" class:ok={s.status === "connected"} class:bad></span>
                     <span class="sname mono">{s.name}</span>
-                    <span class="sstatus" title={bad ? s.error ?? s.status : tools.map(shortMcp).join(" · ")}>
+                    <span class="sstatus" use:tip={bad ? s.error ?? s.status : tools.map(shortMcp).join(" · ")}>
                       {#if bad}
                         {s.status}{s.error ? ` — ${s.error}` : ""}
                       {:else if tools.length > 0}
@@ -657,7 +658,7 @@
               <span class="meta">{init.tools.length}{#if chatPolicy} · {builtinTools.filter(refused).length} refused{/if}</span>
             </div>
             <div class="chips">
-              {#each builtinTools as t (t)}<span class="chip" class:refused={refused(t)} title={refused(t) ? "Refused on a Chat: a call to it gets an error result" : ""}>{t}</span>{/each}
+              {#each builtinTools as t (t)}<span class="chip" class:refused={refused(t)} use:tip={refused(t) ? "Refused on a Chat: a call to it gets an error result" : ""}>{t}</span>{/each}
             </div>
             {#each [...mcpTools.entries()] as [server, names] (server)}
               <div class="sub">
@@ -739,7 +740,7 @@
           <span>permission {init.permission_mode ?? "?"}</span>
           <span>effort {app.connection?.agent?.effort ?? "default"}</span>
           <span>{app.connection?.agent?.fallback_model ? `fallback ${app.connection.agent.fallback_model}` : "no fallback"}</span>
-          <span title={SAFE_MODE_DROPS}>safe mode {app.connection?.agent?.safe_mode ? "on — MCP, skills, commands and hooks dropped" : "off — on, this panel loses MCP, skills, commands and hooks"}</span>
+          <span use:tip={SAFE_MODE_DROPS}>safe mode {app.connection?.agent?.safe_mode ? "on — MCP, skills, commands and hooks dropped" : "off — on, this panel loses MCP, skills, commands and hooks"}</span>
         </p>
       {/if}
       <!-- Prompt suggestions (backlog 083): the switch lives here because
@@ -805,9 +806,9 @@
               <span class="meta">{1 + (app.connection.folders?.length ?? 0)}</span>
             </div>
             <div class="chips fold-chips">
-              <span class="chip" title="The working directory">{app.connection.workspace}</span>
+              <span class="chip" use:tip={"The working directory"}>{app.connection.workspace}</span>
               {#each app.connection.folders ?? [] as f (f.path)}
-                <span class="chip" title={f.path}>{#if f.alias}<strong>{f.alias}</strong> → {/if}{f.path} <em>· {f.source === "project" ? "project" : "this chat"}</em></span>
+                <span class="chip" use:tip={f.path}>{#if f.alias}<strong>{f.alias}</strong> → {/if}{f.path} <em>· {f.source === "project" ? "project" : "this chat"}</em></span>
               {/each}
             </div>
           </section>
@@ -834,7 +835,7 @@
                 {@const share = windowShare(cliPromptTokens)}
                 <!-- The board's size against the window (Layers.dc.html):
                      the gauge's 56px bar scaled to the layer's share. -->
-                <span class="meta lbar" title="Estimated at four characters a token; {cliPromptChars.toLocaleString()} characters in {cliPrompt.sections.length} sections{share !== null ? ` — ${(share * 100).toFixed(1)}% of the window` : ""}">
+                <span class="meta lbar" use:tip={`Estimated at four characters a token; ${cliPromptChars.toLocaleString()} characters in ${cliPrompt.sections.length} sections${share !== null ? ` — ${(share * 100).toFixed(1)}% of the window` : ""}`}>
                   <span>{fmtTokens(cliPromptTokens)}</span>
                   {#if share !== null}
                     <span class="sb" aria-hidden="true"><i style:width="{share * 100}%"></i></span>
@@ -855,7 +856,7 @@
             {#if isOpen && cliPrompt}
               <div class="body">
                 <div class="body-bar">
-                  <span class="file" title={cliPrompt.path}>{cliPrompt.path}</span>
+                  <span class="file" use:tip={cliPrompt.path}>{cliPrompt.path}</span>
                   <span class="spacer"></span>
                   <button class="ns-btn ghost small" onclick={() => copy(CLI_PROMPT, cliPrompt?.sections.join("\n\n"))}>
                     {copied === CLI_PROMPT ? "Copied" : "Copy"}
@@ -884,7 +885,7 @@
                 checked={!isOff}
                 disabled={switching || railOff || app.busy || app.connecting}
                 aria-label={`${layer.label} for this chat`}
-                title={isOff
+                use:tip={isOff
                   ? "Off for this chat — switch on to send it again"
                   : "On — switch off to keep it from this chat"}
                 onchange={(e) => void flip(layer.kind, (e.currentTarget as HTMLInputElement).checked)}
@@ -905,7 +906,7 @@
                 <button
                   class="ns-btn ghost small"
                   disabled={locked || railOff}
-                  title={isEdited
+                  use:tip={isEdited
                     ? "Change this chat's own text for the layer"
                     : "Give this chat its own text for this layer — the file is untouched"}
                   onclick={() => void beginEdit(layer.kind as EditableLayer)}
@@ -917,7 +918,7 @@
               {#if canRead && segs.length > 0}
                 <span class="meta">{layerSize(segs)}</span>
                 {#if segs.some((s) => s.cache_anchor)}
-                  <span class="anchor" title="Cached prefix ends here">⚑</span>
+                  <span class="anchor" use:tip={"Cached prefix ends here"}>⚑</span>
                 {/if}
               {/if}
               {#if canRead && !isEditing}
@@ -941,7 +942,7 @@
                 <button
                   class="ns-btn ghost small"
                   disabled={locked}
-                  title="Drop this chat's text; the layer reads the file again"
+                  use:tip={"Drop this chat's text; the layer reads the file again"}
                   onclick={() => void revert(layer.kind as EditableLayer)}
                 >
                   <Icon name="revert" size={12} />
@@ -950,7 +951,7 @@
                 <button
                   class="ns-btn ghost small"
                   disabled={locked}
-                  title="Open the file's editor with this text as a draft — nothing is written until you save there"
+                  use:tip={"Open the file's editor with this text as a draft — nothing is written until you save there"}
                   onclick={() => promote(layer.kind as EditableLayer)}
                 >
                   <Icon name="ext" size={12} />
@@ -983,10 +984,10 @@
                 <div class="body">
                   <div class="body-bar">
                     {#if segs.length > 1}
-                      <span class="file" title={seg.name}>{seg.name}</span>
+                      <span class="file" use:tip={seg.name}>{seg.name}</span>
                       <span class="meta">{sizeLabel(seg.size)}</span>
                     {:else}
-                      <span class="file" title={seg.name}>{seg.name}</span>
+                      <span class="file" use:tip={seg.name}>{seg.name}</span>
                     {/if}
                     <span class="spacer"></span>
                     <button class="ns-btn ghost small" onclick={() => copy(seg.name, seg.text)}>
@@ -1015,7 +1016,7 @@
               <span class="spacer"></span>
               <span class="meta">{sizeLabel(seg.size)}</span>
               {#if seg.cache_anchor}
-                <span class="anchor" title="Cached prefix ends here">⚑</span>
+                <span class="anchor" use:tip={"Cached prefix ends here"}>⚑</span>
               {/if}
               <button
                 class="ns-btn small read"
@@ -1057,7 +1058,7 @@
                 checked={!cliMemoryOff}
                 disabled={switching || app.busy || app.connecting}
                 aria-label="Claude Code memory for this chat"
-                title={cliMemoryOff
+                use:tip={cliMemoryOff
                   ? "Off for this chat — the CLI is started with autoMemoryEnabled false; switch on to let it read its memory again"
                   : "On — the CLI reads its own memory for this folder; switch off to keep it from this chat"}
                 onchange={(e) => void flip(CLI_MEMORY, (e.currentTarget as HTMLInputElement).checked)}
@@ -1078,7 +1079,7 @@
               <span class="spacer"></span>
               {#if !cliMemoryOff && hasFile}
                 {@const share = windowShare(cliMemoryTokens)}
-                <span class="meta lbar" title="Estimated at four characters a token; {(cliMemory?.text ?? "").length.toLocaleString()} characters{share !== null ? ` — ${(share * 100).toFixed(1)}% of the window` : ""}">
+                <span class="meta lbar" use:tip={`Estimated at four characters a token; ${(cliMemory?.text ?? "").length.toLocaleString()} characters${share !== null ? ` — ${(share * 100).toFixed(1)}% of the window` : ""}`}>
                   <span>{fmtTokens(cliMemoryTokens)}</span>
                   {#if share !== null}
                     <span class="sb" aria-hidden="true"><i style:width="{share * 100}%"></i></span>
@@ -1099,7 +1100,7 @@
             {#if !cliMemoryOff && isOpen && cliMemory}
               <div class="body">
                 <div class="body-bar">
-                  <span class="file" title={cliMemory.path}>{cliMemory.path}</span>
+                  <span class="file" use:tip={cliMemory.path}>{cliMemory.path}</span>
                   <span class="spacer"></span>
                   <button class="ns-btn ghost small" onclick={() => copy(CLI_MEMORY, cliMemory?.text)}>
                     {copied === CLI_MEMORY ? "Copied" : "Copy"}
@@ -1137,7 +1138,7 @@
             <button
               class="ns-btn ghost small"
               disabled={working}
-              title={EDIT_NOTE}
+              use:tip={EDIT_NOTE}
               onclick={() => edit(elided, false)}
             >
               Restore {elided.length} removed
@@ -1145,7 +1146,7 @@
           {/if}
           <span
             class="total"
-            title={t.unestimated > 0
+            use:tip={t.unestimated > 0
               ? `${TOTAL_NOTE}\n\n${t.unestimated} item${t.unestimated === 1 ? "" : "s"} (images) cannot be estimated at all, so the total is a floor.`
               : TOTAL_NOTE}
           >
@@ -1225,7 +1226,7 @@
               <li
                 class="row"
                 class:elided={b.elided}
-                title={b.preview + (b.truncated ? "…" : "")}
+                use:tip={b.preview + (b.truncated ? "…" : "")}
               >
                 <div class="line">
                   <span class="size">{sizeLabel(b.size)}</span>
@@ -1235,7 +1236,7 @@
                     <button
                       class="act"
                       disabled={working || app.busy}
-                      title={EDIT_NOTE}
+                      use:tip={EDIT_NOTE}
                       onclick={() => edit([indexOf(b)!], !b.elided)}
                     >
                       {b.elided ? "↺" : "✕"}

@@ -211,7 +211,7 @@ const wikilink: TokenizerAndRendererExtension = {
     // to show rather than an error.
     const cls = found.kind === "note" ? "wikilink" : "wikilink broken";
     const title = linkTitle(target, found);
-    return `<a class="${cls}" href="${linkHref(target)}" title="${escapeHtml(title)}">${label}</a>`;
+    return `<a class="${cls}" href="${linkHref(target)}" data-tip="${escapeHtml(title)}">${label}</a>`;
   },
 };
 

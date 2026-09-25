@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tip";
   import {
     app,
     applyDraft,
@@ -446,10 +447,10 @@
   <div class="row mi">
     <span class="lbl">Instructions</span>
     {#if instructModel}
-      <span class="mi-id" title={instructModel}>{instructModel}</span>
+      <span class="mi-id" use:tip={instructModel}>{instructModel}</span>
       <button
         class="icon"
-        title={`Instructions for ${instructModel} only — ~/.nightloom/models/`}
+        use:tip={`Instructions for ${instructModel} only — ~/.nightloom/models/`}
         aria-label={`Instructions for ${instructModel}`}
         disabled={locked}
         onclick={() => openModelInstructions(instructModel!, "rail")}><Icon name="pencil" size={13} /></button
@@ -557,7 +558,7 @@
     <p class="kind-line kind-note">A Chat over a Claude Code chat: the folder and the tool list stay, the writers are refused when called.</p>
   {/if}
 
-  <div class="status" title={app.connection?.workspace ?? ""}>
+  <div class="status" use:tip={app.connection?.workspace ?? ""}>
     {#if app.connecting}
       <span class="dot pending"></span><span class="dim">connecting…</span>
     {:else if app.connection}
@@ -597,7 +598,7 @@
           role="radio"
           aria-checked={app.draft.agentModel.trim() === "" && !agentOther}
           disabled={locked}
-          title="Whatever the CLI defaults to"
+          use:tip={"Whatever the CLI defaults to"}
           onclick={() => pickAgentModel("")}
         >
           default
@@ -610,7 +611,7 @@
             role="radio"
             aria-checked={app.draft.agentModel.trim() === a && !agentOther}
             disabled={locked}
-            title={cap ? `${a} — ${cap}` : a}
+            use:tip={cap ? `${a} — ${cap}` : a}
             onclick={() => pickAgentModel(a)}
           >
             {a}
@@ -623,7 +624,7 @@
           role="radio"
           aria-checked={showAgentField}
           disabled={locked}
-          title="A full model id, typed"
+          use:tip={"A full model id, typed"}
           onclick={() => (agentOther = true)}
         >
           other…
@@ -661,7 +662,7 @@
             role="radio"
             aria-checked={p.kind === app.draft.provider}
             disabled={locked || !usable(p)}
-            title={usable(p)
+            use:tip={usable(p)
               ? `${providerLabel(p.kind)}${i < 9 ? ` — ${mod}${i + 1}` : ""}`
               : `${providerLabel(p.kind)} — no key; add one in Settings`}
             onclick={() => pickProvider(p.kind)}
@@ -699,7 +700,7 @@
               role="radio"
               aria-checked={m === app.draft.model}
               disabled={locked}
-              title={m}
+              use:tip={m}
               onclick={() => pickModel(m)}
             >
               <span class="rad"></span>
@@ -757,7 +758,7 @@
             role="radio"
             aria-checked={c.value === app.draft.thinkingMode}
             disabled={locked}
-            title={c.label}
+            use:tip={c.label}
             onclick={() => pickThinking(c.value)}
           >
             {seg(c.label)}
@@ -834,7 +835,7 @@
               role="radio"
               aria-checked={c.value === approvalPosition}
               disabled={locked}
-              title={c.title}
+              use:tip={c.title}
               onclick={() => pickApproval(c.value)}
             >
               {c.label}
@@ -961,7 +962,7 @@
               role="radio"
               aria-checked={e === app.draft.agentEffort}
               disabled={locked}
-              title={e
+              use:tip={e
                 ? `--effort ${e}`
                 : effortDefaultText === "?"
                   ? "no --effort flag; the model's own default, which the docs do not name for this model"
@@ -993,7 +994,7 @@
             role="radio"
             aria-checked={app.draft.agentFallback.trim() === ""}
             disabled={locked}
-            title="No fallback"
+            use:tip={"No fallback"}
             onclick={() => pickFallback("")}
           >
             none
@@ -1005,7 +1006,7 @@
               role="radio"
               aria-checked={app.draft.agentFallback.trim() === a}
               disabled={locked}
-              title="--fallback-model {a}"
+              use:tip={`--fallback-model ${a}`}
               onclick={() => pickFallback(a)}
             >
               {a}
@@ -1120,7 +1121,7 @@
           {#if isChat}
             <!-- A Chat has no folder (backlog 102): the neutral directory,
                  stated rather than offered as a field. -->
-            <span class="path locked dim-path" title={workspaceTitle}>no folder — a Chat runs in a neutral, empty directory</span>
+            <span class="path locked dim-path" use:tip={workspaceTitle}>no folder — a Chat runs in a neutral, empty directory</span>
           {:else}
             {#if app.project}<span class="lock"><Icon name="lock" size={12} /></span>{/if}
             <input
@@ -1136,7 +1137,7 @@
               }}
               onchange={apply}
               placeholder="launch folder"
-              title={workspaceTitle}
+              use:tip={workspaceTitle}
               disabled={locked || !!app.project}
               readonly={!!app.project}
             />
@@ -1152,13 +1153,13 @@
         <span class="lbl">Folders</span>
         <div class="fold-list">
           {#each folders as f (f.path)}
-            <div class="fold-item" title={f.alias ? `${f.alias}/… reaches ${f.path}` : f.path}>
+            <div class="fold-item" use:tip={f.alias ? `${f.alias}/… reaches ${f.path}` : f.path}>
               {#if f.alias}<code class="fold-alias">{f.alias}</code>{/if}
               <span class="fold-path">{f.path}</span>
               <span class="fold-src">{f.source === "project" ? "project" : "this chat"}</span>
               <button
                 class="fold-x"
-                title={f.source === "project" ? "Stop granting this folder to the project's chats" : "Stop granting this folder to this chat"}
+                use:tip={f.source === "project" ? "Stop granting this folder to the project's chats" : "Stop granting this folder to this chat"}
                 aria-label="Remove {f.path}"
                 disabled={locked}
                 onclick={() => void removeFolder(f.path, f.source)}
@@ -1170,10 +1171,10 @@
           {#each refused as r (r)}
             <!-- A folder the model was refused a read in last turn (backlog
                  143, pass 2): offered for the grant after the fact. -->
-            <div class="fold-item fold-refused" title="The model tried to read here last turn and was refused: it is outside every folder this chat can see. Grant it and ask again.">
+            <div class="fold-item fold-refused" use:tip={"The model tried to read here last turn and was refused: it is outside every folder this chat can see. Grant it and ask again."}>
               <span class="fold-path">{r}</span>
               <span class="fold-src">refused</span>
-              <button class="fold-x" title="Forget this" aria-label="Dismiss {r}" onclick={() => dismissRefused(r)}>×</button>
+              <button class="fold-x" use:tip={"Forget this"} aria-label="Dismiss {r}" onclick={() => dismissRefused(r)}>×</button>
             </div>
             <div class="fold-add">
               <button class="ns-btn" disabled={locked} onclick={() => void grantRefused(r, "chat")}>Allow for this chat</button>
@@ -1201,7 +1202,7 @@
                 <span
                   class="chip"
                   class:failed={server.error !== null}
-                  title={server.error ??
+                  use:tip={server.error ??
                     `${server.tools} tool${server.tools === 1 ? "" : "s"} — MCP tools always ask before running.`}
                 >
                   {server.name}
@@ -1212,7 +1213,7 @@
             {#if app.connection && app.draft.web}
               <span
                 class="chip"
-                title="Read a URL. It cannot run JavaScript, so a page built in the browser comes back empty."
+                use:tip={"Read a URL. It cannot run JavaScript, so a page built in the browser comes back empty."}
               >
                 web_fetch
               </span>
@@ -1222,7 +1223,7 @@
                      so all of them can see a query and all of them are named. -->
                 <span
                   class="chip"
-                  title="Queries are sent to {app.connection.search}, in that order — the next one only if the one before it cannot answer."
+                  use:tip={`Queries are sent to ${app.connection.search}, in that order — the next one only if the one before it cannot answer.`}
                 >
                   web_search <b>{app.connection.search}</b>
                 </span>
@@ -1235,7 +1236,7 @@
                 {#each app.connection.reviewers as reviewer (reviewer.name)}
                   <span
                     class="chip"
-                    title="{reviewer.model} — a second opinion on a document. It reads the file and this workspace, never this conversation."
+                    use:tip={`${reviewer.model} — a second opinion on a document. It reads the file and this workspace, never this conversation.`}
                   >
                     review <b>{reviewer.name}</b>
                   </span>
@@ -1264,7 +1265,7 @@
           void usePrompt(v || null);
         }}
         disabled={locked}
-        title={app.draft.system ||
+        use:tip={app.draft.system ||
           (agentMode
             ? "Appended to Claude Code's own system prompt."
             : "No system prompt beyond the preamble.")}
@@ -1279,7 +1280,7 @@
       </select>
       <button
         class="icon"
-        title="Saved system prompts"
+        use:tip={"Saved system prompts"}
         aria-label="Saved system prompts"
         onclick={openPrompts}><Icon name="pencil" size={13} /></button
       >
@@ -1299,7 +1300,7 @@
           onchange={apply}
           placeholder="claude"
           disabled={locked}
-          title={agent?.version ? `${agent.binary} — ${agent.version}` : ""}
+          use:tip={agent?.version ? `${agent.binary} — ${agent.version}` : ""}
         />
         <Hint
           text="The Claude Code CLI to run. Left empty, `claude` is looked for on PATH and then in the usual install locations (~/.local/bin, /opt/homebrew/bin, /usr/local/bin). Give an absolute path if it lives somewhere else."
@@ -1335,7 +1336,7 @@
       {#if app.agentTurn.cost_usd != null}
         <p
           class="note"
-          title="What the same turn would have cost on the API. Under a subscription it is not charged — which is the only reading of this number that is true."
+          use:tip={"What the same turn would have cost on the API. Under a subscription it is not charged — which is the only reading of this number that is true."}
         >
           ≈ ${app.agentTurn.cost_usd.toFixed(4)} on the API — <span class="ok">not charged</span>
         </p>

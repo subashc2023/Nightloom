@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tip";
   // Every Copy button goes through the in-app clipboard ring (backlog 173).
   import { copyText } from "./clipRing.svelte";
   import type { Segment } from "./state.svelte";
@@ -439,7 +440,7 @@
           {@const icon = toolIcon(c.call.name)}
           <div class="arow static" class:error={!!c.call.result?.is_error}>
             <span class="ico">{#if icon}<Icon name={icon} size={13} />{:else}⚒{/if}</span>
-            <span class="name" title={c.call.name}>{shortToolName(c.call.name)}</span>
+            <span class="name" use:tip={c.call.name}>{shortToolName(c.call.name)}</span>
             <span class="arg">{toolInputSummary(c.call.input)}</span>
             <span class="size">{toolResultSummary(c.call, streaming)}</span>
           </div>
@@ -484,7 +485,7 @@
         <button
           class="fold"
           aria-expanded={!folded}
-          title={folded ? "Show the calls" : "Fold to one line"}
+          use:tip={folded ? "Show the calls" : "Fold to one line"}
           onpointerdown={(e) => pressFold(e, g.key)}
           onclick={(e) => keyFold(e, g.key)}
         >
@@ -499,7 +500,7 @@
                      097): a fact in the dim style, no pointer, nothing to
                      open — a button here did nothing, which is what he
                      saw. -->
-                <div class="arow static thinking hidden wide" title={HIDDEN_THINKING_TITLE}>
+                <div class="arow static thinking hidden wide" use:tip={HIDDEN_THINKING_TITLE}>
                   <span class="ico"><Icon name="think" size={13} /></span>
                   <span class="name">thought · hidden by the model</span>
                   <span class="size"></span>
@@ -518,7 +519,7 @@
                     class="arow thinking"
                     class:wide={!summary}
                     aria-expanded={isOpen(i, seg)}
-                    title={isOpen(i, seg) ? "Hide the thinking" : "Show the thinking"}
+                    use:tip={isOpen(i, seg) ? "Hide the thinking" : "Show the thinking"}
                     onpointerdown={(e) => press(e, i, seg)}
                     onclick={(e) => keyClick(e, i, seg)}
                   >
@@ -554,7 +555,7 @@
                   class:error={bad}
                   class:agent-drag={!!agentTab}
                   aria-expanded={open}
-                  title={agentTab
+                  use:tip={agentTab
                     ? `${open ? "Collapse to one line" : "Expand this call"} — drag onto a tab strip to open the agent's transcript as a tab`
                     : open
                       ? "Collapse to one line"
@@ -566,9 +567,9 @@
                   onclick={(e) => keyClick(e, i, seg)}
                 >
                   <span class="ico">{#if icon}<Icon name={icon} size={13} />{:else}⚒{/if}</span>
-                  <span class="name" title={seg.call.name}>{shortToolName(seg.call.name)}</span>
+                  <span class="name" use:tip={seg.call.name}>{shortToolName(seg.call.name)}</span>
                   <span class="arg">{toolInputSummary(seg.call.input)}</span>
-                  <span class="size" title={agentRow ? `${seg.call.name} call · ${toolResultSummary(seg.call, streaming)}` : undefined}
+                  <span class="size" use:tip={agentRow ? `${seg.call.name} call · ${toolResultSummary(seg.call, streaming)}` : undefined}
                     >{agentRow ? agentRowLine(agentRow) : toolResultSummary(seg.call, streaming)}</span
                   >
                 </button>
@@ -611,13 +612,13 @@
                   <span
                     class="block-tools"
                     class:two={!!agentTab && !!onremove && seg.block != null}
-                    title={onremove && seg.block != null ? controlsTitle : ""}
+                    use:tip={onremove && seg.block != null ? controlsTitle : ""}
                   >
                     {#if agentTab}
                       <!-- *Open as tab* (backlog 160): the drag's click. -->
                       <button
                         class="tool-btn"
-                        title="Open this agent's transcript as a tab"
+                        use:tip={"Open this agent's transcript as a tab"}
                         aria-label="Open this agent's transcript as a tab"
                         onclick={() => void openContent(agentTab)}
                       >
@@ -627,7 +628,7 @@
                     {#if onremove && seg.block != null}
                       <button
                         class="tool-btn"
-                        title="Remove this tool call and its result from the context. Both stay in the log; Restore is on the placeholder."
+                        use:tip={"Remove this tool call and its result from the context. Both stay in the log; Restore is on the placeholder."}
                         aria-label="Remove this tool call and its result from the context"
                         onclick={() => onremove?.(seg.block!)}
                       >
@@ -700,7 +701,7 @@
         {#if onrestore}
           <button
             class="tool-btn"
-            title="Restore to the context"
+            use:tip={"Restore to the context"}
             aria-label="Restore to the context"
             onclick={() => onrestore?.(seg.block)}
           >
@@ -725,24 +726,24 @@
          card — extension badge, path, size, Open, Reveal. -->
     <div class="cards">
       {#each links as l (l.url)}
-        <div class="card link" title={l.url}>
+        <div class="card link" use:tip={l.url}>
           <span class="card-ico"><Icon name="link" size={14} /></span>
           <span class="card-text">
             <span class="card-title">{l.title}</span>
             <span class="card-sub">{l.url.replace(/^https?:\/\//, "")}</span>
           </span>
-          <button class="ns-btn ghost small" title="Open in the browser" onclick={() => void openLink(l.url)}>Open <Icon name="ext" size={11} /></button>
+          <button class="ns-btn ghost small" use:tip={"Open in the browser"} onclick={() => void openLink(l.url)}>Open <Icon name="ext" size={11} /></button>
         </div>
       {/each}
       {#each files as f (f.path)}
-        <div class="card file" title={f.path}>
+        <div class="card file" use:tip={f.path}>
           <span class="card-ext">{extOf(f.path)}</span>
           <span class="card-text">
             <span class="card-title mono">{f.label}</span>
           </span>
           <span class="card-size">{fmtSize(f.size)}</span>
-          <button class="ns-btn ghost small" title="Open as a tab here — ⌘-click opens it with its application" onclick={(e) => void openFile(f.path, e)}>Open</button>
-          <button class="ns-btn ghost small" title="Show in the file manager" onclick={() => void revealFile(f.path)}>Reveal</button>
+          <button class="ns-btn ghost small" use:tip={"Open as a tab here — ⌘-click opens it with its application"} onclick={(e) => void openFile(f.path, e)}>Open</button>
+          <button class="ns-btn ghost small" use:tip={"Show in the file manager"} onclick={() => void revealFile(f.path)}>Reveal</button>
         </div>
       {/each}
     </div>
@@ -751,7 +752,7 @@
     {@const share = size ? shareOf(size.tokens, limit) : null}
     <div class="footer">
       <button class="ns-btn ghost small" onclick={() => void copy()}>{copied ? "Copied" : "Copy"}</button>
-      <span class="meta" title={footerTitle(footer, size)}>{fmtFigure(footer.usage, size)}{fmtCost(footer.cost)}</span>
+      <span class="meta" use:tip={footerTitle(footer, size)}>{fmtFigure(footer.usage, size)}{fmtCost(footer.cost)}</span>
       {#if footer.stop_reason?.startsWith("error: ")}
         <!-- Why the reply stopped (backlog 202): the API error the CLI
              ended it with, as the log recorded it. -->
@@ -760,7 +761,7 @@
       {#if fmtShare(share)}
         <!-- The reply's share of the window (backlog 090), the gauge's bar
              scaled to it, once the reply is worth a bar. -->
-        <span class="meta share" title={size ? sizeTitle(size, "assistant", limit) : ""}>
+        <span class="meta share" use:tip={size ? sizeTitle(size, "assistant", limit) : ""}>
           <span class="share-bar" aria-hidden="true"><span class="share-fill" style:width="{(share ?? 0) * 100}%"></span></span>
           {fmtShare(share)}
         </span>
@@ -768,18 +769,18 @@
       {#if footer.at}
         <!-- When the reply landed (backlog 123): in words, the exact
              moment on hover, as Claude Code's footer does. -->
-        <span class="meta when" title={exactTime(footer.at)}>{relativeTimeLong(footer.at, clock)}</span>
+        <span class="meta when" use:tip={exactTime(footer.at)}>{relativeTimeLong(footer.at, clock)}</span>
       {/if}
       {#if onedit || onremoveturn}
         <!-- The turn's own controls on the same row (backlog 121): they
              were a row of their own under the footer, three rows per
              message in a run of one-call replies. Hidden until the reply
              is hovered, as the transcript's tool rows are. -->
-        <span class="footer-tools" title={controlsTitle}>
+        <span class="footer-tools" use:tip={controlsTitle}>
           {#if onedit}
             <button
               class="tool-btn"
-              title="Edit this reply in place; the original stays in the log"
+              use:tip={"Edit this reply in place; the original stays in the log"}
               aria-label="Edit this reply"
               onclick={() => onedit?.()}
             >
@@ -789,7 +790,7 @@
           {#if onremoveturn}
             <button
               class="tool-btn"
-              title="Remove this reply from the context. Its tool calls stay; it stays in the log."
+              use:tip={"Remove this reply from the context. Its tool calls stay; it stays in the log."}
               aria-label="Remove this reply from the context"
               onclick={() => onremoveturn?.()}
             >
