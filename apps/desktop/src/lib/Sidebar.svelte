@@ -97,6 +97,36 @@
     return tabs.allTabs(app.tabs).some((t) => t.content.kind === "chat" && t.content.session === id);
   }
 
+  /**
+   * A chat row's right-click menu (backlog 099's leftover, board 9a):
+   * Open · Open in a new tab (⌘-click) · Open beside (drag) · Rename ·
+   * Delete…. The board's *Fork* is not here: only the open chat forks, at
+   * a turn, and a whole-chat fork from a row needs the backend (blocker
+   * 380). Each item does what the row's own gesture does.
+   */
+  let rowMenu = $state<{ s: SessionMeta; x: number; y: number } | null>(null);
+  function openRowMenu(e: MouseEvent, s: SessionMeta) {
+    e.preventDefault();
+    rowMenu = { s, x: e.clientX, y: e.clientY };
+  }
+  function rowOpen(how: "replace" | "new" | "beside") {
+    const s = rowMenu?.s;
+    rowMenu = null;
+    if (!s) return;
+    app.openNext = how;
+    void openSession(s.id);
+  }
+  function rowRename() {
+    const s = rowMenu?.s;
+    rowMenu = null;
+    if (s) startRename(s.id, s.title ?? s.first_user ?? "");
+  }
+  function rowDelete() {
+    const s = rowMenu?.s;
+    rowMenu = null;
+    if (s) deleting = s;
+  }
+
   let renaming = $state<string | null>(null);
   let draft = $state("");
 
@@ -498,6 +528,7 @@
                 }}
                 ondblclick={() =>
                   startRename(s.id, s.title ?? s.first_user ?? "")}
+                oncontextmenu={(e) => openRowMenu(e, s)}
                 draggable="true"
                 ondragstart={(e) => startContentDrag(e, { kind: "chat", session: s.id })}
                 ondragend={endContentDrag}
@@ -533,6 +564,17 @@
           </div>
         {/each}
       </div>
+      {#if rowMenu}
+        <button class="scrim" aria-label="Close" onclick={() => (rowMenu = null)} oncontextmenu={(e) => { e.preventDefault(); rowMenu = null; }}></button>
+        <div class="row-menu" role="menu" style:left="{rowMenu.x}px" style:top="{rowMenu.y}px">
+          <button role="menuitem" onclick={() => rowOpen("replace")}>Open</button>
+          <button role="menuitem" onclick={() => rowOpen("new")}>Open in a new tab <span class="row-key">{mod}-click</span></button>
+          <button role="menuitem" onclick={() => rowOpen("beside")}>Open beside <span class="row-key">drag</span></button>
+          <div class="row-sep"></div>
+          <button role="menuitem" onclick={rowRename}>Rename</button>
+          <button role="menuitem" disabled={app.busy} onclick={rowDelete}>Delete…</button>
+        </div>
+      {/if}
     {/if}
   {:else if app.leftTab === "notes"}
     <NotesPanel />
@@ -750,6 +792,51 @@
     background: transparent;
     border: none;
     cursor: default;
+  }
+  /* A chat row's right-click menu (backlog 099, board 9a) — the tab
+     strip's menu, in the same shape. */
+  .row-menu {
+    position: fixed;
+    z-index: 36;
+    display: flex;
+    flex-direction: column;
+    min-width: 200px;
+    padding: 4px;
+    background: var(--sheet);
+    border: 1px solid var(--line2);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  }
+  .row-menu button {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    text-align: left;
+    background: transparent;
+    border: none;
+    border-radius: 5px;
+    color: var(--ink2);
+    font: inherit;
+    font-size: 12.5px;
+    padding: 6px 10px;
+    cursor: pointer;
+  }
+  .row-menu button:hover:not(:disabled) {
+    background: var(--well);
+    color: var(--ink);
+  }
+  .row-menu button:disabled {
+    color: var(--dim);
+    cursor: default;
+  }
+  .row-key {
+    color: var(--dim);
+    font-size: 11.5px;
+  }
+  .row-sep {
+    height: 1px;
+    margin: 4px 6px;
+    background: var(--line);
   }
   /* The three modes, as rows. */
   .nav {

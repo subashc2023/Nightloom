@@ -478,14 +478,48 @@ export function step(ws: Workspace, dir: 1 | -1): Tab | null {
 }
 
 /**
+ * Whether dropping `tabId` at `index` in its own pane's strip leaves it
+ * where it is — the slot before it or the one after it (nightshift backlog
+ * 195: a drag that ends in its own slot is nothing, not a click).
+ */
+export function isOwnSlot(ws: Workspace, tabId: string, paneId: string, index: number): boolean {
+  const from = paneOf(ws, tabId);
+  if (!from || from.id !== paneId) return false;
+  const at = from.tabs.findIndex((t) => t.id === tabId);
+  return index === at || index === at + 1;
+}
+
+/**
+ * Reorder a tab within its own strip to `index` (counted in the list as it
+ * stands, the tab still in it). A reorder is not a click (backlog 195): the
+ * pane's active tab and the focused pane stay as they were, whichever tab
+ * moved. Returns false when nothing moved — a drop in its own slot.
+ */
+export function reorder(ws: Workspace, tabId: string, index: number): boolean {
+  const pane = paneOf(ws, tabId);
+  if (!pane || isOwnSlot(ws, tabId, pane.id, index)) return false;
+  const at = pane.tabs.findIndex((t) => t.id === tabId);
+  const [tab] = pane.tabs.splice(at, 1);
+  const dest = index > at ? index - 1 : index;
+  pane.tabs.splice(Math.max(0, Math.min(dest, pane.tabs.length)), 0, tab);
+  return true;
+}
+
+/**
  * Move a tab to `index` in `toPane` — a reorder within its strip or a move
  * into the other pane's. A pane emptied by the move goes (the mover's tab
  * was its last). Returns false when nothing moved.
+ *
+ * Within its own strip this is `reorder` (backlog 195): a drop in its own
+ * slot moves nothing and returns false, and the active tab stays. Into the
+ * other pane the tab becomes that pane's active one and the focus follows
+ * it (guess pass 2026-09-25, question 10: yes).
  */
 export function move(ws: Workspace, tabId: string, toPaneId: string, index: number): boolean {
   const from = paneOf(ws, tabId);
   const to = paneById(ws, toPaneId);
   if (!from || !to) return false;
+  if (from === to) return reorder(ws, tabId, index);
   const at = from.tabs.findIndex((t) => t.id === tabId);
   const tab = from.tabs[at];
   from.tabs.splice(at, 1);
