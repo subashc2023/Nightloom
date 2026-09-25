@@ -1081,7 +1081,7 @@ fn import_project(
     // for the same reason, so a second import adds to it rather than making
     // "Unfiled chats" twice.
     let source = if project.uuid.is_empty() {
-        "claude:unfiled".to_string()
+        crate::project::UNFILED_SOURCE.to_string()
     } else {
         format!("claude:{}", project.uuid)
     };

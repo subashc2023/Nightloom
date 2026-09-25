@@ -4735,10 +4735,13 @@ export async function setProjectFolders(folders: string[]): Promise<void> {
  * The kind a New chat makes when nothing said otherwise (backlog 102's
  * definition of done): Claude Code in a project with a folder of its own,
  * Chat unfiled or in a project that has none — a folderless project is
- * notes and chats only, which is what a Chat is for.
+ * notes and chats only, which is what a Chat is for. The import's
+ * "Unfiled chats" holder counts as unfiled though the consolidation (114)
+ * gave it a folder — the walk of 2026-09-25 found Claude Code the default
+ * there.
  */
 export function defaultKind(): ChatKind {
-  return app.project?.root ? "build" : "chat";
+  return app.project?.root && !app.project.unfiled ? "build" : "chat";
 }
 
 /**
@@ -6715,6 +6718,23 @@ export function liveFlags(events: SessionEvent[]): boolean[] {
     for (let j = e.to; j < i; j++) live[j] = false;
   });
   return live;
+}
+
+/**
+ * The Claude Code session a chat's next turn continues, read off its own
+ * log: the latest live `agent_session` line — `Session::agent_session`
+ * and the backend's `resume_of`, mirrored. The engine rail names this
+ * (backlog 159, walk 2026-09-25): it named `connection.agent.resume`,
+ * which is the chat open when the connection was made, so chat B read
+ * "Continuing Claude Code session ece63fa7" — chat A's.
+ */
+export function chatAgentSession(events: SessionEvent[]): string | null {
+  const live = liveFlags(events);
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (live[i] && e.event === "agent_session" && e.agent === "claude-code") return e.id;
+  }
+  return null;
 }
 
 /**

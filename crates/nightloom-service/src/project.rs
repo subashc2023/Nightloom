@@ -214,7 +214,19 @@ impl Project {
             None => true,
         }
     }
+
+    /// Whether this is the holder a claude.ai import made for the chats that
+    /// belonged to no project — "Unfiled chats" (nightshift backlog 102).
+    /// Its chats are unfiled even though the folder consolidation (114) gave
+    /// it a folder, so a New chat in it is a Chat, not Claude Code. By
+    /// source, never by name: he may rename it.
+    pub fn is_unfiled_holder(&self) -> bool {
+        self.source.as_deref() == Some(UNFILED_SOURCE)
+    }
 }
+
+/// The `source` of the project a claude.ai import makes for its unfiled chats.
+pub const UNFILED_SOURCE: &str = "claude:unfiled";
 
 /// The named folders this user has, persisted in `~/.nightloom/projects.json`.
 ///
@@ -1792,6 +1804,27 @@ mod tests {
             path: None,
             projects,
         }
+    }
+
+    /// Backlog 102 (walk 2026-09-25): his "Unfiled chats" has a folder since
+    /// the consolidation, and a New chat in it came up Claude Code. It is
+    /// known by its import source — renamed or not — and no other is.
+    #[test]
+    fn the_unfiled_holder_is_known_by_its_source_not_its_folder_or_name() {
+        let at = "2026-08-21T21:25:38Z".parse::<DateTime<Utc>>().unwrap();
+        let holder = |name: &str, source: Option<&str>| Project {
+            id: new_id(),
+            name: name.into(),
+            workspace: Some(PathBuf::from("/tmp/projects/Unfiled-chats")),
+            source: source.map(str::to_string),
+            extra_folders: Vec::new(),
+            created: at,
+            last_opened: at,
+        };
+        assert!(holder("Unfiled chats", Some("claude:unfiled")).is_unfiled_holder());
+        assert!(holder("Loose ends", Some(UNFILED_SOURCE)).is_unfiled_holder());
+        assert!(!holder("Unfiled chats", None).is_unfiled_holder());
+        assert!(!holder("Value Generalization", Some("claude:0b1c")).is_unfiled_holder());
     }
 
     #[test]

@@ -3,6 +3,7 @@
     app,
     applyDraft,
     bornKind,
+    chatAgentSession,
     chatKind,
     currentModelId,
     declaredKind,
@@ -53,6 +54,10 @@
 
   const agentMode = $derived(app.draft.engine === "claude-code");
   const agent = $derived(app.connection?.agent ?? null);
+  // The open chat's own CLI session, off its log (backlog 159's label fix,
+  // 2026-09-25): `agent.resume` is the chat that was open at connect time.
+  // A chat not yet opened (a new chat) continues nothing.
+  const chatResume = $derived(app.activeSessionId ? chatAgentSession(app.events) : null);
 
   /**
    * The last turn's plan window, phrased. This is the only figure in an
@@ -574,8 +579,8 @@
         {:else}
           An API key in the environment will be used, and the API billed.
         {/if}
-        {#if agent.resume}
-          Continuing Claude Code session <code>{agent.resume.slice(0, 8)}</code>.
+        {#if chatResume}
+          Continuing Claude Code session <code>{chatResume.slice(0, 8)}</code>.
         {/if}
       </div>
     {/if}

@@ -143,6 +143,17 @@ export function tipTimer(opts: {
   };
 }
 
+/**
+ * The composer's Send tip (backlog 171; walk 2026-09-25 part 2: "no pill
+ * on the disabled Send" — the button had no tip at all). A disabled Send
+ * says why it is disabled; an enabled one says what it does and its key.
+ */
+export function sendTip(connected: boolean, empty: boolean): { text: string; keys?: string } {
+  if (!connected) return { text: "Nothing to send to yet — no model is connected" };
+  if (empty) return { text: "Type a message or attach a file to send", keys: "↵" };
+  return { text: "Send this message", keys: "↵" };
+}
+
 // When the last pill was hidden, shared across every anchor so the warm
 // run spans controls.
 let lastHidden = -Infinity;

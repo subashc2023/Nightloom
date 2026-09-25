@@ -102,6 +102,14 @@ pub struct Translator {
     /// Agent hook (backlog 165, `brief::USAGE_FILE`); `None` writes nothing.
     pub usage_sink: Option<std::path::PathBuf>,
     outcome: AgentOutcome,
+    /// The last character of the main thread's prose since its last call,
+    /// result or thought — `None` when the next text starts a block of its
+    /// own anyway (backlog 152).
+    prose_tail: Option<char>,
+    /// A new text block opened right after prose: its first delta is led
+    /// by a paragraph break, or the two run together in the transcript and
+    /// the log ("…notifies me.The agent said: hello", walk 2026-09-25).
+    text_break: bool,
 }
 
 /// A subagent's accounting, as the stream lets it be kept (2026-09-17,
@@ -208,6 +216,18 @@ impl SubagentLedger {
     }
 }
 
+/// What goes between prose ending in `tail` and a new text block starting
+/// with `next`, so they read as two paragraphs (backlog 152): nothing when
+/// the break is already there, one newline to finish it, else two.
+fn paragraph_break(tail: char, next: &str) -> String {
+    let starts_nl = next.starts_with('\n');
+    match (tail == '\n', starts_nl) {
+        (true, true) => String::new(),
+        (true, false) | (false, true) => "\n".to_string(),
+        (false, false) => "\n\n".to_string(),
+    }
+}
+
 impl Translator {
     pub fn new() -> Self {
         Self::default()
@@ -300,9 +320,29 @@ impl Translator {
 
     fn stream_event(&mut self, event: StreamEv) -> Vec<TurnEvent> {
         match event {
+            StreamEv::ContentBlockStart { content_block } => {
+                if content_block.kind == "text" && self.prose_tail.is_some() {
+                    self.text_break = true;
+                }
+                Vec::new()
+            }
             StreamEv::ContentBlockDelta { delta } => match delta {
-                Delta::Text { text } => vec![TurnEvent::TextDelta { text }],
-                Delta::Thinking { thinking } => vec![TurnEvent::ThinkingDelta { text: thinking }],
+                Delta::Text { text } => {
+                    if text.is_empty() {
+                        return vec![TurnEvent::TextDelta { text }];
+                    }
+                    let text = match (std::mem::take(&mut self.text_break), self.prose_tail) {
+                        (true, Some(tail)) => paragraph_break(tail, &text) + &text,
+                        _ => text,
+                    };
+                    self.prose_tail = text.chars().last();
+                    vec![TurnEvent::TextDelta { text }]
+                }
+                Delta::Thinking { thinking } => {
+                    self.prose_tail = None;
+                    self.text_break = false;
+                    vec![TurnEvent::ThinkingDelta { text: thinking }]
+                }
                 Delta::Other => Vec::new(),
             },
             // One per API call, so this is the round's accounting rather
@@ -383,6 +423,12 @@ impl Translator {
                 }
                 Block::Text { .. } | Block::Thinking { .. } | Block::Other => continue,
             };
+            // A main-thread call, result or withheld thought ends the prose
+            // run: the text after it is a block of its own already.
+            if nested.is_none() {
+                self.prose_tail = None;
+                self.text_break = false;
+            }
             out.push(match &nested {
                 Some(parent) => TurnEvent::Subagent {
                     parent_tool_use_id: parent.clone(),
@@ -730,6 +776,39 @@ mod tests {
         assert!(matches!(&events[0], TurnEvent::ThinkingDelta { text } if text == "The user is"));
         assert!(matches!(&events[1], TurnEvent::TextDelta { text } if text == "hello"));
         assert_eq!(events.len(), 2);
+    }
+
+    /// Backlog 152, walk 2026-09-25: a background subagent's report is a
+    /// second round's text straight after the first's, and the two ran
+    /// together — "…notifies me.The agent said: hello". A new text block
+    /// after prose opens a paragraph; after a call it needs none.
+    #[test]
+    fn a_text_block_after_prose_starts_a_new_paragraph() {
+        const START: &str = r#"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}"#;
+        const FIRST: &str = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"I'll report once it notifies me."}}}"#;
+        const SECOND: &str = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"The agent said: hello"}}}"#;
+        let (events, _) = drive(&[START, FIRST, START, SECOND]);
+        let text: String = events
+            .iter()
+            .filter_map(|e| match e {
+                TurnEvent::TextDelta { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            text,
+            "I'll report once it notifies me.\n\nThe agent said: hello"
+        );
+        // Deltas within one block are not split.
+        let (one, _) = drive(&[START, FIRST, SECOND]);
+        assert!(
+            matches!(&one[1], TurnEvent::TextDelta { text } if text == "The agent said: hello")
+        );
+        // The first block of a turn gets nothing in front of it.
+        assert!(matches!(&one[0], TurnEvent::TextDelta { text } if text.starts_with("I'll")));
+        assert_eq!(paragraph_break('\n', "x"), "\n");
+        assert_eq!(paragraph_break('\n', "\nx"), "");
+        assert_eq!(paragraph_break('.', "x"), "\n\n");
     }
 
     /// The same reply arrives twice — as deltas, then as a whole block on

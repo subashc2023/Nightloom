@@ -35,11 +35,13 @@ portable-pty = "0.9"
 base64 = "0.22"
 libc = "0.2"
 # The Refresh-now banner (nightshift backlog 116, blocker 169) needs its
-# click back, which the plugin's `show()` discards; this is the plugin's own
-# macOS backend, already in the lockfile, held synchronously for that one
-# banner. Nothing else posts through it.
+# click back, which the plugin's `show()` discards. ~~notify-rust~~ (to
+# 2026-09-25): its 4.18 `wait_for_action` no longer waits on a banner with no
+# buttons, so the click never came back. Now the crate under it,
+# mac-notification-sys, with `wait_for_click` — already in the lockfile.
+# Nothing else posts through it.
 [target.'cfg(target_os = "macos")'.dependencies]
-notify-rust = "4"
+mac-notification-sys = "0.6"
 # Web tabs' keys (backlog 172 pass 2): which page holds the first responder,
 # and Undo/Redo sent to it as AppKit actions. Already in the lockfile (tauri
 # and wry use it); two messages and a class lookup, no feature needed.

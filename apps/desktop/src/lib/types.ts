@@ -334,6 +334,10 @@ export interface ProjectInfo {
   /** The other folders the project's content lives in (nightshift backlog
    *  143), granted to every chat in it. Absent on an older shape. */
   extra_folders?: string[];
+  /** The claude.ai import's "Unfiled chats" holder, known by its source
+   *  (backlog 102): a New chat in it is a Chat though it has a folder.
+   *  Absent on an older shape. */
+  unfiled?: boolean;
 }
 
 /** One extra folder as the rail and the Context popover show it (backlog 143). */

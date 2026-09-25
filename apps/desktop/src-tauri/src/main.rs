@@ -266,6 +266,10 @@ struct ProjectInfo {
     /// The other folders the project's content lives in (nightshift backlog
     /// 143), granted to every chat in it; empty for most projects.
     extra_folders: Vec<String>,
+    /// The claude.ai import's holder for chats that had no project
+    /// (`Project::is_unfiled_holder`): a New chat in it is a Chat even though
+    /// it has a folder (nightshift backlog 102).
+    unfiled: bool,
 }
 
 impl ProjectInfo {
@@ -273,6 +277,7 @@ impl ProjectInfo {
         Self {
             id: project.id.clone(),
             name: project.name.clone(),
+            unfiled: project.is_unfiled_holder(),
             root: project
                 .workspace
                 .as_ref()
@@ -6400,8 +6405,9 @@ const USAGE_BANNER_CLICKED: &str = "usage-banner-clicked";
 /// when the usage collector he *asked* to run finishes — never for the
 /// six-hourly refresh — and, unlike `notify`, its click comes back. The
 /// plugin's `show()` drops the handle its macOS backend returns, so this
-/// posts through that backend itself (`notify-rust`, the crate the plugin
-/// already compiles): the same `NSUserNotificationCenter` delegate, the
+/// posts through that backend itself (`mac-notification-sys`, under the
+/// `notify-rust` the plugin already compiles; notify-rust itself until
+/// 2026-09-25): the same `NSUserNotificationCenter` delegate, the
 /// same banner, held synchronously on a thread of its own until it is
 /// clicked or cleared. A click brings the window forward and emits
 /// `usage-banner-clicked`; the frontend opens Settings on the Usage pane.
@@ -6421,29 +6427,33 @@ fn notify_usage_refreshed(app: AppHandle, title: String, body: String) -> Result
                 // opens a "Where is use_default?" chooser over his screen
                 // (seen 2026-09-17 on the first Refresh now). Set once; a
                 // second press gets AlreadySet, which is fine.
-                let _ = notify_rust::set_application("app.nightloom.desktop");
-                let handle = match notify_rust::Notification::new()
-                    .summary(&title)
-                    .body(&body)
-                    .show()
-                {
-                    Ok(h) => h,
-                    Err(_) => return,
-                };
-                handle.wait_for_action(|action| {
-                    if action != "default" {
-                        return;
-                    }
-                    // The window, not the webview window: once a web tab's
-                    // page is a child of it (backlog 172) tauri no longer
-                    // answers `get_webview_window` for it.
-                    if let Some(w) = app.get_window("main") {
-                        let _ = w.unminimize();
-                        let _ = w.show();
-                        let _ = w.set_focus();
-                    }
-                    let _ = app.emit(USAGE_BANNER_CLICKED, ());
-                });
+                let _ = mac_notification_sys::set_application("app.nightloom.desktop");
+                // `wait_for_click` is what makes the send block until the
+                // banner is clicked or cleared. notify-rust 4.18's
+                // `wait_for_action` sets no such flag, so for a banner with
+                // no buttons it returned at delivery and the click was lost
+                // (found 2026-09-25 reading mac-notification-sys 0.6.15's
+                // `needs_response`).
+                let clicked = matches!(
+                    mac_notification_sys::Notification::new()
+                        .title(&title)
+                        .message(&body)
+                        .wait_for_click(true)
+                        .send(),
+                    Ok(mac_notification_sys::NotificationResponse::Click)
+                );
+                if !clicked {
+                    return;
+                }
+                // The window, not the webview window: once a web tab's
+                // page is a child of it (backlog 172) tauri no longer
+                // answers `get_webview_window` for it.
+                if let Some(w) = app.get_window("main") {
+                    let _ = w.unminimize();
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
+                let _ = app.emit(USAGE_BANNER_CLICKED, ());
             })
             .map_err(|e| e.to_string())?;
         Ok(())
