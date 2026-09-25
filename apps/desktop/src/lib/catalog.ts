@@ -109,6 +109,25 @@ export function aliasOf(id: string): string | null {
   return MODEL_KEYS.find((k) => lower.includes(k.alias))?.alias ?? null;
 }
 
+/**
+ * What the composer's model chip names (backlog 204, 2026-09-25). On the
+ * Claude Code engine it is what he picked — the alias, or `default` for
+ * the CLI's own — never the connection's model: a turn's end writes the id
+ * the CLI resolved there (`claude-haiku-4-5-20251001`, which the context
+ * and thinking lookups need), and the chip showed that until the next
+ * reconnect. The resolved id stays in the chip's hover ("last turn ran").
+ * On the provider engine the connection's model, else the draft's.
+ */
+export function modelChipLabel(a: {
+  agentMode: boolean;
+  agentModel: string;
+  model: string;
+  connected: string | null | undefined;
+}): string {
+  if (a.agentMode) return a.agentModel.trim() || "default";
+  return a.connected || a.model.trim() || "model";
+}
+
 /** The first id in `models` that carries `alias`, or null. */
 export function modelForAlias(models: string[], alias: string): string | null {
   return models.find((m) => m.toLowerCase().includes(alias)) ?? null;

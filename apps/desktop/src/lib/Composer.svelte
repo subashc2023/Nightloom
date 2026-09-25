@@ -18,7 +18,7 @@
     switchModelAt,
     turnWasStopped,
   } from "./state.svelte";
-  import { AGENT_MODELS, MODEL_KEYS, thinkingSupport } from "./catalog";
+  import { AGENT_MODELS, MODEL_KEYS, modelChipLabel, thinkingSupport } from "./catalog";
   import { effortDefaultLabel } from "./effortDefaults";
   import { cacheLine, cacheState, nextTickMs, remainingText } from "./cache";
   import { HIDDEN_THINKING_TITLE, thinkingToggleDead } from "./activity";
@@ -965,10 +965,17 @@
     const k = MODEL_KEYS.find((m) => m.alias === alias);
     return k ? `${mod}${shift}${k.key}` : null;
   }
-  /** What the button names: the connection's model (the alias, or
-   *  `default` for the CLI's own), else the draft's while not connected. */
+  /** What the button names: ~~the connection's model (the alias, or
+   *  `default` for the CLI's own), else the draft's while not connected~~ —
+   *  on Claude Code the alias picked, never the id a turn's end resolved
+   *  (backlog 204, 2026-09-25; `modelChipLabel`). */
   const modelLabel = $derived(
-    app.connection?.model || (agentMode ? app.draft.agentModel.trim() || "default" : app.draft.model.trim() || "model"),
+    modelChipLabel({
+      agentMode,
+      agentModel: app.draft.agentModel,
+      model: app.draft.model,
+      connected: app.connection?.model,
+    }),
   );
   const modelTitle = $derived.by(() => {
     const ran = app.agentTurn?.model ? ` — last turn ran ${app.agentTurn.model}` : "";

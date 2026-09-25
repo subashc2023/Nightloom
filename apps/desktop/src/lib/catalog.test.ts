@@ -297,3 +297,24 @@ describe("the subagent limits (backlog 165)", () => {
     expect(readLimits({ per_turn: 6, concurrent: 20 })).toEqual({ ...DEFAULT_LIMITS, concurrent: 20 });
   });
 });
+
+// The composer's model chip (nightshift backlog 204): a turn's end writes
+// the CLI's resolved id into the connection; the chip keeps the alias.
+import { modelChipLabel } from "./catalog";
+
+describe("modelChipLabel (backlog 204)", () => {
+  it("names the alias on Claude Code after a turn resolved it to a full id", () => {
+    const chip = (agentModel: string, connected: string | null) =>
+      modelChipLabel({ agentMode: true, agentModel, model: "", connected });
+    expect(chip("haiku", "claude-haiku-4-5-20251001")).toBe("haiku");
+    expect(chip(" haiku ", "haiku")).toBe("haiku");
+    expect(chip("", "claude-sonnet-5-20260801")).toBe("default");
+    expect(chip("claude-opus-5-5", "claude-opus-5-5")).toBe("claude-opus-5-5");
+  });
+
+  it("names the connection's model on the provider engine, else the draft's", () => {
+    expect(modelChipLabel({ agentMode: false, agentModel: "", model: "gpt-x", connected: "gpt-x-2026" })).toBe("gpt-x-2026");
+    expect(modelChipLabel({ agentMode: false, agentModel: "", model: " gpt-x ", connected: null })).toBe("gpt-x");
+    expect(modelChipLabel({ agentMode: false, agentModel: "", model: "", connected: undefined })).toBe("model");
+  });
+});
