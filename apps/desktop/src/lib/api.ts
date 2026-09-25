@@ -237,6 +237,39 @@ export function cancelAside(seq: number): Promise<null> {
   return invoke("cancel_aside", { seq });
 }
 
+/** One rewrite's whole reply (nightshift backlog 151): the new note, the
+ *  end marker and the model's sentence, unsplit (`noteEdit.ts` splits). */
+export interface NoteEditResult {
+  reply: string;
+  interrupted: boolean;
+  cost_usd: number | null;
+  notices: string[];
+}
+
+/**
+ * Rewrite a note to fit what he says changed (nightshift backlog 151), on
+ * the Claude Code engine with no tools — the reply is the new text, and the
+ * window writes the note. Streams `note-edit-delta` events carrying `seq`.
+ */
+export function editNoteByPrompt(args: {
+  name: string;
+  text: string;
+  request: string;
+  strike: boolean;
+  today: string;
+  seq: number;
+  binary?: string;
+  model?: string;
+  safeMode?: boolean;
+}): Promise<NoteEditResult> {
+  return invoke("edit_note_by_prompt", args);
+}
+
+/** Stop rewrite `seq`; the note is untouched. */
+export function cancelNoteEdit(seq: number): Promise<null> {
+  return invoke("cancel_note_edit", { seq });
+}
+
 /** The search backends, with which has a key and which one answers. */
 export function searchBackends(): Promise<SearchBackendInfo[]> {
   return invoke("search_backends");
