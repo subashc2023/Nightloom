@@ -24,10 +24,18 @@
 //   with no text and no `aria-label` gets the tip as its `aria-label`, so
 //   a screen reader keeps the name the `title` gave it.
 //
-// Pass 2 (the codemod over every other `title=` and a lint) is a later
-// batch; this pass covers the top bar and the composer.
+// Pass 2 (2026-09-25): every other component's `title=` became `use:tip`
+// (a codemod; `tip.test.ts` fails on any native `title=` left in a
+// component). HTML the app builds as a string ({@html}: wiki links, a math
+// error, the note editor's formula widget) carries `data-tip=` instead,
+// and a document-level delegate (`installTipDelegate`) gives any element
+// with `data-tip` — or a stray native `title`, e.g. a markdown link's
+// `[a](url "title")` or KaTeX's error span — the same pill on first hover.
 
 export const TIP_DELAY_MS = 150;
+
+/** An element the pill can anchor to (an SVG mark as well as HTML). */
+export type TipAnchor = HTMLElement | SVGElement;
 export const TIP_WARM_MS = 300;
 const GAP = 6;
 const MARGIN = 8;
@@ -166,7 +174,7 @@ export function coolTips(): void {
 let pill: HTMLDivElement | null = null;
 let pillText: HTMLSpanElement | null = null;
 let pillKeys: HTMLSpanElement | null = null;
-let owner: HTMLElement | null = null;
+let owner: TipAnchor | null = null;
 let seq = 0;
 const PILL_ID = "nl-tip";
 
@@ -192,7 +200,7 @@ function fill(c: TipContent): void {
   pillKeys!.hidden = !c.keys;
 }
 
-function position(anchor: HTMLElement): void {
+function position(anchor: TipAnchor): void {
   const el = ensurePill();
   // Measured at the window's origin (a fixed box's fitted width depends on
   // the room to its right, so the last spot would skew it), then placed;
@@ -207,7 +215,7 @@ function position(anchor: HTMLElement): void {
 }
 
 /** Svelte action: Nightloom's tooltip on this element. */
-export function tip(node: HTMLElement, arg: TipArg): { update(arg: TipArg): void; destroy(): void } {
+export function tip(node: TipAnchor, arg: TipArg): { update(arg: TipArg): void; destroy(): void } {
   let c = content(arg);
   const id = ++seq;
   let labelled = false;
@@ -264,8 +272,8 @@ export function tip(node: HTMLElement, arg: TipArg): { update(arg: TipArg): void
   };
   const onBlur = () => timer.leave();
   const onDown = () => timer.dismiss();
-  const onKey = (e: KeyboardEvent) => {
-    if (e.key === "Escape" && timer.shown) timer.dismiss();
+  const onKey = (e: Event) => {
+    if ((e as KeyboardEvent).key === "Escape" && timer.shown) timer.dismiss();
   };
   const onRelease = () => timer.leave();
 
@@ -301,3 +309,56 @@ export function tip(node: HTMLElement, arg: TipArg): { update(arg: TipArg): void
     },
   };
 }
+
+/** Tags whose `title` names embedded content for a screen reader; WebKit
+ *  draws no tooltip over them that the delegate should replace. */
+const FRAME_TAGS = new Set(["IFRAME", "EMBED", "OBJECT"]);
+
+/**
+ * The element a pointer or focus at `target` should tip through the
+ * delegate: the nearest ancestor-or-self with `data-tip`, or with a native
+ * `title` (not a frame's). A stray `title` is moved to `data-tip` so the OS
+ * box never shows beside the pill. Null when there is nothing to tip or
+ * the element already has its delegated action.
+ */
+export function delegateTarget(target: EventTarget | null): TipAnchor | null {
+  const start = target as Element | null;
+  if (!start || typeof start.closest !== "function") return null;
+  const el = start.closest("[data-tip], [title]") as TipAnchor | null;
+  if (!el || FRAME_TAGS.has(el.tagName.toUpperCase()) || delegated.has(el)) return null;
+  const native = el.getAttribute("title");
+  if (native !== null) {
+    if (!el.hasAttribute("data-tip")) el.setAttribute("data-tip", native);
+    el.removeAttribute("title");
+  }
+  return el.getAttribute("data-tip") ? el : null;
+}
+
+const delegated = new WeakSet<Element>();
+let delegateInstalled = false;
+
+/**
+ * Once per document: hovering or focusing an element with `data-tip` (or a
+ * stray native `title`) attaches `tip` to it and replays the enter/focus,
+ * so string-built HTML gets the same pill as a component's `use:tip`.
+ */
+export function installTipDelegate(doc: Document = document): void {
+  if (delegateInstalled) return;
+  delegateInstalled = true;
+  const adopt = (e: Event, replay: string) => {
+    const el = delegateTarget(e.target);
+    if (!el) return;
+    delegated.add(el);
+    const action = tip(el, el.getAttribute("data-tip"));
+    // A later change to `data-tip` (a link re-resolved) follows.
+    new MutationObserver(() => action.update(el.getAttribute("data-tip"))).observe(el, {
+      attributes: true,
+      attributeFilter: ["data-tip"],
+    });
+    el.dispatchEvent(new Event(replay));
+  };
+  doc.addEventListener("pointerover", (e) => adopt(e, "pointerenter"), true);
+  doc.addEventListener("focusin", (e) => adopt(e, "focus"), true);
+}
+
+if (typeof document !== "undefined") installTipDelegate();

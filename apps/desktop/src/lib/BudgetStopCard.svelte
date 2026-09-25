@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tip";
   // The card at the 85 % stop line (nightshift backlog 189, 2026-09-22;
   // his answer to blocker 290: "There should be override for 290 if I'm
   // present"). Past the line every tool call is refused — unless he is in
@@ -61,13 +62,13 @@
       <button
         class="ns-btn accent"
         disabled={sending}
-        title="Lets this chat's calls run past the line while you are at the Mac; after 10 minutes away the stop applies again"
+        use:tip={"Lets this chat's calls run past the line while you are at the Mac; after 10 minutes away the stop applies again"}
         onclick={() => answer("continue")}>Continue anyway</button
       >
       <button
         class="ns-btn outline"
         disabled={sending}
-        title="The model finishes what is half-done, writes its hand-off, and stops"
+        use:tip={"The model finishes what is half-done, writes its hand-off, and stops"}
         onclick={() => answer("wrap")}>Wrap up</button
       >
       <button class="ns-btn outline" disabled={sending} onclick={() => answer("stop")}>Stop here</button>

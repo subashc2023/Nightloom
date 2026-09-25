@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tip";
   /**
    * Start → Plan a shift (3.7): the backlog with a checkbox per item on the
    * left (same order, same drag reorder as 3.6, via `BacklogList`); until,
@@ -227,8 +228,8 @@
       {#if plan}
         <span>{selectedCount} of {items.length} selected</span>
         <span class="spacer"></span>
-        <button class="ns-btn small" disabled={locked || selectedCount === items.length} title="Select every item" onclick={() => selectAll(true)}>All</button>
-        <button class="ns-btn small" disabled={locked || selectedCount === 0} title="Deselect every item" onclick={() => selectAll(false)}>None</button>
+        <button class="ns-btn small" disabled={locked || selectedCount === items.length} use:tip={"Select every item"} onclick={() => selectAll(true)}>All</button>
+        <button class="ns-btn small" disabled={locked || selectedCount === 0} use:tip={"Deselect every item"} onclick={() => selectAll(false)}>None</button>
       {/if}
     </div>
     <div class="scroll">
@@ -270,7 +271,7 @@
               class="ns-chip preset"
               class:on={startMode === "reset"}
               disabled={resetAtMs == null || resetIsPast}
-              title={resetAtMs == null ? "the usage probe has no reset time" : resetIsPast ? "the window has already reset" : `usage resets ${clockOf(resetAtMs - RESET_MARGIN_MS)}; launches two minutes after`}
+              use:tip={resetAtMs == null ? "the usage probe has no reset time" : resetIsPast ? "the window has already reset" : `usage resets ${clockOf(resetAtMs - RESET_MARGIN_MS)}; launches two minutes after`}
               onclick={() => pickStart("reset")}
             >when usage resets{#if resetAtMs != null && !resetIsPast} · {clockOf(resetAtMs - RESET_MARGIN_MS).replace(/^at /, "")}{/if}</button>
             <button type="button" role="radio" aria-checked={startMode === "at"} class="ns-chip preset" class:on={startMode === "at"} onclick={() => pickStart("at")}>at a time</button>
@@ -329,7 +330,7 @@
         <div class="line">until {plan.until ?? "unbounded"}</div>
         <div class="line">max {plan.max_units ?? "unbounded"} units · budget {plan.budget_usd != null ? `$${plan.budget_usd}` : "unbounded"}</div>
         {#if info?.dirty}
-          <div class="line dirty" title="The runner's preflight commits a dirty contract root as WIP before the first unit, and each unit's commit stages everything — a session editing the same tree during the shift has its half-work committed under the runner's name.">
+          <div class="line dirty" use:tip={"The runner's preflight commits a dirty contract root as WIP before the first unit, and each unit's commit stages everything — a session editing the same tree during the shift has its half-work committed under the runner's name."}>
             {info.dirty} uncommitted file{info.dirty === 1 ? "" : "s"} in the contract root will be committed as WIP when the shift starts
           </div>
         {/if}

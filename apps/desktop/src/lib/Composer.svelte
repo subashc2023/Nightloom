@@ -50,7 +50,7 @@
   import { draftEstimate, draftEstimateTitle, draftExact, draftExactTitle, EXACT_TOKENS_FROM, fmtTokens } from "./tokens";
   import { exactCounter, type ExactResult } from "./draftCount";
   import { countDraftTokens } from "./api";
-  import { tip } from "./tip";
+  import { sendTip, tip } from "./tip";
   import { ghostFor } from "./suggestions.svelte";
   import { queuedElsewhereToast } from "./browse";
   import {
@@ -1685,6 +1685,7 @@
         {/if}
         <button
           class="ns-btn accent send act"
+          use:tip={sendTip(!!app.connection, !text.trim() && attachments.length === 0)}
           onclick={() => void submit()}
           disabled={!app.connection || (!text.trim() && attachments.length === 0)}
         >

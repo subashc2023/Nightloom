@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tip";
   /**
    * Start → Backlog (3.6): the ordered backlog on the left (drag to
    * reorder, locked while a shift is live), the selected item's full text
@@ -202,7 +203,7 @@
     {/if}
     <div class="filter-row">
       <input class="ns-fld" placeholder="filter…" bind:value={filterText} aria-label="Filter the backlog" />
-      <button class="ns-btn small" class:on={draft.open} disabled={locked} title="Describe an idea; the interviewer asks what only you can answer, then writes the item" onclick={() => { draft.open = !draft.open; creating = false; }}>
+      <button class="ns-btn small" class:on={draft.open} disabled={locked} use:tip={"Describe an idea; the interviewer asks what only you can answer, then writes the item"} onclick={() => { draft.open = !draft.open; creating = false; }}>
         <Icon name="plus" />New{#if hasDraft}<span class="ns-pill open draftpill">draft</span>{/if}
       </button>
     </div>
@@ -259,12 +260,12 @@
           <button class="ns-btn small accent" disabled={editBusy || !editDirty} onclick={() => void save()}>{editBusy ? "Saving…" : "Save"}</button>
         {:else}
           {#if draft.open}
-            <button class="ns-btn small ghost" title="Put this item's path into the interview box" onclick={mention}>Mention</button>
+            <button class="ns-btn small ghost" use:tip={"Put this item's path into the interview box"} onclick={mention}>Mention</button>
           {/if}
-          <button class="ns-btn small ghost" disabled={locked} title="Move the item's file to backlog/trash/ (nothing is unlinked)" onclick={() => (confirmDelete = true)}>
+          <button class="ns-btn small ghost" disabled={locked} use:tip={"Move the item's file to backlog/trash/ (nothing is unlinked)"} onclick={() => (confirmDelete = true)}>
             Delete
           </button>
-          <button class="ns-btn small" disabled={locked} title="Edit the item's file as text" onclick={() => void startEdit()}>
+          <button class="ns-btn small" disabled={locked} use:tip={"Edit the item's file as text"} onclick={() => void startEdit()}>
             Edit
           </button>
         {/if}
@@ -320,12 +321,12 @@
         {#if interview?.model}<span class="ns-chip">{interview.model}</span>{/if}
         <span class="spacer"></span>
         {#if !interview}
-          <button class="ns-btn small ghost" title="Close the drawer; the idea text is kept as a draft" onclick={() => (draft.open = false)}>Close</button>
-          <button class="ns-btn small ghost" title="A title and a kind, no interview" onclick={() => { draft.open = false; creating = true; }}>skip the interview</button>
+          <button class="ns-btn small ghost" use:tip={"Close the drawer; the idea text is kept as a draft"} onclick={() => (draft.open = false)}>Close</button>
+          <button class="ns-btn small ghost" use:tip={"A title and a kind, no interview"} onclick={() => { draft.open = false; creating = true; }}>skip the interview</button>
         {:else}
-          <button class="ns-btn small ghost" title="Close the drawer; the conversation is kept" onclick={() => (draft.open = false)}>Close</button>
-          <button class="ns-btn small ghost" disabled={interview.busy} title="Forget the conversation" onclick={() => void dropInterview()}>Cancel</button>
-          <button class="ns-btn small accent" disabled={interview.busy || locked || interview.messages.length < 2} title="The interviewer writes backlog/NNN-slug.md; the transcript is saved beside it" onclick={() => void finishInterview()}>
+          <button class="ns-btn small ghost" use:tip={"Close the drawer; the conversation is kept"} onclick={() => (draft.open = false)}>Close</button>
+          <button class="ns-btn small ghost" disabled={interview.busy} use:tip={"Forget the conversation"} onclick={() => void dropInterview()}>Cancel</button>
+          <button class="ns-btn small accent" disabled={interview.busy || locked || interview.messages.length < 2} use:tip={"The interviewer writes backlog/NNN-slug.md; the transcript is saved beside it"} onclick={() => void finishInterview()}>
             {interview.busy ? "Working…" : "Write the item"}
           </button>
         {/if}

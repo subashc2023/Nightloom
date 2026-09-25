@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./lib/tip";
   import { onMount, untrack } from "svelte";
   import {
     activateTab,
@@ -539,7 +540,7 @@
   >
     <Sidebar />
     {#if app.layout.sidebarCollapsed}
-      <button class="side-expand" title="Show sidebar (⌘\)" onclick={() => toggleSidebar()}>
+      <button class="side-expand" use:tip={"Show sidebar (⌘\\)"} onclick={() => toggleSidebar()}>
         <Icon name="chevr" size={12} />
       </button>
     {:else}
@@ -548,7 +549,7 @@
       <button
         class="side-toggle"
         style:left="{sidebarColumn() - 11}px"
-        title="Collapse sidebar (⌘\)"
+        use:tip={"Collapse sidebar (⌘\\)"}
         onclick={() => toggleSidebar()}
       >
         <Icon name="chevl" size={12} />
@@ -752,11 +753,11 @@
                beside the panes; its head is the panel's chrome. -->
           <aside class="aside-panel" aria-label="aside side panel">
             <div class="aside-panel-head">
-              <span class="aside-panel-title" title="The chat this side conversation is beside">Aside · {panelChat}</span>
+              <span class="aside-panel-title" use:tip={"The chat this side conversation is beside"}>Aside · {panelChat}</span>
               <span class="spacer"></span>
               <button
                 class="ns-btn ghost small"
-                title="Put the card back in the chat, under its passage (Escape in the panel does the same); the thread stays"
+                use:tip={"Put the card back in the chat, under its passage (Escape in the panel does the same); the thread stays"}
                 onclick={() => {
                   app.asidePanel = null;
                   app.asidePanelThread = null;

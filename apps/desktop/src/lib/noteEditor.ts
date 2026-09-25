@@ -77,7 +77,7 @@ class MathWidget extends WidgetType {
     const el: HTMLElement = document.createElement(this.block ? "div" : "span");
     el.className = this.block ? "cm-nmath cm-nmath-block" : "cm-nmath";
     el.innerHTML = renderMathHtml(this.tex, this.display);
-    el.title = "Click to edit the formula";
+    el.dataset.tip = "Click to edit the formula";
     // A click opens the formula for editing: the cursor goes just inside
     // its opening delimiter, which is inside the span, so the source is
     // drawn in its place. Read from the DOM, not kept on the widget: an

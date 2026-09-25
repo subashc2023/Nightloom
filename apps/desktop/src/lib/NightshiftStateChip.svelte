@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tip";
   /**
    * The Nightshift state chip — `live` with the running shift, or the last
    * shift as a word in its colour with how long ago. One component for the
@@ -42,7 +43,7 @@
   });
 </script>
 
-<span class="ns-chip" title={state.tip}>
+<span class="ns-chip" use:tip={state.tip}>
   <Icon name="moon" />
   <span class="ns-pill {pillClass(state.word)}"><span class="dot"></span>{state.text}</span>
   {#if pending && !info?.live}
@@ -51,9 +52,9 @@
          the tooltip says so. -->
     <span
       class="ns-pill open held"
-      title="the app is holding this plan and launches it {clockOf(pending.fire_at_ms)} — as long as Nightloom stays open"
+      use:tip={`the app is holding this plan and launches it ${clockOf(pending.fire_at_ms)} — as long as Nightloom stays open`}
     ><span class="dot"></span>launches {clockOf(pending.fire_at_ms)}</span>
-    <button type="button" class="cancel" title="Cancel the held launch" onclick={() => void cancelLaunch()}>cancel</button>
+    <button type="button" class="cancel" use:tip={"Cancel the held launch"} onclick={() => void cancelLaunch()}>cancel</button>
   {/if}
 </span>
 

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tip";
   /*
    * A layer card's *newer version exists* mark (nightshift backlog 174):
    * the file changed while this chat ran on the old text. Says what the
@@ -37,7 +38,7 @@
         {c.label}
       </button>
     {/each}
-    <button class="ns-btn small" disabled={locked} title={cost} onclick={() => void updateLayerNow(pending.kind)}>
+    <button class="ns-btn small" disabled={locked} use:tip={cost} onclick={() => void updateLayerNow(pending.kind)}>
       Update now
     </button>
     <span class="cost">{cost}</span>

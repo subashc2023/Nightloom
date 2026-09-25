@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tip";
   /**
    * The proposal card's diff, with the proposed side editable in place
    * (nightshift backlog 184). Left: the file as saved, its removed lines
@@ -114,10 +115,10 @@
     <span class="plus">+{rows.added}</span>
     <span class="minus">−{rows.removed}</span>
     {#if edited}
-      <span class="edited" title="The proposed side differs from what the dream wrote">edited</span>
+      <span class="edited" use:tip={"The proposed side differs from what the dream wrote"}>edited</span>
       <button
         class="reset"
-        title="Put the proposed side back to exactly what the dream wrote"
+        use:tip={"Put the proposed side back to exactly what the dream wrote"}
         onclick={() => (proposed = original)}>Back to the dream's text</button
       >
     {/if}
@@ -143,7 +144,7 @@
                 {#each actions.get(i) ?? [] as a, n (n)}
                   <button
                     class="hunk {a.kind}"
-                    title={a.kind === "keep"
+                    use:tip={a.kind === "keep"
                       ? "Keep saved — put the file's lines back here"
                       : "Take proposed — put the dream's lines back here"}
                     aria-label={a.kind === "keep" ? `Keep saved at line ${i + 1}` : `Take proposed at line ${i + 1}`}

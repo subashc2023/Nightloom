@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tip";
   /**
    * The bell and its panel (nightshift backlog 069): what waits on him,
    * six kinds with counts — proposals to a project's or his own
@@ -120,7 +121,7 @@
     class="ns-btn ghost small centre-bell"
     class:on={count > 0}
     bind:this={bellEl}
-    title={count === 0 ? "Nothing to review" : `${count} to review`}
+    use:tip={count === 0 ? "Nothing to review" : `${count} to review`}
     aria-label="Notifications"
     aria-expanded={app.centre.open}
     onclick={toggle}
@@ -133,8 +134,8 @@
       <div class="centre-head">
         <span class="centre-title">To review</span>
         <span class="spacer"></span>
-        <button class="ns-btn ghost small" title="Re-read every source" onclick={() => void refreshCentre()}>Refresh</button>
-        <button class="ns-btn ghost small" title="Close" aria-label="Close" onclick={() => (app.centre.open = false)}>×</button>
+        <button class="ns-btn ghost small" use:tip={"Re-read every source"} onclick={() => void refreshCentre()}>Refresh</button>
+        <button class="ns-btn ghost small" use:tip={"Close"} aria-label="Close" onclick={() => (app.centre.open = false)}>×</button>
       </div>
 
       <div class="centre-body">
@@ -147,13 +148,13 @@
               <span class="centre-kind-title">{KIND_LABEL[k]}</span>
               <span class="centre-n">{counts[k]}</span>
               <span class="spacer"></span>
-              <button class="ns-btn ghost small" title="Dismiss all of this kind" onclick={() => dismissKind(k)}>Dismiss all</button>
+              <button class="ns-btn ghost small" use:tip={"Dismiss all of this kind"} onclick={() => dismissKind(k)}>Dismiss all</button>
             </div>
             {#each byKind(k) as n (n.id)}
               <div class="centre-item">
                 <div class="centre-line">
                   <span class="centre-item-title">{n.title}</span>
-                  {#if n.at}<span class="centre-when" title={n.at}>{relativeTime(n.at)}</span>{/if}
+                  {#if n.at}<span class="centre-when" use:tip={n.at}>{relativeTime(n.at)}</span>{/if}
                 </div>
                 {#if n.detail}<div class="centre-detail">{n.detail}</div>{/if}
                 {#if n.kind === "cli"}<CliUpdateActions />{/if}
@@ -180,7 +181,7 @@
                         <button
                           class="ns-btn ghost small"
                           disabled={reverting !== null}
-                          title="Put this file back as it was before the dream (a commit)"
+                          use:tip={"Put this file back as it was before the dream (a commit)"}
                           onclick={() => void revert(n, f.path)}>{reverting === f.path ? "…" : "Revert"}</button
                         >
                       </div>
@@ -216,7 +217,7 @@
         <button
           class="ns-btn small"
           disabled={app.centre.dailyRunning || app.dreaming || app.capturing}
-          title="Capture → dream → tidy, now, on the engine set under Settings → Knowledge"
+          use:tip={"Capture → dream → tidy, now, on the engine set under Settings → Knowledge"}
           onclick={() => void runDailyPass()}
         >
           {app.centre.dailyRunning ? "Running the daily pass…" : "Run the daily pass now"}

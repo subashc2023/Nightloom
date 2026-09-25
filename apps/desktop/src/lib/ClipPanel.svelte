@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tip";
   /**
    * The ⌘⇧V list (nightshift backlog 173): the in-app clipboard ring,
    * newest first, joined to the composer's top the way the `/` picker is.
@@ -36,7 +37,7 @@
         class="clip-row"
         class:on={i === index}
         aria-selected={i === index}
-        title={e.kind === "text" ? "Paste this at the caret" : "Attach this image again"}
+        use:tip={e.kind === "text" ? "Paste this at the caret" : "Attach this image again"}
         onmousedown={(ev) => ev.preventDefault()}
         onclick={() => onpick(i)}
       >
@@ -47,7 +48,7 @@
           <img class="thumb" src={`data:${e.media_type};base64,${e.data}`} alt={e.name} />
           <span class="txt name">{e.name}</span>
         {/if}
-        <span class="when" title={exactTime(e.at)}>{relativeTime(e.at)}</span>
+        <span class="when" use:tip={exactTime(e.at)}>{relativeTime(e.at)}</span>
       </button>
     {/each}
     <div class="clip-foot">↑↓ move · ↵ paste · Esc close · only what passed through Nightloom; incognito chats add nothing</div>

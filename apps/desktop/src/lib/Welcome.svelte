@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip as tipAction } from "./tip";
   import {
     app,
     importFromClaude,
@@ -212,7 +213,7 @@
         style:offset-path="path('{t.path}')"
         style:animation-duration="{t.lap}s"
         style:animation-delay="{t.delay}s"
-        title={t.note.name}
+        use:tipAction={t.note.name}
         onmouseenter={(e) => showTip(t, e.currentTarget)}
         onmouseleave={hideTipSoon}
         onfocus={(e) => showTip(t, e.currentTarget)}
@@ -252,7 +253,7 @@
       <h1 class="ctitle">{app.project.name}</h1>
       <button
         class="pathchip"
-        title={app.project.root ? "Show this folder" : "Show the notes folder"}
+        use:tipAction={app.project.root ? "Show this folder" : "Show the notes folder"}
         onclick={() => void revealFolder(app.project?.root ?? app.project?.notes_dir)}
       >
         <Icon name="folder" size={13} />
@@ -310,21 +311,21 @@
   </div>
 
   <div class="keys" aria-label="Keyboard shortcuts">
-    <button class="kk" onclick={() => runMenuCommand("commands")} title="Every command and its key">
+    <button class="kk" onclick={() => runMenuCommand("commands")} use:tipAction={"Every command and its key"}>
       <Kbd keys="{mod}K" />commands
     </button>
-    <button class="kk" onclick={() => runMenuCommand("projects")} title="Switch project — 1–9, N new, O open, I import, 0 leave">
+    <button class="kk" onclick={() => runMenuCommand("projects")} use:tipAction={"Switch project — 1–9, N new, O open, I import, 0 leave"}>
       <Kbd keys="{mod}P" />projects
     </button>
-    <button class="kk" onclick={() => runMenuCommand("add_project")} title="Open a folder you already have as a project">
+    <button class="kk" onclick={() => runMenuCommand("add_project")} use:tipAction={"Open a folder you already have as a project"}>
       <Kbd keys="{mod}O" />open project
     </button>
-    <button class="kk" onclick={() => runMenuCommand("model")} title="Model, tasks and context">
+    <button class="kk" onclick={() => runMenuCommand("model")} use:tipAction={"Model, tasks and context"}>
       <Kbd keys="{mod}M" />model
     </button>
     <span class="ksep">|</span>
     {#each modelKeys as k (k.id)}
-      <button class="kk" title={k.title} onclick={() => runMenuCommand(k.id)}>
+      <button class="kk" use:tipAction={k.title} onclick={() => runMenuCommand(k.id)}>
         <Kbd keys={k.key} />{k.label}
       </button>
     {/each}
@@ -334,10 +335,10 @@
     </button>
     <!-- The two other kinds (nightshift backlog 059): incognito on ⌘⇧N;
          ephemeral has no key, and the cap is still a button. -->
-    <button class="kk" onclick={() => runMenuCommand("new_incognito")} title="Kept and marked; writes nothing, unread by other chats">
+    <button class="kk" onclick={() => runMenuCommand("new_incognito")} use:tipAction={"Kept and marked; writes nothing, unread by other chats"}>
       <Kbd keys="{mod}{shift}N" />incognito
     </button>
-    <button class="kk" onclick={() => runMenuCommand("new_ephemeral")} title="Nothing is kept; gone when you close it">
+    <button class="kk" onclick={() => runMenuCommand("new_ephemeral")} use:tipAction={"Nothing is kept; gone when you close it"}>
       ephemeral
     </button>
     <button class="kk" onclick={() => runMenuCommand("settings")}>

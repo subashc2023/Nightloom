@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tip";
   import { app, currentTodos } from "./state.svelte";
 
   // Projected from the log rather than tracked separately, so the panel and
@@ -14,7 +15,7 @@
   {#if todos.length === 0}
     <p
       class="empty"
-      title="The model writes one with todo_write when the work runs to three or more steps, and it is read back to it every turn."
+      use:tip={"The model writes one with todo_write when the work runs to three or more steps, and it is read back to it every turn."}
     >
       No tasks yet.
     </p>

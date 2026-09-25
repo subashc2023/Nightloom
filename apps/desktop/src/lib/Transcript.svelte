@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tip";
   // Every Copy button goes through the in-app clipboard ring (backlog 173).
   import { copyText } from "./clipRing.svelte";
   import { exactTime, relativeTimeLong } from "./time";
@@ -1200,7 +1201,7 @@
                 class:on={!!diffOpen[item.index]}
                 type="button"
                 aria-pressed={!!diffOpen[item.index]}
-                title={diffOpen[item.index] ? "Edited — show the current text" : "Edited — show the edit as a diff"}
+                use:tip={diffOpen[item.index] ? "Edited — show the current text" : "Edited — show the edit as a diff"}
                 onclick={(e) => toggleDiff(item.index, e.currentTarget)}>edited</button
               >
             {/if}
@@ -1213,7 +1214,7 @@
             {#if sizes[item.index]}
               {@const size = sizes[item.index]!}
               {@const share = shareOf(size.tokens, windowLimit)}
-              <span class="turn-size" title={sizeTitle(size, "user", windowLimit)}>
+              <span class="turn-size" use:tip={sizeTitle(size, "user", windowLimit)}>
                 {fmtTokens(size.tokens)} tokens
                 {#if fmtShare(share)}
                   <span class="share-bar" aria-hidden="true"><span class="share-fill" style:width="{(share ?? 0) * 100}%"></span></span>
@@ -1243,7 +1244,7 @@
                 <button
                   class="ns-btn small"
                   disabled={!editButtons(editing).send}
-                  title="Start a fork from here with this text as its next message; this chat stays as it is"
+                  use:tip={"Start a fork from here with this text as its next message; this chat stays as it is"}
                   onclick={() => void commitSend(item)}
                 >
                   Send
@@ -1251,7 +1252,7 @@
                 <button
                   class="ns-btn ghost small"
                   disabled={!editButtons(editing).save}
-                  title="Keep this chat, with this message reworded from here on"
+                  use:tip={"Keep this chat, with this message reworded from here on"}
                   onclick={() => void commitSave()}
                 >
                   Save
@@ -1276,7 +1277,7 @@
                   {#each item.images as img, j (j)}
                     <button
                       class="user-image-btn"
-                      title="Open in front"
+                      use:tip={"Open in front"}
                       onclick={(e) => {
                         const el = e.currentTarget.querySelector("img");
                         if (!app.activeSessionId) return;
@@ -1301,7 +1302,7 @@
                   {#each item.documents as doc, j (j)}
                     <button
                       class="user-file"
-                      title="{doc.media_type} — open in front"
+                      use:tip={`${doc.media_type} — open in front`}
                       onclick={(e) => {
                         if (!app.activeSessionId) return;
                         openAttachment(
@@ -1343,7 +1344,7 @@
                        message went to the seats the reply's record names. -->
                   <span
                     class="ns-chip mono council-chip"
-                    title="Sent to a council of {council.seats.length}: {rosterLabel(council.seats)} · {council.mode} pass"
+                    use:tip={`Sent to a council of ${council.seats.length}: ${rosterLabel(council.seats)} · ${council.mode} pass`}
                     >council · {council.seats.length}</span
                   >
                 {/if}
@@ -1369,7 +1370,7 @@
                 <button
                   class="tool-btn"
                   class:copied={copiedTurn === item.index}
-                  title={copiedTurn === item.index ? "Copied" : "Copy this message"}
+                  use:tip={copiedTurn === item.index ? "Copied" : "Copy this message"}
                   aria-label={copiedTurn === item.index ? "Copied" : "Copy this message"}
                   onclick={() => void copyUserText(item.index, item.text)}
                 >
@@ -1382,13 +1383,13 @@
                    Claude Code each of these rewrites the CLI's history by copy
                    and the next turn resumes the copy — the title says so.
                    Icons, with the full sentence on hover and for a reader. -->
-              <span class="turn-tools" title={controlsTitle}>
+              <span class="turn-tools" use:tip={controlsTitle}>
                 {#if item.removed}
                   <!-- Restore on the placeholder itself (backlog 066): the
                        same restore an undo of the removal runs. -->
                   <button
                     class="tool-btn"
-                    title="Restore to the context"
+                    use:tip={"Restore to the context"}
                     aria-label="Restore to the context"
                     onclick={() => void restoreTurn(item.index)}
                   >
@@ -1397,7 +1398,7 @@
                 {:else}
                   <button
                     class="tool-btn"
-                    title={rewindTitle}
+                    use:tip={rewindTitle}
                     aria-label="Rewind to here"
                     onclick={() => void rewindTo(item.index)}
                   >
@@ -1406,7 +1407,7 @@
                   {#if item.editable}
                     <button
                       class="tool-btn"
-                      title="Edit this message: Save keeps it here with the new text; Send starts a fork from here."
+                      use:tip={"Edit this message: Save keeps it here with the new text; Send starts a fork from here."}
                       aria-label="Edit this message"
                       onclick={() => beginEdit(item)}
                     >
@@ -1415,7 +1416,7 @@
                   {/if}
                   <button
                     class="tool-btn"
-                    title="Remove this message from the context. It stays in the log; the context panel restores it."
+                    use:tip={"Remove this message from the context. It stays in the log; the context panel restores it."}
                     aria-label="Remove this message from the context"
                     onclick={() => void removeTurn(item.index)}
                   >
@@ -1427,7 +1428,7 @@
                          message and its reply — instead of the first one. -->
                     <button
                       class="tool-btn"
-                      title="Fork helpers from here: a long-research helper starts with the chat up to the end of this exchange, at cache-read cost, and none of the later turns."
+                      use:tip={"Fork helpers from here: a long-research helper starts with the chat up to the end of this exchange, at cache-read cost, and none of the later turns."}
                       aria-label="Fork helpers from here"
                       onclick={() => void setCheckpoint(item.index)}
                     >
@@ -1440,12 +1441,12 @@
             {#if app.checkpoint && checkpointOwner(userIndexes, app.checkpoint) === item.index}
               <!-- The checkpoint's marker (backlog 104): on the exchange
                    helpers fork from, always drawn, not only on hover. -->
-              <span class="checkpoint-mark" title={checkpointLine(app.checkpoint, true)}>
+              <span class="checkpoint-mark" use:tip={checkpointLine(app.checkpoint, true)}>
                 <Icon name="branch" size={12} />
                 {checkpointLine(app.checkpoint, false)}
               </span>
             {/if}
-            <span class="when" title={exactTime(item.at)}>{relativeTimeLong(item.at, now)}</span>
+            <span class="when" use:tip={exactTime(item.at)}>{relativeTimeLong(item.at, now)}</span>
           </div>
         </div>
       {:else if item.kind === "compaction"}
@@ -1485,7 +1486,7 @@
                     spellcheck="false"
                   ></textarea>
                 {:else}
-                  <div class="editor-marker" title="A tool call stays where it is; remove it from its own hover">{part.label}</div>
+                  <div class="editor-marker" use:tip={"A tool call stays where it is; remove it from its own hover"}>{part.label}</div>
                 {/if}
               {/each}
               <div class="editor-line">{editCacheLine}</div>
@@ -1493,7 +1494,7 @@
                 <button
                   class="ns-btn small"
                   disabled={!editButtons(editing).save}
-                  title="Keep this chat, with this reply reworded from here on"
+                  use:tip={"Keep this chat, with this reply reworded from here on"}
                   onclick={() => void commitSave()}
                 >
                   Save
@@ -1538,17 +1539,17 @@
                   class:on={!!diffOpen[item.index]}
                   type="button"
                   aria-pressed={!!diffOpen[item.index]}
-                  title={diffOpen[item.index] ? "Edited — show the current text" : "Edited — show the edit as a diff"}
+                  use:tip={diffOpen[item.index] ? "Edited — show the current text" : "Edited — show the edit as a diff"}
                   onclick={(e) => toggleDiff(item.index, e.currentTarget)}>edited</button
                 >
               </div>
             {/if}
           {/if}
           {#if !item.superseded && !app.busy && item.removed}
-            <span class="turn-tools assistant-tools" title={controlsTitle}>
+            <span class="turn-tools assistant-tools" use:tip={controlsTitle}>
               <button
                 class="tool-btn"
-                title="Restore to the context"
+                use:tip={"Restore to the context"}
                 aria-label="Restore to the context"
                 onclick={() => void restoreTurn(item.index)}
               >
@@ -1638,7 +1639,7 @@
             <span class="limit-sub">will resume at {resetLabel({ resetsAtMs: app.limitResumeAt })}</span>
             <button class="ns-btn ghost small" onclick={resumeAfterLimit}>Cancel</button>
           {:else}
-            <button class="ns-btn accent small" disabled={!app.connection} title={resumeDelayMs(pause) === 0 ? "Continue the turn now" : `Continue the turn when the window resets, at ${resetLabel(pause)}`} onclick={resumeAfterLimit}>
+            <button class="ns-btn accent small" disabled={!app.connection} use:tip={resumeDelayMs(pause) === 0 ? "Continue the turn now" : `Continue the turn when the window resets, at ${resetLabel(pause)}`} onclick={resumeAfterLimit}>
               {resumeDelayMs(pause) === 0 ? "Resume" : `Resume at ${resetLabel(pause)}`}
             </button>
           {/if}
@@ -1661,7 +1662,7 @@
     class="ns-btn small aside-pill"
     style:top="{asidePill.top}px"
     style:left="{asidePill.left}px"
-    title="Ask aside about the highlighted passage: a side question on this text, answered from the chat's context, recorded nowhere"
+    use:tip={"Ask aside about the highlighted passage: a side question on this text, answered from the chat's context, recorded nowhere"}
     onmousedown={(e) => e.preventDefault()}
     onclick={() => void askAboutSelection()}
   >

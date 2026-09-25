@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tip";
   /**
    * The backlog list shared by Start → Backlog (3.6, plain) and Start →
    * Plan a shift (3.7, `selectable`): order number, id, title, status pill,
@@ -193,8 +194,8 @@
         <span class="ns-pill {itemStatusPill(row.item.status)}">{row.item.status || "todo"}</span>
         {#if movable(row.item.id)}
           <span class="reorder">
-            <button class="ns-btn small ghost" title="Move up" aria-label="Move {row.item.title} up" onclick={() => move(row.item.id, -1)}>&uarr;</button>
-            <button class="ns-btn small ghost" title="Move down" aria-label="Move {row.item.title} down" onclick={() => move(row.item.id, 1)}>&darr;</button>
+            <button class="ns-btn small ghost" use:tip={"Move up"} aria-label="Move {row.item.title} up" onclick={() => move(row.item.id, -1)}>&uarr;</button>
+            <button class="ns-btn small ghost" use:tip={"Move down"} aria-label="Move {row.item.title} down" onclick={() => move(row.item.id, 1)}>&darr;</button>
             <span class="handle" aria-hidden="true">&#8942;&#8942;</span>
           </span>
         {/if}

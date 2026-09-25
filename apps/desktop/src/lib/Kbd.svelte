@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tip";
   /** A key cap: `⌘K`, `↵`, `esc`. Drawn, never a font glyph, so every palette colours it. */
   let { keys, dim = false }: { keys: string; dim?: boolean } = $props();
 
@@ -28,7 +29,7 @@
   });
 </script>
 
-<kbd class="kbd" class:dim title={spelled || undefined}>{keys}</kbd>
+<kbd class="kbd" class:dim use:tip={spelled || undefined}>{keys}</kbd>
 
 <style>
   .kbd {

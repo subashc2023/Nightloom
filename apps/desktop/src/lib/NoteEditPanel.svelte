@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tip";
   /**
    * The small chat on the right of a note (nightshift backlog 151): he says
    * what changed, a model rewrites the whole note to fit, and the new text
@@ -84,7 +85,7 @@
   <header>
     <span class="title">Edit with a prompt</span>
     <span class="spacer"></span>
-    <button class="x" title="Close the panel — what you typed stays" onclick={() => (noteEditUi.open = false)}>×</button>
+    <button class="x" use:tip={"Close the panel — what you typed stays"} onclick={() => (noteEditUi.open = false)}>×</button>
   </header>
 
   <div class="list" bind:this={list}>
@@ -123,7 +124,7 @@
             {#if canUndo && canUndo.id === turn.id}
               <button
                 class="undo"
-                title="Put the note back as it was before this edit, and save"
+                use:tip={"Put the note back as it was before this edit, and save"}
                 disabled={disabled}
                 onclick={() => void undoNoteEdit(scope, name, text)}>Undo</button
               >
@@ -131,7 +132,7 @@
             {#if turn.status !== "failed" && turn.status !== "stopped" && turn.status !== "unchanged"}
               <button
                 class="link"
-                title={turn.status === "kept"
+                use:tip={turn.status === "kept"
                   ? "Put this text back in the editor as an unsaved draft"
                   : "Put the note as it read before this edit back in the editor, unsaved — Save keeps it, Revert drops it"}
                 disabled={disabled}
@@ -156,7 +157,7 @@
       {onkeydown}
     ></textarea>
     <div class="row">
-      <label title="On: a line that is no longer true is struck through with today's date and the new line put beside it. Off: it is rewritten.">
+      <label use:tip={"On: a line that is no longer true is struck through with today's date and the new line put beside it. Off: it is rewritten."}>
         <input type="checkbox" checked={strike} onchange={(e) => setStrike(key, (e.currentTarget as HTMLInputElement).checked)} />
         strike, don't delete
       </label>

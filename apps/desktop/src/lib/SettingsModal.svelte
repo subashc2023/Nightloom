@@ -14,6 +14,7 @@
 </script>
 
 <script lang="ts">
+  import { tip } from "./tip";
   import { setLinkPref, web as webTabs } from "./webtabs.svelte";
   import {
     app,
@@ -1084,7 +1085,7 @@
       >
         <span class="nav-label">{providerLabel(p.kind)}</span>
         <span class="st">
-          {#if !railVisible(p.kind)}<span class="eye" title="Hidden from the model picker"><Icon name="eye-off" size={12} /></span>{/if}
+          {#if !railVisible(p.kind)}<span class="eye" use:tip={"Hidden from the model picker"}><Icon name="eye-off" size={12} /></span>{/if}
           <span class="dot {st.cls}"></span>{st.text}
         </span>
       </button>
@@ -1135,7 +1136,7 @@
         <h2 class="pane-title">Palette</h2>
         <span class="slug">{app.palette}</span>
         <span class="spacer"></span>
-        <button class="close" title="Close" aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
       </div>
       <p class="note">
         Four dark palettes. Surfaces and the accent change; the colours that
@@ -1335,7 +1336,7 @@
         <h2 class="pane-title">Phone</h2>
         <span class="slug">{remote?.on ? `on · ${remote.address}:${remote.port}` : "off"}</span>
         <span class="spacer"></span>
-        <button class="close" title="Close" aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
       </div>
       <p class="note">
         Nightloom on your phone, over Tailscale: the open project's chats, a
@@ -1420,7 +1421,7 @@
         <h2 class="pane-title">Subscription</h2>
         <span class="slug">the engine on your Claude plan — its defaults</span>
         <span class="spacer"></span>
-        <button class="close" title="Close" aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
       </div>
       <p class="note">
         What a chat on this engine does when its context window fills. The CLI's
@@ -1517,7 +1518,7 @@
           <button
             class="ns-btn ghost small"
             disabled={cli.checking || cli.updating}
-            title="claude --version against the release feed — no tokens"
+            use:tip={"claude --version against the release feed — no tokens"}
             onclick={() => void checkCli(true)}>{cli.checking ? "Checking…" : "Check now"}</button
           >
         </div>
@@ -1590,10 +1591,10 @@
         <button
           class="ns-btn small"
           disabled={usageRefreshing}
-          title="Run the collector now (python3 ~/.claude/usage-ledger.py update), reread the ledger, the plan's two windows and the provider credits"
+          use:tip={"Run the collector now (python3 ~/.claude/usage-ledger.py update), reread the ledger, the plan's two windows and the provider credits"}
           onclick={() => void refreshUsageNow()}
         >{usageRefreshing ? "Refreshing…" : "Refresh now"}</button>
-        <button class="close" title="Close" aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
       </div>
       {#if usageRefreshNote}
         <p class="note small">{usageRefreshNote}</p>
@@ -1827,7 +1828,7 @@
         <h2 class="pane-title">Council</h2>
         <span class="slug">several models answer one message; this chat's model chairs</span>
         <span class="spacer"></span>
-        <button class="close" title="Close" aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
       </div>
       <p class="note">
         The <em>Council</em> button beside Send (Claude Code engine) sends one
@@ -1856,7 +1857,7 @@
               <button
                 class="ns-btn ghost small"
                 disabled={council.seats.length <= COUNCIL_MIN_SEATS}
-                title={council.seats.length <= COUNCIL_MIN_SEATS ? `A council needs ${COUNCIL_MIN_SEATS} seats` : "Remove"}
+                use:tip={council.seats.length <= COUNCIL_MIN_SEATS ? `A council needs ${COUNCIL_MIN_SEATS} seats` : "Remove"}
                 onclick={() => councilRemove(i)}>×</button
               >
             </div>
@@ -1929,7 +1930,7 @@
         <h2 class="pane-title">Projects folder</h2>
         <span class="slug">new projects go in</span>
         <span class="spacer"></span>
-        <button class="close" title="Close" aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
       </div>
       <p class="note">
         Where <em>New project…</em> makes a folder: <code>&lt;this folder&gt;/&lt;name&gt;</code>,
@@ -1981,7 +1982,7 @@
         <h2 class="pane-title">Knowledge base</h2>
         <span class="slug">{app.knowledge?.alias ?? "@kb"}</span>
         <span class="spacer"></span>
-        <button class="close" title="Close" aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
       </div>
       <p class="note">
         Your own notes, kept across every project and available in every
@@ -2089,7 +2090,7 @@
                   <button
                     class="cart"
                     class:on={app.dreamPrefs.model === m.value}
-                    title={m.value === app.dreamPrefs.model ? "The model that dreams" : `Dream on ${m.label}`}
+                    use:tip={m.value === app.dreamPrefs.model ? "The model that dreams" : `Dream on ${m.label}`}
                     onclick={() => pickDreamModel(m.value)}
                   >
                     {#if app.dreamPrefs.model === m.value}<Icon name="check" size={11} />{/if}{m.label}
@@ -2159,7 +2160,7 @@
         <h2 class="pane-title">Model instructions</h2>
         <span class="slug">~/.nightloom/models</span>
         <span class="spacer"></span>
-        <button class="close" title="Close" aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
       </div>
       <p class="note">
         A file per model, read whole into the system prompt of a chat on that
@@ -2181,7 +2182,7 @@
             {#each modelFiles as f (f.name)}
               <button
                 class="mfile"
-                title={`Edit ${f.name}`}
+                use:tip={`Edit ${f.name}`}
                 onclick={() => openModelInstructions(modelOfInstructionFile(f.name), "settings")}
               >
                 <span class="mid">{modelOfInstructionFile(f.name)}</span>
@@ -2195,7 +2196,7 @@
           <button
             class="ns-btn"
             disabled={!addModel}
-            title={addModel
+            use:tip={addModel
               ? `Opens the editor on ${modelInstructionFile(addModel)}`
               : "Pick a model in the popover first"}
             onclick={() => addModel && openModelInstructions(addModel, "settings")}
@@ -2234,7 +2235,7 @@
           <button
             class="ns-btn"
             disabled={chatPath === null}
-            title={chatPath ? `Opens the editor on ${chatPath}` : "No config directory"}
+            use:tip={chatPath ? `Opens the editor on ${chatPath}` : "No config directory"}
             onclick={() => openChatInstructions("settings")}
           >
             {(chatBytes ?? 0) > 0 ? "Edit" : "Create"}
@@ -2290,7 +2291,7 @@
           <button
             class="ns-btn"
             disabled={!pickId || pickBusy}
-            title={!pickId
+            use:tip={!pickId
               ? "Pick a model first"
               : pickFile
                 ? `Opens the editor on ${pickFile.name}`
@@ -2311,7 +2312,7 @@
         <h2 class="pane-title">{searchSel.label}</h2>
         <span class="slug">{searchSel.env_key}</span>
         <span class="spacer"></span>
-        <button class="close" title="Close" aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
       </div>
       <p class="note">
         A key here turns on <code>web_search</code>. Every backend with a key is
@@ -2339,7 +2340,7 @@
         <h2 class="pane-title">{providerLabel(provider.kind)}</h2>
         <span class="slug">{provider.kind}</span>
         <span class="spacer"></span>
-        <label class="sw2" title="Off hides this provider from the popover's pills. The one in use stays listed.">
+        <label class="sw2" use:tip={"Off hides this provider from the popover's pills. The one in use stays listed."}>
           <input
             type="checkbox"
             class="sw"
@@ -2348,7 +2349,7 @@
           />
           Show in the model picker
         </label>
-        <button class="close" title="Close" aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
       </div>
       {#if PROVIDER_NOTES[provider.kind]}
         <p class="note">{PROVIDER_NOTES[provider.kind]}</p>
@@ -2380,7 +2381,7 @@
             class="ns-btn"
             onclick={() => void fetchModels(selected, true)}
             disabled={fetchState?.loading || !provider.available}
-            title={provider.available
+            use:tip={provider.available
               ? "Query the provider's API for its model list"
               : "Needs an API key"}
           >
@@ -2405,7 +2406,7 @@
           {#each pickerOrder as m (m)}
             <button
               class="cart on"
-              title="Click to drop {m} from the picker"
+              use:tip={`Click to drop ${m} from the picker`}
               onclick={() => toggleModel(provider.kind, m)}
             >
               <Icon name="check" size={11} />{m}
@@ -2451,7 +2452,7 @@
                 >
                   {#if on}<Icon name="check" size={11} />{/if}
                 </button>
-                <span class="id" title={e.id}>{e.id}</span>
+                <span class="id" use:tip={e.id}>{e.id}</span>
                 {#if e.id === provider.default_model}
                   <span class="ns-pill open dflt">default</span>
                 {/if}
@@ -2461,7 +2462,7 @@
                     class:open={showFolded(provider.kind, e)}
                     aria-expanded={showFolded(provider.kind, e)}
                     onclick={() => (expanded[e.id] = !expanded[e.id])}
-                    title={`${e.folded.length} dated release${e.folded.length > 1 ? "s" : ""} folded into this one`}
+                    use:tip={`${e.folded.length} dated release${e.folded.length > 1 ? "s" : ""} folded into this one`}
                   >
                     <Icon name={showFolded(provider.kind, e) ? "chev" : "chevr"} size={12} />
                     {e.folded.length} dated release{e.folded.length > 1 ? "s" : ""}
@@ -2483,7 +2484,7 @@
                     >
                       {#if fon}<Icon name="check" size={11} />{/if}
                     </button>
-                    <span class="id" title={f}>{f}</span>
+                    <span class="id" use:tip={f}>{f}</span>
                     <span class="cx">{formatWindow(windows[f])}</span>
                   </div>
                 {/each}

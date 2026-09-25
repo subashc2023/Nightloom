@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tip";
   /**
    * The Claude Code update's buttons (nightshift backlog 182), the same in
    * the bell's notice and in Settings → Subscription: **Update when cold**
@@ -53,14 +54,14 @@
         {:else}
           <button
             class="ns-btn small"
-            title="Runs claude update once no turn is running and every open chat's cache has expired — then no chat pays anything extra"
+            use:tip={"Runs claude update once no turn is running and every open chat's cache has expired — then no chat pays anything extra"}
             onclick={() => void updateWhenCold()}>Update when cold</button
           >
         {/if}
         <button
           class="ns-btn ghost small"
           disabled={reading}
-          title="Shows first what updating now costs the chats whose cache is still warm"
+          use:tip={"Shows first what updating now costs the chats whose cache is still warm"}
           onclick={() => void askNow()}>{reading ? "…" : "Now…"}</button
         >
       </div>

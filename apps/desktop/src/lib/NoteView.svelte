@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tip";
   import * as api from "./api";
   import {
     app,
@@ -477,13 +478,13 @@
       {open?.scope ?? "project"}
     </span>
     <span class="title">{open?.name ?? "no note"}</span>
-    {#if reviewing}<span class="proposed" title="The dream proposed a replacement; nothing is applied until you Accept it (or open it in the editor and save)">proposed change</span>{/if}
-    {#if dirty}<span class="dirty" title="Unsaved changes — kept as a draft until you save or revert">● draft</span>{/if}
+    {#if reviewing}<span class="proposed" use:tip={"The dream proposed a replacement; nothing is applied until you Accept it (or open it in the editor and save)"}>proposed change</span>{/if}
+    {#if dirty}<span class="dirty" use:tip={"Unsaved changes — kept as a draft until you save or revert"}>● draft</span>{/if}
     <span class="spacer"></span>
     {#if dirty}
       <button
         class="ghost revert"
-        title="Discard the draft and go back to the last saved version"
+        use:tip={"Discard the draft and go back to the last saved version"}
         onclick={revert}>Revert</button
       >
     {/if}
@@ -493,13 +494,13 @@
       <button
         class="ghost mode"
         class:on={!preview && mode === "plain"}
-        title="Plain: the Markdown source as typed"
+        use:tip={"Plain: the Markdown source as typed"}
         onclick={() => void setMode("plain")}
         disabled={!open || !!reviewing}>Plain</button
       ><button
         class="ghost mode"
         class:on={!preview && mode === "formatted"}
-        title="Formatted: headings, emphasis, code and math drawn in place, still editable — the cursor's line shows its source"
+        use:tip={"Formatted: headings, emphasis, code and math drawn in place, still editable — the cursor's line shows its source"}
         onclick={() => void setMode("formatted")}
         disabled={!open || !!reviewing}>Formatted</button
       >
@@ -515,13 +516,13 @@
     <button
       class="ghost"
       class:on={noteEditUi.open}
-      title="Tell a model what changed and it rewrites the whole note to fit, in a small chat on the right. Direct editing stays as it is."
+      use:tip={"Tell a model what changed and it rewrites the whole note to fit, in a small chat on the right. Direct editing stays as it is."}
       onclick={() => (noteEditUi.open = !noteEditUi.open)}
       disabled={!open}>Edit with a prompt</button
     >
     <button
       class="ghost"
-      title="Show the folder"
+      use:tip={"Show the folder"}
       onclick={() => void showFolder()}>Folder</button
     >
     <button class="save" onclick={() => void commit()} disabled={!dirty}>
@@ -578,7 +579,7 @@
       <div class="actions">
         <button
           class="accept"
-          title={proposed === saved
+          use:tip={proposed === saved
             ? "The proposed side matches the file as saved — nothing to save"
             : "Save the proposed side, as it reads now, to the file"}
           disabled={accepting || proposed === saved}
@@ -586,15 +587,15 @@
         >
         <button
           class="load"
-          title="Put the proposed side in the editor as a draft for a longer rework — Revert drops it, Save applies it"
+          use:tip={"Put the proposed side in the editor as a draft for a longer rework — Revert drops it, Save applies it"}
           onclick={loadProposal}>Open in the editor</button
         >
         <button
           class="ghost revert"
-          title="Turn the proposal down — it is moved aside, not deleted"
+          use:tip={"Turn the proposal down — it is moved aside, not deleted"}
           onclick={() => (confirmDismiss = true)}>Dismiss</button
         >
-        <button class="ghost" title="Close for now; the badge stays" onclick={closeNote}
+        <button class="ghost" use:tip={"Close for now; the badge stays"} onclick={closeNote}
           >Keep for later</button
         >
       </div>
@@ -657,7 +658,7 @@
             <button
               class="chip"
               class:broken={l.found.kind !== "note"}
-              title={chipTitle(l.target, l.found)}
+              use:tip={chipTitle(l.target, l.found)}
               onclick={() => void follow(l.target)}
               >{l.target}{l.found.kind === "ambiguous" ? " ⚠" : ""}</button
             >

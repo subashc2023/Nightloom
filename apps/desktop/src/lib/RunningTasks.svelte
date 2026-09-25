@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tip";
   /**
    * Running tasks (nightshift backlog 152, 2026-09-17): the subagents of
    * the open chat, one row each, like the Claude app's panel — type,
@@ -118,7 +119,7 @@
 <div class="modal" role="dialog" aria-label="Running tasks">
   <div class="pane-head">
     <h2 class="pane-title">Running tasks</h2>
-    <span class="slug" title={budgetTitle(app.turnBudget)}>
+    <span class="slug" use:tip={budgetTitle(app.turnBudget)}>
       {#if rows.length === 0}
         no subagents in this chat yet{app.turnBudget ? ` · ${budgetChip(app.turnBudget)}` : ""}
       {:else}
@@ -130,13 +131,13 @@
       <button
         class="ns-btn outline small wrap"
         disabled={wrapping || wrapAsked}
-        title={app.busy
+        use:tip={app.busy
           ? "Tell the running chat to finish what is half-done, write its hand-off and stop — its next tool call carries it; no new subagents"
           : "Send this chat its wrap-up as a message: finish, write the hand-off, stop"}
         onclick={() => void wrap()}>{wrapAsked ? "Wrapping up…" : "Wrap up"}</button
       >
     {/if}
-    <button class="close" title="Close" aria-label="Close running tasks" onclick={close}><Icon name="x" size={14} /></button>
+    <button class="close" use:tip={"Close"} aria-label="Close running tasks" onclick={close}><Icon name="x" size={14} /></button>
   </div>
   <div class="pane">
     {#if rows.length === 0}
@@ -162,18 +163,18 @@
             <tr class:running={subagentRunning(r)}>
               <td class="agent">
                 <span class="type mono">{r.subagent_type || "agent"}</span>
-                <span class="desc" title={r.prompt}>{r.description}</span>
+                <span class="desc" use:tip={r.prompt}>{r.description}</span>
               </td>
               <td class="mono dim">{shortModel(r.model)}</td>
               <td class="state">
                 <span class="dot" class:live={subagentRunning(r)} class:bad={r.status !== "running" && r.status !== "completed"}></span>
-                {statusWord(r)}{r.background ? "" : ""}{#if r.restored}<span class="dim" title="Rebuilt from the chat's log: the figures are what the CLI wrote into the result, the transcript is the recorded narrative"> · from the log</span>{/if}
+                {statusWord(r)}{r.background ? "" : ""}{#if r.restored}<span class="dim" use:tip={"Rebuilt from the chat's log: the figures are what the CLI wrote into the result, the transcript is the recorded narrative"}> · from the log</span>{/if}
               </td>
               <td class="num mono">{elapsed(r)}</td>
-              <td class="num mono" title={usageTitle(r)}>{fmtTokens(r.tokens)}</td>
+              <td class="num mono" use:tip={usageTitle(r)}>{fmtTokens(r.tokens)}</td>
               <td class="num mono">{r.tool_uses}</td>
               <td class="act">
-                <button class="ns-btn ghost small" onclick={() => void view(r)} title="Open this agent's calls, results and words as a tab">
+                <button class="ns-btn ghost small" onclick={() => void view(r)} use:tip={"Open this agent's calls, results and words as a tab"}>
                   View transcript
                 </button>
               </td>

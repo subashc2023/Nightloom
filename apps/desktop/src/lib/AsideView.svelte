@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tip";
   import { app, asideAsking, asideOf, asideWaiting, askAside, dismissAside, followUpAside } from "./state.svelte";
   import { quoteLabel } from "./asideQuote";
   import { renderMarkdown } from "./markdown";
@@ -75,7 +76,7 @@
 <div class="aside-view" role="note" aria-label="aside, not part of the chat">
   <div class="aside-view-head">
     <span class="ns-chip mono">aside · not in the chat</span>
-    <span class="ns-chip mono" title="The chat this side conversation is beside">{chatName}</span>
+    <span class="ns-chip mono" use:tip={"The chat this side conversation is beside"}>{chatName}</span>
     {#if aside?.quote}
       <span class="ns-chip mono">about {quoteLabel(aside.quote, "card")}</span>
     {/if}
@@ -86,7 +87,7 @@
     {#if open && aside}
       <button
         class="ns-btn ghost small"
-        title={asking ? "Stop the answer here; what has arrived stays" : "Dismiss the aside — the thread ends"}
+        use:tip={asking ? "Stop the answer here; what has arrived stays" : "Dismiss the aside — the thread ends"}
         onclick={() => dismissAside(aside)}>×</button
       >
     {/if}
@@ -103,7 +104,7 @@
       </p>
     {/if}
     {#if aside.quote}
-      <blockquote class="aside-view-quote" title="The passage he highlighted, sent with the question exactly as selected">{aside.quote.text}</blockquote>
+      <blockquote class="aside-view-quote" use:tip={"The passage he highlighted, sent with the question exactly as selected"}>{aside.quote.text}</blockquote>
     {/if}
     {#if aside.draft}
       {#if open}
@@ -120,7 +121,7 @@
           spellcheck="false"
         ></textarea>
         <div class="aside-view-row">
-          <button class="ns-btn small" disabled={!askDraft.trim()} title="Ask this about the passage, off the chat's context: no changes, recorded nowhere" onclick={submitAsk}>Ask aside</button>
+          <button class="ns-btn small" disabled={!askDraft.trim()} use:tip={"Ask this about the passage, off the chat's context: no changes, recorded nowhere"} onclick={submitAsk}>Ask aside</button>
         </div>
       {:else}
         <p class="aside-view-hint">Nothing asked yet — open the chat to ask about the passage.</p>
@@ -163,7 +164,7 @@
           <button
             class="ns-btn small"
             disabled={!followDraft.trim()}
-            title="Continue the aside: the exchanges above go with this question, off the chat's context; recorded nowhere"
+            use:tip={"Continue the aside: the exchanges above go with this question, off the chat's context; recorded nowhere"}
             onclick={submitFollowUp}
           >
             Follow up

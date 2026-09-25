@@ -9,6 +9,7 @@
   import Icon from "./Icon.svelte";
   import { anyOpen, dockAt, openTerminalFromBar, targetDock, terminalCwd } from "./terminal.svelte";
   import { shortCwd } from "./terminal";
+  import { tip } from "./tip";
 
   /** `bar` (the top bar's chip, the original) or `foot` — a row in the
    *  sidebar's foot beside Settings, where it lives since 2026-09-18 (his
@@ -38,7 +39,7 @@
   <button
     class="term-foot"
     class:term-open-on={lit}
-    {title}
+    use:tip={title}
     aria-label="New terminal"
     disabled={!cwd}
     onclick={() => void openTerminalFromBar()}
@@ -52,7 +53,7 @@
   <button
     class="ns-btn ghost small term-open"
     class:term-open-on={lit}
-    {title}
+    use:tip={title}
     aria-label="New terminal"
     disabled={!cwd}
     onclick={() => void openTerminalFromBar()}

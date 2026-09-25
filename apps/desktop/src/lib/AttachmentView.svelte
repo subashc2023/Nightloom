@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tip";
   import { app, activateTab } from "./state.svelte";
   import { attachmentBytes, type AttachmentContent } from "./attachments.svelte";
   import * as tabs from "./tabs";
@@ -59,7 +60,7 @@
       class:full
       {src}
       alt={bytes.name}
-      title={full ? "Click to fit the pane" : "Click for the image's own size"}
+      use:tip={full ? "Click to fit the pane" : "Click for the image's own size"}
       onclick={() => (full = !full)}
     />
   </div>

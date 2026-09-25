@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tip";
   import {
     app,
     openProjectFolder,
@@ -316,7 +317,7 @@
       class:unfiled={!app.project}
       aria-expanded={menu}
       onclick={() => (menu = !menu)}
-      title={app.project?.root ??
+      use:tip={app.project?.root ??
         (app.project ? "No folder — notes and chats only" : "No project — chats are not tied to a folder")}
     >
       <span class="chip-main">
@@ -397,8 +398,8 @@
            pages" (2026-09-11 review). -->
       {#if nightshiftBlockers > 0 || nightshiftNewPage}
         <span class="badges">
-          {#if nightshiftBlockers > 0}<span class="badge" title="{nightshiftBlockers} open blocker(s)">{nightshiftBlockers} open</span>{/if}
-          {#if nightshiftNewPage}<span class="badge page" title="An unread morning page">new page</span>{/if}
+          {#if nightshiftBlockers > 0}<span class="badge" use:tip={`${nightshiftBlockers} open blocker(s)`}>{nightshiftBlockers} open</span>{/if}
+          {#if nightshiftNewPage}<span class="badge page" use:tip={"An unread morning page"}>new page</span>{/if}
         </span>
       {/if}
     </button>
@@ -426,11 +427,11 @@
           kinds = !kinds;
         }}
       >
-        {newChatLabel()}{#if hasDraft(newDraftKey(app.project?.id, app.pendingMode))} <span class="mark draft" title="has a draft">✎</span>{/if}
+        {newChatLabel()}{#if hasDraft(newDraftKey(app.project?.id, app.pendingMode))} <span class="mark draft" use:tip={"has a draft"}>✎</span>{/if}
       </button>
       <button
         class="new-chat more"
-        title="A Claude Code chat or a Chat; incognito or ephemeral"
+        use:tip={"A Claude Code chat or a Chat; incognito or ephemeral"}
         aria-label="Other kinds of chat"
         aria-expanded={kinds}
         onclick={() => (kinds = !kinds)}
@@ -478,7 +479,7 @@
           onfocus={openSearch}
         />
         {#if app.search.result && !app.search.open}
-          <button class="search-cnt" title="Reopen the results" onclick={openSearch}>{app.search.result.matches} ▸</button>
+          <button class="search-cnt" use:tip={"Reopen the results"} onclick={openSearch}>{app.search.result.matches} ▸</button>
         {/if}
       </div>
     {/if}
@@ -534,18 +535,18 @@
                 ondragend={endContentDrag}
               >
                 <span class="snippet"
-                  >{#if inTab(s.id)}<span class="mark tab" title="Open in a tab">▭</span> {/if}{#if s.mode === "incognito"}<span class="mark" title="Incognito: writes nothing, unread by other chats">{MODE_GLYPH.incognito}</span> {/if}{#if hasDraft(s.id)}<span class="mark draft" title="has a draft">✎</span> {/if}{s.title ?? s.first_user ?? "empty session"}</span
+                  >{#if inTab(s.id)}<span class="mark tab" use:tip={"Open in a tab"}>▭</span> {/if}{#if s.mode === "incognito"}<span class="mark" use:tip={"Incognito: writes nothing, unread by other chats"}>{MODE_GLYPH.incognito}</span> {/if}{#if hasDraft(s.id)}<span class="mark draft" use:tip={"has a draft"}>✎</span> {/if}{s.title ?? s.first_user ?? "empty session"}</span
                 >
                 <!-- A fork says where it came from (backlog 062): the
                      parent's name as its own row shows it, or that the
                      parent is gone. -->
                 <span class="meta"
-                  >{s.id.slice(0, 8)}{#if s.kind === "chat"} · chat{/if}{#if s.mode === "incognito"} · incognito{/if} · {relativeTime(s.modified)}{#if forkLine(s, app.sessions)} · <span class="from" title="Forked from that chat; the parent is unchanged">{forkLine(s, app.sessions)}</span>{/if}</span
+                  >{s.id.slice(0, 8)}{#if s.kind === "chat"} · chat{/if}{#if s.mode === "incognito"} · incognito{/if} · {relativeTime(s.modified)}{#if forkLine(s, app.sessions)} · <span class="from" use:tip={"Forked from that chat; the parent is unchanged"}>{forkLine(s, app.sessions)}</span>{/if}</span
                 >
               </button>
               <button
                 class="rename-btn"
-                title="Rename session"
+                use:tip={"Rename session"}
                 aria-label="Rename session"
                 onclick={() => startRename(s.id, s.title ?? s.first_user ?? "")}
               >
@@ -554,7 +555,7 @@
             {/if}
             <button
               class="delete"
-              title="Delete chat…"
+              use:tip={"Delete chat…"}
               aria-label="Delete chat"
               onclick={() => (deleting = s)}
               disabled={app.busy}
@@ -596,7 +597,7 @@
               <span class="t ns-top">
                 <span class="ns-name">{openRow.name}</span>
                 {#if openRow.nightshift.live}
-                  <span class="ns-pill live" title="A shift is running; editing is locked">live</span>
+                  <span class="ns-pill live" use:tip={"A shift is running; editing is locked"}>live</span>
                 {/if}
               </span>
               <span class="m">{rowMeta(openRow.nightshift)}</span>
@@ -609,7 +610,7 @@
               <button
                 type="button"
                 class="disable-link always"
-                title="Disable Nightshift on this project (behind a warning)"
+                use:tip={"Disable Nightshift on this project (behind a warning)"}
                 onclick={() => (disabling = openRow)}
               >Disable…</button>
             </div>

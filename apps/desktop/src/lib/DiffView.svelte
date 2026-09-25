@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tip";
   /**
    * A side-by-side diff: old on the left, new on the right, line numbers,
    * red and green line fills, hatched padding where a side has no line. A
@@ -47,7 +48,7 @@
     <div class="filestrip" role="tablist" aria-label="Changed files">
       <div class="files">
         {#each files as f, i (f.path + i)}
-          <button role="tab" aria-selected={i === selected} class="file" class:on={i === selected} onclick={() => (selected = i)} title={f.path}>
+          <button role="tab" aria-selected={i === selected} class="file" class:on={i === selected} onclick={() => (selected = i)} use:tip={f.path}>
             <span class="name">{f.path}</span>
             <span class="pm">
               {#if f.binary}binary{:else}

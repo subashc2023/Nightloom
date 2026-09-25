@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tip";
   /**
    * Review → Runs (3.3): the shift list; the selected shift's timeline from
    * `status.json`, its units with commit links, the changes as a side-by-side
@@ -200,7 +201,7 @@
           <span class="dot" class:live={shift.live} class:failed={word === "failed"}></span>
           <span>run.log{shift.live ? " · following" : ""} · {kib(shift.log_bytes)}</span>
           <span class="spacer"></span>
-          <button class="fold" title={drawerOpen ? "Collapse the log" : "Show the log"} onclick={() => (drawerOpen = !drawerOpen)}>
+          <button class="fold" use:tip={drawerOpen ? "Collapse the log" : "Show the log"} onclick={() => (drawerOpen = !drawerOpen)}>
             <Icon name={drawerOpen ? "chev" : "chevl"} />
           </button>
         </div>
@@ -220,7 +221,7 @@
       <div class="ns-side-h row">
         Shifts · <span class="ns-mono dir">shifts/</span>
         <span class="spacer"></span>
-        <button class="fold" title="Collapse the shift list" onclick={() => (listOpen = false)}>
+        <button class="fold" use:tip={"Collapse the shift list"} onclick={() => (listOpen = false)}>
           <Icon name="chevr" />
         </button>
       </div>
@@ -243,7 +244,7 @@
     </div>
   {:else}
     <div class="list-col folded">
-      <button class="fold" title="Show the shift list" onclick={() => (listOpen = true)}>
+      <button class="fold" use:tip={"Show the shift list"} onclick={() => (listOpen = true)}>
         <Icon name="chevl" />
       </button>
     </div>
@@ -265,7 +266,7 @@
         <button
           class="ns-btn danger"
           disabled={shift.live || !status?.head_at_start || reverting}
-          title={shift.live ? "The shift is running" : !status?.head_at_start ? "No start commit recorded" : "Show what a revert would discard, then confirm"}
+          use:tip={shift.live ? "The shift is running" : !status?.head_at_start ? "No start commit recorded" : "Show what a revert would discard, then confirm"}
           onclick={() => void openRevert()}
         >
           <Icon name="revert" />{reverting ? "Reading…" : "Revert this shift…"}

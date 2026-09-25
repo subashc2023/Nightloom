@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tip";
   import {
     activateTab,
     app,
@@ -297,7 +298,7 @@
       tabindex="0"
       aria-selected={pane.active === t.id}
       data-tab={t.id}
-      title={hint(t)}
+      use:tip={hint(t)}
       onpointerdown={(e) => onTabPointerDown(e, t)}
       onclick={() => void activateTab(t.id)}
       onkeydown={(e) => {
@@ -320,14 +321,14 @@
       >
       <span class="name">{title(t)}</span>
       {#if needsYou(t)}
-        <span class="dot needs" title="Waiting on you"></span>
+        <span class="dot needs" use:tip={"Waiting on you"}></span>
       {:else if running(t)}
-        <span class="dot run" title="A turn is running"></span>
+        <span class="dot run" use:tip={"A turn is running"}></span>
       {/if}
-      {#if draft(t)}<span class="mark" title="has a draft">✎</span>{/if}
+      {#if draft(t)}<span class="mark" use:tip={"has a draft"}>✎</span>{/if}
       <button
         class="close"
-        title="Close tab ({isMac ? '⌘W' : 'Ctrl+W'})"
+        use:tip={`Close tab (${isMac ? '⌘W' : 'Ctrl+W'})`}
         aria-label="Close tab"
         tabindex="-1"
         onclick={(e) => {
@@ -345,7 +346,7 @@
   <button
     class="tab-new"
     class:open={chooser}
-    title="New tab… (⌘T is a new chat)"
+    use:tip={"New tab… (⌘T is a new chat)"}
     aria-label="New tab"
     aria-expanded={chooser}
     onclick={() => (chooser = !chooser)}
@@ -384,7 +385,7 @@
     {#if other}
       <button role="menuitem" onclick={() => { menuFor = null; if (t) void moveTab(t.id, other.id, other.tabs.length); }}>Move to the other pane</button>
     {:else}
-      <button role="menuitem" disabled={!canSplit} title={canSplit ? "" : "A pane keeps at least one tab"} onclick={() => { menuFor = null; if (t) void splitTab(t.id, "right"); }}>Open beside</button>
+      <button role="menuitem" disabled={!canSplit} use:tip={canSplit ? "" : "A pane keeps at least one tab"} onclick={() => { menuFor = null; if (t) void splitTab(t.id, "right"); }}>Open beside</button>
     {/if}
   </div>
 {/if}

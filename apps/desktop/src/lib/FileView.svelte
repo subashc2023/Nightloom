@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tip";
   /**
    * A file as a tab (nightshift backlog 161, 2026-09-25): the file card's
    * *Open* under a reply. Read-only, whatever the file is — the card's path
@@ -65,7 +66,7 @@
 
 <div class="file-view">
   <header class="head">
-    <span class="path mono" title={content.path}>{content.path}</span>
+    <span class="path mono" use:tip={content.path}>{content.path}</span>
     {#if file}
       <span class="meta mono">
         {fmtSize(file.size)} · read-only{file.via === "written" ? " · written by this chat's tools, outside its folders" : ""}
@@ -73,12 +74,12 @@
     {/if}
     <span class="spacer"></span>
     {#if file?.kind === "markdown"}
-      <button class="ns-btn ghost small" onclick={() => (plain = !plain)} title="Show the Markdown source or the formatted text"
+      <button class="ns-btn ghost small" onclick={() => (plain = !plain)} use:tip={"Show the Markdown source or the formatted text"}
         >{plain ? "Formatted" : "Plain"}</button
       >
     {/if}
-    <button class="ns-btn ghost small" onclick={() => reads++} title="Read the file again">Reload</button>
-    <button class="ns-btn ghost small" onclick={() => void reveal()} title="Show in the file manager">Reveal</button>
+    <button class="ns-btn ghost small" onclick={() => reads++} use:tip={"Read the file again"}>Reload</button>
+    <button class="ns-btn ghost small" onclick={() => void reveal()} use:tip={"Show in the file manager"}>Reveal</button>
   </header>
   {#if error}
     <div class="note-card">
@@ -96,7 +97,7 @@
         class:full
         {src}
         alt={content.path}
-        title={full ? "Click to fit the pane" : "Click for the image's own size"}
+        use:tip={full ? "Click to fit the pane" : "Click for the image's own size"}
         onclick={() => (full = !full)}
       />
     </div>

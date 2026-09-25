@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tip";
   import { tick } from "svelte";
   import { app, resolveApproval } from "./state.svelte";
   import { draftKey, enqueueMessage } from "./drafts.svelte";
@@ -314,7 +315,7 @@
   <button
     class="fold"
     type="button"
-    title={folded ? "expand" : "collapse to one line"}
+    use:tip={folded ? "expand" : "collapse to one line"}
     aria-label={folded ? "expand the card" : "collapse the card to one line"}
     aria-expanded={!folded}
     onclick={() => (folded = !folded)}
@@ -333,7 +334,7 @@
       placeholder="Note for the model — optional"
       aria-label="note for the model, optional"
     />
-    <span class="q" title={NOTE_TIP[kind]} aria-label={NOTE_TIP[kind]} role="img">?</span>
+    <span class="q" use:tip={NOTE_TIP[kind]} aria-label={NOTE_TIP[kind]} role="img">?</span>
   </div>
 {/snippet}
 
@@ -341,7 +342,7 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class="grip"
-    title="drag to resize · double-click resets to {kind === 'plan' ? 'two thirds' : 'a third'} of the transcript"
+    use:tip={`drag to resize · double-click resets to ${kind === 'plan' ? 'two thirds' : 'a third'} of the transcript`}
     onpointerdown={onGripDown}
     ondblclick={resetHeight}
   >
@@ -427,7 +428,7 @@
       <span class="mark" aria-hidden="true">⚑</span>
       <span>Plan — nothing has been edited yet</span>
       {#if planFile}
-        <span class="effect mono" title="the CLI keeps the plan here">{planFile}</span>
+        <span class="effect mono" use:tip={"the CLI keeps the plan here"}>{planFile}</span>
       {:else}
         <span class="effect">ExitPlanMode</span>
       {/if}
@@ -471,7 +472,7 @@
           class="then"
           role="radiogroup"
           aria-label="after approval"
-          title="After approval: Ask keeps the permission cards; Auto lets the classifier decide (backlog 085)"
+          use:tip={"After approval: Ask keeps the permission cards; Auto lets the classifier decide (backlog 085)"}
         >
           <span class="then-l">then</span>
           <span class="segs">
@@ -489,7 +490,7 @@
               class:on={then === "auto"}
               role="radio"
               aria-checked={then === "auto"}
-              title="Claude Code's auto mode is not available to this account's headless sessions; the chat starts in Manual, with no prompts, so its first write is refused (blocker 079)"
+              use:tip={"Claude Code's auto mode is not available to this account's headless sessions; the chat starts in Manual, with no prompts, so its first write is refused (blocker 079)"}
               onclick={() => (then = "auto")}>Auto</button
             >
           </span>
@@ -543,16 +544,16 @@
         <div class="arg outside">
           <div class="key">outside the folders this chat can see</div>
           <div class="outside-line">
-            <span class="outside-path" title={outside}>{outside}</span>
+            <span class="outside-path" use:tip={outside}>{outside}</span>
             <button
               class="ns-btn"
-              title="Allow this call, and let this chat read and edit {outside} from now on (recorded on the chat's log)"
+              use:tip={`Allow this call, and let this chat read and edit ${outside} from now on (recorded on the chat's log)`}
               onclick={() => allowAndGrant("chat")}>Allow, and let this chat see {outsideLeaf}</button
             >
             {#if app.project}
               <button
                 class="ns-btn"
-                title="Allow this call, and let every chat in the project {app.project.name} read and edit {outside}"
+                use:tip={`Allow this call, and let every chat in the project ${app.project.name} read and edit ${outside}`}
                 onclick={() => allowAndGrant("project")}>…let the project see it</button
               >
             {/if}
@@ -563,7 +564,7 @@
         <button class="ns-btn accent" onclick={() => decide("allow")}>Allow</button>
         <button
           class="ns-btn"
-          title="every later {req.name} in this chat runs unasked"
+          use:tip={`every later ${req.name} in this chat runs unasked`}
           onclick={() => decide("always")}>Allow for this chat</button
         >
         <button class="ns-btn danger" bind:this={denyButton} onclick={() => decide("deny")}>Deny</button>

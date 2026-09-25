@@ -94,7 +94,7 @@ export function renderMath(tex: string, display: boolean): string {
     // Reached only for the errors KaTeX raises regardless of throwOnError
     // (macro expansion blowing its budget, mostly).
     const why = err instanceof Error ? err.message : String(err);
-    return `<span class="math-error" title="${escapeAttr(why)}">${escapeText(tex)}</span>`;
+    return `<span class="math-error" data-tip="${escapeAttr(why)}">${escapeText(tex)}</span>`;
   }
 }
 

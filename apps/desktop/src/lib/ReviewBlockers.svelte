@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tip";
   /**
    * Review → Blockers (3.4): open first, then the rest; the selected
    * blocker's question, the unit's guess, what it blocks, and an answer box
@@ -147,17 +148,17 @@
         </span>
       </div>
       <div class="metarow">
-        <span class="ns-chip mono" title="The blocker file">{blocker.file}</span>
+        <span class="ns-chip mono" use:tip={"The blocker file"}>{blocker.file}</span>
         {#each places as p (p)}
           {@const path = pathOf(p)}
           {#if path}
-            <button class="ns-chip mono place" title="Where the guess lives — open the file as it is now" onclick={() => void openFile(path)}>{p}<Icon name="ext" /></button>
+            <button class="ns-chip mono place" use:tip={"Where the guess lives — open the file as it is now"} onclick={() => void openFile(path)}>{p}<Icon name="ext" /></button>
           {:else}
-            <span class="ns-chip mono" title="Where the guess lives">{p}</span>
+            <span class="ns-chip mono" use:tip={"Where the guess lives"}>{p}</span>
           {/if}
         {/each}
         {#if followUpLine}
-          <span class="ns-chip" title="The follow-up item made from the answer">{followUpLine}</span>
+          <span class="ns-chip" use:tip={"The follow-up item made from the answer"}>{followUpLine}</span>
         {:else if blocker.status === "open"}
           <span class="hint-sm">follow-up item: made by the next shift once answered</span>
         {/if}

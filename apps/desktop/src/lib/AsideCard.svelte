@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tip";
   // Every Copy button goes through the in-app clipboard ring (backlog 173).
   import { copyText } from "./clipRing.svelte";
   import { arrive, launch } from "./sendMotion";
@@ -328,7 +329,7 @@
     class="aside-card-head"
     class:movable
     draggable={draggable && panel}
-    title={draggable
+    use:tip={draggable
       ? panel
         ? "Drag onto a tab strip for a tab of its own"
         : "Drag to move it anywhere — near a tab strip it opens as a tab, at the window's right edge as a side panel, at the left edge beside. Double-click to put it back"
@@ -356,35 +357,35 @@
       <span class="ns-chip mono">{waiting ? "waiting" : "asking…"}</span>
     {/if}
     {#if aside.quote}
-      <span class="ns-chip mono" title="The highlighted passage, sent with the question exactly as selected">about {quoteLabel(aside.quote, "card")}</span>
+      <span class="ns-chip mono" use:tip={"The highlighted passage, sent with the question exactly as selected"}>about {quoteLabel(aside.quote, "card")}</span>
     {/if}
     {#if last && last.answer !== null && last.cacheRead > 0}
       <span class="ns-chip mono">{last.cacheRead.toLocaleString()} read from cache</span>
     {/if}
     <span class="spacer"></span>
     {#if folded}
-      <button class="ns-btn ghost small" title="Open this card again (the oldest other open card folds)" onclick={() => unfoldAside(aside)}
+      <button class="ns-btn ghost small" use:tip={"Open this card again (the oldest other open card folds)"} onclick={() => unfoldAside(aside)}
         >open</button
       >
     {/if}
     {#if moved}
       <button
         class="ns-btn ghost small"
-        title={aside.anchor ? "Put the card back under its passage" : "Put the card back above the composer"}
+        use:tip={aside.anchor ? "Put the card back under its passage" : "Put the card back above the composer"}
         onclick={goHome}>back</button
       >
     {/if}
     {#if last && last.partial.trim()}
       <button
         class="ns-btn ghost small"
-        title={aside.turns.length > 1 ? "Copy the thread as text" : "Copy the answer as text"}
+        use:tip={aside.turns.length > 1 ? "Copy the thread as text" : "Copy the answer as text"}
         onclick={() => void copy()}>{copied ? "Copied" : "Copy"}</button
       >
     {/if}
     {#if !readOnly}
       <button
         class="ns-btn ghost small"
-        title={(aside.draft
+        use:tip={(aside.draft
           ? "Close without asking"
           : asking
             ? "Stop the answer here; what has arrived stays"
@@ -412,7 +413,7 @@
         <button
           class="ns-btn small"
           disabled={!askDraft.trim()}
-          title="Ask this about the passage, off the chat's context: no changes, recorded nowhere"
+          use:tip={"Ask this about the passage, off the chat's context: no changes, recorded nowhere"}
           onclick={submitAsk}
         >
           Ask aside
@@ -468,7 +469,7 @@
           <button
             class="ns-btn small"
             disabled={!followDraft.trim()}
-            title="Continue the aside: the exchanges above go with this question, off the chat's context; recorded nowhere"
+            use:tip={"Continue the aside: the exchanges above go with this question, off the chat's context; recorded nowhere"}
             onclick={submitFollowUp}
           >
             Follow up
