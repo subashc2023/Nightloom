@@ -1709,7 +1709,11 @@ window too and whose click opens a page — [usage-ledger.md](usage-ledger.md)
 Not built: a per-chat mute, and the third banner the design draws for a
 filled window (~~the handoff of backlog 086 does not exist yet~~ — corrected
 2026-09-16: the hand-off landed later the same night, "The context-full
-hand-off" below; `notify.ts` still posts no banner for it). Clicking a
+hand-off" below; ~~`notify.ts` still posts no banner for it~~ — built
+2026-09-25 with backlog 193: the wrap-up's own turn ends as `<chat> —
+handoff written` / `72% · Continue in a new chat, or stay` in place of
+*turn finished*, on the turn-end switch; a failed wrap-up reads as any
+failed turn; `turnEndBanner` in `notify.ts`). Clicking a
 banner activates Nightloom; it does not open the chat the banner names,
 ~~because the plugin exposes no click event on desktop~~ **(corrected
 2026-09-16 evening, backlog 116: the plugin's `show()` discards the click,
@@ -1899,6 +1903,29 @@ The done card (*HANDOFF.md written*) carries the branch mark in the accent.
 A notice row in the transcript (today the compaction notice; the board's
 `context 72% — wrapping up` row is the same kind) is the board's ruled
 amber mono: a rule either side, the words between.
+
+**The read order (nightshift backlog 193, 2026-09-25).** *Continue in a new
+chat* now fills the new chat's box with a fixed prompt — the read order —
+and under it the model's `start-prompt` block (`firstMessage` in
+`handoff.svelte.ts`), both editable, nothing sent. The built-in read order
+is the practices one (the newest `## STATE AS OF` section of `HANDOFF.md` by
+line range, then `backlog/INDEX.md`, then `blockers/INDEX.md`, one file per
+command; nightshift blocker 366, question 11). Settings → Subscription →
+Hand-off has *The read order* with *Reset to default*; a blank stays blank
+across launches (the box then opens with the start prompt alone). The
+wrapped card has this chat's own copy and *Reset the read order*; a chat's
+own copy goes on to the chat that continues it (`carryReadOrder`). With no
+block in the reply the box opens with the read order alone and the toast
+says the block was missing. The built-in wrap-up changed with it: it adds a
+new `## STATE AS OF` section at the top of `HANDOFF.md` ~~overwrites
+HANDOFF.md~~ (an overwrite lost every earlier hand-off) and asks the model
+for only what the read order does not say. A wrap-up of his own in
+Settings is untouched. Also fixed: the notice's *Reset the message* set a
+blank wrap-up for the launch instead of dropping the chat's own
+(`clearMessage`). Tested against a scripted engine in
+`handoff.continue.test.ts` (usage readings, the wrap-up's reply, a stubbed
+`continue_session`). The prompt is stored in `nightloom.handoff`
+(`readOrder`, `readOrders`).
 
 ## Prompt suggestions as a ghost line (nightshift backlog 083, 2026-09-16)
 

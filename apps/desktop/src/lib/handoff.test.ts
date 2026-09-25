@@ -375,4 +375,96 @@ describe("the message, global and per chat", () => {
     expect(readDraft("chat-b").queue).toHaveLength(0);
     setMessage("chat-b", WRAP_UP);
   });
+
+  it("Reset the message drops the chat's own text rather than blanking it (found 2026-09-25)", () => {
+    setDefaultMessage(WRAP_UP);
+    setMessage("chat-c", "Mine.");
+    clearMessage("chat-c");
+    expect(hasOwnMessage("chat-c")).toBe(false);
+    expect(message("chat-c")).toBe(WRAP_UP);
+  });
+});
+
+// The read order above the model's start prompt (backlog 193).
+import {
+  READ_ORDER,
+  carryReadOrder,
+  clearDefaultReadOrder,
+  clearMessage,
+  clearReadOrder,
+  defaultReadOrder,
+  firstMessage,
+  hasOwnDefaultReadOrder,
+  hasOwnReadOrder,
+  readOrder,
+  setDefaultReadOrder,
+  setReadOrder,
+} from "./handoff.svelte";
+
+describe("the read order", () => {
+  it("is practices §5's by default (blocker 366, question 11)", () => {
+    for (const part of ["STATE AS OF", "HANDOFF.md", "backlog/INDEX.md", "blockers/INDEX.md", "one file per command"]) {
+      expect(READ_ORDER).toContain(part);
+    }
+    expect(READ_ORDER.indexOf("HANDOFF.md")).toBeLessThan(READ_ORDER.indexOf("backlog/INDEX.md"));
+    expect(READ_ORDER.indexOf("backlog/INDEX.md")).toBeLessThan(READ_ORDER.indexOf("blockers/INDEX.md"));
+  });
+
+  it("the wrap-up asks for a new STATE section, never an overwrite, and a start prompt that does not repeat the read order", () => {
+    expect(WRAP_UP).toContain("## STATE AS OF");
+    expect(WRAP_UP).toMatch(/never delete or rewrite/);
+    expect(WRAP_UP).not.toMatch(/overwrite it/);
+    expect(WRAP_UP).toMatch(/say only\s+what that does not/);
+  });
+
+  it("puts the read order above the start prompt, each only when there is one", () => {
+    expect(firstMessage("Read A.", "Do B.")).toBe("Read A.\n\nDo B.");
+    expect(firstMessage("Read A.", null)).toBe("Read A.");
+    expect(firstMessage("  ", "Do B.")).toBe("Do B.");
+    expect(firstMessage("", null)).toBe("");
+  });
+
+  it("falls back from the chat's own to the Settings default to the built-in; blanks are kept", () => {
+    clearDefaultReadOrder();
+    expect(defaultReadOrder()).toBe(READ_ORDER);
+    expect(hasOwnDefaultReadOrder()).toBe(false);
+    setDefaultReadOrder("Read NOTES.md.");
+    expect(readOrder("chat-o")).toBe("Read NOTES.md.");
+    setReadOrder("chat-o", "Read PLAN.md.");
+    expect(hasOwnReadOrder("chat-o")).toBe(true);
+    expect(readOrder("chat-o")).toBe("Read PLAN.md.");
+    expect(readOrder("chat-other")).toBe("Read NOTES.md.");
+    // A blank of the chat's own is kept: this chat wants none.
+    setReadOrder("chat-o", "");
+    expect(readOrder("chat-o")).toBe("");
+    // Typing the default back clears the chat's own; Reset does too.
+    setReadOrder("chat-o", "Read NOTES.md.");
+    expect(hasOwnReadOrder("chat-o")).toBe(false);
+    setReadOrder("chat-o", "x");
+    clearReadOrder("chat-o");
+    expect(hasOwnReadOrder("chat-o")).toBe(false);
+    // The built-in typed back clears Settings'; a blank Settings stays blank.
+    setDefaultReadOrder(READ_ORDER);
+    expect(hasOwnDefaultReadOrder()).toBe(false);
+    setDefaultReadOrder("");
+    expect(defaultReadOrder()).toBe("");
+    clearDefaultReadOrder();
+  });
+
+  it("goes on to the continuing chat only when the chat had its own", () => {
+    setReadOrder("chat-p1", "Read P.");
+    carryReadOrder("chat-p1", "chat-p2");
+    expect(readOrder("chat-p2")).toBe("Read P.");
+    carryReadOrder("chat-none", "chat-p3");
+    expect(hasOwnReadOrder("chat-p3")).toBe(false);
+  });
+
+  it("reads the stored fields back, blank included, and defaults them when absent", () => {
+    const s = parseStored(JSON.stringify({ default: 0.5, readOrder: "", readOrders: { a: "", b: "Read B.", c: 3 } }));
+    expect(s.readOrder).toBe("");
+    expect(s.readOrders).toEqual({ a: "", b: "Read B." });
+    const old = parseStored(JSON.stringify({ default: 0.5 }));
+    expect(old.readOrder).toBeNull();
+    expect(old.readOrders).toEqual({});
+  });
 });

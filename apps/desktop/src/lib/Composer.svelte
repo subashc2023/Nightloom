@@ -29,15 +29,20 @@
     abortWrapUp,
     awayNow,
     beginWrapUp,
+    clearMessage,
+    clearReadOrder,
     handoff,
     hasOwnMessage,
+    hasOwnReadOrder,
     hasOwnThreshold,
     message,
     noteActivity,
     noteFill,
     queueHold,
+    readOrder,
     reconsider,
     setMessage,
+    setReadOrder,
     setThreshold,
     stayHere,
     threshold,
@@ -462,6 +467,8 @@
   const reAskPct = Math.round(RE_ASK * 100);
   /** The wrap-up this chat would send: its own edit, else the Settings default. */
   const wrapUpText = $derived(message(app.activeSessionId));
+  /** The read order this chat's continuation opens with (backlog 193). */
+  const readOrderText = $derived(readOrder(app.activeSessionId));
   /** The wrap-up Nightloom queued while he was away is still in the queue. */
   const wrapUpQueued = $derived(handoff.queuedId !== 0 && queue.some((q) => q.id === handoff.queuedId));
 
@@ -1416,7 +1423,7 @@
         {/if}
         <button class="ns-btn ghost small" use:tip={`No wrap-up; asked again past ${reAskPct}%`} onclick={stayHere}>Stay here</button>
         {#if hasOwnMessage(app.activeSessionId)}
-          <button class="ns-btn ghost small" use:tip={"Back to the Settings default for this chat"} onclick={() => setMessage(app.activeSessionId, "")}>Reset the message</button>
+          <button class="ns-btn ghost small" use:tip={"Back to the Settings default for this chat"} onclick={() => clearMessage(app.activeSessionId)}>Reset the message</button>
         {/if}
         <span class="handoff-keys mono">stay past {reAskPct}% and the wrap-up is asked again</span>
       </div>
@@ -1435,11 +1442,34 @@
       </div>
       <p class="handoff-d">
         Check the reply above. <strong>Continue in a new chat</strong> opens a linked chat in the same folder with
-        {#if handoff.startPrompt}the model's start prompt in the box, not sent{:else}an empty box — the reply had no
+        {#if handoff.startPrompt}{readOrderText.trim() ? "the read order below and then " : ""}the model's start prompt
+          in the box, not sent{:else if readOrderText.trim()}the read order below in the box, not sent — the reply had no
+          <code>start-prompt</code> block, so add what to do first{:else}an empty box — the reply had no
           <code>start-prompt</code> block, so say what to read first{/if}. This chat stays readable.
       </p>
+      <!-- The read order (backlog 193): the fixed text above the model's
+           start prompt in the new chat's box; this chat's own copy, the
+           default in Settings → Subscription. -->
+      <textarea
+        class="handoff-msg"
+        rows="4"
+        autocorrect="off"
+        autocapitalize="off"
+        spellcheck="false"
+        aria-label="The read order the new chat opens with, for this chat"
+        placeholder="No read order — the new chat opens with the model's start prompt alone"
+        use:tip={"Put above the model's start prompt in the new chat's box. Edits are kept for this chat and the chats that continue it; the default is in Settings → Subscription."}
+        value={readOrderText}
+        oninput={(e) => {
+          noteActivity();
+          setReadOrder(app.activeSessionId, (e.currentTarget as HTMLTextAreaElement).value);
+        }}
+      ></textarea>
       <div class="handoff-acts">
         <button class="ns-btn accent small" disabled={app.busy} onclick={() => void continueChat()}>Continue in a new chat</button>
+        {#if hasOwnReadOrder(app.activeSessionId)}
+          <button class="ns-btn ghost small" use:tip={"Back to the Settings default for this chat"} onclick={() => clearReadOrder(app.activeSessionId)}>Reset the read order</button>
+        {/if}
         <button class="ns-btn ghost small" use:tip={`Keep going here; asked again past ${reAskPct}%`} onclick={stayHere}>Stay here</button>
         <span class="handoff-keys mono">stay past {reAskPct}% and the wrap-up is asked again</span>
       </div>

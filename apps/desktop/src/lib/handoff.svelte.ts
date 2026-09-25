@@ -44,6 +44,15 @@
  *    start prompt in its box — never sent. No block found: the box is
  *    left empty and the composer says so. Staying past 85% asks the
  *    wrap-up again.
+ * 6. **The read order** (backlog 193, 2026-09-25): the continued chat's
+ *    box holds a fixed prompt — the read order, a Settings default with a
+ *    per-chat override, practices §5's by default (blocker 366, question
+ *    11, default A) — and under it the model's start prompt, which now
+ *    says only what the read order does not: what changed, what to do
+ *    first. Both visible and editable in the box; nothing is sent. The
+ *    wrap-up adds a new `## STATE AS OF` section at the top of
+ *    `HANDOFF.md` ~~overwrites HANDOFF.md~~ (superseded 2026-09-25: an
+ *    overwrite lost every earlier hand-off).
  *
  * The stage machine is pure (`nextStage`, `autoQueues`, `isAway`,
  * `extractStartPrompt`) so it can be tested without a window: the running
@@ -72,14 +81,40 @@ export const START_PROMPT_TAG = "start-prompt";
 export const WRAP_UP =
   "This chat's context window is nearly full, so let's hand off to a new chat. Before anything else:\n" +
   "1. Finish or save whatever edit is half-done, so every file is in a coherent state.\n" +
-  "2. Write a file named HANDOFF.md at the top of the project folder (overwrite it if one exists) " +
-  "for the chat that continues this one: what we were doing, what is done, what is next, " +
-  "the decisions taken and why, and the files that matter — in your own words, complete enough " +
-  "that a fresh session can carry on without this conversation.\n" +
-  "3. End your reply with a short start prompt for the new chat — which files to read, in which " +
-  "order, and what to do first — in a fenced code block tagged `start-prompt` " +
+  "2. Add a new section at the top of HANDOFF.md, the file at the top of the project folder (create the file " +
+  "if there is none; never delete or rewrite the sections already in it), headed " +
+  "`## STATE AS OF <date time> — <one line>`, for the chat that continues this one: what we were " +
+  "doing, what is done, what is next, the decisions taken and why, and the files that matter — in " +
+  "your own words, complete enough that a fresh session can carry on without this conversation — " +
+  "ending with the queue of next steps in order as its last list.\n" +
+  "3. End your reply with a short start prompt for the new chat. The new chat is already told to " +
+  "read the newest HANDOFF.md section, then backlog/INDEX.md, then blockers/INDEX.md, so say only " +
+  "what that does not: what changed since the section was written, any other file to read, and " +
+  "what to do first. Put it in a fenced code block tagged `start-prompt` " +
   "(a line of three backticks followed by start-prompt, the prompt, then a line of three backticks).\n" +
   "Then stop; do not start the next step.";
+
+/**
+ * The fixed prompt above the model's start prompt in the continued chat's
+ * box (backlog 193): practices §5's session-start read order, blocker 366's
+ * answer to question 11 (default A). Editable in Settings → Subscription,
+ * and per chat on the hand-off card.
+ */
+export const READ_ORDER =
+  "This chat continues an earlier one that handed off. Read these first, one file per command:\n" +
+  "1. the newest `## STATE AS OF` section of HANDOFF.md, by its line range — not the whole file;\n" +
+  "2. backlog/INDEX.md;\n" +
+  "3. blockers/INDEX.md.\n" +
+  "The queue is that section's last list.";
+
+/**
+ * The continued chat's first message, as its box opens with it: the read
+ * order, then the model's start prompt, each only when there is one. Empty
+ * when neither is. Nothing sends it.
+ */
+export function firstMessage(readOrderText: string, startPrompt: string | null): string {
+  return [readOrderText.trim(), (startPrompt ?? "").trim()].filter((t) => t).join("\n\n");
+}
 
 /** ~~The first message of the continued chat, ready in its box.~~ Superseded
  *  2026-09-16 (pass 2): the box holds the model's own start prompt, or
@@ -367,6 +402,11 @@ export interface Stored {
   message: string | null;
   /** A chat's own wrap-up message, when it has one. */
   messages: Record<string, string>;
+  /** The Settings read order (backlog 193); null means the built-in
+   *  `READ_ORDER`. A blank is kept: no read order at all. */
+  readOrder: string | null;
+  /** A chat's own read order, blank included, when it has one. */
+  readOrders: Record<string, string>;
 }
 
 function isRatio(v: unknown): v is number {
@@ -385,6 +425,10 @@ function isText(v: unknown): v is string {
   return typeof v === "string" && v.trim() !== "";
 }
 
+function isString(v: unknown): v is string {
+  return typeof v === "string";
+}
+
 /** The stored preference read back; the defaults when absent or malformed. */
 export function parseStored(raw: string | null): Stored {
   try {
@@ -395,12 +439,14 @@ export function parseStored(raw: string | null): Stored {
         perChat: readMap(p.perChat, isRatio),
         message: isText(p.message) ? p.message : null,
         messages: readMap(p.messages, isText),
+        readOrder: isString(p.readOrder) ? p.readOrder : null,
+        readOrders: readMap(p.readOrders, isString),
       };
     }
   } catch {
     // Unreadable storage: the defaults.
   }
-  return { default: DEFAULT_THRESHOLD, perChat: {}, message: null, messages: {} };
+  return { default: DEFAULT_THRESHOLD, perChat: {}, message: null, messages: {}, readOrder: null, readOrders: {} };
 }
 
 function load(): Stored {
@@ -481,5 +527,75 @@ export function setMessage(chat: string | null, text: string): void {
   if (!chat) return;
   if (text !== defaultMessage()) stored.messages[chat] = text;
   else delete stored.messages[chat];
+  save();
+}
+
+/** The notice's *Reset the message*: the chat's own wrap-up dropped, so it
+ *  reads the Settings default again. (Found 2026-09-25, backlog 193: the
+ *  button called `setMessage(chat, "")`, which kept a blank for the launch —
+ *  an empty box and a disabled *Wrap up now* — rather than resetting.) */
+export function clearMessage(chat: string | null): void {
+  if (!chat) return;
+  delete stored.messages[chat];
+  save();
+}
+
+// ---- the read order above the model's start prompt (backlog 193) ----
+
+/** The Settings read order: his own text (blank included), else the built-in. */
+export function defaultReadOrder(): string {
+  return stored.readOrder ?? READ_ORDER;
+}
+
+/** Whether Settings holds a read order of his own. */
+export function hasOwnDefaultReadOrder(): boolean {
+  return stored.readOrder !== null;
+}
+
+/** Set the Settings read order; the built-in text clears it. A blank is
+ *  kept, across launches too: a project without HANDOFF.md may want none. */
+export function setDefaultReadOrder(text: string): void {
+  stored.readOrder = text === READ_ORDER ? null : text;
+  save();
+}
+
+/** Settings' *Reset to default*: back to the built-in. */
+export function clearDefaultReadOrder(): void {
+  stored.readOrder = null;
+  save();
+}
+
+/** The read order this chat's continuation opens with: its own if edited, else the Settings default. */
+export function readOrder(chat: string | null): string {
+  if (chat && chat in stored.readOrders) return stored.readOrders[chat];
+  return defaultReadOrder();
+}
+
+/** Whether the chat has a read order of its own. */
+export function hasOwnReadOrder(chat: string | null): boolean {
+  return !!chat && chat in stored.readOrders;
+}
+
+/** Set the read order for one chat; the default's own text clears it. A
+ *  blank is kept: this chat's continuation opens with the start prompt only. */
+export function setReadOrder(chat: string | null, text: string): void {
+  if (!chat) return;
+  if (text !== defaultReadOrder()) stored.readOrders[chat] = text;
+  else delete stored.readOrders[chat];
+  save();
+}
+
+/** The hand-off card's *Reset*: the chat reads the Settings default again. */
+export function clearReadOrder(chat: string | null): void {
+  if (!chat) return;
+  delete stored.readOrders[chat];
+  save();
+}
+
+/** At *Continue*: a read order of the chat's own goes on to the chat that
+ *  continues it, so the next hand-off in the line opens the same way. */
+export function carryReadOrder(from: string | null, to: string): void {
+  if (!from || !(from in stored.readOrders)) return;
+  stored.readOrders[to] = stored.readOrders[from];
   save();
 }
