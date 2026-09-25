@@ -4,14 +4,37 @@ import {
   chatName,
   filesChanged,
   fmtElapsed,
+  handoffWrittenBody,
+  handoffWrittenTitle,
   needsYouBody,
   needsYouTitle,
   parseNotifyPrefs,
+  turnEndBanner,
   turnEndBody,
   turnEndTitle,
   usageRefreshBody,
   usageRefreshTitle,
 } from "./notify";
+
+// The third variant (backlog 079 with 193): the wrap-up's own turn ends as
+// "handoff written" with the fill, instead of "turn finished".
+describe("the handoff-written banner", () => {
+  const base = { chat: "Q5 draft", segs: [] as Segment[], outTokens: 1200, elapsedMs: 5000, error: null };
+  it("reads as board 5c draws it", () => {
+    expect(handoffWrittenTitle("Q5 draft")).toBe("Q5 draft — handoff written");
+    expect(handoffWrittenBody(0.72)).toBe("72% · Continue in a new chat, or stay");
+    expect(handoffWrittenBody(1.4)).toBe("100% · Continue in a new chat, or stay");
+  });
+  it("replaces the turn-end banner only for the wrap-up's turn, and never for a failed one", () => {
+    expect(turnEndBanner({ ...base, handoffFill: 0.72 })).toEqual([
+      "Q5 draft — handoff written",
+      "72% · Continue in a new chat, or stay",
+    ]);
+    expect(turnEndBanner({ ...base, handoffFill: null })[0]).toBe("Q5 draft — turn finished");
+    expect(turnEndBanner(base)[0]).toBe("Q5 draft — turn finished");
+    expect(turnEndBanner({ ...base, error: "boom", handoffFill: 0.72 })).toEqual(["Q5 draft — turn failed", "boom"]);
+  });
+});
 
 // The turn-end banner (nightshift backlog 079): the switches' defaults and
 // the copy, in the shape the design board draws.

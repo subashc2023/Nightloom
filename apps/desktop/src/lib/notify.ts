@@ -157,10 +157,46 @@ export function needsYouBody(req: Pick<ApprovalRequest, "name" | "input">): stri
   return arg ? `${arg.slice(0, 100)} · waits until you answer` : "waits until you answer";
 }
 
+/** `<chat> — handoff written`: board 5c's third variant (backlog 079, built
+ *  2026-09-25 with 193 per blocker 366, question 13). */
+export function handoffWrittenTitle(chat: string): string {
+  return `${chat} — handoff written`;
+}
+
+/** `72% · Continue in a new chat, or stay` — the window's fill, 0..1. */
+export function handoffWrittenBody(fill: number): string {
+  return `${Math.round(Math.min(Math.max(fill, 0), 1) * 100)}% · Continue in a new chat, or stay`;
+}
+
+/**
+ * The two lines the turn-end banner carries. The wrap-up's own turn
+ * (`handoffFill` set: the hand-off was `wrapping` in the chat the turn ran
+ * in) ends as *handoff written* instead of *turn finished* — one banner,
+ * not two; a failed wrap-up reads as any failed turn.
+ */
+export function turnEndBanner(args: {
+  chat: string;
+  segs: Segment[];
+  outTokens: number | null;
+  elapsedMs: number | null;
+  error: string | null;
+  handoffFill?: number | null;
+}): [string, string] {
+  if (args.handoffFill != null && args.error === null) {
+    return [handoffWrittenTitle(args.chat), handoffWrittenBody(args.handoffFill)];
+  }
+  return [
+    turnEndTitle(args.chat, args.error !== null),
+    turnEndBody(args.segs, args.outTokens, args.elapsedMs, args.error),
+  ];
+}
+
 /**
  * Post the turn-end banner, unless the window is in front or the switch is
  * off. Errors from the notification centre are swallowed: a banner that
  * could not be shown is not worth a toast in a window nobody is looking at.
+ * The hand-off's *handoff written* rides the same switch: it is that
+ * turn's end.
  */
 export async function notifyTurnEnd(args: {
   chat: string;
@@ -168,15 +204,14 @@ export async function notifyTurnEnd(args: {
   outTokens: number | null;
   elapsedMs: number | null;
   error: string | null;
+  handoffFill?: number | null;
   prefs?: NotifyPrefs;
 }): Promise<void> {
   const prefs = args.prefs ?? loadNotifyPrefs();
   if (!prefs.turnEnd || windowFocused()) return;
   try {
-    await api.notify(
-      turnEndTitle(args.chat, args.error !== null),
-      turnEndBody(args.segs, args.outTokens, args.elapsedMs, args.error),
-    );
+    const [title, body] = turnEndBanner(args);
+    await api.notify(title, body);
   } catch {
     // See above.
   }

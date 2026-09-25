@@ -77,8 +77,12 @@
   import CliUpdateActions from "./CliUpdateActions.svelte";
   import {
     WRAP_UP,
+    clearDefaultReadOrder,
     defaultMessage as handoffDefaultMessage,
+    defaultReadOrder,
     hasOwnDefaultMessage,
+    hasOwnDefaultReadOrder,
+    setDefaultReadOrder,
     setDefaultMessage as setHandoffDefaultMessage,
     setThreshold as setHandoffThreshold,
     threshold as handoffThreshold,
@@ -1403,9 +1407,35 @@
         <p class="note small">
           Sent as typed. Keep the ask for a fenced block tagged
           <code>start-prompt</code>: that is what the new chat's first message
-          is read out of; without one its box opens empty. A chat can edit its
+          is read out of; without one its box opens with the read order alone. A chat can edit its
           own copy on the notice without changing this.
           {#if hasOwnDefaultMessage()}<em>Edited; Reset to default restores the built-in text (a box left empty reads as the built-in after a relaunch).</em>{:else}<em>The built-in text ({WRAP_UP.length} characters).</em>{/if}
+        </p>
+        <!-- The read order (nightshift backlog 193): the fixed prompt above
+             the model's start prompt in the continued chat's box. -->
+        <div class="ch"><span class="t">The read order</span>
+          <span class="spacer"></span>
+          {#if hasOwnDefaultReadOrder()}
+            <button class="ns-btn ghost small" onclick={clearDefaultReadOrder}>Reset to default</button>
+          {/if}
+        </div>
+        <textarea
+          class="handoff-msg"
+          rows="6"
+          autocorrect="off"
+          autocapitalize="off"
+          spellcheck="false"
+          aria-label="The default read order a continued chat opens with"
+          placeholder="No read order — a continued chat opens with the model's start prompt alone"
+          value={defaultReadOrder()}
+          oninput={(e) => setDefaultReadOrder((e.currentTarget as HTMLTextAreaElement).value)}
+        ></textarea>
+        <p class="note small">
+          What a continued chat's box opens with, above the model's start
+          prompt — both in the box, editable, not sent. Left empty, it stays
+          empty. A chat can edit its own copy on the hand-off card, and the
+          chats that continue it keep that copy.
+          {#if hasOwnDefaultReadOrder()}<em>Edited; Reset to default restores the built-in read order.</em>{:else}<em>The built-in read order: the newest HANDOFF.md section, then the two indexes.</em>{/if}
         </p>
       </section>
 

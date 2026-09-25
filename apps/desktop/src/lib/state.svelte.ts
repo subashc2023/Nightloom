@@ -1,7 +1,14 @@
 import { tick } from "svelte";
 import { listen } from "@tauri-apps/api/event";
 import * as api from "./api";
-import { handoff, noteAgentTurnEnd, resetHandoff } from "./handoff.svelte";
+import {
+  carryReadOrder,
+  firstMessage,
+  handoff,
+  noteAgentTurnEnd,
+  readOrder,
+  resetHandoff,
+} from "./handoff.svelte";
 import { suggestions } from "./suggestions.svelte";
 import { isMac } from "./platform";
 import { UNFILED, draftKey, enqueueMessage, moveDraft, newDraftKey, setDraftText } from "./drafts.svelte";
@@ -4702,11 +4709,19 @@ export const MODE_GLYPH: Record<ChatMode, string> = {
  * and continue." in its box~~ (pass 1). No block in the reply: the box is
  * left empty, a toast says so, and the composer's hint line repeats it
  * until he types.
+ *
+ * Since backlog 193 (2026-09-25) the box holds the read order first — the
+ * Settings default or the wrapped chat's own (`handoff.svelte.ts`
+ * `readOrder`) — then the model's start prompt; with no block, the read
+ * order alone, and the toast still says the block was missing. A read
+ * order of the chat's own goes on to the new chat.
  */
 export async function continueChat(): Promise<void> {
   if (app.busy) return;
   try {
     const start = handoff.startPrompt;
+    const from = handoff.chat ?? app.activeSessionId;
+    const lead = readOrder(from);
     const res = await api.continueSession();
     // The aside thread stays with the chat being left (backlog 130).
     switchAside(res.session);
@@ -4718,11 +4733,16 @@ export async function continueChat(): Promise<void> {
     // ~~`app.subagents = []`~~ — rows are per chat since backlog 160.
     app.suggestion = null;
     resetHandoff();
-    if (start) {
-      setDraftText(res.session, start);
-    } else {
+    carryReadOrder(from, res.session);
+    const first = firstMessage(lead, start);
+    if (first) setDraftText(res.session, first);
+    if (!start) {
       handoff.noStartPromptChat = res.session;
-      addToast("The wrap-up reply had no start-prompt block — the new chat's box is empty; say what to read first.");
+      addToast(
+        first
+          ? "The wrap-up reply had no start-prompt block — the new chat's box holds only the read order; say what to do first."
+          : "The wrap-up reply had no start-prompt block — the new chat's box is empty; say what to read first.",
+      );
     }
     leaveNote();
   } catch (e) {
@@ -5264,12 +5284,20 @@ function bannerChat(): string {
 function notifyTurnEnded(error: string | null): void {
   const sent = [...app.events].reverse().find((e) => e.event === "user_message");
   const since = sent?.event === "user_message" ? Date.parse(sent.at) : NaN;
+  // The wrap-up's own turn (backlog 079's third banner, with 193): the
+  // hand-off is still `wrapping` in the chat the turn ran in — the turn's
+  // end moves it on only after this. A turn the CLI ended with an error
+  // wrote no hand-off worth announcing.
+  const ranIn = app.parked ? app.parked.session : app.activeSessionId;
+  const wrapUp =
+    ranIn !== null && handoff.chat === ranIn && handoff.stage === "wrapping" && app.agentTurn?.is_error !== true;
   void notifyTurnEnd({
     chat: bannerChat(),
     segs: app.live?.segments ?? [],
     outTokens: app.liveUsage?.output_tokens ?? null,
     elapsedMs: Number.isNaN(since) ? null : Date.now() - since,
     error,
+    handoffFill: wrapUp ? handoff.fill : null,
   });
 }
 
