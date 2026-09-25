@@ -157,7 +157,10 @@ pub trait Host: Send + Sync + 'static {
     /// sentence goes to the phone as a 409, and the phone keeps the text).
     async fn send(&self, chat: Option<&str>, text: &str) -> Result<Handed, String>;
     async fn approve(&self, req: ApproveRequest) -> Result<(), String>;
-    async fn cancel(&self) -> Result<(), String>;
+    /// Stop `chat`'s turn, or the open chat's when `None` (nightshift
+    /// backlog 159, A3: two chats may run at once, and the phone's Stop
+    /// is for the chat the phone is showing).
+    async fn cancel(&self, chat: Option<&str>) -> Result<(), String>;
     /// A fresh subscriber to the event relay.
     fn events(&self) -> broadcast::Receiver<Event>;
     /// The page's files by path (`remote.html`, `assets/remote-….js`, …).
@@ -303,6 +306,7 @@ fn router(shared: Arc<Shared>) -> Router {
         .route("/send", post(send_active))
         .route("/approve", post(approve))
         .route("/cancel", post(cancel))
+        .route("/chats/{id}/cancel", post(cancel_chat))
         .route("/events", get(events))
         // An explicit fallback so the bearer layer below covers a miss
         // too: without one an unknown `/api` path fell through to the
@@ -400,7 +404,16 @@ async fn approve(State(shared): State<Arc<Shared>>, Json(req): Json<ApproveReque
 }
 
 async fn cancel(State(shared): State<Arc<Shared>>) -> Response {
-    match shared.host.cancel().await {
+    match shared.host.cancel(None).await {
+        Ok(()) => StatusCode::OK.into_response(),
+        Err(e) => bad(e),
+    }
+}
+
+/// Stop one chat's turn (backlog 159, A3): the chat the phone shows, which
+/// need not be the one on the Mac's screen.
+async fn cancel_chat(State(shared): State<Arc<Shared>>, Path(id): Path<String>) -> Response {
+    match shared.host.cancel(Some(&id)).await {
         Ok(()) => StatusCode::OK.into_response(),
         Err(e) => bad(e),
     }
@@ -494,6 +507,7 @@ mod tests {
         sent: Mutex<Vec<(Option<String>, String)>>,
         approved: Mutex<Vec<ApproveRequest>>,
         cancelled: Mutex<usize>,
+        cancelled_chats: Mutex<Vec<Option<String>>>,
         tx: broadcast::Sender<Event>,
     }
 
@@ -504,6 +518,7 @@ mod tests {
                 sent: Mutex::new(Vec::new()),
                 approved: Mutex::new(Vec::new()),
                 cancelled: Mutex::new(0),
+                cancelled_chats: Mutex::new(Vec::new()),
                 tx: tx.clone(),
             });
             (host, tx)
@@ -564,8 +579,12 @@ mod tests {
             self.approved.lock().unwrap().push(req);
             Ok(())
         }
-        async fn cancel(&self) -> Result<(), String> {
+        async fn cancel(&self, chat: Option<&str>) -> Result<(), String> {
             *self.cancelled.lock().unwrap() += 1;
+            self.cancelled_chats
+                .lock()
+                .unwrap()
+                .push(chat.map(String::from));
             Ok(())
         }
         fn events(&self) -> broadcast::Receiver<Event> {
@@ -845,6 +864,19 @@ mod tests {
             .unwrap();
         assert_eq!(r.status(), 200);
         assert_eq!(*host.cancelled.lock().unwrap(), 1);
+
+        // The phone's Stop for the chat it shows (backlog 159, A3).
+        let r = c
+            .post(format!("{base}/api/chats/abc/cancel"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        assert_eq!(
+            *host.cancelled_chats.lock().unwrap(),
+            vec![None, Some("abc".to_string())]
+        );
         server.stop().await;
     }
 

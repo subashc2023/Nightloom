@@ -1352,7 +1352,9 @@ export async function init(): Promise<void> {
     const { id, name, decision, reason, answer, then } = e.payload;
     void resolveApproval(id, name, decision, reason ?? undefined, answer ?? undefined, then ?? undefined);
   });
-  await listen("remote-cancel", () => void cancelTurn());
+  // The phone names the chat it shows (backlog 159, A3); `null` is the
+  // chat on screen, as before.
+  await listen<{ chat?: string | null } | null>("remote-cancel", (e) => void cancelTurn(e.payload?.chat ?? null));
   // A chat's first turn names its chat as it starts (backlog 192; review
   // 2026-09-23 finding 4): the budget meter and stop card follow it now,
   // not only once the turn has ended.
@@ -4772,12 +4774,38 @@ async function refocus(session: string | null): Promise<void> {
 interface TurnCtx {
   chat: string | null;
   detached: boolean;
+  /** The window's own name for the turn (A3), sent with it: what its Stop
+   *  names until the chat is known. */
+  key: string;
+}
+
+let turnKeys = 0;
+function newTurnKey(): string {
+  turnKeys += 1;
+  return `turn:${Date.now().toString(36)}-${turnKeys}`;
+}
+
+/** What a Stop for the turn on screen names (A3): its chat, or its turn
+ *  key before the chat is known — never nothing, which the backend reads
+ *  as "the latest turn", possibly another chat's. `null` only when no
+ *  Claude Code turn runs here (the provider engine, a compaction). */
+export function stopTarget(t: { chat: string | null; key: string } | null): string | null {
+  return t ? (t.chat ?? t.key) : null;
 }
 
 /** The turn on screen (or parked), if one runs. */
 let fg: TurnCtx | null = null;
 /** The turns in `app.background`, by chat. */
 const bgTurns = new Map<string, TurnCtx>();
+
+/** The background turn's chat id that `chat` names (the full id or a
+ *  prefix, as the phone may send), or `null` when that chat is not
+ *  running in the background (A3). */
+export function backgroundTurnOf(chat: string): string | null {
+  if (bgTurns.has(chat)) return chat;
+  const hits = [...bgTurns.keys()].filter((id) => id.startsWith(chat));
+  return hits.length === 1 ? hits[0] : null;
+}
 
 /** A background chat's name, for its toasts. */
 function backgroundName(id: string): string {
@@ -5348,7 +5376,7 @@ async function sendAgent(
   app.busy = true;
   // This turn, for the background (backlog 159, A2): he may open another
   // chat while it runs, and send there.
-  const turn: TurnCtx = { chat: app.activeSessionId, detached: false };
+  const turn: TurnCtx = { chat: app.activeSessionId, detached: false, key: newTurnKey() };
   fg = turn;
   // The budget meter (backlog 165, pass 2) follows this chat's ledger
   // while the turn runs; a chat not yet created has no directory to read.
@@ -5361,6 +5389,7 @@ async function sendAgent(
       images.length > 0 ? images : undefined,
       documents.length > 0 ? documents : undefined,
       council ?? undefined,
+      turn.key,
     );
     // Off screen at its end (A2): the chat on screen is another's, and
     // nothing below is about it.
@@ -5794,14 +5823,38 @@ export function turnWasStopped(): boolean {
   return stopped;
 }
 
-export async function cancelTurn(): Promise<void> {
+export async function cancelTurn(chat?: string | null): Promise<void> {
+  // A named chat that is not the one on screen (backlog 159, A3: the
+  // phone's Stop for the chat it shows): stop that chat's turn only; the
+  // screen's turn, its queue flag and its prompts are left alone.
+  const bg = chat ? backgroundTurnOf(chat) : null;
+  if (bg) {
+    try {
+      await api.cancel(bg);
+      const b = app.background[bg];
+      if (b) b.approvals = [];
+    } catch (e) {
+      addToast(String(e));
+    }
+    return;
+  }
+  // A named chat with no turn here at all: nothing to stop — never the
+  // screen's turn in its place.
+  // (The provider engine's turn has no `fg`: the chat on screen is its.)
+  // A parked turn (the provider engine's, looked away from) is the one
+  // that runs, so its chat is the one a Stop may name.
+  const running = app.parked ? app.parked.session : (fg?.chat ?? app.activeSessionId);
+  if (chat && !running?.startsWith(chat)) return;
   // Before the call, not after: the stopped turn can return before the
   // cancel's own reply does, and the queue reads the flag at that return.
   stopped = true;
   try {
     // The turn on screen (or parked) only (backlog 159, A2): a chat
     // running in the background keeps running.
-    await api.cancel(fg?.chat ?? null);
+    // Its turn key before its first event names the chat (A3: a New
+    // chat's first turn stopped at once named nothing, and the backend
+    // then stopped the latest-registered turn — another chat's).
+    await api.cancel(stopTarget(fg));
     // Cancelling refuses every parked prompt on the backend, so they stop
     // being answerable — but only once the call actually lands. Clearing
     // them before that could strand a still-running turn with no prompt.

@@ -190,8 +190,11 @@ export function sendAgent(
   images?: ImageInput[],
   documents?: DocumentInput[],
   council?: CouncilRequest,
+  stopKey?: string,
 ): Promise<AgentTurnResult> {
-  return invoke("send_agent", { text, images, documents, council });
+  // `stopKey` (backlog 159, A3): the window's name for this turn, which a
+  // Stop can use before the turn's first event names its chat.
+  return invoke("send_agent", { text, images, documents, council, stopKey });
 }
 
 /**

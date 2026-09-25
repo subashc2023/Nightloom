@@ -25,8 +25,14 @@
 //! is only the map and the focus; the sessions are behind their own async
 //! locks.
 //!
-//! Not this step (A2): the Claude Code agent is still one per window, so a
-//! second chat's *send* still waits for the first chat's turn.
+//! - **A command reads its chat once** (A3, 2026-09-25; A2 review finding
+//!   2): [`Target`] is the focus and its log taken together, and a command
+//!   that locks an agent and a log locks both from it, so a switch between
+//!   the two locks cannot put chat A's turn into chat B's log.
+//!
+//! ~~Not this step (A2): the Claude Code agent is still one per window, so a
+//! second chat's *send* still waits for the first chat's turn.~~ (done in A2,
+//! `agents.rs`.)
 
 use nightloom_core::{ChatKind, ChatMode, Session};
 use std::collections::HashMap;
@@ -50,6 +56,36 @@ struct Inner {
     /// turn's end when he browsed away (and, for a New chat's first turn,
     /// the only way it learns the id before the turn reports it).
     last_turn: Option<String>,
+    /// The chat New chat's first message made and focused, until the focus
+    /// next moves (backlog 159, A3): a second command aimed at that same
+    /// New chat finds it here instead of making another.
+    made_from_new: Option<String>,
+}
+
+/// The chat a command is about, read **once** (backlog 159, A3; A2 review
+/// finding 2). A command that read the focus twice — once for the agent,
+/// again for the log — could pair chat A's agent with chat B's log when he
+/// switched chats between the two reads, and a send then ran A's
+/// `--resume` into B's log. It holds the chat's log handle, so the chat
+/// stays held until the command is done with it.
+pub struct Target {
+    id: Option<String>,
+    log: Option<Log>,
+}
+
+impl Target {
+    /// The chat's id, `None` on New chat.
+    pub fn id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+
+    /// The chat, locked: waits only on its own turn. Nothing on New chat.
+    pub async fn lock(&self) -> Open {
+        match &self.log {
+            Some(log) => Open(Some(log.clone().lock_owned().await)),
+            None => Open(None),
+        }
+    }
 }
 
 /// See the module docs.
@@ -97,6 +133,15 @@ impl Chats {
             .and_then(|id| inner.held.get(id).cloned())
     }
 
+    /// The open chat and its log, read together, once — what a command
+    /// that locks both an agent and a chat aims at ([`Target`]).
+    pub fn target(&self) -> Target {
+        let inner = self.inner();
+        let id = inner.focus.clone();
+        let log = id.as_ref().and_then(|id| inner.held.get(id).cloned());
+        Target { id, log }
+    }
+
     /// The open chat, locked: waits only on *that* chat's turn.
     pub async fn lock_focused(&self) -> Open {
         match self.focused() {
@@ -136,6 +181,7 @@ impl Chats {
         let (full, log) = self.find(id)?;
         let mut inner = self.inner();
         inner.focus = Some(full);
+        inner.made_from_new = None;
         prune(&mut inner);
         Some(log)
     }
@@ -152,6 +198,7 @@ impl Chats {
             .or_insert_with(|| Arc::new(AsyncMutex::new(session)))
             .clone();
         inner.focus = Some(id);
+        inner.made_from_new = None;
         prune(&mut inner);
         log
     }
@@ -160,6 +207,7 @@ impl Chats {
     pub fn focus_new(&self) {
         let mut inner = self.inner();
         inner.focus = None;
+        inner.made_from_new = None;
         prune(&mut inner);
     }
 
@@ -181,7 +229,8 @@ impl Chats {
         let id = session.id.clone();
         let log = Arc::new(AsyncMutex::new(session));
         inner.held.insert(id.clone(), log.clone());
-        inner.focus = Some(id);
+        inner.focus = Some(id.clone());
+        inner.made_from_new = Some(id);
         Ok((log, true))
     }
 
@@ -193,6 +242,49 @@ impl Chats {
         log_dir: &Path,
     ) -> Result<(Held, bool), String> {
         let (log, created) = self.focused_or_start(mode, kind, log_dir)?;
+        Ok((log.lock_owned().await, created))
+    }
+
+    /// [`lock_or_start`](Self::lock_or_start) for the chat `target` read
+    /// when the command began, not whatever is open by the time it gets
+    /// here (backlog 159, A3; A2 review finding 2). A chat target is that
+    /// chat. A New chat target makes a chat — focused if New chat is still
+    /// open; if a racing command on the same New chat made one already, it
+    /// is that one; and if he has opened another chat since, the new one is
+    /// made without taking the focus from the chat he is looking at.
+    pub async fn lock_or_start_at(
+        &self,
+        target: &Target,
+        mode: ChatMode,
+        kind: ChatKind,
+        log_dir: &Path,
+    ) -> Result<(Held, bool), String> {
+        if let Some(log) = &target.log {
+            return Ok((log.clone().lock_owned().await, false));
+        }
+        let (log, created) = {
+            let mut inner = self.inner();
+            match inner.focus.clone() {
+                None => {
+                    drop(inner);
+                    self.focused_or_start(mode, kind, log_dir)?
+                }
+                Some(id) if inner.made_from_new.as_ref() == Some(&id) => {
+                    match inner.held.get(&id) {
+                        Some(log) => (log.clone(), false),
+                        None => return Err("the new chat went away".into()),
+                    }
+                }
+                Some(_) => {
+                    let session =
+                        crate::start_session(mode, kind, log_dir).map_err(|e| e.to_string())?;
+                    let id = session.id.clone();
+                    let log = Arc::new(AsyncMutex::new(session));
+                    inner.held.insert(id, log.clone());
+                    (log, true)
+                }
+            }
+        };
         Ok((log.lock_owned().await, created))
     }
 
@@ -366,6 +458,85 @@ mod tests {
         drop(turn);
         assert!(chats.try_lock_focused().is_ok());
         assert_eq!(chats.last_turn().as_deref(), Some(a_id.as_str()));
+    }
+
+    /// A2 review finding 2 (A3): a command reads its chat once. He sends
+    /// in A and switches to B before the command reaches the log: the
+    /// message still lands in A, and B stays the chat on screen.
+    #[tokio::test]
+    async fn a_send_read_in_chat_a_lands_in_a_after_a_switch_to_b() {
+        let chats = Chats::default();
+        let a = chat();
+        let a_id = a.id.clone();
+        chats.open(a);
+        let target = chats.target();
+        assert_eq!(target.id(), Some(a_id.as_str()));
+        let b = chat();
+        let b_id = b.id.clone();
+        chats.open(b);
+        // A is idle and unfocused, but the target's handle keeps it held.
+        assert!(chats.find(&a_id).is_some());
+        let (held, created) = chats
+            .lock_or_start_at(
+                &target,
+                ChatMode::Normal,
+                ChatKind::Build,
+                Path::new("/nonexistent"),
+            )
+            .await
+            .unwrap();
+        assert!(!created);
+        assert_eq!(held.id, a_id);
+        assert_eq!(chats.focus().as_deref(), Some(b_id.as_str()));
+        // B answers at once while A's lock is held.
+        assert!(chats.try_lock_focused().is_ok());
+        drop(held);
+        assert_eq!(
+            target.lock().await.as_ref().map(|s| s.id.clone()),
+            Some(a_id)
+        );
+    }
+
+    /// The same for New chat: a first message typed at New chat, then a
+    /// switch to chat B before it lands, makes a new chat — not a message
+    /// in B — and leaves B on screen. Two commands aimed at the same New
+    /// chat still make one chat between them.
+    #[tokio::test]
+    async fn a_first_message_read_at_new_chat_never_lands_in_the_chat_opened_after() {
+        let dir = std::env::temp_dir().join("nightloom-chats-target-test");
+        let chats = Chats::default();
+        chats.focus_new();
+        let target = chats.target();
+        assert_eq!(target.id(), None);
+        let b = chat();
+        let b_id = b.id.clone();
+        chats.open(b);
+        let (held, created) = chats
+            .lock_or_start_at(&target, ChatMode::Ephemeral, ChatKind::Build, &dir)
+            .await
+            .unwrap();
+        assert!(created);
+        assert_ne!(held.id, b_id);
+        assert_eq!(chats.focus().as_deref(), Some(b_id.as_str()));
+        drop(held);
+
+        // Two racing commands on one New chat: one chat made.
+        chats.focus_new();
+        let first = chats.target();
+        let second = chats.target();
+        let (made, created) = chats
+            .lock_or_start_at(&first, ChatMode::Ephemeral, ChatKind::Build, &dir)
+            .await
+            .unwrap();
+        assert!(created);
+        let made_id = made.id.clone();
+        drop(made);
+        let (again, created) = chats
+            .lock_or_start_at(&second, ChatMode::Ephemeral, ChatKind::Build, &dir)
+            .await
+            .unwrap();
+        assert!(!created);
+        assert_eq!(again.id, made_id);
     }
 
     #[test]

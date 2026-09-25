@@ -81,6 +81,10 @@ struct AppState {
     /// chats running, Stop in one must stop that one. `cancel` still holds
     /// the latest turn's token, for the callers that name no chat.
     turn_cancels: std::sync::Mutex<HashMap<String, CancellationToken>>,
+    /// Stops asked for by a turn key (`turn:…`, the window's name for a
+    /// turn whose chat it does not know yet) before that turn registered
+    /// (backlog 159, A3): the turn cancels itself on registering.
+    early_stops: std::sync::Mutex<std::collections::HashSet<String>>,
     /// ~~`session: Mutex<Option<Session>>`, the one open chat~~ — replaced
     /// 2026-09-24 (backlog 159, pass 2 step A1): each chat behind its own
     /// lock and the open one a focus, so a command about chat B never
@@ -379,6 +383,27 @@ impl<'a> TurnStop<'a> {
             chat: chat.to_string(),
         }
     }
+}
+
+/// The window's name for a turn whose chat it may not know yet (backlog
+/// 159, A3): `turn:` and a nonce, sent with the turn and with its Stop.
+fn is_turn_key(name: &str) -> bool {
+    name.starts_with("turn:")
+}
+
+/// Whether a Stop for `key` came before its turn registered; forgets it.
+fn take_early_stop(stops: &std::sync::Mutex<std::collections::HashSet<String>>, key: &str) -> bool {
+    stops.lock().unwrap_or_else(|p| p.into_inner()).remove(key)
+}
+
+/// Hold a Stop for a turn key no turn has registered yet. Bounded: a key
+/// whose turn never came (the send failed first) must not pile up.
+fn hold_early_stop(stops: &std::sync::Mutex<std::collections::HashSet<String>>, key: &str) {
+    let mut held = stops.lock().unwrap_or_else(|p| p.into_inner());
+    if held.len() >= 32 {
+        held.clear();
+    }
+    held.insert(key.to_string());
 }
 
 impl Drop for TurnStop<'_> {
@@ -2363,26 +2388,38 @@ fn resume_of(session: &Session) -> Option<String> {
 /// the agent, then a chat. ~~The one agent, re-pointed at the open chat
 /// when `agent_readopt` said so (A1)~~.
 async fn lock_agent(state: &AppState) -> agents::Guard {
-    let focus = state.chats.focus();
-    let slot = match state.agents.slot(focus.as_deref()) {
+    lock_agent_at(state, &state.chats.target()).await
+}
+
+/// [`lock_agent`] for a chat read once at the command's start (backlog
+/// 159, A3; A2 review finding 2): the agent and the log a command locks
+/// are then the same chat's even if he switches chats in between.
+async fn lock_agent_at(state: &AppState, target: &chats::Target) -> agents::Guard {
+    let slot = match state.agents.slot(target.id()) {
         agents::Found::Off => return agents::Guard::none(),
         agents::Found::Ready(slot) => slot,
         agents::Found::Make => {
             // The chat's lock is taken and let go before the agent's, so
             // the order above holds.
-            let resume = state
-                .chats
-                .lock_focused()
-                .await
-                .as_ref()
-                .and_then(resume_of);
-            match state.agents.make(focus.as_deref(), resume) {
+            let resume = target.lock().await.as_ref().and_then(resume_of);
+            match state.agents.make(target.id(), resume) {
                 Some(slot) => slot,
                 None => return agents::Guard::none(),
             }
         }
     };
     agents::Guard::new(slot.lock_owned().await)
+}
+
+/// The open chat's agent and log, both of the chat open when this was
+/// called (backlog 159, A3): what every command that locks the two takes,
+/// so a switch between the two locks cannot pair one chat's agent with
+/// another's log. Lock order as everywhere: the agent, then the chat.
+async fn lock_agent_and_chat(state: &AppState) -> (agents::Guard, chats::Open) {
+    let target = state.chats.target();
+    let agent = lock_agent_at(state, &target).await;
+    let chat = target.lock().await;
+    (agent, chat)
 }
 
 /// Resolve a session ID (or unique prefix), make it active, and return its
@@ -2639,12 +2676,18 @@ async fn send_agent(
     images: Option<Vec<ImageInput>>,
     documents: Option<Vec<DocumentInput>>,
     council: Option<nightloom_service::council::CouncilRequest>,
+    stop_key: Option<String>,
 ) -> Result<AgentTurn, String> {
     use nightloom_service::council;
     if let Some(c) = &council {
         c.validate().map_err(|e| e.to_string())?;
     }
-    let mut agent_guard = lock_agent(&state).await;
+    // The chat this message was typed into, read once (backlog 159, A3;
+    // A2 review finding 2): the agent and the log below are both its,
+    // however fast he switches chats meanwhile. ~~`lock_agent` and then
+    // `lock_or_start`, each reading the focus afresh~~.
+    let target = state.chats.target();
+    let mut agent_guard = lock_agent_at(&state, &target).await;
     // Its slot, for New chat's first turn to hand to the chat it makes.
     let agent_slot = agent_guard.is_some().then(|| agent_guard.slot().clone());
     let agent = agent_guard
@@ -2662,7 +2705,7 @@ async fn send_agent(
     // command there answers at once.
     let (mut held, created) = state
         .chats
-        .lock_or_start(pending, pending_kind, &log_dir)
+        .lock_or_start_at(&target, pending, pending_kind, &log_dir)
         .await?;
     let session: &mut Session = &mut held;
     state.chats.mark_turn(&session.id);
@@ -2700,6 +2743,17 @@ async fn send_agent(
     *state.cancel.lock().unwrap() = cancel.clone();
     // Stop by chat (backlog 159, A2); the entry goes when the turn does.
     let _stop = TurnStop::register(&state.turn_cancels, &chat_id, &cancel);
+    // The window's own name for this turn (backlog 159, A3): a New chat's
+    // first turn is stopped by it before its first event tells the window
+    // the chat's id. A Stop that came before this line is applied now.
+    let _stop_key = stop_key
+        .as_deref()
+        .map(|k| TurnStop::register(&state.turn_cancels, k, &cancel));
+    if let Some(k) = &stop_key
+        && take_early_stop(&state.early_stops, k)
+    {
+        cancel.cancel();
+    }
 
     // The Ask position's files live beside the chat's log, per chat
     // (`agent::ask`): `<log dir>/ask/<chat id>/`. An ephemeral chat has no
@@ -3248,8 +3302,7 @@ async fn compact(
 /// [`edit_on_cli`]; the log gets its `Rewind` marker either way.
 #[tauri::command]
 async fn rewind(state: State<'_, AppState>, to: usize) -> Result<Vec<SessionEvent>, String> {
-    let mut agent_guard = lock_agent(&state).await;
-    let mut session_guard = state.chats.lock_focused().await;
+    let (mut agent_guard, mut session_guard) = lock_agent_and_chat(&state).await;
     let session = session_guard
         .as_mut()
         .ok_or_else(|| "no active session".to_string())?;
@@ -3281,8 +3334,7 @@ async fn rewind(state: State<'_, AppState>, to: usize) -> Result<Vec<SessionEven
 /// stood before, or at nothing if there was none.
 #[tauri::command]
 async fn unrewind(state: State<'_, AppState>, of: usize) -> Result<Vec<SessionEvent>, String> {
-    let mut agent_guard = lock_agent(&state).await;
-    let mut session_guard = state.chats.lock_focused().await;
+    let (mut agent_guard, mut session_guard) = lock_agent_and_chat(&state).await;
     let session = session_guard
         .as_mut()
         .ok_or_else(|| "no active session".to_string())?;
@@ -3526,8 +3578,7 @@ async fn edit_message(
 ) -> Result<MessageEdit, String> {
     match mode.as_str() {
         "save" => {
-            let mut agent_guard = lock_agent(&state).await;
-            let mut session_guard = state.chats.lock_focused().await;
+            let (mut agent_guard, mut session_guard) = lock_agent_and_chat(&state).await;
             let session = session_guard
                 .as_mut()
                 .ok_or_else(|| "no active session".to_string())?;
@@ -3588,8 +3639,7 @@ async fn edit_message(
 /// turn outright and marks a turn with tool calls ([`CliSession::remove`]).
 #[tauri::command]
 async fn remove_message(state: State<'_, AppState>, index: usize) -> Result<MessageEdit, String> {
-    let mut agent_guard = lock_agent(&state).await;
-    let mut session_guard = state.chats.lock_focused().await;
+    let (mut agent_guard, mut session_guard) = lock_agent_and_chat(&state).await;
     let session = session_guard
         .as_mut()
         .ok_or_else(|| "no active session".to_string())?;
@@ -3636,8 +3686,7 @@ async fn remove_message(state: State<'_, AppState>, index: usize) -> Result<Mess
 /// every edit here is, so a refusal records nothing.
 #[tauri::command]
 async fn restore_message(state: State<'_, AppState>, index: usize) -> Result<MessageEdit, String> {
-    let mut agent_guard = lock_agent(&state).await;
-    let mut session_guard = state.chats.lock_focused().await;
+    let (mut agent_guard, mut session_guard) = lock_agent_and_chat(&state).await;
     let session = session_guard
         .as_mut()
         .ok_or_else(|| "no active session".to_string())?;
@@ -3672,8 +3721,7 @@ async fn remove_block(
     index: usize,
     block: usize,
 ) -> Result<MessageEdit, String> {
-    let mut agent_guard = lock_agent(&state).await;
-    let mut session_guard = state.chats.lock_focused().await;
+    let (mut agent_guard, mut session_guard) = lock_agent_and_chat(&state).await;
     let session = session_guard
         .as_mut()
         .ok_or_else(|| "no active session".to_string())?;
@@ -3707,8 +3755,7 @@ async fn restore_block(
     index: usize,
     block: usize,
 ) -> Result<MessageEdit, String> {
-    let mut agent_guard = lock_agent(&state).await;
-    let mut session_guard = state.chats.lock_focused().await;
+    let (mut agent_guard, mut session_guard) = lock_agent_and_chat(&state).await;
     let session = session_guard
         .as_mut()
         .ok_or_else(|| "no active session".to_string())?;
@@ -3824,9 +3871,10 @@ fn restore_cli_file(
 /// an ephemeral parent forks to another chat with no log.
 #[tauri::command]
 async fn fork_session(state: State<'_, AppState>, upto: usize) -> Result<MessageEdit, String> {
-    let mut agent_guard = lock_agent(&state).await;
+    let target = state.chats.target();
+    let mut agent_guard = lock_agent_at(&state, &target).await;
     let log_dir = state.log_dir().await;
-    let session_guard = state.chats.lock_focused().await;
+    let session_guard = target.lock().await;
     let parent = session_guard
         .as_ref()
         .ok_or_else(|| "no active session".to_string())?;
@@ -3875,9 +3923,10 @@ async fn fork_session(state: State<'_, AppState>, upto: usize) -> Result<Message
 /// Nightloom's words; the hand-off is the model's file.
 #[tauri::command]
 async fn continue_session(state: State<'_, AppState>) -> Result<MessageEdit, String> {
-    let mut agent_guard = lock_agent(&state).await;
+    let target = state.chats.target();
+    let mut agent_guard = lock_agent_at(&state, &target).await;
     let log_dir = state.log_dir().await;
-    let session_guard = state.chats.lock_focused().await;
+    let session_guard = target.lock().await;
     let parent = session_guard
         .as_ref()
         .ok_or_else(|| "no active session".to_string())?;
@@ -5046,8 +5095,7 @@ async fn set_checkpoint(
         at_ms: now,
     };
     fork::write_checkpoint(&dir, &cp).map_err(|e| format!("writing the checkpoint failed: {e}"))?;
-    let agent = lock_agent(&state).await;
-    let open = state.chats.lock_focused().await;
+    let (agent, open) = lock_agent_and_chat(&state).await;
     if let (Some(agent), Some(open)) = (agent.as_ref(), open.as_ref())
         && open
             .log_path()
@@ -6389,6 +6437,14 @@ fn cancel(state: State<'_, AppState>, chat: Option<String>) {
             token.cancel();
             return;
         }
+        // A turn key with no turn registered yet (backlog 159, A3): the
+        // turn has not reached its registration — a New chat's first turn
+        // stopped at once. Held for it, and never the fallthrough below,
+        // which stops whichever turn registered last: another chat's.
+        if is_turn_key(&chat) {
+            hold_early_stop(&state.early_stops, &chat);
+            return;
+        }
         // The named chat has no turn registered (it just ended, or has not
         // registered yet) while another chat's runs: the fallthrough below
         // would stop *that* turn — `state.cancel` is the latest turn's —
@@ -6991,6 +7047,7 @@ fn main() {
                 agents: agents::Agents::default(),
                 agent_live: std::sync::atomic::AtomicBool::new(false),
                 turn_cancels: std::sync::Mutex::new(HashMap::new()),
+                early_stops: std::sync::Mutex::new(std::collections::HashSet::new()),
                 chats: chats::Chats::default(),
                 pending_mode: tokio::sync::Mutex::new(ChatMode::Normal),
                 pending_kind: tokio::sync::Mutex::new(ChatKind::Build),
@@ -7881,6 +7938,25 @@ mod tests {
         assert_eq!(files_in(&folder).len(), 4);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Backlog 159, A3 (found live): a Stop for a New chat's first turn,
+    /// sent before the turn registered, is held by its turn key and taken
+    /// once by that turn; a chat id is never a turn key; the held set is
+    /// bounded.
+    #[test]
+    fn an_early_stop_is_held_for_its_turn_key_and_taken_once() {
+        let stops = std::sync::Mutex::new(std::collections::HashSet::new());
+        assert!(is_turn_key("turn:abc-1"));
+        assert!(!is_turn_key("635e8ee0-1234"));
+        assert!(!take_early_stop(&stops, "turn:abc-1"));
+        hold_early_stop(&stops, "turn:abc-1");
+        assert!(take_early_stop(&stops, "turn:abc-1"));
+        assert!(!take_early_stop(&stops, "turn:abc-1"), "taken once");
+        for i in 0..100 {
+            hold_early_stop(&stops, &format!("turn:x-{i}"));
+        }
+        assert!(stops.lock().unwrap().len() <= 32);
     }
 
     /// `turns_after` counts live user turns past the one an event belongs

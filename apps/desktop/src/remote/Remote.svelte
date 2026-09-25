@@ -345,7 +345,8 @@
   async function stop() {
     if (!client) return;
     try {
-      await client.cancel();
+      // The chat this page shows (backlog 159, A3), not the Mac's screen.
+      await client.cancel(chatId);
       remote = { ...remote, pending: [] };
     } catch (e) {
       fail(e);

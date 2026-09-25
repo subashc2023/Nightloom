@@ -128,8 +128,12 @@ export class Client {
     await this.call("/approve", { method: "POST", body: JSON.stringify(req) });
   }
 
-  async cancel(): Promise<void> {
-    await this.call("/cancel", { method: "POST" });
+  /** Stop `chat`'s turn — the chat this page shows, which need not be the
+   *  one on the Mac's screen (backlog 159, A3) — or the Mac's open chat's
+   *  when `null`. */
+  async cancel(chat: string | null = null): Promise<void> {
+    const path = chat ? `/chats/${encodeURIComponent(chat)}/cancel` : "/cancel";
+    await this.call(path, { method: "POST" });
   }
 
   /**

@@ -252,9 +252,11 @@ impl Host for DesktopHost {
             .map_err(|e| format!("the desktop window could not take the answer: {e}"))
     }
 
-    async fn cancel(&self) -> Result<(), String> {
+    async fn cancel(&self, chat: Option<&str>) -> Result<(), String> {
+        // The chat the phone shows (backlog 159, A3); `null` is the chat
+        // on the Mac's screen, as before.
         self.app
-            .emit("remote-cancel", ())
+            .emit("remote-cancel", serde_json::json!({ "chat": chat }))
             .map_err(|e| format!("the desktop window could not take the stop: {e}"))
     }
 
