@@ -17,7 +17,7 @@
    * cache write). *tool uses* is the CLI's count. *elapsed* is the CLI's
    * `duration_ms` once it has reported one, the window's clock until then.
    */
-  import { app, openContent, subagentRunning, type SubagentRow } from "./state.svelte";
+  import { app, openChatSubagents, openContent, subagentRunning, type SubagentRow } from "./state.svelte";
   import { fmtTokens } from "./tokens";
   import { budgetChip, budgetTitle } from "./budget";
   import { wrapAsk, wrapTarget, wrapUp } from "./budgetWrap.svelte";
@@ -26,14 +26,16 @@
   /** A ticking clock for the elapsed column while any child runs. */
   let now = $state(Date.now());
   $effect(() => {
-    if (!app.subagents.some(subagentRunning)) return;
+    if (!mine.some(subagentRunning)) return;
     const t = setInterval(() => (now = Date.now()), 1000);
     return () => clearInterval(t);
   });
 
+  /** The open chat's rows (backlog 160: the store holds every chat's). */
+  const mine = $derived(openChatSubagents());
   /** Newest first: the latest turn's agents at the top. */
-  const rows = $derived([...app.subagents].reverse());
-  const running = $derived(app.subagents.filter(subagentRunning).length);
+  const rows = $derived([...mine].reverse());
+  const running = $derived(mine.filter(subagentRunning).length);
   /** The caps in force (backlog 165): this turn's spawns of the per-turn
    *  cap — lowered past `slow_at` of the window — the window itself, and
    *  (pass 2) the message's budget meter: `spent 4% of 35%`. */
@@ -165,7 +167,7 @@
               <td class="mono dim">{shortModel(r.model)}</td>
               <td class="state">
                 <span class="dot" class:live={subagentRunning(r)} class:bad={r.status !== "running" && r.status !== "completed"}></span>
-                {statusWord(r)}{r.background ? "" : ""}
+                {statusWord(r)}{r.background ? "" : ""}{#if r.restored}<span class="dim" title="Rebuilt from the chat's log: the figures are what the CLI wrote into the result, the transcript is the recorded narrative"> · from the log</span>{/if}
               </td>
               <td class="num mono">{elapsed(r)}</td>
               <td class="num mono" title={usageTitle(r)}>{fmtTokens(r.tokens)}</td>

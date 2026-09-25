@@ -48,6 +48,7 @@ import {
 } from "./browse";
 import { SEARCH_COLUMN_MAX, searchGrowth } from "./search.svelte";
 import * as tabs from "./tabs";
+import { adoptPending, latestAgents, mergeRows, rowsFromLog, rowsOf } from "./subagentRows";
 import { cli, startCliClock } from "./cliUpdate.svelte";
 import { chatIsCold, loadLayerPrefs, reconnectBeforeTurn, saveLayerPrefs } from "./promptVersions";
 import type { TabContent, Workspace } from "./tabs";
@@ -388,6 +389,11 @@ export interface ToolCallView {
  * row and not from a live message that the post-turn re-sync replaces.
  */
 export interface SubagentRow extends SubagentStatus {
+  /** The chat it ran in (backlog 160: rows are kept per chat, not cleared
+   *  on a switch); null for a New chat's until its first turn names it. */
+  session: string | null;
+  /** Rebuilt from the chat's log on reopening it (`rowsFromLog`). */
+  restored?: boolean;
   /** The send this subagent ran under: `app.turnSeq` at its first event. */
   turn: number;
   /** Clock at the first event, for the elapsed count while it runs. */
@@ -794,12 +800,14 @@ export const app = $state({
    */
   agentInit: null as AgentInit | null,
   /**
-   * The open chat's subagents (nightshift backlog 152): a row per `Agent`
-   * call the CLI spawned, newest turn last, kept for the chat while it is
-   * open — cleared with `agentInit` on a chat switch, so a finished
-   * agent's transcript stays a click away until you leave the chat.
-   * `turnSeq` counts sends, so the top bar's chip and the gauge's
-   * "+ subagents" line can read the latest turn's rows alone.
+   * The subagents (nightshift backlog 152): a row per `Agent` call the CLI
+   * spawned, newest turn last. ~~Kept for the chat while it is open —
+   * cleared with `agentInit` on a chat switch~~ — since backlog 160
+   * (2026-09-25) every chat's, each row naming its chat, never cleared on
+   * a switch, and rebuilt from the log when a chat is opened
+   * (`subagentRows.ts`). `turnSeq` counts sends, so the gauge's
+   * "+ subagents" line can read the latest turn's rows alone; the chip
+   * reads the chat's latest turn that had any.
    */
   subagents: [] as SubagentRow[],
   turnSeq: 0,
@@ -2867,7 +2875,7 @@ export async function useEngine(engine: Engine): Promise<void> {
   app.connection = null;
   app.agentTurn = null;
   app.agentInit = null;
-  app.subagents = [];
+  // ~~`app.subagents = []`~~ — rows are per chat since backlog 160.
   app.suggestion = null;
   // ~~`app.aside = null`~~ — not since backlog 137 (2026-09-17): the thread
   // is his reading and belongs to the chat, not the engine; nulling it
@@ -2998,6 +3006,7 @@ async function showContentOf(c: TabContent): Promise<void> {
     case "aside":
     case "attachment":
     case "subagent":
+    case "file":
       return;
   }
 }
@@ -3016,7 +3025,8 @@ export async function openContent(content: TabContent, how: tabs.LandHow = "new"
     content.kind === "project" ||
     content.kind === "aside" ||
     content.kind === "attachment" ||
-    content.kind === "subagent"
+    content.kind === "subagent" ||
+    content.kind === "file"
   ) {
     const t = tabs.land(app.tabs, tabs.focusedPane(app.tabs), content, how);
     await activateTab(t.id);
@@ -3216,6 +3226,8 @@ function dropChatTabs(session: string): void {
   for (const r of tabs.dropChat(app.tabs, session)) {
     if (r.show) void activateTab(r.show.id);
   }
+  // And its Running-tasks rows (backlog 160: kept until the chat goes).
+  app.subagents = app.subagents.filter((r) => r.session !== session);
 }
 
 /** A deleted note's tabs, or every vault note's when the vault moves. */
@@ -3343,6 +3355,9 @@ function resolveTabContent(c: TabContent): TabContent | null {
     case "nightshift":
     case "graph":
     case "new-project":
+    // A file tab comes back like the rest (guess pass 2026-09-25, question
+    // 20); a file gone since says so in its tab, which reads it again.
+    case "file":
       return c;
   }
 }
@@ -4407,7 +4422,7 @@ export async function newSession(mode?: ChatMode, kind?: ChatKind): Promise<void
     app.error = null;
     app.agentTurn = null;
     app.agentInit = null;
-    app.subagents = [];
+    // ~~`app.subagents = []`~~ — rows are per chat since backlog 160.
     app.suggestion = null;
     leaveNote();
   } catch (e) {
@@ -4700,7 +4715,7 @@ export async function continueChat(): Promise<void> {
     app.error = null;
     app.agentTurn = null;
     app.agentInit = null;
-    app.subagents = [];
+    // ~~`app.subagents = []`~~ — rows are per chat since backlog 160.
     app.suggestion = null;
     resetHandoff();
     if (start) {
@@ -4972,6 +4987,8 @@ async function peekSession(id: string): Promise<void> {
     switchAside(id);
     app.activeSessionId = id;
     app.events = events;
+    // Its recorded agents, as `openSession` (backlog 160).
+    app.subagents = mergeRows(app.subagents, rowsFromLog(events, id));
     app.error = null;
     app.suggestion = null;
     leaveNote();
@@ -5039,6 +5056,8 @@ async function settleTurnView(pendingKey: string | null, chat: string | null = n
     const first = events[0];
     const made = first && first.event === "session_created" ? first.id : null;
     const plan = settlePlan({ parked, viewed: app.activeSessionId, made, pendingKey });
+    // A New chat's agents, made before its id was known (backlog 160).
+    if (made) adoptPending(app.subagents, made);
     if (plan.moveDraft) moveDraft(plan.moveDraft[0], plan.moveDraft[1]);
     if (plan.adopt) app.events = events;
     if (plan.activeSessionId !== undefined) app.activeSessionId = plan.activeSessionId;
@@ -5077,7 +5096,9 @@ export async function openSession(id: string): Promise<void> {
     // The plan window and estimate belong to the chat you just left.
     app.agentTurn = null;
     app.agentInit = null;
-    app.subagents = [];
+    // ~~`app.subagents = []`~~ (backlog 160): the rows stay, keyed by
+    // chat, and this chat's recorded agents join them from its log.
+    app.subagents = mergeRows(app.subagents, rowsFromLog(app.events, id));
     app.suggestion = null;
     leaveNote();
     if (inFront) app.openNext = "replace";
@@ -5958,11 +5979,16 @@ function applyBackgroundEvent(bg: Background<Segment, ApprovalRequest>, ev: Turn
     const i = bg.approvals.findIndex((r) => r.id === ev.tool_use_id);
     if (i >= 0) bg.approvals.splice(i, 1);
   }
+  // A background chat's subagents are rows of that chat (backlog 160).
+  if (ev.type === "subagent_status") {
+    upsertSubagentRow(ev, bg.session);
+    return;
+  }
   if (!bg.live) return;
   // The stream's own shapes are one function's (`applyStream`), shared
-  // with the chat on screen; the app-wide rows (agent init, suggestions,
-  // Running tasks) stay the chat on screen's.
-  if (ev.type === "agent_init" || ev.type === "prompt_suggestion" || ev.type === "subagent_status") return;
+  // with the chat on screen; the app-wide rows (agent init, suggestions)
+  // stay the chat on screen's.
+  if (ev.type === "agent_init" || ev.type === "prompt_suggestion") return;
   // Without its `chat`, or it would be routed here again.
   const { chat: _chat, ...plain } = ev as TurnEvent & { chat?: string };
   const saved = app.parked;
@@ -6024,6 +6050,18 @@ export function applyTurnEvent(ev: TurnEvent & { chat?: string }): void {
     const i = app.pendingApprovals.findIndex((r) => r.id === ev.tool_use_id);
     if (i >= 0) app.pendingApprovals.splice(i, 1);
   }
+  // The Running-tasks rows outlive the live message (backlog 160): a
+  // status or a child's event that lands after it ended still reaches its
+  // row, which is the chat's and not the message's.
+  if (ev.type === "subagent_status") {
+    upsertSubagentRow(ev, ev.chat ?? fg?.chat ?? app.activeSessionId);
+    app.liveVersion++;
+    return;
+  }
+  if (ev.type === "subagent") {
+    const row = subagentRow(ev.parent_tool_use_id);
+    if (row) applyToSegments(row.segments, ev.event);
+  }
   if (!host.live) return;
   const segments = host.live.segments;
   switch (ev.type) {
@@ -6041,32 +6079,12 @@ export function applyTurnEvent(ev: TurnEvent & { chat?: string }): void {
       // subagent is under a child's call — and is applied there exactly
       // as the main thread's would be, so the same renderer draws it.
       // The Running-tasks row keeps its own copy (backlog 152), applied
-      // the same way, so its transcript outlives the live message.
-      const row = subagentRow(ev.parent_tool_use_id);
-      if (row) applyToSegments(row.segments, ev.event);
+      // the same way, so its transcript outlives the live message — above,
+      // before the live message is asked for (backlog 160).
       const parent = findCall(segments, ev.parent_tool_use_id);
       if (!parent) break;
       parent.children ??= [];
       applyToSegments(parent.children, ev.event);
-      break;
-    }
-    case "subagent_status": {
-      // The translator's whole row each time (backlog 152): replace the
-      // figures, keep what the window holds beside them.
-      const { type: _type, ...status } = ev;
-      const row = subagentRow(status.tool_use_id);
-      const now = Date.now();
-      if (row) {
-        Object.assign(row, status, { updatedAt: now });
-      } else {
-        app.subagents.push({
-          ...status,
-          turn: app.turnSeq,
-          startedAt: now,
-          updatedAt: now,
-          segments: [],
-        });
-      }
       break;
     }
     case "round_limit":
@@ -6098,6 +6116,42 @@ function subagentRow(id: string): SubagentRow | null {
   return app.subagents.find((r) => r.tool_use_id === id) ?? null;
 }
 
+/**
+ * The translator's whole row each time (backlog 152): replace the figures,
+ * keep what the window holds beside them. `session` is the chat it runs in
+ * (backlog 160); a row rebuilt from the log is live again once the CLI
+ * speaks of it.
+ */
+function upsertSubagentRow(ev: Extract<TurnEvent, { type: "subagent_status" }>, session: string | null): void {
+  const { type: _type, chat: _chat, ...status } = ev as typeof ev & { chat?: string };
+  const row = subagentRow(status.tool_use_id);
+  const now = Date.now();
+  if (row) {
+    Object.assign(row, status, { updatedAt: now, restored: false });
+    row.session ??= session;
+  } else {
+    app.subagents.push({
+      ...status,
+      session,
+      turn: app.turnSeq,
+      startedAt: now,
+      updatedAt: now,
+      segments: [],
+    });
+  }
+}
+
+/** The open chat's rows (backlog 160), for the Running-tasks panel. */
+export function openChatSubagents(): SubagentRow[] {
+  return rowsOf(app.subagents, app.activeSessionId);
+}
+
+/** The chip's rows (backlog 160): the open chat's latest turn that had
+ *  agents, kept after they finish. */
+export function latestSubagents(): { rows: SubagentRow[]; running: number; tokens: number } {
+  return latestAgents(app.subagents, app.activeSessionId);
+}
+
 /** Whether a subagent is still running (backlog 152). */
 export function subagentRunning(r: SubagentRow): boolean {
   return r.status === "running";
@@ -6112,7 +6166,8 @@ export function subagentRunning(r: SubagentRow): boolean {
  * child's context is its own and not the next request's.
  */
 export function subagentsOfTurn(): { rows: SubagentRow[]; running: number; tokens: number } {
-  const rows = app.subagents.filter((r) => r.turn === app.turnSeq);
+  // The open chat's alone since rows are kept per chat (backlog 160).
+  const rows = app.subagents.filter((r) => r.turn === app.turnSeq && r.session === app.activeSessionId);
   return {
     rows,
     running: rows.filter(subagentRunning).length,

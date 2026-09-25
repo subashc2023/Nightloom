@@ -74,7 +74,13 @@ export type TabContent =
    *  child webview over the pane (`WebView.svelte`). `url` is where the
    *  page is now — it follows the page's own navigation — and `title`
    *  the page's title once it has one. Only http(s). */
-  | { kind: "web"; url: string; title?: string };
+  | { kind: "web"; url: string; title?: string }
+  /** A file a reply named (nightshift backlog 161): the file card's
+   *  *Open*, drawn read-only by `FileView.svelte`. `path` is absolute and
+   *  is what makes the tab one per file; `session` is the chat whose card
+   *  opened it, whose log may grant a file its own tools wrote outside its
+   *  folders (guess pass 2026-09-25, question 17). */
+  | { kind: "file"; path: string; session?: string };
 
 export type TabKind = TabContent["kind"];
 
@@ -166,6 +172,13 @@ export function parseContentDrag(json: string | null | undefined): TabContent | 
           name: typeof a.name === "string" ? a.name : "subagent",
         };
       }
+      case "file": {
+        const f = c as { path?: unknown; session?: unknown };
+        if (typeof f.path !== "string" || !isAbsolutePath(f.path)) return null;
+        return typeof f.session === "string"
+          ? { kind: "file", path: f.path, session: f.session }
+          : { kind: "file", path: f.path };
+      }
       case "web": {
         const w = c as { url?: unknown; title?: unknown };
         if (typeof w.url !== "string" || !isWebUrl(w.url)) return null;
@@ -190,6 +203,17 @@ export function parseContentDrag(json: string | null | undefined): TabContent | 
   } catch {
     return null;
   }
+}
+
+/** An absolute path, on either platform: the only kind a file tab holds. */
+export function isAbsolutePath(p: string): boolean {
+  return p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p);
+}
+
+/** A path's last component, for a file tab's strip. */
+export function baseName(p: string): string {
+  const parts = p.split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1] ?? p;
 }
 
 /** An http(s) URL — the only kind a web tab holds. */
@@ -228,6 +252,8 @@ export function sameContent(a: TabContent, b: TabContent): boolean {
     return a.session === b.session && a.toolUseId === b.toolUseId;
   }
   if (a.kind === "web" && b.kind === "web") return a.url === b.url;
+  // One tab per file (backlog 161), whichever chat's card opened it.
+  if (a.kind === "file" && b.kind === "file") return a.path === b.path;
   // The singletons carry nothing but their kind.
   return isSingleton(a);
 }
@@ -657,6 +683,8 @@ export function tabTitle(
       return content.name;
     case "subagent":
       return `Agent · ${content.name}`;
+    case "file":
+      return baseName(content.path);
     case "web": {
       if (content.title?.trim()) return content.title.trim();
       try {
@@ -686,6 +714,8 @@ export function tabGlyph(content: TabContent): IconName {
       return content.media === "image" ? "read" : "download";
     case "subagent":
       return "think";
+    case "file":
+      return "read";
     case "web":
       return "ext";
     case "chat":

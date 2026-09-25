@@ -39,6 +39,7 @@
   import AttachmentLayer from "./lib/AttachmentLayer.svelte";
   import AttachmentView from "./lib/AttachmentView.svelte";
   import SubagentView from "./lib/SubagentView.svelte";
+  import FileView from "./lib/FileView.svelte";
   import WebView from "./lib/WebView.svelte";
   import { closeOrphans, initWebTabs, routeLink } from "./lib/webtabs.svelte";
   import RunningTasks from "./lib/RunningTasks.svelte";
@@ -663,6 +664,13 @@
                    panel's View transcript, drawn from the chat's row. -->
               <div class="content">
                 <SubagentView content={t.content} />
+                {#if focused}<FindBar bind:this={findBar} />{/if}
+              </div>
+            {:else if t.content.kind === "file"}
+              <!-- A file a reply named (backlog 161): the file card's
+                   Open, read-only. -->
+              <div class="content">
+                <FileView content={t.content} />
                 {#if focused}<FindBar bind:this={findBar} />{/if}
               </div>
             {:else if t.content.kind === "web"}

@@ -8,6 +8,7 @@
     currentTodos,
     liveFlags,
     MODE_GLYPH,
+    latestSubagents,
     sessionCost,
     subagentsOfTurn,
   } from "./state.svelte";
@@ -312,6 +313,9 @@
    * in its hover, so the window figure is not read as the whole.
    */
   const agents = $derived(subagentsOfTurn());
+  /** The chip's own rows (backlog 160): the chat's latest turn that had
+   *  agents, so `1 agent · done · 31k` stays after the turn and the next. */
+  const chipAgents = $derived(latestSubagents());
   const agentsTail = $derived(
     agents.rows.length > 0
       ? ` · + subagents: ${agents.tokens.toLocaleString()} tokens (${agents.rows.length}, not in the window)`
@@ -566,20 +570,24 @@
     <!-- The agents chip (nightshift backlog 152): the latest turn's
          subagents and their tokens, opening the Running-tasks panel. Shown
          while any runs and kept, quieter, once all are done, so a finished
-         agent's transcript stays a click away until the next turn. -->
-    {#if agents.rows.length > 0}
+         agent's transcript stays a click away — ~~until the next turn~~
+         since backlog 160 until a later turn spawns agents: the chip reads
+         the chat's latest turn that had any (`chipAgents`). -->
+    {#if chipAgents.rows.length > 0}
       <button
         class="ns-chip mono agents"
-        class:live={agents.running > 0}
+        class:live={chipAgents.running > 0}
         class:open={app.showTasks}
         aria-expanded={app.showTasks}
-        use:tip={`${agents.rows.length} subagent${agents.rows.length === 1 ? '' : 's'} this turn${agents.running > 0 ? `, ${agents.running} running` : ', all done'} · ${agents.tokens.toLocaleString()} tokens (the CLI's figure per agent, not in the context gauge) — click for the Running-tasks panel${app.turnBudget ? `\n${budgetTitle(app.turnBudget)}` : ''}`}
+        use:tip={`${chipAgents.rows.length} subagent${chipAgents.rows.length === 1 ? '' : 's'} in this chat's latest turn with agents${chipAgents.running > 0 ? `, ${chipAgents.running} running` : ', all done'} · ${chipAgents.tokens.toLocaleString()} tokens (the CLI's figure per agent, not in the context gauge) — click for the Running-tasks panel${app.turnBudget ? `\n${budgetTitle(app.turnBudget)}` : ''}`}
         onclick={toggleTasks}
       >
         <span class="figure">
-          <span>{agents.rows.length} agent{agents.rows.length === 1 ? "" : "s"}</span>
-          {#if agents.running === 0}<span class="of fold1">· done</span>{/if}
-          <span class="of fold3">· {tokens(agents.tokens)}</span>
+          <span>{chipAgents.rows.length} agent{chipAgents.rows.length === 1 ? "" : "s"}</span>
+          {#if chipAgents.running === 0}<span class="of fold1">· done</span>{/if}
+          <!-- No figure when none is known (a row rebuilt from a log whose
+               result carried none), rather than a bare `· 0`. -->
+          {#if chipAgents.tokens > 0}<span class="of fold3">· {tokens(chipAgents.tokens)}</span>{/if}
           <!-- The message's budget meter (backlog 165, pass 2): spent of
                budget, in window percent, as the hook's ledger moves. -->
           {#if app.turnBudget}<span class="of budget" class:stopped={!!app.turnBudget.stopped}>· {budgetChip(app.turnBudget)}</span>{/if}

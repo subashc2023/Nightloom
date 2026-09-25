@@ -815,6 +815,22 @@ export function openFile(path: string): Promise<null> {
   return invoke("open_file", { path });
 }
 
+/** A file read for a tab (nightshift backlog 161): refused, in words,
+ *  outside `chat`'s folders unless its own tools wrote it. */
+export interface FileTabData {
+  path: string;
+  kind: "text" | "markdown" | "image" | "pdf" | "other";
+  media_type: string;
+  size: number;
+  text: string | null;
+  data: string | null;
+  /** Why it could be read: inside the chat's folders, or written by it. */
+  via: "folder" | "written";
+}
+export function readFileTab(path: string, chat: string | null): Promise<FileTabData> {
+  return invoke("read_file_tab", { path, chat });
+}
+
 /** Open an `https://` link in the browser. */
 export function openUrl(url: string): Promise<null> {
   return invoke("open_url", { url });

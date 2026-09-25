@@ -102,7 +102,9 @@
               ? `${title(t)} — an attachment of a message, kept as a tab`
               : c.kind === "subagent"
                 ? `${title(t)} — a subagent's transcript: its calls, results and words`
-                : title(t) + chatTail(c);
+                : c.kind === "file"
+                  ? `${c.path} — a file a reply named, read-only`
+                  : title(t) + chatTail(c);
     const state = needsYou(t) ? " · waiting on you" : running(t) ? " · a turn is running" : "";
     return `${base}${state} — ${isMac ? "⌘W" : "Ctrl+W"} closes`;
   }

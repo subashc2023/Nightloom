@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { app, applyTurnEvent, subagentsOfTurn } from "./state.svelte";
+import { app, applyTurnEvent, latestSubagents, openChatSubagents, subagentsOfTurn } from "./state.svelte";
 import type { SubagentStatus, TurnEvent } from "./types";
 
 /**
@@ -24,6 +24,9 @@ const status = (over: Partial<SubagentStatus> = {}): TurnEvent => ({
   rounds: 0,
   ...over,
 });
+
+/** An event as the Claude Code engine sends it, naming its chat. */
+const withChat = (ev: TurnEvent, chat: string): TurnEvent & { chat?: string } => Object.assign({}, ev, { chat });
 
 describe("the subagent rows", () => {
   beforeEach(() => {
@@ -95,6 +98,33 @@ describe("the subagent rows", () => {
     expect(search.kind === "tool" && search.call.result?.content).toBe("three results");
     expect(row.segments[1]).toEqual({ kind: "text", text: "The answer, sourced." });
     expect(JSON.stringify(app.live!.segments)).toBe(before);
+  });
+
+  it("a row is keyed by its chat and spawning call, and survives the relay: a status after the live message ended still lands (backlog 160)", () => {
+    app.activeSessionId = "c1";
+    applyTurnEvent(withChat(status(), "c1"));
+    expect(app.subagents[0].session).toBe("c1");
+    // The parent relays the child's report: the live message has ended
+    // (the post-turn re-sync replaced it) when the child's last lines land.
+    app.live = null;
+    applyTurnEvent({ type: "subagent", parent_tool_use_id: "toolu_p", event: { type: "text_delta", text: "Report." } });
+    applyTurnEvent(withChat(status({ status: "completed", tokens: 31_000 }), "c1"));
+    expect(app.subagents).toHaveLength(1);
+    expect(app.subagents[0].status).toBe("completed");
+    expect(app.subagents[0].segments).toEqual([{ kind: "text", text: "Report." }]);
+    // A later send spawns nothing: the chip still reads `1 agent · done · 31k`.
+    app.turnSeq = 8;
+    const chip = latestSubagents();
+    expect(chip.rows.map((r) => r.tool_use_id)).toEqual(["toolu_p"]);
+    expect(chip.running).toBe(0);
+    expect(chip.tokens).toBe(31_000);
+    // Another chat on screen: its panel is its own; the row is kept, not dropped.
+    app.activeSessionId = "c2";
+    expect(openChatSubagents()).toEqual([]);
+    expect(latestSubagents().rows).toEqual([]);
+    app.activeSessionId = "c1";
+    expect(openChatSubagents().map((r) => r.tool_use_id)).toEqual(["toolu_p"]);
+    app.activeSessionId = null;
   });
 
   it("the chip reads the latest turn's rows: count, running, the CLI's tokens summed", () => {

@@ -36,6 +36,9 @@ mod agents;
 mod chats;
 /// The composer's exact token count on the provider engine (backlog 155).
 mod draft_count;
+/// A file card's Open as a tab: which paths may be read, and reading them
+/// (nightshift backlog 161).
+mod filetab;
 /// Nightshift: the unattended runner's file contract, as commands.
 mod nightshift;
 /// Sleep-safe turns: the power assertion and the wake watcher.
@@ -6275,6 +6278,62 @@ fn open_file(path: String) -> Result<(), String> {
     project::reveal(&target).map_err(|e| e.to_string())
 }
 
+/// A file card's Open as a tab (nightshift backlog 161): the file read for
+/// the pane, when `chat` may see it — inside its folders (the project's,
+/// the chat's own, the extra folders, the vault) or written by its own
+/// tools, known from its log (guess pass 2026-09-25, question 17). The
+/// rules and the refusal's words are `filetab`'s. The chat's log is read
+/// from memory when it is held and free, else from disk, so a card under a
+/// running turn still opens.
+#[tauri::command]
+async fn read_file_tab(
+    state: State<'_, AppState>,
+    path: String,
+    chat: Option<String>,
+) -> Result<filetab::FileTab, String> {
+    let target = PathBuf::from(&path);
+    let active = state.active().await;
+    // The trees and the written paths, from the chat's log however it is
+    // reached; `Session` is not `Clone`, so both are taken under one look.
+    let facts = |session: Option<&Session>| -> (Vec<PathBuf>, Vec<PathBuf>) {
+        let mut trees: Vec<PathBuf> = Vec::new();
+        if let Some(p) = &active {
+            trees.push(p.workspace_dir());
+        }
+        if let Some(w) = session.and_then(|s| s.kind_workspace()) {
+            trees.push(w.to_path_buf());
+        }
+        trees.extend(
+            extra_folders(active.as_ref(), session)
+                .into_iter()
+                .map(|(p, _)| p),
+        );
+        if let Some(config) = project::config_dir() {
+            trees.push(nightloom_service::knowledge::vault_dir_in(&config));
+        }
+        let written = session
+            .map(|s| filetab::written_paths(s.events(), trees.first().map(PathBuf::as_path)))
+            .unwrap_or_default();
+        (trees, written)
+    };
+    let held = chat.as_deref().and_then(|id| state.chats.find(id));
+    let from_memory = held
+        .as_ref()
+        .and_then(|(_, log)| log.try_lock().ok().map(|s| facts(Some(&*s))));
+    let (trees, written) = match (from_memory, &chat) {
+        (Some(f), _) => f,
+        (None, Some(id)) => {
+            let loaded = store::find_by_prefix(&state.log_dir().await, id)
+                .ok()
+                .and_then(|p| Session::load(p).ok());
+            facts(loaded.as_ref())
+        }
+        (None, None) => facts(None),
+    };
+    let via = filetab::permitted(&target, &trees, &written)?;
+    filetab::read(&target, via)
+}
+
 /// What a file the OS would run rather than show is, by extension or the
 /// executable bit; `None` for a document. The list is blocker 205's.
 fn launchable(path: &Path) -> Option<&'static str> {
@@ -7215,6 +7274,7 @@ fn main() {
             named_files,
             reveal_file,
             open_file,
+            read_file_tab,
             open_url,
             notify,
             notify_usage_refreshed,

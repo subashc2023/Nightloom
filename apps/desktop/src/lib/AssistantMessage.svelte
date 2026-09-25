@@ -37,11 +37,21 @@
     displayPath,
     extOf,
     fmtSize,
+    noteForPath,
     pathCandidates,
     type ArtifactLink,
   } from "./cards";
   import * as api from "./api";
-  import { addToast, app } from "./state.svelte";
+  import {
+    addToast,
+    app,
+    endContentDrag,
+    openContent,
+    startContentDrag,
+    type SubagentRow,
+  } from "./state.svelte";
+  import { agentCallContent, agentRowLine, isAgentCall } from "./subagentRows";
+  import type { TabContent } from "./tabs";
   import ApprovalPrompt from "./ApprovalPrompt.svelte";
   import Icon from "./Icon.svelte";
   import { REMOVED_TEXT_PLACEHOLDER, REMOVED_TOOL_PLACEHOLDER } from "./edit";
@@ -255,6 +265,23 @@
   function keyClick(e: MouseEvent, i: number, seg: Segment): void {
     if (e.detail === 0) toggle(i, seg);
   }
+  // The Agent call's row as a drag source (nightshift backlog 160): the
+  // transcript on screen is the open chat's, so its id names the tab.
+  function agentTabOf(call: { id: string; name: string; input: unknown }) {
+    if (!isAgentCall(call.name) || !app.activeSessionId) return null;
+    return agentCallContent(app.activeSessionId, call);
+  }
+  function rowOf(id: string): SubagentRow | null {
+    return app.subagents.find((r) => r.tool_use_id === id) ?? null;
+  }
+  /** The press already flipped the row (the toggle is on pointerdown, for
+   *  the streaming reason above); a press that turns into a drag was not a
+   *  click, so the flip is undone as the drag starts. */
+  function dragAgent(e: DragEvent, i: number, seg: Segment, content: TabContent): void {
+    toggle(i, seg);
+    startContentDrag(e, content);
+  }
+
   function pressFold(e: PointerEvent, key: string): void {
     if (e.button !== 0) return;
     toggleFold(key);
@@ -340,7 +367,39 @@
       addToast(`Could not open the link: ${String(e)}`);
     }
   }
-  async function openFile(path: string): Promise<void> {
+  /**
+   * The card's Open (nightshift backlog 161): the file as a tab inside
+   * Nightloom — a note under the notes folder or the vault in the note view
+   * itself, anything else read-only in a file tab. The backend reads it
+   * first: a refusal (outside the chat's folders and not written by its
+   * tools) is a toast in its words and no tab; a kind the tab cannot draw
+   * goes to its own application, as Open always did. ⌘-click (Ctrl-click
+   * elsewhere) keeps the system's opener — blocker 205's refusals still
+   * apply there.
+   */
+  async function openFile(path: string, e?: MouseEvent): Promise<void> {
+    if (e && (e.metaKey || e.ctrlKey)) {
+      await openWithApp(path);
+      return;
+    }
+    const note = noteForPath(path, { project: app.project?.notes_dir, knowledge: app.knowledge?.dir });
+    if (note) {
+      await openContent({ kind: "note", ...note });
+      return;
+    }
+    const chat = app.activeSessionId;
+    try {
+      const f = await api.readFileTab(path, chat);
+      if (f.kind === "other") {
+        await openWithApp(path);
+        return;
+      }
+      await openContent(chat ? { kind: "file", path, session: chat } : { kind: "file", path });
+    } catch (err) {
+      addToast(String(err));
+    }
+  }
+  async function openWithApp(path: string): Promise<void> {
     try {
       await api.openFile(path);
     } catch (e) {
@@ -483,19 +542,35 @@
               {@const open = isOpen(i, seg)}
               {@const bad = !!seg.call.result?.is_error || !!seg.call.denied}
               {@const icon = toolIcon(seg.call.name)}
+              {@const agentTab = agentTabOf(seg.call)}
+              {@const agentRow = agentTab ? rowOf(seg.call.id) : null}
               <div class="row-wrap tool">
+                <!-- An Agent call's row is a drag source (backlog 160): its
+                     subagent's transcript as a tab, dropped on a strip or a
+                     pane's half — live while it runs (guess pass 2026-09-25,
+                     question 19). -->
                 <button
                   class="arow"
                   class:error={bad}
+                  class:agent-drag={!!agentTab}
                   aria-expanded={open}
-                  title={open ? "Collapse to one line" : "Expand this call"}
+                  title={agentTab
+                    ? `${open ? "Collapse to one line" : "Expand this call"} — drag onto a tab strip to open the agent's transcript as a tab`
+                    : open
+                      ? "Collapse to one line"
+                      : "Expand this call"}
+                  draggable={agentTab ? "true" : undefined}
+                  ondragstart={agentTab ? (e) => dragAgent(e, i, seg, agentTab) : undefined}
+                  ondragend={agentTab ? () => endContentDrag() : undefined}
                   onpointerdown={(e) => press(e, i, seg)}
                   onclick={(e) => keyClick(e, i, seg)}
                 >
                   <span class="ico">{#if icon}<Icon name={icon} size={13} />{:else}⚒{/if}</span>
                   <span class="name" title={seg.call.name}>{shortToolName(seg.call.name)}</span>
                   <span class="arg">{toolInputSummary(seg.call.input)}</span>
-                  <span class="size">{toolResultSummary(seg.call, streaming)}</span>
+                  <span class="size" title={agentRow ? `${seg.call.name} call · ${toolResultSummary(seg.call, streaming)}` : undefined}
+                    >{agentRow ? agentRowLine(agentRow) : toolResultSummary(seg.call, streaming)}</span
+                  >
                 </button>
                 {#if open}
                   <!-- The full call: its whole input, then what came back. -->
@@ -532,16 +607,33 @@
                 {/if}
                 <!-- The hover on the call itself (backlog 066): the call and its
                      result leave the context together, the log keeps both. -->
-                {#if onremove && seg.block != null}
-                  <span class="block-tools" title={controlsTitle}>
-                    <button
-                      class="tool-btn"
-                      title="Remove this tool call and its result from the context. Both stay in the log; Restore is on the placeholder."
-                      aria-label="Remove this tool call and its result from the context"
-                      onclick={() => onremove?.(seg.block!)}
-                    >
-                      <Icon name="minus" size={12} />
-                    </button>
+                {#if (onremove && seg.block != null) || agentTab}
+                  <span
+                    class="block-tools"
+                    class:two={!!agentTab && !!onremove && seg.block != null}
+                    title={onremove && seg.block != null ? controlsTitle : ""}
+                  >
+                    {#if agentTab}
+                      <!-- *Open as tab* (backlog 160): the drag's click. -->
+                      <button
+                        class="tool-btn"
+                        title="Open this agent's transcript as a tab"
+                        aria-label="Open this agent's transcript as a tab"
+                        onclick={() => void openContent(agentTab)}
+                      >
+                        <Icon name="ext" size={12} />
+                      </button>
+                    {/if}
+                    {#if onremove && seg.block != null}
+                      <button
+                        class="tool-btn"
+                        title="Remove this tool call and its result from the context. Both stay in the log; Restore is on the placeholder."
+                        aria-label="Remove this tool call and its result from the context"
+                        onclick={() => onremove?.(seg.block!)}
+                      >
+                        <Icon name="minus" size={12} />
+                      </button>
+                    {/if}
                   </span>
                 {/if}
               </div>
@@ -649,7 +741,7 @@
             <span class="card-title mono">{f.label}</span>
           </span>
           <span class="card-size">{fmtSize(f.size)}</span>
-          <button class="ns-btn ghost small" title="Open with its application" onclick={() => void openFile(f.path)}>Open</button>
+          <button class="ns-btn ghost small" title="Open as a tab here — ⌘-click opens it with its application" onclick={(e) => void openFile(f.path, e)}>Open</button>
           <button class="ns-btn ghost small" title="Show in the file manager" onclick={() => void revealFile(f.path)}>Reveal</button>
         </div>
       {/each}
@@ -1014,6 +1106,15 @@
   .tool:hover .block-tools,
   .block-tools:focus-within {
     opacity: 1;
+  }
+  /* Open as tab beside Remove (backlog 160): the pair in the same gutter. */
+  .block-tools.two {
+    right: -52px;
+    display: flex;
+    gap: 2px;
+  }
+  .arow.agent-drag {
+    cursor: grab;
   }
   .tool-btn {
     display: inline-grid;

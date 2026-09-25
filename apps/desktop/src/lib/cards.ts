@@ -138,6 +138,30 @@ export function extOf(path: string): string {
   return name.slice(dot + 1).toLowerCase().slice(0, 6);
 }
 
+/**
+ * The note a card's path is (nightshift backlog 161): a `.md` file inside
+ * the project's notes folder or the vault opens in the note view itself,
+ * named as the Notes list names it — its path under the folder, forward
+ * slashes, extension kept. Null for anything else, which opens as a file
+ * tab (read-only for a `.md` outside those folders — guess pass
+ * 2026-09-25, question 18).
+ */
+export function noteForPath(
+  path: string,
+  folders: { project?: string | null; knowledge?: string | null },
+): { scope: "project" | "knowledge"; name: string } | null {
+  if (!/\.(md|markdown)$/i.test(path)) return null;
+  const p = path.replace(/\\/g, "/");
+  for (const scope of ["project", "knowledge"] as const) {
+    const dir = folders[scope]?.replace(/\\/g, "/").replace(/\/+$/, "");
+    if (!dir || !p.startsWith(dir + "/")) continue;
+    const name = p.slice(dir.length + 1);
+    if (name.split("/").some((s) => s === ".." || s === "." || s === "")) return null;
+    return { scope, name };
+  }
+  return null;
+}
+
 /** `4.1 KB`, `812 B`, `1.2 MB` — the composer's attachment figure style. */
 export function fmtSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;

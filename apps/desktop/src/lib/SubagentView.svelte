@@ -18,10 +18,13 @@
 
   let { content }: { content: Extract<TabContent, { kind: "subagent" }> } = $props();
 
+  // ~~The open chat's row only~~ — since backlog 160 the rows are kept per
+  // chat, so a tab of another chat's agent draws too once its chat has
+  // been open (or its turn ran) in this window.
   const row = $derived<SubagentRow | null>(
-    content.session === app.activeSessionId
-      ? (app.subagents.find((r) => r.tool_use_id === content.toolUseId) ?? null)
-      : null,
+    app.subagents.find(
+      (r) => r.tool_use_id === content.toolUseId && (r.session === content.session || r.session === null),
+    ) ?? null,
   );
 
   function callsOf(segs: Segment[]): number {
@@ -32,9 +35,10 @@
 <div class="sub-view">
   {#if !row}
     <p class="note">
-      This agent's transcript belongs to another chat, or the chat was left
-      since: the rows are kept while a chat is open. Its collapsed row is
-      still under the spawning call in that chat's transcript.
+      This agent's chat has not been opened in this window since it
+      started: open that chat once and its agents come back from its log.
+      Its collapsed row is under the spawning call in that chat's
+      transcript.
     </p>
   {:else}
     <header class="head">
@@ -43,10 +47,13 @@
         <span>{row.subagent_type}</span>
         {#if row.model}<span>· {row.model}</span>{/if}
         <span>· {subagentRunning(row) ? "running" : row.status === "completed" ? "done" : row.status}</span>
-        <span>· {fmtTokens(row.tokens)} tokens</span>
-        <span>· {row.tool_uses} tool use{row.tool_uses === 1 ? "" : "s"}</span>
-        <span>· {row.rounds} round{row.rounds === 1 ? "" : "s"}</span>
+        <!-- A row rebuilt from the log (backlog 160) knows only what the
+             result carried; a figure it does not know is left out. -->
+        {#if !row.restored || row.tokens > 0}<span>· {fmtTokens(row.tokens)} tokens</span>{/if}
+        {#if !row.restored || row.tool_uses > 0}<span>· {row.tool_uses} tool use{row.tool_uses === 1 ? "" : "s"}</span>{/if}
+        {#if !row.restored}<span>· {row.rounds} round{row.rounds === 1 ? "" : "s"}</span>{/if}
         {#if row.background}<span>· background</span>{/if}
+        {#if row.restored}<span>· from the log</span>{/if}
       </div>
     </header>
     {#if row.prompt}
