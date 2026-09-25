@@ -6379,16 +6379,21 @@ fn set_zoom(app: AppHandle, factor: f64) -> Result<(), String> {
 #[tauri::command]
 fn cancel(state: State<'_, AppState>, chat: Option<String>) {
     if let Some(chat) = chat {
-        let token = state
-            .turn_cancels
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .get(&chat)
-            .cloned();
+        let (token, others) = {
+            let map = state.turn_cancels.lock().unwrap_or_else(|p| p.into_inner());
+            (map.get(&chat).cloned(), !map.is_empty())
+        };
         if let Some(token) = token {
             // The turn refuses its own deferred call and lets go of it
             // (`send_agent`); another chat's prompt stays.
             token.cancel();
+            return;
+        }
+        // The named chat has no turn registered (it just ended, or has not
+        // registered yet) while another chat's runs: the fallthrough below
+        // would stop *that* turn — `state.cancel` is the latest turn's —
+        // and let go of its prompts (review 2026-09-25, finding 1).
+        if others {
             return;
         }
     }
