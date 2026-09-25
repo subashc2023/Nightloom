@@ -42,7 +42,9 @@
     stayHere,
     threshold,
   } from "./handoff.svelte";
-  import { draftEstimate, draftEstimateTitle, fmtTokens } from "./tokens";
+  import { draftEstimate, draftEstimateTitle, draftExact, draftExactTitle, EXACT_TOKENS_FROM, fmtTokens } from "./tokens";
+  import { exactCounter, type ExactResult } from "./draftCount";
+  import { countDraftTokens } from "./api";
   import { tip } from "./tip";
   import { ghostFor } from "./suggestions.svelte";
   import { queuedElsewhereToast } from "./browse";
@@ -108,6 +110,38 @@
     }
     const id = setTimeout(() => (estimate = draftEstimate(t)), 120);
     return () => clearTimeout(id);
+  });
+  /**
+   * The exact count (backlog 155, second half): on the provider engine, a
+   * draft past ~500 tokens is counted by the provider once it has been still
+   * for a moment — never per keystroke. Shown only while it is the count of
+   * the text in the box; any edit falls back to the estimate until the next
+   * pause. The Claude Code engine has no counter and keeps the estimate.
+   */
+  let exact = $state<ExactResult | null>(null);
+  const counter = exactCounter(countDraftTokens, (r) => (exact = r));
+  $effect(() => {
+    counter.update(text ?? "", {
+      engine: app.connection?.engine,
+      provider: app.connection?.provider,
+      model: app.connection?.model,
+    });
+  });
+  $effect(() => () => counter.dispose());
+  /** The figure beside Send and its hover: exact when counted, else the estimate. */
+  const shown = $derived.by(() => {
+    if (!estimate) return null;
+    if (exact && exact.text === text && exact.tokens !== null)
+      return { ...draftExact(exact.tokens), title: draftExactTitle(exact.tokens, exact.model) };
+    let why: string | undefined;
+    if (app.connection?.engine === "claude-code")
+      why = "The Claude Code engine has no count endpoint, so it stays an estimate.";
+    else if (estimate.tokens < EXACT_TOKENS_FROM)
+      why = `From ~${EXACT_TOKENS_FROM} tokens it is counted exactly after you pause.`;
+    else if (exact && exact.text === text && exact.tokens === null)
+      why = "This provider's count was not available, so it stays an estimate.";
+    else why = "Counting exactly once you pause.";
+    return { ...estimate, title: draftEstimateTitle(estimate.tokens, why) };
   });
   const attachments = $derived(draft.attachments);
   /**
@@ -1111,6 +1145,7 @@
       app.connection?.engine,
       app.events.length > 0,
       estimate !== null,
+      shown?.long,
     ];
     refoldRow();
   });
@@ -1555,9 +1590,9 @@
         </span>
       {/if}
       <span class="spacer"></span>
-      {#if estimate}
-        <span class="draft-tokens mono act" use:tip={draftEstimateTitle(estimate.tokens)}
-          ><span class="fold-word">{estimate.long}</span><span class="short-word">{estimate.short}</span></span
+      {#if shown}
+        <span class="draft-tokens mono act" use:tip={shown.title}
+          ><span class="fold-word">{shown.long}</span><span class="short-word">{shown.short}</span></span
         >
       {/if}
       {#if app.busy}

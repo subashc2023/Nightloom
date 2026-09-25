@@ -106,6 +106,16 @@ export function contextLimits(
   return invoke("context_limits", { provider, models });
 }
 
+/** The draft's exact token count on `provider` (backlog 155); null where the
+ *  provider has no counter Nightloom asks. Rejects on no key or a failed call. */
+export function countDraftTokens(
+  provider: string,
+  model: string | undefined,
+  text: string,
+): Promise<number | null> {
+  return invoke("count_draft_tokens", { provider, model, text });
+}
+
 /** Rewind to the turn at log index `to`; resolves with the new transcript. */
 export function rewind(to: number): Promise<SessionEvent[]> {
   return invoke("rewind", { to });

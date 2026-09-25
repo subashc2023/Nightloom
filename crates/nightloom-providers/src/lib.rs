@@ -7,6 +7,7 @@
 //! OpenRouter, legacy OpenAI, and local servers as flavors of one dialect.
 
 mod anthropic;
+pub mod count;
 mod gemini;
 pub mod limits;
 pub mod models;
@@ -17,6 +18,7 @@ mod registry;
 pub mod retry;
 
 pub use anthropic::Anthropic;
+pub use count::count_tokens;
 pub use gemini::Gemini;
 pub use limits::context_limit;
 pub use openai_compat::OpenAiCompat;
