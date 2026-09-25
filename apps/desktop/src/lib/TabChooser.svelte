@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { app, defaultKind, KIND_LINES, kindLabel, newSession, openContent, saveNote } from "./state.svelte";
+  import { app, browseFree, defaultKind, KIND_LINES, kindLabel, newSession, openContent, saveNote } from "./state.svelte";
   import * as tabs from "./tabs";
   import type { ChatKind, Note, NoteScope } from "./types";
   import Icon from "./Icon.svelte";
@@ -88,7 +88,7 @@
 
   <div class="tab-chooser-sect">New chat <span class="tab-chooser-key">{isMac ? "⌘T" : "Ctrl+T"} is the default kind</span></div>
   {#each KINDS as k (k)}
-    <button class="tab-chooser-row" role="menuitem" onclick={() => void newChat(k)} disabled={app.busy}>
+    <button class="tab-chooser-row" role="menuitem" onclick={() => void newChat(k)} disabled={app.busy && !browseFree()}>
       <span class="tab-chooser-glyph" aria-hidden="true">{defaultKind() === k ? "●" : "○"}</span>
       <span class="tab-chooser-text">
         <span class="tab-chooser-name">{kindLabel(k, engine)}{#if defaultKind() === k} <span class="tab-chooser-tag">default here</span>{/if}</span>

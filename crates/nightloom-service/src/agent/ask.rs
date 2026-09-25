@@ -719,6 +719,13 @@ impl AskGate {
     pub fn abandon_all(&self) {
         self.pending.lock().unwrap().clear();
     }
+
+    /// Forget one waiting call — a stopped turn's own (nightshift backlog
+    /// 159, A2): with two chats running, stopping one must not let go of
+    /// the other's prompt.
+    pub fn abandon(&self, id: &str) {
+        self.pending.lock().unwrap().remove(id);
+    }
 }
 
 #[cfg(test)]

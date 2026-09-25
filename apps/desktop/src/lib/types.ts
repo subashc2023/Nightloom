@@ -982,6 +982,9 @@ export interface ApprovalRequest {
    *  see (nightshift backlog 143, pass 2): the card offers to grant it,
    *  for this chat or the project. Only on a Claude Code deferred call. */
   outside?: string;
+  /** The chat whose turn asks (nightshift backlog 159, A2): two chats may
+   *  be running. Only on a Claude Code deferred call. */
+  chat?: string;
 }
 
 export type ApprovalDecision = "allow" | "always" | "deny";

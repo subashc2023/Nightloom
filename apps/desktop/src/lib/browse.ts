@@ -105,3 +105,53 @@ export function settlePlan(args: {
 export function queuedElsewhereToast(runningName: string): string {
   return `A turn is running in ${runningName} — this sends when that ends`;
 }
+
+/*
+ * Two live turns (nightshift backlog 159, pass 2 step A2, 2026-09-25).
+ *
+ * The backend runs one Claude Code agent per chat now, and every event a
+ * turn sends names its chat. So the chat he leaves while its turn runs no
+ * longer has to be parked with the window still "busy": it goes to the
+ * **background** — its log, its stream and the prompts it asked are kept
+ * under its id, its events land there — and the chat he opens is idle:
+ * he can send there at once, edit, rewind (blocker 206: nothing waits).
+ * Opening the background chat again brings it back on screen, streaming,
+ * and sends whatever is on screen to the background in its place.
+ *
+ * Parking stays for the two cases the background cannot take: a turn on
+ * the provider engine (one provider chat holds the whole turn), and the
+ * first moment of a New chat's first turn, before its first event has
+ * named the chat.
+ */
+
+/** A running chat's turn off screen, under its id. */
+export interface Background<Segment = unknown, Approval = unknown> extends Parked<Segment> {
+  session: string;
+  /** The prompts it asked while off screen (backlog 079's card, A2). */
+  approvals: Approval[];
+}
+
+/** The background chat an event belongs to, or null for the chat on
+ *  screen (or parked) — an event without a chat is the provider engine's,
+ *  which runs one turn at a time. */
+export function eventHost<H>(background: Record<string, H>, chat: string | null | undefined): H | null {
+  return chat ? (background[chat] ?? null) : null;
+}
+
+/** Whether the turn on screen may go to the background: on the Claude
+ *  Code engine, once the chat it runs in has a name. */
+export function canDetach(engine: string | null | undefined, chat: string | null): boolean {
+  return engine === "claude-code" && chat !== null;
+}
+
+/** The toast for a reply that finished off screen. */
+export function backgroundEndToast(name: string, failed: string | null): string {
+  return failed ? `The turn in ${name} ended with an error: ${failed}` : `Reply finished in ${name}`;
+}
+
+/** The light toast for a prompt a background chat is waiting on (guess
+ *  pass 5, his answer 2026-09-25: the tab's dot and the banner, and a
+ *  light toast in the chat he has open). */
+export function backgroundAskToast(name: string): string {
+  return `${name} is waiting on you`;
+}

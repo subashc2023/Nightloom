@@ -160,7 +160,9 @@ impl Host for DesktopHost {
             Some(id) => (true, Some(id.clone())),
         };
         // Held by a turn reads as connected: a turn cannot run without one.
-        let agent = state.agent.try_lock().map(|g| g.is_some()).unwrap_or(true);
+        // ~~`state.agent.try_lock()`~~ — one agent per chat since backlog
+        // 159 A2; the engine is live when a connection is, or a turn runs.
+        let agent = state.agents.connected() || !state.agents.running().is_empty();
         let chat = state.chat.try_lock().map(|g| g.is_some()).unwrap_or(true);
         let engine = if agent {
             Some(crate::AGENT.to_string())

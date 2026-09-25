@@ -1,3 +1,4 @@
+import { tick } from "svelte";
 import { listen } from "@tauri-apps/api/event";
 import * as api from "./api";
 import { handoff, noteAgentTurnEnd, resetHandoff } from "./handoff.svelte";
@@ -35,7 +36,16 @@ import { isPrivateChat, loadAsides, markChatMode, nextAsideId } from "./asides";
 import { MAX_OPEN_ASIDES, foldTheOldest } from "./asideCard";
 import { loadCouncilPrefs, type CouncilPrefs, type CouncilRequest } from "./council";
 import { limitPauseFrom, resumeDelayMs, resumeMessage, type LimitPause } from "./limit";
-import { liveHost, settlePlan, type Parked } from "./browse";
+import {
+  backgroundAskToast,
+  backgroundEndToast,
+  canDetach,
+  eventHost,
+  liveHost,
+  settlePlan,
+  type Background,
+  type Parked,
+} from "./browse";
 import { SEARCH_COLUMN_MAX, searchGrowth } from "./search.svelte";
 import * as tabs from "./tabs";
 import { cli, startCliClock } from "./cliUpdate.svelte";
@@ -748,6 +758,13 @@ export const app = $state({
    */
   parked: null as Parked<Segment> | null,
   /**
+   * The chats whose turn runs off screen, by id (nightshift backlog 159,
+   * pass 2 step A2; `browse.ts`): each keeps its log, its stream and the
+   * prompts it asked, and its events land there. The chat on screen is
+   * idle unless it runs a turn of its own.
+   */
+  background: {} as Record<string, Background<Segment, ApprovalRequest>>,
+  /**
    * The running message's budget ledger (nightshift backlog 165, pass 2):
    * the hook's `turn-budget.json`, read every `TURN_BUDGET_EVERY_MS`
    * while a Claude Code turn runs and once as it ends, for the meter on
@@ -1252,7 +1269,7 @@ export async function loadContextLimits(kind: string, models: string[]): Promise
 export async function init(): Promise<void> {
   if (initialized) return;
   initialized = true;
-  await listen<TurnEvent>("turn-event", (e) => applyTurnEvent(e.payload));
+  await listen<TurnEvent & { chat?: string }>("turn-event", (e) => applyTurnEvent(e.payload));
   // The aside's answer as it streams (nightshift backlog 128): a delta
   // for the live exchange is appended; one for a cancelled or replaced
   // exchange (its `seq` differs) is dropped.
@@ -1293,6 +1310,16 @@ export async function init(): Promise<void> {
   // drained rather than for anything it carries.
   await listen<TurnEvent>("capture-event", () => {});
   await listen<ApprovalRequest>("tool-approval", (e) => {
+    // A background chat's prompt waits in that chat (backlog 159, A2):
+    // its tab's dot, the banner, and a light toast here (guess pass 5).
+    const bg = eventHost(app.background, e.payload.chat);
+    if (bg) {
+      bg.approvals.push(e.payload);
+      const name = backgroundName(bg.session);
+      addToast(backgroundAskToast(name));
+      void notifyNeedsYou(name, e.payload);
+      return;
+    }
     app.pendingApprovals.push(e.payload);
     // The needs-you banner (backlog 079): the turn waits on him, and if the
     // window is behind something else nothing on screen says so.
@@ -3087,7 +3114,8 @@ export async function newTab(): Promise<void> {
   // ~~Refused while a turn runs~~ — since backlog 159 New chat opens as a
   // view, the running chat parked; the one refusal is the pending
   // chat's own first turn (one pending slot per project and kind).
-  if (app.busy && !app.parked && app.activeSessionId === null) {
+  // Lifted once the turn can go to the background (backlog 159, A2).
+  if (app.busy && !app.parked && app.activeSessionId === null && !canLeaveRunning()) {
     addToast("This chat is having its first turn — New chat opens when it ends");
     return;
   }
@@ -4738,6 +4766,143 @@ async function refocus(session: string | null): Promise<void> {
   }
 }
 
+/** A Claude Code turn the window started (backlog 159, A2): the chat it
+ *  runs in — learned from its first event on a New chat — and whether it
+ *  is off screen now. */
+interface TurnCtx {
+  chat: string | null;
+  detached: boolean;
+}
+
+/** The turn on screen (or parked), if one runs. */
+let fg: TurnCtx | null = null;
+/** The turns in `app.background`, by chat. */
+const bgTurns = new Map<string, TurnCtx>();
+
+/** A background chat's name, for its toasts. */
+function backgroundName(id: string): string {
+  const s = app.sessions.find((x) => x.id === id);
+  return s ? chatName(s.title, s.first_user) : "another chat";
+}
+
+/** Whether a chat can be opened while a turn runs without parking it —
+ *  the Claude Code engine's turns go to the background (A2). */
+export function browseFree(): boolean {
+  return app.connection?.engine === "claude-code";
+}
+
+/** Whether the turn on screen can go to the background right now (A2):
+ *  what lifts the New-chat refusals during a New chat's first turn. */
+export function canLeaveRunning(): boolean {
+  return !app.busy || (fg !== null && !app.parked && canDetach(app.connection?.engine, fg.chat));
+}
+
+/**
+ * The turn on screen to the background (backlog 159, A2): its view kept
+ * under its chat's id, the window idle for the chat he opens next. False
+ * when it cannot go (`canDetach`): the caller parks it instead.
+ */
+function detach(): boolean {
+  const t = fg;
+  if (!t || app.parked || !canDetach(app.connection?.engine, t.chat)) return false;
+  const id = t.chat as string;
+  // A New chat's first turn: its tab still says "New chat", and the next
+  // New chat would land in it (one new-chat tab per pane). The tab takes
+  // the chat's id first, as the turn's end would have given it.
+  // The tab is retitled here and the reflection skipped for this one
+  // change (`activating`), so the opener's "new tab" is still armed for
+  // the chat he is opening.
+  if (app.activeSessionId === null) {
+    const tab = tabs.activeTab(tabs.focusedPane(app.tabs));
+    if (tab.content.kind === "chat" && tab.content.session === null) tab.content = { kind: "chat", session: id };
+    activating++;
+    app.activeSessionId = id;
+    void tick().then(() => activating--);
+  }
+  const mine = (r: ApprovalRequest) => !r.chat || r.chat === id;
+  app.background[id] = {
+    session: id,
+    pendingMode: app.pendingMode,
+    pendingKind: app.pendingKind,
+    events: app.events,
+    live: app.live,
+    liveUsage: app.liveUsage,
+    approvals: app.pendingApprovals.filter(mine),
+  };
+  app.pendingApprovals = app.pendingApprovals.filter((r) => !mine(r));
+  t.detached = true;
+  bgTurns.set(id, t);
+  fg = null;
+  app.live = null;
+  app.liveUsage = null;
+  app.busy = false;
+  return true;
+}
+
+/** A parked turn whose chat has just been named goes to the background,
+ *  so the chat on screen stops waiting on it (A2). */
+function promoteParked(): void {
+  const t = fg;
+  const p = app.parked;
+  if (!t || !p || !canDetach(app.connection?.engine, t.chat)) return;
+  const id = t.chat as string;
+  app.background[id] = { ...p, session: id, approvals: app.pendingApprovals.filter((r) => !r.chat || r.chat === id) };
+  app.pendingApprovals = app.pendingApprovals.filter((r) => r.chat && r.chat !== id);
+  app.parked = null;
+  t.detached = true;
+  bgTurns.set(id, t);
+  fg = null;
+  app.busy = false;
+}
+
+/** A background chat back on screen, streaming (A2); whatever turn was on
+ *  screen goes to the background in its place. */
+async function attach(id: string): Promise<void> {
+  const b = app.background[id];
+  const t = bgTurns.get(id);
+  if (!b || !t) return;
+  if (app.busy && !detach()) {
+    addToast("A turn is just starting here — open that chat again in a moment");
+    app.openNext = "replace";
+    return;
+  }
+  delete app.background[id];
+  bgTurns.delete(id);
+  t.detached = false;
+  fg = t;
+  switchAside(id);
+  app.activeSessionId = id;
+  app.pendingMode = b.pendingMode;
+  app.pendingKind = b.pendingKind;
+  app.events = b.events;
+  app.live = b.live;
+  app.liveUsage = b.liveUsage;
+  app.pendingApprovals.push(...b.approvals);
+  app.busy = true;
+  app.liveVersion++;
+  app.error = null;
+  app.suggestion = null;
+  leaveNote();
+  await refocus(id);
+}
+
+/** A background turn's end (A2): nothing on screen changes; the chat's
+ *  record is on disk (or held, for an ephemeral chat), its row refreshes,
+ *  and a light toast says where the reply is. */
+function endBackground(t: TurnCtx, failed: string | null, notices: string[]): void {
+  const id = t.chat as string;
+  const b = app.background[id];
+  delete app.background[id];
+  bgTurns.delete(id);
+  const used = b?.liveUsage ? b.liveUsage.input_tokens + b.liveUsage.output_tokens : null;
+  addToast(backgroundEndToast(backgroundName(id), failed));
+  for (const n of notices) addToast(n);
+  void refreshSessions();
+  void refreshNotes();
+  void refreshPlanUsage(true);
+  noteAgentTurnEnd(id, used, app.connection?.contextLimit ?? null, null);
+}
+
 /**
  * Another chat on screen while a turn runs (backlog 159, pass 1): its log
  * read from disk, the running chat parked; the running chat asked for
@@ -4750,6 +4915,16 @@ async function refocus(session: string | null): Promise<void> {
  * page and the other commands of the open chat act on it at once.
  */
 async function peekSession(id: string): Promise<void> {
+  if (app.background[id]) {
+    await attach(id);
+    return;
+  }
+  // The running chat to the background, and the chat opens as it would
+  // with nothing running (backlog 159, A2).
+  if (id !== app.activeSessionId && detach()) {
+    await openSession(id);
+    return;
+  }
   if (id === app.activeSessionId) {
     if (app.view !== "chat") leaveNote();
     app.openNext = "replace";
@@ -4778,6 +4953,12 @@ async function peekSession(id: string): Promise<void> {
  *  turn is the pending chat's own first (one pending slot per project
  *  and kind — see `browse.ts`). */
 async function peekNew(mode?: ChatMode, kind?: ChatKind): Promise<void> {
+  // As `peekSession` (backlog 159, A2): the running chat to the
+  // background, New chat as with nothing running.
+  if (detach()) {
+    await newSession(mode, kind);
+    return;
+  }
   const running = app.parked ? app.parked.session : app.activeSessionId;
   if (running === null) {
     if (app.parked) {
@@ -4814,13 +4995,15 @@ async function peekNew(mode?: ChatMode, kind?: ChatKind): Promise<void> {
  * re-opened on the chat on screen, so what the composer drains next goes
  * where he is looking. The plan is `settlePlan`'s, which the suite pins.
  */
-async function settleTurnView(pendingKey: string | null): Promise<void> {
+async function settleTurnView(pendingKey: string | null, chat: string | null = null): Promise<void> {
   const parked = app.parked;
   app.parked = null;
   try {
     // The chat the turn ran in, whichever is open now (backlog 159, A1:
-    // the backend's open chat follows the screen during the turn).
-    const events = await api.transcript(true);
+    // the backend's open chat follows the screen during the turn) — by
+    // its id when known (A2: two turns may have run; "the latest" may be
+    // the other's).
+    const events = chat ? await api.transcript(false, chat) : await api.transcript(true);
     const first = events[0];
     const made = first && first.event === "session_created" ? first.id : null;
     const plan = settlePlan({ parked, viewed: app.activeSessionId, made, pendingKey });
@@ -4835,6 +5018,10 @@ async function settleTurnView(pendingKey: string | null): Promise<void> {
 }
 
 export async function openSession(id: string): Promise<void> {
+  if (app.background[id]) {
+    await attach(id);
+    return;
+  }
   if (app.busy) {
     await peekSession(id);
     return;
@@ -5159,6 +5346,10 @@ async function sendAgent(
   app.liveUsage = null;
   app.turnSeq += 1;
   app.busy = true;
+  // This turn, for the background (backlog 159, A2): he may open another
+  // chat while it runs, and send there.
+  const turn: TurnCtx = { chat: app.activeSessionId, detached: false };
+  fg = turn;
   // The budget meter (backlog 165, pass 2) follows this chat's ledger
   // while the turn runs; a chat not yet created has no directory to read.
   budgetTyped = turnTyped;
@@ -5171,6 +5362,12 @@ async function sendAgent(
       documents.length > 0 ? documents : undefined,
       council ?? undefined,
     );
+    // Off screen at its end (A2): the chat on screen is another's, and
+    // nothing below is about it.
+    if (turn.detached) {
+      endBackground(turn, null, res.notices);
+      return;
+    }
     app.agentTurn = res;
     // The turn stopped by the usage limit (backlog 164): marked paused,
     // not failed, with its Resume; any other end clears an old mark.
@@ -5198,8 +5395,18 @@ async function sendAgent(
     for (const notice of res.notices) addToast(notice);
   } catch (e) {
     failed = String(e);
+    if (turn.detached) {
+      endBackground(turn, failed, []);
+      return;
+    }
     app.error = failed;
   } finally {
+    if (!turn.detached) await endForeground();
+  }
+  /** The turn's end with its chat on screen (or parked) — everything that
+   *  was this function's `finally` before A2. */
+  async function endForeground(): Promise<void> {
+    if (fg === turn) fg = null;
     // The banner for an unfocused window (backlog 079), before the live
     // state it reads is cleared.
     notifyTurnEnded(failed);
@@ -5218,7 +5425,7 @@ async function sendAgent(
       ? app.parked.liveUsage.input_tokens + app.parked.liveUsage.output_tokens
       : null;
     const browsed = app.parked !== null;
-    await settleTurnView(pendingKey);
+    await settleTurnView(pendingKey, turn.chat);
     // The meter's final figure, now that the chat exists and the hook's
     // last write is in (backlog 165, pass 2).
     void readTurnBudget(ranIn ?? app.activeSessionId);
@@ -5592,7 +5799,9 @@ export async function cancelTurn(): Promise<void> {
   // cancel's own reply does, and the queue reads the flag at that return.
   stopped = true;
   try {
-    await api.cancel();
+    // The turn on screen (or parked) only (backlog 159, A2): a chat
+    // running in the background keeps running.
+    await api.cancel(fg?.chat ?? null);
     // Cancelling refuses every parked prompt on the backend, so they stop
     // being answerable — but only once the call actually lands. Clearing
     // them before that could strand a still-running turn with no prompt.
@@ -5678,8 +5887,54 @@ function closeThinking(segments: Segment[]): void {
   }
 }
 
+/** A background chat's event (backlog 159, A2): its stream and usage,
+ *  the way `applyTurnEvent` builds the chat on screen's — through it,
+ *  with the background's state in the host's place for the moment. */
+function applyBackgroundEvent(bg: Background<Segment, ApprovalRequest>, ev: TurnEvent): void {
+  if (ev.type === "usage") {
+    bg.liveUsage = ev.usage;
+    return;
+  }
+  if (ev.type === "tool_denied" || ev.type === "tool_result") {
+    const i = bg.approvals.findIndex((r) => r.id === ev.tool_use_id);
+    if (i >= 0) bg.approvals.splice(i, 1);
+  }
+  if (!bg.live) return;
+  // The stream's own shapes are one function's (`applyStream`), shared
+  // with the chat on screen; the app-wide rows (agent init, suggestions,
+  // Running tasks) stay the chat on screen's.
+  if (ev.type === "agent_init" || ev.type === "prompt_suggestion" || ev.type === "subagent_status") return;
+  // Without its `chat`, or it would be routed here again.
+  const { chat: _chat, ...plain } = ev as TurnEvent & { chat?: string };
+  const saved = app.parked;
+  app.parked = bg;
+  try {
+    applyTurnEvent(plain as TurnEvent);
+  } finally {
+    app.parked = saved;
+  }
+}
+
 /** Exported for the tests of what a turn's events do to the state. */
-export function applyTurnEvent(ev: TurnEvent): void {
+export function applyTurnEvent(ev: TurnEvent & { chat?: string }): void {
+  // A background chat's event lands in its own state (backlog 159, A2);
+  // what else an event does is for the chat on screen, so it stops here.
+  const bg = eventHost(app.background, ev.chat);
+  if (bg) {
+    applyBackgroundEvent(bg, ev);
+    return;
+  }
+  // The turn on screen learns its chat from its first event (a New
+  // chat's first turn), and a parked one can then go to the background.
+  if (ev.chat && fg && fg.chat === null) {
+    fg.chat = ev.chat;
+    if (app.parked) promoteParked();
+    if (fg === null) {
+      const moved = eventHost(app.background, ev.chat);
+      if (moved) applyBackgroundEvent(moved, ev);
+      return;
+    }
+  }
   // The running chat's live state, parked or on screen (backlog 159).
   const host = liveHost(app);
   if (ev.type === "usage") {

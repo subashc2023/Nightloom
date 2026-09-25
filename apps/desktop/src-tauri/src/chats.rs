@@ -248,12 +248,24 @@ impl Chats {
     }
 }
 
-/// Keep the focused chat and every chat someone still holds a handle to.
+/// Keep the focused chat, every chat someone still holds a handle to, and
+/// every ephemeral chat.
+///
+/// Ephemeral (backlog 159, A2, 2026-09-25; blocker 358): its log is only
+/// here, in memory, so dropping it when he looks away lost it — and with
+/// a turn running in the background, looking away mid-turn is the point.
+/// It stays held until the window goes (nothing reaches the disk, so
+/// "nothing is kept" holds). ~~Dropped like any idle chat~~.
 fn prune(inner: &mut Inner) {
     let focus = inner.focus.clone();
-    inner
-        .held
-        .retain(|id, log| Some(id) == focus.as_ref() || Arc::strong_count(log) > 1);
+    inner.held.retain(|id, log| {
+        Some(id) == focus.as_ref()
+            || Arc::strong_count(log) > 1
+            || log
+                .try_lock()
+                .map(|s| s.mode() == ChatMode::Ephemeral)
+                .unwrap_or(true)
+    });
 }
 
 #[cfg(test)]
@@ -267,6 +279,31 @@ mod tests {
 
     fn chat() -> Session {
         Session::new()
+    }
+
+    /// Blocker 358's default (A2): an ephemeral chat's log lives only
+    /// here, so looking away from it — its turn still running in the
+    /// background, or done — must not drop it; an idle normal chat is on
+    /// disk and still let go.
+    #[test]
+    fn an_ephemeral_chat_stays_held_when_he_looks_away() {
+        let chats = Chats::default();
+        let dir = std::env::temp_dir().join("nightloom-chats-ephemeral-test");
+        let (log, created) = chats
+            .focused_or_start(ChatMode::Ephemeral, ChatKind::Build, &dir)
+            .unwrap();
+        assert!(created);
+        let id = log.try_lock().unwrap().id.clone();
+        drop(log);
+        chats.focus_new();
+        assert!(chats.find(&id).is_some(), "the ephemeral chat was dropped");
+        chats.open(chat());
+        let normal = chats.focus().unwrap();
+        chats.focus_new();
+        assert!(
+            chats.find(&normal).is_none(),
+            "an idle normal chat stays held"
+        );
     }
 
     /// The step's claim (backlog 159 A1): while chat A's turn holds A's

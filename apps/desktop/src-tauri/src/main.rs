@@ -30,6 +30,8 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio_util::sync::CancellationToken;
 
+/// The Claude Code agents the window holds, one per chat (backlog 159, A2).
+mod agents;
 /// The chats the backend holds, one lock per chat (backlog 159, A1).
 mod chats;
 /// Nightshift: the unattended runner's file contract, as commands.
@@ -58,18 +60,25 @@ struct AppState {
     /// turn opens or continues one of its sessions, and carrying that id
     /// into the next `--resume` is the only way this is a conversation at
     /// all.
-    agent: tokio::sync::Mutex<Option<ClaudeCodeAgent>>,
+    ///
+    /// ~~`agent: Mutex<Option<ClaudeCodeAgent>>`, one for the window~~ —
+    /// replaced 2026-09-25 (backlog 159, pass 2 step A2): one agent per
+    /// chat, so a second chat's turn runs beside the first. See [`agents`].
+    agents: agents::Agents,
     /// Whether `agent` is `Some`, readable without its lock (backlog 159,
     /// A1): a turn holds `agent` for its whole length, and "which engine
     /// is live" — the context page's question, the conversation-edit
     /// guard's — must not wait a turn for the answer. Written beside every
     /// write of `agent` (`connect`, `connect_agent`) and nowhere else.
     agent_live: std::sync::atomic::AtomicBool,
-    /// The agent must re-point its `--resume` at the open chat before its
-    /// next use (backlog 159, A1): set when the open chat changed while a
-    /// turn held `agent`, so the change did not wait for the turn. Applied
-    /// by [`lock_agent`], cleared by any adoption that reached the agent.
-    agent_readopt: std::sync::atomic::AtomicBool,
+    /// ~~`agent_readopt`: the one agent re-pointed its `--resume` at the
+    /// open chat before its next use (A1's bridge)~~ — gone 2026-09-25
+    /// (A2): each chat's agent carries its own chat's resume.
+    ///
+    /// Each agent turn's Stop token, by chat (backlog 159, A2): with two
+    /// chats running, Stop in one must stop that one. `cancel` still holds
+    /// the latest turn's token, for the callers that name no chat.
+    turn_cancels: std::sync::Mutex<HashMap<String, CancellationToken>>,
     /// ~~`session: Mutex<Option<Session>>`, the one open chat~~ — replaced
     /// 2026-09-24 (backlog 159, pass 2 step A1): each chat behind its own
     /// lock and the open one a focus, so a command about chat B never
@@ -323,6 +332,60 @@ struct ApprovalRequest<'a> {
     /// refuse such a path themselves, before any prompt.
     #[serde(skip_serializing_if = "Option::is_none")]
     outside: Option<PathBuf>,
+    /// The chat whose turn asks (nightshift backlog 159, A2): with two
+    /// chats running, the card belongs in that chat's pane. Only the
+    /// agent engine's deferred calls name one; the API engine's prompts
+    /// are the open chat's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chat: Option<&'a str>,
+}
+
+/// A `turn-event` with the chat it belongs to (nightshift backlog 159,
+/// A2): the event's own fields, plus `chat`. Two chats may stream at once,
+/// and the window routes each event to its chat's pane by this.
+#[derive(Serialize, Clone)]
+struct ChatEvent<'a> {
+    chat: &'a str,
+    #[serde(flatten)]
+    event: &'a TurnEvent,
+}
+
+impl<'a> ChatEvent<'a> {
+    fn new(chat: &'a str, event: &'a TurnEvent) -> Self {
+        Self { chat, event }
+    }
+}
+
+/// A running agent turn's Stop token, registered by chat for as long as
+/// the turn runs (nightshift backlog 159, A2).
+struct TurnStop<'a> {
+    map: &'a std::sync::Mutex<HashMap<String, CancellationToken>>,
+    chat: String,
+}
+
+impl<'a> TurnStop<'a> {
+    fn register(
+        map: &'a std::sync::Mutex<HashMap<String, CancellationToken>>,
+        chat: &str,
+        token: &CancellationToken,
+    ) -> Self {
+        map.lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(chat.to_string(), token.clone());
+        Self {
+            map,
+            chat: chat.to_string(),
+        }
+    }
+}
+
+impl Drop for TurnStop<'_> {
+    fn drop(&mut self) {
+        self.map
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&self.chat);
+    }
 }
 
 impl WindowApprover {
@@ -361,6 +424,7 @@ impl Approver for WindowApprover {
                     input: call.input,
                     effect: call.effect,
                     outside: None,
+                    chat: None,
                 },
             )
             .is_err()
@@ -1301,7 +1365,7 @@ async fn connect(
     // live, so connecting to a provider is what ends agent mode. The chat
     // itself is not cheap enough to rebuild casually, but the agent is a
     // spec and a process that has already exited.
-    *state.agent.lock().await = None;
+    state.agents.disconnect();
     state
         .agent_live
         .store(false, std::sync::atomic::Ordering::SeqCst);
@@ -1976,12 +2040,12 @@ async fn connect_agent(
             .collect(),
     };
     let spec_model = spec.model.clone();
-    // Built with the open chat's resume (above), so nothing is left for
-    // `lock_agent` to re-point.
-    *state.agent.lock().await = Some(ClaudeCodeAgent::new(spec));
+    // Built with the open chat's resume (above): the open chat's agent
+    // now, and the spec every other chat's next agent is made from
+    // (backlog 159, A2). A running turn keeps the agent it runs on.
     state
-        .agent_readopt
-        .store(false, std::sync::atomic::Ordering::SeqCst);
+        .agents
+        .connect(ClaudeCodeAgent::new(spec), state.chats.focus().as_deref());
     state
         .agent_live
         .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -2275,23 +2339,11 @@ async fn new_session(
 /// commands call this unconditionally instead of each asking which engine is
 /// running.
 async fn adopt_agent_session(state: &AppState, resume: Option<String>) {
-    // Not `lock().await` (backlog 159, A1): a turn holds the agent for its
-    // length, and opening another chat or New chat must not wait for it.
-    // Held means a turn is running; the agent re-reads the open chat's
-    // resume before its next use instead (`lock_agent`).
-    match state.agent.try_lock() {
-        Ok(mut guard) => {
-            state
-                .agent_readopt
-                .store(false, std::sync::atomic::Ordering::SeqCst);
-            if let Some(agent) = guard.as_mut() {
-                agent.set_resume(resume);
-            }
-        }
-        Err(_) => state
-            .agent_readopt
-            .store(true, std::sync::atomic::Ordering::SeqCst),
-    }
+    // The open chat's own agent (backlog 159, A2), and never waiting: a
+    // running turn's agent carries its own resume, and a chat with no
+    // agent yet reads its resume when one is made (`lock_agent`).
+    // ~~One agent, `try_lock`ed, else `agent_readopt` set (A1)~~.
+    state.agents.adopt(state.chats.focus().as_deref(), resume);
 }
 
 /// The `--resume` a chat's next agent turn continues: the Claude Code
@@ -2303,25 +2355,32 @@ fn resume_of(session: &Session) -> Option<String> {
         .map(|(_, id)| id.to_string())
 }
 
-/// The agent, locked, pointed at the open chat (backlog 159, A1): when the
-/// open chat changed while a turn held the agent, the adoption was left
-/// for here. Lock order as everywhere: the agent, then a chat.
-async fn lock_agent(state: &AppState) -> tokio::sync::MutexGuard<'_, Option<ClaudeCodeAgent>> {
-    let mut guard = state.agent.lock().await;
-    if state
-        .agent_readopt
-        .swap(false, std::sync::atomic::Ordering::SeqCst)
-        && let Some(agent) = guard.as_mut()
-    {
-        let resume = state
-            .chats
-            .lock_focused()
-            .await
-            .as_ref()
-            .and_then(resume_of);
-        agent.set_resume(resume);
-    }
-    guard
+/// The open chat's agent, locked (backlog 159, A2): it waits only on that
+/// chat's own turn. A chat with no agent yet gets one from the newest
+/// connection, pointed at its recorded resume. Lock order as everywhere:
+/// the agent, then a chat. ~~The one agent, re-pointed at the open chat
+/// when `agent_readopt` said so (A1)~~.
+async fn lock_agent(state: &AppState) -> agents::Guard {
+    let focus = state.chats.focus();
+    let slot = match state.agents.slot(focus.as_deref()) {
+        agents::Found::Off => return agents::Guard::none(),
+        agents::Found::Ready(slot) => slot,
+        agents::Found::Make => {
+            // The chat's lock is taken and let go before the agent's, so
+            // the order above holds.
+            let resume = state
+                .chats
+                .lock_focused()
+                .await
+                .as_ref()
+                .and_then(resume_of);
+            match state.agents.make(focus.as_deref(), resume) {
+                Some(slot) => slot,
+                None => return agents::Guard::none(),
+            }
+        }
+    };
+    agents::Guard::new(slot.lock_owned().await)
 }
 
 /// Resolve a session ID (or unique prefix), make it active, and return its
@@ -2405,9 +2464,26 @@ async fn peek_session(state: State<'_, AppState>, id: String) -> Result<Vec<Sess
 async fn transcript(
     state: State<'_, AppState>,
     turn: Option<bool>,
+    chat: Option<String>,
 ) -> Result<Vec<SessionEvent>, String> {
     const RUNNING: &str = "the chat is running a turn — the transcript is what is on screen, \
                            and it refreshes when the turn ends";
+    // A named chat (backlog 159, A2): the one a turn ran in, whichever is
+    // open and whichever turn ran last — two may have. Held (in memory,
+    // an ephemeral one included) or on disk.
+    if let Some(id) = chat {
+        if let Some((_, log)) = state.chats.find(&id) {
+            let Ok(session) = log.try_lock() else {
+                return Err(RUNNING.into());
+            };
+            return Ok(session.events().to_vec());
+        }
+        let Ok(path) = store::find_by_prefix(&state.log_dir().await, &id) else {
+            return Ok(Vec::new());
+        };
+        let session = Session::load(path).map_err(|e| e.to_string())?;
+        return Ok(session.events().to_vec());
+    }
     if turn.unwrap_or(false) {
         let Some(log) = state.chats.last_turn_log() else {
             // Left and let go since (an idle chat not open is not held):
@@ -2567,6 +2643,8 @@ async fn send_agent(
         c.validate().map_err(|e| e.to_string())?;
     }
     let mut agent_guard = lock_agent(&state).await;
+    // Its slot, for New chat's first turn to hand to the chat it makes.
+    let agent_slot = agent_guard.is_some().then(|| agent_guard.slot().clone());
     let agent = agent_guard
         .as_mut()
         .ok_or_else(|| "not connected".to_string())?;
@@ -2586,6 +2664,13 @@ async fn send_agent(
         .await?;
     let session: &mut Session = &mut held;
     state.chats.mark_turn(&session.id);
+    // The chat this turn runs in, on every event it sends the window
+    // (backlog 159, A2): two chats may be streaming at once.
+    let chat_id = session.id.clone();
+    // New chat's agent is the chat's it just made (backlog 159, A2).
+    if created && let Some(slot) = &agent_slot {
+        state.agents.adopt_new(&chat_id, slot);
+    }
     // A connection built on New chat now belongs to the chat this turn
     // created; what it sends is that chat's hold (nightshift backlog 174).
     if created {
@@ -2611,6 +2696,8 @@ async fn send_agent(
 
     let cancel = CancellationToken::new();
     *state.cancel.lock().unwrap() = cancel.clone();
+    // Stop by chat (backlog 159, A2); the entry goes when the turn does.
+    let _stop = TurnStop::register(&state.turn_cancels, &chat_id, &cancel);
 
     // The Ask position's files live beside the chat's log, per chat
     // (`agent::ask`): `<log dir>/ask/<chat id>/`. An ephemeral chat has no
@@ -2685,7 +2772,7 @@ async fn send_agent(
                     event: Box::new(e),
                 }
             };
-            let _ = app.emit("turn-event", &e);
+            let _ = app.emit("turn-event", ChatEvent::new(&chat_id, &e));
         };
         let results = council::run_seats(
             agent,
@@ -2817,7 +2904,7 @@ async fn send_agent(
     // about what happened.
     let mut recorder = Recorder::new(session, seed);
     let mut on_event = |e: TurnEvent| {
-        let _ = app.emit("turn-event", &e);
+        let _ = app.emit("turn-event", ChatEvent::new(&chat_id, &e));
         recorder.push(&e);
     };
     let mut result = agent.run_turn(input, &cancel, &mut on_event).await;
@@ -2861,6 +2948,7 @@ async fn send_agent(
                 input: &call.input,
                 effect: nightloom_core::Effect::Mutating,
                 outside,
+                chat: Some(&chat_id),
             },
         );
         let answer = tokio::select! {
@@ -2886,7 +2974,9 @@ async fn send_agent(
             // call's name, and the recorder leaves it out of the log,
             // where this turn's orphan marker already answers the call.
             agent.note_refused(session_id.as_deref(), call.clone());
-            state.ask.abandon_all();
+            // This call only (backlog 159, A2): another chat's prompt may
+            // be waiting too. ~~`state.ask.abandon_all()`~~.
+            state.ask.abandon(&call.id);
             if let Ok(o) = &mut result {
                 o.notices
                     .push("stopped while waiting for your answer".into());
@@ -4420,6 +4510,7 @@ async fn delete_session(
             return Err("that chat is running a turn — delete it when the turn ends".into());
         }
     };
+    state.agents.forget(&full_id);
     if was_active {
         adopt_agent_session(&state, None).await;
     }
@@ -6279,8 +6370,26 @@ fn set_zoom(app: AppHandle, factor: f64) -> Result<(), String> {
 }
 
 /// Interrupt the in-flight turn or compaction, if any.
+///
+/// `chat` (backlog 159, A2): stop that chat's agent turn and nothing else
+/// — two chats may be running. Without it, the latest turn (the phone's
+/// Stop, a compaction, the provider engine), as before.
 #[tauri::command]
-fn cancel(state: State<'_, AppState>) {
+fn cancel(state: State<'_, AppState>, chat: Option<String>) {
+    if let Some(chat) = chat {
+        let token = state
+            .turn_cancels
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&chat)
+            .cloned();
+        if let Some(token) = token {
+            // The turn refuses its own deferred call and lets go of it
+            // (`send_agent`); another chat's prompt stays.
+            token.cancel();
+            return;
+        }
+    }
     state.cancel.lock().unwrap().cancel();
     state
         .gate
@@ -6856,9 +6965,9 @@ fn main() {
             });
             app.manage(AppState {
                 chat: tokio::sync::Mutex::new(None),
-                agent: tokio::sync::Mutex::new(None),
+                agents: agents::Agents::default(),
                 agent_live: std::sync::atomic::AtomicBool::new(false),
-                agent_readopt: std::sync::atomic::AtomicBool::new(false),
+                turn_cancels: std::sync::Mutex::new(HashMap::new()),
                 chats: chats::Chats::default(),
                 pending_mode: tokio::sync::Mutex::new(ChatMode::Normal),
                 pending_kind: tokio::sync::Mutex::new(ChatKind::Build),

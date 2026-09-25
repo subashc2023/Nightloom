@@ -64,11 +64,16 @@
    *  since backlog 159 the running chat may be parked behind another on
    *  screen, and its tab keeps the mark. */
   function running(t: tabs.Tab): boolean {
+    // A chat running in the background (backlog 159, A2) keeps its mark.
+    if (t.content.kind === "chat" && t.content.session && app.background[t.content.session]) return true;
     if (!app.busy) return false;
     if (app.parked) return t.content.kind === "chat" && t.content.session === app.parked.session;
     return live?.id === t.id;
   }
   function needsYou(t: tabs.Tab): boolean {
+    // A background chat's prompt waits in its own tab (A2, guess pass 5).
+    const bg = t.content.kind === "chat" && t.content.session ? app.background[t.content.session] : undefined;
+    if (bg) return bg.approvals.length > 0;
     return live?.id === t.id && app.pendingApprovals.length > 0;
   }
 

@@ -334,7 +334,10 @@ export function peekSession(id: string): Promise<SessionEvent[]> {
 
 /** The open chat's events; with `turn`, those of the chat the latest turn
  *  ran in (backlog 159, A1 — he may have opened another chat meanwhile). */
-export function transcript(turn?: boolean): Promise<SessionEvent[]> {
+export function transcript(turn?: boolean, chat?: string | null): Promise<SessionEvent[]> {
+  // `chat` (backlog 159, A2): that chat's log, whichever is open and
+  // whichever turn ran last — two chats may have run at once.
+  if (chat) return invoke("transcript", { chat });
   return invoke("transcript", turn ? { turn } : {});
 }
 
@@ -351,8 +354,9 @@ export function send(
   return invoke("send", { text, images, documents });
 }
 
-export function cancel(): Promise<null> {
-  return invoke("cancel");
+export function cancel(chat?: string | null): Promise<null> {
+  // `chat` (backlog 159, A2): stop that chat's turn only — two may run.
+  return invoke("cancel", chat ? { chat } : {});
 }
 
 /** Compact the active session (earlier turns superseded by a summary). */

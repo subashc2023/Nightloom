@@ -2,6 +2,7 @@
   import { onMount, untrack } from "svelte";
   import {
     activateTab,
+    browseFree,
     app,
     asideOf,
     asideTabThread,
@@ -690,8 +691,10 @@
                     Not the open chat. One chat is live at a time — its transcript is
                     in the other pane's tab, or under a note.
                   </p>
-                  <button class="ns-btn small" onclick={() => void activateTab(t.id)} disabled={app.busy}
-                    >{app.busy ? "Opens when the running turn ends" : "Open here"}</button
+                  <!-- On the Claude Code engine the running chat goes to the
+                       background and this opens at once (backlog 159, A2). -->
+                  <button class="ns-btn small" onclick={() => void activateTab(t.id)} disabled={app.busy && !browseFree()}
+                    >{app.busy && !browseFree() ? "Opens when the running turn ends" : "Open here"}</button
                   >
                 </div>
                 {#if focused}<FindBar bind:this={findBar} />{/if}
