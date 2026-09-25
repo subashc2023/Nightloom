@@ -291,6 +291,15 @@ pub(super) enum Block {
 pub(super) enum StreamEv {
     #[serde(rename = "content_block_delta")]
     ContentBlockDelta { delta: Delta },
+    /// A block opens. Read only for its type: a text block that follows
+    /// text with nothing between (two rounds' replies, as a background
+    /// subagent's report makes) is a new paragraph, not a continuation —
+    /// nightshift backlog 152's "…notifies me.The agent said: hello".
+    #[serde(rename = "content_block_start")]
+    ContentBlockStart {
+        #[serde(default)]
+        content_block: BlockHead,
+    },
     /// Carries the round's final usage. Emitted once per API call, which is
     /// what makes it the right feed for a context gauge — see
     /// [`TurnEvent::Usage`](crate::TurnEvent::Usage).
@@ -301,6 +310,14 @@ pub(super) enum StreamEv {
     },
     #[serde(other)]
     Other,
+}
+
+/// The head of a `content_block_start`: its type alone (`text`,
+/// `thinking`, `tool_use`, …).
+#[derive(Debug, Default, Deserialize)]
+pub(super) struct BlockHead {
+    #[serde(rename = "type", default)]
+    pub kind: String,
 }
 
 #[derive(Debug, Deserialize)]

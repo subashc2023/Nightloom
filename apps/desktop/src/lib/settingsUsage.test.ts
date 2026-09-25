@@ -3,6 +3,7 @@ import {
   USAGE_PANE,
   canonicalPane,
   groupKey,
+  openingPane,
   readStamp,
   refreshUsageAndCost,
   settingsGroups,
@@ -37,6 +38,16 @@ describe("the merged Usage · Cost nav (backlog 153)", () => {
   it("carries the providers and backends as panes", () => {
     expect(groups[4].panes).toEqual(["anthropic", "openai"]);
     expect(groups[5].panes).toEqual(["search:brave"]);
+  });
+
+  it("opens on the top pane when nothing was asked or left within two minutes (backlog 109)", () => {
+    // The walk of 2026-09-25 saw Providers → Anthropic here: the fallback
+    // was the rail's provider. It is the nav's first row.
+    expect(openingPane(null, null)).toBe(groups[0].panes[0]);
+    expect(openingPane(undefined, null)).toBe(USAGE_PANE);
+    expect(openingPane(null, "knowledge")).toBe("knowledge");
+    expect(openingPane("models", "knowledge")).toBe("models");
+    expect(openingPane(null, "cost")).toBe(USAGE_PANE);
   });
 
   it("opens a remembered or requested Cost pane on the merged pane", () => {

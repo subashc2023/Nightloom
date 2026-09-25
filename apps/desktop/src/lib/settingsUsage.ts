@@ -27,6 +27,19 @@ export function canonicalPane(pane: string): string {
 }
 
 /**
+ * The pane Settings opens on (backlog 109): the pane a round trip asked
+ * for, else the pane he left within the last two minutes, else the top
+ * pane — Usage · Cost, the first row of the nav. His words: "After those
+ * two minutes, it should default back … to the top page." Until
+ * 2026-09-25 the fallback was the rail's provider, so once a provider
+ * engine had been chosen ⌘, opened on Providers → Anthropic after the two
+ * minutes (walk 2026-09-25 part 2).
+ */
+export function openingPane(asked: string | null | undefined, recent: string | null): string {
+  return canonicalPane(asked ?? recent ?? USAGE_PANE);
+}
+
+/**
  * The groups in nav order. The order is his (backlog 127, 2026-09-16) with
  * Usage and Cost as one group since 153: ⌘1 Usage · Cost, ⌘2 Subscription,
  * ⌘3 Knowledge, ⌘4 Projects, ⌘5 Providers, ⌘6 Web search, ⌘7 Appearance,

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   app,
+  chatAgentSession,
   chatMode,
   clockOf,
   currentTodos,
@@ -100,6 +101,24 @@ function todos(...contents: string[]): SessionEvent {
 function compaction(): SessionEvent {
   return { event: "compaction", summary: "…", at: AT };
 }
+
+describe("chatAgentSession (the rail's 'Continuing Claude Code session')", () => {
+  const cli = (id: string, agent = "claude-code"): SessionEvent => ({ event: "agent_session", agent, id, at: AT });
+
+  it("names the chat's own latest live CLI session, not another chat's", () => {
+    // Walk 2026-09-25: chat B's rail named A's session (ece63fa7); B's log
+    // said 8376769b. The label now reads the open chat's log.
+    expect(chatAgentSession([user("one"), cli("8376769b-aaaa"), assistant("hi")])).toBe("8376769b-aaaa");
+    expect(chatAgentSession([cli("old"), user("two"), cli("new")])).toBe("new");
+    expect(chatAgentSession([user("one"), assistant("hi")])).toBeNull();
+    expect(chatAgentSession([cli("x", "other-agent")])).toBeNull();
+  });
+
+  it("skips a session a rewind took back, as the backend's resume does", () => {
+    const events = [user("one"), cli("kept"), user("two"), cli("rewound"), rewind(2)];
+    expect(chatAgentSession(events)).toBe("kept");
+  });
+});
 
 describe("liveFlags", () => {
   it("leaves a log with no rewind entirely live", () => {
@@ -545,6 +564,12 @@ describe("newSession — a state, not a file", () => {
     expect(app.pendingKind).toBe("build");
     expect(api.newSession).toHaveBeenLastCalledWith("incognito", "build");
     app.project = { id: "q", name: "Q", root: null } as never;
+    expect(defaultKind()).toBe("chat");
+    await newSession();
+    expect(app.pendingKind).toBe("chat");
+    // His "Unfiled chats" has a folder since the consolidation; it is
+    // still unfiled (walk 2026-09-25: the default read Claude Code there).
+    app.project = { id: "u", name: "Unfiled chats", root: "/tmp/Unfiled-chats", unfiled: true } as never;
     expect(defaultKind()).toBe("chat");
     await newSession();
     expect(app.pendingKind).toBe("chat");

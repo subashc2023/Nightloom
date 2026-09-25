@@ -70,7 +70,7 @@
   import { relativeTime } from "./time";
   import { dreamEngineRows, dreamModelPills, dreamSentence } from "./dreamRows";
   import { loadNotifyPrefs, notifyUsageRefreshed, saveNotifyPrefs, type NotifyPrefs } from "./notify";
-  import { canonicalPane, groupKey, readStamp, refreshUsageAndCost, settingsGroups } from "./settingsUsage";
+  import { canonicalPane, groupKey, openingPane, readStamp, refreshUsageAndCost, settingsGroups } from "./settingsUsage";
   import { loadSleepPrefs, saveSleepPrefs, type SleepPrefs } from "./sleep";
   import { checkCli, cli, curatedAnthropic, setAutoUpdate } from "./cliUpdate.svelte";
   import { cliNoticeDetail } from "./cliUpdate";
@@ -105,16 +105,11 @@
 
   // Opens on the pane a round trip asked for — back from a model's
   // instruction file — else on the pane he left within the last two
-  // minutes (backlog 109), else on the rail's provider.
+  // minutes (backlog 109), else on the top pane, Usage · Cost (was the
+  // rail's provider until 2026-09-25; `openingPane` says why).
   // `cost` (backlog 127's second pane, perhaps still remembered) opens the
   // merged Usage · Cost pane (backlog 153).
-  let selected = $state(
-    canonicalPane(
-      app.settingsOpenOn ??
-        recentPane() ??
-        (app.draft.provider || app.providers[0]?.kind || ""),
-    ),
-  );
+  let selected = $state(openingPane(app.settingsOpenOn, recentPane()));
   app.settingsOpenOn = null;
   onDestroy(() => {
     lastPane = { pane: selected, closedAt: Date.now() };

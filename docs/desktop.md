@@ -781,7 +781,8 @@ own window handler takes the chords; `App.svelte`'s `onShortcut` stands aside
 from ⌘-digit and ⌘-bracket while `app.showSettings`, so the provider and model
 digits (blockers 043/044) are back the moment it closes. The pane he left is
 kept in module state with the time it closed; reopening within two minutes
-(`REMEMBER_PANE_MS`) lands on it, later on the default (the rail's provider), and
+(`REMEMBER_PANE_MS`) lands on it, later on the top pane, Usage · Cost
+(`openingPane` in `settingsUsage.ts`; the rail's provider until 2026-09-25), and
 an explicit `settingsOpenOn` still wins. The Palette row prints the palette's
 name — "Slate & copper" — not its letter, which read as a key.
 

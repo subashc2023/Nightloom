@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import topBarSrc from "./TopBar.svelte?raw";
 import composerSrc from "./Composer.svelte?raw";
-import { coolTips, placeTip, TIP_DELAY_MS, TIP_WARM_MS, tipTimer } from "./tip";
+import { coolTips, placeTip, sendTip, TIP_DELAY_MS, TIP_WARM_MS, tipTimer } from "./tip";
 
 // Nightshift backlog 171 pass 1: the pill's placement and its timing.
 
@@ -140,6 +140,14 @@ describe("tipTimer", () => {
     a.timer.dismiss();
     b.timer.enter();
     expect(b.log).toEqual([]);
+  });
+});
+
+describe("sendTip (the disabled Send says why)", () => {
+  it("names the reason Send is disabled, and the key when it is not", () => {
+    expect(sendTip(false, true).text).toMatch(/no model is connected/);
+    expect(sendTip(true, true)).toEqual({ text: "Type a message or attach a file to send", keys: "↵" });
+    expect(sendTip(true, false)).toEqual({ text: "Send this message", keys: "↵" });
   });
 });
 
