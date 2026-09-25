@@ -76,10 +76,10 @@ pub fn allowed_navigation(url: &Url) -> bool {
 /// dev server's only when `dev` says so; a page he opens on his own
 /// machine's server stays allowed.)
 pub fn is_app_origin(url: &Url, dev: Option<&Url>) -> bool {
-    if let Some(host) = url.host_str() {
-        if host.to_ascii_lowercase().ends_with(".localhost") {
-            return true;
-        }
+    if let Some(host) = url.host_str()
+        && host.to_ascii_lowercase().ends_with(".localhost")
+    {
+        return true;
     }
     dev.is_some_and(|d| d.origin() == url.origin())
 }
@@ -263,19 +263,19 @@ fn remember_native<R: Runtime>(app: &AppHandle<R>, view: &tauri::Webview<R>) {
             let _ = native;
             0usize
         };
-        if let Some(n) = app.try_state::<Natives>() {
-            if let Ok(mut map) = n.0.lock() {
-                map.insert(label, address);
-            }
+        if let Some(n) = app.try_state::<Natives>()
+            && let Ok(mut map) = n.0.lock()
+        {
+            map.insert(label, address);
         }
     });
 }
 
 fn forget_native<R: Runtime>(app: &AppHandle<R>, label: &str) {
-    if let Some(n) = app.try_state::<Natives>() {
-        if let Ok(mut map) = n.0.lock() {
-            map.remove(label);
-        }
+    if let Some(n) = app.try_state::<Natives>()
+        && let Ok(mut map) = n.0.lock()
+    {
+        map.remove(label);
     }
 }
 
