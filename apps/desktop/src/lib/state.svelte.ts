@@ -41,6 +41,7 @@ import * as tabs from "./tabs";
 import { cli, startCliClock } from "./cliUpdate.svelte";
 import { chatIsCold, loadLayerPrefs, reconnectBeforeTurn, saveLayerPrefs } from "./promptVersions";
 import type { TabContent, Workspace } from "./tabs";
+import { UNFILED_TABS, loadSavedWorkspaces, rebuild, saveWorkspaceFor, snapshot } from "./tabsStore";
 import {
   buildNotices,
   dailyDue,
@@ -1421,6 +1422,9 @@ export async function init(): Promise<void> {
   await refreshDreamStatus();
   await refreshCaptureStatus();
   await autoConnect();
+  // The tabs he left open (backlog 201), once the lists that decide which
+  // survive are read and the engine is connected.
+  await restoreTabs();
 }
 
 // ---- projects ----
@@ -2110,6 +2114,12 @@ export async function useProject(id: string | null): Promise<void> {
     return;
   }
   saveLastProject(app.project?.id ?? null);
+  // ~~The workspace just left is dropped~~ — since backlog 201 it is
+  // written under its project first (while its chat is still the open
+  // one, so an aside tab of it finds its threads), and the new project's
+  // comes back at the end (`restoreTabs`), once its lists are read.
+  flushTabs();
+  tabsOwner = null;
   app.activeSessionId = null;
   app.events = [];
   // The tabs were the list just left too (backlog 099): a workspace is a
@@ -2140,6 +2150,11 @@ export async function useProject(id: string | null): Promise<void> {
   await refreshProjects();
   await refreshSessions();
   await refreshNotes();
+  // The project's own tabs (backlog 201). On the Nightshift page the page
+  // stays in front and lands in the restored workspace.
+  const stay = app.view === "nightshift";
+  await restoreTabs({ show: !stay });
+  if (stay) reflectTabs();
 }
 
 /**
@@ -3184,6 +3199,157 @@ function dropNoteTabs(scope: NoteScope, name?: string): void {
 function dropProjectTabs(id: string): void {
   for (const r of tabs.dropProject(app.tabs, id)) {
     if (r.show) void activateTab(r.show.id);
+  }
+}
+
+// ---- the workspace across a quit (nightshift backlog 201) ----
+
+/**
+ * The project the workspace in `app.tabs` belongs to, as a store key
+ * (`tabsStore.ts`), or null while it belongs to none yet — at launch
+ * until `restoreTabs` has run, and during a project switch. Nothing is
+ * saved while it is null, so the one New chat tab a launch opens with
+ * never overwrites the stored workspace it is about to be replaced by.
+ */
+let tabsOwner: string | null = null;
+
+/** The key of the open project's workspace. */
+function tabsKeyNow(): string {
+  return app.project?.id ?? UNFILED_TABS;
+}
+
+/**
+ * The terminal docks' part (`terminal.svelte.ts` registers it; this file
+ * cannot import that one, which imports this): how many shells a pane's
+ * dock holds, whether any shell is open, and opening fresh ones.
+ */
+interface TerminalHooks {
+  count(pane: string): number;
+  any(): boolean;
+  open(pane: string, n: number): Promise<void>;
+}
+let terminalHooks: TerminalHooks | null = null;
+export function registerTerminalHooks(h: TerminalHooks): void {
+  terminalHooks = h;
+}
+
+/** Write the workspace now, under the project it belongs to. Called on
+ *  the keeper's debounce (`tabsKeeper.svelte.ts`), on `pagehide` and
+ *  before a project switch replaces it. Best-effort. */
+export function flushTabs(): void {
+  if (tabsOwner === null || typeof localStorage === "undefined") return;
+  const counter = terminalHooks;
+  saveWorkspaceFor(
+    localStorage,
+    tabsOwner,
+    snapshot(app.tabs, counter ? (p) => counter.count(p) : undefined, storeTabContent),
+  );
+}
+
+/**
+ * The threads of a chat the aside store writes (`asides.ts`: a draft is
+ * not kept, nor a turn still asking with nothing arrived), in its order.
+ * An aside thread's id is per window — a relaunch numbers them again —
+ * so an aside tab is stored by its thread's place in this list.
+ */
+function storedThreads(session: string): Aside[] {
+  return asidesOf(session).filter(
+    (a) =>
+      !a.draft &&
+      a.turns.some((t) => {
+        const asking = t.answer === null && t.error === null && !t.cancelled;
+        return !(asking && !(t.answer ?? t.partial).trim());
+      }),
+  );
+}
+
+/** A tab's content as the store keeps it: an aside tab's thread id as the
+ *  thread's place (`storedThreads`); -1 for a thread the store will not
+ *  keep, which then does not come back. Everything else as it is. */
+function storeTabContent(c: TabContent): TabContent {
+  if (c.kind !== "aside" || c.thread === undefined) return c;
+  const at = storedThreads(c.session).findIndex((a) => a.id === c.thread);
+  return { kind: "aside", session: c.session, thread: at };
+}
+
+/**
+ * A stored tab's content made live, or null when its target is gone: a
+ * chat not on the list, a project or vault note that no longer lists, a
+ * forgotten project, an aside thread not in the stash (its place mapped
+ * back to this window's id). A web tab reopens at its address; the
+ * singletons and the note scopes no list covers are kept.
+ */
+function resolveTabContent(c: TabContent): TabContent | null {
+  const chat = (id: string) => app.sessions.some((s) => s.id === id);
+  switch (c.kind) {
+    case "chat":
+      return c.session === null || chat(c.session) ? c : null;
+    case "note":
+      if (c.scope === "project") return app.notes.some((n) => n.name === c.name) ? c : null;
+      if (c.scope === "knowledge") return app.vault.some((n) => n.name === c.name) ? c : null;
+      return c;
+    case "project":
+      return app.projects.some((p) => p.id === c.id) ? c : null;
+    case "aside": {
+      if (!chat(c.session)) return null;
+      const list = asidesOf(c.session);
+      if (c.thread === undefined) return list.length > 0 ? c : null;
+      const a = list[c.thread];
+      return a ? { kind: "aside", session: c.session, thread: a.id } : null;
+    }
+    case "attachment":
+    case "subagent":
+      return chat(c.session) ? c : null;
+    case "web":
+    case "nightshift":
+    case "graph":
+    case "new-project":
+      return c;
+  }
+}
+
+/**
+ * Put back the open project's stored workspace (backlog 201): at launch
+ * and after a project switch, once the chat, note and project lists are
+ * read (they decide which tabs survive). With nothing stored, or nothing
+ * that survives, the workspace stays as it is. `show` (the default)
+ * brings the focused pane's front tab forward through the tab's own
+ * opener — a chat's transcript is read, no turn is started; a caller
+ * that keeps the page in front (a switch on the Nightshift page) passes
+ * false. At launch only — no shell open yet — the docks' shells reopen,
+ * fresh, in the project's folder. A malformed store costs the layout,
+ * never the launch.
+ */
+export async function restoreTabs(opts: { show?: boolean } = {}): Promise<void> {
+  const key = tabsKeyNow();
+  let reopenShells: { pane: string; count: number }[] = [];
+  try {
+    const saved = typeof localStorage === "undefined" ? undefined : loadSavedWorkspaces(localStorage)[key];
+    const rebuilt = saved ? rebuild(saved, resolveTabContent) : null;
+    if (rebuilt) {
+      app.tabs = rebuilt.ws;
+      reopenShells = rebuilt.shells;
+    }
+  } catch {
+    // The layout is lost; the launch is not.
+  }
+  tabsOwner = key;
+  if (opts.show !== false) {
+    try {
+      await activateTab(tabs.activeTab(tabs.focusedPane(app.tabs)).id);
+    } catch {
+      // The tab stays; its content opens on the next click.
+    }
+  }
+  const hooks = terminalHooks;
+  if (hooks && reopenShells.length > 0 && !hooks.any()) {
+    for (const s of reopenShells) {
+      try {
+        await hooks.open(s.pane, s.count);
+      } catch {
+        // A shell that cannot open says so in its own toast.
+      }
+    }
   }
 }
 

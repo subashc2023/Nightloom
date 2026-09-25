@@ -29,6 +29,7 @@
   } from "./lib/state.svelte";
   import * as tabs from "./lib/tabs";
   import { draggedShell, dropLabel } from "./lib/terminal.svelte";
+  import "./lib/tabsKeeper.svelte";
   import TabStrip from "./lib/TabStrip.svelte";
   import AsideView from "./lib/AsideView.svelte";
   import AsideCard from "./lib/AsideCard.svelte";

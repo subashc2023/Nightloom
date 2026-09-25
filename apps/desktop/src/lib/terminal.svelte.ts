@@ -22,7 +22,7 @@
  */
 import { listen } from "@tauri-apps/api/event";
 import * as api from "./api";
-import { app, addToast, menuInterceptors } from "./state.svelte";
+import { app, addToast, menuInterceptors, registerTerminalHooks } from "./state.svelte";
 import { TERM_DRAG } from "./tabs";
 import {
   TERM_DEFAULT_HEIGHT,
@@ -561,3 +561,19 @@ export function toggleCollapsed(pane: string): void {
   if (!dock.collapsed) requestFocus(pane);
   else if (term.focused === pane) term.focused = null;
 }
+
+/**
+ * The workspace's keeper counts each pane's shells into the stored
+ * workspace, and a launch reopens them — fresh shells in the project's
+ * folder, the old ones having died with the app (nightshift backlog 201).
+ * Registered, since `state.svelte.ts` cannot import this module.
+ */
+registerTerminalHooks({
+  count: (pane) => shellsIn(pane).length,
+  any: () => term.shells.length > 0,
+  open: async (pane, n) => {
+    for (let i = 0; i < n; i++) {
+      if (!(await newShell(pane))) return;
+    }
+  },
+});
