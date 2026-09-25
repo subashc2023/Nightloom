@@ -32,7 +32,9 @@
 // with `data-tip` — or a stray native `title`, e.g. a markdown link's
 // `[a](url "title")` or KaTeX's error span — the same pill on first hover.
 
-export const TIP_DELAY_MS = 150;
+// 300 since 2026-09-25: 150 felt "too quick" to him (blocker 420); the
+// test keeps it under the OS box's ~1 s.
+export const TIP_DELAY_MS = 300;
 
 /** An element the pill can anchor to (an SVG mark as well as HTML). */
 export type TipAnchor = HTMLElement | SVGElement;
