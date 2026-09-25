@@ -70,6 +70,7 @@
   import { relativeTime } from "./time";
   import { dreamEngineRows, dreamModelPills, dreamSentence } from "./dreamRows";
   import { loadNotifyPrefs, notifyUsageRefreshed, saveNotifyPrefs, type NotifyPrefs } from "./notify";
+  import { canonicalPane, groupKey, readStamp, refreshUsageAndCost, settingsGroups } from "./settingsUsage";
   import { loadSleepPrefs, saveSleepPrefs, type SleepPrefs } from "./sleep";
   import { checkCli, cli, curatedAnthropic, setAutoUpdate } from "./cliUpdate.svelte";
   import { cliNoticeDetail } from "./cliUpdate";
@@ -101,10 +102,14 @@
   // Opens on the pane a round trip asked for — back from a model's
   // instruction file — else on the pane he left within the last two
   // minutes (backlog 109), else on the rail's provider.
+  // `cost` (backlog 127's second pane, perhaps still remembered) opens the
+  // merged Usage · Cost pane (backlog 153).
   let selected = $state(
-    app.settingsOpenOn ??
-      recentPane() ??
-      (app.draft.provider || app.providers[0]?.kind || ""),
+    canonicalPane(
+      app.settingsOpenOn ??
+        recentPane() ??
+        (app.draft.provider || app.providers[0]?.kind || ""),
+    ),
   );
   app.settingsOpenOn = null;
   onDestroy(() => {
@@ -355,9 +360,14 @@
    * a failed call reads as the same thing so Settings still opens.
    */
   let usage = $state<UsageSummary | null>(null);
+  /** When this modal last read the ledger (backlog 153: each half says when it was read). */
+  let ledgerReadAt = $state<Date | null>(null);
+  /** When this modal last asked for the plan's two windows. */
+  let planReadAt = $state<Date | null>(null);
   async function refreshUsage() {
     try {
       usage = await api.usageLedger();
+      ledgerReadAt = new Date();
     } catch (e) {
       usage = {
         available: false,
@@ -376,17 +386,22 @@
     }
   }
   void refreshUsage();
-  // Both panes read the ledger (backlog 127 split it); Usage also asks
-  // for a fresh plan sample, the top bar's own reading.
+  // The Usage · Cost pane (backlog 153; 127's two panes merged) reads the
+  // ledger and asks for a fresh plan sample, the top bar's own reading.
   $effect(() => {
-    if (selected === "usage" || selected === "cost") void refreshUsage();
-    if (selected === "usage") void refreshPlanUsage();
+    if (selected === "usage") {
+      void refreshUsage();
+      void refreshPlanUsage().then(() => (planReadAt = new Date()));
+    }
   });
   // The button: run the collector now rather than wait for its six-hourly
-  // turn. A few seconds; the pane says so while it runs — and, since he
-  // pressed it (nightshift backlog 116), a native banner when it lands,
-  // focused or not, whose click opens this pane. The periodic refresh
-  // never posts one: it does not come through here.
+  // turn, and — since backlog 153 merged Usage and Cost — re-read the plan
+  // gauges (the CLI's print-mode `/usage`: zero tokens, ~12 s) and the
+  // provider credits in the same press, so the whole pane is current. The
+  // pane says so while it runs — and, since he pressed it (nightshift
+  // backlog 116), a native banner when it lands, focused or not, whose
+  // click opens this pane. The periodic refresh never posts one: it does
+  // not come through here.
   let usageRefreshing = $state(false);
   let usageRefreshNote = $state<string | null>(null);
   async function refreshUsageNow() {
@@ -395,11 +410,20 @@
     usageRefreshNote = null;
     let error: string | null = null;
     try {
-      usage = await api.refreshUsageLedger();
-      usageRefreshNote = "Collector run; the ledger is current.";
-    } catch (e) {
-      error = String(e);
-      usageRefreshNote = error;
+      const r = await refreshUsageAndCost({
+        ledger: () => api.refreshUsageLedger(),
+        plan: () => refreshPlanUsage(true),
+        credits: () => refreshCredits(),
+      });
+      planReadAt = r.readAt;
+      if (r.usage) {
+        usage = r.usage;
+        ledgerReadAt = r.ledgerReadAt;
+        usageRefreshNote = "Collector run, plan and credits re-read; the pane is current.";
+      } else {
+        error = r.error;
+        usageRefreshNote = `The collector failed (${r.error}); the plan and the credits were re-read.`;
+      }
     } finally {
       usageRefreshing = false;
     }
@@ -451,7 +475,7 @@
   }
 
   function select(kind: string) {
-    selected = kind;
+    selected = canonicalPane(kind);
     keyDraft = "";
     keyError = null;
     filter = "";
@@ -796,10 +820,13 @@
   }
   let credits = $state<ProviderCredit[] | null>(null);
   let creditsBusy = $state(false);
+  /** When the credits were last asked for (backlog 153's last-read stamps). */
+  let creditsReadAt = $state<Date | null>(null);
   async function refreshCredits(): Promise<void> {
     creditsBusy = true;
     try {
       credits = await api.providerCredits();
+      creditsReadAt = new Date();
     } catch (e) {
       credits = [{ kind: "credits", status: "error", detail: String(e) }];
     } finally {
@@ -808,7 +835,7 @@
   }
   $effect(() => {
     if (selected === "council" && councilTurns === null) void refreshCouncilTurns();
-    if (selected === "cost" && credits === null) void refreshCredits();
+    if (selected === "usage" && credits === null) void refreshCredits();
   });
 
   /**
@@ -822,20 +849,17 @@
    * while it is open, and the app's own ⌘-digits are back on close.
    */
   // The order is his (nightshift backlog 127, 2026-09-16): Usage and
-  // Cost at the top, Providers and Web search just above Appearance.
-  const groups = $derived.by(() => [
-    { title: "Usage", panes: ["usage"] },
-    { title: "Cost", panes: ["cost"] },
-    { title: "Subscription", panes: ["claude-code", "council"] },
-    { title: "Knowledge", panes: ["knowledge", "models"] },
-    { title: "Projects", panes: ["projects"] },
-    { title: "Providers", panes: app.providers.map((p) => p.kind) },
-    { title: "Web search", panes: app.searchBackends.map((b) => "search:" + b.name) },
-    { title: "Appearance", panes: ["appearance"] },
-    { title: "Remote", panes: ["remote"] },
-  ]);
-  function keyOf(groupIndex: number): string {
-    return `⌘${groupIndex + 1}`;
+  // Cost at the top — one group since backlog 153 — Providers and Web
+  // search just above Appearance. `settingsUsage.ts` holds the list.
+  const groups = $derived(
+    settingsGroups(
+      app.providers.map((p) => p.kind),
+      app.searchBackends.map((b) => b.name),
+    ),
+  );
+  /** The ⌘-chip on a group's title, by title, so a merge or a move cannot misnumber it. */
+  function keyOf(title: string): string {
+    return groupKey(groups, title);
   }
   function selectGroup(n: number) {
     const g = groups[n - 1];
@@ -957,37 +981,30 @@
 <div class="modal">
   <nav class="nav" bind:this={navEl}>
     <div class="nav-h">Settings</div>
-    <!-- Usage and Cost, two panes since nightshift backlog 127: what the
-         plan has left and where the week went, then what it would have
-         cost. Both read the same ledger; the split is his. -->
-    <div class="nav-title">Usage<Kbd keys={keyOf(0)} dim /></div>
+    <!-- Usage · Cost, one pane again since nightshift backlog 153 (127
+         had split it): what the plan has left and where the week went,
+         then what it would have cost. Both read the same ledger. -->
+    <div class="nav-title">Usage · Cost<Kbd keys={keyOf("Usage · Cost")} dim /></div>
     <button
       class="nav-item"
       class:active={selected === "usage"}
       onclick={() => select("usage")}
     >
-      <span class="nav-label">Usage</span>
+      <span class="nav-label">Usage · Cost</span>
       <span class="st">
         <span class="dot" class:ok={app.planUsage?.five_hour != null || !!usage?.available}></span>
-        {app.planUsage?.five_hour != null ? `5h ${app.planUsage.five_hour}%` : usage?.available ? "ledger" : "none"}
-      </span>
-    </button>
-    <div class="nav-title">Cost<Kbd keys={keyOf(1)} dim /></div>
-    <button
-      class="nav-item"
-      class:active={selected === "cost"}
-      onclick={() => select("cost")}
-    >
-      <span class="nav-label">Cost</span>
-      <span class="st">
-        <span class="dot" class:ok={!!usage?.available}></span>
-        {usage?.available && usage.week ? `${usd(usage.week.usd)} / 7d` : "none"}
+        {[
+          app.planUsage?.five_hour != null ? `5h ${app.planUsage.five_hour}%` : null,
+          usage?.available && usage.week ? `${usd(usage.week.usd)} / 7d` : null,
+        ]
+          .filter(Boolean)
+          .join(" · ") || "none"}
       </span>
     </button>
     <!-- The Claude Code engine's own pane (nightshift backlog 086 pass 2):
          not a provider — no key, no model list — but the place its
          defaults live: the hand-off, and the cards other items add. -->
-    <div class="nav-title">Subscription<Kbd keys={keyOf(2)} dim /></div>
+    <div class="nav-title">Subscription<Kbd keys={keyOf("Subscription")} dim /></div>
     <button
       class="nav-item"
       class:active={selected === "claude-code"}
@@ -1004,7 +1021,7 @@
       <span class="nav-label">Council</span>
       <span class="st">{council.seats.length} seats · {council.mode}</span>
     </button>
-    <div class="nav-title">Knowledge<Kbd keys={keyOf(3)} dim /></div>
+    <div class="nav-title">Knowledge<Kbd keys={keyOf("Knowledge")} dim /></div>
     <button
       class="nav-item"
       class:active={selected === "knowledge"}
@@ -1027,7 +1044,7 @@
         {modelFiles.length === 0 ? "none" : `${modelFiles.length} model${modelFiles.length === 1 ? "" : "s"}`}
       </span>
     </button>
-    <div class="nav-title">Projects<Kbd keys={keyOf(4)} dim /></div>
+    <div class="nav-title">Projects<Kbd keys={keyOf("Projects")} dim /></div>
     <button
       class="nav-item"
       class:active={selected === "projects"}
@@ -1039,7 +1056,7 @@
         {app.projectsFolder ? (app.projectsFolder.is_default ? "default" : "set") : "none"}
       </span>
     </button>
-    <div class="nav-title">Providers<Kbd keys={keyOf(5)} dim /></div>
+    <div class="nav-title">Providers<Kbd keys={keyOf("Providers")} dim /></div>
     {#each app.providers as p (p.kind)}
       {@const st = navState(p)}
       <button
@@ -1055,7 +1072,7 @@
         </span>
       </button>
     {/each}
-    <div class="nav-title">Web search<Kbd keys={keyOf(6)} dim /></div>
+    <div class="nav-title">Web search<Kbd keys={keyOf("Web search")} dim /></div>
     {#each app.searchBackends as b (b.name)}
       <button
         class="nav-item"
@@ -1069,7 +1086,7 @@
         </span>
       </button>
     {/each}
-    <div class="nav-title">Appearance<Kbd keys={keyOf(7)} dim /></div>
+    <div class="nav-title">Appearance<Kbd keys={keyOf("Appearance")} dim /></div>
     <button
       class="nav-item"
       class:active={selected === "appearance"}
@@ -1079,7 +1096,7 @@
       <!-- The palette's name, not its letter: "B" read as a key (backlog 109). -->
       <span class="st">{PALETTES.find((p) => p.id === app.palette)?.name ?? app.palette}</span>
     </button>
-    <div class="nav-title">Remote<Kbd keys={keyOf(7)} dim /></div>
+    <div class="nav-title">Remote<Kbd keys={keyOf("Remote")} dim /></div>
     <button
       class="nav-item"
       class:active={selected === "remote"}
@@ -1235,7 +1252,7 @@
             checked={notifyPrefs.usageRefresh}
             onchange={(e) => setNotify("usageRefresh", e.currentTarget.checked)}
           />
-          <span>When Usage → Refresh now finishes — the figures; clicking it opens that page. Never for the automatic refresh</span>
+          <span>When Usage · Cost → Refresh now finishes — the figures; clicking it opens that page. Never for the automatic refresh</span>
         </label>
       </section>
     </div>
@@ -1506,20 +1523,21 @@
       </section>
     </div>
   {:else if selected === "usage"}
-    <!-- Usage (nightshift backlog 127, split from the one Usage pane of
-         backlog 045): what the plan has left and where the week went — the
-         plan's two windows, the surfaces, the weekly caps, the collector
-         and its Refresh now (the 116 banner opens here). Dollars are on
-         Cost, below. -->
+    <!-- Usage · Cost (nightshift backlog 153, 2026-09-24; 127's Usage and
+         Cost panes merged back into one): the gauges above — the plan's
+         two windows, the surfaces and weekly caps — then the dollars — the
+         spend table and the provider credits — then the ledger. One
+         Refresh now re-reads all of it (the 116 banner opens here); each
+         half says when it was read. -->
     <div class="pane">
       <div class="pane-head">
-        <h2 class="pane-title">Usage</h2>
-        <span class="slug">{plan && plan.five_hour != null ? `5h ${plan.five_hour}% · week ${plan.seven_day ?? "?"}%` : "no plan sample"}</span>
+        <h2 class="pane-title">Usage · Cost</h2>
+        <span class="slug">{plan && plan.five_hour != null ? `5h ${plan.five_hour}% · week ${plan.seven_day ?? "?"}%` : "no plan sample"}{usage?.available && usage.week ? ` · ${usd(usage.week.usd)} in 7 days` : ""}</span>
         <span class="spacer"></span>
         <button
           class="ns-btn small"
           disabled={usageRefreshing}
-          title="Run the collector now (python3 ~/.claude/usage-ledger.py update) and reread the ledger"
+          title="Run the collector now (python3 ~/.claude/usage-ledger.py update), reread the ledger, the plan's two windows and the provider credits"
           onclick={() => void refreshUsageNow()}
         >{usageRefreshing ? "Refreshing…" : "Refresh now"}</button>
         <button class="close" title="Close" aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
@@ -1528,15 +1546,14 @@
         <p class="note small">{usageRefreshNote}</p>
       {/if}
       <p class="note">
-        How much of the plan is used and where the week went. The plan's two
-        windows are the top bar's own reading — server-computed, account-wide,
-        every surface. The surfaces and the caps are from the usage ledger
-        under <code>~/.claude</code>. What it would have cost is the
-        <button class="ns-link" onclick={() => select("cost")}>Cost</button> page.
+        How much of the plan is used, where the week went, and what it would
+        have cost. The plan's two windows are the top bar's own reading —
+        server-computed, account-wide, every surface. The surfaces, the caps
+        and the spend are from the usage ledger under <code>~/.claude</code>.
       </p>
 
       <section class="card">
-        <div class="ch"><span class="t">Plan</span><span class="dim small">account-wide · every surface</span></div>
+        <div class="ch"><span class="t">Plan</span><span class="dim small">account-wide · every surface · {readStamp(planReadAt)}</span></div>
         {#if plan && plan.five_hour != null}
           <div class="usage-rows">
             <div class="usage-row">
@@ -1624,60 +1641,15 @@
         </section>
 
         <section class="card">
-          <div class="ch"><span class="t">Ledger</span></div>
-          <div class="key-status">
-            <code class="path">{usage.dir}</code>
-            <br />
-            {usage.first_date} → {usage.last_date}{usage.updated_at
-              ? `, last updated ${relativeTime(usage.updated_at)} (${new Date(usage.updated_at).toLocaleString()})`
-              : ""}.
-          </div>
+          <div class="ch"><span class="t">Spend</span><span class="dim small">dedup basis · API-equivalent · {readStamp(ledgerReadAt)}</span></div>
           <p class="note small">
-            The collector is <code>{usage.collector}</code>, run every six hours by
-            a LaunchAgent (<code>com.swaraagsistla.claude-usage-ledger</code>).
-            Nightloom reads its three files and writes none of them; the
-            same numbers, to the cent, are <code>claude_usage</code> in a shell.
+            What Claude Code has cost. These are the API's own usage fields —
+            tokens in, out, cache written and cache read, one count per API
+            message — priced by <code>usage-rates.json</code>. Turns run on a
+            subscription are shown as what they <em>would</em> have cost on the
+            API, not as a bill; a rate change in that file restates every figure
+            here. Days are UTC, as on Anthropic's dashboard.
           </p>
-        </section>
-      {/if}
-    </div>
-  {:else if selected === "cost"}
-    <!-- Cost (nightshift backlog 127): every dollar figure — the spend
-         table by model and window. The ledger and the collector are the
-         Usage page's; this page only prices what they counted. -->
-    <div class="pane">
-      <div class="pane-head">
-        <h2 class="pane-title">Cost</h2>
-        <span class="slug">{usage?.available && usage.week ? `${usd(usage.week.usd)} in 7 days` : "no ledger"}</span>
-        <span class="spacer"></span>
-        <button class="close" title="Close" aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
-      </div>
-      <p class="note">
-        What Claude Code has cost, from the usage ledger under
-        <code>~/.claude</code>. These are the API's own usage fields — tokens
-        in, out, cache written and cache read, one count per API message —
-        priced by <code>usage-rates.json</code>. Turns run on a subscription
-        are shown as what they <em>would</em> have cost on the API, not as a
-        bill; a rate change in that file restates every figure here. Days are
-        UTC, as on Anthropic's dashboard.
-      </p>
-
-      {#if !usage}
-        <p class="note small">Reading the ledger…</p>
-      {:else if !usage.available}
-        <section class="card">
-          <div class="ch"><span class="t">No ledger yet</span></div>
-          <div class="key-status">{usage.reason}</div>
-          <p class="note small">
-            The collector is <code>{usage.collector}</code>, run every six hours by
-            a LaunchAgent; nothing in Nightloom writes these files. Run
-            <code>python3 {usage.collector} update --all</code> once and this
-            pane fills.
-          </p>
-        </section>
-      {:else}
-        <section class="card">
-          <div class="ch"><span class="t">Spend</span><span class="dim small">dedup basis · API-equivalent</span></div>
           <div class="usage-table">
             <table>
               <thead>
@@ -1724,7 +1696,7 @@
       <!-- Provider credits (nightshift backlog 149, blocker 244): what
            each key has left, where the provider's API says. -->
       <section class="card">
-        <div class="ch"><span class="t">Provider credits</span><span class="spacer"></span><button class="ns-btn ghost small" disabled={creditsBusy} onclick={() => void refreshCredits()}>{creditsBusy ? "Asking…" : "Refresh"}</button></div>
+        <div class="ch"><span class="t">Provider credits</span><span class="dim small">{readStamp(creditsReadAt)}</span><span class="spacer"></span><button class="ns-btn ghost small" disabled={creditsBusy} onclick={() => void refreshCredits()}>{creditsBusy ? "Asking…" : "Refresh"}</button></div>
         {#if credits === null}
           <p class="note small">Asking the providers…</p>
         {:else}
@@ -1747,10 +1719,28 @@
           <p class="note small">
             OpenRouter's API reports credits bought and used; Anthropic's,
             OpenAI's, Gemini's and Groq's show a balance only in their consoles.
-            The subscription engine has no balance — its window is on the Usage page.
+            The subscription engine has no balance — its windows are the Plan card above.
           </p>
         {/if}
       </section>
+      {#if usage?.available}
+        <section class="card">
+          <div class="ch"><span class="t">Ledger</span><span class="dim small">{readStamp(ledgerReadAt)}</span></div>
+          <div class="key-status">
+            <code class="path">{usage.dir}</code>
+            <br />
+            {usage.first_date} → {usage.last_date}{usage.updated_at
+              ? `, last updated ${relativeTime(usage.updated_at)} (${new Date(usage.updated_at).toLocaleString()})`
+              : ""}.
+          </div>
+          <p class="note small">
+            The collector is <code>{usage.collector}</code>, run every six hours by
+            a LaunchAgent (<code>com.swaraagsistla.claude-usage-ledger</code>).
+            Nightloom reads its three files and writes none of them; the
+            same numbers, to the cent, are <code>claude_usage</code> in a shell.
+          </p>
+        </section>
+      {/if}
     </div>
   {:else if selected === "council"}
     <!-- The council's pane (nightshift backlog 149): the default roster
