@@ -19,6 +19,8 @@ serde_json.workspace = true
 async-trait.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
+# The connect log's timestamps (item 220, `connect_deadline`).
+chrono.workspace = true
 # API keys entered in-app land in the OS credential store (Windows
 # Credential Manager / macOS Keychain / Secret Service), never on disk.
 tauri-plugin-dialog = "2"
