@@ -4,7 +4,7 @@
   import { copyText } from "./clipRing.svelte";
   import type { Segment } from "./state.svelte";
   import type { ApprovalRequest, Usage } from "./types";
-  import { renderMarkdown } from "./markdown";
+  import { renderReply } from "./markdown";
   import CouncilBlocks from "./CouncilBlocks.svelte";
   import { parseCouncilRecord, parseCouncilSeat } from "./council";
   import { wordDiff } from "./textdiff";
@@ -674,7 +674,7 @@
           {#each wordDiff(before, g.seg.text) as op, k (k)}{#if op.kind === "del"}<del>{op.text}</del>{:else if op.kind === "add"}<ins>{op.text}</ins>{:else}{op.text}{/if}{/each}
         </div>
       {:else}
-        <div class="markdown">{@html renderMarkdown(g.seg.text)}</div>
+        <div class="markdown">{@html renderReply(g.seg.text)}</div>
       {/if}
     {:else if g.seg.kind === "removed_tool" || g.seg.kind === "removed_text"}
       {@const seg = g.seg}
@@ -804,6 +804,35 @@
 </div>
 
 <style>
+  /* Sources inline (backlog 213, `cite.ts`): a citation marker as a small
+     chip beside its sentence, and the foot list folded. */
+  .markdown :global(a.cite-chip) {
+    display: inline-block;
+    max-width: 14em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    vertical-align: 0.1em;
+    margin: 0 0.1em 0 0.2em;
+    padding: 0 0.45em;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent-ink);
+    font-size: 0.72em;
+    line-height: 1.6;
+    text-decoration: none;
+  }
+  .markdown :global(a.cite-chip:hover) {
+    background: var(--line2);
+  }
+  .markdown :global(details.all-sources) {
+    margin-top: 0.6em;
+    font-size: 0.9em;
+    color: var(--dim);
+  }
+  .markdown :global(details.all-sources > summary) {
+    cursor: pointer;
+  }
   .assistant {
     display: flex;
     flex-direction: column;

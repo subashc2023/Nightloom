@@ -1329,7 +1329,13 @@ impl Tool for WebSearch {
     fn def(&self) -> ToolDef {
         ToolDef {
             name: "web_search".into(),
-            description: format!("{SEARCH_DESC_PREFIX}{}.", self.chain_phrase()),
+            // The citation marker (nightshift backlog 213) rides on the
+            // tool's description: present exactly when search is.
+            description: format!(
+                "{SEARCH_DESC_PREFIX}{}. {}",
+                self.chain_phrase(),
+                crate::prompt::CITE_NOTE
+            ),
             input_schema: json!({
                 "type": "object",
                 "properties": {

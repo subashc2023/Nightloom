@@ -438,9 +438,29 @@ fn engine_note_segment(knowledge: Option<&KnowledgeContext>) -> Segment {
          .meta.json beside it naming the call that spawned it) and take up from its last \
          result rather than repeating the search.",
     );
+    // Sources inline (nightshift backlog 213, 2026-09-25): the CLI's
+    // WebSearch result ends by telling the model to include its sources as
+    // Markdown links, which it did as one list at the foot of every reply.
+    // The marker below is such a link, placed where the claim is; the
+    // desktop draws it as a chip and folds any foot list.
+    text.push(' ');
+    text.push_str(CITE_NOTE);
     text.push_str("\n</engine-note>");
     Segment::new(SegmentKind::EngineNote, "engine-note", text)
 }
+
+/// How to cite a web source (nightshift backlog 213): a marker right after
+/// the sentence it supports, `[[n]](url "title")`, which the desktop draws
+/// as a chip (`apps/desktop/src/lib/cite.ts`). Said on the Claude Code
+/// engine in the engine note and on the API engine in `web_search`'s own
+/// description, so it is present exactly where web results can be.
+pub const CITE_NOTE: &str = "When a sentence rests on a web page you searched or fetched, cite \
+     it right after that sentence with a marker: a Markdown link whose text is the source's \
+     number in brackets and whose title is the page's title, like \
+     [[1]](https://example.com/page \"Page title\"). Number sources in the order you first use \
+     them and reuse a number for the same page; a sentence with no web source gets no marker. \
+     These markers are how you include your sources as Markdown links: do not also list them \
+     at the end of the reply.";
 
 pub fn identity_segment() -> Segment {
     Segment::new(SegmentKind::Identity, "identity", DEFAULT_IDENTITY)
@@ -1668,6 +1688,12 @@ the body text",
 
         assert!(text.contains("always answer in haiku"), "{text}");
         assert!(text.contains("one.md"), "{text}");
+        // The citation marker (backlog 213) is inside the engine note.
+        let cite = text
+            .find("[[1]](https://example.com/page")
+            .expect("the cite note");
+        assert!(cite > text.find("<engine-note>").unwrap(), "{text}");
+        assert!(cite < text.find("</engine-note>").unwrap(), "{text}");
         assert!(text.contains("<engine-note>"), "{text}");
         assert!(!text.contains("You are Nightloom"), "{text}");
         assert!(!text.contains("<environment>"), "{text}");

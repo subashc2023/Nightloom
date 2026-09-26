@@ -1,7 +1,8 @@
-import { marked } from "marked";
+import { Marked, marked } from "marked";
 import DOMPurify from "dompurify";
 import { math, renderMath } from "./math";
 import { tilde } from "./tilde";
+import { cite } from "./cite";
 import "katex/dist/katex.min.css";
 
 marked.use(math);
@@ -24,6 +25,22 @@ const ALLOW_MATHML = { ADD_TAGS: ["semantics", "annotation"] };
 /** Render assistant markdown to sanitized HTML. */
 export function renderMarkdown(src: string): string {
   const html = marked.parse(src, { async: false, gfm: true });
+  return DOMPurify.sanitize(html, ALLOW_MATHML);
+}
+
+/**
+ * A reply's text (nightshift backlog 213): `renderMarkdown` plus the
+ * citation chips and the folded sources list (`cite.ts`). Its own marked
+ * instance, so a note, a blocker or a file view that happens to hold a
+ * "Sources" list or a `[1](url)` link renders exactly as before.
+ */
+const replyMarked = new Marked();
+replyMarked.use(math);
+replyMarked.use(tilde);
+replyMarked.use(cite);
+
+export function renderReply(src: string): string {
+  const html = replyMarked.parse(src, { async: false, gfm: true });
   return DOMPurify.sanitize(html, ALLOW_MATHML);
 }
 
