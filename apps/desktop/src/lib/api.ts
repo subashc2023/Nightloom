@@ -952,6 +952,11 @@ export function knowledgeInfo(): Promise<KnowledgeInfo | null> {
   return invoke("knowledge_info");
 }
 
+/** The window's timing of a launch step, for `<config>/logs/startup.log` (item 220). */
+export function startupMark(step: string, ms: number, detail?: string): Promise<null> {
+  return invoke("startup_mark", { step, ms, detail });
+}
+
 /**
  * Point the vault at a folder, or back at the default with `null`.
  *

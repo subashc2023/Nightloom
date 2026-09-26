@@ -108,6 +108,9 @@ pub fn clean_favicon(raw: &str) -> Option<String> {
 pub fn guard<R: Runtime>(
     inner: impl Fn(Invoke<R>) -> bool + Send + Sync + 'static,
 ) -> impl Fn(Invoke<R>) -> bool + Send + Sync + 'static {
+    // Timed too (item 220): a dispatch that holds the IPC thread gets a
+    // line in the startup log.
+    let inner = crate::startup_log::timed_dispatch(inner);
     move |invoke: Invoke<R>| {
         if is_web_label(invoke.message.webview_ref().label()) {
             invoke.resolver.reject("a web tab cannot call Nightloom");

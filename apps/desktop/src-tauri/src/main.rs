@@ -52,6 +52,7 @@ mod power;
 mod prompt_hold;
 /// The phone page over the tailnet (nightshift backlog 091, Shape B).
 mod remote;
+mod startup_log;
 /// The terminal pane's shells (nightshift backlog 113).
 mod terminal;
 /// Web tabs: a clicked link as a child webview in a pane (backlog 172).
@@ -1642,34 +1643,39 @@ async fn connect_agent(
     // error naming it, and `~/.nightloom/logs/connect.log` a line.
     let stage = connect_deadline::Stage::new();
     let log = connect_deadline::log_path();
-    connect_deadline::run(
-        &stage,
-        connect_deadline::CONNECT_TIMEOUT,
-        log.as_deref(),
-        connect_agent_body(
+    // Its line in the startup log too (item 220, 2026-09-26), beside the
+    // reopen and the vault read it used to wait behind.
+    startup_log::timed(
+        "connect_agent",
+        connect_deadline::run(
             &stage,
-            &state,
-            binary,
-            model,
-            workspace,
-            tools,
-            approval,
-            safe_mode,
-            budget,
-            system,
-            preamble,
-            ask,
-            plan,
-            prompt_suggestions,
-            effort,
-            fallback_model,
-            subagents_auto,
-            limits,
-            fork_mode,
-            &holds,
-            cold,
-            auto_layers,
-            update_now,
+            connect_deadline::CONNECT_TIMEOUT,
+            log.as_deref(),
+            connect_agent_body(
+                &stage,
+                &state,
+                binary,
+                model,
+                workspace,
+                tools,
+                approval,
+                safe_mode,
+                budget,
+                system,
+                preamble,
+                ask,
+                plan,
+                prompt_suggestions,
+                effort,
+                fallback_model,
+                subagents_auto,
+                limits,
+                fork_mode,
+                &holds,
+                cold,
+                auto_layers,
+                update_now,
+            ),
         ),
     )
     .await
@@ -4869,15 +4875,35 @@ async fn pick_folder(
 
 #[tauri::command]
 async fn list_projects(state: State<'_, AppState>) -> Result<Vec<ProjectInfo>, String> {
-    Ok(state
-        .workspaces
-        .lock()
-        .await
-        .registry
-        .projects()
-        .iter()
-        .map(ProjectInfo::of)
-        .collect())
+    // The first thing the launch shows (item 220): its line in the startup log.
+    startup_log::timed("list_projects", async {
+        // ~~Counted under the workspaces lock, one project after another~~
+        // (item 220, measured 2026-09-26: 250 ms to 4.3 s for 19 projects,
+        // each `ProjectInfo::of` reading its notes and statting its folder,
+        // with every command that needs the lock — the reopen among them —
+        // waiting behind it). The list is copied out under the lock; the
+        // disk is read outside it, one thread per project.
+        let projects = state.workspaces.lock().await.registry.projects();
+        tokio::task::spawn_blocking(move || project_infos(&projects))
+            .await
+            .map_err(|e| format!("listing projects: {e}"))
+    })
+    .await
+}
+
+/// `ProjectInfo::of` for each project, together, in the list's order.
+fn project_infos(projects: &[Project]) -> Vec<ProjectInfo> {
+    std::thread::scope(|s| {
+        let handles: Vec<_> = projects
+            .iter()
+            .map(|p| s.spawn(move || ProjectInfo::of(p)))
+            .collect();
+        handles
+            .into_iter()
+            .zip(projects)
+            .map(|(h, p)| h.join().unwrap_or_else(|_| ProjectInfo::of(p)))
+            .collect()
+    })
 }
 
 #[tauri::command]
@@ -5517,14 +5543,24 @@ async fn open_project(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<ProjectInfo, String> {
+    // The launch waits on this one (item 220): its line in the startup log.
+    startup_log::timed("open_project", open_project_body(&app, &state, &id)).await
+}
+
+/// [`open_project`]'s work.
+async fn open_project_body(
+    app: &AppHandle,
+    state: &AppState,
+    id: &str,
+) -> Result<ProjectInfo, String> {
     let project = {
         let mut guard = state.workspaces.lock().await;
         let project = guard
             .registry
-            .find(&id)
+            .find(id)
             .cloned()
             .ok_or_else(|| format!("no project {id}"))?;
-        guard.registry.touch(&id);
+        guard.registry.touch(id);
         guard.active = Some(project.clone());
         project
     };
@@ -5534,11 +5570,11 @@ async fn open_project(
     // otherwise (nightshift backlog 061).
     *state.pending_mode.lock().await = ChatMode::Normal;
     *state.pending_kind.lock().await = ChatKind::Build;
-    adopt_agent_session(&state, None).await;
+    adopt_agent_session(state, None).await;
     // After the guard is dropped, and before the counts are read: a project
     // opened for the first time since the move has its chats and notes still
     // in the folder, and `ProjectInfo` would report zero of each.
-    announce_migration(&app, &project);
+    announce_migration(app, &project);
     Ok(ProjectInfo::of(&project))
 }
 
@@ -5891,7 +5927,9 @@ impl KnowledgeInfo {
 
 #[tauri::command]
 async fn knowledge_info() -> Result<Option<KnowledgeInfo>, String> {
-    Ok(KnowledgeInfo::current())
+    // 86 s as the window saw it once (item 220): its own line, to tell the
+    // read from the wait before it.
+    startup_log::timed("knowledge_info", async { Ok(KnowledgeInfo::current()) }).await
 }
 
 /// Where the per-model instruction files live, so the editor's Folder button
@@ -7225,6 +7263,8 @@ fn mac_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
 }
 
 fn main() {
+    // The startup log's clock (item 220): every line's `+N ms` counts from here.
+    startup_log::mark_launch();
     // `nightloom-desktop --mcp-serve [--project <id>]`: this binary as an
     // MCP server on stdio, for the Claude Code engine. The app's `connect_agent`
     // hands `claude -p` a `--mcp-config` naming `current_exe()` with these
@@ -7451,6 +7491,7 @@ fn main() {
             dismiss_proposal,
             mark_applied,
             knowledge_info,
+            startup_log::startup_mark,
             model_instructions_dir,
             chat_instructions_path,
             set_knowledge_dir,

@@ -13,6 +13,7 @@
     subagentsOfTurn,
   } from "./state.svelte";
   import { cacheState } from "./cache";
+  import { connectionWord, launch } from "./launch.svelte";
   import { budgetChip, budgetTitle } from "./budget";
   import RightRail from "./RightRail.svelte";
   import { portal, anchorBelow } from "./portal";
@@ -520,7 +521,15 @@
           >{kindLabel(chatKind(app.events), app.connection.engine)}<span class="fold2"> · {engineName}</span></span
         >
       {:else}
-        <span class="annotation">not connected</span>
+        <!-- "not connected" only once it is true (item 220): while the
+             launch connect or any connect runs, "connecting…". -->
+        <span class="annotation"
+          >{connectionWord({
+            connected: false,
+            connecting: app.connecting,
+            launchConnectSettled: launch.connectSettled,
+          })}</span
+        >
       {/if}
       {#if openTasks > 0}<span class="badge" use:tip={`${openTasks} open tasks`}>{openTasks}</span>{/if}
     </button>
