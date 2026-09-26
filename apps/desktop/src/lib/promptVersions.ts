@@ -28,7 +28,8 @@ export function takenAtCold(layer: PendingLayer, auto: boolean): boolean {
 /**
  * Reconnect before the turn? When the connection was built for another
  * chat than the one sending (its holds are not this chat's), and when the
- * chat is cold and a mark is waiting for exactly that.
+ * chat is cold ~~and a mark is waiting for exactly that~~ (2026-09-26: any
+ * cold turn — see the body).
  *
  * "Another chat" includes New chat on a connection built for an existing
  * one: that connection carries the old chat's held texts, which the CLI
@@ -39,11 +40,19 @@ export function reconnectBeforeTurn(
   view: PendingView | null,
   activeSessionId: string | null,
   cold: boolean,
-  auto: boolean,
+  _auto: boolean,
 ): boolean {
   if (!view) return false;
   if (view.session !== activeSessionId) return true;
-  return cold && view.layers.some((l) => takenAtCold(l, auto));
+  // ~~`cold && view.layers.some((l) => takenAtCold(l, auto))`~~ — superseded
+  // 2026-09-26 (night batch F, measured): the view is only as new as the
+  // last connect, so a file edited on disk since (his editor, the model's
+  // `remember`, another chat's save) had no mark and was never taken at
+  // cold. A cold chat now reconnects once before its turn whatever the
+  // marks say; the connect lays the files against the hold and takes what
+  // the choices allow (a kept layer stays kept). Cold is the one moment a
+  // reconnect cannot cost a cache rewrite, and after the turn it is warm.
+  return cold && activeSessionId !== null;
 }
 
 /**
