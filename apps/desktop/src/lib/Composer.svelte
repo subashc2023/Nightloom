@@ -87,6 +87,7 @@
   import type { CouncilPrefs } from "./council";
   import { foldToFit } from "./fold";
   import { launch } from "./sendMotion";
+  import { composerConnectHint, launch as launchState } from "./launch.svelte";
   import { hasQuoteLine, insertQuote, mirrorLines, replyRequest, takeReply } from "./replyQuote.svelte";
 
   /**
@@ -1840,7 +1841,15 @@
     </div>
   {/if}
   {#if !app.connection}
-    <div class="hint">connect a provider to start</div>
+    <!-- "connecting…" while the launch connect runs, as the top bar says;
+         the failure wording only once it is true (item 230). -->
+    <div class="hint">
+      {composerConnectHint({
+        connected: false,
+        connecting: app.connecting,
+        launchConnectSettled: launchState.connectSettled,
+      })}
+    </div>
   {:else if dragDepth > 0}
     <div class="hint">drop images or PDFs to attach</div>
   {:else if handoff.noStartPromptChat !== null && handoff.noStartPromptChat === app.activeSessionId && !text}

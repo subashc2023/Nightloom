@@ -50,6 +50,22 @@ export function connectionWord(s: {
   return "not connected";
 }
 
+/**
+ * The line under the composer when there is no connection (item 230,
+ * 2026-09-26): "connecting…" while the launch connect or any connect runs —
+ * the same state the top bar reads — and the failure wording only once
+ * "not connected" is true. Null when connected.
+ */
+export function composerConnectHint(s: {
+  connected: boolean;
+  connecting: boolean;
+  launchConnectSettled: boolean;
+}): string | null {
+  const word = connectionWord(s);
+  if (word === "connected") return null;
+  return word === "connecting…" ? "connecting…" : "connect a provider to start";
+}
+
 /** The steps `init` hands the launch; the tests hand fakes. */
 export interface LaunchSteps {
   /** Read the project list (`refreshProjects`). */

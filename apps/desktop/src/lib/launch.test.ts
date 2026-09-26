@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { connectionWord, launch, launchMessage, runLaunch, type LaunchSteps } from "./launch.svelte";
+import { composerConnectHint, connectionWord, launch, launchMessage, runLaunch, type LaunchSteps } from "./launch.svelte";
 
 /**
  * Item 220 (2026-09-26): the app opened to an empty window saying "not
@@ -120,5 +120,26 @@ describe('"not connected" only once it is true (item 220)', () => {
     expect(connectionWord({ connected: true, connecting: true, launchConnectSettled: false })).toBe("connected");
     expect(connectionWord({ connected: false, connecting: true, launchConnectSettled: true })).toBe("connecting…");
     expect(connectionWord({ connected: false, connecting: false, launchConnectSettled: true })).toBe("not connected");
+  });
+});
+
+describe("the line under the composer says connecting… while the connect runs (item 230)", () => {
+  it("reads connecting… until the launch connect has settled, then the failure wording", async () => {
+    const connect = deferred();
+    const s = steps({ connect: () => connect.promise });
+    const done = runLaunch(s);
+    const hint = () =>
+      composerConnectHint({ connected: false, connecting: false, launchConnectSettled: launch.connectSettled });
+    expect(hint()).toBe("connecting…");
+    await vi.waitFor(() => expect(s.log).toContain("newSession"));
+    expect(hint()).toBe("connecting…");
+    connect.reject("claude not found");
+    await done;
+    expect(hint()).toBe("connect a provider to start");
+  });
+
+  it("reads connecting… during a later connect, and nothing when connected", () => {
+    expect(composerConnectHint({ connected: false, connecting: true, launchConnectSettled: true })).toBe("connecting…");
+    expect(composerConnectHint({ connected: true, connecting: false, launchConnectSettled: true })).toBeNull();
   });
 });
