@@ -236,6 +236,11 @@ pub const UNFILED_SOURCE: &str = "claude:unfiled";
 pub struct Registry {
     path: Option<PathBuf>,
     projects: Vec<Project>,
+    /// Why this run may not write the file, when it may not: the file is
+    /// there but could not be read (a full disk, iCloud stalled after sleep),
+    /// so the empty list in memory is not what it holds, and saving it would
+    /// wipe the projects (backlog 219). The next run reads it again.
+    save_blocked: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -251,16 +256,17 @@ fn schema_version() -> u32 {
 }
 
 impl Registry {
-    /// Load from the user's config dir. A missing or unreadable file is an
-    /// empty registry, not an error — the first run has no projects, and a
-    /// corrupt file should not make the app unusable when the recovery is to
-    /// pick the folder again.
+    /// Load from the user's config dir. A missing, unreadable or corrupt file
+    /// is an empty registry, not an error — the first run has no projects, and
+    /// a bad file should not make the app unusable. But an empty registry is
+    /// never written over projects it could not see: see [`Registry::load_from`].
     pub fn load() -> Self {
         match config_dir().map(|d| d.join(REGISTRY_FILE)) {
             Some(path) => Self::load_from(path),
             None => Self {
                 path: None,
                 projects: Vec::new(),
+                save_blocked: None,
             },
         }
     }
@@ -272,16 +278,37 @@ impl Registry {
         Self::load_from(config.join(REGISTRY_FILE))
     }
 
+    /// Three ways to find no projects, and only the first may be saved over
+    /// as it stands (backlog 219, after his app opened empty on a full disk):
+    ///
+    /// - no file: the first run, an empty registry;
+    /// - a file that cannot be read: empty for this run, and no save this run
+    ///   — the projects are still in it, and the next run reads them;
+    /// - a file read but not parsed (cut short, emptied): moved aside to
+    ///   `projects.json.broken-<time>`, kept, and the registry starts empty.
+    ///   A move that fails blocks saving too, since the file is then the only
+    ///   copy of whatever it holds.
     pub fn load_from(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
-        let projects = fs::read_to_string(&path)
-            .ok()
-            .and_then(|raw| serde_json::from_str::<RegistryFile>(&raw).ok())
-            .map(|f| f.projects)
-            .unwrap_or_default();
+        let (projects, save_blocked) = match fs::read_to_string(&path) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => (Vec::new(), None),
+            Err(e) => (
+                Vec::new(),
+                Some(format!(
+                    "{} could not be read ({e}), so this run will not write over it — \
+                     quit and reopen Nightloom to read it again",
+                    path.display()
+                )),
+            ),
+            Ok(raw) => match serde_json::from_str::<RegistryFile>(&raw) {
+                Ok(f) => (f.projects, None),
+                Err(_) => (Vec::new(), set_aside_broken(&path).err()),
+            },
+        };
         Self {
             path: Some(path),
             projects,
+            save_blocked,
         }
     }
 
@@ -510,6 +537,11 @@ impl Registry {
             // No path is an in-memory registry, which is not a failure.
             return Ok(());
         };
+        if let Some(why) = &self.save_blocked {
+            return Err(format!(
+                "the change was made for this run but not saved — {why}"
+            ));
+        }
         let file = RegistryFile {
             version: schema_version(),
             projects: self.projects.clone(),
@@ -519,13 +551,30 @@ impl Registry {
         if let Some(parent) = path.parent() {
             let _ = fs::create_dir_all(parent);
         }
-        fs::write(path, json).map_err(|e| {
-            format!(
-                "the change was made for this run but not saved — cannot write {}: {e}",
-                path.display()
-            )
-        })
+        // Through a temp file and a rename: a write that fails (a full disk)
+        // leaves the old file whole instead of empty (backlog 219).
+        crate::nightshift::write_atomic(path, &json)
+            .map_err(|e| format!("the change was made for this run but not saved — {e}"))
     }
+}
+
+/// Move a registry file that did not parse to `<name>.broken-<time>` beside
+/// it, so the projects it may still hold survive the next save. A rename, not
+/// a copy: it needs no free space, which is when files break.
+fn set_aside_broken(path: &Path) -> Result<(), String> {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| REGISTRY_FILE.to_string());
+    let stamp = Utc::now().format("%Y%m%d-%H%M%S");
+    let aside = path.with_file_name(format!("{name}.broken-{stamp}"));
+    fs::rename(path, &aside).map_err(|e| {
+        format!(
+            "{} could not be read as a project list and could not be moved aside ({e}), \
+             so this run will not write over it",
+            path.display()
+        )
+    })
 }
 
 /// Overrides [`config_dir`] for the life of the process. See [`set_config_dir`].
@@ -1743,6 +1792,87 @@ mod tests {
         assert!(!fs::read_to_string(&path).unwrap().contains("extra_folders"));
     }
 
+    /// Backlog 219: a save that cannot write (a full disk) leaves the old
+    /// file whole. The temp file's name is taken by a folder, so the write
+    /// fails the way a full disk makes it fail: before the rename.
+    #[test]
+    fn a_save_that_fails_leaves_the_old_registry_whole() {
+        let dir = temp_dir("save-fails");
+        let path = dir.join("projects.json");
+        let home = dir.join("home");
+        fs::create_dir_all(&home).unwrap();
+        let mut reg = Registry::load_from(&path);
+        let p = reg.add(&home, None).unwrap();
+        let before = fs::read(&path).unwrap();
+
+        let tmp = dir.join(format!(".projects.json.{}.tmp", std::process::id()));
+        fs::create_dir_all(&tmp).unwrap();
+        let err = reg.rename(&p.id, "Renamed").unwrap_err();
+        assert!(err.contains("not saved"), "{err}");
+        assert_eq!(fs::read(&path).unwrap(), before);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Backlog 219: a registry that is there but cannot be read loads empty
+    /// and is never written over this run. A folder in its place stands in
+    /// for the read error a full disk or a stalled iCloud gives.
+    #[test]
+    fn an_unreadable_registry_is_never_saved_over() {
+        let dir = temp_dir("unreadable");
+        let path = dir.join("projects.json");
+        fs::create_dir_all(&path).unwrap();
+        let home = dir.join("home");
+        fs::create_dir_all(&home).unwrap();
+
+        let mut reg = Registry::load_from(&path);
+        assert!(reg.projects().is_empty());
+        let err = reg.add(&home, None).unwrap_err();
+        assert!(err.contains("will not write over it"), "{err}");
+        assert!(path.is_dir());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Backlog 219: a registry cut short is moved aside, kept, and the next
+    /// save writes a fresh one instead of over it.
+    #[test]
+    fn a_broken_registry_is_moved_aside_and_kept() {
+        let dir = temp_dir("broken");
+        let path = dir.join("projects.json");
+        let cut = "{\"version\": 1, \"projects\": [{\"id\": \"a\", \"na";
+        fs::write(&path, cut).unwrap();
+        let home = dir.join("home");
+        fs::create_dir_all(&home).unwrap();
+
+        let mut reg = Registry::load_from(&path);
+        assert!(reg.projects().is_empty());
+        let kept: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("projects.json.broken-"))
+            .collect();
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        assert_eq!(fs::read_to_string(dir.join(&kept[0])).unwrap(), cut);
+
+        reg.add(&home, None).unwrap();
+        assert_eq!(Registry::load_from(&path).projects().len(), 1);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// No file is the first run: empty, and saving works.
+    #[test]
+    fn a_missing_registry_is_empty_and_saves() {
+        let dir = temp_dir("missing");
+        let path = dir.join("projects.json");
+        let home = dir.join("home");
+        fs::create_dir_all(&home).unwrap();
+        let mut reg = Registry::load_from(&path);
+        assert!(reg.projects().is_empty());
+        reg.add(&home, None).unwrap();
+        assert_eq!(Registry::load_from(&path).projects().len(), 1);
+        fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn the_registry_round_trips_through_its_file() {
         let dir = temp_dir("round-trip");
@@ -1810,6 +1940,7 @@ mod tests {
         Registry {
             path: None,
             projects,
+            save_blocked: None,
         }
     }
 
@@ -1882,6 +2013,7 @@ mod tests {
         let reg = Registry {
             path: None,
             projects: Vec::new(),
+            save_blocked: None,
         };
         let got = default_projects_folder(&reg);
         assert!(
@@ -1897,6 +2029,7 @@ mod tests {
         let reg = Registry {
             path: None,
             projects: Vec::new(),
+            save_blocked: None,
         };
         let chosen = config.join("elsewhere");
         fs::create_dir_all(&chosen).unwrap();
