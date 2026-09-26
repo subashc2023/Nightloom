@@ -25,7 +25,6 @@
     toggleSidebar,
   } from "./state.svelte";
   import * as api from "./api";
-  import * as tabs from "./tabs";
   import { hasDraft, newDraftKey } from "./drafts.svelte";
   import TerminalButton from "./TerminalButton.svelte";
   import { forkLine } from "./edit";
@@ -106,12 +105,9 @@
   // it automatically would mean guessing when a conversation has drifted,
   // which the user can see and the app cannot.
 
-  /** The row's tab glyph (backlog 099, board 9a): the chat is open in some
-   *  tab other than the live one — the live one is the highlighted row. */
-  function inTab(id: string): boolean {
-    if (id === app.activeSessionId) return false;
-    return tabs.allTabs(app.tabs).some((t) => t.content.kind === "chat" && t.content.session === id);
-  }
+  // The row's ▭ tab glyph (backlog 099) was dropped in nightshift backlog
+  // 239 (2026-09-26): a font drew it as a thin empty box nobody could read,
+  // and the tab strip already shows which chats are open.
 
   /**
    * A chat row's right-click menu (backlog 099's leftover, board 9a):
@@ -576,7 +572,7 @@
                 ondragend={endContentDrag}
               >
                 <span class="snippet"
-                  >{#if inTab(s.id)}<span class="mark tab" use:tip={"Open in a tab"}>▭</span> {/if}{#if s.mode === "incognito"}<span class="mark" use:tip={"Incognito: writes nothing, unread by other chats"}>{MODE_GLYPH.incognito}</span> {/if}{#if hasDraft(s.id)}<span class="mark draft" role="img" aria-label="has a draft" use:tip={"has a draft"}></span> {/if}{s.title ?? s.first_user ?? "empty session"}</span
+                  >{#if s.mode === "incognito"}<span class="mark" use:tip={"Incognito: writes nothing, unread by other chats"}>{MODE_GLYPH.incognito}</span> {/if}{#if hasDraft(s.id)}<span class="mark draft" role="img" aria-label="has a draft" use:tip={"has a draft"}></span> {/if}{s.title ?? s.first_user ?? "empty session"}</span
                 >
                 <!-- A fork says where it came from (backlog 062): the
                      parent's name as its own row shows it, or that the
@@ -1127,6 +1123,13 @@
   .mark {
     color: var(--dim);
   }
+  /* A row's marks sit before the title with a gap (nightshift backlog 239):
+     the space written after each mark is the last thing in its {#if}
+     block, which Svelte trims, so the dot and ◐ touched the title. */
+  .snippet > .mark,
+  .snippet > .mark.draft {
+    margin-right: 0.35em;
+  }
   /* A chat with words waiting in its composer (nightshift backlog 065):
      ~~the incognito mark's style, a size down~~ — an accent dot since
      backlog 208 (2026-09-25): the ✎ it was matched the rename button's,
@@ -1139,12 +1142,6 @@
     border-radius: 50%;
     background: var(--accent);
     vertical-align: middle;
-  }
-  /* The tab glyph (backlog 099): the chat is open in a tab that is not
-     the live one. */
-  .mark.tab {
-    font-size: 0.75em;
-    color: var(--accent);
   }
   /* The kinds menu: the project menu's popover, under the split button. */
   .kinds {
