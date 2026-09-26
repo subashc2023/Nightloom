@@ -57,7 +57,15 @@
   import { stashEdit, takeEdit } from "./drafts.svelte";
   // For its effect: the aside threads' keeper (backlog 137).
   import "./asides.svelte";
-  import { JUMP_OFFSET, MIN_TICKS, activeTick, stepTick, ticks as tickModel } from "./navigator";
+  import {
+    JUMP_OFFSET,
+    MIN_TICKS,
+    activeTick,
+    scrollToLatest,
+    showJumpDown,
+    stepTick,
+    ticks as tickModel,
+  } from "./navigator";
   import type {
     ApprovalRequest,
     DocumentInput,
@@ -593,18 +601,23 @@
   // scroll container, and the a11y lint (rightly) has no category for that.
   function scrollIntent(node: HTMLElement) {
     let touchY = 0;
+    // Any upward input also ends the ⌄'s ride down (item 218).
+    const up = () => {
+      pinned = false;
+      chasing = false;
+    };
     const wheel = (e: WheelEvent) => {
-      if (e.deltaY < 0) pinned = false;
+      if (e.deltaY < 0) up();
     };
     const key = (e: KeyboardEvent) => {
-      if (["ArrowUp", "PageUp", "Home"].includes(e.key)) pinned = false;
+      if (["ArrowUp", "PageUp", "Home"].includes(e.key)) up();
     };
     const touchstart = (e: TouchEvent) => {
       touchY = e.touches[0]?.clientY ?? 0;
     };
     const touchmove = (e: TouchEvent) => {
       const y = e.touches[0]?.clientY ?? 0;
-      if (y > touchY) pinned = false;
+      if (y > touchY) up();
       touchY = y;
     };
     node.addEventListener("wheel", wheel, { passive: true });
@@ -622,10 +635,12 @@
   }
 
   function onscroll() {
-    if (!scrollingSelf) {
+    if (!scrollingSelf && !chasing) {
       // A scrollbar drag has no wheel event; it unpins here on its way up
       // and re-pins here on its way back down. Reaching the foot by any
-      // means re-pins.
+      // means re-pins. Not while the ⌄'s smooth scroll is on its way down
+      // (item 218): its own scroll events would unpin it mid-ride, and a
+      // reply landing then would not be followed.
       pinned = atBottom();
     }
     scheduleScrollWork();
@@ -901,6 +916,12 @@
   let navActive = $state<number | null>(null);
   let navScrolls = $state(false);
   const showNav = $derived(navScrolls && navTicks.length >= MIN_TICKS);
+  // The round ⌄ above the composer (item 218): lit when scrolled up past
+  // `JUMP_DOWN_SHOW`, dark at the foot and while its own click is carrying
+  // the view down (`chasing`, cleared at the foot or on any upward input).
+  let jumpDown = $state(false);
+  let chasing = false;
+  let chaseTimer: ReturnType<typeof setTimeout> | undefined;
 
   function anchorTop(index: number): number | null {
     if (!viewport) return null;
@@ -912,6 +933,8 @@
   function measureNav() {
     if (!viewport) return;
     navScrolls = viewport.scrollHeight > viewport.clientHeight + 8;
+    if (chasing && atBottom()) chasing = false;
+    jumpDown = showJumpDown(viewport.scrollTop, viewport.clientHeight, viewport.scrollHeight, chasing);
     if (!navScrolls || navTicks.length < MIN_TICKS) {
       navActive = null;
       return;
@@ -947,10 +970,22 @@
     viewport.scrollTo({ top: 0, behavior: "smooth" });
     viewport.focus({ preventScroll: true });
   }
+  /** The ⌄'s click (item 218; it was 065's bottom chevron on the strip):
+   *  to the latest message, re-pinned so a reply still streaming is
+   *  followed from there. */
   function toBottom() {
     if (!viewport) return;
     pinned = true;
-    viewport.scrollTo({ top: viewport.scrollHeight, behavior: "smooth" });
+    chasing = true;
+    jumpDown = false;
+    scrollToLatest(viewport);
+    // A smooth scroll that something else interrupts (a scrollbar grab)
+    // never reaches the foot; the ride is over by then either way.
+    clearTimeout(chaseTimer);
+    chaseTimer = setTimeout(() => {
+      chasing = false;
+      measureNav();
+    }, 1500);
     viewport.focus({ preventScroll: true });
   }
 
@@ -1670,8 +1705,26 @@
   </div>
 </div>
 {#if showNav}
-  <Navigator ticks={navTicks} active={navActive} onjump={jumpTo} ontop={toTop} onbottom={toBottom} />
+  <Navigator ticks={navTicks} active={navActive} onjump={jumpTo} ontop={toTop} />
 {/if}
+<!-- The jump to the latest message (item 218): round, centred just above
+     the composer where the Claude app keeps it, faded in only when the
+     view is scrolled up. It replaces the strip's small bottom chevron. -->
+<button
+  class="jump-down"
+  class:shown={jumpDown}
+  use:tip={"Jump to the latest message — and follow the reply again"}
+  aria-label="Jump to the latest message"
+  aria-hidden={!jumpDown}
+  tabindex={jumpDown ? 0 : -1}
+  onclick={toBottom}
+>
+  <!-- A chevron drawn for this button: the shared `chev` spans 6 of its 20
+       units and read as a speck at this size. -->
+  <svg class="ns-ico" viewBox="0 0 20 20" aria-hidden="true" style:width="18px" style:height="18px"
+    ><path d="m5 7.5 5 5 5-5" /></svg
+  >
+</button>
 <!-- The Ask aside pill over a selection (backlog 107), with Reply beside
      it since backlog 215. Mousedown is swallowed on both so the click
      keeps the selection it is about. -->
@@ -1707,6 +1760,41 @@
 {/if}
 
 <style>
+  /* Positioned by the parent's `.content` (the transcript's area, the
+     composer right under it): centred on it, a little above its foot. */
+  .jump-down {
+    position: absolute;
+    left: 50%;
+    bottom: 14px;
+    z-index: 5;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border-radius: 50%;
+    border: 1px solid var(--line2);
+    background: var(--sheet);
+    color: var(--ink2);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    opacity: 0;
+    pointer-events: none;
+    transform: translate(-50%, 6px);
+    transition:
+      opacity 0.16s ease,
+      transform 0.16s ease;
+  }
+  .jump-down.shown {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translate(-50%, 0);
+  }
+  .jump-down:hover {
+    color: var(--ink);
+    background: var(--well);
+  }
   .transcript {
     flex: 1;
     min-height: 0;

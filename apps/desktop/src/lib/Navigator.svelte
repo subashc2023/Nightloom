@@ -10,6 +10,9 @@
    * short tick per message, wider for a longer one, the one being read
    * bright and full width. Click a tick and the transcript scrolls to that
    * message; rest on one and a bubble to the left says how it starts.
+   * Since item 218 (2026-09-26) the bottom chevron is gone from the strip:
+   * the jump to the latest message is the round ⌄ centred above the
+   * composer, drawn by `Transcript.svelte`. The top chevron stays.
    *
    * A view and nothing else: `Transcript.svelte` owns the viewport, works
    * out which tick is being read, and scrolls. This draws what it is told
@@ -24,14 +27,12 @@
     active,
     onjump,
     ontop,
-    onbottom,
   }: {
     ticks: Tick[];
     /** Index into `ticks` of the message being read, or null. */
     active: number | null;
     onjump: (i: number) => void;
     ontop: () => void;
-    onbottom: () => void;
   } = $props();
 
   let root = $state<HTMLDivElement | null>(null);
@@ -65,9 +66,6 @@
       </button>
     {/each}
   </div>
-  <button class="chev" use:tip={"Bottom of the chat — and follow the reply again"} aria-label="Scroll to the bottom" onclick={onbottom}>
-    <Icon name="chev" size={12} />
-  </button>
   {#if hover && ticks[hover.i]}
     <div class="bubble" class:user={ticks[hover.i].role === "user"} style:top="{hover.y}px" role="tooltip">
       <span class="who">{ticks[hover.i].role === "user" ? "You" : "Reply"}</span>

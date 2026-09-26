@@ -123,6 +123,39 @@ export function activeTick(
   return best;
 }
 
+/** How far above the foot of the chat the view must be before the
+ *  jump-to-latest ⌄ shows (item 218). Under it the foot is a flick away
+ *  and a button would only flash while the last line settles. */
+export const JUMP_DOWN_SHOW = 160;
+
+/**
+ * Whether the round ⌄ above the composer shows (item 218, the Claude
+ * app's place for it): the view scrolls, it is more than `JUMP_DOWN_SHOW`
+ * above the foot, and a click on it is not already carrying the view
+ * down (`chasing`) — a smooth scroll passes through every height on its
+ * way, and the button would otherwise stay lit for the whole ride.
+ */
+export function showJumpDown(scrollTop: number, clientHeight: number, scrollHeight: number, chasing = false): boolean {
+  if (chasing) return false;
+  if (scrollHeight <= clientHeight + 8) return false;
+  return scrollHeight - scrollTop - clientHeight > JUMP_DOWN_SHOW;
+}
+
+/** The scroll target for the latest message: the foot of the view. */
+export function latestTop(scrollHeight: number, clientHeight: number): number {
+  return Math.max(0, scrollHeight - clientHeight);
+}
+
+/** What a click on the ⌄ does to the viewport: one smooth scroll to the
+ *  latest message. The caller re-pins, so a reply still streaming is
+ *  followed from there. */
+export function scrollToLatest(
+  el: Pick<HTMLElement, "scrollHeight" | "clientHeight" | "scrollTo">,
+  behavior: ScrollBehavior = "smooth",
+): void {
+  el.scrollTo({ top: latestTop(el.scrollHeight, el.clientHeight), behavior });
+}
+
 /**
  * The tick a step lands on from the current one: ⌥↓ from the last stays
  * on it, ⌥↑ from the first stays on it, and with nothing current a step
