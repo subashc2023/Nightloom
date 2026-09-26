@@ -47,6 +47,16 @@ function schedule(): void {
   timer = setTimeout(flushAsides, SAVE_DELAY_MS);
 }
 
+/**
+ * A save for a change the effect below cannot see (nightshift backlog 238):
+ * text typed in the composer of an aside tab whose chat is not the open
+ * one lands on a stashed thread, and the effect watches only the open
+ * chat's cards. Debounced with the rest.
+ */
+export function scheduleAsideSave(): void {
+  schedule();
+}
+
 if (typeof window !== "undefined") {
   $effect.root(() => {
     $effect(() => {
