@@ -1591,7 +1591,7 @@
              the OS asked for less motion it is three still dots. It says
              nothing about progress, because it can see none. -->
         <div class="waiting" role="status" aria-label="Waiting for the reply">
-          <span class="roll" aria-hidden="true"><Icon name="moon" size={16} /></span>
+          <span class="roll" aria-hidden="true"><Icon name="moon" size={22} /></span>
           <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
         </div>
       {:else}

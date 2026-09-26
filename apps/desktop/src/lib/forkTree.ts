@@ -9,24 +9,26 @@
  * are open is remembered across launches.
  *
  * A chat whose parent is not in the list (deleted, trashed, in another
- * project) stays a top-level row as before. Forks of a fork are flattened
+ * project) stays a top-level row as before. ~~Forks of a fork are flattened
  * under the topmost origin present in the list, one indent level, each
  * keeping its own "from X" line when X is not that origin (nightshift
- * blocker 430, default taken). A chat with no forks is a plain row.
+ * blocker 430, default taken).~~ Since blocker 430's answer ("nested is
+ * fine", 2026-09-25) a fork of a fork sits under the fork it came from,
+ * one indent step further, and that fork has its own disclosure and count,
+ * closed by default and remembered in the same open set. A fork row never
+ * carries a "from X" line: its parent is the row it is indented under. A
+ * chat with no forks is a plain row.
  */
 import type { SessionMeta } from "./types";
 
 export interface SidebarRow {
   meta: SessionMeta;
-  /** 0 for a top-level row, 1 for a fork listed under its origin. */
-  depth: 0 | 1;
-  /** On an origin row: how many chats are grouped under it (0 = none). */
+  /** 0 for a top-level row, n for a fork n steps under its top-level origin. */
+  depth: number;
+  /** How many chats forked directly from this one are listed under it (0 = none). */
   forks: number;
-  /** On an origin row: its forks are listed right after it. */
+  /** Its forks are listed right after it. */
   expanded: boolean;
-  /** On a fork row: true when its direct parent is not the origin it sits
-   *  under (a fork of a fork), so its "from X" line still says something. */
-  fromOther: boolean;
 }
 
 /**
@@ -60,10 +62,12 @@ export function originsOf(sessions: SessionMeta[]): Map<string, string> {
 
 /**
  * The sidebar's rows in order: each top-level chat where it stands in
- * `sessions`, and, when its id is in `open` (or `reveal` is one of its
- * forks), its forks right after it in `sessions`' order. `reveal` is the
- * active chat: a closed group holding it is shown open so the open chat
- * always has a row — not stored, so it closes again when he moves on.
+ * `sessions`, and, when its id is in `open` (or `reveal` is somewhere
+ * under it), the chats forked directly from it right after it in
+ * `sessions`' order — each of those in turn followed by its own forks
+ * when it is open, one depth further. `reveal` is the active chat: every
+ * closed group on the way down to it is shown open so the open chat
+ * always has a row — not stored, so they close again when he moves on.
  */
 export function sidebarRows(
   sessions: SessionMeta[],
@@ -71,31 +75,35 @@ export function sidebarRows(
   reveal: string | null = null,
 ): SidebarRow[] {
   const origins = originsOf(sessions);
+  const byId = new Map(sessions.map((s) => [s.id, s]));
+  // A chat's parent, when it is grouped at all: `originsOf` has already
+  // checked that the whole chain up is listed and acyclic, so the direct
+  // parent is listed too.
+  const parentOf = (s: SessionMeta): string | undefined =>
+    origins.has(s.id) ? s.forked_from?.session : undefined;
   const children = new Map<string, SessionMeta[]>();
   for (const s of sessions) {
-    const o = origins.get(s.id);
-    if (!o) continue;
-    const list = children.get(o) ?? [];
+    const p = parentOf(s);
+    if (!p) continue;
+    const list = children.get(p) ?? [];
     list.push(s);
-    children.set(o, list);
+    children.set(p, list);
+  }
+  const onPath = new Set<string>();
+  for (let cur = reveal ? byId.get(reveal) : undefined; cur; ) {
+    const p = parentOf(cur);
+    if (!p) break;
+    onPath.add(p);
+    cur = byId.get(p);
   }
   const rows: SidebarRow[] = [];
-  for (const s of sessions) {
-    if (origins.has(s.id)) continue;
+  const walk = (s: SessionMeta, depth: number): void => {
     const kids = children.get(s.id) ?? [];
-    const show =
-      kids.length > 0 && (open.has(s.id) || (reveal !== null && kids.some((k) => k.id === reveal)));
-    rows.push({ meta: s, depth: 0, forks: kids.length, expanded: show, fromOther: false });
-    if (!show) continue;
-    for (const k of kids)
-      rows.push({
-        meta: k,
-        depth: 1,
-        forks: 0,
-        expanded: false,
-        fromOther: k.forked_from?.session !== s.id,
-      });
-  }
+    const show = kids.length > 0 && (open.has(s.id) || onPath.has(s.id));
+    rows.push({ meta: s, depth, forks: kids.length, expanded: show });
+    if (show) for (const k of kids) walk(k, depth + 1);
+  };
+  for (const s of sessions) if (!origins.has(s.id)) walk(s, 0);
   return rows;
 }
 

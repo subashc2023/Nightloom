@@ -44,14 +44,38 @@ describe("sidebarRows (backlog 207)", () => {
     expect(rows[0].forks).toBe(0);
   });
 
-  it("flattens a fork of a fork under the topmost origin and marks it", () => {
+  // Blocker 430 answered "nested is fine" (2026-09-25): ~~flattened under
+  // the topmost origin~~ → under its own parent, one step further in.
+  it("nests a fork of a fork under the fork it came from, behind its own disclosure", () => {
     const list = [meta("g", "f"), meta("f", "r"), meta("r")];
     expect(originsOf(list).get("g")).toBe("r");
-    const rows = sidebarRows(list, new Set(["r"]));
-    expect(ids(rows)).toEqual(["r", "-g", "-f"]);
-    expect(rows[0].forks).toBe(2);
-    expect(rows.find((r) => r.meta.id === "g")!.fromOther).toBe(true);
-    expect(rows.find((r) => r.meta.id === "f")!.fromOther).toBe(false);
+    const closedMid = sidebarRows(list, new Set(["r"]));
+    expect(ids(closedMid)).toEqual(["r", "-f"]);
+    expect(closedMid[0].forks).toBe(1);
+    expect(closedMid[1].forks).toBe(1);
+    expect(closedMid[1].expanded).toBe(false);
+    const openMid = sidebarRows(list, new Set(["r", "f"]));
+    expect(ids(openMid)).toEqual(["r", "-f", "--g"]);
+    expect(openMid[1].expanded).toBe(true);
+  });
+
+  it("keeps a middle fork's open state even while its origin is closed", () => {
+    const list = [meta("g", "f"), meta("f", "r"), meta("r")];
+    expect(ids(sidebarRows(list, new Set(["f"])))).toEqual(["r"]);
+    expect(ids(sidebarRows(list, new Set(["f", "r"])))).toEqual(["r", "-f", "--g"]);
+  });
+
+  it("orders siblings and their subtrees depth-first in list order", () => {
+    const list = [meta("f2", "p"), meta("g1", "f1"), meta("f1", "p"), meta("p"), meta("x")];
+    expect(ids(sidebarRows(list, new Set(["p", "f1"])))).toEqual(["p", "-f2", "-f1", "--g1", "x"]);
+  });
+
+  it("opens every closed group on the way down to the active chat", () => {
+    const list = [meta("h", "g"), meta("g", "f"), meta("f", "r"), meta("r"), meta("other", "r")];
+    const rows = sidebarRows(list, new Set(), "h");
+    expect(ids(rows)).toEqual(["r", "-f", "--g", "---h", "-other"]);
+    expect(rows.filter((r) => r.expanded).map((r) => r.meta.id)).toEqual(["r", "f", "g"]);
+    expect(ids(sidebarRows(list, new Set(), "f"))).toEqual(["r", "-f", "-other"]);
   });
 
   it("stops at a missing link: a fork of a deleted fork groups nowhere", () => {

@@ -120,10 +120,28 @@
    * a turn, and a whole-chat fork from a row needs the backend (blocker
    * 380). Each item does what the row's own gesture does.
    */
-  let rowMenu = $state<{ s: SessionMeta; x: number; y: number } | null>(null);
+  let rowMenu = $state<{ s: SessionMeta; x: number; y: number; up?: boolean } | null>(null);
   function openRowMenu(e: MouseEvent, s: SessionMeta) {
     e.preventDefault();
     rowMenu = { s, x: e.clientX, y: e.clientY };
+  }
+  /**
+   * The row's one tool, ··· (backlog 208, design C, blocker 436: "the triple
+   * dots thing might be the way to go"): the same menu as a right-click,
+   * its right edge under the button's, dropped below it — or raised above
+   * it when the row sits too near the window's foot for the menu to fit.
+   */
+  const ROW_MENU_W = 200;
+  const ROW_MENU_ROOM = 190;
+  function openRowMenuFrom(e: MouseEvent, s: SessionMeta) {
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const up = window.innerHeight - r.bottom < ROW_MENU_ROOM;
+    rowMenu = {
+      s,
+      x: Math.max(4, r.right - ROW_MENU_W),
+      y: up ? window.innerHeight - r.top + 4 : r.bottom + 4,
+      up,
+    };
   }
   function rowOpen(how: "replace" | "new" | "beside") {
     const s = rowMenu?.s;
@@ -186,6 +204,13 @@
    * `find.ts` is the one place the key is named (blocker 164).
    */
   function windowKeys(e: KeyboardEvent) {
+    // The row menu is reachable from the keyboard now (the ··· button,
+    // backlog 208), so Escape closes it.
+    if (rowMenu && e.key === "Escape") {
+      e.preventDefault();
+      rowMenu = null;
+      return;
+    }
     if (findChord(e, isMac ? e.metaKey : e.ctrlKey) !== "everywhere") return;
     e.preventDefault();
     if (app.search.open) {
@@ -442,7 +467,7 @@
           kinds = !kinds;
         }}
       >
-        {newChatLabel()}{#if hasDraft(newDraftKey(app.project?.id, app.pendingMode))} <span class="mark draft" use:tip={"has a draft"}>✎</span>{/if}
+        {newChatLabel()}{#if hasDraft(newDraftKey(app.project?.id, app.pendingMode))} <span class="mark draft" role="img" aria-label="has a draft" use:tip={"has a draft"}></span>{/if}
       </button>
       <button
         class="new-chat more"
@@ -513,7 +538,7 @@
       <div class="session-list">
         {#each rows as r (r.meta.id)}
           {@const s = r.meta}
-          <div class="session-item" class:active={s.id === app.activeSessionId} class:fork={r.depth === 1}>
+          <div class="session-item" class:active={s.id === app.activeSessionId} class:fork={r.depth > 0} style:--depth={r.depth > 0 ? r.depth : undefined}>
             {#if renaming === s.id}
               <!-- svelte-ignore a11y_autofocus -->
               <input
@@ -551,13 +576,13 @@
                 ondragend={endContentDrag}
               >
                 <span class="snippet"
-                  >{#if inTab(s.id)}<span class="mark tab" use:tip={"Open in a tab"}>▭</span> {/if}{#if s.mode === "incognito"}<span class="mark" use:tip={"Incognito: writes nothing, unread by other chats"}>{MODE_GLYPH.incognito}</span> {/if}{#if hasDraft(s.id)}<span class="mark draft" use:tip={"has a draft"}>✎</span> {/if}{s.title ?? s.first_user ?? "empty session"}</span
+                  >{#if inTab(s.id)}<span class="mark tab" use:tip={"Open in a tab"}>▭</span> {/if}{#if s.mode === "incognito"}<span class="mark" use:tip={"Incognito: writes nothing, unread by other chats"}>{MODE_GLYPH.incognito}</span> {/if}{#if hasDraft(s.id)}<span class="mark draft" role="img" aria-label="has a draft" use:tip={"has a draft"}></span> {/if}{s.title ?? s.first_user ?? "empty session"}</span
                 >
                 <!-- A fork says where it came from (backlog 062): the
                      parent's name as its own row shows it, or that the
                      parent is gone. -->
                 <span class="meta"
-                  >{s.id.slice(0, 8)}{#if s.kind === "chat"} · chat{/if}{#if s.mode === "incognito"} · incognito{/if} · {relativeTime(s.modified)}{#if (r.depth === 0 || r.fromOther) && forkLine(s, app.sessions)} · <span class="from" use:tip={"Forked from that chat; the parent is unchanged"}>{forkLine(s, app.sessions)}</span>{/if}</span
+                  >{s.id.slice(0, 8)}{#if s.kind === "chat"} · chat{/if}{#if s.mode === "incognito"} · incognito{/if} · {relativeTime(s.modified)}{#if r.depth === 0 && forkLine(s, app.sessions)} · <span class="from" use:tip={"Forked from that chat; the parent is unchanged"}>{forkLine(s, app.sessions)}</span>{/if}</span
                 >
               </button>
               <!-- The origin's forks (backlog 207): a chevron and the count,
@@ -575,30 +600,38 @@
                   <Icon name="chevr" size={11} />{r.forks}
                 </button>
               {/if}
+              <!-- The row's one tool (backlog 208, design C): ··· opens the
+                   right-click menu — Open, new tab, beside, Rename, Delete…
+                   (Delete still confirms and moves to the trash folder). It
+                   replaced a ✎ and a bin he found clunky, most on the
+                   highlighted row. -->
+              {@const menuHere = rowMenu?.s.id === s.id}
               <button
-                class="rename-btn"
-                use:tip={"Rename session"}
-                aria-label="Rename session"
-                onclick={() => startRename(s.id, s.title ?? s.first_user ?? "")}
+                class="more-btn"
+                class:open={menuHere}
+                use:tip={"Open, rename, delete…"}
+                aria-label="More for this chat"
+                aria-haspopup="menu"
+                aria-expanded={menuHere}
+                onclick={(e) => openRowMenuFrom(e, s)}
               >
-                ✎
+                <svg viewBox="0 0 20 20" aria-hidden="true" width="14" height="14" fill="currentColor"
+                  ><circle cx="4.5" cy="10" r="1.6" /><circle cx="10" cy="10" r="1.6" /><circle cx="15.5" cy="10" r="1.6" /></svg
+                >
               </button>
             {/if}
-            <button
-              class="delete"
-              use:tip={"Delete chat…"}
-              aria-label="Delete chat"
-              onclick={() => (deleting = s)}
-              disabled={app.busy}
-            >
-              <Icon name="trash" size={13} />
-            </button>
           </div>
         {/each}
       </div>
       {#if rowMenu}
         <button class="scrim" aria-label="Close" onclick={() => (rowMenu = null)} oncontextmenu={(e) => { e.preventDefault(); rowMenu = null; }}></button>
-        <div class="row-menu" role="menu" style:left="{rowMenu.x}px" style:top="{rowMenu.y}px">
+        <div
+          class="row-menu"
+          role="menu"
+          style:left="{rowMenu.x}px"
+          style:top={rowMenu.up ? undefined : `${rowMenu.y}px`}
+          style:bottom={rowMenu.up ? `${rowMenu.y}px` : undefined}
+        >
           <button role="menuitem" onclick={() => rowOpen("replace")}>Open</button>
           <button role="menuitem" onclick={() => rowOpen("new")}>Open in a new tab <span class="row-key">{mod}-click</span></button>
           <button role="menuitem" onclick={() => rowOpen("beside")}>Open beside <span class="row-key">drag</span></button>
@@ -1087,10 +1120,17 @@
     color: var(--dim);
   }
   /* A chat with words waiting in its composer (nightshift backlog 065):
-     the incognito mark's style, a size down so it reads as a note on the
-     row and not part of the title. */
+     ~~the incognito mark's style, a size down~~ — an accent dot since
+     backlog 208 (2026-09-25): the ✎ it was matched the rename button's,
+     so a hovered row with a draft showed two pencils. */
   .mark.draft {
-    font-size: 0.8em;
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    margin: 0 1px 1px 0;
+    border-radius: 50%;
+    background: var(--accent);
+    vertical-align: middle;
   }
   /* The tab glyph (backlog 099): the chat is open in a tab that is not
      the live one. */
@@ -1245,39 +1285,49 @@
     opacity: 0.6;
     cursor: default;
   }
-  /* The row's tools (rename, trash) are out of the flow until the row is
-     hovered or one of them has keyboard focus — zero width, no padding —
-     so the name gets the whole row before it truncates (nightshift backlog
-     110: "it should say as much as it can"). On hover they take their
-     width back and the name shortens to make room, where it did before.
-     Invisible-but-present (`opacity: 0` alone) kept their width reserved
-     and the name was cut with space sitting empty at its right. */
-  .delete {
-    background: transparent;
-    border: none;
-    color: var(--dim);
-    padding: 0;
-    width: 0;
-    overflow: hidden;
-    cursor: pointer;
-    border-radius: 8px;
+  /* The row's tool — ~~rename and trash~~ one ··· since backlog 208
+     (2026-09-25) — is out of the flow until the row is hovered, it has
+     keyboard focus, or its menu is open: zero width, no margin, so the
+     name gets the whole row before it truncates (nightshift backlog 110:
+     "it should say as much as it can"). On hover it takes its width back
+     and the name shortens to make room. Invisible-but-present (`opacity:
+     0` alone) kept the width reserved and the name was cut with space
+     sitting empty at its right. A small tile, dim at rest and a soft fill
+     under the pointer — on the highlighted row too, where the old full-
+     height strips read heaviest. */
+  .more-btn {
     flex-shrink: 0;
+    align-self: center;
+    width: 0;
+    height: 22px;
+    padding: 0;
+    margin: 0;
+    overflow: hidden;
     display: inline-flex;
     align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: none;
+    border-radius: 5px;
+    color: var(--dim);
+    cursor: pointer;
     opacity: 0;
   }
-  .session-item:hover .delete,
-  .delete:focus-visible {
-    width: auto;
-    padding: 0 0.4rem;
+  .session-item:hover .more-btn,
+  .more-btn:focus-visible,
+  .more-btn.open {
+    width: 22px;
+    margin-right: 5px;
     opacity: 1;
   }
-  .delete:hover {
-    color: var(--error);
+  .more-btn:hover,
+  .more-btn.open {
+    background: var(--line);
+    color: var(--ink);
   }
-  .delete:disabled {
-    opacity: 0.5;
-    cursor: default;
+  .session-item.active .more-btn:hover,
+  .session-item.active .more-btn.open {
+    background: var(--well);
   }
   .snippet {
     font-size: 0.85rem;
@@ -1361,34 +1411,16 @@
     outline: none;
   }
 
-  .rename-btn {
-    padding: 0;
-    width: 0;
-    overflow: hidden;
-    flex-shrink: 0;
-    font-size: 0.75rem;
-    color: var(--dim);
-    background: none;
-    border: none;
-    cursor: pointer;
-    opacity: 0;
-  }
-
-  .session-item:hover .rename-btn,
-  .rename-btn:focus-visible {
-    width: auto;
-    padding: 0 0.3rem;
-    opacity: 1;
-  }
-
-  .rename-btn:hover {
-    color: var(--text);
-  }
+  /* ~~`.rename-btn`~~ — retired with the ✎ button (backlog 208); rename
+     is in the ··· menu, and a double-click on the row still starts it. */
 
   /* Forks under their origin (backlog 207): one indent step with a thin
-     rule at its left, so the group reads as belonging to the row above. */
+     rule at its left, so the group reads as belonging to the row above.
+     A fork of a fork sits under its own parent one step further in
+     (blocker 430, "nested is fine"); past three steps the indent stops
+     growing so a deep chain keeps room for its names. */
   .session-item.fork {
-    margin-left: 0.9rem;
+    margin-left: calc(min(var(--depth, 1), 3) * 0.9rem);
     position: relative;
   }
   .session-item.fork::before {
