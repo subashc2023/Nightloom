@@ -46,6 +46,7 @@ import {
 } from "./chatChoice";
 import { madeChatRow, refreshWithin, withNote, withoutNote } from "./afterWrite";
 import { runLaunch } from "./launch.svelte";
+import { withProject, withoutProject } from "./projectRows";
 import { EDITABLE_LAYERS } from "./types";
 import { LIST_SCOPE, NEW_CHAT_SCOPE, UndoHistory } from "./undo";
 import { chatName, notifyNeedsYou, notifyTurnEnd } from "./notify";
@@ -2181,7 +2182,10 @@ export async function useKnowledgeDir(dir: string | null): Promise<void> {
   // The open note may not exist in the new vault.
   if (app.openNote?.scope === "knowledge") leaveNote();
   dropNoteTabs("knowledge");
-  await refreshNotes();
+  // ~~await refreshNotes()~~ first (backlog 211's leftovers, 2026-09-26):
+  // the vault's notes are re-read in the background under the limit; the
+  // reconnect, which is what points the model at the new vault, goes now.
+  void refreshWithin("pointing the vault elsewhere", [refreshNotes]);
   await applyDraft();
 }
 
@@ -2244,10 +2248,19 @@ export async function useProject(id: string | null): Promise<void> {
   if (app.view !== "nightshift") app.view = "chat";
   app.openNote = null;
   reflectTabs();
-  await applyDraft();
-  await refreshProjects();
-  await refreshSessions();
-  await refreshNotes();
+  // ~~The connect, then the list, the chats and the notes, each awaited~~
+  // (backlog 211's leftovers, 2026-09-26): the three re-reads run together,
+  // beside the connect, and settle within `REFRESH_LIMIT_MS` whatever the
+  // disk does — a late answer still lands. The tabs wait for them, since
+  // the lists decide which tabs survive.
+  await Promise.all([
+    applyDraft(),
+    refreshWithin("opening " + (app.project?.name ?? "unfiled chats"), [
+      refreshProjects,
+      refreshSessions,
+      refreshNotes,
+    ]),
+  ]);
   // The project's own tabs (backlog 201). On the Nightshift page the page
   // stays in front and lands in the restored workspace.
   const stay = app.view === "nightshift";
@@ -2276,7 +2289,9 @@ export async function openProjectFolder(): Promise<void> {
   if (!path) return; // cancelled
   try {
     const project = await api.createProject(path);
-    await refreshProjects();
+    // Its row from the answer; the list is re-read behind (backlog 211).
+    app.projects = withProject(app.projects, project);
+    void refreshWithin("opening " + project.name, [refreshProjects]);
     await useProject(project.id);
   } catch (e) {
     addToast(String(e));
@@ -2354,12 +2369,16 @@ export async function createNewProject(): Promise<boolean> {
   try {
     const project = await api.newProject(d.name, d.pickedPath, d.instructions);
     app.newProjectDraft = { name: "", instructions: "", pickedPath: null };
-    await refreshProjects();
-    // The folder now exists if it did not; the Settings pane's line reads
-    // off `exists`.
-    await refreshProjectsFolder();
+    // ~~The list and the folder re-read before the form closed~~ (backlog
+    // 211's leftovers, 2026-09-26: the form stayed up for as long as a
+    // listing could hang). The row comes from the answer, the form closes
+    // at once, and the re-reads follow in the background — the folder's
+    // because it now exists if it did not, and the Settings pane's line
+    // reads off `exists`.
+    app.projects = withProject(app.projects, project);
+    void refreshWithin("creating " + project.name, [refreshProjects, refreshProjectsFolder]);
     app.view = "chat";
-    await useProject(project.id);
+    void useProject(project.id);
     return true;
   } catch (e) {
     addToast(String(e));
@@ -2390,7 +2409,8 @@ export async function importFromClaude(): Promise<void> {
   addToast("Importing…");
   try {
     const result = await api.importClaude(archive, true);
-    await refreshProjects();
+    // The toast at once; the new rows follow the re-read (backlog 211).
+    void refreshWithin("importing", [refreshProjects]);
     addToast(`Imported ${result.summary}`);
     // The memory summaries that were too long for AGENTS.md: their file
     // points at the full text and someone owes a short version. Named, so
@@ -2409,7 +2429,9 @@ export async function renameProject(id: string, name: string): Promise<void> {
   try {
     const project = await api.renameProject(id, name);
     if (app.project?.id === id) app.project = project;
-    await refreshProjects();
+    // The row renamed in place; the re-read follows (backlog 211).
+    app.projects = withProject(app.projects, project);
+    void refreshWithin("renaming " + name, [refreshProjects]);
   } catch (e) {
     addToast(String(e));
   }
@@ -2430,7 +2452,9 @@ export async function forgetProject(id: string): Promise<void> {
   addToast(
     "Removed from the list — the folder, its notes and its chats are untouched on disk.",
   );
-  await refreshProjects();
+  // The row goes at once; the re-read follows (backlog 211).
+  app.projects = withoutProject(app.projects, id);
+  void refreshWithin("forgetting a project", [refreshProjects]);
   dropProjectTabs(id);
   if (wasOpen) await useProject(null);
 }
