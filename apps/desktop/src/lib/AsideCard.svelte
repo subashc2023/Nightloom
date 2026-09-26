@@ -27,6 +27,7 @@
   import Icon from "./Icon.svelte";
   import MoveZone from "./MoveZone.svelte";
   import AsideBox from "./AsideBox.svelte";
+  import { roomForBox } from "./boxGrow";
 
   /**
    * The floating aside card (nightshift backlog 141, 2026-09-17; blocker
@@ -114,6 +115,37 @@
   /** The box's drag edge (backlog 226): the top on a card stuck above the
    *  composer, which grows upward; the bottom everywhere else. */
   const boxEdge = $derived(placement === null && !panel && !aside.moved ? "top" : "bottom");
+  /**
+   * The most the question box may take (nightshift backlog 233): the
+   * card's height limit less its head and borders, the body's top padding
+   * and everything under the box — the gap and the Ask aside / Cancel (or
+   * Follow up) row — so the buttons always show; `null` when the card has
+   * no limit to meet. Earlier answers above a follow-up box are not
+   * counted: the body scrolls them away, as it always has.
+   */
+  function boxRoom(min: number): number | null {
+    const card = root;
+    const inner = body;
+    const box = askBox ?? followBox;
+    const wrap = box?.parentElement;
+    if (!card || !inner || !wrap) return null;
+    const cs = getComputedStyle(card);
+    // A card in the side panel has no max-height; its own height is the
+    // column's, and that is its limit.
+    const max = parseFloat(cs.maxHeight);
+    const limit = Number.isFinite(max) ? max : panel ? card.getBoundingClientRect().height : NaN;
+    if (!Number.isFinite(limit)) return null;
+    const cardRect = card.getBoundingClientRect();
+    const bodyRect = inner.getBoundingClientRect();
+    const frame = cardRect.height - bodyRect.height;
+    const above = parseFloat(getComputedStyle(inner).paddingTop) || 0;
+    // The body's content ends at its top, less what is scrolled, plus
+    // its whole scroll height; what lies between that and the box's
+    // bottom is what must stay in view under it.
+    const contentBottom = bodyRect.top - inner.scrollTop + inner.scrollHeight;
+    const below = Math.max(0, contentBottom - wrap.getBoundingClientRect().bottom);
+    return roomForBox(limit, frame, above, below, min);
+  }
   function typed(e: Event): void {
     setAsideUnsent(aside, (e.currentTarget as HTMLTextAreaElement).value);
   }
@@ -142,6 +174,10 @@
   let zone = $state<Zone | null>(null);
   const moved = $derived(panel ? null : (aside.moved ?? null));
   const pos = $derived(dragPos ?? moved);
+  /** Whatever may change the card's room, so the box measures again. */
+  const roomKey = $derived(
+    `${placement?.maxHeight ?? ""}|${pos?.top ?? ""}|${footCount}|${footBottom ?? ""}|${panel}`,
+  );
 
   function headDown(e: PointerEvent): void {
     if (!movable || !root || folded) return;
@@ -213,6 +249,41 @@
     if (!body) return;
     bodyPinned = body.scrollHeight - body.scrollTop - body.clientHeight < 4;
   }
+  /** The box grew or shrank (backlog 233): the box and its button row
+   *  are the body's last things, so while he types in it — or while the
+   *  body is held at its foot — the foot stays in view and the buttons
+   *  with it; a longer question never pushes them out of the card. */
+  function boxGrew(): void {
+    const el = body;
+    if (!el) return;
+    const box = askBox ?? followBox;
+    if (bodyPinned || (box !== null && document.activeElement === box)) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }
+  // A card whose room shrinks — a shorter window, more cards stacked
+  // above the composer — keeps its foot where it was: held at the bottom
+  // before the change, held there after, so the buttons stay (backlog
+  // 233). Measured on a change of the body's height only.
+  $effect(() => {
+    const el = body;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    let height = el.clientHeight;
+    let atFoot = el.scrollHeight - el.scrollTop - el.clientHeight < 4;
+    const keep = () => (atFoot = el.scrollHeight - el.scrollTop - el.clientHeight < 4);
+    el.addEventListener("scroll", keep);
+    const ro = new ResizeObserver(() => {
+      if (el.clientHeight === height) return;
+      height = el.clientHeight;
+      if (atFoot) el.scrollTop = el.scrollHeight;
+      keep();
+    });
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+      el.removeEventListener("scroll", keep);
+    };
+  });
   $effect(() => {
     void last?.partial;
     void last?.answer;
@@ -425,6 +496,9 @@
         oninput={typed}
         onkeydown={askKeys}
         edge={boxEdge}
+        room={boxRoom}
+        {roomKey}
+        ongrow={boxGrew}
         placeholder={aside.quote ? "Ask about the passage… (Enter asks)" : "Ask aside… (Enter asks)"}
         label="Your question about the highlighted passage"
       />
@@ -478,6 +552,9 @@
           oninput={typed}
           onkeydown={followKeys}
           edge={boxEdge}
+        room={boxRoom}
+        {roomKey}
+        ongrow={boxGrew}
           placeholder="Follow up in the aside… (Enter asks)"
           label="A follow-up in the aside"
         />

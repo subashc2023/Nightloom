@@ -25,7 +25,14 @@ const text = [
   "Would a unit ever edit it directly?",
   "What happens on a rate limit?",
   "Where is the commit message written?",
+  "Who reads the note in the morning?",
+  "And what if the run is killed mid-unit?",
 ].slice(0, lines);
+// Backlog 233: a floating card held to `maxh` px (a passage near the
+// window's edge), or a card above the composer sharing its room with
+// `count` others; the caption then says where the buttons are.
+const maxh = Number(q.get("maxh") ?? "0");
+const count = Number(q.get("count") ?? "1");
 
 function measure(): void {
   const ta = document.querySelector("textarea");
@@ -35,15 +42,41 @@ function measure(): void {
     `lines=${lines} height=${ta.offsetHeight} scrollHeight=${ta.scrollHeight} clientHeight=${ta.clientHeight} ` +
     `lineHeight=${cs.lineHeight} overflowY=${cs.overflowY} overflowX=${cs.overflowX} ` +
     `scrollWidth=${ta.scrollWidth} clientWidth=${ta.clientWidth} vbar=${ta.offsetWidth - ta.clientWidth - 2}px`;
+  const card = document.querySelector<HTMLElement>(".aside-card");
+  const body = document.querySelector<HTMLElement>(".aside-card-body");
+  if (card && body) {
+    const b = body.getBoundingClientRect();
+    const r = (e: Element | null | undefined) => {
+      if (!e) return "none";
+      const x = e.getBoundingClientRect();
+      const shown = x.top >= b.top - 0.5 && x.bottom <= b.bottom + 0.5;
+      return `${Math.round(x.top)}..${Math.round(x.bottom)} ${shown ? "fully shown" : "HIDDEN/CUT"}`;
+    };
+    const buttons = Array.from(document.querySelectorAll(".aside-card-row button"));
+    const c = card.getBoundingClientRect();
+    cap.textContent +=
+      `\ncard ${Math.round(c.top)}..${Math.round(c.bottom)} (h ${Math.round(c.height)}, max-height ${getComputedStyle(card).maxHeight})` +
+      `  body ${Math.round(b.top)}..${Math.round(b.bottom)} scrollTop=${body.scrollTop}` +
+      `\nbox ${r(ta)}\nAsk aside ${r(buttons[0])}\nCancel ${r(buttons[1])}`;
+  }
 }
 
 if (what === "card" || what === "view") {
+  // Each snap starts from no dragged height: the WebKit store outlives a
+  // run, and a height left by a `drag` run would size every later box.
+  localStorage.removeItem("nightloom.aside.height");
   const quote = { text: "The watermark advances only on success.", role: "assistant" as const, ordinal: 2 };
   const a = draftAside(quote, null)!;
   if (lines > 0) setAsideUnsent(a, text.join("\n"));
   if (what === "card") {
     root.style.width = "440px";
-    mount(AsideCard, { target: root, props: { aside: app.asides[0]!, placement: null } });
+    const placement =
+      maxh > 0 ? { top: 8, left: 24, width: 440, maxHeight: maxh, side: "below" as const } : null;
+    if (placement) root.style.height = `${maxh + 40}px`;
+    mount(AsideCard, {
+      target: root,
+      props: { aside: app.asides[0]!, placement, footCount: count, footBottom: count > 1 ? 0 : null },
+    });
   } else {
     root.style.width = "900px";
     mount(AsideView, { target: root, props: { session: "chat-a" } });
@@ -63,10 +96,20 @@ if (what === "card" || what === "view") {
     fire("pointermove", r.top + 6 + drag);
     fire("pointerup", r.top + 6 + drag);
   }
+  // Backlog 233: the card's room shrinks after it opened (a shorter
+  // window): its max-height set lower and a resize told, as the window's
+  // own would.
+  const shrink = Number(q.get("shrink") ?? "0");
+  if (shrink > 0) {
+    setTimeout(() => {
+      document.querySelector<HTMLElement>(".aside-card")!.style.maxHeight = `${shrink}px`;
+      window.dispatchEvent(new Event("resize"));
+    }, 150);
+  }
   setTimeout(() => {
     measure();
     cap.textContent += `  stored=${localStorage.getItem("nightloom.aside.height")}`;
-  }, 300);
+  }, 450);
 } else {
   root.className = "sidebar";
   mount(Sidebar, { target: root, props: {} });

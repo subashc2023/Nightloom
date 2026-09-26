@@ -77,3 +77,20 @@ export function saveBoxHeight(key: string, n: number | null): void {
     // best-effort
   }
 }
+
+/**
+ * The most a box may take inside a card that has a height limit, so what
+ * sits under it — the aside card's Ask aside and Cancel — always shows
+ * (nightshift backlog 233, 2026-09-26: the box grew to four lines, or to
+ * a dragged height, and pushed the buttons out of a card held at its
+ * `max-height`). `limit` is the card's most height; `frame` what the card
+ * spends outside its scrolling body (the head row, the borders); `above`
+ * what in the body must stay above the box (its top padding — earlier
+ * answers may scroll away and are not counted); `below` everything under
+ * the box to the body's end (the gap, the button row, the bottom
+ * padding). Never under `min`, one line of the box: past that the body
+ * scrolls, as it did before. Pure.
+ */
+export function roomForBox(limit: number, frame: number, above: number, below: number, min: number): number {
+  return Math.max(min, Math.floor(limit - frame - above - below));
+}

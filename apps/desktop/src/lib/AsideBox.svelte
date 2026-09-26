@@ -26,6 +26,9 @@
     edge = "bottom",
     variant = "card",
     box = $bindable(null),
+    room = null,
+    roomKey = "",
+    ongrow = null,
   }: {
     value: string;
     oninput: (e: Event) => void;
@@ -38,6 +41,17 @@
     edge?: "top" | "bottom";
     variant?: "card" | "view";
     box?: HTMLTextAreaElement | null;
+    /** The card's limit on the box (backlog 233): what its height cap
+     *  leaves once the head, the padding and everything under the box —
+     *  the Ask aside and Cancel row — are paid for; `null` is no limit
+     *  (the tab, or a card with room to spare). Read on every grow step. */
+    room?: ((min: number) => number | null) | null;
+    /** Changes when the card's room may have (its placement, a move, the
+     *  number of cards stacked), so the box is measured again. */
+    roomKey?: string;
+    /** Told after each grow step, so the card can keep the box's foot —
+     *  and the buttons under it — in view (backlog 233). */
+    ongrow?: (() => void) | null;
   } = $props();
 
   const HEIGHT_KEY = "nightloom.aside.height";
@@ -68,9 +82,14 @@
     const need = ta.scrollHeight + m.border;
     const floor = setPx ?? linesHeight(m.line, MIN_LINES, m.chrome);
     const cap = setPx ?? linesHeight(m.line, GROW_LINES, m.chrome);
-    const h = growHeight(need, floor, cap);
+    let h = growHeight(need, floor, cap);
+    // Never taller than the card leaves room for (backlog 233): the text
+    // scrolls inside the box and the buttons under it stay in view.
+    const limit = room?.(linesHeight(m.line, MIN_LINES, m.chrome)) ?? null;
+    if (limit !== null) h = Math.min(h, limit);
     ta.style.height = h + "px";
     ta.style.overflowY = overflows(need, h) ? "auto" : "hidden";
+    ongrow?.();
   }
 
   function down(e: PointerEvent): void {
@@ -106,6 +125,7 @@
   $effect(() => {
     void value;
     void setPx;
+    void roomKey;
     grow();
     requestAnimationFrame(grow);
   });
@@ -125,6 +145,8 @@
     return () => ro.disconnect();
   });
 </script>
+
+<svelte:window onresize={grow} />
 
 <div class="aside-box-wrap" class:view={variant === "view"}>
   <textarea
