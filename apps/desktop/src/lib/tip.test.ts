@@ -158,6 +158,8 @@ describe("sendTip (the disabled Send says why)", () => {
     expect(sendTip(false, true).text).toMatch(/no model is connected/);
     expect(sendTip(true, true)).toEqual({ text: "Type a message or attach a file to send", keys: "↵" });
     expect(sendTip(true, false)).toEqual({ text: "Send this message", keys: "↵" });
+    // Item 222: held while the rail's new settings connect.
+    expect(sendTip(true, false, true).text).toMatch(/Applying the rail's new settings/);
   });
 });
 

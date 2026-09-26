@@ -2,7 +2,6 @@
   import { tip } from "./tip";
   import {
     app,
-    applyDraft,
     bornKind,
     chatAgentSession,
     chatKind,
@@ -12,6 +11,7 @@
     kindLabel,
     kindSwitchCost,
     kindWorkspace,
+    scheduleApply,
     loadContextLimits,
     openModelInstructions,
     pickerModels,
@@ -80,10 +80,17 @@
   const providers = $derived(providerPills());
   // The same list `switchModelAt` counts, so row n's cap is ⌘⇧n.
   const models = $derived(pickerModels());
-  const locked = $derived(app.busy || app.connecting);
+  // ~~`app.busy || app.connecting`~~ — item 222 (2026-09-25): a connect no
+  // longer greys the rail. A change made during one is kept and connected
+  // when it settles (`scheduleApply`); a turn still locks it (backlog 214).
+  const locked = $derived(app.busy);
+  // What still waits for a connect to settle: the engine, the kind and the
+  // folders, whose actions return early while one runs and so would drop
+  // the click (item 222's report).
+  const switching = $derived(app.busy || app.connecting);
   const thinking = $derived(thinkingSupport(app.draft.provider, app.draft.model));
 
-  const apply = () => void applyDraft();
+  const apply = () => scheduleApply();
 
   function onProviderChange() {
     const sel = app.providers.find((p) => p.kind === app.draft.provider);
@@ -474,7 +481,7 @@
       class:on={!agentMode}
       role="radio"
       aria-checked={!agentMode}
-      disabled={locked}
+      disabled={switching}
       onclick={() => void useEngine("provider")}
     >
       <span class="radio"></span>
@@ -491,7 +498,7 @@
       class:on={agentMode}
       role="radio"
       aria-checked={agentMode}
-      disabled={locked}
+      disabled={switching}
       onclick={() => void useEngine("claude-code")}
     >
       <span class="radio"></span>
@@ -523,7 +530,7 @@
         class:on={k.kind === kind}
         role="radio"
         aria-checked={k.kind === kind}
-        disabled={locked}
+        disabled={switching}
         onclick={() => askSwitch(k.kind)}
       >
         <span class="kind-glyph" aria-hidden="true">{k.kind === kind ? "●" : "○"}</span>
@@ -559,7 +566,9 @@
   {/if}
 
   <div class="status" use:tip={app.connection?.workspace ?? ""}>
-    {#if app.connecting}
+    {#if app.applyPending}
+      <span class="dot pending"></span><span class="dim">applying…</span>
+    {:else if app.connecting}
       <span class="dot pending"></span><span class="dim">connecting…</span>
     {:else if app.connection}
       <span class="dot ok"></span>
@@ -1161,7 +1170,7 @@
                 class="fold-x"
                 use:tip={f.source === "project" ? "Stop granting this folder to the project's chats" : "Stop granting this folder to this chat"}
                 aria-label="Remove {f.path}"
-                disabled={locked}
+                disabled={switching}
                 onclick={() => void removeFolder(f.path, f.source)}
               >×</button>
             </div>
@@ -1177,14 +1186,14 @@
               <button class="fold-x" use:tip={"Forget this"} aria-label="Dismiss {r}" onclick={() => dismissRefused(r)}>×</button>
             </div>
             <div class="fold-add">
-              <button class="ns-btn" disabled={locked} onclick={() => void grantRefused(r, "chat")}>Allow for this chat</button>
-              {#if app.project}<button class="ns-btn" disabled={locked} onclick={() => void grantRefused(r, "project")}>…for the project</button>{/if}
+              <button class="ns-btn" disabled={switching} onclick={() => void grantRefused(r, "chat")}>Allow for this chat</button>
+              {#if app.project}<button class="ns-btn" disabled={switching} onclick={() => void grantRefused(r, "project")}>…for the project</button>{/if}
             </div>
           {/each}
           {#if !isChat}
             <div class="fold-add">
-              <button class="ns-btn" disabled={locked} onclick={() => void addFolder("chat")}>Add a folder for this chat…</button>
-              {#if app.project}<button class="ns-btn" disabled={locked} onclick={() => void addFolder("project")}>…for the project</button>{/if}
+              <button class="ns-btn" disabled={switching} onclick={() => void addFolder("chat")}>Add a folder for this chat…</button>
+              {#if app.project}<button class="ns-btn" disabled={switching} onclick={() => void addFolder("project")}>…for the project</button>{/if}
             </div>
           {/if}
         </div>

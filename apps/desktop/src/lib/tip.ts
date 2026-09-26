@@ -158,8 +158,10 @@ export function tipTimer(opts: {
  * on the disabled Send" — the button had no tip at all). A disabled Send
  * says why it is disabled; an enabled one says what it does and its key.
  */
-export function sendTip(connected: boolean, empty: boolean): { text: string; keys?: string } {
+export function sendTip(connected: boolean, empty: boolean, held = false): { text: string; keys?: string } {
   if (!connected) return { text: "Nothing to send to yet — no model is connected" };
+  // Item 222: a rail change is being connected; the message waits for it.
+  if (held) return { text: "Applying the rail's new settings — Send is back in a moment" };
   if (empty) return { text: "Type a message or attach a file to send", keys: "↵" };
   return { text: "Send this message", keys: "↵" };
 }

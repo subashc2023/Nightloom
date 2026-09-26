@@ -9,7 +9,8 @@
 //! ([`Stage::set`] before each wait), and at [`CONNECT_TIMEOUT`] it gives
 //! up with an error that names that step — shown on the rail — and appends
 //! the same line to `<config dir>/logs/connect.log`, since the installed
-//! app's stderr is `/dev/null`.
+//! app's stderr is `/dev/null`. Since item 222 every connect appends one
+//! line there, on time or not: its total and the ms each step took.
 //!
 //! Dropping the connect at the deadline releases every lock it held (tokio
 //! guards drop with the future). What it had already done stays done: the
@@ -25,23 +26,59 @@ use std::time::{Duration, Instant};
 /// enough for a cold disk and short enough that he is not left guessing.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// The step a connect is on, readable from outside the future.
+/// The step a connect is on, readable from outside the future, and when
+/// each step began — the timing line (item 222) is built from these.
 #[derive(Clone)]
-pub struct Stage(Arc<Mutex<&'static str>>);
+pub struct Stage(Arc<Mutex<Vec<(&'static str, Instant)>>>);
 
 impl Stage {
     pub fn new() -> Self {
-        Self(Arc::new(Mutex::new("starting")))
+        Self(Arc::new(Mutex::new(vec![("starting", Instant::now())])))
     }
 
     /// Say what the next wait is for.
     pub fn set(&self, what: &'static str) {
-        *self.0.lock().unwrap_or_else(|p| p.into_inner()) = what;
+        self.marks().push((what, Instant::now()));
     }
 
     pub fn get(&self) -> &'static str {
-        *self.0.lock().unwrap_or_else(|p| p.into_inner())
+        self.marks().last().map(|m| m.0).unwrap_or("starting")
     }
+
+    fn marks(&self) -> std::sync::MutexGuard<'_, Vec<(&'static str, Instant)>> {
+        self.0.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Milliseconds spent on each step up to `end`, in the order each was
+    /// first reached; a step reached twice is summed.
+    pub fn durations(&self, end: Instant) -> Vec<(&'static str, u128)> {
+        let marks = self.marks();
+        let mut out: Vec<(&'static str, u128)> = Vec::new();
+        for (i, (name, at)) in marks.iter().enumerate() {
+            let until = marks.get(i + 1).map(|m| m.1).unwrap_or(end);
+            let ms = until.saturating_duration_since(*at).as_millis();
+            match out.iter_mut().find(|(n, _)| n == name) {
+                Some(slot) => slot.1 += ms,
+                None => out.push((name, ms)),
+            }
+        }
+        out
+    }
+}
+
+/// The one line every connect writes (item 222): its outcome, total ms and
+/// ms per step, e.g. `ok total 412 ms; starting 0 ms, the open project … 3 ms`.
+pub fn timing_line(stage: &Stage, started: Instant, end: Instant, outcome: &str) -> String {
+    let stages = stage
+        .durations(end)
+        .iter()
+        .map(|(name, ms)| format!("{name} {ms} ms"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "{outcome} total {} ms; {stages}",
+        end.saturating_duration_since(started).as_millis()
+    )
 }
 
 /// Run `connect` under `limit`. On time, its result; past it, an error
@@ -53,22 +90,29 @@ pub async fn run<T>(
     connect: impl Future<Output = Result<T, String>>,
 ) -> Result<T, String> {
     let started = Instant::now();
-    match tokio::time::timeout(limit, connect).await {
-        Ok(result) => result,
-        Err(_) => {
-            let message = timed_out(stage.get(), limit);
-            let line = format!(
-                "{} connect_agent: {message} (elapsed {:.1} s)",
-                chrono::Utc::now().to_rfc3339(),
-                started.elapsed().as_secs_f64()
-            );
-            eprintln!("{line}");
-            if let Some(path) = log {
-                append(path, &line);
-            }
-            Err(message)
-        }
+    let (result, late) = match tokio::time::timeout(limit, connect).await {
+        Ok(result) => (result, false),
+        Err(_) => (Err(timed_out(stage.get(), limit)), true),
+    };
+    // One line per connect, whatever its outcome (item 222): the timeout's
+    // message as before, and now the time each step took.
+    let outcome = match &result {
+        Ok(_) => "ok".to_string(),
+        Err(e) if late => format!("{e} (elapsed {:.1} s)", started.elapsed().as_secs_f64()),
+        Err(e) => format!("error: {e}"),
+    };
+    let line = format!(
+        "{} connect_agent: {}",
+        chrono::Utc::now().to_rfc3339(),
+        timing_line(stage, started, Instant::now(), &outcome)
+    );
+    if result.is_err() {
+        eprintln!("{line}");
     }
+    if let Some(path) = log {
+        append(path, &line);
+    }
+    result
 }
 
 /// What the rail shows when a connect ran out of time.
@@ -136,21 +180,62 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_connect_on_time_passes_its_result_through_and_logs_nothing() {
+    async fn a_connect_on_time_passes_its_result_through_and_logs_one_timing_line() {
+        // ~~logs nothing~~ — since item 222 (2026-09-25) every connect
+        // writes one line: its outcome, total ms and ms per step.
         let log = scratch("ontime").join("connect.log");
         let stage = Stage::new();
-        let ok = run(&stage, SHORT, Some(&log), async {
+        let s = stage.clone();
+        let ok = run(&stage, SHORT, Some(&log), async move {
+            s.set("the open project (the workspaces lock)");
             tokio::time::sleep(Duration::from_millis(5)).await;
             Ok::<_, String>(7)
         })
         .await;
         assert_eq!(ok, Ok(7));
-        let err = run(&stage, SHORT, Some(&log), async {
+        let err = run(&Stage::new(), SHORT, Some(&log), async {
             Err::<(), _>("not found".to_string())
         })
         .await;
         assert_eq!(err, Err("not found".to_string()));
-        assert!(!log.exists());
+        let written = std::fs::read_to_string(&log).unwrap();
+        let lines: Vec<&str> = written.lines().collect();
+        assert_eq!(lines.len(), 2, "{written}");
+        assert!(
+            lines[0].contains("connect_agent: ok total "),
+            "{}",
+            lines[0]
+        );
+        assert!(lines[0].contains("; starting "), "{}", lines[0]);
+        assert!(
+            lines[0].contains("the open project (the workspaces lock) "),
+            "{}",
+            lines[0]
+        );
+        assert!(
+            lines[1].contains("connect_agent: error: not found total "),
+            "{}",
+            lines[1]
+        );
+    }
+
+    #[test]
+    fn a_step_reached_twice_is_summed_and_kept_in_first_order() {
+        let stage = Stage::new();
+        let t0 = Instant::now();
+        {
+            let mut m = stage.marks();
+            m.clear();
+            m.push(("a", t0));
+            m.push(("b", t0 + Duration::from_millis(10)));
+            m.push(("a", t0 + Duration::from_millis(30)));
+        }
+        let d = stage.durations(t0 + Duration::from_millis(35));
+        assert_eq!(d, vec![("a", 15), ("b", 20)]);
+        assert_eq!(
+            timing_line(&stage, t0, t0 + Duration::from_millis(35), "ok"),
+            "ok total 35 ms; a 15 ms, b 20 ms"
+        );
     }
 
     /// The shape of the item-136 family: a turn holds the open chat's log,

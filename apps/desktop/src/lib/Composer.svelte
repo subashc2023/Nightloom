@@ -14,6 +14,7 @@
     contextUsed,
     pickerModels,
     send,
+    sendHeld,
     switchModel,
     switchModelAt,
     turnWasStopped,
@@ -917,6 +918,9 @@
       enqueue();
       return;
     }
+    // Not on the old settings while the rail's new ones connect (item
+    // 222); the text stays in the box.
+    if (sendHeld()) return;
     const pending = attachments.slice();
     const typed = text;
     // Where the words were, for the send motion (backlog 194): measured
@@ -940,7 +944,7 @@
   async function submitCouncil(prefs: CouncilPrefs) {
     councilOpen = false;
     const t = text.trim();
-    if ((!t && attachments.length === 0) || !app.connection || app.busy) return;
+    if ((!t && attachments.length === 0) || !app.connection || app.busy || sendHeld()) return;
     noteActivity();
     const pending = attachments.slice();
     const typed = text;
@@ -1710,7 +1714,7 @@
             {#if councilOpen}
               <CouncilPopover
                 anchor={councilBtn}
-                disabled={!app.connection || (!text.trim() && attachments.length === 0)}
+                disabled={!app.connection || sendHeld() || (!text.trim() && attachments.length === 0)}
                 onsend={(p) => void submitCouncil(p)}
                 onclose={() => {
                   councilOpen = false;
@@ -1722,9 +1726,9 @@
         {/if}
         <button
           class="ns-btn accent send act"
-          use:tip={sendTip(!!app.connection, !text.trim() && attachments.length === 0)}
+          use:tip={sendTip(!!app.connection, !text.trim() && attachments.length === 0, sendHeld())}
           onclick={() => void submit()}
-          disabled={!app.connection || (!text.trim() && attachments.length === 0)}
+          disabled={!app.connection || sendHeld() || (!text.trim() && attachments.length === 0)}
         >
           Send
         </button>

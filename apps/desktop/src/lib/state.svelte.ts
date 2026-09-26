@@ -605,6 +605,13 @@ export const app = $state({
   draft: defaultDraft(),
   connection: null as Connection | null,
   connecting: false,
+  /**
+   * A rail change waits to be connected (item 222): its debounce is
+   * running, or it came during a connect and goes out when that settles.
+   * Send is held while this or `connecting` is true, so no message goes
+   * out on the settings the rail no longer shows.
+   */
+  applyPending: false,
   /** Last connect failure, shown in the rail until the next attempt. */
   connectError: null as string | null,
   /** The connected chat's *newer version exists* marks (backlog 174). */
@@ -2785,6 +2792,52 @@ export async function windowFromInit(model: string | null | undefined): Promise<
 function deferPick(): void {
   if (chatChoice.ready) chatConnected(app.activeSessionId, choiceOf(app.draft));
   chatChoice.reconnect = true;
+  // Held behind a connect, the pick is owed a connect of its own (item
+  // 222); behind a turn alone, Send keeps backlog 214's rules.
+  app.applyPending = app.connecting || applyTimer !== null;
+}
+
+/** Send waits while a connect runs or a rail change is owed one (item
+ *  222), so no message goes out on settings the rail no longer shows. A
+ *  running turn is backlog 214's business, not this: its queue still takes
+ *  messages. */
+export function sendHeld(): boolean {
+  return !app.busy && (app.connecting || app.applyPending);
+}
+
+/** How long a rail change waits for the next one before connecting (item 222). */
+export const APPLY_DEBOUNCE_MS = 400;
+let applyTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * A rail change (item 222): the rail no longer greys out while a connect
+ * runs, so a run of clicks (Subagent limits 6 → 2) waits ~400 ms for the
+ * next one and then connects once. One made during a connect is kept on
+ * the draft (`deferPick`) and connected once that settles, if the draft
+ * still differs from what that connect sent (`syncPromptLayers`).
+ */
+export function scheduleApply(): void {
+  app.applyPending = true;
+  if (applyTimer !== null) clearTimeout(applyTimer);
+  applyTimer = setTimeout(() => {
+    applyTimer = null;
+    void applyDraft();
+  }, APPLY_DEBOUNCE_MS);
+}
+
+/** What the last connect was built from — its chat and its draft (item
+ *  222): a pick held behind a connect is connected afterwards only when
+ *  the draft moved on from this. */
+let lastSent: string | null = null;
+function sentKey(): string {
+  return JSON.stringify([app.activeSessionId, app.draft]);
+}
+
+/** A connect is starting: note what it is built from, and the pending
+ *  flag now covers only a debounce still running. */
+function connectStarting(): void {
+  lastSent = sentKey();
+  app.applyPending = applyTimer !== null;
 }
 
 /** A connect built for `chat` succeeded with `c` (backlog 205) — recorded
@@ -2847,11 +2900,15 @@ export async function applyDraft(): Promise<void> {
     return;
   }
   if (d.engine === "claude-code") return applyAgentDraft();
-  if (!d.provider) return;
+  if (!d.provider) {
+    app.applyPending = applyTimer !== null; // nothing to connect (item 222)
+    return;
+  }
   sanitizeThinking(d); // a saved draft may hold a mode this target rejects
   // The chat this connect is for, and the choice it sends (backlog 205).
   const chat = app.activeSessionId;
   const sent = choiceOf(d);
+  connectStarting();
   app.connecting = true;
   app.connectError = null;
   try {
@@ -2918,6 +2975,7 @@ async function applyAgentDraft(updateNow: PromptLayer[] = []): Promise<void> {
   // As `applyDraft` (backlog 205).
   const chat = app.activeSessionId;
   const sent = choiceOf(d);
+  connectStarting();
   app.connecting = true;
   app.connectError = null;
   try {
@@ -6734,8 +6792,14 @@ export async function syncPromptLayers(): Promise<void> {
   if (app.busy || app.connecting) return;
   if (chatChoice.reconnect) {
     chatChoice.reconnect = false;
-    await applyDraft();
-    return;
+    // Only when the draft moved on from what the last connect sent (item
+    // 222): four picks held behind one connect go out as one, and a pick
+    // put back as it was costs nothing. A chat switch changes the key.
+    if (sentKey() !== lastSent) {
+      await applyDraft();
+      return;
+    }
+    app.applyPending = applyTimer !== null;
   }
   if (!app.connection) return;
   try {
