@@ -11,7 +11,13 @@
 </script>
 
 <div class="launch" role="status" aria-live="polite">
-  <span class="moon" aria-hidden="true"><Icon name="moon" size={30} /></span>
+  <!-- The rolling moon (nightshift item 234, 2026-09-26, his words: "the
+       rolling moon to replace the stationary moon"): the one a reply shows
+       while it streams (`AssistantMessage.svelte`'s `.working .roll`), at
+       its size when alone (backlog 212: 28), in the same 60 px track, with
+       the same three still dots under reduced motion. -->
+  <span class="roll" aria-hidden="true"><Icon name="moon" size={28} /></span>
+  <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
   <p class="line">{launchMessage(launch.project)}</p>
 </div>
 
@@ -28,10 +34,17 @@
     background: var(--paper);
     color: var(--dim);
   }
-  .moon {
-    color: var(--accent);
+  /* The streaming moon's roll, as `AssistantMessage.svelte` draws it: a
+     60 px track (the 32 px roll plus the 28 px moon), so the roll is
+     centred over the line; the moon in the accent. */
+  .roll {
     display: inline-flex;
-    animation: rock 2.4s ease-in-out infinite;
+    flex: none;
+    width: 60px;
+    color: var(--accent);
+  }
+  .roll :global(svg) {
+    animation: roll 1.5s ease-in-out infinite alternate;
   }
   .line {
     margin: 0;
@@ -39,20 +52,32 @@
     font-size: 17px;
     color: var(--ink2);
   }
-  /* The moon rocks a little while it waits, as the transcript's does, so
-     the window visibly has not frozen. */
-  @keyframes rock {
-    0%,
-    100% {
-      transform: rotate(-8deg);
+  @keyframes roll {
+    from {
+      transform: translateX(0) rotate(0deg);
     }
-    50% {
-      transform: rotate(8deg);
+    to {
+      transform: translateX(32px) rotate(360deg);
     }
   }
+  .dots {
+    display: none;
+    gap: 5px;
+    color: var(--accent);
+  }
+  .dots i {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: currentColor;
+    opacity: 0.55;
+  }
   @media (prefers-reduced-motion: reduce) {
-    .moon {
-      animation: none;
+    .roll {
+      display: none;
+    }
+    .dots {
+      display: inline-flex;
     }
   }
 </style>
