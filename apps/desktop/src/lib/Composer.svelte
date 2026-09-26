@@ -74,8 +74,13 @@
     setDraftText,
     shiftQueue,
     takeBackQueued,
+    NEW_DRAFT_PREFIX,
   } from "./drafts.svelte";
   import type { Attachment } from "./types";
+  // Scheduled send (backlog 224): the ▾ beside Send and the chip above.
+  import ScheduleMenu from "./ScheduleMenu.svelte";
+  import ScheduledChip from "./ScheduledChip.svelte";
+  import { registerScheduleDrain } from "./scheduleRuntime";
   import CouncilPopover from "./CouncilPopover.svelte";
   import ClipPanel from "./ClipPanel.svelte";
   import { clips, recordImage, recordText } from "./clipRing.svelte";
@@ -889,6 +894,27 @@
     await dispatch(q.text, q.attachments, wrapUp);
   }
 
+  // Scheduled send (backlog 224): a due message joins this chat's queue
+  // and goes through `drain`, which gives the words back on a failure.
+  // Untracked: the first tick reads the store, which is not this effect's.
+  $effect(() => untrack(() => registerScheduleDrain(() => drain())));
+  /** Why nothing can be scheduled from this box, if nothing can. */
+  const scheduleBlocked = $derived(
+    key.startsWith(NEW_DRAFT_PREFIX)
+      ? "send a first message first — a new chat has no id to wait under"
+      : attachments.length > 0
+        ? "attachments cannot be scheduled yet; text only"
+        : null,
+  );
+  function scheduled(): void {
+    clearDraft(key);
+    requestAnimationFrame(autogrow);
+  }
+  function scheduleEdited(): void {
+    requestAnimationFrame(autogrow);
+    ta?.focus();
+  }
+
   /** Hold what is in the box for the next turn (the turn is running). In
    *  a chat that is not the running one (backlog 159), the toast says
    *  where the turn is; the message goes here when it ends. */
@@ -1383,6 +1409,7 @@
       onreset={handleReset}
     />
   {/if}
+  <ScheduledChip {key} onedit={scheduleEdited} />
   {#if queue.length > 0}
     <div class="queue" role="list" aria-label="queued messages">
       <div class="queue-head">
@@ -1743,14 +1770,18 @@
             {/if}
           </span>
         {/if}
-        <button
-          class="ns-btn accent send act"
-          use:tip={sendTip(!!app.connection, !text.trim() && attachments.length === 0, sendHeld())}
-          onclick={() => void submit()}
-          disabled={!app.connection || sendHeld() || (!text.trim() && attachments.length === 0)}
-        >
-          Send
-        </button>
+        <!-- Send and its ▾ (backlog 224): a split button, the sidebar's
+             New chat ▾ shape; the ▾ schedules the message instead. -->
+        <span class="send-split act">
+          <button
+            class="ns-btn accent send act"
+            use:tip={sendTip(!!app.connection, !text.trim() && attachments.length === 0, sendHeld())}
+            onclick={() => void submit()}
+            disabled={!app.connection || sendHeld() || (!text.trim() && attachments.length === 0)}
+          >
+            Send
+          </button><ScheduleMenu {key} {text} blocked={scheduleBlocked} onscheduled={scheduled} />
+        </span>
       {/if}
     </div>
   </div>
@@ -2342,6 +2373,15 @@
   }
   .send {
     padding: 6px 16px;
+  }
+  /* Send's split (backlog 224): the ▾ carries the right-hand corners. */
+  .send-split {
+    display: inline-flex;
+    align-items: stretch;
+  }
+  .send-split .send {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
   }
   .hint {
     max-width: 760px;
