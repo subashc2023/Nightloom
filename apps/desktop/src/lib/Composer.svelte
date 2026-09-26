@@ -988,9 +988,11 @@
   );
   const modelTitle = $derived.by(() => {
     const ran = app.agentTurn?.model ? ` — last turn ran ${app.agentTurn.model}` : "";
+    // Backlog 214: open during a turn, and says when a pick lands.
+    const next = locked ? " — a pick now applies from the next turn" : "";
     return agentMode
-      ? `Model — ${mod}${shift}F / O / S / H pick an alias from anywhere; ${mod}M opens the rail${ran}`
-      : `Model — ${mod}${shift}1…9 pick from the picker anywhere; ${mod}M opens the rail`;
+      ? `Model — ${mod}${shift}F / O / S / H pick an alias from anywhere; ${mod}M opens the rail${ran}${next}`
+      : `Model — ${mod}${shift}1…9 pick from the picker anywhere; ${mod}M opens the rail${next}`;
   });
   /** The CLI's effort levels (backlog 076), *default* (no flag) first. */
   const EFFORTS = ["", "low", "medium", "high", "xhigh", "max"];
@@ -1567,14 +1569,16 @@
       </button>
       <!-- The model and effort buttons (backlog 112, board 10's A): each
            opens its menu above; the top bar's chip no longer names the
-           model (blocker 141). Disabled while a turn runs or a connect is
-           in flight, as the rail's pills are. -->
+           model (blocker 141). ~~Disabled while a turn runs or a connect
+           is in flight, as the rail's pills are~~ — open then too since
+           backlog 214: a pick waits for the turn and applies to the next
+           (`applyDraft` defers it); the tip says so while one runs. -->
       <span class="pick-wrap">
         <button
           class="pick-btn"
           class:open={menu === "model"}
           bind:this={modelBtn}
-          disabled={locked || !app.connection}
+          disabled={!app.connection}
           aria-haspopup="menu"
           aria-expanded={menu === "model"}
           use:tip={modelTitle}
@@ -1593,7 +1597,7 @@
           class="pick-btn"
           class:open={menu === "effort"}
           bind:this={effortBtn}
-          disabled={locked || !app.connection}
+          disabled={!app.connection}
           aria-haspopup="menu"
           aria-expanded={menu === "effort"}
           use:tip={agentMode
