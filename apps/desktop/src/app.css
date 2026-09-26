@@ -302,6 +302,27 @@ button {
   overflow-y: hidden;
 }
 
+/* The sideways bar of an equation wider than its pane (nightshift backlog
+   236, 2026-09-26: his aside showed a grey bar under a long equation "I've
+   never seen before"). The app-wide thumb above is drawn at rest; here it
+   is thin and clear until the pointer is over the equation, the way macOS
+   overlay bars behave, so a formula that fits shows nothing and one that
+   does not can still be scrolled (trackpad, or the bar on hover). The
+   clipped glyphs at the edge are what says there is more. */
+.markdown .katex-display::-webkit-scrollbar,
+.ns-prose .katex-display::-webkit-scrollbar {
+  height: 6px;
+}
+.markdown .katex-display::-webkit-scrollbar-thumb,
+.ns-prose .katex-display::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 3px;
+}
+.markdown .katex-display:hover::-webkit-scrollbar-thumb,
+.ns-prose .katex-display:hover::-webkit-scrollbar-thumb {
+  background: var(--border);
+}
+
 .markdown .katex-error,
 .markdown .math-error {
   font-family: var(--mono);

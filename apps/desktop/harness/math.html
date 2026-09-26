@@ -1,0 +1,24 @@
+<!doctype html>
+<!-- Backlog 236: a display equation through the real renderer (renderMarkdown + app.css's .markdown rules) at the
+     aside card's width (440), the aside tab's (760) and a wide pane (900), snapped with nightshift-code bin/snap.
+     ?hover=1 applies the :hover rules (a snapshot cannot hover). The caption measures each display block. -->
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      body { margin: 0; background: var(--paper, #111); }
+      #root { padding: 16px 24px; display: flex; flex-direction: column; gap: 18px; }
+      .frame { border: 1px dashed #555; padding: 8px 12px; }
+      .label { font: 11px ui-monospace, monospace; color: #999; }
+      #cap { font: 12px/1.5 ui-monospace, monospace; color: #ddd; background: #000; padding: 6px 8px; white-space: pre; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <div id="cap"></div>
+    <script>
+      window.addEventListener("error", (e) => (document.getElementById("cap").textContent = "error: " + e.message));
+    </script>
+    <script type="module" src="./math.ts"></script>
+  </body>
+</html>
