@@ -79,6 +79,7 @@
   import type { CouncilPrefs } from "./council";
   import { foldToFit } from "./fold";
   import { launch } from "./sendMotion";
+  import { insertQuote, replyRequest, takeReply } from "./replyQuote.svelte";
 
   /**
    * `floating` drops the docked chrome (top border, panel fill) for the
@@ -553,6 +554,31 @@
       autogrow();
     });
   }
+
+  /*
+   * Reply to a highlighted passage (nightshift backlog 215): the
+   * transcript's pill asks (`requestReply`), and the passage goes in here
+   * as a `> ` quote block at the caret, the caret on the line after it
+   * (`insertQuote`). It is text in the draft, not a chip, so it sits
+   * where he placed it, stacks with others and is kept like any draft.
+   */
+  $effect(() => {
+    void replyRequest.seq;
+    const passage = untrack(() => takeReply());
+    if (passage === null) return;
+    untrack(() => {
+      const start = ta?.selectionStart ?? text.length;
+      const end = ta?.selectionEnd ?? start;
+      const r = insertQuote(text, start, end, passage);
+      setDraftText(key, r.text);
+      void tick().then(() => {
+        if (!ta) return;
+        ta.focus();
+        ta.selectionStart = ta.selectionEnd = r.caret;
+        autogrow();
+      });
+    });
+  });
 
   function onkeydown(e: KeyboardEvent) {
     if ((e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey && (e.code === "KeyV" || e.key.toLowerCase() === "v")) {

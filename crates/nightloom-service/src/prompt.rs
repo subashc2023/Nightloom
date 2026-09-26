@@ -438,9 +438,36 @@ fn engine_note_segment(knowledge: Option<&KnowledgeContext>) -> Segment {
          .meta.json beside it naming the call that spawned it) and take up from its last \
          result rather than repeating the search.",
     );
+    // Sources inline (nightshift backlog 213, 2026-09-25): the CLI's
+    // WebSearch result ends by telling the model to include its sources as
+    // Markdown links, which it did as one list at the foot of every reply.
+    // The marker below is such a link, placed where the claim is; the
+    // desktop draws it as a chip and folds any foot list.
+    text.push(' ');
+    text.push_str(CITE_NOTE);
     text.push_str("\n</engine-note>");
     Segment::new(SegmentKind::EngineNote, "engine-note", text)
 }
+
+/// How to cite a web source (nightshift backlog 213): a marker right after
+/// the sentence it supports, `[[n]](url "title")`, which the desktop draws
+/// as a chip (`apps/desktop/src/lib/cite.ts`). Said on the Claude Code
+/// engine in the engine note and on the API engine in `web_search`'s own
+/// description, so it is present exactly where web results can be.
+///
+/// The wording was measured (2026-09-25, `claude -p --model haiku`, one
+/// WebSearch turn each): a softer first draft ("cite it right after that
+/// sentence with a marker … do not also list them at the end") gave no
+/// markers and no list; this one, with MUST and a worked example, gave a
+/// marker after each sourced sentence and no foot list. One sample each.
+pub const CITE_NOTE: &str = "Citing web sources: every sentence that states something you got \
+     from a web search or fetch MUST end with a citation marker for that source, placed right \
+     after the sentence's full stop: a Markdown link whose text is the source's number in square \
+     brackets and whose title is the page's title, for example: Rust 1.85 shipped the 2024 \
+     edition. [[1]](https://blog.rust-lang.org/2025/02/20/Rust-1.85.0.html \"Announcing Rust \
+     1.85.0\") Number sources in the order you first cite them and reuse the number for the same \
+     page. These inline markers are how you include your sources as Markdown hyperlinks; do not \
+     add a list of sources at the end.";
 
 pub fn identity_segment() -> Segment {
     Segment::new(SegmentKind::Identity, "identity", DEFAULT_IDENTITY)
@@ -1668,6 +1695,12 @@ the body text",
 
         assert!(text.contains("always answer in haiku"), "{text}");
         assert!(text.contains("one.md"), "{text}");
+        // The citation marker (backlog 213) is inside the engine note.
+        let cite = text
+            .find("[[1]](https://blog.rust-lang.org/")
+            .expect("the cite note");
+        assert!(cite > text.find("<engine-note>").unwrap(), "{text}");
+        assert!(cite < text.find("</engine-note>").unwrap(), "{text}");
         assert!(text.contains("<engine-note>"), "{text}");
         assert!(!text.contains("You are Nightloom"), "{text}");
         assert!(!text.contains("<environment>"), "{text}");

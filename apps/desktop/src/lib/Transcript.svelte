@@ -48,6 +48,7 @@
   import { wordDiff } from "./textdiff";
   import { continuedFlags } from "./runs";
   import { samePassage, selectionText, type AsideQuote } from "./asideQuote";
+  import { requestReply, splitQuotes } from "./replyQuote.svelte";
   import { PREFERRED_CARD_HEIGHT, chooseSide, offsetsOf, type AsideAnchor } from "./asideCard";
   import { isMac } from "./platform";
   import { fmtShare, fmtTokens, shareOf, sizeTitle, turnSizes } from "./tokens";
@@ -1007,11 +1008,12 @@
   // the native menu — grepped 2026-09-16).
   const PILL_HEIGHT = 30;
   let asidePill = $state<{ quote: AsideQuote; top: number; left: number } | null>(null);
-  // A turn starting, or the engine changing, takes the pill down without
-  // waiting for the next selection change.
-  $effect(() => {
-    if (app.busy || !onClaudeCode) asidePill = null;
-  });
+  // ~~A turn starting, or the engine changing, takes the pill down without
+  // waiting for the next selection change.~~ Since backlog 215
+  // (2026-09-25) the pill also carries *Reply*, which works on any engine
+  // and mid-turn (the composer queues), so the pill stays; only its Ask
+  // aside half needs the Claude Code engine and an idle chat.
+  const canAsk = $derived(onClaudeCode && !app.busy);
 
   // Per turn index, the message's 1-based place among the live messages
   // of its kind — "your 3rd reply" in the framing. Rewound and removed
@@ -1082,7 +1084,7 @@
   }
 
   function placePill() {
-    if (!viewport || !onClaudeCode || app.busy) {
+    if (!viewport) {
       asidePill = null;
       return;
     }
@@ -1106,7 +1108,8 @@
     const top = above
       ? r.top - PILL_HEIGHT - 4
       : Math.max(vp.top + 4, Math.min(r.bottom + 4, vp.bottom - PILL_HEIGHT - 4));
-    const left = Math.min(Math.max(r.left + r.width / 2, vp.left + 70), vp.right - 70);
+    // 110: half the pill's width with both of its buttons (backlog 215).
+    const left = Math.min(Math.max(r.left + r.width / 2, vp.left + 110), vp.right - 110);
     asidePill = { quote: p.quote, top, left };
   }
 
@@ -1124,7 +1127,7 @@
    *  is nothing to confirm. */
   function askAboutSelection(): void {
     const pill = asidePill;
-    if (!pill) return;
+    if (!pill || !canAsk) return;
     const anchor = anchorOfSelection();
     document.getSelection()?.removeAllRanges();
     asidePill = null;
@@ -1134,10 +1137,20 @@
     draftAside(pill.quote, anchor);
   }
 
+  /** Reply (backlog 215): the passage to the composer as a quote at its
+   *  caret (`replyQuote.svelte.ts`; the composer inserts it). */
+  function replyToSelection(): void {
+    const pill = asidePill;
+    if (!pill) return;
+    document.getSelection()?.removeAllRanges();
+    asidePill = null;
+    requestReply(pill.quote.text);
+  }
+
   function asideChord(e: KeyboardEvent): void {
     const primary = isMac ? e.metaKey : e.ctrlKey;
     if (!primary || !e.shiftKey || e.altKey || e.code !== "KeyA") return;
-    if (!asidePill) return;
+    if (!asidePill || !canAsk) return;
     e.preventDefault();
     askAboutSelection();
   }
@@ -1335,7 +1348,11 @@
                     <pre>{adoptedMsg.carried}</pre>
                   </details>
                   {#if adoptedMsg.said}<div class="user-text">{adoptedMsg.said}</div>{/if}
-                {:else}<div class="user-text">{item.text}</div>{/if}
+                {:else}
+                  <!-- `> ` lines are quotes he placed with Reply (backlog
+                       215), drawn as quotes where they sit in his words. -->
+                  <div class="user-text">{#each splitQuotes(item.text) as seg, k (k)}{#if seg.kind === "quote"}<blockquote class="user-quote">{seg.text}</blockquote>{:else}{seg.text}{/if}{/each}</div>
+                {/if}
               {/if}
               {#if !item.removed}
                 {@const council = councilOfTurn(app.events, item.index)}
@@ -1655,19 +1672,30 @@
 {#if showNav}
   <Navigator ticks={navTicks} active={navActive} onjump={jumpTo} ontop={toTop} onbottom={toBottom} />
 {/if}
-<!-- The Ask aside pill over a selection (backlog 107). Its mousedown is
-     swallowed so the click keeps the selection it is about. -->
+<!-- The Ask aside pill over a selection (backlog 107), with Reply beside
+     it since backlog 215. Mousedown is swallowed on both so the click
+     keeps the selection it is about. -->
 {#if asidePill}
-  <button
-    class="ns-btn small aside-pill"
-    style:top="{asidePill.top}px"
-    style:left="{asidePill.left}px"
-    use:tip={"Ask aside about the highlighted passage: a side question on this text, answered from the chat's context, recorded nowhere"}
-    onmousedown={(e) => e.preventDefault()}
-    onclick={() => void askAboutSelection()}
-  >
-    Ask aside <kbd class="aside-key">{isMac ? "⌘⇧A" : "Ctrl+Shift+A"}</kbd>
-  </button>
+  <div class="aside-pill" style:top="{asidePill.top}px" style:left="{asidePill.left}px">
+    {#if canAsk}
+      <button
+        class="ns-btn small"
+        use:tip={"Ask aside about the highlighted passage: a side question on this text, answered from the chat's context, recorded nowhere"}
+        onmousedown={(e) => e.preventDefault()}
+        onclick={() => void askAboutSelection()}
+      >
+        Ask aside <kbd class="aside-key">{isMac ? "⌘⇧A" : "Ctrl+Shift+A"}</kbd>
+      </button>
+    {/if}
+    <button
+      class="ns-btn small"
+      use:tip={"Reply: quote the highlighted passage in your message, at the cursor, and keep typing after it"}
+      onmousedown={(e) => e.preventDefault()}
+      onclick={replyToSelection}
+    >
+      Reply
+    </button>
+  </div>
 {/if}
 
 <style>
@@ -1995,6 +2023,12 @@
     white-space: pre-wrap;
     word-break: break-word;
   }
+  .user-quote {
+    margin: 0.3rem 0;
+    padding: 0.1rem 0 0.1rem 0.7rem;
+    border-left: 3px solid var(--accent);
+    color: var(--dim);
+  }
   .adopted-carry {
     margin-bottom: 0.4rem;
     font-size: 12.5px;
@@ -2121,13 +2155,18 @@
     color: inherit;
     border-radius: 2px;
   }
+  /* The pill is two buttons since backlog 215: Ask aside and Reply. */
   .aside-pill {
     position: fixed;
     transform: translateX(-50%);
     z-index: 10;
+    display: flex;
+    gap: 6px;
+    white-space: nowrap;
+  }
+  .aside-pill > button {
     padding: 5px 10px;
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
-    white-space: nowrap;
   }
   .aside-key {
     font-family: var(--mono);
