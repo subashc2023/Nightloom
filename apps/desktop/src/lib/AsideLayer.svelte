@@ -1,8 +1,9 @@
 <script lang="ts">
   import { onDestroy, tick, untrack } from "svelte";
-  import { app, asideInTab } from "./state.svelte";
+  import { app, asideInTab, unfoldAside } from "./state.svelte";
   import type { Aside } from "./state.svelte";
   import AsideCard from "./AsideCard.svelte";
+  import AsidesList from "./AsidesList.svelte";
   import {
     CARD_GAP,
     PREFERRED_CARD_HEIGHT,
@@ -207,7 +208,32 @@
     return () => ro.disconnect();
   });
   onDestroy(unmarkAll);
+
+  /**
+   * A row of the asides list clicked (item 229): the card, unfolded if it
+   * was folded, placed, scrolled into the middle of the viewport and its
+   * outline flashed once so the eye finds it. A card he moved stays where
+   * he put it; the scroll then only shows its passage's neighbourhood.
+   */
+  async function bring(id: number): Promise<void> {
+    const a = app.asides.find((x) => x.id === id);
+    if (!a || asideInTab(session, id)) return;
+    if (a.folded) unfoldAside(a);
+    await place();
+    const el = cards[id]?.element();
+    if (!el) return;
+    el.scrollIntoView({ block: "center", behavior: "smooth" });
+    el.animate?.(
+      [
+        { outline: "2px solid var(--accent)", outlineOffset: "3px" },
+        { outline: "2px solid transparent", outlineOffset: "3px" },
+      ],
+      { duration: 1400, easing: "ease-out" },
+    );
+  }
 </script>
+
+<AsidesList {viewport} onbring={(id) => void bring(id)} />
 
 {#each shown as a (a.id)}
   <AsideCard
