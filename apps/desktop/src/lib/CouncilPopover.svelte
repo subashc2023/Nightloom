@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tip } from "./tip";
+  import { floatMenu } from "./floatMenu";
   /**
    * The per-turn council control (nightshift backlog 149, blocker 243):
    * a popover above the composer's *Council* button with the roster and
@@ -14,10 +15,14 @@
   import { MAX_SEATS, MIN_SEATS, lastCouncil, type CouncilMode, type CouncilPrefs, type Seat } from "./council";
 
   let {
+    anchor = null,
     disabled = false,
     onsend,
     onclose,
   }: {
+    /** The Council button: the popover is placed by it, under `body`
+     *  (backlog 210 — the Welcome page's scrolling column cut it off). */
+    anchor?: HTMLElement | null;
     /** Nothing in the box, or no connection: the send button is off. */
     disabled?: boolean;
     onsend: (prefs: CouncilPrefs) => void;
@@ -65,7 +70,14 @@
   }
 </script>
 
-<div class="pick-menu council-menu" role="dialog" aria-label="Council" tabindex="-1" {onkeydown}>
+<div
+  class="pick-menu council-menu"
+  role="dialog"
+  aria-label="Council"
+  tabindex="-1"
+  use:floatMenu={{ anchor, align: "right", maxVh: 0.8 }}
+  {onkeydown}
+>
   <div class="pick-head"><span>Council</span><span class="pick-sub">this turn · remembered on this chat</span></div>
   <div class="council-rows">
     {#each prefs.seats as seat, i (i)}
@@ -208,13 +220,11 @@
     flex: 1;
   }
   /* The composer's menu frame, restated here since the popover is its own
-     component: the same sheet, border, shadow and placement. */
+     component: the same sheet, border, shadow and placement (`floatMenu`,
+     backlog 210: top, left and max-height set inline). */
   .pick-menu {
-    position: absolute;
-    z-index: 70;
-    bottom: calc(100% + 8px);
-    right: 0;
-    max-height: 70vh;
+    position: fixed;
+    z-index: 80;
     overflow-y: auto;
     background: var(--sheet);
     border: 1px solid var(--line2);

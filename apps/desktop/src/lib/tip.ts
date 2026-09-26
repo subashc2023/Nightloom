@@ -216,6 +216,30 @@ function position(anchor: TipAnchor): void {
   el.dataset.side = p.side;
 }
 
+// Open menus (backlog 210): while any is open, only an anchor inside one
+// may show the pill — a tip from the page under a menu ("Show this folder"
+// on the Welcome page) was drawn over it.
+const menus = new Set<Element>();
+
+/** Whether `node` may show its pill now: no menu open, or it is inside one. */
+export function tipAllowed(node: Node): boolean {
+  if (menus.size === 0) return true;
+  for (const m of menus) if (m.contains(node)) return true;
+  return false;
+}
+
+/**
+ * A menu opens: the pill showing for anything outside it hides, and no
+ * such pill shows until the returned release is called (the menu closes).
+ */
+export function holdTips(menu: Element): () => void {
+  menus.add(menu);
+  if (owner && !tipAllowed(owner)) owner.dispatchEvent(new CustomEvent("nl-tip-release"));
+  return () => {
+    menus.delete(menu);
+  };
+}
+
 /** Svelte action: Nightloom's tooltip on this element. */
 export function tip(node: TipAnchor, arg: TipArg): { update(arg: TipArg): void; destroy(): void } {
   let c = content(arg);
@@ -238,7 +262,7 @@ export function tip(node: TipAnchor, arg: TipArg): { update(arg: TipArg): void; 
 
   const onScroll = () => timer.leave();
   const show = () => {
-    if (!c || !node.isConnected) return;
+    if (!c || !node.isConnected || !tipAllowed(node)) return;
     // Another anchor's pill hands over.
     if (owner && owner !== node) owner.dispatchEvent(new CustomEvent("nl-tip-release"));
     owner = node;

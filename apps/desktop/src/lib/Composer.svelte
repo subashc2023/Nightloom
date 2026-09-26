@@ -51,6 +51,7 @@
   import { exactCounter, type ExactResult } from "./draftCount";
   import { countDraftTokens } from "./api";
   import { sendTip, tip } from "./tip";
+  import { floatMenu } from "./floatMenu";
   import { ghostFor } from "./suggestions.svelte";
   import { queuedElsewhereToast } from "./browse";
   import {
@@ -925,7 +926,8 @@
   }
   function onCouncilDocClick(e: MouseEvent) {
     const t = e.target as Node;
-    if (councilWrap?.contains(t)) return;
+    // The popover lives under `body` since backlog 210, outside the wrap.
+    if (councilWrap?.contains(t) || (t instanceof Element && t.closest(".council-menu"))) return;
     councilOpen = false;
   }
   $effect(() => {
@@ -1217,7 +1219,11 @@
       e.stopPropagation();
       closeMenu("button");
     } else if (e.key === "Tab") {
-      closeMenu(null);
+      // The menu lives at the end of `body` since backlog 210, so Tab from
+      // it would leave the composer: it goes from the button instead, as
+      // it did when the menu sat beside it (Shift+Tab lands on the button).
+      if (e.shiftKey) e.preventDefault();
+      closeMenu("button");
     }
   }
   function onMenuDocClick(e: MouseEvent) {
@@ -1673,6 +1679,7 @@
             </button>
             {#if councilOpen}
               <CouncilPopover
+                anchor={councilBtn}
                 disabled={!app.connection || (!text.trim() && attachments.length === 0)}
                 onsend={(p) => void submitCouncil(p)}
                 onclose={() => {
@@ -1764,7 +1771,15 @@
      Drawn from `menuRows`, so the model and effort menus are one piece
      of markup and one set of keys. -->
 {#snippet pickMenu(head: string, sub: string)}
-  <div class="pick-menu" role="menu" tabindex="-1" aria-label={head} bind:this={menuEl} onkeydown={onMenuKey}>
+  <div
+    class="pick-menu"
+    role="menu"
+    tabindex="-1"
+    aria-label={head}
+    bind:this={menuEl}
+    use:floatMenu={{ anchor: menuButton() }}
+    onkeydown={onMenuKey}
+  >
     <div class="pick-head"><span>{head}</span><span class="pick-sub">{sub}</span></div>
     {#each menuRows as r (r.id)}
       {#if r.id === "rail"}<div class="pick-sep"></div>{/if}
@@ -1859,11 +1874,12 @@
     width: 11px;
     height: 11px;
   }
+  /* Placed by `use:floatMenu` (backlog 210): portalled to `body` and fixed
+     by the button's rectangle, so the Welcome page's scrolling column can
+     no longer cut it off; its top, left and max-height are set inline. */
   .pick-menu {
-    position: absolute;
-    z-index: 70;
-    bottom: calc(100% + 8px);
-    left: 0;
+    position: fixed;
+    z-index: 80;
     min-width: 230px;
     max-width: 360px;
     max-height: 60vh;
