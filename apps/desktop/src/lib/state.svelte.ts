@@ -1304,6 +1304,8 @@ export async function init(): Promise<void> {
     if (t && t.answer === null && !t.cancelled) t.partial += e.payload.text;
   });
   await listen<string>("turn-notice", (e) => addToast(e.payload));
+  // A chat named itself (nightshift backlog 209): the list re-reads its titles.
+  await listen<{ chat: string; title: string }>("chat-titled", () => void refreshSessions());
   // The Mac came back from sleep (nightshift backlog 101): `sleepWatch`
   // matches it against the turn that was running, and the keep-awake
   // switches reach Rust once at start-up.

@@ -1642,6 +1642,7 @@ fn write_conversation(dir: &Path, conv: &ExportedConversation) -> Result<Option<
         session.record(SessionEvent::Title {
             text: title.to_string(),
             at: created,
+            by: None,
         });
     }
 

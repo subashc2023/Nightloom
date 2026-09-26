@@ -821,7 +821,7 @@ fn rename(session: &mut Session, name: &str) {
         eprintln!("{DIM}usage: /name <text>{RESET}");
         return;
     }
-    session.record_title(name);
+    session.record_title_by(name, nightloom_core::TitleBy::User);
     println!("{DIM}named “{name}”{RESET}");
 }
 
