@@ -35,6 +35,8 @@ mod agents;
 mod chat_name;
 /// The chats the backend holds, one lock per chat (backlog 159, A1).
 mod chats;
+/// A connect under a deadline that names its wait (item 220).
+mod connect_deadline;
 /// The composer's exact token count on the provider engine (backlog 155).
 mod draft_count;
 /// A file card's Open as a tab: which paths may be read, and reading them
@@ -1629,9 +1631,75 @@ async fn connect_agent(
     subagents_auto: Option<bool>,
     limits: Option<nightloom_service::agent::brief::SubagentLimits>,
     fork_mode: Option<bool>,
+    holds: State<'_, prompt_hold::Pending>,
+    cold: Option<bool>,
+    auto_layers: Option<bool>,
+    update_now: Option<Vec<SegmentKind>>,
+) -> Result<ConnectedInfo, String> {
+    // Never a silent hang (nightshift item 220): the installed app sat at
+    // "connecting…" for forty minutes with nothing to say what it waited
+    // on. The body records each wait; past the deadline the rail gets an
+    // error naming it, and `~/.nightloom/logs/connect.log` a line.
+    let stage = connect_deadline::Stage::new();
+    let log = connect_deadline::log_path();
+    connect_deadline::run(
+        &stage,
+        connect_deadline::CONNECT_TIMEOUT,
+        log.as_deref(),
+        connect_agent_body(
+            &stage,
+            &state,
+            binary,
+            model,
+            workspace,
+            tools,
+            approval,
+            safe_mode,
+            budget,
+            system,
+            preamble,
+            ask,
+            plan,
+            prompt_suggestions,
+            effort,
+            fallback_model,
+            subagents_auto,
+            limits,
+            fork_mode,
+            &holds,
+            cold,
+            auto_layers,
+            update_now,
+        ),
+    )
+    .await
+}
+
+/// [`connect_agent`]'s work, each wait named on `stage` first.
+#[allow(clippy::too_many_arguments)]
+async fn connect_agent_body(
+    stage: &connect_deadline::Stage,
+    state: &AppState,
+    binary: Option<String>,
+    model: Option<String>,
+    workspace: Option<String>,
+    tools: bool,
+    approval: Option<bool>,
+    safe_mode: Option<bool>,
+    budget: Option<f64>,
+    system: Option<String>,
+    preamble: Option<bool>,
+    ask: Option<bool>,
+    plan: Option<bool>,
+    prompt_suggestions: Option<bool>,
+    effort: Option<String>,
+    fallback_model: Option<String>,
+    subagents_auto: Option<bool>,
+    limits: Option<nightloom_service::agent::brief::SubagentLimits>,
+    fork_mode: Option<bool>,
     // Nightshift backlog 174: the chat's cache timer reads cold, the
     // Settings default takes changes then, and *Update now* by layer.
-    holds: State<'_, prompt_hold::Pending>,
+    holds: &prompt_hold::Pending,
     cold: Option<bool>,
     auto_layers: Option<bool>,
     update_now: Option<Vec<SegmentKind>>,
@@ -1639,9 +1707,13 @@ async fn connect_agent(
     // Same rule as `connect`: an open project wins over the rail's saved
     // folder, or a chat filed under a project would be running somewhere
     // else entirely.
+    stage.set("the open project (the workspaces lock)");
     let active = state.active().await;
-    let kind = session_kind(&state).await;
-    let declared = session_declared_kind(&state).await;
+    // Everything this connect needs of the open chat, read once and never
+    // waiting on its turn (item 220): the log on disk while a turn holds it.
+    let open = open_chat(state, active.as_ref(), stage).await;
+    let kind = open.kind;
+    let declared = open.declared;
     let workspace = match &active {
         Some(project) => project.workspace_dir(),
         None => workspace
@@ -1651,8 +1723,9 @@ async fn connect_agent(
     };
     // The folder a switch to Claude Code named wins over the project's
     // (nightshift backlog 144), as in `connect`.
-    let workspace = session_kind_workspace(&state)
-        .await
+    let workspace = open
+        .kind_workspace
+        .clone()
         .filter(|p| p.is_dir())
         .unwrap_or(workspace);
     // A Chat runs in the neutral directory whatever the project or the
@@ -1717,15 +1790,15 @@ async fn connect_agent(
     // chat's own, each granted the same way — readable without a prompt,
     // edits under the permission mode (`external`, the CLI's permissions
     // reference, via blocker 050).
-    let granted = extra_folders(active.as_ref(), state.chats.lock_focused().await.as_ref());
+    let granted = open.granted.clone();
     spec.add_dirs.extend(granted.iter().map(|(p, _)| p.clone()));
     // Built as segments and rendered from them, so the Context popover can
     // show the same segments the flag carries rather than a re-parse of the
     // string (see `PromptBuilt`). The chat's own exclusions apply here as on
     // the other engine, plus the one layer that exists only here.
-    let off = layers_off(&state).await;
-    let edits = layer_edits(&state).await;
-    let mode = session_mode(&state).await;
+    let off = open.off.clone();
+    let edits = open.edits.clone();
+    let mode = open.mode;
     // The CLI's own memory is a layer the chat can switch off like the
     // rest (nightshift backlog 088), but never one Nightloom assembles:
     // the kind reaches the CLI as a setting, not as text.
@@ -1768,19 +1841,12 @@ async fn connect_agent(
     // A changed layer waits for the chat's cold moment (nightshift backlog
     // 174, `prompt_hold`): the held text goes out while the cache is warm.
     let prompt = {
+        stage.set("the chats folder (the workspaces lock)");
         let log_dir = state.log_dir().await;
         // `chat` is the chat this connection is built for, whatever its
         // mode; `id` is the one whose hold is kept (an ephemeral chat
         // keeps nothing on disk).
-        let (chat, id, has_cli) = match state.chats.lock_focused().await.as_ref() {
-            Some(s) if s.mode() != ChatMode::Ephemeral => (
-                Some(s.id.clone()),
-                Some(s.id.clone()),
-                s.agent_session().is_some_and(|(a, _)| a == AGENT),
-            ),
-            Some(s) => (Some(s.id.clone()), None, false),
-            None => (None, None, false),
-        };
+        let (chat, id, has_cli) = (open.chat.clone(), open.hold_id.clone(), open.has_cli);
         let file = id.as_deref().map(|id| prompt_hold::file_for(&log_dir, id));
         let held = file.as_deref().and_then(prompt_hold::load);
         let r = prompt_hold::resolve(
@@ -1810,6 +1876,7 @@ async fn connect_agent(
         spec.system_prompt_snapshot_off = r.hold.snapshot_off;
         // New chat: the first turn creates the chat and writes this hold
         // under its id (`Pending::bind_new_chat`, from `send_agent`).
+        stage.set("the prompt-hold view (the prompt-hold locks)");
         *holds.unsaved.lock().await = chat.is_none().then(|| r.hold.clone());
         *holds.view.lock().await = prompt_hold::PendingView {
             session: chat,
@@ -2005,6 +2072,7 @@ async fn connect_agent(
     // overwhelmingly likely first failure on this engine, and finding out at
     // connect gives the rail something to show instead of a turn that dies
     // with a process error the first time the user sends anything.
+    stage.set("the Claude Code binary's `--version` probe");
     let (resolved_binary, version) = agent_version(&spec.binary).await?;
 
     // Pick the conversation back up if the open chat already has one. This
@@ -2018,11 +2086,9 @@ async fn connect_agent(
     // with `error_during_execution` — the same failure `follow_on` was
     // taught to avoid on 2026-09-17, reached here by any rail change.
     if !spec.no_session_persistence
-        && let Some(session) = state.chats.lock_focused().await.as_ref()
-        && let Some((agent, id)) = session.agent_session()
-        && agent == AGENT
+        && let Some(id) = open.resume.clone()
     {
-        spec.resume = Some(id.to_string());
+        spec.resume = Some(id);
     }
 
     let info = ConnectedInfo {
@@ -2087,6 +2153,7 @@ async fn connect_agent(
     state
         .agent_live
         .store(true, std::sync::atomic::Ordering::SeqCst);
+    stage.set("the provider engine's chat and the built prompt (their locks)");
     *state.chat.lock().await = None;
     *state.prompt.lock().await = PromptBuilt {
         off,
@@ -2099,6 +2166,101 @@ async fn connect_agent(
         kind,
     };
     Ok(info)
+}
+
+/// What `connect_agent` reads of the open chat — read once, at the start
+/// (nightshift item 220, 2026-09-25). It used to lock the open chat seven
+/// times over the connect, and each lock waited for that chat's running
+/// turn: a rail change during a turn sat at "connecting…" for the turn's
+/// whole length, with every other command on that chat queued behind it
+/// (the item-136 family). A running turn never loses its agent to a connect
+/// (`Agents::connect`), so nothing here needs the turn to end.
+struct OpenChat {
+    kind: ChatKind,
+    declared: ChatKind,
+    kind_workspace: Option<PathBuf>,
+    granted: Vec<(PathBuf, &'static str)>,
+    off: Vec<SegmentKind>,
+    edits: BTreeMap<SegmentKind, String>,
+    mode: ChatMode,
+    /// The chat the connection is built for, whatever its mode.
+    chat: Option<String>,
+    /// The chat whose prompt hold is kept (not an ephemeral one).
+    hold_id: Option<String>,
+    /// Whether the chat has a Claude Code session already.
+    has_cli: bool,
+    /// The Claude Code session to `--resume`.
+    resume: Option<String>,
+}
+
+/// The pure half of [`open_chat`]: the same answers `session_kind`,
+/// `layers_off` and the rest give, from one read of the chat.
+fn open_chat_of(
+    session: Option<&Session>,
+    active: Option<&Project>,
+    pending_mode: ChatMode,
+    pending_kind: ChatKind,
+) -> OpenChat {
+    let (chat, hold_id, has_cli) = match session {
+        Some(s) if s.mode() != ChatMode::Ephemeral => (
+            Some(s.id.clone()),
+            Some(s.id.clone()),
+            s.agent_session().is_some_and(|(a, _)| a == AGENT),
+        ),
+        Some(s) => (Some(s.id.clone()), None, false),
+        None => (None, None, false),
+    };
+    OpenChat {
+        kind: kind_of(session, pending_kind),
+        declared: session.map(Session::declared_kind).unwrap_or(pending_kind),
+        kind_workspace: session.and_then(|s| s.kind_workspace().map(Path::to_path_buf)),
+        granted: extra_folders(active, session),
+        off: session
+            .map(|s| s.prompt_layers_off().to_vec())
+            .unwrap_or_default(),
+        edits: session
+            .map(|s| s.prompt_layer_edits().clone())
+            .unwrap_or_default(),
+        mode: mode_of(session, pending_mode),
+        chat,
+        hold_id,
+        has_cli,
+        resume: session.and_then(resume_of),
+    }
+}
+
+/// The open chat as `connect_agent` needs it, without waiting on its turn:
+/// the held log when it is free, else the log on disk — what the turn has
+/// appended so far, as `open_session` reads a running chat. Only an
+/// incognito chat, which keeps no log, still waits for its turn (under the
+/// connect's deadline, which names that wait).
+async fn open_chat(
+    state: &AppState,
+    active: Option<&Project>,
+    stage: &connect_deadline::Stage,
+) -> OpenChat {
+    stage.set("the pending chat mode and kind (their locks)");
+    let pending_mode = *state.pending_mode.lock().await;
+    let pending_kind = *state.pending_kind.lock().await;
+    let target = state.chats.target();
+    if let Ok(open) = target.try_lock() {
+        return open_chat_of(open.as_ref(), active, pending_mode, pending_kind);
+    }
+    if let Some(id) = target.id().map(str::to_string) {
+        stage.set("the open chat's log on disk (its turn holds the chat)");
+        let dir = state.log_dir().await;
+        let loaded = blocking(move || -> Result<Session, String> {
+            let path = store::find_by_prefix(&dir, &id).map_err(|e| e.to_string())?;
+            Session::load(path).map_err(|e| e.to_string())
+        })
+        .await;
+        if let Ok(session) = loaded {
+            return open_chat_of(Some(&session), active, pending_mode, pending_kind);
+        }
+    }
+    stage.set("the open chat's lock (an incognito chat's turn is running)");
+    let open = target.lock().await;
+    open_chat_of(open.as_ref(), active, pending_mode, pending_kind)
 }
 
 /// Which agent a recorded [`SessionEvent::AgentSession`] belongs to.
@@ -7386,6 +7548,44 @@ mod tests {
             .collect();
         v.sort();
         v
+    }
+
+    /// Item 220: while a turn holds the open chat, `connect_agent` reads it
+    /// from the log on disk instead of waiting for the turn — and the log
+    /// gives the same answers the held chat does.
+    #[tokio::test]
+    async fn a_connect_reads_a_chat_whose_turn_is_running_from_its_log_without_waiting() {
+        let dir = empty_log_dir("open-chat-busy");
+        let chats = chats::Chats::default();
+        let (mut held, _) = chats
+            .lock_or_start(ChatMode::Normal, ChatKind::Build, &dir)
+            .await
+            .unwrap();
+        held.record_prompt_layers([SegmentKind::UserMemory]);
+        held.record_agent_session(AGENT, "cli-session-1");
+        held.record_kind(ChatKind::Chat, Some(dir.clone()));
+        let from_held = open_chat_of(Some(&held), None, ChatMode::Normal, ChatKind::Build);
+
+        // The turn holds the chat: taking it would wait.
+        let target = chats.target();
+        assert!(target.try_lock().is_err());
+        let path = store::find_by_prefix(&dir, target.id().unwrap()).unwrap();
+        let loaded = Session::load(path).unwrap();
+        let from_disk = open_chat_of(Some(&loaded), None, ChatMode::Normal, ChatKind::Build);
+
+        assert_eq!(from_held.off, vec![SegmentKind::UserMemory]);
+        assert_eq!(from_disk.off, vec![SegmentKind::UserMemory]);
+        assert_eq!(from_disk.off, from_held.off);
+        assert_eq!(from_disk.edits, from_held.edits);
+        assert_eq!(from_disk.kind, from_held.kind);
+        assert_eq!(from_disk.declared, from_held.declared);
+        assert_eq!(from_disk.kind_workspace, from_held.kind_workspace);
+        assert_eq!(from_disk.mode, from_held.mode);
+        assert_eq!(from_disk.hold_id, from_held.hold_id);
+        assert_eq!(from_disk.resume.as_deref(), Some("cli-session-1"));
+        assert!(from_disk.has_cli && from_held.has_cli);
+        drop(held);
+        assert!(target.try_lock().is_ok());
     }
 
     /// A dream or a capture routes by the `provider` string (nightshift

@@ -86,6 +86,19 @@ impl Target {
             None => Open(None),
         }
     }
+
+    /// The chat without waiting; `Err(Busy)` while its turn runs (item
+    /// 220: a connect reads the log on disk then, rather than wait).
+    pub fn try_lock(&self) -> Result<Open, Busy> {
+        match &self.log {
+            Some(log) => log
+                .clone()
+                .try_lock_owned()
+                .map(|g| Open(Some(g)))
+                .map_err(|_| Busy),
+            None => Ok(Open(None)),
+        }
+    }
 }
 
 /// See the module docs.

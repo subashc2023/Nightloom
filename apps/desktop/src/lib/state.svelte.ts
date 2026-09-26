@@ -69,6 +69,7 @@ import * as tabs from "./tabs";
 import { adoptPending, latestAgents, mergeRows, rowsFromLog, rowsOf } from "./subagentRows";
 import { cli, startCliClock } from "./cliUpdate.svelte";
 import { chatIsCold, loadLayerPrefs, reconnectBeforeTurn, saveLayerPrefs } from "./promptVersions";
+import { CONNECT_DEADLINE_MS, withDeadline } from "./deadline";
 import type { TabContent, Workspace } from "./tabs";
 import { UNFILED_TABS, loadSavedWorkspaces, rebuild, saveWorkspaceFor, snapshot } from "./tabsStore";
 import {
@@ -2864,7 +2865,9 @@ async function applyAgentDraft(updateNow: PromptLayer[] = []): Promise<void> {
   app.connecting = true;
   app.connectError = null;
   try {
-    const res = await api.connectAgent({
+    // Never an endless "connecting…" (item 220): the rail is locked while
+    // this is pending, so a promise that never settles locks it for good.
+    const connecting = api.connectAgent({
       binary: d.agentBinary.trim() || undefined,
       model: d.agentModel.trim() || undefined,
       workspace: d.workspace.trim() || undefined,
@@ -2887,7 +2890,8 @@ async function applyAgentDraft(updateNow: PromptLayer[] = []): Promise<void> {
       autoLayers: app.layerPrefs.autoAtCold,
       updateNow,
     });
-    app.promptPending = await api.promptPending().catch(() => null);
+    const res = await withDeadline(connecting, CONNECT_DEADLINE_MS, "Connecting to Claude Code");
+    app.promptPending = await withDeadline(api.promptPending(), 5_000, "The held prompt").catch(() => null);
     app.connection = {
       provider: res.provider,
       model: res.model,
