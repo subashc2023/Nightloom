@@ -18,6 +18,7 @@
     reflectTabs,
     runMenuCommand,
     runToastAction,
+    answerAsideDiscard,
     setPaneWidth,
     splitTab,
     syncUndoMenu,
@@ -37,6 +38,8 @@
   import { halfLabel } from "./lib/tabDrag";
   import AsideView from "./lib/AsideView.svelte";
   import AsideCard from "./lib/AsideCard.svelte";
+  import ConfirmDialog from "./lib/ConfirmDialog.svelte";
+  import { quoteLabel } from "./lib/asideQuote";
   import AttachmentLayer from "./lib/AttachmentLayer.svelte";
   import AttachmentView from "./lib/AttachmentView.svelte";
   import SubagentView from "./lib/SubagentView.svelte";
@@ -820,6 +823,24 @@
       <div class="settings-overlay" onmousedown={(e) => { if (e.target === e.currentTarget) app.showTasks = false; }}><RunningTasks /></div>
     {/if}
     <Palette />
+    <!-- Closing an aside with unsent text (backlog 228, practices §7):
+         only an explicit, confirmed Discard drops what he typed. -->
+    {#if app.asideDiscard}
+      {@const d = app.asideDiscard}
+      <ConfirmDialog
+        title="Discard the unsent aside text?"
+        lead={d.draft
+          ? "The question typed in this aside has not been asked. Closing the card drops it."
+          : "The follow-up typed under this aside has not been sent. Closing the thread drops it and the thread."}
+        facts={[
+          ["typed", (d.unsent ?? "").trim().slice(0, 160) + ((d.unsent ?? "").trim().length > 160 ? "…" : "")],
+          ...(d.quote ? [["about", quoteLabel(d.quote, "card")] as [string, string]] : []),
+        ]}
+        confirmLabel="Discard"
+        onconfirm={() => answerAsideDiscard(true)}
+        onclose={() => answerAsideDiscard(false)}
+      />
+    {/if}
     {#if app.showPrompts}
       <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
       <div class="settings-overlay" onmousedown={(e) => { if (e.target === e.currentTarget) closePrompts(); }}><PromptLibrary /></div>

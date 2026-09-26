@@ -8,8 +8,9 @@
     askAside,
     asideAsking,
     asideWaiting,
-    dismissAside,
     dropContent,
+    requestDismissAside,
+    setAsideUnsent,
     endContentDrag,
     followUpAside,
     startContentDrag,
@@ -25,6 +26,7 @@
   import { renderMarkdown } from "./markdown";
   import Icon from "./Icon.svelte";
   import MoveZone from "./MoveZone.svelte";
+  import AsideBox from "./AsideBox.svelte";
 
   /**
    * The floating aside card (nightshift backlog 141, 2026-09-17; blocker
@@ -104,8 +106,17 @@
   let body = $state<HTMLElement | null>(null);
   let askBox = $state<HTMLTextAreaElement | null>(null);
   let followBox = $state<HTMLTextAreaElement | null>(null);
-  let askDraft = $state("");
-  let followDraft = $state("");
+  // ~~`askDraft` / `followDraft`, the card's own `$state`~~ — lost on an
+  // unmount and on quit (backlog 228, 2026-09-26). The text lives on the
+  // thread (`aside.unsent`), which the aside store writes; the two boxes
+  // never show at once, so one field serves both.
+  const unsent = $derived(aside.unsent ?? "");
+  /** The box's drag edge (backlog 226): the top on a card stuck above the
+   *  composer, which grows upward; the bottom everywhere else. */
+  const boxEdge = $derived(placement === null && !panel && !aside.moved ? "top" : "bottom");
+  function typed(e: Event): void {
+    setAsideUnsent(aside, (e.currentTarget as HTMLTextAreaElement).value);
+  }
   let copied = $state(false);
 
   const asking = $derived(asideAsking(aside));
@@ -225,10 +236,12 @@
   }
 
   function submitAsk(): void {
-    const q = askDraft.trim();
+    const q = unsent.trim();
     if (!q || !aside.quote || !aside.draft) return;
+    // Off the Claude Code engine the ask does nothing; the text stays (228).
+    if (app.connection?.engine !== "claude-code") return;
     launch("aside", askBox);
-    askDraft = "";
+    setAsideUnsent(aside, "");
     void askAside(q, aside.quote, aside);
   }
   function askKeys(e: KeyboardEvent): void {
@@ -238,10 +251,12 @@
     }
   }
   function submitFollowUp(): void {
-    const q = followDraft.trim();
+    const q = unsent.trim();
     if (!q || aside.draft || asking) return;
+    // Off the Claude Code engine the ask does nothing; the text stays (228).
+    if (app.connection?.engine !== "claude-code") return;
     launch("aside", followBox);
-    followDraft = "";
+    setAsideUnsent(aside, "");
     void followUpAside(q, aside);
   }
   function followKeys(e: KeyboardEvent): void {
@@ -257,22 +272,29 @@
     if (e.key !== "Escape") return;
     e.preventDefault();
     e.stopPropagation();
+    // The discard question is up (backlog 228): Escape answers it "keep".
+    if (app.asideDiscard !== null) {
+      app.asideDiscard = null;
+      return;
+    }
     if (panel) {
       app.asidePanel = null;
       app.asidePanelThread = null;
-    } else dismissAside(aside);
+    } else requestDismissAside(aside);
   }
   /** Escape elsewhere: ours unless another text field has it. The
    *  panel does not claim it — a panel is furniture, not a popover. */
   function windowKeys(e: KeyboardEvent): void {
     if (panel || !front || e.key !== "Escape" || e.defaultPrevented) return;
+    // The discard question is up (backlog 228): its own Escape closes it.
+    if (app.asideDiscard !== null) return;
     const t = e.target as HTMLElement | null;
     if (t && root?.contains(t)) return; // `cardKeys` had it
     const tag = (t?.tagName ?? "").toUpperCase();
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || t?.isContentEditable) return;
     e.preventDefault();
     e.stopPropagation();
-    dismissAside(aside);
+    requestDismissAside(aside);
   }
 
   /** The last answer as its markdown source; the thread when there are
@@ -390,35 +412,32 @@
           : asking
             ? "Stop the answer here; what has arrived stays"
             : "Dismiss the aside — the thread ends") + (panel ? "" : " (Escape)")}
-        onclick={() => dismissAside(aside)}>×</button
+        onclick={() => requestDismissAside(aside)}>×</button
       >
     {/if}
   </div>
   {#if !folded}
   <div class="aside-card-body" bind:this={body} onscroll={bodyScrolled}>
     {#if aside.draft}
-      <textarea
-        class="aside-card-box"
-        bind:this={askBox}
-        bind:value={askDraft}
-        rows="1"
-        placeholder={aside.quote ? "Ask about the passage… (Enter asks)" : "Ask aside… (Enter asks)"}
-        aria-label="Your question about the highlighted passage"
+      <AsideBox
+        bind:box={askBox}
+        value={unsent}
+        oninput={typed}
         onkeydown={askKeys}
-        autocorrect="off"
-        autocapitalize="off"
-        spellcheck="false"
-      ></textarea>
+        edge={boxEdge}
+        placeholder={aside.quote ? "Ask about the passage… (Enter asks)" : "Ask aside… (Enter asks)"}
+        label="Your question about the highlighted passage"
+      />
       <div class="aside-card-row">
         <button
           class="ns-btn small"
-          disabled={!askDraft.trim()}
+          disabled={!unsent.trim()}
           use:tip={"Ask this about the passage, off the chat's context: no changes, recorded nowhere"}
           onclick={submitAsk}
         >
           Ask aside
         </button>
-        <button class="ns-btn ghost small" onclick={() => dismissAside(aside)}>Cancel</button>
+        <button class="ns-btn ghost small" onclick={() => requestDismissAside(aside)}>Cancel</button>
       </div>
     {:else}
       {#each aside.turns as turn (turn.seq)}
@@ -453,22 +472,19 @@
       {:else if last && !asking && !onClaudeCode}
         <div class="aside-card-mark">Follow up on the Claude Code engine</div>
       {:else if last && !asking}
-        <textarea
-          class="aside-card-box"
-          bind:this={followBox}
-          bind:value={followDraft}
-          rows="1"
-          placeholder="Follow up in the aside… (Enter asks)"
-          aria-label="A follow-up in the aside"
+        <AsideBox
+          bind:box={followBox}
+          value={unsent}
+          oninput={typed}
           onkeydown={followKeys}
-          autocorrect="off"
-          autocapitalize="off"
-          spellcheck="false"
-        ></textarea>
+          edge={boxEdge}
+          placeholder="Follow up in the aside… (Enter asks)"
+          label="A follow-up in the aside"
+        />
         <div class="aside-card-row">
           <button
             class="ns-btn small"
-            disabled={!followDraft.trim()}
+            disabled={!unsent.trim()}
             use:tip={"Continue the aside: the exchanges above go with this question, off the chat's context; recorded nowhere"}
             onclick={submitFollowUp}
           >
@@ -674,26 +690,7 @@
       background: var(--dim);
     }
   }
-  .aside-card-box {
-    /* Never shrink below its rows (nightshift backlog 179, 2026-09-22): a
-       textarea is a scroll container, so in a scrolling flex column its
-       minimum height is 0 and a long answer squashed it to a sliver. */
-    flex-shrink: 0;
-    width: 100%;
-    box-sizing: border-box;
-    resize: none;
-    padding: 7px 10px;
-    border: 1px solid var(--line2);
-    border-radius: 8px;
-    background: var(--well);
-    color: var(--ink);
-    font: inherit;
-    line-height: 1.4;
-  }
-  .aside-card-box:focus {
-    outline: none;
-    border-color: var(--accent);
-  }
+  /* The question box is `AsideBox.svelte` since backlog 226. */
   .aside-card-row {
     display: flex;
     gap: 8px;

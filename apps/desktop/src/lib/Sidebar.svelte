@@ -1097,6 +1097,8 @@
     margin: 0 0.75rem 0.6rem;
   }
   .new-chat {
+    /* Positioned so a hovered half can sit over its neighbour (below). */
+    position: relative;
     flex: 1;
     min-width: 0;
     padding: 0.45rem 0.75rem;
@@ -1109,10 +1111,16 @@
     font-family: inherit;
     text-align: left;
   }
+  /* ~~`border-left: none`~~ — the ▾ half borrowed New chat's right edge,
+     so its hover lit three sides (nightshift backlog 225, his screenshot
+     of 2026-09-25). It has a left edge of its own now, laid over New
+     chat's by a -1px margin — still one line between them — and the
+     hovered half is raised over the other, so either one lights all four
+     sides. */
   .new-chat.more {
     flex: none;
+    margin-left: -1px;
     padding: 0.45rem 0.5rem;
-    border-left: none;
     border-radius: 0 8px 8px 0;
     color: var(--dim);
   }
@@ -1218,6 +1226,7 @@
   .new-chat:hover:not(:disabled) {
     border-color: var(--accent);
     color: var(--accent);
+    z-index: 2;
   }
   /* Selected: the row's own active tokens (`.session-item.active` below),
      so "no chat open" and "this chat open" read as the same kind of
@@ -1225,6 +1234,7 @@
   .new-chat.active {
     background: var(--sheet);
     border-color: var(--line2);
+    z-index: 1;
   }
   .new-chat:disabled {
     opacity: 0.5;
