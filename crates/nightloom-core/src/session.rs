@@ -43,6 +43,16 @@ impl SessionCost {
     }
 }
 
+/// Who wrote a chat's title (nightshift backlog 209).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TitleBy {
+    /// He renamed it. A naming pass never touches such a chat.
+    User,
+    /// A naming pass wrote it, and a later one may refine it.
+    Model,
+}
+
 /// What a chat was started as, decided at its birth and never changed.
 ///
 /// One field with three values rather than two booleans, because the two
@@ -336,7 +346,16 @@ pub enum SessionEvent {
     /// message, clipped — is what both shells did before, and it is the
     /// thing that stops working: forty chats whose names all begin "can you
     /// help me" are a list you have to open one by one.
-    Title { text: String, at: DateTime<Utc> },
+    Title {
+        text: String,
+        at: DateTime<Utc>,
+        /// Who named it (nightshift backlog 209): `User` for every rename
+        /// he makes, `Model` for a name a naming pass wrote. Absent on every
+        /// title written before 2026-09-25, and read then as his — see
+        /// [`Session::named_by_user`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        by: Option<TitleBy>,
+    },
     /// The external agent session this log mirrors, when a turn was run by
     /// one instead of by a provider call.
     ///
@@ -1650,6 +1669,17 @@ impl Session {
         self.record(SessionEvent::Title {
             text: text.into(),
             at: Utc::now(),
+            by: None,
+        });
+    }
+
+    /// A title with who wrote it (nightshift backlog 209): `User` from a
+    /// rename, `Model` from a naming pass.
+    pub fn record_title_by(&mut self, text: impl Into<String>, by: TitleBy) {
+        self.record(SessionEvent::Title {
+            text: text.into(),
+            at: Utc::now(),
+            by: Some(by),
         });
     }
 
@@ -2480,6 +2510,21 @@ impl Session {
                 SessionEvent::Title { text, .. } => Some(text.as_str()),
                 _ => None,
             })
+    }
+
+    /// Whether he named this chat himself (nightshift backlog 209): its
+    /// live title was written by a rename, or before titles said who wrote
+    /// them — an old title is read as his, so a naming pass never replaces
+    /// a name it cannot prove a model gave. No title at all is `false`.
+    pub fn named_by_user(&self) -> bool {
+        self.live_events()
+            .into_iter()
+            .rev()
+            .find_map(|(_, e)| match e {
+                SessionEvent::Title { by, .. } => Some(*by != Some(TitleBy::Model)),
+                _ => None,
+            })
+            .unwrap_or(false)
     }
 
     /// Projection: the external agent session this log currently mirrors.
@@ -4259,6 +4304,39 @@ mod tests {
         // Unlike the task list, which a compaction clears.
         s.record_compaction("a summary");
         assert_eq!(s.title(), Some("What it turned out to be"));
+    }
+
+    /// Backlog 209: his rename flags the chat, a model's name does not, and
+    /// a title from before the flag existed is read as his.
+    #[test]
+    fn a_rename_flags_the_chat_as_named_by_him_and_a_model_title_does_not() {
+        let mut s = Session::new();
+        exchange(&mut s, "one", "first");
+        assert!(!s.named_by_user(), "no title is not his");
+        s.record_title_by("A model's guess", TitleBy::Model);
+        assert!(!s.named_by_user());
+        s.record_title_by("His own name", TitleBy::User);
+        assert!(s.named_by_user());
+        assert_eq!(s.title(), Some("His own name"));
+        // Legacy: no `by` on the event.
+        let mut old = Session::new();
+        old.record_title("Written before 209");
+        assert!(old.named_by_user());
+        // The field round-trips, and is absent when unset.
+        let json = serde_json::to_string(&SessionEvent::Title {
+            text: "x".into(),
+            at: Utc::now(),
+            by: Some(TitleBy::Model),
+        })
+        .unwrap();
+        assert!(json.contains(r#""by":"model""#), "{json}");
+        let legacy = serde_json::to_string(&SessionEvent::Title {
+            text: "x".into(),
+            at: Utc::now(),
+            by: None,
+        })
+        .unwrap();
+        assert!(!legacy.contains("\"by\""), "{legacy}");
     }
 
     /// Rewinding past the name that describes a turn drops the name with it,

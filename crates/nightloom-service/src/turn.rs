@@ -1070,7 +1070,7 @@ impl Chat {
                 "empty title from provider; session left unnamed".into(),
             ));
         }
-        session.record_title(&title);
+        session.record_title_by(&title, nightloom_core::TitleBy::Model);
         Ok(Some(title))
     }
 }

@@ -32,6 +32,7 @@ use tokio_util::sync::CancellationToken;
 
 /// The Claude Code agents the window holds, one per chat (backlog 159, A2).
 mod agents;
+mod chat_name;
 /// The chats the backend holds, one lock per chat (backlog 159, A1).
 mod chats;
 /// The composer's exact token count on the provider engine (backlog 155).
@@ -2312,7 +2313,8 @@ async fn rename_session(
     if let Some((_, log)) = state.chats.find(&id) {
         return match log.try_lock() {
             Ok(mut open) => {
-                open.record_title(title);
+                // His name: a naming pass never touches it (backlog 209).
+                open.record_title_by(title, nightloom_core::TitleBy::User);
                 Ok(())
             }
             Err(_) => Err("that chat is running a turn — rename it when the turn ends".into()),
@@ -2321,7 +2323,7 @@ async fn rename_session(
 
     let path = store::find_by_prefix(&state.log_dir().await, &id).map_err(|e| e.to_string())?;
     let mut session = Session::load(&path).map_err(|e| e.to_string())?;
-    session.record_title(title);
+    session.record_title_by(title, nightloom_core::TitleBy::User);
     Ok(())
 }
 
@@ -3167,6 +3169,11 @@ async fn send_agent(
                 let _ = app.emit("turn-notice", failure.summary());
             }
             agent.follow_on(&outcome);
+            // A name for the chat (nightshift backlog 209): spawned, never
+            // awaited — the turn returns as it would without it.
+            if !outcome.is_error && !cancel.is_cancelled() {
+                chat_name::after_turn(&app, session, agent.spec());
+            }
             // The checkpoint again, now that the CLI's file holds this turn
             // (backlog 104): the first exchange sets it, and its uuid
             // resolves here rather than at the next send, so the

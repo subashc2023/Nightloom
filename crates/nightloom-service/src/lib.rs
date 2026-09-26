@@ -11,6 +11,7 @@ pub mod agent;
 pub mod approval;
 pub mod capture;
 pub mod centre;
+pub mod chat_name;
 pub mod cli_update;
 pub mod council;
 pub mod credentials;
