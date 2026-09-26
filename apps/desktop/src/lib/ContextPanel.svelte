@@ -24,7 +24,8 @@
   import { EDITABLE_LAYERS } from "./types";
   import { reconsider, setThreshold, threshold } from "./handoff.svelte";
   import { setPromptSuggestions, suggestions } from "./suggestions.svelte";
-  import { applyDraft } from "./state.svelte";
+  import { applyDraft, refreshLayerVersions } from "./state.svelte";
+  import { onMount } from "svelte";
   import type {
     BlockKind,
     CliMemoryFile,
@@ -36,6 +37,15 @@
     WireSegment,
     WireView,
   } from "./types";
+
+  // A memory or instructions file edited outside the app since the last
+  // connect has no *newer version exists* mark until something reconnects
+  // (backlog 174; night batch F, 2026-09-26): opening the page does, once.
+  // `onMount`, not an effect — the reconnect moves `app.connection`, which
+  // an effect would read and re-run on, forever.
+  onMount(() => {
+    void refreshLayerVersions();
+  });
 
   /*
    * The Context page: what the next request carries, as a centre modal the

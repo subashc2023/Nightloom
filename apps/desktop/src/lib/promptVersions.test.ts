@@ -44,11 +44,15 @@ describe("reconnectBeforeTurn", () => {
     expect(reconnectBeforeTurn(view("a", [layer("auto")]), "a", false, true)).toBe(false);
     expect(reconnectBeforeTurn(view("a", [layer("cold")]), "a", false, true)).toBe(false);
   });
-  it("reconnects a cold chat only for a mark that is taken then", () => {
+  // ~~"reconnects a cold chat only for a mark that is taken then"~~ —
+  // superseded 2026-09-26 (night batch F): a file edited on disk after the
+  // last connect has no mark yet, so a cold chat reconnects whatever the
+  // marks say and the connect decides what is taken (Rust `resolve`).
+  it("reconnects a cold chat so the connect sees files changed since", () => {
     expect(reconnectBeforeTurn(view("a", [layer("auto")]), "a", true, true)).toBe(true);
-    expect(reconnectBeforeTurn(view("a", [layer("auto")]), "a", true, false)).toBe(false);
-    expect(reconnectBeforeTurn(view("a", [layer("keep")]), "a", true, true)).toBe(false);
-    expect(reconnectBeforeTurn(view("a", []), "a", true, true)).toBe(false);
+    expect(reconnectBeforeTurn(view("a", [layer("auto")]), "a", true, false)).toBe(true);
+    expect(reconnectBeforeTurn(view("a", [layer("keep")]), "a", true, true)).toBe(true);
+    expect(reconnectBeforeTurn(view("a", []), "a", true, true)).toBe(true);
   });
   it("leaves a new chat alone", () => {
     expect(reconnectBeforeTurn(view(null, []), null, true, true)).toBe(false);

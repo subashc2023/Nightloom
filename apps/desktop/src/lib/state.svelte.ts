@@ -3108,6 +3108,22 @@ async function layersBeforeTurn(): Promise<void> {
   await applyAgentDraft();
 }
 
+/**
+ * Re-read which layers have a newer file (backlog 174; night batch F,
+ * 2026-09-26, measured): the marks are computed at a connect, and a file
+ * edited outside the app — his editor, the model's `remember`, another
+ * chat's save — triggers none, so the Context page showed no mark for it.
+ * Called when the Context page opens. A reconnect on a warm chat sends the
+ * held text byte for byte (Rust `prompt_hold::resolve`), so it rewrites no
+ * cache; on a cold chat it takes what the choices allow, as the next turn
+ * would. Never during a turn or a connect, never for New chat.
+ */
+export async function refreshLayerVersions(): Promise<void> {
+  if (app.busy || app.connecting || app.connection?.engine !== "claude-code") return;
+  if (app.activeSessionId === null) return;
+  await applyAgentDraft();
+}
+
 /** *Update now* on a mark: the new text goes out with the next message,
  *  whatever the cache (its cost was shown on the button). */
 export async function updateLayerNow(kind: PromptLayer): Promise<void> {
