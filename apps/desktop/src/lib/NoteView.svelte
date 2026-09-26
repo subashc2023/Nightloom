@@ -34,7 +34,7 @@
   import { fieldScrollTop } from "./find";
   import NoteEditPanel from "./NoteEditPanel.svelte";
   import { noteEditUi, onLanded, runningTurn } from "./noteEdit.svelte";
-  import { changedLines, splitReply } from "./noteEdit";
+  import { changedLines } from "./noteEdit";
 
   /**
    * Which note the editor has loaded, as `scope:name`. A plain variable, not
@@ -143,19 +143,20 @@
   });
 
   /**
-   * Edit with a prompt (nightshift backlog 151). While a rewrite of this
-   * note streams, the note's pane shows the new text as it arrives, the
-   * lines that differ from the old text marked; the buffer keeps the old
-   * text until the reply is whole, so nothing typed or saved is touched by
-   * a reply that stops halfway. When it lands (`onLanded`) the buffer takes
-   * it — saved, or as a draft — and the changed lines stay marked for a few
-   * seconds, or until a click or a key.
+   * Edit with a prompt (nightshift backlog 151). While a turn on this note
+   * runs, the note's pane shows the file as each Edit leaves it (pass 2:
+   * `current`, from `note-edit-landed`), the lines that differ from the
+   * text before the turn marked. The pane is read-only and stands in for
+   * the editor, so nothing can be typed into the note for an Edit to land
+   * over. When the turn ends (`onLanded`) the buffer takes the file's text
+   * as saved, and the changed lines stay marked for a few seconds, or
+   * until a click or a key.
    */
   const streaming = $derived(bufferKey ? runningTurn(bufferKey) : null);
   const streamed = $derived.by(() => {
     const t = streaming;
     if (!t) return null;
-    const note = splitReply(t.partial ?? "", t.before).note;
+    const note = t.current ?? t.before;
     const lines = note === "" ? [] : note.replace(/\n$/, "").split("\n");
     const marked = lines.length <= 2000 ? new Set(changedLines(t.before, note)) : new Set<number>();
     return { lines, marked };
@@ -183,18 +184,16 @@
   });
   $effect(() => () => clearMarks());
   let streamPane = $state<HTMLDivElement | null>(null);
+  /** The first marked line in view — as each Edit lands, and when the
+   *  marks show at the end. (Pass 1 followed the stream's tail instead.) */
   $effect(() => {
-    void streamed?.lines.length;
-    const el = streamPane;
-    if (el) el.scrollTop = el.scrollHeight;
-  });
-  /** The first marked line in view when the marks show. */
-  $effect(() => {
-    const m = marks;
+    const m = streamed ?? marks;
     const el = streamPane;
     if (!m || !el) return;
-    const first = el.querySelector(".ln.mark");
-    if (first instanceof HTMLElement) el.scrollTop = Math.max(0, first.offsetTop - el.clientHeight / 3);
+    void tick().then(() => {
+      const first = el.querySelector(".ln.mark");
+      if (first instanceof HTMLElement) el.scrollTop = Math.max(0, first.offsetTop - el.clientHeight / 3);
+    });
   });
 
   /**
@@ -516,7 +515,7 @@
     <button
       class="ghost"
       class:on={noteEditUi.open}
-      use:tip={"Tell a model what changed and it rewrites the whole note to fit, in a small chat on the right. Direct editing stays as it is."}
+      use:tip={"Tell a model what changed and it edits this note to fit, in a small chat on the right. Direct editing stays as it is."}
       onclick={() => (noteEditUi.open = !noteEditUi.open)}
       disabled={!open}>Edit with a prompt</button
     >
@@ -553,7 +552,7 @@
       {#each (streamed ?? marks)?.lines ?? [] as line, i (i)}
         <div class="ln" class:mark={(streamed ?? marks)?.marked.has(i)}>{line || " "}</div>
       {/each}
-      {#if streamed}<div class="ln caret">▍</div>{/if}
+      {#if streamed}<div class="ln"><span class="caret">▍</span> editing — {streaming?.edits ?? 0} edit{streaming?.edits === 1 ? "" : "s"} so far</div>{/if}
     </div>
   {:else if reviewing}
     <!-- The proposal: why, the diff with its proposed side editable, four

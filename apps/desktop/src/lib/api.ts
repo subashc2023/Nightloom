@@ -237,21 +237,31 @@ export function cancelAside(seq: number): Promise<null> {
   return invoke("cancel_aside", { seq });
 }
 
-/** One rewrite's whole reply (nightshift backlog 151): the new note, the
- *  end marker and the model's sentence, unsplit (`noteEdit.ts` splits). */
+/** How one note-edit turn ended (nightshift backlog 151, pass 2). Returned
+ *  on a stop or a failure too: edits may have landed either way. */
 export interface NoteEditResult {
-  reply: string;
+  /** The note on disk when the turn ended. */
+  text: string;
+  /** The model's closing sentences. */
+  summary: string;
+  edits: number;
   interrupted: boolean;
+  error: string | null;
+  /** The saved file his unsaved buffer replaced, when they differed. */
+  was_on_disk: string | null;
   cost_usd: number | null;
   notices: string[];
 }
 
 /**
- * Rewrite a note to fit what he says changed (nightshift backlog 151), on
- * the Claude Code engine with no tools — the reply is the new text, and the
- * window writes the note. Streams `note-edit-delta` events carrying `seq`.
+ * Edit a note to fit what he says changed (nightshift backlog 151), on the
+ * Claude Code engine: the model has Read and Edit on the note's own file
+ * and nothing else. `text` (the editor's buffer) is written to the file
+ * first when it differs. Streams `note-edit-landed` (the file after each
+ * Edit) and `note-edit-delta` (the model's text), both carrying `seq`.
  */
 export function editNoteByPrompt(args: {
+  scope: NoteScope;
   name: string;
   text: string;
   request: string;
@@ -265,7 +275,7 @@ export function editNoteByPrompt(args: {
   return invoke("edit_note_by_prompt", args);
 }
 
-/** Stop rewrite `seq`; the note is untouched. */
+/** Stop turn `seq`; edits that already landed stay. */
 export function cancelNoteEdit(seq: number): Promise<null> {
   return invoke("cancel_note_edit", { seq });
 }

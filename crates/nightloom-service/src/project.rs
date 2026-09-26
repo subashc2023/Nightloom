@@ -1286,6 +1286,13 @@ fn note_path(dir: &Path, name: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+/// The file a note name names under `dir`, checked as every note command
+/// checks it — for the note editor (nightshift backlog 151), whose model
+/// is given this one path and no other.
+pub fn note_file(dir: &Path, name: &str) -> Result<PathBuf, String> {
+    note_path(dir, name)
+}
+
 pub fn read_note(dir: &Path, name: &str) -> Result<String, String> {
     let path = note_path(dir, name)?;
     fs::read_to_string(&path).map_err(|e| format!("cannot read {name}: {e}"))
