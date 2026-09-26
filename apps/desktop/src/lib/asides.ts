@@ -208,3 +208,23 @@ export function saveAsides(
     // best-effort, as the drafts are
   }
 }
+
+// ---- Night batch B (item 229, 2026-09-26): the past asides' hooks ----
+// Additions only (agent AS edits the code above tonight). A closed thread
+// is kept in `asideHistory.ts` under its own key in the same stored form a
+// thread has here, so these two wrappers are the whole interface.
+
+/** A thread's stored form, as `nightloom.asides` writes it. */
+export type StoredAsideForm = StoredAside;
+
+/** One thread in its stored form; null for a draft or a thread with
+ *  nothing to keep (the rule `serializeAsides` applies). */
+export function storedAsideOf(a: Aside): StoredAsideForm | null {
+  return storeAside(a);
+}
+
+/** A stored thread read back as a live one, with a fresh id; null when
+ *  malformed or empty. */
+export function asideFromStored(v: unknown): Aside | null {
+  return loadAside(v);
+}

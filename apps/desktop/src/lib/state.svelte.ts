@@ -6033,6 +6033,11 @@ export function dismissAside(thread: Aside | null = null): void {
     // Nothing arrived: marked cancelled too, so a late result is dropped.
     t.cancelled = true;
   }
+  // Night batch B (item 229): the chat the thread belongs to, for the
+  // past-asides history told below.
+  const closedIn = app.asides.includes(a)
+    ? app.activeSessionId
+    : ([...asideStash].find(([, list]) => list.includes(a))?.[0] ?? null);
   const i = app.asides.indexOf(a);
   if (i >= 0) {
     app.asides.splice(i, 1);
@@ -6048,6 +6053,27 @@ export function dismissAside(thread: Aside | null = null): void {
   }
   if (app.asidePanelThread === a.id) app.asidePanelThread = null;
   if (app.asideFocus === a.id) app.asideFocus = null;
+  if (closedIn !== null) for (const fn of asideClosedListeners) fn(closedIn, a);
+}
+
+/**
+ * Night batch B (item 229, 2026-09-26): who hears of a thread closed by
+ * its ×, so `asideHistory.svelte.ts` can keep it under the chat's Past
+ * list instead of it being gone. A listener, not an import, so the state
+ * does not import the history (which imports the state).
+ */
+const asideClosedListeners = new Set<(chat: string, a: Aside) => void>();
+export function onAsideClosed(fn: (chat: string, a: Aside) => void): () => void {
+  asideClosedListeners.add(fn);
+  return () => asideClosedListeners.delete(fn);
+}
+
+/** A past thread back as an open card of the open chat (item 229): under
+ *  its passage, folding the oldest past the crowd rule as a new one does.
+ *  Returns the live thread; null with no chat open. */
+export function reopenAside(a: Aside): Aside | null {
+  if (app.activeSessionId === null) return null;
+  return openAsideThread({ ...a, draft: false, folded: false, moved: null });
 }
 
 /**
