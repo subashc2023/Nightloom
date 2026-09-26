@@ -80,7 +80,7 @@
   import type { CouncilPrefs } from "./council";
   import { foldToFit } from "./fold";
   import { launch } from "./sendMotion";
-  import { insertQuote, replyRequest, takeReply } from "./replyQuote.svelte";
+  import { hasQuoteLine, insertQuote, mirrorLines, replyRequest, takeReply } from "./replyQuote.svelte";
 
   /**
    * `floating` drops the docked chrome (top border, panel fill) for the
@@ -177,6 +177,23 @@
    */
   const queue = $derived(draft.queue);
   let ta = $state<HTMLTextAreaElement | null>(null);
+  /*
+   * The quote styled in place (item 223, his pick "A": not a card). While
+   * the draft has a `> ` line, a layer behind the textarea draws the whole
+   * draft — quote lines with the bubble's bar and muted text — and the
+   * textarea's own glyphs go transparent over it, its caret and selection
+   * kept. It is still the textarea he types in: cursor, selection, IME,
+   * undo, paste and auto-grow are the textarea's. The layer holds the same
+   * characters with the same font, padding and wrapping, sized to the
+   * textarea's client box and scrolled with it (`syncMirror`).
+   */
+  let mirror = $state<HTMLDivElement | null>(null);
+  function syncMirror() {
+    if (!mirror || !ta) return;
+    mirror.style.width = ta.clientWidth + "px";
+    mirror.style.height = ta.clientHeight + "px";
+    mirror.scrollTop = ta.scrollTop;
+  }
   // Drag events fire per element, so a boolean flickers as the pointer crosses
   // children; count enters against leaves instead.
   let dragDepth = $state(0);
@@ -395,6 +412,7 @@
     ta.style.maxHeight = max + "px";
     ta.style.height = "auto";
     ta.style.height = Math.max(min, Math.min(ta.scrollHeight, max)) + "px";
+    syncMirror();
   }
 
   // A resized window moves the 40% line.
@@ -579,6 +597,19 @@
         autogrow();
       });
     });
+  });
+
+  const quoted = $derived(hasQuoteLine(text));
+  // The layer follows the box: its size (a drag, the 40% line, a resized
+  // window) and its text (the scroll after a keystroke) — item 223.
+  $effect(() => {
+    if (!ta || !mirror) return;
+    void text;
+    const box = ta;
+    const ro = new ResizeObserver(() => syncMirror());
+    ro.observe(box);
+    void tick().then(syncMirror);
+    return () => ro.disconnect();
   });
 
   function onkeydown(e: KeyboardEvent) {
@@ -1562,9 +1593,18 @@
         <span class="ghost-key">Tab</span>
       </button>
     {/if}
+    <div class="ta-wrap">
+    {#if quoted}
+      <!-- Item 223: the draft drawn behind the textarea, quote lines as the
+           bubble draws them. An empty line holds a zero-width space so it
+           keeps its height, as the textarea's does. -->
+      <div class="ta-mirror" aria-hidden="true" bind:this={mirror}>{#each mirrorLines(text) as l, i (i)}<div class="ml" class:q={l.quote}>{#if l.quote}<span class="qm">{l.marker}</span>{l.rest}{:else}{l.rest || "\u200b"}{/if}</div>{/each}</div>
+    {/if}
     <textarea
       bind:this={ta}
+      class:quoted
       bind:value={() => text, (v) => setDraftText(key, v)}
+      onscroll={syncMirror}
       rows="1"
       autocorrect="off"
       autocapitalize="off"
@@ -1580,6 +1620,7 @@
       {onkeydown}
       onblur={() => (clipOpen = false)}
     ></textarea>
+    </div>
     <div class="row" bind:this={rowEl} data-fold={rowFold}>
       <input
         bind:this={picker}
@@ -2304,6 +2345,58 @@
   }
   textarea::placeholder {
     color: var(--dim);
+  }
+  /* Item 223: the textarea and the layer behind it share one box. A 10px
+     gutter left of the text holds the quote bar; the wrap's negative margin
+     keeps the text where it always was, so nothing moves when a quote
+     appears or goes. */
+  .ta-wrap {
+    position: relative;
+    margin-left: -10px;
+    width: calc(100% + 10px);
+  }
+  .ta-wrap textarea {
+    position: relative;
+    z-index: 1;
+    display: block;
+    padding-left: 10px;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+  }
+  textarea.quoted {
+    color: transparent;
+    caret-color: var(--ink);
+  }
+  .ta-mirror {
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 0;
+    overflow: hidden;
+    box-sizing: border-box;
+    padding: 2px 0 2px 10px;
+    font-size: 15px;
+    font-family: inherit;
+    line-height: 1.5;
+    color: var(--ink);
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+    pointer-events: none;
+  }
+  .composer.floating .ta-mirror {
+    font-size: 15.5px;
+  }
+  /* A quote line: the bubble's `.user-quote` look (bar, muted text), the
+     bar in the gutter; the `> ` marker dimmed further but kept, so the
+     characters and the caret stay where the textarea has them. */
+  .ml.q {
+    margin-left: -10px;
+    padding-left: 10px;
+    box-shadow: inset 3px 0 0 var(--accent);
+    color: var(--dim);
+  }
+  .qm {
+    opacity: 0.45;
   }
   textarea:focus {
     outline: none;

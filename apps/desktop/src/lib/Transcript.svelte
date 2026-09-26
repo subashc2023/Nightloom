@@ -48,7 +48,7 @@
   import { wordDiff } from "./textdiff";
   import { continuedFlags } from "./runs";
   import { samePassage, selectionText, type AsideQuote } from "./asideQuote";
-  import { requestReply, splitQuotes } from "./replyQuote.svelte";
+  import { pillParts, requestReply, splitQuotes } from "./replyQuote.svelte";
   import { PREFERRED_CARD_HEIGHT, chooseSide, offsetsOf, type AsideAnchor } from "./asideCard";
   import { isMac } from "./platform";
   import { fmtShare, fmtTokens, shareOf, sizeTitle, turnSizes } from "./tokens";
@@ -1676,25 +1676,33 @@
      it since backlog 215. Mousedown is swallowed on both so the click
      keeps the selection it is about. -->
 {#if asidePill}
+  <!-- One outline since item 223 (his ask: "part of the same view"),
+       a thin divider between the two; Reply alone when asking aside is
+       not offered (`pillParts`). -->
   <div class="aside-pill" style:top="{asidePill.top}px" style:left="{asidePill.left}px">
-    {#if canAsk}
-      <button
-        class="ns-btn small"
-        use:tip={"Ask aside about the highlighted passage: a side question on this text, answered from the chat's context, recorded nowhere"}
-        onmousedown={(e) => e.preventDefault()}
-        onclick={() => void askAboutSelection()}
-      >
-        Ask aside <kbd class="aside-key">{isMac ? "⌘⇧A" : "Ctrl+Shift+A"}</kbd>
-      </button>
-    {/if}
-    <button
-      class="ns-btn small"
-      use:tip={"Reply: quote the highlighted passage in your message, at the cursor, and keep typing after it"}
-      onmousedown={(e) => e.preventDefault()}
-      onclick={replyToSelection}
-    >
-      Reply
-    </button>
+    {#each pillParts(canAsk) as part (part)}
+      {#if part === "ask"}
+        <button
+          class="pill-btn"
+          use:tip={"Ask aside about the highlighted passage: a side question on this text, answered from the chat's context, recorded nowhere"}
+          onmousedown={(e) => e.preventDefault()}
+          onclick={() => void askAboutSelection()}
+        >
+          Ask aside <kbd class="aside-key">{isMac ? "⌘⇧A" : "Ctrl+Shift+A"}</kbd>
+        </button>
+      {:else if part === "divider"}
+        <span class="pill-div" aria-hidden="true"></span>
+      {:else}
+        <button
+          class="pill-btn"
+          use:tip={"Reply: quote the highlighted passage in your message, at the cursor, and keep typing after it"}
+          onmousedown={(e) => e.preventDefault()}
+          onclick={replyToSelection}
+        >
+          Reply
+        </button>
+      {/if}
+    {/each}
   </div>
 {/if}
 
@@ -2155,18 +2163,44 @@
     color: inherit;
     border-radius: 2px;
   }
-  /* The pill is two buttons since backlog 215: Ask aside and Reply. */
+  /* The pill is two buttons since backlog 215: Ask aside and Reply —
+     one outline since item 223, a thin divider between them, no gap. */
   .aside-pill {
     position: fixed;
     transform: translateX(-50%);
     z-index: 10;
     display: flex;
-    gap: 6px;
+    align-items: stretch;
+    gap: 0;
     white-space: nowrap;
-  }
-  .aside-pill > button {
-    padding: 5px 10px;
+    border: 1px solid var(--line2);
+    border-radius: 999px;
+    background: var(--sheet);
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+    overflow: hidden;
+  }
+  .pill-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 12px;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    color: var(--ink);
+    font-size: 11.5px;
+    font-family: var(--sans);
+    line-height: 1.3;
+    cursor: pointer;
+  }
+  .pill-btn:hover {
+    background: color-mix(in srgb, var(--ink) 8%, transparent);
+  }
+  .pill-div {
+    width: 1px;
+    align-self: stretch;
+    margin: 5px 0;
+    background: var(--line2);
   }
   .aside-key {
     font-family: var(--mono);

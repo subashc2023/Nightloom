@@ -57,6 +57,47 @@ export function insertQuote(
   return { text: out, caret: (before + lead + block + trail).length };
 }
 
+/** `> x` or a bare `>`: what `quoteBlock` writes. `>5` is not a quote.
+ *  The one rule for a quote line, shared by the sent bubble
+ *  (`splitQuotes`) and the composer's styling (`mirrorLines`, item 223). */
+const QUOTE_LINE = /^>(?: (.*))?$/;
+
+/** A quote line's marker (`> ` or a bare `>`) and the words after it, or
+ *  null for an ordinary line. `marker + rest` is the line, unchanged. */
+export function quoteLine(line: string): { marker: string; rest: string } | null {
+  const m = QUOTE_LINE.exec(line);
+  if (!m) return null;
+  return m[1] === undefined ? { marker: ">", rest: "" } : { marker: "> ", rest: m[1] };
+}
+
+export type MirrorLine = { quote: boolean; marker: string; rest: string };
+
+/**
+ * The composer's draft, line by line, for the layer drawn behind its
+ * textarea (item 223): a quote line is styled as the bubble draws it while
+ * he types, and stays ordinary text in the box. Every character is kept —
+ * `lines.map(l => l.marker + l.rest).join("\n")` is the draft exactly — so
+ * the layer wraps where the textarea wraps.
+ */
+export function mirrorLines(text: string): MirrorLine[] {
+  return text.split("\n").map((line) => {
+    const q = quoteLine(line);
+    return q ? { quote: true, ...q } : { quote: false, marker: "", rest: line };
+  });
+}
+
+/** Whether the draft has a quote line — the composer draws its layer only then. */
+export function hasQuoteLine(text: string): boolean {
+  return text.split("\n").some((l) => QUOTE_LINE.test(l));
+}
+
+/** The selection pill's parts, left to right (item 223): one outline,
+ *  a thin divider between Ask aside and Reply; Reply alone when asking
+ *  aside is not offered (the API engine, or a turn running). */
+export function pillParts(canAsk: boolean): Array<"ask" | "divider" | "reply"> {
+  return canAsk ? ["ask", "divider", "reply"] : ["reply"];
+}
+
 export type QuoteSegment = { kind: "quote" | "text"; text: string };
 
 /** His message split into quote blocks (runs of lines starting `>`) and
@@ -77,14 +118,13 @@ export function splitQuotes(text: string): QuoteSegment[] {
     buf = [];
   };
   for (const line of lines) {
-    // `> x` or a bare `>`: what `quoteBlock` writes. `>5` is not a quote.
-    const m = /^>(?: (.*))?$/.exec(line);
-    const kind = m ? "quote" : "text";
+    const q = quoteLine(line);
+    const kind = q ? "quote" : "text";
     if (!cur || cur.kind !== kind) {
       flush();
       cur = { kind, text: "" };
     }
-    buf.push(m ? (m[1] ?? "") : line);
+    buf.push(q ? q.rest : line);
   }
   flush();
   return out;
