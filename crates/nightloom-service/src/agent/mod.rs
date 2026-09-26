@@ -31,6 +31,7 @@
 pub mod ask;
 pub mod brief;
 pub mod cli_session;
+pub mod connectors;
 pub mod fork;
 mod protocol;
 mod record;
@@ -441,6 +442,16 @@ pub struct AgentSpec {
     /// the switch on a running chat re-writes its cached prefix once; on
     /// from the first turn it costs nothing more.
     pub fork_mode: bool,
+    /// His claude.ai connectors (Google Drive, Claude Docs, …) as tools —
+    /// nightshift backlog 235, blocker 490. **Off by default**, on every
+    /// path that builds a spec: off sends `ENABLE_CLAUDEAI_MCP_SERVERS=false`
+    /// in the environment and the CLI never loads them ([`connectors`] has
+    /// the measurements). Only a chat's rail switch turns it on.
+    pub claude_ai_connectors: bool,
+    /// With [`Self::claude_ai_connectors`] on, the connectors he unticked,
+    /// by the init event's server name (`claude.ai Google Drive`): each a
+    /// server-level `--disallowedTools` rule. Ignored while off.
+    pub claude_ai_blocked: Vec<String>,
     /// Passed through verbatim, last, so a caller can reach a flag this
     /// struct has not grown a field for.
     pub extra_args: Vec<String>,
@@ -666,6 +677,8 @@ impl AgentSpec {
             brief: None,
             chat_policy: false,
             fork_mode: true,
+            claude_ai_connectors: false,
+            claude_ai_blocked: Vec::new(),
             extra_args: Vec::new(),
         }
     }
@@ -887,6 +900,8 @@ impl AgentSpec {
             // the `--settings` one, as the survey's M2c ran it.
             env.push(("CLAUDE_CODE_FORK_SUBAGENT", "1".into()));
         }
+        // His claude.ai connectors (backlog 235): off unless the chat said on.
+        env.extend(connectors::env(self.claude_ai_connectors));
         env
     }
 
@@ -971,6 +986,13 @@ impl AgentSpec {
         if !self.allowed_tools.is_empty() {
             a.push("--allowedTools".into());
             a.extend(self.allowed_tools.iter().cloned());
+        }
+        // The connectors he unticked, when they are on at all (backlog 235);
+        // off, the environment hides every one and this is empty.
+        let blocked = connectors::disallowed(self.claude_ai_connectors, &self.claude_ai_blocked);
+        if !blocked.is_empty() {
+            a.push("--disallowedTools".into());
+            a.extend(blocked);
         }
         // Ask overrides the mode: the hook decides first, and what it
         // does not catch falls to Manual, which headless is a refusal the
@@ -2034,6 +2056,65 @@ mod tests {
 
     fn spec() -> AgentSpec {
         AgentSpec::new("/work")
+    }
+
+    /// Backlog 235: every spec starts with his claude.ai connectors off —
+    /// the CLI's switch in the environment, on the turn and on the
+    /// checkpoint fork alike, and no tool rule on argv. On drops the
+    /// variable, and the connectors he unticked become server rules.
+    #[test]
+    fn claude_ai_connectors_are_off_unless_the_chat_says_on() {
+        let has_off = |env: &[(String, String)]| {
+            env.iter()
+                .any(|(k, v)| k == connectors::ENV_VAR && v == "false")
+        };
+        let env_of = |s: &AgentSpec| -> Vec<(String, String)> {
+            s.env_set()
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect()
+        };
+        let off = spec();
+        assert!(!off.claude_ai_connectors);
+        assert!(has_off(&env_of(&off)));
+        assert!(!off.args("hi").iter().any(|x| x == "--disallowedTools"));
+        // A pass (dream, capture, note edit, chat name) has no switch at all.
+        let pass = PassSpec::new("claude", Vec::new()).spec_in("/w");
+        assert!(has_off(&env_of(&pass)));
+        // The checkpoint fork runs with the same environment as its turn.
+        let mut resumed = spec();
+        resumed.resume = Some("s-1".into());
+        assert!(has_off(&resumed.fork_spec().unwrap().env));
+        // Blocked names mean nothing while off.
+        let mut still_off = spec();
+        still_off.claude_ai_blocked = vec!["claude.ai Google Drive".into()];
+        assert!(
+            !still_off
+                .args("hi")
+                .iter()
+                .any(|x| x == "--disallowedTools")
+        );
+
+        let mut on = spec();
+        on.claude_ai_connectors = true;
+        assert!(!has_off(&env_of(&on)));
+        assert!(!on.env_set().iter().any(|(k, _)| *k == connectors::ENV_VAR));
+        assert!(!on.args("hi").iter().any(|x| x == "--disallowedTools"));
+        on.claude_ai_blocked = vec!["claude.ai Google Drive".into(), "openalex".into()];
+        let a = on.args("hi");
+        let i = a.iter().position(|x| x == "--disallowedTools").unwrap();
+        assert_eq!(a[i + 1], "mcp__claude_ai_Google_Drive", "{a:?}");
+        assert!(a[i + 2].starts_with("--"), "{a:?}");
+        assert!(!a.iter().any(|x| x == "mcp__openalex"), "{a:?}");
+        // The fork is the chat's prefix, so it hides the same connectors.
+        on.resume = Some("s-1".into());
+        assert!(
+            on.fork_spec()
+                .unwrap()
+                .argv
+                .iter()
+                .any(|x| x == "mcp__claude_ai_Google_Drive")
+        );
     }
 
     /// Every turn needs these three together: `stream-json` is what this

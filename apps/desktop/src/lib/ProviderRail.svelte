@@ -27,6 +27,7 @@
   import * as api from "./api";
   import { launch } from "./launch.svelte";
   import { fmtTokens } from "./tokens";
+  import { connectorLabel, connectorNames, setConnectorAllowed } from "./connectors";
   import {
     AGENT_MODELS,
     MODEL_KEYS,
@@ -92,6 +93,15 @@
   const thinking = $derived(thinkingSupport(app.draft.provider, app.draft.model));
 
   const apply = () => scheduleApply();
+
+  // His claude.ai connectors (backlog 235): the ones the last init event
+  // named, plus any still unticked, each with its own tick when the switch
+  // is on.
+  const connectors = $derived(connectorNames(app.agentInit, app.draft.agentClaudeAiBlocked));
+  function toggleConnector(name: string, allowed: boolean) {
+    app.draft.agentClaudeAiBlocked = setConnectorAllowed(app.draft.agentClaudeAiBlocked, name, allowed);
+    apply();
+  }
 
   function onProviderChange() {
     const sel = app.providers.find((p) => p.kind === app.draft.provider);
@@ -1083,6 +1093,42 @@
           disabled={locked}
         />
       </label>
+      <!-- His claude.ai connectors (nightshift backlog 235; blocker 490, his
+           words: "in theory it would be nice to be able to allow them to see
+           drive and docs etc., if I enable it, but by default no"). Off, the
+           CLI is started with ENABLE_CLAUDEAI_MCP_SERVERS=false and loads
+           none; on, each one the init event listed has a tick. -->
+      <label class="swq">
+        <span class="t">claude.ai connectors</span>
+        <Hint text="Off (the default): chats here cannot see the connectors on your claude.ai account — Google Drive, Claude Docs, Gmail and the rest — so a turn can never write to them. Dreams, captures and note edits never see them either. On: they load as tools in this chat, less any you untick below. Safe mode keeps them off whatever this says. Flipping it on a running chat re-writes its cached prefix once." />
+        <input
+          type="checkbox"
+          class="sw"
+          bind:checked={app.draft.agentClaudeAi}
+          onchange={apply}
+          disabled={locked}
+          aria-label="claude.ai connectors"
+        />
+      </label>
+      {#if app.draft.agentClaudeAi}
+        {#if connectors.length === 0}
+          <p class="note sub-note">Send a turn and the connectors it loaded are listed here, each to switch off on its own.</p>
+        {:else}
+          {#each connectors as name (name)}
+            <label class="swq sub">
+              <span class="t">{connectorLabel(name)}</span>
+              <input
+                type="checkbox"
+                class="sw"
+                checked={!app.draft.agentClaudeAiBlocked.includes(name)}
+                onchange={(e) => toggleConnector(name, (e.currentTarget as HTMLInputElement).checked)}
+                disabled={locked}
+                aria-label={`claude.ai connector ${connectorLabel(name)}`}
+              />
+            </label>
+          {/each}
+        {/if}
+      {/if}
     {/if}
 
     <!-- Shown on both engines (2026-09-14): the preamble crosses to Claude

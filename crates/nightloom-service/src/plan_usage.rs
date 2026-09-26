@@ -254,7 +254,13 @@ fn run_usage_command(now_ms: i64) -> Option<Sample> {
     use std::process::{Command, Stdio};
     let dir = std::env::temp_dir().join(format!("nightloom-usage-{}", std::process::id()));
     std::fs::create_dir_all(&dir).ok()?;
-    let mut child = Command::new("claude")
+    let mut cmd = Command::new("claude");
+    // His claude.ai connectors stay unloaded here too (backlog 235): the
+    // command needs none, and loading them is network on every refresh.
+    if let Some((k, v)) = crate::agent::connectors::env(false) {
+        cmd.env(k, v);
+    }
+    let mut child = cmd
         .args(USAGE_ARGS)
         .current_dir(&dir)
         .stdin(Stdio::null())

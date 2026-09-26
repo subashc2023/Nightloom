@@ -103,6 +103,13 @@ export interface AgentConnectArgs {
    *  spawn a `fork` helper (the whole chat at cache-read cost) and the
    *  `checkpoint` helper (a fork from the chat's checkpoint). Omitted is on. */
   forkMode?: boolean;
+  /** His claude.ai connectors (Google Drive, Claude Docs, …) as tools —
+   *  nightshift backlog 235, blocker 490. Omitted is off: the CLI is
+   *  started with ENABLE_CLAUDEAI_MCP_SERVERS=false and loads none. */
+  claudeAiConnectors?: boolean;
+  /** With `claudeAiConnectors` on, the connectors he unticked, by the
+   *  init event's server name ("claude.ai Google Drive"). */
+  claudeAiBlocked?: string[];
   /** Stop the turn if the CLI's own cost estimate passes this. */
   budget?: number;
   /** The subagent limits (backlog 165); omitted is the defaults. */

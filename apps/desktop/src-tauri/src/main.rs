@@ -1632,6 +1632,8 @@ async fn connect_agent(
     subagents_auto: Option<bool>,
     limits: Option<nightloom_service::agent::brief::SubagentLimits>,
     fork_mode: Option<bool>,
+    claude_ai_connectors: Option<bool>,
+    claude_ai_blocked: Option<Vec<String>>,
     holds: State<'_, prompt_hold::Pending>,
     cold: Option<bool>,
     auto_layers: Option<bool>,
@@ -1671,6 +1673,8 @@ async fn connect_agent(
                 subagents_auto,
                 limits,
                 fork_mode,
+                claude_ai_connectors,
+                claude_ai_blocked,
                 &holds,
                 cold,
                 auto_layers,
@@ -1703,6 +1707,10 @@ async fn connect_agent_body(
     subagents_auto: Option<bool>,
     limits: Option<nightloom_service::agent::brief::SubagentLimits>,
     fork_mode: Option<bool>,
+    // His claude.ai connectors (nightshift backlog 235, blocker 490): off
+    // unless the rail said on; the ones he unticked stay hidden when on.
+    claude_ai_connectors: Option<bool>,
+    claude_ai_blocked: Option<Vec<String>>,
     // Nightshift backlog 174: the chat's cache timer reads cold, the
     // Settings default takes changes then, and *Update now* by layer.
     holds: &prompt_hold::Pending,
@@ -1760,6 +1768,11 @@ async fn connect_agent_body(
     // per-chat switch, on unless it said off.
     spec.fork_mode = fork_mode.unwrap_or(true);
     spec.safe_mode = safe_mode.unwrap_or(false);
+    // His claude.ai connectors (backlog 235; blocker 490, his words: "by
+    // default no"): off unless the rail said on — and a rail that says
+    // nothing, an older one included, is off.
+    spec.claude_ai_connectors = claude_ai_connectors.unwrap_or(false);
+    spec.claude_ai_blocked = claude_ai_blocked.unwrap_or_default();
     // Effort and the fallback model (backlog 076), as the rail spelled
     // them; empty is the CLI's default and no fallback.
     spec.effort = effort

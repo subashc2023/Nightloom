@@ -211,6 +211,13 @@ export interface ConnectionDraft {
    *  `checkpoint` helper, a fork from the chat's checkpoint for long
    *  research. On by default. */
   agentForkMode: boolean;
+  /** His claude.ai connectors (nightshift backlog 235; blocker 490, his
+   *  words: "by default no"): off by default, and a draft saved before the
+   *  switch existed reads as off. */
+  agentClaudeAi: boolean;
+  /** With `agentClaudeAi` on, the connectors he unticked, by the init
+   *  event's server name ("claude.ai Google Drive"). */
+  agentClaudeAiBlocked: string[];
   /** `--effort` on the agent engine (backlog 076): `low`, `medium`, `high`,
    *  `xhigh` or `max`, sent as spelled — or empty, the rail's *default*
    *  position, which sends no flag and leaves the level to the CLI. Empty
@@ -300,6 +307,8 @@ export function defaultDraft(): ConnectionDraft {
     agentPlan: false,
     agentSubagentsAuto: true,
     agentForkMode: true,
+    agentClaudeAi: false,
+    agentClaudeAiBlocked: [],
     agentEffort: "",
     agentFallback: "",
     agentBudget: 0,
@@ -822,6 +831,12 @@ export function loadLastConnection(): ConnectionDraft | null {
       agentSubagentsAuto: parsed.agentSubagentsAuto !== false,
       // And for fork mode (backlog 104): on unless the draft said off.
       agentForkMode: parsed.agentForkMode !== false,
+      // His claude.ai connectors (backlog 235): on only if the draft said
+      // true, and the blocked list only as strings.
+      agentClaudeAi: parsed.agentClaudeAi === true,
+      agentClaudeAiBlocked: Array.isArray(parsed.agentClaudeAiBlocked)
+        ? (parsed.agentClaudeAiBlocked as unknown[]).filter((x): x is string => typeof x === "string")
+        : [],
       // The limits (backlog 165): a draft from before them, or a field
       // that is not a whole number, reads as the default for that field.
       agentLimits: readLimits(parsed.agentLimits),

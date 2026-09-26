@@ -3048,6 +3048,8 @@ async function applyAgentDraft(updateNow: PromptLayer[] = [], take = true): Prom
       subagentsAuto: d.agentSubagentsAuto,
       limits: d.agentLimits,
       forkMode: d.agentForkMode,
+      claudeAiConnectors: d.agentClaudeAi,
+      claudeAiBlocked: d.agentClaudeAiBlocked,
       promptSuggestions: suggestions.enabled,
       effort: d.agentEffort.trim() || undefined,
       fallbackModel: d.agentFallback.trim() || undefined,
