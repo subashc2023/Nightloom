@@ -19,8 +19,17 @@
  * unique for the card's keyed list, which no live exchange has) and not
  * `cacheRead`. A turn still asking when the store
  * was written comes back as cancelled with what had arrived, or not at
- * all if nothing had: nothing can still be asking after a relaunch. A
- * draft card (opened from a selection, nothing asked) is not kept.
+ * all if nothing had: nothing can still be asking after a relaunch. ~~A
+ * draft card (opened from a selection, nothing asked) is not kept.~~
+ *
+ * Unsent text is kept since backlog 228 (2026-09-26, his "I have some
+ * asides drafts that are still a work in progress"; practices §7): a
+ * thread's `unsent` — the question typed in a draft card's box, or the
+ * follow-up typed under an answered thread — is written with the thread,
+ * and a draft card that holds text is kept with its quote and anchor, so
+ * it comes back under its passage. A draft card with nothing typed is
+ * still not kept: there is nothing of his in it. Whitespace alone counts
+ * as nothing.
  *
  * Several threads per chat since backlog 176 (2026-09-23): a chat's entry
  * is a **list** of threads, oldest first, and each thread carries an `id`
@@ -95,6 +104,11 @@ interface StoredAside {
   /** The passage's place (backlog 141), so a restored thread's card opens
    *  under its passage again; absent for a composer aside. */
   anchor?: AsideAnchor;
+  /** Opened from a selection and not yet asked (backlog 228): kept only
+   *  when it holds `unsent` text. */
+  draft?: true;
+  /** Text typed in the thread's box and not sent (backlog 228). */
+  unsent?: string;
 }
 
 function storeTurn(t: AsideTurn): StoredTurn | null {
@@ -104,11 +118,34 @@ function storeTurn(t: AsideTurn): StoredTurn | null {
   return { question: t.question, answer, error: t.error, cancelled: t.cancelled || asking };
 }
 
+/** Unsent text worth keeping: anything but whitespace, kept as typed. */
+function unsentOf(a: Aside): string | null {
+  const u = a.unsent ?? "";
+  return u.trim() ? u : null;
+}
+
 function storeAside(a: Aside): StoredAside | null {
-  if (a.draft) return null;
-  const turns = a.turns.map(storeTurn).filter((t): t is StoredTurn => t !== null);
-  if (turns.length === 0) return null;
-  return a.anchor ? { quote: a.quote, turns, anchor: a.anchor } : { quote: a.quote, turns };
+  const unsent = unsentOf(a);
+  let out: StoredAside;
+  if (a.draft) {
+    // A draft card with nothing typed holds nothing of his (backlog 228).
+    if (unsent === null) return null;
+    out = { quote: a.quote, turns: [], draft: true };
+  } else {
+    const turns = a.turns.map(storeTurn).filter((t): t is StoredTurn => t !== null);
+    if (turns.length === 0) return null;
+    out = { quote: a.quote, turns };
+  }
+  if (a.anchor) out.anchor = a.anchor;
+  if (unsent !== null) out.unsent = unsent;
+  return out;
+}
+
+/** Whether the store keeps this thread (a draft with no text is not; nor
+ *  a thread whose only turn was still asking with nothing arrived). The
+ *  tab store numbers aside tabs by their place among these. */
+export function asideKept(a: Aside): boolean {
+  return storeAside(a) !== null;
 }
 
 /**
@@ -175,8 +212,17 @@ function loadAside(v: unknown): Aside | null {
       cacheRead: 0,
     });
   }
+  const anchor = isAnchor(a.anchor) ? a.anchor : null;
+  const unsent = typeof a.unsent === "string" && a.unsent.trim() ? a.unsent : null;
+  // A draft card kept for its unsent question (backlog 228).
+  if (a.draft === true) {
+    if (unsent === null) return null;
+    return { id: nextAsideId(), quote, draft: true, turns: [], anchor, unsent };
+  }
   if (turns.length === 0) return null;
-  return { id: nextAsideId(), quote, draft: false, turns, anchor: isAnchor(a.anchor) ? a.anchor : null };
+  const out: Aside = { id: nextAsideId(), quote, draft: false, turns, anchor };
+  if (unsent !== null) out.unsent = unsent;
+  return out;
 }
 
 export function loadAsides(storage: Pick<Storage, "getItem">): Map<string, Aside[]> {

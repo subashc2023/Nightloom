@@ -51,7 +51,7 @@ import { chatName, notifyNeedsYou, notifyTurnEnd } from "./notify";
 import { RESUME_TEXT, SleepWatch, loadSleepPrefs, pushPowerPrefs, type Woke } from "./sleep";
 import { asideFollowUp, asideQuestion, type AsideQuote } from "./asideQuote";
 import type { AsideAnchor } from "./asideCard";
-import { isPrivateChat, loadAsides, markChatMode, nextAsideId } from "./asides";
+import { asideKept, isPrivateChat, loadAsides, markChatMode, nextAsideId } from "./asides";
 import { MAX_OPEN_ASIDES, foldTheOldest } from "./asideCard";
 import { loadCouncilPrefs, type CouncilPrefs, type CouncilRequest } from "./council";
 import { limitPauseFrom, resumeDelayMs, resumeMessage, type LimitPause } from "./limit";
@@ -532,6 +532,13 @@ export interface Aside {
    *  while the thread is open, never saved — a relaunch puts the card back
    *  under its passage. Absent or null: the card is at its home. */
   moved?: { left: number; top: number; width: number } | null;
+  /** Text typed in the thread's box and not yet sent (backlog 228): the
+   *  question in a draft's box, or the follow-up under an answered
+   *  thread — the two never show at once. Kept here, not in the card, so
+   *  a chat switch, a closed tab or a relaunch does not lose it
+   *  (`asides.ts` writes it); a close with text in it asks first
+   *  (`requestDismissAside`). */
+  unsent?: string;
 }
 
 /** The aside's live exchange — the last turn while it is still asking. */
@@ -863,6 +870,10 @@ export const app = $state({
   /** The thread whose question box takes the caret once its card is
    *  placed (a draft just opened); cleared by the card that took it. */
   asideFocus: null as number | null,
+  /** The thread whose close waits on "Discard the unsent text?" (backlog
+   *  228, practices §7): set by `requestDismissAside`, answered by the
+   *  dialog in `App.svelte`. */
+  asideDiscard: null as Aside | null,
   /** Observations awaiting the next dream — the badge on the Dream button. */
   dreamPending: 0,
   /** A dream is running; the button becomes its progress line. */
@@ -3520,14 +3531,9 @@ export function flushTabs(): void {
  * so an aside tab is stored by its thread's place in this list.
  */
 function storedThreads(session: string): Aside[] {
-  return asidesOf(session).filter(
-    (a) =>
-      !a.draft &&
-      a.turns.some((t) => {
-        const asking = t.answer === null && t.error === null && !t.cancelled;
-        return !(asking && !(t.answer ?? t.partial).trim());
-      }),
-  );
+  // The store's own rule (`asideKept`), since backlog 228 kept a draft
+  // with unsent text — one rule, so a tab's place cannot disagree.
+  return asidesOf(session).filter(asideKept);
 }
 
 /** A tab's content as the store keeps it: an aside tab's thread id as the
@@ -6048,6 +6054,40 @@ export function dismissAside(thread: Aside | null = null): void {
   }
   if (app.asidePanelThread === a.id) app.asidePanelThread = null;
   if (app.asideFocus === a.id) app.asideFocus = null;
+  if (app.asideDiscard === a) app.asideDiscard = null;
+}
+
+/** The text typed in a thread's box, into app state (backlog 228). */
+export function setAsideUnsent(a: Aside, text: string): void {
+  a.unsent = text;
+}
+
+/**
+ * A close from the card, its Cancel, its Escape or a tab's × (backlog
+ * 228, practices §7 — only an explicit Discard drops his text, and a
+ * Discard confirms): a thread whose box holds unsent text asks first,
+ * through `app.asideDiscard`; anything else closes as `dismissAside`
+ * always did. A thread still asking has no box, so its × stops the
+ * answer at once, as before.
+ */
+export function requestDismissAside(thread: Aside | null = null): void {
+  const a = thread ?? app.aside;
+  if (!a) return;
+  if (!asideAsking(a) && (a.unsent ?? "").trim()) {
+    // The box keeps the caret otherwise, and its Enter and Escape would
+    // act on the card behind the dialog.
+    if (typeof document !== "undefined") (document.activeElement as HTMLElement | null)?.blur?.();
+    app.asideDiscard = a;
+    return;
+  }
+  dismissAside(a);
+}
+
+/** The dialog's answer: Discard closes the thread, text and all. */
+export function answerAsideDiscard(discard: boolean): void {
+  const a = app.asideDiscard;
+  app.asideDiscard = null;
+  if (discard && a) dismissAside(a);
 }
 
 /**

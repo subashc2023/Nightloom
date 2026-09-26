@@ -59,6 +59,9 @@ if (typeof window !== "undefined") {
       untrack(markOpenChat);
       for (const a of app.asides) {
         void a.draft;
+        // Unsent text (backlog 228): each keystroke schedules the
+        // debounced save, as a composer draft's does.
+        void a.unsent;
         for (const t of a.turns) {
           void t.partial;
           void t.answer;

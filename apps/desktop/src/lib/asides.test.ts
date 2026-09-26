@@ -179,3 +179,57 @@ describe("an incognito or ephemeral chat's threads stay off disk (blocker 217)",
     expect(isPrivateChat("e", sessions)).toBe(false);
   });
 });
+
+describe("unsent aside text across a relaunch (backlog 228)", () => {
+  const q = { text: "the passage", role: "assistant" as const, ordinal: 2 };
+  const at = { turn: 3, block: 0, start: 12, end: 40, side: "below" as const };
+
+  it("keeps a draft card's typed question, with its quote and anchor, and drops a draft with no text", () => {
+    const map = new Map<string, Aside[]>([
+      [
+        "a",
+        [
+          { id: 1, quote: q, draft: true, turns: [], anchor: at, unsent: "what does this mean?" },
+          { id: 2, quote: q, draft: true, turns: [], anchor: at, unsent: "   \n " },
+          { id: 3, quote: q, draft: true, turns: [], anchor: at },
+        ],
+      ],
+    ]);
+    const mem = new Mem();
+    saveAsides(map, mem);
+    const back = loadAsides(mem).get("a")!;
+    expect(back.length).toBe(1);
+    expect(back[0]!.draft).toBe(true);
+    expect(back[0]!.turns).toEqual([]);
+    expect(back[0]!.unsent).toBe("what does this mean?");
+    expect(back[0]!.quote).toEqual(q);
+    expect(back[0]!.anchor).toEqual(at);
+  });
+
+  it("keeps a typed follow-up with its thread, as typed", () => {
+    const map = new Map<string, Aside[]>([
+      ["a", [{ id: 1, quote: null, draft: false, turns: [turn({})], anchor: null, unsent: "and then?\n  more" }]],
+    ]);
+    const mem = new Mem();
+    saveAsides(map, mem);
+    const back = loadAsides(mem).get("a")![0]!;
+    expect(back.draft).toBe(false);
+    expect(back.turns.map((t) => t.question)).toEqual(["why"]);
+    expect(back.unsent).toBe("and then?\n  more");
+  });
+
+  it("a thread with no unsent text reads back with none, and an old store still loads", () => {
+    const mem = new Mem();
+    mem.setItem(ASIDES_KEY, JSON.stringify({ a: [{ quote: null, turns: [{ question: "q", answer: "a", error: null, cancelled: false }] }] }));
+    const back = loadAsides(mem).get("a")![0]!;
+    expect(back.unsent).toBeUndefined();
+    expect(back.draft).toBe(false);
+  });
+
+  it("a private chat's unsent text is not written (blocker 217)", () => {
+    const map = new Map<string, Aside[]>([
+      ["p", [{ id: 1, quote: q, draft: true, turns: [], anchor: at, unsent: "secret question" }]],
+    ]);
+    expect(serializeAsides(map, (k) => k === "p")).toBe("{}");
+  });
+});

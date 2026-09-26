@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tip } from "./tip";
-  import { app, asideAsking, asideOf, asideWaiting, askAside, dismissAside, followUpAside } from "./state.svelte";
+  import { app, asideAsking, asideOf, asideWaiting, askAside, followUpAside, requestDismissAside, setAsideUnsent } from "./state.svelte";
   import { quoteLabel } from "./asideQuote";
   import { renderMarkdown } from "./markdown";
   import { arrive, launch } from "./sendMotion";
@@ -40,14 +40,21 @@
   // A draft dragged into the tab before anything was asked (backlog 148):
   // the box is here, the send is the card's own `askAside`, which reads the
   // open chat's aside — so it asks only while this tab's chat is the open one.
-  let askDraft = $state("");
+  // ~~`askDraft` / `followDraft` here~~ — the thread's own `unsent` since
+  // backlog 228, shared with its card and written with the thread.
+  const unsent = $derived(aside?.unsent ?? "");
+  function typed(e: Event) {
+    if (aside) setAsideUnsent(aside, (e.currentTarget as HTMLTextAreaElement).value);
+  }
   let askBox = $state<HTMLTextAreaElement | null>(null);
   let followBox = $state<HTMLTextAreaElement | null>(null);
   function submitAsk() {
-    const q = askDraft.trim();
+    const q = unsent.trim();
     if (!q || !open || !aside || !aside.draft) return;
+    // Off the Claude Code engine the ask does nothing; the text stays (228).
+    if (app.connection?.engine !== "claude-code") return;
     launch("aside", askBox);
-    askDraft = "";
+    setAsideUnsent(aside, "");
     void askAside(q, aside.quote, aside);
   }
   function askKeys(e: KeyboardEvent) {
@@ -57,12 +64,13 @@
     }
   }
 
-  let followDraft = $state("");
   function submitFollowUp() {
-    const q = followDraft.trim();
+    const q = unsent.trim();
     if (!q || !open || !aside || aside.draft || asking) return;
+    // Off the Claude Code engine the ask does nothing; the text stays (228).
+    if (app.connection?.engine !== "claude-code") return;
     launch("aside", followBox);
-    followDraft = "";
+    setAsideUnsent(aside, "");
     void followUpAside(q, aside);
   }
   function followKeys(e: KeyboardEvent) {
@@ -88,7 +96,7 @@
       <button
         class="ns-btn ghost small"
         use:tip={asking ? "Stop the answer here; what has arrived stays" : "Dismiss the aside — the thread ends"}
-        onclick={() => dismissAside(aside)}>×</button
+        onclick={() => requestDismissAside(aside)}>×</button
       >
     {/if}
   </div>
@@ -111,7 +119,8 @@
         <textarea
           class="aside-view-box"
           bind:this={askBox}
-          bind:value={askDraft}
+          value={unsent}
+          oninput={typed}
           rows="2"
           placeholder={aside.quote ? "Ask about the passage… (Enter asks)" : "Ask aside… (Enter asks)"}
           aria-label="Your question about the highlighted passage"
@@ -121,7 +130,7 @@
           spellcheck="false"
         ></textarea>
         <div class="aside-view-row">
-          <button class="ns-btn small" disabled={!askDraft.trim()} use:tip={"Ask this about the passage, off the chat's context: no changes, recorded nowhere"} onclick={submitAsk}>Ask aside</button>
+          <button class="ns-btn small" disabled={!unsent.trim()} use:tip={"Ask this about the passage, off the chat's context: no changes, recorded nowhere"} onclick={submitAsk}>Ask aside</button>
         </div>
       {:else}
         <p class="aside-view-hint">Nothing asked yet — open the chat to ask about the passage.</p>
@@ -151,7 +160,8 @@
         <textarea
           class="aside-view-box"
           bind:this={followBox}
-          bind:value={followDraft}
+          value={unsent}
+          oninput={typed}
           rows="2"
           placeholder="Follow up in the aside… (Enter asks)"
           aria-label="A follow-up in the aside"
@@ -163,7 +173,7 @@
         <div class="aside-view-row">
           <button
             class="ns-btn small"
-            disabled={!followDraft.trim()}
+            disabled={!unsent.trim()}
             use:tip={"Continue the aside: the exchanges above go with this question, off the chat's context; recorded nowhere"}
             onclick={submitFollowUp}
           >
