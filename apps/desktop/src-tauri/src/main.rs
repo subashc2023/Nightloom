@@ -2024,15 +2024,23 @@ async fn connect_agent(
     {
         spec.resume = Some(id.to_string());
     }
+    // The window, from the id the CLI last reported for this chat when the
+    // alias names that family (nightshift backlog 216): every reconnect —
+    // a chat reopened, a note saved, a pick — used to reset it to unknown.
+    let window = {
+        let focused = state.chats.lock_focused().await;
+        let reported = focused.as_ref().and_then(last_model);
+        nightloom_service::claude_code_window(spec.model.as_deref(), reported.as_deref())
+    };
 
     let info = ConnectedInfo {
         provider: AGENT.into(),
         model: spec.model.clone().unwrap_or_else(|| "default".into()),
-        // Unknown until the CLI names the model it resolved: an alias like
-        // `sonnet` is not in the limits table and never will be. The first
-        // turn reports the real id and the gauge picks a denominator up
-        // then, which is later than ideal and better than a guessed window.
-        context_limit: None,
+        // ~~Unknown until the CLI names the model it resolved~~ (216): an
+        // alias like `sonnet` is not in the limits table, so it is read off
+        // the id this chat's last turn reported; a chat that has not run on
+        // the alias's family yet still waits for its first turn's report.
+        context_limit: window,
         // No per-token bill under a subscription, and the CLI's own dollar
         // figure is an estimate of what the API *would* have charged. Left
         // `None` so the cost readout never renders it as money spent; the
@@ -2602,6 +2610,12 @@ async fn send(
         .await?;
     let session: &mut Session = &mut held;
     state.chats.mark_turn(&session.id);
+    // The chat's id as the turn starts, as the agent engine sends it
+    // (nightshift backlog 211): a New chat's sidebar row appears now, not
+    // when the turn ends. An ephemeral chat has no row to show.
+    if session.log_path().is_some() {
+        let _ = app.emit("turn-chat", session.id.clone());
+    }
 
     let cancel = CancellationToken::new();
     *state.cancel.lock().unwrap() = cancel.clone();

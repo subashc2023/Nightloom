@@ -61,6 +61,48 @@ pub fn context_limit(kind: ProviderKind, model: &str) -> Option<u64> {
     longest_prefix(table, &model)
 }
 
+/// The window a Claude Code connection will run in, known before its first
+/// turn (nightshift backlog 216).
+///
+/// The chat sends the CLI an alias (`opus`, `sonnet`) or nothing at all
+/// (`default`), and no alias is in [`ANTHROPIC`]: only the CLI knows which
+/// snapshot it resolves to, and it says so in each turn's init and result
+/// lines, which the chat's log records as the model of every reply. So the
+/// window is read off that id, `reported`, when it is one the alias names:
+///
+/// - an alias that is itself a table id (`claude-opus-5-5`) is read directly;
+/// - no alias, or `default`: the reported id, since the CLI's default is
+///   exactly what the last turn ran;
+/// - an alias of a family (`opus`): the reported id only when it is of that
+///   family (`claude-opus-5-5`), never another's — a chat switched from
+///   Sonnet to Opus has not yet run on Opus, and Sonnet's window would be a
+///   guess;
+/// - otherwise `None`, as ever: the first turn's own report fills it in.
+pub fn claude_code_window(alias: Option<&str>, reported: Option<&str>) -> Option<u64> {
+    let alias = alias.map(str::trim).filter(|a| !a.is_empty());
+    if let Some(a) = alias
+        && let Some(w) = context_limit(ProviderKind::Anthropic, a)
+    {
+        return Some(w);
+    }
+    let reported = reported.map(str::trim).filter(|r| !r.is_empty())?;
+    match alias.map(str::to_ascii_lowercase).as_deref() {
+        None | Some("default") => {}
+        Some(family) if is_of_family(family, reported) => {}
+        Some(_) => return None,
+    }
+    context_limit(ProviderKind::Anthropic, reported)
+}
+
+/// `claude-opus-5-5` is of the `opus` family; `claude-sonnet-5` is not.
+/// Matched on a whole dash-separated word, so `opus` never matches an id
+/// that merely contains the letters.
+fn is_of_family(family: &str, id: &str) -> bool {
+    id.to_ascii_lowercase()
+        .split(['-', '/', '['])
+        .any(|w| w == family)
+}
+
 fn longest_prefix(table: &[(&str, u64)], model: &str) -> Option<u64> {
     table
         .iter()
@@ -382,6 +424,76 @@ mod tests {
         assert_eq!(
             context_limit(ProviderKind::Gemini, "gemini-2.5-flash-image"),
             Some(32_768)
+        );
+    }
+
+    /// Backlog 216: the context popover said "window size unknown" on a chat
+    /// that had run on Opus 5.5 — the connection is made with the alias
+    /// `opus`, and the id the CLI reported (`claude-opus-5-5`, as the log and
+    /// `context-status.json` recorded on 2026-09-25) was not consulted.
+    #[test]
+    fn claude_code_alias_reads_the_window_off_the_reported_id() {
+        assert_eq!(
+            claude_code_window(Some("opus"), Some("claude-opus-5-5")),
+            Some(1_000_000)
+        );
+        assert_eq!(
+            claude_code_window(Some("sonnet"), Some("claude-sonnet-4-5-20250929")),
+            Some(200_000)
+        );
+        // The 1M-context suffix the CLI may print does not stop the match.
+        assert_eq!(
+            claude_code_window(Some("opus"), Some("claude-opus-5-5[1m]")),
+            Some(1_000_000)
+        );
+    }
+
+    #[test]
+    fn claude_code_default_takes_whatever_the_last_turn_ran() {
+        assert_eq!(
+            claude_code_window(None, Some("claude-opus-5-5")),
+            Some(1_000_000)
+        );
+        assert_eq!(
+            claude_code_window(Some("default"), Some("claude-haiku-4-5-20251001")),
+            Some(200_000)
+        );
+        assert_eq!(
+            claude_code_window(Some(""), Some("claude-opus-5-5")),
+            Some(1_000_000)
+        );
+    }
+
+    #[test]
+    fn claude_code_a_full_id_needs_no_report() {
+        assert_eq!(
+            claude_code_window(Some("claude-opus-5-5"), None),
+            Some(1_000_000)
+        );
+        assert_eq!(
+            claude_code_window(Some("claude-opus-4-5-20251101"), Some("claude-opus-5-5")),
+            Some(200_000)
+        );
+    }
+
+    #[test]
+    fn claude_code_never_lends_one_familys_window_to_another() {
+        // Switched from Sonnet to Opus: Opus has not run yet, so no guess.
+        assert_eq!(
+            claude_code_window(Some("opus"), Some("claude-sonnet-5")),
+            None
+        );
+        assert_eq!(
+            claude_code_window(Some("haiku"), Some("claude-opus-5-5")),
+            None
+        );
+        // No report at all: nothing to read.
+        assert_eq!(claude_code_window(Some("opus"), None), None);
+        assert_eq!(claude_code_window(None, None), None);
+        // A reported id the table lacks stays unknown.
+        assert_eq!(
+            claude_code_window(Some("opus"), Some("claude-opus-9")),
+            None
         );
     }
 

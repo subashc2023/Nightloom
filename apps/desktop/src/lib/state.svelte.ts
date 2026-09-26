@@ -44,6 +44,7 @@ import {
   type ChatChoice,
   type ChatChoices,
 } from "./chatChoice";
+import { madeChatRow, refreshWithin, withNote, withoutNote } from "./afterWrite";
 import { EDITABLE_LAYERS } from "./types";
 import { LIST_SCOPE, NEW_CHAT_SCOPE, UndoHistory } from "./undo";
 import { chatName, notifyNeedsYou, notifyTurnEnd } from "./notify";
@@ -1247,7 +1248,8 @@ export function modelForKey(alias: string): string | null {
  * (nightshift blockers 035, 044).
  */
 export async function switchModel(alias: string): Promise<void> {
-  if (app.busy || app.connecting) return;
+  // ~~Refused while a turn or connect ran~~ — taken, for the next turn
+  // (backlog 214; `applyDraft` defers the connect).
   if (app.draft.engine !== "claude-code") {
     addToast(`On the API engine models are ${keyMod()}${keyShift()}1–9; the letters are Claude Code's`);
     return;
@@ -1259,7 +1261,8 @@ export async function switchModel(alias: string): Promise<void> {
 
 /** ⌘⇧1…9: the n-th model of the picker, on the API engine. */
 export async function switchModelAt(n: number): Promise<void> {
-  if (app.busy || app.connecting || app.draft.engine === "claude-code") return;
+  // As `switchModel`: a pick during a turn waits for it (backlog 214).
+  if (app.draft.engine === "claude-code") return;
   const target = pickerModels()[n - 1];
   if (!target) {
     addToast(`${providerLabel(app.draft.provider)}'s picker has no model ${n}`);
@@ -1387,7 +1390,12 @@ export async function init(): Promise<void> {
   // 2026-09-23 finding 4): the budget meter and stop card follow it now,
   // not only once the turn has ended.
   await listen<string>("turn-chat", (e) => {
-    if (app.busy && app.budgetSession === null && e.payload) startBudgetPoll(e.payload, budgetTyped);
+    // The provider engine names its chat too since backlog 211; the budget
+    // meter is the agent engine's alone.
+    if (app.busy && app.budgetSession === null && e.payload && app.connection?.engine === "claude-code") {
+      startBudgetPoll(e.payload, budgetTyped);
+    }
+    showMadeChat(e.payload);
   });
   await listen<string>("menu", (e) => runMenuCommand(e.payload));
   // Only the watched project (selectNightshiftProject calls nightshiftWatch)
@@ -1949,7 +1957,8 @@ export async function revertDreamFile(n: Notice, file: string): Promise<boolean>
     addToast(`revert failed: ${String(e)}`);
     return false;
   }
-  await refreshNotes();
+  // In the background (backlog 211): the revert is done when it returns.
+  void refreshWithin("reverting " + file, [refreshNotes]);
   return true;
 }
 
@@ -2520,12 +2529,17 @@ export async function saveNote(
   name: string,
   content: string,
 ): Promise<boolean> {
+  let written: Note;
   try {
-    await api.saveNote(scope, name, content);
+    written = await api.saveNote(scope, name, content);
   } catch (e) {
     addToast(String(e));
     return false;
   }
+  // The list shows the note now, from the write's own answer (backlog 211);
+  // the re-read below confirms it in the background.
+  if (written && scope === "project") app.notes = withNote(app.notes, written);
+  else if (written && scope === "knowledge") app.vault = withNote(app.vault, written);
   // The draft that was saved came from a proposal: record it as applied,
   // with the text that was actually saved. After the save and never
   // instead of it — the file was written by the editor's own path above,
@@ -2539,8 +2553,10 @@ export async function saveNote(
       addToast(`saved, but could not file the proposal as applied: ${String(e)}`);
     }
   }
-  await refreshNotes();
-  await refreshProjects();
+  // ~~`await refreshNotes(); await refreshProjects();`~~ — in the background
+  // since backlog 211: a listing hung on iCloud held Saved, the draft and
+  // the way back to Settings behind it, though the file was written.
+  void refreshWithin("saving " + name, [refreshNotes, refreshProjects]);
   // The always-loaded files are read once, when the connection's preamble
   // is assembled — so a saved edit would otherwise sit unread until the
   // next connect. Re-connect the live connection, the same rule as editing
@@ -2553,7 +2569,10 @@ export async function saveNote(
     (scope === "instructions" || scope === "memory" || scope === "models" || scope === "chat") &&
     app.connection
   ) {
-    await applyDraft();
+    // Not awaited (backlog 211): a reconnect spawns the CLI, and Save is
+    // done when the file is written. During a turn it waits for the turn's
+    // end (backlog 214's deferral in `applyDraft`).
+    void applyDraft();
   }
   return true;
 }
@@ -2567,8 +2586,10 @@ export async function deleteNote(scope: NoteScope, name: string): Promise<void> 
   }
   if (app.openNote?.scope === scope && app.openNote.name === name) leaveNote();
   dropNoteTabs(scope, name);
-  await refreshNotes();
-  await refreshProjects();
+  // As `saveNote` (backlog 211): off the list now, re-read in the background.
+  if (scope === "project") app.notes = withoutNote(app.notes, name);
+  else if (scope === "knowledge") app.vault = withoutNote(app.vault, name);
+  void refreshWithin("deleting " + name, [refreshNotes, refreshProjects]);
 }
 
 // ---- proposals: the dream's suggested edits to the fixed files ----
@@ -2739,6 +2760,32 @@ function saveChatChoices(): void {
   if (typeof localStorage !== "undefined") saveChoices(localStorage, chatChoice.choices);
 }
 
+/**
+ * The window from the id the CLI names in its init line (backlog 216), when
+ * the connection does not know it yet — a chat's first turn on an alias, or
+ * the first on a newly picked family. The turn's end sets it again from the
+ * result's id; this makes it right from the turn's first second. Exported
+ * for the tests.
+ */
+export async function windowFromInit(model: string | null | undefined): Promise<void> {
+  const conn = app.connection;
+  if (!model || !conn || conn.engine !== "claude-code" || conn.contextLimit != null) return;
+  try {
+    const [limit] = await api.contextLimits("anthropic", [model]);
+    if (limit != null && app.connection === conn && conn.contextLimit == null) conn.contextLimit = limit;
+  } catch {
+    // Best-effort, as every other look-up: the turn's end tries again.
+  }
+}
+
+/** A pick that must wait for the running turn or connect (backlog 214):
+ *  the chat on screen keeps it — so switching away and back shows it —
+ *  and the effect's re-run at the end connects it. */
+function deferPick(): void {
+  if (chatChoice.ready) chatConnected(app.activeSessionId, choiceOf(app.draft));
+  chatChoice.reconnect = true;
+}
+
 /** A connect built for `chat` succeeded with `c` (backlog 205) — recorded
  *  only while that chat is still the one on screen. */
 function chatConnected(chat: string | null, c: ChatChoice): void {
@@ -2788,7 +2835,16 @@ export function restoreChatChoice(): boolean {
 /** (Re)connect with the rail's current settings. Called on every rail change. */
 export async function applyDraft(): Promise<void> {
   const d = app.draft;
-  if (app.busy || app.connecting) return;
+  if (app.busy || app.connecting) {
+    // ~~Dropped~~ — deferred since backlog 214: a pick made while a turn
+    // or a connect runs is kept on the draft, recorded as the open chat's,
+    // and connected when either ends (the effect that re-runs
+    // `syncPromptLayers`), so it applies to the next turn. The running
+    // turn keeps the model it started on: its CLI process was spawned
+    // with it, and a connect under it would tear down its engine.
+    deferPick();
+    return;
+  }
   if (d.engine === "claude-code") return applyAgentDraft();
   if (!d.provider) return;
   sanitizeThinking(d); // a saved draft may hold a mode this target rejects
@@ -4479,6 +4535,27 @@ export async function refreshSessions(): Promise<void> {
   } catch {
     // sidebar refresh is best-effort
   }
+}
+
+/**
+ * A New chat's row in the sidebar the moment its first turn starts
+ * (backlog 211): the backend names the chat it made (`turn-chat`), and the
+ * row is built from what was sent — not left to the listing at the turn's
+ * end, which a slow disk (iCloud) can hold for the whole turn and more. Only
+ * for the pending chat on screen; the turn's-end re-read replaces the row.
+ * Exported for the tests.
+ */
+export function showMadeChat(id: string | null | undefined): void {
+  if (!id || !app.busy || app.activeSessionId !== null) return;
+  const sent = [...app.events].reverse().find((e) => e.event === "user_message");
+  const row = madeChatRow(
+    app.sessions,
+    id,
+    sent && sent.event === "user_message" ? sent.text : null,
+    app.pendingMode,
+    app.pendingKind,
+  );
+  if (row) app.sessions = [row, ...app.sessions];
 }
 
 /**
@@ -6247,6 +6324,7 @@ export function applyTurnEvent(ev: TurnEvent & { chat?: string }): void {
       // The CLI's init line (nightshift backlog 077): kept whole for the
       // Context page. Nothing in the transcript changes.
       app.agentInit = ev;
+      void windowFromInit(ev.model);
       break;
     case "prompt_suggestion":
       // After the result (backlog 083): the composer's ghost line.
