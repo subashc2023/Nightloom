@@ -3022,7 +3022,7 @@ export async function applyDraft(): Promise<void> {
  * one connect per rail change, the backend's answer read back rather than the
  * draft echoed — and that is what `Connection` is.
  */
-async function applyAgentDraft(updateNow: PromptLayer[] = []): Promise<void> {
+async function applyAgentDraft(updateNow: PromptLayer[] = [], take = true): Promise<void> {
   const d = app.draft;
   // As `applyDraft` (backlog 205).
   const chat = app.activeSessionId;
@@ -3052,7 +3052,9 @@ async function applyAgentDraft(updateNow: PromptLayer[] = []): Promise<void> {
       effort: d.agentEffort.trim() || undefined,
       fallbackModel: d.agentFallback.trim() || undefined,
       // A changed layer waits for this chat's cold moment (backlog 174).
-      cold: chatIsCold(app.events, Date.now()),
+      // `take` false (the Context page's look, review RF 2026-09-26): the
+      // connect only reads the marks and never takes one, cold or not.
+      cold: take && chatIsCold(app.events, Date.now()),
       autoLayers: app.layerPrefs.autoAtCold,
       updateNow,
     });
@@ -3115,13 +3117,19 @@ async function layersBeforeTurn(): Promise<void> {
  * chat's save — triggers none, so the Context page showed no mark for it.
  * Called when the Context page opens. A reconnect on a warm chat sends the
  * held text byte for byte (Rust `prompt_hold::resolve`), so it rewrites no
- * cache; on a cold chat it takes what the choices allow, as the next turn
- * would. Never during a turn or a connect, never for New chat.
+ * cache; ~~on a cold chat it takes what the choices allow, as the next turn
+ * would~~ (struck 2026-09-26, review RF: under the Auto default that took
+ * the newer file the moment he opened the page on a cold chat, before he
+ * could see the mark and click *Keep this version* — the one place Keep
+ * lives). It now only looks: the connect goes out as warm, so nothing is
+ * taken here; the next cold turn takes what the choices then allow
+ * (`reconnectBeforeTurn`). Never during a turn or a connect, never for
+ * New chat.
  */
 export async function refreshLayerVersions(): Promise<void> {
   if (app.busy || app.connecting || app.connection?.engine !== "claude-code") return;
   if (app.activeSessionId === null) return;
-  await applyAgentDraft();
+  await applyAgentDraft([], false);
 }
 
 /** *Update now* on a mark: the new text goes out with the next message,
