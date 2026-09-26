@@ -70,3 +70,27 @@ export function moveScroll(from: string, to: string): void {
 export function resetScroll(): void {
   positions.clear();
 }
+
+/**
+ * An aside tab's entry (nightshift backlog 237, 2026-09-26: "even in aside
+ * chats it should save where exactly I am … instead of each time I'm
+ * clicking into that tab, it starts me at the very top"). The same map,
+ * keyed by the chat and the thread's id, so it can never collide with a
+ * chat's key (a chat id has no `aside:` prefix). Not persisted, as a
+ * chat's is not.
+ */
+export function asideScrollKey(session: string, thread: number): string {
+  return `aside:${session}:${thread}`;
+}
+
+/**
+ * Where to put a view back on mount or on a switch back: nothing for a view
+ * never scrolled (it opens where it always did); the foot for one that was
+ * held at its foot (an answer that grew meanwhile is followed to its end);
+ * else the remembered top, never past the end the content now has.
+ */
+export function restoreTop(entry: ScrollEntry | null, scrollHeight: number, clientHeight: number): number | null {
+  if (!entry) return null;
+  const end = Math.max(0, scrollHeight - clientHeight);
+  return entry.pinned ? end : Math.min(entry.top, end);
+}

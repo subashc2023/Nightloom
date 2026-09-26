@@ -6,6 +6,8 @@
   import { arrive, launch } from "./sendMotion";
   import Icon from "./Icon.svelte";
   import AsideBox from "./AsideBox.svelte";
+  import { tick, untrack } from "svelte";
+  import { asideScrollKey, recallScroll, rememberScroll, restoreTop } from "./scroll.svelte";
 
   /**
    * An aside thread as a tab of its own (nightshift backlog 130 part 2,
@@ -36,6 +38,28 @@
   const chatName = $derived.by(() => {
     const s = app.sessions.find((x) => x.id === session);
     return s?.title ?? s?.first_user ?? session.slice(0, 8);
+  });
+
+  // Where he was in the thread (nightshift backlog 237, 2026-09-26): the
+  // tab unmounts when another tab takes its pane, and came back at the
+  // top. The place is kept per thread in 065's scroll map, written as he
+  // scrolls and put back when the view mounts or shows another thread.
+  let view = $state<HTMLDivElement | null>(null);
+  const viewKey = $derived(aside ? asideScrollKey(session, aside.id) : null);
+  function scrolled() {
+    if (!view || !viewKey) return;
+    rememberScroll(viewKey, view.scrollTop, view.scrollHeight - view.scrollTop - view.clientHeight < 4);
+  }
+  $effect(() => {
+    const key = viewKey;
+    const el = view;
+    if (!key || !el) return;
+    untrack(() => {
+      void tick().then(() => {
+        const top = restoreTop(recallScroll(key), el.scrollHeight, el.clientHeight);
+        if (top !== null) el.scrollTop = top;
+      });
+    });
   });
 
   // A draft dragged into the tab before anything was asked (backlog 148):
@@ -82,7 +106,7 @@
   }
 </script>
 
-<div class="aside-view" role="note" aria-label="aside, not part of the chat">
+<div class="aside-view" role="note" aria-label="aside, not part of the chat" bind:this={view} onscroll={scrolled}>
   <div class="aside-view-head">
     <span class="ns-chip mono">aside · not in the chat</span>
     <span class="ns-chip mono" use:tip={"The chat this side conversation is beside"}>{chatName}</span>
