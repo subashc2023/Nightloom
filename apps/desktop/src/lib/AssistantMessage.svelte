@@ -652,7 +652,7 @@
         {/if}
         {#if last}
           <div class="working" role="status" aria-label={working}>
-            <span class="roll" aria-hidden="true"><Icon name="moon" size={14} /></span>
+            <span class="roll" aria-hidden="true"><Icon name="moon" size={20} /></span>
             <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
             <span class="working-text">{working}</span>
           </div>
@@ -715,7 +715,7 @@
   {/each}
   {#if moonAlone}
     <div class="working" role="status" aria-label={working}>
-      <span class="roll" aria-hidden="true"><Icon name="moon" size={20} /></span>
+      <span class="roll" aria-hidden="true"><Icon name="moon" size={28} /></span>
       <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
       <span class="working-text">{working}</span>
     </div>
@@ -1058,11 +1058,13 @@
   /* The moon rolls inside a track of its own, so the text after it starts
      past the far end of the roll rather than under it (his 2026-09-16
      screenshot: the moon rolling over "working · 29 s"); it is drawn a
-     size up while it rolls. */
+     size up while it rolls. The moon a size up again (backlog 212,
+     2026-09-25, "still feels kinda small": 14 → 20 in the block, 20 → 28
+     alone), so the track is the 32 px roll plus the larger moon. */
   .roll {
     display: inline-flex;
     flex: none;
-    width: 52px;
+    width: 60px;
   }
   .roll :global(svg) {
     animation: roll 1.5s ease-in-out infinite alternate;
