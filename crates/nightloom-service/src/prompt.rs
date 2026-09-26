@@ -454,13 +454,20 @@ fn engine_note_segment(knowledge: Option<&KnowledgeContext>) -> Segment {
 /// as a chip (`apps/desktop/src/lib/cite.ts`). Said on the Claude Code
 /// engine in the engine note and on the API engine in `web_search`'s own
 /// description, so it is present exactly where web results can be.
-pub const CITE_NOTE: &str = "When a sentence rests on a web page you searched or fetched, cite \
-     it right after that sentence with a marker: a Markdown link whose text is the source's \
-     number in brackets and whose title is the page's title, like \
-     [[1]](https://example.com/page \"Page title\"). Number sources in the order you first use \
-     them and reuse a number for the same page; a sentence with no web source gets no marker. \
-     These markers are how you include your sources as Markdown links: do not also list them \
-     at the end of the reply.";
+///
+/// The wording was measured (2026-09-25, `claude -p --model haiku`, one
+/// WebSearch turn each): a softer first draft ("cite it right after that
+/// sentence with a marker … do not also list them at the end") gave no
+/// markers and no list; this one, with MUST and a worked example, gave a
+/// marker after each sourced sentence and no foot list. One sample each.
+pub const CITE_NOTE: &str = "Citing web sources: every sentence that states something you got \
+     from a web search or fetch MUST end with a citation marker for that source, placed right \
+     after the sentence's full stop: a Markdown link whose text is the source's number in square \
+     brackets and whose title is the page's title, for example: Rust 1.85 shipped the 2024 \
+     edition. [[1]](https://blog.rust-lang.org/2025/02/20/Rust-1.85.0.html \"Announcing Rust \
+     1.85.0\") Number sources in the order you first cite them and reuse the number for the same \
+     page. These inline markers are how you include your sources as Markdown hyperlinks; do not \
+     add a list of sources at the end.";
 
 pub fn identity_segment() -> Segment {
     Segment::new(SegmentKind::Identity, "identity", DEFAULT_IDENTITY)
@@ -1690,7 +1697,7 @@ the body text",
         assert!(text.contains("one.md"), "{text}");
         // The citation marker (backlog 213) is inside the engine note.
         let cite = text
-            .find("[[1]](https://example.com/page")
+            .find("[[1]](https://blog.rust-lang.org/")
             .expect("the cite note");
         assert!(cite > text.find("<engine-note>").unwrap(), "{text}");
         assert!(cite < text.find("</engine-note>").unwrap(), "{text}");
