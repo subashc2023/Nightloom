@@ -2,6 +2,8 @@
   import { tick, untrack } from "svelte";
   import Icon from "./Icon.svelte";
   import Kbd from "./Kbd.svelte";
+  import ResizeHandle from "./ResizeHandle.svelte";
+  import { dragHeight, growHeight, loadBoxHeight, saveBoxHeight } from "./boxGrow";
   import {
     app,
     addToast,
@@ -226,22 +228,13 @@
   /** No shorter than one line of text plus the box's own padding. */
   const FLOOR_MIN = 26;
 
+  // Read and written through `boxGrow.ts` since backlog 226, which the
+  // aside boxes share.
   function loadHeight(k: string): number | null {
-    try {
-      const raw = localStorage.getItem(HEIGHT_KEY + k);
-      const n = raw === null ? NaN : Number(raw);
-      return Number.isFinite(n) && n >= FLOOR_MIN ? n : null;
-    } catch {
-      return null;
-    }
+    return loadBoxHeight(HEIGHT_KEY + k, FLOOR_MIN);
   }
   function saveHeight(k: string, n: number | null): void {
-    try {
-      if (n === null) localStorage.removeItem(HEIGHT_KEY + k);
-      else localStorage.setItem(HEIGHT_KEY + k, String(Math.round(n)));
-    } catch {
-      // best-effort
-    }
+    saveBoxHeight(HEIGHT_KEY + k, n);
   }
 
   /** The height set by hand for the open chat, or null for auto-grow alone. */
@@ -338,26 +331,14 @@
    * rule and the box sized to its text.
    */
   function handleDown(e: PointerEvent) {
-    if (e.button !== 0 || !ta) return;
-    e.preventDefault();
-    const startY = e.clientY;
-    const startH = ta.offsetHeight;
-    const target = e.currentTarget as HTMLElement;
-    target.setPointerCapture(e.pointerId);
+    if (!ta) return;
     dragging = true;
-    const move = (ev: PointerEvent) => {
-      setHeight(startH + (startY - ev.clientY));
-    };
-    const up = () => {
+    // The pointer half is `boxGrow.ts`'s since backlog 226 (the aside
+    // boxes drag with it too); the handle is on the top edge.
+    dragHeight(e, ta.offsetHeight, "top", setHeight, () => {
       dragging = false;
       persistHeight();
-      target.removeEventListener("pointermove", move);
-      target.removeEventListener("pointerup", up);
-      target.removeEventListener("pointercancel", up);
-    };
-    target.addEventListener("pointermove", move);
-    target.addEventListener("pointerup", up);
-    target.addEventListener("pointercancel", up);
+    });
   }
 
   function handleReset() {
@@ -411,7 +392,7 @@
     const min = floating ? 0 : Math.min(max, floorPx ?? 0);
     ta.style.maxHeight = max + "px";
     ta.style.height = "auto";
-    ta.style.height = Math.max(min, Math.min(ta.scrollHeight, max)) + "px";
+    ta.style.height = growHeight(ta.scrollHeight, min, max) + "px";
     syncMirror();
   }
 
@@ -1390,20 +1371,17 @@
   {ondrop}
 >
   {#if !floating}
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div
-      class="handle"
-      class:dragging
-      role="separator"
-      aria-orientation="horizontal"
-      aria-label="Composer height"
-      aria-valuenow={floorPx ?? undefined}
-      use:tip={floorPx === null && capPx === null
+    <ResizeHandle
+      edge="top"
+      {dragging}
+      label="Composer height"
+      value={floorPx ?? undefined}
+      hint={floorPx === null && capPx === null
         ? "Drag to resize · double-click to reset (⌥⌘↑ / ⌥⌘↓ by a line)"
         : `Drag to resize · double-click to reset — ${floorPx === null ? "automatic" : `${floorPx}px`} for this chat${capPx === null ? "" : `, grows to ${capPx}px`}`}
-      onpointerdown={handleDown}
-      ondblclick={handleReset}
-    ></div>
+      ondown={handleDown}
+      onreset={handleReset}
+    />
   {/if}
   {#if queue.length > 0}
     <div class="queue" role="list" aria-label="queued messages">
@@ -2089,50 +2067,8 @@
     background: var(--paper);
     padding: 12px 20px 22px;
   }
-  /* The drag handle sits on the top edge, over the border. The grip mark
-     is the sidebar's (`Grip.svelte`, laid flat): a short bar, accent on
-     hover; since backlog 111 the hover also draws a line the width of the
-     edge, so the place to drag is findable, and the strip is taller. */
-  .handle {
-    position: absolute;
-    top: -6px;
-    left: 0;
-    right: 0;
-    height: 13px;
-    cursor: row-resize;
-    touch-action: none;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    z-index: 2;
-  }
-  .handle::before {
-    content: "";
-    position: absolute;
-    left: 20px;
-    right: 20px;
-    top: 6px;
-    height: 1px;
-    background: transparent;
-    transition: background 0.12s;
-  }
-  .handle::after {
-    content: "";
-    position: relative;
-    width: 36px;
-    height: 3px;
-    border-radius: 2px;
-    background: var(--line2);
-    transition: background 0.12s;
-  }
-  .handle:hover::before,
-  .handle.dragging::before {
-    background: var(--accent);
-  }
-  .handle:hover::after,
-  .handle.dragging::after {
-    background: var(--accent);
-  }
+  /* The drag handle sits on the top edge, over the border: `ResizeHandle`
+     since backlog 226, which the aside boxes share. */
   .composer.floating {
     background: transparent;
     border-top: none;

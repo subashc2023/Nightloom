@@ -26,6 +26,7 @@
   import { renderMarkdown } from "./markdown";
   import Icon from "./Icon.svelte";
   import MoveZone from "./MoveZone.svelte";
+  import AsideBox from "./AsideBox.svelte";
 
   /**
    * The floating aside card (nightshift backlog 141, 2026-09-17; blocker
@@ -110,6 +111,9 @@
   // thread (`aside.unsent`), which the aside store writes; the two boxes
   // never show at once, so one field serves both.
   const unsent = $derived(aside.unsent ?? "");
+  /** The box's drag edge (backlog 226): the top on a card stuck above the
+   *  composer, which grows upward; the bottom everywhere else. */
+  const boxEdge = $derived(placement === null && !panel && !aside.moved ? "top" : "bottom");
   function typed(e: Event): void {
     setAsideUnsent(aside, (e.currentTarget as HTMLTextAreaElement).value);
   }
@@ -415,19 +419,15 @@
   {#if !folded}
   <div class="aside-card-body" bind:this={body} onscroll={bodyScrolled}>
     {#if aside.draft}
-      <textarea
-        class="aside-card-box"
-        bind:this={askBox}
+      <AsideBox
+        bind:box={askBox}
         value={unsent}
         oninput={typed}
-        rows="1"
-        placeholder={aside.quote ? "Ask about the passage… (Enter asks)" : "Ask aside… (Enter asks)"}
-        aria-label="Your question about the highlighted passage"
         onkeydown={askKeys}
-        autocorrect="off"
-        autocapitalize="off"
-        spellcheck="false"
-      ></textarea>
+        edge={boxEdge}
+        placeholder={aside.quote ? "Ask about the passage… (Enter asks)" : "Ask aside… (Enter asks)"}
+        label="Your question about the highlighted passage"
+      />
       <div class="aside-card-row">
         <button
           class="ns-btn small"
@@ -472,19 +472,15 @@
       {:else if last && !asking && !onClaudeCode}
         <div class="aside-card-mark">Follow up on the Claude Code engine</div>
       {:else if last && !asking}
-        <textarea
-          class="aside-card-box"
-          bind:this={followBox}
+        <AsideBox
+          bind:box={followBox}
           value={unsent}
-        oninput={typed}
-          rows="1"
-          placeholder="Follow up in the aside… (Enter asks)"
-          aria-label="A follow-up in the aside"
+          oninput={typed}
           onkeydown={followKeys}
-          autocorrect="off"
-          autocapitalize="off"
-          spellcheck="false"
-        ></textarea>
+          edge={boxEdge}
+          placeholder="Follow up in the aside… (Enter asks)"
+          label="A follow-up in the aside"
+        />
         <div class="aside-card-row">
           <button
             class="ns-btn small"
@@ -694,26 +690,7 @@
       background: var(--dim);
     }
   }
-  .aside-card-box {
-    /* Never shrink below its rows (nightshift backlog 179, 2026-09-22): a
-       textarea is a scroll container, so in a scrolling flex column its
-       minimum height is 0 and a long answer squashed it to a sliver. */
-    flex-shrink: 0;
-    width: 100%;
-    box-sizing: border-box;
-    resize: none;
-    padding: 7px 10px;
-    border: 1px solid var(--line2);
-    border-radius: 8px;
-    background: var(--well);
-    color: var(--ink);
-    font: inherit;
-    line-height: 1.4;
-  }
-  .aside-card-box:focus {
-    outline: none;
-    border-color: var(--accent);
-  }
+  /* The question box is `AsideBox.svelte` since backlog 226. */
   .aside-card-row {
     display: flex;
     gap: 8px;
