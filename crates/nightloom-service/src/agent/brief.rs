@@ -1840,9 +1840,23 @@ mod tests {
 
     /// The hook prepends the brief to the task and hands the whole input
     /// back; without a brief on disk, or on a task already briefed, it
-    /// has no opinion.
+    /// has no opinion. Run against fixed gauge readings — none, and a
+    /// low window — never this machine's live usage, which refused the
+    /// call whenever the five-hour window stood above the stop line
+    /// (backlog 227).
     #[test]
     fn the_hook_prepends_the_brief_once() {
+        let now = chrono::Utc::now().timestamp_millis();
+        prepends_the_brief_once(None);
+        prepends_the_brief_once(Some(super::WindowReading {
+            five_hour_pct: 20,
+            resets_at: Some(now / 1000 + 3600),
+            sampled_at_ms: now,
+        }));
+    }
+
+    fn prepends_the_brief_once(gauge: Option<super::WindowReading>) {
+        let decide = |dir: &std::path::Path, stdin: &str| super::decide_with(dir, stdin, gauge);
         let dir = scratch();
         assert_eq!(decide(&dir, STDIN), HookReply::pass());
         let brief = compose(&preamble(), &[]).unwrap();

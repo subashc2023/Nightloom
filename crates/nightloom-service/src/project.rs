@@ -1307,16 +1307,53 @@ fn summarize(path: &Path) -> Option<String> {
     use std::io::Read;
     let mut buf = vec![0u8; SUMMARY_PROBE];
     let read = fs::File::open(path).ok()?.read(&mut buf).ok()?;
-    let text = String::from_utf8_lossy(&buf[..read]);
-    let line = text
-        .lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty())
-        .map(|l| l.trim_start_matches('#').trim())?;
-    if line.is_empty() {
+    summary_of(&String::from_utf8_lossy(&buf[..read]))
+}
+
+/// A note's one-line summary from its opening bytes: the front matter's
+/// `description:` when it has one, else the first heading or non-empty
+/// line after it. Backlog 217: every note in his vault opens with a `---`
+/// front-matter fence, and the index listed each one as `— ---`.
+/// A fence still open at the end of the probe yields its description or
+/// nothing — never a front-matter key read as prose.
+pub(crate) fn summary_of(text: &str) -> Option<String> {
+    let mut lines = text.lines().map(str::trim).skip_while(|l| l.is_empty());
+    let mut first = lines.next()?;
+    if first == "---" {
+        let mut description = None;
+        let mut closed = false;
+        for line in lines.by_ref() {
+            if line == "---" || line == "..." {
+                closed = true;
+                break;
+            }
+            if let Some(v) = line.strip_prefix("description:") {
+                let v = v.trim().trim_matches(|c| c == '"' || c == '\'');
+                if !v.is_empty() {
+                    description = Some(v.to_string());
+                }
+            }
+        }
+        if let Some(d) = description {
+            return Some(d.chars().take(120).collect());
+        }
+        if !closed {
+            return None;
+        }
+        first = lines.find(|l| !l.is_empty() && !is_rule(l))?;
+    }
+    let line = first.trim_start_matches('#').trim();
+    if line.is_empty() || is_rule(line) {
         return None;
     }
     Some(line.chars().take(120).collect())
+}
+
+/// A Markdown thematic break (`---`, `***`, `___`, three or more): a
+/// divider, never a summary.
+fn is_rule(line: &str) -> bool {
+    let t: String = line.chars().filter(|c| !c.is_whitespace()).collect();
+    t.len() >= 3 && ['-', '*', '_'].iter().any(|&m| t.chars().all(|c| c == m))
 }
 
 /// Resolve a note name against the docspace, refusing anything outside it.
@@ -2242,6 +2279,42 @@ mod tests {
         assert_eq!(
             listed[1].summary.as_deref(),
             Some("Because the table was wrong.")
+        );
+    }
+
+    /// Backlog 217: a note that opens with front matter is summarised by its
+    /// `description:`, or by the first real line after the fence — never as
+    /// `---`, and never as a front-matter key.
+    #[test]
+    fn front_matter_is_not_a_summary() {
+        let with_description = "---\ntitle: x\ndescription: \"Why the cache is keyed by path\"\ntags: [a]\n---\n# Heading\n";
+        assert_eq!(
+            summary_of(with_description).as_deref(),
+            Some("Why the cache is keyed by path")
+        );
+        let without = "\n---\ntitle: x\ntags: [a]\n---\n\n# The real title\nbody\n";
+        assert_eq!(summary_of(without).as_deref(), Some("The real title"));
+        // A fence the probe never saw closed: nothing rather than a key.
+        assert_eq!(summary_of("---\ntitle: x\ntags: [a, b"), None);
+        // Only a fence and a rule: nothing.
+        assert_eq!(summary_of("---\n---\n***\n"), None);
+        assert_eq!(summary_of("***\n"), None);
+        // The plain cases are unchanged.
+        assert_eq!(
+            summary_of("# Auth rewrite\n").as_deref(),
+            Some("Auth rewrite")
+        );
+        assert_eq!(
+            summary_of("\n\nplain line\n").as_deref(),
+            Some("plain line")
+        );
+        // Through the index, from a file.
+        let dir = temp_dir("front-matter");
+        let notes = dir.join("notes");
+        write_note(&notes, "fm.md", with_description).unwrap();
+        assert_eq!(
+            list_notes(&notes)[0].summary.as_deref(),
+            Some("Why the cache is keyed by path")
         );
     }
 

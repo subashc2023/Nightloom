@@ -827,7 +827,7 @@ pub fn chat_dir() -> Option<PathBuf> {
 /// expect `grep` or `glob` to reach them, and will not look. A prompt that is
 /// wrong in a direction nothing errors on is the expensive kind.
 pub fn project_notes_segment(project: &ProjectContext) -> Segment {
-    let notes = crate::project::list_notes(&project.notes_dir);
+    let mut notes = crate::project::list_notes(&project.notes_dir);
     let name = &project.name;
     let dir = project.notes_dir.display();
     // The path the model should actually type. The docspace is a directory
@@ -847,10 +847,8 @@ pub fn project_notes_segment(project: &ProjectContext) -> Segment {
         "Shared notes for this project. Every conversation in it sees this index, and \
          anything written here reaches later conversations — this is where to leave \
          something for your next self.\n\n\
-         Read one with read_file and add or revise one with write_file / edit_file. This \
-         directory is inside the workspace, so a relative path reaches it ({rel}/<name>), \
-         and grep and glob walk it like any other folder — a note can be found without \
-         being read first. Only this index is loaded automatically; the contents are not.\n\n\
+         A note is at {rel}/<name>, inside the workspace: read_file, write_file / edit_file, \
+         grep and glob reach it. Only this index is loaded; the contents are not.\n\n\
          Worth writing down: a task list that outlives one conversation, a decision and \
          why it was made, a map of something that took real work to figure out. Not worth \
          writing down: anything already obvious from the code, or a summary of what you \
@@ -864,25 +862,27 @@ The notes directory is currently empty.
 ",
         );
     } else {
-        text.push_str(
-            "
-Notes now:
-",
-        );
-        for note in &notes {
-            let size = human_bytes(note.bytes);
-            match &note.summary {
-                Some(summary) => text.push_str(&format!(
-                    "  {} ({size}) — {summary}
-",
-                    note.name
-                )),
-                None => text.push_str(&format!(
-                    "  {} ({size})
-",
-                    note.name
-                )),
-            }
+        // Backlog 217: most recently edited first, and capped — past
+        // `LIST_NAME_CAP` names or `LIST_TOKEN_CAP` tokens of listing the
+        // rest is one line with an exact count, and the tools list it.
+        notes.sort_by(|a, b| {
+            b.modified
+                .cmp(&a.modified)
+                .then_with(|| a.name.cmp(&b.name))
+        });
+        let total = crate::project::note_counts(&project.notes_dir)
+            .0
+            .values()
+            .sum::<usize>()
+            .max(notes.len());
+        let lines: Vec<String> = notes.iter().map(|note| note_entry("", note)).collect();
+        let shown = capped_count(&lines);
+        text.push_str("\nNotes now, most recently edited first:\n");
+        for line in &lines[..shown] {
+            text.push_str(line);
+        }
+        if shown < total {
+            text.push_str(&more_line(total - shown));
         }
     }
     text.push_str("</project-notes>");
@@ -901,6 +901,36 @@ Notes now:
 /// reachable by search, which is the trade the docspace makes about note
 /// *contents* applied one level up.
 const VAULT_INDEX_BUDGET: usize = 4 * 1024;
+
+/// Past this many names a list in the prompt stops (backlog 217, his "#1:
+/// yeah that sounds good" to ~60 names / ~1,500 tokens): the rest are one
+/// `list_dir`, `glob` or `grep` away, and every turn of every chat pays for
+/// the names it lists.
+pub const LIST_NAME_CAP: usize = 60;
+/// Past this many estimated tokens of listing a list stops, whichever of
+/// the two caps binds first.
+pub const LIST_TOKEN_CAP: u64 = 1_500;
+
+/// How many of `lines`, in order, fit both caps. The first line always
+/// fits, so a non-empty list never renders as nothing.
+fn capped_count(lines: &[String]) -> usize {
+    let mut tokens = 0u64;
+    let mut shown = 0usize;
+    for line in lines {
+        let cost = nightloom_core::estimate_tokens(line);
+        if shown >= LIST_NAME_CAP || (shown > 0 && tokens + cost > LIST_TOKEN_CAP) {
+            break;
+        }
+        tokens += cost;
+        shown += 1;
+    }
+    shown
+}
+
+/// The line that stands for what a capped list left out.
+fn more_line(more: usize) -> String {
+    format!("  …and {more} more (use the tools to list them)\n")
+}
 
 /// The knowledge vault: an index of what the user knows.
 ///
@@ -986,10 +1016,9 @@ pub fn knowledge_segment(knowledge: &KnowledgeContext) -> Segment {
          available in every conversation, including ones with no project open. It is theirs \
          rather than yours: treat what is written here as something they rely on, revise \
          carefully, and say when you have changed something.\n\n\
-         Reach a note at {alias}/<name> — the vault lives outside the workspace, and that \
-         prefix is how the file tools address it. read_file to read one, write_file and \
-         edit_file to add or revise one, and glob or grep with path \"{alias}\" to search the \
-         whole vault. Only this index is loaded automatically; the contents are not.\n\n\
+         A note is at {alias}/<name>: the vault is outside the workspace and the file tools \
+         address it by that prefix — read_file, write_file / edit_file, and glob or grep with \
+         path \"{alias}\" to search it. Only this index is loaded; the contents are not.\n\n\
          Notes link to each other with [[name]], which means {alias}/<name>.md. Follow one by \
          reading that path. Writing [[name]] for a note that does not exist yet is normal — it \
          is how the user plans one.\n\n\
@@ -1054,6 +1083,11 @@ pub fn knowledge_segment(knowledge: &KnowledgeContext) -> Segment {
                 let Some(note) = group.get(shown[i]) else {
                     continue;
                 };
+                // Backlog 217: the name cap binds here too, whatever the
+                // byte budget has left.
+                if total_shown >= LIST_NAME_CAP {
+                    break;
+                }
                 let line = note_entry(prefix, note);
                 if used + line.len() > VAULT_INDEX_BUDGET && total_shown > 0 {
                     continue;
@@ -1257,6 +1291,106 @@ the body text",
         // The index is an index. A note's body reaching the prompt would make
         // the facility cost more the more it was used.
         assert!(!text.contains("the body text"), "{text}");
+    }
+
+    /// A docspace of `n` notes, each with `body`, rendered.
+    fn notes_listing(label: &str, n: usize, body: &str) -> String {
+        let dir = temp_dir(label).join("notes");
+        for i in 0..n {
+            crate::project::write_note(&dir, &format!("n{i:03}.md"), body).unwrap();
+        }
+        project_notes_segment(&ProjectContext {
+            name: "P".into(),
+            notes_dir: dir,
+        })
+        .text
+    }
+
+    fn listed(text: &str) -> usize {
+        text.lines().filter(|l| l.starts_with("  n")).count()
+    }
+
+    /// Backlog 217: the notes list stops at 60 names, and says how many it
+    /// left out and how to reach them; at or under 60 it says nothing.
+    #[test]
+    fn the_notes_list_is_capped_at_sixty_names() {
+        for n in [59, 60] {
+            let text = notes_listing("cap", n, "# short\n");
+            assert_eq!(listed(&text), n, "{text}");
+            assert!(!text.contains("more (use the tools"), "{text}");
+        }
+        let text = notes_listing("cap", 61, "# short\n");
+        assert_eq!(listed(&text), 60, "{text}");
+        assert!(
+            text.contains("  …and 1 more (use the tools to list them)\n"),
+            "{text}"
+        );
+    }
+
+    /// The token cap binds before the name cap when the lines are long.
+    #[test]
+    fn the_notes_list_is_capped_at_fifteen_hundred_tokens() {
+        let body = format!("# {}\n", "word ".repeat(40));
+        let text = notes_listing("tokens", 55, &body);
+        let shown = listed(&text);
+        assert!(shown > 0 && shown < 55, "{shown}");
+        let listing: String = text
+            .lines()
+            .filter(|l| l.starts_with("  n"))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        assert!(
+            nightloom_core::estimate_tokens(&listing) <= LIST_TOKEN_CAP,
+            "{listing}"
+        );
+        assert!(
+            text.contains(&format!("…and {} more (use the tools", 55 - shown)),
+            "{text}"
+        );
+    }
+
+    /// The how-to is the path and what reaches it, not a paragraph.
+    #[test]
+    fn the_notes_how_to_is_trimmed_to_the_path() {
+        let text = notes_listing("howto", 1, "# one\n");
+        assert!(
+            text.contains(".agents/<name>") || text.contains("notes/<name>"),
+            "{text}"
+        );
+        assert!(
+            !text.contains("a note can be found without being read first"),
+            "{text}"
+        );
+        assert!(!text.contains("Read one with read_file"), "{text}");
+        assert!(text.contains("Only this index is loaded"), "{text}");
+    }
+
+    /// The vault's name cap: 150 short notes would fit its byte budget, but
+    /// only 60 are listed, and the root line counts the rest.
+    #[test]
+    fn the_vault_list_is_capped_at_sixty_names() {
+        let dir = temp_dir("vault-cap").join("vault");
+        for i in 0..150 {
+            crate::project::write_note(&dir, &format!("v{i:03}.md"), "x").unwrap();
+        }
+        let text = knowledge_segment(&KnowledgeContext { dir }).text;
+        let shown = text.lines().filter(|l| l.starts_with("  v")).count();
+        assert_eq!(shown, 60, "{text}");
+        assert!(text.contains("… 90 more at the vault root"), "{text}");
+        assert!(!text.contains("Reach a note at"), "{text}");
+    }
+
+    /// No note renders as `— ---` (his vault: every note opens with front
+    /// matter).
+    #[test]
+    fn front_matter_never_renders_as_the_description() {
+        let text = notes_listing(
+            "fm",
+            2,
+            "---\ndescription: The real description\n---\n# H\n",
+        );
+        assert!(!text.contains("— ---"), "{text}");
+        assert!(text.contains("— The real description"), "{text}");
     }
 
     #[test]
