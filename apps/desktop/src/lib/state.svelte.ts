@@ -45,6 +45,7 @@ import {
   type ChatChoices,
 } from "./chatChoice";
 import { madeChatRow, refreshWithin, withNote, withoutNote } from "./afterWrite";
+import { runLaunch } from "./launch.svelte";
 import { EDITABLE_LAYERS } from "./types";
 import { LIST_SCOPE, NEW_CHAT_SCOPE, UndoHistory } from "./undo";
 import { chatName, notifyNeedsYou, notifyTurnEnd } from "./notify";
@@ -1463,44 +1464,60 @@ export async function init(): Promise<void> {
   } catch (e) {
     app.error = String(e);
   }
-  await refreshProjects();
-  // Reopen where the user left off *before* connecting: the project decides
-  // the workspace, so connecting first would root the tools at the previous
-  // folder and then immediately re-connect to correct it.
-  const lastProject = loadLastProject();
-  if (lastProject && app.projects.some((p) => p.id === lastProject)) {
-    try {
-      app.project = await api.openProject(lastProject);
+  // The launch (item 220, 2026-09-26; `launch.svelte.ts`): ~~each step
+  // awaited in turn, the connect last~~ — the window showed an empty app
+  // saying "not connected" for 7–86 s on 2026-09-25. Now the launch screen
+  // covers the list read and the reopen, and the connect runs beside the
+  // reads. Still in order: reopen where the user left off *before*
+  // connecting — the project decides the workspace, so connecting first
+  // would root the tools at the previous folder and then re-connect.
+  await runLaunch({
+    listProjects: refreshProjects,
+    lastProject: () => {
+      const id = loadLastProject();
+      const row = id ? app.projects.find((p) => p.id === id) : undefined;
+      return row ? { id: row.id, name: row.name } : null;
+    },
+    openProject: async (id) => {
+      app.project = await api.openProject(id);
       // Opening bumps last-opened on the backend, so the list read a
-      // moment ago is already stale in its ordering.
-      await refreshProjects();
-    } catch {
-      // A project whose folder vanished must not stop the app launching.
-      saveLastProject(null);
-    }
-  }
-  // No chat is open at launch, so the next one is of the default kind
-  // (nightshift backlog 102) — said to the backend before the engine is
-  // built, since `connect` roots a Chat in the neutral folder.
-  app.pendingKind = defaultKind();
-  try {
-    await api.newSession(undefined, app.pendingKind);
-  } catch {
-    // The first New chat click sends it again.
-  }
-  await refreshSessions();
-  await refreshKnowledge();
-  await refreshProjectsFolder();
-  await refreshNotes();
-  await refreshDreamStatus();
-  await refreshCaptureStatus();
-  await autoConnect();
-  // Each chat's model and engine are put back from here on (backlog 205):
-  // before this the draft is still being read and the launch connect made.
-  chatChoice.ready = true;
-  // The tabs he left open (backlog 201), once the lists that decide which
-  // survive are read and the engine is connected.
-  await restoreTabs();
+      // moment ago is stale in its ordering — re-read behind the launch.
+      void refreshProjects();
+    },
+    // A project whose folder vanished must not stop the app launching.
+    forgetLastProject: () => saveLastProject(null),
+    // No chat is open at launch, so the next one is of the default kind
+    // (nightshift backlog 102) — said to the backend before the engine is
+    // built, since `connect` roots a Chat in the neutral folder. A failure
+    // is fine: the first New chat click sends it again.
+    newSession: async () => {
+      app.pendingKind = defaultKind();
+      await api.newSession(undefined, app.pendingKind);
+    },
+    connect: autoConnect,
+    reads: [
+      ["refreshSessions", refreshSessions],
+      // The memory proposals `refreshNotes` lists need the vault first.
+      ["refreshKnowledge+Notes", async () => {
+        await refreshKnowledge();
+        await refreshNotes();
+      }],
+      ["refreshProjectsFolder", refreshProjectsFolder],
+      ["refreshDreamStatus", refreshDreamStatus],
+      ["refreshCaptureStatus", refreshCaptureStatus],
+    ],
+    after: async () => {
+      // Each chat's model and engine are put back from here on (backlog
+      // 205): before this the draft is still being read and the launch
+      // connect made.
+      chatChoice.ready = true;
+      // The tabs he left open (backlog 201), once the lists that decide
+      // which survive are read and the engine is connected.
+      await restoreTabs();
+    },
+    mark: (step, ms, detail) => void api.startupMark(step, ms, detail).catch(() => {}),
+    now: () => performance.now(),
+  });
 }
 
 // ---- projects ----

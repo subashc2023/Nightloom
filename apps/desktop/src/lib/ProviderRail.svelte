@@ -25,6 +25,7 @@
     usePrompt,
   } from "./state.svelte";
   import * as api from "./api";
+  import { launch } from "./launch.svelte";
   import { fmtTokens } from "./tokens";
   import {
     AGENT_MODELS,
@@ -568,7 +569,8 @@
   <div class="status" use:tip={app.connection?.workspace ?? ""}>
     {#if app.applyPending}
       <span class="dot pending"></span><span class="dim">applying…</span>
-    {:else if app.connecting}
+    {:else if app.connecting || (!app.connection && !launch.connectSettled)}
+      <!-- Until the launch connect has ended, too (item 220). -->
       <span class="dot pending"></span><span class="dim">connecting…</span>
     {:else if app.connection}
       <span class="dot ok"></span>

@@ -69,9 +69,17 @@
   import TerminalDock from "./lib/TerminalDock.svelte";
   import Icon from "./lib/Icon.svelte";
   import { externalHref } from "./lib/extlink";
+  import LaunchScreen from "./lib/LaunchScreen.svelte";
+  import { launch } from "./lib/launch.svelte";
 
   onMount(() => {
-    void init();
+    // A launch that fails outright must not leave the launch screen up
+    // over the reason (item 220).
+    void init().catch((e: unknown) => {
+      launch.opening = false;
+      launch.connectSettled = true;
+      app.error = String(e);
+    });
     // The stored zoom back on the window, and the View menu's zoom items
     // (nightshift backlog 108).
     void initZoom();
@@ -539,6 +547,9 @@
     style:grid-template-columns="{app.layout.sidebarCollapsed ? 0 : sidebarColumn()}px minmax(0, 1fr)"
   >
     <Sidebar />
+    <!-- The launch screen (item 220): over the app until the project list
+         is read and the last project has reopened. -->
+    {#if launch.opening}<LaunchScreen />{/if}
     {#if app.layout.sidebarCollapsed}
       <button class="side-expand" use:tip={"Show sidebar (⌘\\)"} onclick={() => toggleSidebar()}>
         <Icon name="chevr" size={12} />
