@@ -29,6 +29,12 @@
   import { hasDraft, newDraftKey } from "./drafts.svelte";
   import TerminalButton from "./TerminalButton.svelte";
   import { forkLine } from "./edit";
+  import {
+    sidebarRows,
+    loadOpen as loadForksOpen,
+    saveOpen as saveForksOpen,
+    toggled as toggledForks,
+  } from "./forkTree";
   import { findChord } from "./find";
   import { findBar } from "./search";
   import { isMac } from "./platform";
@@ -77,6 +83,15 @@
   function startOfKind(kind: ChatKind) {
     kinds = false;
     void newSession(undefined, kind);
+  }
+
+  // Forks under their origin (backlog 207): which origins are open is kept
+  // across launches; a closed group holding the open chat shows anyway.
+  let forksOpen = $state<Set<string>>(loadForksOpen());
+  const rows = $derived(sidebarRows(app.sessions, forksOpen, app.activeSessionId));
+  function toggleForks(id: string) {
+    forksOpen = toggledForks(forksOpen, id);
+    saveForksOpen(forksOpen);
   }
 
   function confirmDelete() {
@@ -496,8 +511,9 @@
       </p>
     {:else}
       <div class="session-list">
-        {#each app.sessions as s (s.id)}
-          <div class="session-item" class:active={s.id === app.activeSessionId}>
+        {#each rows as r (r.meta.id)}
+          {@const s = r.meta}
+          <div class="session-item" class:active={s.id === app.activeSessionId} class:fork={r.depth === 1}>
             {#if renaming === s.id}
               <!-- svelte-ignore a11y_autofocus -->
               <input
@@ -541,9 +557,24 @@
                      parent's name as its own row shows it, or that the
                      parent is gone. -->
                 <span class="meta"
-                  >{s.id.slice(0, 8)}{#if s.kind === "chat"} · chat{/if}{#if s.mode === "incognito"} · incognito{/if} · {relativeTime(s.modified)}{#if forkLine(s, app.sessions)} · <span class="from" use:tip={"Forked from that chat; the parent is unchanged"}>{forkLine(s, app.sessions)}</span>{/if}</span
+                  >{s.id.slice(0, 8)}{#if s.kind === "chat"} · chat{/if}{#if s.mode === "incognito"} · incognito{/if} · {relativeTime(s.modified)}{#if (r.depth === 0 || r.fromOther) && forkLine(s, app.sessions)} · <span class="from" use:tip={"Forked from that chat; the parent is unchanged"}>{forkLine(s, app.sessions)}</span>{/if}</span
                 >
               </button>
+              <!-- The origin's forks (backlog 207): a chevron and the count,
+                   always shown on a row that has any; closed by default. -->
+              {#if r.forks > 0}
+                {@const shown = r.expanded}
+                <button
+                  class="forks-btn"
+                  class:open={shown}
+                  aria-expanded={shown}
+                  aria-label={`${shown ? "Hide" : "Show"} ${r.forks} fork${r.forks === 1 ? "" : "s"}`}
+                  use:tip={`${shown ? "Hide" : "Show"} the ${r.forks === 1 ? "chat" : `${r.forks} chats`} forked from this one`}
+                  onclick={() => toggleForks(s.id)}
+                >
+                  <Icon name="chevr" size={11} />{r.forks}
+                </button>
+              {/if}
               <button
                 class="rename-btn"
                 use:tip={"Rename session"}
@@ -1352,5 +1383,49 @@
 
   .rename-btn:hover {
     color: var(--text);
+  }
+
+  /* Forks under their origin (backlog 207): one indent step with a thin
+     rule at its left, so the group reads as belonging to the row above. */
+  .session-item.fork {
+    margin-left: 0.9rem;
+    position: relative;
+  }
+  .session-item.fork::before {
+    content: "";
+    position: absolute;
+    left: -0.45rem;
+    top: 4px;
+    bottom: 4px;
+    width: 1px;
+    background: var(--line2);
+  }
+  /* The disclosure: chevron and count, always visible on a row that has
+     forks; the chevron turns down when the group is open. */
+  .forks-btn {
+    flex-shrink: 0;
+    align-self: center;
+    display: inline-flex;
+    align-items: center;
+    gap: 1px;
+    margin-right: 0.25rem;
+    padding: 2px 5px 2px 3px;
+    border: none;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--dim);
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    cursor: pointer;
+  }
+  .forks-btn:hover {
+    background: var(--line);
+    color: var(--text);
+  }
+  .forks-btn :global(.ns-ico) {
+    transition: transform 0.12s;
+  }
+  .forks-btn.open :global(.ns-ico) {
+    transform: rotate(90deg);
   }
 </style>
