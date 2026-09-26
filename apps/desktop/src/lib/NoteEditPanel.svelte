@@ -2,9 +2,10 @@
   import { tip } from "./tip";
   /**
    * The small chat on the right of a note (nightshift backlog 151): he says
-   * what changed, a model rewrites the whole note to fit, and the new text
-   * streams into the note (`NoteView` draws it). Everything lives in
-   * `noteEdit.svelte.ts`, so a rewrite lands however this panel is left and
+   * what changed, a model edits the note's file to fit (the Edit tool, on
+   * that one path — pass 2), and each edit shows in the note as it lands
+   * (`NoteView` draws it). Everything lives in `noteEdit.svelte.ts`, so a
+   * turn lands however this panel is left and
    * the half-typed request is there when it opens again.
    */
   import { onMount, tick } from "svelte";
@@ -75,9 +76,8 @@
     return `+${added} −${removed} line${added + removed === 1 ? "" : "s"}`;
   }
 
-  function streamedLines(turn: NoteEditTurn): number {
-    const p = turn.partial ?? "";
-    return p === "" ? 0 : p.split("\n").length;
+  function plural(n: number, word: string): string {
+    return `${n} ${word}${n === 1 ? "" : "s"}`;
   }
 </script>
 
@@ -92,8 +92,8 @@
     {#if turns.length === 0}
       <p class="hint">
         Say what changed — "we dropped the neutral folder; update everything that assumes it" —
-        and the model rewrites the whole note to fit, streaming it in. It has no tools: it can
-        change this note's text and nothing else. Each edit can be undone.
+        and the model edits the note to fit; each edit shows as it lands. It can read and edit
+        this note's file and nothing else. Each request can be undone in one step.
       </p>
     {/if}
     {#each turns as turn (turn.id)}
@@ -101,10 +101,16 @@
         {#if turn.status !== "kept"}<div class="ask">{turn.request}</div>{/if}
         <div class="said" class:bad={turn.status === "failed"}>
           {#if turn.status === "running"}
-            <span class="working">Rewriting the note… {streamedLines(turn)} line{streamedLines(turn) === 1 ? "" : "s"} so far</span>
+            {#if turn.partial}<p>{turn.partial}</p>{/if}
+            <span class="working">Editing the note… {plural(turn.edits ?? 0, "edit")} so far</span>
           {:else if turn.status === "applied" || turn.status === "undone"}
             {#if turn.summary}<p>{turn.summary}</p>{/if}
-            <span class="meta">{lines(turn)} · saved{turn.status === "undone" ? " · undone" : ""}</span>
+            {#if turn.error}<span class="meta warn">{turn.error}</span><br />{/if}
+            <span class="meta"
+              >{turn.edits !== undefined ? `${plural(turn.edits, "edit")} · ` : ""}{lines(turn)} · saved{turn.status === "undone"
+                ? " · undone"
+                : ""}</span
+            >
           {:else if turn.status === "unchanged"}
             <p>{turn.summary || "Nothing needed to change."}</p>
             <span class="meta">no change</span>
@@ -112,7 +118,11 @@
             {#if turn.summary}<p>{turn.summary}</p>{/if}
             <span class="meta warn">{turn.error}</span>
           {:else if turn.status === "stopped"}
-            <span class="meta">stopped — the note is as it was</span>
+            <span class="meta"
+              >{turn.after !== undefined && turn.after !== turn.before
+                ? "cut off when the window closed — the edits that landed stay; Undo puts the note back"
+                : "stopped — the note is as it was"}</span
+            >
           {:else if turn.status === "kept"}
             <span class="meta">{turn.summary}</span>
           {:else}
@@ -129,7 +139,7 @@
                 onclick={() => void undoNoteEdit(scope, name, text)}>Undo</button
               >
             {/if}
-            {#if turn.status !== "failed" && turn.status !== "stopped" && turn.status !== "unchanged"}
+            {#if turn.status !== "failed" && turn.status !== "unchanged" && (turn.status !== "stopped" || turn.after !== undefined)}
               <button
                 class="link"
                 use:tip={turn.status === "kept"
@@ -168,7 +178,7 @@
         <button class="send" disabled={disabled || !draft.trim()} onclick={send}>Send</button>
       {/if}
     </div>
-    <span class="model">on {model} · no tools</span>
+    <span class="model">on {model} · reads and edits this file only</span>
   </footer>
 </aside>
 

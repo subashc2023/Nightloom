@@ -1,18 +1,26 @@
 /**
  * Edit a note by prompt (nightshift backlog 151) — the live part: every
  * note's side chat, kept in localStorage the way the drafts are, and the
- * rewrite itself. Here rather than in the panel so a rewrite finishes and
+ * edit turn itself. Here rather than in the panel so a turn finishes and
  * lands however the view is left: the panel closed, another note opened,
  * the note's pane gone.
+ *
+ * Pass 2 (blocker 414): the model edits the note's file with the Edit tool,
+ * on that one path; each Edit that lands arrives as `note-edit-landed` with
+ * the file's text, and the note's views show it with the changed lines
+ * marked. The window writes the file only for Undo and for the buffer he
+ * sends from (the command writes that, so the model edits what he sees).
  *
  * His text is never lost (practices §7):
  * - the half-typed request is the thread's `draft`, stored as he types, so
  *   closing the panel or the note keeps it;
- * - every exchange keeps the note as it was before (`before`), which is
- *   what Undo restores and what "Put back as a draft" offers;
- * - the note is written only from a whole reply; a reply with no end
- *   marker, or one for a note whose project changed meanwhile, becomes an
- *   unsaved draft instead (Revert drops it);
+ * - every exchange keeps the note as it was before the turn (`before`),
+ *   which is what Undo restores and what "Earlier text as a draft" offers;
+ * - an unsaved draft he sends from goes to the file first; the saved text
+ *   it replaced is kept as a `kept` entry;
+ * - while a turn runs, every view of the note shows it read-only (the
+ *   editor is swapped out), so nothing can be typed into the note for an
+ *   Edit to land over; the request box stays his;
  * - Undo over text that differs from what the model left keeps that text
  *   as a `kept` entry first.
  */
@@ -26,7 +34,6 @@ import {
   emptyThread,
   parseThreads,
   serializeThreads,
-  splitReply,
   today,
   undoable,
   type NoteEditThread,
@@ -111,20 +118,37 @@ function land(key: string, l: Landed): void {
   for (const fn of listeners.get(key) ?? []) fn(l);
 }
 
-/** The exchange whose reply is streaming, by `seq`. */
+/** The exchange whose turn is running, by `seq`. */
 const live = new Map<number, NoteEditTurn>();
 let nextSeq = Date.now();
 let listening = false;
 
-/** The delta listener, once — from the panel's mount. */
+/** The model's text streaming in, for the panel. */
+export function onNoteEditDelta(seq: number, text: string): void {
+  const t = live.get(seq);
+  if (t && t.status === "running") t.partial = (t.partial ?? "") + text;
+}
+
+/** One Edit landed: the file now reads `text`. Every view of the note
+ *  shows it (they read `current` while the turn runs). */
+export function onNoteEditLanded(seq: number, text: string, edits: number): void {
+  const t = live.get(seq);
+  if (!t || t.status !== "running") return;
+  t.current = text;
+  t.edits = edits;
+}
+
+/** The two listeners, once — from the panel's mount. */
 export async function initNoteEditEvents(): Promise<void> {
   if (listening) return;
   listening = true;
   try {
-    await listen<{ seq: number; text: string }>("note-edit-delta", (e) => {
-      const t = live.get(e.payload.seq);
-      if (t && t.status === "running") t.partial = (t.partial ?? "") + e.payload.text;
-    });
+    await listen<{ seq: number; text: string }>("note-edit-delta", (e) =>
+      onNoteEditDelta(e.payload.seq, e.payload.text),
+    );
+    await listen<{ seq: number; text: string; edits: number }>("note-edit-landed", (e) =>
+      onNoteEditLanded(e.payload.seq, e.payload.text, e.payload.edits),
+    );
   } catch {
     listening = false;
   }
@@ -141,9 +165,9 @@ export function runningTurn(key: string): NoteEditTurn | null {
 const seqOf = new Map<string, number>();
 
 /**
- * Rewrite the note `scope:name`, whose text in the editor is `before`, to
- * fit the thread's request. The note is written through `saveNote` — the
- * editor's own Save — only when the reply is whole.
+ * Edit the note `scope:name`, whose text in the editor is `before`, to fit
+ * the thread's request. The model edits the file; this records the turn
+ * and hands each view the final text.
  */
 export async function runNoteEdit(scope: NoteScope, name: string, before: string): Promise<void> {
   const key = noteDraftKey(scope, name);
@@ -159,9 +183,10 @@ export async function runNoteEdit(scope: NoteScope, name: string, before: string
     status: "running",
     before,
     partial: "",
+    edits: 0,
   };
   t.turns.push(turn);
-  // The proxy, so the delta listener's writes are seen by the views.
+  // The proxy, so the listeners' writes are seen by the views.
   const row = t.turns[t.turns.length - 1];
   live.set(seq, row);
   seqOf.set(key, seq);
@@ -172,6 +197,7 @@ export async function runNoteEdit(scope: NoteScope, name: string, before: string
   const d = app.draft;
   try {
     const r = await api.editNoteByPrompt({
+      scope,
       name,
       text: before,
       request,
@@ -183,69 +209,57 @@ export async function runNoteEdit(scope: NoteScope, name: string, before: string
       safeMode: d.agentSafeMode,
     });
     for (const n of r.notices) addToast(n);
-    await finish(scope, name, key, row, r);
+    finish(key, t, row, r);
   } catch (e) {
+    // Refused before the model ran (no project open, a bad name): the
+    // note is as it was.
     row.status = "failed";
     row.error = String(e);
   } finally {
     live.delete(seq);
     seqOf.delete(key);
     row.partial = undefined;
+    row.current = undefined;
     t.touched = new Date().toISOString();
     flushNoteEdits();
   }
 }
 
-async function finish(
-  scope: NoteScope,
-  name: string,
-  key: string,
-  row: NoteEditTurn,
-  r: api.NoteEditResult,
-): Promise<void> {
-  if (r.interrupted) {
-    row.status = "stopped";
-    return;
+function finish(key: string, t: NoteEditThread, row: NoteEditTurn, r: api.NoteEditResult): void {
+  if (r.was_on_disk !== null && r.was_on_disk !== row.before) {
+    // His unsaved draft went to the file so the model would edit what he
+    // saw; the text it replaced is kept, just before this exchange.
+    t.turns.splice(t.turns.indexOf(row), 0, {
+      id: nextSeq++,
+      request: "",
+      strike: t.strike,
+      at: row.at,
+      status: "kept",
+      before: r.was_on_disk,
+      summary: "The file as it was saved before your unsaved text went in, kept here.",
+    });
   }
-  const split = splitReply(r.reply, row.before);
-  row.summary = split.summary;
-  const after = split.note;
-  if (after.trim() === "" && row.before.trim() !== "") {
-    row.status = "failed";
-    row.error = "the model returned an empty note — nothing was changed";
+  // The buffer he sent from is in the file now; a draft that held it is
+  // no longer a draft (and would otherwise come back over the model's
+  // edits the next time the note opens).
+  if (app.noteDrafts[key] === row.before) delete app.noteDrafts[key];
+  row.summary = r.summary;
+  row.edits = r.edits;
+  const after = r.text;
+  if (after === row.before) {
+    row.status = r.interrupted ? "stopped" : r.error ? "failed" : "unchanged";
+    if (r.error) row.error = r.error;
     return;
   }
   row.after = after;
-  if (after === row.before) {
-    row.status = "unchanged";
-    return;
-  }
-  const marks = changedLines(row.before, after);
-  // Another project took the app meanwhile: `saveNote` would write this
-  // name in *that* project. The result waits as this note's draft.
-  const sameProject = noteDraftKey(scope, name) === key;
-  if (!split.complete || !sameProject) {
-    app.noteDrafts[key] = after;
-    row.status = "draft";
-    row.error = !split.complete
-      ? "the reply had no end marker, so it may be cut off — it is in the editor unsaved; Save keeps it, Revert drops it"
-      : "the project changed while this ran — the result is this note's unsaved draft";
-    land(key, { text: after, saved: false, marks });
-    return;
-  }
-  if (await saveNote(scope, name, after)) {
-    delete app.noteDrafts[key];
-    row.status = "applied";
-    land(key, { text: after, saved: true, marks });
-  } else {
-    app.noteDrafts[key] = after;
-    row.status = "draft";
-    row.error = "the save failed — the result is in the editor unsaved";
-    land(key, { text: after, saved: false, marks });
-  }
+  row.status = "applied";
+  if (r.interrupted) row.error = `stopped after ${r.edits} edit${r.edits === 1 ? "" : "s"} — they stay; Undo puts the note back`;
+  else if (r.error) row.error = `${r.error} — the edits that landed stay; Undo puts the note back`;
+  land(key, { text: after, saved: true, marks: changedLines(row.before, after) });
 }
 
-/** Stop the running rewrite on `key`. The note is untouched. */
+/** Stop the running turn on `key`. Edits that landed stay; Undo puts the
+ *  note back. */
 export async function stopNoteEdit(key: string): Promise<void> {
   const seq = seqOf.get(key);
   if (seq === undefined) return;
@@ -257,7 +271,7 @@ export async function stopNoteEdit(key: string): Promise<void> {
 }
 
 /**
- * Undo the newest applied edit: the note goes back to its text before it,
+ * Undo the newest edit: the note goes back to its text before that turn,
  * saved, in one step. `current` is the editor's text; when it is not what
  * the model left (he typed since), it is kept as an entry first.
  */

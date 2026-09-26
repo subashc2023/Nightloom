@@ -1,21 +1,24 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "./api";
 import { app, noteDraftKey } from "./state.svelte";
-import { END_MARKER } from "./noteEdit";
 import {
   noteEdits,
   onLanded,
+  onNoteEditDelta,
+  onNoteEditLanded,
   runNoteEdit,
+  runningTurn,
   setRequestDraft,
   undoNoteEdit,
   type Landed,
 } from "./noteEdit.svelte";
 
-// Edit a note by prompt (nightshift backlog 151), the live part: a whole
-// reply is saved and handed to the view with its marks; nothing else ever
-// writes the note; a stop, a failure, an empty or cut-off reply leave the
-// note as it was (or as an unsaved draft); Undo restores in one step and
-// keeps text it would overwrite; the half-typed request is kept.
+// Edit a note by prompt (nightshift backlog 151, pass 2), the live part:
+// the model edits the file; each landed Edit shows while the turn runs;
+// the window never writes the note except for Undo; a stop or a failure
+// keeps the edits that landed and Undo puts the note back in one step;
+// Undo keeps text it would overwrite; the saved text a sent draft replaced
+// is kept; the half-typed request is kept.
 
 vi.mock("./api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./api")>()),
@@ -30,11 +33,16 @@ const edit = vi.mocked(api.editNoteByPrompt);
 const save = vi.mocked(api.saveNote);
 const BEFORE = "# Plan\n- use the neutral folder\n";
 const AFTER = "# Plan\n- ~~use the neutral folder~~ (2026-09-25)\n- no neutral folder\n";
-const reply = (note: string, summary = "Struck the neutral folder.") => ({
-  reply: `${note}${END_MARKER}\n${summary}`,
+const result = (text: string, extra: Partial<api.NoteEditResult> = {}): api.NoteEditResult => ({
+  text,
+  summary: "Struck the neutral folder.",
+  edits: 1,
   interrupted: false,
+  error: null,
+  was_on_disk: null,
   cost_usd: null,
   notices: [],
+  ...extra,
 });
 
 describe("runNoteEdit", () => {
@@ -51,20 +59,50 @@ describe("runNoteEdit", () => {
     onLanded(key, (l) => landed.push(l));
   });
 
-  it("saves the whole reply, once, to this note, and marks what changed", async () => {
-    edit.mockResolvedValueOnce(reply(AFTER));
+  it("sends the buffer and the request for this note, never writes the note itself, and marks what changed", async () => {
+    edit.mockResolvedValueOnce(result(AFTER));
     setRequestDraft(key, "we dropped the neutral folder");
     await runNoteEdit("knowledge", "plan.md", BEFORE);
-    // What the model was sent: the editor's text and the request.
     expect(edit).toHaveBeenCalledTimes(1);
-    expect(edit.mock.calls[0][0]).toMatchObject({ name: "plan.md", text: BEFORE, request: "we dropped the neutral folder", strike: true });
-    // Written once, this note only, with the model's text.
-    expect(save.mock.calls).toEqual([["knowledge", "plan.md", AFTER]]);
+    expect(edit.mock.calls[0][0]).toMatchObject({
+      scope: "knowledge",
+      name: "plan.md",
+      text: BEFORE,
+      request: "we dropped the neutral folder",
+      strike: true,
+    });
+    // The model wrote the file; the window did not.
+    expect(save).not.toHaveBeenCalled();
     expect(landed).toEqual([{ text: AFTER, saved: true, marks: [1, 2] }]);
     const t = noteEdits[key].turns[0];
-    expect(t).toMatchObject({ status: "applied", before: BEFORE, after: AFTER, summary: "Struck the neutral folder." });
+    expect(t).toMatchObject({ status: "applied", before: BEFORE, after: AFTER, edits: 1, summary: "Struck the neutral folder." });
+    expect(t.current).toBeUndefined();
     // The box empties once sent; the request lives in the exchange.
     expect(noteEdits[key].draft).toBe("");
+  });
+
+  it("shows each Edit as it lands, and the model's text, while the turn runs", async () => {
+    let seq = 0;
+    let resolve!: (r: api.NoteEditResult) => void;
+    edit.mockImplementationOnce((args) => {
+      seq = args.seq;
+      return new Promise((r) => (resolve = r));
+    });
+    setRequestDraft(key, "x");
+    const running = runNoteEdit("knowledge", "plan.md", BEFORE);
+    const mid = "# Plan\n- ~~use the neutral folder~~ (2026-09-25)\n";
+    onNoteEditLanded(seq, mid, 1);
+    onNoteEditDelta(seq, "Struck ");
+    expect(runningTurn(key)).toMatchObject({ current: mid, edits: 1, partial: "Struck " });
+    // A landed event for another exchange is not this one's.
+    onNoteEditLanded(seq + 999, "other", 5);
+    expect(runningTurn(key)?.current).toBe(mid);
+    onNoteEditLanded(seq, AFTER, 2);
+    expect(runningTurn(key)?.current).toBe(AFTER);
+    resolve(result(AFTER, { edits: 2 }));
+    await running;
+    expect(runningTurn(key)).toBeNull();
+    expect(noteEdits[key].turns[0]).toMatchObject({ status: "applied", edits: 2 });
   });
 
   it("does nothing with an empty request", async () => {
@@ -73,8 +111,8 @@ describe("runNoteEdit", () => {
     expect(edit).not.toHaveBeenCalled();
   });
 
-  it("a stopped rewrite leaves the note untouched", async () => {
-    edit.mockResolvedValueOnce({ ...reply("# Pl"), interrupted: true });
+  it("a stop before any edit leaves the note as it was", async () => {
+    edit.mockResolvedValueOnce(result(BEFORE, { interrupted: true, edits: 0 }));
     setRequestDraft(key, "x");
     await runNoteEdit("knowledge", "plan.md", BEFORE);
     expect(save).not.toHaveBeenCalled();
@@ -82,46 +120,66 @@ describe("runNoteEdit", () => {
     expect(noteEdits[key].turns[0].status).toBe("stopped");
   });
 
-  it("a failed rewrite leaves the note untouched and says why", async () => {
-    edit.mockRejectedValueOnce("the note editor's Claude Code turn failed: boom");
+  it("a stop after an edit keeps it, says so, and Undo puts the note back", async () => {
+    const half = "# Plan\n- ~~use the neutral folder~~ (2026-09-25)\n";
+    edit.mockResolvedValueOnce(result(half, { interrupted: true, edits: 1 }));
+    setRequestDraft(key, "x");
+    await runNoteEdit("knowledge", "plan.md", BEFORE);
+    const t = noteEdits[key].turns[0];
+    expect(t).toMatchObject({ status: "applied", after: half });
+    expect(t.error).toContain("stopped after 1 edit");
+    await undoNoteEdit("knowledge", "plan.md", half);
+    expect(save.mock.calls).toEqual([["knowledge", "plan.md", BEFORE]]);
+  });
+
+  it("a turn refused before it ran leaves the note untouched and says why", async () => {
+    edit.mockRejectedValueOnce("no project is open, so there is no shared notes folder");
     setRequestDraft(key, "x");
     await runNoteEdit("knowledge", "plan.md", BEFORE);
     expect(save).not.toHaveBeenCalled();
     expect(noteEdits[key].turns[0]).toMatchObject({ status: "failed" });
+    expect(noteEdits[key].turns[0].error).toContain("no project");
+  });
+
+  it("a CLI failure with nothing landed is a failure; with edits landed they stay", async () => {
+    edit.mockResolvedValueOnce(result(BEFORE, { error: "the note editor's Claude Code turn failed: boom", edits: 0 }));
+    setRequestDraft(key, "x");
+    await runNoteEdit("knowledge", "plan.md", BEFORE);
+    expect(noteEdits[key].turns[0]).toMatchObject({ status: "failed" });
     expect(noteEdits[key].turns[0].error).toContain("boom");
-  });
 
-  it("an empty note from the model is refused", async () => {
-    edit.mockResolvedValueOnce(reply(""));
-    setRequestDraft(key, "x");
+    edit.mockResolvedValueOnce(result(AFTER, { error: "stopped: the model called Write" }));
+    setRequestDraft(key, "y");
     await runNoteEdit("knowledge", "plan.md", BEFORE);
-    expect(save).not.toHaveBeenCalled();
-    expect(noteEdits[key].turns[0].status).toBe("failed");
-  });
-
-  it("a reply with no end marker becomes an unsaved draft, not a save", async () => {
-    edit.mockResolvedValueOnce({ reply: "# Plan\n- cut o", interrupted: false, cost_usd: null, notices: [] });
-    setRequestDraft(key, "x");
-    await runNoteEdit("knowledge", "plan.md", BEFORE);
-    expect(save).not.toHaveBeenCalled();
-    expect(app.noteDrafts[key]).toBe("# Plan\n- cut o");
-    expect(landed[0]).toMatchObject({ saved: false });
-    expect(noteEdits[key].turns[0].status).toBe("draft");
+    expect(noteEdits[key].turns[1]).toMatchObject({ status: "applied", after: AFTER });
+    expect(noteEdits[key].turns[1].error).toContain("Write");
   });
 
   it("an unchanged note is not written", async () => {
-    edit.mockResolvedValueOnce(reply(BEFORE, "Nothing needed to change."));
+    edit.mockResolvedValueOnce(result(BEFORE, { summary: "Nothing needed to change.", edits: 0 }));
     setRequestDraft(key, "x");
     await runNoteEdit("knowledge", "plan.md", BEFORE);
     expect(save).not.toHaveBeenCalled();
     expect(noteEdits[key].turns[0].status).toBe("unchanged");
   });
 
-  it("Undo restores the text before the edit in one step, saved", async () => {
-    edit.mockResolvedValueOnce(reply(AFTER));
+  it("an unsaved draft he sent from: the saved text it replaced is kept, and the stale draft is dropped", async () => {
+    const draft = `${BEFORE}- a line he had not saved\n`;
+    app.noteDrafts[key] = draft;
+    edit.mockResolvedValueOnce(result(AFTER, { was_on_disk: BEFORE }));
+    setRequestDraft(key, "x");
+    await runNoteEdit("knowledge", "plan.md", draft);
+    const turns = noteEdits[key].turns;
+    expect(turns.map((t) => t.status)).toEqual(["kept", "applied"]);
+    expect(turns[0].before).toBe(BEFORE);
+    expect(turns[1].before).toBe(draft);
+    expect(app.noteDrafts[key]).toBeUndefined();
+  });
+
+  it("Undo restores the text before the turn in one step, saved", async () => {
+    edit.mockResolvedValueOnce(result(AFTER));
     setRequestDraft(key, "x");
     await runNoteEdit("knowledge", "plan.md", BEFORE);
-    save.mockClear();
     landed = [];
     await undoNoteEdit("knowledge", "plan.md", AFTER);
     expect(save.mock.calls).toEqual([["knowledge", "plan.md", BEFORE]]);
@@ -130,7 +188,7 @@ describe("runNoteEdit", () => {
   });
 
   it("Undo over text he typed since keeps that text first", async () => {
-    edit.mockResolvedValueOnce(reply(AFTER));
+    edit.mockResolvedValueOnce(result(AFTER));
     setRequestDraft(key, "x");
     await runNoteEdit("knowledge", "plan.md", BEFORE);
     const typed = `${AFTER}- and a line he added\n`;
