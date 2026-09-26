@@ -73,6 +73,91 @@ pub enum TurnEvent {
     Usage {
         usage: Usage,
     },
+    /// What the Claude Code session has, from the CLI's `system/init` line
+    /// — the first line of every turn on that engine (nightshift backlog
+    /// 077, 2026-09-16). The provider engine never emits it. Carried as an
+    /// event rather than folded into the outcome so the shell has it at
+    /// the turn's start, and so a shell that ignores unknown events loses
+    /// nothing: MCP servers with their status, the built-in and MCP tool
+    /// names, the skills, the slash commands, the agents, the CLI's version
+    /// and the permission mode it started in. Under Nightloom's safe mode
+    /// the lists are honestly short (measured: no servers, no skills, no
+    /// slash commands; the agents and built-in tools stay).
+    AgentInit {
+        session_id: Option<String>,
+        model: Option<String>,
+        version: Option<String>,
+        permission_mode: Option<String>,
+        tools: Vec<String>,
+        mcp_servers: Vec<McpServer>,
+        slash_commands: Vec<String>,
+        skills: Vec<String>,
+        agents: Vec<String>,
+    },
+    /// The CLI's predicted next prompt, after the turn's result (nightshift
+    /// backlog 083). Shown as a ghost line in the composer; never sent
+    /// unless accepted. Claude Code engine, and only when asked for.
+    PromptSuggestion {
+        text: String,
+    },
+    /// An event of a subagent's own turn — one the Claude Code CLI spawned
+    /// through its `Agent` tool — carrying the id of the call that spawned
+    /// it (2026-09-16, nightshift backlog 075; `--forward-subagent-text`).
+    /// `event` is the child's text, thinking, call or result exactly as the
+    /// main thread's would be, so a renderer nests it under the parent's
+    /// row and a log keeps it against the parent's id; a nested subagent's
+    /// parent is itself a child's call. Claude Code engine only.
+    Subagent {
+        parent_tool_use_id: String,
+        event: Box<TurnEvent>,
+    },
+    /// A subagent's standing, whole, each time it changes (2026-09-17,
+    /// nightshift backlog 152): the CLI's `task_started`,
+    /// `task_progress` and `task_notification` lines, and each new round
+    /// of the child's own messages, keyed by the spawning call's id. A
+    /// shell replaces its row by `tool_use_id` — the Running-tasks panel
+    /// (type, model, running or done, elapsed, tokens, tool uses) and the
+    /// gauge's "+ subagents" line. Claude Code engine only.
+    SubagentStatus {
+        /// The spawning `Agent` call — the key.
+        tool_use_id: String,
+        /// The CLI's own id for the task (`agent-<id>.jsonl` on disk).
+        task_id: String,
+        subagent_type: String,
+        description: String,
+        /// The task the child was given, as the CLI reports it —
+        /// with the brief in front when the hook put it there.
+        prompt: String,
+        /// `running`, `completed`, `failed`, or whatever the CLI's
+        /// `task_notification.status` said.
+        status: String,
+        background: bool,
+        /// The child's model, from its first message.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        /// The CLI's figure: the latest round's whole request and
+        /// response — what the Claude app's panel shows.
+        tokens: u64,
+        tool_uses: u32,
+        duration_ms: u64,
+        /// The translator's sum over the child's rounds: the prompt side
+        /// from each round's message, the output from the CLI's totals.
+        usage: Usage,
+        /// Rounds seen so far — the child's API calls.
+        rounds: u32,
+    },
+}
+
+/// One MCP server as the CLI's init line lists it (see
+/// [`TurnEvent::AgentInit`]): measured statuses are `connected`,
+/// `pending` and `needs-auth`; the headless reference also names `failed`
+/// with an `error` string.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct McpServer {
+    pub name: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// What the user is sending this turn.
@@ -392,9 +477,12 @@ impl Chat {
         // on a file, the session is still unnamed and will be tried again
         // next turn, and there is no version of "the reply is lost because
         // naming it did not work" that is the right trade.
+        // Never for an ephemeral chat (2026-09-15): a name is for a list,
+        // and this chat is in none — the call would be paid for nothing.
         if self.auto_title
             && matches!(&outcome, Ok(o) if !o.interrupted)
             && session.title().is_none()
+            && session.mode() != nightloom_core::ChatMode::Ephemeral
         {
             let _ = self.title(session, cancel).await;
         }
@@ -483,6 +571,10 @@ impl Chat {
                 }
             }
 
+            // The cache's clock starts here, at the request's start, not
+            // when the reply lands (nightshift backlog 063): a round that
+            // streams for four minutes leaves one on a five-minute entry.
+            let sent_at = chrono::Utc::now();
             let mut stream = self.provider.stream_chat(request).await?;
             let mut blocks = Vec::new();
             let mut text_buf = String::new();
@@ -589,12 +681,14 @@ impl Chat {
                 if !blocks.is_empty() {
                     let reason = if interrupted { "interrupted" } else { "error" };
                     let cost = self.price.map(|p| p.cost(&usage));
-                    session.record_assistant_priced(
+                    session.record_assistant_timed(
                         &self.model,
                         blocks,
                         Some(reason.into()),
                         usage,
                         cost,
+                        sent_at,
+                        self.provider.cache_ttl(),
                     );
                 }
                 if let Some(e) = stream_err {
@@ -620,9 +714,19 @@ impl Chat {
                 });
             }
             // Per round, not per turn: a tool loop bills each round, and the
-            // last one's usage is not the turn's total.
+            // last one's usage is not the turn's total. The cache lifetime
+            // is the adapter's when the usage does not name one, since the
+            // adapter is what asked for the cache and with what `ttl`.
             let cost = self.price.map(|p| p.cost(&usage));
-            session.record_assistant_priced(&self.model, blocks, stop_reason.clone(), usage, cost);
+            session.record_assistant_timed(
+                &self.model,
+                blocks,
+                stop_reason.clone(),
+                usage,
+                cost,
+                sent_at,
+                self.provider.cache_ttl(),
+            );
 
             if calls.is_empty() {
                 return Ok(TurnOutcome {
@@ -966,7 +1070,7 @@ impl Chat {
                 "empty title from provider; session left unnamed".into(),
             ));
         }
-        session.record_title(&title);
+        session.record_title_by(&title, nightloom_core::TitleBy::Model);
         Ok(Some(title))
     }
 }
@@ -1045,7 +1149,7 @@ pub(crate) mod tests {
     use crate::tools::TodoWrite;
     use nightloom_core::TodoStatus;
     use nightloom_core::tool::{Effect, RESULT_LIMIT};
-    use nightloom_core::{EventStream, SessionEvent, ToolDef};
+    use nightloom_core::{CacheTtl, EventStream, SessionEvent, ToolDef};
     use serde_json::json;
     use std::sync::{Arc, Mutex};
 
@@ -1055,6 +1159,9 @@ pub(crate) mod tests {
     struct Scripted {
         scripts: Mutex<Vec<Vec<StreamEvent>>>,
         seen: Arc<Mutex<Vec<ChatRequest>>>,
+        /// What this pretend adapter caches with when a reply does not
+        /// say; `None` like any host the crate cannot vouch for.
+        cache_ttl: Option<CacheTtl>,
     }
 
     type Seen = Arc<Mutex<Vec<ChatRequest>>>;
@@ -1069,8 +1176,17 @@ pub(crate) mod tests {
             let provider = Box::new(Self {
                 scripts: Mutex::new(scripts),
                 seen: Arc::clone(&seen),
+                cache_ttl: None,
             });
             (provider, seen)
+        }
+
+        fn caching(scripts: Vec<Vec<StreamEvent>>, ttl: CacheTtl) -> Box<dyn Provider> {
+            Box::new(Self {
+                scripts: Mutex::new(scripts),
+                seen: Arc::new(Mutex::new(Vec::new())),
+                cache_ttl: Some(ttl),
+            })
         }
     }
 
@@ -1078,6 +1194,10 @@ pub(crate) mod tests {
     impl Provider for Scripted {
         fn name(&self) -> &'static str {
             "scripted"
+        }
+
+        fn cache_ttl(&self) -> Option<CacheTtl> {
+            self.cache_ttl
         }
 
         async fn stream_chat(&self, request: ChatRequest) -> Result<EventStream, ProviderError> {
@@ -1136,6 +1256,25 @@ pub(crate) mod tests {
     /// the crate conventions.
     pub(crate) fn chat_scripted(scripts: Vec<Vec<StreamEvent>>) -> Chat {
         Chat::new(Scripted::provider(scripts), "scripted-model")
+    }
+
+    /// The same, plus every request the provider was handed, for a test in
+    /// another module that has to assert on what a pass put in front of
+    /// the model rather than only on what came back.
+    pub(crate) fn chat_recording(scripts: Vec<Vec<StreamEvent>>) -> (Chat, Seen) {
+        let (provider, seen) = Scripted::recording(scripts);
+        (Chat::new(provider, "scripted-model"), seen)
+    }
+
+    /// Every message text of every recorded request, joined — the whole of
+    /// what the model was ever shown.
+    pub(crate) fn all_text(seen: &Seen) -> String {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .flat_map(|r| r.messages.iter().map(|m| m.text()))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     fn tail_text(requests: &[ChatRequest], i: usize) -> String {
@@ -2328,6 +2467,84 @@ pub(crate) mod tests {
         assert!((total.usd - expected.iter().sum::<f64>()).abs() < 1e-12);
     }
 
+    /// Every round's message says when its request went out and how long
+    /// the cache it left lives (nightshift backlog 063): the reply's own
+    /// split when it names one, the adapter's lifetime when the round only
+    /// read, nothing on a host with no lifetime to vouch for.
+    #[tokio::test]
+    async fn each_round_records_its_send_time_and_the_adapters_cache_lifetime() {
+        let round = |usage: Usage, events: Vec<StreamEvent>| {
+            let mut v = vec![StreamEvent::Usage(usage)];
+            v.extend(events);
+            v
+        };
+        let wrote_5m = Usage {
+            input_tokens: 1_000,
+            cache_write_tokens: Some(900),
+            cache_write_5m_tokens: Some(900),
+            cache_write_1h_tokens: Some(0),
+            ..Default::default()
+        };
+        let read_only = Usage {
+            input_tokens: 1_500,
+            cache_read_tokens: Some(1_400),
+            cache_write_tokens: Some(0),
+            ..Default::default()
+        };
+        let provider = Scripted::caching(
+            vec![
+                round(wrote_5m, tool_call("current_time", json!({}))),
+                round(read_only, says("half past")),
+            ],
+            CacheTtl::OneHour,
+        );
+        let mut chat = Chat::new(provider, "test-model");
+        chat.tools = crate::tools::builtin();
+        let mut session = Session::new();
+        let before = chrono::Utc::now();
+        let (out, _) = run(&chat, &mut session, "when").await;
+        assert!(out.is_ok());
+
+        let rounds: Vec<(chrono::DateTime<chrono::Utc>, Option<CacheTtl>)> = session
+            .events()
+            .iter()
+            .filter_map(|e| match e {
+                SessionEvent::AssistantMessage {
+                    sent_at, cache_ttl, ..
+                } => Some((sent_at.expect("sent_at recorded"), *cache_ttl)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rounds.len(), 2);
+        assert!(rounds[0].0 >= before && rounds[1].0 >= rounds[0].0);
+        // The reply named five minutes; the adapter's hour does not override it.
+        assert_eq!(rounds[0].1, Some(CacheTtl::FiveMinutes));
+        // A read refreshes the entry for what the adapter writes with.
+        assert_eq!(rounds[1].1, Some(CacheTtl::OneHour));
+
+        // A host with no lifetime to vouch for records the time and no timer.
+        let provider = Scripted::provider(vec![round(
+            Usage {
+                input_tokens: 10,
+                cache_read_tokens: Some(8),
+                ..Default::default()
+            },
+            says("hi"),
+        )]);
+        let chat = Chat::new(provider, "test-model");
+        let mut session = Session::new();
+        let (out, _) = run(&chat, &mut session, "hi").await;
+        assert!(out.is_ok());
+        assert!(matches!(
+            session.events().last().unwrap(),
+            SessionEvent::AssistantMessage {
+                sent_at: Some(_),
+                cache_ttl: None,
+                ..
+            }
+        ));
+    }
+
     #[tokio::test]
     async fn an_unpriced_model_records_no_cost_rather_than_zero() {
         let provider = Scripted::provider(vec![says("hi")]);
@@ -2614,6 +2831,19 @@ pub(crate) mod tests {
             .filter(|e| matches!(e, SessionEvent::Title { .. }))
             .count();
         assert_eq!(names, 1);
+    }
+
+    /// An ephemeral chat is never named, even with titles on: it appears in
+    /// no list, so the call would buy nothing.
+    #[tokio::test]
+    async fn an_ephemeral_chat_is_never_named() {
+        // One script only: a title call would panic the provider.
+        let provider = Scripted::provider(vec![says("reply")]);
+        let mut chat = Chat::new(provider, "test-model");
+        chat.enable_titles();
+        let mut session = Session::ephemeral();
+        let _ = run(&chat, &mut session, "one").await;
+        assert_eq!(session.title(), None);
     }
 
     /// Off unless a shell asks, so the probe and the eval suite are not

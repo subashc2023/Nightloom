@@ -9,26 +9,42 @@
 
 pub mod agent;
 pub mod approval;
+pub mod capture;
+pub mod centre;
+pub mod chat_name;
+pub mod cli_update;
+pub mod council;
 pub mod credentials;
+pub mod credits;
 pub mod dream;
 pub mod import;
 pub mod knowledge;
+pub mod mcp_server;
+pub mod nightshift;
+pub mod note_edit;
 pub mod observe;
+pub mod pass_lock;
+pub mod plan_usage;
 pub mod project;
 pub mod prompt;
+pub mod proposal;
+pub mod remote;
 pub mod sidecar;
 pub mod store;
+pub mod tidy;
 pub mod tools;
 pub mod turn;
+pub mod usage;
 
 pub use agent::{
-    AgentError, AgentOutcome, AgentSpec, ClaudeCodeAgent, Recorder, resolve_binary,
-    searched_locations,
+    AgentError, AgentOutcome, AgentSpec, ClaudeCodeAgent, PassSpec, Recorder, carry_transcript,
+    resolve_binary, searched_locations,
 };
 pub use approval::{Approver, AutoApprove, Decision, PendingCall};
 pub use credentials::{CredentialError, KeySource, provider_key, search_key};
 pub use nightloom_providers::ProviderKind;
-pub use nightloom_providers::limits::context_limit;
+pub use nightloom_providers::count::count_tokens;
+pub use nightloom_providers::limits::{claude_code_window, context_limit};
 pub use nightloom_providers::models::list_models;
 pub use nightloom_providers::pricing::{Price, price};
 /// MCP: tools that live in another process.
@@ -41,7 +57,10 @@ pub mod mcp {
 }
 pub use knowledge::{LinkGraph, vault_dir};
 pub use project::{Note, Project, Registry};
-pub use prompt::{KnowledgeContext, ProjectContext, PromptConfig, assemble};
+pub use prompt::{
+    KnowledgeContext, ProjectContext, PromptConfig, agent_preamble, agent_prompt, assemble,
+    layer_source,
+};
 pub use sidecar::{SidecarContext, SidecarPart};
 pub use turn::{Chat, CompactOutcome, TurnEvent, TurnInput, TurnOutcome};
 

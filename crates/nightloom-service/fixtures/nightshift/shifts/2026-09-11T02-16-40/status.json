@@ -1,0 +1,39 @@
+{
+  "shift_id": "2026-09-11T02-16-40",
+  "pid": 66594,
+  "phase": "done",
+  "phase_started": "2026-09-11T02:41:28",
+  "started": "2026-09-11T02:16:46",
+  "head_at_start": "e7758cbd6b1bf8118c1885667a2d30331adc53a2",
+  "plan": "shifts/2026-09-11T02-16-40/plan.json",
+  "unit_index": 1,
+  "item_id": "017",
+  "pass": 1,
+  "units": [
+    {
+      "n": 1,
+      "item_id": "017",
+      "pass": 1,
+      "started": "2026-09-11T02:16:49",
+      "ended": "2026-09-11T02:31:35",
+      "outcome": "done",
+      "commit": "58d3290d1b31c5dba32e70d36428c1dfa7a0f18d",
+      "cost_usd": 10.444366999999996,
+      "turns": 80,
+      "continuation_commit": "f2851e007d0b473224eafbcc87c91f4b7fbdb8e5",
+      "landing": false
+    }
+  ],
+  "usage": {
+    "five_hour_pct": 51,
+    "weekly_pct": 17,
+    "fable_weekly_pct": 18,
+    "sampled_age_seconds": 80.3,
+    "stale": false
+  },
+  "next_wake": null,
+  "page": "/Users/swaraagsistla/Documents/ComputerScience/PersonalProjects/nightshift/mornings/2026-09-11.md",
+  "review": "notes/reviews/2026-09-11-review-2026-09-11T02-16-40.md",
+  "exit": 0,
+  "updated": "2026-09-11T02:41:28"
+}

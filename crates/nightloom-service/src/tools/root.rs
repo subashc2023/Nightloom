@@ -114,6 +114,16 @@ pub struct Root {
     /// offer one, which is the whole of what "the vault is off" means — there
     /// is no flag to disagree with a tree that is not there.
     vault: Option<Anchor>,
+    /// The extra folders a chat may see (nightshift backlog 143, 2026-09-17),
+    /// each reached as `@<alias>/…` the way the vault is — ~~never an
+    /// open-ended set~~: the set is still closed and named, it is just no
+    /// longer at most one. The argument above for the vault transfers to
+    /// these: a folder the project's content lives in that is not the
+    /// project's home cannot be moved inside it, and a chat that must read
+    /// and edit there needs a tree, not a workaround. The alias is the
+    /// folder's leaf name ([`folder_alias`]), made unique in order of
+    /// grant; `@kb` stays the vault's.
+    extras: Vec<(String, Anchor)>,
 }
 
 impl Root {
@@ -121,7 +131,52 @@ impl Root {
         Self {
             tree: Anchor::new(absolutize(path.into())),
             vault: None,
+            extras: Vec::new(),
         }
+    }
+
+    /// Grant an extra folder, addressed `@<alias>/…` (nightshift backlog
+    /// 143). The alias is derived from the folder's name and made unique
+    /// against the vault's and the ones already granted (`notes`, `notes-2`,
+    /// …); the folder itself is not checked for existence, like the
+    /// workspace. A folder already granted, or the workspace or vault
+    /// itself, is skipped. Returns the alias it went in under, or `None`
+    /// when it was skipped.
+    pub fn with_extra(mut self, path: impl Into<PathBuf>) -> Self {
+        self.add_extra(path);
+        self
+    }
+
+    /// The same grant on a root already built; see [`with_extra`](Self::with_extra).
+    pub fn add_extra(&mut self, path: impl Into<PathBuf>) -> Option<String> {
+        let path = absolutize(path.into());
+        if path == self.tree.path
+            || self.vault.as_ref().is_some_and(|v| v.path == path)
+            || self.extras.iter().any(|(_, a)| a.path == path)
+        {
+            return None;
+        }
+        let base = folder_alias(&path);
+        let taken = |alias: &str| {
+            alias == VAULT_ALIAS.trim_start_matches('@')
+                || self.extras.iter().any(|(a, _)| a == alias)
+        };
+        let mut alias = base.clone();
+        let mut n = 2;
+        while taken(&alias) {
+            alias = format!("{base}-{n}");
+            n += 1;
+        }
+        self.extras.push((alias.clone(), Anchor::new(path)));
+        Some(alias)
+    }
+
+    /// The extra folders, as `(alias, path)` in the order granted.
+    pub fn extras(&self) -> Vec<(&str, &Path)> {
+        self.extras
+            .iter()
+            .map(|(a, anchor)| (a.as_str(), anchor.path.as_path()))
+            .collect()
     }
 
     /// Attach the knowledge vault, addressed [`VAULT_ALIAS`].
@@ -157,13 +212,27 @@ impl Root {
     /// call kept succeeding. A tool definition is the outermost layer of the
     /// prompt cache, so this must be fixed for the life of the `Chat` — which
     /// it is, the vault being decided at connect time and never per turn.
-    pub fn path_hint(&self) -> &'static str {
+    pub fn path_hint(&self) -> String {
+        let mut hint = String::new();
         if self.vault.is_some() {
-            " A path beginning \"@kb/\" reaches the knowledge vault instead, which is outside \
-             the workspace."
-        } else {
-            ""
+            hint.push_str(
+                " A path beginning \"@kb/\" reaches the knowledge vault instead, which is outside \
+                 the workspace.",
+            );
         }
+        if !self.extras.is_empty() {
+            let names: Vec<String> = self
+                .extras
+                .iter()
+                .map(|(a, anchor)| format!("\"@{a}/\" ({})", anchor.path.display()))
+                .collect();
+            hint.push_str(&format!(
+                " This chat may also read and edit these extra folders, outside the workspace, \
+                 by the prefix given: {}.",
+                names.join(", ")
+            ));
+        }
+        hint
     }
 
     /// Resolve a tool's path argument, or explain to the model why it cannot
@@ -190,6 +259,19 @@ impl Root {
             }
             return Err(self.escaped(arg));
         }
+        // An extra folder's alias, the same way (backlog 143): the alias
+        // picks the tree, then the two checks run against it.
+        // An `@name` that is no grant falls through and is read as an
+        // ordinary workspace path, as `@kbd/…` always was.
+        if let Some((alias, rest)) = strip_any_alias(arg)
+            && let Some((_, anchor)) = self.extras.iter().find(|(a, _)| *a == alias)
+        {
+            let candidate = normalize(&anchor.path.join(rest));
+            if anchor.holds(&candidate) {
+                return Ok(candidate);
+            }
+            return Err(self.escaped(arg));
+        }
         let raw = Path::new(arg);
         // `join` on Windows also replaces the whole path for a rooted-but-
         // driveless argument such as `\Users`, which is precisely why the
@@ -210,6 +292,9 @@ impl Root {
         if let Some(vault) = &self.vault
             && vault.holds(&candidate)
         {
+            return Ok(candidate);
+        }
+        if self.extras.iter().any(|(_, a)| a.holds(&candidate)) {
             return Ok(candidate);
         }
         Err(self.escaped(arg))
@@ -238,6 +323,14 @@ impl Root {
                 None => VAULT_ALIAS.to_string(),
             };
         }
+        for (alias, anchor) in &self.extras {
+            if let Ok(relative) = path.strip_prefix(&anchor.path) {
+                return match slashed(relative) {
+                    Some(rest) => format!("@{alias}/{rest}"),
+                    None => format!("@{alias}"),
+                };
+            }
+        }
         slashed(path).unwrap_or_else(|| ".".to_string())
     }
 
@@ -259,7 +352,64 @@ impl Root {
                  \"src/main.rs\" works and \"../..\" does not.",
             ),
         }
+        if !self.extras.is_empty() {
+            let names: Vec<String> = self
+                .extras
+                .iter()
+                .map(|(a, anchor)| format!("\"@{a}/<path>\" ({})", anchor.path.display()))
+                .collect();
+            message.push_str(&format!(
+                " The extra folders this chat may reach: {}.",
+                names.join(", ")
+            ));
+        }
         message
+    }
+}
+
+/// The alias an extra folder is granted under, before it is made unique:
+/// the folder's leaf name with everything but letters, digits, `-` and `_`
+/// replaced by `-`, lower-cased — `@value-gen/…` for
+/// `~/Documents/Value Gen`. A folder with no usable name (`/`) is `folder`.
+pub fn folder_alias(path: &Path) -> String {
+    let leaf = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let cleaned: String = leaf
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let trimmed = cleaned.trim_matches('-').to_string();
+    if trimmed.is_empty() {
+        "folder".to_string()
+    } else {
+        trimmed
+    }
+}
+
+/// The alias and the remainder of an argument that begins with `@<name>`,
+/// for any name — the extra folders' aliases (backlog 143). Matched on
+/// components like [`strip_alias`]; the vault's own alias is answered
+/// before this is asked.
+fn strip_any_alias(arg: &str) -> Option<(String, PathBuf)> {
+    let mut components = Path::new(arg).components();
+    match components.next() {
+        Some(Component::Normal(first)) => {
+            let first = first.to_string_lossy();
+            let name = first.strip_prefix('@')?;
+            if name.is_empty() {
+                return None;
+            }
+            Some((name.to_string(), components.as_path().to_path_buf()))
+        }
+        _ => None,
     }
 }
 
@@ -499,6 +649,70 @@ mod tests {
         // The workspace is untouched by any of it.
         let src = root.resolve("src/main.rs").unwrap();
         assert_eq!(root.show(&src), "src/main.rs");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// An extra folder (nightshift backlog 143) is a further named tree:
+    /// reached by `@<leaf>/…` and by its absolute spelling, shown back as
+    /// the alias, the alias made unique against the vault's and each
+    /// other's, the workspace and a duplicate skipped, and the two checks
+    /// still run against it — `..` out of it is refused.
+    #[test]
+    fn an_extra_folder_is_reached_by_its_own_alias_and_cannot_climb_out() {
+        let dir = test_dir("root-extra");
+        let workspace = dir.join("workspace");
+        let notes = dir.join("Value Gen");
+        let other = dir.join("kb");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::create_dir_all(notes.join("nb")).unwrap();
+        fs::create_dir_all(&other).unwrap();
+        fs::write(dir.join("secret.txt"), "shh").unwrap();
+        let mut root = Root::new(&workspace).with_vault(dir.join("vault"));
+        assert_eq!(root.add_extra(&notes).as_deref(), Some("value-gen"));
+        assert_eq!(root.add_extra(&notes), None, "granted once");
+        assert_eq!(
+            root.add_extra(&workspace),
+            None,
+            "the workspace is not extra"
+        );
+        assert_eq!(
+            root.add_extra(&other).as_deref(),
+            Some("kb-2"),
+            "the vault keeps its alias"
+        );
+        assert_eq!(root.extras().len(), 2);
+        assert_eq!(folder_alias(Path::new("/x/My Notes!")), "my-notes");
+        assert_eq!(folder_alias(Path::new("/")), "folder");
+
+        let resolved = root.resolve("@value-gen/nb/run.ipynb").unwrap();
+        assert_eq!(resolved, normalize(&notes.join("nb").join("run.ipynb")));
+        assert_eq!(root.show(&resolved), "@value-gen/nb/run.ipynb");
+        assert_eq!(root.resolve(&root.show(&resolved)).unwrap(), resolved);
+        assert_eq!(root.resolve("@value-gen").unwrap(), normalize(&notes));
+        assert_eq!(root.show(&normalize(&notes)), "@value-gen");
+        assert_eq!(
+            root.resolve(notes.join("nb").join("run.ipynb").to_str().unwrap())
+                .unwrap(),
+            resolved
+        );
+        assert_eq!(
+            root.resolve("@kb-2/a.md").unwrap(),
+            normalize(&other.join("a.md"))
+        );
+
+        let err = root.resolve("@value-gen/../secret.txt").unwrap_err();
+        assert!(err.contains("outside the workspace root"), "{err}");
+        assert!(err.contains("@value-gen/<path>"), "{err}");
+        // A name that is no grant is an ordinary workspace path, as ever.
+        assert_eq!(
+            root.resolve("@nothing/x").unwrap(),
+            normalize(&workspace.join("@nothing").join("x"))
+        );
+        let hint = root.path_hint();
+        assert!(hint.contains("\"@value-gen/\""), "{hint}");
+        assert!(hint.contains("\"@kb/\""), "{hint}");
+        // Without any grant the hint is what it always was.
+        assert_eq!(Root::new(&workspace).path_hint(), "");
         fs::remove_dir_all(&dir).ok();
     }
 

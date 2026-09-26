@@ -22,7 +22,18 @@ walkdir.workspace = true
 uuid.workspace = true
 reqwest.workspace = true
 zip = { version = "8", default-features = false, features = ["deflate"] }
+# The Nightshift watcher: one OS subscription per open contract root, so the
+# GUI learns of a runner's status write without polling.
+notify = "8"
 keyring = { workspace = true, optional = true }
+# The phone page's listener (nightshift backlog 091, Shape B). axum 0.8 is
+# the version built on hyper 1 / http 1 / tower 0.5, which tauri and reqwest
+# already compile — so it adds no second HTTP stack. The QR code that
+# carries the token to the phone: `qrcode` with only its SVG renderer, which
+# pulls in nothing (`image` is its optional dependency, left off).
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+async-stream.workspace = true
 
 [features]
 default = ["keyring"]

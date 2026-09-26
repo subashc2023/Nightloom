@@ -1043,6 +1043,8 @@ mod tests {
             reasoning_tokens: Some(40),
             cache_read_tokens: Some(1024),
             cache_write_tokens: None,
+            cache_write_5m_tokens: None,
+            cache_write_1h_tokens: None,
         };
         for final_chunk in [
             json!({ "choices": [], "usage": counts }),

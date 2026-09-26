@@ -1,0 +1,602 @@
+<script lang="ts">
+  import { tip } from "./tip";
+  import {
+    activateTab,
+    app,
+    closeTab,
+    dropContent,
+    droppedContent,
+    moveTab,
+    noteDraftKey,
+    splitTab,
+  } from "./state.svelte";
+  import { hasDraft, newDraftKey } from "./drafts.svelte";
+  import * as tabs from "./tabs";
+  import { TAB_DRAG, TERM_DRAG, type Pane } from "./tabs";
+  import { draggedShell } from "./terminal.svelte";
+  import Icon from "./Icon.svelte";
+  import TabChooser from "./TabChooser.svelte";
+  import { isMac } from "./platform";
+  import { web, webLabel } from "./webtabs.svelte";
+  import { plan, startTabDrag } from "./tabDrag";
+  import { tabDrag } from "./tabDrag.svelte";
+
+  /**
+   * One pane's strip of tabs (nightshift backlog 099, boards 9a and 9d):
+   * a glyph for the kind, the title, a pulsing dot while the chat's turn
+   * runs, the needs-you dot when it waits on him, ✎ for a draft, × on
+   * hover. ~~`+` opens a new chat in a new tab (⌘T).~~ Since nightshift
+   * backlog 140 (2026-09-17) `+` opens a chooser under the strip
+   * (`TabChooser.svelte`) — New chat and its kinds, a new note, the
+   * notes, Nightshift, the graph, the projects — and the new tab is what
+   * he picks; ⌘T stays the one-key new chat. The active tab is the
+   * sheet; the focused pane's active tab carries the accent rule on top,
+   * so with two panes one strip says which the keys act on.
+   *
+   * Tabs drag: within the strip to reorder, onto the other pane's strip
+   * to move, onto a pane's half to split — the halves are `App.svelte`'s
+   * drop zones; this strip owns the reorder and the move. The drag carries
+   * the tab's id under its own type, so a file or text dropped here is
+   * nothing to it. Content from outside (backlog 140 pass 2: a sidebar
+   * chat row, a note row, the Nightshift and Graph buttons, a project
+   * row, the aside card) drops here as a new tab at the slot; the
+   * terminal dock's strip (backlog 113's 12b) drops here to move the dock
+   * under this pane.
+   */
+  let { pane }: { pane: Pane } = $props();
+
+  const focused = $derived(app.tabs.focused === pane.id);
+  const live = $derived(tabs.liveTab(app.tabs, app.activeSessionId));
+
+  function title(t: tabs.Tab): string {
+    return tabs.tabTitle(t.content, app.sessions, app.projects);
+  }
+
+  function draft(t: tabs.Tab): boolean {
+    const c = t.content;
+    if (c.kind === "note") {
+      // The draft's key carries the project for per-project files
+      // (backlog 133); `noteDraftKey` is the one place it is spelled.
+      return app.noteDrafts[noteDraftKey(c.scope, c.name)] !== undefined;
+    }
+    if (c.kind !== "chat") return false;
+    return hasDraft(c.session ?? newDraftKey(app.project?.id, app.pendingMode));
+  }
+
+  /** The chat's turn runs, or waits on him. ~~Only the live tab can~~ —
+   *  since backlog 159 the running chat may be parked behind another on
+   *  screen, and its tab keeps the mark. */
+  function running(t: tabs.Tab): boolean {
+    // A chat running in the background (backlog 159, A2) keeps its mark.
+    if (t.content.kind === "chat" && t.content.session && app.background[t.content.session]) return true;
+    if (!app.busy) return false;
+    if (app.parked) return t.content.kind === "chat" && t.content.session === app.parked.session;
+    return live?.id === t.id;
+  }
+  function needsYou(t: tabs.Tab): boolean {
+    // A background chat's prompt waits in its own tab (A2, guess pass 5).
+    const bg = t.content.kind === "chat" && t.content.session ? app.background[t.content.session] : undefined;
+    if (bg) return bg.approvals.length > 0;
+    return live?.id === t.id && app.pendingApprovals.length > 0;
+  }
+
+  /** A chat tab's short id and mode, for its hover (board d, nightshift
+   *  backlog 175 pass 2): the top bar's title row and id went, so the tab
+   *  that names the chat carries them. */
+  function chatTail(c: tabs.TabContent): string {
+    if (c.kind !== "chat" || !c.session) return "";
+    const meta = app.sessions.find((s) => s.id === c.session);
+    const mode = meta?.mode === "incognito" ? " · incognito" : "";
+    return ` · ${c.session.slice(0, 8)}${mode}`;
+  }
+
+  function hint(t: tabs.Tab): string {
+    const c = t.content;
+    const base =
+      c.kind === "note"
+        ? `${c.name} — a note`
+        : c.kind === "project"
+          ? `${title(t)} — a project`
+          : c.kind === "aside"
+            ? `${title(t)} — a side conversation, not in the chat`
+            : c.kind === "attachment"
+              ? `${title(t)} — an attachment of a message, kept as a tab`
+              : c.kind === "subagent"
+                ? `${title(t)} — a subagent's transcript: its calls, results and words`
+                : c.kind === "file"
+                  ? `${c.path} — a file a reply named, read-only`
+                  : title(t) + chatTail(c);
+    const state = needsYou(t) ? " · waiting on you" : running(t) ? " · a turn is running" : "";
+    return `${base}${state} — ${isMac ? "⌘W" : "Ctrl+W"} closes`;
+  }
+
+  /** The + chooser (backlog 140): open under this strip's + button. */
+  let chooser = $state(false);
+
+  // ---- drag and drop ----
+
+  /** Where a dragged tab would land in this strip, as an index; null when
+   *  nothing is over it. */
+  let dropAt = $state<number | null>(null);
+  let stripEl = $state<HTMLElement | null>(null);
+
+  // ---- a tab dragged: pointer events (nightshift backlog 195) ----
+  //
+  // ~~The tab was `draggable` and moved by WebKit's native drag~~ — since
+  // 195 (2026-09-25) a press past `DRAG_SLOP` px drags a ghost of the tab
+  // (`tabDrag.ts`); a press that never travels is the click it was. The
+  // release reorders (the active tab stays active), moves into the other
+  // pane (the focus follows), splits — or snaps the ghost back, visibly.
+  // The strip's native handlers below stay for what still drags natively
+  // into it: a sidebar row, a note, the aside card, the terminal dock.
+
+  /** The ghost under the pointer: the tab's look, where it was grabbed. */
+  let ghost = $state<{
+    tab: tabs.Tab;
+    width: number;
+    dx: number;
+    dy: number;
+    /** Set while it flies home after a drag that did nothing. */
+    home: { left: number; top: number } | null;
+  } | null>(null);
+  const SNAP_MS = 160;
+
+  /** The slot marker for a tab drag over this strip, when the release
+   *  would land there — none over its own slot, which is a snap. */
+  const dragMark = $derived(
+    tabDrag.id &&
+      tabDrag.target?.kind === "strip" &&
+      tabDrag.target.pane === pane.id &&
+      (tabDrag.plan?.kind === "reorder" || tabDrag.plan?.kind === "move")
+      ? tabDrag.target.index
+      : null,
+  );
+
+  function onTabPointerDown(e: PointerEvent, t: tabs.Tab) {
+    // The × is a button of its own; its click must stay a click.
+    if (e.target instanceof Element && e.target.closest(".close")) return;
+    const el = e.currentTarget as HTMLElement;
+    const r = el.getBoundingClientRect();
+    const grab = { dx: e.clientX - r.left, dy: e.clientY - r.top };
+    startTabDrag(e, {
+      onStart() {
+        ghost = { tab: t, width: r.width, ...grab, home: null };
+        tabDrag.id = t.id;
+        app.draggingTab = t.id;
+      },
+      onMove(p, target) {
+        tabDrag.x = p.x;
+        tabDrag.y = p.y;
+        tabDrag.target = target;
+        tabDrag.plan = plan(app.tabs, t.id, target);
+      },
+      onDrop(target) {
+        const p = plan(app.tabs, t.id, target);
+        endDrag();
+        if (p.kind === "snap") return snapHome(t.id);
+        ghost = null;
+        if (p.kind === "reorder") tabs.reorder(app.tabs, t.id, p.index);
+        else if (p.kind === "move") void moveTab(t.id, p.pane, p.index);
+        else void splitTab(t.id, p.side);
+      },
+      onCancel() {
+        endDrag();
+        snapHome(t.id);
+      },
+    });
+  }
+  function endDrag() {
+    tabDrag.id = null;
+    tabDrag.target = null;
+    tabDrag.plan = null;
+    app.draggingTab = null;
+  }
+  /** Fly the ghost back to the tab it came from, then drop it. */
+  function snapHome(id: string) {
+    const el = stripEl?.querySelector<HTMLElement>(`[data-tab="${id}"]`);
+    if (!ghost || !el) {
+      ghost = null;
+      return;
+    }
+    const r = el.getBoundingClientRect();
+    ghost.home = { left: r.left, top: r.top };
+    setTimeout(() => (ghost = null), SNAP_MS);
+  }
+
+  function indexAt(e: DragEvent): number {
+    if (!stripEl) return pane.tabs.length;
+    const els = Array.from(stripEl.querySelectorAll<HTMLElement>("[data-tab]"));
+    for (let i = 0; i < els.length; i++) {
+      const r = els[i].getBoundingClientRect();
+      if (e.clientX < r.left + r.width / 2) return i;
+    }
+    return els.length;
+  }
+  function onDragOver(e: DragEvent) {
+    if (!app.draggingTab && !app.draggingContent && !app.draggingTerm) return;
+    e.preventDefault();
+    // The strip's drop is the strip's: the pane behind it draws the
+    // *open beside* halves for a drag over its content, not over its tabs.
+    e.stopPropagation();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = app.draggingContent ? "copy" : "move";
+    // The dock has no slot in the strip: dropping it anywhere here docks
+    // it under this pane, so no accent bar.
+    dropAt = app.draggingTerm ? null : indexAt(e);
+  }
+  function onDragLeave(e: DragEvent) {
+    if (stripEl && e.relatedTarget instanceof Node && stripEl.contains(e.relatedTarget)) return;
+    dropAt = null;
+  }
+  function onDrop(e: DragEvent) {
+    const at = dropAt ?? indexAt(e);
+    dropAt = null;
+    // A terminal's shell (backlog 113's 12b; blocker 155): into this
+    // pane's dock — a second dock if it has none.
+    if (e.dataTransfer?.types.includes(TERM_DRAG) || app.draggingTerm) {
+      e.preventDefault();
+      e.stopPropagation();
+      app.draggingTerm = false;
+      draggedShell(e, pane.id);
+      return;
+    }
+    // Content from outside (backlog 140 pass 2): a new tab at the slot.
+    const content = droppedContent(e);
+    if (content) {
+      e.preventDefault();
+      e.stopPropagation();
+      app.draggingContent = null;
+      void dropContent(content, { pane: pane.id, index: at });
+      return;
+    }
+    const id = e.dataTransfer?.getData(TAB_DRAG) || app.draggingTab;
+    if (!id) return;
+    e.preventDefault();
+    e.stopPropagation();
+    app.draggingTab = null;
+    void moveTab(id, pane.id, at);
+  }
+
+  // ---- the tab's menu (right-click) ----
+
+  let menuFor = $state<string | null>(null);
+  let menuAt = $state({ x: 0, y: 0 });
+  function openMenu(e: MouseEvent, t: tabs.Tab) {
+    e.preventDefault();
+    menuFor = t.id;
+    menuAt = { x: e.clientX, y: e.clientY };
+  }
+  function closeOthers(id: string) {
+    for (const t of [...pane.tabs]) if (t.id !== id) void closeTab(t.id);
+  }
+  const canSplit = $derived(app.tabs.panes.length < tabs.MAX_PANES && pane.tabs.length > 1);
+  const other = $derived(tabs.otherPane(app.tabs, pane.id));
+</script>
+
+<!-- svelte-ignore a11y_no_static_element_interactions a11y_interactive_supports_focus -->
+<div
+  class="tab-strip"
+  class:focused
+  role="tablist"
+  tabindex="-1"
+  bind:this={stripEl}
+  ondragover={onDragOver}
+  ondragleave={onDragLeave}
+  ondrop={onDrop}
+>
+  {#each pane.tabs as t, i (t.id)}
+    {@const favicon = t.content.kind === "web" ? web.live[webLabel(t.id)]?.favicon : undefined}
+    {#if dropAt === i || dragMark === i}<span class="tab-drop"></span>{/if}
+    <!-- A div, not a button: a button cannot hold the close button, and
+         the strip's keys are the window's (⌘⇧] / ⌘⇧[). Focusable so the
+         Tab key reaches it; ↵ and Space activate. -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="tab"
+      class:active={pane.active === t.id}
+      class:dragging={app.draggingTab === t.id}
+      role="tab"
+      tabindex="0"
+      aria-selected={pane.active === t.id}
+      data-tab={t.id}
+      use:tip={hint(t)}
+      onpointerdown={(e) => onTabPointerDown(e, t)}
+      onclick={() => void activateTab(t.id)}
+      onkeydown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          void activateTab(t.id);
+        }
+      }}
+      onauxclick={(e) => {
+        // The middle button closes, as in every browser.
+        if (e.button === 1) void closeTab(t.id);
+      }}
+      oncontextmenu={(e) => openMenu(e, t)}
+    >
+      <span class="glyph" aria-hidden="true"
+        >{#if favicon}<img class="favicon" src={favicon} alt="" width="12" height="12" referrerpolicy="no-referrer" onerror={(e) => ((e.currentTarget as HTMLImageElement).style.display = "none")} />{:else}<Icon
+            name={tabs.tabGlyph(t.content)}
+            size={12}
+          />{/if}</span
+      >
+      <span class="name">{title(t)}</span>
+      {#if needsYou(t)}
+        <span class="dot needs" use:tip={"Waiting on you"}></span>
+      {:else if running(t)}
+        <span class="dot run" use:tip={"A turn is running"}></span>
+      {/if}
+      {#if draft(t)}<span class="mark" use:tip={"has a draft"}>✎</span>{/if}
+      <button
+        class="close"
+        use:tip={`Close tab (${isMac ? '⌘W' : 'Ctrl+W'})`}
+        aria-label="Close tab"
+        tabindex="-1"
+        onclick={(e) => {
+          e.stopPropagation();
+          void closeTab(t.id);
+        }}
+      >
+        <Icon name="x" size={10} />
+      </button>
+    </div>
+  {/each}
+  {#if dropAt === pane.tabs.length || dragMark === pane.tabs.length}<span class="tab-drop"></span>{/if}
+  <!-- The + (backlog 140): a chooser of what the new tab becomes. ⌘T is
+       still the one-key new chat and lives in the File menu. -->
+  <button
+    class="tab-new"
+    class:open={chooser}
+    use:tip={"New tab… (⌘T is a new chat)"}
+    aria-label="New tab"
+    aria-expanded={chooser}
+    onclick={() => (chooser = !chooser)}
+  >
+    <Icon name="plus" size={12} />
+  </button>
+  <!-- The terminal pane's dock button lives in `App.svelte`'s pane foot,
+       not here: the strip is the tabs' and stays the tabs'. -->
+</div>
+{#if ghost}
+  <!-- The dragged tab under the pointer (backlog 195); after a drag that
+       does nothing it flies back to its tab (`home`), then goes. -->
+  <div
+    class="tab-ghost"
+    class:home={ghost.home !== null}
+    aria-hidden="true"
+    style:width="{ghost.width}px"
+    style:left="{ghost.home ? ghost.home.left : tabDrag.x - ghost.dx}px"
+    style:top="{ghost.home ? ghost.home.top : tabDrag.y - ghost.dy}px"
+    style:transition-duration="{SNAP_MS}ms"
+  >
+    <span class="glyph"><Icon name={tabs.tabGlyph(ghost.tab.content)} size={12} /></span>
+    <span class="name">{title(ghost.tab)}</span>
+  </div>
+{/if}
+{#if chooser}
+  <TabChooser paneId={pane.id} close={() => (chooser = false)} />
+{/if}
+
+{#if menuFor}
+  {@const t = pane.tabs.find((x) => x.id === menuFor)}
+  <button class="tab-scrim" aria-label="Close" onclick={() => (menuFor = null)} oncontextmenu={(e) => { e.preventDefault(); menuFor = null; }}></button>
+  <div class="tab-menu" role="menu" style:left="{menuAt.x}px" style:top="{menuAt.y}px">
+    <button role="menuitem" onclick={() => { menuFor = null; if (t) void closeTab(t.id); }}>Close</button>
+    <button role="menuitem" disabled={pane.tabs.length < 2} onclick={() => { menuFor = null; if (t) closeOthers(t.id); }}>Close others</button>
+    {#if other}
+      <button role="menuitem" onclick={() => { menuFor = null; if (t) void moveTab(t.id, other.id, other.tabs.length); }}>Move to the other pane</button>
+    {:else}
+      <button role="menuitem" disabled={!canSplit} use:tip={canSplit ? "" : "A pane keeps at least one tab"} onclick={() => { menuFor = null; if (t) void splitTab(t.id, "right"); }}>Open beside</button>
+    {/if}
+  </div>
+{/if}
+
+<style>
+  .tab-strip {
+    display: flex;
+    align-items: stretch;
+    gap: 2px;
+    height: 36px;
+    padding: 4px 8px 0;
+    background: var(--paper);
+    border-bottom: 1px solid var(--line);
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    flex-shrink: 0;
+    min-width: 0;
+  }
+  .tab-strip::-webkit-scrollbar {
+    display: none;
+  }
+  .tab {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 8px 0 10px;
+    max-width: 200px;
+    min-width: 0;
+    flex: 0 1 auto;
+    border-radius: 6px 6px 0 0;
+    color: var(--dim);
+    font-size: 12.5px;
+    cursor: default;
+    user-select: none;
+    border-top: 2px solid transparent;
+  }
+  .tab:hover {
+    background: var(--well);
+    color: var(--ink2);
+  }
+  .tab.active {
+    background: var(--sheet);
+    color: var(--ink);
+    box-shadow: 0 0 0 1px var(--line);
+  }
+  /* The accent rule on the focused pane's active tab (board 9d). */
+  .tab-strip.focused .tab.active {
+    border-top-color: var(--accent);
+  }
+  .tab.dragging {
+    opacity: 0.4;
+    border-style: dashed;
+  }
+  .glyph {
+    display: inline-flex;
+    color: var(--dim);
+    flex-shrink: 0;
+  }
+  /* A web tab's page icon (backlog 172), in the glyph's square. */
+  .favicon {
+    width: 12px;
+    height: 12px;
+    object-fit: contain;
+  }
+  .name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+  .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .dot.run {
+    background: var(--accent);
+    animation: tab-pulse 1.2s ease-in-out infinite;
+  }
+  .dot.needs {
+    background: var(--live);
+  }
+  @keyframes tab-pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.3;
+    }
+  }
+  .mark {
+    font-size: 11px;
+    color: var(--accent);
+    flex-shrink: 0;
+  }
+  .close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--dim);
+    padding: 0;
+    cursor: pointer;
+    opacity: 0;
+    flex-shrink: 0;
+  }
+  .tab:hover .close,
+  .tab.active .close {
+    opacity: 1;
+  }
+  .close:hover {
+    background: var(--line2);
+    color: var(--ink);
+  }
+  .tab-new {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    margin: 3px 0 0 2px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--dim);
+    padding: 0;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .tab-new:hover,
+  .tab-new.open {
+    background: var(--well);
+    color: var(--ink);
+  }
+  .tab-ghost {
+    position: fixed;
+    z-index: 40;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 32px;
+    padding: 0 10px;
+    box-sizing: border-box;
+    border-radius: 6px 6px 0 0;
+    border-top: 2px solid var(--accent);
+    background: var(--sheet);
+    color: var(--ink);
+    font-size: 12.5px;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+    opacity: 0.92;
+    pointer-events: none;
+    transition-property: none;
+  }
+  .tab-ghost.home {
+    transition-property: left, top, opacity;
+    transition-timing-function: ease-out;
+    opacity: 0.4;
+  }
+  .tab-drop {
+    width: 2px;
+    margin: 4px 0;
+    background: var(--accent);
+    border-radius: 1px;
+    flex-shrink: 0;
+  }
+  .tab-scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 35;
+    background: transparent;
+    border: none;
+    cursor: default;
+    padding: 0;
+  }
+  .tab-menu {
+    position: fixed;
+    z-index: 36;
+    display: flex;
+    flex-direction: column;
+    min-width: 180px;
+    padding: 4px;
+    background: var(--sheet);
+    border: 1px solid var(--line2);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  }
+  .tab-menu button {
+    text-align: left;
+    background: transparent;
+    border: none;
+    border-radius: 5px;
+    color: var(--ink2);
+    font: inherit;
+    font-size: 12.5px;
+    padding: 6px 10px;
+    cursor: pointer;
+  }
+  .tab-menu button:hover:not(:disabled) {
+    background: var(--well);
+    color: var(--ink);
+  }
+  .tab-menu button:disabled {
+    color: var(--dim);
+    cursor: default;
+  }
+</style>

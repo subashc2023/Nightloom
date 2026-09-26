@@ -1,10 +1,13 @@
 mod agent;
+mod capture;
 mod chat;
+mod council_trial;
 mod dream;
 mod eval;
 mod import;
 mod keys;
 mod knowledge;
+mod mcp_serve;
 mod probe;
 mod sessions;
 
@@ -45,6 +48,27 @@ enum Command {
     Knowledge(knowledge::KnowledgeArgs),
     /// Consolidate remembered observations into the knowledge vault
     Dream(dream::DreamArgs),
+    /// Read the session logs since their watermarks into the memory inbox
+    Capture(capture::CaptureArgs),
+    /// The council experiment (nightshift backlog 149): one dump answered
+    /// three ways — one turn, the council, one turn playing a council —
+    /// filed blind for you to judge; `--tally <dir>` sums the judged runs
+    CouncilTrial(council_trial::CouncilTrialArgs),
+    /// Serve search_chats, read_chat, remember and fetch_page over MCP on
+    /// stdio, for `claude -p --mcp-config`. Hidden: nothing to see if run
+    /// by hand (see `mcp_serve.rs`).
+    #[command(hide = true)]
+    McpServe(mcp_serve::McpServeArgs),
+    /// The Claude Code `PreToolUse` hook behind the desktop's Ask position
+    /// (nightshift backlog 084): reads the CLI's JSON on stdin, answers
+    /// from the ask directory, prints one line. Hidden, and here for the
+    /// same reason `mcp-serve` is — a binary the CLI can spawn without the
+    /// desktop app built — see `nightloom_service::agent::ask`.
+    #[command(hide = true)]
+    PermissionHook {
+        /// The chat's ask directory (`rules.json`, `decision.json`).
+        dir: String,
+    },
 }
 
 #[tokio::main]
@@ -58,6 +82,12 @@ async fn main() -> Result<()> {
         Some(Command::Keys(args)) => keys::run(args),
         Some(Command::Knowledge(args)) => knowledge::run(args),
         Some(Command::Dream(args)) => dream::run(args).await,
+        Some(Command::Capture(args)) => capture::run(args).await,
+        Some(Command::CouncilTrial(args)) => council_trial::run(args).await,
+        Some(Command::McpServe(args)) => mcp_serve::run(args).await,
+        Some(Command::PermissionHook { dir }) => {
+            nightloom_service::agent::ask::run_hook(&[dir]).map_err(Into::into)
+        }
         // `--agent` swaps the engine, not the provider: Claude Code owns
         // the loop and the tools, and Nightloom renders what it streams.
         None if cli.chat.agent.is_some() => agent::run(cli.chat).await,

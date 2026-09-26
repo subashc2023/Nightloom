@@ -35,6 +35,7 @@ export const CURATED: Record<string, string[]> = {
   anthropic: [
     "claude-sonnet-5",
     "claude-fable-5",
+    "claude-opus-5-5",
     "claude-opus-5",
     "claude-haiku-4-5",
   ],
@@ -87,6 +88,97 @@ export type Engine = "provider" | "claude-code";
  */
 export const AGENT_MODELS = ["", "fable", "opus", "sonnet", "haiku"];
 
+/**
+ * The four core models and the key each switches to, on any screen (⌘⇧ +
+ * the letter; nightshift blocker 035, 2026-09-13). The aliases are the CLI's,
+ * and on the provider engine a key picks the first id in the picker's list
+ * that *contains* the alias — `claude-sonnet-5` on Anthropic,
+ * `anthropic/claude-sonnet-5` on OpenRouter. A provider with no such id
+ * makes the key do nothing, and the ⌘K row says so.
+ */
+export const MODEL_KEYS: { alias: string; key: string }[] = [
+  { alias: "sonnet", key: "S" },
+  { alias: "opus", key: "O" },
+  { alias: "fable", key: "F" },
+  { alias: "haiku", key: "H" },
+];
+
+/** The alias a model id carries, or null; the popover prints its key cap. */
+export function aliasOf(id: string): string | null {
+  const lower = id.toLowerCase();
+  return MODEL_KEYS.find((k) => lower.includes(k.alias))?.alias ?? null;
+}
+
+/**
+ * What the composer's model chip names (backlog 204, 2026-09-25). On the
+ * Claude Code engine it is what he picked — the alias, or `default` for
+ * the CLI's own — never the connection's model: a turn's end writes the id
+ * the CLI resolved there (`claude-haiku-4-5-20251001`, which the context
+ * and thinking lookups need), and the chip showed that until the next
+ * reconnect. The resolved id stays in the chip's hover ("last turn ran").
+ * On the provider engine the connection's model, else the draft's.
+ */
+export function modelChipLabel(a: {
+  agentMode: boolean;
+  agentModel: string;
+  model: string;
+  connected: string | null | undefined;
+}): string {
+  if (a.agentMode) return a.agentModel.trim() || "default";
+  return a.connected || a.model.trim() || "model";
+}
+
+/** The first id in `models` that carries `alias`, or null. */
+export function modelForAlias(models: string[], alias: string): string | null {
+  return models.find((m) => m.toLowerCase().includes(alias)) ?? null;
+}
+
+/**
+ * The file a model's own instructions live in, under `~/.nightloom/models/`:
+ * the id plus `.md`, with a `/` — which router ids carry
+ * (`deepseek/deepseek-v4-flash`) — written `__`, so the id is one file in
+ * one folder. A `:` is left alone. The same rule as the backend's
+ * `prompt::model_instruction_file`, spelled here as well because the picker
+ * needs the name synchronously to say which file its pencil opens.
+ */
+export function modelInstructionFile(id: string): string {
+  return `${id.trim().replace(/\//g, "__")}.md`;
+}
+
+/** The inverse, for listing the folder: `deepseek__deepseek-v4-flash.md` →
+ *  `deepseek/deepseek-v4-flash`. A name without `.md` is shown as it is. */
+export function modelOfInstructionFile(name: string): string {
+  return name.replace(/\.md$/, "").replace(/__/g, "/");
+}
+
+/**
+ * What Settings' any-model picker writes when it creates a file for a
+ * provider/model pair (nightshift backlog 053): the name is
+ * `modelInstructionFile` and nothing else — the preamble keys the file on
+ * the model id alone, and a second mapping here would be a file the chat
+ * never reads — and the content is one comment line naming the pair, so a
+ * file found in the folder months later says what it was for. The provider
+ * lives in that line only. On the Claude Code engine `provider` is
+ * `"claude-code"` and `model` the alias the picker sends, since that is the
+ * name the bridge looks up.
+ */
+export function instructionFileFor(
+  provider: string,
+  model: string,
+): { name: string; header: string } {
+  return {
+    name: modelInstructionFile(model),
+    header: `<!-- model instructions · ${provider} / ${model.trim()} -->\n`,
+  };
+}
+
+/** `200000` → `200k`, `1048576` → `1M`; the context window beside a model id. */
+export function formatWindow(n: number | null | undefined): string {
+  if (n == null) return "";
+  if (n >= 1_000_000) return `${parseFloat((n / 1_000_000).toFixed(1))}M`;
+  return `${Math.round(n / 1_000)}k`;
+}
+
 export interface ConnectionDraft {
   /** Which engine the rail is on. Absent on drafts saved before it existed,
    *  which read as "provider" — the only engine there was. */
@@ -99,10 +191,57 @@ export interface ConnectionDraft {
   agentModel: string;
   /** Run the agent without the host's CLAUDE.md, hooks, plugins and MCP. */
   agentSafeMode: boolean;
+  /** The Ask position of the approval switch on the agent engine: the CLI
+   *  pauses on each call a person should decide and the transcript asks
+   *  (2026-09-16). Only meaningful with `approval` on. */
+  agentAsk: boolean;
+  /** The Plan position (2026-09-16, backlog 085): Ask under the CLI's plan
+   *  mode — nothing is edited until the plan on the card is approved, and
+   *  Approve picks Ask or Auto for the rest of the chat. Implies `agentAsk`;
+   *  only meaningful with `approval` on. */
+  agentPlan: boolean;
+  /** *Subagents run on auto* (backlog 152, 2026-09-17): under Ask or
+   *  Plan, a subagent's calls run without a prompt — the CLI drops a
+   *  pause from that depth, so the only other position is a refusal in
+   *  words. On by default (blocker 247); only meaningful with `agentAsk`. */
+  agentSubagentsAuto: boolean;
+  /** Fork mode (nightshift backlog 104, pass 3; blocker 288, his answer:
+   *  "per-chat switch, on"): the model may spawn a `fork` helper — the
+   *  whole chat so far at cache-read cost, for a short side task — and the
+   *  `checkpoint` helper, a fork from the chat's checkpoint for long
+   *  research. On by default. */
+  agentForkMode: boolean;
+  /** His claude.ai connectors (nightshift backlog 235; blocker 490, his
+   *  words: "by default no"): off by default, and a draft saved before the
+   *  switch existed reads as off. */
+  agentClaudeAi: boolean;
+  /** With `agentClaudeAi` on, the connectors he unticked, by the init
+   *  event's server name ("claude.ai Google Drive"). */
+  agentClaudeAiBlocked: string[];
+  /** `--effort` on the agent engine (backlog 076): `low`, `medium`, `high`,
+   *  `xhigh` or `max`, sent as spelled — or empty, the rail's *default*
+   *  position, which sends no flag and leaves the level to the CLI. Empty
+   *  by default (the whole-project review of 2026-09-16, F15: ~~`high` by
+   *  default, which is what his settings say and what the model defaults
+   *  to~~ meant every chat's command line gained `--effort high`, and a
+   *  rail saved before the segment existed read back as a choice he never
+   *  made). */
+  agentEffort: string;
+  /** `--fallback-model`: an alias the CLI retries with when the model is
+   *  overloaded; empty is none. */
+  agentFallback: string;
   /** Stop a turn once the CLI's own estimate passes this many dollars. 0 is
    *  no cap, which is the default: under a subscription the estimate is not
-   *  a bill, and a cap on it stops turns for no saving. */
+   *  a bill, and a cap on it stops turns for no saving. It is also the
+   *  CLI's own budget limit on subagents (backlog 165): past it new agents
+   *  cannot start. */
   agentBudget: number;
+  /** The subagent limits (nightshift backlog 165): per turn (Nightloom's
+   *  hook), at once and nesting depth (the CLI's own, passed as
+   *  environment), per chat per day (the hook), and the usage-aware pair —
+   *  at `slowAt` percent of the five-hour window the per-turn cap drops to
+   *  `slowTo`, at `stopAt` every spawn is refused with the reset time. */
+  agentLimits: SubagentLimits;
   provider: string;
   model: string;
   baseUrl: string;
@@ -164,7 +303,16 @@ export function defaultDraft(): ConnectionDraft {
     agentBinary: "",
     agentModel: "",
     agentSafeMode: false,
+    agentAsk: false,
+    agentPlan: false,
+    agentSubagentsAuto: true,
+    agentForkMode: true,
+    agentClaudeAi: false,
+    agentClaudeAiBlocked: [],
+    agentEffort: "",
+    agentFallback: "",
     agentBudget: 0,
+    agentLimits: { ...DEFAULT_LIMITS },
     provider: "anthropic",
     model: "",
     baseUrl: "",
@@ -601,6 +749,68 @@ export function savePrefs(prefs: CatalogPrefs): void {
   }
 }
 
+/** The subagent limits, as the backend's `SubagentLimits` spells them. */
+export interface SubagentLimits {
+  per_turn: number;
+  concurrent: number;
+  depth: number;
+  per_day: number;
+  slow_at: number;
+  slow_to: number;
+  stop_at: number;
+  /** Pass 2 (2026-09-22): the share of the 5-hour window one message —
+   *  the main thread plus every subagent and council seat — may spend
+   *  before every further tool call is refused with "stop and report".
+   *  Blocker 278, his answer: 35. */
+  budget_pct: number;
+  /** Pass 2: the model subagents run on. Blocker 280: the chat's own. */
+  model: SubagentModel;
+}
+
+/** `chat` leaves a spawn's model as the parent wrote it; `sonnet` sets it
+ *  (unless the parent asked for haiku). */
+export type SubagentModel = "chat" | "sonnet";
+export const SUBAGENT_MODELS: readonly SubagentModel[] = ["chat", "sonnet"];
+
+/** The defaults, the backend's (`brief::SubagentLimits::default`): the
+ *  6 of the first cap; ~~the CLI's own 20 at once~~ 4 at once (blocker
+ *  279) and depth 3; no day cap (0); slow from 70% to 4, stop at 85%
+ *  (blocker 271, his answer); 35% of the window a message (278); the
+ *  chat's own model (280). */
+export const DEFAULT_LIMITS: SubagentLimits = Object.freeze({
+  per_turn: 6,
+  concurrent: 4,
+  depth: 3,
+  // His answer to blocker 271 (2026-09-18): no day cap (0), slow to 4,
+  // stop at 85 — ~~30 · 2 · 90~~.
+  per_day: 0,
+  slow_at: 70,
+  slow_to: 4,
+  stop_at: 85,
+  budget_pct: 35,
+  model: "chat",
+}) as SubagentLimits;
+
+/** A saved limits object, each number a whole number in range or the
+ *  default; the model one of the two words or the default. */
+export function readLimits(v: unknown): SubagentLimits {
+  const out: SubagentLimits = { ...DEFAULT_LIMITS };
+  if (v === null || typeof v !== "object") return out;
+  const m = v as Record<string, unknown>;
+  for (const k of Object.keys(DEFAULT_LIMITS) as (keyof SubagentLimits)[]) {
+    if (k === "model") {
+      const s = m[k];
+      if (s === "chat" || s === "sonnet") out.model = s;
+      continue;
+    }
+    const n = m[k];
+    if (typeof n !== "number" || !Number.isInteger(n) || n < 0) continue;
+    if ((k === "slow_at" || k === "stop_at" || k === "budget_pct") && n > 100) continue;
+    out[k] = n;
+  }
+  return out;
+}
+
 export function loadLastConnection(): ConnectionDraft | null {
   try {
     const raw = localStorage.getItem(LAST_KEY);
@@ -616,6 +826,20 @@ export function loadLastConnection(): ConnectionDraft | null {
       // absent value means on, so only an explicit false turns them off.
       preamble: parsed.preamble !== false,
       sidecar: parsed.sidecar !== false,
+      // The same rule for the subagent switch (backlog 152): a draft
+      // saved before it existed reads as on, its default.
+      agentSubagentsAuto: parsed.agentSubagentsAuto !== false,
+      // And for fork mode (backlog 104): on unless the draft said off.
+      agentForkMode: parsed.agentForkMode !== false,
+      // His claude.ai connectors (backlog 235): on only if the draft said
+      // true, and the blocked list only as strings.
+      agentClaudeAi: parsed.agentClaudeAi === true,
+      agentClaudeAiBlocked: Array.isArray(parsed.agentClaudeAiBlocked)
+        ? (parsed.agentClaudeAiBlocked as unknown[]).filter((x): x is string => typeof x === "string")
+        : [],
+      // The limits (backlog 165): a draft from before them, or a field
+      // that is not a whole number, reads as the default for that field.
+      agentLimits: readLimits(parsed.agentLimits),
       approval: parsed.approval !== false,
       web: parsed.web !== false,
       knowledge: parsed.knowledge !== false,

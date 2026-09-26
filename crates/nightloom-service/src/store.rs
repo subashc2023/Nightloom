@@ -3,13 +3,23 @@
 //! `nightloom_core::Session`.
 
 use chrono::{DateTime, Utc};
-use nightloom_core::{ContentBlock, SessionEvent};
+use nightloom_core::{ChatKind, ChatMode, ContentBlock, ForkedFrom, SessionEvent};
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+
+/// The ranked index the `search_chats` tool searches through, kept beside
+/// the logs on the listing cache's terms. A submodule because it reads the
+/// same events through the same fold, and the two must not disagree.
+pub mod index;
+/// The search-everywhere panel's scan (nightshift backlog 117): every chat
+/// in a scope and every note, answered per message with the message's
+/// position, so a hit can be opened in place. A submodule for the same
+/// reason as the index: one fold, one definition of "the conversation".
+pub mod search;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -40,6 +50,30 @@ pub struct SessionSummary {
     /// and a log written before titles existed never will be — so a picker
     /// wants [`SessionSummary::label`] rather than this field on its own.
     pub title: Option<String>,
+    /// What the chat was started as (2026-09-15). `Normal` for every log
+    /// written before the modes existed. A picker marks an `Incognito` row;
+    /// an `Ephemeral` chat has no log and so is never in a listing.
+    #[serde(default, skip_serializing_if = "is_normal")]
+    pub mode: ChatMode,
+    /// What the chat is for (nightshift backlog 102, 2026-09-16): `Build`
+    /// for every log written before kinds existed. A picker marks a `Chat`
+    /// row the way it marks an incognito one.
+    #[serde(default, skip_serializing_if = "is_build")]
+    pub kind: ChatKind,
+    /// The chat this one was forked from, when it was (2026-09-15,
+    /// nightshift backlog 062): the parent's id and the cut. A picker
+    /// shows the row with a "from <parent>" line; the parent may since
+    /// have been deleted, which the picker says rather than hides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forked_from: Option<ForkedFrom>,
+}
+
+fn is_normal(mode: &ChatMode) -> bool {
+    *mode == ChatMode::Normal
+}
+
+fn is_build(kind: &ChatKind) -> bool {
+    *kind == ChatKind::Build
 }
 
 impl SessionSummary {
@@ -80,10 +114,13 @@ fn skip_deleted<T>(result: Result<T, StoreError>) -> Result<Option<T>, StoreErro
 }
 
 /// One session log, as the directory scan already described it.
-struct Log {
-    path: PathBuf,
-    len: u64,
-    modified: DateTime<Utc>,
+///
+/// `pub(crate)` with [`log_files`] since the capture pass, which needs the
+/// same size-and-mtime listing to find logs with bytes past a watermark.
+pub(crate) struct Log {
+    pub(crate) path: PathBuf,
+    pub(crate) len: u64,
+    pub(crate) modified: DateTime<Utc>,
 }
 
 /// Every session log in the dir, with the size and mtime that came back with
@@ -96,7 +133,7 @@ struct Log {
 /// was measured at 34 ms of the 40 ms a warm listing took — more than
 /// everything else in [`list`] put together. On Unix it costs what it always
 /// did.
-fn log_files(log_dir: &Path) -> Result<Vec<Log>, StoreError> {
+pub(crate) fn log_files(log_dir: &Path) -> Result<Vec<Log>, StoreError> {
     let entries = fs::read_dir(log_dir).map_err(io_err(log_dir))?;
     let mut logs = Vec::new();
     for entry in entries {
@@ -159,11 +196,17 @@ fn log_paths(log_dir: &Path) -> Result<Vec<PathBuf>, StoreError> {
 /// block — and then read four fields off them. The listing is the hot path
 /// (see [`list`]); the events it does not name are the overwhelming majority
 /// of the bytes.
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, Debug, PartialEq)]
 #[serde(tag = "event", rename_all = "snake_case")]
 enum Peek {
     SessionCreated {
         id: String,
+        #[serde(default)]
+        mode: ChatMode,
+        #[serde(default)]
+        kind: ChatKind,
+        #[serde(default)]
+        forked_from: Option<ForkedFrom>,
     },
     UserMessage {
         text: String,
@@ -201,9 +244,56 @@ fn peek(line: &str) -> Option<Peek> {
     }
     // Unknown or malformed lines shouldn't sink the whole listing; future
     // SessionEvent variants show up here before this crate learns them.
-    serde_json::from_str::<Peek>(line)
-        .ok()
-        .filter(|p| !matches!(p, Peek::Other))
+    match serde_json::from_str::<Peek>(line) {
+        Ok(Peek::Other) => None,
+        Ok(p) => Some(p),
+        Err(_) => peek_created_closed(line),
+    }
+}
+
+/// A creation line whose `mode` or `kind` this build does not know — a
+/// value a newer build wrote before a rollback, or one renamed without an
+/// alias — read *closed* (review 2026-09-17 FC-c, backlog 134). Strictly
+/// parsed, an unknown enum value failed the whole line, and every reader
+/// then fell back to normal + build: an incognito chat written under the
+/// new value was listed as normal, indexed, searched by other chats and
+/// captured by the daily pass. Now the line is re-read with the two fields
+/// as plain strings; a value this build knows maps to itself, an unknown
+/// mode reads as incognito (kept, listed, but written nothing and read by
+/// nothing) and an unknown kind as the read-only chat — the answers that
+/// give nothing away. `None` when the line is not a creation line at all.
+fn peek_created_closed(line: &str) -> Option<Peek> {
+    #[derive(Deserialize)]
+    struct Loose {
+        event: String,
+        id: String,
+        #[serde(default)]
+        mode: Option<String>,
+        #[serde(default)]
+        kind: Option<String>,
+        #[serde(default)]
+        forked_from: Option<ForkedFrom>,
+    }
+    let loose: Loose = serde_json::from_str(line).ok()?;
+    if loose.event != "session_created" {
+        return None;
+    }
+    let mode = match loose.mode.as_deref() {
+        None => ChatMode::Normal,
+        Some(m) => serde_json::from_value::<ChatMode>(serde_json::Value::String(m.to_string()))
+            .unwrap_or(ChatMode::Incognito),
+    };
+    let kind = match loose.kind.as_deref() {
+        None => ChatKind::Build,
+        Some(k) => serde_json::from_value::<ChatKind>(serde_json::Value::String(k.to_string()))
+            .unwrap_or(ChatKind::Chat),
+    };
+    Some(Peek::SessionCreated {
+        id: loose.id,
+        mode,
+        kind,
+        forked_from: loose.forked_from,
+    })
 }
 
 /// The listing fields, accumulated over a log's events in order.
@@ -218,12 +308,33 @@ struct Summarizing {
     user_turns: usize,
     first_user: Option<String>,
     title: Option<String>,
+    /// From the first line; `Normal` until a creation event says otherwise,
+    /// and absent from every cache entry written before the field existed.
+    #[serde(default)]
+    mode: ChatMode,
+    /// From the first line too; `Build` until a creation event says
+    /// otherwise (nightshift backlog 102).
+    #[serde(default)]
+    kind: ChatKind,
+    /// From the first line too; `None` for every chat that is not a fork.
+    #[serde(default)]
+    forked_from: Option<ForkedFrom>,
 }
 
 impl Summarizing {
     fn saw(&mut self, event: Peek) {
         match event {
-            Peek::SessionCreated { id } => self.id = Some(id),
+            Peek::SessionCreated {
+                id,
+                mode,
+                kind,
+                forked_from,
+            } => {
+                self.id = Some(id);
+                self.mode = mode;
+                self.kind = kind;
+                self.forked_from = forked_from;
+            }
             Peek::UserMessage { text } => {
                 if self.first_user.is_none() {
                     self.first_user = Some(text);
@@ -253,7 +364,18 @@ impl Summarizing {
             user_turns: self.user_turns,
             first_user: self.first_user.clone(),
             title: self.title.clone(),
+            mode: self.mode,
+            kind: self.kind,
+            forked_from: self.forked_from.clone(),
         }
+    }
+
+    /// Whether other chats may read this log — the first thing every
+    /// walker that feeds a model asks, and a field rather than a method on
+    /// the summary because the index keeps a `Summarizing` and not a
+    /// `SessionSummary`.
+    pub(crate) fn unread_by_others(&self) -> bool {
+        self.mode.unread_by_others()
     }
 }
 
@@ -325,8 +447,12 @@ struct Listing {
 const LISTING_FILE: &str = ".listing.json";
 
 /// Bumped whenever [`Summarizing`] or [`Cached`] changes shape. An older file
-/// is discarded rather than migrated: it is derived data.
-const LISTING_VERSION: u32 = 1;
+/// is discarded rather than migrated: it is derived data. 2 since the mode
+/// (2026-09-15): an entry without it would read as normal for a log that is
+/// not, which is the one thing the listing must not get wrong. 3 since the
+/// fork line (2026-09-15, later the same day), on the same reasoning. 4
+/// since the kind (2026-09-16, nightshift backlog 102), likewise.
+const LISTING_VERSION: u32 = 4;
 
 impl Listing {
     fn read(dir: &Path) -> BTreeMap<String, Cached> {
@@ -359,21 +485,35 @@ impl Listing {
 /// has these in hand, so it folds them through [`Summarizing`] too.
 fn peek_at(event: &SessionEvent) -> Option<Peek> {
     match event {
-        SessionEvent::SessionCreated { id, .. } => Some(Peek::SessionCreated { id: id.clone() }),
+        SessionEvent::SessionCreated {
+            id,
+            mode,
+            kind,
+            forked_from,
+            ..
+        } => Some(Peek::SessionCreated {
+            id: id.clone(),
+            mode: *mode,
+            kind: *kind,
+            forked_from: forked_from.clone(),
+        }),
         SessionEvent::UserMessage { text, .. } => Some(Peek::UserMessage { text: text.clone() }),
         SessionEvent::Title { text, .. } => Some(Peek::Title { text: text.clone() }),
         _ => None,
     }
 }
 
-/// Full scan of one log: the summary *and* every event, for the one caller
-/// that has to look inside the conversation.
+/// Full scan of one log: the summary *and* every event, for the callers that
+/// have to look inside the conversation — `search` here, and the `read_chat`
+/// tool, which hands the model a window of one.
 ///
 /// Not cached, and not cacheable by [`Listing`]: `search` needs the text of
-/// every message, which is the part a summary throws away. What would help it
-/// is a full-text index, which is a much larger thing than this — and search
-/// is something a user asks for, where listing happens on its own.
-fn scan(
+/// every message, which is the part a summary throws away. What helps the
+/// *tool* is [`index::ChatIndex`], which keeps the counts and not the text —
+/// so it ranks, and a scan of each chat it returns still makes the excerpt.
+/// The sidebar's search stays a scan: it is something a user asks for, where
+/// listing happens on its own.
+pub(crate) fn scan(
     path: &Path,
     modified: DateTime<Utc>,
 ) -> Result<(SessionSummary, Vec<SessionEvent>), StoreError> {
@@ -389,6 +529,50 @@ fn scan(
         acc.saw(event);
     }
     Ok((acc.summary(path, modified), events))
+}
+
+/// What one log was started as, from its first line and nothing else.
+///
+/// For the walkers that must decide before reading a log whether a model
+/// may see it — the capture pass, the chat tools' resolver — and read it
+/// from the offset they last stopped at, which is past the first line. One
+/// `read` of a small buffer: the creation event is the first line by
+/// construction (`Session::create` records it before anything else), and
+/// it is under two hundred bytes. A log that cannot be opened, or whose
+/// first line is not a creation event, reads as `Normal`, the answer every
+/// stage gave before the field existed; the walker then fails or skips on
+/// its own terms when it opens the log properly.
+pub(crate) fn mode_of(path: &Path) -> ChatMode {
+    let Ok(mut file) = fs::File::open(path) else {
+        return ChatMode::Normal;
+    };
+    let mut head = [0u8; 512];
+    let n = file.read(&mut head).unwrap_or(0);
+    let head = String::from_utf8_lossy(&head[..n]);
+    let Some(line) = head.lines().next() else {
+        return ChatMode::Normal;
+    };
+    match peek(line) {
+        Some(Peek::SessionCreated { mode, .. }) => mode,
+        // A creation line longer than the buffer, with the mode cut off,
+        // fails to parse here. The buffer is four times a creation line,
+        // so this is a damaged log; every reader treats one as normal.
+        // (An unknown mode value is not this case: `peek` reads it closed.)
+        _ => ChatMode::Normal,
+    }
+}
+
+/// Whether `id` is the shape of a log's file stem — a uuid, or the store's
+/// own `[A-Za-z0-9._-]` name — and nothing that could be a path: no
+/// separator, no leading dot (`..`). The desktop's `restore_session` builds
+/// two file names from the id the webview sends and checks it here first
+/// (review 2026-09-17 FC-e, backlog 134).
+pub fn is_log_id(id: &str) -> bool {
+    !id.is_empty()
+        && !id.starts_with('.')
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
 }
 
 /// How many session logs are in the dir, without reading any of them.
@@ -549,24 +733,34 @@ pub fn search(log_dir: &Path, query: &str) -> Result<Vec<SessionMatch>, StoreErr
 }
 
 /// Something a search can look through, tagged with who said it.
-struct Said<'a> {
-    who: &'static str,
+///
+/// `pub(crate)` because the `search_chats` / `read_chat` tools apply exactly
+/// this filter — it is the definition of "the conversation", and two readers
+/// of the same log must not be able to disagree about what a tool result is.
+pub(crate) struct Said<'a> {
+    /// As a listing row says it: `you`, `model`, or `name`. A tool that
+    /// speaks to the model rather than to the user relabels the first two.
+    pub(crate) who: &'static str,
     /// False only for the session's name, which is shown beside the excerpt
     /// rather than in it.
-    conversation: bool,
-    text: std::borrow::Cow<'a, str>,
+    pub(crate) conversation: bool,
+    pub(crate) text: std::borrow::Cow<'a, str>,
+    /// When it was said. Unused by `search`, which dates the whole chat by
+    /// its file; `read_chat` dates each message so a quotation can carry one.
+    pub(crate) at: DateTime<Utc>,
 }
 
 /// The searchable text of one event, or `None` for the events that are not
 /// conversation.
-fn said(event: &SessionEvent) -> Option<Said<'_>> {
+pub(crate) fn said(event: &SessionEvent) -> Option<Said<'_>> {
     match event {
-        SessionEvent::UserMessage { text, .. } => Some(Said {
+        SessionEvent::UserMessage { text, at, .. } => Some(Said {
             who: "you",
             conversation: true,
             text: text.into(),
+            at: *at,
         }),
-        SessionEvent::AssistantMessage { blocks, .. } => Some(Said {
+        SessionEvent::AssistantMessage { blocks, at, .. } => Some(Said {
             who: "model",
             conversation: true,
             // Text blocks only: thinking is not what the conversation said,
@@ -580,13 +774,15 @@ fn said(event: &SessionEvent) -> Option<Said<'_>> {
                 .collect::<Vec<_>>()
                 .join(" ")
                 .into(),
+            at: *at,
         }),
         // Findable by its name as well as by what was said in it, since the
         // name is the thing most likely to be remembered.
-        SessionEvent::Title { text, .. } => Some(Said {
+        SessionEvent::Title { text, at, .. } => Some(Said {
             who: "name",
             conversation: false,
             text: text.into(),
+            at: *at,
         }),
         _ => None,
     }
@@ -600,7 +796,7 @@ fn said(event: &SessionEvent) -> Option<Said<'_>> {
 /// change a string's length, so the offset does not point where the caller
 /// thinks in the original. Walking the original keeps every index usable for
 /// slicing it.
-fn find_fold(text: &str, needle: &str) -> Option<usize> {
+pub(crate) fn find_fold(text: &str, needle: &str) -> Option<usize> {
     if needle.is_empty() {
         return None;
     }
@@ -618,7 +814,7 @@ fn find_fold(text: &str, needle: &str) -> Option<usize> {
 /// useless: a match three thousand characters in would not appear in the
 /// excerpt at all, and a result that does not show why it matched reads as a
 /// false positive.
-fn excerpt_around(text: &str, at: usize, width: usize) -> String {
+pub(crate) fn excerpt_around(text: &str, at: usize, width: usize) -> String {
     let start = text[..at]
         .char_indices()
         .rev()
@@ -638,7 +834,7 @@ fn excerpt_around(text: &str, at: usize, width: usize) -> String {
 
 /// Characters of context before a hit; twice that after it, since what
 /// follows a phrase usually says more about it than what precedes it.
-const EXCERPT_WIDTH: usize = 40;
+pub(crate) const EXCERPT_WIDTH: usize = 40;
 
 /// Resolve a session ID or unique ID prefix to its log file.
 pub fn find_by_prefix(log_dir: &Path, prefix: &str) -> Result<PathBuf, StoreError> {
@@ -780,6 +976,9 @@ mod tests {
             user_turns: 1,
             first_user: Some("can you help me rename a function\neverywhere".into()),
             title: None,
+            mode: ChatMode::Normal,
+            kind: ChatKind::Build,
+            forked_from: None,
         };
         assert_eq!(s.label(60), "can you help me rename a function everywhere");
 
@@ -794,6 +993,150 @@ mod tests {
             ..s
         };
         assert_eq!(blank.label(60), "");
+    }
+
+    /// An incognito log is listed like any other and marked; `mode_of`
+    /// answers off the first line alone, past which a walker's watermark
+    /// may already be; and the *user's* sidebar search still finds it — it
+    /// is hidden from other chats, not from him.
+    #[test]
+    fn an_incognito_log_is_listed_and_marked_and_read_off_its_first_line() {
+        use nightloom_core::Session;
+        let dir = std::env::temp_dir().join(format!("nightloom-store-mode-{}", uuid_like()));
+        let mut inc = Session::incognito(&dir).unwrap();
+        inc.record_user("a private question about parsnips");
+        let plain = logged(&dir, "an ordinary question", "an answer", "");
+
+        let listed = list(&dir).unwrap();
+        let of = |id: &str| listed.iter().find(|s| s.id == id).unwrap();
+        assert_eq!(of(&inc.id).mode, ChatMode::Incognito);
+        assert_eq!(of(&plain).mode, ChatMode::Normal);
+        // And again through the cache, which has to carry the mark too.
+        let again = list(&dir).unwrap();
+        assert_eq!(
+            again.iter().find(|s| s.id == inc.id).unwrap().mode,
+            ChatMode::Incognito
+        );
+
+        assert_eq!(
+            mode_of(&dir.join(format!("{}.jsonl", inc.id))),
+            ChatMode::Incognito
+        );
+        assert_eq!(
+            mode_of(&dir.join(format!("{plain}.jsonl"))),
+            ChatMode::Normal
+        );
+        assert_eq!(mode_of(&dir.join("missing.jsonl")), ChatMode::Normal);
+
+        let found = search(&dir, "parsnips").unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].summary.mode, ChatMode::Incognito);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A creation line with a mode or kind this build does not know — a
+    /// newer build's value after a rollback — reads *closed* (backlog 134,
+    /// review C's FC-c): the chat keeps its own id, lists as incognito (or
+    /// the read-only kind), is skipped by `mode_of`'s callers, and is not
+    /// admitted to the index. Before this the whole line failed to parse
+    /// and every reader fell back to normal + build.
+    #[test]
+    fn an_unknown_mode_or_kind_on_the_creation_line_reads_closed() {
+        let dir = std::env::temp_dir().join(format!("nightloom-store-closed-{}", uuid_like()));
+        fs::create_dir_all(&dir).unwrap();
+        let at = "2026-09-17T12:00:00Z";
+        let future_mode = dir.join("future-mode.jsonl");
+        fs::write(
+            &future_mode,
+            format!(
+                "{{\"event\":\"session_created\",\"id\":\"future-mode\",\"mode\":\"vaulted\",\"at\":\"{at}\"}}\n\
+                 {{\"event\":\"user_message\",\"text\":\"a secret about parsnips\",\"images\":[],\"documents\":[],\"at\":\"{at}\"}}\n"
+            ),
+        )
+        .unwrap();
+        let future_kind = dir.join("future-kind.jsonl");
+        fs::write(
+            &future_kind,
+            format!(
+                "{{\"event\":\"session_created\",\"id\":\"future-kind\",\"kind\":\"agentic\",\"at\":\"{at}\"}}\n\
+                 {{\"event\":\"user_message\",\"text\":\"an ordinary question\",\"images\":[],\"documents\":[],\"at\":\"{at}\"}}\n"
+            ),
+        )
+        .unwrap();
+        // A value this build knows still reads as itself through the same path.
+        assert_eq!(
+            peek_created_closed(
+                r#"{"event":"session_created","id":"x","mode":"incognito","kind":"chat","at":"2026-09-17T12:00:00Z"}"#
+            ),
+            Some(Peek::SessionCreated {
+                id: "x".into(),
+                mode: ChatMode::Incognito,
+                kind: ChatKind::Chat,
+                forked_from: None
+            })
+        );
+        assert_eq!(mode_of(&future_mode), ChatMode::Incognito);
+        assert_eq!(mode_of(&future_kind), ChatMode::Normal);
+        let listed = list(&dir).unwrap();
+        let of = |id: &str| listed.iter().find(|s| s.id == id).unwrap();
+        assert_eq!(of("future-mode").mode, ChatMode::Incognito);
+        assert_eq!(of("future-kind").kind, ChatKind::Chat);
+        assert_eq!(of("future-kind").mode, ChatMode::Normal);
+        // The index: the unknown-mode log is a record with no terms.
+        let idx = index::ChatIndex::load_or_build(&dir).unwrap();
+        assert_eq!(idx.len(), 1, "only the known-mode log is admitted");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_log_id_is_a_file_stem_and_never_a_path() {
+        assert!(is_log_id("5eb30ca1-0d5f-4c1e-9c7a-0a1b2c3d4e5f"));
+        assert!(is_log_id("imported_2026-09-17.v2"));
+        assert!(!is_log_id(""));
+        assert!(!is_log_id("../live-chat"));
+        assert!(!is_log_id("..\\live-chat"));
+        assert!(!is_log_id("a/b"));
+        assert!(!is_log_id(".hidden"));
+        assert!(!is_log_id("with space"));
+    }
+
+    /// A fork lists as a chat of its own with its parent named, through
+    /// the cache as well as on a cold scan; an ordinary log names none.
+    #[test]
+    fn a_fork_lists_with_its_parent_named() {
+        use nightloom_core::Session;
+        let dir = std::env::temp_dir().join(format!("nightloom-store-fork-{}", uuid_like()));
+        let mut parent = Session::with_log(&dir).unwrap();
+        parent.record_user("the first question");
+        parent.record_user("the one to replace");
+        let fork = parent.fork_from(&dir, 2).unwrap();
+
+        for pass in 0..2 {
+            let listed = list(&dir).unwrap();
+            let of = |id: &str| listed.iter().find(|s| s.id == id).unwrap();
+            assert_eq!(
+                of(&fork.id).forked_from,
+                Some(ForkedFrom {
+                    session: parent.id.clone(),
+                    index: 2,
+                    reason: None,
+                }),
+                "pass {pass}"
+            );
+            assert_eq!(of(&parent.id).forked_from, None);
+            assert_eq!(of(&fork.id).user_turns, 1, "the copied turn only");
+        }
+        let found = search(&dir, "first question").unwrap();
+        assert_eq!(found.len(), 2, "both hold the copied turn");
+        assert!(found.iter().any(|h| h.summary.forked_from.is_some()));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    fn uuid_like() -> u128 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
     }
 
     #[test]

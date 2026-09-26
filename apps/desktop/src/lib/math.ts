@@ -94,7 +94,7 @@ export function renderMath(tex: string, display: boolean): string {
     // Reached only for the errors KaTeX raises regardless of throwOnError
     // (macro expansion blowing its budget, mostly).
     const why = err instanceof Error ? err.message : String(err);
-    return `<span class="math-error" title="${escapeAttr(why)}">${escapeText(tex)}</span>`;
+    return `<span class="math-error" data-tip="${escapeAttr(why)}">${escapeText(tex)}</span>`;
   }
 }
 
@@ -141,6 +141,73 @@ const inlineMath: TokenizerAndRendererExtension = {
     return renderMath(token.tex as string, token.display as boolean);
   },
 };
+
+/**
+ * A formula found in a note's source, for the formatted editor (nightshift
+ * backlog 150): `from`/`to` are offsets into the text, delimiters included,
+ * and `openLen` is the opening delimiter's length, so a click on the
+ * rendered formula can put the cursor just inside it. `block` is a display
+ * formula standing on its own lines, which the editor draws as a block.
+ */
+export interface MathSpan {
+  from: number;
+  to: number;
+  tex: string;
+  display: boolean;
+  block: boolean;
+  openLen: number;
+}
+
+/** Where the paragraph holding `i` ends: the next blank line, or the end. */
+function paragraphEnd(src: string, i: number): number {
+  const blank = /\n[ \t]*\n/g;
+  blank.lastIndex = i;
+  const m = blank.exec(src);
+  return m ? m.index : src.length;
+}
+
+/**
+ * Every formula in `src`, in order, by the same rules the preview renders
+ * with — `BLOCK` at the start of a line, `matchInline` anywhere else, both
+ * bounded by the paragraph as marked's inline pass is, and a backslash
+ * escaping the character after it (`\$5`). Code is not excluded here: the
+ * editor knows where code is from its own parse and drops spans inside it.
+ */
+export function findMath(src: string): MathSpan[] {
+  const out: MathSpan[] = [];
+  let i = 0;
+  while (i < src.length) {
+    if (i === 0 || src.charCodeAt(i - 1) === 10) {
+      const m = BLOCK.exec(src.slice(i));
+      if (m) {
+        const closes = m[1] === "$$" ? "$$" : "\\]";
+        if (m[3] === closes && m[2].trim()) {
+          const from = i + m[0].indexOf(m[1]);
+          const to = from + m[1].length + m[2].length + m[3].length;
+          out.push({ from, to, tex: m[2], display: true, block: true, openLen: m[1].length });
+          i = to;
+          continue;
+        }
+      }
+    }
+    const ch = src[i];
+    if (ch === "\\" && src[i + 1] !== "(" && src[i + 1] !== "[") {
+      i += 2;
+      continue;
+    }
+    if (ch === "$" || ch === "\\") {
+      const hit = matchInline(src.slice(i, paragraphEnd(src, i)));
+      if (hit) {
+        const openLen = hit.raw.startsWith("$$") || hit.raw.startsWith("\\") ? 2 : 1;
+        out.push({ from: i, to: i + hit.raw.length, tex: hit.tex, display: hit.display, block: false, openLen });
+        i += hit.raw.length;
+        continue;
+      }
+    }
+    i++;
+  }
+  return out;
+}
 
 /** The marked extension: `marked.use(math)`. */
 export const math: MarkedExtension = {

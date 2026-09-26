@@ -1,0 +1,141 @@
+import { beforeEach, describe, expect, it } from "vitest";
+import { app, applyTurnEvent, latestSubagents, openChatSubagents, subagentsOfTurn } from "./state.svelte";
+import type { SubagentStatus, TurnEvent } from "./types";
+
+/**
+ * The Running-tasks rows (nightshift backlog 152): the translator's
+ * `subagent_status` event replaces a row whole, the child's own events
+ * land in the row's segments as well as under the live call, and the
+ * latest turn's rows are what the chip and the gauge's line read.
+ */
+const status = (over: Partial<SubagentStatus> = {}): TurnEvent => ({
+  type: "subagent_status",
+  tool_use_id: "toolu_p",
+  task_id: "a1",
+  subagent_type: "general-purpose",
+  description: "Survey the crate",
+  prompt: "Survey the crate and report.",
+  status: "running",
+  background: false,
+  tokens: 0,
+  tool_uses: 0,
+  duration_ms: 0,
+  usage: { input_tokens: 0, output_tokens: 0 },
+  rounds: 0,
+  ...over,
+});
+
+/** An event as the Claude Code engine sends it, naming its chat. */
+const withChat = (ev: TurnEvent, chat: string): TurnEvent & { chat?: string } => Object.assign({}, ev, { chat });
+
+describe("the subagent rows", () => {
+  beforeEach(() => {
+    app.subagents = [];
+    app.turnSeq = 7;
+    app.live = {
+      segments: [{ kind: "tool", call: { id: "toolu_p", name: "Agent", input: {}, result: null } }],
+    };
+  });
+
+  it("one row per spawning call, replaced whole on each status, the window's fields kept", () => {
+    applyTurnEvent(status());
+    expect(app.subagents).toHaveLength(1);
+    const first = app.subagents[0];
+    expect(first.turn).toBe(7);
+    expect(first.segments).toEqual([]);
+    const started = first.startedAt;
+    applyTurnEvent(status({ tokens: 26271, tool_uses: 1, model: "claude-haiku-4-5-20251001", rounds: 1 }));
+    expect(app.subagents).toHaveLength(1);
+    expect(app.subagents[0].tokens).toBe(26271);
+    expect(app.subagents[0].model).toBe("claude-haiku-4-5-20251001");
+    expect(app.subagents[0].startedAt).toBe(started);
+    applyTurnEvent(status({ tool_use_id: "toolu_q", description: "Second" }));
+    expect(app.subagents.map((r) => r.tool_use_id)).toEqual(["toolu_p", "toolu_q"]);
+  });
+
+  it("the child's events fill the row's own segments and the live call's children alike", () => {
+    applyTurnEvent(status());
+    const call: TurnEvent = { type: "tool_call", id: "toolu_c", name: "Read", input: { file_path: "a.rs" } };
+    applyTurnEvent({ type: "subagent", parent_tool_use_id: "toolu_p", event: call });
+    applyTurnEvent({
+      type: "subagent",
+      parent_tool_use_id: "toolu_p",
+      event: { type: "tool_result", tool_use_id: "toolu_c", name: "Read", content: "fn main() {}", is_error: false },
+    });
+    applyTurnEvent({ type: "subagent", parent_tool_use_id: "toolu_p", event: { type: "text_delta", text: "Done." } });
+    const row = app.subagents[0];
+    expect(row.segments).toHaveLength(2);
+    expect(row.segments[0].kind === "tool" && row.segments[0].call.result?.content).toBe("fn main() {}");
+    expect(row.segments[1]).toEqual({ kind: "text", text: "Done." });
+    const live = app.live!.segments[0];
+    expect(live.kind === "tool" && live.call.children?.length).toBe(2);
+    // A child's event before any status still reaches the live call; the
+    // row appears with the CLI's first task line.
+    applyTurnEvent({ type: "subagent", parent_tool_use_id: "toolu_x", event: { type: "text_delta", text: "?" } });
+    expect(app.subagents).toHaveLength(1);
+  });
+
+  it("a council seat's stream fills its row and leaves the chair's live message alone (backlog 169)", () => {
+    // The seats' rows and events as `send_agent` sends them: a
+    // `council seat` row keyed `council-seat-<seed>-<index>`, and the
+    // seat's own events as `subagent` keyed by that row.
+    const key = "council-seat-2a-0";
+    app.live = { segments: [{ kind: "notice", text: "Council: 2 seats answering in parallel" }] };
+    const before = JSON.stringify(app.live.segments);
+    applyTurnEvent(status({ tool_use_id: key, task_id: key, subagent_type: "council seat", description: "Seat 1 · opus", background: true }));
+    const seat = (event: TurnEvent): TurnEvent => ({ type: "subagent", parent_tool_use_id: key, event });
+    applyTurnEvent(seat({ type: "tool_call", id: "toolu_s1", name: "WebSearch", input: { query: "council of models" } }));
+    applyTurnEvent(
+      seat({ type: "tool_result", tool_use_id: "toolu_s1", name: "WebSearch", content: "three results", is_error: false }),
+    );
+    applyTurnEvent(seat({ type: "text_delta", text: "The answer, " }));
+    applyTurnEvent(seat({ type: "text_delta", text: "sourced." }));
+    const row = app.subagents.find((r) => r.tool_use_id === key)!;
+    expect(row.segments).toHaveLength(2);
+    const search = row.segments[0];
+    expect(search.kind === "tool" && search.call.name).toBe("WebSearch");
+    expect(search.kind === "tool" && search.call.input).toEqual({ query: "council of models" });
+    expect(search.kind === "tool" && search.call.result?.content).toBe("three results");
+    expect(row.segments[1]).toEqual({ kind: "text", text: "The answer, sourced." });
+    expect(JSON.stringify(app.live!.segments)).toBe(before);
+  });
+
+  it("a row is keyed by its chat and spawning call, and survives the relay: a status after the live message ended still lands (backlog 160)", () => {
+    app.activeSessionId = "c1";
+    applyTurnEvent(withChat(status(), "c1"));
+    expect(app.subagents[0].session).toBe("c1");
+    // The parent relays the child's report: the live message has ended
+    // (the post-turn re-sync replaced it) when the child's last lines land.
+    app.live = null;
+    applyTurnEvent({ type: "subagent", parent_tool_use_id: "toolu_p", event: { type: "text_delta", text: "Report." } });
+    applyTurnEvent(withChat(status({ status: "completed", tokens: 31_000 }), "c1"));
+    expect(app.subagents).toHaveLength(1);
+    expect(app.subagents[0].status).toBe("completed");
+    expect(app.subagents[0].segments).toEqual([{ kind: "text", text: "Report." }]);
+    // A later send spawns nothing: the chip still reads `1 agent · done · 31k`.
+    app.turnSeq = 8;
+    const chip = latestSubagents();
+    expect(chip.rows.map((r) => r.tool_use_id)).toEqual(["toolu_p"]);
+    expect(chip.running).toBe(0);
+    expect(chip.tokens).toBe(31_000);
+    // Another chat on screen: its panel is its own; the row is kept, not dropped.
+    app.activeSessionId = "c2";
+    expect(openChatSubagents()).toEqual([]);
+    expect(latestSubagents().rows).toEqual([]);
+    app.activeSessionId = "c1";
+    expect(openChatSubagents().map((r) => r.tool_use_id)).toEqual(["toolu_p"]);
+    app.activeSessionId = null;
+  });
+
+  it("the chip reads the latest turn's rows: count, running, the CLI's tokens summed", () => {
+    applyTurnEvent(status({ tokens: 8_785, status: "completed" }));
+    app.turnSeq = 8;
+    applyTurnEvent(status({ tool_use_id: "toolu_q", tokens: 26_271 }));
+    applyTurnEvent(status({ tool_use_id: "toolu_r", tokens: 7_629, status: "completed" }));
+    const t = subagentsOfTurn();
+    expect(t.rows.map((r) => r.tool_use_id)).toEqual(["toolu_q", "toolu_r"]);
+    expect(t.running).toBe(1);
+    expect(t.tokens).toBe(26_271 + 7_629);
+    expect(app.subagents).toHaveLength(3);
+  });
+});

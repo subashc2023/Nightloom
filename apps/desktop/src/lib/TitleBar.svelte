@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "./tip";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import type { UnlistenFn } from "@tauri-apps/api/event";
   import { app } from "./state.svelte";
@@ -131,7 +132,7 @@
            minimize reads as a fourth caption button. -->
       <button
         class="cap app"
-        title="Settings"
+        use:tip={"Settings"}
         aria-label="Settings"
         onclick={() => (app.showSettings = !app.showSettings)}
       >
@@ -148,7 +149,7 @@
       </button>
       <button
         class="cap"
-        title="Minimize"
+        use:tip={"Minimize"}
         aria-label="Minimize"
         onclick={() => void win.minimize()}
       >
@@ -158,7 +159,7 @@
       </button>
       <button
         class="cap"
-        title={maximized ? "Restore" : "Maximize"}
+        use:tip={maximized ? "Restore" : "Maximize"}
         aria-label={maximized ? "Restore" : "Maximize"}
         onclick={() => void win.toggleMaximize()}
       >
@@ -173,7 +174,7 @@
       </button>
       <button
         class="cap close"
-        title="Close"
+        use:tip={"Close"}
         aria-label="Close"
         onclick={() => void win.close()}
       >

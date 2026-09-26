@@ -18,7 +18,11 @@ use serde::{Deserialize, Serialize};
 /// What a segment carries. Adapters ignore this; it exists so shells can
 /// introspect an assembled prompt (show what's in play, drop one layer)
 /// without parsing text.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `Ord` and `Hash` are derived so a kind can key a map — a chat's own
+/// text per layer is stored as one — and the derived order is declaration
+/// order, which is not the ladder: use [`SegmentKind::LAYERS`] for that.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum SegmentKind {
@@ -42,8 +46,70 @@ pub enum SegmentKind {
     Knowledge,
     /// User-level standing preferences, from the config dir.
     UserMemory,
+    /// Standing instructions for the one model this chat runs on, from the
+    /// config dir's `models/` folder. Separate from
+    /// [`SegmentKind::UserMemory`] because that layer is read by every
+    /// model and this one is not: it exists for the preference that is
+    /// about *how one model talks*, which does not belong in a file every
+    /// other model also reads.
+    ModelInstructions,
+    /// How a *Chat* — the conversational kind of chat (nightshift backlog
+    /// 102, 2026-09-16) — talks: one file in the config dir, beside the
+    /// user's memory and the models' folder, read into a Chat's prompt
+    /// and no Build chat's. Its own kind because it is the layer that
+    /// makes a Chat a Chat on the subscription engine, where the CLI's
+    /// coding prompt stays underneath; on the provider engine it sits in
+    /// the same ladder position, after the model's file and before the
+    /// project's rules.
+    ChatInstructions,
+    /// The short gloss the Claude Code bridge appends after the layers above,
+    /// saying how their names (`read_file`, `@kb/`) read on an engine that
+    /// has its own tools. Its own kind rather than a [`SegmentKind::Custom`]
+    /// segment named "engine-note", because a shell that lets a chat switch
+    /// layers off addresses them by kind, and the note is a layer a user may
+    /// reasonably drop — the library prompt, which *is* `Custom`, is not.
+    EngineNote,
+    /// Claude Code's own auto memory for the chat's folder
+    /// (`~/.claude/projects/<cwd>/memory/MEMORY.md` and its topic files;
+    /// nightshift backlog 088, 2026-09-16). Never a segment of a
+    /// [`SystemPrompt`]: the CLI reads the file itself and Nightloom does
+    /// not assemble it. It is a kind so a chat can switch it off the way
+    /// it switches any other layer — recorded in the log by kind, read at
+    /// connect, and sent to the CLI as `autoMemoryEnabled: false` for
+    /// that chat. Off on any other engine, where there is no such file.
+    CliMemory,
     /// Anything a shell supplies directly (`--system`, the desktop textarea).
     Custom,
+}
+
+impl SegmentKind {
+    /// Every kind a chat may switch off, in ladder order — the set a shell
+    /// offers as switches. Excludes [`SegmentKind::Custom`]: the shell's own
+    /// text is chosen by the shell's own control (a dropdown, a flag), not by
+    /// a layer switch, and offering it twice would leave the two disagreeing.
+    pub const LAYERS: [SegmentKind; 9] = [
+        SegmentKind::Identity,
+        SegmentKind::Environment,
+        SegmentKind::UserMemory,
+        SegmentKind::ModelInstructions,
+        SegmentKind::ChatInstructions,
+        SegmentKind::ProjectInstructions,
+        SegmentKind::ProjectNotes,
+        SegmentKind::Knowledge,
+        SegmentKind::EngineNote,
+    ];
+
+    /// The kinds whose text a chat may replace with its own — the four
+    /// that are a file the user wrote, in ladder order. The two indexes are
+    /// listings the shell computes, the identity and environment are the
+    /// harness's, and the engine note is the bridge's: none of those is a
+    /// text a user edits, so a chat's override for them is not a thing.
+    pub const EDITABLE: [SegmentKind; 4] = [
+        SegmentKind::UserMemory,
+        SegmentKind::ModelInstructions,
+        SegmentKind::ChatInstructions,
+        SegmentKind::ProjectInstructions,
+    ];
 }
 
 /// One addressable piece of the system prompt.

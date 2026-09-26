@@ -128,8 +128,17 @@ fn build_chat(
         // per-workspace, so the developer's own notes would reach every eval
         // on that machine and none on any other.
         knowledge: None,
+        // Off for the same reason as user memory: a file the developer wrote
+        // for this model on this machine is not part of the fixture.
+        model: None,
+        // No kinds on the CLI: an eval is a build chat, and the Chat file
+        // is the developer's own too.
+        chat_instructions: false,
         cwd: workspace.to_path_buf(),
         custom: None,
+        // A chat's own text for a layer is read from a chat's log, which the
+        // CLI does not keep; the files are what it sends.
+        edits: Default::default(),
     });
     chat.thinking = target.thinking.clone();
     chat.max_tokens = max_tokens;

@@ -1,19 +1,126 @@
-:root {
-  --bg: #0d0d14;
-  --panel: #14121f;
-  --border: #262336;
-  --text: #e6e4f0;
-  --dim: #8a86a3;
-  --accent: #8b7cf6;
-  --error: #f66d7c;
-  --mono: ui-monospace, "Cascadia Code", Consolas, "SF Mono", Menlo, monospace;
+/* ---- tokens ----------------------------------------------------------------
+
+   Four dark palettes, drawn in notes/runner-design/redesign-mockup-2026-09-11
+   (nightshift repo, item 036) and chosen by Swaraag on 2026-09-11: A is the
+   default, the others are picked in Settings → Appearance and applied as
+   `data-palette` on <html>. Surfaces and the accent change between them;
+   status and diff colours are shared.
+
+   The older names (--bg, --panel, --border, --text, --accent, --error) are
+   kept as aliases onto the new tokens so every existing screen follows the
+   palette without touching its CSS. New work uses the new names. */
+
+:root,
+[data-palette="A"] {
+  /* A — charcoal & amber */
+  --paper: #1b1916;
+  --sheet: #232019;
+  --well: #2c2822;
+  --ink: #ece7dc;
+  --ink2: #c9c2b3;
+  --dim: #8d8676;
+  --line: #332e27;
+  --line2: #4a443a;
+  --accent: #e0a458;
+  --accent-ink: #f0c27a;
+  --accent-soft: #3a2d1c;
+  --term: #131110;
+  --add-bg: #1f3324;
+  --add-fg: #bfe6c4;
+  --del-bg: #3c2222;
+  --del-fg: #f2bcbc;
+
+  /* shared across palettes */
+  --done: #7cc48a;
+  --done-soft: #1f3324;
+  --partial: #e0b35b;
+  --partial-soft: #3a2f17;
+  --failed: #e57373;
+  --failed-soft: #3c2222;
+  --live: #7fb3f0;
+  --live-soft: #1d2c40;
+
+  --serif: "Newsreader Variable", Georgia, "Times New Roman", serif;
+  --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+
+  /* aliases — the names the pre-redesign screens use */
+  --bg: var(--paper);
+  --panel: var(--sheet);
+  --border: var(--line);
+  --text: var(--ink);
+  --error: var(--failed);
+  /* `--muted` was used by the chat top bar, transcript and composer but never
+     defined (2026-09-11 chat restyle); it is the dim ink. */
+  --muted: var(--dim);
+
   /* The window's own title bar, drawn in the webview because the system frame
      is off on Windows and Linux. 34px against Windows' own 32 — it carries a
      wordmark as well as the caption buttons. */
   --titlebar-h: 34px;
 
   color-scheme: dark;
-  font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+  font-family: var(--sans);
+}
+
+[data-palette="B"] {
+  /* slate & copper */
+  --paper: #15181d;
+  --sheet: #1c2027;
+  --well: #252a33;
+  --ink: #e6e9ee;
+  --ink2: #c0c6cf;
+  --dim: #7f8794;
+  --line: #2a3039;
+  --line2: #3c434e;
+  --accent: #d38b5d;
+  --accent-ink: #e8a87c;
+  --accent-soft: #3a2a1f;
+  --term: #0f1115;
+  --add-bg: #1c3128;
+  --add-fg: #b9e3c6;
+  --del-bg: #3a2226;
+  --del-fg: #f0bcc0;
+}
+
+[data-palette="C"] {
+  /* graphite & teal */
+  --paper: #131313;
+  --sheet: #1b1b1b;
+  --well: #242424;
+  --ink: #e9e9e6;
+  --ink2: #bebebb;
+  --dim: #7e7e7a;
+  --line: #2b2b2b;
+  --line2: #3e3e3e;
+  --accent: #5fc4c0;
+  --accent-ink: #8fdcd8;
+  --accent-soft: #193233;
+  --term: #0c0c0c;
+  --add-bg: #1c3122;
+  --add-fg: #bfe4c3;
+  --del-bg: #3a2020;
+  --del-fg: #f0baba;
+}
+
+[data-palette="D"] {
+  /* espresso & gold */
+  --paper: #1a1412;
+  --sheet: #221a17;
+  --well: #2c2320;
+  --ink: #f0e6dc;
+  --ink2: #cbbfb3;
+  --dim: #9a8b80;
+  --line: #352a26;
+  --line2: #4a3b35;
+  --accent: #d4a24c;
+  --accent-ink: #e8bd6e;
+  --accent-soft: #3c2e17;
+  --term: #120e0c;
+  --add-bg: #22331f;
+  --add-fg: #c4e4bd;
+  --del-bg: #3e2220;
+  --del-fg: #f2bdb8;
 }
 
 *,
@@ -58,7 +165,7 @@ button {
   border-radius: 5px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #35304d;
+  background: var(--line2);
 }
 
 /* ---- markdown rendering for assistant text ---- */
@@ -116,14 +223,14 @@ button {
 .markdown code {
   font-family: var(--mono);
   font-size: 0.82em;
-  background: #1c1930;
+  background: var(--well);
   border: 1px solid var(--border);
   border-radius: 4px;
   padding: 0.1em 0.35em;
 }
 
 .markdown pre {
-  background: #100e1a;
+  background: var(--term);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 0.7em 0.9em;
@@ -195,9 +302,569 @@ button {
   overflow-y: hidden;
 }
 
+/* The sideways bar of an equation wider than its pane (nightshift backlog
+   236, 2026-09-26: his aside showed a grey bar under a long equation "I've
+   never seen before"). The app-wide thumb above is drawn at rest; here it
+   is thin and clear until the pointer is over the equation, the way macOS
+   overlay bars behave, so a formula that fits shows nothing and one that
+   does not can still be scrolled (trackpad, or the bar on hover). The
+   clipped glyphs at the edge are what says there is more. */
+.markdown .katex-display::-webkit-scrollbar,
+.ns-prose .katex-display::-webkit-scrollbar {
+  height: 6px;
+}
+.markdown .katex-display::-webkit-scrollbar-thumb,
+.ns-prose .katex-display::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 3px;
+}
+.markdown .katex-display:hover::-webkit-scrollbar-thumb,
+.ns-prose .katex-display:hover::-webkit-scrollbar-thumb {
+  background: var(--border);
+}
+
 .markdown .katex-error,
 .markdown .math-error {
   font-family: var(--mono);
   font-size: 0.85em;
   color: var(--error);
+}
+
+/* ---- the Nightshift surface's shared pieces ----------------------------
+
+   Ported from the mock-up's component CSS (build.py). Global rather than
+   per-component because the header, the Review screens and the sidebar all
+   draw the same pills, chips, buttons and section labels, and the rendered
+   morning page (`.prose`) is markup the renderer produces, which a scoped
+   style cannot reach. Prefixed `ns-` so nothing here collides with the chat
+   screens' classes. */
+
+.ns-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--line2);
+  background: var(--sheet);
+  color: var(--ink);
+  font-size: 13px;
+  font-family: var(--sans);
+  line-height: 1.3;
+  cursor: pointer;
+  white-space: nowrap;
+  flex: none;
+}
+.ns-btn:hover:not(:disabled) {
+  border-color: var(--dim);
+}
+.ns-btn.accent {
+  background: var(--accent);
+  color: var(--paper);
+  border-color: var(--accent);
+  font-weight: 500;
+}
+.ns-btn.accent:hover:not(:disabled) {
+  background: var(--accent-ink);
+  border-color: var(--accent-ink);
+}
+.ns-btn.danger {
+  color: var(--failed);
+  border-color: #7a3d3f;
+  background: var(--sheet);
+}
+.ns-btn.danger:hover:not(:disabled) {
+  border-color: var(--failed);
+}
+.ns-btn.ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--ink2);
+}
+.ns-btn.ghost:hover:not(:disabled) {
+  background: var(--well);
+  border-color: transparent;
+}
+.ns-btn.small {
+  padding: 3px 8px;
+  font-size: 11.5px;
+}
+.ns-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.ns-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.ns-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  cursor: pointer;
+}
+.ns-link:hover {
+  color: var(--accent-ink);
+  text-decoration: underline;
+}
+
+.ns-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  line-height: 1.5;
+}
+.ns-pill .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.ns-pill.done,
+.ns-pill.applied {
+  background: var(--done-soft);
+  color: var(--done);
+}
+.ns-pill.partial,
+.ns-pill.interrupted,
+.ns-pill.wip {
+  background: var(--partial-soft);
+  color: var(--partial);
+}
+.ns-pill.failed {
+  background: var(--failed-soft);
+  color: var(--failed);
+}
+.ns-pill.live,
+.ns-pill.answered {
+  background: var(--live-soft);
+  color: var(--live);
+}
+.ns-pill.open {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+.ns-pill.grey,
+.ns-pill.withdrawn,
+.ns-pill.unknown {
+  background: var(--well);
+  color: var(--dim);
+}
+
+.ns-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--line2);
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--ink2);
+  background: var(--sheet);
+  white-space: nowrap;
+}
+.ns-chip .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--done);
+}
+.ns-chip .dot.live {
+  background: var(--live);
+}
+.ns-chip .dot.failed {
+  background: var(--failed);
+}
+.ns-chip .dot.unknown {
+  background: var(--dim);
+}
+.ns-chip.mono {
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+.ns-chip svg {
+  width: 14px;
+  height: 14px;
+}
+
+.ns-mono {
+  font-family: var(--mono);
+}
+
+/* The small uppercase label — a column head, a section name, a field key. */
+.ns-k {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+  font-family: var(--sans);
+  font-weight: 500;
+}
+
+.ns-card {
+  background: var(--sheet);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+/* A section label with a rule running to the right edge. */
+.ns-sect {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 0 8px;
+}
+.ns-sect::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+.ns-sect .sub {
+  font-size: 12px;
+  color: var(--dim);
+}
+
+/* The uppercase heading of a sidebar or list group. */
+.ns-side-h {
+  padding: 14px 20px 6px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.ns-list {
+  display: flex;
+  flex-direction: column;
+  padding: 0 10px;
+}
+.ns-list .ns-row {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  color: var(--ink);
+  background: transparent;
+  border: none;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+  width: 100%;
+}
+/* Every other row a shade darker (2026-09-11 review: lists should read as
+   rows). Hover and selection still win. */
+.ns-list .ns-row:nth-child(even) {
+  background: color-mix(in srgb, var(--sheet) 55%, transparent);
+}
+.ns-list .ns-row:hover {
+  background: var(--well);
+}
+.ns-list .ns-row.on {
+  background: var(--sheet);
+  box-shadow: 0 0 0 1px var(--line2);
+}
+.ns-list .ns-row .t {
+  font-size: 13.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ns-list .ns-row .m {
+  font-size: 11.5px;
+  color: var(--dim);
+  font-family: var(--mono);
+}
+
+/* Inline SVG icons: stroke, no fill, sized by the parent. */
+.ns-ico {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  flex: none;
+}
+
+table.ns-grid {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+}
+table.ns-grid th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--dim);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+}
+table.ns-grid td {
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+table.ns-grid tr:last-child td {
+  border-bottom: none;
+}
+table.ns-grid tbody tr:nth-child(even) td {
+  background: color-mix(in srgb, var(--sheet) 55%, transparent);
+}
+
+input.ns-fld,
+textarea.ns-fld,
+select.ns-fld {
+  font-family: var(--sans);
+  font-size: 13.5px;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--line2);
+  border-radius: 6px;
+  padding: 7px 10px;
+  width: 100%;
+}
+textarea.ns-fld {
+  font-family: var(--serif);
+  font-size: 15px;
+  line-height: 1.5;
+  min-height: 110px;
+  resize: vertical;
+}
+.ns-fld:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* The rendered morning page and any blocker text: reading material, so the
+   serif at 17px with generous leading. Headings follow the mock-up: h1 the
+   page title, h2 a small uppercase sans label, h3 the finding titles. */
+.ns-prose {
+  font-family: var(--serif);
+  font-size: 17px;
+  line-height: 1.55;
+  color: var(--ink);
+  word-break: break-word;
+}
+.ns-prose > :first-child {
+  margin-top: 0;
+}
+.ns-prose h1 {
+  font-size: 34px;
+  line-height: 1.15;
+  font-weight: 500;
+  letter-spacing: -0.015em;
+  margin: 0 0 10px;
+}
+.ns-prose h2 {
+  font-size: 15px;
+  font-family: var(--sans);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+  font-weight: 500;
+  margin: 34px 0 12px;
+}
+.ns-prose h3 {
+  font-size: 21px;
+  font-weight: 500;
+  line-height: 1.3;
+  margin: 22px 0 8px;
+  letter-spacing: -0.01em;
+}
+.ns-prose h4,
+.ns-prose h5,
+.ns-prose h6 {
+  font-size: 17px;
+  font-weight: 600;
+  margin: 18px 0 6px;
+}
+.ns-prose p {
+  margin: 0 0 12px;
+}
+.ns-prose ul,
+.ns-prose ol {
+  margin: 0 0 12px;
+  padding-left: 1.4em;
+}
+.ns-prose li {
+  margin: 0.2em 0;
+}
+.ns-prose code {
+  font-family: var(--mono);
+  font-size: 13px;
+  background: var(--well);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+.ns-prose pre {
+  background: var(--term);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  margin: 0 0 14px;
+}
+.ns-prose pre code {
+  background: transparent;
+  padding: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.ns-prose blockquote {
+  margin: 0 0 12px;
+  padding: 0 0 0 14px;
+  border-left: 3px solid var(--line2);
+  color: var(--ink2);
+}
+.ns-prose a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.ns-prose a:hover {
+  color: var(--accent-ink);
+  text-decoration: underline;
+}
+.ns-prose hr {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 24px 0;
+}
+.ns-prose table {
+  border-collapse: collapse;
+  font-family: var(--sans);
+  font-size: 13px;
+  margin: 8px 0 14px;
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+}
+.ns-prose td,
+.ns-prose th {
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+}
+.ns-prose th {
+  font-weight: 500;
+  color: var(--dim);
+}
+.ns-prose del,
+.ns-prose s {
+  color: var(--dim);
+}
+.ns-prose .katex {
+  font-size: 1.02em;
+}
+.ns-prose .katex-display {
+  margin: 0.8em 0;
+  padding: 0.4em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+/* ---- find in page (nightshift backlog 106) ------------------------------
+
+   ⌘F's hits, lit from outside the message components by `find.ts`. The
+   first pair is the CSS Custom Highlight API — `FindBar.svelte` registers
+   the hit ranges under these two names and nothing is inserted into the
+   DOM; a `::highlight()` rule may only carry colour, background and text
+   decoration. The second pair is the fallback where the webview lacks the
+   API: `<mark>` wrappers, unwrapped again on close. Global because the
+   highlights and the marks live inside markup the renderer and the
+   transcript produce, which a scoped style cannot reach. */
+
+::highlight(find-match) {
+  background-color: var(--accent-soft);
+  color: var(--ink);
+}
+::highlight(find-current) {
+  background-color: var(--accent);
+  color: var(--paper);
+}
+mark.find-hit {
+  background: var(--accent-soft);
+  color: var(--ink);
+  border-radius: 2px;
+}
+mark.find-hit.find-current {
+  background: var(--accent);
+  color: var(--paper);
+}
+/* The field holding the current hit (nightshift backlog 162): a textarea
+   cannot hold a mark, so the hit is its selection — painted even while
+   the focus is in the find bar — and the box is ringed. */
+.find-current-field {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+textarea.find-current-field::selection {
+  background: var(--accent);
+  color: var(--paper);
+}
+
+/* Nightloom's own tooltip (nightshift backlog 171, `lib/tip.ts`): one pill
+   on `body`, drawn for whichever `use:tip` anchor owns it. A dark rounded
+   pill a step lighter than the sheet, 13px text, wrapped at 320px, line
+   breaks kept; it never takes the pointer, so it never blocks a click.
+   Above every popover (Hint's tip is 90, the top bar's cards 80). */
+.nl-tip {
+  position: fixed;
+  top: -9999px;
+  left: -9999px;
+  z-index: 1000;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  max-width: 320px;
+  padding: 6px 10px;
+  background: var(--well);
+  color: var(--ink);
+  border: 1px solid var(--line2);
+  border-radius: 8px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.4;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  visibility: hidden;
+  opacity: 0;
+  transition:
+    opacity 0.08s ease-out,
+    visibility 0s linear 0.08s;
+}
+.nl-tip.shown {
+  visibility: visible;
+  opacity: 1;
+  transition: opacity 0.08s ease-out;
+}
+.nl-tip-text {
+  min-width: 0;
+}
+.nl-tip-keys {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--dim);
+}
+@media (prefers-reduced-motion: reduce) {
+  .nl-tip,
+  .nl-tip.shown {
+    transition: none;
+  }
 }

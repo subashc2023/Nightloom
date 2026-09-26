@@ -804,6 +804,8 @@ mod tests {
                 reasoning_tokens: Some(480),
                 cache_read_tokens: Some(900),
                 cache_write_tokens: None,
+                cache_write_5m_tokens: None,
+                cache_write_1h_tokens: None,
             }
         );
     }
