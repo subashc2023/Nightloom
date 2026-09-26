@@ -63,7 +63,22 @@ function rectOf(sel: string): string {
   return `${Math.round(r.top)}..${Math.round(r.bottom)} ${shown ? "in view" : "OUT OF VIEW"}`;
 }
 
+// 240: &mode=openchat — the tab's chat is not the open one (use with &open=0); "Open the chat" is what
+// `openContent({kind:"chat"}, "new")` leaves behind: the chat is the open one and a chat tab took the pane (this
+// view unmounted); then back to the aside tab (mounted again). The foot is read before and after.
+const footText = () =>
+  (document.querySelector(".aside-view-foot-row")?.textContent ?? "absent").replace(/\s+/g, " ").trim();
 setTimeout(() => {
+  if (mode === "openchat") {
+    lines.push(`before: foot "${footText()}"`);
+    switchAside("chat-a");
+    app.activeSessionId = "chat-a";
+    unmount(comp);
+    flushSync();
+    comp = mount(AsideView, { target: root, props });
+    flushSync();
+    lines.push(`back, at once: foot "${footText()}"`);
+  }
   if (scroll > 0) {
     const el = sc();
     el.scrollTop = scroll;

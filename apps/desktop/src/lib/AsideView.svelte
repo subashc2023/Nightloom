@@ -207,6 +207,12 @@
             <span class="aside-view-foot-note">Sends when this answer ends.</span>
           {:else if composer.note === "engine"}
             <span class="aside-view-foot-note">Asides run on the Claude Code engine.</span>
+          {:else if composer.note === "ready"}
+            <!-- Backlog 240: the bar keeps a line once the chat is open (after
+                 Open the chat), instead of dropping to a bare Send. -->
+            <span class="aside-view-foot-note"
+              >Answers from <em>{chatName}</em>'s context; nothing here enters the chat.</span
+            >
           {/if}
           <span class="spacer"></span>
           <button

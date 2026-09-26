@@ -20,7 +20,7 @@ describe("aside tab composer (backlog 238)", () => {
     expect(asideComposer(thread([], true), base).shown).toBe(true);
     for (const n of [1, 2, 3]) {
       const turns = Array.from({ length: n }, (_, i) => turn(i + 1, true));
-      expect(asideComposer(thread(turns), base)).toEqual({ shown: true, canSend: true, note: null });
+      expect(asideComposer(thread(turns), base)).toEqual({ shown: true, canSend: true, note: "ready" });
     }
     const streaming = asideComposer(thread([turn(1, true), turn(2, false)]), { ...base, asking: true });
     expect(streaming).toEqual({ shown: true, canSend: false, note: "answering" });
@@ -42,5 +42,16 @@ describe("aside tab composer (backlog 238)", () => {
       note: "engine",
     });
     expect(asideComposer(null, base).shown).toBe(false);
+  });
+
+  // Backlog 240: full-screen aside tab → Open the chat → back to the tab. The chat is now the open one; the bar
+  // keeps a line (the ready one) rather than going bare, and Send is live. Before 240 the note was null here.
+  it("keeps a line after Open the chat makes the tab's chat the open one", () => {
+    const t = thread([turn(1, true)]);
+    const before = asideComposer(t, { ...base, open: false });
+    expect(before.note).toBe("not-open");
+    const back = asideComposer(t, { ...base, open: true });
+    expect(back).toEqual({ shown: true, canSend: true, note: "ready" });
+    expect(asideComposer(t, { ...base, open: true, text: "" })).toEqual({ shown: true, canSend: false, note: "ready" });
   });
 });
