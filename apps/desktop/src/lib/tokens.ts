@@ -190,3 +190,34 @@ export function draftExact(tokens: number): { tokens: number; long: string; shor
 export function draftExactTitle(tokens: number, model: string): string {
   return `${tokens.toLocaleString("en-US")} tokens in the message box — exact, counted by the provider for ${model} after you paused, the text only as one message; attachments, the system prompt and the history are not in it.`;
 }
+
+/**
+ * The figure under his own message (nightshift backlog 245, 2026-09-27:
+ * "my replies should have the token count the way that the agent's
+ * replies do"). The most exact source is the one a reply's figure reads:
+ * the log's usage, where what arrived between two replies — this message,
+ * with whatever the turn put on the wire beside it — is the next reply's
+ * input less the context the last one left ([`turnSizes`]). That figure is
+ * shown as it is, with the gauge's share. Where the log cannot give one —
+ * before the reply lands, a reply whose usage was not recorded, a context
+ * that shrank between the two — and on the chat's first message, whose
+ * figure holds the system prompt too, the text's estimate stands in,
+ * marked `~` as the composer marks its own. Null on a message with no
+ * text and no figure.
+ */
+export function userFigure(
+  size: TurnSize | null,
+  text: string,
+  limit: number | null,
+): { label: string; title: string; tokens: number; exact: boolean } | null {
+  if (size && !size.preamble) {
+    return { label: `${fmtTokens(size.tokens)} tokens`, title: sizeTitle(size, "user", limit), tokens: size.tokens, exact: true };
+  }
+  const tokens = estimateTokens(text);
+  if (tokens === 0) return null;
+  const est = `About ${tokens.toLocaleString("en-US")} tokens: an estimate of this message's text (characters ÷ ${CHARS_PER_TOKEN}), attachments not counted.`;
+  const why = size?.preamble
+    ? ` The log's exact figure, ${size.tokens.toLocaleString("en-US")} tokens, holds the system prompt too — it does not separate them.`
+    : " The exact figure comes from the reply's usage, and the log has none for this message: no reply yet, its usage not recorded, or the context shrank between the two replies.";
+  return { label: `~${fmtTokens(tokens)} tokens`, title: est + why, tokens, exact: false };
+}

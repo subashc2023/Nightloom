@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { SessionEvent, Usage } from "./types";
 import { liveFlags } from "./state.svelte";
-import { SHARE_BAR_FROM, fmtShare, fmtTokens, shareOf, sizeTitle, turnSizes } from "./tokens";
+import { SHARE_BAR_FROM, fmtShare, fmtTokens, shareOf, sizeTitle, turnSizes, userFigure } from "./tokens";
 
 // Per-message sizes (nightshift backlog 090): the delta projection over a
 // fixture log, and the reconciliation — every turn's figure sums to the
@@ -138,5 +138,30 @@ describe("sizeTitle", () => {
     expect(sizeTitle({ tokens: 2_040, out: 40, results: 2_000 }, "assistant", null)).toBe(
       "2,040 tokens this reply added to the context: 40 out · 2,000 from its tool results",
     );
+  });
+});
+
+// Backlog 245: the figure under his own message.
+describe("userFigure", () => {
+  it("shows the log's exact figure, as the reply's is shown", () => {
+    const f = userFigure({ tokens: 1234 }, "hello there", 200_000)!;
+    expect(f.label).toBe("1.2k tokens");
+    expect(f.exact).toBe(true);
+    expect(f.title).toContain("1,234 tokens this message added to the context");
+  });
+  it("stands the text's estimate in, marked ~, where the log has no figure", () => {
+    const f = userFigure(null, "x".repeat(4000), null)!;
+    expect(f.label).toBe("~1k tokens");
+    expect(f.exact).toBe(false);
+    expect(f.title).toContain("an estimate");
+    expect(f.title).toContain("no reply yet");
+  });
+  it("does not call the system prompt his: the first message gets the estimate, the exact figure in the title", () => {
+    const f = userFigure({ tokens: 25_593, preamble: true }, "hi there, read this", null)!;
+    expect(f.label).toBe("~5 tokens");
+    expect(f.title).toContain("25,593 tokens, holds the system prompt too");
+  });
+  it("says nothing for a message with no text and no figure", () => {
+    expect(userFigure(null, "", null)).toBeNull();
   });
 });

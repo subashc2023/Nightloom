@@ -51,7 +51,7 @@
   import { pillParts, requestReply, splitQuotes } from "./replyQuote.svelte";
   import { PREFERRED_CARD_HEIGHT, chooseSide, offsetsOf, type AsideAnchor } from "./asideCard";
   import { isMac } from "./platform";
-  import { fmtShare, fmtTokens, shareOf, sizeTitle, turnSizes } from "./tokens";
+  import { fmtShare, shareOf, turnSizes, userFigure } from "./tokens";
   import { cacheState } from "./cache";
   import { moveScroll, recallScroll, rememberScroll, scrollKey, NEW_SCROLL_KEY } from "./scroll.svelte";
   import { stashEdit, takeEdit } from "./drafts.svelte";
@@ -1256,20 +1256,9 @@
             <!-- The time moved to the foot (backlog 123): one place is
                  enough, and his ask was the foot. -->
             <span class="ns-k">You</span>
-            <!-- The turn's own size (backlog 090): what it added to the
-                 context, and its share of the window with the gauge's bar
-                 once it is worth a bar. Nothing where the log cannot say. -->
-            {#if sizes[item.index]}
-              {@const size = sizes[item.index]!}
-              {@const share = shareOf(size.tokens, windowLimit)}
-              <span class="turn-size" use:tip={sizeTitle(size, "user", windowLimit)}>
-                {fmtTokens(size.tokens)} tokens
-                {#if fmtShare(share)}
-                  <span class="share-bar" aria-hidden="true"><span class="share-fill" style:width="{(share ?? 0) * 100}%"></span></span>
-                  <span class="share-pct">{fmtShare(share)}</span>
-                {/if}
-              </span>
-            {/if}
+            <!-- The turn's own size (backlog 090) moved to the foot on
+                 2026-09-27 (backlog 245): under his message, as a reply's
+                 figure is under the reply. -->
           </div>
           {#if editing?.index === item.index}
             <div class="editor">
@@ -1497,6 +1486,23 @@
                 <Icon name="branch" size={12} />
                 {checkpointLine(app.checkpoint, false)}
               </span>
+            {/if}
+            {#if editing?.index !== item.index && !item.superseded && !item.removed}
+              <!-- His message's figure (backlog 245), in the reply footer's
+                   mono 11px beside the time: the log's exact figure with
+                   its share of the window (backlog 090), or the text's
+                   estimate, marked ~, where the log cannot say. -->
+              {@const fig = userFigure(sizes[item.index], item.text, windowLimit)}
+              {#if fig}
+                {@const share = fig.exact ? shareOf(fig.tokens, windowLimit) : null}
+                <span class="turn-size" use:tip={fig.title}>
+                  {fig.label}
+                  {#if fmtShare(share)}
+                    <span class="share-bar" aria-hidden="true"><span class="share-fill" style:width="{(share ?? 0) * 100}%"></span></span>
+                    <span class="share-pct">{fmtShare(share)}</span>
+                  {/if}
+                </span>
+              {/if}
             {/if}
             <span class="when" use:tip={exactTime(item.at)}>{relativeTimeLong(item.at, now)}</span>
           </div>
