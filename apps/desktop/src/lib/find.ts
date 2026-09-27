@@ -170,6 +170,70 @@ export function findChord(
   return null;
 }
 
+/**
+ * A body of text a page keeps folded — not in the DOM, so the walker
+ * cannot see it — named by the key that unfolds it (nightshift backlog
+ * 242: the Context page's layers, whose text renders only when read).
+ */
+export interface FoldedBody {
+  key: string;
+  text: string;
+}
+
+/**
+ * The keys of the folded bodies holding at least one case-insensitive
+ * occurrence of `query`, in the order given. An empty query holds nothing.
+ */
+export function foldedHolding(bodies: readonly FoldedBody[], query: string): string[] {
+  const q = foldCase(query);
+  if (q.length === 0) return [];
+  return bodies.filter((b) => foldCase(b.text).includes(q)).map((b) => b.key);
+}
+
+/**
+ * What is open after a search that unfolds the bodies holding a match
+ * (backlog 242). `open` is what the page has open now; `byFind` the keys
+ * the search opened itself. A body the search opened and that no longer
+ * holds a match folds back as the query narrows; one he opened by hand is
+ * never folded by the search; a newly matching folded body opens and is
+ * remembered as the search's. Pure; the inputs are not changed.
+ */
+export function unfoldPlan(
+  open: ReadonlySet<string>,
+  byFind: ReadonlySet<string>,
+  holding: readonly string[],
+): { open: Set<string>; byFind: Set<string> } {
+  const want = new Set(holding);
+  const nextOpen = new Set(open);
+  const nextByFind = new Set<string>();
+  for (const k of byFind) {
+    if (want.has(k)) nextByFind.add(k);
+    else nextOpen.delete(k);
+  }
+  for (const k of holding) {
+    if (!nextOpen.has(k)) {
+      nextOpen.add(k);
+      nextByFind.add(k);
+    }
+  }
+  return { open: nextOpen, byFind: nextByFind };
+}
+
+/**
+ * What folds back when the bar closes (backlog 242): every body the search
+ * opened except `keep` — the one holding the current hit, which he is
+ * reading. He opened nothing here; his own stay open.
+ */
+export function foldOnClose(
+  open: ReadonlySet<string>,
+  byFind: ReadonlySet<string>,
+  keep: string | null,
+): Set<string> {
+  const next = new Set(open);
+  for (const k of byFind) if (k !== keep) next.delete(k);
+  return next;
+}
+
 // ---- The DOM half ---------------------------------------------------------
 
 /**
@@ -473,31 +537,32 @@ export function markFallback(root: () => Element | null): Highlighter {
  * one element scrolls: `scrollIntoView` would also move any ancestor that
  * happened to overflow. Nothing moves when the hit is already in view.
  */
-export function scrollRangeIntoView(range: Range, stop: Element): void {
-  const rect = range.getBoundingClientRect();
-  if (rect.width === 0 && rect.height === 0) return;
+export function scrollRangeIntoView(range: Range, stop: Element, nested = false): void {
+  const first = range.getBoundingClientRect();
+  if (first.width === 0 && first.height === 0) return;
   let el: Element | null =
     range.startContainer.nodeType === Node.TEXT_NODE
       ? range.startContainer.parentElement
       : (range.startContainer as Element);
-  let scroller: Element | null = null;
+  // `nested` (backlog 242): every scroller between the hit and `stop`
+  // moves, innermost first — the Context page's layer text scrolls in its
+  // own box inside the scrolling page, and a hit needs both. Without it,
+  // only the innermost, as before.
   while (el && el !== stop) {
     const oy = getComputedStyle(el).overflowY;
     if (
       (oy === "auto" || oy === "scroll") &&
       el.scrollHeight > el.clientHeight
     ) {
-      scroller = el;
-      break;
+      const rect = range.getBoundingClientRect();
+      const box = el.getBoundingClientRect();
+      const margin = 24;
+      if (rect.top < box.top + margin || rect.bottom > box.bottom - margin)
+        el.scrollTop += rect.top - box.top - box.height / 2 + rect.height / 2;
+      if (!nested) return;
     }
     el = el.parentElement;
   }
-  if (!scroller) return;
-  const box = scroller.getBoundingClientRect();
-  const margin = 24;
-  if (rect.top >= box.top + margin && rect.bottom <= box.bottom - margin)
-    return;
-  scroller.scrollTop += rect.top - box.top - box.height / 2 + rect.height / 2;
 }
 
 /** The current hit's element, for the mark fallback's scroll. */

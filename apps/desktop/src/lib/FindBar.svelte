@@ -64,6 +64,23 @@
    * and "back to results" while the panel holds an answer.
    */
 
+  /**
+   * `scoped` (nightshift backlog 242): a bar inside a modal — the Context
+   * page — searching only its own parent. It is not the app's bar: it does
+   * not register with the search panel, carries nothing to the next bar,
+   * has no "search all chats" link, and scrolls every box between the hit
+   * and the page (a layer's text scrolls inside the scrolling page).
+   * `prepare(query)` runs before each fresh search, so the page can unfold
+   * what holds a match; `onclosed(el)` hears the close, with the element
+   * holding the current hit.
+   */
+  interface Props {
+    scoped?: boolean;
+    prepare?: (query: string) => void;
+    onclosed?: (current: Element | null) => void;
+  }
+  let { scoped = false, prepare, onclosed }: Props = $props();
+
   let open = $state(false);
   let query = $state("");
   let hits = $state<Hit[]>([]);
@@ -81,6 +98,7 @@
   let pendingTurn: number | null = null;
 
   onMount(() => {
+    if (scoped) return;
     registerFindBar({ openWith, query: () => (open ? query : "") });
     // An open search follows the focus (backlog 099's leftover): the bar
     // is mounted per focused pane and per kind of page, so a click into
@@ -94,10 +112,12 @@
   // highlights stay painted on the page and the observer keeps scheduling
   // searches against a bar that is gone (review E, 2026-09-17).
   onDestroy(() => {
-    carried.open = open;
-    carried.query = query;
+    if (!scoped) {
+      carried.open = open;
+      carried.query = query;
+    }
     close();
-    registerFindBar(null);
+    if (!scoped) registerFindBar(null);
   });
 
   async function reopen(q: string) {
@@ -118,12 +138,23 @@
     return el === bar || el.classList.contains("toasts");
   }
 
+  /** Whether the bar is up (the Context page's ⎋ closes it first). */
+  export function isOpen(): boolean {
+    return open;
+  }
+
+  /** Search again from the top, after the page under the bar changed
+   *  wholesale (the Context page's pane switch); nothing while closed. */
+  export async function research() {
+    if (open && query) await fresh();
+  }
+
   export async function show() {
     if (!open) {
       open = true;
       await tick();
       watch();
-      if (query) search(true);
+      if (query) await fresh();
     }
     field?.focus();
     field?.select();
@@ -149,6 +180,10 @@
 
   export function close() {
     if (!open) return;
+    if (onclosed) {
+      const node = current === null ? null : segments.nodes[hits[current]?.start.seg];
+      onclosed(isField(node) ? node.field : (node?.parentElement ?? null));
+    }
     pendingTurn = null;
     unwatch();
     painter?.clear();
@@ -256,7 +291,7 @@
     litField = el;
     const r = root.ownerDocument.createRange();
     r.selectNode(el);
-    scrollRangeIntoView(r, root);
+    scrollRangeIntoView(r, root, scoped);
   }
 
   /** Scroll the current hit into the middle of its scroller. */
@@ -279,7 +314,7 @@
     } else {
       range = hitRange(segments, hits[current]);
     }
-    if (range) scrollRangeIntoView(range, root);
+    if (range) scrollRangeIntoView(range, root, scoped);
   }
 
   /** Watch the page for changes and search again on the next frame. */
@@ -321,7 +356,16 @@
 
   function onInput() {
     pendingTurn = null;
-    search(true);
+    void fresh();
+  }
+
+  /** A fresh search, after the page has unfolded what holds a match. */
+  async function fresh() {
+    if (prepare) {
+      prepare(query);
+      await tick();
+    }
+    if (open) search(true);
   }
 
   /** The bar's link: the panel, with this query (board 11c's "from ⌘F"),
@@ -346,6 +390,9 @@
   /** ⌘G / ⌘⇧G step from anywhere while the bar is open; ⌘F is App.svelte's. */
   function windowKeys(e: KeyboardEvent) {
     if (!open) return;
+    // The app's bar stands aside while the Context page is over it: its
+    // own bar takes ⌘G there (backlog 242).
+    if (!scoped && app.showContext) return;
     const chord = findChord(e, isMac ? e.metaKey : e.ctrlKey);
     if (chord === "next" || chord === "prev") {
       e.preventDefault();
@@ -376,7 +423,7 @@
     <button class="find-btn" use:tip={"Next match (⏎)"} disabled={hits.length === 0} onclick={() => step(1)}>
       <Icon name="chev" size={12} />
     </button>
-    {#if !app.search.open}
+    {#if !scoped && !app.search.open}
       <!-- The way to the search panel (backlog 117), in the bar's own
            voice since backlog 139 (blocker 203, board a): a glyph button
            before the ×, the words in its tooltip; the dot says the panel

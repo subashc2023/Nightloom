@@ -491,7 +491,9 @@
     // ⌘⇧G itself while open; ⌘⇧F is left for the search-everywhere half
     // (backlog 117).
     if (findChord(e, primary) === "open") {
-      void findBar?.show();
+      // The Context page has its own bar (backlog 242): ⌘F over it opens
+      // that one, never the transcript's behind the modal.
+      if (!app.showContext) void findBar?.show();
       return true;
     }
     // Tabs (nightshift backlog 099): ⌘T, ⌘W, ⌘⇧], ⌘⇧[ are File and View

@@ -25,7 +25,10 @@
   import { reconsider, setThreshold, threshold } from "./handoff.svelte";
   import { setPromptSuggestions, suggestions } from "./suggestions.svelte";
   import { applyDraft, refreshLayerVersions } from "./state.svelte";
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
+  import FindBar from "./FindBar.svelte";
+  import { findChord, foldedHolding, foldOnClose, unfoldPlan, type FoldedBody } from "./find";
+  import { isMac } from "./platform";
   import type {
     BlockKind,
     CliMemoryFile,
@@ -95,6 +98,81 @@
 
   function close(): void {
     app.showContext = false;
+  }
+
+  /*
+   * Find in the page (nightshift backlog 242): the app's find bar
+   * (`FindBar.svelte`, backlog 106), scoped to this modal — ⌘F opens it
+   * here and never reaches the transcript behind; ⏎ / ⌘G next, ⇧⏎ / ⇧⌘G
+   * previous; ⎋ closes the bar first, then the page. It searches the open
+   * pane — Layers, As sent or This session — as rendered. A folded layer's
+   * text is not rendered, so before each search the layers holding a
+   * match are unfolded (`prepareFind`); the ones the search opened fold
+   * back as the query narrows and when the bar closes, except the one
+   * holding the current match, which he is reading. A layer he opened
+   * himself is never folded by the search.
+   */
+  let finder = $state<FindBar | null>(null);
+  let openedByFind = new Set<string>();
+
+  /** The text each foldable card shows when read, by its fold key: only
+   *  on Layers, and only cards whose Read button is there. */
+  function foldedBodies(): FoldedBody[] {
+    if (!view || mode !== "layers") return [];
+    const out: FoldedBody[] = [];
+    if (agentEngine && cliPrompt) out.push({ key: CLI_PROMPT, text: cliPrompt.sections.join("\n\n") });
+    for (const l of LAYERS) {
+      if (!shown(l.engines) || off.includes(l.kind)) continue;
+      const segs = segmentsOf(l.kind);
+      if (segs.length > 0) out.push({ key: l.kind, text: segs.map((s) => s.text).join("\n") });
+    }
+    for (const seg of custom) out.push({ key: seg.name, text: seg.text });
+    if (agentEngine && !cliMemoryOff && cliMemory?.text) out.push({ key: CLI_MEMORY, text: cliMemory.text });
+    return out;
+  }
+
+  function sameSet(a: Set<string>, b: Set<string>): boolean {
+    return a.size === b.size && [...a].every((k) => b.has(k));
+  }
+
+  function prepareFind(query: string): void {
+    const plan = unfoldPlan(open, openedByFind, foldedHolding(foldedBodies(), query));
+    openedByFind = plan.byFind;
+    if (!sameSet(plan.open, open)) open = plan.open;
+  }
+
+  function findClosed(current: Element | null): void {
+    const keep = current?.closest("[data-fold-key]")?.getAttribute("data-fold-key") ?? null;
+    const next = foldOnClose(open, openedByFind, keep);
+    openedByFind = new Set();
+    if (!sameSet(next, open)) open = next;
+  }
+
+  // Another pane under an open search: search it afresh (Layers unfolds).
+  $effect(() => {
+    void mode;
+    const bar = finder;
+    // Untracked: the bar's own query and state are not this effect's.
+    untrack(() => void bar?.research());
+  });
+
+  function onkeydown(e: KeyboardEvent): void {
+    if (findChord(e, isMac ? e.metaKey : e.ctrlKey) === "open") {
+      e.preventDefault();
+      void finder?.show();
+      return;
+    }
+    if (e.key !== "Escape" || e.defaultPrevented) return;
+    if (finder?.isOpen()) {
+      e.preventDefault();
+      finder.close();
+      return;
+    }
+    // A layer being edited keeps its draft only while the page is up, so
+    // ⎋ does not close the page over one (practices §7).
+    if (editing !== null) return;
+    e.preventDefault();
+    close();
   }
 
   // The CLI holds the conversation on this engine, so the view is the
@@ -553,6 +631,8 @@
     "Removing an item takes its content off the next request. Nothing is deleted — the session log keeps it, the transcript still shows it, and no cost is refunded.";
 </script>
 
+<svelte:window {onkeydown} />
+
 <div class="modal" role="dialog" aria-label="Context">
   <div class="pane-head">
     <h2 class="pane-title">Context</h2>
@@ -594,6 +674,8 @@
     <button class="close" use:tip={"Close"} aria-label="Close context" onclick={close}><Icon name="x" size={14} /></button>
   </div>
 
+  <div class="find-scope">
+  <FindBar bind:this={finder} scoped prepare={prepareFind} onclosed={findClosed} />
   <div class="pane">
     {#if !app.connection}
       <p class="note">Not connected.</p>
@@ -829,7 +911,7 @@
              turn. -->
         {#if agentEngine}
           {@const isOpen = open.has(CLI_PROMPT)}
-          <section class="card layer">
+          <section class="card layer" data-fold-key={CLI_PROMPT}>
             <div class="ch">
               <span class="sw-space"></span>
               <div class="name">
@@ -887,7 +969,7 @@
           {@const canRead = !isOff && (segs.length > 0 || isEditing)}
           {@const locked = saving || seeding || app.busy || app.connecting}
           {@const mark = agentEngine ? pendingFor(app.promptPending, layer.kind, app.activeSessionId) : null}
-          <section class="card layer" class:off={isOff} class:edited={isEdited && !isOff}>
+          <section class="card layer" class:off={isOff} class:edited={isEdited && !isOff} data-fold-key={layer.kind}>
             <div class="ch">
               <input
                 type="checkbox"
@@ -1016,7 +1098,7 @@
              disagreeing. Shown so the list is the whole prompt. -->
         {#each custom as seg (seg.name)}
           {@const isOpen = open.has(seg.name)}
-          <section class="card layer">
+          <section class="card layer" data-fold-key={seg.name}>
             <div class="ch">
               <span class="sw-space"></span>
               <div class="name">
@@ -1060,7 +1142,7 @@
         {#if agentEngine}
           {@const isOpen = open.has(CLI_MEMORY)}
           {@const hasFile = cliMemory?.text != null}
-          <section class="card layer" class:off={cliMemoryOff}>
+          <section class="card layer" class:off={cliMemoryOff} data-fold-key={CLI_MEMORY}>
             <div class="ch">
               <input
                 type="checkbox"
@@ -1265,6 +1347,7 @@
       </section>
     {/if}
   </div>
+  </div>
 </div>
 
 <style>
@@ -1352,6 +1435,15 @@
   .seg button:disabled {
     opacity: 0.5;
     cursor: default;
+  }
+  /* The find bar's page (backlog 242): the pane, with the bar over its
+     top right. */
+  .find-scope {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
   }
   .pane {
     padding: 4px 24px 20px;

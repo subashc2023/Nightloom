@@ -7,9 +7,12 @@ import {
   findChord,
   findMatches,
   foldCase,
+  foldedHolding,
+  foldOnClose,
   isField,
   keepHit,
   stepHit,
+  unfoldPlan,
   type Segments,
 } from "./find";
 
@@ -183,5 +186,61 @@ describe("fields searched by value (backlog 162)", () => {
     const v = Array.from({ length: 40 }, (_, i) => `line ${i}`).join("\n");
     const at = v.indexOf("line 30");
     expect(fieldScrollTop(v, at, 20, 100)).toBe(30 * 20 - 50 + 10);
+  });
+});
+
+// The Context page's find (backlog 242): the prompt a layer holds is not
+// rendered while the layer is folded, so the page unfolds the layers
+// holding a match before it searches, and folds the search's own back.
+describe("folded bodies (backlog 242)", () => {
+  const bodies = [
+    { key: "cli_prompt", text: "You are Claude Code.\n## Standing instructions" },
+    { key: "agents_md", text: "Swaraag's STANDING rules" },
+    { key: "memory", text: "nothing here" },
+  ];
+
+  it("finds the bodies holding the query, case-insensitively, in order", () => {
+    expect(foldedHolding(bodies, "standing")).toEqual(["cli_prompt", "agents_md"]);
+    expect(foldedHolding(bodies, "STANDING INSTRUCTIONS")).toEqual(["cli_prompt"]);
+    expect(foldedHolding(bodies, "absent")).toEqual([]);
+    expect(foldedHolding(bodies, "")).toEqual([]);
+  });
+
+  it("finds the same hits the page's matcher will", () => {
+    const text = bodies[0].text;
+    expect(findMatches([text], "standing").length).toBe(1);
+    expect(foldedHolding([bodies[0]], "standing")).toEqual(["cli_prompt"]);
+  });
+
+  it("opens the matching folded bodies and remembers them as the search's", () => {
+    const plan = unfoldPlan(new Set(["memory"]), new Set(), ["cli_prompt", "memory"]);
+    expect([...plan.open].sort()).toEqual(["cli_prompt", "memory"]);
+    // "memory" was open by his hand: not the search's.
+    expect([...plan.byFind]).toEqual(["cli_prompt"]);
+  });
+
+  it("folds back what the search opened once it stops matching, never his own", () => {
+    const first = unfoldPlan(new Set(["memory"]), new Set(), ["cli_prompt", "agents_md"]);
+    const narrowed = unfoldPlan(first.open, first.byFind, ["cli_prompt"]);
+    expect([...narrowed.open].sort()).toEqual(["cli_prompt", "memory"]);
+    expect([...narrowed.byFind]).toEqual(["cli_prompt"]);
+    const cleared = unfoldPlan(narrowed.open, narrowed.byFind, []);
+    expect([...cleared.open]).toEqual(["memory"]);
+    expect(cleared.byFind.size).toBe(0);
+  });
+
+  it("does not change its inputs", () => {
+    const open = new Set(["a"]);
+    const by = new Set(["a"]);
+    unfoldPlan(open, by, ["b"]);
+    expect([...open]).toEqual(["a"]);
+    expect([...by]).toEqual(["a"]);
+  });
+
+  it("on close keeps the body holding the current hit and folds the rest the search opened", () => {
+    const open = new Set(["mine", "x", "y"]);
+    expect([...foldOnClose(open, new Set(["x", "y"]), "y")].sort()).toEqual(["mine", "y"]);
+    expect([...foldOnClose(open, new Set(["x", "y"]), null)]).toEqual(["mine"]);
+    expect([...foldOnClose(open, new Set(["x"]), "mine")].sort()).toEqual(["mine", "y"]);
   });
 });
