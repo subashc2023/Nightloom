@@ -78,19 +78,40 @@ pub fn carry_transcript(session: &Session, text: &str) -> String {
 /// message just recorded, since the seat's own prompt already holds it.
 pub fn carry_messages(messages: &[nightloom_core::Message], text: &str) -> String {
     let mut earlier = String::new();
-    for m in messages {
-        let said = m.text();
-        if said.trim().is_empty() {
-            continue;
-        }
-        let who = match m.role {
-            Role::User => "user",
-            Role::Assistant => "assistant",
-        };
+    let mut say = |who: &str, said: &str| {
         earlier.push_str(who);
         earlier.push_str(": ");
         earlier.push_str(said.trim());
         earlier.push_str("\n\n");
+    };
+    for m in messages {
+        // A subagent's narrative is the window's (backlog 244): its steps
+        // never reach the parent in the CLI, so they are not carried
+        // either. What the parent did get — the Agent tool's result, the
+        // child's report — is, as the one tool result a carry keeps.
+        let said: String = m
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } if !b.is_subagent_narrative() => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        if !said.trim().is_empty() {
+            let who = match m.role {
+                Role::User => "user",
+                Role::Assistant => "assistant",
+            };
+            say(who, &said);
+        }
+        for b in &m.content {
+            if let ContentBlock::ToolResult { name, content, .. } = b
+                && is_subagent_tool(name)
+                && !content.trim().is_empty()
+            {
+                say("subagent report", content);
+            }
+        }
     }
     if earlier.is_empty() {
         return text.to_string();
@@ -108,11 +129,16 @@ pub fn carry_messages(messages: &[nightloom_core::Message], text: &str) -> Strin
         "<earlier-turns>\n\
          This chat is ephemeral: nothing about it is kept, by Nightloom or by you, so its \
          earlier turns are replayed here rather than resumed. Tool results from those turns \
-         are not included.{cut_note} Continue the conversation from the last message.\n\n\
+         are not included, except a subagent's report.{cut_note} Continue the conversation from the last message.\n\n\
          {}\
          </earlier-turns>\n\n{text}",
         earlier.trim_end_matches('\n').to_string() + "\n"
     )
+}
+
+/// The Claude Code CLI's subagent tool: `Agent`, and `Task`, its older name.
+fn is_subagent_tool(name: &str) -> bool {
+    matches!(name, "Agent" | "Task")
 }
 
 /// Feed it the [`TurnEvent`]s of an agent turn; it writes the session log.
@@ -261,8 +287,11 @@ impl<'a> Recorder<'a> {
     /// replay. Now the child's turn is kept as prose against the parent's
     /// id: each call one line, its result's first line under it, its
     /// words as they are. A log reader that knows the marker
-    /// ([`SUBAGENT_OPEN`]) nests it under the parent's row; a provider
-    /// replaying the log sees assistant text, which is valid.
+    /// ([`SUBAGENT_OPEN`]) nests it under the parent's row; ~~a provider
+    /// replaying the log sees assistant text, which is valid~~ (struck
+    /// 2026-09-27, backlog 244: that text was the child's whole step list
+    /// reaching the parent model) — the projection and the carry now leave
+    /// it out, and the parent gets the Agent result, as in the CLI.
     fn push_subagent(&mut self, parent: &str, event: &TurnEvent) {
         let line = match event {
             TurnEvent::TextDelta { text } => text.clone(),
@@ -397,7 +426,7 @@ impl<'a> Recorder<'a> {
 /// `<subagent parent="<tool_use_id>">\n…\n</subagent>` (backlog 075). A
 /// renderer that knows it nests the block under the parent's call; one
 /// that does not shows a readable transcript with the parent named.
-pub const SUBAGENT_OPEN: &str = "<subagent parent=\"";
+pub const SUBAGENT_OPEN: &str = nightloom_core::SUBAGENT_OPEN;
 pub const SUBAGENT_CLOSE: &str = "</subagent>";
 
 /// One subagent's narrative as the log records it.
@@ -790,6 +819,89 @@ mod tests {
         assert!(!out.contains("SECRET-FILE-CONTENTS"), "{out}");
         assert!(out.contains("replayed here rather than resumed"), "{out}");
         assert!(!out.contains("were cut"), "{out}");
+    }
+
+    /// A turn that ran a subagent (backlog 244): the carry holds the Agent
+    /// tool's result — the child's report — and none of its steps, which
+    /// the parent in the CLI never saw either. Measured leaking before the
+    /// fix: the whole `<subagent>` block went out, the child's own tool
+    /// results in it, and the report did not.
+    #[test]
+    fn a_carry_holds_a_subagents_report_and_never_its_steps() {
+        let mut s = Session::ephemeral();
+        s.record_user("explore");
+        let mut r = Recorder::new(&mut s, "m");
+        r.push(&TurnEvent::ToolCall {
+            id: "p1".into(),
+            name: "Agent".into(),
+            input: json!({"prompt": "x"}),
+        });
+        r.push(&sub("p1", call("c1")));
+        r.push(&sub(
+            "p1",
+            TurnEvent::ToolResult {
+                tool_use_id: "c1".into(),
+                name: "Read".into(),
+                content: "CHILD-STEP-RESULT".into(),
+                is_error: false,
+            },
+        ));
+        r.push(&sub(
+            "p1",
+            TurnEvent::TextDelta {
+                text: "CHILD-FINAL-WORDS".into(),
+            },
+        ));
+        r.push(&TurnEvent::ToolResult {
+            tool_use_id: "p1".into(),
+            name: "Agent".into(),
+            content: "AGENT-RESULT-SUMMARY".into(),
+            is_error: false,
+        });
+        r.push(&TurnEvent::TextDelta {
+            text: "Done.".into(),
+        });
+        r.finish(Some("end_turn"));
+        // The log keeps the narrative for the window.
+        assert!(
+            assistant_blocks(&s)[0]
+                .iter()
+                .any(|b| b.is_subagent_narrative())
+        );
+
+        // The ephemeral carry, and a council seat's (the same function
+        // over the messages without the one just typed).
+        for out in [
+            carry_transcript(&s, "next"),
+            carry_messages(&s.messages(), "next"),
+        ] {
+            assert!(!out.contains("<subagent"), "{out}");
+            assert!(!out.contains("CHILD-STEP-RESULT"), "{out}");
+            assert!(!out.contains("CHILD-FINAL-WORDS"), "{out}");
+            assert!(
+                out.contains(
+                    "user: explore\n\nsubagent report: AGENT-RESULT-SUMMARY\n\nassistant: Done."
+                ),
+                "{out}"
+            );
+        }
+
+        // And a list of messages that still holds a block (built by hand,
+        // not by the projection) is carried without it.
+        let raw = vec![nightloom_core::Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::Text {
+                    text: "before ".into(),
+                },
+                ContentBlock::Text {
+                    text: subagent_block("p9", "\u{25b8} Read secret\n  \u{21b3} STEP"),
+                },
+            ],
+        }];
+        let out = carry_messages(&raw, "now");
+        assert!(out.contains("assistant: before"), "{out}");
+        assert!(!out.contains("STEP"), "{out}");
     }
 
     /// Past the limit the oldest turns go and the block says so.

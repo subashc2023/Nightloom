@@ -185,6 +185,26 @@ impl Message {
     }
 }
 
+/// The marker a subagent's narrative is recorded under, as the text block
+/// `<subagent parent="<tool_use_id>">\n…\n</subagent>` (nightshift backlog
+/// 075: the Claude Code engine's recorder writes one per subagent, for the
+/// window to nest under the parent's call).
+///
+/// It is for the window and never for a model (nightshift backlog 244,
+/// 2026-09-27): the parent agent is owed the Agent tool's result — the
+/// child's final report — and nothing of the child's steps, which is all
+/// the CLI's own session ever gives it. So the projection leaves these
+/// blocks out, and so does every replay built on it.
+pub const SUBAGENT_OPEN: &str = "<subagent parent=\"";
+
+impl ContentBlock {
+    /// Whether this is a subagent's narrative ([`SUBAGENT_OPEN`]): the
+    /// window's, not the model's.
+    pub fn is_subagent_narrative(&self) -> bool {
+        matches!(self, ContentBlock::Text { text } if text.starts_with(SUBAGENT_OPEN))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

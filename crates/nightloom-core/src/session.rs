@@ -10,6 +10,11 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+/// What the projection puts where an assistant message held only
+/// subagent narratives (backlog 244), so the turns still alternate.
+/// Addressed to the model, which is who reads it.
+const SUBAGENT_STEPS_OMITTED: &str = "[a subagent ran here; its steps are not part of this conversation, and its report is the Agent tool's result]";
+
 /// A point a session can be rewound to.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Checkpoint {
@@ -2925,11 +2930,26 @@ impl Session {
                     });
                 }
                 SessionEvent::AssistantMessage { blocks, .. } => {
-                    let content = if elided[i] {
+                    let mut content = if elided[i] {
                         elide_assistant(blocks, &gone[i], i)
                     } else {
                         edit_assistant(blocks, &block_edits[i], &gone[i], i)
                     };
+                    // A subagent's narrative is the window's, not the
+                    // model's (backlog 244): the Agent call and its result
+                    // stay, and they are what the parent is owed. A message
+                    // that held nothing else keeps a line in its place, so
+                    // the turns still alternate.
+                    let had = content.len();
+                    content.retain(|b| !b.block.is_subagent_narrative());
+                    if content.is_empty() && had > 0 {
+                        content.push(SourcedBlock::event(
+                            ContentBlock::Text {
+                                text: SUBAGENT_STEPS_OMITTED.to_string(),
+                            },
+                            i,
+                        ));
+                    }
                     messages.push(SourcedMessage {
                         role: Role::Assistant,
                         content,
@@ -3373,6 +3393,68 @@ mod tests {
         assert!(reloaded.messages()[1].text().contains("removed"));
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A subagent's narrative (backlog 244) is in the log for the window
+    /// and out of the projection — which is what the provider engine sends
+    /// after an engine switch, and what the Context page itemizes. The
+    /// Agent call and its result stay; a message that held only narrative
+    /// keeps a line so the turns still alternate.
+    #[test]
+    fn the_projection_leaves_a_subagents_narrative_out() {
+        let narrative = format!(
+            "{}p1\">\n\u{25b8} Read a\n  \u{21b3} STEP\n</subagent>",
+            crate::message::SUBAGENT_OPEN
+        );
+        let mut s = Session::new();
+        s.record_user("explore");
+        s.record_assistant(
+            "m",
+            vec![
+                ContentBlock::ToolUse {
+                    id: "p1".into(),
+                    name: "Agent".into(),
+                    input: serde_json::json!({"prompt": "x"}),
+                    signature: None,
+                },
+                ContentBlock::Text {
+                    text: narrative.clone(),
+                },
+            ],
+            None,
+            Usage::default(),
+        );
+        s.record_tool_result(&ContentBlock::ToolResult {
+            tool_use_id: "p1".into(),
+            name: "Agent".into(),
+            content: "REPORT".into(),
+            is_error: false,
+        });
+        s.record_assistant(
+            "m",
+            vec![ContentBlock::Text {
+                text: narrative.clone(),
+            }],
+            Some("end_turn".into()),
+            Usage::default(),
+        );
+        let msgs = s.messages();
+        assert_eq!(msgs.len(), 4, "{msgs:?}");
+        assert!(
+            msgs.iter()
+                .all(|m| m.content.iter().all(|b| !b.is_subagent_narrative())),
+            "{msgs:?}"
+        );
+        assert!(matches!(
+            &msgs[1].content[..],
+            [ContentBlock::ToolUse { .. }]
+        ));
+        assert!(matches!(&msgs[2].content[..],
+            [ContentBlock::ToolResult { content, .. }] if content == "REPORT"));
+        assert_eq!(msgs[3].text(), SUBAGENT_STEPS_OMITTED);
+        // The log itself is untouched: the window still reads it.
+        assert!(s.events().iter().any(|e| matches!(e,
+            SessionEvent::AssistantMessage { blocks, .. } if blocks.iter().any(|b| b.is_subagent_narrative()))));
     }
 
     #[test]
