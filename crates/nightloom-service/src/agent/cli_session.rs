@@ -767,6 +767,73 @@ impl CliSession {
             return Ok(None);
         }
         let target = self.prompt_from_last(from_last)?;
+        Ok(Some(self.cut_before(target)))
+    }
+
+    /// A copy cut before the log's turn `turns[0]`, found by text rather
+    /// than by count (nightshift backlog 255). `turns` is what the log's
+    /// live user turns read now, from the one being cut through the
+    /// newest; `before` is the log's turn just before them.
+    ///
+    /// Counting from the newest (as [`Self::truncate`] does) cuts one turn
+    /// too far when the log holds a turn the CLI never recorded — a
+    /// message stopped before the CLI wrote it (Stuart 9, 2026-09-28). So
+    /// the cut lands on the first of `turns` the file has, at the prompt
+    /// reading the same, counted from the newest among prompts of that
+    /// text (two identical messages both happened that day). Turns before
+    /// it that the file lacks were never recorded, and need no cut.
+    ///
+    /// None of `turns` in the file: the CLI recorded none of them, which
+    /// is safe to leave as it is only when the file ends at `before` —
+    /// then the copy is unchanged. Otherwise, and when the file has fewer
+    /// prompts of that text than the log from here on, it refuses: a copy
+    /// cut at the wrong turn is worse than a refusal. `Ok(None)` as for
+    /// [`Self::truncate`], when the cut leaves no turn.
+    pub fn truncate_by_text(
+        &self,
+        turns: &[String],
+        before: Option<&str>,
+    ) -> Result<Option<Self>, CliSessionError> {
+        let prompts = self.prompts();
+        let texts: Vec<String> = prompts
+            .iter()
+            .map(|&i| self.lines[i].text().trim().to_string())
+            .collect();
+        for (k, turn) in turns.iter().enumerate() {
+            let turn = turn.trim();
+            let matches: Vec<usize> = (0..texts.len()).filter(|&p| texts[p] == turn).collect();
+            if matches.is_empty() {
+                continue;
+            }
+            let in_log = turns[k..].iter().filter(|t| t.trim() == turn).count();
+            if matches.len() < in_log {
+                return Err(CliSessionError::Locate(format!(
+                    "that turn's text is in Claude Code's history {} time{} but in this chat's log {in_log} times from here on, so which one to cut at is not clear; nothing was changed",
+                    matches.len(),
+                    if matches.len() == 1 { "" } else { "s" },
+                )));
+            }
+            let p = matches[matches.len() - in_log];
+            if p == 0 {
+                return Ok(None);
+            }
+            return Ok(Some(self.cut_before(prompts[p])));
+        }
+        match (texts.last(), before) {
+            (None, _) => Ok(None),
+            (Some(last), Some(b)) if last == b.trim() => Ok(Some(Self {
+                lines: self.lines.clone(),
+                id: self.id.clone(),
+            })),
+            _ => Err(CliSessionError::Locate(
+                "none of the turns being rewound is in Claude Code's history, and its history does not end at the turn before them; nothing was changed".into(),
+            )),
+        }
+    }
+
+    /// A copy cut before the user prompt at line `target`; see
+    /// [`Self::truncate`].
+    fn cut_before(&self, target: usize) -> Self {
         let dropped = self.descendants(target);
         let last_kept = self.lines[..target]
             .iter()
@@ -796,10 +863,10 @@ impl CliSession {
             }
             lines.push(line.clone());
         }
-        Ok(Some(Self {
+        Self {
             lines,
             id: self.id.clone(),
-        }))
+        }
     }
 
     /// The uuids of node `i` and everything under it.
@@ -1466,6 +1533,75 @@ mod tests {
             err.to_string().contains("not in Claude Code's history"),
             "{err}"
         );
+    }
+
+    /// Backlog 255: the cut finds the turn by its text. A turn the CLI
+    /// never recorded (stopped before it was written) no longer shifts the
+    /// cut onto the turn before it.
+    #[test]
+    fn truncation_by_text_skips_a_turn_the_cli_never_recorded() {
+        let s = CliSession::parse(&fixture()).unwrap();
+        let by_count = uuids(&s.truncate(0).unwrap().unwrap().render_as("n"));
+        let t = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+
+        // The plain case agrees with the count.
+        let out = s.truncate_by_text(&t(&["second"]), Some("first")).unwrap();
+        assert_eq!(uuids(&out.unwrap().render_as("n")), by_count);
+
+        // Stuart 9: the log has first, second, then a stopped message the
+        // CLI never wrote. Rewinding it leaves the CLI's history whole —
+        // the count cut "second" away.
+        let out = s
+            .truncate_by_text(&t(&["stopped"]), Some("second"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(out.prompt_count(), 2);
+        assert_eq!(uuids(&out.render_as("n")), uuids(&fixture()));
+
+        // An unrecorded turn before a recorded one: the cut lands on the
+        // recorded one.
+        let out = s
+            .truncate_by_text(&t(&["stopped", "second"]), Some("first"))
+            .unwrap();
+        assert_eq!(uuids(&out.unwrap().render_as("n")), by_count);
+
+        // Cutting at the oldest prompt leaves nothing to resume.
+        assert!(
+            s.truncate_by_text(&t(&["first", "second"]), None)
+                .unwrap()
+                .is_none()
+        );
+
+        // None of the turns in the file, and the file does not end at the
+        // turn before them: refuse rather than guess.
+        let err = s
+            .truncate_by_text(&t(&["stopped"]), Some("first"))
+            .unwrap_err();
+        assert!(err.to_string().contains("nothing was changed"), "{err}");
+    }
+
+    /// Backlog 255: two prompts reading the same are told apart by how
+    /// many of that text the log has from the cut on, counted from the
+    /// newest; more in the log than in the file refuses.
+    #[test]
+    fn truncation_by_text_counts_identical_prompts_from_the_newest() {
+        let same = fixture().replace("\"second\"", "\"first\"");
+        let s = CliSession::parse(&same).unwrap();
+        assert_eq!(s.prompt_count(), 2);
+        let t = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        let by_count = uuids(&s.truncate(0).unwrap().unwrap().render_as("n"));
+
+        let out = s.truncate_by_text(&t(&["first"]), Some("first")).unwrap();
+        assert_eq!(uuids(&out.unwrap().render_as("n")), by_count);
+        assert!(
+            s.truncate_by_text(&t(&["first", "first"]), None)
+                .unwrap()
+                .is_none()
+        );
+        let err = s
+            .truncate_by_text(&t(&["first", "first", "first"]), None)
+            .unwrap_err();
+        assert!(err.to_string().contains("not clear"), "{err}");
     }
 
     /// The cut drops the prompt, everything under it, and the bookkeeping

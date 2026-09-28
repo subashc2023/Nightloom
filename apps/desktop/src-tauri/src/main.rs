@@ -3537,9 +3537,11 @@ async fn rewind(state: State<'_, AppState>, to: usize) -> Result<Vec<SessionEven
         .as_mut()
         .ok_or_else(|| "no active session".to_string())?;
     let workspace = agent_guard.as_ref().map(|a| a.spec().workspace.clone());
-    let from_last = turns_after(session, to)?;
+    let (turns, before) = turn_texts(session, to)?;
     let change = match &workspace {
-        Some(cwd) => edit_on_cli(session, cwd, |cli| cli.truncate(from_last))?,
+        Some(cwd) => edit_on_cli(session, cwd, |cli| {
+            cli.truncate_by_text(&turns, before.as_deref())
+        })?,
         None => CliChange::Untouched,
     };
     session.rewind(to)?;
@@ -3648,6 +3650,33 @@ fn turns_after(session: &Session, index: usize) -> Result<usize, String> {
         .iter()
         .filter(|(_, e)| matches!(e, SessionEvent::UserMessage { .. }))
         .count())
+}
+
+/// What the log's live user turns read now (edits applied), from the turn
+/// event `index` belongs to through the newest, and the turn just before
+/// it — what [`CliSession::truncate_by_text`] finds the cut by (nightshift
+/// backlog 255), in place of the count [`turns_after`] gives, which a turn
+/// the CLI never recorded throws off by one.
+fn turn_texts(session: &Session, index: usize) -> Result<(Vec<String>, Option<String>), String> {
+    let edited = session.edit_texts();
+    let users: Vec<(usize, String)> = session
+        .live_events()
+        .into_iter()
+        .filter_map(|(i, e)| match e {
+            SessionEvent::UserMessage { text, .. } => {
+                Some((i, edited[i].unwrap_or(text).to_string()))
+            }
+            _ => None,
+        })
+        .collect();
+    let turn = users
+        .iter()
+        .rposition(|(i, _)| *i <= index)
+        .ok_or_else(|| format!("event {index} is not part of a turn"))?;
+    Ok((
+        users[turn..].iter().map(|(_, t)| t.clone()).collect(),
+        turn.checked_sub(1).map(|b| users[b].1.clone()),
+    ))
 }
 
 /// The CLI node that stands for event `index`, addressed from the newest
@@ -4109,10 +4138,12 @@ async fn fork_session(state: State<'_, AppState>, upto: usize) -> Result<Message
         .as_ref()
         .ok_or_else(|| "no active session".to_string())?;
     let workspace = agent_guard.as_ref().map(|a| a.spec().workspace.clone());
-    let from_last = turns_after(parent, upto)?;
+    let (turns, before) = turn_texts(parent, upto)?;
     // The CLI copy first, so a refusal makes no fork.
     let change = match &workspace {
-        Some(cwd) => edit_on_cli(parent, cwd, |cli| cli.truncate(from_last))?,
+        Some(cwd) => edit_on_cli(parent, cwd, |cli| {
+            cli.truncate_by_text(&turns, before.as_deref())
+        })?,
         None => CliChange::Untouched,
     };
     let mut fork = parent
