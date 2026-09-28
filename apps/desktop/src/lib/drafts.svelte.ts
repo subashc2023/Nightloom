@@ -573,10 +573,16 @@ export function retained(before: string, after: string): number {
 /**
  * A text into the key's ring, newest first — when it is long enough and
  * not what the ring already has on top (a queue followed by a clear
- * offers the same words twice). Ten per key.
+ * offers the same words twice). Ten per key. `min` is lowered to 1 by a
+ * rewind that replaces typed text (backlog 247): he was told it is there.
  */
-export function recordDraft(key: string, text: string, at: string = new Date().toISOString()): void {
-  if (text.length < HISTORY_MIN_CHARS) return;
+export function recordDraft(
+  key: string,
+  text: string,
+  at: string = new Date().toISOString(),
+  min: number = HISTORY_MIN_CHARS,
+): void {
+  if (text.length < Math.max(1, min)) return;
   const ring = (draftHistory[key] ??= []);
   if (ring.some((s) => s.text === text)) return;
   ring.unshift({ text, at });

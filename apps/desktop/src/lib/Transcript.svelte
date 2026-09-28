@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tip } from "./tip";
+  import { rewoundRuns } from "./rewindDraft.svelte";
   // Every Copy button goes through the in-app clipboard ring (backlog 173).
   import { copyText } from "./clipRing.svelte";
   import { exactTime, relativeTimeLong } from "./time";
@@ -107,9 +108,9 @@
    * A rendered turn, plus where it sits in the log.
    *
    * `index` is what `rewind` takes, and `superseded` marks a turn a rewind
-   * dropped. Superseded turns stay on screen, dimmed: the log keeps them so
-   * you can see what you undid, and hiding them would make a rewind
-   * indistinguishable from a delete.
+   * dropped. Since backlog 247 superseded turns are not drawn — a quiet
+   * "N messages rewound" line stands in for each run (blocker 582) — and
+   * the log still keeps them, so Undo brings them back.
    *
    * `original` is the text before an edit, when there was one, for the
    * `edited` mark to unfold; `removed` marks a turn an `elide` hides, drawn
@@ -342,6 +343,10 @@
       })),
     ),
   );
+
+  // Rewound turns are not drawn (backlog 247): one quiet line stands where
+  // each run of them was (blocker 582).
+  const rewound = $derived(rewoundRuns(items, continued));
 
   // When the live turn was sent, for its `working · 41 s` row (backlog
   // 096): both send paths push the optimistic `user_message` just before
@@ -1231,7 +1236,16 @@
       </div>
     {/if}
     {#each items as item, i (i)}
-      {#if item.kind === "user"}
+      {#if item.superseded}
+        {#if rewound[i] !== null}
+          <div
+            class="rewound"
+            use:tip={"Rewound — not part of the conversation any more. Undo (or ⌘Z) brings it back while nothing newer is on the stack."}
+          >
+            {rewound[i] === 1 ? "1 message rewound" : `${rewound[i]} messages rewound`}
+          </div>
+        {/if}
+      {:else if item.kind === "user"}
         <div
           class="user-turn"
           class:superseded={item.superseded}
@@ -1874,6 +1888,26 @@
   .superseded {
     opacity: 0.38;
     filter: saturate(0.4);
+  }
+  /* Where rewound turns were (backlog 247, blocker 582): out of the way —
+     small, faint, a hairline either side; the turns themselves are not
+     drawn, so .superseded above no longer shows in the thread. */
+  .rewound {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 4px 0;
+    font-size: 11px;
+    color: var(--dim);
+    opacity: 0.55;
+    user-select: none;
+  }
+  .rewound::before,
+  .rewound::after {
+    content: "";
+    flex: 1;
+    border-top: 1px solid var(--line2);
+    opacity: 0.6;
   }
   /* The hover controls on a turn — Rewind, Edit, Remove — shown on both
      engines since 2026-09-15 (backlog 062). Under the bubble as a row of

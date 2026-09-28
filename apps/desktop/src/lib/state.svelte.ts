@@ -11,7 +11,19 @@ import {
 } from "./handoff.svelte";
 import { suggestions } from "./suggestions.svelte";
 import { isMac } from "./platform";
-import { UNFILED, draftKey, enqueueMessage, moveDraft, newDraftKey, setDraftText } from "./drafts.svelte";
+import {
+  UNFILED,
+  draftKey,
+  enqueueMessage,
+  moveDraft,
+  newDraftKey,
+  nextAttachmentId,
+  readDraft,
+  recordDraft,
+  setDraftAttachments,
+  setDraftText,
+} from "./drafts.svelte";
+import { requestComposerFocus, rewoundMessage, swapIn, untouched, type BoxSwap } from "./rewindDraft.svelte";
 import {
   CURATED,
   defaultDraft,
@@ -92,6 +104,7 @@ import {
 import type {
   AgentInfo,
   AgentInit,
+  Attachment,
   AgentTurnResult,
   SubagentStatus,
   PlanUsage,
@@ -7055,6 +7068,8 @@ export function chatAgentSession(events: SessionEvent[]): string | null {
  */
 export async function rewindTo(to: number): Promise<void> {
   if (app.busy) return;
+  // His message at `to`, read before the rewind supersedes it (backlog 247).
+  const back = rewoundMessage(app.events, to, nextAttachmentId);
   try {
     app.events = await api.rewind(to);
     app.error = null;
@@ -7062,6 +7077,8 @@ export async function rewindTo(to: number): Promise<void> {
     app.error = String(e);
     return;
   }
+  const key = draftKey(app.activeSessionId, app.project?.id, app.pendingMode);
+  let swap = back ? fillBox(key, back) : null;
   // The inverse lifts the marker this call landed — and, after a redo,
   // the marker *that* call lands, which is why the index is a variable.
   let marker = lastMarker("rewind");
@@ -7069,13 +7086,35 @@ export async function rewindTo(to: number): Promise<void> {
     label: "rewind",
     undo: async () => {
       app.events = await api.unrewind(marker);
+      // The box gets back what it held — unless he changed the message
+      // since, which then stays (never-lose-work).
+      if (swap && untouched(readDraft(key), swap)) {
+        setDraftText(key, swap.before.text);
+        setDraftAttachments(key, swap.before.attachments);
+      }
     },
     redo: async () => {
       app.events = await api.rewind(to);
       marker = lastMarker("rewind");
+      if (back) swap = fillBox(key, back);
     },
   });
-  undoToast("Rewound to here", handle);
+  undoToast(back ? "Rewound — your message is back in the box" : "Rewound to here", handle);
+}
+
+/** A rewound message into the box (backlog 247, blocker 581): what was
+ *  half-typed goes to the top of the draft history, with a toast saying
+ *  so; its chips stay after the message's own. */
+function fillBox(key: string, back: { text: string; attachments: Attachment[] }): BoxSwap {
+  const swap = swapIn(readDraft(key), back);
+  if (swap.stashed) {
+    recordDraft(key, swap.before.text, undefined, 1);
+    addToast("Your half-typed message is in drafts, under the box");
+  }
+  setDraftText(key, swap.after.text);
+  setDraftAttachments(key, swap.after.attachments);
+  requestComposerFocus();
+  return swap;
 }
 
 /** The log index of the newest event of `kind` — the marker an operation

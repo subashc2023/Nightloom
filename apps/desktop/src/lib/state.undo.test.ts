@@ -23,6 +23,7 @@ import {
 } from "./state.svelte";
 import type { SessionEvent } from "./types";
 import * as api from "./api";
+import { draftHistory, drafts, historyFor, readDraft, setDraftText } from "./drafts.svelte";
 
 /*
  * One inverse per operation (nightshift backlog 064): each undo calls the
@@ -205,13 +206,15 @@ describe("the Undo toast", () => {
     expect(api.restoreMessage).toHaveBeenCalledTimes(1);
   });
 
-  it("a rewind raises 'Rewound to here · Undo'", async () => {
+  it("a rewind raises '… back in the box · Undo' (backlog 247), 'Rewound to here' on a reply", async () => {
     await rewindTo(3);
-    const toast = app.toasts.find((t) => t.text === "Rewound to here");
+    const toast = app.toasts.find((t) => t.text === "Rewound — your message is back in the box");
     expect(toast?.action?.label).toBe("Undo");
     runToastAction(toast!.id);
     await flush();
     expect(api.unrewind).toHaveBeenCalledWith(5);
+    await rewindTo(4);
+    expect(app.toasts.find((t) => t.text === "Rewound to here")?.action?.label).toBe("Undo");
   });
 
   it("refuses once something newer is on the stack, and says so", async () => {
@@ -288,5 +291,46 @@ describe("Restore and tool calls", () => {
     expect(api.editBlock).toHaveBeenLastCalledWith(2, 0, "alpha, reworded");
     expect(api.removeBlock).toHaveBeenCalledTimes(2);
     expect(undoLabel()).toBe("edit");
+  });
+});
+
+describe("rewind puts his message back in the box (backlog 247)", () => {
+  beforeEach(() => {
+    delete drafts["chat-1"];
+    delete draftHistory["chat-1"];
+  });
+
+  it("fills an empty box with the rewound message; undo empties it again", async () => {
+    await rewindTo(3);
+    expect(readDraft("chat-1").text).toBe("two");
+    expect(historyFor("chat-1")).toEqual([]);
+    expect(app.toasts.map((t) => t.text)).toEqual(["Rewound — your message is back in the box"]);
+    await undo();
+    expect(readDraft("chat-1").text).toBe("");
+  });
+
+  it("replaces half-typed text, which goes to the top of the drafts, and says so (blocker 581)", async () => {
+    setDraftText("chat-1", "half typed");
+    await rewindTo(3);
+    expect(readDraft("chat-1").text).toBe("two");
+    expect(historyFor("chat-1")[0].text).toBe("half typed");
+    expect(app.toasts.some((t) => t.text.includes("half-typed message is in drafts"))).toBe(true);
+    await undo();
+    expect(readDraft("chat-1").text).toBe("half typed");
+  });
+
+  it("undo leaves the box alone once he has changed the restored message", async () => {
+    await rewindTo(3);
+    setDraftText("chat-1", "two, reworded");
+    await undo();
+    expect(app.events).toEqual(withUnrewind);
+    expect(readDraft("chat-1").text).toBe("two, reworded");
+  });
+
+  it("a rewind to a reply puts nothing in the box", async () => {
+    setDraftText("chat-1", "mine");
+    await rewindTo(4);
+    expect(readDraft("chat-1").text).toBe("mine");
+    expect(historyFor("chat-1")).toEqual([]);
   });
 });

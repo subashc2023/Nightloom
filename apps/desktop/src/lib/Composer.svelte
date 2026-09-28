@@ -89,6 +89,7 @@
   import { launch } from "./sendMotion";
   import { composerConnectHint, launch as launchState } from "./launch.svelte";
   import { hasQuoteLine, insertQuote, mirrorLines, replyRequest, takeReply } from "./replyQuote.svelte";
+  import { composerFocus } from "./rewindDraft.svelte";
 
   /**
    * `floating` drops the docked chrome (top border, panel fill) for the
@@ -583,6 +584,22 @@
         ta.selectionStart = ta.selectionEnd = r.caret;
         autogrow();
       });
+    });
+  });
+
+  // A rewind put his message back in the box (backlog 247): the caret
+  // goes to its end, ready to change and send again.
+  // Only a request made while mounted: a box opened later must not jump.
+  let focusSeen = untrack(() => composerFocus.seq);
+  $effect(() => {
+    const seq = composerFocus.seq;
+    if (seq === focusSeen) return;
+    focusSeen = seq;
+    void tick().then(() => {
+      if (!ta) return;
+      ta.focus();
+      ta.selectionStart = ta.selectionEnd = ta.value.length;
+      autogrow();
     });
   });
 
