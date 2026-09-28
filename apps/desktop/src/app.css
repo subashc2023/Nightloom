@@ -276,6 +276,13 @@ button {
   border: 1px solid var(--border);
   padding: 0.35em 0.65em;
   font-size: 0.85rem;
+  /* Nightshift 262: `.markdown`'s `word-break: break-word` let a cell's
+     minimum width fall to one letter, so the table squeezed a short column
+     to a letter per line and split words ("authorshi p"). Here a word
+     breaks only when it cannot fit a line alone; a table too wide
+     scrolls (the `overflow-x` above). */
+  word-break: normal;
+  overflow-wrap: break-word;
 }
 
 .markdown th {
