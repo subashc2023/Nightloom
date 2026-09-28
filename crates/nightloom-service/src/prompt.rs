@@ -346,6 +346,50 @@ pub fn agent_prompt(
     library: Option<&str>,
     engine_note: bool,
 ) -> SystemPrompt {
+    agent_prompt_with(
+        config,
+        library,
+        EngineLayers {
+            engine_note,
+            ..EngineLayers::NONE
+        },
+    )
+}
+
+/// The Claude Code engine's own layers, each a chat's switch (the Context
+/// page's rows): the engine note, and since 2026-09-27 the pacing rule
+/// (nightshift backlog 250) and the subagent practices (backlog 251).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EngineLayers {
+    pub engine_note: bool,
+    pub pacing: bool,
+    pub subagents: bool,
+    /// Whether `subagent_type: "reusable"` is on this chat's roster — the
+    /// user's own agent file, which safe mode's empty `--setting-sources`
+    /// drops (measured, backlog 251 Step 0). Only changes what the
+    /// subagents layer says about the cache.
+    pub reusable: bool,
+}
+
+impl EngineLayers {
+    pub const NONE: EngineLayers = EngineLayers {
+        engine_note: false,
+        pacing: false,
+        subagents: false,
+        reusable: false,
+    };
+}
+
+/// [`agent_prompt`] with every engine layer's switch given. The pacing and
+/// subagents layers follow the engine note, each only when the preamble
+/// has something in it — a chat with the preamble off sends nothing of
+/// Nightloom's, as before.
+pub fn agent_prompt_with(
+    config: &PromptConfig,
+    library: Option<&str>,
+    layers: EngineLayers,
+) -> SystemPrompt {
+    let engine_note = layers.engine_note;
     let assembled = assemble(&PromptConfig {
         identity: false,
         environment: false,
@@ -359,13 +403,81 @@ pub fn agent_prompt(
             ..seg.clone()
         });
     }
-    if engine_note && !prompt.is_empty() {
+    let preamble = !prompt.is_empty();
+    if engine_note && preamble {
         prompt.push(engine_note_segment(config.knowledge.as_ref()));
+    }
+    if layers.pacing && preamble {
+        prompt.push(Segment::new(SegmentKind::Pacing, "pacing", PACING_NOTE));
+    }
+    if layers.subagents && preamble {
+        prompt.push(subagents_segment(layers.reusable));
     }
     if let Some(library) = library {
         prompt.push(Segment::new(SegmentKind::Custom, "custom", library));
     }
     prompt
+}
+
+/// The pacing rule (nightshift backlog 250, 2026-09-27; his words: "is it
+/// gonna know that it has a usage limit of 20% and then be able to adapt
+/// the size of its reasoning chain"). Static — no figure in it, so the
+/// cached prefix never moves; the figures are the usage line's
+/// (`agent::brief::usage_line`, backlog 249). The weekly figure is shown,
+/// never capped, and how much it matters is his to say in the chat
+/// (blocker 583).
+pub const PACING_NOTE: &str = "<pacing>\n\
+     Each message has a usage budget, a share of the plan's five-hour window set per chat; \
+     past the plan's stop line Nightloom refuses every tool call. The usage line beside your \
+     tool calls ('Usage: this message …') says where you stand: it comes with your first \
+     call, each subagent launch, every 5 points spent, and every call past half the budget. \
+     Size the plan to the budget from the start: a small budget means fewer subagents and \
+     narrower searches. Past about 70% of it, start no new work: finish what is half-done and \
+     write up what you have and what is left. The weekly figure is information, not a limit; \
+     the user's instructions in this chat say how much it matters.\n\
+     </pacing>";
+
+/// The subagent practices (nightshift backlog 251, 2026-09-27), from the
+/// user's own practices file, cut to what was measured to hold in a
+/// Nightloom chat (CLI 2.1.283, the 251 report's Step 0): SendMessage
+/// continues a finished subagent in the same message and in a later one
+/// (`--resume`); `reusable` writes the 1-hour cache and the default types
+/// the 5-minute one, and the Agent tool has no other lever on it;
+/// `reusable` is on the roster only outside safe mode (`reusable` false
+/// here drops that sentence for one that is true without it); a `fork`
+/// spawn asked for `model: haiku` was recorded by the CLI as `inherit`.
+fn subagents_segment(reusable: bool) -> Segment {
+    let cache = if reusable {
+        "The agent type sets how long a subagent's cache lives; nothing else does. \
+         subagent_type reusable writes a 1-hour cache: pick it for work likely to get a \
+         follow-up. The default types (general-purpose, Explore) write a 5-minute cache, \
+         cheaper to write: pick them for one big job."
+    } else {
+        "The agent type sets how long a subagent's cache lives; nothing else does. The \
+         default types (general-purpose, Explore) write a 5-minute cache, so a follow-up \
+         after five idle minutes pays to write it again."
+    };
+    let text = format!(
+        "<subagents>\n\
+         How to use subagents here (the Agent tool):\n\
+         - Launch one only when it pays for its start: a fresh subagent often spends 60–100k \
+         tokens before it does any work, all of it from this message's budget. It is worth it \
+         for work across many files, broad searches or long research, or to keep your own \
+         context clean; a bounded task smaller than that, do yourself.\n\
+         - Reuse a finished subagent for a follow-up on the same topic — in this message or a \
+         later one — with SendMessage by its id or name: it keeps its context and its cache. \
+         Retire one past about 300k tokens of context, and have a fresh subagent review its \
+         work before you rely on it.\n\
+         - {cache}\n\
+         - Name the model on every launch (model: haiku, sonnet or opus); left out, a \
+         subagent runs this chat's model or its type's own. A fork always runs this \
+         chat's model.\n\
+         - Brief it with a short written spec: what to read, by path; the task; how to check \
+         it; what to report. Ask for the whole report in its reply.\n\
+         - Read the latest usage line before each launch.\n\
+         </subagents>"
+    );
+    Segment::new(SegmentKind::Subagents, "subagents", text)
 }
 
 /// How the names in the preamble read on Claude Code — see
@@ -2051,6 +2163,115 @@ the body text",
             kinds(&no_note),
             vec![SegmentKind::ProjectInstructions, SegmentKind::ProjectNotes]
         );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The pacing rule (nightshift backlog 250) and the subagent practices
+    /// (251) are the engine's own layers after the engine note, each on its
+    /// own switch; the subagents layer names `reusable` only when the chat's
+    /// roster has it. Neither carries a figure, so neither moves the prefix.
+    #[test]
+    fn the_pacing_and_subagents_layers_follow_the_note_and_switch_off_alone() {
+        let dir = temp_dir("agent-pacing");
+        std::fs::write(dir.join("AGENTS.md"), "a project rule").unwrap();
+        let config = PromptConfig {
+            project_instructions: true,
+            ..bare(dir.clone())
+        };
+        let kinds = |p: &SystemPrompt| p.segments().iter().map(|s| s.kind).collect::<Vec<_>>();
+        let all = EngineLayers {
+            engine_note: true,
+            pacing: true,
+            subagents: true,
+            reusable: true,
+        };
+        let full = agent_prompt_with(&config, Some("Be terse."), all);
+        assert_eq!(
+            kinds(&full),
+            vec![
+                SegmentKind::ProjectInstructions,
+                SegmentKind::EngineNote,
+                SegmentKind::Pacing,
+                SegmentKind::Subagents,
+                SegmentKind::Custom,
+            ]
+        );
+        let text = full.render_flat().unwrap();
+        assert!(
+            text.contains("<pacing>") && text.contains("Past about 70%"),
+            "{text}"
+        );
+        assert!(text.contains("usage line"), "{text}");
+        assert!(text.contains("weekly figure is information"), "{text}");
+        assert!(
+            text.contains("SendMessage") && text.contains("subagent_type reusable"),
+            "{text}"
+        );
+        // Under 120 and 250 words, as the items ask.
+        let words = |k: SegmentKind| {
+            full.segments()
+                .iter()
+                .find(|s| s.kind == k)
+                .map(|s| s.text.split_whitespace().count())
+                .unwrap()
+        };
+        assert!(
+            words(SegmentKind::Pacing) <= 125,
+            "{}",
+            words(SegmentKind::Pacing)
+        );
+        assert!(
+            words(SegmentKind::Subagents) <= 250,
+            "{}",
+            words(SegmentKind::Subagents)
+        );
+
+        // Each switches off alone.
+        let no_pacing = agent_prompt_with(
+            &config,
+            None,
+            EngineLayers {
+                pacing: false,
+                ..all
+            },
+        );
+        assert_eq!(
+            kinds(&no_pacing),
+            vec![
+                SegmentKind::ProjectInstructions,
+                SegmentKind::EngineNote,
+                SegmentKind::Subagents,
+            ]
+        );
+        let no_sub = agent_prompt_with(
+            &config,
+            None,
+            EngineLayers {
+                subagents: false,
+                ..all
+            },
+        );
+        assert!(!kinds(&no_sub).contains(&SegmentKind::Subagents));
+        assert!(kinds(&no_sub).contains(&SegmentKind::Pacing));
+        // Without `reusable` on the roster, the layer does not offer it.
+        let safe = agent_prompt_with(
+            &config,
+            None,
+            EngineLayers {
+                reusable: false,
+                ..all
+            },
+        );
+        let text = safe.render_flat().unwrap();
+        assert!(!text.contains("reusable"), "{text}");
+        assert!(text.contains("5-minute cache"), "{text}");
+        // The old entry point sends neither, and the switches by kind reach them.
+        assert!(!kinds(&agent_prompt(&config, None, true)).contains(&SegmentKind::Pacing));
+        assert!(SegmentKind::LAYERS.contains(&SegmentKind::Pacing));
+        assert!(SegmentKind::LAYERS.contains(&SegmentKind::Subagents));
+        // A preamble with nothing in it sends none of Nightloom's layers.
+        let empty = agent_prompt_with(&bare(dir.clone()), None, all);
+        assert!(empty.segments().is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

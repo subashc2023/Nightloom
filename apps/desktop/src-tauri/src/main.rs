@@ -1822,7 +1822,12 @@ async fn connect_agent_body(
     // rest (nightshift backlog 088), but never one Nightloom assembles:
     // the kind reaches the CLI as a setting, not as text.
     spec.auto_memory = !off.contains(&SegmentKind::CliMemory);
-    let prompt = nightloom_service::agent_prompt(
+    // The subagents layer says `reusable` only when the roster has it: the
+    // user's own agent file, dropped under safe mode (nightshift backlog 251).
+    let reusable = !spec.safe_mode
+        && nightloom_service::usage::claude_dir()
+            .is_some_and(|c| c.join("agents").join("reusable.md").exists());
+    let prompt = nightloom_service::agent_prompt_with(
         &PromptConfig {
             identity: false,
             environment: false,
@@ -1855,7 +1860,14 @@ async fn connect_agent_body(
         }
         .without(&off),
         system.as_deref(),
-        !off.contains(&SegmentKind::EngineNote),
+        nightloom_service::EngineLayers {
+            engine_note: !off.contains(&SegmentKind::EngineNote),
+            // The pacing rule and the subagent practices (backlog 250,
+            // 251): on by default, each a row of its own on the Context page.
+            pacing: !off.contains(&SegmentKind::Pacing),
+            subagents: !off.contains(&SegmentKind::Subagents),
+            reusable,
+        },
     );
     // A changed layer waits for the chat's cold moment (nightshift backlog
     // 174, `prompt_hold`): the held text goes out while the cache is warm.

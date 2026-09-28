@@ -431,8 +431,10 @@ pub fn budget_spent_reason(spent: u8, budget: u8, pct: u8, start: u8) -> String 
 // The model sees its usage while it works: one line, as the hook's
 // `additionalContext` on an allowed call (Step 0 of 249 measured that it
 // reaches the model, a subagent's calls included). It fires at every
-// spawn, at a subagent's first call (its launch, from its side), each
-// time this message's spend crosses into another 5-point band, and on
+// spawn, at each process's first call of the message (a subagent's is its
+// launch, seen from its side; the main thread's, since backlog 250, is
+// where the pacing rule has it size the plan), each time this message's
+// spend crosses into another 5-point band, and on
 // every call once the message is past half its budget. The weekly figure
 // is shown and never capped (blocker 583).
 
@@ -441,14 +443,14 @@ pub const USAGE_BAND: u8 = 5;
 
 /// Whether the line is due on this call, pure: `Some(band)` to show it and
 /// record `band` for `who` (`""` the main thread, else the `agent_id`).
-pub fn usage_due(b: &TurnBudget, who: &str, spawn: bool, subagent: bool) -> Option<u8> {
+pub fn usage_due(b: &TurnBudget, who: &str, spawn: bool) -> Option<u8> {
     let spent = b.spent_pct();
     let band = spent.map_or(0, |s| s / USAGE_BAND);
     let last = b.usage_shown.get(who).copied();
-    let first_of_child = subagent && last.is_none();
+    let first = last.is_none();
     let crossed = band > last.unwrap_or(0);
     let past_half = b.budget_pct > 0 && spent.is_some_and(|s| s as u16 * 2 >= b.budget_pct as u16);
-    (spawn || first_of_child || crossed || past_half).then_some(band.max(last.unwrap_or(0)))
+    (spawn || first || crossed || past_half).then_some(band.max(last.unwrap_or(0)))
 }
 
 /// The line itself, from what is known — `None` when nothing is. The
@@ -627,8 +629,8 @@ pub struct TurnBudget {
     #[serde(default)]
     pub wrap_at_ms: Option<i64>,
     /// The usage line's last 5-point band shown, per process of the turn
-    /// (backlog 249): `""` for the main thread, a subagent's `agent_id`
-    /// for its own. A process sees the line again once this message's
+    /// (backlog 249): a main thread by its `session_id` (`""` when the
+    /// hook's input has none), a subagent by its `agent_id`. A process sees the line again once this message's
     /// spend crosses into a higher band.
     #[serde(default)]
     pub usage_shown: std::collections::BTreeMap<String, u8>,
@@ -1463,7 +1465,7 @@ fn note_reading(
     // refusal's own reason already carries the figures.
     let mut show = false;
     if matches!(verdict, CallVerdict::Allow { .. })
-        && let Some(band) = usage_due(&b, who, spawn, subagent)
+        && let Some(band) = usage_due(&b, who, spawn)
     {
         b.usage_shown.insert(who.to_string(), band);
         show = true;
@@ -1589,8 +1591,15 @@ const BRIEF_LEAD: &str = "You are a subagent of a chat running in Nightloom. Wha
      task: the project's instructions, and how the tools and names read on this \
      engine. You see nothing else of the conversation — only your task below.";
 
-/// The segment kinds the brief keeps, in the preamble's own order.
-const KEPT: [SegmentKind; 2] = [SegmentKind::ProjectInstructions, SegmentKind::EngineNote];
+/// The segment kinds the brief keeps, in the preamble's own order. The
+/// pacing rule since 2026-09-27 (nightshift backlog 250): a subagent's calls
+/// carry the usage line too (249), and the rule is what says what to do
+/// with it. The subagents layer is the parent's and stays out.
+const KEPT: [SegmentKind; 3] = [
+    SegmentKind::ProjectInstructions,
+    SegmentKind::EngineNote,
+    SegmentKind::Pacing,
+];
 
 /// What a connection carries for the brief (mirrors [`super::AskSpec`]).
 #[derive(Debug, Clone)]
@@ -1671,6 +1680,11 @@ struct HookInput {
     /// The main thread's session file (backlog 249: the context size).
     #[serde(default)]
     transcript_path: Option<PathBuf>,
+    /// The calling process's session (backlog 249): a checkpoint fork is a
+    /// second main thread on the same ledger, told apart from the chat's
+    /// own by this, so its first call gets the usage line too.
+    #[serde(default)]
+    session_id: Option<String>,
 }
 
 /// The hook's whole decision, pure: the CLI's stdin line and the chat's
@@ -1754,10 +1768,12 @@ fn decide_holding(
     // Backlog 189: past the stop line, a chat he is present in holds the
     // call for his answer rather than refusing it.
     let subagent = input.agent_id.as_deref().is_some_and(|s| !s.is_empty());
+    // Whose line this is: a subagent by its id, a main thread by its
+    // session (the chat's own, or a checkpoint fork's), else the one main.
     let who = if subagent {
         input.agent_id.as_deref().unwrap_or_default()
     } else {
-        ""
+        input.session_id.as_deref().unwrap_or_default()
     };
     let spawn = is_spawn(&input.tool_name);
     let (mut verdict, turn, deadline, show) =
@@ -2020,6 +2036,26 @@ mod tests {
         assert_eq!(compose(&SystemPrompt::new(), &[]), None);
         assert_eq!(compose(&SystemPrompt::from_text("You are Rex."), &[]), None);
         assert_eq!(compose(&SystemPrompt::new(), &["  ".into()]), None);
+    }
+
+    /// The pacing rule rides the brief to subagents (backlog 250) — their
+    /// calls carry the usage line too; the subagents layer is the parent's.
+    #[test]
+    fn the_brief_keeps_the_pacing_rule_and_not_the_subagents_layer() {
+        let mut p = preamble();
+        p.push(Segment::new(
+            SegmentKind::Pacing,
+            "pacing",
+            "<pacing>\nPace.\n</pacing>",
+        ));
+        p.push(Segment::new(
+            SegmentKind::Subagents,
+            "subagents",
+            "<subagents>\nReuse.\n</subagents>",
+        ));
+        let text = compose(&p, &[]).unwrap();
+        assert!(text.contains("<pacing>\nPace."), "{text}");
+        assert!(!text.contains("<subagents>"), "{text}");
     }
 
     /// The hook prepends the brief to the task and hands the whole input
@@ -3129,32 +3165,34 @@ mod tests {
         }
     }
 
-    /// When the line fires: every spawn; a subagent's first call; each new
-    /// 5-point band of this message's spend, once per process; every call
-    /// past half the budget. Not on a main-thread call in band 0.
+    /// When the line fires: every spawn; each process's first call of the
+    /// message; each new 5-point band of this message's spend, once per
+    /// process; every call past half the budget. Not otherwise.
     #[test]
-    fn the_usage_line_fires_at_spawns_new_bands_a_childs_first_call_and_past_half() {
+    fn the_usage_line_fires_at_spawns_first_calls_new_bands_and_past_half() {
         let mut b = ledger(40, 42, 35);
-        assert_eq!(super::usage_due(&b, "", false, false), None);
-        assert_eq!(super::usage_due(&b, "", true, false), Some(0));
-        assert_eq!(super::usage_due(&b, "a1", false, true), Some(0));
+        assert_eq!(super::usage_due(&b, "", false), Some(0));
+        b.usage_shown.insert("".into(), 0);
+        assert_eq!(super::usage_due(&b, "", false), None);
+        assert_eq!(super::usage_due(&b, "", true), Some(0));
+        assert_eq!(super::usage_due(&b, "a1", false), Some(0));
         b.usage_shown.insert("a1".into(), 0);
-        assert_eq!(super::usage_due(&b, "a1", false, true), None);
+        assert_eq!(super::usage_due(&b, "a1", false), None);
         // 47: seven spent, band 1 — each process sees it once.
         b.latest_pct = Some(47);
-        assert_eq!(super::usage_due(&b, "", false, false), Some(1));
+        assert_eq!(super::usage_due(&b, "", false), Some(1));
         b.usage_shown.insert("".into(), 1);
-        assert_eq!(super::usage_due(&b, "", false, false), None);
-        assert_eq!(super::usage_due(&b, "a1", false, true), Some(1));
+        assert_eq!(super::usage_due(&b, "", false), None);
+        assert_eq!(super::usage_due(&b, "a1", false), Some(1));
         // 58: eighteen of thirty-five — past half, so every call.
         b.latest_pct = Some(58);
         b.usage_shown.insert("".into(), 3);
-        assert_eq!(super::usage_due(&b, "", false, false), Some(3));
-        assert_eq!(super::usage_due(&b, "", false, false), Some(3));
+        assert_eq!(super::usage_due(&b, "", false), Some(3));
+        assert_eq!(super::usage_due(&b, "", false), Some(3));
         // No per-message budget: bands only, never "past half".
         let mut z = ledger(40, 58, 0);
         z.usage_shown.insert("".into(), 3);
-        assert_eq!(super::usage_due(&z, "", false, false), None);
+        assert_eq!(super::usage_due(&z, "", false), None);
     }
 
     #[test]
@@ -3240,9 +3278,16 @@ mod tests {
         let read = serde_json::json!({"tool_name":"Read","tool_input":{"file_path":"/x"},
             "transcript_path": t})
         .to_string();
-        // Band 0 on the main thread: nothing to say.
+        // The message's first call: the line, band 0.
         let r = super::decide_with_week(&dir, &read, reading(42, now + 1), Some(74));
-        assert_eq!((r.decision(), r.additional_context()), ("pass", None));
+        assert_eq!(r.decision(), "pass");
+        assert!(
+            r.additional_context()
+                .is_some_and(|c| c.starts_with("Usage: this message 2%"))
+        );
+        // Band 0 again: nothing to say.
+        let r = super::decide_with_week(&dir, &read, reading(43, now + 1), Some(74));
+        assert_eq!(r.additional_context(), None);
         // 47: a new band — the line, and no decision beside it.
         let r = super::decide_with_week(&dir, &read, reading(47, now + 2), Some(74));
         assert_eq!(r.decision(), "pass");

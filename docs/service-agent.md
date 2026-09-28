@@ -918,9 +918,11 @@ stream-json output, so nothing renders it in the transcript.
 
 **When it fires** (`usage_due`, per process — `""` for the main thread, the
 `agent_id` for a subagent, recorded in the ledger's `usage_shown`): at every
-spawn; at a subagent's first call (its launch, seen from its side); each time
-this message's spend crosses into another 5-point band; and on every call
-once the message is past half its budget. A refused call carries no line — its
+spawn; at each process's first call of the message (a subagent's is its
+launch, seen from its side; the main thread's is where the pacing rule, backlog
+250, has it size the plan); each time this message's spend crosses into
+another 5-point band; and on every call once the message is past half its
+budget. A refused call carries no line — its
 reason already has the figures, and usage refusals now end with the weekly
 figure too (`with_week`).
 
@@ -932,6 +934,32 @@ caller's own: the last assistant message's input (fresh + cache read + cache
 written) in the CLI's session file — `transcript_path` from the hook's stdin
 for the main thread, `<session>/subagents/agent-<id>.jsonl` for a subagent
 (`context_tokens`, tail only). No file, no context part — never a guess.
+
+## Two engine layers: pacing and subagents (2026-09-27, nightshift backlogs 250, 251)
+
+After the engine note, `agent_prompt_with` adds two layers of this engine's
+own, each a `SegmentKind` of its own (`Pacing`, `Subagents`) so the Context
+page gives each a row and a chat can switch either off; both on by default.
+Neither carries a figure, so neither moves the cached prefix — the figures are
+the usage line's.
+
+- **Pacing** (`PACING_NOTE`, under 120 words): the per-message budget and the
+  stop line, the usage line as the way to know, size the plan at the start,
+  past ~70% start nothing new and write up; the weekly figure is information
+  and the user's instructions in the chat say how much it matters (blocker
+  583). It also rides the subagent brief (`brief::KEPT`), since a subagent's
+  calls carry the usage line too.
+- **Subagents** (`subagents_segment`, under 250 words): when a subagent pays
+  for its start, reuse by `SendMessage`, retire past ~300k with a fresh review,
+  the cache lifetime by agent type, name the model, brief by a short spec,
+  read the usage line before a launch. Every claim was measured in a Nightloom
+  chat's shape on CLI 2.1.283 (nightshift `notes/runner-design/249-251-report-2026-09-27.md`):
+  `SendMessage` continues a finished subagent in the same message and under
+  `--resume` in the next; `reusable` writes the 1-hour cache and
+  `general-purpose` the 5-minute one, and the Agent tool has no other lever;
+  `reusable` is on the roster only outside safe mode, so the desktop passes
+  `reusable: false` under safe mode or when `~/.claude/agents/reusable.md` is
+  absent, and the layer then says only what holds without it.
 
 ## Effort and a fallback model (2026-09-16, nightshift backlog 076)
 

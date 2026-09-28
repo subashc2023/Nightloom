@@ -252,6 +252,18 @@
       gloss: "How the names above read on Claude Code: its Read, Write and Edit, and where @kb points.",
       engines: "agent",
     },
+    {
+      kind: "pacing",
+      label: "Pacing",
+      gloss: "This message's usage budget and the stop line: size the plan to it, and past ~70% write up. The figures come in the usage line beside tool calls.",
+      engines: "agent",
+    },
+    {
+      kind: "subagents",
+      label: "Subagents",
+      gloss: "When a subagent is worth launching, reusing one with SendMessage, retiring it, the 5-minute and 1-hour caches, naming the model, briefing by a short spec.",
+      engines: "agent",
+    },
   ];
 
   /** The chat's switched-off layers, projected from the log like the todos. */

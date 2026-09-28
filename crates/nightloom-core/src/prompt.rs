@@ -69,6 +69,18 @@ pub enum SegmentKind {
     /// layers off addresses them by kind, and the note is a layer a user may
     /// reasonably drop — the library prompt, which *is* `Custom`, is not.
     EngineNote,
+    /// How to pace a message against its usage budget (nightshift backlog
+    /// 250, 2026-09-27): the per-message budget, the stop line, the usage
+    /// line the budget hook adds beside tool calls, and when to stop and
+    /// write up. Claude Code engine only, after the engine note; static
+    /// text — the figures ride the usage line, never the prompt.
+    Pacing,
+    /// How to use subagents on this engine (nightshift backlog 251,
+    /// 2026-09-27): when one pays for its start, reuse by SendMessage,
+    /// retirement, the cache lifetime by agent type, the model, the brief.
+    /// Claude Code engine only, after [`SegmentKind::Pacing`]; each
+    /// sentence was measured to hold in a Nightloom chat.
+    Subagents,
     /// Claude Code's own auto memory for the chat's folder
     /// (`~/.claude/projects/<cwd>/memory/MEMORY.md` and its topic files;
     /// nightshift backlog 088, 2026-09-16). Never a segment of a
@@ -87,7 +99,7 @@ impl SegmentKind {
     /// offers as switches. Excludes [`SegmentKind::Custom`]: the shell's own
     /// text is chosen by the shell's own control (a dropdown, a flag), not by
     /// a layer switch, and offering it twice would leave the two disagreeing.
-    pub const LAYERS: [SegmentKind; 9] = [
+    pub const LAYERS: [SegmentKind; 11] = [
         SegmentKind::Identity,
         SegmentKind::Environment,
         SegmentKind::UserMemory,
@@ -97,6 +109,8 @@ impl SegmentKind {
         SegmentKind::ProjectNotes,
         SegmentKind::Knowledge,
         SegmentKind::EngineNote,
+        SegmentKind::Pacing,
+        SegmentKind::Subagents,
     ];
 
     /// The kinds whose text a chat may replace with its own — the four

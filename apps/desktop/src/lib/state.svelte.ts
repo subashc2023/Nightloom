@@ -6775,6 +6775,8 @@ const LAYER_ORDER: PromptLayer[] = [
   "project_notes",
   "knowledge",
   "engine_note",
+  "pacing",
+  "subagents",
 ];
 
 /** Whether two layer sets are the same set, whatever order they came in. */

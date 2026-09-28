@@ -1395,6 +1395,12 @@ export type PromptLayer =
   | "project_notes"
   | "knowledge"
   | "engine_note"
+  /** How to pace a message against its usage budget (nightshift backlog
+   *  250). Claude Code engine only. */
+  | "pacing"
+  /** How to use subagents on this engine (nightshift backlog 251). Claude
+   *  Code engine only. */
+  | "subagents"
   /** Claude Code's own auto memory for the chat's folder (nightshift backlog
    *  088): a switch only — the CLI reads the file itself, and off is sent
    *  to it as a setting. Claude Code engine only. */
