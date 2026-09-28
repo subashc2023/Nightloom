@@ -3,14 +3,18 @@ import {
   SseParser,
   backoffMs,
   cardKind,
+  draftKey,
   emptyTurn,
   foldTurnEvent,
   liveFlags,
+  loadDraft,
   loadQueue,
   newQueued,
   parseSendReply,
   questionAnswer,
+  saveDraft,
   saveQueue,
+  shortWhen,
   toolSummary,
   tokenFromHash,
   transcriptRows,
@@ -158,5 +162,32 @@ describe("the 202's body (backlog 132)", () => {
     expect(parseSendReply('{"status":"sent"}')).toBe("sent");
     expect(parseSendReply("")).toBe("sent");
     expect(parseSendReply("not json")).toBe("sent");
+  });
+});
+
+describe("drafts per chat (item 246)", () => {
+  it("keeps each chat's text apart and forgets an emptied one", () => {
+    const a = draftKey("chat-a", "p1");
+    const fresh = draftKey(null, "p1");
+    expect(fresh).toBe("new:p1");
+    saveDraft(a, "half a thought");
+    saveDraft(fresh, "for a new chat");
+    expect(loadDraft(a)).toBe("half a thought");
+    expect(loadDraft(fresh)).toBe("for a new chat");
+    expect(loadDraft("chat-b")).toBe("");
+    saveDraft(a, "  ");
+    expect(loadDraft(a)).toBe("");
+    expect(loadDraft(fresh)).toBe("for a new chat");
+  });
+});
+
+describe("the short time", () => {
+  const now = new Date(2026, 8, 27, 18, 0);
+  it("is 12-hour today, then Yesterday, a weekday, a date", () => {
+    expect(shortWhen(new Date(2026, 8, 27, 16, 5).toISOString(), now)).toBe("4:05 PM");
+    expect(shortWhen(new Date(2026, 8, 26, 9, 0).toISOString(), now)).toBe("Yesterday");
+    expect(shortWhen(new Date(2026, 8, 23, 9, 0).toISOString(), now)).toBe("Wednesday");
+    expect(shortWhen(new Date(2026, 8, 11, 9, 0).toISOString(), now)).toBe("Sep 11");
+    expect(shortWhen("nonsense", now)).toBe("");
   });
 });

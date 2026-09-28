@@ -1386,9 +1386,11 @@ export async function init(): Promise<void> {
   // queue (the phone also holds one for while the Mac is unreachable).
   // The listener waits for the answer (backlog 132): what became of the
   // message goes back through `remote_sent`, and the phone hears it.
-  await listen<{ id: number; chat: string | null; text: string }>("remote-send", (e) => {
+  await listen<{ id: number; chat: string | null; text: string; new?: boolean; project?: string | null }>("remote-send", (e) => {
     const { id, chat, text } = e.payload;
-    remoteSend(chat, text).then(
+    // A new chat from the phone (item 246) opens its project first.
+    const start = e.payload.new ? remoteNewChat(e.payload.project ?? null, text) : remoteSend(chat, text);
+    start.then(
       (outcome) => void api.remoteSent(id, outcome === "queued", null).catch(() => {}),
       (err: unknown) => void api.remoteSent(id, false, String(err)).catch(() => {}),
     );
@@ -1407,6 +1409,12 @@ export async function init(): Promise<void> {
   // The phone names the chat it shows (backlog 159, A3); `null` is the
   // chat on screen, as before.
   await listen<{ chat?: string | null } | null>("remote-cancel", (e) => void cancelTurn(e.payload?.chat ?? null));
+  // The phone's chat-actions sheet (item 246): open a chat here, and
+  // re-read the list after the phone renamed one.
+  await listen<{ chat: string }>("remote-open", (e) => {
+    if (e.payload?.chat && !app.busy) void openSession(e.payload.chat);
+  });
+  await listen("remote-renamed", () => void refreshSessions());
   // A chat's first turn names its chat as it starts (backlog 192; review
   // 2026-09-23 finding 4): the budget meter and stop card follow it now,
   // not only once the turn has ended.
@@ -5543,6 +5551,26 @@ export async function remoteSend(chat: string | null, text: string): Promise<"se
   if (!app.connection) throw new Error("no engine is connected on the desktop — connect one there first");
   // Answered before the turn, not after: `send` resolves at the turn's
   // end, and the phone is waiting to hear the message was taken.
+  void sendUntyped(text);
+  return "sent";
+}
+
+/**
+ * A new chat from the phone (item 246): in `project` when it names one
+ * that is not open (the window switches to it, as the project menu does),
+ * then the New chat state, then the message — which creates the log, as a
+ * first message typed here does. Refused, never queued, while a turn runs:
+ * leaving the running chat's project mid-turn is not the phone's call.
+ */
+export async function remoteNewChat(project: string | null, text: string): Promise<"sent" | "queued"> {
+  if (app.busy) throw new Error("the desktop is running a turn — start the new chat when it ends");
+  if (project && project !== app.project?.id) {
+    await useProject(project);
+    if (app.project?.id !== project) throw new Error("the desktop could not open that project");
+  }
+  await newSession();
+  if (app.activeSessionId !== null) throw new Error(app.error ? `the desktop could not start a chat: ${app.error}` : "the desktop could not start a chat");
+  if (!app.connection) throw new Error("no engine is connected on the desktop — connect one there first");
   void sendUntyped(text);
   return "sent";
 }

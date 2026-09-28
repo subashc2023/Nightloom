@@ -9,6 +9,7 @@ import type { ApprovalRequest, SessionEvent, TurnEvent } from "../lib/types";
 
 export const TOKEN_KEY = "nightloom.remote.token";
 export const QUEUE_KEY = "nightloom.remote.queue";
+export const DRAFTS_KEY = "nightloom.remote.drafts";
 
 // ---- the token ----------------------------------------------------------
 
@@ -61,6 +62,14 @@ export interface ChatRow {
   mode: string;
 }
 
+/** One row of `/api/projects` — `ProjectRow` in the service crate. */
+export interface ProjectRow {
+  id: string;
+  name: string;
+  /** The project open on the Mac. */
+  active: boolean;
+}
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -99,12 +108,34 @@ export class Client {
     return (await this.call("/state")).json();
   }
 
-  async chats(): Promise<ChatRow[]> {
-    return (await this.call("/chats")).json();
+  /** The open project's chats, or `project`'s (item 246's drawer). */
+  async chats(project: string | null = null): Promise<ChatRow[]> {
+    return (await this.call(project ? `/projects/${encodeURIComponent(project)}/chats` : "/chats")).json();
   }
 
-  async transcript(id: string): Promise<SessionEvent[]> {
-    return (await this.call(`/chats/${encodeURIComponent(id)}/transcript`)).json();
+  async projects(): Promise<ProjectRow[]> {
+    return (await this.call("/projects")).json();
+  }
+
+  /** A new chat on the Mac, in `project` or the open one (item 246). */
+  async newChat(project: string | null, text: string): Promise<"sent" | "queued"> {
+    const r = await this.call("/new", { method: "POST", body: JSON.stringify({ text, project }) });
+    return parseSendReply(await r.text());
+  }
+
+  async rename(chat: string, title: string): Promise<void> {
+    await this.call(`/chats/${encodeURIComponent(chat)}/rename`, { method: "POST", body: JSON.stringify({ title }) });
+  }
+
+  /** Open `chat` in the Mac's window. */
+  async open(chat: string): Promise<void> {
+    await this.call(`/chats/${encodeURIComponent(chat)}/open`, { method: "POST" });
+  }
+
+  /** A chat's log — in `project` when it is not the one open on the Mac. */
+  async transcript(id: string, project: string | null = null): Promise<SessionEvent[]> {
+    const base = project ? `/projects/${encodeURIComponent(project)}` : "";
+    return (await this.call(`${base}/chats/${encodeURIComponent(id)}/transcript`)).json();
   }
 
   /** 202: the turn runs on the Mac — or, `"queued"`, waits behind the one
@@ -487,4 +518,57 @@ export function parseSendReply(body: string): "sent" | "queued" {
   } catch {
     return "sent";
   }
+}
+
+// ---- drafts (item 246; practices §7) ----------------------------------------
+
+/**
+ * The composer's text per chat, kept in localStorage as he types, so a
+ * reload, a tab the phone evicted, or a switch to another chat never loses
+ * it, and a draft typed for one chat is never sent to another. The key is
+ * the chat's id, or `new:<project>` for a chat not yet started.
+ */
+export function draftKey(chat: string | null, project: string | null): string {
+  return chat ?? `new:${project ?? ""}`;
+}
+
+function readDrafts(): Record<string, string> {
+  try {
+    const v: unknown = JSON.parse(localStorage.getItem(DRAFTS_KEY) ?? "{}");
+    return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, string>) : {};
+  } catch {
+    return {};
+  }
+}
+
+export function loadDraft(key: string): string {
+  const v = readDrafts()[key];
+  return typeof v === "string" ? v : "";
+}
+
+/** An empty text removes the key rather than keeping a blank. */
+export function saveDraft(key: string, text: string): void {
+  const all = readDrafts();
+  if (text.trim()) all[key] = text;
+  else delete all[key];
+  try {
+    if (Object.keys(all).length === 0) localStorage.removeItem(DRAFTS_KEY);
+    else localStorage.setItem(DRAFTS_KEY, JSON.stringify(all));
+  } catch {
+    // Storage off: the draft lives in the page's state only.
+  }
+}
+
+/** A time for a row or a message, 12-hour: "4:05 PM" today, "Yesterday",
+ *  a weekday within the week, else "Sep 21". */
+export function shortWhen(iso: string, now = new Date()): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  if (d.toDateString() === now.toDateString()) return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  const y = new Date(now);
+  y.setDate(now.getDate() - 1);
+  if (d.toDateString() === y.toDateString()) return "Yesterday";
+  const days = (now.getTime() - d.getTime()) / 86400000;
+  if (days < 7 && days > 0) return d.toLocaleDateString("en-US", { weekday: "long" });
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }

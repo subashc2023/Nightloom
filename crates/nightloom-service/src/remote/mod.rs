@@ -63,6 +63,31 @@ pub struct ChatRow {
     pub mode: String,
 }
 
+/// One row of the phone's project list (item 246): the drawer groups the
+/// chats under these, and a new chat can start in any of them.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProjectRow {
+    pub id: String,
+    pub name: String,
+    /// The project open on the Mac.
+    pub active: bool,
+}
+
+/// A new chat from the phone (item 246): the first message, and the
+/// project to start it in (`None`: the one open on the Mac).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewChatRequest {
+    pub text: String,
+    #[serde(default)]
+    pub project: Option<String>,
+}
+
+/// A chat's new name, from the phone's chat-actions sheet (item 246).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RenameRequest {
+    pub title: String,
+}
+
 /// What the phone asks first and re-asks after every event: where the Mac
 /// is, and whether it can take a message right now.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -149,13 +174,28 @@ pub struct Asset {
 #[async_trait::async_trait]
 pub trait Host: Send + Sync + 'static {
     async fn state(&self) -> RemoteState;
-    async fn chats(&self) -> Result<Vec<ChatRow>, String>;
-    async fn transcript(&self, id: &str) -> Result<Vec<SessionEvent>, String>;
+    /// The chats of `project`, or of the project open on the Mac when `None`.
+    async fn chats(&self, project: Option<&str>) -> Result<Vec<ChatRow>, String>;
+    /// Every project, the open one marked (item 246).
+    async fn projects(&self) -> Result<Vec<ProjectRow>, String>;
+    /// A chat's log, in `project` or the open project when `None`.
+    async fn transcript(
+        &self,
+        project: Option<&str>,
+        id: &str,
+    ) -> Result<Vec<SessionEvent>, String>;
     /// Send `text` to `chat`, or to the open chat when `None`. Returns once
     /// the message is handed on — sent, or queued behind a running turn
     /// in that chat — not when the turn ends; `Err` when it was not (the
     /// sentence goes to the phone as a 409, and the phone keeps the text).
     async fn send(&self, chat: Option<&str>, text: &str) -> Result<Handed, String>;
+    /// Start a new chat in `project` (or the open project) with `text` as
+    /// its first message — answered as `send` is (item 246).
+    async fn new_chat(&self, project: Option<&str>, text: &str) -> Result<Handed, String>;
+    /// Name a chat (item 246); `Err` is the desktop's sentence.
+    async fn rename(&self, chat: &str, title: &str) -> Result<(), String>;
+    /// Open a chat in the Mac's window (item 246), so he finds it there.
+    async fn open(&self, chat: &str) -> Result<(), String>;
     async fn approve(&self, req: ApproveRequest) -> Result<(), String>;
     /// Stop `chat`'s turn, or the open chat's when `None` (nightshift
     /// backlog 159, A3: two chats may run at once, and the phone's Stop
@@ -301,6 +341,15 @@ fn router(shared: Arc<Shared>) -> Router {
     let api = Router::new()
         .route("/state", get(state))
         .route("/chats", get(chats))
+        .route("/projects", get(projects))
+        .route("/projects/{id}/chats", get(project_chats))
+        .route(
+            "/projects/{pid}/chats/{id}/transcript",
+            get(project_transcript),
+        )
+        .route("/new", post(new_chat))
+        .route("/chats/{id}/rename", post(rename))
+        .route("/chats/{id}/open", post(open))
         .route("/chats/{id}/transcript", get(transcript))
         .route("/chats/{id}/send", post(send_to))
         .route("/send", post(send_active))
@@ -358,14 +407,76 @@ async fn state(State(shared): State<Arc<Shared>>) -> Json<RemoteState> {
 }
 
 async fn chats(State(shared): State<Arc<Shared>>) -> Response {
-    match shared.host.chats().await {
+    match shared.host.chats(None).await {
         Ok(rows) => Json(rows).into_response(),
         Err(e) => bad(e),
     }
 }
 
+/// Another project's chats (item 246), for the phone's drawer.
+async fn project_chats(State(shared): State<Arc<Shared>>, Path(id): Path<String>) -> Response {
+    match shared.host.chats(Some(&id)).await {
+        Ok(rows) => Json(rows).into_response(),
+        Err(e) => bad(e),
+    }
+}
+
+async fn projects(State(shared): State<Arc<Shared>>) -> Response {
+    match shared.host.projects().await {
+        Ok(rows) => Json(rows).into_response(),
+        Err(e) => bad(e),
+    }
+}
+
+/// A new chat (item 246): 202 with `sent`/`queued` as a send, 409 with
+/// the desktop's sentence when it could not start one.
+async fn new_chat(State(shared): State<Arc<Shared>>, Json(req): Json<NewChatRequest>) -> Response {
+    if req.text.trim().is_empty() {
+        return bad("nothing to send".into());
+    }
+    match shared
+        .host
+        .new_chat(req.project.as_deref(), &req.text)
+        .await
+    {
+        Ok(status) => (StatusCode::ACCEPTED, Json(SendReply { status })).into_response(),
+        Err(e) => (StatusCode::CONFLICT, e).into_response(),
+    }
+}
+
+async fn rename(
+    State(shared): State<Arc<Shared>>,
+    Path(id): Path<String>,
+    Json(req): Json<RenameRequest>,
+) -> Response {
+    if req.title.trim().is_empty() {
+        return bad("a name cannot be empty".into());
+    }
+    match shared.host.rename(&id, req.title.trim()).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => (StatusCode::CONFLICT, e).into_response(),
+    }
+}
+
+async fn open(State(shared): State<Arc<Shared>>, Path(id): Path<String>) -> Response {
+    match shared.host.open(&id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => (StatusCode::CONFLICT, e).into_response(),
+    }
+}
+
 async fn transcript(State(shared): State<Arc<Shared>>, Path(id): Path<String>) -> Response {
-    match shared.host.transcript(&id).await {
+    match shared.host.transcript(None, &id).await {
+        Ok(events) => Json(events).into_response(),
+        Err(e) => (StatusCode::NOT_FOUND, e).into_response(),
+    }
+}
+
+async fn project_transcript(
+    State(shared): State<Arc<Shared>>,
+    Path((pid, id)): Path<(String, String)>,
+) -> Response {
+    match shared.host.transcript(Some(&pid), &id).await {
         Ok(events) => Json(events).into_response(),
         Err(e) => (StatusCode::NOT_FOUND, e).into_response(),
     }
@@ -508,6 +619,12 @@ mod tests {
         approved: Mutex<Vec<ApproveRequest>>,
         cancelled: Mutex<usize>,
         cancelled_chats: Mutex<Vec<Option<String>>>,
+        /// `(project, text)` of each new chat; `(chat, title)` of each
+        /// rename; each chat opened; each project whose chats were listed.
+        started: Mutex<Vec<(Option<String>, String)>>,
+        renamed: Mutex<Vec<(String, String)>>,
+        opened: Mutex<Vec<String>>,
+        listed: Mutex<Vec<Option<String>>>,
         tx: broadcast::Sender<Event>,
     }
 
@@ -519,6 +636,10 @@ mod tests {
                 approved: Mutex::new(Vec::new()),
                 cancelled: Mutex::new(0),
                 cancelled_chats: Mutex::new(Vec::new()),
+                started: Mutex::new(Vec::new()),
+                renamed: Mutex::new(Vec::new()),
+                opened: Mutex::new(Vec::new()),
+                listed: Mutex::new(Vec::new()),
                 tx: tx.clone(),
             });
             (host, tx)
@@ -537,7 +658,8 @@ mod tests {
                 pending: vec![serde_json::json!({"id": "t1", "name": "Bash"})],
             }
         }
-        async fn chats(&self) -> Result<Vec<ChatRow>, String> {
+        async fn chats(&self, project: Option<&str>) -> Result<Vec<ChatRow>, String> {
+            self.listed.lock().unwrap().push(project.map(String::from));
             Ok(vec![ChatRow {
                 id: "abc".into(),
                 label: "first".into(),
@@ -547,8 +669,12 @@ mod tests {
                 mode: "normal".into(),
             }])
         }
-        async fn transcript(&self, id: &str) -> Result<Vec<SessionEvent>, String> {
-            if id == "abc" {
+        async fn transcript(
+            &self,
+            project: Option<&str>,
+            id: &str,
+        ) -> Result<Vec<SessionEvent>, String> {
+            if id == "abc" && matches!(project, None | Some("p2")) {
                 Ok(vec![SessionEvent::UserMessage {
                     text: "hello".into(),
                     images: vec![],
@@ -574,6 +700,44 @@ mod tests {
             } else {
                 Handed::Sent
             })
+        }
+        async fn projects(&self) -> Result<Vec<ProjectRow>, String> {
+            Ok(vec![
+                ProjectRow {
+                    id: "p1".into(),
+                    name: "nightloom".into(),
+                    active: true,
+                },
+                ProjectRow {
+                    id: "p2".into(),
+                    name: "keepsake".into(),
+                    active: false,
+                },
+            ])
+        }
+        async fn new_chat(&self, project: Option<&str>, text: &str) -> Result<Handed, String> {
+            if text.contains("refuse me") {
+                return Err("the desktop is busy in another chat".into());
+            }
+            self.started
+                .lock()
+                .unwrap()
+                .push((project.map(String::from), text.to_string()));
+            Ok(Handed::Sent)
+        }
+        async fn rename(&self, chat: &str, title: &str) -> Result<(), String> {
+            if chat == "running" {
+                return Err("that chat is running a turn".into());
+            }
+            self.renamed
+                .lock()
+                .unwrap()
+                .push((chat.to_string(), title.to_string()));
+            Ok(())
+        }
+        async fn open(&self, chat: &str) -> Result<(), String> {
+            self.opened.lock().unwrap().push(chat.to_string());
+            Ok(())
         }
         async fn approve(&self, req: ApproveRequest) -> Result<(), String> {
             self.approved.lock().unwrap().push(req);
@@ -739,6 +903,134 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(r.status(), 404);
+        server.stop().await;
+    }
+
+    #[tokio::test]
+    async fn projects_new_chat_rename_and_open_reach_the_host() {
+        let (server, host, _tx, token) = up().await;
+        let base = format!("http://{}", server.addr());
+        let c = client();
+        let rows: Vec<ProjectRow> = c
+            .get(format!("{base}/api/projects"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].active && !rows[1].active);
+        // A project named on the list is passed through; none is the open one.
+        let r = c
+            .get(format!("{base}/api/projects/p2/chats"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        let r = c
+            .get(format!("{base}/api/chats"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        assert_eq!(
+            *host.listed.lock().unwrap(),
+            vec![Some("p2".to_string()), None]
+        );
+        let r = c
+            .get(format!("{base}/api/projects/p2/chats/abc/transcript"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        let r = c
+            .get(format!("{base}/api/projects/p9/chats/abc/transcript"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 404);
+
+        let r = c
+            .post(format!("{base}/api/new"))
+            .bearer_auth(&token)
+            .json(&NewChatRequest {
+                text: "a fresh start".into(),
+                project: Some("p2".into()),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 202);
+        assert_eq!(r.json::<SendReply>().await.unwrap().status, Handed::Sent);
+        let r = c
+            .post(format!("{base}/api/new"))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({ "text": "refuse me" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 409);
+        let r = c
+            .post(format!("{base}/api/new"))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({ "text": "  " }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 400);
+        assert_eq!(
+            *host.started.lock().unwrap(),
+            vec![(Some("p2".to_string()), "a fresh start".to_string())]
+        );
+
+        let r = c
+            .post(format!("{base}/api/chats/abc/rename"))
+            .bearer_auth(&token)
+            .json(&RenameRequest {
+                title: "  a new name ".into(),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 204);
+        let r = c
+            .post(format!("{base}/api/chats/running/rename"))
+            .bearer_auth(&token)
+            .json(&RenameRequest { title: "x".into() })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 409);
+        let r = c
+            .post(format!("{base}/api/chats/abc/rename"))
+            .bearer_auth(&token)
+            .json(&RenameRequest { title: " ".into() })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 400);
+        assert_eq!(
+            *host.renamed.lock().unwrap(),
+            vec![("abc".to_string(), "a new name".to_string())]
+        );
+
+        let r = c
+            .post(format!("{base}/api/chats/abc/open"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 204);
+        assert_eq!(*host.opened.lock().unwrap(), vec!["abc".to_string()]);
+        // And none of them without the bearer.
+        let r = c.get(format!("{base}/api/projects")).send().await.unwrap();
+        assert_eq!(r.status(), 401);
         server.stop().await;
     }
 

@@ -39,8 +39,8 @@ use std::time::Duration;
 use nightloom_core::SessionEvent;
 use nightloom_service::credentials;
 use nightloom_service::remote::{
-    ApproveRequest, Asset, ChatRow, DEFAULT_PORT, Event, Handed, Host, RemoteState, Server,
-    tailnet, token,
+    ApproveRequest, Asset, ChatRow, DEFAULT_PORT, Event, Handed, Host, ProjectRow, RemoteState,
+    Server, tailnet, token,
 };
 use nightloom_service::store;
 use serde::Serialize;
@@ -60,6 +60,10 @@ const RELAYED: [&str; 3] = ["turn-event", "tool-approval", "turn-notice"];
 /// before the phone is told the desktop did not take it. The window's
 /// part is a chat open at most — an IPC and a file read.
 const SEND_WAIT: Duration = Duration::from_secs(3);
+
+/// A new chat from the phone may open another project first (item 246):
+/// its lists are read before the chat starts, so the window gets longer.
+const NEW_CHAT_WAIT: Duration = Duration::from_secs(10);
 
 /// The desktop as the listener sees it.
 pub struct DesktopHost {
@@ -139,6 +143,57 @@ fn lowercase<T: Serialize>(v: T) -> String {
         .unwrap_or_default()
 }
 
+impl DesktopHost {
+    /// Where a project's chats live: the one named by the phone's drawer
+    /// (item 246), or the open project's when `None`.
+    async fn dir_of(&self, project: Option<&str>) -> Result<std::path::PathBuf, String> {
+        let state = self.state_of();
+        let Some(id) = project else {
+            return Ok(state.log_dir().await);
+        };
+        let found = state
+            .workspaces
+            .lock()
+            .await
+            .registry
+            .projects()
+            .into_iter()
+            .find(|p| p.id == id);
+        found
+            .map(|p| p.session_dir())
+            .ok_or_else(|| format!("no project {id}"))
+    }
+
+    /// Emit a `remote-send` carrying `payload` plus an id and wait up to
+    /// `wait` for the window's answer (backlog 132).
+    async fn hand(&self, mut payload: serde_json::Value, wait: Duration) -> Result<Handed, String> {
+        let id = self.next_send.fetch_add(1, Ordering::Relaxed);
+        payload["id"] = serde_json::json!(id);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.replies
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(id, tx);
+        if let Err(e) = self.app.emit("remote-send", payload) {
+            self.answer(id, Err(String::new()));
+            return Err(format!(
+                "the desktop window could not take the message: {e}"
+            ));
+        }
+        match tokio::time::timeout(wait, rx).await {
+            Ok(Ok(outcome)) => outcome,
+            Ok(Err(_)) => Err("the desktop window dropped the message".into()),
+            Err(_) => {
+                self.replies
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .remove(&id);
+                Err("the desktop window did not answer — is Nightloom's window open?".into())
+            }
+        }
+    }
+}
+
 #[async_trait::async_trait]
 impl Host for DesktopHost {
     async fn state(&self) -> RemoteState {
@@ -190,8 +245,8 @@ impl Host for DesktopHost {
         }
     }
 
-    async fn chats(&self) -> Result<Vec<ChatRow>, String> {
-        let dir = self.state_of().log_dir().await;
+    async fn chats(&self, project: Option<&str>) -> Result<Vec<ChatRow>, String> {
+        let dir = self.dir_of(project).await?;
         let rows = crate::blocking(move || store::list(&dir)).await?;
         Ok(rows
             .into_iter()
@@ -206,8 +261,12 @@ impl Host for DesktopHost {
             .collect())
     }
 
-    async fn transcript(&self, id: &str) -> Result<Vec<SessionEvent>, String> {
-        let dir = self.state_of().log_dir().await;
+    async fn transcript(
+        &self,
+        project: Option<&str>,
+        id: &str,
+    ) -> Result<Vec<SessionEvent>, String> {
+        let dir = self.dir_of(project).await?;
         let id = id.to_string();
         crate::blocking(move || -> Result<Vec<SessionEvent>, String> {
             let path = store::find_by_prefix(&dir, &id).map_err(|e| e.to_string())?;
@@ -217,33 +276,48 @@ impl Host for DesktopHost {
         .await
     }
 
+    async fn projects(&self) -> Result<Vec<ProjectRow>, String> {
+        let state = self.state_of();
+        let ws = state.workspaces.lock().await;
+        let open = ws.active.as_ref().map(|p| p.id.clone());
+        Ok(ws
+            .registry
+            .projects()
+            .into_iter()
+            .map(|p| ProjectRow {
+                active: open.as_deref() == Some(p.id.as_str()),
+                id: p.id,
+                name: p.name,
+            })
+            .collect())
+    }
+
     async fn send(&self, chat: Option<&str>, text: &str) -> Result<Handed, String> {
-        let id = self.next_send.fetch_add(1, Ordering::Relaxed);
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        self.replies
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(id, tx);
-        if let Err(e) = self.app.emit(
-            "remote-send",
-            serde_json::json!({ "id": id, "chat": chat, "text": text }),
-        ) {
-            self.answer(id, Err(String::new()));
-            return Err(format!(
-                "the desktop window could not take the message: {e}"
-            ));
-        }
-        match tokio::time::timeout(SEND_WAIT, rx).await {
-            Ok(Ok(outcome)) => outcome,
-            Ok(Err(_)) => Err("the desktop window dropped the message".into()),
-            Err(_) => {
-                self.replies
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .remove(&id);
-                Err("the desktop window did not answer — is Nightloom's window open?".into())
-            }
-        }
+        self.hand(serde_json::json!({ "chat": chat, "text": text }), SEND_WAIT)
+            .await
+    }
+
+    async fn new_chat(&self, project: Option<&str>, text: &str) -> Result<Handed, String> {
+        self.hand(
+            serde_json::json!({ "chat": null, "text": text, "new": true, "project": project }),
+            NEW_CHAT_WAIT,
+        )
+        .await
+    }
+
+    async fn rename(&self, chat: &str, title: &str) -> Result<(), String> {
+        // The desktop's own command (the id is the list's full one); a
+        // chat whose turn is running is refused with its sentence.
+        crate::rename_session(self.state_of(), chat.to_string(), title.to_string(), None).await?;
+        // The window's list re-reads so the sidebar shows the new name.
+        let _ = self.app.emit("remote-renamed", chat);
+        Ok(())
+    }
+
+    async fn open(&self, chat: &str) -> Result<(), String> {
+        self.app
+            .emit("remote-open", serde_json::json!({ "chat": chat }))
+            .map_err(|e| format!("the desktop window could not take it: {e}"))
     }
 
     async fn approve(&self, req: ApproveRequest) -> Result<(), String> {
