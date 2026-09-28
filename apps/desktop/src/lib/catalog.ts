@@ -763,20 +763,30 @@ export interface SubagentLimits {
    *  before every further tool call is refused with "stop and report".
    *  Blocker 278, his answer: 35. */
   budget_pct: number;
-  /** Pass 2: the model subagents run on. Blocker 280: the chat's own. */
+  /** Pass 2: the model subagents run on. ~~Blocker 280: the chat's own~~
+   *  — nightshift 257 (blocker 584): the main agent chooses, by his rule. */
   model: SubagentModel;
 }
 
-/** `chat` leaves a spawn's model as the parent wrote it; `sonnet` sets it
- *  (unless the parent asked for haiku). */
-export type SubagentModel = "chat" | "sonnet";
-export const SUBAGENT_MODELS: readonly SubagentModel[] = ["chat", "sonnet"];
+/** `choose` leaves a spawn's model as the parent wrote it (the Subagents
+ *  layer gives it his rule); `same` sets the chat's own model on every
+ *  spawn; `sonnet` sets sonnet (unless the parent asked for haiku).
+ *  ~~`chat`~~ (the old default, which enforced nothing) reads as `choose`
+ *  (nightshift 257, blockers 584, 585). */
+export type SubagentModel = "choose" | "same" | "sonnet";
+export const SUBAGENT_MODELS: readonly SubagentModel[] = ["choose", "same", "sonnet"];
+/** The rail's words for each (blocker 584's wording). */
+export const SUBAGENT_MODEL_LABELS: Readonly<Record<SubagentModel, string>> = Object.freeze({
+  choose: "Main agent chooses, by the rule",
+  same: "Always the chat's model",
+  sonnet: "Sonnet 5 · read-heavy scans",
+});
 
 /** The defaults, the backend's (`brief::SubagentLimits::default`): the
  *  6 of the first cap; ~~the CLI's own 20 at once~~ 4 at once (blocker
  *  279) and depth 3; no day cap (0); slow from 70% to 4, stop at 85%
- *  (blocker 271, his answer); 35% of the window a message (278); the
- *  chat's own model (280). */
+ *  (blocker 271, his answer); 35% of the window a message (278); ~~the
+ *  chat's own model (280)~~ the main agent chooses, by his rule (584). */
 export const DEFAULT_LIMITS: SubagentLimits = Object.freeze({
   per_turn: 6,
   concurrent: 4,
@@ -788,11 +798,12 @@ export const DEFAULT_LIMITS: SubagentLimits = Object.freeze({
   slow_to: 4,
   stop_at: 85,
   budget_pct: 35,
-  model: "chat",
+  model: "choose",
 }) as SubagentLimits;
 
 /** A saved limits object, each number a whole number in range or the
- *  default; the model one of the two words or the default. */
+ *  default; the model one of the three words (old `chat` as `choose`) or
+ *  the default. */
 export function readLimits(v: unknown): SubagentLimits {
   const out: SubagentLimits = { ...DEFAULT_LIMITS };
   if (v === null || typeof v !== "object") return out;
@@ -800,7 +811,8 @@ export function readLimits(v: unknown): SubagentLimits {
   for (const k of Object.keys(DEFAULT_LIMITS) as (keyof SubagentLimits)[]) {
     if (k === "model") {
       const s = m[k];
-      if (s === "chat" || s === "sonnet") out.model = s;
+      if (s === "chat") out.model = "choose";
+      else if (s === "choose" || s === "same" || s === "sonnet") out.model = s;
       continue;
     }
     const n = m[k];

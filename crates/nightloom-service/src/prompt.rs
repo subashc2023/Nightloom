@@ -369,6 +369,9 @@ pub struct EngineLayers {
     /// drops (measured, backlog 251 Step 0). Only changes what the
     /// subagents layer says about the cache.
     pub reusable: bool,
+    /// The rail's "Subagents use" (nightshift 257, blocker 584): what the
+    /// subagents layer says about naming a model.
+    pub subagent_model: crate::agent::brief::SubagentModel,
 }
 
 impl EngineLayers {
@@ -377,6 +380,7 @@ impl EngineLayers {
         pacing: false,
         subagents: false,
         reusable: false,
+        subagent_model: crate::agent::brief::SubagentModel::Choose,
     };
 }
 
@@ -411,7 +415,7 @@ pub fn agent_prompt_with(
         prompt.push(Segment::new(SegmentKind::Pacing, "pacing", PACING_NOTE));
     }
     if layers.subagents && preamble {
-        prompt.push(subagents_segment(layers.reusable));
+        prompt.push(subagents_segment(layers.reusable, layers.subagent_model));
     }
     if let Some(library) = library {
         prompt.push(Segment::new(SegmentKind::Custom, "custom", library));
@@ -446,7 +450,7 @@ pub const PACING_NOTE: &str = "<pacing>\n\
 /// `reusable` is on the roster only outside safe mode (`reusable` false
 /// here drops that sentence for one that is true without it); a `fork`
 /// spawn asked for `model: haiku` was recorded by the CLI as `inherit`.
-fn subagents_segment(reusable: bool) -> Segment {
+fn subagents_segment(reusable: bool, model: crate::agent::brief::SubagentModel) -> Segment {
     let cache = if reusable {
         "The agent type sets how long a subagent's cache lives; nothing else does. \
          subagent_type reusable writes a 1-hour cache: pick it for work likely to get a \
@@ -456,6 +460,27 @@ fn subagents_segment(reusable: bool) -> Segment {
         "The agent type sets how long a subagent's cache lives; nothing else does. The \
          default types (general-purpose, Explore) write a 5-minute cache, so a follow-up \
          after five idle minutes pays to write it again."
+    };
+    // ~~"Name the model on every launch (model: haiku, sonnet or opus)"~~
+    // — 2026-09-28 (nightshift 257): that sentence led an Opus chat to run
+    // Stuart 9's four scans on Sonnet. The model sentence now follows the
+    // rail's setting; under `Choose` it carries his rule (practices §3,
+    // blocker 584).
+    use crate::agent::brief::SubagentModel;
+    let model = match model {
+        SubagentModel::Choose => {
+            "Model: this chat's for all work; fable only after a pass on it visibly failed, \
+             said so; sonnet or haiku only for mechanical work. Name it on each launch, one \
+             line: which and why. Forks always run it."
+        }
+        SubagentModel::Same => {
+            "Every subagent runs this chat's model: Nightloom sets it on each launch, \
+             whatever the call names, so leave model out."
+        }
+        SubagentModel::Sonnet => {
+            "Subagents run on sonnet (haiku if you name it): Nightloom sets it on each \
+             launch. Give them mechanical, read-heavy work and keep the judgement yourself."
+        }
     };
     let text = format!(
         "<subagents>\n\
@@ -469,9 +494,7 @@ fn subagents_segment(reusable: bool) -> Segment {
          Retire one past about 300k tokens of context, and have a fresh subagent review its \
          work before you rely on it.\n\
          - {cache}\n\
-         - Name the model on every launch (model: haiku, sonnet or opus); left out, a \
-         subagent runs this chat's model or its type's own. A fork always runs this \
-         chat's model.\n\
+         - {model}\n\
          - Brief it with a short written spec: what to read, by path; the task; how to check \
          it; what to report. Ask for the whole report in its reply.\n\
          - Read the latest usage line before each launch.\n\
@@ -2184,6 +2207,7 @@ the body text",
             pacing: true,
             subagents: true,
             reusable: true,
+            subagent_model: crate::agent::brief::SubagentModel::Choose,
         };
         let full = agent_prompt_with(&config, Some("Be terse."), all);
         assert_eq!(
@@ -2265,6 +2289,39 @@ the body text",
         let text = safe.render_flat().unwrap();
         assert!(!text.contains("reusable"), "{text}");
         assert!(text.contains("5-minute cache"), "{text}");
+        // The model sentence follows the rail (257, blocker 584): under
+        // `choose` his rule and a stated reason; `same` and `sonnet` say
+        // Nightloom sets it. Never the old "haiku, sonnet or opus" menu.
+        {
+            use crate::agent::brief::SubagentModel;
+            let say = |m| {
+                agent_prompt_with(
+                    &config,
+                    None,
+                    EngineLayers {
+                        subagent_model: m,
+                        ..all
+                    },
+                )
+                .render_flat()
+                .unwrap()
+            };
+            let choose = say(SubagentModel::Choose);
+            assert!(choose.contains("fable only after"), "{choose}");
+            assert!(choose.contains("only for mechanical work"), "{choose}");
+            assert!(choose.contains("which and why"), "{choose}");
+            let same = say(SubagentModel::Same);
+            assert!(
+                same.contains("Every subagent runs this chat's model"),
+                "{same}"
+            );
+            assert!(!same.contains("which and why"), "{same}");
+            let sonnet = say(SubagentModel::Sonnet);
+            assert!(sonnet.contains("Subagents run on sonnet"), "{sonnet}");
+            for text in [&choose, &same, &sonnet] {
+                assert!(!text.contains("haiku, sonnet or opus"), "{text}");
+            }
+        }
         // The old entry point sends neither, and the switches by kind reach them.
         assert!(!kinds(&agent_prompt(&config, None, true)).contains(&SegmentKind::Pacing));
         assert!(SegmentKind::LAYERS.contains(&SegmentKind::Pacing));

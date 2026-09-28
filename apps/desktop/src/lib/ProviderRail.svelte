@@ -32,6 +32,7 @@
     AGENT_MODELS,
     MODEL_KEYS,
     SUBAGENT_MODELS,
+    SUBAGENT_MODEL_LABELS,
     formatWindow,
     modelsFor,
     providerLabel,
@@ -917,14 +918,16 @@
           </label>
         {/each}
       </div>
-      <!-- The subagents' model (backlog 165, pass 2; blocker 280, his
-           answer: the chat's own). Applied by the hook as the spawn's
-           `model` input, so it holds for every subagent of the chat. -->
+      <!-- The subagents' model (backlog 165, pass 2; ~~blocker 280, his
+           answer: the chat's own~~ nightshift 257, blocker 584: the main
+           agent chooses by his rule, or always the chat's model, or
+           Sonnet). Applied by the hook as the spawn's `model` input, so it
+           holds for every subagent of the chat. -->
       <label class="row limits-model">
         <span class="lbl">Subagents use</span>
         <select class="limits-model-select" bind:value={app.draft.agentLimits.model} onchange={apply} disabled={locked} aria-label="subagents use">
           {#each SUBAGENT_MODELS as m (m)}
-            <option value={m}>{m === "chat" ? "the chat's model" : "Sonnet 5 · read-heavy scans"}</option>
+            <option value={m}>{SUBAGENT_MODEL_LABELS[m]}</option>
           {/each}
         </select>
       </label>

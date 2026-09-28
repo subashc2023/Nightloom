@@ -1391,6 +1391,8 @@ impl ClaudeCodeAgent {
             let _ = brief::write(&brief.dir, &brief.text);
             // The limits beside it, for the hook (backlog 165).
             let _ = brief::write_limits(&brief.dir, &self.spec.subagent_limits.unwrap_or_default());
+            // And the chat's model, for "always the chat's model" (257).
+            brief::write_chat_model(&brief.dir, self.spec.model.as_deref());
         }
     }
 
@@ -1474,6 +1476,7 @@ impl ClaudeCodeAgent {
         // chair of a council whose seats just ran).
         let chair = self.chair.lock().ok().and_then(|mut c| c.take());
         if let Some(brief) = &self.spec.brief {
+            brief::write_chat_model(&brief.dir, self.spec.model.as_deref());
             brief::begin_turn(
                 &brief.dir,
                 &self.spec.subagent_limits.unwrap_or_default(),

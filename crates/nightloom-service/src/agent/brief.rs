@@ -168,29 +168,57 @@ pub struct SubagentLimits {
     pub model: SubagentModel,
 }
 
-/// Which model a spawned subagent runs on (backlog 165, pass 2). `Chat`
-/// leaves the call's `model` as the parent wrote it (usually absent, so
-/// the CLI's inherit); `Sonnet` sets it to `sonnet` unless the parent
-/// asked for `haiku`, which is cheaper still.
+/// Which model a spawned subagent runs on (backlog 165, pass 2; nightshift
+/// 257, blocker 584). `Choose` leaves the call's `model` as the parent
+/// wrote it — the Subagents layer gives it his rule for choosing; `Same`
+/// sets it to the chat's own model whatever the parent wrote; `Sonnet`
+/// sets it to `sonnet` unless the parent asked for `haiku`, which is
+/// cheaper still. ~~`Chat` (leave the call alone) was the default~~ —
+/// 2026-09-28: a stored `chat` reads as `Choose` (blocker 585): it never
+/// enforced anything.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SubagentModel {
     #[default]
-    Chat,
+    #[serde(alias = "chat")]
+    Choose,
+    Same,
     Sonnet,
 }
 
+/// What the hook does to a spawn's `model` input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpawnModel {
+    Leave,
+    Set(&'static str),
+    /// Drop the parent's pick so the spawn inherits the chat's model (a
+    /// `Same` chat whose model the hook cannot name).
+    Clear,
+}
+
 impl SubagentModel {
-    /// The `model` the spawn's input should carry, given what the parent
-    /// wrote; `None` leaves the input alone.
-    pub fn for_spawn(self, asked: Option<&str>) -> Option<&'static str> {
-        match (self, asked) {
-            (Self::Chat, _) => None,
-            (Self::Sonnet, Some("haiku")) => None,
-            (Self::Sonnet, Some("sonnet")) => None,
-            (Self::Sonnet, _) => Some("sonnet"),
+    /// What the spawn's input should carry, given what the parent wrote
+    /// and the chat's model as an Agent-tool alias ([`agent_alias`]).
+    pub fn for_spawn(self, asked: Option<&str>, chat: Option<&'static str>) -> SpawnModel {
+        match (self, asked, chat) {
+            (Self::Choose, _, _) => SpawnModel::Leave,
+            (Self::Same, a, Some(c)) if a == Some(c) => SpawnModel::Leave,
+            (Self::Same, _, Some(c)) => SpawnModel::Set(c),
+            (Self::Same, None, None) => SpawnModel::Leave,
+            (Self::Same, Some(_), None) => SpawnModel::Clear,
+            (Self::Sonnet, Some("haiku" | "sonnet"), _) => SpawnModel::Leave,
+            (Self::Sonnet, _, _) => SpawnModel::Set("sonnet"),
         }
     }
+}
+
+/// A chat's model (an alias or a full id) as the Agent tool's `model`
+/// takes it: CLI 2.1.283 accepts only `sonnet`, `opus`, `haiku`, `fable`.
+pub fn agent_alias(model: &str) -> Option<&'static str> {
+    let m = model.to_ascii_lowercase();
+    ["fable", "opus", "sonnet", "haiku"]
+        .into_iter()
+        .find(|a| m.contains(a))
 }
 
 fn d_per_turn() -> usize {
@@ -280,6 +308,30 @@ pub fn write_limits(dir: &Path, limits: &SubagentLimits) -> std::io::Result<()> 
         dir.join(LIMITS_FILE),
         serde_json::to_string_pretty(limits).unwrap_or_default(),
     )
+}
+
+/// The chat's model, beside the limits, for `SubagentModel::Same` (257).
+pub const CHAT_MODEL_FILE: &str = "subagent-chat-model.txt";
+
+/// Writes the chat's model for the hook; `None` removes a stale one.
+pub fn write_chat_model(dir: &Path, model: Option<&str>) {
+    let path = dir.join(CHAT_MODEL_FILE);
+    match model.map(str::trim).filter(|m| !m.is_empty()) {
+        Some(m) => {
+            let _ = std::fs::create_dir_all(dir);
+            let _ = std::fs::write(path, m);
+        }
+        None => {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+/// The chat's model as an Agent-tool alias, if one was written.
+pub fn read_chat_alias(dir: &Path) -> Option<&'static str> {
+    std::fs::read_to_string(dir.join(CHAT_MODEL_FILE))
+        .ok()
+        .and_then(|m| agent_alias(&m))
 }
 
 /// The chat's limits, or the defaults when none were written (a chat
@@ -1869,12 +1921,20 @@ fn decide_holding(
         fields.insert("prompt".into(), Value::String(briefed));
         changed = true;
     }
-    // The subagents' model (pass 2, blocker 280): the switch on the rail
-    // sets the spawn's `model` input, which the Agent tool takes.
+    // The subagents' model (pass 2, blocker 280; 257, blocker 584): the
+    // switch on the rail sets the spawn's `model` input, which the Agent
+    // tool takes.
     let asked = fields.get("model").and_then(Value::as_str);
-    if let Some(model) = limits.model.for_spawn(asked) {
-        fields.insert("model".into(), Value::String(model.into()));
-        changed = true;
+    match limits.model.for_spawn(asked, read_chat_alias(dir)) {
+        SpawnModel::Leave => {}
+        SpawnModel::Set(model) => {
+            fields.insert("model".into(), Value::String(model.into()));
+            changed = true;
+        }
+        SpawnModel::Clear => {
+            fields.remove("model");
+            changed = true;
+        }
     }
     if !changed {
         return HookReply::pass().with_context(line);
@@ -2917,19 +2977,37 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The subagents' model (blocker 280): `chat` leaves the spawn alone;
-    /// `sonnet` sets the call's `model` unless the parent asked for haiku.
+    /// The subagents' model (blocker 280; 257): `choose` leaves the spawn
+    /// alone; `sonnet` sets the call's `model` unless the parent asked for
+    /// haiku.
     #[test]
     fn the_sonnet_switch_sets_the_spawns_model_and_haiku_is_left_cheaper() {
-        assert_eq!(super::SubagentModel::Chat.for_spawn(None), None);
-        assert_eq!(super::SubagentModel::Chat.for_spawn(Some("opus")), None);
-        assert_eq!(super::SubagentModel::Sonnet.for_spawn(None), Some("sonnet"));
+        use super::{SpawnModel, SubagentModel};
+        let opus = Some("opus");
         assert_eq!(
-            super::SubagentModel::Sonnet.for_spawn(Some("opus")),
-            Some("sonnet")
+            SubagentModel::Choose.for_spawn(None, opus),
+            SpawnModel::Leave
         );
-        assert_eq!(super::SubagentModel::Sonnet.for_spawn(Some("haiku")), None);
-        assert_eq!(super::SubagentModel::Sonnet.for_spawn(Some("sonnet")), None);
+        assert_eq!(
+            SubagentModel::Choose.for_spawn(Some("sonnet"), opus),
+            SpawnModel::Leave
+        );
+        assert_eq!(
+            SubagentModel::Sonnet.for_spawn(None, opus),
+            SpawnModel::Set("sonnet")
+        );
+        assert_eq!(
+            SubagentModel::Sonnet.for_spawn(Some("opus"), opus),
+            SpawnModel::Set("sonnet")
+        );
+        assert_eq!(
+            SubagentModel::Sonnet.for_spawn(Some("haiku"), opus),
+            SpawnModel::Leave
+        );
+        assert_eq!(
+            SubagentModel::Sonnet.for_spawn(Some("sonnet"), opus),
+            SpawnModel::Leave
+        );
         let dir = limits_dir("model");
         super::write_limits(
             &dir,
@@ -2973,6 +3051,69 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// 257 (blocker 584): `same` puts the chat's model on every spawn,
+    /// whatever the parent named — Stuart 9's scans named `sonnet` under
+    /// an Opus chat; a stored `chat` (the old default) reads as `choose`
+    /// (blocker 585).
+    #[test]
+    fn same_puts_the_chats_model_on_every_spawn_and_old_chat_reads_as_choose() {
+        use super::{SpawnModel, SubagentModel};
+        let opus = Some("opus");
+        assert_eq!(
+            SubagentModel::Same.for_spawn(Some("sonnet"), opus),
+            SpawnModel::Set("opus")
+        );
+        assert_eq!(
+            SubagentModel::Same.for_spawn(None, opus),
+            SpawnModel::Set("opus")
+        );
+        assert_eq!(
+            SubagentModel::Same.for_spawn(Some("opus"), opus),
+            SpawnModel::Leave
+        );
+        assert_eq!(
+            SubagentModel::Same.for_spawn(Some("haiku"), None),
+            SpawnModel::Clear
+        );
+        assert_eq!(SubagentModel::Same.for_spawn(None, None), SpawnModel::Leave);
+        assert_eq!(super::agent_alias("claude-opus-5-5"), Some("opus"));
+        assert_eq!(super::agent_alias("fable"), Some("fable"));
+        assert_eq!(
+            super::agent_alias("claude-haiku-4-5-20251001"),
+            Some("haiku")
+        );
+        assert_eq!(super::agent_alias("gpt-5"), None);
+        let old: super::SubagentLimits = serde_json::from_str(r#"{"model":"chat"}"#).unwrap();
+        assert_eq!(old.model, SubagentModel::Choose);
+
+        let dir = limits_dir("same");
+        let same = super::SubagentLimits {
+            model: SubagentModel::Same,
+            ..Default::default()
+        };
+        super::write_limits(&dir, &same).unwrap();
+        super::write_chat_model(&dir, Some("claude-opus-5-5"));
+        let call = r#"{"tool_name":"Agent","tool_input":{"prompt":"<nightloom-subagent-brief>x</nightloom-subagent-brief>\n\ngo","model":"sonnet"}}"#;
+        let r = super::decide_with(&dir, call, None);
+        assert_eq!(r.decision(), "allow");
+        let out = r
+            .hook_specific_output
+            .as_ref()
+            .and_then(|o| o.updated_input.clone())
+            .unwrap();
+        assert_eq!(out["model"], "opus");
+        // No model written: the parent's pick is dropped, so it inherits.
+        super::write_chat_model(&dir, None);
+        let r = super::decide_with(&dir, call, None);
+        let out = r
+            .hook_specific_output
+            .as_ref()
+            .and_then(|o| o.updated_input.clone())
+            .unwrap();
+        assert!(out.get("model").is_none(), "{out}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     // The family of limits (nightshift backlog 165).
     fn limits_dir(tag: &str) -> PathBuf {
         let dir =
@@ -3002,13 +3143,14 @@ mod tests {
         assert_eq!(back.per_day, 5);
         assert_eq!(back.per_turn, super::SPAWN_CAP);
         // 4 at once since pass 2 (blocker 279, his answer); 35 % a message
-        // (278); the chat's own model (280).
+        // (278); ~~the chat's own model (280)~~ the main agent chooses by
+        // his rule (257, blocker 584).
         assert_eq!(back.concurrent, 4);
         assert_eq!(back.depth, 3);
         assert_eq!(back.budget_pct, 35);
-        assert_eq!(back.model, super::SubagentModel::Chat);
+        assert_eq!(back.model, super::SubagentModel::Choose);
         let json = serde_json::to_string(&super::SubagentLimits::default()).unwrap();
-        assert!(json.contains(r#""model":"chat""#), "{json}");
+        assert!(json.contains(r#""model":"choose""#), "{json}");
         assert_eq!(
             super::read_limits(Path::new("/nonexistent/x")),
             super::SubagentLimits::default()

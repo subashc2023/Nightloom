@@ -1867,6 +1867,9 @@ async fn connect_agent_body(
             pacing: !off.contains(&SegmentKind::Pacing),
             subagents: !off.contains(&SegmentKind::Subagents),
             reusable,
+            // What the layer says about the model follows the rail's
+            // "Subagents use" (nightshift 257, blocker 584).
+            subagent_model: spec.subagent_limits.unwrap_or_default().model,
         },
     );
     // A changed layer waits for the chat's cold moment (nightshift backlog
