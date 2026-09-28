@@ -484,7 +484,12 @@ pub struct HookReply {
 pub struct HookOutput {
     #[serde(rename = "hookEventName")]
     pub hook_event_name: String,
-    #[serde(rename = "permissionDecision")]
+    /// Empty for a reply that carries only [`HookOutput::additional_context`]
+    /// — no decision, the CLI's own flow (nightshift backlog 249).
+    #[serde(
+        rename = "permissionDecision",
+        skip_serializing_if = "String::is_empty"
+    )]
     pub permission_decision: String,
     #[serde(
         rename = "permissionDecisionReason",
@@ -493,6 +498,12 @@ pub struct HookOutput {
     pub permission_decision_reason: Option<String>,
     #[serde(rename = "updatedInput", skip_serializing_if = "Option::is_none")]
     pub updated_input: Option<Value>,
+    /// Text the model reads beside the call (nightshift backlog 249). Measured
+    /// on CLI 2.1.283 (backlog 249, Step 0): a `PreToolUse` reply with this and
+    /// no decision reaches the model on an allowed call, a subagent's included,
+    /// and does not appear in the stream-json output.
+    #[serde(rename = "additionalContext", skip_serializing_if = "Option::is_none")]
+    pub additional_context: Option<String>,
 }
 
 impl HookReply {
@@ -503,8 +514,37 @@ impl HookReply {
                 permission_decision: decision.into(),
                 permission_decision_reason: None,
                 updated_input: None,
+                additional_context: None,
             }),
         }
+    }
+
+    /// This reply with `text` for the model beside the call (backlog 249).
+    /// A pass becomes a reply with no decision and only the text; a deny
+    /// is left as it is — its reason is what the model reads.
+    pub fn with_context(mut self, text: Option<String>) -> Self {
+        let Some(text) = text.filter(|t| !t.trim().is_empty()) else {
+            return self;
+        };
+        match &mut self.hook_specific_output {
+            Some(o) if o.permission_decision == "deny" => {}
+            Some(o) => o.additional_context = Some(text),
+            None => {
+                let mut r = Self::new("");
+                if let Some(o) = &mut r.hook_specific_output {
+                    o.additional_context = Some(text);
+                }
+                return r;
+            }
+        }
+        self
+    }
+
+    /// The text for the model this reply carries, if any.
+    pub fn additional_context(&self) -> Option<&str> {
+        self.hook_specific_output
+            .as_ref()
+            .and_then(|o| o.additional_context.as_deref())
     }
 
     /// No decision at all: `{}` on stdout, and the CLI decides as if no
@@ -538,9 +578,12 @@ impl HookReply {
 
     /// The decision word, or `pass` for the reply that carries none.
     pub fn decision(&self) -> &str {
-        self.hook_specific_output
-            .as_ref()
-            .map_or("pass", |o| o.permission_decision.as_str())
+        self.hook_specific_output.as_ref().map_or("pass", |o| {
+            match o.permission_decision.as_str() {
+                "" => "pass",
+                d => d,
+            }
+        })
     }
 
     /// The `updatedInput` an allow carries, if any.

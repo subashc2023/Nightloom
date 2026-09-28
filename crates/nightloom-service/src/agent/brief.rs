@@ -353,20 +353,6 @@ pub fn freshest(
     }
 }
 
-/// The desktop's gauge as a reading (`plan_usage`), when it has the
-/// five-hour figure.
-fn gauge_reading() -> Option<WindowReading> {
-    // Fresh through print-mode `/usage` when the files are over ~two
-    // minutes old (blocker 264, his yes 2026-09-18; pass 2 widened 60 s
-    // to 120 s and made the throttle cross-process): every hook is its
-    // own process, so the one-a-minute rule lives in a stamp and a lock
-    // in the temp directory (`plan_usage::read_fresh_shared`), and a hook
-    // that finds the lock held reads the stamp rather than waiting ~12 s.
-    reading_of(crate::plan_usage::read_fresh_shared(
-        std::time::Duration::from_secs(120),
-    ))
-}
-
 /// The gauge's files alone as a reading — no refresh, no latency. What a
 /// turn's start is measured from ([`begin_turn`]).
 fn gauge_on_hand() -> Option<WindowReading> {
@@ -440,6 +426,144 @@ pub fn budget_spent_reason(spent: u8, budget: u8, pct: u8, start: u8) -> String 
     )
 }
 
+// ---- the usage line (nightshift backlog 249, 2026-09-27) ----
+//
+// The model sees its usage while it works: one line, as the hook's
+// `additionalContext` on an allowed call (Step 0 of 249 measured that it
+// reaches the model, a subagent's calls included). It fires at every
+// spawn, at a subagent's first call (its launch, from its side), each
+// time this message's spend crosses into another 5-point band, and on
+// every call once the message is past half its budget. The weekly figure
+// is shown and never capped (blocker 583).
+
+/// The band width, in window points, between two showings of the line.
+pub const USAGE_BAND: u8 = 5;
+
+/// Whether the line is due on this call, pure: `Some(band)` to show it and
+/// record `band` for `who` (`""` the main thread, else the `agent_id`).
+pub fn usage_due(b: &TurnBudget, who: &str, spawn: bool, subagent: bool) -> Option<u8> {
+    let spent = b.spent_pct();
+    let band = spent.map_or(0, |s| s / USAGE_BAND);
+    let last = b.usage_shown.get(who).copied();
+    let first_of_child = subagent && last.is_none();
+    let crossed = band > last.unwrap_or(0);
+    let past_half = b.budget_pct > 0 && spent.is_some_and(|s| s as u16 * 2 >= b.budget_pct as u16);
+    (spawn || first_of_child || crossed || past_half).then_some(band.max(last.unwrap_or(0)))
+}
+
+/// The line itself, from what is known — `None` when nothing is. The
+/// message's part needs the ledger's start and a reading; the context part
+/// is the caller's own process's, never a guess.
+pub fn usage_line(
+    b: Option<&TurnBudget>,
+    reading: Option<WindowReading>,
+    week: Option<u8>,
+    context: Option<u64>,
+) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    if let (Some(b), Some(r)) = (b, reading)
+        && let Some(start) = b.start_pct
+    {
+        let spent = r.five_hour_pct.saturating_sub(start);
+        parts.push(if b.budget_pct > 0 {
+            format!("this message {spent}% of its {}% budget", b.budget_pct)
+        } else {
+            format!("this message {spent}% (no per-message budget)")
+        });
+    }
+    if let Some(r) = reading {
+        match b.map(|b| b.stop_at).filter(|s| *s > 0) {
+            Some(stop) => parts.push(format!("5-hour {}% (stop line {stop}%)", r.five_hour_pct)),
+            None => parts.push(format!("5-hour {}%", r.five_hour_pct)),
+        }
+    }
+    if let Some(w) = week {
+        parts.push(format!("week {w}%"));
+    }
+    if let Some(c) = context {
+        parts.push(if c < 1000 {
+            "context <1k".to_string()
+        } else {
+            format!("context {}k", (c + 500) / 1000)
+        });
+    }
+    (!parts.is_empty()).then(|| format!("Usage: {}", parts.join(" · ")))
+}
+
+/// The weekly figure appended to a usage refusal (blocker 583: shown, not
+/// capped), or the reason unchanged when there is none.
+pub fn with_week(reason: String, week: Option<u8>) -> String {
+    match week {
+        Some(w) => format!(
+            "{reason} (The plan's weekly figure is {w}% — information, not a limit Nightloom sets.)"
+        ),
+        None => reason,
+    }
+}
+
+/// The weekly percent from the gauge, when its sample is younger than a
+/// five-hour window and its week has not reset since.
+fn week_of(u: &crate::plan_usage::PlanUsage, now_ms: i64) -> Option<u8> {
+    const FRESH_MS: i64 = 5 * 60 * 60 * 1000;
+    let at = u.sampled_at_ms?;
+    if now_ms - at > FRESH_MS {
+        return None;
+    }
+    if let Some(reset) = u
+        .seven_day_resets_at
+        .as_deref()
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        && reset.timestamp_millis() <= now_ms
+    {
+        return None;
+    }
+    u.seven_day
+}
+
+/// The context size of the process making the call, from the CLI's own
+/// session file: the last assistant message's input (fresh + cache read +
+/// cache written). The main thread's file is `transcript`; a subagent's is
+/// `<transcript without .jsonl>/subagents/agent-<id>.jsonl` (measured in
+/// 249 Step 0). Only the file's tail is read. `None` when it is not there.
+pub fn context_tokens(transcript: &Path, agent_id: Option<&str>) -> Option<u64> {
+    use std::io::{Read as _, Seek as _};
+    const TAIL: u64 = 512 * 1024;
+    let path = match agent_id {
+        Some(id) => transcript
+            .with_extension("")
+            .join("subagents")
+            .join(format!("agent-{id}.jsonl")),
+        None => transcript.to_path_buf(),
+    };
+    let mut f = std::fs::File::open(&path).ok()?;
+    let len = f.metadata().ok()?.len();
+    let from = len.saturating_sub(TAIL);
+    f.seek(std::io::SeekFrom::Start(from)).ok()?;
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf).ok()?;
+    let text = String::from_utf8_lossy(&buf);
+    for line in text.lines().rev() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if v.get("type").and_then(Value::as_str) != Some("assistant")
+            || (agent_id.is_none() && v.get("isSidechain").and_then(Value::as_bool) == Some(true))
+        {
+            continue;
+        }
+        let Some(u) = v.pointer("/message/usage") else {
+            continue;
+        };
+        let n = |k: &str| u.get(k).and_then(Value::as_u64).unwrap_or(0);
+        let total =
+            n("input_tokens") + n("cache_read_input_tokens") + n("cache_creation_input_tokens");
+        if total > 0 {
+            return Some(total);
+        }
+    }
+    None
+}
+
 // ---- the per-message budget (nightshift backlog 165, pass 2, 2026-09-22) ----
 
 /// The turn's budget ledger, beside the brief: written when a turn
@@ -502,6 +626,12 @@ pub struct TurnBudget {
     /// message's calls go on so it can write its hand-off, spawns refused.
     #[serde(default)]
     pub wrap_at_ms: Option<i64>,
+    /// The usage line's last 5-point band shown, per process of the turn
+    /// (backlog 249): `""` for the main thread, a subagent's `agent_id`
+    /// for its own. A process sees the line again once this message's
+    /// spend crosses into a higher band.
+    #[serde(default)]
+    pub usage_shown: std::collections::BTreeMap<String, u8>,
 }
 
 impl TurnBudget {
@@ -595,6 +725,7 @@ pub fn start_turn_budget(
         override_at_ms: None,
         holds: Vec::new(),
         wrap_at_ms: None,
+        usage_shown: Default::default(),
     }
 }
 
@@ -1260,16 +1391,19 @@ fn await_answer(
 /// override and his presence, and a held call marks the ledger pending;
 /// since 192 it returns the held call's deadline (0 otherwise), a *Wrap
 /// up* is delivered here, and the Mac is looked at only past the line.
+#[allow(clippy::too_many_arguments)]
 fn note_reading(
     dir: &Path,
     reading: Option<WindowReading>,
     subagent: bool,
+    who: &str,
+    spawn: bool,
     now_ms: i64,
     hold_ms: i64,
     senses: &Senses,
-) -> (CallVerdict, i64, i64) {
+) -> (CallVerdict, i64, i64, bool) {
     use std::io::{Read as _, Seek as _, Write as _};
-    let allowed = (CallVerdict::Allow { overridden: false }, 0, 0);
+    let allowed = (CallVerdict::Allow { overridden: false }, 0, 0, false);
     let Ok(mut file) = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -1325,6 +1459,15 @@ fn note_reading(
             }
         }
     }
+    // The usage line (backlog 249), judged on an allowed call only: a
+    // refusal's own reason already carries the figures.
+    let mut show = false;
+    if matches!(verdict, CallVerdict::Allow { .. })
+        && let Some(band) = usage_due(&b, who, spawn, subagent)
+    {
+        b.usage_shown.insert(who.to_string(), band);
+        show = true;
+    }
     let _ = file.set_len(0);
     let _ = file.seek(std::io::SeekFrom::Start(0));
     let _ = file.write_all(
@@ -1332,7 +1475,7 @@ fn note_reading(
             .unwrap_or_default()
             .as_bytes(),
     );
-    (verdict, b.started_at_ms, deadline)
+    (verdict, b.started_at_ms, deadline, show)
 }
 
 /// The per-chat, per-day refusal.
@@ -1525,6 +1668,9 @@ struct HookInput {
     /// beside `agent_type` on the child's `Read`).
     #[serde(default)]
     agent_id: Option<String>,
+    /// The main thread's session file (backlog 249: the context size).
+    #[serde(default)]
+    transcript_path: Option<PathBuf>,
 }
 
 /// The hook's whole decision, pure: the CLI's stdin line and the chat's
@@ -1544,18 +1690,37 @@ pub fn decide(dir: &Path, stdin_json: &str) -> HookReply {
     // in `freshest` anyway (review of 44ab834).
     let now_ms = chrono::Utc::now().timestamp_millis();
     let wire_fresh = read_usage_file(dir).is_some_and(|r| now_ms - r.sampled_at_ms <= 120_000);
-    let gauge = if wire_fresh {
-        gauge_on_hand()
+    // One read of the gauge for both figures: the five-hour reading and
+    // the weekly one the usage line and the refusals show (backlog 249).
+    // Fresh through print-mode `/usage` when the files are over ~two
+    // minutes old (blocker 264, his yes 2026-09-18; pass 2 widened 60 s
+    // to 120 s and made the throttle cross-process): every hook is its
+    // own process, so the one-a-minute rule lives in a stamp and a lock
+    // in the temp directory (`plan_usage::read_fresh_shared`), and a hook
+    // that finds the lock held reads the stamp rather than waiting ~12 s.
+    let usage = if wire_fresh {
+        crate::plan_usage::read()
     } else {
-        gauge_reading()
+        crate::plan_usage::read_fresh_shared(std::time::Duration::from_secs(120))
     };
-    decide_with(dir, stdin_json, gauge)
+    let week = week_of(&usage, now_ms);
+    decide_with_week(dir, stdin_json, reading_of(usage), week)
+}
+
+/// [`decide_with`] with the weekly figure too (backlog 249).
+pub fn decide_with_week(
+    dir: &Path,
+    stdin_json: &str,
+    gauge: Option<WindowReading>,
+    week: Option<u8>,
+) -> HookReply {
+    decide_holding(dir, stdin_json, gauge, week, HOLD_MS, 500, &Senses::real())
 }
 
 /// [`decide`] with the desktop's gauge reading passed in, so the suite
 /// runs against a fixed window rather than this machine's files.
 pub fn decide_with(dir: &Path, stdin_json: &str, gauge: Option<WindowReading>) -> HookReply {
-    decide_holding(dir, stdin_json, gauge, HOLD_MS, 500, &Senses::real())
+    decide_holding(dir, stdin_json, gauge, None, HOLD_MS, 500, &Senses::real())
 }
 
 /// [`decide_with`] with the hold's length and poll interval passed in,
@@ -1565,6 +1730,7 @@ fn decide_holding(
     dir: &Path,
     stdin_json: &str,
     gauge: Option<WindowReading>,
+    week: Option<u8>,
     hold_ms: i64,
     poll_ms: u64,
     senses: &Senses,
@@ -1588,8 +1754,14 @@ fn decide_holding(
     // Backlog 189: past the stop line, a chat he is present in holds the
     // call for his answer rather than refusing it.
     let subagent = input.agent_id.as_deref().is_some_and(|s| !s.is_empty());
-    let (mut verdict, turn, deadline) =
-        note_reading(dir, reading, subagent, now_ms, hold_ms, senses);
+    let who = if subagent {
+        input.agent_id.as_deref().unwrap_or_default()
+    } else {
+        ""
+    };
+    let spawn = is_spawn(&input.tool_name);
+    let (mut verdict, turn, deadline, show) =
+        note_reading(dir, reading, subagent, who, spawn, now_ms, hold_ms, senses);
     if verdict == CallVerdict::Hold
         && let Some(r) = reading
     {
@@ -1597,13 +1769,24 @@ fn decide_holding(
     }
     let overridden = match verdict {
         CallVerdict::Deny(reason) | CallVerdict::WrapUp(reason) => {
-            return HookReply::deny(reason);
+            return HookReply::deny(with_week(reason, week));
         }
         CallVerdict::Allow { overridden } => overridden,
         CallVerdict::Hold => false,
     };
-    if !is_spawn(&input.tool_name) {
-        return HookReply::pass();
+    // The usage line for this call, when due (backlog 249): read after the
+    // verdict, so the ledger it quotes is the one this call just updated.
+    let line = if show {
+        let context = input
+            .transcript_path
+            .as_deref()
+            .and_then(|t| context_tokens(t, subagent.then_some(who)));
+        usage_line(read_turn_budget(dir).as_ref(), reading, week, context)
+    } else {
+        None
+    };
+    if !spawn {
+        return HookReply::pass().with_context(line);
     }
     // A chat wrapping up starts nothing new (backlog 192).
     if read_turn_budget(dir).is_some_and(|b| b.wrap_at_ms.is_some() && b.started_at_ms == turn) {
@@ -1620,14 +1803,15 @@ fn decide_holding(
     } else {
         match window_verdict(&limits, reading) {
             Ok(cap) => cap,
-            Err(reason) => return HookReply::deny(reason),
+            Err(reason) => return HookReply::deny(with_week(reason, week)),
         }
     };
     if claim_spawn(dir, cap).is_err() {
         return HookReply::deny(match reading {
-            Some(r) if cap < limits.per_turn => {
-                slowed_cap_reason(cap, r.five_hour_pct, limits.slow_at)
-            }
+            Some(r) if cap < limits.per_turn => with_week(
+                slowed_cap_reason(cap, r.five_hour_pct, limits.slow_at),
+                week,
+            ),
             _ => spawn_cap_reason(cap),
         });
     }
@@ -1637,7 +1821,7 @@ fn decide_holding(
         return HookReply::deny(day_cap_reason(limits.per_day));
     }
     let Value::Object(mut fields) = input.tool_input else {
-        return HookReply::pass();
+        return HookReply::pass().with_context(line);
     };
     // A checkpoint fork (backlog 104, pass 3; `super::fork`): the spawn
     // asked for the `checkpoint` helper, and the chat's directory holds
@@ -1677,9 +1861,9 @@ fn decide_holding(
         changed = true;
     }
     if !changed {
-        return HookReply::pass();
+        return HookReply::pass().with_context(line);
     }
-    HookReply::allow(Some(Value::Object(fields)))
+    HookReply::allow(Some(Value::Object(fields))).with_context(line)
 }
 
 /// The process entry: `<binary> --subagent-hook <dir>`. Reads stdin to
@@ -2510,7 +2694,7 @@ mod tests {
         let s_other = senses(&idle, &other);
         let read = r#"{"tool_name":"Read","tool_input":{"file_path":"/x"}}"#;
         let hold_for = |d: &std::path::Path, stdin: &str, at: i64, ms: i64, s: &super::Senses| {
-            super::decide_holding(d, stdin, reading(90, at), ms, 5, s)
+            super::decide_holding(d, stdin, reading(90, at), None, ms, 5, s)
         };
         // Nobody there (the Mac unread, nothing from the window): refused,
         // and never held — the ledger shows no hold was taken.
@@ -2604,7 +2788,7 @@ mod tests {
         let write = r#"{"tool_name":"Write","tool_input":{"file_path":"/p/HANDOFF.md"}}"#;
         let sub = r#"{"tool_name":"Read","tool_input":{},"agent_id":"a1"}"#;
         let go = |stdin: &str, at: i64| {
-            super::decide_holding(&dir, stdin, reading(90, at), 20_000, 5, &s)
+            super::decide_holding(&dir, stdin, reading(90, at), None, 20_000, 5, &s)
         };
         let clicker = answer_when_held(dir.clone(), "wrap", Some("write HANDOFF.md now".into()));
         let r = go(read, now + 1);
@@ -2629,7 +2813,7 @@ mod tests {
         // carries it, the one after runs.
         super::write_answer(&dir, "wrap", None, chrono::Utc::now().timestamp_millis()).unwrap();
         let under = |stdin: &str, at: i64| {
-            super::decide_holding(&dir, stdin, reading(50, at), 20_000, 5, &s)
+            super::decide_holding(&dir, stdin, reading(50, at), None, 20_000, 5, &s)
         };
         let r = under(read, now + 5);
         assert_eq!(r.decision(), "deny");
@@ -2656,7 +2840,7 @@ mod tests {
             std::thread::spawn(move || {
                 let idle = || Some(1_000);
                 let s = senses(&idle, &d);
-                super::decide_holding(&d, read, reading(90, at), ms, 5, &s)
+                super::decide_holding(&d, read, reading(90, at), None, ms, 5, &s)
                     .decision()
                     .to_string()
             })
@@ -2930,6 +3114,180 @@ mod tests {
         std::fs::write(dir.join(super::DAY_SPAWNS_FILE), "2000-01-01 3").unwrap();
         super::reset_spawns(&dir);
         assert_eq!(super::decide_with(&dir, CALL, None).decision(), "allow");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- the usage line (nightshift backlog 249) ----
+
+    fn ledger(start: u8, latest: u8, budget: u8) -> super::TurnBudget {
+        super::TurnBudget {
+            budget_pct: budget,
+            stop_at: 85,
+            start_pct: Some(start),
+            latest_pct: Some(latest),
+            ..Default::default()
+        }
+    }
+
+    /// When the line fires: every spawn; a subagent's first call; each new
+    /// 5-point band of this message's spend, once per process; every call
+    /// past half the budget. Not on a main-thread call in band 0.
+    #[test]
+    fn the_usage_line_fires_at_spawns_new_bands_a_childs_first_call_and_past_half() {
+        let mut b = ledger(40, 42, 35);
+        assert_eq!(super::usage_due(&b, "", false, false), None);
+        assert_eq!(super::usage_due(&b, "", true, false), Some(0));
+        assert_eq!(super::usage_due(&b, "a1", false, true), Some(0));
+        b.usage_shown.insert("a1".into(), 0);
+        assert_eq!(super::usage_due(&b, "a1", false, true), None);
+        // 47: seven spent, band 1 — each process sees it once.
+        b.latest_pct = Some(47);
+        assert_eq!(super::usage_due(&b, "", false, false), Some(1));
+        b.usage_shown.insert("".into(), 1);
+        assert_eq!(super::usage_due(&b, "", false, false), None);
+        assert_eq!(super::usage_due(&b, "a1", false, true), Some(1));
+        // 58: eighteen of thirty-five — past half, so every call.
+        b.latest_pct = Some(58);
+        b.usage_shown.insert("".into(), 3);
+        assert_eq!(super::usage_due(&b, "", false, false), Some(3));
+        assert_eq!(super::usage_due(&b, "", false, false), Some(3));
+        // No per-message budget: bands only, never "past half".
+        let mut z = ledger(40, 58, 0);
+        z.usage_shown.insert("".into(), 3);
+        assert_eq!(super::usage_due(&z, "", false, false), None);
+    }
+
+    #[test]
+    fn the_usage_line_says_what_is_known_and_nothing_else() {
+        let r = reading(52, 0);
+        assert_eq!(
+            super::usage_line(Some(&ledger(40, 52, 35)), r, Some(74), Some(180_400)).as_deref(),
+            Some(
+                "Usage: this message 12% of its 35% budget · 5-hour 52% (stop line 85%) · week 74% · context 180k"
+            )
+        );
+        assert_eq!(
+            super::usage_line(Some(&ledger(40, 52, 0)), r, None, None).as_deref(),
+            Some("Usage: this message 12% (no per-message budget) · 5-hour 52% (stop line 85%)")
+        );
+        // No start pinned: no message part; no ledger: no stop line.
+        let mut unpinned = ledger(40, 52, 35);
+        unpinned.start_pct = None;
+        assert_eq!(
+            super::usage_line(Some(&unpinned), r, None, Some(400)).as_deref(),
+            Some("Usage: 5-hour 52% (stop line 85%) · context <1k")
+        );
+        assert_eq!(
+            super::usage_line(None, None, Some(74), None).as_deref(),
+            Some("Usage: week 74%")
+        );
+        assert_eq!(super::usage_line(None, None, None, None), None);
+        assert_eq!(super::with_week("Stop.".into(), None), "Stop.");
+        assert!(super::with_week("Stop.".into(), Some(74)).contains("weekly figure is 74%"));
+    }
+
+    /// The context size from the CLI's session files: the last assistant
+    /// message's whole input, the main thread's sidechain lines skipped, a
+    /// subagent's from its own file under `subagents/`.
+    #[test]
+    fn the_context_size_is_read_from_the_last_assistant_message_of_the_callers_file() {
+        let dir = scratch();
+        let main = dir.join("s1.jsonl");
+        let line = |side: bool, i: u64, r: u64, w: u64| {
+            serde_json::json!({"type":"assistant","isSidechain":side,"message":{"usage":{
+                "input_tokens":i,"cache_read_input_tokens":r,"cache_creation_input_tokens":w}}})
+            .to_string()
+        };
+        std::fs::write(
+            &main,
+            [
+                line(false, 10, 1000, 200),
+                line(false, 10, 20_000, 1_800),
+                line(true, 1, 1, 1),
+                r#"{"type":"user","message":{}}"#.to_string(),
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        assert_eq!(super::context_tokens(&main, None), Some(21_810));
+        let sub = dir.join("s1").join("subagents");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("agent-a9.jsonl"), line(true, 10, 0, 11_300)).unwrap();
+        assert_eq!(super::context_tokens(&main, Some("a9")), Some(11_310));
+        assert_eq!(super::context_tokens(&main, Some("nope")), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Through the hook: the line rides an allowed call as
+    /// `additionalContext` with no decision, reaches a subagent's first call,
+    /// and a refusal carries the weekly figure instead.
+    #[test]
+    fn the_hook_carries_the_usage_line_as_additional_context() {
+        let dir = limits_dir("usage-line");
+        let now = chrono::Utc::now().timestamp_millis();
+        let l = super::SubagentLimits::default();
+        super::write_limits(&dir, &l).unwrap();
+        super::write_usage(&dir, 40, Some(now / 1000 + 3600), now);
+        super::begin_turn(&dir, &l, super::TurnPhase::Turn);
+        let t = dir.join("sess.jsonl");
+        std::fs::write(
+            &t,
+            serde_json::json!({"type":"assistant","message":{"usage":{
+                "input_tokens":5,"cache_read_input_tokens":90_000,"cache_creation_input_tokens":5_000}}})
+            .to_string(),
+        )
+        .unwrap();
+        let read = serde_json::json!({"tool_name":"Read","tool_input":{"file_path":"/x"},
+            "transcript_path": t})
+        .to_string();
+        // Band 0 on the main thread: nothing to say.
+        let r = super::decide_with_week(&dir, &read, reading(42, now + 1), Some(74));
+        assert_eq!((r.decision(), r.additional_context()), ("pass", None));
+        // 47: a new band — the line, and no decision beside it.
+        let r = super::decide_with_week(&dir, &read, reading(47, now + 2), Some(74));
+        assert_eq!(r.decision(), "pass");
+        assert_eq!(
+            r.additional_context(),
+            Some(
+                "Usage: this message 7% of its 35% budget · 5-hour 47% (stop line 85%) · week 74% · context 95k"
+            )
+        );
+        let wire = serde_json::to_value(&r).unwrap();
+        assert!(
+            wire["hookSpecificOutput"]
+                .get("permissionDecision")
+                .is_none(),
+            "{wire}"
+        );
+        assert_eq!(wire["hookSpecificOutput"]["hookEventName"], "PreToolUse");
+        // Same band again: silent.
+        let r = super::decide_with_week(&dir, &read, reading(48, now + 3), Some(74));
+        assert_eq!(r.additional_context(), None);
+        // A subagent's first call: its own line, without a context it has no file for.
+        let child = serde_json::json!({"tool_name":"Read","tool_input":{"file_path":"/x"},
+            "transcript_path": t, "agent_id":"a1", "agent_type":"general-purpose"})
+        .to_string();
+        let r = super::decide_with_week(&dir, &child, reading(48, now + 4), Some(74));
+        assert_eq!(
+            r.additional_context(),
+            Some(
+                "Usage: this message 8% of its 35% budget · 5-hour 48% (stop line 85%) · week 74%"
+            )
+        );
+        // A spawn: allowed with the brief-less input untouched, and the line.
+        let r = super::decide_with_week(&dir, CALL, reading(48, now + 5), Some(74));
+        assert!(
+            r.additional_context()
+                .is_some_and(|c| c.starts_with("Usage: this message 8%"))
+        );
+        // Past the budget: refused, the weekly figure in the reason, no context.
+        let r = super::decide_with_week(&dir, &read, reading(75, now + 6), Some(74));
+        assert_eq!(r.decision(), "deny");
+        assert!(
+            r.reason()
+                .is_some_and(|s| s.contains("spent 35%") && s.contains("weekly figure is 74%"))
+        );
+        assert_eq!(r.additional_context(), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

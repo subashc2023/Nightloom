@@ -901,6 +901,38 @@ The main thread's `usage` is untouched by a child's. The CLI also writes
 each child's own JSONL, `~/.claude/projects/<cwd>/<session>/subagents/agent-<task_id>.jsonl`
 (`external`, seen twice); not read — the stream has everything above.
 
+## The usage line: the model sees its spend while it works (2026-09-27, nightshift backlog 249)
+
+The budget hook (`brief.rs`, the one `PreToolUse` entry on every call) used
+to speak only when it refused. It now also tells the calling process where it
+stands, as the reply's `additionalContext` with no `permissionDecision` — the
+CLI's own flow continues and the model reads the text beside the call:
+
+    Usage: this message 12% of its 35% budget · 5-hour 40% (stop line 85%) · week 74% · context 180k
+
+Measured on CLI 2.1.283, Haiku, print mode (nightshift
+`notes/runner-design/249-251-report-2026-09-27.md`, Step 0): the text reaches
+the model on an allowed call, with or without an `allow` beside it; it reaches
+a **subagent** whose call runs the same hook; and it never appears in the
+stream-json output, so nothing renders it in the transcript.
+
+**When it fires** (`usage_due`, per process — `""` for the main thread, the
+`agent_id` for a subagent, recorded in the ledger's `usage_shown`): at every
+spawn; at a subagent's first call (its launch, seen from its side); each time
+this message's spend crosses into another 5-point band; and on every call
+once the message is past half its budget. A refused call carries no line — its
+reason already has the figures, and usage refusals now end with the weekly
+figure too (`with_week`).
+
+**What it says** (`usage_line`): only what is known. The message's share needs
+the ledger's start and a reading; the weekly figure comes from the same gauge
+read as the five-hour one (`plan_usage`, no older than five hours) and is
+**shown, never capped** (nightshift blocker 583). The context size is the
+caller's own: the last assistant message's input (fresh + cache read + cache
+written) in the CLI's session file — `transcript_path` from the hook's stdin
+for the main thread, `<session>/subagents/agent-<id>.jsonl` for a subagent
+(`context_tokens`, tail only). No file, no context part — never a guess.
+
 ## Effort and a fallback model (2026-09-16, nightshift backlog 076)
 
 Two flags on `AgentSpec`, each only when set, passed through as the rail
