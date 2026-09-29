@@ -24,7 +24,8 @@
   /**
    * One pane's strip of tabs (nightshift backlog 099, boards 9a and 9d):
    * a glyph for the kind, the title, a pulsing dot while the chat's turn
-   * runs, the needs-you dot when it waits on him, ✎ for a draft, × on
+   * runs, the needs-you dot when it waits on him, ~~✎~~ a hollow accent
+   * ring for a draft (backlog 221, blocker 480's mark A), × on
    * hover. ~~`+` opens a new chat in a new tab (⌘T).~~ Since nightshift
    * backlog 140 (2026-09-17) `+` opens a chooser under the strip
    * (`TabChooser.svelte`) — New chat and its kinds, a new note, the
@@ -325,7 +326,7 @@
       {:else if running(t)}
         <span class="dot run" use:tip={"A turn is running"}></span>
       {/if}
-      {#if draft(t)}<span class="mark" use:tip={"has a draft"}>✎</span>{/if}
+      {#if draft(t)}<span class="mark" role="img" aria-label="has a draft" use:tip={"has a draft"}></span>{/if}
       <button
         class="close"
         use:tip={`Close tab (${isMac ? '⌘W' : 'Ctrl+W'})`}
@@ -480,9 +481,16 @@
       opacity: 0.3;
     }
   }
+  /* The draft mark (backlog 221, blocker 480 answered "hollow ring sounds
+     fine"): ~~a ✎ glyph, which he found clunky~~ — a hollow accent ring,
+     kin to the sidebar's filled draft dot (208) and hollow so it cannot be
+     read as the filled, pulsing running dot beside it. */
   .mark {
-    font-size: 11px;
-    color: var(--accent);
+    box-sizing: border-box;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    border: 1.5px solid var(--accent);
     flex-shrink: 0;
   }
   .close {
