@@ -188,6 +188,15 @@ pub struct LimitsOff {
     pub budget_pct: bool,
 }
 
+/// "No limit" for the CLI's own two (backlog 253, blocker 610 answered
+/// "i meant truly unlimited"). The CLI has no off value for either: CLI
+/// 2.1.284 reads each env var as a digits-only integer >= 1 with no upper
+/// bound (`D.int({min:1,digitsOnly:!0})`), and refuses a spawn only when
+/// the running count is not below it (`getConcurrentSubagents()<e`) or the
+/// depth reaches it (`Tt>=kt`) — `external`, read from the binary's
+/// strings on 2026-09-29. A million is past any count a chat can reach.
+pub const CLI_UNLIMITED: usize = 1_000_000;
+
 /// A percent no reading reaches (readings are 0..=100): a stop line or a
 /// slow line at this value never fires, and is not shown as a line.
 pub const NEVER_PCT: u8 = u8::MAX;
@@ -298,11 +307,20 @@ impl SubagentLimits {
     /// (backlog 253): no per-turn cap (`usize::MAX`), no day cap (0, as
     /// blocker 271 already reads it), no slow or stop line
     /// ([`NEVER_PCT`]), no per-message budget (0, as `usage_line` already
-    /// reads it). The CLI's two (`concurrent`, `depth`) are dropped from
+    /// reads it). ~~The CLI's two (`concurrent`, `depth`) are dropped from
     /// [`Self::env`] instead: off, Nightloom passes nothing and the CLI's
-    /// own default applies (blocker 610). Idempotent.
+    /// own default applies (blocker 610).~~ 2026-09-29, blocker 610's
+    /// answer ("i meant truly unlimited"): the CLI's two are passed as
+    /// [`CLI_UNLIMITED`] — passing nothing left its own 20 and 3 in force.
+    /// Idempotent.
     pub fn effective(&self) -> Self {
         let mut l = *self;
+        if l.off.concurrent {
+            l.concurrent = CLI_UNLIMITED;
+        }
+        if l.off.depth {
+            l.depth = CLI_UNLIMITED;
+        }
         if l.off.per_turn {
             l.per_turn = usize::MAX;
         }
@@ -323,22 +341,16 @@ impl SubagentLimits {
 
     /// The CLI's own limits, as the environment the process is spawned
     /// with. The budget rides as a flag (`--max-budget-usd`), not here.
-    /// One switched off (backlog 253) is not passed.
+    /// One switched off (backlog 253) goes as [`CLI_UNLIMITED`].
     pub fn env(&self) -> Vec<(&'static str, String)> {
-        let mut env = Vec::new();
-        if !self.off.concurrent {
-            env.push((
+        let l = self.effective();
+        vec![
+            (
                 "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS",
-                self.concurrent.to_string(),
-            ));
-        }
-        if !self.off.depth {
-            env.push((
-                "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH",
-                self.depth.to_string(),
-            ));
-        }
-        env
+                l.concurrent.to_string(),
+            ),
+            ("CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH", l.depth.to_string()),
+        ]
     }
 
     /// The per-turn cap in force at a window reading: lowered to
@@ -3253,7 +3265,21 @@ mod tests {
             off,
             ..Default::default()
         };
-        assert!(l.env().is_empty(), "the CLI's own limits are not passed");
+        // Blocker 610: truly unlimited, not the CLI's own 20 and 3.
+        assert_eq!(
+            l.env(),
+            vec![
+                (
+                    "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS",
+                    "1000000".to_string()
+                ),
+                (
+                    "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH",
+                    "1000000".to_string()
+                ),
+            ]
+        );
+        assert_eq!(l.effective().env(), l.env(), "idempotent");
         let r = |pct| {
             Some(super::WindowReading {
                 five_hour_pct: pct,
