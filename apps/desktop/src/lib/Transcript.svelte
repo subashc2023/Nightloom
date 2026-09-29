@@ -21,6 +21,7 @@
     setCheckpoint,
     openSession,
     resumeAfterLimit,
+    retryConnect,
     runningChatName,
   } from "./state.svelte";
   import type { Segment, ToolCallView } from "./state.svelte";
@@ -1690,6 +1691,20 @@
     {/if}
     {#if app.error}
       <div class="error-banner">{app.error}</div>
+    {/if}
+    <!-- Not connected, and why (item 261): a failed connect used to leave
+         every chat saying "not connected" with nothing to press but a
+         relaunch. One Retry connects again with the rail as it is. -->
+    {#if !app.connection && app.connectError && !app.connecting}
+      <div class="limit-card" role="status">
+        <div class="limit-head">
+          <span class="ns-chip mono">not connected</span>
+        </div>
+        <div class="limit-text">{app.connectError}</div>
+        <div class="limit-actions">
+          <button class="ns-btn accent small" use:tip={"Connect again with the rail's settings"} onclick={() => void retryConnect()}>Retry</button>
+        </div>
+      </div>
     {/if}
     <!-- A turn paused by the usage limit (nightshift backlog 164): not
          failed — the mark says when the window opens, and one Resume

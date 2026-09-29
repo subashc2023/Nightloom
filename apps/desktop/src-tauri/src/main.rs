@@ -571,23 +571,38 @@ fn extra_folders(
     project: Option<&Project>,
     session: Option<&Session>,
 ) -> Vec<(PathBuf, &'static str)> {
-    let mut out: Vec<(PathBuf, &'static str)> = Vec::new();
+    existing_folders(folder_candidates(project, session))
+}
+
+/// The folders [`extra_folders`] would check, read without touching the
+/// disk: the project's home, then the project's and the chat's folders in
+/// order (nightshift item 261). Split out so `connect_agent` can ask the
+/// disk on a blocking thread — a stat on a stalled volume (iCloud; on
+/// 2026-09-28 `list_projects` took 36 s at the same moment) held the
+/// connect's runtime thread for 35 s, where no deadline can fire.
+type FolderCandidates = (Option<PathBuf>, Vec<(PathBuf, &'static str)>);
+
+fn folder_candidates(project: Option<&Project>, session: Option<&Session>) -> FolderCandidates {
     let home = project.map(Project::workspace_dir);
-    let mut push = |f: &PathBuf, source: &'static str| {
-        if home.as_ref() == Some(f) || out.iter().any(|(p, _)| p == f) || !f.is_dir() {
-            return;
-        }
-        out.push((f.clone(), source));
-    };
+    let mut all: Vec<(PathBuf, &'static str)> = Vec::new();
     if let Some(p) = project {
-        for f in &p.extra_folders {
-            push(f, "project");
-        }
+        all.extend(p.extra_folders.iter().map(|f| (f.clone(), "project")));
     }
     if let Some(s) = session {
-        for f in s.folders() {
-            push(f, "chat");
+        all.extend(s.folders().iter().map(|f| (f.clone(), "chat")));
+    }
+    (home, all)
+}
+
+/// The disk half of [`extra_folders`]: each candidate once, not the home,
+/// and only if it is a folder now.
+fn existing_folders((home, candidates): FolderCandidates) -> Vec<(PathBuf, &'static str)> {
+    let mut out: Vec<(PathBuf, &'static str)> = Vec::new();
+    for (f, source) in candidates {
+        if home.as_ref() == Some(&f) || out.iter().any(|(p, _)| *p == f) || !f.is_dir() {
+            continue;
         }
+        out.push((f, source));
     }
     out
 }
@@ -1737,11 +1752,8 @@ async fn connect_agent_body(
     };
     // The folder a switch to Claude Code named wins over the project's
     // (nightshift backlog 144), as in `connect`.
-    let workspace = open
-        .kind_workspace
-        .clone()
-        .filter(|p| p.is_dir())
-        .unwrap_or(workspace);
+    // Checked for existence by `open_chat`, off the runtime (item 261).
+    let workspace = open.kind_workspace.clone().unwrap_or(workspace);
     // A Chat runs in the neutral directory whatever the project or the
     // rail said (nightshift backlog 102; `chat_workspace`): the CLI's cwd,
     // its per-cwd session files and its auto memory all land there, and
@@ -2221,7 +2233,11 @@ struct OpenChat {
     kind: ChatKind,
     declared: ChatKind,
     kind_workspace: Option<PathBuf>,
+    /// The extra folders that exist — filled by [`open_chat`] from
+    /// `candidates` on a blocking thread (item 261); empty from
+    /// [`open_chat_of`], which never touches the disk.
     granted: Vec<(PathBuf, &'static str)>,
+    candidates: FolderCandidates,
     off: Vec<SegmentKind>,
     edits: BTreeMap<SegmentKind, String>,
     mode: ChatMode,
@@ -2256,7 +2272,8 @@ fn open_chat_of(
         kind: kind_of(session, pending_kind),
         declared: session.map(Session::declared_kind).unwrap_or(pending_kind),
         kind_workspace: session.and_then(|s| s.kind_workspace().map(Path::to_path_buf)),
-        granted: extra_folders(active, session),
+        granted: Vec::new(),
+        candidates: folder_candidates(active, session),
         off: session
             .map(|s| s.prompt_layers_off().to_vec())
             .unwrap_or_default(),
@@ -2277,6 +2294,35 @@ fn open_chat_of(
 /// incognito chat, which keeps no log, still waits for its turn (under the
 /// connect's deadline, which names that wait).
 async fn open_chat(
+    state: &AppState,
+    active: Option<&Project>,
+    stage: &connect_deadline::Stage,
+) -> OpenChat {
+    let mut open = read_open_chat(state, active, stage).await;
+    // The disk, asked off the runtime thread and under a stage of its own
+    // (item 261): the 35 s wedge of 2026-09-28 was billed to "the pending
+    // chat mode and kind (their locks)" because every stat here ran
+    // inside that stage, synchronously, where the connect's deadline could
+    // not fire until the stat returned.
+    stage.set("the chat's folders on disk (a stat of each; a slow disk)");
+    let candidates = std::mem::take(&mut open.candidates);
+    let kind_workspace = open.kind_workspace.take();
+    let checked = blocking(move || -> Result<_, String> {
+        Ok((
+            existing_folders(candidates),
+            kind_workspace.filter(|p| p.is_dir()),
+        ))
+    })
+    .await;
+    if let Ok((granted, kind_workspace)) = checked {
+        open.granted = granted;
+        open.kind_workspace = kind_workspace;
+    }
+    open
+}
+
+/// [`open_chat`]'s reads of memory and of the chat's log.
+async fn read_open_chat(
     state: &AppState,
     active: Option<&Project>,
     stage: &connect_deadline::Stage,
@@ -7648,6 +7694,28 @@ mod tests {
 
     /// A fresh, empty log directory per test, so "unchanged" means "still
     /// empty" and one test's log is never another's.
+    /// Item 261: the connect's read of the open chat never stats a folder
+    /// (the disk is asked afterwards, on a blocking thread, under a stage
+    /// of its own), and the disk half keeps what `extra_folders` kept —
+    /// order, one of each, no home, no missing folder.
+    #[test]
+    fn a_connect_reads_the_chat_without_the_disk_and_checks_folders_apart() {
+        let dir = empty_log_dir("open-chat-folders");
+        let real = dir.join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let gone = dir.join("gone");
+        let mut session = Session::new();
+        session.record_folders([real.clone(), gone, real.clone()]);
+        let open = open_chat_of(Some(&session), None, ChatMode::Normal, ChatKind::Build);
+        assert!(open.granted.is_empty());
+        assert!(!open.candidates.1.is_empty());
+        let granted = existing_folders(open.candidates.clone());
+        assert_eq!(granted, vec![(real.clone(), "chat")]);
+        assert_eq!(granted, extra_folders(None, Some(&session)));
+        // The home is never an extra folder.
+        assert!(existing_folders((Some(real.clone()), vec![(real, "project")])).is_empty());
+    }
+
     fn empty_log_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("nightloom-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

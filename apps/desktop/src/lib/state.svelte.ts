@@ -6977,7 +6977,19 @@ export async function syncPromptLayers(): Promise<void> {
     }
     app.applyPending = applyTimer !== null;
   }
-  if (!app.connection) return;
+  if (!app.connection) {
+    // Item 261: a connect that failed left every chat "not connected", and
+    // opening another chat never tried again — only a relaunch did. Now
+    // opening another chat (or New chat) retries once for it; the chat
+    // whose connect just failed is not retried in a loop (the transcript's
+    // Retry is the way to try it again).
+    const key = sentKey();
+    if (app.connectError && key !== lastSent && key !== lastAutoRetry) {
+      lastAutoRetry = key;
+      await applyDraft();
+    }
+    return;
+  }
   try {
     const { off, built, edits, built_edits, mode, built_mode, kind, built_kind } =
       await api.promptLayers();
@@ -7010,6 +7022,22 @@ export async function syncPromptLayers(): Promise<void> {
 }
 /** The (chat, wanted set) whose sync last failed to connect; see above. */
 let lastFailedSync: string | null = null;
+/** The (chat, draft) a failed connect was last retried for on its own
+ *  (item 261), so a retry that fails too is not repeated forever. */
+let lastAutoRetry: string | null = null;
+
+/**
+ * Try the connection again after it failed (item 261): the Retry on the
+ * "not connected" card. The rail's settings as they are, for the open
+ * chat; a turn or a connect in flight defers it as any rail change is.
+ */
+export async function retryConnect(): Promise<void> {
+  if (app.connecting) return;
+  app.connectError = null;
+  lastFailedSync = null;
+  lastAutoRetry = null;
+  await applyDraft();
+}
 
 /**
  * Which events still count, after every `rewind` marker in the log.
