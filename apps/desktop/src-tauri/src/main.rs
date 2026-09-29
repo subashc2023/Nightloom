@@ -52,6 +52,7 @@ mod power;
 mod prompt_hold;
 /// The phone page over the tailnet (nightshift backlog 091, Shape B).
 mod remote;
+mod set_aside;
 mod startup_log;
 /// The terminal pane's shells (nightshift backlog 113).
 mod terminal;
@@ -3593,6 +3594,39 @@ async fn rewind(state: State<'_, AppState>, to: usize) -> Result<Vec<SessionEven
     session.rewind(to)?;
     change.adopt(session, agent_guard.as_mut());
     Ok(session.events().to_vec())
+}
+
+/// Move the files a rewound turn wrote aside (nightshift item 259): into
+/// `<config dir>/rewound/<local date-time>-<chat>/`, outside the project so
+/// the next run cannot read them, never deleted. `workspace` is the folder
+/// the chat's tools ran in, which relative paths are read against. The
+/// disk work runs on a blocking thread.
+#[tauri::command]
+async fn set_aside_files(
+    chat: Option<String>,
+    workspace: Option<String>,
+    paths: Vec<String>,
+) -> Result<set_aside::SetAside, String> {
+    let root = project::config_dir()
+        .ok_or("no config folder to set the files aside in")?
+        .join("rewound");
+    let short: String = chat.unwrap_or_default().chars().take(8).collect();
+    let mut stamp = chrono::Local::now().format("%Y-%m-%d-%H%M%S").to_string();
+    if !short.is_empty() {
+        stamp = format!("{stamp}-{short}");
+    }
+    let workspace = workspace
+        .map(|w| PathBuf::from(w.trim()))
+        .filter(|w| !w.as_os_str().is_empty());
+    blocking(move || -> Result<_, String> {
+        Ok(set_aside::set_aside(
+            &root,
+            &stamp,
+            workspace.as_deref(),
+            &paths,
+        ))
+    })
+    .await
 }
 
 /// Lift the rewind recorded at log index `of` — the undo of a rewind
@@ -7538,6 +7572,7 @@ fn main() {
             compact,
             rewind,
             unrewind,
+            set_aside_files,
             edit_message,
             remove_message,
             restore_message,

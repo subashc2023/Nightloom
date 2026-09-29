@@ -85,6 +85,7 @@ import { adoptPending, latestAgents, mergeRows, rowsFromLog, rowsOf } from "./su
 import { cli, startCliClock } from "./cliUpdate.svelte";
 import { chatIsCold, loadLayerPrefs, reconnectBeforeTurn, saveLayerPrefs } from "./promptVersions";
 import { CONNECT_DEADLINE_MS, withDeadline } from "./deadline";
+import { rewoundWrites, setAsideFiles } from "./rewoundFiles";
 import type { TabContent, Workspace } from "./tabs";
 import { UNFILED_TABS, loadSavedWorkspaces, rebuild, saveWorkspaceFor, snapshot } from "./tabsStore";
 import {
@@ -636,6 +637,9 @@ export const app = $state({
   applyPending: false,
   /** Last connect failure, shown in the rail until the next attempt. */
   connectError: null as string | null,
+  /** The files the last rewind's turns wrote, offered to be set aside
+   *  (item 259); null when it removed none, or once he chose. */
+  rewoundWrites: null as import("./rewoundFiles").RewoundWrites | null,
   /** The connected chat's *newer version exists* marks (backlog 174). */
   promptPending: null as import("./types").PendingView | null,
   /** Settings: take changed layers at the next cold moment (backlog 174). */
@@ -7100,6 +7104,9 @@ export async function rewindTo(to: number): Promise<void> {
   if (app.busy) return;
   // His message at `to`, read before the rewind supersedes it (backlog 247).
   const back = rewoundMessage(app.events, to, nextAttachmentId);
+  // What the removed turns wrote, read before the rewind supersedes them
+  // (item 259): offered to be set aside, since the next run reads them.
+  const written = rewoundWrites(app.events, liveFlags(app.events), to);
   try {
     app.events = await api.rewind(to);
     app.error = null;
@@ -7107,6 +7114,15 @@ export async function rewindTo(to: number): Promise<void> {
     app.error = String(e);
     return;
   }
+  app.rewoundWrites =
+    written.length > 0
+      ? {
+          session: app.activeSessionId,
+          workspace: app.connection?.workspace ?? null,
+          files: written,
+          done: null,
+        }
+      : null;
   const key = draftKey(app.activeSessionId, app.project?.id, app.pendingMode);
   let swap = back ? fillBox(key, back) : null;
   // The inverse lifts the marker this call landed — and, after a redo,
@@ -7116,6 +7132,9 @@ export async function rewindTo(to: number): Promise<void> {
     label: "rewind",
     undo: async () => {
       app.events = await api.unrewind(marker);
+      // The turn is back; its files were left alone unless he set them
+      // aside, and then the card says where they went.
+      if (app.rewoundWrites && app.rewoundWrites.done === null) app.rewoundWrites = null;
       // The box gets back what it held — unless he changed the message
       // since, which then stays (never-lose-work).
       if (swap && untouched(readDraft(key), swap)) {
@@ -7130,6 +7149,30 @@ export async function rewindTo(to: number): Promise<void> {
     },
   });
   undoToast(back ? "Rewound — your message is back in the box" : "Rewound to here", handle);
+}
+
+/**
+ * Set aside the rewound turn's files he ticked (item 259): moved into a
+ * dated folder outside the project, never deleted. The card then names
+ * the folder and anything that could not move.
+ */
+export async function setAsideRewound(paths: string[]): Promise<void> {
+  const w = app.rewoundWrites;
+  if (!w || paths.length === 0) return;
+  try {
+    const out = await setAsideFiles(w.session, w.workspace, paths);
+    const skipped = out.skipped.map((s) => `${s.path}: ${s.why}`);
+    w.done = out.folder
+      ? `Moved ${out.moved.length} to ${out.folder}${skipped.length ? ` · not moved: ${skipped.join("; ")}` : ""}`
+      : `Nothing moved${skipped.length ? `: ${skipped.join("; ")}` : ""}`;
+  } catch (e) {
+    addToast(`Could not set the files aside: ${String(e)}`);
+  }
+}
+
+/** Leave the rewound turn's files where they are (item 259). */
+export function keepRewound(): void {
+  app.rewoundWrites = null;
 }
 
 /** A rewound message into the box (backlog 247, blocker 581): what was
