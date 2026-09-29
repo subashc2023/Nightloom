@@ -27,6 +27,9 @@
   import { applyDraft, refreshLayerVersions } from "./state.svelte";
   import { onMount, untrack } from "svelte";
   import FindBar from "./FindBar.svelte";
+  import ConfirmDialog from "./ConfirmDialog.svelte";
+  import { draftKey } from "./drafts.svelte";
+  import { dropLayerDraft, firstHeldLayer, heldLayerDraft, holdLayerDraft } from "./layerDrafts.svelte";
   import { findChord, foldedHolding, foldOnClose, unfoldPlan, type FoldedBody } from "./find";
   import { isMac } from "./platform";
   import type {
@@ -307,11 +310,59 @@
   let seeding = $state(false);
   let saving = $state(false);
 
+  /*
+   * The half-typed text is kept outside the page since backlog 243
+   * (`layerDrafts.svelte.ts`): the ×, a click outside and a relaunch no
+   * longer drop it, and opening the page again reopens the editor with it
+   * ("restored"). `base` is what the editor opened with, so Cancel asks
+   * before it throws a real change away and an untouched editor is not
+   * kept. `editChat` is the chat the editor belongs to, so a chat switch
+   * under the open page cannot file the text under the other chat.
+   */
+  const chatKey = $derived(draftKey(app.activeSessionId, app.project?.id, app.pendingMode));
+  let base = $state("");
+  let editChat = $state<string | null>(null);
+  let restored = $state(false);
+  let confirmDiscard = $state(false);
+
+  $effect(() => {
+    if (editing === null || editChat === null) return;
+    const [c, l, t, b] = [editChat, editing, draft, base];
+    untrack(() => holdLayerDraft(c, l, t, b));
+  });
+
+  // Another chat opened under the page: its editor closes, its text held.
+  $effect(() => {
+    if (editing !== null && editChat !== null && chatKey !== editChat) {
+      untrack(() => {
+        editing = null;
+        editChat = null;
+      });
+    }
+  });
+
+  onMount(() => {
+    const held = firstHeldLayer(chatKey, EDITABLE_LAYERS);
+    if (held) void beginEdit(held);
+  });
+
   function editable(kind: PromptLayer): kind is EditableLayer {
     return (EDITABLE_LAYERS as readonly string[]).includes(kind);
   }
 
   async function beginEdit(layer: EditableLayer): Promise<void> {
+    const chat = chatKey;
+    const held = heldLayerDraft(chat, layer);
+    if (held) {
+      draft = held.text;
+      base = held.base;
+      restored = true;
+      editChat = chat;
+      editing = layer;
+      if (!open.has(layer)) toggle(layer);
+      return;
+    }
+    restored = false;
     seeding = true;
     try {
       const own = edits[layer];
@@ -322,6 +373,8 @@
     } finally {
       seeding = false;
     }
+    base = draft;
+    editChat = chat;
     editing = layer;
     if (!open.has(layer)) toggle(layer);
   }
@@ -330,14 +383,32 @@
     if (!editing) return;
     saving = true;
     try {
-      if (await setPromptLayerText(editing, draft)) editing = null;
+      const layer = editing;
+      if (await setPromptLayerText(layer, draft)) {
+        if (editChat) dropLayerDraft(editChat, layer);
+        editing = null;
+        editChat = null;
+      }
     } finally {
       saving = false;
     }
   }
 
+  /** Cancel: an untouched editor just closes; a changed one asks first. */
   function cancelEdit(): void {
+    if (draft !== base) {
+      confirmDiscard = true;
+      return;
+    }
+    discardEdit();
+  }
+
+  function discardEdit(): void {
+    confirmDiscard = false;
+    if (editing && editChat) dropLayerDraft(editChat, editing);
     editing = null;
+    editChat = null;
+    restored = false;
   }
 
   async function revert(layer: EditableLayer): Promise<void> {
@@ -1074,7 +1145,8 @@
                 ></textarea>
                 <div class="body-bar">
                   <span class="gloss">
-                    This chat only. The file is untouched, and every other chat still reads it.
+                    {#if restored}Your unsaved text from before, kept until you save or discard it.
+                    {/if}This chat only. The file is untouched, and every other chat still reads it.
                   </span>
                   <span class="spacer"></span>
                   <button class="ns-btn small" disabled={locked} onclick={cancelEdit}>Cancel</button>
@@ -1361,6 +1433,17 @@
   </div>
   </div>
 </div>
+
+{#if confirmDiscard && editing}
+  <ConfirmDialog
+    title="Discard your changes?"
+    lead="The text you typed for this layer is dropped; the chat keeps reading what it read before."
+    facts={[["layer", editing.replace(/_/g, " ")]]}
+    confirmLabel="Discard"
+    onconfirm={discardEdit}
+    onclose={() => (confirmDiscard = false)}
+  />
+{/if}
 
 <style>
   /* The frame is Settings' frame, one pane wide: same tokens, same radius,
