@@ -1715,12 +1715,28 @@ exec sleep 30
             areas: vec![],
         };
         let cancel = CancellationToken::new();
+        // The Stop comes once both seats are running and the second has
+        // written its half answer — read from the events, never from a
+        // clock (backlog 232: ~~a Stop at a fixed 1.5 s~~ raced a loaded
+        // machine, where the stand-in had not always printed by then). A
+        // backstop at 15 s keeps a broken run from hanging the suite.
         let stopper = cancel.clone();
+        let (mut inited, mut wrote) = ([false; 2], false);
+        let mut sink = move |i: usize, e: TurnEvent| {
+            match e {
+                TurnEvent::AgentInit { .. } => inited[i] = true,
+                TurnEvent::TextDelta { .. } if i == 1 => wrote = true,
+                _ => {}
+            }
+            if inited == [true; 2] && wrote {
+                stopper.cancel();
+            }
+        };
+        let backstop = cancel.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-            stopper.cancel();
+            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+            backstop.cancel();
         });
-        let mut sink = |_: usize, _: TurnEvent| {};
         let started = std::time::Instant::now();
         let results = run_seats(
             &agent, &chat, None, &request, "the dump", 7, &cancel, &mut sink,
