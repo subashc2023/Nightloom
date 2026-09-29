@@ -3776,15 +3776,56 @@ fn cli_target(session: &Session, index: usize) -> Result<Target, String> {
         // 066): edits applied, removed blocks out, removed calls leaving
         // no mark — which is what the CLI's copy reads after the same
         // edits, so the two histories still agree on the reply.
+        //
+        // Without the subagents' narratives (nightshift item 252): the
+        // recorder writes one `<subagent …>` text block per running child
+        // into each round of the parent's reply, for the window; the CLI's
+        // file never has them, so a reply with any never matched and every
+        // edit of it refused.
         Some(SessionEvent::AssistantMessage { .. }) => Ok(Target::Assistant {
             from_last,
-            text: session.reply_text(index).unwrap_or_default(),
+            text: cli_reply_text(session, index),
         }),
         Some(_) => Err(format!(
             "event {index} is not a user message or an assistant reply"
         )),
         None => Err(format!("no event at {index}")),
     }
+}
+
+/// What the CLI's copy of the reply at `index` reads: `Session::reply_text`
+/// (edits applied, removed blocks out) less the subagents' narratives,
+/// which are the window's and never the model's (item 252).
+fn cli_reply_text(session: &Session, index: usize) -> String {
+    let Some(SessionEvent::AssistantMessage { blocks, .. }) = session.events().get(index) else {
+        return String::new();
+    };
+    let edits = session.block_edits();
+    let gone = session.block_elisions();
+    let mut out = String::new();
+    for (n, b) in blocks.iter().enumerate() {
+        if gone[index].contains(&n) || b.is_subagent_narrative() {
+            continue;
+        }
+        if let nightloom_core::ContentBlock::Text { text } = b {
+            out.push_str(edits[index].get(&n).copied().unwrap_or(text.as_str()));
+        }
+    }
+    if let Some(text) = edits[index].get(&blocks.len()) {
+        out.push_str(text);
+    }
+    out
+}
+
+/// Whether block `block` of the reply at `index` is a subagent's narrative
+/// (item 252): the window's alone, so removing or restoring it changes
+/// nothing in the CLI's file.
+fn is_narrative_block(session: &Session, index: usize, block: usize) -> bool {
+    matches!(
+        session.events().get(index),
+        Some(SessionEvent::AssistantMessage { blocks, .. })
+            if blocks.get(block).is_some_and(|b| b.is_subagent_narrative())
+    )
 }
 
 /// The CLI's address for block `block` of the reply at `index`
@@ -3797,12 +3838,26 @@ fn cli_block(session: &Session, index: usize, block: usize) -> Result<Block, Str
         return Err(format!("event {index} is not a reply"));
     };
     match blocks.get(block) {
-        Some(nightloom_core::ContentBlock::Text { .. }) => Ok(Block::Text(
-            blocks[..block]
-                .iter()
-                .filter(|b| matches!(b, nightloom_core::ContentBlock::Text { .. }))
-                .count(),
+        // Counted among the text blocks the CLI's copy has (item 252): not
+        // the subagents' narratives, which it never had, and not a text
+        // block already removed, which its copy dropped when it was.
+        Some(b) if b.is_subagent_narrative() => Err(format!(
+            "block {block} of event {index} is a subagent's steps, which Claude Code's history does not hold"
         )),
+        Some(nightloom_core::ContentBlock::Text { .. }) => {
+            let gone = session.block_elisions();
+            Ok(Block::Text(
+                blocks[..block]
+                    .iter()
+                    .enumerate()
+                    .filter(|(n, b)| {
+                        matches!(b, nightloom_core::ContentBlock::Text { .. })
+                            && !b.is_subagent_narrative()
+                            && !gone[index].contains(n)
+                    })
+                    .count(),
+            ))
+        }
         Some(nightloom_core::ContentBlock::ToolUse { id, .. }) => Ok(Block::ToolUse(id.clone())),
         Some(_) => Err(format!(
             "block {block} of event {index} is not text or a tool call"
@@ -4066,6 +4121,8 @@ async fn remove_block(
         .ok_or_else(|| "no active session".to_string())?;
     let workspace = agent_guard.as_ref().map(|a| a.spec().workspace.clone());
     let change = match &workspace {
+        // A subagent's steps are the window's; the CLI never had them.
+        Some(_) if is_narrative_block(session, index, block) => CliChange::Untouched,
         Some(cwd) => {
             let target = cli_target(session, index)?;
             let which = cli_block(session, index, block)?;
@@ -4157,6 +4214,9 @@ fn restore_on_cli(
     let Some(original) = agent_session_before(session, marker).filter(|id| *id != current) else {
         return Ok(CliChange::Untouched);
     };
+    if block.is_some_and(|b| is_narrative_block(session, index, b)) {
+        return Ok(CliChange::Untouched);
+    }
     let target = cli_target(session, index)?;
     let which = block.map(|b| cli_block(session, index, b)).transpose()?;
     let projects = cli_session::projects_dir()
@@ -8027,6 +8087,50 @@ mod tests {
         ]
         .join("\n")
             + "\n"
+    }
+
+    /// Item 252: a reply is matched against the CLI's copy without the
+    /// subagents' narratives, which the CLI never had; a text block is
+    /// counted without them; and a narrative itself is the window's alone.
+    #[test]
+    fn the_cli_reads_a_reply_without_its_subagent_narratives() {
+        use nightloom_core::ContentBlock;
+        let mut session = Session::new();
+        session.record_user("go");
+        session.record_assistant(
+            "m",
+            vec![
+                ContentBlock::Text {
+                    text: "<subagent parent=\"t0\">\nsteps\n</subagent>".into(),
+                },
+                ContentBlock::Text { text: "one".into() },
+                ContentBlock::ToolUse {
+                    id: "t1".into(),
+                    name: "Read".into(),
+                    input: serde_json::json!({}),
+                    signature: None,
+                },
+                ContentBlock::Text { text: "two".into() },
+            ],
+            Some("tool_use".into()),
+            nightloom_core::Usage::default(),
+        );
+        assert_eq!(
+            cli_target(&session, 2).unwrap(),
+            Target::Assistant {
+                from_last: 0,
+                text: "onetwo".into()
+            }
+        );
+        assert!(is_narrative_block(&session, 2, 0));
+        assert!(!is_narrative_block(&session, 2, 1));
+        assert!(cli_block(&session, 2, 0).is_err());
+        assert_eq!(cli_block(&session, 2, 1).unwrap(), Block::Text(0));
+        assert_eq!(cli_block(&session, 2, 3).unwrap(), Block::Text(1));
+        assert_eq!(
+            cli_block(&session, 2, 2).unwrap(),
+            Block::ToolUse("t1".into())
+        );
     }
 
     /// The sequence `edit_message("save")` runs on this engine, minus the
