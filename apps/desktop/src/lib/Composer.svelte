@@ -4,6 +4,7 @@
   import Kbd from "./Kbd.svelte";
   import ResizeHandle from "./ResizeHandle.svelte";
   import { dragHeight, growHeight, loadBoxHeight, saveBoxHeight } from "./boxGrow";
+  import { sentSinceDrag } from "./composerSize";
   import {
     app,
     addToast,
@@ -254,6 +255,16 @@
     floorPx = loadHeight(key);
   });
 
+  /**
+   * Since backlog 254 a send turns the dragged height into a ceiling:
+   * the box goes back to one line, and typing grows it up to his size
+   * (`maxHeight` keeps the floor in the cap). A drag makes it a floor again.
+   */
+  function afterSend(k: string): void {
+    sentSinceDrag.sent(k);
+    requestAnimationFrame(autogrow);
+  }
+
   function loadCap(): number | null {
     try {
       const raw = localStorage.getItem(CAP_KEY);
@@ -313,6 +324,7 @@
   function setHeight(px: number) {
     const next = Math.min(dragLimit(), Math.max(FLOOR_MIN, Math.round(px)));
     floorPx = next;
+    sentSinceDrag.sized(key);
     const need = textHeight();
     // Only a draft of two lines or more lowers the cap: an empty box is a
     // hair taller than the smallest floor, and must not cap every chat at
@@ -351,6 +363,7 @@
   function handleReset() {
     floorPx = null;
     capPx = null;
+    sentSinceDrag.sized(key);
     persistHeight();
     autogrow();
   }
@@ -396,7 +409,7 @@
     const max = maxHeight();
     // The floor (backlog 111) is the docked box's; the floating one keeps
     // sizing to its text.
-    const min = floating ? 0 : Math.min(max, floorPx ?? 0);
+    const min = floating ? 0 : Math.min(max, sentSinceDrag.floor(key, floorPx) ?? 0);
     ta.style.maxHeight = max + "px";
     ta.style.height = "auto";
     ta.style.height = growHeight(ta.scrollHeight, min, max) + "px";
@@ -942,7 +955,7 @@
     enqueueMessage(key, text, attachments.slice());
     clearDraft(key);
     if (app.parked) addToast(queuedElsewhereToast(runningChatName()));
-    requestAnimationFrame(autogrow);
+    afterSend(key);
   }
 
   function takeBack(id?: number): void {
@@ -957,7 +970,7 @@
     // The words fly from the box into the aside's card (backlog 194).
     launch("aside", ta);
     clearDraft(key);
-    requestAnimationFrame(autogrow);
+    afterSend(key);
     await askAside(t);
   }
 
@@ -983,7 +996,7 @@
     // before the box clears.
     launch("chat", ta);
     clearDraft(key);
-    requestAnimationFrame(autogrow);
+    afterSend(key);
     await dispatch(typed, pending);
   }
 
@@ -1007,7 +1020,7 @@
     recordText("sent", typed);
     launch("chat", ta);
     clearDraft(key);
-    requestAnimationFrame(autogrow);
+    afterSend(key);
     await dispatch(typed, pending, false, prefs);
   }
   function onCouncilDocClick(e: MouseEvent) {
