@@ -33,6 +33,7 @@
     MODEL_KEYS,
     SUBAGENT_MODELS,
     SUBAGENT_MODEL_LABELS,
+    switchOf,
     formatWindow,
     modelsFor,
     providerLabel,
@@ -899,23 +900,46 @@
       <div class="row limits">
         <span class="lbl">Subagent limits</span>
         <Hint
-          text="Per turn: how many subagents one reply may spawn (Nightloom's hook; the seventh is refused in words). At once and depth: Claude Code's own concurrency and nesting caps, passed to it. Per day: a running count for this chat across turns. Slow at / to: past this share of the 5-hour window, the per-turn cap drops to this number. Stop at: past this share every spawn — and, mid-flight, every tool call — is refused with the reset time. Budget: the share of the 5-hour window one message may spend, counting the main thread, every subagent and every council seat; past it every further tool call is refused with 'stop and report', and the chip in the top bar shows the spend as it runs. The window is the freshest of the gauge and the turn's own readings. Subagents use: the chat's own model, or Sonnet for read-heavy scans."
+          text="Per turn: how many subagents one reply may spawn (Nightloom's hook; the seventh is refused in words). At once and depth: Claude Code's own concurrency and nesting caps, passed to it. Per day: a running count for this chat across turns. Slow at / to: past this share of the 5-hour window, the per-turn cap drops to this number. Stop at: past this share every spawn — and, mid-flight, every tool call — is refused with the reset time. Budget: the share of the 5-hour window one message may spend, counting the main thread, every subagent and every council seat; past it every further tool call is refused with 'stop and report', and the chip in the top bar shows the spend as it runs. The window is the freshest of the gauge and the turn's own readings. Subagents use: the chat's own model, or Sonnet for read-heavy scans. The small switch beside each limit turns it off: that limit does not apply at all, and its number is kept for when you switch it back on (slow at and to share one switch). At once and depth off: Nightloom passes nothing, so Claude Code's own defaults apply (20 at once, depth 3)."
         />
       </div>
       <div class="limits-grid">
         {#each [["per_turn", "per turn"], ["concurrent", "at once"], ["depth", "depth"], ["per_day", "per day"], ["slow_at", "slow at %"], ["slow_to", "to"], ["stop_at", "stop at %"], ["budget_pct", "budget %"]] as [k, label] (k)}
-          <label class="limit">
-            <span class="limit-k">{label}</span>
+          <!-- Backlog 253: a small switch per limit; off, the limit does not
+               apply at all (the number is kept for switching it back on).
+               The slow pair shares the switch on "slow at". A div, not a
+               label, so a click on the name does not flip the switch. -->
+          {@const sw = switchOf(k)}
+          {@const isOff = sw !== null && app.draft.agentLimits.off[sw]}
+          <div class="limit" class:off={isOff}>
+            <span class="limit-k">
+              {label}
+              {#if sw && k !== "slow_to"}
+                <input
+                  type="checkbox"
+                  class="sw mini"
+                  checked={!isOff}
+                  onchange={(e) => {
+                    app.draft.agentLimits.off[sw] = !(e.currentTarget as HTMLInputElement).checked;
+                    apply();
+                  }}
+                  disabled={locked}
+                  aria-label={`${label} limit on`}
+                  use:tip={isOff ? `Off — no ${label} limit applies. Switch on to use the number` : `On — switch off and no ${label} limit applies at all`}
+                />
+              {/if}
+            </span>
             <input
               type="number"
               min="0"
               max={k === "slow_at" || k === "stop_at" || k === "budget_pct" ? 100 : undefined}
               step="1"
+              aria-label={`subagents ${label}`}
               bind:value={app.draft.agentLimits[k as "per_turn" | "concurrent" | "depth" | "per_day" | "slow_at" | "slow_to" | "stop_at" | "budget_pct"]}
               onchange={apply}
-              disabled={locked}
+              disabled={locked || isOff}
             />
-          </label>
+          </div>
         {/each}
       </div>
       <!-- The subagents' model (backlog 165, pass 2; ~~blocker 280, his
@@ -1631,6 +1655,30 @@
   .limit input[type="number"] {
     width: 100%;
     min-width: 0;
+  }
+  /* Backlog 253: the per-limit switch, a size down from the rail's. */
+  .limit-k {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.25rem;
+  }
+  .sw.mini {
+    width: 20px;
+    height: 11px;
+  }
+  .sw.mini::after {
+    top: 1.5px;
+    left: 1.5px;
+    width: 8px;
+    height: 8px;
+  }
+  .sw.mini:checked::after {
+    transform: translateX(9px);
+  }
+  .limit.off input[type="number"] {
+    opacity: 0.45;
+    text-decoration: line-through;
   }
   /* The subagents' model (backlog 165, pass 2): one select on its row. */
   .limits-model {

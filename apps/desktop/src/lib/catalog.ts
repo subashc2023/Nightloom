@@ -312,7 +312,7 @@ export function defaultDraft(): ConnectionDraft {
     agentEffort: "",
     agentFallback: "",
     agentBudget: 0,
-    agentLimits: { ...DEFAULT_LIMITS },
+    agentLimits: { ...DEFAULT_LIMITS, off: allOn() },
     provider: "anthropic",
     model: "",
     baseUrl: "",
@@ -766,6 +766,37 @@ export interface SubagentLimits {
   /** Pass 2: the model subagents run on. ~~Blocker 280: the chat's own~~
    *  — nightshift 257 (blocker 584): the main agent chooses, by his rule. */
   model: SubagentModel;
+  /** Which limits he switched off (nightshift backlog 253): the number is
+   *  kept, the limit does not apply (`brief::SubagentLimits::effective`). */
+  off: LimitsOff;
+}
+
+/** One switch per limit (backlog 253); `slow` is the slow-at / to pair. */
+export interface LimitsOff {
+  per_turn: boolean;
+  concurrent: boolean;
+  depth: boolean;
+  per_day: boolean;
+  slow: boolean;
+  stop_at: boolean;
+  budget_pct: boolean;
+}
+export const LIMIT_SWITCHES: readonly (keyof LimitsOff)[] = [
+  "per_turn",
+  "concurrent",
+  "depth",
+  "per_day",
+  "slow",
+  "stop_at",
+  "budget_pct",
+];
+/** The switch a limit's number answers to: the slow pair shares one. */
+export function switchOf(k: string): keyof LimitsOff | null {
+  if (k === "slow_at" || k === "slow_to") return "slow";
+  return (LIMIT_SWITCHES as readonly string[]).includes(k) ? (k as keyof LimitsOff) : null;
+}
+export function allOn(): LimitsOff {
+  return { per_turn: false, concurrent: false, depth: false, per_day: false, slow: false, stop_at: false, budget_pct: false };
 }
 
 /** `choose` leaves a spawn's model as the parent wrote it (the Subagents
@@ -799,16 +830,23 @@ export const DEFAULT_LIMITS: SubagentLimits = Object.freeze({
   stop_at: 85,
   budget_pct: 35,
   model: "choose",
+  off: Object.freeze(allOn()),
 }) as SubagentLimits;
 
 /** A saved limits object, each number a whole number in range or the
  *  default; the model one of the three words (old `chat` as `choose`) or
  *  the default. */
 export function readLimits(v: unknown): SubagentLimits {
-  const out: SubagentLimits = { ...DEFAULT_LIMITS };
+  const out: SubagentLimits = { ...DEFAULT_LIMITS, off: allOn() };
   if (v === null || typeof v !== "object") return out;
   const m = v as Record<string, unknown>;
   for (const k of Object.keys(DEFAULT_LIMITS) as (keyof SubagentLimits)[]) {
+    if (k === "off") {
+      const o = m.off;
+      if (o !== null && typeof o === "object")
+        for (const s of LIMIT_SWITCHES) out.off[s] = (o as Record<string, unknown>)[s] === true;
+      continue;
+    }
     if (k === "model") {
       const s = m[k];
       if (s === "chat") out.model = "choose";
