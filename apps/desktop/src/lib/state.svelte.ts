@@ -5536,8 +5536,17 @@ function endBackground(t: TurnCtx, failed: string | null, res: AgentTurnResult |
     void refreshSessions();
     void refreshNotes();
   }
-  void refreshPlanUsage(true);
-  noteAgentTurnEnd(id, used, app.connection?.contextLimit ?? null, null);
+  if (t.provider) {
+    // A provider turn's end (A4 review, 2026-09-29) does what the
+    // screen's provider end does — ~~the plan meter and the Claude Code
+    // wrap-up's fill, which could queue a wrap-up message into a provider
+    // chat~~ — the Dream and Capture badges follow the turn it logged.
+    void refreshDreamStatus();
+    void refreshCaptureStatus();
+  } else {
+    void refreshPlanUsage(true);
+    noteAgentTurnEnd(id, used, app.connection?.contextLimit ?? null, null);
+  }
   // Was it sleep that ended it (backlog 101)? A4: a background turn's end
   // reached the watch not at all.
   sleepTurnEnded(errored, b?.events ?? [], id, t.stopped === true);
