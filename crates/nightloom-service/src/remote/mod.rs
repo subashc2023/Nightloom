@@ -26,6 +26,7 @@
 //! is a setup step this page exists to not have. No Tailscale identity
 //! headers yet (they need `tailscale serve` in front of the port; later).
 
+pub mod api;
 pub mod tailnet;
 pub mod token;
 
@@ -33,8 +34,8 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use axum::body::Body;
-use axum::extract::{Path, Request, State};
-use axum::http::{HeaderValue, StatusCode, header};
+use axum::extract::{DefaultBodyLimit, Path, Request, State};
+use axum::http::{HeaderValue, StatusCode, Uri, header};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -42,7 +43,15 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures::Stream;
 use nightloom_core::SessionEvent;
+use nightloom_core::message::{DocumentInput, ImageInput};
 use serde::{Deserialize, Serialize};
+
+use crate::council::CouncilRequest;
+use api::{
+    ActReply, ChatAction, ContextEditReply, ContextEditRequest, ContextReply, LayerChange,
+    NOT_AVAILABLE, NewProjectRequest, NoteText, ProjectRenameRequest, Rail, RailPatch, Running,
+    SearchScope, StateReply, UsageReply,
+};
 use tokio::sync::{broadcast, oneshot};
 
 /// The port the card proposes (nightshift blocker 172, its default taken).
@@ -109,11 +118,45 @@ pub struct RemoteState {
     pub pending: Vec<serde_json::Value>,
 }
 
-/// A message from the phone.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// A message from the phone. Only `text` was there before item 246's
+/// wave 1; every other field defaults, so an older page still sends.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SendRequest {
     pub text: String,
+    /// Said aloud in voice mode (wave 3): the reply is written for the ear.
+    /// Accepted and passed to the host; nothing acts on it before wave 3.
+    #[serde(default)]
+    pub spoken: bool,
+    /// The project the chat is in, when it is not the one open on the Mac:
+    /// the host opens it first, as a new chat in another project does.
+    #[serde(default)]
+    pub project: Option<String>,
+    /// Photos, base64 with no `data:` prefix, as the Mac's composer
+    /// attaches them.
+    #[serde(default)]
+    pub images: Vec<ImageInput>,
+    #[serde(default)]
+    pub documents: Vec<DocumentInput>,
+    /// Send as a council turn, with these seats.
+    #[serde(default)]
+    pub council: Option<CouncilRequest>,
 }
+
+impl SendRequest {
+    /// Only text (and perhaps `spoken`): what a host from before wave 1
+    /// can take through [`Host::send`].
+    pub fn is_plain(&self) -> bool {
+        self.project.is_none()
+            && self.images.is_empty()
+            && self.documents.is_empty()
+            && self.council.is_none()
+    }
+}
+
+/// The largest body a send takes: photos and documents ride in it as
+/// base64, which the extractor's 2 MB default would refuse for a single
+/// phone photo. Every other route keeps the default.
+pub const SEND_BODY_LIMIT: usize = 32 * 1024 * 1024;
 
 /// What became of a phone's message once the desktop took it (review
 /// 2026-09-17 FA2/FA3, backlog 132): the 202 used to mean only "emitted
@@ -205,6 +248,103 @@ pub trait Host: Send + Sync + 'static {
     fn events(&self) -> broadcast::Receiver<Event>;
     /// The page's files by path (`remote.html`, `assets/remote-….js`, …).
     fn asset(&self, path: &str) -> Option<Asset>;
+
+    // ---- item 246, wave 1: the ONE API (design §4) ----
+    //
+    // Every method below has a default body answering [`NOT_AVAILABLE`]
+    // (a 501 to the phone), so a host adopts them one at a time; it names
+    // what it serves in `features` (the names in [`api::feature`]).
+
+    /// The route groups this host serves, from [`api::feature`]. Carried on
+    /// `/api/state` so the phone greys out the rest.
+    fn features(&self) -> Vec<String> {
+        Vec::new()
+    }
+    /// A send with everything the phone can attach. The default takes a
+    /// plain text send through [`Host::send`] (`spoken` is ignored before
+    /// wave 3) and answers [`NOT_AVAILABLE`] for the rest.
+    async fn send_with(&self, chat: Option<&str>, req: SendRequest) -> Result<Handed, String> {
+        if req.is_plain() {
+            self.send(chat, &req.text).await
+        } else {
+            Err(NOT_AVAILABLE.into())
+        }
+    }
+    /// One action on `chat`'s log, as the Mac's menus offer it. `Err` is
+    /// the sentence the phone shows (409), and the chat is as it was.
+    async fn act(&self, _chat: &str, _action: ChatAction) -> Result<ActReply, String> {
+        Err(NOT_AVAILABLE.into())
+    }
+    /// `chat`'s Context page.
+    async fn context(&self, _chat: &str) -> Result<ContextReply, String> {
+        Err(NOT_AVAILABLE.into())
+    }
+    /// Hide or show items of `chat`'s context.
+    async fn edit_context(
+        &self,
+        _chat: &str,
+        _targets: Vec<usize>,
+        _remove: bool,
+    ) -> Result<ContextEditReply, String> {
+        Err(NOT_AVAILABLE.into())
+    }
+    /// Change `chat`'s prompt layers; the answer is its Context page after.
+    async fn layers(&self, _chat: &str, _change: LayerChange) -> Result<ContextReply, String> {
+        Err(NOT_AVAILABLE.into())
+    }
+    /// The engine and turn settings.
+    async fn rail(&self) -> Result<Rail, String> {
+        Err(NOT_AVAILABLE.into())
+    }
+    /// Merge `patch` into the settings and reconnect; the whole rail after.
+    async fn set_rail(&self, _patch: RailPatch) -> Result<Rail, String> {
+        Err(NOT_AVAILABLE.into())
+    }
+    /// What is running now: turns, asides, a dream, a capture.
+    async fn running(&self) -> Result<Running, String> {
+        Err(NOT_AVAILABLE.into())
+    }
+    /// The plan's usage windows and the ledger's summary.
+    async fn usage(&self) -> Result<UsageReply, String> {
+        Err(NOT_AVAILABLE.into())
+    }
+    /// Search everywhere, as the Mac's panel does.
+    async fn search(
+        &self,
+        _q: &str,
+        _scope: SearchScope,
+    ) -> Result<crate::store::search::SearchResult, String> {
+        Err(NOT_AVAILABLE.into())
+    }
+    /// A new project in the host's projects folder.
+    async fn project_new(&self, _req: NewProjectRequest) -> Result<ProjectRow, String> {
+        Err(NOT_AVAILABLE.into())
+    }
+    /// Make `id` the open project.
+    async fn project_open(&self, _id: &str) -> Result<ProjectRow, String> {
+        Err(NOT_AVAILABLE.into())
+    }
+    async fn project_rename(&self, _id: &str, _name: &str) -> Result<ProjectRow, String> {
+        Err(NOT_AVAILABLE.into())
+    }
+    /// Drop `id` from the list; its folder and chats stay on disk.
+    async fn project_forget(&self, _id: &str) -> Result<(), String> {
+        Err(NOT_AVAILABLE.into())
+    }
+    /// The notes of `scope` (one of [`api::NOTE_SCOPES`]).
+    async fn notes_list(&self, _scope: &str) -> Result<Vec<crate::project::Note>, String> {
+        Err(NOT_AVAILABLE.into())
+    }
+    async fn note_read(&self, _scope: &str, _name: &str) -> Result<String, String> {
+        Err(NOT_AVAILABLE.into())
+    }
+    async fn note_write(&self, _scope: &str, _name: &str, _text: &str) -> Result<(), String> {
+        Err(NOT_AVAILABLE.into())
+    }
+    /// Delete a note — to the trash, never gone (the never-lose-work rule).
+    async fn note_delete(&self, _scope: &str, _name: &str) -> Result<(), String> {
+        Err(NOT_AVAILABLE.into())
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -341,7 +481,10 @@ fn router(shared: Arc<Shared>) -> Router {
     let api = Router::new()
         .route("/state", get(state))
         .route("/chats", get(chats))
-        .route("/projects", get(projects))
+        .route("/projects", get(projects).post(project_new))
+        .route("/projects/{id}/open", post(project_open))
+        .route("/projects/{id}/rename", post(project_rename))
+        .route("/projects/{id}/forget", post(project_forget))
         .route("/projects/{id}/chats", get(project_chats))
         .route(
             "/projects/{pid}/chats/{id}/transcript",
@@ -351,12 +494,31 @@ fn router(shared: Arc<Shared>) -> Router {
         .route("/chats/{id}/rename", post(rename))
         .route("/chats/{id}/open", post(open))
         .route("/chats/{id}/transcript", get(transcript))
-        .route("/chats/{id}/send", post(send_to))
-        .route("/send", post(send_active))
+        .route(
+            "/chats/{id}/send",
+            post(send_to).layer(DefaultBodyLimit::max(SEND_BODY_LIMIT)),
+        )
+        .route(
+            "/send",
+            post(send_active).layer(DefaultBodyLimit::max(SEND_BODY_LIMIT)),
+        )
         .route("/approve", post(approve))
         .route("/cancel", post(cancel))
         .route("/chats/{id}/cancel", post(cancel_chat))
         .route("/events", get(events))
+        // Item 246, wave 1: the ONE API (design §4; types in `api`).
+        .route("/chats/{id}/act", post(act))
+        .route("/chats/{id}/context", get(context).post(edit_context))
+        .route("/chats/{id}/layers", post(layers))
+        .route("/rail", get(rail).post(set_rail))
+        .route("/running", get(running))
+        .route("/usage", get(usage))
+        .route("/search", get(search))
+        .route("/notes", get(notes_list))
+        .route(
+            "/notes/{scope}/{*name}",
+            get(note_read).put(note_write).delete(note_delete),
+        )
         // An explicit fallback so the bearer layer below covers a miss
         // too: without one an unknown `/api` path fell through to the
         // outer router's 404 *before* the token check, which let a caller
@@ -402,8 +564,38 @@ fn bad(e: String) -> Response {
     (StatusCode::BAD_REQUEST, e).into_response()
 }
 
-async fn state(State(shared): State<Arc<Shared>>) -> Json<RemoteState> {
-    Json(shared.host.state().await)
+/// A host's refusal: 501 when it has no such thing ([`NOT_AVAILABLE`]),
+/// 409 with its sentence when it refused this time.
+fn refused(e: String) -> Response {
+    if e == NOT_AVAILABLE {
+        (StatusCode::NOT_IMPLEMENTED, e).into_response()
+    } else {
+        (StatusCode::CONFLICT, e).into_response()
+    }
+}
+
+/// `Ok` as 200 with the JSON body, `Err` as [`refused`].
+fn answer<T: Serialize>(r: Result<T, String>) -> Response {
+    match r {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => refused(e),
+    }
+}
+
+/// `Ok(())` as 204, `Err` as [`refused`].
+fn done(r: Result<(), String>) -> Response {
+    match r {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => refused(e),
+    }
+}
+
+/// The state, and what this host serves (item 246: `features`).
+async fn state(State(shared): State<Arc<Shared>>) -> Json<StateReply> {
+    Json(StateReply {
+        state: shared.host.state().await,
+        features: shared.host.features(),
+    })
 }
 
 async fn chats(State(shared): State<Arc<Shared>>) -> Response {
@@ -495,15 +687,22 @@ async fn send_active(State(shared): State<Arc<Shared>>, Json(req): Json<SendRequ
 }
 
 async fn send_impl(shared: &Shared, chat: Option<&str>, req: SendRequest) -> Response {
-    if req.text.trim().is_empty() {
+    // A photo or a document with no caption is a message (item 246); an
+    // empty text alone is not.
+    if req.text.trim().is_empty() && req.images.is_empty() && req.documents.is_empty() {
         return bad("nothing to send".into());
     }
-    match shared.host.send(chat, &req.text).await {
+    if let Some(council) = &req.council
+        && let Err(e) = council.validate()
+    {
+        return bad(e.to_string());
+    }
+    match shared.host.send_with(chat, req).await {
         // Accepted, not done: the turn runs on the Mac and its progress
         // comes down the event stream; the body says whether it started
         // or waits behind the running turn.
         Ok(status) => (StatusCode::ACCEPTED, Json(SendReply { status })).into_response(),
-        Err(e) => (StatusCode::CONFLICT, e).into_response(),
+        Err(e) => refused(e),
     }
 }
 
@@ -528,6 +727,177 @@ async fn cancel_chat(State(shared): State<Arc<Shared>>, Path(id): Path<String>) 
         Ok(()) => StatusCode::OK.into_response(),
         Err(e) => bad(e),
     }
+}
+
+// ---- item 246, wave 1: the ONE API ----
+
+/// One action on a chat's log (edit, remove, rewind, fork, delete, …):
+/// 200 with the chat now showing and its log, 409 with the sentence, 400
+/// for an action no host could take.
+async fn act(
+    State(shared): State<Arc<Shared>>,
+    Path(id): Path<String>,
+    Json(action): Json<ChatAction>,
+) -> Response {
+    if let Err(e) = action.check() {
+        return bad(e);
+    }
+    answer::<ActReply>(shared.host.act(&id, action).await)
+}
+
+async fn context(State(shared): State<Arc<Shared>>, Path(id): Path<String>) -> Response {
+    answer(shared.host.context(&id).await)
+}
+
+async fn edit_context(
+    State(shared): State<Arc<Shared>>,
+    Path(id): Path<String>,
+    Json(req): Json<ContextEditRequest>,
+) -> Response {
+    if req.targets.is_empty() {
+        return bad("no items named".into());
+    }
+    answer(shared.host.edit_context(&id, req.targets, req.remove).await)
+}
+
+async fn layers(
+    State(shared): State<Arc<Shared>>,
+    Path(id): Path<String>,
+    Json(change): Json<LayerChange>,
+) -> Response {
+    answer(shared.host.layers(&id, change).await)
+}
+
+async fn rail(State(shared): State<Arc<Shared>>) -> Response {
+    answer(shared.host.rail().await)
+}
+
+async fn set_rail(State(shared): State<Arc<Shared>>, Json(patch): Json<RailPatch>) -> Response {
+    if patch.is_empty() {
+        return bad("nothing to change".into());
+    }
+    answer(shared.host.set_rail(patch).await)
+}
+
+async fn running(State(shared): State<Arc<Shared>>) -> Response {
+    answer::<Running>(shared.host.running().await)
+}
+
+async fn usage(State(shared): State<Arc<Shared>>) -> Response {
+    answer::<UsageReply>(shared.host.usage().await)
+}
+
+/// `?q=` (required) and `?scope=this|all|notes` (default `all`).
+async fn search(State(shared): State<Arc<Shared>>, uri: Uri) -> Response {
+    let q = api::query_param(uri.query(), "q").unwrap_or_default();
+    if q.trim().is_empty() {
+        return bad("nothing to search for".into());
+    }
+    let scope = api::query_param(uri.query(), "scope").unwrap_or_default();
+    let Some(scope) = SearchScope::parse(&scope) else {
+        return bad(format!(
+            "a search is `this`, `all` or `notes`, not `{scope}`"
+        ));
+    };
+    answer(shared.host.search(q.trim(), scope).await)
+}
+
+async fn project_new(
+    State(shared): State<Arc<Shared>>,
+    Json(req): Json<NewProjectRequest>,
+) -> Response {
+    if req.name.trim().is_empty() {
+        return bad("a project needs a name".into());
+    }
+    answer(shared.host.project_new(req).await)
+}
+
+async fn project_open(State(shared): State<Arc<Shared>>, Path(id): Path<String>) -> Response {
+    answer(shared.host.project_open(&id).await)
+}
+
+async fn project_rename(
+    State(shared): State<Arc<Shared>>,
+    Path(id): Path<String>,
+    Json(req): Json<ProjectRenameRequest>,
+) -> Response {
+    if req.name.trim().is_empty() {
+        return bad("a name cannot be empty".into());
+    }
+    answer(shared.host.project_rename(&id, req.name.trim()).await)
+}
+
+async fn project_forget(State(shared): State<Arc<Shared>>, Path(id): Path<String>) -> Response {
+    done(shared.host.project_forget(&id).await)
+}
+
+/// A scope the Mac's editor knows, or the 400's sentence.
+fn note_scope(scope: &str) -> Result<(), String> {
+    if api::NOTE_SCOPES.contains(&scope) {
+        Ok(())
+    } else {
+        Err(format!(
+            "`{scope}` is not a notes scope ({})",
+            api::NOTE_SCOPES.join(", ")
+        ))
+    }
+}
+
+/// A note's name: a path under its scope, never out of it.
+fn note_name(name: &str) -> Result<(), String> {
+    if name.is_empty() || name.split('/').any(|seg| seg.is_empty() || seg == "..") {
+        Err(format!("`{name}` is not a note's name"))
+    } else {
+        Ok(())
+    }
+}
+
+/// `?scope=` (default `project`, as the Mac's).
+async fn notes_list(State(shared): State<Arc<Shared>>, uri: Uri) -> Response {
+    let scope = api::query_param(uri.query(), "scope")
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "project".into());
+    if let Err(e) = note_scope(&scope) {
+        return bad(e);
+    }
+    answer(shared.host.notes_list(&scope).await)
+}
+
+async fn note_read(
+    State(shared): State<Arc<Shared>>,
+    Path((scope, name)): Path<(String, String)>,
+) -> Response {
+    if let Err(e) = note_scope(&scope).and_then(|()| note_name(&name)) {
+        return bad(e);
+    }
+    answer(
+        shared
+            .host
+            .note_read(&scope, &name)
+            .await
+            .map(|text| NoteText { text }),
+    )
+}
+
+async fn note_write(
+    State(shared): State<Arc<Shared>>,
+    Path((scope, name)): Path<(String, String)>,
+    Json(body): Json<NoteText>,
+) -> Response {
+    if let Err(e) = note_scope(&scope).and_then(|()| note_name(&name)) {
+        return bad(e);
+    }
+    done(shared.host.note_write(&scope, &name, &body.text).await)
+}
+
+async fn note_delete(
+    State(shared): State<Arc<Shared>>,
+    Path((scope, name)): Path<(String, String)>,
+) -> Response {
+    if let Err(e) = note_scope(&scope).and_then(|()| note_name(&name)) {
+        return bad(e);
+    }
+    done(shared.host.note_delete(&scope, &name).await)
 }
 
 /// The relay as SSE: `event: <name>` / `data: <payload>` per window event,
@@ -625,6 +995,15 @@ mod tests {
         renamed: Mutex<Vec<(String, String)>>,
         opened: Mutex<Vec<String>>,
         listed: Mutex<Vec<Option<String>>>,
+        /// Item 246, wave 1: sends with attachments or a project; each
+        /// action by chat; each layer change; the rail; notes by
+        /// `(scope, name)`; projects forgotten.
+        extras: Mutex<Vec<(Option<String>, SendRequest)>>,
+        acted: Mutex<Vec<(String, ChatAction)>>,
+        layered: Mutex<Vec<(String, LayerChange)>>,
+        rail: Mutex<Rail>,
+        notes: Mutex<std::collections::BTreeMap<(String, String), String>>,
+        forgotten: Mutex<Vec<String>>,
         tx: broadcast::Sender<Event>,
     }
 
@@ -640,6 +1019,23 @@ mod tests {
                 renamed: Mutex::new(Vec::new()),
                 opened: Mutex::new(Vec::new()),
                 listed: Mutex::new(Vec::new()),
+                extras: Mutex::new(Vec::new()),
+                acted: Mutex::new(Vec::new()),
+                layered: Mutex::new(Vec::new()),
+                rail: Mutex::new(Rail {
+                    engine: "claude-code".into(),
+                    model: "opus".into(),
+                    ..Default::default()
+                }),
+                notes: Mutex::new(
+                    [(
+                        ("project".to_string(), "plans/today.md".to_string()),
+                        "# Today".to_string(),
+                    )]
+                    .into_iter()
+                    .collect(),
+                ),
+                forgotten: Mutex::new(Vec::new()),
                 tx: tx.clone(),
             });
             (host, tx)
@@ -767,6 +1163,262 @@ mod tests {
                 _ => None,
             }
         }
+
+        // ---- item 246, wave 1 ----
+        //
+        // Each refuses with a sentence on a chat named `running` (or an
+        // input the Mac would refuse), as the window would.
+
+        fn features(&self) -> Vec<String> {
+            api::feature::ALL.iter().map(|s| s.to_string()).collect()
+        }
+        async fn send_with(&self, chat: Option<&str>, req: SendRequest) -> Result<Handed, String> {
+            if req.is_plain() {
+                return self.send(chat, &req.text).await;
+            }
+            if chat == Some("running") {
+                return Err("a turn is running in the chat the Mac has open".into());
+            }
+            self.extras
+                .lock()
+                .unwrap()
+                .push((chat.map(String::from), req));
+            Ok(Handed::Sent)
+        }
+        async fn act(&self, chat: &str, action: ChatAction) -> Result<ActReply, String> {
+            if chat == "running" {
+                return Err("a turn is running in that chat — stop it first".into());
+            }
+            self.acted
+                .lock()
+                .unwrap()
+                .push((chat.to_string(), action.clone()));
+            Ok(ActReply {
+                chat: match action {
+                    ChatAction::Fork { .. } => "forked".into(),
+                    _ => chat.to_string(),
+                },
+                events: self.transcript(None, "abc").await?,
+            })
+        }
+        async fn context(&self, chat: &str) -> Result<ContextReply, String> {
+            if chat == "running" {
+                return Err("a turn is running in that chat".into());
+            }
+            Ok(ContextReply {
+                view: empty_view(),
+                layers: serde_json::json!({"off": []}),
+                pending: serde_json::Value::Null,
+            })
+        }
+        async fn edit_context(
+            &self,
+            chat: &str,
+            targets: Vec<usize>,
+            remove: bool,
+        ) -> Result<ContextEditReply, String> {
+            if chat == "running" {
+                return Err("a turn is running in that chat".into());
+            }
+            Ok(ContextEditReply {
+                view: empty_view(),
+                events: Vec::new(),
+                changed: if remove { targets.len() } else { 0 },
+            })
+        }
+        async fn layers(&self, chat: &str, change: LayerChange) -> Result<ContextReply, String> {
+            if chat == "running" {
+                return Err("a turn is running in that chat".into());
+            }
+            self.layered
+                .lock()
+                .unwrap()
+                .push((chat.to_string(), change));
+            self.context(chat).await
+        }
+        async fn rail(&self) -> Result<Rail, String> {
+            Ok(self.rail.lock().unwrap().clone())
+        }
+        async fn set_rail(&self, patch: RailPatch) -> Result<Rail, String> {
+            if patch.engine.as_deref().is_some_and(|e| e == "bogus") {
+                return Err("there is no engine called bogus".into());
+            }
+            let mut rail = self.rail.lock().unwrap();
+            if let Some(m) = patch.model {
+                rail.model = m;
+            }
+            if let Some(e) = patch.effort {
+                rail.effort = e;
+            }
+            Ok(rail.clone())
+        }
+        async fn running(&self) -> Result<Running, String> {
+            Ok(Running {
+                tasks: vec![api::RunningTask {
+                    kind: "chat".into(),
+                    chat: Some("abc".into()),
+                    project: Some("p1".into()),
+                    title: "first".into(),
+                    since: None,
+                }],
+            })
+        }
+        async fn usage(&self) -> Result<UsageReply, String> {
+            Ok(UsageReply {
+                plan: crate::plan_usage::PlanUsage {
+                    five_hour: Some(12),
+                    source: "cli-cache".into(),
+                    ..Default::default()
+                },
+                ledger: serde_json::Value::Null,
+            })
+        }
+        async fn search(
+            &self,
+            q: &str,
+            scope: SearchScope,
+        ) -> Result<crate::store::search::SearchResult, String> {
+            if scope == SearchScope::This && q == "nothing open" {
+                return Err("no project is open".into());
+            }
+            Ok(crate::store::search::SearchResult {
+                matches: q.len(),
+                ..Default::default()
+            })
+        }
+        async fn project_new(&self, req: NewProjectRequest) -> Result<ProjectRow, String> {
+            if req.name == "nightloom" {
+                return Err("a project called nightloom exists".into());
+            }
+            Ok(ProjectRow {
+                id: "p3".into(),
+                name: req.name,
+                active: false,
+            })
+        }
+        async fn project_open(&self, id: &str) -> Result<ProjectRow, String> {
+            if id != "p2" {
+                return Err(format!("no project {id}"));
+            }
+            Ok(ProjectRow {
+                id: id.into(),
+                name: "keepsake".into(),
+                active: true,
+            })
+        }
+        async fn project_rename(&self, id: &str, name: &str) -> Result<ProjectRow, String> {
+            if id != "p2" {
+                return Err(format!("no project {id}"));
+            }
+            Ok(ProjectRow {
+                id: id.into(),
+                name: name.into(),
+                active: false,
+            })
+        }
+        async fn project_forget(&self, id: &str) -> Result<(), String> {
+            if id == "p1" {
+                return Err("close the project before forgetting it".into());
+            }
+            self.forgotten.lock().unwrap().push(id.to_string());
+            Ok(())
+        }
+        async fn notes_list(&self, scope: &str) -> Result<Vec<crate::project::Note>, String> {
+            Ok(self
+                .notes
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|((s, _), _)| s == scope)
+                .map(|((_, name), text)| crate::project::Note {
+                    name: name.clone(),
+                    bytes: text.len() as u64,
+                    modified: chrono::Utc::now(),
+                    summary: text.lines().next().map(String::from),
+                })
+                .collect())
+        }
+        async fn note_read(&self, scope: &str, name: &str) -> Result<String, String> {
+            self.notes
+                .lock()
+                .unwrap()
+                .get(&(scope.to_string(), name.to_string()))
+                .cloned()
+                .ok_or_else(|| format!("no note {name}"))
+        }
+        async fn note_write(&self, scope: &str, name: &str, text: &str) -> Result<(), String> {
+            self.notes
+                .lock()
+                .unwrap()
+                .insert((scope.to_string(), name.to_string()), text.to_string());
+            Ok(())
+        }
+        async fn note_delete(&self, scope: &str, name: &str) -> Result<(), String> {
+            self.notes
+                .lock()
+                .unwrap()
+                .remove(&(scope.to_string(), name.to_string()))
+                .map(|_| ())
+                .ok_or_else(|| format!("no note {name}"))
+        }
+    }
+
+    fn empty_view() -> nightloom_core::context::WireView {
+        serde_json::from_value(serde_json::json!({
+            "system": [], "system_text": null, "messages": [],
+            "totals": {"tokens": 0, "bytes": 0, "unestimated": 0},
+            "context_limit": null
+        }))
+        .unwrap()
+    }
+
+    /// A host from before wave 1: only the required methods, every new
+    /// one left to its default — what the away server's headless host is
+    /// until it adopts them.
+    struct BareHost(Arc<FakeHost>);
+
+    #[async_trait::async_trait]
+    impl Host for BareHost {
+        async fn state(&self) -> RemoteState {
+            self.0.state().await
+        }
+        async fn chats(&self, project: Option<&str>) -> Result<Vec<ChatRow>, String> {
+            self.0.chats(project).await
+        }
+        async fn projects(&self) -> Result<Vec<ProjectRow>, String> {
+            self.0.projects().await
+        }
+        async fn transcript(
+            &self,
+            project: Option<&str>,
+            id: &str,
+        ) -> Result<Vec<SessionEvent>, String> {
+            self.0.transcript(project, id).await
+        }
+        async fn send(&self, chat: Option<&str>, text: &str) -> Result<Handed, String> {
+            self.0.send(chat, text).await
+        }
+        async fn new_chat(&self, project: Option<&str>, text: &str) -> Result<Handed, String> {
+            self.0.new_chat(project, text).await
+        }
+        async fn rename(&self, chat: &str, title: &str) -> Result<(), String> {
+            self.0.rename(chat, title).await
+        }
+        async fn open(&self, chat: &str) -> Result<(), String> {
+            self.0.open(chat).await
+        }
+        async fn approve(&self, req: ApproveRequest) -> Result<(), String> {
+            self.0.approve(req).await
+        }
+        async fn cancel(&self, chat: Option<&str>) -> Result<(), String> {
+            self.0.cancel(chat).await
+        }
+        fn events(&self) -> broadcast::Receiver<Event> {
+            self.0.events()
+        }
+        fn asset(&self, path: &str) -> Option<Asset> {
+            self.0.asset(path)
+        }
     }
 
     async fn up() -> (Server, Arc<FakeHost>, broadcast::Sender<Event>, String) {
@@ -875,14 +1527,16 @@ mod tests {
             let resp = c.execute(r).await.unwrap();
             assert_eq!(resp.status(), 401, "{what}");
         }
-        // A 3 MB message with the right token: the extractor's default
-        // limit (2 MB) refuses it. The server answers before the body is
-        // all read and hyper then closes the connection, so the client
-        // sees either the 413 or a reset while still writing — which of
-        // the two is a race on loopback. The property is that the host
-        // never sees the message.
+        // A message past the send limit with the right token is refused
+        // (item 246 raised a send's limit to `SEND_BODY_LIMIT` for photos;
+        // it was the extractor's 2 MB default). The server answers before
+        // the body is all read and hyper then closes the connection, so
+        // the client sees either the 413 or a reset while still writing —
+        // which of the two is a race on loopback. The property is that the
+        // host never sees the message.
         let big = SendRequest {
-            text: "x".repeat(3 * 1024 * 1024),
+            text: "x".repeat(SEND_BODY_LIMIT + 1024 * 1024),
+            ..Default::default()
         };
         match c
             .post(format!("{base}/api/send"))
@@ -894,7 +1548,25 @@ mod tests {
             Ok(r) => assert_eq!(r.status(), 413),
             Err(e) => assert!(e.is_request(), "{e}"),
         }
+        // Every other route keeps the 2 MB default: a 3 MB edit is refused.
+        let edit = serde_json::json!({
+            "op": "edit", "index": 0, "mode": "save", "text": "x".repeat(3 * 1024 * 1024)
+        });
+        match c
+            .post(format!("{base}/api/chats/abc/act"))
+            .bearer_auth(&token)
+            .json(&edit)
+            .send()
+            .await
+        {
+            Ok(r) => assert_eq!(r.status(), 413),
+            Err(e) => assert!(e.is_request(), "{e}"),
+        }
+        assert!(host.acted.lock().unwrap().is_empty());
         assert!(host.sent.lock().unwrap().is_empty());
+        // A fresh client: the server closes a connection it refused a body
+        // on, and a pooled one may be that connection.
+        let c = client();
         // An asset path that starts with `/` after the root is still a
         // relative lookup, not an absolute one.
         let r = c
@@ -1072,6 +1744,7 @@ mod tests {
             .bearer_auth(&token)
             .json(&SendRequest {
                 text: "from the phone".into(),
+                ..Default::default()
             })
             .send()
             .await
@@ -1086,6 +1759,7 @@ mod tests {
             .bearer_auth(&token)
             .json(&SendRequest {
                 text: "queue me please".into(),
+                ..Default::default()
             })
             .send()
             .await
@@ -1097,6 +1771,7 @@ mod tests {
             .bearer_auth(&token)
             .json(&SendRequest {
                 text: "refuse me".into(),
+                ..Default::default()
             })
             .send()
             .await
@@ -1111,6 +1786,7 @@ mod tests {
             .bearer_auth(&token)
             .json(&SendRequest {
                 text: "to the open chat".into(),
+                ..Default::default()
             })
             .send()
             .await
@@ -1119,7 +1795,10 @@ mod tests {
         let r = c
             .post(format!("{base}/api/send"))
             .bearer_auth(&token)
-            .json(&SendRequest { text: "   ".into() })
+            .json(&SendRequest {
+                text: "   ".into(),
+                ..Default::default()
+            })
             .send()
             .await
             .unwrap();
@@ -1275,5 +1954,618 @@ mod tests {
         );
         server.stop().await;
         assert!(c.get(format!("{base}/api/state")).send().await.is_err());
+    }
+
+    // ---- item 246, wave 1: the ONE API ----
+
+    /// Every new route says 401 with no token, before the route table or
+    /// the body is looked at.
+    #[tokio::test]
+    async fn every_wave_1_route_needs_the_bearer() {
+        let (server, host, _tx, _token) = up().await;
+        let base = format!("http://{}", server.addr());
+        let c = client();
+        let reqs = [
+            c.post(format!("{base}/api/chats/abc/act"))
+                .json(&serde_json::json!({"op": "delete"})),
+            c.get(format!("{base}/api/chats/abc/context")),
+            c.post(format!("{base}/api/chats/abc/context")),
+            c.post(format!("{base}/api/chats/abc/layers")),
+            c.get(format!("{base}/api/rail")),
+            c.post(format!("{base}/api/rail")),
+            c.get(format!("{base}/api/running")),
+            c.get(format!("{base}/api/usage")),
+            c.get(format!("{base}/api/search?q=x")),
+            c.post(format!("{base}/api/projects")),
+            c.post(format!("{base}/api/projects/p2/open")),
+            c.post(format!("{base}/api/projects/p2/rename")),
+            c.post(format!("{base}/api/projects/p2/forget")),
+            c.get(format!("{base}/api/notes")),
+            c.get(format!("{base}/api/notes/project/plans/today.md")),
+            c.put(format!("{base}/api/notes/project/plans/today.md")),
+            c.delete(format!("{base}/api/notes/project/plans/today.md")),
+        ];
+        for r in reqs {
+            let r = r.build().unwrap();
+            let what = format!("{} {}", r.method(), r.url().path());
+            let resp = c.execute(r).await.unwrap();
+            assert_eq!(resp.status(), 401, "{what}");
+        }
+        assert!(host.acted.lock().unwrap().is_empty());
+        assert!(host.forgotten.lock().unwrap().is_empty());
+        server.stop().await;
+    }
+
+    /// Tiny helpers for the tests below: a request with the bearer.
+    async fn get_json(c: &reqwest::Client, url: String, token: &str) -> (u16, serde_json::Value) {
+        let r = c.get(url).bearer_auth(token).send().await.unwrap();
+        let status = r.status().as_u16();
+        let text = r.text().await.unwrap();
+        (
+            status,
+            serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text)),
+        )
+    }
+
+    async fn post_json(
+        c: &reqwest::Client,
+        url: String,
+        token: &str,
+        body: serde_json::Value,
+    ) -> (u16, serde_json::Value) {
+        let r = c
+            .post(url)
+            .bearer_auth(token)
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        let status = r.status().as_u16();
+        let text = r.text().await.unwrap();
+        (
+            status,
+            serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text)),
+        )
+    }
+
+    #[tokio::test]
+    async fn state_lists_what_the_host_serves() {
+        let (server, _host, _tx, token) = up().await;
+        let base = format!("http://{}", server.addr());
+        let (status, v) = get_json(&client(), format!("{base}/api/state"), &token).await;
+        assert_eq!(status, 200);
+        assert_eq!(v["active_chat"], "abc", "the state is still flat");
+        let features: Vec<String> = serde_json::from_value(v["features"].clone()).unwrap();
+        assert_eq!(features.len(), api::feature::ALL.len());
+        assert!(features.iter().any(|f| f == "act"));
+        server.stop().await;
+    }
+
+    #[tokio::test]
+    async fn an_action_answers_the_log_or_the_sentence() {
+        let (server, host, _tx, token) = up().await;
+        let base = format!("http://{}", server.addr());
+        let c = client();
+        let url = |chat: &str| format!("{base}/api/chats/{chat}/act");
+        let (status, v) = post_json(
+            &c,
+            url("abc"),
+            &token,
+            serde_json::json!({"op": "edit", "index": 0, "text": "better", "mode": "save"}),
+        )
+        .await;
+        assert_eq!(status, 200, "{v}");
+        let reply: ActReply = serde_json::from_value(v).unwrap();
+        assert_eq!(reply.chat, "abc");
+        assert_eq!(reply.events.len(), 1);
+        // A fork answers with the new chat, so the phone follows it.
+        let (status, v) = post_json(
+            &c,
+            url("abc"),
+            &token,
+            serde_json::json!({"op": "fork", "upto": 0}),
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(v["chat"], "forked");
+        // The host's refusal is a 409 with its sentence.
+        let (status, v) = post_json(
+            &c,
+            url("running"),
+            &token,
+            serde_json::json!({"op": "rewind", "to": 0}),
+        )
+        .await;
+        assert_eq!(status, 409);
+        assert_eq!(v, "a turn is running in that chat — stop it first");
+        // What no host could take is a 400 and never reaches the host.
+        let (status, _) = post_json(
+            &c,
+            url("abc"),
+            &token,
+            serde_json::json!({"op": "kind", "kind": "novel"}),
+        )
+        .await;
+        assert_eq!(status, 400);
+        let (status, _) = post_json(
+            &c,
+            url("abc"),
+            &token,
+            serde_json::json!({"op": "edit", "index": 0, "text": " ", "mode": "send"}),
+        )
+        .await;
+        assert_eq!(status, 400);
+        // An op the API does not have is the extractor's 422.
+        let (status, _) =
+            post_json(&c, url("abc"), &token, serde_json::json!({"op": "explode"})).await;
+        assert_eq!(status, 422);
+        let acted = host.acted.lock().unwrap().clone();
+        assert_eq!(
+            acted,
+            vec![
+                (
+                    "abc".to_string(),
+                    ChatAction::Edit {
+                        index: 0,
+                        text: "better".into(),
+                        mode: api::EditMode::Save,
+                        block: None
+                    }
+                ),
+                ("abc".to_string(), ChatAction::Fork { upto: 0 }),
+            ]
+        );
+        server.stop().await;
+    }
+
+    #[tokio::test]
+    async fn context_layers_and_rail_reach_the_host() {
+        let (server, host, _tx, token) = up().await;
+        let base = format!("http://{}", server.addr());
+        let c = client();
+        let (status, v) = get_json(&c, format!("{base}/api/chats/abc/context"), &token).await;
+        assert_eq!(status, 200);
+        let reply: ContextReply = serde_json::from_value(v).unwrap();
+        assert!(reply.view.messages.is_empty());
+        assert_eq!(reply.layers["off"], serde_json::json!([]));
+        let (status, v) = get_json(&c, format!("{base}/api/chats/running/context"), &token).await;
+        assert_eq!(
+            (status, v.as_str()),
+            (409, Some("a turn is running in that chat"))
+        );
+
+        let (status, v) = post_json(
+            &c,
+            format!("{base}/api/chats/abc/context"),
+            &token,
+            serde_json::json!({"targets": [1, 2], "remove": true}),
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(v["changed"], 2);
+        let (status, _) = post_json(
+            &c,
+            format!("{base}/api/chats/abc/context"),
+            &token,
+            serde_json::json!({"targets": [], "remove": true}),
+        )
+        .await;
+        assert_eq!(status, 400);
+
+        let (status, _) = post_json(
+            &c,
+            format!("{base}/api/chats/abc/layers"),
+            &token,
+            serde_json::json!({"off": ["identity"]}),
+        )
+        .await;
+        assert_eq!(status, 200);
+        let (status, _) = post_json(
+            &c,
+            format!("{base}/api/chats/running/layers"),
+            &token,
+            serde_json::json!({"kind": "identity", "text": "be brief"}),
+        )
+        .await;
+        assert_eq!(status, 409);
+        assert_eq!(host.layered.lock().unwrap().len(), 1);
+
+        let (status, v) = get_json(&c, format!("{base}/api/rail"), &token).await;
+        assert_eq!(status, 200);
+        assert_eq!(v["model"], "opus");
+        let (status, v) = post_json(
+            &c,
+            format!("{base}/api/rail"),
+            &token,
+            serde_json::json!({"model": "sonnet", "effort": "high"}),
+        )
+        .await;
+        assert_eq!(status, 200);
+        let rail: Rail = serde_json::from_value(v).unwrap();
+        assert_eq!(
+            (rail.model.as_str(), rail.effort.as_str()),
+            ("sonnet", "high")
+        );
+        assert_eq!(
+            rail.engine, "claude-code",
+            "a patch changes only what it names"
+        );
+        let (status, _) = post_json(
+            &c,
+            format!("{base}/api/rail"),
+            &token,
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, 400);
+        let (status, v) = post_json(
+            &c,
+            format!("{base}/api/rail"),
+            &token,
+            serde_json::json!({"engine": "bogus"}),
+        )
+        .await;
+        assert_eq!(
+            (status, v.as_str()),
+            (409, Some("there is no engine called bogus"))
+        );
+        server.stop().await;
+    }
+
+    #[tokio::test]
+    async fn running_usage_and_search_answer() {
+        let (server, _host, _tx, token) = up().await;
+        let base = format!("http://{}", server.addr());
+        let c = client();
+        let (status, v) = get_json(&c, format!("{base}/api/running"), &token).await;
+        assert_eq!(status, 200);
+        assert_eq!(v["tasks"][0]["chat"], "abc");
+        let (status, v) = get_json(&c, format!("{base}/api/usage"), &token).await;
+        assert_eq!(status, 200);
+        assert_eq!(v["plan"]["five_hour"], 12);
+        // `q` decoded (`hello there`, 11 characters: the fake's count).
+        let (status, v) = get_json(
+            &c,
+            format!("{base}/api/search?q=hello%20there&scope=notes"),
+            &token,
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(v["matches"], 11);
+        let (status, _) = get_json(&c, format!("{base}/api/search"), &token).await;
+        assert_eq!(status, 400, "no query");
+        let (status, _) = get_json(&c, format!("{base}/api/search?q=a&scope=moon"), &token).await;
+        assert_eq!(status, 400, "no such scope");
+        let (status, v) = get_json(
+            &c,
+            format!("{base}/api/search?q=nothing+open&scope=this"),
+            &token,
+        )
+        .await;
+        assert_eq!((status, v.as_str()), (409, Some("no project is open")));
+        server.stop().await;
+    }
+
+    #[tokio::test]
+    async fn projects_can_be_made_opened_renamed_and_forgotten() {
+        let (server, host, _tx, token) = up().await;
+        let base = format!("http://{}", server.addr());
+        let c = client();
+        let (status, v) = post_json(
+            &c,
+            format!("{base}/api/projects"),
+            &token,
+            serde_json::json!({"name": "garden"}),
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(v["id"], "p3");
+        let (status, v) = post_json(
+            &c,
+            format!("{base}/api/projects"),
+            &token,
+            serde_json::json!({"name": "nightloom"}),
+        )
+        .await;
+        assert_eq!(
+            (status, v.as_str()),
+            (409, Some("a project called nightloom exists"))
+        );
+        let (status, _) = post_json(
+            &c,
+            format!("{base}/api/projects"),
+            &token,
+            serde_json::json!({"name": " "}),
+        )
+        .await;
+        assert_eq!(status, 400);
+        let (status, v) = post_json(
+            &c,
+            format!("{base}/api/projects/p2/open"),
+            &token,
+            serde_json::json!(null),
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(v["active"], true);
+        let (status, _) = post_json(
+            &c,
+            format!("{base}/api/projects/p9/open"),
+            &token,
+            serde_json::json!(null),
+        )
+        .await;
+        assert_eq!(status, 409);
+        let (status, v) = post_json(
+            &c,
+            format!("{base}/api/projects/p2/rename"),
+            &token,
+            serde_json::json!({"name": "  keepsake two "}),
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(v["name"], "keepsake two");
+        let r = c
+            .post(format!("{base}/api/projects/p2/forget"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 204);
+        let r = c
+            .post(format!("{base}/api/projects/p1/forget"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 409);
+        assert_eq!(*host.forgotten.lock().unwrap(), vec!["p2".to_string()]);
+        server.stop().await;
+    }
+
+    #[tokio::test]
+    async fn notes_are_listed_read_written_and_deleted() {
+        let (server, _host, _tx, token) = up().await;
+        let base = format!("http://{}", server.addr());
+        let c = client();
+        let (status, v) = get_json(&c, format!("{base}/api/notes"), &token).await;
+        assert_eq!(status, 200, "the scope defaults to project");
+        assert_eq!(v[0]["name"], "plans/today.md");
+        let (status, v) = get_json(&c, format!("{base}/api/notes?scope=knowledge"), &token).await;
+        assert_eq!((status, v), (200, serde_json::json!([])));
+        let (status, _) = get_json(&c, format!("{base}/api/notes?scope=attic"), &token).await;
+        assert_eq!(status, 400);
+
+        let note = format!("{base}/api/notes/project/plans/today.md");
+        let (status, v) = get_json(&c, note.clone(), &token).await;
+        assert_eq!(status, 200);
+        assert_eq!(v["text"], "# Today");
+        let r = c
+            .put(&note)
+            .bearer_auth(&token)
+            .json(&NoteText {
+                text: "# Today\n\nwalk".into(),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 204);
+        let (_, v) = get_json(&c, note.clone(), &token).await;
+        assert_eq!(v["text"], "# Today\n\nwalk");
+        let r = c.delete(&note).bearer_auth(&token).send().await.unwrap();
+        assert_eq!(r.status(), 204);
+        let (status, v) = get_json(&c, note.clone(), &token).await;
+        assert_eq!((status, v.as_str()), (409, Some("no note plans/today.md")));
+        // A bad scope or an empty segment never reaches the host. (A `..`
+        // segment is folded away by the URL before it is sent; `note_name`
+        // refuses it too, checked below.)
+        let (status, _) = get_json(&c, format!("{base}/api/notes/attic/x.md"), &token).await;
+        assert_eq!(status, 400);
+        let (status, _) =
+            get_json(&c, format!("{base}/api/notes/project/plans//x.md"), &token).await;
+        assert_eq!(status, 400);
+        assert!(note_name("a/../b").is_err());
+        assert!(note_name("..").is_err());
+        assert!(note_name("a/b.md").is_ok());
+        server.stop().await;
+    }
+
+    #[tokio::test]
+    async fn a_send_carries_photos_a_project_and_a_council() {
+        let (server, host, _tx, token) = up().await;
+        let base = format!("http://{}", server.addr());
+        let c = client();
+        // A 4 MB photo with no caption: past the old 2 MB limit, and a
+        // message without text.
+        let photo = "A".repeat(4 * 1024 * 1024);
+        let r = c
+            .post(format!("{base}/api/chats/abc/send"))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({
+                "text": "",
+                "images": [{"media_type": "image/jpeg", "data": photo}],
+                "project": "p2",
+                "spoken": true
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 202);
+        {
+            let extras = host.extras.lock().unwrap();
+            assert_eq!(extras.len(), 1);
+            let (chat, req) = &extras[0];
+            assert_eq!(chat.as_deref(), Some("abc"));
+            assert_eq!(req.project.as_deref(), Some("p2"));
+            assert_eq!(req.images[0].data.len(), 4 * 1024 * 1024);
+            assert!(req.spoken);
+        }
+        // A plain send still goes through `send`, `spoken` or not.
+        let (status, _) = post_json(
+            &c,
+            format!("{base}/api/send"),
+            &token,
+            serde_json::json!({"text": "hi", "spoken": true}),
+        )
+        .await;
+        assert_eq!(status, 202);
+        assert_eq!(host.sent.lock().unwrap().len(), 1);
+        // The host's refusal: 409 with the sentence.
+        let (status, v) = post_json(
+            &c,
+            format!("{base}/api/chats/running/send"),
+            &token,
+            serde_json::json!({"text": "x", "project": "p2"}),
+        )
+        .await;
+        assert_eq!(
+            (status, v.as_str()),
+            (409, Some("a turn is running in the chat the Mac has open"))
+        );
+        // A council of one is refused before the host sees it.
+        let (status, v) = post_json(
+            &c,
+            format!("{base}/api/send"),
+            &token,
+            serde_json::json!({"text": "x", "council": {"seats": [{"model": "opus"}]}}),
+        )
+        .await;
+        assert_eq!(status, 400, "{v}");
+        let (status, _) = post_json(
+            &c,
+            format!("{base}/api/send"),
+            &token,
+            serde_json::json!({"text": "x", "council": {"seats": [{"model": "opus"}, {"model": "sonnet"}]}}),
+        )
+        .await;
+        assert_eq!(status, 202);
+        assert_eq!(host.extras.lock().unwrap().len(), 2);
+        server.stop().await;
+    }
+
+    /// A host that has not adopted wave 1 (the away server's today): every
+    /// new route is a 501 with the sentence, a plain send still works, and
+    /// `/api/state` lists no features.
+    #[tokio::test]
+    async fn a_host_from_before_wave_1_says_not_available() {
+        let (fake, _tx) = FakeHost::new();
+        let token = token::generate();
+        let server = Server::start_for_test(
+            "127.0.0.1:0".parse().unwrap(),
+            token.clone(),
+            Arc::new(BareHost(fake.clone())),
+        )
+        .await
+        .unwrap();
+        let base = format!("http://{}", server.addr());
+        let c = client();
+        let (status, v) = get_json(&c, format!("{base}/api/state"), &token).await;
+        assert_eq!(status, 200);
+        assert_eq!(v["features"], serde_json::json!([]));
+        for (status, v) in [
+            post_json(
+                &c,
+                format!("{base}/api/chats/abc/act"),
+                &token,
+                serde_json::json!({"op": "delete"}),
+            )
+            .await,
+            get_json(&c, format!("{base}/api/chats/abc/context"), &token).await,
+            get_json(&c, format!("{base}/api/rail"), &token).await,
+            get_json(&c, format!("{base}/api/running"), &token).await,
+            get_json(&c, format!("{base}/api/usage"), &token).await,
+            get_json(&c, format!("{base}/api/search?q=x"), &token).await,
+            get_json(&c, format!("{base}/api/notes"), &token).await,
+            post_json(
+                &c,
+                format!("{base}/api/projects"),
+                &token,
+                serde_json::json!({"name": "garden"}),
+            )
+            .await,
+            post_json(
+                &c,
+                format!("{base}/api/send"),
+                &token,
+                serde_json::json!({"text": "x", "images": [{"media_type": "image/png", "data": "AA=="}]}),
+            )
+            .await,
+        ] {
+            assert_eq!((status, v.as_str()), (501, Some(NOT_AVAILABLE)));
+        }
+        let (status, _) = post_json(
+            &c,
+            format!("{base}/api/send"),
+            &token,
+            serde_json::json!({"text": "plain", "spoken": true}),
+        )
+        .await;
+        assert_eq!(status, 202);
+        assert_eq!(fake.sent.lock().unwrap().len(), 1);
+        server.stop().await;
+    }
+
+    /// The API check script (`scripts/remote-api-check.sh`, which later
+    /// waves run against the Mac, `nightloom-cli serve` and the Fly
+    /// machine) passes against both fakes: everything on the full host,
+    /// and on the bare one the new routes reported as lacking, not failed.
+    /// Skipped where bash, curl or jq is missing.
+    #[tokio::test]
+    async fn the_api_check_script_passes_against_both_hosts() {
+        let have = |tool: &str| {
+            std::process::Command::new("sh")
+                .args(["-c", &format!("command -v {tool}")])
+                .output()
+                .is_ok_and(|o| o.status.success())
+        };
+        if !["bash", "curl", "jq"].into_iter().all(have) {
+            eprintln!("skipped: needs bash, curl and jq");
+            return;
+        }
+        let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../scripts/remote-api-check.sh");
+        let run = |base: String, token: String| {
+            let script = script.clone();
+            async move {
+                tokio::process::Command::new("bash")
+                    .arg(script)
+                    .args([base, token, "--write".into()])
+                    .env("NO_PROXY", "*")
+                    .output()
+                    .await
+                    .unwrap()
+            }
+        };
+        let (server, _host, _tx, token) = up().await;
+        let out = run(format!("http://{}", server.addr()), token).await;
+        let text = String::from_utf8_lossy(&out.stdout);
+        eprintln!("{text}");
+        assert!(
+            out.status.success(),
+            "{text}{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(!text.contains("LACKS"), "{text}");
+        assert!(text.contains("PASS  DELETE the scratch note"), "{text}");
+        server.stop().await;
+
+        let (fake, _tx) = FakeHost::new();
+        let token = token::generate();
+        let server = Server::start_for_test(
+            "127.0.0.1:0".parse().unwrap(),
+            token.clone(),
+            Arc::new(BareHost(fake)),
+        )
+        .await
+        .unwrap();
+        let out = run(format!("http://{}", server.addr()), token).await;
+        let text = String::from_utf8_lossy(&out.stdout);
+        eprintln!("{text}");
+        assert!(out.status.success(), "{text}");
+        assert!(
+            text.contains("LACKS GET /api/rail (feature rail)"),
+            "{text}"
+        );
+        server.stop().await;
     }
 }
