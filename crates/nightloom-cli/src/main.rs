@@ -9,6 +9,7 @@ mod keys;
 mod knowledge;
 mod mcp_serve;
 mod probe;
+mod serve;
 mod sessions;
 
 use anyhow::Result;
@@ -54,6 +55,9 @@ enum Command {
     /// three ways — one turn, the council, one turn playing a council —
     /// filed blind for you to judge; `--tally <dir>` sums the judged runs
     CouncilTrial(council_trial::CouncilTrialArgs),
+    /// The phone page and Claude Code turns with the desktop app closed:
+    /// the listener on this Mac's tailnet address (nightshift item 268)
+    Serve(serve::ServeArgs),
     /// Serve search_chats, read_chat, remember and fetch_page over MCP on
     /// stdio, for `claude -p --mcp-config`. Hidden: nothing to see if run
     /// by hand (see `mcp_serve.rs`).
@@ -85,6 +89,7 @@ async fn main() -> Result<()> {
         Some(Command::Capture(args)) => capture::run(args).await,
         Some(Command::CouncilTrial(args)) => council_trial::run(args).await,
         Some(Command::McpServe(args)) => mcp_serve::run(args).await,
+        Some(Command::Serve(args)) => serve::run(args).await,
         Some(Command::PermissionHook { dir }) => {
             nightloom_service::agent::ask::run_hook(&[dir]).map_err(Into::into)
         }

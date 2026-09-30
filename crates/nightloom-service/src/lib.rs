@@ -8,6 +8,7 @@
 //! the shell's business.
 
 pub mod agent;
+pub mod agent_turn;
 pub mod approval;
 pub mod capture;
 pub mod centre;
@@ -29,6 +30,7 @@ pub mod project;
 pub mod prompt;
 pub mod proposal;
 pub mod remote;
+pub mod serve;
 pub mod sidecar;
 pub mod store;
 pub mod tidy;
