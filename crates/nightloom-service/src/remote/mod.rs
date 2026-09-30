@@ -29,6 +29,7 @@
 pub mod api;
 pub mod tailnet;
 pub mod token;
+mod voice_ws;
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -116,6 +117,12 @@ pub struct RemoteState {
     /// The approval prompts still waiting for an answer, each the desktop's
     /// own `tool-approval` payload (`id`, `name`, `input`, `effect`).
     pub pending: Vec<serde_json::Value>,
+    /// This host's voice (item 246, wave 3), or `None` when
+    /// `bin/voice-setup.sh`'s programs are not there: the page then offers
+    /// keyboard dictation instead of the orb. Filled by the listener from
+    /// [`Host::voice`], not by the host's `state`.
+    #[serde(default)]
+    pub voice: Option<crate::voice::VoiceInfo>,
 }
 
 /// A message from the phone. Only `text` was there before item 246's
@@ -244,6 +251,17 @@ pub trait Host: Send + Sync + 'static {
     /// backlog 159, A3: two chats may run at once, and the phone's Stop
     /// is for the chat the phone is showing).
     async fn cancel(&self, chat: Option<&str>) -> Result<(), String>;
+    /// Send `text` as a spoken message (the phone's voice mode, item 246
+    /// wave 3): answered as `send` is, recorded `spoken`, and run with the
+    /// "answer for the ear" note. A host that cannot says so.
+    async fn send_spoken(&self, chat: Option<&str>, text: &str) -> Result<Handed, String> {
+        let _ = (chat, text);
+        Err("spoken messages are not available on this host".into())
+    }
+    /// The voice engine, when this host has one (`crate::voice::Engine::find`).
+    fn voice(&self) -> Option<Arc<crate::voice::Engine>> {
+        None
+    }
     /// A fresh subscriber to the event relay.
     fn events(&self) -> broadcast::Receiver<Event>;
     /// The page's files by path (`remote.html`, `assets/remote-….js`, …).
@@ -378,6 +396,9 @@ struct Shared {
 /// is next up.
 pub struct Server {
     addr: SocketAddr,
+    /// Serving HTTPS with Tailscale's certificate (the page's link is then
+    /// `https://<machine>.<tailnet>.ts.net:<port>/`, not the bare address).
+    https: bool,
     /// The bearer this listener runs with, for a rebind that must fall
     /// back to it (the desktop's `rebind`, review 2026-09-17 FA9).
     token: String,
@@ -427,15 +448,36 @@ impl Server {
             token: token.clone(),
             closing: closing.clone(),
         }));
-        let task = tokio::spawn(async move {
-            let _ = axum::serve(listener, app)
-                .with_graceful_shutdown(async {
-                    let _ = rx.await;
-                })
-                .await;
-        });
+        // HTTPS when `tailscale cert`'s files are in `<config>/remote/`
+        // (item 246 wave 3, blocker 660); plain HTTP otherwise, as before.
+        // Unreadable files are an error, not a silent fall back to HTTP.
+        let tls = crate::tls::dir()
+            .and_then(|d| crate::tls::load(&d))
+            .transpose()
+            .map_err(|e| Error::Bind {
+                addr,
+                source: std::io::Error::other(e),
+            })?;
+        let https = tls.is_some();
+        let task = match tls {
+            Some(config) => tokio::spawn(async move {
+                let _ = axum::serve(crate::tls::TlsListener::new(listener, config), app)
+                    .with_graceful_shutdown(async {
+                        let _ = rx.await;
+                    })
+                    .await;
+            }),
+            None => tokio::spawn(async move {
+                let _ = axum::serve(listener, app)
+                    .with_graceful_shutdown(async {
+                        let _ = rx.await;
+                    })
+                    .await;
+            }),
+        };
         Ok(Self {
             addr: bound,
+            https,
             token,
             shutdown: Some(tx),
             closing,
@@ -445,6 +487,11 @@ impl Server {
 
     pub fn addr(&self) -> SocketAddr {
         self.addr
+    }
+
+    /// Whether this listener serves HTTPS (see [`crate::tls`]).
+    pub fn https(&self) -> bool {
+        self.https
     }
 
     /// The bearer this listener checks.
@@ -534,6 +581,10 @@ fn router(shared: Arc<Shared>) -> Router {
         .route("/remote.html", get(page))
         .route("/assets/{*path}", get(asset_under_assets))
         .route("/remote/{*path}", get(asset_under_remote))
+        // Outside the bearer layer: the socket's first frame carries the
+        // token (a browser WebSocket cannot send the header), checked
+        // before any audio is read (voice_ws.rs).
+        .route("/api/voice", get(voice_ws::voice))
         .nest("/api", api)
         .with_state(shared)
 }
@@ -592,8 +643,10 @@ fn done(r: Result<(), String>) -> Response {
 
 /// The state, and what this host serves (item 246: `features`).
 async fn state(State(shared): State<Arc<Shared>>) -> Json<StateReply> {
+    let mut state = shared.host.state().await;
+    state.voice = shared.host.voice().map(|v| v.info());
     Json(StateReply {
-        state: shared.host.state().await,
+        state,
         features: shared.host.features(),
     })
 }
@@ -1052,6 +1105,7 @@ mod tests {
                 connected: true,
                 engine: Some("claude-code".into()),
                 pending: vec![serde_json::json!({"id": "t1", "name": "Bash"})],
+                voice: None,
             }
         }
         async fn chats(&self, project: Option<&str>) -> Result<Vec<ChatRow>, String> {
@@ -1075,6 +1129,7 @@ mod tests {
                     text: "hello".into(),
                     images: vec![],
                     documents: vec![],
+                    spoken: false,
                     at: chrono::Utc::now(),
                 }])
             } else {
