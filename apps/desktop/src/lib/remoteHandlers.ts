@@ -689,7 +689,7 @@ export interface RemoteSendPayload {
   images?: ImageInput[];
   documents?: DocumentInput[];
   council?: CouncilRequest | null;
-  /** Wave 3's; accepted and ignored here. */
+  /** Said aloud in voice mode (wave 3): the turn runs "for the ear". */
   spoken?: boolean;
 }
 
@@ -711,7 +711,7 @@ export async function runSend(p: RemoteSendPayload): Promise<"sent" | "queued"> 
   if (council && app.connection && app.connection.engine !== "claude-code") throw new Error("a council runs on the Claude Code engine — switch the Mac to it first");
   // Through `remoteSend` with its files (1B's patch note 1): the turn is
   // not his typed input, and a busy chat refuses rather than queues.
-  return remoteSend(p.chat, p.text, images, documents, council);
+  return remoteSend(p.chat, p.text, images, documents, council, p.spoken === true);
 }
 
 // ---- the listeners ----

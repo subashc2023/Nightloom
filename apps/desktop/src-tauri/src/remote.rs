@@ -97,7 +97,15 @@ pub struct DesktopHost {
     /// `replies`, from the one counter.
     calls: Mutex<HashMap<u64, tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>>>,
     next_send: AtomicU64,
+    /// The voice engine (item 246 wave 3, 3C), made on first ask and kept:
+    /// its programs start on a socket's `hello` and stop after
+    /// [`VOICE_IDLE`] unused. `None` until `bin/voice-setup.sh` has run.
+    voice: Mutex<Option<Arc<nightloom_service::voice::Engine>>>,
 }
+
+/// The voice programs (two whisper servers and Piper, ~700 MB between
+/// them) stop after this long unused; the next socket starts them again.
+const VOICE_IDLE: Duration = Duration::from_secs(600);
 
 impl DesktopHost {
     fn new(app: AppHandle) -> Arc<Self> {
@@ -110,6 +118,7 @@ impl DesktopHost {
             replies: Mutex::new(HashMap::new()),
             calls: Mutex::new(HashMap::new()),
             next_send: AtomicU64::new(1),
+            voice: Mutex::new(None),
         })
     }
 
@@ -460,6 +469,35 @@ impl Host for DesktopHost {
 
     fn events(&self) -> broadcast::Receiver<Event> {
         self.tx.subscribe()
+    }
+
+    /// Through the window's send, as a typed phone message goes, marked
+    /// `spoken`: the window passes it to `send_agent`/`send`.
+    async fn send_spoken(&self, chat: Option<&str>, text: &str) -> Result<Handed, String> {
+        DesktopHost::send_to(
+            self,
+            chat,
+            serde_json::json!({ "text": text, "spoken": true }),
+        )
+        .await
+    }
+
+    /// The engine over `~/.nightloom/voice/`, found on the first ask and
+    /// kept with its idle reaper; looked for again while it is absent, so
+    /// running the setup script needs no relaunch. Finding it starts no
+    /// program — the socket's `hello` does (`Engine::warm`).
+    fn voice(&self) -> Option<Arc<nightloom_service::voice::Engine>> {
+        let mut slot = self.voice.lock().unwrap_or_else(|p| p.into_inner());
+        if slot.is_none() {
+            let engine = nightloom_service::voice::Engine::find()?;
+            // The listener's routes run on the runtime, where the reaper's
+            // task is spawned.
+            if tokio::runtime::Handle::try_current().is_ok() {
+                engine.spawn_idle_reaper(VOICE_IDLE);
+            }
+            *slot = Some(engine);
+        }
+        slot.clone()
     }
 
     /// A file of the page from the bundle (or, under `tauri dev`, from
@@ -922,7 +960,7 @@ impl DesktopHost {
 
     /// `send` with §4's `SendRequest`: `project` opens that project first,
     /// `images`/`documents`/`council` go with the message as the Mac's
-    /// composer sends them; `spoken` is accepted and ignored until wave 3.
+    /// composer sends them; `spoken` marks a message said aloud (wave 3).
     pub async fn send_to(
         &self,
         chat: Option<&str>,
@@ -1091,7 +1129,16 @@ const NO_TAILSCALE: &str =
 /// and the QR render all block, and on a runtime worker they held a
 /// streaming turn with them (review 2026-09-17 FA7). `status` is the
 /// `spawn_blocking` wrapper every command uses.
-fn status_of(port: u16, keep_awake: bool, bound: Option<std::net::SocketAddr>) -> RemoteStatus {
+///
+/// `https_name` is the machine's `<machine>.<tailnet>.ts.net` when the
+/// running listener serves HTTPS (item 246 wave 3, blocker 660): the
+/// certificate is for that name, so the QR carries it, not the address.
+fn status_of(
+    port: u16,
+    keep_awake: bool,
+    bound: Option<std::net::SocketAddr>,
+    https_name: Option<String>,
+) -> RemoteStatus {
     let on = bound.is_some();
     let address = match bound {
         Some(addr) => Some(addr.ip()),
@@ -1099,8 +1146,9 @@ fn status_of(port: u16, keep_awake: bool, bound: Option<std::net::SocketAddr>) -
     };
     let port = bound.map(|a| a.port()).unwrap_or(port);
     let token = credentials::remote_token();
-    let setup_url = match (&address, &token) {
-        (Some(ip), Some(t)) => Some(token::setup_url(&ip.to_string(), port, t)),
+    let setup_url = match (&address, &token, &https_name) {
+        (_, Some(t), Some(name)) if on => Some(https_setup_url(name, port, t)),
+        (Some(ip), Some(t), _) => Some(token::setup_url(&ip.to_string(), port, t)),
         _ => None,
     };
     let qr_svg = setup_url.as_deref().and_then(|u| token::qr_svg(u).ok());
@@ -1116,6 +1164,12 @@ fn status_of(port: u16, keep_awake: bool, bound: Option<std::net::SocketAddr>) -
     }
 }
 
+/// The QR's link on an HTTPS listener: the certificate's name, not the
+/// address, so the phone's browser accepts it.
+fn https_setup_url(name: &str, port: u16, token: &str) -> String {
+    format!("https://{name}:{port}/#token={token}")
+}
+
 /// `status_of` off the runtime, with the card's settings read first.
 async fn status(
     remote: &Remote,
@@ -1123,7 +1177,19 @@ async fn status(
 ) -> Result<RemoteStatus, String> {
     let port = remote.port();
     let keep_awake = remote.keep_awake();
-    crate::blocking(move || Ok::<_, String>(status_of(port, keep_awake, bound))).await
+    let https = bound.is_some()
+        && remote
+            .server
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(Server::https);
+    let https_name = if https {
+        nightloom_service::tls::tailnet_domain().await
+    } else {
+        None
+    };
+    crate::blocking(move || Ok::<_, String>(status_of(port, keep_awake, bound, https_name))).await
 }
 
 /// The card's read: is the listener up, where, and the token.
@@ -1212,9 +1278,30 @@ async fn start_listener(
             t
         }
     };
+    renew_certificate().await;
     let bound = rebind(remote, IpAddr::V4(ip), port, token).await?;
     remote.apply_awake(app, remote.keep_awake());
     status(remote, Some(bound)).await
+}
+
+/// Renew Tailscale's certificate at each start (item 246 wave 3, design
+/// §2.7) — only where HTTPS is already set up, i.e. `tailscale cert`'s
+/// files are in `~/.nightloom/remote/` (blocker 660 is his switch; nothing
+/// runs without them). Tailscale replaces the files only near expiry. A
+/// failure is logged and the listener starts on the files it has.
+async fn renew_certificate() {
+    use nightloom_service::tls;
+    let Some(dir) = tls::dir() else { return };
+    let (cert, key) = tls::files(&dir);
+    if !cert.is_file() || !key.is_file() {
+        return;
+    }
+    let Some(name) = tls::tailnet_domain().await else {
+        return;
+    };
+    if let Err(e) = tls::refresh(&dir, &name).await {
+        eprintln!("remote: could not renew the HTTPS certificate: {e}");
+    }
 }
 
 /// Start the listener at `ip:port` with `token`, in place of the one
@@ -1275,6 +1362,16 @@ pub async fn remote_stop(
     if let Some(server) = remote.server.lock().await.take() {
         server.stop().await;
     }
+    // The voice programs go with the listener (item 246 wave 3).
+    let voice = remote
+        .host
+        .voice
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone();
+    if let Some(engine) = voice {
+        engine.stop().await;
+    }
     remote.apply_awake(&app, false);
     remote.persist(false);
     status(&remote, None).await
@@ -1326,6 +1423,14 @@ pub async fn remote_token(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_https_listeners_link_names_the_certificates_machine() {
+        assert_eq!(
+            https_setup_url("mac.tail1234.ts.net", 8642, "tok"),
+            "https://mac.tail1234.ts.net:8642/#token=tok"
+        );
+    }
 
     #[test]
     fn a_done_answer_is_the_reply_or_the_windows_sentence() {

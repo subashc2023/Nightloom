@@ -150,8 +150,18 @@ vi.mock("./state.svelte", () => {
     refreshProjects: async () => calls.push("refreshProjects"),
     refreshSessions: async () => {},
     remoteNewChat: async () => "sent",
-    remoteSend: async (chat: string | null, text: string, images: unknown[] = []) => {
-      calls.push(images.length ? `remoteSend ${chat} ${text} ${images.length}` : `remoteSend ${chat} ${text}`);
+    remoteSend: async (
+      chat: string | null,
+      text: string,
+      images: unknown[] = [],
+      _documents: unknown[] = [],
+      _council: unknown = null,
+      spoken = false,
+    ) => {
+      calls.push(
+        (images.length ? `remoteSend ${chat} ${text} ${images.length}` : `remoteSend ${chat} ${text}`) +
+          (spoken ? " spoken" : ""),
+      );
       return "sent";
     },
     removeBlock: async () => true,
@@ -327,6 +337,11 @@ describe("a message from the phone", () => {
   it("text alone goes the way it always went", async () => {
     expect(await runSend({ id: 1, chat: "c1", text: "hello" })).toBe("sent");
     expect(calls).toEqual(["remoteSend c1 hello"]);
+  });
+
+  it("a message said aloud in voice mode goes marked spoken (wave 3)", async () => {
+    expect(await runSend({ id: 1, chat: "c1", text: "what's the weather", spoken: true })).toBe("sent");
+    expect(calls).toEqual(["remoteSend c1 what's the weather spoken"]);
   });
 
   it("a photo goes with the message through the phone's own send path", async () => {
