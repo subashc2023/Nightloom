@@ -72,7 +72,7 @@
         {#if asking}
           <span class="as-live">answering…</span>
           <span class="as-grow"></span>
-          <button class="as-btn" onclick={onstop} disabled={aside.thread === null}>Stop</button>
+          <button class="as-btn" onclick={onstop}>Stop</button>
         {:else if aside.answer}
           <span class="as-grow"></span>
           <button class="as-btn" onclick={() => oncopy(aside!.answer)}>Copy</button>

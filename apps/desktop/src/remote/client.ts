@@ -58,6 +58,9 @@ export interface RemoteState {
    *  listener from before wave 1 sends none, and the page greys out what
    *  is missing. */
   features?: string[];
+  /** This host's voice (item 246 wave 3), or null when its programs are
+   *  not set up — the page then offers keyboard dictation instead. */
+  voice?: import("./voice/socket").VoiceInfo | null;
 }
 
 /** Whether the host serves `name` (design §4's `features`). */
@@ -303,7 +306,9 @@ export function searchSummary(r: SearchResult | null): string {
 }
 
 // ---- asides -------------------------------------------------------------------
-// The Mac's shapes, from 2A's patch note (`246w2-patch-p2a-to-p2c.md`, ~4:05 AM).
+// The Mac's shapes, from 2A's patch note (`246w2-patch-p2a-to-p2c.md`, current version ~4:25 AM:
+// 2C's first proposal with 2A's differences). The first version's `op` / threads shapes are
+// still read, so either host build works.
 
 /** One aside exchange as the page holds it: the question, the answer so
  *  far, and whether it has ended (well, stopped, or failed). */
@@ -333,6 +338,8 @@ export interface AsideStarted {
 export type AsideEvent =
   | { kind: "delta"; seq: number; text: string }
   | { kind: "done"; seq: number; answer: string | null; error: string | null; cancelled: boolean };
+// (An `error` event — `{kind: "error", seq, error, answer, cancelled}` — is
+// read as a `done` with its `error` set.)
 
 export function parseAsideEvent(data: string): AsideEvent | null {
   let v: Record<string, unknown>;
@@ -347,12 +354,12 @@ export function parseAsideEvent(data: string): AsideEvent | null {
   const seq = v.seq;
   const kind = typeof v.kind === "string" ? v.kind : "delta";
   if (kind === "delta" && typeof v.text === "string") return { kind, seq, text: v.text };
-  if (kind === "done")
+  if (kind === "done" || kind === "error")
     return {
-      kind,
+      kind: "done",
       seq,
       answer: typeof v.answer === "string" ? v.answer : null,
-      error: typeof v.error === "string" && v.error.trim() ? v.error : null,
+      error: typeof v.error === "string" && v.error.trim() ? v.error : kind === "error" ? "The aside failed." : null,
       cancelled: v.cancelled === true,
     };
   return null;
@@ -365,8 +372,8 @@ export function foldAside(a: Aside, ev: AsideEvent): Aside {
   if (ev.seq !== a.seq) return a;
   if (ev.kind === "delta") return a.state === "asking" ? { ...a, answer: a.answer + ev.text } : a;
   const answer = ev.answer && ev.answer.trim() ? ev.answer : a.answer;
-  if (ev.error) return { ...a, answer, state: "failed", error: ev.error };
   if (ev.cancelled) return { ...a, answer, state: "failed", error: "Stopped — what had arrived is kept." };
+  if (ev.error) return { ...a, answer, state: "failed", error: ev.error };
   return { ...a, answer, state: "done" };
 }
 
@@ -389,12 +396,49 @@ export interface PastAside {
   thread: string;
 }
 
-/** The threads' exchanges, newest first, without `skip` (the one on the
- *  sheet's card) and without any still asking. */
-export function pastAsides(threads: AsideThread[], skip: number | null = null): PastAside[] {
+/** One row of the flat list 2A serves (current version): Past threads
+ *  first (oldest closed first), then the open cards' exchanges. */
+export interface AsideRow {
+  seq?: number | null;
+  question: string;
+  answer: string;
+  at?: string | null;
+  thread?: number | null;
+  key?: string | null;
+  open?: boolean;
+  name?: string | null;
+  error?: string | null;
+  cancelled?: boolean;
+  asking?: boolean;
+}
+
+/** The exchanges, newest first, without `skip` (the one on the sheet's
+ *  card) and without any still asking. Reads 2A's flat rows or its first
+ *  version's threads. */
+export function pastAsides(list: (AsideThread | AsideRow)[], skip: number | null = null): PastAside[] {
+  if (!Array.isArray(list)) return [];
+  const threads: AsideThread[] = list.map((x) =>
+    "turns" in x && Array.isArray(x.turns)
+      ? x
+      : {
+          id: (x as AsideRow).thread ?? null,
+          open: (x as AsideRow).open ?? (x as AsideRow).thread != null,
+          name: (x as AsideRow).name ?? null,
+          turns: [
+            {
+              seq: (x as AsideRow).seq ?? null,
+              question: (x as AsideRow).question,
+              answer: (x as AsideRow).answer,
+              error: (x as AsideRow).error ?? null,
+              asking: (x as AsideRow).asking,
+            },
+          ],
+        },
+  );
   const out: PastAside[] = [];
   threads.forEach((t, i) => {
-    const label = t.name?.trim() || (t.open ? "Open card" : `Earlier thread ${i + 1}`);
+    const label = t.name?.trim() || (t.open ? "Open card" : "Closed thread");
+    void i;
     for (const turn of t.turns) {
       if (turn.asking || (skip !== null && turn.seq === skip)) continue;
       out.push({ seq: turn.seq, question: turn.question, answer: turn.answer || turn.error || "", thread: label });
@@ -665,19 +709,20 @@ export class Client {
    *  exchange's number; the answer streams as `aside-event`s. */
   async aside(chat: string, text: string, project: string | null = null, thread: number | null = null): Promise<AsideStarted> {
     const q = project ? `?project=${encodeURIComponent(project)}` : "";
-    const body: Record<string, unknown> = { op: "ask", text };
+    const body: Record<string, unknown> = { text };
     if (thread !== null) body.thread = thread;
     const r = await this.call(`/chats/${encodeURIComponent(chat)}/aside${q}`, { method: "POST", body: JSON.stringify(body) });
     const v = (await r.json()) as Partial<AsideStarted>;
     return { chat: typeof v.chat === "string" ? v.chat : chat, thread: typeof v.thread === "number" ? v.thread : null, seq: typeof v.seq === "number" ? v.seq : null };
   }
 
-  /** Stop a card's running exchange (the Mac's × on it). */
-  async stopAside(chat: string, thread: number): Promise<void> {
-    await this.call(`/chats/${encodeURIComponent(chat)}/aside`, { method: "POST", body: JSON.stringify({ op: "stop", thread }) });
+  /** Stop a running exchange (the Mac's × on its card); 409 when it is
+   *  no longer answering. */
+  async stopAside(chat: string, seq: number): Promise<void> {
+    await this.call(`/chats/${encodeURIComponent(chat)}/aside/cancel`, { method: "POST", body: JSON.stringify({ seq }) });
   }
 
-  async asides(chat: string): Promise<AsideThread[]> {
+  async asides(chat: string): Promise<(AsideThread | AsideRow)[]> {
     return (await this.call(`/chats/${encodeURIComponent(chat)}/asides`)).json();
   }
 

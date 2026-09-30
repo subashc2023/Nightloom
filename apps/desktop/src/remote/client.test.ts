@@ -451,6 +451,15 @@ describe("asides (wave 2C, 2A's shapes)", () => {
       error: null,
       cancelled: false,
     });
+    // 2A's current version: an error row, with what had arrived and whether it was a stop.
+    expect(parseAsideEvent('{"kind":"error","chat":"c1","thread":3,"seq":4,"error":"the aside was cancelled","answer":"half","cancelled":true}')).toEqual({
+      kind: "done",
+      seq: 4,
+      answer: "half",
+      error: "the aside was cancelled",
+      cancelled: true,
+    });
+    expect(parseAsideEvent('{"kind":"done","chat":"c1","seq":4,"answer":"A","is_error":false,"cost_usd":null}')).toMatchObject({ error: null, cancelled: false });
     expect(parseAsideEvent("not json")).toBeNull();
     expect(parseAsideEvent('{"kind":"delta","text":"no seq"}')).toBeNull();
     expect(parseAsideEvent('{"kind":"odd","seq":1}')).toBeNull();
@@ -494,6 +503,22 @@ describe("asides (wave 2C, 2A's shapes)", () => {
     expect(past.map((p) => p.question)).toEqual(["q1", "old"]);
     expect(past[1].thread).toBe("Named");
     expect(past[0].thread).toBe("Open card");
+  });
+
+  it("reads 2A's flat rows too (Past first, then the open cards')", () => {
+    const past = pastAsides(
+      [
+        { seq: null, question: "old", answer: "a0", at: "2026-09-30T03:00:00Z", thread: null, key: "k1", open: false, name: "Named" },
+        { seq: 4, question: "q4", answer: "a4", at: null, thread: 3, open: true },
+        { seq: 5, question: "q5", answer: "", at: null, thread: 3, open: true, asking: true },
+        { seq: 6, question: "q6", answer: "a6", at: null, thread: 3, open: true },
+      ],
+      4,
+    );
+    expect(past.map((p) => [p.question, p.thread])).toEqual([
+      ["q6", "Open card"],
+      ["old", "Named"],
+    ]);
   });
 });
 

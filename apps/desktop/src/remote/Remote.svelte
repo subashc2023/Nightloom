@@ -79,6 +79,7 @@
   import ContextSheet from "./ContextSheet.svelte";
   import RunningSheet from "./RunningSheet.svelte";
   import UsageLine from "./UsageLine.svelte";
+  import MicButton from "./voice/MicButton.svelte";
   import NotesSheet from "./NotesSheet.svelte";
   import AsideSheet from "./AsideSheet.svelte";
   import CouncilSheet from "./CouncilSheet.svelte";
@@ -1038,9 +1039,9 @@
 
   async function stopAside() {
     const a = chatId ? asides[chatId] : null;
-    if (!client || !a || a.thread === null) return;
+    if (!client || !a || a.state !== "asking") return;
     try {
-      await client.stopAside(a.chat, a.thread);
+      await client.stopAside(a.chat, a.seq);
     } catch (e) {
       asideProblem = e instanceof ApiError && (e.status === 404 || e.status === 501) ? "Stop is not available on this Mac." : String(e instanceof Error ? e.message : e);
     }
@@ -1724,8 +1725,19 @@
               }
             }}
           ></textarea>
-          <!-- Wave 3B mounts the mic button here (design §2.5, the orb):
-               beside Send, shown while the box is empty. -->
+          <!-- Voice (item 246 wave 3B, its patch note): the orb, or keyboard
+               dictation with auto-send; shown while the box is empty. -->
+          <MicButton
+            {token}
+            chat={chatId}
+            {title}
+            voice={remote.voice ?? null}
+            {draft}
+            {box}
+            {still}
+            send={() => void sendNow()}
+            onkeep={(t) => setDraft(draft.trim() ? `${draft}\n${t}` : t)}
+          />
           {#if busyHere && link === "online" && !draft.trim()}
             <button class="send stop" onclick={stop} aria-label="Stop the turn">{@render icon("stop")}</button>
           {:else}
