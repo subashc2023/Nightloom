@@ -128,7 +128,13 @@
        its seats against the message's share of the window like
        subagents, so the number is here before the send. -->
   <div class="council-line council-budget">
-    <span class="council-hint">{councilBudgetLine(app.draft.agentLimits.budget_pct, app.planUsage?.five_hour ?? null, app.draft.agentLimits.stop_at)}</span>
+    <span class="council-hint">{app.draft.agentLimits.off.budget_pct
+        ? "No per-message budget (switched off)"
+        : councilBudgetLine(
+            app.draft.agentLimits.budget_pct,
+            app.planUsage?.five_hour ?? null,
+            app.draft.agentLimits.off.stop_at ? 100 : app.draft.agentLimits.stop_at,
+          )}</span>
   </div>
   <div class="council-line council-send">
     <button class="ns-btn ghost small" onclick={onclose}>Cancel</button>

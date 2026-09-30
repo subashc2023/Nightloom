@@ -2877,9 +2877,13 @@ mod tests {
         // He is at the Mac, and says nothing: held for the hold, then refused,
         // and the hold leaves the ledger.
         idle_ms.store(5_000, std::sync::atomic::Ordering::SeqCst);
-        let t = std::time::Instant::now();
+        // Timed on the clock the hold keeps — the wall clock in whole ms
+        // (backlog 232): ~~a monotonic `Instant`~~ read 99.990 ms of a
+        // 100 ms hold whose two ends were truncated to the ms.
+        let t = chrono::Utc::now().timestamp_millis();
         assert_eq!(hold_for(&dir, read, now + 3, 100, &s).decision(), "deny");
-        assert!(t.elapsed() >= std::time::Duration::from_millis(100));
+        let held = chrono::Utc::now().timestamp_millis() - t;
+        assert!(held >= 100, "held {held} ms, not the whole hold");
         let b = super::read_turn_budget(&dir).unwrap();
         assert!(b.pending_since_ms.is_none() && b.holds.is_empty(), "{b:?}");
         // Held, and he clicks Continue while it waits: it goes on.
@@ -2919,12 +2923,10 @@ mod tests {
         idle_ms.store(super::AWAY_MS, std::sync::atomic::Ordering::SeqCst);
         assert_eq!(hold_for(&dir, read, now + 9, 60_000, &s).decision(), "deny");
         idle_ms.store(1_000, std::sync::atomic::Ordering::SeqCst);
-        let t = std::time::Instant::now();
+        let t = chrono::Utc::now().timestamp_millis();
         assert_eq!(hold_for(&dir, read, now + 10, 100, &s).decision(), "deny");
-        assert!(
-            t.elapsed() >= std::time::Duration::from_millis(100),
-            "held, not passed"
-        );
+        let held = chrono::Utc::now().timestamp_millis() - t;
+        assert!(held >= 100, "held {held} ms, not passed");
         // Stop here, with him there: refused at once, recorded.
         super::write_override(&dir, false, chrono::Utc::now().timestamp_millis()).unwrap();
         assert_eq!(

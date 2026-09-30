@@ -738,7 +738,7 @@ export const app = $state({
   noteFrom: null as null | "rail" | "settings",
   /** Which pane Settings opens on next time, then clears; the round trip
    *  back from a model's file lands on the Model instructions row. */
-  settingsOpenOn: null as null | "models" | "usage",
+  settingsOpenOn: null as null | "models" | "usage" | "claude-code",
   /**
    * The library's unsaved edit, kept here rather than in the component so
    * that no way out of the modal loses typed text (memory never-lose-work):

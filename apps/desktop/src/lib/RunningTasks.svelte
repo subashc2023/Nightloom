@@ -43,10 +43,13 @@
   function capsLine(): string {
     const l = app.draft.agentLimits;
     const pct = app.planUsage?.five_hour ?? null;
-    const cap = pct !== null && pct >= l.slow_at ? Math.min(l.per_turn, l.slow_to) : l.per_turn;
-    const window = pct === null ? "" : ` · window ${pct}%${pct >= l.stop_at ? " · spawns refused" : pct >= l.slow_at ? " · slowed" : ""}`;
+    // A switched-off limit (backlog 253) is not quoted.
+    const slowOn = !l.off.slow && pct !== null && pct >= l.slow_at;
+    const stopOn = !l.off.stop_at && pct !== null && pct >= l.stop_at;
+    const cap = l.off.per_turn ? (slowOn ? l.slow_to : null) : slowOn ? Math.min(l.per_turn, l.slow_to) : l.per_turn;
+    const window = pct === null ? "" : ` · window ${pct}%${stopOn ? " · spawns refused" : slowOn ? " · slowed" : ""}`;
     const budget = app.turnBudget ? ` · ${budgetChip(app.turnBudget)}` : "";
-    return ` · ${rows.length} of ${cap}${window}${budget}`;
+    return ` · ${cap === null ? `${rows.length}` : `${rows.length} of ${cap}`}${window}${budget}`;
   }
 
   function elapsed(r: SubagentRow): string {

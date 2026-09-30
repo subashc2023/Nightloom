@@ -567,9 +567,7 @@
   });
   /** The mark is set in Settings → Subscription since backlog 258. */
   function openHandoffSettings(): void {
-    // `settingsOpenOn`'s declared type (state.svelte.ts, W1's) names only
-    // models and usage; the pane id is read by `openingPane` as any string.
-    (app as { settingsOpenOn: string | null }).settingsOpenOn = "claude-code";
+    app.settingsOpenOn = "claude-code";
     app.showContext = false;
     app.showSettings = true;
   }
