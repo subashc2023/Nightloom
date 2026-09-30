@@ -28,10 +28,13 @@ describe("the background's routing (pure)", () => {
     expect(eventHost(bg, undefined)).toBeNull();
   });
 
-  it("sends only a named Claude Code turn to the background", () => {
+  it("sends a named turn to the background, on either engine (A4)", () => {
     expect(canDetach("claude-code", "a")).toBe(true);
     expect(canDetach("claude-code", null)).toBe(false);
-    expect(canDetach("anthropic", "a")).toBe(false);
+    // ~~`expect(canDetach("anthropic", "a")).toBe(false)`~~ — since A4 the
+    // provider engine's turn goes off screen too.
+    expect(canDetach("anthropic", "a")).toBe(true);
+    expect(canDetach(null, "a")).toBe(false);
   });
 
   it("names the chat in its toasts", () => {

@@ -76,6 +76,7 @@ import {
   eventHost,
   firstUserText,
   liveHost,
+  queuedElsewhereToast,
   settlePlan,
   type Background,
   type Parked,
@@ -5177,6 +5178,9 @@ interface TurnCtx {
   /** He stopped it while it ran off screen (A4): the sleep watch does not
    *  read a Stop as sleep's doing. The screen's turn has `stopped`. */
   stopped?: boolean;
+  /** A provider (API key) turn (A4): one runs at a time, so a message in
+   *  another chat queues while it runs off screen. */
+  provider?: boolean;
 }
 
 let turnKeys = 0;
@@ -5295,9 +5299,23 @@ export function canDeleteChat(id: string): boolean {
 }
 
 /** Whether a chat can be opened while a turn runs without parking it —
- *  the Claude Code engine's turns go to the background (A2). */
+ *  ~~the Claude Code engine's turns go to the background (A2)~~ either
+ *  engine's since A4. */
 export function browseFree(): boolean {
-  return app.connection?.engine === "claude-code";
+  return !!app.connection;
+}
+
+/** The provider turn running off screen, if one does (A4): the engine
+ *  runs one at a time, so a message typed elsewhere meanwhile queues in
+ *  its chat and sends when that turn ends. */
+export function providerElsewhere(): string | null {
+  for (const [id, t] of bgTurns) if (t.provider) return id;
+  return null;
+}
+/** Its name, for the queue's toast. */
+export function providerElsewhereName(): string | null {
+  const id = providerElsewhere();
+  return id ? backgroundName(id) : null;
 }
 
 /** Whether the turn on screen can go to the background right now (A2):
@@ -5717,7 +5735,7 @@ export async function remoteSend(chat: string | null, text: string): Promise<"se
       throw new Error(app.error ? `the desktop could not open that chat: ${app.error}` : "the desktop could not open that chat");
     }
   }
-  if (app.busy) {
+  if (app.busy || providerElsewhere()) {
     enqueueMessage(draftKey(app.activeSessionId, app.project?.id, app.pendingMode), text, []);
     return "queued";
   }
@@ -5863,6 +5881,18 @@ export async function send(
   if (app.connection.engine === "claude-code") {
     return sendAgent(text, images, documents, council);
   }
+  // One provider turn at a time (A4): a turn running off screen holds the
+  // engine. The composer queues before it gets here; any other caller's
+  // words are queued in this chat too, never dropped.
+  const elsewhere = providerElsewhereName();
+  if (elsewhere) {
+    enqueueMessage(draftKey(app.activeSessionId, app.project?.id, app.pendingMode), text, []);
+    addToast(
+      queuedElsewhereToast(elsewhere) +
+        (images.length + documents.length > 0 ? " (without its attachments — add them again)" : ""),
+    );
+    return;
+  }
   // The pending chat's draft key, taken now: it names the project and the
   // kind this send is making a chat in (nightshift backlog 094).
   const pendingKey = app.activeSessionId === null ? newDraftKey(app.project?.id, app.pendingMode) : null;
@@ -5882,45 +5912,56 @@ export async function send(
   app.liveUsage = null;
   app.turnSeq += 1;
   app.busy = true;
+  // This turn, for the background (backlog 159, A4): as the agent
+  // engine's since A2 — he may open another chat while it runs, and it
+  // goes off screen instead of parking once its chat has a name.
+  const turn: TurnCtx = { chat: app.activeSessionId, detached: false, key: newTurnKey(), choice, provider: true };
+  fg = turn;
   let failed: string | null = null;
   try {
     await api.send(
       text,
       images.length > 0 ? images : undefined,
       documents.length > 0 ? documents : undefined,
+      turn.key,
     );
   } catch (e) {
     failed = String(e);
-    app.error = failed;
-  } finally {
-    // The banner for an unfocused window (backlog 079), before the live
-    // state it reads is cleared.
-    notifyTurnEnded(failed);
-    app.live = null;
-    // The trailing assistant message now carries the same reading.
-    app.liveUsage = null;
-    // The turn is over: anything still parked was answered by the backend
-    // (or died with the turn), so the prompts can no longer decide anything.
-    app.pendingApprovals = [];
-    app.busy = false;
-    // Sessions are created lazily on first send; the id is picked up here.
-    await settleTurnView(pendingKey, null, choice);
-    void refreshSessions();
-    // The turn may have written to the docspace, and the sidebar showing a
-    // note the model just left is the visible half of "shared knowledge".
-    void refreshNotes();
-    // And it may have remembered something; the Dream badge follows. The
-    // turn was logged, so the Capture count follows too.
-    void refreshDreamStatus();
-    void refreshCaptureStatus();
-    if (compactedThisTurn) {
-      compactedThisTurn = false;
-      void maybeAutoDream();
-    }
-    // Last, once the turn is fully over: was it sleep that ended it
-    // (nightshift backlog 101)?
-    sleepTurnEnded(failed !== null);
   }
+  // Off screen at its end (A4): nothing below is about the chat on screen.
+  if (turn.detached) {
+    endBackground(turn, failed, null);
+    return;
+  }
+  if (fg === turn) fg = null;
+  if (failed !== null) app.error = failed;
+  // The banner for an unfocused window (backlog 079), before the live
+  // state it reads is cleared.
+  notifyTurnEnded(failed);
+  app.live = null;
+  // The trailing assistant message now carries the same reading.
+  app.liveUsage = null;
+  // The turn is over: anything still parked was answered by the backend
+  // (or died with the turn), so the prompts can no longer decide anything.
+  app.pendingApprovals = [];
+  app.busy = false;
+  // Sessions are created lazily on first send; the id is picked up here.
+  await settleTurnView(pendingKey, turn.chat, choice);
+  void refreshSessions();
+  // The turn may have written to the docspace, and the sidebar showing a
+  // note the model just left is the visible half of "shared knowledge".
+  void refreshNotes();
+  // And it may have remembered something; the Dream badge follows. The
+  // turn was logged, so the Capture count follows too.
+  void refreshDreamStatus();
+  void refreshCaptureStatus();
+  if (compactedThisTurn) {
+    compactedThisTurn = false;
+    void maybeAutoDream();
+  }
+  // Last, once the turn is fully over: was it sleep that ended it
+  // (nightshift backlog 101)?
+  sleepTurnEnded(failed !== null);
 }
 
 /**

@@ -14,6 +14,7 @@
     cancelTurn,
     continueChat,
     runningChatName,
+    providerElsewhereName,
     contextUsed,
     pickerModels,
     send,
@@ -912,7 +913,8 @@
    * the explicit choice and goes regardless.
    */
   async function drain(explicit = false): Promise<void> {
-    if (app.busy || !app.connection) return;
+    // A provider turn off screen holds the engine (backlog 159, A4).
+    if (app.busy || !app.connection || providerElsewhereName()) return;
     if (!explicit && hold) return;
     // The held row is where this message leaves from (backlog 194).
     const head = queue[0];
@@ -955,6 +957,10 @@
     enqueueMessage(key, text, attachments.slice());
     clearDraft(key);
     if (app.parked) addToast(queuedElsewhereToast(runningChatName()));
+    else if (!app.busy) {
+      const elsewhere = providerElsewhereName();
+      if (elsewhere) addToast(queuedElsewhereToast(elsewhere));
+    }
     afterSend(key);
   }
 
@@ -983,7 +989,8 @@
     // What he sent — or queued behind the running turn — is in the ⌘⇧V
     // list too (blocker 282's default).
     recordText("sent", text);
-    if (app.busy) {
+    // Or a provider turn off screen (A4): one runs at a time.
+    if (app.busy || providerElsewhereName()) {
       enqueue();
       return;
     }

@@ -144,10 +144,11 @@ export function eventHost<H>(background: Record<string, H>, chat: string | null 
   return chat ? (background[chat] ?? null) : null;
 }
 
-/** Whether the turn on screen may go to the background: on the Claude
- *  Code engine, once the chat it runs in has a name. */
+/** Whether the turn on screen may go to the background: ~~on the Claude
+ *  Code engine~~ on either engine since A4 (the provider engine's turn no
+ *  longer holds the engine), once the chat it runs in has a name. */
 export function canDetach(engine: string | null | undefined, chat: string | null): boolean {
-  return engine === "claude-code" && chat !== null;
+  return !!engine && chat !== null;
 }
 
 /** The first message of a chat's log, for naming a chat that has no
