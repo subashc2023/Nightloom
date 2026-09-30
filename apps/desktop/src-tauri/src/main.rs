@@ -3045,6 +3045,16 @@ async fn send_agent(
     let _awake = power.acquire();
 
     let log_dir = state.log_dir().await;
+    // The project the turn runs in (backlog 159, A4; blocker 630: he may
+    // switch projects while it runs off screen): a folder granted "for the
+    // project" mid-turn goes to this one, not the one open by then.
+    let turn_project = state
+        .workspaces
+        .lock()
+        .await
+        .active
+        .as_ref()
+        .map(|p| p.id.clone());
     let pending = *state.pending_mode.lock().await;
     let pending_kind = *state.pending_kind.lock().await;
     // The open chat's own lock, held for the turn — no other chat's
@@ -3410,13 +3420,22 @@ async fn send_agent(
                 GrantScope::Chat => granted_to_chat.push(grant.dir.clone()),
                 GrantScope::Project => {
                     let mut guard = state.workspaces.lock().await;
-                    let written = guard.active.clone().map(|p| {
-                        let mut list = p.extra_folders.clone();
-                        list.push(grant.dir.clone());
-                        guard.registry.set_extra_folders(&p.id, list)
-                    });
+                    // The turn's own project (A4), which may no longer be
+                    // the open one.
+                    let written = turn_project
+                        .as_deref()
+                        .and_then(|id| guard.registry.find(id).cloned())
+                        .map(|p| {
+                            let mut list = p.extra_folders.clone();
+                            list.push(grant.dir.clone());
+                            guard.registry.set_extra_folders(&p.id, list)
+                        });
                     match written {
-                        Some(Ok(project)) => guard.active = Some(project),
+                        Some(Ok(project)) => {
+                            if guard.active.as_ref().is_some_and(|a| a.id == project.id) {
+                                guard.active = Some(project);
+                            }
+                        }
                         Some(Err(e)) => {
                             let _ = app.emit("turn-notice", format!("folder not granted: {e}"));
                         }

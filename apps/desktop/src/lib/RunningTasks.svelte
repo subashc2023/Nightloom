@@ -23,7 +23,7 @@
     liveChats,
     openChatSubagents,
     openContent,
-    openSession,
+    openRunningChat,
     subagentRunning,
     type LiveChat,
     type SubagentRow,
@@ -55,7 +55,8 @@
   async function openChat(c: LiveChat) {
     if (!c.session || c.onScreen) return;
     app.showTasks = false;
-    await openSession(c.session);
+    // In its own project first, when that is not the open one (A4).
+    await openRunningChat(c.session);
   }
 
   /** The open chat's rows (backlog 160: the store holds every chat's). */

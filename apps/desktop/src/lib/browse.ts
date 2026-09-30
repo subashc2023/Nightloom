@@ -135,6 +135,19 @@ export interface Background<Segment = unknown, Approval = unknown> extends Parke
   /** Its CLI's init line (A4): the slash commands and connectors the
    *  composer and the Context page show, back with the chat. */
   agentInit?: AgentInit | null;
+  /** The project it runs in, and that project's name (A4, blocker 630:
+   *  he may switch projects while it runs): its row, toast and banner say
+   *  where it is, and opening it goes back to that project first. */
+  project?: string | null;
+  projectName?: string | null;
+  /** Its name as its project's list gave it when it left the screen — the
+   *  list on screen may be another project's by the time it ends. */
+  name?: string | null;
+}
+
+/** Whether a background record runs in a project other than `open`. */
+export function inOtherProject(b: { project?: string | null }, open: string | null): boolean {
+  return b.project !== undefined && (b.project ?? null) !== open;
 }
 
 /** The background chat an event belongs to, or null for the chat on

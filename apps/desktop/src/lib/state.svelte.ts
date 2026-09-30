@@ -75,6 +75,7 @@ import {
   canDetach,
   eventHost,
   firstUserText,
+  inOtherProject,
   liveHost,
   queuedElsewhereToast,
   settlePlan,
@@ -2211,7 +2212,13 @@ function budgetTick(): void {
     notePresence(onScreen, false);
     void readTurnBudget(onScreen);
   }
-  for (const id of bgTurns.keys()) void readTurnBudget(id);
+  // A chat in another project (blocker 630): its ledger is under that
+  // project's logs, which the backend does not read from here — its last
+  // reading stands until it is back on screen.
+  for (const id of bgTurns.keys()) {
+    const b = app.background[id];
+    if (!b || !inOtherProject(b, app.project?.id ?? null)) void readTurnBudget(id);
+  }
 }
 
 let planUsageClock: ReturnType<typeof setInterval> | null = null;
@@ -2256,9 +2263,18 @@ export async function useKnowledgeDir(dir: string | null): Promise<void> {
  * chat list has to be re-read after, since it comes from the project folder.
  */
 export async function useProject(id: string | null): Promise<void> {
-  // Any chat's turn (A4's gates audit), not only the screen's: a chat
-  // running off screen belongs to this project's list and tabs.
-  if (turnsRunning()) return;
+  // ~~`if (app.busy) return;`~~, ~~`if (turnsRunning()) return;`~~ (A4's
+  // first gates audit) — blocker 630, "allow": the chat on screen that is
+  // running goes off screen and keeps its turn, its record naming this
+  // project; only a New chat's first turn, not yet named, waits.
+  if (app.busy || app.parked) {
+    if (app.parked && fg && canDetach(app.connection?.engine, fg.chat)) promoteParked();
+    else if (app.busy) detach();
+    if (app.busy || app.parked) {
+      addToast("This chat's first turn is just starting — switch projects in a moment");
+      return;
+    }
+  }
   try {
     if (id) {
       app.project = await api.openProject(id);
@@ -5216,10 +5232,49 @@ export function backgroundTurnOf(chat: string): string | null {
  *  nor a New chat the list has not re-read yet; its first message names
  *  it, quoted. */
 function backgroundName(id: string, events?: SessionEvent[]): string {
-  const s = app.sessions.find((x) => x.id === id);
+  const b = app.background[id];
+  // In another project (blocker 630): the list on screen is not its own,
+  // so the name it had when it left the screen, and where it is.
+  const where = b && inOtherProject(b, app.project?.id ?? null) ? ` in ${b.projectName ?? "unfiled chats"}` : "";
+  const s = where ? undefined : app.sessions.find((x) => x.id === id);
   if (s) return chatName(s.title, s.first_user);
-  const first = firstUserText(events ?? app.background[id]?.events ?? []);
-  return first ? `“${chatName(null, first)}”` : "a chat off screen";
+  if (b?.name) return b.name + where;
+  const first = firstUserText(events ?? b?.events ?? []);
+  return (first ? `“${chatName(null, first)}”` : "a chat off screen") + where;
+}
+
+/** Where a chat going off screen runs, and what its list calls it (A4). */
+function whereItRuns(id: string): { project: string | null; projectName: string | null; name: string | null } {
+  const s = app.sessions.find((x) => x.id === id);
+  return {
+    project: app.project?.id ?? null,
+    projectName: app.project?.name ?? null,
+    name: s ? chatName(s.title, s.first_user) : null,
+  };
+}
+
+/** Whether the project can be left or switched now (blocker 630, "allow"):
+ *  a running chat goes off screen and keeps its turn. The one wait is a
+ *  New chat's first turn before its first event names the chat — it has
+ *  no id to be kept under yet. */
+export function canLeaveProject(): boolean {
+  // Re-read as the first event names the chat (`fg` is not state).
+  void app.liveVersion;
+  if (app.parked) return fg !== null && canDetach(app.connection?.engine, fg.chat);
+  return canLeaveRunning();
+}
+
+/** Open a chat running off screen, from anywhere (A4): its own project
+ *  first when that is not the open one; the chat then comes back on
+ *  screen, streaming, as from its tab. */
+export async function openRunningChat(id: string): Promise<void> {
+  const b = app.background[id];
+  if (b && inOtherProject(b, app.project?.id ?? null)) {
+    await useProject(b.project ?? null);
+    if ((app.project?.id ?? null) !== (b.project ?? null)) return;
+  }
+  // Its restored tab may have brought it back already.
+  if (app.background[id] || app.activeSessionId !== id) await openSession(id);
 }
 
 /** Every chat whose turn runs now (A4), for the Running-tasks panel and
@@ -5234,6 +5289,8 @@ export interface LiveChat {
   waiting: number;
 }
 export function liveChats(): LiveChat[] {
+  // (A4, blocker 630: a row's name says which project it runs in when that
+  // is not the open one — `backgroundName`.)
   const started = (events: SessionEvent[]): number | null => {
     for (let i = events.length - 1; i >= 0; i--) {
       const e = events[i];
@@ -5274,8 +5331,9 @@ export function liveChats(): LiveChat[] {
 }
 
 /** Whether a turn runs in any chat — on screen, parked or off screen
- *  (A4's gates audit): what the app-wide controls wait on (leaving the
- *  project, a CLI update), where `app.busy` is "the chat on screen runs". */
+ *  (A4's gates audit): what a CLI update waits on, where `app.busy` is
+ *  "the chat on screen runs". ~~Leaving the project too~~ — blocker 630
+ *  ("allow"): `canLeaveProject`. */
 export function turnsRunning(): boolean {
   return app.busy || app.parked !== null || Object.keys(app.background).length > 0;
 }
@@ -5359,6 +5417,7 @@ function detach(): boolean {
     // shows its own, not this one's.
     budget: app.budgetSession === id ? app.turnBudget : null,
     agentInit: app.agentInit,
+    ...whereItRuns(id),
   };
   app.pendingApprovals = app.pendingApprovals.filter((r) => !mine(r));
   t.detached = true;
@@ -5389,6 +5448,7 @@ function promoteParked(): void {
     session: id,
     approvals: app.pendingApprovals.filter((r) => !r.chat || r.chat === id),
     budget: app.budgetSession === id ? app.turnBudget : null,
+    ...whereItRuns(id),
   };
   app.pendingApprovals = app.pendingApprovals.filter((r) => r.chat && r.chat !== id);
   app.parked = null;
@@ -5410,6 +5470,11 @@ async function attach(id: string): Promise<void> {
   const b = app.background[id];
   const t = bgTurns.get(id);
   if (!b || !t) return;
+  // Its own project first (blocker 630): its log, tab and list are there.
+  if (inOtherProject(b, app.project?.id ?? null)) {
+    await openRunningChat(id);
+    return;
+  }
   if (app.busy && !detach()) {
     addToast("A turn is just starting here — open that chat again in a moment");
     app.openNext = "replace";
@@ -5465,8 +5530,12 @@ function endBackground(t: TurnCtx, failed: string | null, res: AgentTurnResult |
   });
   addToast(backgroundEndToast(name, failed));
   for (const n of res?.notices ?? []) addToast(n);
-  void refreshSessions();
-  void refreshNotes();
+  // Its list and notes are its project's (blocker 630): re-read only when
+  // that is the one open; coming back to it reads them fresh anyway.
+  if (!b || !inOtherProject(b, app.project?.id ?? null)) {
+    void refreshSessions();
+    void refreshNotes();
+  }
   void refreshPlanUsage(true);
   noteAgentTurnEnd(id, used, app.connection?.contextLimit ?? null, null);
   // Was it sleep that ended it (backlog 101)? A4: a background turn's end

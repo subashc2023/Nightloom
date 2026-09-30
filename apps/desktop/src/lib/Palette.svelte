@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { browseFree, turnsRunning } from "./state.svelte";
+  import { browseFree, canLeaveProject } from "./state.svelte";
   import {
     app,
     pickerModels,
@@ -73,7 +73,7 @@
       key: i < 9 ? String(i + 1) : "",
       group: "Projects · press a number",
       run: () => go(() => void useProject(p.id)),
-      disabled: turnsRunning(),
+      disabled: !canLeaveProject(),
       current: app.project?.id === p.id,
     }));
     // New is the form, Open the folder picker (backlog 047, 2026-09-14).
@@ -87,7 +87,7 @@
       key: "N",
       group: "Or",
       run: () => go(() => runMenuCommand("new_project")),
-      disabled: turnsRunning(),
+      disabled: !canLeaveProject(),
     });
     rows.push({
       id: "open",
@@ -97,7 +97,7 @@
       key: "O",
       group: "Or",
       run: () => go(() => runMenuCommand("add_project")),
-      disabled: turnsRunning(),
+      disabled: !canLeaveProject(),
     });
     rows.push({
       id: "import",
@@ -118,7 +118,7 @@
         key: "0",
         group: "Or",
         run: () => go(() => void useProject(null)),
-        disabled: turnsRunning(),
+        disabled: !canLeaveProject(),
       });
     }
     return rows;
@@ -343,7 +343,7 @@
         key: "",
         group: "Go",
         run: () => go(() => runMenuCommand("new_project")),
-        disabled: turnsRunning(),
+        disabled: !canLeaveProject(),
       },
       {
         id: "add_project",
@@ -353,7 +353,7 @@
         key: `${mod}O`,
         group: "Go",
         run: () => go(() => runMenuCommand("add_project")),
-        disabled: turnsRunning(),
+        disabled: !canLeaveProject(),
       },
       {
         id: "import",
