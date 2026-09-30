@@ -143,6 +143,163 @@ fn append(path: &Path, line: &str) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The `--version` probe, kept (nightshift item 231, 2026-09-29).
+//
+// ~~A healthy probe takes 0.1 s~~ — measured 2026-09-29 (W3): the probe was
+// the whole of the slow connects in connect.log (7.4 s, 15.0 s, 3.0 s), and
+// the time is macOS's, not Nightloom's: the CLI is one 226 MB executable, and
+// the first run of a fresh copy of it took 2.4–2.6 s with 0.00 s of user CPU
+// while every run after took 0.01 s; the installed one went slow again
+// (2.1 s, 4.3 s) after some minutes unused while builds ran. So a connect no
+// longer waits for it when it need not: a probe that answered is remembered
+// with the identity of the file that answered (its real path, size and
+// modified time), and a connect to that same file takes the answer on hand
+// and probes again behind itself — which also pays the OS's cost before the
+// first turn spawns the CLI. A changed or missing file is probed on the spot,
+// as before, so a broken binary still fails at connect. At launch the app
+// probes the default binary once in the background ([`warm`]), so even the
+// first connect after an update finds the OS's work under way.
+// ---------------------------------------------------------------------------
+
+/// What `agent_version` returns: the path it spawned and its `--version`.
+pub type Probed = (String, Option<String>);
+
+/// One remembered probe: the file that answered and what it said.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
+pub struct ProbeRecord {
+    /// The binary as the rail names it (`claude`, or a path).
+    pub binary: String,
+    /// The file it resolved to, symlinks followed.
+    pub file: String,
+    pub len: u64,
+    pub modified_ns: u128,
+    /// What the probe returned, as `agent_version` returns it.
+    pub resolved: String,
+    pub version: Option<String>,
+}
+
+/// `<config dir>/logs/claude-probe.json`, beside the connect log.
+pub fn probe_cache_path() -> Option<PathBuf> {
+    nightloom_service::project::config_dir().map(|c| c.join("logs").join("claude-probe.json"))
+}
+
+/// The file a resolved binary runs: a path as given, a bare name the first
+/// match on `PATH` (as `resolve_binary` finds it), symlinks followed; with
+/// its size and modified time. `None` when there is no such file.
+fn identity(resolved: &str) -> Option<(String, u64, u128)> {
+    let path = if resolved.chars().any(std::path::is_separator) {
+        PathBuf::from(resolved)
+    } else {
+        let paths = std::env::var_os("PATH")?;
+        std::env::split_paths(&paths)
+            .filter(|d| !d.as_os_str().is_empty())
+            .map(|d| d.join(resolved))
+            .find(|p| p.is_file())?
+    };
+    let real = std::fs::canonicalize(&path).ok()?;
+    let meta = std::fs::metadata(&real).ok()?;
+    let modified = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    Some((real.to_string_lossy().into_owned(), meta.len(), modified))
+}
+
+/// The remembered answer for `binary`, when the file it resolves to now is
+/// the one that gave it. Pure over the record and the file's identity.
+fn recalled(record: Option<&ProbeRecord>, binary: &str, resolved: &str) -> Option<Probed> {
+    let r = record?;
+    let (file, len, modified_ns) = identity(resolved)?;
+    (r.binary == binary && r.file == file && r.len == len && r.modified_ns == modified_ns)
+        .then(|| (r.resolved.clone(), r.version.clone()))
+}
+
+fn read_record(cache: &Path) -> Option<ProbeRecord> {
+    serde_json::from_str(&std::fs::read_to_string(cache).ok()?).ok()
+}
+
+/// Remember a probe that answered. Best-effort, written whole by rename.
+fn remember(cache: &Path, binary: &str, probed: &Probed) {
+    let Some((file, len, modified_ns)) = identity(&probed.0) else {
+        return;
+    };
+    let record = ProbeRecord {
+        binary: binary.to_string(),
+        file,
+        len,
+        modified_ns,
+        resolved: probed.0.clone(),
+        version: probed.1.clone(),
+    };
+    if let Some(dir) = cache.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let tmp = cache.with_extension("json.tmp");
+    if std::fs::write(&tmp, serde_json::to_string(&record).unwrap_or_default()).is_ok() {
+        let _ = std::fs::rename(&tmp, cache);
+    }
+}
+
+/// The probe for a connect. `resolved` is `resolve_binary(binary)`; `run`
+/// is the real probe (`agent_version`). The same file as the last probe
+/// that answered: that answer at once, and `run` again in the background
+/// to refresh it. Anything else: `run` now, under the stage it always had.
+pub async fn probe<F, Fut>(
+    stage: &Stage,
+    cache: Option<&Path>,
+    binary: &str,
+    resolved: &str,
+    run: F,
+) -> Result<Probed, String>
+where
+    F: FnOnce(String) -> Fut,
+    Fut: Future<Output = Result<Probed, String>> + Send + 'static,
+{
+    stage.set("the Claude Code binary's identity (the probe's cache)");
+    let on_hand = cache.and_then(|c| recalled(read_record(c).as_ref(), binary, resolved));
+    if let (Some(probed), Some(cache)) = (on_hand, cache) {
+        let (cache, binary) = (cache.to_path_buf(), binary.to_string());
+        let fresh = run(binary.clone());
+        tokio::spawn(async move {
+            if let Ok(p) = fresh.await {
+                remember(&cache, &binary, &p);
+            }
+        });
+        return Ok(probed);
+    }
+    stage.set("the Claude Code binary's `--version` probe");
+    let probed = run(binary.to_string()).await?;
+    if let Some(cache) = cache {
+        remember(cache, binary, &probed);
+    }
+    Ok(probed)
+}
+
+/// At launch: probe `binary` once in the background and remember the
+/// answer, so the OS's first-run cost is paid before the window connects.
+pub async fn warm<Fut>(cache: Option<PathBuf>, binary: String, run: impl FnOnce(String) -> Fut)
+where
+    Fut: Future<Output = Result<Probed, String>>,
+{
+    let started = Instant::now();
+    let outcome = run(binary.clone()).await;
+    if let (Ok(p), Some(c)) = (&outcome, &cache) {
+        remember(c, &binary, p);
+    }
+    if let Some(log) = log_path() {
+        let line = format!(
+            "{} warm_probe: {} total {} ms",
+            chrono::Utc::now().to_rfc3339(),
+            if outcome.is_ok() { "ok" } else { "error" },
+            started.elapsed().as_millis()
+        );
+        append(&log, &line);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -263,5 +420,107 @@ mod tests {
         drop(held);
         // Released by its holder, the chat is lockable at once.
         assert!(chats.try_lock_focused().is_ok());
+    }
+
+    /// Item 231: the first probe of a file is waited for and remembered;
+    /// a connect to the same file takes the answer at once — even when the
+    /// probe would take seconds — and refreshes it behind itself; a changed
+    /// file is probed on the spot again, and a failing probe still fails.
+    #[tokio::test]
+    async fn a_probe_that_answered_is_not_waited_for_again_until_the_file_changes() {
+        let dir = scratch("probe");
+        let bin = dir.join("claude");
+        std::fs::write(&bin, "v1").unwrap();
+        let bin_s = bin.to_string_lossy().into_owned();
+        let cache = dir.join("logs").join("claude-probe.json");
+        let calls = Arc::new(Mutex::new(0u32));
+        let slow = |calls: Arc<Mutex<u32>>, ms: u64, answer: &'static str| {
+            move |b: String| async move {
+                tokio::time::sleep(Duration::from_millis(ms)).await;
+                *calls.lock().unwrap() += 1;
+                Ok::<Probed, String>((b, Some(answer.to_string())))
+            }
+        };
+        // First connect: nothing on hand, the probe is waited for.
+        let stage = Stage::new();
+        let got = probe(
+            &stage,
+            Some(&cache),
+            &bin_s,
+            &bin_s,
+            slow(calls.clone(), 1, "1.0"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(got, (bin_s.clone(), Some("1.0".into())));
+        assert_eq!(stage.get(), "the Claude Code binary's `--version` probe");
+        assert_eq!(*calls.lock().unwrap(), 1);
+        // Same file: answered from the record without waiting on a probe
+        // that takes 3 s; that probe runs behind and refreshes the record.
+        let stage = Stage::new();
+        let t = Instant::now();
+        let got = probe(
+            &stage,
+            Some(&cache),
+            &bin_s,
+            &bin_s,
+            slow(calls.clone(), 3000, "1.1"),
+        )
+        .await
+        .unwrap();
+        assert!(
+            t.elapsed() < Duration::from_millis(1500),
+            "{:?}",
+            t.elapsed()
+        );
+        assert_eq!(got, (bin_s.clone(), Some("1.0".into())));
+        assert_ne!(stage.get(), "the Claude Code binary's `--version` probe");
+        let until = Instant::now() + Duration::from_secs(20);
+        while *calls.lock().unwrap() < 2 && Instant::now() < until {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let refreshed = until_record(&cache, "1.1").await;
+        assert_eq!(refreshed.version.as_deref(), Some("1.1"));
+        // A changed file (an update): probed on the spot again.
+        std::fs::write(&bin, "v2, longer").unwrap();
+        let stage = Stage::new();
+        let got = probe(
+            &stage,
+            Some(&cache),
+            &bin_s,
+            &bin_s,
+            slow(calls.clone(), 1, "2.0"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(got.1.as_deref(), Some("2.0"));
+        assert_eq!(stage.get(), "the Claude Code binary's `--version` probe");
+        // Another binary name on the rail never takes this one's answer.
+        assert!(recalled(read_record(&cache).as_ref(), "other", &bin_s).is_none());
+        // A missing file: probed, and its failure is the connect's.
+        std::fs::remove_file(&bin).unwrap();
+        let err = probe(
+            &Stage::new(),
+            Some(&cache),
+            &bin_s,
+            &bin_s,
+            |_b: String| async { Err::<Probed, _>("could not start it".to_string()) },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err, "could not start it");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Wait (bounded) for the record to say `version`.
+    async fn until_record(cache: &Path, version: &str) -> ProbeRecord {
+        let until = Instant::now() + Duration::from_secs(20);
+        loop {
+            let r = read_record(cache).unwrap();
+            if r.version.as_deref() == Some(version) || Instant::now() >= until {
+                return r;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     }
 }

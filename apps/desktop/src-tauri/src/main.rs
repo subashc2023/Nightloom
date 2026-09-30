@@ -2119,8 +2119,17 @@ async fn connect_agent_body(
     // overwhelmingly likely first failure on this engine, and finding out at
     // connect gives the rail something to show instead of a turn that dies
     // with a process error the first time the user sends anything.
-    stage.set("the Claude Code binary's `--version` probe");
-    let (resolved_binary, version) = agent_version(&spec.binary).await?;
+    // Item 231: a probe that answered for this same file is not waited
+    // for again; `connect_deadline::probe` says why and sets the stage.
+    let cache = connect_deadline::probe_cache_path();
+    let (resolved_binary, version) = connect_deadline::probe(
+        stage,
+        cache.as_deref(),
+        &spec.binary,
+        &resolve_binary(&spec.binary),
+        |b: String| async move { agent_version(&b).await },
+    )
+    .await?;
 
     // Pick the conversation back up if the open chat already has one. This
     // is the case where a session was started on the agent, the rail was
@@ -7526,6 +7535,13 @@ fn main() {
             // Continue anyway at the 85 % line after 10 minutes away
             // (nightshift backlog 192).
             nightloom_service::agent::brief::spawn_activity_watch();
+            // Item 231: pay the OS's first run of the CLI now, in the
+            // background, rather than inside the window's first connect.
+            tauri::async_runtime::spawn(connect_deadline::warm(
+                connect_deadline::probe_cache_path(),
+                AGENT_BINARY.to_string(),
+                |b: String| async move { agent_version(&b).await },
+            ));
             // App-data is now the *previous* home for unfiled chats, kept
             // only long enough to move them. A user who has been running this
             // app has a sidebar full of them, and a release that silently
