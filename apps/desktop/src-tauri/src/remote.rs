@@ -807,14 +807,15 @@ impl DesktopHost {
         .await
     }
 
-    /// An aside on `chat` (item 246, wave 2): `{op: "ask", text, thread?}`
-    /// or `{op: "stop", thread}` → `{chat, thread, seq}` once the exchange
-    /// exists. The answer streams on the relay as `aside-event`s. The
-    /// window opens the chat first (an aside forks the open chat).
+    /// An aside on `chat` (item 246, wave 2): `{text, thread?}` →
+    /// `{chat, thread, seq}` once the exchange exists. The answer streams
+    /// on the relay as `aside-event`s. The window opens the chat first (an
+    /// aside forks the open chat).
     ///
-    /// Not reached by a route yet: the service crate's `aside`/`asides`
-    /// Host methods and routes are in `246w2-patch-p2a-to-orchestrator`,
-    /// whose diff adds the trait forwards and drops these `allow`s.
+    /// Not reached by a route yet: the service crate's `aside`,
+    /// `aside_cancel` and `asides` Host methods and routes are in
+    /// `246w2-patch-p2a-to-orchestrator`, whose diff adds the trait
+    /// forwards and drops these `allow`s.
     #[allow(dead_code)]
     pub async fn aside(
         &self,
@@ -830,8 +831,22 @@ impl DesktopHost {
         .await
     }
 
-    /// `chat`'s aside threads: the open ones, then the closed ones under
-    /// Past — read from the window without opening the chat.
+    /// Stop exchange `seq` of an aside on `chat`, as the card's × does
+    /// while it asks; nothing is opened.
+    #[allow(dead_code)]
+    pub async fn aside_cancel(&self, chat: &str, seq: u64) -> Result<(), String> {
+        self.call(
+            "remote-aside",
+            serde_json::json!({ "chat": chat, "aside": { "cancel": seq } }),
+            READ_WAIT,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// `chat`'s aside exchanges, newest last: the closed threads' under
+    /// Past, then the open cards' — read from the window without opening
+    /// the chat.
     #[allow(dead_code)]
     pub async fn asides(&self, chat: &str) -> Result<serde_json::Value, String> {
         self.call(

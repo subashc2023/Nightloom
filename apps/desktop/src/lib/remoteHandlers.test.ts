@@ -75,6 +75,7 @@ vi.mock("./api", () => ({
   contextView: async () => ({ items: [] }),
   promptLayers: async () => ({ off: [] }),
   promptPending: async () => null,
+  promptLayerFile: async (kind: string) => (kind === "user_memory" ? "# memory file" : null),
   newProject: async (name: string) => ({ id: "p9", name }),
 }));
 vi.mock("./asideHistory.svelte", () => ({
@@ -207,6 +208,7 @@ import {
   asideRows,
   runAct,
   runAsideOp,
+  runContext,
   runningNow,
   runProject,
   runSend,
@@ -304,6 +306,15 @@ describe("a chat action from the phone", () => {
   });
 });
 
+describe("the Context page from the phone", () => {
+  it("carries each editable layer's file text beside the layers (2B's patch note)", async () => {
+    const r = (await runContext("c1", null)) as { layers: { off: unknown[]; sources: Record<string, string | null> } };
+    expect(r.layers.off).toEqual([]);
+    expect(r.layers.sources.user_memory).toBe("# memory file");
+    expect(Object.keys(r.layers.sources).length).toBeGreaterThan(1);
+  });
+});
+
 describe("the rail from the phone", () => {
   it("a bad field changes nothing", async () => {
     expect(() => checkRail({ effort: "turbo" })).toThrow("no effort level turbo");
@@ -392,7 +403,7 @@ describe("the listeners answer through remote_done", () => {
 describe("an aside from the phone (wave 2, 2A)", () => {
   it("asks as the composer does, answers at once, and tells the end", async () => {
     const told: unknown[] = [];
-    const r = await runAsideOp("c7", null, { op: "ask", text: " why? " }, (e) => told.push(e));
+    const r = await runAsideOp("c7", null, { text: " why? " }, (e) => told.push(e));
     expect(calls).toContain("open c7");
     expect(r.chat).toBe("c7");
     expect(r.seq).toBe(fake.aside.seq);
@@ -400,47 +411,50 @@ describe("an aside from the phone (wave 2, 2A)", () => {
     expect(told).toEqual([]);
     fake.aside.finish.shift()!();
     await vi.waitFor(() => expect(told).toHaveLength(1));
-    expect(told[0]).toEqual({ kind: "done", chat: "c7", thread: r.thread, seq: r.seq, answer: "answer to why?", error: null, cancelled: false });
+    expect(told[0]).toEqual({ kind: "done", chat: "c7", thread: r.thread, seq: r.seq, answer: "answer to why?", is_error: false, cost_usd: null });
   });
 
   it("a named thread is its card's reply box; one still answering is refused", async () => {
-    const first = await runAsideOp("c1", null, { op: "ask", text: "one" }, () => {});
-    await expect(runAsideOp("c1", null, { op: "ask", text: "two", thread: first.thread }, () => {})).rejects.toThrow(/still answering/);
+    const first = await runAsideOp("c1", null, { text: "one" }, () => {});
+    await expect(runAsideOp("c1", null, { text: "two", thread: first.thread }, () => {})).rejects.toThrow(/still answering/);
     fake.aside.finish.shift()!();
     await vi.waitFor(() => expect(fake.app.asides[0]!.turns[0]!.answer).not.toBeNull());
-    const second = await runAsideOp("c1", null, { op: "ask", text: "two", thread: first.thread }, () => {});
+    const second = await runAsideOp("c1", null, { text: "two", thread: first.thread }, () => {});
     expect(second.thread).toBe(first.thread);
     expect(fake.app.asides[0]!.turns.map((t) => t.question)).toEqual(["one", "two"]);
-    await expect(runAsideOp("c1", null, { op: "ask", text: "x", thread: 999 }, () => {})).rejects.toThrow(/not open/);
+    await expect(runAsideOp("c1", null, { text: "x", thread: 999 }, () => {})).rejects.toThrow(/not open/);
   });
 
-  it("stops a running exchange as the card's × does, and nothing else", async () => {
-    const r = await runAsideOp("c1", null, { op: "ask", text: "long" }, () => {});
-    expect(await runAsideOp("c1", null, { op: "stop", thread: r.thread })).toEqual({ chat: "c1", thread: r.thread, seq: null });
+  it("cancels a running exchange as the card's × does, tells it as an error, and nothing else", async () => {
+    const told: { kind: string }[] = [];
+    const r = await runAsideOp("c1", null, { text: "long" }, (e) => told.push(e));
+    expect(await runAsideOp("c1", null, { cancel: r.seq! })).toEqual({ chat: "c1", thread: r.thread, seq: null });
     expect(fake.aside.cancelled).toEqual([r.seq]);
-    await expect(runAsideOp("c1", null, { op: "stop", thread: r.thread })).rejects.toThrow(/not answering/);
+    await expect(runAsideOp("c1", null, { cancel: r.seq! })).rejects.toThrow(/not answering/);
+    fake.aside.finish.shift()!();
+    await vi.waitFor(() => expect(told).toHaveLength(1));
+    expect(told[0]).toMatchObject({ kind: "error", seq: r.seq, cancelled: true, error: "the aside was cancelled" });
   });
 
   it("is refused in words off Claude Code, and with no question", async () => {
-    await expect(runAsideOp("c1", null, { op: "ask", text: "  " })).rejects.toThrow(/needs a question/);
+    await expect(runAsideOp("c1", null, { text: "  " })).rejects.toThrow(/needs a question/);
     fake.app.connection = { engine: "api" };
-    await expect(runAsideOp("c1", null, { op: "ask", text: "q" })).rejects.toThrow(/Claude Code engine/);
+    await expect(runAsideOp("c1", null, { text: "q" })).rejects.toThrow(/Claude Code engine/);
     expect(fake.app.asides).toEqual([]);
   });
 
-  it("lists the open threads, then the closed ones; no drafts; opens nothing", async () => {
+  it("lists the exchanges newest last — Past first, then the open cards; no drafts; opens nothing", async () => {
     fake.app.asides.push({ id: 1, quote: { text: "passage" }, draft: false, anchor: null, turns: [{ seq: 4, question: "q", partial: "so f", answer: null, error: null, cancelled: false, cacheRead: 0 }] });
     fake.app.asides.push({ id: 2, quote: { text: "p2" }, draft: true, anchor: null, turns: [] });
-    const rows = asideRows("c1");
-    expect(rows).toEqual([
-      { id: 1, key: null, open: true, name: null, quote: "passage", turns: [{ seq: 4, question: "q", answer: "so f", error: null, cancelled: false, asking: true }] },
-      { id: null, key: "k1", open: false, name: "Old", quote: null, closed_at: 5, turns: [{ seq: null, question: "q0", answer: "a0", error: null, cancelled: false, asking: false }] },
+    expect(asideRows("c1")).toEqual([
+      { thread: null, key: "k1", open: false, name: "Old", quote: null, seq: null, question: "q0", answer: "a0", error: null, cancelled: false, asking: false, at: new Date(5).toISOString() },
+      { thread: 1, key: null, open: true, name: null, quote: "passage", seq: 4, question: "q", answer: "so f", error: null, cancelled: false, asking: true, at: null },
     ]);
     expect(calls.some((c) => c.startsWith("open"))).toBe(false);
   });
 
   it("Running tasks names every exchange still asking, in any chat", async () => {
-    await runAsideOp("c1", null, { op: "ask", text: "here" }, () => {});
+    await runAsideOp("c1", null, { text: "here" }, () => {});
     fake.stash.set("c2", [{ id: 9, quote: null, draft: false, anchor: null, turns: [{ seq: 50, question: "there", partial: "", answer: null, error: null, cancelled: false, cacheRead: 0 }] }]);
     fake.app.dreaming = true;
     const r = runningNow() as { asides: { chat: string; question: string }[]; dream: unknown; capture: unknown };
@@ -449,13 +463,15 @@ describe("an aside from the phone (wave 2, 2A)", () => {
     expect(r.capture).toBeNull();
   });
 
-  it("the listener answers through remote_done", async () => {
+  it("the listener answers through remote_done, and the end goes out as aside-event", async () => {
     await installRemoteHandlers();
-    fake.listeners.get("remote-aside")!({ payload: { id: 21, chat: "c1", project: null, aside: { op: "ask", text: "hm" } } });
+    fake.listeners.get("remote-aside")!({ payload: { id: 21, chat: "c1", project: null, aside: { text: "hm" } } });
     fake.listeners.get("remote-asides")!({ payload: { id: 22, chat: "c1" } });
     await vi.waitFor(() => expect(calls.filter((c) => c.startsWith("invoke remote_done"))).toHaveLength(2));
     const done = calls.filter((c) => c.startsWith("invoke remote_done"));
     expect(done).toContainEqual(expect.stringContaining('"id":21,"ok":true,"json":{"chat":"c1","thread"'));
     expect(done).toContainEqual(expect.stringContaining('"id":22,"ok":true'));
+    fake.aside.finish.shift()!();
+    await vi.waitFor(() => expect(calls.some((c) => c.startsWith('emit aside-event {"kind":"done"'))).toBe(true));
   });
 });
