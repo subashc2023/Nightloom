@@ -2892,6 +2892,11 @@ async fn send(
     documents: Option<Vec<DocumentInput>>,
     stop_key: Option<String>,
 ) -> Result<TurnOutcome, String> {
+    // The chat this message was typed into, read once, as `send_agent`
+    // does since A3 (A4 review, 2026-09-29): ~~`lock_or_start`, reading
+    // the focus after the awaits below~~ — a provider turn can run off
+    // screen since A4, and a chat opened in that gap got this message.
+    let target = state.chats.target();
     // The engine out of its lock (backlog 159, A4): nothing else waits on
     // this turn for it.
     let chat = state
@@ -2912,7 +2917,7 @@ async fn send(
     let pending_kind = *state.pending_kind.lock().await;
     let (mut held, _) = state
         .chats
-        .lock_or_start(pending, pending_kind, &log_dir)
+        .lock_or_start_at(&target, pending, pending_kind, &log_dir)
         .await?;
     let session: &mut Session = &mut held;
     state.chats.mark_turn(&session.id);
