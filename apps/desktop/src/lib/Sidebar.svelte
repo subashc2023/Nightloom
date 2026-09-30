@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { canLeaveProject, canDeleteChat } from "./state.svelte";
   import { tip } from "./tip";
   import {
     app,
@@ -384,9 +385,9 @@
          2026-09-16): a new project, and leaving this one. Open project…
          stays in the menu — it is a folder picker, rarer than either. -->
     <div class="project-actions">
-      <button class="ns-btn small" onclick={showNewProject} disabled={app.busy}>New project…</button>
+      <button class="ns-btn small" onclick={showNewProject} disabled={!canLeaveProject()}>New project…</button>
       {#if app.project}
-        <button class="ns-btn small ghost" onclick={() => void useProject(null)} disabled={app.busy}>
+        <button class="ns-btn small ghost" onclick={() => void useProject(null)} disabled={!canLeaveProject()}>
           Leave project
         </button>
       {/if}
@@ -633,7 +634,7 @@
           <button role="menuitem" onclick={() => rowOpen("beside")}>Open beside <span class="row-key">drag</span></button>
           <div class="row-sep"></div>
           <button role="menuitem" onclick={rowRename}>Rename</button>
-          <button role="menuitem" disabled={app.busy} onclick={rowDelete}>Delete…</button>
+          <button role="menuitem" disabled={!!rowMenu?.s && !canDeleteChat(rowMenu.s.id)} onclick={rowDelete}>Delete…</button>
         </div>
       {/if}
     {/if}

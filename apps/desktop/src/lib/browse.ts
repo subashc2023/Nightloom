@@ -32,7 +32,7 @@
  * The pure half here — what a parked state holds, where a stream event
  * lands, and what the turn's end does — is what the suite pins.
  */
-import type { ChatKind, ChatMode, SessionEvent, Usage } from "./types";
+import type { AgentInit, ChatKind, ChatMode, SessionEvent, TurnBudget, Usage } from "./types";
 
 
 /** The running chat, set aside while another is on screen. */
@@ -129,6 +129,25 @@ export interface Background<Segment = unknown, Approval = unknown> extends Parke
   session: string;
   /** The prompts it asked while off screen (backlog 079's card, A2). */
   approvals: Approval[];
+  /** Its budget meter's latest ledger (A4): polled while it runs off
+   *  screen, back on the meter when it comes back on screen. */
+  budget?: TurnBudget | null;
+  /** Its CLI's init line (A4): the slash commands and connectors the
+   *  composer and the Context page show, back with the chat. */
+  agentInit?: AgentInit | null;
+  /** The project it runs in, and that project's name (A4, blocker 630:
+   *  he may switch projects while it runs): its row, toast and banner say
+   *  where it is, and opening it goes back to that project first. */
+  project?: string | null;
+  projectName?: string | null;
+  /** Its name as its project's list gave it when it left the screen — the
+   *  list on screen may be another project's by the time it ends. */
+  name?: string | null;
+}
+
+/** Whether a background record runs in a project other than `open`. */
+export function inOtherProject(b: { project?: string | null }, open: string | null): boolean {
+  return b.project !== undefined && (b.project ?? null) !== open;
 }
 
 /** The background chat an event belongs to, or null for the chat on
@@ -138,10 +157,19 @@ export function eventHost<H>(background: Record<string, H>, chat: string | null 
   return chat ? (background[chat] ?? null) : null;
 }
 
-/** Whether the turn on screen may go to the background: on the Claude
- *  Code engine, once the chat it runs in has a name. */
+/** Whether the turn on screen may go to the background: ~~on the Claude
+ *  Code engine~~ on either engine since A4 (the provider engine's turn no
+ *  longer holds the engine), once the chat it runs in has a name. */
 export function canDetach(engine: string | null | undefined, chat: string | null): boolean {
-  return engine === "claude-code" && chat !== null;
+  return !!engine && chat !== null;
+}
+
+/** The first message of a chat's log, for naming a chat that has no
+ *  sidebar row — an ephemeral chat, or one the list has not re-read yet
+ *  (A4: the toast said "another chat"). */
+export function firstUserText(events: SessionEvent[]): string | null {
+  for (const e of events) if (e.event === "user_message" && e.text.trim()) return e.text;
+  return null;
 }
 
 /** The toast for a reply that finished off screen. */

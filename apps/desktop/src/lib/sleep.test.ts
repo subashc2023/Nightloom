@@ -136,6 +136,19 @@ describe("SleepWatch", () => {
     expect(seen).toHaveLength(0);
   });
 
+  it("matches each chat a sleep cut, when two ran at once (backlog 159, A4)", () => {
+    const seen: TurnEnd[] = [];
+    const w = new SleepWatch((t) => seen.push(t));
+    w.turnEnded({ ...cut, chat: "a" });
+    w.woke(wake);
+    // The other chat's error arrives after the wake was matched once.
+    w.turnEnded({ ...cut, chat: "b" });
+    expect(seen.map((t) => t.chat)).toEqual(["a", "b"]);
+    // Neither fires again on the same wake.
+    w.woke(wake);
+    expect(seen).toHaveLength(2);
+  });
+
   it("hands the cut-off turn's chat to the match, so the resume can find it (backlog 137)", () => {
     const seen: TurnEnd[] = [];
     const w = new SleepWatch((t) => seen.push(t));

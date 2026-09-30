@@ -408,8 +408,11 @@ export function send(
   text: string,
   images?: ImageInput[],
   documents?: DocumentInput[],
+  stopKey?: string,
 ): Promise<TurnResult> {
-  return invoke("send", { text, images, documents });
+  // `stopKey` (backlog 159, A4): as `sendAgent`'s — a provider turn can run
+  // off screen now, and its Stop names it before its chat is known.
+  return invoke("send", { text, images, documents, stopKey });
 }
 
 export function cancel(chat?: string | null): Promise<null> {

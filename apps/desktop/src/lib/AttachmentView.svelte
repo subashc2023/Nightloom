@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tip } from "./tip";
-  import { app, activateTab } from "./state.svelte";
+  import { app, activateTab, browseFree } from "./state.svelte";
   import { attachmentBytes, type AttachmentContent } from "./attachments.svelte";
   import * as tabs from "./tabs";
 
@@ -42,8 +42,8 @@
   <div class="attach-note">
     <div class="attach-note-title">{content.name}</div>
     <p>An attachment of <em>{chatName}</em>, which is not the open chat. Its bytes are in that chat's log.</p>
-    <button class="ns-btn small" onclick={() => void openChat()} disabled={app.busy}
-      >{app.busy ? "Opens when the running turn ends" : "Open the chat"}</button
+    <button class="ns-btn small" onclick={() => void openChat()} disabled={app.busy && !browseFree()}
+      >{app.busy && !browseFree() ? "Opens when the running turn ends" : "Open the chat"}</button
     >
   </div>
 {:else if !bytes || !src}

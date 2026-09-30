@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { canLeaveProject } from "./state.svelte";
   import { tip } from "./tip";
   import {
     app,
@@ -82,7 +83,7 @@
                (blocker 193); the menu stays open through the drag. -->
           <button
             class="open"
-            disabled={app.busy}
+            disabled={!canLeaveProject()}
             onclick={() => void choose(p.id)}
             ondblclick={() => startRename(p.id, p.name)}
             use:tip={p.root ?? "No folder — notes and chats only"}
@@ -139,17 +140,17 @@
   </div>
 
   <div class="rule"></div>
-  <button class="wide new" onclick={make} disabled={app.busy}>
+  <button class="wide new" onclick={make} disabled={!canLeaveProject()}>
     <Icon name="plus" size={14} />
     New project…
   </button>
-  <button class="wide quiet" onclick={() => void pick()} disabled={app.busy}>
+  <button class="wide quiet" onclick={() => void pick()} disabled={!canLeaveProject()}>
     <Icon name="folder" size={14} />
     Open project…
     <span class="wide-meta">a folder you already have</span>
   </button>
   {#if app.project}
-    <button class="wide quiet" onclick={() => void choose(null)} disabled={app.busy}>
+    <button class="wide quiet" onclick={() => void choose(null)} disabled={!canLeaveProject()}>
       <Icon name="chevl" size={14} />
       Leave project
       <span class="wide-meta">unfiled chats</span>

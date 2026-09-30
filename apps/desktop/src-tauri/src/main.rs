@@ -60,7 +60,13 @@ mod terminal;
 mod webtab;
 
 struct AppState {
-    chat: tokio::sync::Mutex<Option<Chat>>,
+    /// The provider engine (the API key's loop). ~~Held for a whole turn
+    /// under this lock~~ — since backlog 159 A4 (2026-09-30) an `Arc` the
+    /// turn clones out and lets go of, so another chat's context page, its
+    /// elisions, its compaction and a reconnect do not wait a turn; a
+    /// connect swaps in a new engine and the running turn finishes on its
+    /// own. One provider turn at a time still (`WindowApprover::turn`).
+    chat: tokio::sync::Mutex<Option<Arc<Chat>>>,
     /// The Claude Code agent, when the rail is on that engine instead.
     ///
     /// `Some` here **is** what "agent mode" means, rather than a third field
@@ -338,6 +344,60 @@ struct WindowApprover {
     app: AppHandle,
     cancel: Arc<std::sync::Mutex<CancellationToken>>,
     pending: std::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<Decision>>>,
+    /// The provider turn running now, by its chat (backlog 159, A4): one
+    /// at a time — the engine's subagent handle and its compaction flag
+    /// are one per engine — and its prompts name that chat, so a turn off
+    /// screen asks in its own tab. `chat` is empty while its chat is not
+    /// open yet. A compaction claims it too (A4 review, 2026-09-29).
+    turn: std::sync::Mutex<Option<ProviderRun>>,
+}
+
+/// What the running provider turn holds (backlog 159, A4).
+#[derive(Default)]
+struct ProviderRun {
+    /// Its chat, once open; empty before.
+    chat: String,
+    /// Its own Stop token (A4 review, 2026-09-29): its prompts race this,
+    /// not `AppState::cancel`, which the latest turn, compaction or aside
+    /// of any chat overwrites — a Claude Code turn in another chat after
+    /// an engine switch did, and a Stop of this turn then left its prompt
+    /// standing until answered.
+    cancel: Option<CancellationToken>,
+}
+
+/// The one provider turn, claimed for its length (backlog 159, A4).
+struct ProviderTurn<'a> {
+    slot: &'a std::sync::Mutex<Option<ProviderRun>>,
+}
+
+/// The refusal a second provider turn gets while one runs.
+const PROVIDER_TURN_BUSY: &str = "a turn is running in another chat — this sends when that ends";
+
+impl<'a> ProviderTurn<'a> {
+    /// Claimed, or refused with `busy` while another chat's provider turn
+    /// (or compaction) runs.
+    fn claim(slot: &'a std::sync::Mutex<Option<ProviderRun>>, busy: &str) -> Result<Self, String> {
+        let mut held = slot.lock().unwrap_or_else(|p| p.into_inner());
+        if held.is_some() {
+            return Err(busy.into());
+        }
+        *held = Some(ProviderRun::default());
+        Ok(Self { slot })
+    }
+
+    /// The chat the turn runs in, once it is open, and its Stop token.
+    fn name(&self, chat: &str, cancel: &CancellationToken) {
+        *self.slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(ProviderRun {
+            chat: chat.to_string(),
+            cancel: Some(cancel.clone()),
+        });
+    }
+}
+
+impl Drop for ProviderTurn<'_> {
+    fn drop(&mut self) {
+        *self.slot.lock().unwrap_or_else(|p| p.into_inner()) = None;
+    }
 }
 
 #[derive(Serialize, Clone)]
@@ -455,7 +515,17 @@ impl Approver for WindowApprover {
     async fn approve(&self, call: &PendingCall<'_>) -> Decision {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.pending.lock().unwrap().insert(call.id.to_string(), tx);
-        let token = self.cancel.lock().unwrap().clone();
+        // The running provider turn's chat (A4), when it has one, and its
+        // own Stop token (A4 review) — the shared one only before it is
+        // named, which no tool call precedes.
+        let (chat, own) = match &*self.turn.lock().unwrap_or_else(|p| p.into_inner()) {
+            Some(run) => (
+                Some(run.chat.clone()).filter(|c| !c.is_empty()),
+                run.cancel.clone(),
+            ),
+            None => (None, None),
+        };
+        let token = own.unwrap_or_else(|| self.cancel.lock().unwrap().clone());
         if self
             .app
             .emit(
@@ -466,7 +536,7 @@ impl Approver for WindowApprover {
                     input: call.input,
                     effect: call.effect,
                     outside: None,
-                    chat: None,
+                    chat: chat.as_deref(),
                 },
             )
             .is_err()
@@ -1417,7 +1487,7 @@ async fn connect(
                 .collect()
         },
     };
-    *state.chat.lock().await = Some(chat);
+    *state.chat.lock().await = Some(Arc::new(chat));
     // One engine at a time: `Some` in either slot is what says which is
     // live, so connecting to a provider is what ends agent mode. The chat
     // itself is not cheap enough to rebuild casually, but the agent is a
@@ -2844,11 +2914,24 @@ async fn send(
     text: String,
     images: Option<Vec<ImageInput>>,
     documents: Option<Vec<DocumentInput>>,
+    stop_key: Option<String>,
 ) -> Result<TurnOutcome, String> {
-    let chat_guard = state.chat.lock().await;
-    let chat = chat_guard
-        .as_ref()
+    // The chat this message was typed into, read once, as `send_agent`
+    // does since A3 (A4 review, 2026-09-29): ~~`lock_or_start`, reading
+    // the focus after the awaits below~~ — a provider turn can run off
+    // screen since A4, and a chat opened in that gap got this message.
+    let target = state.chats.target();
+    // The engine out of its lock (backlog 159, A4): nothing else waits on
+    // this turn for it.
+    let chat = state
+        .chat
+        .lock()
+        .await
+        .clone()
         .ok_or_else(|| "not connected".to_string())?;
+    // One provider turn at a time, refused in words — before a New chat's
+    // log is made for a turn that cannot run.
+    let one = ProviderTurn::claim(&state.gate.turn, PROVIDER_TURN_BUSY)?;
     // The Mac stays awake for the turn (nightshift backlog 101): held to
     // the end of this function, whichever way it ends.
     let _awake = power.acquire();
@@ -2858,10 +2941,11 @@ async fn send(
     let pending_kind = *state.pending_kind.lock().await;
     let (mut held, _) = state
         .chats
-        .lock_or_start(pending, pending_kind, &log_dir)
+        .lock_or_start_at(&target, pending, pending_kind, &log_dir)
         .await?;
     let session: &mut Session = &mut held;
     state.chats.mark_turn(&session.id);
+    let chat_id = session.id.clone();
     // The chat's id as the turn starts, as the agent engine sends it
     // (nightshift backlog 211): a New chat's sidebar row appears now, not
     // when the turn ends. An ephemeral chat has no row to show.
@@ -2871,9 +2955,24 @@ async fn send(
 
     let cancel = CancellationToken::new();
     *state.cancel.lock().unwrap() = cancel.clone();
+    // Its chat and its own token, for its prompts (A4 review).
+    one.name(&chat_id, &cancel);
+    // Stop by chat and by the window's turn key, as `send_agent` (A4): the
+    // turn can run off screen now, and a Stop must name it.
+    let _stop = TurnStop::register(&state.turn_cancels, &chat_id, &cancel);
+    let _stop_key = stop_key
+        .as_deref()
+        .map(|k| TurnStop::register(&state.turn_cancels, k, &cancel));
+    if let Some(k) = &stop_key
+        && take_early_stop(&state.early_stops, k)
+    {
+        cancel.cancel();
+    }
 
+    // Each event names its chat (A4), as the agent engine's do: the window
+    // routes a turn running off screen to its own tab.
     let mut on_event = |e: TurnEvent| {
-        let _ = app.emit("turn-event", &e);
+        let _ = app.emit("turn-event", ChatEvent::new(&chat_id, &e));
     };
     let input = TurnInput {
         text,
@@ -2976,6 +3075,16 @@ async fn send_agent(
     let _awake = power.acquire();
 
     let log_dir = state.log_dir().await;
+    // The project the turn runs in (backlog 159, A4; blocker 630: he may
+    // switch projects while it runs off screen): a folder granted "for the
+    // project" mid-turn goes to this one, not the one open by then.
+    let turn_project = state
+        .workspaces
+        .lock()
+        .await
+        .active
+        .as_ref()
+        .map(|p| p.id.clone());
     let pending = *state.pending_mode.lock().await;
     let pending_kind = *state.pending_kind.lock().await;
     // The open chat's own lock, held for the turn — no other chat's
@@ -3341,13 +3450,22 @@ async fn send_agent(
                 GrantScope::Chat => granted_to_chat.push(grant.dir.clone()),
                 GrantScope::Project => {
                     let mut guard = state.workspaces.lock().await;
-                    let written = guard.active.clone().map(|p| {
-                        let mut list = p.extra_folders.clone();
-                        list.push(grant.dir.clone());
-                        guard.registry.set_extra_folders(&p.id, list)
-                    });
+                    // The turn's own project (A4), which may no longer be
+                    // the open one.
+                    let written = turn_project
+                        .as_deref()
+                        .and_then(|id| guard.registry.find(id).cloned())
+                        .map(|p| {
+                            let mut list = p.extra_folders.clone();
+                            list.push(grant.dir.clone());
+                            guard.registry.set_extra_folders(&p.id, list)
+                        });
                     match written {
-                        Some(Ok(project)) => guard.active = Some(project),
+                        Some(Ok(project)) => {
+                            if guard.active.as_ref().is_some_and(|a| a.id == project.id) {
+                                guard.active = Some(project);
+                            }
+                        }
                         Some(Err(e)) => {
                             let _ = app.emit("turn-notice", format!("folder not granted: {e}"));
                         }
@@ -3552,10 +3670,21 @@ async fn compact(
     power: State<'_, power::Holder>,
 ) -> Result<CompactOutcome, String> {
     not_in_agent_mode(&state, "compact").await?;
-    let chat_guard = state.chat.lock().await;
-    let chat = chat_guard
-        .as_ref()
+    // Out of its lock (A4), as `send`.
+    let chat = state
+        .chat
+        .lock()
+        .await
+        .clone()
         .ok_or_else(|| "not connected".to_string())?;
+    // Not beside another chat's provider turn (A4 review, 2026-09-29):
+    // it would take over the one `AppState::cancel`, and its Stop (which
+    // names no chat) would refuse that turn's open prompts. Before A4 it
+    // waited for the turn on the engine's lock; now it says so.
+    let _one = ProviderTurn::claim(
+        &state.gate.turn,
+        "a turn is running in another chat — compact this one when it ends",
+    )?;
     // A compaction is a model call too (nightshift backlog 101).
     let _awake = power.acquire();
     let mut session_guard = state.chats.lock_focused().await;
@@ -4494,9 +4623,12 @@ async fn context_view(state: State<'_, AppState>) -> Result<WireView, String> {
             None,
         ));
     }
-    let chat_guard = state.chat.lock().await;
-    let chat = chat_guard
-        .as_ref()
+    // Out of its lock (A4): another chat's provider turn does not hold it.
+    let chat = state
+        .chat
+        .lock()
+        .await
+        .clone()
         .ok_or_else(|| "not connected".to_string())?;
     let session_guard = state.chats.lock_focused().await;
     let Some(session) = session_guard.as_ref() else {
@@ -4522,9 +4654,12 @@ async fn edit_context(
     remove: bool,
 ) -> Result<ContextEdit, String> {
     not_in_agent_mode(&state, "edit the context").await?;
-    let chat_guard = state.chat.lock().await;
-    let chat = chat_guard
-        .as_ref()
+    // Out of its lock (A4), as `send`.
+    let chat = state
+        .chat
+        .lock()
+        .await
+        .clone()
         .ok_or_else(|| "not connected".to_string())?;
     let mut session_guard = state.chats.lock_focused().await;
     let session = session_guard
@@ -7558,6 +7693,7 @@ fn main() {
                 app: app.handle().clone(),
                 cancel: cancel.clone(),
                 pending: std::sync::Mutex::new(HashMap::new()),
+                turn: std::sync::Mutex::new(None),
             });
             app.manage(AppState {
                 chat: tokio::sync::Mutex::new(None),
@@ -8564,6 +8700,42 @@ mod tests {
         assert_eq!(files_in(&folder).len(), 4);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// One provider turn at a time (backlog 159, A4): a second is refused
+    /// in words while the first runs, the running one names its chat and
+    /// its own Stop token for its prompts (A4 review: not the shared one,
+    /// which another chat's turn overwrites), and the slot is free again
+    /// when it ends. A compaction's claim is refused in its own words.
+    #[test]
+    fn one_provider_turn_at_a_time_named_by_its_chat() {
+        let slot = std::sync::Mutex::new(None);
+        let turn = ProviderTurn::claim(&slot, PROVIDER_TURN_BUSY).expect("the first claims");
+        assert!(
+            slot.lock()
+                .unwrap()
+                .as_ref()
+                .is_some_and(|r| r.chat.is_empty() && r.cancel.is_none())
+        );
+        let second = ProviderTurn::claim(&slot, PROVIDER_TURN_BUSY);
+        assert!(second.is_err_and(|e| e.contains("another chat")));
+        let compaction = ProviderTurn::claim(&slot, "compact this one when it ends");
+        assert!(compaction.is_err_and(|e| e.contains("compact")));
+        let token = CancellationToken::new();
+        turn.name("chat-a", &token);
+        {
+            let held = slot.lock().unwrap();
+            let run = held.as_ref().expect("named");
+            assert_eq!(run.chat, "chat-a");
+            token.cancel();
+            assert!(
+                run.cancel.as_ref().is_some_and(|t| t.is_cancelled()),
+                "the turn's own token"
+            );
+        }
+        drop(turn);
+        assert!(slot.lock().unwrap().is_none());
+        assert!(ProviderTurn::claim(&slot, PROVIDER_TURN_BUSY).is_ok());
     }
 
     /// Backlog 159, A3 (found live): a Stop for a New chat's first turn,

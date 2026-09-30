@@ -23,7 +23,7 @@ import * as api from "./api";
 import { cacheState } from "./cache";
 import { CURATED } from "./catalog";
 import { chatName } from "./notify";
-import { addToast, app, liveFlags, refreshCentre } from "./state.svelte";
+import { addToast, app, liveFlags, refreshCentre, turnsRunning } from "./state.svelte";
 import type { CliStatus, CliUpdateResult, SessionEvent } from "./types";
 import {
   COLD_TICK_MS,
@@ -61,7 +61,8 @@ function binary(): string | null {
 /** What is running now, in words; empty when nothing is. */
 export function runningNow(): string[] {
   const out: string[] = [];
-  if (app.busy) out.push("a turn");
+  // Any chat's turn (A4), not only the one on screen.
+  if (turnsRunning()) out.push("a turn");
   if (app.connecting) out.push("a connect");
   if (app.dreaming) out.push("a dream");
   if (app.capturing) out.push("a capture");
