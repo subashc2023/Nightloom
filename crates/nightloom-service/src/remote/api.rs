@@ -56,6 +56,9 @@ pub mod feature {
     pub const SPOKEN: &str = "spoken";
     /// `GET /api/voice` (wave 3).
     pub const VOICE: &str = "voice";
+    /// `POST /api/chats/{id}/aside`, `…/aside/cancel`, `GET …/asides`
+    /// (wave 2).
+    pub const ASIDE: &str = "aside";
     /// Every name, for a host that serves the lot and for tests.
     pub const ALL: &[&str] = &[
         ACT,
@@ -73,6 +76,7 @@ pub mod feature {
         COUNCIL,
         SPOKEN,
         VOICE,
+        ASIDE,
     ];
 }
 
@@ -444,6 +448,43 @@ fn decode(s: &str) -> String {
         i += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+/// `POST /api/chats/{id}/aside`'s body (item 246, wave 2; the shape 2C's
+/// page sends): a side question of the chat that adds nothing to it.
+/// `thread` names an open thread to follow up in; without it a question
+/// goes as the Mac's composer sends one (it continues the newest answered
+/// thread, else opens a new one).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct AsideRequest {
+    pub text: String,
+    #[serde(default)]
+    pub thread: Option<u64>,
+}
+
+impl AsideRequest {
+    /// A question with no words is refused before any host sees it.
+    pub fn check(&self) -> Result<(), String> {
+        if self.text.trim().is_empty() {
+            return Err("an aside needs a question".into());
+        }
+        Ok(())
+    }
+}
+
+/// `POST /api/chats/{id}/aside/cancel`'s body: the exchange to stop.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AsideCancel {
+    pub seq: u64,
+}
+
+/// The 202's body: the chat (its full id), the thread asked in, and the
+/// exchange's number — which the `aside-event`s on the stream carry.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct AsideStarted {
+    pub chat: String,
+    pub thread: u64,
+    pub seq: Option<u64>,
 }
 
 #[cfg(test)]

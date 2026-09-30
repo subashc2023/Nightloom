@@ -52,9 +52,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::council::CouncilRequest;
 use api::{
-    ActReply, ChatAction, ContextEditRequest, ContextReply, LayerChange, NOT_AVAILABLE,
-    NewProjectRequest, NoteText, ProjectRenameRequest, Rail, RailPatch, Running, SearchScope,
-    StateReply, UsageReply,
+    ActReply, AsideCancel, AsideRequest, AsideStarted, ChatAction, ContextEditRequest,
+    ContextReply, LayerChange, NOT_AVAILABLE, NewProjectRequest, NoteText, ProjectRenameRequest,
+    Rail, RailPatch, Running, SearchScope, StateReply, UsageReply,
 };
 use tokio::sync::{broadcast, oneshot};
 
@@ -366,6 +366,19 @@ pub trait Host: Send + Sync + 'static {
     async fn note_delete(&self, _scope: &str, _name: &str) -> Result<(), String> {
         Err(NOT_AVAILABLE.into())
     }
+    /// An aside on `chat` (item 246, wave 2). Answers once the exchange
+    /// exists; its text streams as `aside-event`s.
+    async fn aside(&self, _chat: &str, _req: AsideRequest) -> Result<AsideStarted, String> {
+        Err(NOT_AVAILABLE.into())
+    }
+    /// Stop exchange `seq` of an aside on `chat` while it answers.
+    async fn aside_cancel(&self, _chat: &str, _seq: u64) -> Result<(), String> {
+        Err(NOT_AVAILABLE.into())
+    }
+    /// `chat`'s aside threads (the host's own shape, passed through).
+    async fn asides(&self, _chat: &str) -> Result<Vec<serde_json::Value>, String> {
+        Err(NOT_AVAILABLE.into())
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -568,6 +581,9 @@ fn router(shared: Arc<Shared>) -> Router {
         .route("/chats/{id}/act", post(act))
         .route("/chats/{id}/context", get(context).post(edit_context))
         .route("/chats/{id}/layers", post(layers))
+        .route("/chats/{id}/aside", post(aside))
+        .route("/chats/{id}/aside/cancel", post(aside_cancel))
+        .route("/chats/{id}/asides", get(asides))
         .route("/rail", get(rail).post(set_rail))
         .route("/running", get(running))
         .route("/usage", get(usage))
@@ -830,6 +846,36 @@ async fn layers(
     Json(change): Json<LayerChange>,
 ) -> Response {
     answer(shared.host.layers(&id, change).await)
+}
+
+/// An aside asked (item 246, wave 2): 202 with the thread and
+/// the exchange's number once it exists, 409 with the sentence, 400 for a
+/// question with no words.
+async fn aside(
+    State(shared): State<Arc<Shared>>,
+    Path(id): Path<String>,
+    Json(req): Json<AsideRequest>,
+) -> Response {
+    if let Err(e) = req.check() {
+        return bad(e);
+    }
+    match shared.host.aside(&id, req).await {
+        Ok(started) => (StatusCode::ACCEPTED, Json(started)).into_response(),
+        Err(e) => refused(e),
+    }
+}
+
+/// An aside's running exchange stopped: 204, or 409 with the sentence.
+async fn aside_cancel(
+    State(shared): State<Arc<Shared>>,
+    Path(id): Path<String>,
+    Json(req): Json<AsideCancel>,
+) -> Response {
+    done(shared.host.aside_cancel(&id, req.seq).await)
+}
+
+async fn asides(State(shared): State<Arc<Shared>>, Path(id): Path<String>) -> Response {
+    answer(shared.host.asides(&id).await)
 }
 
 async fn rail(State(shared): State<Arc<Shared>>) -> Response {
@@ -1316,6 +1362,28 @@ mod tests {
                 rail.effort = e;
             }
             Ok(rail.clone())
+        }
+        async fn aside(&self, chat: &str, req: AsideRequest) -> Result<AsideStarted, String> {
+            if chat == "running" {
+                return Err("an aside runs on the Claude Code engine".into());
+            }
+            Ok(AsideStarted {
+                chat: chat.into(),
+                thread: req.thread.unwrap_or(1),
+                seq: Some(7),
+            })
+        }
+        async fn aside_cancel(&self, _chat: &str, seq: u64) -> Result<(), String> {
+            if seq == 7 {
+                Ok(())
+            } else {
+                Err("that aside is not answering".into())
+            }
+        }
+        async fn asides(&self, chat: &str) -> Result<Vec<serde_json::Value>, String> {
+            Ok(vec![
+                serde_json::json!({ "id": 1, "open": true, "chat": chat }),
+            ])
         }
         async fn running(&self) -> Result<Running, String> {
             Ok(Running {
@@ -2276,6 +2344,77 @@ mod tests {
             (status, v.as_str()),
             (409, Some("there is no engine called bogus"))
         );
+        server.stop().await;
+    }
+
+    #[tokio::test]
+    async fn an_aside_is_accepted_refused_or_listed() {
+        let (server, _host, _tx, token) = up().await;
+        let base = format!("http://{}", server.addr());
+        let c = client();
+        let (status, v) = post_json(
+            &c,
+            format!("{base}/api/chats/abc/aside"),
+            &token,
+            serde_json::json!({"text": "why?"}),
+        )
+        .await;
+        assert_eq!(status, 202, "{v}");
+        assert_eq!(
+            serde_json::from_value::<AsideStarted>(v).unwrap(),
+            AsideStarted {
+                chat: "abc".into(),
+                thread: 1,
+                seq: Some(7)
+            }
+        );
+        let r = c
+            .post(format!("{base}/api/chats/abc/aside/cancel"))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({"seq": 7}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status().as_u16(), 204);
+        let (status, v) = post_json(
+            &c,
+            format!("{base}/api/chats/abc/aside/cancel"),
+            &token,
+            serde_json::json!({"seq": 8}),
+        )
+        .await;
+        assert_eq!(
+            (status, v.as_str()),
+            (409, Some("that aside is not answering"))
+        );
+        let (status, _) = post_json(
+            &c,
+            format!("{base}/api/chats/abc/aside"),
+            &token,
+            serde_json::json!({"text": "  "}),
+        )
+        .await;
+        assert_eq!(status, 400);
+        let (status, v) = post_json(
+            &c,
+            format!("{base}/api/chats/running/aside"),
+            &token,
+            serde_json::json!({"text": "q"}),
+        )
+        .await;
+        assert_eq!(
+            (status, v.as_str()),
+            (409, Some("an aside runs on the Claude Code engine"))
+        );
+        let (status, v) = get_json(&c, format!("{base}/api/chats/abc/asides"), &token).await;
+        assert_eq!((status, v[0]["chat"].as_str()), (200, Some("abc")));
+        // Without the token, nothing.
+        let r = c
+            .get(format!("{base}/api/chats/abc/asides"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status().as_u16(), 401);
         server.stop().await;
     }
 

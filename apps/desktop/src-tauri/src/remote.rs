@@ -575,6 +575,18 @@ impl Host for DesktopHost {
         from_json(DesktopHost::running(self).await?)
     }
 
+    async fn aside(&self, chat: &str, req: api::AsideRequest) -> Result<api::AsideStarted, String> {
+        from_json(DesktopHost::aside(self, chat, to_json(&req)?).await?)
+    }
+
+    async fn aside_cancel(&self, chat: &str, seq: u64) -> Result<(), String> {
+        DesktopHost::aside_cancel(self, chat, seq).await
+    }
+
+    async fn asides(&self, chat: &str) -> Result<Vec<serde_json::Value>, String> {
+        from_json(DesktopHost::asides(self, chat).await?)
+    }
+
     async fn usage(&self) -> Result<api::UsageReply, String> {
         from_json(DesktopHost::usage(self).await?)
     }
@@ -811,12 +823,6 @@ impl DesktopHost {
     /// `{chat, thread, seq}` once the exchange exists. The answer streams
     /// on the relay as `aside-event`s. The window opens the chat first (an
     /// aside forks the open chat).
-    ///
-    /// Not reached by a route yet: the service crate's `aside`,
-    /// `aside_cancel` and `asides` Host methods and routes are in
-    /// `246w2-patch-p2a-to-orchestrator`, whose diff adds the trait
-    /// forwards and drops these `allow`s.
-    #[allow(dead_code)]
     pub async fn aside(
         &self,
         chat: &str,
@@ -833,7 +839,6 @@ impl DesktopHost {
 
     /// Stop exchange `seq` of an aside on `chat`, as the card's × does
     /// while it asks; nothing is opened.
-    #[allow(dead_code)]
     pub async fn aside_cancel(&self, chat: &str, seq: u64) -> Result<(), String> {
         self.call(
             "remote-aside",
@@ -847,7 +852,6 @@ impl DesktopHost {
     /// `chat`'s aside exchanges, newest last: the closed threads' under
     /// Past, then the open cards' — read from the window without opening
     /// the chat.
-    #[allow(dead_code)]
     pub async fn asides(&self, chat: &str) -> Result<serde_json::Value, String> {
         self.call(
             "remote-asides",
