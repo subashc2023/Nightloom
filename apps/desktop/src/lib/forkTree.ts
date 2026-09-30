@@ -120,17 +120,22 @@ export function parseOpen(raw: string | null): Set<string> {
   }
 }
 
-export function loadOpen(): Set<string> {
+/** The chats whose asides are listed under them (item 265): the same
+ *  shape as the forks' open set, its own key, so the two toggles on a row
+ *  open and close apart. */
+export const ASIDES_OPEN_KEY = "nightloom.asidesOpen";
+
+export function loadOpen(key: string = FORKS_OPEN_KEY): Set<string> {
   try {
-    return parseOpen(localStorage.getItem(FORKS_OPEN_KEY));
+    return parseOpen(localStorage.getItem(key));
   } catch {
     return new Set();
   }
 }
 
-export function saveOpen(open: ReadonlySet<string>): void {
+export function saveOpen(open: ReadonlySet<string>, key: string = FORKS_OPEN_KEY): void {
   try {
-    localStorage.setItem(FORKS_OPEN_KEY, JSON.stringify([...open]));
+    localStorage.setItem(key, JSON.stringify([...open]));
   } catch {
     // best-effort, like the zoom and the transcript prefs
   }

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tip } from "./tip";
-  import { app, asideAsking, asideOf, asideWaiting, askAside, followUpAside, openContent, requestDismissAside, setAsideUnsent } from "./state.svelte";
+  import { app, asideAsking, asideOf, asideTabThread, asideWaiting, askAside, followUpAside, openContent, setAsideUnsent } from "./state.svelte";
   import { quoteLabel } from "./asideQuote";
   import { renderMarkdown } from "./markdown";
   import { arrive, launch } from "./sendMotion";
@@ -10,6 +10,11 @@
   import { scheduleAsideSave } from "./asides.svelte";
   import { asideComposer } from "./asideComposer";
   import { asideScrollKey, recallScroll, rememberScroll, restoreTop } from "./scroll.svelte";
+  import { asideLabel } from "./asides";
+  import { renameAside } from "./asides.svelte";
+  import { closeAsideToChat } from "./asideSidebar.svelte";
+  import AsideNameEdit from "./AsideNameEdit.svelte";
+  import * as tabs from "./tabs";
 
   /**
    * An aside thread as a tab of its own (nightshift backlog 130 part 2,
@@ -39,6 +44,18 @@
   const open = $derived(session === app.activeSessionId);
   const asking = $derived(asideAsking(aside));
   const last = $derived(aside?.turns[aside.turns.length - 1] ?? null);
+  // The tab this view is drawn in, for the Close's way back (item 266).
+  const myTab = $derived(
+    tabs
+      .allTabs(app.tabs)
+      .find(
+        (t) =>
+          t.content.kind === "aside" &&
+          t.content.session === session &&
+          (asideTabThread(t.content) ?? null) === (thread ?? null),
+      )?.id ?? null,
+  );
+  let naming = $state(false);
   const chatName = $derived.by(() => {
     const s = app.sessions.find((x) => x.id === session);
     return s?.title ?? s?.first_user ?? session.slice(0, 8);
@@ -118,6 +135,28 @@
 
 <div class="aside-view" role="note" aria-label="aside, not part of the chat">
   <div class="aside-view-scroll" bind:this={view} onscroll={scrolled}>
+    {#if aside}
+      <!-- The thread's name (item 265): his, or its first question until
+           he names it; a click renames it, here as in the sidebar and the
+           asides list. -->
+      <div class="aside-view-title">
+        {#if naming}
+          <AsideNameEdit
+            value={aside.name ?? ""}
+            placeholder={asideLabel({ ...aside, name: undefined })}
+            oncommit={(v) => {
+              naming = false;
+              renameAside(aside, v);
+            }}
+            oncancel={() => (naming = false)}
+          />
+        {:else}
+          <button class="aside-view-name" class:unnamed={!aside.name} use:tip={"Rename this aside"} onclick={() => (naming = true)}
+            >{asideLabel(aside, 120)}</button
+          >
+        {/if}
+      </div>
+    {/if}
     <div class="aside-view-head">
       <span class="ns-chip mono">aside · not in the chat</span>
       <span class="ns-chip mono" use:tip={"The chat this side conversation is beside"}>{chatName}</span>
@@ -128,11 +167,17 @@
         <span class="ns-chip mono">{last.cacheRead.toLocaleString()} read from cache</span>
       {/if}
       <span class="spacer"></span>
-      {#if open && aside}
+      {#if aside}
+        <!-- ~~× (only while the chat was open): "Dismiss the aside — the
+             thread ends"~~ — item 266 (2026-09-29, blocker 640): Close, on
+             every aside tab, moves the thread to the chat's Past list (the
+             card's ×) and takes him back to the chat it came from. -->
         <button
-          class="ns-btn ghost small"
-          use:tip={asking ? "Stop the answer here; what has arrived stays" : "Dismiss the aside — the thread ends"}
-          onclick={() => requestDismissAside(aside)}>×</button
+          class="ns-btn ghost small aside-view-close"
+          use:tip={asking
+            ? "Stop the answer, move this aside to the chat's Past list, and go back to the chat"
+            : "Close this aside — it moves to the chat's Past list, reopenable — and go back to the chat"}
+          onclick={() => closeAsideToChat(session, aside, myTab)}><Icon name="x" size={12} /> Close</button
         >
       {/if}
     </div>
@@ -278,6 +323,39 @@
   }
   .aside-view-send {
     padding: 4px 16px;
+  }
+  .aside-view-title {
+    display: flex;
+    min-width: 0;
+  }
+  .aside-view-name {
+    max-width: 100%;
+    padding: 2px 6px;
+    margin-left: -6px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--ink);
+    font: inherit;
+    font-size: 16px;
+    font-weight: 600;
+    text-align: left;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: text;
+  }
+  .aside-view-name.unnamed {
+    color: var(--ink2);
+    font-weight: 500;
+  }
+  .aside-view-name:hover {
+    background: var(--well);
+  }
+  .aside-view-close {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
   }
   .aside-view-head {
     display: flex;

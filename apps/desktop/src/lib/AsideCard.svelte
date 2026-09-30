@@ -445,6 +445,10 @@
     }}
   >
     <span class="aside-card-grip" aria-hidden="true" class:live={draggable}>⋮⋮</span>
+    {#if aside.name}
+      <!-- Its name (item 265), where he gave it one. -->
+      <span class="ns-chip aside-card-name" use:tip={"This aside's name — rename it from the sidebar, the asides list or its tab"}>{aside.name}</span>
+    {/if}
     <span class="ns-chip mono">aside · not in the chat</span>
     {#if folded && asking}
       <span class="ns-chip mono">{waiting ? "waiting" : "asking…"}</span>
@@ -652,6 +656,13 @@
     padding: 8px 8px 6px 10px;
     border-bottom: 1px solid var(--line);
     cursor: default;
+  }
+  .aside-card-name {
+    font-weight: 600;
+    max-width: 16em;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
   }
   .aside-card-head .spacer {
     flex: 1;

@@ -8,7 +8,7 @@
  */
 import { app, onAsideClosed, reopenAside } from "./state.svelte";
 import type { Aside } from "./state.svelte";
-import { isPrivateChat } from "./asides";
+import { cleanAsideName, isPrivateChat } from "./asides";
 import { deletePast, loadPast, recordPast, savePast, takePast, type PastMap } from "./asideHistory";
 
 export const pastAsides = $state({
@@ -57,6 +57,18 @@ export function deletePastAside(chat: string, key: string, confirm: () => boolea
   const done = deletePast(pastAsides.byChat, chat, key, confirm);
   if (done) schedule();
   return done;
+}
+
+/** Name a past thread (item 265): the same name a live one carries, kept
+ *  when it is reopened. Blank clears it. Returns whether it was found. */
+export function renamePast(chat: string, key: string, name: string): boolean {
+  const p = (pastAsides.byChat[chat] ?? []).find((q) => q.key === key);
+  if (!p) return false;
+  const n = cleanAsideName(name);
+  if (n === null) delete p.thread.name;
+  else p.thread.name = n;
+  schedule();
+  return true;
 }
 
 /** A chat's past threads, oldest first. */

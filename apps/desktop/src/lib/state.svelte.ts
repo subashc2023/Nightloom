@@ -558,6 +558,10 @@ export interface Aside {
    *  (`asides.ts` writes it); a close with text in it asks first
    *  (`requestDismissAside`). */
   unsent?: string;
+  /** The name he gave the thread (item 265), written with it by
+   *  `asides.ts`; absent when unnamed (`asideLabel` then calls it by its
+   *  first question). Set through `renameAside` (`asides.svelte.ts`). */
+  name?: string;
 }
 
 /** The aside's live exchange — the last turn while it is still asking. */
