@@ -41,6 +41,22 @@
     shortWhen,
     tokenFromHash,
     transcriptRows,
+    damp,
+    dismissVerdict,
+    foldAside,
+    parseAsideEvent,
+    pastAsides,
+    searchGroupLabel,
+    searchSummary,
+    swipeVerdict,
+    PULL_AT,
+    type Aside,
+    type AsideEvent,
+    type CouncilSend,
+    type NoteScope,
+    type PastAside,
+    type SearchResult,
+    type SearchScope,
     type ChatAction,
     type ChatRow,
     type LiveTurn,
@@ -60,8 +76,13 @@
   import type { ApprovalRequest, AskQuestion, ImageInput, SessionEvent, TurnEvent } from "../lib/types";
   import MessageMenu from "./MessageMenu.svelte";
   import RailSheet from "./RailSheet.svelte";
+  import ContextSheet from "./ContextSheet.svelte";
   import RunningSheet from "./RunningSheet.svelte";
   import UsageLine from "./UsageLine.svelte";
+  import MicButton from "./voice/MicButton.svelte";
+  import NotesSheet from "./NotesSheet.svelte";
+  import AsideSheet from "./AsideSheet.svelte";
+  import CouncilSheet from "./CouncilSheet.svelte";
 
   // ---- the token and the connection --------------------------------------
   let token = $state<string | null>(null);
@@ -105,11 +126,46 @@
   let enterFrom = $state(0);
   let drawer = $state(false);
   let search = $state("");
-  let sheet = $state<null | "chat" | "rename" | "project" | "message" | "rail" | "running" | "delete">(null);
+  let sheet = $state<
+    null | "chat" | "rename" | "project" | "message" | "rail" | "running" | "delete" | "notes" | "aside" | "council" | "newproject"
+  >(null);
+  // ---- wave 2C: notes, asides, council, new project, search, gestures ----
+  /** The notes sheet opens on this note (a search hit), else its list. */
+  let notesStart = $state<{ scope: NoteScope; name: string } | null>(null);
+  /** A note open or edited: the sheet takes more of the screen. */
+  let sheetTall = $state(false);
+  /** The aside asked from this page, per chat; folded from `aside-event`s. */
+  let asides = $state<Record<string, Aside>>({});
+  let asidePast = $state<PastAside[] | null>(null);
+  /** Deltas whose exchange this page has not been told the number of yet
+   *  (one can arrive a moment before the 202 does; 2A's note): kept a few
+   *  seconds, then dropped — the end's whole answer heals any gap. */
+  let asideEarly: { ev: AsideEvent; at: number }[] = [];
+  let asideProblem = $state<string | null>(null);
+  let councilProblem = $state<string | null>(null);
+  let projName = $state(loadDraft("newproject:name"));
+  let projInstructions = $state(loadDraft("newproject:instructions"));
+  let projProblem = $state<string | null>(null);
+  let projBusy = $state(false);
+  let searchScope = $state<SearchScope>("all");
+  let found = $state<SearchResult | null>(null);
+  let searching = $state(false);
+  let searchProblem = $state<string | null>(null);
+  let searchTimer: number | null = null;
+  let searchAbort: AbortController | null = null;
+  /** A pull-to-refresh in progress: how far, and where. */
+  let pullBy = $state(0);
+  let pullWhere = $state<"chat" | "drawer">("chat");
+  let refreshing = $state(false);
+  /** A drag on the drawer (left, to close) or the sheet (down, to dismiss). */
+  let drawerDx = $state(0);
+  let sheetDy = $state(0);
   /** What the message menu is open on (wave 1C). */
   let menuOn = $state<{ row: Row; part: TextPart | null; tool: ToolRow | null } | null>(null);
   /** The rail as the Mac last said, and why it could not be read. */
   let rail = $state<Rail | null>(null);
+  /** The Context page (wave 2B), full screen over the chat. */
+  let contextOn = $state(false);
   let railProblem = $state<string | null>(null);
   let running = $state<Running | null>(null);
   let runningProblem = $state<string | null>(null);
@@ -329,6 +385,28 @@
       case "lagged":
         void everything();
         break;
+      case "aside-event":
+      case "aside-delta": {
+        // Wave 2C: an aside's answer streaming in (patch note 2C→2A).
+        const ev = parseAsideEvent(data);
+        if (!ev) break;
+        if (!Object.values(asides).some((a) => a.seq === ev.seq)) {
+          // Not ours yet (the 202 is on its way), or another aside's.
+          const now = Date.now();
+          asideEarly = [...asideEarly.filter((e) => now - e.at < 5000).slice(-200), { ev, at: now }];
+          break;
+        }
+        let ended: Aside | null = null;
+        const next: Record<string, Aside> = {};
+        for (const [chat, a] of Object.entries(asides)) {
+          const b = foldAside(a, ev);
+          if (a.state === "asking" && b.state !== "asking") ended = b;
+          next[chat] = b;
+        }
+        asides = next;
+        if (ended && sheet !== "aside") note(ended.state === "done" ? "The aside answered — open it from the chat's ⋯" : "The aside stopped");
+        break;
+      }
       default:
         break;
     }
@@ -911,6 +989,353 @@
     }
   }
 
+  // ---- wave 2C: notes, asides, council, new project ---------------------------------
+  function openNotes(start: { scope: NoteScope; name: string } | null = null) {
+    drawer = false;
+    notesStart = start;
+    sheetTall = false;
+    sheet = "notes";
+  }
+
+  async function openAside() {
+    if (!chatId) return;
+    asideProblem = null;
+    asidePast = null;
+    sheet = "aside";
+    if (!client || !hasFeature(remote, "aside")) return;
+    try {
+      asidePast = pastAsides(await client.asides(chatId), asides[chatId]?.seq ?? null);
+    } catch {
+      // A host without the list: the sheet leaves "Earlier asides" out.
+    }
+  }
+
+  /** Ask an aside on the chat on screen; true when the Mac took it. */
+  async function askAside(text: string): Promise<boolean> {
+    if (!client || !chatId) return false;
+    if (link !== "online") {
+      asideProblem = "The Mac is unreachable — your question stays here.";
+      return false;
+    }
+    const chat = chatId;
+    asideProblem = null;
+    try {
+      const started = await client.aside(chat, text, sendProject);
+      if (started.seq === null) {
+        asideProblem = "The Mac took the question but did not say which answer is its — look on the Mac.";
+        return true;
+      }
+      let a: Aside = { chat, seq: started.seq, thread: started.thread, question: text, answer: "", state: "asking" };
+      // What streamed before the 202 arrived.
+      for (const e of asideEarly) a = foldAside(a, e.ev);
+      asideEarly = asideEarly.filter((e) => e.ev.seq !== started.seq);
+      asides = { ...asides, [chat]: a };
+      return true;
+    } catch (e) {
+      asideProblem = e instanceof Unreachable ? "The Mac is unreachable — your question stays here." : String(e instanceof Error ? e.message : e);
+      return false;
+    }
+  }
+
+  async function stopAside() {
+    const a = chatId ? asides[chatId] : null;
+    if (!client || !a || a.state !== "asking") return;
+    try {
+      await client.stopAside(a.chat, a.seq);
+    } catch (e) {
+      asideProblem = e instanceof ApiError && (e.status === 404 || e.status === 501) ? "Stop is not available on this Mac." : String(e instanceof Error ? e.message : e);
+    }
+  }
+
+  async function openCouncil() {
+    councilProblem = null;
+    // The seats start from the Mac's rail when it has not been read yet
+    // (read before the sheet opens: the sheet takes its seats once).
+    if (!rail && client && hasFeature(remote, "rail")) {
+      try {
+        rail = await client.rail();
+      } catch {
+        // The sheet starts from his last seats, or two defaults.
+      }
+    }
+    sheet = "council";
+  }
+
+  /** Send the composer's text as a council turn. It is never held: a
+   *  council cannot wait in the phone's queue, so the text stays in the
+   *  box until the Mac can take it. */
+  async function sendCouncil(council: CouncilSend): Promise<boolean> {
+    const text = draft.trim();
+    if (!client || !chatId || !text) return false;
+    const project = sendProject;
+    councilProblem = null;
+    try {
+      const status = await client.send(chatId, text, { project, council });
+      setDraft("");
+      sheet = null;
+      remote = { ...remote, busy: true };
+      if (project) void refreshProjects();
+      if (status === "queued") {
+        note("The Mac is mid-turn — the council goes when it ends");
+        return true;
+      }
+      live = emptyTurn();
+      events = [...events, { event: "user_message", text, at: new Date().toISOString() }];
+      scrollToEnd();
+      note(`Asked ${council.seats.length} seats`);
+      return true;
+    } catch (e) {
+      councilProblem = e instanceof Unreachable ? "The Mac is unreachable — your message stays in the box." : String(e instanceof Error ? e.message : e);
+      return false;
+    }
+  }
+
+  function openNewProject() {
+    drawer = false;
+    projProblem = null;
+    sheet = "newproject";
+  }
+
+  async function createProject() {
+    const name = projName.trim();
+    if (!client || !name) return;
+    projBusy = true;
+    projProblem = null;
+    try {
+      const row = await client.newProject(name, projInstructions.trim() || null);
+      // Made on the Mac: only now do the drafts go.
+      projName = "";
+      projInstructions = "";
+      saveDraft("newproject:name", "");
+      saveDraft("newproject:instructions", "");
+      await refreshProjects();
+      note(`“${row.name}” created on the Mac`);
+      startNew(row.id);
+    } catch (e) {
+      projProblem = e instanceof Unreachable ? "The Mac is unreachable — what you typed stays here." : String(e instanceof Error ? e.message : e);
+    } finally {
+      projBusy = false;
+    }
+  }
+
+  // ---- wave 2C: search everywhere ----------------------------------------------------
+  /** As he types (after a pause): the Mac's search over chats and notes. A
+   *  host without `/api/search` keeps the title filter. */
+  function searchTyped() {
+    if (searchTimer !== null) clearTimeout(searchTimer);
+    if (!hasFeature(remote, "search")) return;
+    const q = search.trim();
+    if (q.length < 2) {
+      searchAbort?.abort();
+      found = null;
+      searchProblem = null;
+      searching = false;
+      return;
+    }
+    searchTimer = window.setTimeout(() => void runSearch(), 300);
+  }
+
+  async function runSearch() {
+    const q = search.trim();
+    if (!client || q.length < 2) return;
+    searchAbort?.abort();
+    const ctl = new AbortController();
+    searchAbort = ctl;
+    searching = true;
+    searchProblem = null;
+    try {
+      const r = await client.search(q, searchScope, ctl.signal);
+      if (searchAbort === ctl) found = r;
+    } catch (e) {
+      if (searchAbort === ctl && !ctl.signal.aborted) searchProblem = e instanceof Unreachable ? "The Mac is unreachable." : String(e instanceof Error ? e.message : e);
+    } finally {
+      if (searchAbort === ctl) searching = false;
+    }
+  }
+
+  function setSearchScope(s: SearchScope) {
+    searchScope = s;
+    void runSearch();
+  }
+
+  function clearSearch() {
+    search = "";
+    searchTyped();
+  }
+
+  const searchOn = $derived(hasFeature(remote, "search") && search.trim().length >= 2);
+
+  // ---- wave 2C: gestures (pass 1's leftovers) -----------------------------------------
+  /**
+   * Pull-to-refresh on a scroller: a drag down that starts at its top shows
+   * the pull, and letting go past `PULL_AT` runs `fn`. Touch events, not
+   * pointer events: the phone's own overscroll would cancel a pointer.
+   */
+  function pull(node: HTMLElement, opts: { where: "chat" | "drawer"; fn: () => Promise<void> }) {
+    let o = opts;
+    let y0: number | null = null;
+    const y = (e: TouchEvent) => e.touches?.[0]?.clientY ?? 0;
+    const start = (e: TouchEvent) => {
+      y0 = node.scrollTop <= 0 && !refreshing && (e.touches?.length ?? 1) === 1 ? y(e) : null;
+    };
+    const move = (e: TouchEvent) => {
+      if (y0 === null) return;
+      if (node.scrollTop > 0) {
+        y0 = null;
+        pullBy = 0;
+        return;
+      }
+      pullWhere = o.where;
+      pullBy = damp(y(e) - y0);
+    };
+    const end = async () => {
+      if (y0 === null) return;
+      y0 = null;
+      const go = pullBy >= PULL_AT;
+      pullBy = 0;
+      if (!go) return;
+      pullWhere = o.where;
+      refreshing = true;
+      try {
+        await o.fn();
+      } finally {
+        refreshing = false;
+      }
+    };
+    node.addEventListener("touchstart", start, { passive: true });
+    node.addEventListener("touchmove", move, { passive: true });
+    node.addEventListener("touchend", end);
+    node.addEventListener("touchcancel", end);
+    return {
+      update(next: typeof opts) {
+        o = next;
+      },
+      destroy() {
+        node.removeEventListener("touchstart", start);
+        node.removeEventListener("touchmove", move);
+        node.removeEventListener("touchend", end);
+        node.removeEventListener("touchcancel", end);
+      },
+    };
+  }
+
+  async function pullChat() {
+    await everything();
+    note("Up to date");
+  }
+
+  async function pullDrawer() {
+    await Promise.all([refreshProjects(), refreshUsage()]);
+    await refreshChats();
+    for (const p of projects) if (!p.active && expanded[p.id]) await loadProject(p.id);
+  }
+
+  type DragOpts = {
+    axis: "x" | "y";
+    onmove: (d: number, x0: number, dx: number, dy: number) => void;
+    onend: (d: number, ms: number, x0: number, dx: number, dy: number) => void;
+  };
+
+  /**
+   * A horizontal or downward drag that follows the finger: `onmove` gets
+   * the distance, `onend` the distance and the time, and a click that ends
+   * a drag is swallowed so the row under the finger does not open.
+   */
+  function drag(node: HTMLElement, opts: DragOpts) {
+    let o = opts;
+    let x0 = 0;
+    let y0 = 0;
+    let t0 = 0;
+    let id: number | null = null;
+    let moved = false;
+    const down = (e: PointerEvent) => {
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      id = e.pointerId;
+      x0 = e.clientX;
+      y0 = e.clientY;
+      t0 = performance.now();
+      moved = false;
+    };
+    const move = (e: PointerEvent) => {
+      if (id !== e.pointerId) return;
+      const dx = e.clientX - x0;
+      const dy = e.clientY - y0;
+      if (!moved && Math.hypot(dx, dy) > 8) moved = true;
+      if (moved) o.onmove(o.axis === "x" ? dx : dy, x0, dx, dy);
+    };
+    const up = (e: PointerEvent) => {
+      if (id !== e.pointerId) return;
+      id = null;
+      const dx = e.clientX - x0;
+      const dy = e.clientY - y0;
+      o.onend(moved ? (o.axis === "x" ? dx : dy) : 0, performance.now() - t0, x0, moved ? dx : 0, moved ? dy : 0);
+    };
+    const cancel = () => {
+      if (id === null) return;
+      id = null;
+      o.onend(0, 0, x0, 0, 0);
+    };
+    const click = (e: MouseEvent) => {
+      if (moved) {
+        e.preventDefault();
+        e.stopPropagation();
+        moved = false;
+      }
+    };
+    node.addEventListener("pointerdown", down);
+    node.addEventListener("pointermove", move);
+    node.addEventListener("pointerup", up);
+    node.addEventListener("pointercancel", cancel);
+    node.addEventListener("click", click, true);
+    return {
+      update(next: DragOpts) {
+        o = next;
+      },
+      destroy() {
+        node.removeEventListener("pointerdown", down);
+        node.removeEventListener("pointermove", move);
+        node.removeEventListener("pointerup", up);
+        node.removeEventListener("pointercancel", cancel);
+        node.removeEventListener("click", click, true);
+      },
+    };
+  }
+
+  /** The left edge: a swipe right opens the drawer. */
+  const edgeDrag: DragOpts = {
+    axis: "x",
+    onmove: (_d, x0, dx, dy) => {
+      if (!drawer && swipeVerdict(x0, dx, dy, false) === "open") openDrawer();
+    },
+    onend: () => {},
+  };
+  /** The drawer follows a swipe left and closes past the mark. */
+  const drawerDrag: DragOpts = {
+    axis: "x",
+    onmove: (d) => (drawerDx = Math.min(0, d)),
+    onend: (_d, _ms, x0, dx, dy) => {
+      drawerDx = 0;
+      if (swipeVerdict(x0, dx, dy, true) === "close") drawer = false;
+    },
+  };
+  /** The sheet follows its grabber down and goes past the mark or on a
+   *  flick. Everything typed in a sheet is kept as a draft, so a dismissal
+   *  loses nothing (practices §7). */
+  const sheetDrag: DragOpts = {
+    axis: "y",
+    onmove: (d) => (sheetDy = Math.max(0, d)),
+    onend: (d, ms) => {
+      sheetDy = 0;
+      if (dismissVerdict(d, ms)) closeSheet();
+    },
+  };
+
+  function closeSheet() {
+    sheet = null;
+    menuOn = null;
+    sheetTall = false;
+  }
+
   // ---- wave 1C: photos --------------------------------------------------------------
   /** A photo from the camera or Photos, scaled to `PHOTO_EDGE` and
    *  re-encoded as JPEG (which also turns an iPhone's HEIC into something
@@ -1026,7 +1451,7 @@
   const toolCount = (tools: ToolRow[]): number => tools.reduce((n, t) => n + 1 + toolCount(t.children), 0);
 </script>
 
-{#snippet icon(name: "menu" | "new" | "more" | "up" | "stop" | "chev" | "x" | "search" | "check" | "mac" | "pencil" | "sliders" | "plus" | "trash" | "play" | "swap" | "pulse")}
+{#snippet icon(name: "menu" | "new" | "more" | "up" | "stop" | "chev" | "x" | "search" | "check" | "mac" | "pencil" | "sliders" | "plus" | "trash" | "play" | "swap" | "pulse" | "note" | "aside" | "council" | "folder")}
   <svg class="ico" viewBox="0 0 24 24" aria-hidden="true">
     {#if name === "menu"}<path d="M4 7h16M4 12h16M4 17h10" />
     {:else if name === "new"}<path d="M12 20h8M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
@@ -1045,6 +1470,10 @@
     {:else if name === "play"}<path d="M7 5v14l11-7Z" />
     {:else if name === "swap"}<path d="M7 7h12l-3-3M17 17H5l3 3" />
     {:else if name === "pulse"}<path d="M3 12h4l2-6 4 12 2-6h6" />
+    {:else if name === "note"}<path d="M6 3h9l4 4v14H6Z" /><path d="M14 3v5h5M9 13h7M9 17h5" />
+    {:else if name === "aside"}<path d="M4 5h16v10H9l-5 4Z" /><path d="M8 9h8" />
+    {:else if name === "council"}<circle cx="7" cy="9" r="2.5" /><circle cx="17" cy="9" r="2.5" /><circle cx="12" cy="6" r="2.5" /><path d="M3 19c0-3 2-5 4-5M21 19c0-3-2-5-4-5M8 19c0-3 2-5 4-5s4 2 4 5" />
+    {:else if name === "folder"}<path d="M3 6h6l2 2h10v11H3Z" /><path d="M12 11v5M9.5 13.5h5" />
     {/if}
   </svg>
 {/snippet}
@@ -1129,7 +1558,18 @@
       </div>
     {/if}
 
-    <main class="chat" bind:this={scroller}>
+    {#if token && !drawer && !sheet}
+      <!-- Wave 2C: a swipe right from the left edge opens the drawer. -->
+      <div class="edge" use:drag={edgeDrag} aria-hidden="true"></div>
+    {/if}
+    <main class="chat" bind:this={scroller} use:pull={{ where: "chat", fn: pullChat }}>
+      {#if pullWhere === "chat" && (pullBy > 0 || refreshing)}
+        <div class="pull" aria-live="polite">
+          <span class="pull-pill" class:ready={pullBy >= PULL_AT} class:spin={refreshing} style:transform="translateY({refreshing ? PULL_AT * 0.6 : pullBy * 0.6}px)">
+            {refreshing ? "Refreshing…" : pullBy >= PULL_AT ? "Release to refresh" : "Pull to refresh"}
+          </span>
+        </div>
+      {/if}
       {#if chatId === null && rows.length === 0 && !liveHere}
         <div class="hello" in:fade={{ duration: motion(200) }}>
           <div class="hello-mark">N</div>
@@ -1285,8 +1725,19 @@
               }
             }}
           ></textarea>
-          <!-- Wave 3B mounts the mic button here (design §2.5, the orb):
-               beside Send, shown while the box is empty. -->
+          <!-- Voice (item 246 wave 3B, its patch note): the orb, or keyboard
+               dictation with auto-send; shown while the box is empty. -->
+          <MicButton
+            {token}
+            chat={chatId}
+            {title}
+            voice={remote.voice ?? null}
+            {draft}
+            {box}
+            {still}
+            send={() => void sendNow()}
+            onkeep={(t) => setDraft(draft.trim() ? `${draft}\n${t}` : t)}
+          />
           {#if busyHere && link === "online" && !draft.trim()}
             <button class="send stop" onclick={stop} aria-label="Stop the turn">{@render icon("stop")}</button>
           {:else}
@@ -1300,20 +1751,87 @@
 
     {#if drawer}
       <div class="scrim" transition:fade={{ duration: motion(220) }} onclick={() => (drawer = false)} role="presentation"></div>
-      <nav class="drawer" transition:fly={{ x: -340, duration: motion(300), easing: cubicOut, opacity: 1 }} aria-label="Chats">
+      <nav
+        class="drawer"
+        class:dragging={drawerDx !== 0}
+        style:transform={drawerDx ? `translateX(${drawerDx}px)` : null}
+        transition:fly={{ x: -340, duration: motion(300), easing: cubicOut, opacity: 1 }}
+        aria-label="Chats"
+        use:drag={drawerDrag}
+      >
         <div class="drawer-head">
           <span class="drawer-title">Nightloom</span>
           <button class="icon-btn" onclick={() => (drawer = false)} aria-label="Close">{@render icon("x")}</button>
         </div>
         <label class="search">
           {@render icon("search")}
-          <input type="search" placeholder="Search chats" bind:value={search} autocomplete="off" />
+          <input
+            type="search"
+            placeholder={hasFeature(remote, "search") ? "Search chats and notes" : "Search chats"}
+            bind:value={search}
+            oninput={searchTyped}
+            autocomplete="off"
+          />
+          {#if search}<button class="icon-btn small" onclick={clearSearch} aria-label="Clear the search">{@render icon("x")}</button>{/if}
         </label>
-        <button class="new-row" onclick={() => startNew(null)}>{@render icon("new")} New chat</button>
-        {#if hasFeature(remote, "running")}
-          <button class="new-row quiet" onclick={openRunning}>{@render icon("pulse")} Running tasks</button>
+        {#if searchOn}
+          <div class="scopes" role="tablist" aria-label="Search in">
+            {#each [["this", "This project"], ["all", "All chats"], ["notes", "Notes"]] as [k, label] (k)}
+              <button role="tab" aria-selected={searchScope === k} class:on={searchScope === k} onclick={() => setSearchScope(k as SearchScope)}>{label}</button>
+            {/each}
+          </div>
+        {:else}
+          <button class="new-row" onclick={() => startNew(null)}>{@render icon("new")} New chat</button>
+          {#if hasFeature(remote, "running")}
+            <button class="new-row quiet" onclick={openRunning}>{@render icon("pulse")} Running tasks</button>
+          {/if}
+          {#if hasFeature(remote, "notes")}
+            <button class="new-row quiet" onclick={() => openNotes()}>{@render icon("note")} Notes</button>
+          {/if}
         {/if}
-        <div class="drawer-list">
+        {#if searchOn}
+          <div class="drawer-list found">
+            {#if searchProblem}
+              <p class="empty">{searchProblem}</p>
+            {:else if !found}
+              <p class="empty">Searching…</p>
+            {:else}
+              <p class="found-sum">{searchSummary(found)}{searching ? " · searching…" : ""}</p>
+              {#each found.groups as g (g.id)}
+                <button class="hit" onclick={() => ((search = ""), (found = null), void openChat(g.id, g.project?.id ?? null))}>
+                  <span class="hit-head">
+                    <span class="chat-label">{searchGroupLabel(g)}</span>
+                    {#if g.project && g.project.id !== activePid}<span class="tag">{g.project.name}</span>{/if}
+                  </span>
+                  {#each g.rows.slice(0, 2) as h (h.index)}
+                    <span class="hit-row">{h.before}<mark>{h.matched}</mark>{h.after}</span>
+                  {/each}
+                  {#if g.hits > 2}<span class="hit-more">{g.hits} matches</span>{/if}
+                </button>
+              {/each}
+              {#each found.notes as n (`${n.scope}/${n.name}`)}
+                <button class="hit" onclick={() => openNotes({ scope: n.scope as NoteScope, name: n.name })}>
+                  <span class="hit-head">
+                    {@render icon("note")}
+                    <span class="chat-label">{n.name.replace(/\.md$/i, "")}</span>
+                    <span class="tag">{n.scope === "knowledge" ? "vault" : "note"}</span>
+                  </span>
+                  {#each n.rows.slice(0, 2) as h (h.line)}
+                    <span class="hit-row">{h.before}<mark>{h.matched}</mark>{h.after}</span>
+                  {/each}
+                </button>
+              {/each}
+            {/if}
+          </div>
+        {:else}
+        <div class="drawer-list" use:pull={{ where: "drawer", fn: pullDrawer }}>
+          {#if pullWhere === "drawer" && (pullBy > 0 || refreshing)}
+            <div class="pull">
+              <span class="pull-pill" class:ready={pullBy >= PULL_AT} class:spin={refreshing} style:transform="translateY({refreshing ? PULL_AT * 0.6 : pullBy * 0.6}px)">
+                {refreshing ? "Refreshing…" : pullBy >= PULL_AT ? "Release to refresh" : "Pull to refresh"}
+              </span>
+            </div>
+          {/if}
           {#each projects.length > 0 ? projects : [{ id: "", name: remote.project ?? "Unfiled", active: true }] as p (p.id)}
             {@const open = p.active || expanded[p.id]}
             <div class="proj">
@@ -1339,7 +1857,11 @@
               {/if}
             </div>
           {/each}
+          {#if hasFeature(remote, "projects")}
+            <button class="new-row quiet" onclick={openNewProject}>{@render icon("folder")} New project</button>
+          {/if}
         </div>
+        {/if}
         <UsageLine {usage} />
         <div class="drawer-foot">
           <span class="dot" class:ok={link === "online"} class:bad={link !== "online"}></span>
@@ -1348,10 +1870,34 @@
       </nav>
     {/if}
 
+    {#if contextOn && chatId && client}
+      {#key chatId}
+        <ContextSheet
+          api={client}
+          chat={chatId}
+          project={chatProject}
+          {title}
+          engine={remote.engine}
+          busy={busyHere}
+          canLayers={hasFeature(remote, "layers")}
+          onclose={() => (contextOn = false)}
+        />
+      {/key}
+    {/if}
+
     {#if sheet}
-      <div class="scrim" transition:fade={{ duration: motion(200) }} onclick={() => (sheet = null)} role="presentation"></div>
-      <div class="sheet" transition:fly={{ y: 400, duration: motion(300), easing: cubicOut, opacity: 1 }} role="dialog" aria-modal="true">
-        <div class="grabber"></div>
+      <div class="scrim" transition:fade={{ duration: motion(200) }} onclick={closeSheet} role="presentation"></div>
+      <div
+        class="sheet"
+        class:tall={sheetTall}
+        class:dragging={sheetDy !== 0}
+        style:transform={sheetDy ? `translateY(${sheetDy}px)` : null}
+        transition:fly={{ y: 400, duration: motion(300), easing: cubicOut, opacity: 1 }}
+        role="dialog"
+        aria-modal="true"
+      >
+        <!-- Wave 2C: drag the grabber down to dismiss (drafts are kept). -->
+        <div class="grab" use:drag={sheetDrag}><div class="grabber"></div></div>
         {#if sheet === "chat"}
           <div class="sheet-title">{title}</div>
           <div class="sheet-sub">{projectName(chatProject)}{currentChat ? ` · ${currentChat.user_turns} messages · ${shortWhen(currentChat.modified)}` : ""}</div>
@@ -1361,6 +1907,16 @@
               <button onclick={openOnMac} disabled={remote.busy && chatId !== remote.active_chat}>{@render icon("mac")} Open on the Mac</button>
             {/if}
             <button onclick={() => startNew(chatProject)}>{@render icon("new")} New chat{readOnly ? ` in ${projectName(chatProject)}` : ""}</button>
+            {#if !readOnly && hasFeature(remote, "aside")}
+              <button onclick={openAside}>
+                {@render icon("aside")}
+                <span class="grow">Ask aside</span>
+                {#if chatId && asides[chatId]?.state === "asking"}<span class="tag">answering</span>{:else if chatId && asides[chatId]}<span class="tag">answered</span>{/if}
+              </button>
+            {/if}
+            {#if !readOnly && hasFeature(remote, "council")}
+              <button onclick={openCouncil}>{@render icon("council")} Ask the council</button>
+            {/if}
             {#if !readOnly && canAct}
               <button onclick={continueTurn} disabled={!!actBlocked}>{@render icon("play")} Continue</button>
               <button onclick={switchKind} disabled={!!actBlocked}>
@@ -1368,6 +1924,9 @@
                 <span class="grow">{currentChat?.kind === "build" ? "Make it a plain chat" : "Make it a build chat"}</span>
                 <span class="tag">{currentChat?.kind ?? "chat"}</span>
               </button>
+            {/if}
+            {#if !readOnly && hasFeature(remote, "context")}
+              <button data-act="context" onclick={() => (closeSheet(), (contextOn = true))}>{@render icon("pulse")} Context</button>
             {/if}
             {#if busyHere}
               <button class="danger" onclick={stop}>{@render icon("stop")} Stop the turn</button>
@@ -1411,6 +1970,51 @@
           />
         {:else if sheet === "rail"}
           <RailSheet {rail} problem={railProblem} busy={remote.busy} onpatch={patchRail} />
+        {:else if sheet === "notes" && client}
+          <NotesSheet {client} available={hasFeature(remote, "notes")} start={notesStart} onnote={note} ontall={(t) => (sheetTall = t)} />
+        {:else if sheet === "aside" && chatId}
+          <AsideSheet
+            chat={chatId}
+            {title}
+            available={hasFeature(remote, "aside")}
+            aside={asides[chatId] ?? null}
+            past={asidePast}
+            problem={asideProblem}
+            onask={askAside}
+            onstop={stopAside}
+            oncopy={copy}
+          />
+        {:else if sheet === "council"}
+          <CouncilSheet
+            available={hasFeature(remote, "council") && chatId !== null}
+            initial={rail?.council ?? null}
+            text={draft}
+            blocked={link !== "online" ? "The Mac is unreachable." : busyHere ? "A turn is running in this chat — wait for it to end." : null}
+            problem={councilProblem}
+            onsend={sendCouncil}
+          />
+        {:else if sheet === "newproject"}
+          <div class="sheet-title">New project</div>
+          <p class="sheet-note">Made in the Mac's projects folder. A different folder is chosen on the Mac.</p>
+          <input
+            type="text"
+            placeholder="Name"
+            bind:value={projName}
+            oninput={() => saveDraft("newproject:name", projName)}
+            onkeydown={(e) => e.key === "Enter" && void createProject()}
+          />
+          <textarea
+            class="proj-inst"
+            rows="4"
+            placeholder="Instructions for its chats (optional)"
+            bind:value={projInstructions}
+            oninput={() => saveDraft("newproject:instructions", projInstructions)}
+          ></textarea>
+          {#if projProblem}<p class="sheet-note bad">{projProblem}</p>{/if}
+          <div class="actions end">
+            <button class="btn" onclick={closeSheet}>Cancel</button>
+            <button class="btn accent" disabled={!projName.trim() || projBusy} onclick={createProject}>Create</button>
+          </div>
         {:else if sheet === "running"}
           <RunningSheet
             {running}
@@ -2491,6 +3095,150 @@
   .new-row.quiet {
     color: var(--ink2);
     font-weight: 400;
+  }
+
+  /* ---- wave 2C: gestures, search, the new project sheet ---- */
+  /* The strip a swipe right starts on: under the top bar, above the dock,
+     narrower than the chat's own padding so it covers nothing tappable. */
+  .edge {
+    position: fixed;
+    left: 0;
+    top: calc(64px + env(safe-area-inset-top, 0px));
+    bottom: calc(96px + env(safe-area-inset-bottom, 0px));
+    width: 14px;
+    z-index: 5;
+    touch-action: none;
+  }
+  .drawer {
+    touch-action: pan-y;
+  }
+  .drawer.dragging,
+  .sheet.dragging {
+    transition: none;
+  }
+  .grab {
+    margin: -8px -16px 0;
+    padding: 8px 0 8px;
+    touch-action: none;
+    cursor: grab;
+    flex: none;
+  }
+  .grab .grabber {
+    margin: 0 auto;
+  }
+  .sheet.tall {
+    max-height: 94dvh;
+  }
+  .pull {
+    position: sticky;
+    top: 0;
+    height: 0;
+    margin-bottom: -18px;
+    display: flex;
+    justify-content: center;
+    z-index: 2;
+    overflow: visible;
+  }
+  .drawer-list .pull {
+    margin-bottom: 0;
+  }
+  .pull-pill {
+    display: inline-block;
+    margin-top: -32px;
+    padding: 6px 14px;
+    border-radius: 999px;
+    background: var(--sheet);
+    border: 1px solid var(--line);
+    color: var(--dim);
+    font-size: 13px;
+    white-space: nowrap;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  }
+  .pull-pill.ready,
+  .pull-pill.spin {
+    color: var(--accent-ink);
+    border-color: var(--accent);
+  }
+  .scopes {
+    display: flex;
+    gap: 6px;
+    margin: 0 14px 6px;
+  }
+  .scopes button {
+    all: unset;
+    cursor: pointer;
+    padding: 6px 12px;
+    border-radius: 999px;
+    border: 1px solid var(--line2);
+    font-size: 13px;
+    color: var(--ink2);
+  }
+  .scopes button.on {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    color: var(--accent-ink);
+  }
+  .found-sum {
+    font-size: 12px;
+    color: var(--dim);
+    margin: 2px 10px 6px;
+  }
+  .hit {
+    all: unset;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 10px;
+    border-radius: 12px;
+    cursor: pointer;
+  }
+  .hit:active {
+    background: var(--well);
+  }
+  .hit-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+  .hit-head .chat-label {
+    flex: 1;
+    min-width: 0;
+  }
+  .hit-head .ico {
+    width: 16px;
+    height: 16px;
+    flex: none;
+  }
+  .hit-row {
+    font-size: 13px;
+    color: var(--dim);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .hit-row mark {
+    background: var(--accent-soft);
+    color: var(--accent-ink);
+    border-radius: 3px;
+    padding: 0 1px;
+  }
+  .hit-more {
+    font-size: 11px;
+    color: var(--dim);
+  }
+  .proj-inst {
+    resize: none;
+  }
+  /* The field's own clear button would sit beside the page's. */
+  .search input::-webkit-search-cancel-button {
+    -webkit-appearance: none;
+    appearance: none;
+  }
+  .drawer-list > .new-row {
+    margin: 6px 0 0;
   }
   .picker {
     display: none;
