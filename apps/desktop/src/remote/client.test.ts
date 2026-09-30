@@ -28,6 +28,26 @@ import {
   sendBody,
   sinceText,
   usageLine,
+  councilProblem,
+  damp,
+  dismissVerdict,
+  foldAside,
+  loadNoteDraft,
+  noteDraftKey,
+  noteDraftKeys,
+  noteFileName,
+  noteNameProblem,
+  notePath,
+  noteTitle,
+  parseAsideEvent,
+  pastAsides,
+  saveNoteDraft,
+  searchGroupLabel,
+  searchSummary,
+  swipeVerdict,
+  PULL_AT,
+  type Aside,
+  type SearchResult,
 } from "./client";
 import type { SessionEvent, TurnEvent } from "../lib/types";
 
@@ -336,5 +356,168 @@ describe("wave 1: photos, usage, running", () => {
     // The Mac sends unix milliseconds.
     expect(sinceText(new Date(2026, 8, 30, 4, 56).getTime(), now)).toBe("4 min");
     expect(sinceText(null, now)).toBe("");
+  });
+});
+
+// ---- wave 2C -------------------------------------------------------------------
+
+describe("a council send (wave 2C)", () => {
+  it("carries the council with its areas, and leaves it out otherwise", () => {
+    const council = { seats: [{ model: "opus" }, { model: "sonnet" }], mode: "disproof" as const };
+    expect(sendBody("idea", { council })).toEqual({ text: "idea", council: { ...council, areas: [] } });
+    expect(sendBody("idea", { council: null })).toEqual({ text: "idea" });
+  });
+
+  it("refuses a council the listener would refuse", () => {
+    expect(councilProblem([{ model: "opus" }])).toMatch(/at least 2/);
+    expect(councilProblem([{ model: "opus" }, { model: "haiku" }])).toBeNull();
+    expect(councilProblem(Array.from({ length: 7 }, () => ({ model: "opus" })))).toMatch(/at most 6/);
+    expect(councilProblem([{ model: "opus" }, { model: "x", engine: "api" }])).toMatch(/API/);
+  });
+});
+
+describe("notes (wave 2C)", () => {
+  it("addresses a note by segments, keeping its slashes", () => {
+    expect(notePath("project", "design/phone page.md")).toBe("/notes/project/design/phone%20page.md");
+    expect(notePath("memory", "AGENTS.md")).toBe("/notes/memory/AGENTS.md");
+  });
+
+  it("names a new note as the listener takes it", () => {
+    expect(noteNameProblem("  ")).toMatch(/needs a name/);
+    expect(noteNameProblem("a//b")).toMatch(/empty/);
+    expect(noteNameProblem("../up")).toMatch(/\.\./);
+    expect(noteNameProblem("ideas/phone")).toBeNull();
+    expect(noteFileName(" Phone ideas ")).toBe("Phone ideas.md");
+    expect(noteFileName("ideas / phone")).toBe("ideas/phone.md");
+    expect(noteFileName("list.txt")).toBe("list.txt");
+    expect(noteTitle("design/phone page.md")).toBe("phone page");
+  });
+
+  it("keeps an edit's draft until it is saved or discarded", () => {
+    localStorage.clear();
+    const key = noteDraftKey("project", "a.md");
+    expect(key).toBe("project/a.md");
+    expect(noteDraftKey("knowledge", null)).toBe("new:knowledge");
+    saveNoteDraft(key, { text: "half typed", base: "old" });
+    expect(loadNoteDraft(key)).toEqual({ text: "half typed", base: "old" });
+    expect(noteDraftKeys()).toEqual([key]);
+    // Typed back to the note's own text: nothing to keep.
+    saveNoteDraft(key, { text: "old", base: "old" });
+    expect(loadNoteDraft(key)).toBeNull();
+    // A new note with only a name is still a draft.
+    saveNoteDraft("new:project", { text: "", base: "", name: "Ideas" });
+    expect(loadNoteDraft("new:project")?.name).toBe("Ideas");
+    saveNoteDraft("new:project", null);
+    expect(noteDraftKeys()).toEqual([]);
+  });
+});
+
+describe("search (wave 2C)", () => {
+  const group = (over: object) => ({ id: "c1", hits: 1, rows: [], ...over });
+  it("labels a hit's chat by its name, else its first line", () => {
+    expect(searchGroupLabel(group({ title: "Tab drag", first_user: "why" }))).toBe("Tab drag");
+    expect(searchGroupLabel(group({ title: null, first_user: "why does\nthe tab" }))).toBe("why does the tab");
+    expect(searchGroupLabel(group({}))).toBe("Untitled chat");
+  });
+
+  it("counts what it found", () => {
+    const r = (m: number, g: number, n: number): SearchResult => ({
+      matches: m,
+      messages: m,
+      chats: g,
+      shown: m,
+      elapsed_ms: 3,
+      groups: Array.from({ length: g }, (_, i) => group({ id: `c${i}` })) as SearchResult["groups"],
+      notes: Array.from({ length: n }, (_, i) => ({ scope: "project", name: `n${i}`, modified: "", hits: 1, rows: [] })),
+    });
+    expect(searchSummary(null)).toBe("");
+    expect(searchSummary(r(0, 0, 0))).toBe("No matches.");
+    expect(searchSummary(r(14, 4, 2))).toBe("14 matches in 4 chats · 2 notes");
+    expect(searchSummary(r(1, 1, 0))).toBe("1 match in 1 chat");
+    expect(searchSummary(r(3, 0, 1))).toBe("3 matches · 1 note");
+  });
+});
+
+describe("asides (wave 2C, 2A's shapes)", () => {
+  const asking: Aside = { chat: "c1", seq: 4, thread: 3, question: "q", answer: "", state: "asking" };
+
+  it("reads the stream's aside events, and the Mac's bare aside-delta", () => {
+    expect(parseAsideEvent('{"kind":"delta","seq":4,"text":"Hi"}')).toEqual({ kind: "delta", seq: 4, text: "Hi" });
+    expect(parseAsideEvent('{"seq":4,"text":"Hi"}')).toEqual({ kind: "delta", seq: 4, text: "Hi" });
+    expect(parseAsideEvent('{"kind":"done","chat":"c1","thread":3,"seq":4,"answer":"All","error":null,"cancelled":false}')).toEqual({
+      kind: "done",
+      seq: 4,
+      answer: "All",
+      error: null,
+      cancelled: false,
+    });
+    expect(parseAsideEvent("not json")).toBeNull();
+    expect(parseAsideEvent('{"kind":"delta","text":"no seq"}')).toBeNull();
+    expect(parseAsideEvent('{"kind":"odd","seq":1}')).toBeNull();
+  });
+
+  it("folds its own exchange's events and no other's", () => {
+    let a = foldAside(asking, { kind: "delta", seq: 4, text: "The " });
+    a = foldAside(a, { kind: "delta", seq: 4, text: "answr" });
+    expect(a.answer).toBe("The answr");
+    // The Mac's own aside, or another phone's: untouched.
+    expect(foldAside(a, { kind: "delta", seq: 5, text: "x" })).toBe(a);
+    // The whole answer heals a lost delta.
+    const done = foldAside(a, { kind: "done", seq: 4, answer: "The answer", error: null, cancelled: false });
+    expect(done).toMatchObject({ state: "done", answer: "The answer" });
+    expect(foldAside(done, { kind: "delta", seq: 4, text: "late" }).answer).toBe("The answer");
+  });
+
+  it("marks a failure with the Mac's sentence, and a stop keeps what arrived", () => {
+    const failed = foldAside(asking, { kind: "done", seq: 4, answer: null, error: "no session yet", cancelled: false });
+    expect(failed).toMatchObject({ state: "failed", error: "no session yet" });
+    const part = foldAside(asking, { kind: "delta", seq: 4, text: "half" });
+    expect(foldAside(part, { kind: "done", seq: 4, answer: "", error: null, cancelled: true })).toMatchObject({ state: "failed", answer: "half" });
+  });
+
+  it("lists earlier exchanges newest first, without the one on the card or any still asking", () => {
+    const past = pastAsides(
+      [
+        { id: null, key: "k1", open: false, name: "Named", turns: [{ seq: null, question: "old", answer: "a0" }] },
+        {
+          id: 3,
+          open: true,
+          turns: [
+            { seq: 1, question: "q1", answer: "a1" },
+            { seq: 4, question: "q4", answer: "a4" },
+            { seq: 5, question: "q5", answer: "", asking: true },
+          ],
+        },
+      ],
+      4,
+    );
+    expect(past.map((p) => p.question)).toEqual(["q1", "old"]);
+    expect(past[1].thread).toBe("Named");
+    expect(past[0].thread).toBe("Open card");
+  });
+});
+
+describe("gestures (wave 2C)", () => {
+  it("damps a pull past the mark", () => {
+    expect(damp(-5)).toBe(0);
+    expect(damp(40)).toBe(40);
+    expect(damp(PULL_AT + 100)).toBeCloseTo(PULL_AT + 35);
+  });
+
+  it("opens the drawer only from the edge, and closes it by a swipe left", () => {
+    expect(swipeVerdict(8, 80, 10, false)).toBe("open");
+    expect(swipeVerdict(120, 80, 10, false)).toBeNull();
+    expect(swipeVerdict(8, 30, 0, false)).toBeNull();
+    // More down than across is a scroll.
+    expect(swipeVerdict(8, 60, 80, false)).toBeNull();
+    expect(swipeVerdict(200, -90, 12, true)).toBe("close");
+    expect(swipeVerdict(200, 90, 12, true)).toBeNull();
+  });
+
+  it("dismisses a sheet past the mark or on a flick", () => {
+    expect(dismissVerdict(140, 600)).toBe(true);
+    expect(dismissVerdict(60, 50)).toBe(true);
+    expect(dismissVerdict(60, 600)).toBe(false);
+    expect(dismissVerdict(20, 10)).toBe(false);
   });
 });

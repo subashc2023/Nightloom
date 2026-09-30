@@ -7,6 +7,8 @@
  */
 import type { ApprovalRequest, ImageInput, SessionEvent, TurnEvent } from "../lib/types";
 import type { SubagentLimits } from "../lib/catalog";
+import type { WireView } from "../lib/types";
+import type { ContextReply, LayerChange } from "./ContextSheet.svelte";
 
 export const TOKEN_KEY = "nightloom.remote.token";
 export const QUEUE_KEY = "nightloom.remote.queue";
@@ -170,11 +172,21 @@ export interface Usage {
   ledger?: unknown;
 }
 
+/** A council turn's request (the desktop's `CouncilRequest`, council.ts). */
+export interface CouncilSend {
+  seats: CouncilSeat[];
+  mode: "answer" | "disproof";
+  /** Empty: the backend reads the last council turn's areas itself. */
+  areas?: string[];
+}
+
 /** What a send carries besides its text (design §4 `SendRequest`). */
 export interface SendExtras {
   project?: string | null;
   images?: ImageInput[];
   spoken?: boolean;
+  /** Wave 2C: the message goes to a council of seats, not one model. */
+  council?: CouncilSend | null;
 }
 
 /** The body of a send: absent fields are left out, so a pass-1 listener
@@ -184,7 +196,306 @@ export function sendBody(text: string, extras: SendExtras = {}): Record<string, 
   if (extras.project) body.project = extras.project;
   if (extras.images && extras.images.length > 0) body.images = extras.images;
   if (extras.spoken) body.spoken = true;
+  if (extras.council) body.council = { seats: extras.council.seats, mode: extras.council.mode, areas: extras.council.areas ?? [] };
   return body;
+}
+
+// ---- wave 2C: notes, search, projects, asides, council ----------------------------
+
+/** The note scopes the Mac's editor reaches (`NOTE_SCOPES` in `api.rs`). */
+export type NoteScope = "project" | "knowledge" | "instructions" | "memory" | "models" | "chat";
+
+/** The fixed-file scopes: one file each, read and written, never listed or
+ *  deleted (the desktop's `NoteScope::fixed_name`). */
+export const FIXED_NOTES: Partial<Record<NoteScope, string>> = {
+  instructions: "AGENTS.md",
+  memory: "AGENTS.md",
+  chat: "CHAT.md",
+};
+
+/** One row of `GET /api/notes?scope=` (`project::Note`). */
+export interface NoteRow {
+  /** The path under the scope, `/`-separated. */
+  name: string;
+  bytes: number;
+  modified: string;
+  /** First heading or line; null for a file that is not text. */
+  summary: string | null;
+}
+
+/** A note's address in the route: each path segment escaped, the `/`
+ *  between them kept (the listener's `{*name}`). */
+export function notePath(scope: NoteScope, name: string): string {
+  return `/notes/${encodeURIComponent(scope)}/${name.split("/").map(encodeURIComponent).join("/")}`;
+}
+
+/** Why a new note's name will not do, or null. The listener refuses an
+ *  empty or `..` segment; a name without an extension gets `.md`. */
+export function noteNameProblem(name: string): string | null {
+  const n = name.trim();
+  if (!n) return "A note needs a name.";
+  if (n.split("/").some((s) => !s.trim() || s === "..")) return "A name cannot have an empty or “..” part.";
+  return null;
+}
+
+export function noteFileName(name: string): string {
+  const n = name.trim().replace(/\s*\/\s*/g, "/");
+  return /\.[a-z0-9]+$/i.test(n) ? n : `${n}.md`;
+}
+
+/** The last part of a note's path, without `.md`, for a row's title. */
+export function noteTitle(name: string): string {
+  const leaf = name.split("/").pop() ?? name;
+  return leaf.replace(/\.md$/i, "");
+}
+
+/** `GET /api/search`'s answer (`store::search::SearchResult`). */
+export interface SearchHit {
+  index: number;
+  who: string;
+  at: string;
+  before: string;
+  matched: string;
+  after: string;
+  matches: number;
+}
+export interface SearchChatGroup {
+  id: string;
+  /** `SessionSummary`, flattened: his name for it, else his first line. */
+  title?: string | null;
+  first_user?: string | null;
+  project?: { id: string; name: string } | null;
+  hits: number;
+  rows: SearchHit[];
+}
+export interface SearchNoteGroup {
+  scope: string;
+  name: string;
+  modified: string;
+  hits: number;
+  rows: { line: number; before: string; matched: string; after: string; matches: number }[];
+}
+export interface SearchResult {
+  matches: number;
+  messages: number;
+  chats: number;
+  shown: number;
+  elapsed_ms: number;
+  groups: SearchChatGroup[];
+  notes: SearchNoteGroup[];
+}
+export type SearchScope = "this" | "all" | "notes";
+
+/** A group's name as the drawer shows it: the chat's label, else its id. */
+export function searchGroupLabel(g: SearchChatGroup): string {
+  for (const t of [g.title, g.first_user]) if (typeof t === "string" && t.trim()) return t.trim().replace(/\s+/g, " ");
+  return "Untitled chat";
+}
+
+/** The count line under the search box: "14 matches in 4 chats · 2 notes". */
+export function searchSummary(r: SearchResult | null): string {
+  if (!r) return "";
+  if (r.matches === 0) return "No matches.";
+  const parts = [`${r.matches} match${r.matches === 1 ? "" : "es"}`];
+  if (r.groups.length > 0) parts.push(`in ${r.groups.length} chat${r.groups.length === 1 ? "" : "s"}`);
+  if (r.notes.length > 0) parts.push(`${r.notes.length} note${r.notes.length === 1 ? "" : "s"}`);
+  return parts.join(" · ").replace(" · in ", " in ");
+}
+
+// ---- asides -------------------------------------------------------------------
+// The Mac's shapes, from 2A's patch note (`246w2-patch-p2a-to-p2c.md`, ~4:05 AM).
+
+/** One aside exchange as the page holds it: the question, the answer so
+ *  far, and whether it has ended (well, stopped, or failed). */
+export interface Aside {
+  chat: string;
+  /** The exchange's number (the 202's), which its `aside-event`s carry. */
+  seq: number;
+  /** The Mac's card it is on (for Stop). */
+  thread: number | null;
+  question: string;
+  answer: string;
+  state: "asking" | "done" | "failed";
+  error?: string;
+}
+
+/** `POST /api/chats/{id}/aside`'s 202. */
+export interface AsideStarted {
+  chat: string;
+  thread: number | null;
+  seq: number | null;
+}
+
+/** An `aside-event` from the stream: a piece of an answer (sent for every
+ *  aside on the Mac, his own included), or the end of one asked from a
+ *  phone. The desktop's bare `aside-delta` (`{seq, text}`) reads as a
+ *  delta. Null for a payload the page cannot read. */
+export type AsideEvent =
+  | { kind: "delta"; seq: number; text: string }
+  | { kind: "done"; seq: number; answer: string | null; error: string | null; cancelled: boolean };
+
+export function parseAsideEvent(data: string): AsideEvent | null {
+  let v: Record<string, unknown>;
+  try {
+    const o: unknown = JSON.parse(data);
+    if (!o || typeof o !== "object") return null;
+    v = o as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  if (typeof v.seq !== "number") return null;
+  const seq = v.seq;
+  const kind = typeof v.kind === "string" ? v.kind : "delta";
+  if (kind === "delta" && typeof v.text === "string") return { kind, seq, text: v.text };
+  if (kind === "done")
+    return {
+      kind,
+      seq,
+      answer: typeof v.answer === "string" ? v.answer : null,
+      error: typeof v.error === "string" && v.error.trim() ? v.error : null,
+      cancelled: v.cancelled === true,
+    };
+  return null;
+}
+
+/** Fold one event into the exchange with its `seq`; any other leaves it
+ *  as it was. The end's whole `answer` replaces the deltas (a lost delta
+ *  is healed); a stop keeps what had arrived. */
+export function foldAside(a: Aside, ev: AsideEvent): Aside {
+  if (ev.seq !== a.seq) return a;
+  if (ev.kind === "delta") return a.state === "asking" ? { ...a, answer: a.answer + ev.text } : a;
+  const answer = ev.answer && ev.answer.trim() ? ev.answer : a.answer;
+  if (ev.error) return { ...a, answer, state: "failed", error: ev.error };
+  if (ev.cancelled) return { ...a, answer, state: "failed", error: "Stopped — what had arrived is kept." };
+  return { ...a, answer, state: "done" };
+}
+
+/** One thread of `GET /api/chats/{id}/asides` (oldest first; open threads,
+ *  then closed ones). */
+export interface AsideThread {
+  id: number | null;
+  key?: string | null;
+  open: boolean;
+  name?: string | null;
+  quote?: string | null;
+  turns: { seq: number | null; question: string; answer: string; error?: string | null; cancelled?: boolean; asking?: boolean }[];
+}
+
+/** An earlier exchange, for the sheet's list. */
+export interface PastAside {
+  seq: number | null;
+  question: string;
+  answer: string;
+  thread: string;
+}
+
+/** The threads' exchanges, newest first, without `skip` (the one on the
+ *  sheet's card) and without any still asking. */
+export function pastAsides(threads: AsideThread[], skip: number | null = null): PastAside[] {
+  const out: PastAside[] = [];
+  threads.forEach((t, i) => {
+    const label = t.name?.trim() || (t.open ? "Open card" : `Earlier thread ${i + 1}`);
+    for (const turn of t.turns) {
+      if (turn.asking || (skip !== null && turn.seq === skip)) continue;
+      out.push({ seq: turn.seq, question: turn.question, answer: turn.answer || turn.error || "", thread: label });
+    }
+  });
+  return out.reverse();
+}
+
+// ---- council ------------------------------------------------------------------
+
+export const COUNCIL_MODELS = ["fable", "opus", "sonnet", "haiku"];
+export const MIN_SEATS = 2;
+export const MAX_SEATS = 6;
+
+/** Whether `seats` make a council the listener takes. */
+export function councilProblem(seats: CouncilSeat[]): string | null {
+  if (seats.length < MIN_SEATS) return `A council needs at least ${MIN_SEATS} seats.`;
+  if (seats.length > MAX_SEATS) return `A council has at most ${MAX_SEATS} seats.`;
+  if (seats.some((s) => s.engine === "api")) return "An API-engine seat cannot sit on a council yet.";
+  return null;
+}
+
+// ---- gestures (pass 1's leftovers: swipe and pull) -------------------------------
+
+/** How far a pull or a drag must go, in CSS px, before letting go acts. */
+export const PULL_AT = 70;
+export const DISMISS_AT = 110;
+/** A touch this close to the left edge may open the drawer. */
+export const EDGE = 24;
+
+/** A drag's shown distance: the finger's, damped past `at` so it slows. */
+export function damp(d: number, at = PULL_AT): number {
+  if (d <= 0) return 0;
+  return d <= at ? d : at + (d - at) * 0.35;
+}
+
+/** Whether a horizontal drag from `x0` that moved (`dx`, `dy`) opens the
+ *  drawer (from the edge, rightward, more across than down) or closes it. */
+export function swipeVerdict(x0: number, dx: number, dy: number, open: boolean): "open" | "close" | null {
+  if (Math.abs(dx) < 50 || Math.abs(dy) > Math.abs(dx) * 0.7) return null;
+  if (!open && x0 <= EDGE && dx > 0) return "open";
+  if (open && dx < 0) return "close";
+  return null;
+}
+
+/** Whether a sheet let go after a `dy` drag down in `ms` dismisses it: past
+ *  `DISMISS_AT`, or a flick (fast and more than 30 px). */
+export function dismissVerdict(dy: number, ms: number): boolean {
+  if (dy >= DISMISS_AT) return true;
+  return dy > 30 && ms > 0 && dy / ms > 0.6;
+}
+
+// ---- drafts for the sheets' editors (practices §7) -----------------------------------
+
+export const NOTE_DRAFTS_KEY = "nightloom.remote.notedrafts";
+
+/** A note being edited on the phone: his text, and the note's text when he
+ *  began (so a reopen can say the Mac's copy changed since). For a new
+ *  note `name` is what he typed as its name. */
+export interface NoteDraft {
+  text: string;
+  base: string;
+  name?: string;
+}
+
+/** The key of a note's draft: `<scope>/<name>`, or `new:<scope>`. */
+export function noteDraftKey(scope: NoteScope, name: string | null): string {
+  return name === null ? `new:${scope}` : `${scope}/${name}`;
+}
+
+function readNoteDrafts(): Record<string, NoteDraft> {
+  try {
+    const v: unknown = JSON.parse(localStorage.getItem(NOTE_DRAFTS_KEY) ?? "{}");
+    return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, NoteDraft>) : {};
+  } catch {
+    return {};
+  }
+}
+
+export function loadNoteDraft(key: string): NoteDraft | null {
+  const d = readNoteDrafts()[key];
+  return d && typeof d === "object" && typeof d.text === "string" ? { text: d.text, base: typeof d.base === "string" ? d.base : "", ...(typeof d.name === "string" ? { name: d.name } : {}) } : null;
+}
+
+/** `null` drops the draft (Save, or a confirmed Discard); so does a draft
+ *  that says nothing new (its text is the note's and no name was typed). */
+export function saveNoteDraft(key: string, draft: NoteDraft | null): void {
+  const all = readNoteDrafts();
+  if (draft && (draft.text !== draft.base || (draft.name ?? "").trim())) all[key] = draft;
+  else delete all[key];
+  try {
+    if (Object.keys(all).length === 0) localStorage.removeItem(NOTE_DRAFTS_KEY);
+    else localStorage.setItem(NOTE_DRAFTS_KEY, JSON.stringify(all));
+  } catch {
+    // Storage off: the draft lives in the sheet's state only.
+  }
+}
+
+/** The keys with a kept draft, for the list's "draft kept" marks. */
+export function noteDraftKeys(): string[] {
+  return Object.keys(readNoteDrafts());
 }
 
 /** One row of `/api/chats` — `ChatRow` in the service crate. */
@@ -290,6 +601,84 @@ export class Client {
 
   async usage(): Promise<Usage> {
     return (await this.call("/usage")).json();
+  }
+
+  // ---- wave 2B's patch note (246w2-patch-p2b-to-p2c, ~4:15 AM) ----
+
+  /** A chat's Context page (design §4 `context`): the view, its layers,
+   *  any held layer change. `project` as `act`'s. */
+  async context(chat: string, project: string | null = null): Promise<ContextReply> {
+    const q = project ? `?project=${encodeURIComponent(project)}` : "";
+    return (await this.call(`/chats/${encodeURIComponent(chat)}/context${q}`)).json();
+  }
+
+  /** Remove (`remove: true`) or restore the items at these log indexes;
+   *  the reply is the view after. */
+  async editContext(chat: string, targets: number[], remove: boolean, project: string | null = null): Promise<WireView> {
+    const q = project ? `?project=${encodeURIComponent(project)}` : "";
+    const r = await this.call(`/chats/${encodeURIComponent(chat)}/context${q}`, { method: "POST", body: JSON.stringify({ targets, remove }) });
+    return r.json();
+  }
+
+  /** A layer switch, a layer's own text (`null`: the file again), or a
+   *  held change's choice; the reply is the context after. */
+  async layers(chat: string, change: LayerChange, project: string | null = null): Promise<ContextReply> {
+    const q = project ? `?project=${encodeURIComponent(project)}` : "";
+    const r = await this.call(`/chats/${encodeURIComponent(chat)}/layers${q}`, { method: "POST", body: JSON.stringify(change) });
+    return r.json();
+  }
+
+  // ---- wave 2C ----
+
+  async notes(scope: NoteScope): Promise<NoteRow[]> {
+    return (await this.call(`/notes?scope=${encodeURIComponent(scope)}`)).json();
+  }
+
+  async readNote(scope: NoteScope, name: string): Promise<string> {
+    const v = (await (await this.call(notePath(scope, name))).json()) as { text?: unknown };
+    return typeof v?.text === "string" ? v.text : "";
+  }
+
+  async writeNote(scope: NoteScope, name: string, text: string): Promise<void> {
+    await this.call(notePath(scope, name), { method: "PUT", body: JSON.stringify({ text }) });
+  }
+
+  /** To the Mac's trash, never gone (the listener's `note_delete`). */
+  async deleteNote(scope: NoteScope, name: string): Promise<void> {
+    await this.call(notePath(scope, name), { method: "DELETE" });
+  }
+
+  async search(q: string, scope: SearchScope, signal?: AbortSignal): Promise<SearchResult> {
+    return (await this.call(`/search?q=${encodeURIComponent(q)}&scope=${scope}`, { signal })).json();
+  }
+
+  /** A new project by name in the Mac's projects folder (no folder
+   *  picker from the phone, blocker 666). */
+  async newProject(name: string, instructions: string | null): Promise<ProjectRow> {
+    const body: Record<string, unknown> = { name };
+    if (instructions && instructions.trim()) body.instructions = instructions;
+    return (await this.call("/projects", { method: "POST", body: JSON.stringify(body) })).json();
+  }
+
+  /** Ask an aside on `chat` (no `thread`: as the Mac's composer does, the
+   *  newest answered card continues, else a new one opens). 202 with the
+   *  exchange's number; the answer streams as `aside-event`s. */
+  async aside(chat: string, text: string, project: string | null = null, thread: number | null = null): Promise<AsideStarted> {
+    const q = project ? `?project=${encodeURIComponent(project)}` : "";
+    const body: Record<string, unknown> = { op: "ask", text };
+    if (thread !== null) body.thread = thread;
+    const r = await this.call(`/chats/${encodeURIComponent(chat)}/aside${q}`, { method: "POST", body: JSON.stringify(body) });
+    const v = (await r.json()) as Partial<AsideStarted>;
+    return { chat: typeof v.chat === "string" ? v.chat : chat, thread: typeof v.thread === "number" ? v.thread : null, seq: typeof v.seq === "number" ? v.seq : null };
+  }
+
+  /** Stop a card's running exchange (the Mac's × on it). */
+  async stopAside(chat: string, thread: number): Promise<void> {
+    await this.call(`/chats/${encodeURIComponent(chat)}/aside`, { method: "POST", body: JSON.stringify({ op: "stop", thread }) });
+  }
+
+  async asides(chat: string): Promise<AsideThread[]> {
+    return (await this.call(`/chats/${encodeURIComponent(chat)}/asides`)).json();
   }
 
   async rename(chat: string, title: string): Promise<void> {
