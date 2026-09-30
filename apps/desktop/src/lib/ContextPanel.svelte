@@ -131,6 +131,7 @@
     }
     for (const seg of custom) out.push({ key: seg.name, text: seg.text });
     if (agentEngine && !cliMemoryOff && cliMemory?.text) out.push({ key: CLI_MEMORY, text: cliMemory.text });
+    if (voiceNote?.text && !voiceEditing) out.push({ key: SPOKEN, text: voiceNote.text });
     return out;
   }
 
@@ -468,6 +469,81 @@
   }
   const cliMemoryOff = $derived(off.includes(CLI_MEMORY));
   const cliMemoryFolder = $derived(app.connection?.workspace ?? "");
+
+  /*
+   * Spoken turns (item 246 wave 3, 3C; design §2.4): the note a message
+   * said aloud in the phone's voice mode carries — `~/.nightloom/voice.md`,
+   * made with the default wording the first time it is read. Not a layer:
+   * it rides that one message (the CLI's `-p`, or the provider engine's
+   * per-turn sidecar), never the system prompt, so it has no switch and
+   * no size here. Every chat reads the one file.
+   *
+   * Its editor keeps half-typed text the way the layer editor does
+   * (practices §7): in the layer-draft store under a key no chat has
+   * (`VOICE_DRAFT`), so the ×, a click outside and a relaunch keep it;
+   * only Save or a confirmed Discard drops it.
+   */
+  const SPOKEN = "spoken_turns";
+  const VOICE_DRAFT: [string, EditableLayer] = ["\u0001voice.md", SPOKEN as EditableLayer];
+  let voiceNote = $state<api.VoiceNoteFile | null>(null);
+  let voiceEditing = $state(false);
+  let voiceDraft = $state("");
+  let voiceBase = $state("");
+  let voiceRestored = $state(false);
+  let voiceSaving = $state(false);
+  let confirmVoiceDiscard = $state(false);
+  async function refreshVoiceNote(): Promise<void> {
+    try {
+      voiceNote = await api.voiceNoteFile();
+    } catch {
+      voiceNote = null;
+    }
+  }
+  $effect(() => {
+    if (!voiceEditing) return;
+    const [t, b] = [voiceDraft, voiceBase];
+    untrack(() => holdLayerDraft(VOICE_DRAFT[0], VOICE_DRAFT[1], t, b));
+  });
+  onMount(() => {
+    void refreshVoiceNote().then(() => {
+      const held = heldLayerDraft(VOICE_DRAFT[0], VOICE_DRAFT[1]);
+      if (held) beginVoiceEdit();
+    });
+  });
+  function beginVoiceEdit(): void {
+    const held = heldLayerDraft(VOICE_DRAFT[0], VOICE_DRAFT[1]);
+    voiceRestored = held !== null;
+    voiceDraft = held ? held.text : (voiceNote?.text ?? "");
+    voiceBase = held ? held.base : voiceDraft;
+    voiceEditing = true;
+    if (!open.has(SPOKEN)) toggle(SPOKEN);
+  }
+  async function saveVoiceEdit(): Promise<void> {
+    voiceSaving = true;
+    try {
+      voiceNote = await api.setVoiceNote(voiceDraft);
+      dropLayerDraft(VOICE_DRAFT[0], VOICE_DRAFT[1]);
+      voiceEditing = false;
+      voiceRestored = false;
+    } catch (e) {
+      addToast(String(e));
+    } finally {
+      voiceSaving = false;
+    }
+  }
+  function cancelVoiceEdit(): void {
+    if (voiceDraft !== voiceBase) {
+      confirmVoiceDiscard = true;
+      return;
+    }
+    discardVoiceEdit();
+  }
+  function discardVoiceEdit(): void {
+    confirmVoiceDiscard = false;
+    dropLayerDraft(VOICE_DRAFT[0], VOICE_DRAFT[1]);
+    voiceEditing = false;
+    voiceRestored = false;
+  }
 
   /*
    * Claude Code's own prompt (nightshift backlog 077, his ask of 00:55):
@@ -1290,6 +1366,80 @@
             {/if}
           </section>
         {/if}
+
+        <!-- Spoken turns (item 246 wave 3): not a layer — the note rides a
+             message said aloud on the phone, never the system prompt — so
+             no switch and no size; Read and Edit, like a layer's. -->
+        <section class="card layer" class:edited={voiceEditing} data-fold-key={SPOKEN}>
+          <div class="ch">
+            <span class="sw-space"></span>
+            <div class="name">
+              <span class="t">Spoken turns</span>
+              {#if voiceNote && voiceNote.text.trim() === ""}
+                <span class="state">empty — spoken turns carry no note</span>
+              {/if}
+              <span class="gloss">
+                Added after a message you say aloud in the phone's voice mode, so the reply is written
+                to be heard — ~/.nightloom/voice.md, every chat. Sent with that message only, never in
+                the system prompt.
+              </span>
+            </div>
+            <span class="spacer"></span>
+            {#if voiceNote && !voiceEditing}
+              <button
+                class="ns-btn ghost small"
+                disabled={voiceSaving}
+                use:tip={"Change the note every spoken turn carries — the file itself"}
+                onclick={beginVoiceEdit}
+              >
+                <Icon name="pencil" size={12} />
+                Edit
+              </button>
+              <button
+                class="ns-btn small read"
+                class:on={open.has(SPOKEN)}
+                aria-expanded={open.has(SPOKEN)}
+                onclick={() => toggle(SPOKEN)}
+              >
+                {open.has(SPOKEN) ? "Close" : "Read"}
+                <span class="chev" class:up={open.has(SPOKEN)}><Icon name="chev" size={12} /></span>
+              </button>
+            {/if}
+          </div>
+          {#if voiceEditing}
+            <div class="body">
+              <textarea
+                class="reader editor"
+                aria-label="Spoken turns note"
+                placeholder="Empty means spoken turns carry no note."
+                bind:value={voiceDraft}
+                disabled={voiceSaving}
+              ></textarea>
+              <div class="body-bar">
+                <span class="gloss">
+                  {#if voiceRestored}Your unsaved text from before, kept until you save or discard it.
+                  {/if}Saved to {voiceNote?.path ?? "~/.nightloom/voice.md"}; the next spoken turn reads it.
+                </span>
+                <span class="spacer"></span>
+                <button class="ns-btn small" disabled={voiceSaving} onclick={cancelVoiceEdit}>Cancel</button>
+                <button class="ns-btn accent small" disabled={voiceSaving} onclick={() => void saveVoiceEdit()}>
+                  Save
+                </button>
+              </div>
+            </div>
+          {:else if open.has(SPOKEN) && voiceNote}
+            <div class="body">
+              <div class="body-bar">
+                <span class="file" use:tip={voiceNote.path}>{voiceNote.path}</span>
+                <span class="spacer"></span>
+                <button class="ns-btn ghost small" onclick={() => copy(SPOKEN, voiceNote?.text)}>
+                  {copied === SPOKEN ? "Copied" : "Copy"}
+                </button>
+              </div>
+              <pre class="reader">{voiceNote.text}</pre>
+            </div>
+          {/if}
+        </section>
       </div>
       {#if kind !== "normal"}
         <p class="note small caveat">{MODE_CAVEAT[kind]}</p>
@@ -1420,6 +1570,17 @@
   </div>
   </div>
 </div>
+
+{#if confirmVoiceDiscard}
+  <ConfirmDialog
+    title="Discard your changes?"
+    lead="The text you typed for the spoken-turns note is dropped; voice.md stays as it was."
+    facts={[["file", voiceNote?.path ?? "~/.nightloom/voice.md"]]}
+    confirmLabel="Discard"
+    onconfirm={discardVoiceEdit}
+    onclose={() => (confirmVoiceDiscard = false)}
+  />
+{/if}
 
 {#if confirmDiscard && editing}
   <ConfirmDialog

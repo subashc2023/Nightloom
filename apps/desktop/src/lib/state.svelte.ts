@@ -2150,6 +2150,10 @@ let turnTyped = true;
 /** Whether the running turn's message was typed here, for its first
  *  turn's late start of the poll (`turn-chat`). */
 let budgetTyped = true;
+/** This turn's message was said aloud in the phone's voice mode (item 246
+ *  wave 3): read once, synchronously, at the top of `send`/`sendAgent`,
+ *  and passed to the backend, which answers it "for the ear". */
+let turnSpoken = false;
 /** `send` for a message he did not type here (the phone, a resume) —
  *  with the phone's photos, documents or council when it sent them
  *  (item 246, 1B's patch note 1), so such a turn is not his typed input. */
@@ -2158,12 +2162,15 @@ async function sendUntyped(
   images: ImageInput[] = [],
   documents: DocumentInput[] = [],
   council: CouncilRequest | null = null,
+  spoken = false,
 ): Promise<void> {
   turnTyped = false;
+  turnSpoken = spoken;
   try {
     await send(text, images, documents, council);
   } finally {
     turnTyped = true;
+    turnSpoken = false;
   }
 }
 function startBudgetPoll(session: string | null, typed = false): void {
@@ -5808,6 +5815,7 @@ export async function remoteSend(
   images: ImageInput[] = [],
   documents: DocumentInput[] = [],
   council: CouncilRequest | null = null,
+  spoken = false,
 ): Promise<"sent" | "queued"> {
   const extras = images.length > 0 || documents.length > 0 || council !== null;
   if (chat && chat !== app.activeSessionId) {
@@ -5826,8 +5834,10 @@ export async function remoteSend(
   }
   if (!app.connection) throw new Error("no engine is connected on the desktop — connect one there first");
   // Answered before the turn, not after: `send` resolves at the turn's
-  // end, and the phone is waiting to hear the message was taken.
-  void sendUntyped(text, images, documents, council);
+  // end, and the phone is waiting to hear the message was taken. A queued
+  // message (above) goes later as a typed one — spoken or not, the words
+  // are kept; only the "for the ear" note is lost.
+  void sendUntyped(text, images, documents, council, spoken);
   return "sent";
 }
 
@@ -5957,6 +5967,7 @@ export async function send(
   council: CouncilRequest | null = null,
 ): Promise<void> {
   if (!app.connection || app.busy) return;
+  const spoken = turnSpoken;
   stopped = false;
   // A turn the model answers is not undoable, and nothing under it is:
   // a rewind lifted from under a reply would put the model in a
@@ -5964,7 +5975,7 @@ export async function send(
   history.clear(chatScope());
   app.undoTick++;
   if (app.connection.engine === "claude-code") {
-    return sendAgent(text, images, documents, council);
+    return sendAgent(text, images, documents, council, spoken);
   }
   // One provider turn at a time (A4): a turn running off screen holds the
   // engine. The composer queues before it gets here; any other caller's
@@ -6009,6 +6020,7 @@ export async function send(
       images.length > 0 ? images : undefined,
       documents.length > 0 ? documents : undefined,
       turn.key,
+      spoken || undefined,
     );
   } catch (e) {
     failed = String(e);
@@ -6064,6 +6076,7 @@ async function sendAgent(
   images: ImageInput[] = [],
   documents: DocumentInput[] = [],
   council: CouncilRequest | null = null,
+  spoken = false,
 ): Promise<void> {
   // ~~The hand-off's wrap-up rides this message when the window has crossed
   // the chat's threshold (nightshift backlog 086); `withWrapUp` also moves
@@ -6124,6 +6137,7 @@ async function sendAgent(
       documents.length > 0 ? documents : undefined,
       council ?? undefined,
       turn.key,
+      spoken || undefined,
     );
     // Off screen at its end (A2): the chat on screen is another's, and
     // nothing below is about it.

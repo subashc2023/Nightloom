@@ -2906,6 +2906,7 @@ fn turn_session(state: State<'_, AppState>) -> Option<String> {
 /// off a paste or a drop. They go into the session log verbatim rather than
 /// as file paths, so the transcript keeps rendering after the source file
 /// moves — see [`nightloom_core::ImageInput`].
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn send(
     app: AppHandle,
@@ -2915,6 +2916,9 @@ async fn send(
     images: Option<Vec<ImageInput>>,
     documents: Option<Vec<DocumentInput>>,
     stop_key: Option<String>,
+    // Said aloud in the phone's voice mode (item 246 wave 3, 3C): recorded
+    // `spoken`, and the sidecar carries the "answer for the ear" note.
+    spoken: Option<bool>,
 ) -> Result<TurnOutcome, String> {
     // The chat this message was typed into, read once, as `send_agent`
     // does since A3 (A4 review, 2026-09-29): ~~`lock_or_start`, reading
@@ -2980,7 +2984,12 @@ async fn send(
         documents: documents.unwrap_or_default(),
     };
     let sealed_before = session.write_failure().is_some();
-    let outcome = chat.run_turn(session, input, &cancel, &mut on_event).await;
+    let outcome = if spoken == Some(true) {
+        chat.run_spoken_turn(session, input, &cancel, &mut on_event)
+            .await
+    } else {
+        chat.run_turn(session, input, &cancel, &mut on_event).await
+    };
     // On the transition only, which needs no flag to remember: a log seals
     // once, and a turn that sealed it looks from here exactly like one that
     // did not. There is no stderr behind this window for the notice to go to,
@@ -3054,6 +3063,9 @@ async fn send_agent(
     documents: Option<Vec<DocumentInput>>,
     council: Option<nightloom_service::council::CouncilRequest>,
     stop_key: Option<String>,
+    // Said aloud in the phone's voice mode (item 246 wave 3, 3C): the log
+    // keeps his words marked `spoken`; the CLI gets them with the note.
+    spoken: Option<bool>,
 ) -> Result<AgentTurn, String> {
     use nightloom_service::council;
     if let Some(c) = &council {
@@ -3186,10 +3198,12 @@ async fn send_agent(
     // after them, around whatever the chair is sent.
     let carry_head = (session.mode() == ChatMode::Ephemeral).then(|| carry_transcript(session, ""));
     let switch_note = session.kind_switch_note();
-    session.record_user_with_attachments(
+    let spoken = spoken == Some(true);
+    session.record_user_message(
         typed.clone(),
         input.images.clone(),
         input.documents.clone(),
+        spoken,
     );
     let mut council_run: Option<(council::CouncilRequest, Vec<council::SeatResult>)> = None;
     let mut council_notices: Vec<String> = Vec::new();
@@ -3297,6 +3311,11 @@ async fn send_agent(
     // first message after the switch and on no other. The log keeps the
     // text as typed; the note is on the wire only, where the API engine's
     // projection puts the same one.
+    // A spoken turn's "answer for the ear" note (`~/.nightloom/voice.md`)
+    // rides the wire after his words — or the chair's prompt — never the log.
+    if spoken {
+        input.text = nightloom_service::voice::for_the_ear(&input.text);
+    }
     if let Some(head) = carry_head {
         input.text = format!("{head}{}", input.text);
     }
@@ -4945,6 +4964,48 @@ async fn prompt_layer_file(
         built.model.as_deref(),
         &cwd,
     ))
+}
+
+/// The Context page's "Spoken turns" row (item 246 wave 3, 3C): the note a
+/// message said aloud on the phone carries — `~/.nightloom/voice.md`, made
+/// with the design's default the first time it is read. Not a layer: it
+/// rides that turn's message, never the system prompt.
+#[derive(Serialize)]
+struct VoiceNoteFile {
+    path: String,
+    text: String,
+}
+
+#[tauri::command]
+async fn voice_note_file() -> Result<VoiceNoteFile, String> {
+    use nightloom_service::voice;
+    let path = voice::note_path().ok_or_else(|| "no home directory".to_string())?;
+    // Creates the file with the default when it is absent.
+    let fallback = voice::note();
+    let text = std::fs::read_to_string(&path).unwrap_or(fallback);
+    Ok(VoiceNoteFile {
+        path: path.to_string_lossy().into_owned(),
+        text,
+    })
+}
+
+/// Save the "Spoken turns" note. Empty is his "no note" (`voice::note`).
+#[tauri::command]
+async fn set_voice_note(text: String) -> Result<VoiceNoteFile, String> {
+    let path =
+        nightloom_service::voice::note_path().ok_or_else(|| "no home directory".to_string())?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    let body = match text.trim() {
+        "" => String::new(),
+        t => format!("{t}\n"),
+    };
+    std::fs::write(&path, &body).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(VoiceNoteFile {
+        path: path.to_string_lossy().into_owned(),
+        text: body,
+    })
 }
 
 /// Claude Code's auto memory for the folder the live engine was built on
@@ -7800,6 +7861,8 @@ fn main() {
             set_project_folders,
             set_prompt_layer_text,
             prompt_layer_file,
+            voice_note_file,
+            set_voice_note,
             cli_memory_file,
             cli_prompt_snapshot,
             prompt_pending,

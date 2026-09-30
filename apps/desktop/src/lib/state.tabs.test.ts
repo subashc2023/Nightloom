@@ -315,6 +315,33 @@ describe("remote-send", () => {
   });
 });
 
+// Voice mode (item 246 wave 3, 3C): a message said aloud on the phone
+// reaches the backend marked `spoken`, which answers it "for the ear".
+describe("remote-send, spoken", () => {
+  it("passes spoken to the agent engine's send, and a typed send does not", async () => {
+    await openSession("v");
+    reflectTabs();
+    app.busy = false;
+    const was = app.connection;
+    app.connection = { engine: "claude-code" } as typeof app.connection;
+    const spy = vi.spyOn(api, "sendAgent").mockRejectedValue("stop here");
+    try {
+      await expect(remoteSend("v", "said aloud", [], [], null, true)).resolves.toBe("sent");
+      await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+      expect(spy.mock.calls[0][0]).toBe("said aloud");
+      expect(spy.mock.calls[0][5]).toBe(true);
+      await vi.waitFor(() => expect(app.busy).toBe(false));
+      await expect(remoteSend("v", "typed")).resolves.toBe("sent");
+      await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(2));
+      expect(spy.mock.calls[1][5]).toBeUndefined();
+    } finally {
+      spy.mockRestore();
+      app.connection = was;
+      app.busy = false;
+    }
+  });
+});
+
 describe("⌘T", () => {
   it("opens a new-chat tab beside the active one, and only one", async () => {
     await openSession("a");

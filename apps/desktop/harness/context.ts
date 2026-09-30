@@ -30,6 +30,10 @@ const cliPrompt = { path: "~/.claude/projects/x/session.jsonl", sections: [`You 
       return { system, system_text: systemText, messages: [], totals: { tokens: Math.round(systemText.length / 4), bytes: systemText.length, unestimated: 0 }, context_limit: 200000 };
     case "cli_prompt_snapshot":
       return cliPrompt;
+    case "voice_note_file":
+    case "set_voice_note":
+      // Item 246 wave 3 (3C): the Spoken turns card.
+      return { path: "/Users/you/.nightloom/voice.md", text: "This message was spoken aloud, and your reply will be read aloud to me while I walk. Answer for the ear: lead with the answer in plain sentences, usually two to four; no markdown, lists, tables or headings; no code or file paths unless I ask (say it is on screen); no preamble, no recap, no offer of more. Say numbers and names the way they are spoken. If you need to use tools, do, then tell me the result.\n" };
     case "cli_memory_file":
       return { path: "~/.claude/projects/x/memory/MEMORY.md", text: `# Memory\n${filler(8, "automem")}`, others: [] };
     default:
@@ -68,6 +72,19 @@ async function run() {
   if (hand) {
     const sec = document.querySelector(`[data-fold-key="${hand}"]`);
     Array.from(sec?.querySelectorAll("button") ?? []).find((b) => /Read/.test(b.textContent ?? ""))?.click();
+  }
+  // &edit=<fold key>: its Edit button (item 246 wave 3's Spoken turns card);
+  // &scroll=<fold key>: that card scrolled into view.
+  const edit = q.get("edit");
+  if (edit) {
+    await tick();
+    const sec = document.querySelector(`[data-fold-key="${edit}"]`);
+    Array.from(sec?.querySelectorAll("button") ?? []).find((b) => /^\s*Edit/.test(b.textContent ?? ""))?.click();
+  }
+  const scroll = q.get("scroll");
+  if (scroll) {
+    await tick();
+    document.querySelector(`[data-fold-key="${scroll}"]`)?.scrollIntoView({ block: "start" });
   }
   await tick();
   await wait(100);
