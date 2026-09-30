@@ -15,6 +15,7 @@
     continueChat,
     runningChatName,
     providerElsewhereName,
+    registerProviderDrain,
     contextUsed,
     pickerModels,
     send,
@@ -931,6 +932,9 @@
   // and goes through `drain`, which gives the words back on a failure.
   // Untracked: the first tick reads the store, which is not this effect's.
   $effect(() => untrack(() => registerScheduleDrain(() => drain())));
+  // And when a provider turn off screen ends (A4 review): the message
+  // queued behind it here goes, as its notice said.
+  $effect(() => untrack(() => registerProviderDrain(() => drain())));
   /** Why nothing can be scheduled from this box, if nothing can. */
   const scheduleBlocked = $derived(
     key.startsWith(NEW_DRAFT_PREFIX)

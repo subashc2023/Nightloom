@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { app, send, useProject } from "./state.svelte";
+import { app, registerProviderDrain, send, useProject } from "./state.svelte";
 import { REFRESH_LIMIT_MS } from "./afterWrite";
 import type { ProjectInfo } from "./types";
 
@@ -7,7 +7,8 @@ import type { ProjectInfo } from "./types";
  * A4 review (2026-09-29): a provider (API key) turn that ends off screen
  * does what the screen's provider end does, and not the Claude Code
  * engine's wrap-up bookkeeping, which could queue a wrap-up message into
- * a provider chat.
+ * a provider chat; and the message queued behind it in the chat on screen
+ * goes (the mounted composer's drain is called).
  */
 const { row, turn } = vi.hoisted(() => {
   let resolve: (v: unknown) => void = () => {};
@@ -57,7 +58,9 @@ describe("a provider turn's end off screen (A4 review)", () => {
   });
   afterEach(() => vi.useRealTimers());
 
-  it("ends in its record, with a toast, and never feeds the Claude Code wrap-up", async () => {
+  it("ends in its record, with a toast, drains the screen's queue, and never feeds the Claude Code wrap-up", async () => {
+    const drain = vi.fn(async () => {});
+    const undo = registerProviderDrain(drain);
     app.activeSessionId = "chat-1";
     app.events = [];
     const running = send("count to ten");
@@ -72,5 +75,7 @@ describe("a provider turn's end off screen (A4 review)", () => {
     const { noteAgentTurnEnd } = await import("./handoff.svelte");
     expect(vi.mocked(noteAgentTurnEnd)).not.toHaveBeenCalled();
     expect(app.toasts.length).toBeGreaterThan(0);
+    expect(drain).toHaveBeenCalledTimes(1);
+    undo();
   });
 });

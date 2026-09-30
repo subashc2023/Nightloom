@@ -5376,6 +5376,20 @@ export function providerElsewhereName(): string | null {
   return id ? backgroundName(id) : null;
 }
 
+/** Each mounted composer's drain, newest last (A4 review, 2026-09-29): a
+ *  provider turn that ends off screen frees the engine, and the message
+ *  queued behind it in the chat on screen goes, as its notice promised —
+ *  ~~only through the continuation of the composer that sent the turn,
+ *  which is another instance once a New chat's Welcome box gave way~~. */
+const providerDrains: Array<() => Promise<void>> = [];
+export function registerProviderDrain(fn: () => Promise<void>): () => void {
+  providerDrains.push(fn);
+  return () => {
+    const i = providerDrains.lastIndexOf(fn);
+    if (i >= 0) providerDrains.splice(i, 1);
+  };
+}
+
 /** Whether the turn on screen can go to the background right now (A2):
  *  what lifts the New-chat refusals during a New chat's first turn. */
 export function canLeaveRunning(): boolean {
@@ -5543,6 +5557,9 @@ function endBackground(t: TurnCtx, failed: string | null, res: AgentTurnResult |
     // chat~~ — the Dream and Capture badges follow the turn it logged.
     void refreshDreamStatus();
     void refreshCaptureStatus();
+    // The engine is free: the chat on screen's queue goes (its drain waits
+    // on its own turn, a hold, or another provider turn).
+    void providerDrains.at(-1)?.();
   } else {
     void refreshPlanUsage(true);
     noteAgentTurnEnd(id, used, app.connection?.contextLimit ?? null, null);
