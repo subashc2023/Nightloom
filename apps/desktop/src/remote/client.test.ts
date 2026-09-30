@@ -546,3 +546,30 @@ describe("gestures (wave 2C)", () => {
     expect(dismissVerdict(20, 10)).toBe(false);
   });
 });
+
+describe("wave 2: a council turn from the phone", () => {
+  const at = "2026-09-30T11:40:00Z";
+  it("keeps the chair's reply and folds the seats and the record into a note", () => {
+    const rows = transcriptRows([
+      { event: "session_created", id: "abc", at },
+      { event: "user_message", text: "council question", at },
+      {
+        event: "assistant_message",
+        model: "m",
+        blocks: [
+          { type: "text", text: "the chair" },
+          { type: "text", text: '<council-seat label="B" model="opus">\nseat b\n</council-seat>' },
+          { type: "text", text: '<council-seat label="A" model="sonnet">\nseat a\n</council-seat>' },
+          { type: "text", text: '<council>\n{"mode":"answer"}\n</council>' },
+        ],
+        stop_reason: null,
+        usage: { input_tokens: 0, output_tokens: 0 } as never,
+        at,
+      },
+    ]);
+    expect(rows[1]).toMatchObject({ kind: "assistant", text: "the chair" });
+    expect((rows[1] as { parts: unknown[] }).parts).toHaveLength(1);
+    expect(rows[2]).toMatchObject({ kind: "note", text: "council — 2 seats answered; their answers fold on the Mac" });
+    expect(rows).toHaveLength(3);
+  });
+});

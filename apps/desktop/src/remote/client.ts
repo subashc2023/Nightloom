@@ -9,6 +9,7 @@ import type { ApprovalRequest, ImageInput, SessionEvent, TurnEvent } from "../li
 import type { SubagentLimits } from "../lib/catalog";
 import type { WireView } from "../lib/types";
 import type { ContextReply, LayerChange } from "./ContextSheet.svelte";
+import { isCouncilBlock } from "../lib/council";
 
 export const TOKEN_KEY = "nightloom.remote.token";
 export const QUEUE_KEY = "nightloom.remote.queue";
@@ -1100,8 +1101,15 @@ export function transcriptRows(events: SessionEvent[]): Row[] {
         const edits = mk.blockText.get(i);
         const gone = mk.blocksGone.get(i);
         const whole = mk.removed.has(i);
+        // A council turn's seat answers and record (`<council-seat …>`,
+        // `<council>`) fold on the Mac; the phone drew them as raw text and
+        // JSON (246 wave 2 page walk). They leave the reply; a note row
+        // after it says how many seats answered.
+        let seats = 0;
         e.blocks.forEach((b, n) => {
-          if (b.type === "text") {
+          if (b.type === "text" && isCouncilBlock(b.text)) {
+            if (b.text.startsWith("<council-seat ")) seats += 1;
+          } else if (b.type === "text") {
             const edit = edits?.get(n);
             parts.push({ index: i, block: n, text: edit ?? b.text, removed: whole || !!gone?.has(n), edited: edit !== undefined });
           } else if (b.type === "tool_use") {
@@ -1137,6 +1145,7 @@ export function transcriptRows(events: SessionEvent[]): Row[] {
         } else {
           rows.push({ kind: "assistant", model: e.model, text: said.join("\n\n"), tools, at: e.at, indexes: [i], parts, removed: whole });
         }
+        if (seats > 0) rows.push({ kind: "note", text: `council — ${seats} ${seats === 1 ? "seat" : "seats"} answered; their answers fold on the Mac`, at: e.at });
         break;
       }
       case "tool_result": {
