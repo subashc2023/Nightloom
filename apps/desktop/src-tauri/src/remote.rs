@@ -339,6 +339,7 @@ impl Host for DesktopHost {
             connected: agent || chat,
             engine,
             pending,
+            voice: None,
         }
     }
 
