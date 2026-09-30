@@ -15,12 +15,12 @@
   }
   let { running, problem, onopen, onrefresh }: Props = $props();
 
-  /** The Mac sends no asides, dream or capture yet (1A's note): each
+  /** Asides (2A: `{chat, thread, seq, question}`, labelled by the question), dream and capture: each
    *  section shows only when a host reports something. */
   const asides = $derived(Array.isArray(running?.asides) ? running.asides : []);
   const label = (v: unknown, fallback: string): string => {
     const o = v && typeof v === "object" ? (v as Record<string, unknown>) : {};
-    const t = o.title ?? o.label ?? o.name;
+    const t = o.title ?? o.label ?? o.name ?? o.question;
     return typeof t === "string" && t.trim() ? t : fallback;
   };
   const started = (v: unknown): number | null => {
