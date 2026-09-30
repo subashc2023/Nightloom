@@ -10,7 +10,7 @@
    * The row lives as long as the chat is open; a tab kept past a chat
    * switch says so rather than drawing nothing.
    */
-  import { app, subagentRunning, type SubagentRow, type Segment } from "./state.svelte";
+  import { app, chatRuns, subagentRunning, type SubagentRow, type Segment } from "./state.svelte";
   import { shortToolName } from "./activity";
   import { toolInputSummary } from "./transcriptPrefs.svelte";
   import { compactJson } from "./toolinput";
@@ -42,8 +42,9 @@
   let followUps = $state<FollowUp[]>([]);
   $effect(() => {
     const id = adopted;
-    // Re-read once each turn ends, wherever it ran.
-    if (app.busy) return;
+    // Re-read once each turn ends, wherever it ran — A4: a turn in the
+    // adopted chat that runs off screen too.
+    if (app.busy || (id !== null && chatRuns(id))) return;
     if (!id) {
       followUps = [];
       return;

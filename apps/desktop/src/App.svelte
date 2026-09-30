@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { turnsRunning } from "./lib/state.svelte";
   import { tip } from "./lib/tip";
   import { onMount, untrack } from "svelte";
   import {
@@ -665,8 +666,8 @@
                     {#if app.project?.id === p.id}
                       <p>This is the open project.</p>
                     {:else}
-                      <button class="ns-btn small" onclick={() => void useProject(p.id)} disabled={app.busy}
-                        >{app.busy ? "Opens when the running turn ends" : "Open this project"}</button
+                      <button class="ns-btn small" onclick={() => void useProject(p.id)} disabled={turnsRunning()}
+                        >{turnsRunning() ? "Opens when the running turns end" : "Open this project"}</button
                       >
                       <p class="tab-card-hint">Opening it closes these tabs — a workspace is a project's.</p>
                     {/if}

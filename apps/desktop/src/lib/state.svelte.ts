@@ -2255,7 +2255,9 @@ export async function useKnowledgeDir(dir: string | null): Promise<void> {
  * chat list has to be re-read after, since it comes from the project folder.
  */
 export async function useProject(id: string | null): Promise<void> {
-  if (app.busy) return;
+  // Any chat's turn (A4's gates audit), not only the screen's: a chat
+  // running off screen belongs to this project's list and tabs.
+  if (turnsRunning()) return;
   try {
     if (id) {
       app.project = await api.openProject(id);
@@ -5259,7 +5261,9 @@ export function liveChats(): LiveChat[] {
       onScreen: false,
       startedAt: started(b.events),
       usage: b.liveUsage,
-      waiting: b.approvals.length,
+      // A budget stop the hook holds for his answer (backlog 189) waits on
+      // him too.
+      waiting: b.approvals.length + (b.budget?.pending_since_ms ? 1 : 0),
     });
   }
   return out;
@@ -5279,6 +5283,15 @@ export function chatRuns(id: string): boolean {
   if (!app.busy) return false;
   const running = app.parked ? app.parked.session : (fg?.chat ?? app.activeSessionId);
   return running === id;
+}
+
+/** Whether chat `id` can be deleted now (A4's gates audit): ~~never while
+ *  any turn runs~~ — any chat but a running one, on the Claude Code engine,
+ *  where each chat has its own lock. A provider turn, or a parked one,
+ *  keeps the old rule. */
+export function canDeleteChat(id: string): boolean {
+  if (chatRuns(id)) return false;
+  return !app.busy || (browseFree() && !app.parked);
 }
 
 /** Whether a chat can be opened while a turn runs without parking it —
@@ -5634,7 +5647,13 @@ export async function compactSession(): Promise<void> {
 }
 
 export async function deleteSession(id: string): Promise<void> {
-  if (app.busy) return;
+  // ~~`if (app.busy) return;`~~ — A4: a running chat is refused in words,
+  // another chat is deleted while a turn runs (the backend refuses only the
+  // running one, since A1).
+  if (!canDeleteChat(id)) {
+    addToast("That chat is running a turn — delete it when the turn ends");
+    return;
+  }
   let full: string;
   try {
     full = await api.deleteSession(id, app.activeSessionId);

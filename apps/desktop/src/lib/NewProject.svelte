@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { turnsRunning } from "./state.svelte";
   import { tip } from "./tip";
   import {
     app,
@@ -109,7 +110,7 @@
       <button class="ghost revert" use:tip={"Drop what is typed here"} onclick={() => (confirmDiscard = true)}>Discard</button>
     {/if}
     <button class="ghost" use:tip={"Back to the chat; what is typed stays (Esc)"} onclick={closeNewProject}>Cancel</button>
-    <button class="save" disabled={!canCreate || creating || app.busy} use:tip={`Make the folder and open the project (${mod}↵)`} onclick={() => void create()}>
+    <button class="save" disabled={!canCreate || creating || turnsRunning()} use:tip={`Make the folder and open the project (${mod}↵)`} onclick={() => void create()}>
       {creating ? "Creating…" : "Create"}
     </button>
   </header>
@@ -171,7 +172,7 @@
         <button class="ns-btn" use:tip={"Back to the chat; what is typed stays (Esc)"} onclick={closeNewProject}>Cancel</button>
         <button
           class="ns-btn accent"
-          disabled={!canCreate || creating || app.busy}
+          disabled={!canCreate || creating || turnsRunning()}
           use:tip={`Make the folder and open the project (${mod}↵)`}
           onclick={() => void create()}
         >

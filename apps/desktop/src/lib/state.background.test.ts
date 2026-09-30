@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { backgroundAskToast, backgroundEndToast, canDetach, eventHost, firstUserText } from "./browse";
-import { app, applyTurnEvent, chatRuns, liveChats, turnsRunning } from "./state.svelte";
+import { app, applyTurnEvent, canDeleteChat, chatRuns, liveChats, turnsRunning } from "./state.svelte";
 import type { TurnEvent } from "./types";
 
 /**
@@ -148,5 +148,15 @@ describe("a chat off screen acts as the screen's does (backlog 159, A4)", () => 
     expect(chatRuns("b")).toBe(false);
     app.background = {};
     expect(turnsRunning()).toBe(false);
+  });
+
+  it("lets another chat be deleted while one runs off screen, never the running one (gates audit)", () => {
+    expect(canDeleteChat("a")).toBe(false);
+    expect(canDeleteChat("b")).toBe(true);
+  });
+
+  it("counts a budget stop held for him as waiting on him", () => {
+    app.background.a.budget = { pending_since_ms: 1 } as never;
+    expect(liveChats()[0].waiting).toBe(1);
   });
 });

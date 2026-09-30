@@ -77,7 +77,8 @@
   function needsYou(t: tabs.Tab): boolean {
     // A background chat's prompt waits in its own tab (A2, guess pass 5).
     const bg = t.content.kind === "chat" && t.content.session ? app.background[t.content.session] : undefined;
-    if (bg) return bg.approvals.length > 0;
+    // A4: or a budget stop the hook holds for his answer (backlog 189).
+    if (bg) return bg.approvals.length > 0 || !!bg.budget?.pending_since_ms;
     return live?.id === t.id && app.pendingApprovals.length > 0;
   }
 
