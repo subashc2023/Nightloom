@@ -77,6 +77,10 @@ pub struct DesktopHost {
     seen: Mutex<HashMap<String, serde_json::Value>>,
     /// The `remote-send`s awaiting the window's answer, by id.
     replies: Mutex<HashMap<u64, tokio::sync::oneshot::Sender<Result<Handed, String>>>>,
+    /// The other window calls (item 246, wave 1: `remote-act`,
+    /// `remote-rail`, …) awaiting `remote_done`, by id — the same ids as
+    /// `replies`, from the one counter.
+    calls: Mutex<HashMap<u64, tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>>>,
     next_send: AtomicU64,
 }
 
@@ -89,6 +93,7 @@ impl DesktopHost {
             last_chat: Mutex::new(None),
             seen: Mutex::new(HashMap::new()),
             replies: Mutex::new(HashMap::new()),
+            calls: Mutex::new(HashMap::new()),
             next_send: AtomicU64::new(1),
         })
     }
@@ -127,6 +132,18 @@ impl DesktopHost {
     fn answer(&self, id: u64, outcome: Result<Handed, String>) {
         let tx = self
             .replies
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&id);
+        if let Some(tx) = tx {
+            let _ = tx.send(outcome);
+        }
+    }
+
+    /// The window's answer to any other call (from `remote_done`).
+    fn finish(&self, id: u64, outcome: Result<serde_json::Value, String>) {
+        let tx = self
+            .calls
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .remove(&id);
@@ -191,6 +208,86 @@ impl DesktopHost {
                 Err("the desktop window did not answer — is Nightloom's window open?".into())
             }
         }
+    }
+
+    /// Emit `event` carrying `body` (an object) plus an id and wait up to
+    /// `wait` for the window's `remote_done` (item 246, wave 1) — `hand`'s
+    /// general form: the answer is any JSON, or the window's sentence.
+    async fn call(
+        &self,
+        event: &str,
+        mut body: serde_json::Value,
+        wait: Duration,
+    ) -> Result<serde_json::Value, String> {
+        let id = self.next_send.fetch_add(1, Ordering::Relaxed);
+        body["id"] = serde_json::json!(id);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.calls
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(id, tx);
+        if let Err(e) = self.app.emit(event, body) {
+            self.finish(id, Err(String::new()));
+            return Err(format!("the desktop window could not take it: {e}"));
+        }
+        match tokio::time::timeout(wait, rx).await {
+            Ok(Ok(outcome)) => outcome,
+            Ok(Err(_)) => Err("the desktop window dropped it".into()),
+            Err(_) => {
+                self.calls
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .remove(&id);
+                Err(
+                    "the desktop window did not answer in time — is Nightloom's window open?"
+                        .into(),
+                )
+            }
+        }
+    }
+
+    /// The project `chat` lives in, when that is not the open one — so the
+    /// window can switch to it before acting (blocker 665's default: the
+    /// Mac's window follows the phone). `None` when the chat is in the
+    /// open project, or found nowhere (the window's open then says so).
+    async fn project_of(&self, chat: &str) -> Option<String> {
+        let state = self.state_of();
+        let (active, projects) = {
+            let ws = state.workspaces.lock().await;
+            (
+                ws.active.as_ref().map(|p| p.id.clone()),
+                ws.registry.projects(),
+            )
+        };
+        let open_dir = state.log_dir().await;
+        let chat = chat.to_string();
+        crate::blocking(move || -> Result<Option<String>, String> {
+            if store::find_by_prefix(&open_dir, &chat).is_ok() {
+                return Ok(None);
+            }
+            Ok(projects
+                .into_iter()
+                .filter(|p| active.as_deref() != Some(p.id.as_str()))
+                .find(|p| store::find_by_prefix(&p.session_dir(), &chat).is_ok())
+                .map(|p| p.id))
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+
+    /// A window call addressed to one chat: `chat` and its project (when
+    /// not the open one) go with `body`.
+    async fn call_chat(
+        &self,
+        event: &str,
+        chat: &str,
+        mut body: serde_json::Value,
+        wait: Duration,
+    ) -> Result<serde_json::Value, String> {
+        body["chat"] = serde_json::json!(chat);
+        body["project"] = serde_json::json!(self.project_of(chat).await);
+        self.call(event, body, wait).await
     }
 }
 
@@ -354,6 +451,309 @@ impl Host for DesktopHost {
             bytes: a.bytes,
             mime: a.mime_type,
         })
+    }
+}
+
+/// How long a chat action may take in the window: the chat opened (in
+/// another project, its lists read) and the command run — on Claude Code
+/// a copy of the CLI's file.
+const ACT_WAIT: Duration = Duration::from_secs(20);
+
+/// A compaction is a model call; the phone waits for the summary.
+const COMPACT_WAIT: Duration = Duration::from_secs(180);
+
+/// A read the window answers from its own state.
+const READ_WAIT: Duration = Duration::from_secs(5);
+
+/// The rail's change reconnects the engine before it answers.
+const RAIL_WAIT: Duration = Duration::from_secs(30);
+
+/// What this host serves of §4 (item 246 design), for `/api/state`'s
+/// `features`: the phone greys out what a host lacks.
+pub const FEATURES: [&str; 14] = [
+    "act",
+    "context",
+    "layers",
+    "rail",
+    "running",
+    "usage",
+    "search",
+    "projects",
+    "notes",
+    "send_project",
+    "images",
+    "documents",
+    "council",
+    "spoken",
+];
+
+/// The phone's note deletes go here, never gone (the never-lose-work
+/// rule; blocker 685): `~/.nightloom/trash/notes/<when>/<scope>/<name>`.
+fn note_trash(scope: &str, name: &str) -> Option<std::path::PathBuf> {
+    let home = std::env::var("HOME").ok().filter(|h| !h.is_empty())?;
+    let when = chrono::Local::now().format("%Y-%m-%d-%H%M%S").to_string();
+    Some(
+        std::path::PathBuf::from(home)
+            .join(nightloom_service::project::DOT_DIR)
+            .join("trash")
+            .join("notes")
+            .join(when)
+            .join(scope)
+            .join(name.trim().trim_start_matches('/')),
+    )
+}
+
+/// §4's new `Host` methods, the Mac's way (item 246, wave 1, agent 1B).
+///
+/// MERGE (1A lands the trait): these move into `impl Host for
+/// DesktopHost` with 1A's signatures — each body stays; a typed argument
+/// (`ChatAction`, `RailPatch`, `LayerChange`, `SendRequest`) goes through
+/// `serde_json::to_value` and a typed reply through
+/// `serde_json::from_value`. Until then nothing calls them, hence the
+/// `allow`. The report (`246-wave1-report-p1b.md`) has the forwarding block.
+///
+/// Every chat-addressed one runs in the window, like `send`: the window
+/// opens the chat when it is not the open one (another project's first),
+/// refused with a sentence while a turn runs in the chat on screen
+/// (blocker 665's default), runs the same state function the Mac's button
+/// runs, and answers through [`remote_done`]. Reads that need no window
+/// (usage, search, notes) are served here.
+#[allow(dead_code)]
+impl DesktopHost {
+    pub fn features(&self) -> Vec<String> {
+        FEATURES.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// One message action (`ChatAction`, tagged by `op`) → `ActReply`
+    /// (`{chat, events}`: the chat now showing — a fork's new id — and its
+    /// log). `Err` is the window's sentence (the 409).
+    pub async fn act(
+        &self,
+        chat: &str,
+        action: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let wait = match action.get("op").and_then(|o| o.as_str()) {
+            Some("compact") => COMPACT_WAIT,
+            _ => ACT_WAIT,
+        };
+        self.call_chat(
+            "remote-act",
+            chat,
+            serde_json::json!({ "action": action }),
+            wait,
+        )
+        .await
+    }
+
+    /// `{ view, layers, pending }` of `chat` — the Context page's reads.
+    pub async fn context(&self, chat: &str) -> Result<serde_json::Value, String> {
+        self.call_chat("remote-context", chat, serde_json::json!({}), ACT_WAIT)
+            .await
+    }
+
+    /// Remove or restore the content of log events → the new view.
+    pub async fn edit_context(
+        &self,
+        chat: &str,
+        targets: Vec<usize>,
+        remove: bool,
+    ) -> Result<serde_json::Value, String> {
+        self.call_chat(
+            "remote-edit-context",
+            chat,
+            serde_json::json!({ "targets": targets, "remove": remove }),
+            ACT_WAIT,
+        )
+        .await
+    }
+
+    /// `{off:[kind]}`, `{kind, text|null}` or `{kind, choice}` → the
+    /// context as `context` reads it.
+    pub async fn layers(
+        &self,
+        chat: &str,
+        change: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        self.call_chat(
+            "remote-layers",
+            chat,
+            serde_json::json!({ "change": change }),
+            RAIL_WAIT,
+        )
+        .await
+    }
+
+    /// The rail as the Mac shows it: engine, model, effort, fallback,
+    /// limits, ask, plan, fork mode, council seats (blocker 666: no keys,
+    /// no folders).
+    pub async fn rail(&self) -> Result<serde_json::Value, String> {
+        self.call(
+            "remote-rail",
+            serde_json::json!({ "patch": null }),
+            READ_WAIT,
+        )
+        .await
+    }
+
+    /// Merge `patch` into the rail and reconnect, as a click on the Mac's
+    /// rail does → the rail after.
+    pub async fn set_rail(&self, patch: serde_json::Value) -> Result<serde_json::Value, String> {
+        self.call(
+            "remote-rail",
+            serde_json::json!({ "patch": patch }),
+            RAIL_WAIT,
+        )
+        .await
+    }
+
+    /// The chats running now and the open chat's subagents, from the
+    /// window's Running tasks.
+    pub async fn running(&self) -> Result<serde_json::Value, String> {
+        self.call("remote-running", serde_json::json!({}), READ_WAIT)
+            .await
+    }
+
+    /// `{ plan, ledger }`: the plan window (5 h, week, resets) and the
+    /// ledger's summary, read off disk.
+    pub async fn usage(&self) -> Result<serde_json::Value, String> {
+        let plan =
+            crate::blocking(|| Ok::<_, String>(nightloom_service::plan_usage::read())).await?;
+        let ledger =
+            crate::blocking(|| Ok::<_, String>(nightloom_service::usage::summary())).await?;
+        Ok(serde_json::json!({ "plan": plan, "ledger": ledger }))
+    }
+
+    /// Search everywhere: `scope` is `this`, `all` or `notes`.
+    pub async fn search(&self, q: &str, scope: &str) -> Result<serde_json::Value, String> {
+        let scope = serde_json::from_value(serde_json::json!(scope))
+            .map_err(|_| format!("no search scope {scope}"))?;
+        let found = crate::search_everywhere(self.state_of(), q.to_string(), scope).await?;
+        serde_json::to_value(found).map_err(|e| e.to_string())
+    }
+
+    /// A new project by name (its folder under the projects folder, as
+    /// the Mac's form without a picked folder) → its row.
+    pub async fn project_new(
+        &self,
+        name: &str,
+        instructions: Option<&str>,
+    ) -> Result<serde_json::Value, String> {
+        self.call(
+            "remote-project",
+            serde_json::json!({ "op": "new", "name": name, "instructions": instructions }),
+            ACT_WAIT,
+        )
+        .await
+    }
+
+    /// Open a project in the Mac's window.
+    pub async fn project_open(&self, id: &str) -> Result<serde_json::Value, String> {
+        self.call(
+            "remote-project",
+            serde_json::json!({ "op": "open", "pid": id }),
+            ACT_WAIT,
+        )
+        .await
+    }
+
+    pub async fn project_rename(&self, id: &str, name: &str) -> Result<serde_json::Value, String> {
+        self.call(
+            "remote-project",
+            serde_json::json!({ "op": "rename", "pid": id, "name": name }),
+            ACT_WAIT,
+        )
+        .await
+    }
+
+    /// Forget, never delete: the folder, notes and chats stay on disk.
+    pub async fn project_forget(&self, id: &str) -> Result<serde_json::Value, String> {
+        self.call(
+            "remote-project",
+            serde_json::json!({ "op": "forget", "pid": id }),
+            ACT_WAIT,
+        )
+        .await
+    }
+
+    /// The notes of `scope` (`project`, `knowledge`, …), as the Mac lists them.
+    pub async fn notes_list(&self, scope: &str) -> Result<serde_json::Value, String> {
+        let scope = serde_json::from_value(serde_json::json!(scope))
+            .map_err(|_| format!("no note scope {scope}"))?;
+        let notes = crate::list_notes(self.state_of(), Some(scope)).await?;
+        serde_json::to_value(notes).map_err(|e| e.to_string())
+    }
+
+    pub async fn note_read(&self, scope: &str, name: &str) -> Result<String, String> {
+        let scope = serde_json::from_value(serde_json::json!(scope))
+            .map_err(|_| format!("no note scope {scope}"))?;
+        crate::read_note(self.state_of(), Some(scope), name.to_string()).await
+    }
+
+    /// Write a note (a new one too); the window's lists re-read.
+    pub async fn note_write(
+        &self,
+        scope: &str,
+        name: &str,
+        text: &str,
+    ) -> Result<serde_json::Value, String> {
+        let parsed = serde_json::from_value(serde_json::json!(scope))
+            .map_err(|_| format!("no note scope {scope}"))?;
+        let note = crate::save_note(
+            self.state_of(),
+            Some(parsed),
+            name.to_string(),
+            text.to_string(),
+        )
+        .await?;
+        let _ = self.app.emit(
+            "remote-notes-changed",
+            serde_json::json!({ "scope": scope, "name": name }),
+        );
+        serde_json::to_value(note).map_err(|e| e.to_string())
+    }
+
+    /// Delete a note: its text is copied to the trash folder first
+    /// (`note_trash`), and only then is the file removed.
+    pub async fn note_delete(&self, scope: &str, name: &str) -> Result<(), String> {
+        let text = self.note_read(scope, name).await?;
+        let trash = note_trash(scope, name)
+            .ok_or_else(|| "no home folder to keep the deleted note in".to_string())?;
+        crate::blocking(move || -> Result<(), String> {
+            if let Some(dir) = trash.parent() {
+                std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+            }
+            std::fs::write(&trash, text).map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| {
+            format!("could not keep a copy of the note in the trash, so it was not deleted: {e}")
+        })?;
+        let parsed = serde_json::from_value(serde_json::json!(scope))
+            .map_err(|_| format!("no note scope {scope}"))?;
+        crate::delete_note(self.state_of(), Some(parsed), name.to_string()).await?;
+        let _ = self.app.emit(
+            "remote-notes-changed",
+            serde_json::json!({ "scope": scope, "name": name, "deleted": true }),
+        );
+        Ok(())
+    }
+
+    /// `send` with §4's `SendRequest`: `project` opens that project first,
+    /// `images`/`documents`/`council` go with the message as the Mac's
+    /// composer sends them; `spoken` is accepted and ignored until wave 3.
+    pub async fn send_to(
+        &self,
+        chat: Option<&str>,
+        req: serde_json::Value,
+    ) -> Result<Handed, String> {
+        let mut payload = req;
+        payload["chat"] = serde_json::json!(chat);
+        let wait = if payload.get("project").is_some_and(|p| !p.is_null()) {
+            NEW_CHAT_WAIT
+        } else {
+            SEND_WAIT
+        };
+        self.hand(payload, wait).await
     }
 }
 
@@ -564,6 +964,25 @@ pub fn remote_sent(remote: State<'_, Remote>, id: u64, queued: bool, error: Opti
     remote.host.answer(id, outcome);
 }
 
+/// The window's answer to any other call (item 246, wave 1: `remote-act`,
+/// `remote-rail`, `remote-context`, …) — `remote_sent`'s general form.
+/// `ok` with `json` the reply (absent is `null`); not `ok` with `json`
+/// the sentence the phone is shown.
+#[tauri::command]
+pub fn remote_done(remote: State<'_, Remote>, id: u64, ok: bool, json: Option<serde_json::Value>) {
+    remote.host.finish(id, done_outcome(ok, json));
+}
+
+fn done_outcome(ok: bool, json: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
+    if ok {
+        return Ok(json.unwrap_or(serde_json::Value::Null));
+    }
+    Err(match json {
+        Some(serde_json::Value::String(s)) if !s.trim().is_empty() => s,
+        _ => "the desktop did not do it".to_string(),
+    })
+}
+
 /// The token the keychain holds, or a sentence when it could not say
 /// (review 2026-09-17 FA4): a locked or refusing keychain must not read
 /// as "no token" — that minted a new one and un-paired every phone.
@@ -720,4 +1139,49 @@ pub async fn remote_token(
     }
     credentials::set_remote_token(&new).map_err(|e| e.to_string())?;
     status(&remote, None).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_done_answer_is_the_reply_or_the_windows_sentence() {
+        let reply = serde_json::json!({ "chat": "c2", "events": [] });
+        assert_eq!(done_outcome(true, Some(reply.clone())), Ok(reply));
+        assert_eq!(done_outcome(true, None), Ok(serde_json::Value::Null));
+        assert_eq!(
+            done_outcome(
+                false,
+                Some(serde_json::json!("that chat is running a turn"))
+            ),
+            Err("that chat is running a turn".to_string())
+        );
+        // A refusal with no words still reads as one, never as success.
+        assert_eq!(
+            done_outcome(false, None),
+            Err("the desktop did not do it".to_string())
+        );
+        assert_eq!(
+            done_outcome(false, Some(serde_json::json!(""))),
+            Err("the desktop did not do it".to_string())
+        );
+    }
+
+    #[test]
+    fn a_deleted_note_is_kept_under_the_trash_by_scope_and_name() {
+        let Some(path) = note_trash("project", "/plans/today.md") else {
+            return; // no HOME in this environment
+        };
+        let s = path.to_string_lossy();
+        assert!(s.contains("/.nightloom/trash/notes/"), "{s}");
+        assert!(s.ends_with("/project/plans/today.md"), "{s}");
+    }
+
+    #[test]
+    fn features_name_every_route_this_host_serves() {
+        for f in ["act", "rail", "running", "usage", "notes", "images"] {
+            assert!(FEATURES.contains(&f), "{f}");
+        }
+    }
 }

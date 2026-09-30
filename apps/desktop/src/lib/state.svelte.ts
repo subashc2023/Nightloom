@@ -1401,44 +1401,13 @@ export async function init(): Promise<void> {
     // window is behind something else nothing on screen says so.
     void notifyNeedsYou(bannerChat(), e.payload);
   });
-  // The phone page (nightshift backlog 091, Shape B): a message, an answer
-  // or a stop from the phone reaches this window as an event and runs
-  // through the same `send`, `resolveApproval` and `cancelTurn` a click
-  // here does, so the transcript, the queue, the hand-off and the sleep
-  // watch see it as typed. A message for a chat that is not open opens
-  // it first; one that arrives while a turn runs joins the composer's
-  // queue (the phone also holds one for while the Mac is unreachable).
-  // The listener waits for the answer (backlog 132): what became of the
-  // message goes back through `remote_sent`, and the phone hears it.
-  await listen<{ id: number; chat: string | null; text: string; new?: boolean; project?: string | null }>("remote-send", (e) => {
-    const { id, chat, text } = e.payload;
-    // A new chat from the phone (item 246) opens its project first.
-    const start = e.payload.new ? remoteNewChat(e.payload.project ?? null, text) : remoteSend(chat, text);
-    start.then(
-      (outcome) => void api.remoteSent(id, outcome === "queued", null).catch(() => {}),
-      (err: unknown) => void api.remoteSent(id, false, String(err)).catch(() => {}),
-    );
-  });
-  await listen<{
-    id: string;
-    name: string;
-    decision: ApprovalDecision;
-    reason?: string | null;
-    answer?: unknown;
-    then?: "ask" | "auto" | null;
-  }>("remote-approve", (e) => {
-    const { id, name, decision, reason, answer, then } = e.payload;
-    void resolveApproval(id, name, decision, reason ?? undefined, answer ?? undefined, then ?? undefined);
-  });
-  // The phone names the chat it shows (backlog 159, A3); `null` is the
-  // chat on screen, as before.
-  await listen<{ chat?: string | null } | null>("remote-cancel", (e) => void cancelTurn(e.payload?.chat ?? null));
-  // The phone's chat-actions sheet (item 246): open a chat here, and
-  // re-read the list after the phone renamed one.
-  await listen<{ chat: string }>("remote-open", (e) => {
-    if (e.payload?.chat && !app.busy) void openSession(e.payload.chat);
-  });
-  await listen("remote-renamed", () => void refreshSessions());
+  // The phone page (nightshift backlog 091, Shape B; item 246 wave 1):
+  // a message, an answer, a stop or a chat action from the phone reaches
+  // this window as an event and runs through the same state functions a
+  // click here does. The handlers, and why each answers as it does, are
+  // in `remoteHandlers.ts`; loaded here so it imports this module after
+  // it has finished evaluating.
+  await (await import("./remoteHandlers")).installRemoteHandlers();
   // A chat's first turn names its chat as it starts (backlog 192; review
   // 2026-09-23 finding 4): the budget meter and stop card follow it now,
   // not only once the turn has ended.
