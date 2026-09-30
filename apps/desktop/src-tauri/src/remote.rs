@@ -53,8 +53,23 @@ use crate::{AppState, power};
 /// `lagged` event and re-reads rather than trusting what it missed.
 const RELAY_CAPACITY: usize = 256;
 
-/// The window events the phone's stream carries, unchanged.
-const RELAYED: [&str; 3] = ["turn-event", "tool-approval", "turn-notice"];
+/// The window events the phone's stream carries, unchanged. `aside-event`
+/// (item 246, wave 2) is the window's word that an exchange the phone
+/// asked has ended (`remoteHandlers.ts`); the backend's `aside-delta`s go
+/// out under the same name, re-shaped by [`aside_delta_event`].
+const RELAYED: [&str; 4] = ["turn-event", "tool-approval", "turn-notice", "aside-event"];
+
+/// A backend `aside-delta` (`{seq, text}`) as the phone's `aside-event`
+/// (`{kind: "delta", seq, text}`); `None` for a payload that is not one.
+fn aside_delta_event(payload: &str) -> Option<String> {
+    let mut v = serde_json::from_str::<serde_json::Value>(payload).ok()?;
+    let o = v.as_object_mut()?;
+    if !o.get("seq").is_some_and(|s| s.is_u64()) || !o.get("text").is_some_and(|t| t.is_string()) {
+        return None;
+    }
+    o.insert("kind".into(), serde_json::json!("delta"));
+    Some(v.to_string())
+}
 
 /// How long `Host::send` waits for the window's answer to a `remote-send`
 /// before the phone is told the desktop did not take it. The window's
@@ -122,6 +137,17 @@ impl DesktopHost {
                 });
             });
         }
+        // An aside's answer as it streams (item 246, wave 2): every one,
+        // the Mac's own included — the phone keeps the `seq`s it asked.
+        let host = self.clone();
+        self.app.listen("aside-delta", move |ev| {
+            if let Some(payload) = aside_delta_event(ev.payload()) {
+                let _ = host.tx.send(Event {
+                    name: "aside-event".to_string(),
+                    payload,
+                });
+            }
+        });
     }
 
     fn state_of(&self) -> State<'_, AppState> {
@@ -584,7 +610,7 @@ const RAIL_WAIT: Duration = Duration::from_secs(30);
 
 /// What this host serves of §4 (item 246 design), for `/api/state`'s
 /// `features`: the phone greys out what a host lacks.
-pub const FEATURES: [&str; 14] = [
+pub const FEATURES: [&str; 15] = [
     "act",
     "context",
     "layers",
@@ -599,6 +625,8 @@ pub const FEATURES: [&str; 14] = [
     "documents",
     "council",
     "spoken",
+    // Wave 2 (2A): `POST /api/chats/{id}/aside`, `GET …/asides`.
+    "aside",
 ];
 
 /// The phone's note deletes go here, never gone (the never-lose-work
@@ -737,6 +765,41 @@ impl DesktopHost {
             "remote-rail",
             serde_json::json!({ "patch": patch }),
             RAIL_WAIT,
+        )
+        .await
+    }
+
+    /// An aside on `chat` (item 246, wave 2): `{op: "ask", text, thread?}`
+    /// or `{op: "stop", thread}` → `{chat, thread, seq}` once the exchange
+    /// exists. The answer streams on the relay as `aside-event`s. The
+    /// window opens the chat first (an aside forks the open chat).
+    ///
+    /// Not reached by a route yet: the service crate's `aside`/`asides`
+    /// Host methods and routes are in `246w2-patch-p2a-to-orchestrator`,
+    /// whose diff adds the trait forwards and drops these `allow`s.
+    #[allow(dead_code)]
+    pub async fn aside(
+        &self,
+        chat: &str,
+        req: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        self.call_chat(
+            "remote-aside",
+            chat,
+            serde_json::json!({ "aside": req }),
+            ACT_WAIT,
+        )
+        .await
+    }
+
+    /// `chat`'s aside threads: the open ones, then the closed ones under
+    /// Past — read from the window without opening the chat.
+    #[allow(dead_code)]
+    pub async fn asides(&self, chat: &str) -> Result<serde_json::Value, String> {
+        self.call(
+            "remote-asides",
+            serde_json::json!({ "chat": chat }),
+            READ_WAIT,
         )
         .await
     }
@@ -1298,8 +1361,23 @@ mod tests {
     }
 
     #[test]
+    fn an_aside_delta_goes_to_the_phone_as_an_aside_event() {
+        let out = aside_delta_event(r#"{"seq":4,"text":"hel"}"#).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({ "kind": "delta", "seq": 4, "text": "hel" })
+        );
+        assert!(aside_delta_event("[1]").is_none());
+        assert!(aside_delta_event(r#"{"text":"x"}"#).is_none());
+        assert!(RELAYED.contains(&"aside-event"));
+    }
+
+    #[test]
     fn features_name_every_route_this_host_serves() {
-        for f in ["act", "rail", "running", "usage", "notes", "images"] {
+        for f in [
+            "act", "rail", "running", "usage", "notes", "images", "aside",
+        ] {
             assert!(FEATURES.contains(&f), "{f}");
         }
     }
