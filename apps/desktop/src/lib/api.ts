@@ -193,10 +193,12 @@ export function sendAgent(
   documents?: DocumentInput[],
   council?: CouncilRequest,
   stopKey?: string,
+  spoken?: boolean,
 ): Promise<AgentTurnResult> {
   // `stopKey` (backlog 159, A3): the window's name for this turn, which a
-  // Stop can use before the turn's first event names its chat.
-  return invoke("send_agent", { text, images, documents, council, stopKey });
+  // Stop can use before the turn's first event names its chat. `spoken`
+  // (item 246 wave 3): said aloud on the phone — answered for the ear.
+  return invoke("send_agent", { text, images, documents, council, stopKey, spoken });
 }
 
 /**
@@ -409,10 +411,11 @@ export function send(
   images?: ImageInput[],
   documents?: DocumentInput[],
   stopKey?: string,
+  spoken?: boolean,
 ): Promise<TurnResult> {
   // `stopKey` (backlog 159, A4): as `sendAgent`'s — a provider turn can run
   // off screen now, and its Stop names it before its chat is known.
-  return invoke("send", { text, images, documents, stopKey });
+  return invoke("send", { text, images, documents, stopKey, spoken });
 }
 
 export function cancel(chat?: string | null): Promise<null> {
@@ -582,6 +585,23 @@ export function setPromptLayerText(
  */
 export function promptLayerFile(kind: EditableLayer): Promise<string | null> {
   return invoke("prompt_layer_file", { kind });
+}
+
+/** The note a spoken turn carries (item 246 wave 3): `~/.nightloom/voice.md`. */
+export interface VoiceNoteFile {
+  path: string;
+  text: string;
+}
+
+/** The Context page's "Spoken turns" row: the file, made with the default
+ *  wording the first time it is read. */
+export function voiceNoteFile(): Promise<VoiceNoteFile> {
+  return invoke("voice_note_file");
+}
+
+/** Save the "Spoken turns" note; empty means spoken turns carry none. */
+export function setVoiceNote(text: string): Promise<VoiceNoteFile> {
+  return invoke("set_voice_note", { text });
 }
 
 /** Claude Code's auto memory for the built cwd, for the Context page's
