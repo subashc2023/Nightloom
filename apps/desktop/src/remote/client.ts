@@ -5,7 +5,8 @@
  * while the Mac is unreachable. Nothing here touches the DOM, so all of it
  * is under `client.test.ts`; `Remote.svelte` is the screen over it.
  */
-import type { ApprovalRequest, SessionEvent, TurnEvent } from "../lib/types";
+import type { ApprovalRequest, ImageInput, SessionEvent, TurnEvent } from "../lib/types";
+import type { SubagentLimits } from "../lib/catalog";
 
 export const TOKEN_KEY = "nightloom.remote.token";
 export const QUEUE_KEY = "nightloom.remote.queue";
@@ -50,6 +51,140 @@ export interface RemoteState {
   connected: boolean;
   engine: string | null;
   pending: ApprovalRequest[];
+  /** What this host serves beyond pass 1 (item 246 wave 1, design §4):
+   *  the `Host` method names — `act`, `rail`, `running`, `usage`, … A
+   *  listener from before wave 1 sends none, and the page greys out what
+   *  is missing. */
+  features?: string[];
+}
+
+/** Whether the host serves `name` (design §4's `features`). */
+export function hasFeature(state: RemoteState, name: string): boolean {
+  return Array.isArray(state.features) && state.features.includes(name);
+}
+
+// ---- wave 1: the chat's actions, the rail, running tasks, usage -----------
+// The wire shapes of design §4 (`remote/api.rs` in the service crate, serde
+// `rename_all = "snake_case"`, `ChatAction` tagged by `op`).
+
+export type EditMode = "save" | "send";
+
+export type ChatAction =
+  | { op: "edit"; index: number; text: string; mode: EditMode; block: number | null }
+  | { op: "remove"; index: number }
+  | { op: "restore"; index: number }
+  | { op: "remove_block"; index: number; block: number }
+  | { op: "restore_block"; index: number; block: number }
+  | { op: "rewind"; to: number }
+  | { op: "unrewind"; of: number }
+  | { op: "fork"; upto: number }
+  | { op: "continue" }
+  | { op: "compact" }
+  | { op: "delete" }
+  | { op: "undelete" }
+  | { op: "kind"; kind: "build" | "chat" }
+  | { op: "resume_limit" }
+  | { op: "budget"; decision: string; text: string | null }
+  | { op: "checkpoint"; index: number };
+
+/** `ActReply`: the chat now showing (a fork's new id) and its log. */
+export interface ActReply {
+  chat: string;
+  events: SessionEvent[];
+}
+
+/** A council seat on the rail (`RailCouncil` in `api.rs`). */
+export interface CouncilSeat {
+  model: string;
+  engine?: "subscription" | "api";
+}
+
+/** The rail's engine settings (`GET /api/rail`, `Rail` in the service
+ *  crate's `remote/api.rs` — 1A's patch note of 2026-09-30). Every field
+ *  optional on the way in: a host that lacks one leaves its control out. */
+export interface Rail {
+  engine?: string;
+  provider?: string;
+  model?: string;
+  effort?: string;
+  fallback?: string;
+  thinking?: string;
+  limits?: SubagentLimits;
+  approval?: boolean;
+  ask?: boolean;
+  plan?: boolean;
+  subagents_auto?: boolean;
+  fork_mode?: boolean;
+  council?: { seats: CouncilSeat[]; mode: "answer" | "disproof" } | null;
+  /** Read-only: the Mac's connection after the change. */
+  connected?: boolean;
+  connecting?: boolean;
+  /** The change waits for the running turn and connects after it. */
+  deferred?: boolean;
+  error?: string | null;
+}
+/** `POST /api/rail`: merged into the Mac's rail, which then reconnects.
+ *  `limits` is partial — only the named limits change. An empty patch is
+ *  a 400. */
+export type RailPatch = Partial<
+  Pick<Rail, "engine" | "model" | "effort" | "fallback" | "thinking" | "ask" | "plan" | "subagents_auto" | "fork_mode" | "council">
+> & { limits?: Partial<SubagentLimits> };
+
+/** One row of `GET /api/running` (`RunningChat` in `api.rs`). */
+export interface RunningChat {
+  /** Null for a new chat not yet on disk. */
+  chat: string | null;
+  project?: string | null;
+  title: string;
+  /** When its turn started, unix milliseconds. */
+  since: number | null;
+  /** The chat on the Mac's screen. */
+  on_screen?: boolean;
+  /** Its unanswered approval prompts. */
+  waiting?: number;
+}
+export interface Running {
+  chats: RunningChat[];
+  /** The host's own shapes, passed through; the Mac sends none of the
+   *  last three yet. */
+  subagents?: unknown;
+  budget?: unknown;
+  asides?: unknown[];
+  dream?: unknown | null;
+  capture?: unknown | null;
+}
+
+/** The plan's windows (`PlanUsage` in the service crate): percent used. */
+export interface PlanUsage {
+  five_hour: number | null;
+  seven_day: number | null;
+  five_hour_resets_at: string | null;
+  seven_day_resets_at: string | null;
+  /** Read from an old sample: the line greys out. */
+  stale?: boolean;
+  source?: string;
+}
+/** `GET /api/usage`. */
+export interface Usage {
+  plan: PlanUsage;
+  ledger?: unknown;
+}
+
+/** What a send carries besides its text (design §4 `SendRequest`). */
+export interface SendExtras {
+  project?: string | null;
+  images?: ImageInput[];
+  spoken?: boolean;
+}
+
+/** The body of a send: absent fields are left out, so a pass-1 listener
+ *  that knows only `text` reads it as before. */
+export function sendBody(text: string, extras: SendExtras = {}): Record<string, unknown> {
+  const body: Record<string, unknown> = { text };
+  if (extras.project) body.project = extras.project;
+  if (extras.images && extras.images.length > 0) body.images = extras.images;
+  if (extras.spoken) body.spoken = true;
+  return body;
 }
 
 /** One row of `/api/chats` — `ChatRow` in the service crate. */
@@ -118,9 +253,43 @@ export class Client {
   }
 
   /** A new chat on the Mac, in `project` or the open one (item 246). */
-  async newChat(project: string | null, text: string): Promise<"sent" | "queued"> {
-    const r = await this.call("/new", { method: "POST", body: JSON.stringify({ text, project }) });
+  async newChat(project: string | null, text: string, images: ImageInput[] = []): Promise<"sent" | "queued"> {
+    const r = await this.call("/new", { method: "POST", body: JSON.stringify({ ...sendBody(text, { images }), project }) });
     return parseSendReply(await r.text());
+  }
+
+  /** One of the Mac's actions on a chat (design §4 `act`). `project` is
+   *  the chat's project when the Mac has another open (blocker 665: the
+   *  Mac opens it first); the query is ignored by a host that finds chats
+   *  by id alone. A 409 is the host's sentence for refusing. */
+  async act(chat: string, action: ChatAction, project: string | null = null): Promise<ActReply> {
+    const q = project ? `?project=${encodeURIComponent(project)}` : "";
+    const r = await this.call(`/chats/${encodeURIComponent(chat)}/act${q}`, { method: "POST", body: JSON.stringify(action) });
+    return r.json();
+  }
+
+  async rail(): Promise<Rail> {
+    return (await this.call("/rail")).json();
+  }
+
+  /** Merge `patch` into the Mac's rail; the reply is the rail after. */
+  async setRail(patch: RailPatch): Promise<Rail> {
+    const r = await this.call("/rail", { method: "POST", body: JSON.stringify(patch) });
+    const body = await r.text();
+    try {
+      return JSON.parse(body) as Rail;
+    } catch {
+      // A bare 2xx: read the rail as it now stands.
+      return this.rail();
+    }
+  }
+
+  async running(): Promise<Running> {
+    return (await this.call("/running")).json();
+  }
+
+  async usage(): Promise<Usage> {
+    return (await this.call("/usage")).json();
   }
 
   async rename(chat: string, title: string): Promise<void> {
@@ -142,9 +311,9 @@ export class Client {
    *  running in that chat and goes when it ends (backlog 132). A 409 is
    *  the desktop's sentence for not taking it, and the text is ours to
    *  keep. */
-  async send(chat: string | null, text: string): Promise<"sent" | "queued"> {
+  async send(chat: string | null, text: string, extras: SendExtras = {}): Promise<"sent" | "queued"> {
     const path = chat ? `/chats/${encodeURIComponent(chat)}/send` : "/send";
-    const r = await this.call(path, { method: "POST", body: JSON.stringify({ text }) });
+    const r = await this.call(path, { method: "POST", body: JSON.stringify(sendBody(text, extras)) });
     return parseSendReply(await r.text());
   }
 
@@ -238,6 +407,12 @@ export interface ToolRow {
   ok: boolean | null;
   /** Rows of a subagent's own turn, under the `Agent` call that spawned it. */
   children: ToolRow[];
+  /** Where the call lives in the log (a transcript row's, not a live
+   *  turn's): the reply event and its block, for the per-block menu. */
+  index?: number;
+  block?: number;
+  /** Out of the context (`elide` with this block, or the whole reply). */
+  removed?: boolean;
 }
 
 /** The reply as it streams: text so far and the calls made, in order. */
@@ -349,10 +524,95 @@ export function foldTurnEvent(live: LiveTurn, ev: TurnEvent): LiveTurn {
 
 // ---- the transcript ---------------------------------------------------------
 
+/** One text block of a reply as the phone draws it: where it lives in the
+ *  log (the event and its block, which the per-block menu acts on), what
+ *  it says now, and whether it is out of the context. */
+export interface TextPart {
+  index: number;
+  block: number;
+  text: string;
+  removed: boolean;
+  edited: boolean;
+}
+
 export type Row =
-  | { kind: "user"; text: string; at: string }
-  | { kind: "assistant"; model: string; text: string; tools: ToolRow[]; at: string }
+  | {
+      kind: "user";
+      text: string;
+      at: string;
+      /** The event's index in the log — what an action names. */
+      index: number;
+      removed: boolean;
+      edited: boolean;
+      /** Photos sent with it. */
+      images: number;
+    }
+  | {
+      kind: "assistant";
+      model: string;
+      /** The text still in the context, joined. */
+      text: string;
+      tools: ToolRow[];
+      at: string;
+      /** Every reply event this row joins, in order. */
+      indexes: number[];
+      parts: TextPart[];
+      /** Every event of the row is out of the context. */
+      removed: boolean;
+    }
   | { kind: "note"; text: string; at: string };
+
+/**
+ * The edit and removal markers over the live events — the desktop's
+ * `editTexts`, `blockEdits`, `elideFlags` and `blockElisions` (edit.ts),
+ * restated here because edit.ts pulls in the desktop's state module,
+ * which the phone's bundle must not carry. Same rules: live markers only,
+ * the last word on an index wins; an `edit` of a reply with no `block`
+ * names its first text block (or one past the last when it has none).
+ */
+export interface Markers {
+  userText: Map<number, string>;
+  blockText: Map<number, Map<number, string>>;
+  removed: Set<number>;
+  blocksGone: Map<number, Set<number>>;
+}
+
+export function markers(events: SessionEvent[], live = liveFlags(events)): Markers {
+  const m: Markers = { userText: new Map(), blockText: new Map(), removed: new Set(), blocksGone: new Map() };
+  events.forEach((e, i) => {
+    if (!live[i]) return;
+    if (e.event === "edit") {
+      const t = events[e.target];
+      if (t?.event === "user_message") m.userText.set(e.target, e.text);
+      else if (t?.event === "assistant_message") {
+        let block = e.block;
+        if (block == null) {
+          const first = t.blocks.findIndex((b) => b.type === "text");
+          block = first >= 0 ? first : t.blocks.length;
+        }
+        const map = m.blockText.get(e.target) ?? new Map<number, string>();
+        map.set(block, e.text);
+        m.blockText.set(e.target, map);
+      }
+    } else if (e.event === "elide" || e.event === "unelide") {
+      const on = e.event === "elide";
+      if (e.block != null) {
+        const t = e.targets[0];
+        if (t == null) return;
+        const set = m.blocksGone.get(t) ?? new Set<number>();
+        if (on) set.add(e.block);
+        else set.delete(e.block);
+        m.blocksGone.set(t, set);
+      } else {
+        for (const t of e.targets) {
+          if (on) m.removed.add(t);
+          else m.removed.delete(t);
+        }
+      }
+    }
+  });
+  return m;
+}
 
 /**
  * Which events are live after the log's rewind markers: a `rewind` at
@@ -381,34 +641,67 @@ export function liveFlags(events: SessionEvent[]): boolean[] {
  *  lines under the reply that made them, results matched by id. */
 export function transcriptRows(events: SessionEvent[]): Row[] {
   const live = liveFlags(events);
+  const mk = markers(events, live);
   const rows: Row[] = [];
   const byTool = new Map<string, ToolRow>();
   events.forEach((e, i) => {
     if (!live[i]) return;
     switch (e.event) {
-      case "user_message":
-        rows.push({ kind: "user", text: e.text, at: e.at });
+      case "user_message": {
+        const edit = mk.userText.get(i);
+        rows.push({
+          kind: "user",
+          text: edit ?? e.text,
+          at: e.at,
+          index: i,
+          removed: mk.removed.has(i),
+          edited: edit !== undefined,
+          images: e.images?.length ?? 0,
+        });
         break;
+      }
       case "assistant_message": {
-        const texts: string[] = [];
+        const parts: TextPart[] = [];
         const tools: ToolRow[] = [];
-        for (const b of e.blocks) {
-          if (b.type === "text") texts.push(b.text);
-          else if (b.type === "tool_use") {
-            const row: ToolRow = { id: b.id, name: b.name, summary: toolSummary(b.name, b.input), ok: null, children: [] };
+        const edits = mk.blockText.get(i);
+        const gone = mk.blocksGone.get(i);
+        const whole = mk.removed.has(i);
+        e.blocks.forEach((b, n) => {
+          if (b.type === "text") {
+            const edit = edits?.get(n);
+            parts.push({ index: i, block: n, text: edit ?? b.text, removed: whole || !!gone?.has(n), edited: edit !== undefined });
+          } else if (b.type === "tool_use") {
+            const row: ToolRow = {
+              id: b.id,
+              name: b.name,
+              summary: toolSummary(b.name, b.input),
+              ok: null,
+              children: [],
+              index: i,
+              block: n,
+              removed: whole || !!gone?.has(n),
+            };
             tools.push(row);
             byTool.set(b.id, row);
           }
-        }
+        });
+        // An edit that names one past the last block adds text to a reply
+        // that had none (`blockEdits`' rule).
+        const extra = edits?.get(e.blocks.length);
+        if (extra !== undefined) parts.push({ index: i, block: e.blocks.length, text: extra, removed: whole, edited: true });
+        const said = parts.filter((p) => !p.removed && p.text).map((p) => p.text);
         // Consecutive replies with no user turn between draw as one (the
         // desktop's backlog 121): the blocks join the row above.
         const last = rows[rows.length - 1];
         if (last && last.kind === "assistant") {
-          last.text = [last.text, ...texts].filter(Boolean).join("\n\n");
+          last.text = [last.text, ...said].filter(Boolean).join("\n\n");
           last.tools.push(...tools);
+          last.parts.push(...parts);
+          last.indexes.push(i);
+          last.removed = last.removed && whole;
           last.at = e.at;
         } else {
-          rows.push({ kind: "assistant", model: e.model, text: texts.join("\n\n"), tools, at: e.at });
+          rows.push({ kind: "assistant", model: e.model, text: said.join("\n\n"), tools, at: e.at, indexes: [i], parts, removed: whole });
         }
         break;
       }
@@ -427,6 +720,98 @@ export function transcriptRows(events: SessionEvent[]): Row[] {
   return rows;
 }
 
+// ---- the message menu (wave 1) ------------------------------------------------
+
+/** The next live user message after `index`, or the log's length — where
+ *  a rewind or a fork "after this reply" lands. */
+export function nextUserIndex(events: SessionEvent[], index: number): number {
+  const live = liveFlags(events);
+  for (let i = index + 1; i < events.length; i++) if (live[i] && events[i].event === "user_message") return i;
+  return events.length;
+}
+
+/**
+ * Where "Rewind here" and "Fork here" point for a row, on the desktop's
+ * terms (`rewind_to` and `fork_session` both take a user turn's index):
+ * on his message, that message — a rewind drops it and everything after,
+ * back into the box; a fork starts a chat that ends just before it. On a
+ * reply, the next message of his — the reply is kept, what follows goes.
+ * `null` where there is nothing after to drop (the last reply).
+ */
+export function rowTarget(events: SessionEvent[], row: Row): { rewind: number | null; fork: number | null } {
+  if (row.kind === "user") return { rewind: row.index, fork: row.index };
+  if (row.kind === "assistant") {
+    const after = nextUserIndex(events, row.indexes[row.indexes.length - 1]);
+    return { rewind: after < events.length ? after : null, fork: after };
+  }
+  return { rewind: null, fork: null };
+}
+
+/** The actions a whole row's Remove or Restore sends: one per event the
+ *  row joins — a joined reply is several events. */
+export function rowRemoval(row: Row, restore: boolean): ChatAction[] {
+  const op = restore ? "restore" : "remove";
+  if (row.kind === "user") return [{ op, index: row.index }];
+  if (row.kind === "assistant") return row.indexes.map((index) => ({ op, index }));
+  return [];
+}
+
+/** The edit a menu's Save or Send makes; `block` for a reply's text block. */
+export function editAction(index: number, text: string, mode: EditMode, block: number | null = null): ChatAction {
+  return { op: "edit", index, text, mode, block };
+}
+
+// ---- photos (wave 1) -----------------------------------------------------------
+
+/** The long edge a photo is scaled to before it is sent: the size the
+ *  model reads at full detail, and a body the listener takes (an iPhone
+ *  photo is 3–5 MB, base64 a third more). */
+export const PHOTO_EDGE = 1568;
+
+/** The size a `w` × `h` photo is drawn at: at most `edge` on the long side,
+ *  never scaled up, whole pixels. */
+export function fitSize(w: number, h: number, edge = PHOTO_EDGE): { w: number; h: number } {
+  if (w <= 0 || h <= 0) return { w: 0, h: 0 };
+  const k = Math.min(1, edge / Math.max(w, h));
+  return { w: Math.max(1, Math.round(w * k)), h: Math.max(1, Math.round(h * k)) };
+}
+
+/** `data:image/jpeg;base64,AAAA` → the wire's `ImageInput`. */
+export function imageFromDataUrl(url: string): ImageInput | null {
+  const m = /^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i.exec(url);
+  return m ? { media_type: m[1].toLowerCase(), data: m[2] } : null;
+}
+
+// ---- usage (wave 1) -------------------------------------------------------------
+
+/** The drawer's plan line: "5-hour 42% · resets 4:10 AM · week 61%". */
+export function usageLine(u: Usage | null): string {
+  const p = u?.plan;
+  if (!p) return "";
+  const parts: string[] = [];
+  if (p.five_hour != null) {
+    parts.push(`5-hour ${Math.round(p.five_hour)}%`);
+    const at = p.five_hour_resets_at ? new Date(p.five_hour_resets_at) : null;
+    if (at && !Number.isNaN(at.getTime())) parts.push(`resets ${at.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}`);
+  }
+  if (p.seven_day != null) parts.push(`week ${Math.round(p.seven_day)}%`);
+  if (parts.length > 0 && p.stale) parts.push("an old reading");
+  return parts.join(" · ");
+}
+
+/** How long since `at` (unix ms or an ISO time), for the running sheet:
+ *  "just now", "4 min", "2 h 5 min"; "" when unknown. */
+export function sinceText(at: number | string | null, now = new Date()): string {
+  if (at == null) return "";
+  const t = typeof at === "number" ? at : new Date(at).getTime();
+  if (Number.isNaN(t)) return "";
+  const mins = Math.floor((now.getTime() - t) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} min`;
+  const h = Math.floor(mins / 60);
+  return mins % 60 ? `${h} h ${mins % 60} min` : `${h} h`;
+}
+
 // ---- the queue ------------------------------------------------------------
 
 /** A message typed while the Mac was unreachable or busy, waiting. */
@@ -435,6 +820,8 @@ export interface Queued {
   chat: string | null;
   text: string;
   at: string;
+  /** The chat's project when the Mac had another open (blocker 665). */
+  project?: string | null;
 }
 
 export function loadQueue(): Queued[] {
@@ -466,9 +853,11 @@ export function saveQueue(queue: Queued[]): void {
 }
 
 let seq = 0;
-export function newQueued(chat: string | null, text: string, now = new Date()): Queued {
+export function newQueued(chat: string | null, text: string, now = new Date(), project: string | null = null): Queued {
   seq += 1;
-  return { id: `${now.getTime().toString(36)}-${seq}`, chat, text, at: now.toISOString() };
+  const q: Queued = { id: `${now.getTime().toString(36)}-${seq}`, chat, text, at: now.toISOString() };
+  if (project) q.project = project;
+  return q;
 }
 
 // ---- the cards --------------------------------------------------------------
