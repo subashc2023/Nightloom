@@ -10,6 +10,13 @@
    * event on every change. Opened from the top bar's agents chip; the
    * overlay in `App.svelte` closes it like the Context page.
    *
+   * Redesign (backlog 267, 2026-09-30): ~~one table of every send's agents
+   * under `18 agents · 3 running · 18 of 6`~~ — grouped lists whose counts
+   * add up to the header's (`taskGroups.ts`): the chats running, then
+   * the agents running, then the latest send's finished ones (with Running,
+   * the top bar chip's `N agents`), then the earlier sends, folded. One
+   * line per row, the same columns in every group, a wider sheet.
+   *
    * The figures, and what each is (the translator's doc has the
    * measurement): *tokens* is the CLI's own number for the agent — the
    * latest round's whole request and response, the same figure the
@@ -31,6 +38,8 @@
   import { fmtTokens } from "./tokens";
   import { budgetChip, budgetTitle } from "./budget";
   import { wrapAsk, wrapTarget, wrapUp } from "./budgetWrap.svelte";
+  import { shortModel } from "./subagentRows";
+  import { capsLine, fmtElapsed, groupAgents, rowElapsedMs, rowState, stateLabel, summaryLine } from "./taskGroups";
   import Icon from "./Icon.svelte";
 
   /** A ticking clock for the elapsed column while any child or chat runs. */
@@ -47,10 +56,7 @@
   const chats = $derived(liveChats());
   function chatElapsed(c: LiveChat): string {
     if (c.startedAt === null) return "";
-    const s = Math.max(0, Math.round((now - c.startedAt) / 1000));
-    if (s < 60) return `${s} s`;
-    const m = Math.floor(s / 60);
-    return `${m} min ${s - m * 60} s`;
+    return fmtElapsed(now - c.startedAt);
   }
   async function openChat(c: LiveChat) {
     if (!c.session || c.onScreen) return;
@@ -61,30 +67,29 @@
 
   /** The open chat's rows (backlog 160: the store holds every chat's). */
   const mine = $derived(openChatSubagents());
-  /** Newest first: the latest turn's agents at the top. */
-  const rows = $derived([...mine].reverse());
-  const running = $derived(mine.filter(subagentRunning).length);
-  /** The caps in force (backlog 165): this turn's spawns of the per-turn
+  /** Running · finished in the latest send · earlier sends (267). */
+  const groups = $derived(groupAgents(mine));
+  /** Earlier sends fold by default: history, a click away. */
+  let earlierOpen = $state(false);
+
+  /** The caps in force (backlog 165): this send's spawns of the per-send
    *  cap — lowered past `slow_at` of the window — the window itself, and
    *  (pass 2) the message's budget meter: `spent 4% of 35%`. */
-  function capsLine(): string {
-    const l = app.draft.agentLimits;
-    const pct = app.planUsage?.five_hour ?? null;
-    // A switched-off limit (backlog 253) is not quoted.
-    const slowOn = !l.off.slow && pct !== null && pct >= l.slow_at;
-    const stopOn = !l.off.stop_at && pct !== null && pct >= l.stop_at;
-    const cap = l.off.per_turn ? (slowOn ? l.slow_to : null) : slowOn ? Math.min(l.per_turn, l.slow_to) : l.per_turn;
-    const window = pct === null ? "" : ` · window ${pct}%${stopOn ? " · spawns refused" : slowOn ? " · slowed" : ""}`;
-    const budget = app.turnBudget ? ` · ${budgetChip(app.turnBudget)}` : "";
-    return ` · ${cap === null ? `${rows.length}` : `${rows.length} of ${cap}`}${window}${budget}`;
-  }
+  const caps = $derived(
+    capsLine(
+      app.draft.agentLimits,
+      app.planUsage?.five_hour ?? null,
+      mine.filter((r) => r.turn === app.turnSeq).length,
+      app.turnBudget ? budgetChip(app.turnBudget) : null,
+    ),
+  );
 
   function elapsed(r: SubagentRow): string {
-    const ms = r.duration_ms > 0 ? r.duration_ms : Math.max(0, (subagentRunning(r) ? now : r.updatedAt) - r.startedAt);
-    const s = Math.round(ms / 1000);
-    if (s < 60) return `${s} s`;
-    const m = Math.floor(s / 60);
-    return `${m} min ${s - m * 60} s`;
+    return fmtElapsed(rowElapsedMs(r, now));
+  }
+  function sum(rs: SubagentRow[]): string {
+    const n = rs.reduce((t, r) => t + r.tokens, 0);
+    return n > 0 ? `${fmtTokens(n)} tokens` : "";
   }
 
   function usageTitle(r: SubagentRow): string {
@@ -99,17 +104,13 @@
     return parts.join("\n");
   }
 
-  function shortModel(m: string | undefined): string {
-    if (!m) return "";
-    // `claude-haiku-4-5-20251001` → `haiku 4.5`; anything else as given.
-    const x = /^claude-([a-z]+)-(\d+)-(\d+)/.exec(m);
-    return x ? `${x[1]} ${x[2]}.${x[3]}` : m;
+  /** What the row's name hovers: the type, the task given, the prompt. */
+  function nameTitle(r: SubagentRow): string {
+    return [r.subagent_type || "agent", r.description, r.prompt].filter(Boolean).join("\n\n");
   }
 
-  function statusWord(r: SubagentRow): string {
-    if (subagentRunning(r)) return "running";
-    if (r.status === "completed") return "done";
-    return r.status;
+  function sendLabel(i: number): string {
+    return i === 0 ? "The send before" : `${i + 1} sends before`;
   }
 
   async function view(r: SubagentRow) {
@@ -146,16 +147,35 @@
   }
 </script>
 
+{#snippet agentRow(r: SubagentRow)}
+  {@const st = rowState(r)}
+  <div class="row {st}">
+    <span class="state">
+      <span class="dot"></span>{stateLabel(r)}
+    </span>
+    <span class="name" use:tip={nameTitle(r)}>
+      <span class="desc">{r.description || r.subagent_type || "agent"}</span>
+      {#if r.description && r.subagent_type}<span class="type">{r.subagent_type}</span>{/if}
+      {#if r.restored}<span class="tag" use:tip={"Rebuilt from the chat's log: the figures are what the CLI wrote into the result, the transcript is the recorded narrative"}>from the log</span>{/if}
+    </span>
+    <span class="model">{shortModel(r.model)}</span>
+    <span class="num">{elapsed(r)}</span>
+    <span class="num" use:tip={usageTitle(r)}>{r.tokens > 0 ? fmtTokens(r.tokens) : "–"}</span>
+    <span class="num dim" use:tip={"Tool uses: the CLI's count"}>{r.tool_uses}</span>
+    <span class="act">
+      <button class="ns-btn ghost small" onclick={() => void view(r)} use:tip={"Open this agent's calls, results and words as a tab"}>
+        Transcript <Icon name="chevr" size={11} />
+      </button>
+    </span>
+  </div>
+{/snippet}
+
 <div class="modal" role="dialog" aria-label="Running tasks">
   <div class="pane-head">
-    <h2 class="pane-title">Running tasks</h2>
-    <span class="slug" use:tip={budgetTitle(app.turnBudget)}>
-      {#if rows.length === 0}
-        no subagents in this chat yet{app.turnBudget ? ` · ${budgetChip(app.turnBudget)}` : ""}
-      {:else}
-        {rows.length} agent{rows.length === 1 ? "" : "s"}{running > 0 ? ` · ${running} running` : " · all done"}{capsLine()}
-      {/if}
-    </span>
+    <div class="titles">
+      <h2 class="pane-title">Running tasks</h2>
+      <span class="slug" use:tip={budgetTitle(app.turnBudget)}>{summaryLine(groups.counts, chats.length)}</span>
+    </div>
     <span class="spacer"></span>
     {#if wrapFor}
       <button
@@ -169,74 +189,99 @@
     {/if}
     <button class="close" use:tip={"Close"} aria-label="Close running tasks" onclick={close}><Icon name="x" size={14} /></button>
   </div>
+  {#if mine.length > 0 || app.turnBudget}
+    <div class="caps" use:tip={budgetTitle(app.turnBudget)}>{caps}</div>
+  {/if}
   <div class="pane">
-    {#if chats.length > 0}
-      <h3 class="sub">Chats running · {chats.length}</h3>
-      <table class="tasks chats">
-        <tbody>
-          {#each chats as c (c.session ?? "new")}
-            <tr class="running">
-              <td class="agent">
-                <span class="desc chat-name" use:tip={c.session ?? "New chat, first turn"}>{c.name}</span>
-              </td>
-              <td class="state">
-                <span class="dot live"></span>{c.onScreen ? "on screen" : "in the background"}{#if c.waiting > 0}<span class="ask"> · waiting on you</span>{/if}
-              </td>
-              <td class="num mono">{chatElapsed(c)}</td>
-              <td class="num mono" use:tip={"Tokens so far this turn: the latest request and reply"}>{c.usage ? fmtTokens(c.usage.input_tokens + c.usage.output_tokens) : ""}</td>
-              <td class="act">
-                {#if !c.onScreen && c.session}
-                  <button class="ns-btn ghost small" onclick={() => void openChat(c)} use:tip={"Bring this chat on screen, still streaming"}>Open</button>
-                {/if}
-              </td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-      <h3 class="sub">Subagents in this chat</h3>
+    {#if chats.length > 0 || mine.length > 0}
+      <!-- One column head for every group below: they share the columns. -->
+      <div class="cols" aria-hidden="true">
+        <span>state</span><span>{mine.length > 0 ? "agent" : "chat"}</span><span>{mine.length > 0 ? "model" : ""}</span><span class="num">elapsed</span><span class="num">tokens</span><span class="num">{mine.length > 0 ? "tools" : ""}</span><span></span>
+      </div>
     {/if}
-    {#if rows.length === 0}
+    {#if chats.length > 0}
+      <section class="group chats" data-group="chats">
+        <header class="group-head">
+          <span class="ns-k">Chats running</span><span class="count">{chats.length}</span>
+        </header>
+        <div class="rows">
+          {#each chats as c (c.session ?? "new")}
+            <div class="row running">
+              <span class="state"><span class="dot"></span>{c.onScreen ? "on screen" : "background"}</span>
+              <span class="name" use:tip={c.session ?? "New chat, first turn"}>
+                <span class="desc">{c.name}</span>
+                {#if c.waiting > 0}<span class="ask">waiting on you</span>{/if}
+              </span>
+              <span class="model"></span>
+              <span class="num">{chatElapsed(c)}</span>
+              <span class="num" use:tip={"Tokens so far this turn: the latest request and reply"}>{c.usage ? fmtTokens(c.usage.input_tokens + c.usage.output_tokens) : ""}</span>
+              <span class="num"></span>
+              <span class="act">
+                {#if !c.onScreen && c.session}
+                  <button class="ns-btn ghost small" onclick={() => void openChat(c)} use:tip={"Bring this chat on screen, still streaming"}>Open <Icon name="chevr" size={11} /></button>
+                {/if}
+              </span>
+            </div>
+          {/each}
+        </div>
+      </section>
+    {/if}
+
+    {#if mine.length === 0}
       <p class="note">
-        When the model spawns a subagent (its Agent tool), it is listed here with
+        No subagents in this chat yet. When the model spawns one (its Agent tool), it is listed here with
         its tokens and tool uses as it runs, and its transcript opens as a tab.
       </p>
     {:else}
-      <table class="tasks">
-        <thead>
-          <tr>
-            <th>agent</th>
-            <th>model</th>
-            <th>state</th>
-            <th class="num">elapsed</th>
-            <th class="num">tokens</th>
-            <th class="num">tool uses</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each rows as r (r.tool_use_id)}
-            <tr class:running={subagentRunning(r)}>
-              <td class="agent">
-                <span class="type mono">{r.subagent_type || "agent"}</span>
-                <span class="desc" use:tip={r.prompt}>{r.description}</span>
-              </td>
-              <td class="mono dim">{shortModel(r.model)}</td>
-              <td class="state">
-                <span class="dot" class:live={subagentRunning(r)} class:bad={r.status !== "running" && r.status !== "completed"}></span>
-                {statusWord(r)}{r.background ? "" : ""}{#if r.restored}<span class="dim" use:tip={"Rebuilt from the chat's log: the figures are what the CLI wrote into the result, the transcript is the recorded narrative"}> · from the log</span>{/if}
-              </td>
-              <td class="num mono">{elapsed(r)}</td>
-              <td class="num mono" use:tip={usageTitle(r)}>{fmtTokens(r.tokens)}</td>
-              <td class="num mono">{r.tool_uses}</td>
-              <td class="act">
-                <button class="ns-btn ghost small" onclick={() => void view(r)} use:tip={"Open this agent's calls, results and words as a tab"}>
-                  View transcript
-                </button>
-              </td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
+
+      {#if groups.running.length > 0}
+        <section class="group" data-group="running">
+          <header class="group-head">
+            <span class="ns-k">Running</span><span class="count live">{groups.running.length}</span>
+            <span class="spacer"></span><span class="aside">{sum(groups.running)}</span>
+          </header>
+          <div class="rows">
+            {#each groups.running as r (r.tool_use_id)}{@render agentRow(r)}{/each}
+          </div>
+        </section>
+      {/if}
+
+      {#if groups.latest.rows.length > 0}
+        <section class="group" data-group="latest">
+          <header class="group-head">
+            <span class="ns-k">Finished · latest send</span><span class="count">{groups.latest.rows.length}</span>
+            <span class="spacer"></span>
+            <span class="aside" use:tip={"The latest send that spawned agents — the top bar chip's count is this send's, running and finished"}>
+              {groups.latest.total} spawned in this send{sum(groups.latest.rows) ? ` · ${sum(groups.latest.rows)}` : ""}
+            </span>
+          </header>
+          <div class="rows">
+            {#each groups.latest.rows as r (r.tool_use_id)}{@render agentRow(r)}{/each}
+          </div>
+        </section>
+      {/if}
+
+      {#if groups.earlier.length > 0}
+        <section class="group earlier" data-group="earlier" class:open={earlierOpen}>
+          <button class="group-head fold" aria-expanded={earlierOpen} onclick={() => (earlierOpen = !earlierOpen)}>
+            <span class="chev"><Icon name={earlierOpen ? "chev" : "chevr"} size={12} /></span>
+            <span class="ns-k">Earlier sends</span><span class="count">{groups.counts.earlier}</span>
+            <span class="spacer"></span>
+            <span class="aside">
+              {groups.earlier.length} send{groups.earlier.length === 1 ? "" : "s"}{sum(groups.earlier.flatMap((b) => b.rows)) ? ` · ${sum(groups.earlier.flatMap((b) => b.rows))}` : ""}
+            </span>
+          </button>
+          {#if earlierOpen}
+            {#each groups.earlier as b, i (b.turn)}
+              <div class="send-label">{sendLabel(i)} · {b.rows.length}</div>
+              <div class="rows">
+                {#each b.rows as r (r.tool_use_id)}{@render agentRow(r)}{/each}
+              </div>
+            {/each}
+          {/if}
+        </section>
+      {/if}
+
       <p class="note small">
         Tokens are the CLI's figure per agent — its latest request and reply
         together, what the Claude app shows; hover one for the sum over its
@@ -248,25 +293,34 @@
 </div>
 
 <style>
-  /* The Context page's frame, narrower: same tokens, same radius. */
+  /* The Context page's frame: same tokens, same radius. ~~clamp(30rem,
+     54vw, 48rem)~~ — too narrow for one line per agent (267). */
   .modal {
     background: var(--sheet);
     border: 1px solid var(--line2);
     border-radius: 12px;
-    width: clamp(30rem, 54vw, 48rem);
-    max-width: calc(100vw - 3rem);
+    width: min(68rem, calc(100vw - 4rem));
     max-height: calc(100vh - 3rem);
     display: flex;
     flex-direction: column;
     overflow: hidden;
     box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+    /* One column set for every group, so the figures line up down the page. */
+    --cols: 7.25rem minmax(0, 1fr) 6.5rem 4.75rem 4.25rem 3.25rem 7.25rem;
   }
   .pane-head {
     display: flex;
     align-items: center;
     gap: 12px;
     flex: none;
-    padding: 20px 24px 12px;
+    padding: 20px 24px 4px;
+  }
+  .titles {
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+    min-width: 0;
+    flex-wrap: wrap;
   }
   .pane-title {
     margin: 0;
@@ -276,8 +330,13 @@
     letter-spacing: -0.01em;
   }
   .slug {
+    font-size: 13px;
+    color: var(--ink2);
+  }
+  .caps {
+    padding: 0 24px 12px;
     font-family: var(--mono);
-    font-size: 12px;
+    font-size: 11.5px;
     color: var(--dim);
   }
   .spacer {
@@ -305,100 +364,214 @@
     border-color: var(--dim);
   }
   .pane {
-    padding: 0 24px 20px;
+    padding: 4px 24px 20px;
     overflow: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  /* The pane scrolls; its groups never shrink to fit it. */
+  .pane > :global(*) {
+    flex: none;
   }
   .note {
     color: var(--dim);
     font-size: 13px;
-    margin: 8px 0;
+    margin: 4px 0;
   }
   .note.small {
     font-size: 12px;
+    margin-top: 0;
   }
-  .tasks {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 13px;
-  }
-  .tasks th {
-    text-align: left;
-    font-weight: 500;
-    color: var(--dim);
-    font-size: 11.5px;
-    padding: 4px 8px 6px 0;
-    border-bottom: 1px solid var(--line);
-  }
-  .tasks td {
-    padding: 6px 8px 6px 0;
-    border-bottom: 1px solid var(--line);
-    vertical-align: middle;
-  }
-  .tasks th.num,
-  .tasks td.num {
-    text-align: right;
-  }
-  .agent {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    min-width: 0;
-  }
-  .type {
-    font-size: 12px;
-  }
-  .desc {
-    color: var(--dim);
-    font-size: 12px;
-    white-space: nowrap;
+
+  /* ---- groups ---- */
+  .group {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--paper);
     overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 22rem;
   }
-  .mono {
+  .group-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: var(--well);
+    border-bottom: 1px solid var(--line);
+    width: 100%;
+    box-sizing: border-box;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+  }
+  .fold {
+    border: 0;
+    cursor: pointer;
+  }
+  .fold:hover {
+    background: var(--line);
+  }
+  .earlier:not(.open) .group-head {
+    border-bottom: 0;
+  }
+  .chev {
+    display: inline-flex;
+    color: var(--dim);
+    margin-right: -2px;
+  }
+  .count {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--ink2);
+    background: var(--sheet);
+    border: 1px solid var(--line2);
+    border-radius: 999px;
+    padding: 0 7px;
+    line-height: 17px;
+  }
+  .count.live {
+    color: var(--live);
+    background: var(--live-soft);
+    border-color: transparent;
+  }
+  .aside {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--dim);
+  }
+  .send-label {
+    padding: 6px 12px 4px 36px;
+    font-size: 11.5px;
+    color: var(--dim);
+    border-top: 1px solid var(--line);
+    background: var(--sheet);
+  }
+  .group-head + .send-label {
+    border-top: 0;
+  }
+
+  /* ---- rows: one line each, the same columns everywhere ---- */
+  .cols,
+  .row {
+    display: grid;
+    grid-template-columns: var(--cols);
+    column-gap: 12px;
+    align-items: center;
+  }
+  .cols {
+    padding: 0 13px;
+    margin-bottom: -8px;
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--dim);
+  }
+  .row {
+    padding: 0 12px;
+    min-height: 36px;
+    font-size: 13px;
+    color: var(--ink2);
+    border-top: 1px solid var(--line);
+    box-shadow: inset 2px 0 0 transparent;
+  }
+  .rows .row:first-child {
+    border-top: 0;
+  }
+  .row:hover {
+    background: var(--sheet);
+  }
+  .row.running {
+    color: var(--ink);
+    box-shadow: inset 2px 0 0 var(--live);
+  }
+  .num {
+    text-align: right;
     font-family: var(--mono);
     font-size: 12px;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
   }
   .dim {
     color: var(--dim);
   }
   .state {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
     white-space: nowrap;
+    font-size: 12.5px;
   }
   .dot {
-    display: inline-block;
+    flex: none;
     width: 7px;
     height: 7px;
     border-radius: 50%;
-    background: var(--dim);
-    margin-right: 6px;
-    vertical-align: middle;
+    background: var(--done);
   }
-  .dot.live {
-    background: var(--live, #4c9aff);
+  .row.running .state {
+    color: var(--live);
   }
-  .dot.bad {
-    background: var(--error);
+  .row.running .dot {
+    background: var(--live);
+    box-shadow: 0 0 0 3px var(--live-soft);
   }
-  tr.running td {
+  .row.done .state {
+    color: var(--dim);
+  }
+  .row.failed .state {
+    color: var(--failed);
+  }
+  .row.failed .dot {
+    background: var(--failed);
+  }
+  .name {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+  }
+  .desc {
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .row.running .desc,
+  .chats .desc {
     color: var(--ink);
+  }
+  .type,
+  .tag {
+    flex: none;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--dim);
+  }
+  .tag {
+    font-family: var(--sans);
+    font-style: italic;
+  }
+  .ask {
+    flex: none;
+    font-size: 11.5px;
+    color: var(--accent-ink);
+    background: var(--accent-soft);
+    border-radius: 999px;
+    padding: 1px 8px;
+  }
+  .model {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .act {
     text-align: right;
     white-space: nowrap;
   }
-  .sub {
-    margin: 10px 0 4px;
-    font-size: 12px;
-    font-weight: 500;
-    color: var(--dim);
-    font-family: var(--mono);
-  }
-  .chat-name {
-    color: var(--ink);
-    font-size: 13px;
-  }
-  .ask {
-    color: var(--accent, var(--ink));
+  .act .ns-btn {
+    gap: 2px;
   }
 </style>
