@@ -48,9 +48,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::council::CouncilRequest;
 use api::{
-    ActReply, ChatAction, ContextEditReply, ContextEditRequest, ContextReply, LayerChange,
-    NOT_AVAILABLE, NewProjectRequest, NoteText, ProjectRenameRequest, Rail, RailPatch, Running,
-    SearchScope, StateReply, UsageReply,
+    ActReply, ChatAction, ContextEditRequest, ContextReply, LayerChange, NOT_AVAILABLE,
+    NewProjectRequest, NoteText, ProjectRenameRequest, Rail, RailPatch, Running, SearchScope,
+    StateReply, UsageReply,
 };
 use tokio::sync::{broadcast, oneshot};
 
@@ -279,13 +279,13 @@ pub trait Host: Send + Sync + 'static {
     async fn context(&self, _chat: &str) -> Result<ContextReply, String> {
         Err(NOT_AVAILABLE.into())
     }
-    /// Hide or show items of `chat`'s context.
+    /// Hide or show items of `chat`'s context; the answer is the new view.
     async fn edit_context(
         &self,
         _chat: &str,
         _targets: Vec<usize>,
         _remove: bool,
-    ) -> Result<ContextEditReply, String> {
+    ) -> Result<nightloom_core::context::WireView, String> {
         Err(NOT_AVAILABLE.into())
     }
     /// Change `chat`'s prompt layers; the answer is its Context page after.
@@ -1216,15 +1216,14 @@ mod tests {
             chat: &str,
             targets: Vec<usize>,
             remove: bool,
-        ) -> Result<ContextEditReply, String> {
+        ) -> Result<nightloom_core::context::WireView, String> {
             if chat == "running" {
                 return Err("a turn is running in that chat".into());
             }
-            Ok(ContextEditReply {
-                view: empty_view(),
-                events: Vec::new(),
-                changed: if remove { targets.len() } else { 0 },
-            })
+            // The fake's tell: the view counts the items it hid.
+            let mut view = empty_view();
+            view.totals.unestimated = if remove { targets.len() } else { 0 };
+            Ok(view)
         }
         async fn layers(&self, chat: &str, change: LayerChange) -> Result<ContextReply, String> {
             if chat == "running" {
@@ -1254,13 +1253,15 @@ mod tests {
         }
         async fn running(&self) -> Result<Running, String> {
             Ok(Running {
-                tasks: vec![api::RunningTask {
-                    kind: "chat".into(),
+                chats: vec![api::RunningChat {
                     chat: Some("abc".into()),
                     project: Some("p1".into()),
                     title: "first".into(),
-                    since: None,
+                    since: Some(1_790_000_000_000),
+                    on_screen: true,
+                    waiting: 0,
                 }],
+                ..Default::default()
             })
         }
         async fn usage(&self) -> Result<UsageReply, String> {
@@ -2142,7 +2143,7 @@ mod tests {
         )
         .await;
         assert_eq!(status, 200);
-        assert_eq!(v["changed"], 2);
+        assert_eq!(v["totals"]["unestimated"], 2, "the new view");
         let (status, _) = post_json(
             &c,
             format!("{base}/api/chats/abc/context"),
@@ -2219,7 +2220,8 @@ mod tests {
         let c = client();
         let (status, v) = get_json(&c, format!("{base}/api/running"), &token).await;
         assert_eq!(status, 200);
-        assert_eq!(v["tasks"][0]["chat"], "abc");
+        assert_eq!(v["chats"][0]["chat"], "abc");
+        assert_eq!(v["asides"], serde_json::json!([]));
         let (status, v) = get_json(&c, format!("{base}/api/usage"), &token).await;
         assert_eq!(status, 200);
         assert_eq!(v["plan"]["five_hour"], 12);

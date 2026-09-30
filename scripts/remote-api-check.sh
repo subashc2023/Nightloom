@@ -119,8 +119,8 @@ if [ -n "${ACTIVE:-}" ]; then
 fi
 
 # --- wave 1 reads ---
-call GET /api/rail;    expect "GET /api/rail" rail 'has("engine") and has("model") and has("effort")'
-call GET /api/running; expect "GET /api/running" running '.tasks | type == "array"'
+call GET /api/rail;    expect "GET /api/rail" rail 'has("engine") and has("model") and has("effort") and has("connected")'
+call GET /api/running; expect "GET /api/running" running '.chats | type == "array"'
 call GET /api/usage;   expect "GET /api/usage" usage '.plan | has("source")'
 call GET '/api/search?q=the&scope=all'; expect "GET /api/search" search 'has("matches") and has("groups")'
 call GET '/api/search'

@@ -16,7 +16,7 @@ use nightloom_core::context::WireView;
 use nightloom_core::prompt::SegmentKind;
 use serde::{Deserialize, Serialize};
 
-use crate::council::Seat;
+use crate::council::{CouncilMode, Seat};
 use crate::plan_usage::PlanUsage;
 
 /// What a default-bodied [`super::Host`] method answers. The listener maps
@@ -45,9 +45,15 @@ pub mod feature {
     pub const PROJECTS: &str = "projects";
     /// `/api/notes…`.
     pub const NOTES: &str = "notes";
-    /// A send carrying `project`, `images`, `documents` or `council` (a
-    /// plain text send is always there).
-    pub const SEND_EXTRAS: &str = "send_extras";
+    /// A send may carry `project` (a chat in another project), `images`,
+    /// `documents`, `council`, or `spoken` — one name each, so the phone
+    /// can offer a photo where a council is not served (a plain text send
+    /// is always there). The Mac's host (1B) lists all five.
+    pub const SEND_PROJECT: &str = "send_project";
+    pub const IMAGES: &str = "images";
+    pub const DOCUMENTS: &str = "documents";
+    pub const COUNCIL: &str = "council";
+    pub const SPOKEN: &str = "spoken";
     /// `GET /api/voice` (wave 3).
     pub const VOICE: &str = "voice";
     /// Every name, for a host that serves the lot and for tests.
@@ -61,7 +67,11 @@ pub mod feature {
         SEARCH,
         PROJECTS,
         NOTES,
-        SEND_EXTRAS,
+        SEND_PROJECT,
+        IMAGES,
+        DOCUMENTS,
+        COUNCIL,
+        SPOKEN,
         VOICE,
     ];
 }
@@ -190,15 +200,6 @@ pub struct ContextEditRequest {
     pub remove: bool,
 }
 
-/// The Mac's `edit_context` answer: the new view, the log, and how many
-/// items changed (zero is not an error).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ContextEditReply {
-    pub view: WireView,
-    pub events: Vec<SessionEvent>,
-    pub changed: usize,
-}
-
 /// `POST /api/chats/{id}/layers`, one of three bodies: the set of layers
 /// switched off; a layer's own text (`null` puts the default back); or the
 /// answer to a held change (the Mac's `prompt_hold::Choice`, passed
@@ -220,47 +221,84 @@ pub enum LayerChange {
 }
 
 /// The engine and turn settings the Mac's rail shows (blocker 666's
-/// default: these, and never keys or folder choices). Empty strings are the
-/// rail's "default" positions, as on the Mac.
+/// default: these, and never keys or folder choices), with the connection's
+/// state after the last change. Field names are the Mac's host's (1B,
+/// `remoteHandlers.ts` `railOf`); empty strings are the rail's "default"
+/// positions, as on the Mac. A field this struct does not name is kept in
+/// `extra`, so a host that says more loses nothing on the way through.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(default)]
 pub struct Rail {
     /// `claude-code` or `provider`.
     pub engine: String,
+    /// The API engine's provider (read only from the phone).
+    pub provider: String,
+    /// The engine's model: the agent's alias on `claude-code`, the
+    /// provider's model id otherwise.
     pub model: String,
     /// `low` … `max`, or empty for the CLI's own.
     pub effort: String,
     pub fallback: String,
+    /// The API engine's thinking mode (`default`, `effort-low`, …).
+    pub thinking: String,
     /// The subagent limits, as the Mac's `agentLimits` has them.
     pub limits: serde_json::Value,
+    /// Whether approvals are on at all (read only from the phone).
+    pub approval: bool,
     pub ask: bool,
     pub plan: bool,
+    pub subagents_auto: bool,
     pub fork_mode: bool,
-    pub council_seats: Vec<Seat>,
+    /// The council for the chat on the Mac's screen.
+    pub council: Option<RailCouncil>,
+    /// An engine is connected / connecting now.
+    pub connected: bool,
+    pub connecting: bool,
+    /// The change waits for the running turn to end, then connects (the
+    /// Mac's rail does the same, backlog 214).
+    pub deferred: bool,
+    /// The last connect's error, if it failed.
+    pub error: Option<String>,
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+/// A council's seats and mode, as the Mac keeps them per chat.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RailCouncil {
+    pub seats: Vec<Seat>,
+    #[serde(default)]
+    pub mode: CouncilMode,
 }
 
 /// `POST /api/rail`: the fields to change; the host merges them into its
-/// rail and reconnects, then answers with the whole [`Rail`].
+/// rail and reconnects once, then answers with the whole [`Rail`]. `limits`
+/// is partial (only the limits named change).
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
 pub struct RailPatch {
-    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub engine: Option<String>,
-    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
-    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub fallback: Option<String>,
-    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub limits: Option<serde_json::Value>,
-    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub ask: Option<bool>,
-    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub plan: Option<bool>,
-    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subagents_auto: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub fork_mode: Option<bool>,
-    #[serde(default)]
-    pub council_seats: Option<Vec<Seat>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub council: Option<RailCouncil>,
 }
 
 impl RailPatch {
@@ -269,23 +307,40 @@ impl RailPatch {
     }
 }
 
-/// One thing running on the host, for the phone's Running sheet.
+/// A chat whose turn is running now, for the phone's Running sheet (the
+/// Mac's `liveChats`, as 1B sends it).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct RunningTask {
-    /// `chat`, `aside`, `dream` or `capture`.
-    pub kind: String,
-    #[serde(default)]
+pub struct RunningChat {
+    /// The chat's id; `None` for a new chat not yet written to disk.
     pub chat: Option<String>,
+    /// The project it runs in, when the host knows it.
     #[serde(default)]
     pub project: Option<String>,
     pub title: String,
+    /// When its turn started, unix milliseconds.
     #[serde(default)]
-    pub since: Option<chrono::DateTime<chrono::Utc>>,
+    pub since: Option<i64>,
+    /// The chat on the host's screen.
+    #[serde(default)]
+    pub on_screen: bool,
+    /// Its unanswered approval prompts.
+    #[serde(default)]
+    pub waiting: usize,
 }
 
+/// `GET /api/running`: the chats running now, and beside them what the
+/// host knows of the rest — the open chat's subagents and its turn budget
+/// (the Mac's own shapes, passed through); asides, a dream and a capture
+/// when a host reports them (the Mac does not yet: empty / `null`).
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
 pub struct Running {
-    pub tasks: Vec<RunningTask>,
+    pub chats: Vec<RunningChat>,
+    pub subagents: serde_json::Value,
+    pub budget: serde_json::Value,
+    pub asides: Vec<serde_json::Value>,
+    pub dream: Option<serde_json::Value>,
+    pub capture: Option<serde_json::Value>,
 }
 
 /// The drawer's usage line: the plan's windows and the ledger's summary
@@ -527,5 +582,50 @@ mod tests {
         assert_eq!(query_param(Some("q=%zz"), "q").as_deref(), Some("%zz"));
         assert_eq!(query_param(None, "q"), None);
         assert_eq!(query_param(Some("x=1"), "q"), None);
+    }
+
+    /// The Mac's host (1B) answers with `railOf()` and `runningNow()`
+    /// built in the window; those JSON shapes read into these types
+    /// whole, and a field the types do not name survives the trip.
+    #[test]
+    fn the_mac_hosts_rail_and_running_read_whole() {
+        let rail = json!({
+            "engine": "claude-code", "provider": "anthropic", "model": "opus",
+            "effort": "", "fallback": "", "thinking": "default",
+            "limits": {"perTurn": 6, "off": {"perDay": true}},
+            "approval": true, "ask": true, "plan": false, "subagents_auto": true,
+            "fork_mode": true,
+            "council": {"seats": [{"model": "opus", "engine": "subscription"}, {"model": "fable", "engine": "subscription"}], "mode": "answer"},
+            "connected": true, "connecting": false, "deferred": false, "error": null,
+            "something_new": 3
+        });
+        let r: Rail = serde_json::from_value(rail.clone()).unwrap();
+        assert_eq!(r.model, "opus");
+        assert_eq!(r.council.as_ref().unwrap().seats.len(), 2);
+        assert_eq!(r.extra["something_new"], 3);
+        assert_eq!(serde_json::to_value(&r).unwrap(), rail);
+
+        let patch: RailPatch =
+            serde_json::from_value(json!({"effort": "high", "limits": {"off": {"perDay": false}}}))
+                .unwrap();
+        assert!(!patch.is_empty());
+        assert_eq!(
+            serde_json::to_value(&patch).unwrap(),
+            json!({"effort": "high", "limits": {"off": {"perDay": false}}}),
+            "a patch names only what it changes"
+        );
+        assert!(
+            serde_json::from_value::<RailPatch>(json!({}))
+                .unwrap()
+                .is_empty()
+        );
+
+        let running: Running = serde_json::from_value(json!({
+            "chats": [{"chat": null, "title": "New chat", "on_screen": true, "since": null, "waiting": 1}],
+            "subagents": [], "budget": null
+        }))
+        .unwrap();
+        assert_eq!(running.chats[0].waiting, 1);
+        assert!(running.asides.is_empty() && running.dream.is_none());
     }
 }
