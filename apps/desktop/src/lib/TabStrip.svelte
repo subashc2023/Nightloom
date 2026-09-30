@@ -20,6 +20,7 @@
   import { web, webLabel } from "./webtabs.svelte";
   import { plan, startTabDrag } from "./tabDrag";
   import { tabDrag } from "./tabDrag.svelte";
+  import { asideTabName } from "./asideSidebar.svelte";
 
   /**
    * One pane's strip of tabs (nightshift backlog 099, boards 9a and 9d):
@@ -50,6 +51,9 @@
   const live = $derived(tabs.liveTab(app.tabs, app.activeSessionId));
 
   function title(t: tabs.Tab): string {
+    // A named aside is called by its name (item 265).
+    const named = t.content.kind === "aside" ? asideTabName(t.content.session, t.content.thread) : null;
+    if (named) return `Aside · ${named}`;
     return tabs.tabTitle(t.content, app.sessions, app.projects);
   }
 

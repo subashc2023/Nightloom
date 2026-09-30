@@ -109,6 +109,8 @@ interface StoredAside {
   draft?: true;
   /** Text typed in the thread's box and not sent (backlog 228). */
   unsent?: string;
+  /** The name he gave the thread (item 265); absent when unnamed. */
+  name?: string;
 }
 
 function storeTurn(t: AsideTurn): StoredTurn | null {
@@ -138,6 +140,8 @@ function storeAside(a: Aside): StoredAside | null {
   }
   if (a.anchor) out.anchor = a.anchor;
   if (unsent !== null) out.unsent = unsent;
+  const name = cleanAsideName(a.name);
+  if (name !== null) out.name = name;
   return out;
 }
 
@@ -214,14 +218,18 @@ function loadAside(v: unknown): Aside | null {
   }
   const anchor = isAnchor(a.anchor) ? a.anchor : null;
   const unsent = typeof a.unsent === "string" && a.unsent.trim() ? a.unsent : null;
+  const name = cleanAsideName(a.name);
   // A draft card kept for its unsent question (backlog 228).
   if (a.draft === true) {
     if (unsent === null) return null;
-    return { id: nextAsideId(), quote, draft: true, turns: [], anchor, unsent };
+    const d: Aside = { id: nextAsideId(), quote, draft: true, turns: [], anchor, unsent };
+    if (name !== null) d.name = name;
+    return d;
   }
   if (turns.length === 0) return null;
   const out: Aside = { id: nextAsideId(), quote, draft: false, turns, anchor };
   if (unsent !== null) out.unsent = unsent;
+  if (name !== null) out.name = name;
   return out;
 }
 
@@ -284,4 +292,35 @@ export function asideFromStored(v: unknown): Aside | null {
   if (a === null || a.draft) return null;
   delete a.unsent;
   return a;
+}
+
+// ---- Item 265 (2026-09-29): an aside's name ----
+// He can name a thread; the name is written with it here (and so with a
+// past thread, whose stored form is this one), so it survives a relaunch
+// and a close-and-reopen. Unnamed, a thread is called by its first
+// question, else its passage — the label every list and tab shows.
+
+/** Chars a name keeps; a longer one is cut. */
+export const ASIDE_NAME_MAX = 80;
+
+/** A name as kept: one line, trimmed, capped; null for none. */
+export function cleanAsideName(v: unknown): string | null {
+  if (typeof v !== "string") return null;
+  const one = v.replace(/\s+/g, " ").trim();
+  if (!one) return null;
+  return one.length > ASIDE_NAME_MAX ? one.slice(0, ASIDE_NAME_MAX) : one;
+}
+
+/** What a thread is called: its name, else its first question, else a
+ *  snippet of its passage, else "Aside". One line, at most `max` chars. */
+export function asideLabel(
+  a: { name?: string; quote: { text: string } | null; turns: readonly { question: string }[]; unsent?: string },
+  max = 60,
+): string {
+  const pick =
+    cleanAsideName(a.name) ??
+    cleanAsideName(a.turns[0]?.question) ??
+    cleanAsideName(a.quote?.text) ??
+    "Aside";
+  return pick.length > max ? `${pick.slice(0, max - 1)}…` : pick;
 }

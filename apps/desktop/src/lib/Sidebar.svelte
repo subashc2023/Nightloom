@@ -34,6 +34,10 @@
     saveOpen as saveForksOpen,
     toggled as toggledForks,
   } from "./forkTree";
+  // A chat's asides under its row and in its menu (item 265).
+  import SidebarAsides from "./SidebarAsides.svelte";
+  import AsideMenuItems from "./AsideMenuItems.svelte";
+  import { asidesListedOf, asidesShown, toggleAsidesOf } from "./asideSidebar.svelte";
   import { findChord } from "./find";
   import { findBar } from "./search";
   import { isMac } from "./platform";
@@ -596,6 +600,22 @@
                   <Icon name="chevr" size={11} />{r.forks}
                 </button>
               {/if}
+              <!-- Its asides (item 265): a toggle of their own beside the
+                   forks', the asides glyph and the count. -->
+              {@const nAsides = asidesListedOf(s.id).length}
+              {#if nAsides > 0}
+                {@const shownA = asidesShown.open.has(s.id)}
+                <button
+                  class="forks-btn asides-btn"
+                  class:open={shownA}
+                  aria-expanded={shownA}
+                  aria-label={`${shownA ? "Hide" : "Show"} ${nAsides} aside${nAsides === 1 ? "" : "s"}`}
+                  use:tip={`${shownA ? "Hide" : "Show"} this chat's ${nAsides === 1 ? "aside" : `${nAsides} asides`}`}
+                  onclick={() => toggleAsidesOf(s.id)}
+                >
+                  <Icon name="chevr" size={11} /><Icon name="think" size={11} />{nAsides}
+                </button>
+              {/if}
               <!-- The row's one tool (backlog 208, design C): ··· opens the
                    right-click menu — Open, new tab, beside, Rename, Delete…
                    (Delete still confirms and moves to the trash folder). It
@@ -617,6 +637,7 @@
               </button>
             {/if}
           </div>
+          {#if asidesShown.open.has(s.id)}<SidebarAsides session={s.id} depth={r.depth} />{/if}
         {/each}
       </div>
       {#if rowMenu}
@@ -634,6 +655,7 @@
           <div class="row-sep"></div>
           <button role="menuitem" onclick={rowRename}>Rename</button>
           <button role="menuitem" disabled={app.busy} onclick={rowDelete}>Delete…</button>
+          <AsideMenuItems session={rowMenu.s.id} onpick={() => (rowMenu = null)} />
         </div>
       {/if}
     {/if}
@@ -1466,5 +1488,13 @@
   }
   .forks-btn.open :global(.ns-ico) {
     transform: rotate(90deg);
+  }
+  /* The asides toggle (item 265): the forks' disclosure with the asides
+     glyph after its chevron; only the chevron turns. */
+  .asides-btn {
+    gap: 2px;
+  }
+  .forks-btn.asides-btn.open :global(.ns-ico + .ns-ico) {
+    transform: none;
   }
 </style>

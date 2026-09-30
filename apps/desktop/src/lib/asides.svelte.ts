@@ -14,7 +14,8 @@
  */
 import { untrack } from "svelte";
 import { app, asideStash, chatMode } from "./state.svelte";
-import { isPrivateChat, markChatMode, saveAsides } from "./asides";
+import type { Aside } from "./state.svelte";
+import { cleanAsideName, isPrivateChat, markChatMode, saveAsides } from "./asides";
 
 /** Record the open chat's mode. Its log and its id change together in
  *  every opener, so the pair read here belongs to one chat. */
@@ -57,6 +58,25 @@ export function scheduleAsideSave(): void {
   schedule();
 }
 
+/**
+ * Bumped when a thread changes where no reactive read would see it (item
+ * 265): a stashed chat's threads sit in a plain map, so the sidebar's
+ * list of another chat's asides reads this too, and a rename or a close
+ * there redraws it.
+ */
+export const asideTick = $state({ n: 0 });
+
+/** Name a thread (item 265); an empty or blank name clears it, and the
+ *  thread is called by its first question again. Written with the thread,
+ *  so it survives a relaunch. */
+export function renameAside(a: Aside, name: string): void {
+  const n = cleanAsideName(name);
+  if (n === null) delete a.name;
+  else a.name = n;
+  asideTick.n++;
+  schedule();
+}
+
 if (typeof window !== "undefined") {
   $effect.root(() => {
     $effect(() => {
@@ -72,6 +92,7 @@ if (typeof window !== "undefined") {
         // Unsent text (backlog 228): each keystroke schedules the
         // debounced save, as a composer draft's does.
         void a.unsent;
+        void a.name;
         for (const t of a.turns) {
           void t.partial;
           void t.answer;

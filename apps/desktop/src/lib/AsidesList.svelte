@@ -7,7 +7,10 @@
   import { tip } from "./tip";
   import { relativeTime, exactTime } from "./time";
   import { quoteSnippet, type PastAside } from "./asideHistory";
-  import { deletePastAside, pastAsides, pastOf, reopenPast } from "./asideHistory.svelte";
+  import { deletePastAside, pastAsides, pastOf, renamePast, reopenPast } from "./asideHistory.svelte";
+  import { renameAside } from "./asides.svelte";
+  import { asideLabel } from "./asides";
+  import AsideNameEdit from "./AsideNameEdit.svelte";
 
   /**
    * A chat's asides at a glance (nightshift item 229, night batch B,
@@ -44,6 +47,9 @@
   let listOpen = $state(false);
   let now = $state(Date.now());
   let confirming = $state<PastAside | null>(null);
+  /** The row being renamed (item 265): an open thread's id, or a past
+   *  thread's key. */
+  let naming = $state<number | string | null>(null);
   let pos = $state<{ top: number; right: number } | null>(null);
   let pill = $state<HTMLElement | null>(null);
   let pop = $state<HTMLElement | null>(null);
@@ -74,6 +80,7 @@
     void session;
     listOpen = false;
     confirming = null;
+    naming = null;
   });
   $effect(() => {
     if (!shown) listOpen = false;
@@ -119,6 +126,8 @@
    *  card is not dismissed behind the list. */
   function keys(e: KeyboardEvent): void {
     if (e.key !== "Escape" || (!listOpen && !confirming)) return;
+    // The rename box takes its own Escape (item 265).
+    if (naming !== null) return;
     e.preventDefault();
     e.stopPropagation();
     if (confirming) confirming = null;
@@ -172,27 +181,61 @@
     >
       <div class="sec">Open ({open.length})</div>
       {#each open as a (a.id)}
-        <button class="row" disabled={asideInTab(session, a.id)} onclick={() => bring(a)}>
-          <span class="q">{quoteSnippet(a.quote?.text)}</span>
-          <span class="ask">{firstQuestion(a)}</span>
-          <span class="meta">{openState(a)}</span>
-        </button>
+        <div class="past-row">
+          {#if naming === a.id}
+            <AsideNameEdit
+              value={a.name ?? ""}
+              placeholder={asideLabel({ ...a, name: undefined })}
+              oncommit={(v) => {
+                naming = null;
+                renameAside(a, v);
+              }}
+              oncancel={() => (naming = null)}
+            />
+          {:else}
+            <button class="row" disabled={asideInTab(session, a.id)} onclick={() => bring(a)}>
+              {#if a.name}<span class="nm">{a.name}</span>{/if}
+              <span class="q">{quoteSnippet(a.quote?.text)}</span>
+              <span class="ask">{firstQuestion(a)}</span>
+              <span class="meta">{openState(a)}</span>
+            </button>
+            <button class="del ren" aria-label="Rename this aside" use:tip={"Rename this aside"} onclick={() => (naming = a.id)}>
+              <Icon name="pencil" size={13} />
+            </button>
+          {/if}
+        </div>
       {:else}
         <div class="none">No aside open on this chat.</div>
       {/each}
       <div class="sec">Past ({past.length})</div>
       {#each past as p (p.key)}
         <div class="past-row">
+          {#if naming === p.key}
+            <AsideNameEdit
+              value={p.thread.name ?? ""}
+              placeholder={asideLabel({ ...p.thread, name: undefined })}
+              oncommit={(v) => {
+                naming = null;
+                if (session !== null) renamePast(session, p.key, v);
+              }}
+              oncancel={() => (naming = null)}
+            />
+          {:else}
           <button class="row" onclick={() => reopen(p)} use:tip={`Reopen this aside under its passage, thread intact (closed ${exactTime(new Date(p.closedAt).toISOString())})`}>
+            {#if p.thread.name}<span class="nm">{p.thread.name}</span>{/if}
             <span class="q">{quoteSnippet(p.thread.quote?.text)}</span>
             <span class="ask">{firstQuestion(p.thread)}</span>
             <span class="meta"
               >closed {relativeTime(new Date(p.closedAt).toISOString(), now)}</span
             >
           </button>
+          <button class="del ren" aria-label="Rename this past aside" use:tip={"Rename this aside"} onclick={() => (naming = p.key)}>
+            <Icon name="pencil" size={13} />
+          </button>
           <button class="del" aria-label="Delete this past aside" use:tip={"Delete this past aside for good (asks first)"} onclick={() => (confirming = p)}>
             <Icon name="trash" size={13} />
           </button>
+          {/if}
         </div>
       {:else}
         <div class="none">Closed asides land here, reopenable.</div>
@@ -324,6 +367,17 @@
   .del:hover {
     background: var(--del-bg);
     color: var(--del-fg);
+  }
+  /* Rename (item 265): the delete button's shape, a quiet hover. */
+  .del.ren:hover {
+    background: var(--well);
+    color: var(--ink);
+  }
+  .nm {
+    font-weight: 600;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
   }
   .none {
     padding: 4px 8px 8px;
