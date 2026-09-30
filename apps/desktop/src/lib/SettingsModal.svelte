@@ -70,7 +70,7 @@
   } from "./council";
   import { relativeTime } from "./time";
   import { dreamEngineRows, dreamModelPills, dreamSentence } from "./dreamRows";
-  import { loadNotifyPrefs, notifyUsageRefreshed, saveNotifyPrefs, type NotifyPrefs } from "./notify";
+  import { chatName, loadNotifyPrefs, notifyUsageRefreshed, saveNotifyPrefs, type NotifyPrefs } from "./notify";
   import {
     COST_PANE,
     USAGE_COST_GROUP,
@@ -93,6 +93,8 @@
     defaultReadOrder,
     hasOwnDefaultMessage,
     hasOwnDefaultReadOrder,
+    hasOwnThreshold as hasOwnHandoffThreshold,
+    reconsider as reconsiderHandoff,
     setDefaultReadOrder,
     setDefaultMessage as setHandoffDefaultMessage,
     setThreshold as setHandoffThreshold,
@@ -691,6 +693,29 @@
     const n = Number(v);
     if (!Number.isFinite(n)) return;
     setHandoffThreshold(null, Math.min(100, Math.max(1, Math.round(n))) / 100);
+  }
+
+  // The open chat's own mark (nightshift backlog 258, 2026-09-29): it
+  // lived only at the foot of the Context page's Layers tab, where he did
+  // not find it; he looks here, beside the default. Named by the chat it
+  // applies to; "Use the default" drops the chat's own.
+  const handoffChat = $derived(app.activeSessionId);
+  const handoffChatName = $derived.by(() => {
+    const s = app.sessions.find((x) => x.id === handoffChat);
+    return s ? chatName(s.title, s.first_user) : "this chat";
+  });
+  const handoffChatPct = $derived(Math.round(handoffThreshold(handoffChat) * 100));
+  const handoffChatOwn = $derived(hasOwnHandoffThreshold(handoffChat));
+  function setHandoffChatPct(v: string): void {
+    const n = Number(v);
+    if (!handoffChat || !Number.isFinite(n)) return;
+    setHandoffThreshold(handoffChat, Math.min(100, Math.max(1, Math.round(n))) / 100);
+    reconsiderHandoff(handoffChat);
+  }
+  function clearHandoffChatPct(): void {
+    if (!handoffChat) return;
+    setHandoffThreshold(handoffChat, 0);
+    reconsiderHandoff(handoffChat);
   }
 
   /** Turn a whole family on or off in one write rather than one per chip. */
@@ -1447,6 +1472,26 @@
           />
           <span>% of the window, for every chat without a mark of its own (70% to begin with)</span>
         </label>
+        {#if handoffChat}
+          <label class="handoff-row">
+            <span>This chat, <em>{handoffChatName}</em>, at</span>
+            <input
+              type="number"
+              min="1"
+              max="100"
+              step="1"
+              value={handoffChatPct}
+              aria-label="Hand-off threshold, percent of the context window, for the open chat"
+              onchange={(e) => setHandoffChatPct((e.currentTarget as HTMLInputElement).value)}
+            />
+            <span>%{handoffChatOwn ? " — its own mark" : " — the default"}; at 100 it asks only when the window is full</span>
+            {#if handoffChatOwn}
+              <button class="ns-btn ghost small" onclick={clearHandoffChatPct}>Use the default</button>
+            {/if}
+          </label>
+        {:else}
+          <p class="note small">Open a chat to give it a mark of its own.</p>
+        {/if}
         <p class="note small">
           Away from the chat — nothing sent or typed for a minute and the
           window not in front — when the mark is crossed, the wrap-up is put

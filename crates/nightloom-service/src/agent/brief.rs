@@ -166,7 +166,40 @@ pub struct SubagentLimits {
     /// read-heavy scans. Blocker 280, his answer: the chat's own.
     #[serde(default)]
     pub model: SubagentModel,
+    /// Which limits he has switched off (nightshift backlog 253,
+    /// 2026-09-29: "if I don't want that limit to apply at all, then I
+    /// just disable it"). The number stays as he set it, for when he
+    /// switches it back on; [`SubagentLimits::effective`] is what acts.
+    #[serde(default)]
+    pub off: LimitsOff,
 }
+
+/// One switch per limit (backlog 253); `slow` covers the `slow_at` /
+/// `slow_to` pair, which only act together. All on (false) by default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LimitsOff {
+    pub per_turn: bool,
+    pub concurrent: bool,
+    pub depth: bool,
+    pub per_day: bool,
+    pub slow: bool,
+    pub stop_at: bool,
+    pub budget_pct: bool,
+}
+
+/// "No limit" for the CLI's own two (backlog 253, blocker 610 answered
+/// "i meant truly unlimited"). The CLI has no off value for either: CLI
+/// 2.1.284 reads each env var as a digits-only integer >= 1 with no upper
+/// bound (`D.int({min:1,digitsOnly:!0})`), and refuses a spawn only when
+/// the running count is not below it (`getConcurrentSubagents()<e`) or the
+/// depth reaches it (`Tt>=kt`) — `external`, read from the binary's
+/// strings on 2026-09-29. A million is past any count a chat can reach.
+pub const CLI_UNLIMITED: usize = 1_000_000;
+
+/// A percent no reading reaches (readings are 0..=100): a stop line or a
+/// slow line at this value never fires, and is not shown as a line.
+pub const NEVER_PCT: u8 = u8::MAX;
 
 /// Which model a spawned subagent runs on (backlog 165, pass 2; nightshift
 /// 257, blocker 584). `Choose` leaves the call's `model` as the parent
@@ -264,23 +297,59 @@ impl Default for SubagentLimits {
             stop_at: d_stop_at(),
             budget_pct: d_budget_pct(),
             model: SubagentModel::default(),
+            off: LimitsOff::default(),
         }
     }
 }
 
 impl SubagentLimits {
+    /// The limits as they act, with every switched-off one made inert
+    /// (backlog 253): no per-turn cap (`usize::MAX`), no day cap (0, as
+    /// blocker 271 already reads it), no slow or stop line
+    /// ([`NEVER_PCT`]), no per-message budget (0, as `usage_line` already
+    /// reads it). ~~The CLI's two (`concurrent`, `depth`) are dropped from
+    /// [`Self::env`] instead: off, Nightloom passes nothing and the CLI's
+    /// own default applies (blocker 610).~~ 2026-09-29, blocker 610's
+    /// answer ("i meant truly unlimited"): the CLI's two are passed as
+    /// [`CLI_UNLIMITED`] — passing nothing left its own 20 and 3 in force.
+    /// Idempotent.
+    pub fn effective(&self) -> Self {
+        let mut l = *self;
+        if l.off.concurrent {
+            l.concurrent = CLI_UNLIMITED;
+        }
+        if l.off.depth {
+            l.depth = CLI_UNLIMITED;
+        }
+        if l.off.per_turn {
+            l.per_turn = usize::MAX;
+        }
+        if l.off.per_day {
+            l.per_day = 0;
+        }
+        if l.off.slow {
+            l.slow_at = NEVER_PCT;
+        }
+        if l.off.stop_at {
+            l.stop_at = NEVER_PCT;
+        }
+        if l.off.budget_pct {
+            l.budget_pct = 0;
+        }
+        l
+    }
+
     /// The CLI's own limits, as the environment the process is spawned
     /// with. The budget rides as a flag (`--max-budget-usd`), not here.
+    /// One switched off (backlog 253) goes as [`CLI_UNLIMITED`].
     pub fn env(&self) -> Vec<(&'static str, String)> {
+        let l = self.effective();
         vec![
             (
                 "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS",
-                self.concurrent.to_string(),
+                l.concurrent.to_string(),
             ),
-            (
-                "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH",
-                self.depth.to_string(),
-            ),
+            ("CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH", l.depth.to_string()),
         ]
     }
 
@@ -302,11 +371,14 @@ pub const DAY_SPAWNS_FILE: &str = "subagent-spawns-day.txt";
 /// seconds or -> <sampled-at unix ms>`.
 pub const USAGE_FILE: &str = "subagent-usage.txt";
 
+/// Writes the limits as they act ([`SubagentLimits::effective`]), so the
+/// hook, which reads this file at each spawn, never sees a switched-off
+/// limit's number.
 pub fn write_limits(dir: &Path, limits: &SubagentLimits) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     std::fs::write(
         dir.join(LIMITS_FILE),
-        serde_json::to_string_pretty(limits).unwrap_or_default(),
+        serde_json::to_string_pretty(&limits.effective()).unwrap_or_default(),
     )
 }
 
@@ -526,7 +598,8 @@ pub fn usage_line(
         });
     }
     if let Some(r) = reading {
-        match b.map(|b| b.stop_at).filter(|s| *s > 0) {
+        // A stop line switched off (backlog 253) is `NEVER_PCT`: not a line.
+        match b.map(|b| b.stop_at).filter(|s| *s > 0 && *s <= 100) {
             Some(stop) => parts.push(format!("5-hour {}% (stop line {stop}%)", r.five_hour_pct)),
             None => parts.push(format!("5-hour {}%", r.five_hour_pct)),
         }
@@ -762,8 +835,8 @@ pub fn start_turn_budget(
     }
     TurnBudget {
         started_at_ms: now_ms,
-        budget_pct: limits.budget_pct,
-        stop_at: limits.stop_at,
+        budget_pct: limits.effective().budget_pct,
+        stop_at: limits.effective().stop_at,
         start_pct: reading.map(|r| r.five_hour_pct),
         latest_pct: reading.map(|r| r.five_hour_pct),
         latest_at_ms: reading.map(|r| r.sampled_at_ms),
@@ -3172,6 +3245,100 @@ mod tests {
                 ("CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH", "2".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn a_switched_off_limit_does_not_apply_at_all() {
+        // Backlog 253: each switch makes its limit inert; the number he set
+        // is kept for when he switches it back on.
+        let off = super::LimitsOff {
+            per_turn: true,
+            concurrent: true,
+            depth: true,
+            per_day: true,
+            slow: true,
+            stop_at: true,
+            budget_pct: true,
+        };
+        let l = super::SubagentLimits {
+            per_day: 5,
+            off,
+            ..Default::default()
+        };
+        // Blocker 610: truly unlimited, not the CLI's own 20 and 3.
+        assert_eq!(
+            l.env(),
+            vec![
+                (
+                    "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS",
+                    "1000000".to_string()
+                ),
+                (
+                    "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH",
+                    "1000000".to_string()
+                ),
+            ]
+        );
+        assert_eq!(l.effective().env(), l.env(), "idempotent");
+        let r = |pct| {
+            Some(super::WindowReading {
+                five_hour_pct: pct,
+                resets_at: None,
+                sampled_at_ms: 1,
+            })
+        };
+        let e = l.effective();
+        assert_eq!(super::window_verdict(&e, r(100)), Ok(usize::MAX));
+        assert_eq!(e.per_day, 0);
+        assert_eq!(e.budget_pct, 0);
+        assert_eq!(e.effective(), e, "idempotent");
+        // The numbers survive in the setting itself.
+        assert_eq!(
+            (l.per_turn, l.per_day, l.stop_at),
+            (super::SPAWN_CAP, 5, 85)
+        );
+        // The hook reads the file: it sees the inert values.
+        let dir = limits_dir("off");
+        super::write_limits(&dir, &l).unwrap();
+        let back = super::read_limits(&dir);
+        assert_eq!(super::window_verdict(&back, r(99)), Ok(usize::MAX));
+        assert_eq!(back.per_day, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+        // A switched-off stop line is not shown as a line.
+        let b = super::start_turn_budget(None, &l, r(40), 1, super::TurnPhase::Turn);
+        let line = super::usage_line(Some(&b), r(40), None, None).unwrap();
+        assert!(!line.contains("stop line"), "{line}");
+        assert!(line.contains("no per-message budget"), "{line}");
+        // One switch alone leaves the others acting.
+        let only_slow = super::SubagentLimits {
+            off: super::LimitsOff {
+                slow: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let e = only_slow.effective();
+        assert_eq!(super::window_verdict(&e, r(80)), Ok(super::SPAWN_CAP));
+        assert!(
+            super::window_verdict(&e, r(90)).is_err(),
+            "stop still at 85"
+        );
+        assert_eq!(only_slow.env().len(), 2);
+    }
+
+    #[test]
+    fn a_limits_file_from_before_the_switches_reads_all_on() {
+        let dir = limits_dir("pre253");
+        std::fs::write(
+            dir.join(super::LIMITS_FILE),
+            r#"{"per_turn": 3, "off": {"depth": true}}"#,
+        )
+        .unwrap();
+        let back = super::read_limits(&dir);
+        assert!(back.off.depth && !back.off.per_turn);
+        std::fs::write(dir.join(super::LIMITS_FILE), r#"{"per_turn": 3}"#).unwrap();
+        assert_eq!(super::read_limits(&dir).off, super::LimitsOff::default());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
