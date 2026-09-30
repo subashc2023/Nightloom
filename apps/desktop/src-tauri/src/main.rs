@@ -7876,6 +7876,7 @@ fn main() {
             remote::remote_set_keep_awake,
             remote::remote_token,
             remote::remote_sent,
+            remote::remote_done,
             terminal::terminal_open,
             terminal::terminal_write,
             terminal::terminal_resize,
