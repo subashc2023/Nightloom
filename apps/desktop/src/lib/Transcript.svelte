@@ -21,7 +21,10 @@
     setCheckpoint,
     openSession,
     resumeAfterLimit,
+    retryConnect,
     runningChatName,
+    setAsideRewound,
+    keepRewound,
   } from "./state.svelte";
   import type { Segment, ToolCallView } from "./state.svelte";
   import { checkpointLine, checkpointOwner } from "./checkpoint";
@@ -410,6 +413,19 @@
       anchor,
     );
   }
+  // The rewound turn's files (item 259): which he ticked to set aside.
+  // Created files start ticked; edited ones and shell guesses do not, since
+  // moving an edited file takes what was there before the turn with it.
+  let asideTicks = $state<Record<string, boolean>>({});
+  $effect(() => {
+    void app.rewoundWrites;
+    asideTicks = {};
+  });
+  const asideTicked = (path: string, how: string): boolean => asideTicks[path] ?? how === "created";
+  const asidePaths = $derived(
+    (app.rewoundWrites?.files ?? []).filter((f) => asideTicked(f.path, f.how)).map((f) => f.path),
+  );
+  const HOW_LABEL: Record<string, string> = { created: "created", edited: "edited", shell: "shell, a guess" };
   let editorEl = $state<HTMLTextAreaElement | null>(null);
   // A reply's editor is one textarea per text block (backlog 066); the
   // first takes the focus and each grows to its own text.
@@ -1691,6 +1707,61 @@
     {#if app.error}
       <div class="error-banner">{app.error}</div>
     {/if}
+    <!-- The files the rewound turns wrote (item 259): the next run would
+         read them as real. Ticked ones move to a dated folder outside the
+         project, never deleted; Keep leaves them all. -->
+    {#if app.rewoundWrites && app.rewoundWrites.session === app.activeSessionId}
+      {@const rw = app.rewoundWrites}
+      <div class="limit-card" role="status">
+        <div class="limit-head">
+          <span class="ns-chip mono">rewound turn wrote {rw.files.length === 1 ? "1 file" : `${rw.files.length} files`}</span>
+          <span class="limit-sub">still on disk — the next run reads them as real</span>
+        </div>
+        {#if rw.done === null}
+          <div class="aside-files">
+            {#each rw.files as f (f.path)}
+              <label class="aside-file">
+                <input
+                  type="checkbox"
+                  checked={asideTicked(f.path, f.how)}
+                  onchange={(e) => (asideTicks[f.path] = (e.currentTarget as HTMLInputElement).checked)}
+                />
+                <span class="mono">{f.path}</span>
+                <span class="limit-sub">{HOW_LABEL[f.how] ?? f.how}</span>
+              </label>
+            {/each}
+          </div>
+          <div class="limit-actions">
+            <button
+              class="ns-btn accent small"
+              disabled={asidePaths.length === 0}
+              use:tip={"Move the ticked files to a dated folder outside the project (~/.nightloom/rewound); nothing is deleted"}
+              onclick={() => void setAsideRewound(asidePaths)}
+            >Set aside {asidePaths.length === 1 ? "1 file" : `${asidePaths.length} files`}</button>
+            <button class="ns-btn ghost small" onclick={keepRewound}>Keep them</button>
+          </div>
+        {:else}
+          <div class="limit-text">{rw.done}</div>
+          <div class="limit-actions">
+            <button class="ns-btn ghost small" onclick={keepRewound}>Done</button>
+          </div>
+        {/if}
+      </div>
+    {/if}
+    <!-- Not connected, and why (item 261): a failed connect used to leave
+         every chat saying "not connected" with nothing to press but a
+         relaunch. One Retry connects again with the rail as it is. -->
+    {#if !app.connection && app.connectError && !app.connecting}
+      <div class="limit-card" role="status">
+        <div class="limit-head">
+          <span class="ns-chip mono">not connected</span>
+        </div>
+        <div class="limit-text">{app.connectError}</div>
+        <div class="limit-actions">
+          <button class="ns-btn accent small" use:tip={"Connect again with the rail's settings"} onclick={() => void retryConnect()}>Retry</button>
+        </div>
+      </div>
+    {/if}
     <!-- A turn paused by the usage limit (nightshift backlog 164): not
          failed — the mark says when the window opens, and one Resume
          continues the turn then (scheduled if pressed early, never into
@@ -2420,6 +2491,17 @@
   .limit-text {
     color: var(--muted);
     white-space: pre-wrap;
+  }
+  .aside-files {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+  .aside-file {
+    display: flex;
+    align-items: baseline;
+    gap: 0.4rem;
+    word-break: break-all;
   }
   .error-banner {
     color: var(--failed);

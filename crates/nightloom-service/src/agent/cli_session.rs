@@ -146,6 +146,7 @@ impl Line {
             || self.flag("isSidechain")
             || self.flag("isMeta")
             || self.flag("isCompactSummary")
+            || self.is_notification()
         {
             return false;
         }
@@ -156,6 +157,24 @@ impl Line {
                 .any(|b| b.get("type").and_then(Value::as_str) == Some("tool_result")),
             _ => false,
         }
+    }
+    /// A message the CLI wrote as a user node that he never typed
+    /// (nightshift item 252): a background subagent's completion, which
+    /// arrives mid-turn as `<task-notification>…` with an `origin` of kind
+    /// `task-notification` (CLI 2.1.x, measured on Stuart 9's file). Read
+    /// as a prompt, each one split his turn in two: the turn's later
+    /// replies fell outside it, and every turn before it was counted one
+    /// further from the newest — so Remove found no reply, or the wrong one.
+    fn is_notification(&self) -> bool {
+        if let Some(kind) = self
+            .json
+            .get("origin")
+            .and_then(|o| o.get("kind"))
+            .and_then(Value::as_str)
+        {
+            return kind != "user";
+        }
+        self.text().trim_start().starts_with("<task-notification>")
     }
     /// The block type of an assistant node's one content block.
     fn block_type(&self) -> Option<&str> {
@@ -451,22 +470,71 @@ impl CliSession {
             Target::Assistant { from_last, text } => {
                 let prompt = self.prompt_from_last(*from_last)?;
                 let wanted = text.trim();
-                self.replies_after(prompt)
+                let mut hits = self
+                    .replies_after(prompt)
                     .into_iter()
-                    .find(|g| {
-                        g.iter()
-                            .map(|&i| self.lines[i].text())
-                            .collect::<String>()
-                            .trim()
-                            == wanted
-                    })
-                    .ok_or_else(|| {
-                        CliSessionError::Locate(
-                            "that reply is not in Claude Code's history as this chat's log has it; nothing was changed".into(),
-                        )
-                    })
+                    .filter(|g| self.group_text(g).trim() == wanted);
+                match (hits.next(), hits.next()) {
+                    (Some(g), None) => Ok(g),
+                    // Two replies in the turn read the same — in a long
+                    // agentic turn, typically two rounds with no text at
+                    // all (nightshift item 252). The first used to be
+                    // taken, which could be the wrong one.
+                    (Some(_), Some(_)) => Err(CliSessionError::Locate(
+                        "more than one reply in that turn reads the same in Claude Code's history, so which one is meant is unclear; nothing was changed".into(),
+                    )),
+                    (None, _) => Err(CliSessionError::Locate(
+                        "that reply is not in Claude Code's history as this chat's log has it; nothing was changed".into(),
+                    )),
+                }
             }
         }
+    }
+
+    /// The text of a reply's nodes, joined — what [`locate`](Self::locate)
+    /// compares with the log's.
+    fn group_text(&self, group: &[usize]) -> String {
+        group.iter().map(|&i| self.lines[i].text()).collect()
+    }
+
+    /// Whether line `i` is the `tool_use` node of the call `id`.
+    fn is_call(&self, i: usize, id: &str) -> bool {
+        self.lines[i].block_type() == Some("tool_use")
+            && matches!(self.lines[i].content(), Some(Value::Array(b)) if b[0].get("id").and_then(Value::as_str) == Some(id))
+    }
+
+    /// [`locate`](Self::locate) for one block of a reply (nightshift item
+    /// 252). A call is found by its id, which both histories carry
+    /// verbatim — in a long agentic turn many rounds have no text, and a
+    /// match by text alone cannot tell them apart — and the reply it is in
+    /// must still hold the text the log gives it. A text block is located
+    /// by the reply's text, as before.
+    fn locate_block(&self, target: &Target, block: &Block) -> Result<Vec<usize>, CliSessionError> {
+        let (Target::Assistant { from_last, text }, Block::ToolUse(id)) = (target, block) else {
+            return self.locate(target);
+        };
+        let prompt = self.prompt_from_last(*from_last)?;
+        let group = self
+            .replies_after(prompt)
+            .into_iter()
+            .find(|g| g.iter().any(|&i| self.is_call(i, id)))
+            .ok_or_else(|| {
+                CliSessionError::Locate(
+                    "that tool call is not in Claude Code's history as this chat's log has it; nothing was changed".into(),
+                )
+            })?;
+        // Contains rather than equals: the CLI groups nodes by the API
+        // message they came from, and one message whose calls ran one
+        // after another is recorded in the log as a round per call — the
+        // text in the first, none in the next (measured on Stuart 9's
+        // first reply). The id already names the call; this only checks
+        // the histories have not drifted apart.
+        if !self.group_text(&group).contains(text.trim()) {
+            return Err(CliSessionError::Locate(
+                "the reply that tool call is in reads differently in Claude Code's history than in this chat's log; nothing was changed".into(),
+            ));
+        }
+        Ok(group)
     }
 
     /// A copy with the target's text replaced. A user prompt keeps its
@@ -571,10 +639,7 @@ impl CliSession {
                 let call = found
                     .iter()
                     .copied()
-                    .find(|&i| {
-                        self.lines[i].block_type() == Some("tool_use")
-                            && matches!(self.lines[i].content(), Some(Value::Array(b)) if b[0].get("id").and_then(Value::as_str) == Some(id))
-                    })
+                    .find(|&i| self.is_call(i, id))
                     .ok_or_else(|| {
                         CliSessionError::Locate(
                             "that tool call is not in Claude Code's history as this chat's log has it; nothing was changed".into(),
@@ -604,7 +669,7 @@ impl CliSession {
     /// stays. Nothing here says a marker: the CLI's own "drop outright"
     /// shape was measured to resume.
     pub fn remove_block(&self, target: &Target, block: &Block) -> Result<Self, CliSessionError> {
-        let found = self.locate(target)?;
+        let found = self.locate_block(target, block)?;
         let (going, trimmed) = self.block_nodes(&found, block)?;
         let mut copy = self.clone();
         if let (Some(i), Block::ToolUse(id)) = (trimmed, block)
@@ -628,7 +693,7 @@ impl CliSession {
         target: &Target,
         block: &Block,
     ) -> Result<Self, CliSessionError> {
-        let found = original.locate(target)?;
+        let found = original.locate_block(target, block)?;
         let (mut nodes, trimmed) = original.block_nodes(&found, block)?;
         nodes.extend(trimmed);
         Ok(self.restore_nodes(original, &nodes))
@@ -1454,6 +1519,133 @@ mod tests {
 
         let err = s.rewrite_block(&target, 2, "x").unwrap_err();
         assert!(err.to_string().contains("has 2 text blocks"), "{err}");
+    }
+
+    /// Nightshift item 252, the shape of Stuart 9's first reply: a long
+    /// agentic turn whose rounds mostly have no text, a background
+    /// subagent's `<task-notification>` arriving mid-turn as a user node,
+    /// and one API message whose two calls the log records as two rounds.
+    fn fixture_agentic() -> String {
+        let note = node(
+            "n1",
+            Some("r1"),
+            "user",
+            json!({"message": {"role": "user", "content": "<task-notification>\n<task-id>x</task-id>\n</task-notification>"},
+                   "origin": {"kind": "task-notification"}, "promptSource": "sdk"}),
+        );
+        let lines = vec![
+            user("u1", None, json!("go deep")),
+            assistant(
+                "s1",
+                "u1",
+                "msg_1",
+                json!({"type": "text", "text": "starting"}),
+            ),
+            assistant(
+                "s2",
+                "s1",
+                "msg_1",
+                json!({"type": "tool_use", "id": "t1", "name": "Agent", "input": {}}),
+            ),
+            user(
+                "r1",
+                Some("s2"),
+                json!([{"type": "tool_result", "tool_use_id": "t1", "content": "launched"}]),
+            ),
+            note,
+            assistant(
+                "s3",
+                "n1",
+                "msg_2",
+                json!({"type": "tool_use", "id": "t2", "name": "Read", "input": {}}),
+            ),
+            user(
+                "r2",
+                Some("s3"),
+                json!([{"type": "tool_result", "tool_use_id": "t2", "content": "a"}]),
+            ),
+            assistant(
+                "s4",
+                "r2",
+                "msg_3",
+                json!({"type": "tool_use", "id": "t3", "name": "Read", "input": {}}),
+            ),
+            user(
+                "r3",
+                Some("s4"),
+                json!([{"type": "tool_result", "tool_use_id": "t3", "content": "b"}]),
+            ),
+            assistant("s5", "r3", "msg_4", json!({"type": "text", "text": "then"})),
+            assistant(
+                "s6",
+                "s5",
+                "msg_4",
+                json!({"type": "tool_use", "id": "t4", "name": "Read", "input": {}}),
+            ),
+            user(
+                "r4",
+                Some("s6"),
+                json!([{"type": "tool_result", "tool_use_id": "t4", "content": "c"}]),
+            ),
+            assistant(
+                "s7",
+                "r4",
+                "msg_4",
+                json!({"type": "tool_use", "id": "t5", "name": "Read", "input": {}}),
+            ),
+            user(
+                "r5",
+                Some("s7"),
+                json!([{"type": "tool_result", "tool_use_id": "t5", "content": "d"}]),
+            ),
+            assistant("s8", "r5", "msg_5", json!({"type": "text", "text": "done"})),
+        ];
+        lines.join("\n") + "\n"
+    }
+
+    #[test]
+    fn a_call_in_a_long_agentic_reply_is_removed_by_its_id() {
+        let cli = CliSession::parse(&fixture_agentic()).unwrap();
+        // The notification is not a prompt he typed.
+        assert_eq!(cli.prompt_count(), 1);
+        let gone = |text: &str, id: &str| -> Vec<Value> {
+            let target = Target::Assistant {
+                from_last: 0,
+                text: text.into(),
+            };
+            let out = cli
+                .remove_block(&target, &Block::ToolUse(id.into()))
+                .unwrap()
+                .render_as("b");
+            parsed(&out)
+        };
+        // After the notification, and in a round with no text: two such
+        // rounds (t2, t3) read the same, so only the id tells them apart.
+        let lines = gone("", "t3");
+        assert!(lines.iter().all(|o| o["uuid"] != "s4" && o["uuid"] != "r3"));
+        assert!(lines.iter().any(|o| o["uuid"] == "s3"), "t2 stays");
+        // The second call of one message, which the log holds as a round
+        // of its own with no text.
+        let lines = gone("", "t5");
+        assert!(lines.iter().all(|o| o["uuid"] != "s7" && o["uuid"] != "r5"));
+        assert!(lines.iter().any(|o| o["uuid"] == "s6"), "t4 stays");
+        // A round whose text is not in the call's reply is refused.
+        let target = Target::Assistant {
+            from_last: 0,
+            text: "something else".into(),
+        };
+        assert!(
+            cli.remove_block(&target, &Block::ToolUse("t2".into()))
+                .is_err()
+        );
+        // By text alone, two text-less rounds are ambiguous: refused, not
+        // the first one taken.
+        let blank = Target::Assistant {
+            from_last: 0,
+            text: String::new(),
+        };
+        let err = cli.remove(&blank).unwrap_err().to_string();
+        assert!(err.contains("more than one reply"), "{err}");
     }
 
     /// A call goes with the node holding its result, the reply's text and
