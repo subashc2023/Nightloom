@@ -12,6 +12,9 @@ use nightloom_core::{
     Thinking, WireView,
 };
 use nightloom_service::agent::cli_session::{self, Block, CliSession, Target};
+use nightloom_service::agent_turn::{
+    AgentTurnEnd, AgentTurnRun, ApprovalPrompt, ProjectGrant, TurnEnv, run_agent_turn,
+};
 use nightloom_service::approval::{Approver, AutoApprove, Decision, PendingCall};
 use nightloom_service::credentials::{self, KeySource};
 use nightloom_service::import;
@@ -20,8 +23,8 @@ use nightloom_service::store::{self, SessionMatch, SessionSummary};
 use nightloom_service::tools::{ChatDir, ChatDirs, Reviewer, Root, SearchBackend};
 use nightloom_service::{
     AgentSpec, Chat, ClaudeCodeAgent, CompactOutcome, KnowledgeContext, PassSpec, Price,
-    ProjectContext, PromptConfig, ProviderKind, Recorder, TurnEvent, TurnInput, TurnOutcome,
-    carry_transcript, resolve_binary, searched_locations,
+    ProjectContext, PromptConfig, ProviderKind, TurnEvent, TurnInput, TurnOutcome, resolve_binary,
+    searched_locations,
 };
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
@@ -3067,7 +3070,6 @@ async fn send_agent(
     // keeps his words marked `spoken`; the CLI gets them with the note.
     spoken: Option<bool>,
 ) -> Result<AgentTurn, String> {
-    use nightloom_service::council;
     if let Some(c) = &council {
         c.validate().map_err(|e| e.to_string())?;
     }
@@ -3126,18 +3128,13 @@ async fn send_agent(
             )
             .await;
     }
-    // Sampled before the first append of the turn. See `send`: an agent turn
-    // records into the same log through `Recorder`, so it can seal it the same
-    // way, and this window has no stderr for the notice to go to either.
-    let sealed_before = session.write_failure().is_some();
-    let mut input = TurnInput {
+    // (Whether the log was sealed before the turn is sampled in
+    // `run_agent_turn`, before its first append.)
+    let input = TurnInput {
         text,
         images: images.unwrap_or_default(),
         documents: documents.unwrap_or_default(),
     };
-    // The log keeps the message as typed, whatever the wire carries.
-    let typed = input.text.clone();
-
     let cancel = CancellationToken::new();
     *state.cancel.lock().unwrap() = cancel.clone();
     // Stop by chat (backlog 159, A2); the entry goes when the turn does.
@@ -3179,91 +3176,35 @@ async fn send_agent(
         sync_checkpoint(session, agent, dir);
     }
 
-    // A council turn (nightshift backlog 149, 2026-09-17;
-    // `nightloom_service::council`): the seats run first, in parallel,
-    // each a fork of this chat's CLI session under its own model, their
-    // streams and their standing to the window as their Running-tasks
-    // rows — the recorder sees none of it. Then the chair
-    // is *this* turn: the chat's own model, warm, over the answers
-    // anonymised and shuffled, and its reply is the chat's reply. The
-    // seats' answers and the record go into the chair's message as folded
-    // blocks once it has landed. If no seat answered, the turn goes as an
-    // ordinary one and says so.
-    //
-    // The typed message is on the log *before* the seats run (nightshift
-    // backlog 167): they take minutes, and until it was recorded a quit
-    // or a crash lost it and a reopened chat showed nothing. The replay
-    // an ephemeral chat carries and the kind switch's note are asked
-    // first, as before — neither needs the seats — and put on the wire
-    // after them, around whatever the chair is sent.
-    let carry_head = (session.mode() == ChatMode::Ephemeral).then(|| carry_transcript(session, ""));
-    let switch_note = session.kind_switch_note();
-    let spoken = spoken == Some(true);
-    session.record_user_message(
-        typed.clone(),
-        input.images.clone(),
-        input.documents.clone(),
-        spoken,
-    );
-    let mut council_run: Option<(council::CouncilRequest, Vec<council::SeatResult>)> = None;
-    let mut council_notices: Vec<String> = Vec::new();
-    if let Some(mut request) = council {
-        if request.areas.is_empty() {
-            request.areas = council::areas_for_next(session);
-        }
-        let seed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(1);
-        // A seat's stream goes out as a subagent's does (backlog 169):
-        // keyed by its row, so the row's transcript fills — its searches,
-        // their results, its words — and, with no parent call in the live
-        // message, the chair's reply draws none of it. (It was a
-        // `council-event` nothing listened to.)
-        let mut on_seat = |seat: usize, e: TurnEvent| {
-            let e = if matches!(e, TurnEvent::SubagentStatus { .. }) {
-                e
-            } else {
-                TurnEvent::Subagent {
-                    parent_tool_use_id: council::seat_key(seed, seat),
-                    event: Box::new(e),
-                }
-            };
-            let _ = app.emit("turn-event", ChatEvent::new(&chat_id, &e));
-        };
-        let results = council::run_seats(
+    // The turn itself (nightshift item 268, step 1): the typed message on
+    // the log, the council's seats, the stream rendered and recorded, the
+    // Ask position's round trip and the log's end of turn now live in
+    // `nightloom_service::agent_turn::run_agent_turn`, which the headless
+    // `serve` runs too. What stays here is what only the window has: its
+    // events, the project registry it holds, a chat name, the checkpoint,
+    // and the rail's `AgentTurn`.
+    let env = DesktopTurnEnv {
+        app: &app,
+        state: &state,
+        turn_project,
+    };
+    let end = run_agent_turn(
+        AgentTurnRun {
             agent,
-            agent.spec(),
-            Some(&*session),
-            &request,
-            &typed,
-            seed,
-            &cancel,
-            &mut on_seat,
-        )
-        .await;
-        // Stopped during the seats (backlog 167): the turn ends here, as
-        // Stop ends any turn — no chair is spawned on a cancelled token.
-        // The log gets a reply that says so, with the seats' blocks as far
-        // as they got.
-        if cancel.is_cancelled() {
-            let model = last_model(session)
-                .or_else(|| agent.resolved_model().map(String::from))
-                .or_else(|| agent.spec().model.clone())
-                .unwrap_or_else(|| AGENT.into());
-            let mut recorder = Recorder::new(session, model);
-            recorder.push_block(nightloom_core::ContentBlock::Text {
-                text: council::STOPPED_REPLY.into(),
-            });
-            for r in &results {
-                recorder.push_block(nightloom_core::ContentBlock::Text {
-                    text: council::seat_block(r),
-                });
-            }
-            recorder.finish(Some("end_turn"));
-            if !sealed_before && let Some(failure) = session.write_failure() {
-                let _ = app.emit("turn-notice", failure.summary());
-            }
+            session,
+            chat_id: &chat_id,
+            input,
+            spoken: spoken == Some(true),
+            council,
+            cancel: &cancel,
+            ask_dir: ask_dir.clone(),
+            ask: &state.ask,
+        },
+        &env,
+    )
+    .await?;
+    let (outcome, granted_any, context_limit) = match end {
+        AgentTurnEnd::StoppedInCouncil => {
             return Ok(AgentTurn {
                 model: None,
                 context_limit: None,
@@ -3277,404 +3218,118 @@ async fn send_agent(
                 folders: None,
             });
         }
-        let answered = results.iter().filter(|r| r.error.is_none()).count();
-        for r in results.iter().filter(|r| r.error.is_some()) {
-            council_notices.push(format!(
-                "council seat {} ({}) did not answer: {}",
-                r.index + 1,
-                r.seat.model,
-                r.error.as_deref().unwrap_or("")
-            ));
-        }
-        if answered == 0 {
-            council_notices.push("no council seat answered; answered as an ordinary turn".into());
-        } else {
-            let answers = council::anonymised(&results);
-            input.text = council::chair_prompt(request.mode, &typed, &answers, &request.areas);
-            council_run = Some((request, results));
-        }
-        // The chair (or the ordinary turn standing in for it) is this
-        // message, so it continues the seats' budget ledger; nothing else
-        // does (backlog 187).
-        agent.arm_chair();
-    }
-    // An ephemeral chat's CLI session cannot be resumed (measured: see
-    // `AgentSpec::no_session_persistence`), so what the CLI is sent from the
-    // second turn on is the conversation Nightloom holds in memory, rendered
-    // back in front of the message — rendered *before* this turn's message
-    // is recorded (above, since backlog 167), so it holds everything up to
-    // it and not the turn itself. `carry_transcript(session, "")` is that
-    // replay's head, exactly what it would put in front of any text.
-    // The log keeps the text as typed; only the wire carries the replay.
-    // The kind switch's note (nightshift backlog 144), asked before the
-    // turn is recorded for the same reason the replay is: it is due on the
-    // first message after the switch and on no other. The log keeps the
-    // text as typed; the note is on the wire only, where the API engine's
-    // projection puts the same one.
-    // A spoken turn's "answer for the ear" note (`~/.nightloom/voice.md`)
-    // rides the wire after his words — or the chair's prompt — never the log.
-    if spoken {
-        input.text = nightloom_service::voice::for_the_ear(&input.text);
-    }
-    if let Some(head) = carry_head {
-        input.text = format!("{head}{}", input.text);
-    }
-    if let Some(note) = switch_note {
-        input.text = format!("{note}\n\n{}", input.text);
-    }
-    // (The ask directory was pointed above, before the council's seats.)
-    // The `context_status` file describes this chat before the turn, not
-    // whichever chat wrote it last (review 2026-09-17 FC-d, backlog 134):
-    // its own newest reading from the log, or no file at all for a chat
-    // with no completed turn. Best-effort, as the end-of-turn write is.
-    if let Some(config) = project::config_dir() {
-        let model = last_model(session);
-        let window = model
-            .as_deref()
-            .and_then(|m| nightloom_service::context_limit(ProviderKind::Anthropic, m));
-        if let Err(e) = nightloom_service::mcp_server::refresh_context_status(
-            &config,
-            &session.id,
-            model,
-            window,
-            session.events(),
-        ) {
-            let _ = app.emit("turn-notice", format!("context status not refreshed: {e}"));
-        }
-    }
-
-    // (The cancel token is made above, before the council's seats, so a
-    // Stop reaches them too.)
-
-    // Seeded from the last turn rather than from the rail, because what the
-    // rail holds may be an alias. `sonnet` is not in the limits or pricing
-    // tables and never will be — only the CLI can say which snapshot it
-    // means today, and it says so on its `init` line, which arrives before
-    // any event and so after this recorder has to exist. The previous turn
-    // already asked that question and the log kept the answer.
-    //
-    // The agent remembers it too, which covers a *new* chat on a connection
-    // that has already run one. What is left is the first turn after a
-    // connect, whose messages carry the alias up to the one that closes the
-    // turn — every message after that, in every later turn, carries the id.
-    let seed = last_model(session)
-        .or_else(|| agent.resolved_model().map(String::from))
-        .or_else(|| agent.spec().model.clone())
-        .unwrap_or_else(|| AGENT.into());
-    // Rendered live and recorded in one pass. Two passes over the same
-    // stream would be two chances for the window and the log to disagree
-    // about what happened.
-    let mut recorder = Recorder::new(session, seed);
-    let mut on_event = |e: TurnEvent| {
-        let _ = app.emit("turn-event", ChatEvent::new(&chat_id, &e));
-        recorder.push(&e);
+        AgentTurnEnd::Done {
+            outcome,
+            granted_any,
+            context_limit,
+        } => (*outcome, granted_any, context_limit),
     };
-    let mut result = agent.run_turn(input, &cancel, &mut on_event).await;
-
-    // The Ask position's round trip (2026-09-16, nightshift backlog 084).
-    // One Nightloom turn spans every CLI process it takes: the process
-    // that deferred is gone, the call is open in `recorder`, the window is
-    // asked through the same `tool-approval` event the API engine uses,
-    // and the answer — written to the chat's ask directory for the hook to
-    // read — is followed by a `--resume` that runs or refuses the call and
-    // carries on, into this same recorder, until a process ends without
-    // deferring. Kept as one turn rather than ended at the deferral so the
-    // log's pairing holds: the deferred `tool_use` gets its real result
-    // from the resume, not an orphan marker and then a duplicate.
-    //
-    // The folder entrance (nightshift backlog 143, pass 2): a deferred call
-    // whose path is outside every tree the chat may see — the working
-    // directory and each `--add-dir` — is shown with that folder, and the
-    // card's *Allow, and let this chat · the project see it* comes back as
-    // a grant on the answer. The grant reaches the process at once
-    // (`grant_dir`: the resume that carries the allow already has the
-    // `--add-dir`, measured 2026-09-17); who keeps it is settled here for
-    // the project (the registry is not the turn's to hold, so it is
-    // written now) and after the turn for the chat (the log is).
-    let mut granted_to_chat: Vec<PathBuf> = Vec::new();
-    let mut granted_any = false;
-    while let Ok(outcome) = &result
-        && let Some(call) = outcome.deferred.clone()
-    {
-        let Some(dir) = ask_dir.clone() else {
-            break;
-        };
-        let session_id = outcome.session_id.clone();
-        let rx = state.ask.wait(&call.id);
-        let outside = nightloom_service::agent::outside_folder(&call.input, &agent_trees(agent));
-        let _ = app.emit(
-            "tool-approval",
-            ApprovalRequest {
-                id: &call.id,
-                name: &call.name,
-                input: &call.input,
-                effect: nightloom_core::Effect::Mutating,
-                outside,
-                chat: Some(&chat_id),
-            },
-        );
-        let answer = tokio::select! {
-            _ = cancel.cancelled() => None,
-            a = rx => a.ok(),
-        };
-        let ask = nightloom_service::agent::AskDir::new(dir);
-        let Some(answer) = answer else {
-            // Stopped, or the window let go of the prompt. The call stays
-            // pending in the CLI's session on disk, and a later "allow for
-            // this chat" on its tool would run it unasked — so it is
-            // refused on disk now, for the next turn's hook to deliver
-            // (measured: `m084-9-deny-stale.jsonl`). The recorder closes it
-            // with the orphan marker at `finish`.
-            let _ = ask.write(
-                &call,
-                &nightloom_service::agent::Answer::Deny {
-                    reason: "the turn was stopped before this was approved".into(),
-                },
-            );
-            // The next turn opens with that refusal (review F1, 2026-09-16):
-            // the agent seeds its translator so the result carries the
-            // call's name, and the recorder leaves it out of the log,
-            // where this turn's orphan marker already answers the call.
-            agent.note_refused(session_id.as_deref(), call.clone());
-            // This call only (backlog 159, A2): another chat's prompt may
-            // be waiting too. ~~`state.ask.abandon_all()`~~.
-            state.ask.abandon(&call.id);
-            if let Ok(o) = &mut result {
-                o.notices
-                    .push("stopped while waiting for your answer".into());
-                o.deferred = None;
+    // Re-borrowed: the run took the guards' references for its length.
+    let session: &mut Session = &mut held;
+    let agent = agent_guard
+        .as_mut()
+        .ok_or_else(|| "not connected".to_string())?;
+    // A name for the chat (nightshift backlog 209): spawned, never
+    // awaited — the turn returns as it would without it.
+    if !outcome.is_error && !cancel.is_cancelled() {
+        chat_name::after_turn(&app, session, agent.spec());
+    }
+    // The checkpoint again, now that the CLI's file holds this turn
+    // (backlog 104): the first exchange sets it, and its uuid resolves
+    // here rather than at the next send, so the transcript's marker shows
+    // at once.
+    if let Some(dir) = &ask_dir {
+        sync_checkpoint(session, agent, dir);
+    }
+    // The reads the CLI refused outside the trees (backlog 143, pass 2):
+    // each folder once, for the rail to offer the grant after the fact.
+    let trees = agent_trees(agent);
+    let mut refused: Vec<String> = Vec::new();
+    for d in &outcome.denied {
+        if let Some(dir) = nightloom_service::agent::outside_folder(&d.tool_input, &trees) {
+            let shown = dir.to_string_lossy().into_owned();
+            if !refused.contains(&shown) {
+                refused.push(shown);
             }
-            break;
-        };
-        if let Err(e) = ask.write(&call, &answer) {
-            if let Ok(o) = &mut result {
-                o.notices.push(format!("could not record the answer: {e}"));
-                o.deferred = None;
-            }
-            break;
-        }
-        // The resume continues the session that deferred; adopting it here
-        // is what `follow_on` would do after the turn, brought forward.
-        if let Some(id) = &session_id {
-            agent.set_resume(Some(id.clone()));
-        }
-        if let nightloom_service::agent::Answer::Allow {
-            grant: Some(grant), ..
-        } = &answer
-        {
-            use nightloom_service::agent::GrantScope;
-            agent.grant_dir(grant.dir.clone());
-            granted_any = true;
-            match grant.scope {
-                GrantScope::Chat => granted_to_chat.push(grant.dir.clone()),
-                GrantScope::Project => {
-                    let mut guard = state.workspaces.lock().await;
-                    // The turn's own project (A4), which may no longer be
-                    // the open one.
-                    let written = turn_project
-                        .as_deref()
-                        .and_then(|id| guard.registry.find(id).cloned())
-                        .map(|p| {
-                            let mut list = p.extra_folders.clone();
-                            list.push(grant.dir.clone());
-                            guard.registry.set_extra_folders(&p.id, list)
-                        });
-                    match written {
-                        Some(Ok(project)) => {
-                            if guard.active.as_ref().is_some_and(|a| a.id == project.id) {
-                                guard.active = Some(project);
-                            }
-                        }
-                        Some(Err(e)) => {
-                            let _ = app.emit("turn-notice", format!("folder not granted: {e}"));
-                        }
-                        None => {
-                            // No project to keep it: the chat keeps it
-                            // instead, which is the nearest thing to what
-                            // was asked and still on a log.
-                            granted_to_chat.push(grant.dir.clone());
-                        }
-                    }
-                }
-            }
-        }
-        // An approved plan (backlog 085): the card's pick says where the
-        // chat goes next, and the agent shapes this one resume for it —
-        // `plan` mode still for Ask, `auto` with the narrow hook for Auto
-        // — then takes the position once the resume has run. The rail
-        // flips its own switch when it sends the answer (`resolveApproval`).
-        let plan_then = match &answer {
-            nightloom_service::agent::Answer::Allow { plan_then, .. }
-                if call.name == nightloom_service::agent::ask::EXIT_PLAN_TOOL =>
-            {
-                *plan_then
-            }
-            _ => None,
-        };
-        if let Some(then) = plan_then {
-            agent.plan_approved(then);
-        }
-        result = agent.resume_deferred(&call, &cancel, &mut on_event).await;
-        if plan_then.is_some() {
-            agent.plan_exited();
         }
     }
+    // The rail's list, refreshed, when a grant landed this turn — it
+    // otherwise reads it at connect, and no reconnect happened.
+    let folders = if granted_any {
+        let active = state.active().await;
+        Some(
+            extra_folders(active.as_ref(), Some(&*session))
+                .iter()
+                .map(|(path, source)| FolderInfo {
+                    path: path.to_string_lossy().into_owned(),
+                    source: (*source).into(),
+                    alias: None,
+                })
+                .collect(),
+        )
+    } else {
+        None
+    };
+    Ok(AgentTurn {
+        model: outcome.model,
+        context_limit,
+        cost_usd: outcome.cost_usd,
+        rounds: outcome.rounds,
+        plan: outcome.rate_limit,
+        limit: outcome.limit,
+        notices: outcome.notices,
+        is_error: outcome.is_error,
+        refused,
+        folders,
+    })
+}
 
-    // The council's blocks (backlog 149), whichever way the chair ended:
-    // each seat's answer under its label with the map revealed, then the
-    // record — the overlap, the areas for next time — as the last block of
-    // the chair's message. The chair's own text names the gaps that become
-    // those areas; a chair that failed leaves none.
-    if let Some((request, results)) = &council_run {
-        for r in results {
-            recorder.push_block(nightloom_core::ContentBlock::Text {
-                text: council::seat_block(r),
+/// What [`run_agent_turn`] needs of the window (item 268, step 1): its
+/// events, and the project registry a folder granted "for the project"
+/// is kept in — the turn's own project (backlog 159, A4), which may no
+/// longer be the open one.
+struct DesktopTurnEnv<'a> {
+    app: &'a AppHandle,
+    state: &'a AppState,
+    turn_project: Option<String>,
+}
+
+#[async_trait::async_trait]
+impl TurnEnv for DesktopTurnEnv<'_> {
+    fn event(&self, chat: &str, event: &TurnEvent) {
+        let _ = self.app.emit("turn-event", ChatEvent::new(chat, event));
+    }
+
+    fn notice(&self, text: String) {
+        let _ = self.app.emit("turn-notice", text);
+    }
+
+    fn approval(&self, prompt: &ApprovalPrompt<'_>) {
+        let _ = self.app.emit("tool-approval", prompt);
+    }
+
+    async fn grant_to_project(&self, dir: &Path) -> ProjectGrant {
+        let mut guard = self.state.workspaces.lock().await;
+        let written = self
+            .turn_project
+            .as_deref()
+            .and_then(|id| guard.registry.find(id).cloned())
+            .map(|p| {
+                let mut list = p.extra_folders.clone();
+                list.push(dir.to_path_buf());
+                guard.registry.set_extra_folders(&p.id, list)
             });
-        }
-        let chair_text = result.as_ref().map(|o| o.text.as_str()).unwrap_or("");
-        let record = council::CouncilRecord::new(request.mode, results, &request.areas, chair_text);
-        recorder.push_block(nightloom_core::ContentBlock::Text {
-            text: council::council_block(&record),
-        });
-    }
-    if let Ok(o) = &mut result {
-        o.notices.extend(council_notices);
-    }
-
-    match result {
-        Ok(outcome) => {
-            if let Some(model) = &outcome.model {
-                recorder.set_model(model.clone());
-            }
-            // The reason rides in the stop reason (backlog 202), so a
-            // reloaded chat still says why the reply stopped.
-            let reason = match (&outcome.api_error, outcome.is_error) {
-                (Some(e), true) => format!("error: {e}"),
-                (None, true) => "error".to_string(),
-                (_, false) => "end_turn".to_string(),
-            };
-            recorder.finish(Some(&reason));
-            // Written after the turn rather than before it: an id from a run
-            // that then failed to start is a handle to nothing, and the next
-            // turn resuming it would fail for a reason nobody could see.
-            if let Some(id) = &outcome.session_id {
-                session.record_agent_session(AGENT, id);
-            }
-            // The card's grants to the chat (backlog 143, pass 2), on the
-            // log now that the turn has landed — the whole list, as
-            // `set_chat_folders` writes it, so a reload reads the same.
-            if !granted_to_chat.is_empty() {
-                let mut list: Vec<PathBuf> = session.folders().to_vec();
-                list.append(&mut granted_to_chat);
-                session.record_folders(list);
-            }
-            if !sealed_before && let Some(failure) = session.write_failure() {
-                let _ = app.emit("turn-notice", failure.summary());
-            }
-            agent.follow_on(&outcome);
-            // A name for the chat (nightshift backlog 209): spawned, never
-            // awaited — the turn returns as it would without it.
-            if !outcome.is_error && !cancel.is_cancelled() {
-                chat_name::after_turn(&app, session, agent.spec());
-            }
-            // The checkpoint again, now that the CLI's file holds this turn
-            // (backlog 104): the first exchange sets it, and its uuid
-            // resolves here rather than at the next send, so the
-            // transcript's marker shows at once.
-            if let Some(dir) = &ask_dir {
-                sync_checkpoint(session, agent, dir);
-            }
-            // The reads the CLI refused outside the trees (backlog 143,
-            // pass 2): the hook never sees a `Read`, so the prompt host
-            // denied it and the `result` line named it. Each folder once,
-            // for the rail to offer the grant after the fact; a call the
-            // card already granted this turn is not offered again.
-            let trees = agent_trees(agent);
-            let mut refused: Vec<String> = Vec::new();
-            for d in &outcome.denied {
-                if let Some(dir) = nightloom_service::agent::outside_folder(&d.tool_input, &trees) {
-                    let shown = dir.to_string_lossy().into_owned();
-                    if !refused.contains(&shown) {
-                        refused.push(shown);
-                    }
+        match written {
+            Some(Ok(project)) => {
+                if guard.active.as_ref().is_some_and(|a| a.id == project.id) {
+                    guard.active = Some(project);
                 }
+                ProjectGrant::Kept
             }
-            // The rail's list, refreshed, when a grant landed this turn —
-            // it otherwise reads it at connect, and no reconnect happened.
-            let folders = if granted_any {
-                let active = state.active().await;
-                Some(
-                    extra_folders(active.as_ref(), Some(&*session))
-                        .iter()
-                        .map(|(path, source)| FolderInfo {
-                            path: path.to_string_lossy().into_owned(),
-                            source: (*source).into(),
-                            alias: None,
-                        })
-                        .collect(),
-                )
-            } else {
-                None
-            };
-            let context_limit = outcome
-                .model
-                .as_deref()
-                .and_then(|m| nightloom_service::context_limit(ProviderKind::Anthropic, m));
-            // What the model may ask about its own window next turn
-            // (nightshift backlog 073): the newest round's prompt plus
-            // output — the gauge's figure — against the window, written
-            // to the config dir for the MCP server's `context_status`.
-            // Best-effort: a status file that failed to write is a notice,
-            // not a failed turn.
-            if let Some(config) = project::config_dir() {
-                let used = session
-                    .events()
-                    .iter()
-                    .rev()
-                    .find_map(|e| match e {
-                        nightloom_core::SessionEvent::AssistantMessage { usage, .. } => {
-                            Some(usage.input_tokens + usage.output_tokens)
-                        }
-                        _ => None,
-                    })
-                    .unwrap_or(0);
-                let turns = session
-                    .events()
-                    .iter()
-                    .filter(|e| matches!(e, nightloom_core::SessionEvent::UserMessage { .. }))
-                    .count() as u32;
-                let status = nightloom_service::mcp_server::ContextStatus::new(
-                    session.id.clone(),
-                    outcome.model.clone(),
-                    used,
-                    context_limit,
-                    turns,
-                );
-                if let Err(e) =
-                    nightloom_service::mcp_server::write_context_status(&config, &status)
-                {
-                    let _ = app.emit("turn-notice", format!("context status not written: {e}"));
-                }
-            }
-            Ok(AgentTurn {
-                model: outcome.model,
-                context_limit,
-                cost_usd: outcome.cost_usd,
-                rounds: outcome.rounds,
-                plan: outcome.rate_limit,
-                limit: outcome.limit,
-                notices: outcome.notices,
-                is_error: outcome.is_error,
-                refused,
-                folders,
-            })
-        }
-        Err(e) => {
-            // Whatever streamed before the failure is still what happened,
-            // and the pairing guarantee is exactly for this: a turn killed
-            // mid-round leaves calls open, and `finish` closes them.
-            recorder.finish(Some("error"));
-            Err(e.to_string())
+            Some(Err(e)) => ProjectGrant::Failed(e),
+            // No project to keep it: the chat keeps it instead, which is
+            // the nearest thing to what was asked and still on a log.
+            None => ProjectGrant::NoProject,
         }
     }
 }
@@ -7666,6 +7321,23 @@ fn mac_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
     let _ = app.emit("menu", event.id().0.as_str());
 }
 
+/// Say why the app will not open (the home is held by `nightloom serve`)
+/// and exit: an alert on macOS, since there is no window yet to put it in,
+/// and stderr everywhere.
+fn refuse_to_open(why: &str) {
+    eprintln!("nightloom-desktop: {why}");
+    #[cfg(target_os = "macos")]
+    {
+        let script = format!(
+            "display alert \"Nightloom cannot open\" message {:?}",
+            why.replace('"', "'")
+        );
+        let _ = std::process::Command::new("osascript")
+            .args(["-e", &script])
+            .status();
+    }
+}
+
 fn main() {
     // The startup log's clock (item 220): every line's `+N ms` counts from here.
     startup_log::mark_launch();
@@ -7709,6 +7381,24 @@ fn main() {
         }
         return;
     }
+
+    // The one-holder rule (nightshift item 268, step 1): the desktop and
+    // `nightloom serve` never both hold one Nightloom home's chats. Each
+    // takes `<config>/holder.lock` for its life; while `serve` holds it
+    // the app says so and does not open. Kept in a `let` for the whole of
+    // `main`, so the lock lives as long as the app.
+    let _holder = match project::config_dir() {
+        Some(config) => {
+            match nightloom_service::serve::HomeLock::take(&config, "the Nightloom desktop app") {
+                Ok(lock) => Some(lock),
+                Err(e) => {
+                    refuse_to_open(&e);
+                    return;
+                }
+            }
+        }
+        None => None,
+    };
 
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default()
