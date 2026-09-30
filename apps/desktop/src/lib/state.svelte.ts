@@ -2150,11 +2150,18 @@ let turnTyped = true;
 /** Whether the running turn's message was typed here, for its first
  *  turn's late start of the poll (`turn-chat`). */
 let budgetTyped = true;
-/** `send` for a message he did not type here (the phone, a resume). */
-async function sendUntyped(text: string): Promise<void> {
+/** `send` for a message he did not type here (the phone, a resume) —
+ *  with the phone's photos, documents or council when it sent them
+ *  (item 246, 1B's patch note 1), so such a turn is not his typed input. */
+async function sendUntyped(
+  text: string,
+  images: ImageInput[] = [],
+  documents: DocumentInput[] = [],
+  council: CouncilRequest | null = null,
+): Promise<void> {
   turnTyped = false;
   try {
-    await send(text);
+    await send(text, images, documents, council);
   } finally {
     turnTyped = true;
   }
@@ -5795,7 +5802,14 @@ export async function deleteSession(id: string): Promise<void> {
  * chat that is not open: that queue drained only when he opened the chat
  * and pressed Send next, which the phone could not see.
  */
-export async function remoteSend(chat: string | null, text: string): Promise<"sent" | "queued"> {
+export async function remoteSend(
+  chat: string | null,
+  text: string,
+  images: ImageInput[] = [],
+  documents: DocumentInput[] = [],
+  council: CouncilRequest | null = null,
+): Promise<"sent" | "queued"> {
+  const extras = images.length > 0 || documents.length > 0 || council !== null;
   if (chat && chat !== app.activeSessionId) {
     if (app.busy) throw new Error("the desktop is busy in another chat — held on the phone until it is free");
     await openSession(chat);
@@ -5804,13 +5818,16 @@ export async function remoteSend(chat: string | null, text: string): Promise<"se
     }
   }
   if (app.busy || providerElsewhere()) {
+    // The Mac's queue holds `Attachment`s, not the phone's `ImageInput`s:
+    // a message with files or a council stays on the phone until the turn ends.
+    if (extras) throw new Error("this chat is running a turn on the Mac — the message and its files are held on the phone until it ends");
     enqueueMessage(draftKey(app.activeSessionId, app.project?.id, app.pendingMode), text, []);
     return "queued";
   }
   if (!app.connection) throw new Error("no engine is connected on the desktop — connect one there first");
   // Answered before the turn, not after: `send` resolves at the turn's
   // end, and the phone is waiting to hear the message was taken.
-  void sendUntyped(text);
+  void sendUntyped(text, images, documents, council);
   return "sent";
 }
 

@@ -55,7 +55,6 @@ import {
   rewindTo,
   saveEdit,
   saveReplyEdit,
-  send,
   setCheckpoint,
   setCouncilFor,
   setPromptLayer,
@@ -528,13 +527,10 @@ export async function runSend(p: RemoteSendPayload): Promise<"sent" | "queued"> 
   const images = p.images ?? [];
   const documents = p.documents ?? [];
   const council = p.council ?? null;
-  if (images.length === 0 && documents.length === 0 && !council) return remoteSend(p.chat, p.text);
-  if (p.chat) await ensureChat(p.chat, null);
-  if (app.busy) throw new Error("this chat is running a turn on the Mac — the message and its files are held on the phone until it ends");
-  if (!app.connection) throw new Error("no engine is connected on the desktop — connect one there first");
-  if (council && app.connection.engine !== "claude-code") throw new Error("a council runs on the Claude Code engine — switch the Mac to it first");
-  void send(p.text, images, documents, council);
-  return "sent";
+  if (council && app.connection && app.connection.engine !== "claude-code") throw new Error("a council runs on the Claude Code engine — switch the Mac to it first");
+  // Through `remoteSend` with its files (1B's patch note 1): the turn is
+  // not his typed input, and a busy chat refuses rather than queues.
+  return remoteSend(p.chat, p.text, images, documents, council);
 }
 
 // ---- the listeners ----

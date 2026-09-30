@@ -303,6 +303,10 @@ describe("remote-send", () => {
     // would, and says so.
     await expect(remoteSend("y", "for y")).resolves.toBe("queued");
     expect(readDraft("y").queue.map((q) => q.text)).toEqual(["for y"]);
+    // A photo is held on the phone, not queued: the Mac's queue holds
+    // attachments, not the phone's images (item 246, 1B's patch note 1).
+    await expect(remoteSend("y", "look", [{ media_type: "image/png", data: "AA" }])).rejects.toThrow(/held on the phone/);
+    expect(readDraft("y").queue.map((q) => q.text)).toEqual(["for y"]);
     app.busy = false;
     // Idle, a chat that will not open is refused with the reason.
     vi.mocked(api.openSession).mockRejectedValueOnce("no such chat");

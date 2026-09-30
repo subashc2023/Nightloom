@@ -95,8 +95,8 @@ vi.mock("./state.svelte", () => {
     refreshProjects: async () => calls.push("refreshProjects"),
     refreshSessions: async () => {},
     remoteNewChat: async () => "sent",
-    remoteSend: async (chat: string | null, text: string) => {
-      calls.push(`remoteSend ${chat} ${text}`);
+    remoteSend: async (chat: string | null, text: string, images: unknown[] = []) => {
+      calls.push(images.length ? `remoteSend ${chat} ${text} ${images.length}` : `remoteSend ${chat} ${text}`);
       return "sent";
     },
     removeBlock: async () => true,
@@ -265,16 +265,12 @@ describe("a message from the phone", () => {
     expect(calls).toEqual(["remoteSend c1 hello"]);
   });
 
-  it("a photo goes with the message through send", async () => {
+  it("a photo goes with the message through the phone's own send path", async () => {
+    // Through `remoteSend` (1B's patch note 1), so the turn is not his typed
+    // input; its refusal while the chat runs is tested in state.tabs.test.ts.
     await runSend({ id: 1, chat: "c1", text: "look", images: [{ media_type: "image/jpeg", data: "AA" }] });
-    expect(calls).toContain("send look 1");
-  });
-
-  it("a photo is held on the phone, not queued, while the chat runs", async () => {
-    fake.app.busy = true;
-    await expect(runSend({ id: 1, chat: "c1", text: "look", images: [{ media_type: "image/png", data: "AA" }] })).rejects.toThrow(
-      /held on the phone/,
-    );
+    expect(calls).toContain("remoteSend c1 look 1");
+    expect(calls).not.toContain("send look 1");
   });
 
   it("into another project's chat opens that project first", async () => {
