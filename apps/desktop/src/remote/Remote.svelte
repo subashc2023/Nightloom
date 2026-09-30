@@ -25,7 +25,11 @@
     cardKind,
     draftKey,
     emptyTurn,
+    fitSize,
     foldTurnEvent,
+    hasFeature,
+    imageFromDataUrl,
+    rowTarget,
     loadDraft,
     loadQueue,
     loadToken,
@@ -37,8 +41,15 @@
     shortWhen,
     tokenFromHash,
     transcriptRows,
+    type ChatAction,
     type ChatRow,
     type LiveTurn,
+    type Rail,
+    type RailPatch,
+    type Row,
+    type Running,
+    type TextPart,
+    type Usage,
     type ProjectRow,
     type Queued,
     type RemoteState,
@@ -46,7 +57,11 @@
   } from "./client";
   import { renderMarkdown } from "../lib/markdown";
   import { arrive, launch, reducedMotion } from "../lib/sendMotion";
-  import type { ApprovalRequest, AskQuestion, SessionEvent, TurnEvent } from "../lib/types";
+  import type { ApprovalRequest, AskQuestion, ImageInput, SessionEvent, TurnEvent } from "../lib/types";
+  import MessageMenu from "./MessageMenu.svelte";
+  import RailSheet from "./RailSheet.svelte";
+  import RunningSheet from "./RunningSheet.svelte";
+  import UsageLine from "./UsageLine.svelte";
 
   // ---- the token and the connection --------------------------------------
   let token = $state<string | null>(null);
@@ -90,7 +105,23 @@
   let enterFrom = $state(0);
   let drawer = $state(false);
   let search = $state("");
-  let sheet = $state<null | "chat" | "rename" | "project">(null);
+  let sheet = $state<null | "chat" | "rename" | "project" | "message" | "rail" | "running" | "delete">(null);
+  /** What the message menu is open on (wave 1C). */
+  let menuOn = $state<{ row: Row; part: TextPart | null; tool: ToolRow | null } | null>(null);
+  /** The rail as the Mac last said, and why it could not be read. */
+  let rail = $state<Rail | null>(null);
+  let railProblem = $state<string | null>(null);
+  let running = $state<Running | null>(null);
+  let runningProblem = $state<string | null>(null);
+  let usage = $state<Usage | null>(null);
+  /** Photos in the composer, scaled and base64'd (wave 1C). Page state
+   *  only: a photo is too big for localStorage, so a reload drops it —
+   *  his text, which is small, is the draft that persists. */
+  let photos = $state<{ id: number; image: ImageInput; url: string }[]>([]);
+  let photoSeq = 0;
+  let picker = $state<HTMLInputElement | null>(null);
+  /** The chat just moved to the trash, offered back until dismissed. */
+  let trashed = $state<{ id: string; label: string; project: string | null } | null>(null);
   let renameText = $state("");
   let openTools = $state<Record<string, boolean>>({});
 
@@ -104,7 +135,20 @@
   const title = $derived(chatId ? (currentChat?.label ?? "Chat") : "New chat");
   const projectName = (pid: string | null) =>
     pid === null || pid === activePid ? (remote.project ?? "Unfiled") : (projects.find((p) => p.id === pid)?.name ?? "project");
-  const readOnly = $derived(chatProject !== null && chatProject !== activePid);
+  /** A wave-1 host takes actions and sends on any chat, opening it on the
+   *  Mac first (blocker 665's default); an older one only reads a chat in
+   *  another project. */
+  const canAct = $derived(hasFeature(remote, "act"));
+  const readOnly = $derived(chatProject !== null && chatProject !== activePid && !hasFeature(remote, "send_project"));
+  /** A host from before wave 1 would drop a photo without a word. */
+  const canPhoto = $derived(hasFeature(remote, "images"));
+  /** The chat's project to send with when the Mac has another open. */
+  const sendProject = $derived(chatProject !== null && chatProject !== activePid ? chatProject : null);
+  /** Why the log cannot be changed now: a turn running (the desktop's
+   *  controls hide while one runs; the Mac refuses mid-turn, 665). */
+  const actBlocked = $derived(
+    link !== "online" ? "The Mac is unreachable." : remote.busy ? "A turn is running on the Mac — wait for it to end." : null,
+  );
   /** The live turn belongs to the desktop's running (or open) chat; another
    *  chat's view shows nothing live and re-reads when the turn ends. */
   const liveHere = $derived(
@@ -206,7 +250,7 @@
     if (!client || !chatId) return;
     const id = chatId;
     try {
-      const got = await client.transcript(id, readOnly ? chatProject : null);
+      const got = await client.transcript(id, sendProject);
       if (id !== chatId) return;
       const near = nearBottom();
       events = got;
@@ -396,6 +440,7 @@
     drawer = true;
     void refreshProjects();
     void refreshChats();
+    void refreshUsage();
   }
 
   function nearBottom(): boolean {
@@ -437,14 +482,26 @@
       await sendNew(text);
       return;
     }
+    const images = photos.map((p) => p.image);
+    if ((link !== "online" || remote.busy) && images.length > 0) {
+      // A photo is too big to hold on the phone: the message stays in the
+      // composer, photos and all, until the Mac can take it.
+      note(link !== "online" ? "The Mac is unreachable — your message and photos stay here" : "A turn is running — send the photos when it ends");
+      return;
+    }
     setDraft("");
     if (link !== "online" || remote.busy) {
       hold(text);
       return;
     }
+    const project = sendProject;
+    const sentPhotos = photos;
+    photos = [];
     try {
-      const status = await client!.send(chatId, text);
+      const status = await client!.send(chatId, text, { project, images });
       remote = { ...remote, busy: true };
+      // The Mac opened the chat's project to send (blocker 665).
+      if (project) void refreshProjects();
       if (status === "queued") {
         // The Mac has it behind the running turn (backlog 132): it lands
         // in the transcript when its own turn runs, so nothing is drawn
@@ -458,11 +515,19 @@
       launch("phone", box);
       // Drawn at once rather than after the log's re-read: his message is
       // the one thing on the page he already knows the text of.
-      events = [...events, { event: "user_message", text, at: new Date().toISOString() }];
+      events = [
+        ...events,
+        { event: "user_message", text, at: new Date().toISOString(), ...(images.length > 0 ? { images } : {}) },
+      ];
       scrollToEnd();
     } catch (e) {
-      if (e instanceof Unreachable) hold(text);
-      else {
+      // Nothing sent: the photos go back into the composer.
+      photos = [...sentPhotos, ...photos];
+      if (e instanceof Unreachable && images.length === 0) hold(text);
+      else if (e instanceof Unreachable) {
+        note("The Mac is unreachable — your message and photos stay here");
+        if (!draft) setDraft(text);
+      } else {
         // A refusal (409, 401, a 5xx) is not a hold: the text goes back
         // into the composer rather than nowhere, so nothing typed is lost.
         fail(e);
@@ -484,15 +549,17 @@
       return;
     }
     const before = remote.active_chat;
+    const images = photos.map((p) => p.image);
     try {
-      const status = await client!.newChat(newProject, text);
+      const status = await client!.newChat(newProject, text, images);
       pendingNew = { before };
       setDraft("");
+      photos = [];
       remote = { ...remote, busy: true };
       if (status === "queued") return;
       live = emptyTurn();
       launch("phone", box);
-      events = [{ event: "user_message", text, at: new Date().toISOString() }];
+      events = [{ event: "user_message", text, at: new Date().toISOString(), ...(images.length > 0 ? { images } : {}) }];
       scrollToEnd();
     } catch (e) {
       fail(e);
@@ -500,7 +567,7 @@
   }
 
   function hold(text: string) {
-    queue = [...queue, newQueued(chatId, text)];
+    queue = [...queue, newQueued(chatId, text, new Date(), sendProject)];
     saveQueue(queue);
     note(link === "online" ? "Held — goes when the turn ends" : "Held — goes when the Mac is reachable");
   }
@@ -518,7 +585,7 @@
     if (!client || link !== "online" || remote.busy || queue.length === 0) return;
     const [next, ...rest] = queue;
     try {
-      const status = await client.send(next.chat, next.text);
+      const status = await client.send(next.chat, next.text, { project: next.project ?? null });
       queue = rest;
       saveQueue(queue);
       remote = { ...remote, busy: true };
@@ -577,6 +644,313 @@
     } catch (e) {
       fail(e);
     }
+  }
+
+  // ---- wave 1C: the Mac's actions on a chat (design §4 `act`) ------------------
+  /**
+   * Run `actions` in order on `chat` and draw what the Mac answers: the
+   * log after, and — a fork, an Edit and send — the new chat it switched
+   * to. `starts`: the action starts a turn (Continue, Edit and send), so
+   * the live fold opens. A refusal (409: a turn running, blocker 665) is
+   * the Mac's sentence in the error bar, and nothing on the page changes.
+   */
+  async function actOn(chat: string, project: string | null, actions: ChatAction[], label: string, starts = false): Promise<boolean> {
+    if (!client) return false;
+    try {
+      let reply = null;
+      for (const a of actions) reply = await client.act(chat, a, project);
+      // The Mac opened the chat's project to act on it (665).
+      if (project) await refreshProjects();
+      if (reply && chat === chatId) {
+        if (reply.chat && reply.chat !== chatId) {
+          chatId = reply.chat;
+          chatProject = null;
+          draft = loadDraft(draftKey(reply.chat, null));
+          void grow();
+          void refreshChats();
+        } else if (project) chatProject = null;
+        if (Array.isArray(reply.events) && reply.events.length > 0) {
+          events = reply.events;
+          enterFrom = transcriptRows(reply.events).length;
+        } else await refreshTranscript();
+      }
+      // The Mac opened the chat to act on it (design §4): it is the Mac's
+      // open chat now, until the next state read says otherwise.
+      if (reply && chat === chatId && reply.chat) remote = { ...remote, active_chat: reply.chat };
+      if (starts) {
+        live = emptyTurn();
+        remote = { ...remote, busy: true };
+        scrollToEnd();
+      }
+      note(label);
+      return true;
+    } catch (e) {
+      fail(e);
+      return false;
+    }
+  }
+
+  async function act(actions: ChatAction[], label: string, starts = false): Promise<boolean> {
+    if (!chatId) return false;
+    return actOn(chatId, sendProject, actions, label, starts);
+  }
+
+  /** The project whose list holds `chat`, as far as the drawer has read
+   *  (the Mac's running rows carry no project); null is the open one. */
+  function projectOf(chat: string): string | null {
+    for (const [pid, list] of Object.entries(chatsBy)) if (pid !== activePid && list.some((c) => c.id === chat)) return pid;
+    return null;
+  }
+
+  function openMenu(row: Row, part: TextPart | null = null, tool: ToolRow | null = null) {
+    if (!chatId || row.kind === "note") return;
+    error = null;
+    menuOn = { row, part, tool };
+    sheet = "message";
+  }
+
+  /** Copy without the Clipboard API, which a page served over plain HTTP
+   *  (the tailnet listener, blocker 660) does not get. */
+  function copy(text: string) {
+    const done = () => note("Copied");
+    try {
+      if (window.isSecureContext && navigator.clipboard) {
+        void navigator.clipboard.writeText(text).then(done, () => copyByHand(text));
+        return;
+      }
+    } catch {
+      // fall through
+    }
+    copyByHand(text);
+  }
+  function copyByHand(text: string) {
+    const t = document.createElement("textarea");
+    t.value = text;
+    t.setAttribute("readonly", "");
+    t.style.position = "fixed";
+    t.style.opacity = "0";
+    document.body.appendChild(t);
+    t.select();
+    t.setSelectionRange(0, text.length);
+    let ok = false;
+    try {
+      ok = document.execCommand("copy");
+    } catch {
+      ok = false;
+    }
+    t.remove();
+    note(ok ? "Copied" : "Could not copy on this phone");
+  }
+
+  /**
+   * Long-press (wave 1C): 450 ms held still opens the menu; a move of
+   * more than 8 px is a scroll and cancels it. The inner press (a block of
+   * a reply) stops the outer (the reply) from starting. A right-click, for
+   * the harness and a desktop browser, opens it at once.
+   */
+  function press(node: HTMLElement, fn: () => void) {
+    let run = fn;
+    let timer: number | null = null;
+    let x = 0;
+    let y = 0;
+    let fired = false;
+    const cancel = () => {
+      if (timer !== null) clearTimeout(timer);
+      timer = null;
+    };
+    const down = (e: PointerEvent) => {
+      if (e.button !== 0) return;
+      e.stopPropagation();
+      fired = false;
+      x = e.clientX;
+      y = e.clientY;
+      cancel();
+      timer = window.setTimeout(() => {
+        timer = null;
+        fired = true;
+        navigator.vibrate?.(10);
+        run();
+      }, 450);
+    };
+    const move = (e: PointerEvent) => {
+      if (timer !== null && Math.hypot(e.clientX - x, e.clientY - y) > 8) cancel();
+    };
+    const click = (e: MouseEvent) => {
+      // The click that ends a long-press is not a tap on what is under it.
+      if (fired) {
+        e.preventDefault();
+        e.stopPropagation();
+        fired = false;
+      }
+    };
+    const ctx = (e: MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      cancel();
+      run();
+    };
+    node.addEventListener("pointerdown", down);
+    node.addEventListener("pointermove", move);
+    node.addEventListener("pointerup", cancel);
+    node.addEventListener("pointercancel", cancel);
+    node.addEventListener("pointerleave", cancel);
+    node.addEventListener("click", click, true);
+    node.addEventListener("contextmenu", ctx);
+    return {
+      update(next: () => void) {
+        run = next;
+      },
+      destroy() {
+        cancel();
+        node.removeEventListener("pointerdown", down);
+        node.removeEventListener("pointermove", move);
+        node.removeEventListener("pointerup", cancel);
+        node.removeEventListener("pointercancel", cancel);
+        node.removeEventListener("pointerleave", cancel);
+        node.removeEventListener("click", click, true);
+        node.removeEventListener("contextmenu", ctx);
+      },
+    };
+  }
+
+  // ---- wave 1C: the chat sheet's new rows ----------------------------------------
+  async function deleteChat() {
+    if (!chatId) return;
+    const id = chatId;
+    const label = currentChat?.label ?? "Chat";
+    const project = sendProject;
+    const ok = await actOn(id, project, [{ op: "delete" }], "Moved to the trash");
+    if (!ok) {
+      sheet = "chat";
+      return;
+    }
+    sheet = null;
+    trashed = { id, label, project };
+    startNew(null);
+    void refreshChats();
+  }
+
+  async function undeleteChat() {
+    const t = trashed;
+    if (!t) return;
+    const ok = await actOn(t.id, t.project, [{ op: "undelete" }], "Restored");
+    if (!ok) return;
+    trashed = null;
+    await refreshProjects();
+    await refreshChats();
+    await openChat(t.id, null);
+  }
+
+  async function continueTurn() {
+    sheet = null;
+    await act([{ op: "continue" }], "Continuing on the Mac", true);
+  }
+
+  async function switchKind() {
+    const next = currentChat?.kind === "build" ? "chat" : "build";
+    sheet = null;
+    if (await act([{ op: "kind", kind: next }], next === "build" ? "Now a build chat" : "Now a plain chat")) void refreshChats();
+  }
+
+  // ---- wave 1C: the rail, running tasks, usage ---------------------------------
+  async function openRail() {
+    sheet = "rail";
+    if (!client) return;
+    if (!hasFeature(remote, "rail")) {
+      railProblem = "This Mac's Nightloom is older than the phone page: update it to change the model from here.";
+      return;
+    }
+    railProblem = null;
+    try {
+      rail = await client.rail();
+    } catch (e) {
+      railProblem = e instanceof Unreachable ? "The Mac is unreachable." : String(e instanceof Error ? e.message : e);
+    }
+  }
+
+  async function patchRail(patch: RailPatch): Promise<boolean> {
+    if (!client) return false;
+    try {
+      rail = { ...(rail ?? {}), ...(await client.setRail(patch)) };
+      railProblem = null;
+      note("Set on the Mac");
+      return true;
+    } catch (e) {
+      // The sheet says it: the error bar is under the scrim.
+      railProblem = e instanceof Unreachable ? "The Mac is unreachable." : String(e instanceof Error ? e.message : e);
+      return false;
+    }
+  }
+
+  async function openRunning() {
+    drawer = false;
+    sheet = "running";
+    await refreshRunning();
+  }
+
+  async function refreshRunning() {
+    if (!client) return;
+    if (!hasFeature(remote, "running")) {
+      runningProblem = "This Mac's Nightloom is older than the phone page: update it to see running tasks here.";
+      return;
+    }
+    runningProblem = null;
+    try {
+      running = await client.running();
+    } catch (e) {
+      runningProblem = e instanceof Unreachable ? "The Mac is unreachable." : String(e instanceof Error ? e.message : e);
+    }
+  }
+
+  async function refreshUsage() {
+    if (!client || !hasFeature(remote, "usage")) return;
+    try {
+      usage = await client.usage();
+    } catch {
+      // The line stays as it was; the drawer's link line says the rest.
+    }
+  }
+
+  // ---- wave 1C: photos --------------------------------------------------------------
+  /** A photo from the camera or Photos, scaled to `PHOTO_EDGE` and
+   *  re-encoded as JPEG (which also turns an iPhone's HEIC into something
+   *  every engine reads). */
+  function scalePhoto(file: File): Promise<ImageInput> {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        const { w, h } = fitSize(img.naturalWidth, img.naturalHeight);
+        const c = document.createElement("canvas");
+        c.width = w;
+        c.height = h;
+        const g = c.getContext("2d");
+        URL.revokeObjectURL(url);
+        if (!g || w === 0) return reject(new Error("no canvas"));
+        g.drawImage(img, 0, 0, w, h);
+        const out = imageFromDataUrl(c.toDataURL("image/jpeg", 0.85));
+        if (out) resolve(out);
+        else reject(new Error("not an image"));
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error("unreadable"));
+      };
+      img.src = url;
+    });
+  }
+
+  async function addPhotos(files: FileList | null) {
+    for (const f of Array.from(files ?? [])) {
+      try {
+        const image = await scalePhoto(f);
+        photoSeq += 1;
+        photos = [...photos, { id: photoSeq, image, url: `data:${image.media_type};base64,${image.data}` }];
+      } catch {
+        note("That photo could not be read");
+      }
+    }
+    if (picker) picker.value = "";
   }
 
   function chooseProject(pid: string) {
@@ -652,7 +1026,7 @@
   const toolCount = (tools: ToolRow[]): number => tools.reduce((n, t) => n + 1 + toolCount(t.children), 0);
 </script>
 
-{#snippet icon(name: "menu" | "new" | "more" | "up" | "stop" | "chev" | "x" | "search" | "check" | "mac" | "pencil")}
+{#snippet icon(name: "menu" | "new" | "more" | "up" | "stop" | "chev" | "x" | "search" | "check" | "mac" | "pencil" | "sliders" | "plus" | "trash" | "play" | "swap" | "pulse")}
   <svg class="ico" viewBox="0 0 24 24" aria-hidden="true">
     {#if name === "menu"}<path d="M4 7h16M4 12h16M4 17h10" />
     {:else if name === "new"}<path d="M12 20h8M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
@@ -665,26 +1039,32 @@
     {:else if name === "check"}<path d="m5 12 5 5 9-10" />
     {:else if name === "mac"}<rect x="3" y="4" width="18" height="12" rx="2" /><path d="M8 20h8M12 16v4" />
     {:else if name === "pencil"}<path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+    {:else if name === "sliders"}<path d="M4 7h10M18 7h2M4 17h4M12 17h8" /><circle cx="16" cy="7" r="2" /><circle cx="10" cy="17" r="2" />
+    {:else if name === "plus"}<path d="M12 5v14M5 12h14" />
+    {:else if name === "trash"}<path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3" />
+    {:else if name === "play"}<path d="M7 5v14l11-7Z" />
+    {:else if name === "swap"}<path d="M7 7h12l-3-3M17 17H5l3 3" />
+    {:else if name === "pulse"}<path d="M3 12h4l2-6 4 12 2-6h6" />
     {/if}
   </svg>
 {/snippet}
 
-{#snippet toolRows(tools: ToolRow[], depth: number)}
+{#snippet toolRows(tools: ToolRow[], depth: number, row: Row | null = null)}
   {#each tools as t (t.id)}
-    <div class="tool" style:padding-left="{depth * 14}px">
+    <div class="tool" class:removed={t.removed} style:padding-left="{depth * 14}px" use:press={() => row && t.index != null && openMenu(row, null, t)}>
       <span class="tool-dot" class:ok={t.ok === true} class:bad={t.ok === false} class:run={t.ok === null}></span>
       <span class="tool-name">{t.name}</span>
       <span class="tool-sum">{t.summary}</span>
     </div>
-    {#if t.children.length > 0}{@render toolRows(t.children, depth + 1)}{/if}
+    {#if t.children.length > 0}{@render toolRows(t.children, depth + 1, row)}{/if}
   {/each}
 {/snippet}
 
-{#snippet toolBox(tools: ToolRow[], key: string, running: boolean)}
+{#snippet toolBox(tools: ToolRow[], key: string, running: boolean, row: Row | null = null)}
   {@const n = toolCount(tools)}
   {#if n <= 3 || openTools[key]}
     <div class="tools">
-      {@render toolRows(tools, 0)}
+      {@render toolRows(tools, 0, row)}
       {#if n > 3}<button class="tools-toggle" onclick={() => (openTools = { ...openTools, [key]: false })}>Hide steps</button>{/if}
     </div>
   {:else}
@@ -718,6 +1098,7 @@
           {chatId ? projectName(chatProject) : projectName(newProject)} · {status}
         </span>
       </button>
+      <button class="icon-btn" onclick={openRail} aria-label="Model and settings">{@render icon("sliders")}</button>
       {#if chatId}
         <button class="icon-btn" onclick={() => (sheet = "chat")} aria-label="Chat actions">{@render icon("more")}</button>
       {/if}
@@ -732,6 +1113,13 @@
     {:else if link === "offline"}
       <div class="bar" transition:fly={{ y: -12, duration: motion(200) }}>
         <span>Can't reach the Mac — is Tailscale on, and Remote switched on? Messages you send are held.</span>
+      </div>
+    {/if}
+    {#if trashed}
+      <div class="bar" transition:fly={{ y: -12, duration: motion(200) }}>
+        <span>“{trashed.label}” is in the trash.</span>
+        <button class="btn small" onclick={undeleteChat}>Restore</button>
+        <button class="icon-btn small" onclick={() => (trashed = null)} aria-label="Dismiss">{@render icon("x")}</button>
       </div>
     {/if}
     {#if error && link !== "off"}
@@ -755,14 +1143,25 @@
       {/if}
       {#each rows as r, i (i)}
         {#if r.kind === "user"}
-          <div class="turn user" class:enter={i >= enterFrom && !still} use:arrive={{ channel: "phone" }}>
-            <div class="bubble">{r.text}</div>
-            <div class="stamp">{shortWhen(r.at)}</div>
+          <div class="turn user" class:enter={i >= enterFrom && !still} class:removed={r.removed} use:arrive={{ channel: "phone" }}>
+            <div class="bubble" use:press={() => openMenu(r)}>
+              {#if r.images > 0}<span class="pics">{r.images} photo{r.images === 1 ? "" : "s"}</span>{/if}{r.text}
+            </div>
+            <div class="stamp">
+              {#if r.removed}{"removed from the context · "}{:else if r.edited}{"edited · "}{/if}{shortWhen(r.at)}
+            </div>
           </div>
         {:else if r.kind === "assistant"}
-          <div class="turn reply" class:enter={i >= enterFrom && !still}>
-            {#if r.tools.length > 0}{@render toolBox(r.tools, `r${i}`, false)}{/if}
-            {#if r.text}<div class="md">{@html renderMarkdown(r.text)}</div>{/if}
+          <div class="turn reply" class:enter={i >= enterFrom && !still} class:removed={r.removed} use:press={() => openMenu(r)}>
+            {#if r.tools.length > 0}{@render toolBox(r.tools, `r${i}`, false, r)}{/if}
+            {#each r.parts as part (`${part.index}.${part.block}`)}
+              {#if part.removed}
+                <div class="part-gone" use:press={() => openMenu(r, part)}>[text removed]</div>
+              {:else if part.text}
+                <div class="md" use:press={() => openMenu(r, part)}>{@html renderMarkdown(part.text)}</div>
+              {/if}
+            {/each}
+            {#if r.removed}<div class="stamp">removed from the context — long-press to restore</div>{/if}
           </div>
         {:else}
           <div class="turn note">{r.text}</div>
@@ -856,7 +1255,21 @@
           <button class="btn small" onclick={() => startNew(chatProject)}>New chat there</button>
         </div>
       {:else}
+        {#if photos.length > 0}
+          <div class="photos">
+            {#each photos as p (p.id)}
+              <div class="photo">
+                <img src={p.url} alt="" />
+                <button class="photo-x" onclick={() => (photos = photos.filter((q) => q.id !== p.id))} aria-label="Remove the photo">{@render icon("x")}</button>
+              </div>
+            {/each}
+          </div>
+        {/if}
         <div class="composer">
+          <input bind:this={picker} class="picker" type="file" accept="image/*" multiple onchange={(e) => void addPhotos(e.currentTarget.files)} />
+          {#if canPhoto}
+            <button class="attach" onclick={() => picker?.click()} aria-label="Attach a photo">{@render icon("plus")}</button>
+          {/if}
           <textarea
             bind:this={box}
             rows="1"
@@ -872,6 +1285,8 @@
               }
             }}
           ></textarea>
+          <!-- Wave 3B mounts the mic button here (design §2.5, the orb):
+               beside Send, shown while the box is empty. -->
           {#if busyHere && link === "online" && !draft.trim()}
             <button class="send stop" onclick={stop} aria-label="Stop the turn">{@render icon("stop")}</button>
           {:else}
@@ -895,6 +1310,9 @@
           <input type="search" placeholder="Search chats" bind:value={search} autocomplete="off" />
         </label>
         <button class="new-row" onclick={() => startNew(null)}>{@render icon("new")} New chat</button>
+        {#if hasFeature(remote, "running")}
+          <button class="new-row quiet" onclick={openRunning}>{@render icon("pulse")} Running tasks</button>
+        {/if}
         <div class="drawer-list">
           {#each projects.length > 0 ? projects : [{ id: "", name: remote.project ?? "Unfiled", active: true }] as p (p.id)}
             {@const open = p.active || expanded[p.id]}
@@ -922,6 +1340,7 @@
             </div>
           {/each}
         </div>
+        <UsageLine {usage} />
         <div class="drawer-foot">
           <span class="dot" class:ok={link === "online"} class:bad={link !== "online"}></span>
           {link === "online" ? `Connected to the Mac${remote.engine ? ` · ${remote.engine === "claude-code" ? "Claude Code" : remote.engine}` : ""}` : status}
@@ -942,10 +1361,22 @@
               <button onclick={openOnMac} disabled={remote.busy && chatId !== remote.active_chat}>{@render icon("mac")} Open on the Mac</button>
             {/if}
             <button onclick={() => startNew(chatProject)}>{@render icon("new")} New chat{readOnly ? ` in ${projectName(chatProject)}` : ""}</button>
+            {#if !readOnly && canAct}
+              <button onclick={continueTurn} disabled={!!actBlocked}>{@render icon("play")} Continue</button>
+              <button onclick={switchKind} disabled={!!actBlocked}>
+                {@render icon("swap")}
+                <span class="grow">{currentChat?.kind === "build" ? "Make it a plain chat" : "Make it a build chat"}</span>
+                <span class="tag">{currentChat?.kind ?? "chat"}</span>
+              </button>
+            {/if}
             {#if busyHere}
               <button class="danger" onclick={stop}>{@render icon("stop")} Stop the turn</button>
             {/if}
+            {#if !readOnly && canAct}
+              <button class="danger" onclick={() => (sheet = "delete")} disabled={!!actBlocked}>{@render icon("trash")} Delete</button>
+            {/if}
           </div>
+          {#if error}<p class="sheet-note bad">{error}</p>{:else if actBlocked && canAct}<p class="sheet-note">{actBlocked}</p>{/if}
         {:else if sheet === "rename"}
           <div class="sheet-title">Rename chat</div>
           <!-- svelte-ignore a11y_autofocus -->
@@ -954,6 +1385,39 @@
             <button class="btn" onclick={() => (sheet = "chat")}>Cancel</button>
             <button class="btn accent" disabled={!renameText.trim()} onclick={saveRename}>Save</button>
           </div>
+        {:else if sheet === "delete"}
+          <div class="sheet-title">Delete “{title}”?</div>
+          <p class="sheet-note">It moves to the trash on the Mac; Restore brings it back.</p>
+          <div class="actions end">
+            <button class="btn" onclick={() => (sheet = "chat")}>Cancel</button>
+            <button class="btn danger" onclick={deleteChat}>Move to trash</button>
+          </div>
+        {:else if sheet === "message" && menuOn && chatId}
+          {@const target = rowTarget(events, menuOn.row)}
+          <MessageMenu
+            chat={chatId}
+            row={menuOn.row}
+            part={menuOn.part}
+            tool={menuOn.tool}
+            rewind={target.rewind}
+            fork={target.fork}
+            {canAct}
+            blocked={actBlocked}
+            problem={error}
+            onact={(actions, label, starts) => act(actions, label, starts)}
+            oncopy={copy}
+            onwhole={() => menuOn && (menuOn = { row: menuOn.row, part: null, tool: null })}
+            onclose={() => ((sheet = null), (menuOn = null))}
+          />
+        {:else if sheet === "rail"}
+          <RailSheet {rail} problem={railProblem} busy={remote.busy} onpatch={patchRail} />
+        {:else if sheet === "running"}
+          <RunningSheet
+            {running}
+            problem={runningProblem}
+            onrefresh={refreshRunning}
+            onopen={(id, project) => ((sheet = null), void openChat(id, project ?? projectOf(id)))}
+          />
         {:else}
           <div class="sheet-title">Start the chat in</div>
           <div class="menu">
@@ -1692,6 +2156,9 @@
     max-height: 40dvh;
     line-height: 1.45;
   }
+  .composer .attach + textarea {
+    padding-left: 4px;
+  }
   .send {
     all: unset;
     width: 40px;
@@ -1985,6 +2452,100 @@
   }
   .menu button.danger .ico {
     color: var(--failed);
+  }
+
+  /* ---- wave 1C: long-press, removed turns, photos ---- */
+  /* A long-press opens the message menu (Copy is in it), so the phone's
+     own text selection and callout stay off the turns (blocker 690). */
+  .turn.user .bubble,
+  .turn.reply {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+  }
+  .turn.removed .bubble,
+  .turn.reply.removed .md {
+    opacity: 0.5;
+  }
+  .turn.removed .bubble {
+    border: 1.5px dashed var(--line2);
+  }
+  .sheet-note.bad {
+    color: var(--failed);
+    margin: 0;
+  }
+  .part-gone,
+  .tool.removed {
+    color: var(--dim);
+    font-size: 13px;
+    font-style: italic;
+  }
+  .tool.removed .tool-sum {
+    text-decoration: line-through;
+  }
+  .pics {
+    display: block;
+    font-size: 12px;
+    color: var(--dim);
+  }
+  .new-row.quiet {
+    color: var(--ink2);
+    font-weight: 400;
+  }
+  .picker {
+    display: none;
+  }
+  .attach {
+    all: unset;
+    width: 40px;
+    height: 40px;
+    flex: none;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    color: var(--ink2);
+    cursor: pointer;
+    margin: 1px 0 1px 2px;
+  }
+  .attach:active {
+    background: var(--well);
+  }
+  .photos {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    padding: 0 2px 8px;
+  }
+  .photo {
+    position: relative;
+    flex: none;
+  }
+  .photo img {
+    width: 64px;
+    height: 64px;
+    object-fit: cover;
+    border-radius: 12px;
+    display: block;
+    border: 1px solid var(--line);
+  }
+  .photo-x {
+    all: unset;
+    position: absolute;
+    top: -6px;
+    right: -6px;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: var(--ink);
+    color: var(--paper);
+    display: grid;
+    place-items: center;
+    cursor: pointer;
+  }
+  .photo-x .ico {
+    width: 14px;
+    height: 14px;
+    stroke-width: 2.4;
   }
 
   @keyframes pulse {

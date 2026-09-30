@@ -18,6 +18,16 @@ import {
   toolSummary,
   tokenFromHash,
   transcriptRows,
+  editAction,
+  fitSize,
+  hasFeature,
+  imageFromDataUrl,
+  markers,
+  rowRemoval,
+  rowTarget,
+  sendBody,
+  sinceText,
+  usageLine,
 } from "./client";
 import type { SessionEvent, TurnEvent } from "../lib/types";
 
@@ -189,5 +199,142 @@ describe("the short time", () => {
     expect(shortWhen(new Date(2026, 8, 23, 9, 0).toISOString(), now)).toBe("Wednesday");
     expect(shortWhen(new Date(2026, 8, 11, 9, 0).toISOString(), now)).toBe("Sep 11");
     expect(shortWhen("nonsense", now)).toBe("");
+  });
+});
+
+describe("wave 1: the message menu over the log", () => {
+  const at = "2026-09-30T10:00:00Z";
+  const reply = (id: string, text: string): SessionEvent => ({
+    event: "assistant_message",
+    model: "m",
+    blocks: [
+      { type: "text", text },
+      { type: "tool_use", id, name: "Bash", input: { command: "true" } },
+    ],
+    stop_reason: null,
+    usage: { input_tokens: 0, output_tokens: 0 } as never,
+    at,
+  });
+  const log = (): SessionEvent[] => [
+    { event: "session_created", id: "abc", at },
+    { event: "user_message", text: "hi", at, images: [{ media_type: "image/jpeg", data: "AA" }] },
+    reply("t1", "one"),
+    { event: "tool_result", tool_use_id: "t1", name: "Bash", content: "", is_error: false, at },
+    reply("t2", "two"),
+    { event: "user_message", text: "again", at },
+    reply("t3", "three"),
+  ];
+
+  it("gives each row the log indexes an action names", () => {
+    const rows = transcriptRows(log());
+    expect(rows[0]).toMatchObject({ kind: "user", index: 1, images: 1, removed: false, edited: false });
+    expect(rows[1].kind === "assistant" && rows[1].indexes).toEqual([2, 4]);
+    expect(rows[1].kind === "assistant" && rows[1].parts.map((p) => [p.index, p.block])).toEqual([[2, 0], [4, 0]]);
+    expect(rows[1].kind === "assistant" && rows[1].tools.map((t) => [t.index, t.block])).toEqual([[2, 1], [4, 1]]);
+  });
+
+  it("draws edits and removals the way the desktop's markers read", () => {
+    const events = log();
+    events.push(
+      { event: "edit", target: 1, text: "hello", at },
+      { event: "edit", target: 2, block: 0, text: "uno", at },
+      { event: "elide", targets: [4], block: 1, at },
+      { event: "elide", targets: [5], at },
+    );
+    const rows = transcriptRows(events);
+    expect(rows[0]).toMatchObject({ text: "hello", edited: true });
+    const r = rows[1];
+    expect(r.kind === "assistant" && r.text).toBe("uno\n\ntwo");
+    expect(r.kind === "assistant" && r.tools.map((t) => !!t.removed)).toEqual([false, true]);
+    expect(rows[2]).toMatchObject({ kind: "user", removed: true });
+    // A restore lifts the removal; the last word on an index wins.
+    events.push({ event: "unelide", targets: [5], at });
+    expect(transcriptRows(events)[2]).toMatchObject({ removed: false });
+    // A removed text block leaves the joined text and is kept as a part.
+    events.push({ event: "elide", targets: [2], block: 0, at });
+    const r2 = transcriptRows(events)[1];
+    expect(r2.kind === "assistant" && r2.text).toBe("two");
+    expect(r2.kind === "assistant" && r2.parts[0].removed).toBe(true);
+  });
+
+  it("reads an edit without a block as the reply's first text block", () => {
+    const events = log();
+    events.push({ event: "edit", target: 6, text: "tres", at });
+    expect(markers(events).blockText.get(6)?.get(0)).toBe("tres");
+  });
+
+  it("ignores markers a rewind superseded", () => {
+    const events = log();
+    events.push({ event: "elide", targets: [1], at }, { event: "rewind", to: 7, at });
+    expect(transcriptRows(events)[0]).toMatchObject({ removed: false });
+  });
+
+  it("points Rewind and Fork at the right user turn", () => {
+    const events = log();
+    const rows = transcriptRows(events);
+    expect(rowTarget(events, rows[0])).toEqual({ rewind: 1, fork: 1 });
+    // A reply: what follows it goes, the reply stays.
+    expect(rowTarget(events, rows[1])).toEqual({ rewind: 5, fork: 5 });
+    // The last reply: nothing after it to rewind; a fork takes it all.
+    expect(rowTarget(events, rows[3])).toEqual({ rewind: null, fork: events.length });
+  });
+
+  it("removes a joined reply event by event", () => {
+    const rows = transcriptRows(log());
+    expect(rowRemoval(rows[1], false)).toEqual([{ op: "remove", index: 2 }, { op: "remove", index: 4 }]);
+    expect(rowRemoval(rows[0], true)).toEqual([{ op: "restore", index: 1 }]);
+  });
+
+  it("builds §4's payloads", () => {
+    expect(editAction(3, "new", "send")).toEqual({ op: "edit", index: 3, text: "new", mode: "send", block: null });
+    expect(editAction(4, "t", "save", 2)).toEqual({ op: "edit", index: 4, text: "t", mode: "save", block: 2 });
+    expect(sendBody("hi")).toEqual({ text: "hi" });
+    expect(sendBody("hi", { project: "p", images: [{ media_type: "image/jpeg", data: "AA" }] })).toEqual({
+      text: "hi",
+      project: "p",
+      images: [{ media_type: "image/jpeg", data: "AA" }],
+    });
+    expect(sendBody("hi", { project: null, images: [] })).toEqual({ text: "hi" });
+  });
+
+  it("reads features, absent on a pass-1 listener", () => {
+    const base = { project: null, active_chat: null, busy: false, connected: true, engine: null, pending: [] };
+    expect(hasFeature(base, "act")).toBe(false);
+    expect(hasFeature({ ...base, features: ["act", "rail"] }, "rail")).toBe(true);
+  });
+});
+
+describe("wave 1: photos, usage, running", () => {
+  it("scales a photo's long edge down, never up", () => {
+    expect(fitSize(4032, 3024)).toEqual({ w: 1568, h: 1176 });
+    expect(fitSize(3024, 4032)).toEqual({ w: 1176, h: 1568 });
+    expect(fitSize(800, 600)).toEqual({ w: 800, h: 600 });
+    expect(fitSize(0, 10)).toEqual({ w: 0, h: 0 });
+  });
+
+  it("reads a data URL into an ImageInput", () => {
+    expect(imageFromDataUrl("data:image/jpeg;base64,QUJD")).toEqual({ media_type: "image/jpeg", data: "QUJD" });
+    expect(imageFromDataUrl("data:text/plain;base64,QUJD")).toBeNull();
+  });
+
+  it("writes the plan line", () => {
+    expect(usageLine(null)).toBe("");
+    const resets = new Date(2026, 8, 30, 4, 10).toISOString();
+    const plan = { five_hour: 41.6, seven_day: 61, five_hour_resets_at: resets, seven_day_resets_at: null, stale: false };
+    expect(usageLine({ plan })).toBe("5-hour 42% · resets 4:10 AM · week 61%");
+    expect(usageLine({ plan: { ...plan, five_hour: null } })).toBe("week 61%");
+    expect(usageLine({ plan: { ...plan, five_hour: null, stale: true } })).toBe("week 61% · an old reading");
+    expect(usageLine({ plan: { ...plan, five_hour: null, seven_day: null } })).toBe("");
+  });
+
+  it("says how long a task has run", () => {
+    const now = new Date(2026, 8, 30, 5, 0);
+    expect(sinceText(new Date(2026, 8, 30, 4, 59, 40).toISOString(), now)).toBe("just now");
+    expect(sinceText(new Date(2026, 8, 30, 4, 56).toISOString(), now)).toBe("4 min");
+    expect(sinceText(new Date(2026, 8, 30, 2, 55).toISOString(), now)).toBe("2 h 5 min");
+    expect(sinceText(new Date(2026, 8, 30, 3, 0).toISOString(), now)).toBe("2 h");
+    // The Mac sends unix milliseconds.
+    expect(sinceText(new Date(2026, 8, 30, 4, 56).getTime(), now)).toBe("4 min");
+    expect(sinceText(null, now)).toBe("");
   });
 });
