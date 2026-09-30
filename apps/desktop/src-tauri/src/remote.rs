@@ -40,7 +40,7 @@ use nightloom_core::SessionEvent;
 use nightloom_service::credentials;
 use nightloom_service::remote::{
     ApproveRequest, Asset, ChatRow, DEFAULT_PORT, Event, Handed, Host, ProjectRow, RemoteState,
-    Server, tailnet, token,
+    Server, api, tailnet, token,
 };
 use nightloom_service::store;
 use serde::Serialize;
@@ -452,6 +452,119 @@ impl Host for DesktopHost {
             mime: a.mime_type,
         })
     }
+
+    // ---- item 246 wave 1: 1A's trait methods, forwarded to 1B's
+    // inherent ones below (`DesktopHost::x(self, …)` names the inherent
+    // method; inherent wins over the trait's). JSON both ways: the window
+    // speaks JSON, 1A's types are the wire's.
+
+    fn features(&self) -> Vec<String> {
+        DesktopHost::features(self)
+    }
+
+    async fn send_with(
+        &self,
+        chat: Option<&str>,
+        req: nightloom_service::remote::SendRequest,
+    ) -> Result<Handed, String> {
+        if req.is_plain() && !req.spoken {
+            return self.send(chat, &req.text).await;
+        }
+        DesktopHost::send_to(self, chat, to_json(&req)?).await
+    }
+
+    async fn act(&self, chat: &str, action: api::ChatAction) -> Result<api::ActReply, String> {
+        from_json(DesktopHost::act(self, chat, to_json(&action)?).await?)
+    }
+
+    async fn context(&self, chat: &str) -> Result<api::ContextReply, String> {
+        from_json(DesktopHost::context(self, chat).await?)
+    }
+
+    async fn edit_context(
+        &self,
+        chat: &str,
+        targets: Vec<usize>,
+        remove: bool,
+    ) -> Result<nightloom_core::context::WireView, String> {
+        from_json(DesktopHost::edit_context(self, chat, targets, remove).await?)
+    }
+
+    async fn layers(
+        &self,
+        chat: &str,
+        change: api::LayerChange,
+    ) -> Result<api::ContextReply, String> {
+        from_json(DesktopHost::layers(self, chat, to_json(&change)?).await?)
+    }
+
+    async fn rail(&self) -> Result<api::Rail, String> {
+        from_json(DesktopHost::rail(self).await?)
+    }
+
+    async fn set_rail(&self, patch: api::RailPatch) -> Result<api::Rail, String> {
+        from_json(DesktopHost::set_rail(self, to_json(&patch)?).await?)
+    }
+
+    async fn running(&self) -> Result<api::Running, String> {
+        from_json(DesktopHost::running(self).await?)
+    }
+
+    async fn usage(&self) -> Result<api::UsageReply, String> {
+        from_json(DesktopHost::usage(self).await?)
+    }
+
+    async fn search(
+        &self,
+        q: &str,
+        scope: api::SearchScope,
+    ) -> Result<store::search::SearchResult, String> {
+        let scope = match scope {
+            api::SearchScope::This => crate::SearchScope::This,
+            api::SearchScope::All => crate::SearchScope::All,
+            api::SearchScope::Notes => crate::SearchScope::Notes,
+        };
+        crate::search_everywhere(self.state_of(), q.to_string(), scope).await
+    }
+
+    async fn project_new(&self, req: api::NewProjectRequest) -> Result<ProjectRow, String> {
+        let made = DesktopHost::project_new(self, &req.name, req.instructions.as_deref()).await?;
+        self.row_of(&made).await
+    }
+
+    async fn project_open(&self, id: &str) -> Result<ProjectRow, String> {
+        let opened = DesktopHost::project_open(self, id).await?;
+        self.row_of(&opened).await
+    }
+
+    async fn project_rename(&self, id: &str, name: &str) -> Result<ProjectRow, String> {
+        let renamed = DesktopHost::project_rename(self, id, name).await?;
+        self.row_of(&renamed).await
+    }
+
+    async fn project_forget(&self, id: &str) -> Result<(), String> {
+        DesktopHost::project_forget(self, id).await.map(|_| ())
+    }
+
+    async fn notes_list(&self, scope: &str) -> Result<Vec<nightloom_service::Note>, String> {
+        let scope = serde_json::from_value(serde_json::json!(scope))
+            .map_err(|_| format!("no note scope {scope}"))?;
+        crate::list_notes(self.state_of(), Some(scope)).await
+    }
+
+    async fn note_read(&self, scope: &str, name: &str) -> Result<String, String> {
+        DesktopHost::note_read(self, scope, name).await
+    }
+
+    async fn note_write(&self, scope: &str, name: &str, text: &str) -> Result<(), String> {
+        DesktopHost::note_write(self, scope, name, text)
+            .await
+            .map(|_| ())
+    }
+
+    async fn note_delete(&self, scope: &str, name: &str) -> Result<(), String> {
+        DesktopHost::note_delete(self, scope, name).await
+    }
 }
 
 /// How long a chat action may take in the window: the chat opened (in
@@ -503,14 +616,36 @@ fn note_trash(scope: &str, name: &str) -> Option<std::path::PathBuf> {
     )
 }
 
+fn to_json<T: Serialize>(t: &T) -> Result<serde_json::Value, String> {
+    serde_json::to_value(t).map_err(|e| e.to_string())
+}
+
+fn from_json<T: serde::de::DeserializeOwned>(v: serde_json::Value) -> Result<T, String> {
+    serde_json::from_value(v).map_err(|e| format!("the window's answer did not read: {e}"))
+}
+
+impl DesktopHost {
+    /// A project as the phone lists it, from the window's answer (the
+    /// desktop's `ProjectInfo`: its `id`), with `active` read fresh.
+    async fn row_of(&self, project: &serde_json::Value) -> Result<ProjectRow, String> {
+        let id = project
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or("the window did not say which project")?;
+        self.projects()
+            .await?
+            .into_iter()
+            .find(|p| p.id == id)
+            .ok_or_else(|| format!("project {id} is not on the list"))
+    }
+}
+
 /// §4's new `Host` methods, the Mac's way (item 246, wave 1, agent 1B).
 ///
-/// MERGE (1A lands the trait): these move into `impl Host for
-/// DesktopHost` with 1A's signatures — each body stays; a typed argument
-/// (`ChatAction`, `RailPatch`, `LayerChange`, `SendRequest`) goes through
-/// `serde_json::to_value` and a typed reply through
-/// `serde_json::from_value`. Until then nothing calls them, hence the
-/// `allow`. The report (`246-wave1-report-p1b.md`) has the forwarding block.
+/// `impl Host for DesktopHost` forwards 1A's typed trait methods here
+/// (JSON both ways, `to_json`/`from_json`); search and the notes list are
+/// served there directly, since their replies are the service crate's own
+/// types.
 ///
 /// Every chat-addressed one runs in the window, like `send`: the window
 /// opens the chat when it is not the open one (another project's first),
@@ -518,7 +653,6 @@ fn note_trash(scope: &str, name: &str) -> Option<std::path::PathBuf> {
 /// (blocker 665's default), runs the same state function the Mac's button
 /// runs, and answers through [`remote_done`]. Reads that need no window
 /// (usage, search, notes) are served here.
-#[allow(dead_code)]
 impl DesktopHost {
     pub fn features(&self) -> Vec<String> {
         FEATURES.iter().map(|s| s.to_string()).collect()
@@ -623,14 +757,6 @@ impl DesktopHost {
         Ok(serde_json::json!({ "plan": plan, "ledger": ledger }))
     }
 
-    /// Search everywhere: `scope` is `this`, `all` or `notes`.
-    pub async fn search(&self, q: &str, scope: &str) -> Result<serde_json::Value, String> {
-        let scope = serde_json::from_value(serde_json::json!(scope))
-            .map_err(|_| format!("no search scope {scope}"))?;
-        let found = crate::search_everywhere(self.state_of(), q.to_string(), scope).await?;
-        serde_json::to_value(found).map_err(|e| e.to_string())
-    }
-
     /// A new project by name (its folder under the projects folder, as
     /// the Mac's form without a picked folder) → its row.
     pub async fn project_new(
@@ -673,14 +799,6 @@ impl DesktopHost {
             ACT_WAIT,
         )
         .await
-    }
-
-    /// The notes of `scope` (`project`, `knowledge`, …), as the Mac lists them.
-    pub async fn notes_list(&self, scope: &str) -> Result<serde_json::Value, String> {
-        let scope = serde_json::from_value(serde_json::json!(scope))
-            .map_err(|_| format!("no note scope {scope}"))?;
-        let notes = crate::list_notes(self.state_of(), Some(scope)).await?;
-        serde_json::to_value(notes).map_err(|e| e.to_string())
     }
 
     pub async fn note_read(&self, scope: &str, name: &str) -> Result<String, String> {
