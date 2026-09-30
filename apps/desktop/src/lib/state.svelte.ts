@@ -74,6 +74,7 @@ import {
   backgroundEndToast,
   canDetach,
   eventHost,
+  firstUserText,
   liveHost,
   settlePlan,
   type Background,
@@ -2121,7 +2122,16 @@ let budgetPoll: ReturnType<typeof setInterval> | null = null;
 export async function readTurnBudget(session: string | null): Promise<void> {
   if (!session || app.connection?.engine !== "claude-code") return;
   try {
-    app.turnBudget = await api.turnBudget(session);
+    const got = await api.turnBudget(session);
+    // A chat running off screen keeps its own ledger (backlog 159, A4);
+    // the meter on screen is the screen's running chat's, or the open
+    // chat's — never another chat's read that came back late.
+    const b = app.background[session];
+    if (b) {
+      b.budget = got;
+      return;
+    }
+    if (app.budgetSession === session || app.activeSessionId === session) app.turnBudget = got;
   } catch {
     // A failed read keeps the last ledger.
   }
@@ -2175,22 +2185,32 @@ async function sendUntyped(text: string): Promise<void> {
   }
 }
 function startBudgetPoll(session: string | null, typed = false): void {
-  if (budgetPoll) clearInterval(budgetPoll);
-  budgetPoll = null;
   app.turnBudget = null;
   app.budgetSession = session;
   if (!session || app.connection?.engine !== "claude-code") return;
   notePresence(session, typed);
   void readTurnBudget(session);
-  budgetPoll = setInterval(() => {
-    if (!app.busy) {
-      if (budgetPoll) clearInterval(budgetPoll);
-      budgetPoll = null;
-      return;
-    }
-    notePresence(session, false);
-    void readTurnBudget(session);
-  }, TURN_BUDGET_EVERY_MS);
+  ensureBudgetPoll();
+}
+/** One clock for every running chat's meter (backlog 159, A4): the
+ *  screen's running chat, with his presence, and each chat running off
+ *  screen, into its own record. It stops once none runs. */
+function ensureBudgetPoll(): void {
+  if (budgetPoll) return;
+  budgetPoll = setInterval(budgetTick, TURN_BUDGET_EVERY_MS);
+}
+function budgetTick(): void {
+  const onScreen = app.busy ? app.budgetSession : null;
+  if (!onScreen && bgTurns.size === 0) {
+    if (budgetPoll) clearInterval(budgetPoll);
+    budgetPoll = null;
+    return;
+  }
+  if (onScreen) {
+    notePresence(onScreen, false);
+    void readTurnBudget(onScreen);
+  }
+  for (const id of bgTurns.keys()) void readTurnBudget(id);
 }
 
 let planUsageClock: ReturnType<typeof setInterval> | null = null;
@@ -5152,6 +5172,9 @@ interface TurnCtx {
   /** The model and engine it started on (backlog 205): a New chat's first
    *  turn records them for the chat it makes. */
   choice?: ChatChoice;
+  /** He stopped it while it ran off screen (A4): the sleep watch does not
+   *  read a Stop as sleep's doing. The screen's turn has `stopped`. */
+  stopped?: boolean;
 }
 
 let turnKeys = 0;
@@ -5182,10 +5205,80 @@ export function backgroundTurnOf(chat: string): string | null {
   return hits.length === 1 ? hits[0] : null;
 }
 
-/** A background chat's name, for its toasts. */
-function backgroundName(id: string): string {
+/** A background chat's name, for its toasts and banners. ~~"another
+ *  chat" when it has no sidebar row~~ — A4: an ephemeral chat has none,
+ *  nor a New chat the list has not re-read yet; its first message names
+ *  it, quoted. */
+function backgroundName(id: string, events?: SessionEvent[]): string {
   const s = app.sessions.find((x) => x.id === id);
-  return s ? chatName(s.title, s.first_user) : "another chat";
+  if (s) return chatName(s.title, s.first_user);
+  const first = firstUserText(events ?? app.background[id]?.events ?? []);
+  return first ? `“${chatName(null, first)}”` : "a chat off screen";
+}
+
+/** Every chat whose turn runs now (A4), for the Running-tasks panel and
+ *  the top bar's chip: the screen's (or parked) turn first, then each
+ *  off screen, oldest first. `waiting` counts its unanswered prompts. */
+export interface LiveChat {
+  session: string | null;
+  name: string;
+  onScreen: boolean;
+  startedAt: number | null;
+  usage: Usage | null;
+  waiting: number;
+}
+export function liveChats(): LiveChat[] {
+  const started = (events: SessionEvent[]): number | null => {
+    for (let i = events.length - 1; i >= 0; i--) {
+      const e = events[i];
+      if (e.event === "user_message") {
+        const t = Date.parse(e.at);
+        return Number.isNaN(t) ? null : t;
+      }
+    }
+    return null;
+  };
+  const out: LiveChat[] = [];
+  if (app.busy) {
+    const session = app.parked ? app.parked.session : (fg?.chat ?? app.activeSessionId);
+    const events = app.parked ? app.parked.events : app.events;
+    const host = liveHost(app);
+    out.push({
+      session,
+      name: session ? backgroundName(session, events) : "the new chat",
+      onScreen: !app.parked,
+      startedAt: started(events),
+      usage: host.liveUsage,
+      waiting: app.pendingApprovals.length,
+    });
+  }
+  for (const b of Object.values(app.background)) {
+    out.push({
+      session: b.session,
+      name: backgroundName(b.session, b.events),
+      onScreen: false,
+      startedAt: started(b.events),
+      usage: b.liveUsage,
+      waiting: b.approvals.length,
+    });
+  }
+  return out;
+}
+
+/** Whether a turn runs in any chat — on screen, parked or off screen
+ *  (A4's gates audit): what the app-wide controls wait on (leaving the
+ *  project, a CLI update), where `app.busy` is "the chat on screen runs". */
+export function turnsRunning(): boolean {
+  return app.busy || app.parked !== null || Object.keys(app.background).length > 0;
+}
+
+/** Whether chat `id`'s own turn runs (A4): its sidebar row cannot be
+ *  deleted while it does (the backend refuses it too). */
+export function chatRuns(id: string): boolean {
+  if (app.background[id]) return true;
+  if (!app.busy) return false;
+  const running = app.parked ? app.parked.session : (fg?.chat ?? app.activeSessionId);
+  return running === id;
 }
 
 /** Whether a chat can be opened while a turn runs without parking it —
@@ -5231,6 +5324,10 @@ function detach(): boolean {
     live: app.live,
     liveUsage: app.liveUsage,
     approvals: app.pendingApprovals.filter(mine),
+    // Its meter and its init line go with it (A4): the chat opened next
+    // shows its own, not this one's.
+    budget: app.budgetSession === id ? app.turnBudget : null,
+    agentInit: app.agentInit,
   };
   app.pendingApprovals = app.pendingApprovals.filter((r) => !mine(r));
   t.detached = true;
@@ -5239,6 +5336,13 @@ function detach(): boolean {
   app.live = null;
   app.liveUsage = null;
   app.busy = false;
+  if (app.budgetSession === id) {
+    app.turnBudget = null;
+    app.budgetSession = null;
+  }
+  app.agentInit = null;
+  // The clock keeps reading its ledger off screen.
+  ensureBudgetPoll();
   return true;
 }
 
@@ -5249,13 +5353,24 @@ function promoteParked(): void {
   const p = app.parked;
   if (!t || !p || !canDetach(app.connection?.engine, t.chat)) return;
   const id = t.chat as string;
-  app.background[id] = { ...p, session: id, approvals: app.pendingApprovals.filter((r) => !r.chat || r.chat === id) };
+  app.background[id] = {
+    ...p,
+    session: id,
+    approvals: app.pendingApprovals.filter((r) => !r.chat || r.chat === id),
+    budget: app.budgetSession === id ? app.turnBudget : null,
+  };
   app.pendingApprovals = app.pendingApprovals.filter((r) => r.chat && r.chat !== id);
   app.parked = null;
   t.detached = true;
   bgTurns.set(id, t);
   fg = null;
   app.busy = false;
+  // The meter on screen is the viewed chat's now (A4).
+  if (app.budgetSession === id) {
+    app.turnBudget = null;
+    app.budgetSession = null;
+  }
+  ensureBudgetPoll();
 }
 
 /** A background chat back on screen, streaming (A2); whatever turn was on
@@ -5282,6 +5397,11 @@ async function attach(id: string): Promise<void> {
   app.liveUsage = b.liveUsage;
   app.pendingApprovals.push(...b.approvals);
   app.busy = true;
+  // Its meter and init line back with it (A4); the clock is running.
+  app.budgetSession = id;
+  app.turnBudget = b.budget ?? null;
+  app.agentInit = b.agentInit ?? null;
+  ensureBudgetPoll();
   app.liveVersion++;
   app.error = null;
   app.suggestion = null;
@@ -5292,18 +5412,35 @@ async function attach(id: string): Promise<void> {
 /** A background turn's end (A2): nothing on screen changes; the chat's
  *  record is on disk (or held, for an ephemeral chat), its row refreshes,
  *  and a light toast says where the reply is. */
-function endBackground(t: TurnCtx, failed: string | null, notices: string[]): void {
+function endBackground(t: TurnCtx, failed: string | null, res: AgentTurnResult | null): void {
   const id = t.chat as string;
   const b = app.background[id];
+  // Named before its record goes: an ephemeral chat is named from it (A4).
+  const name = backgroundName(id, b?.events);
   delete app.background[id];
   bgTurns.delete(id);
   const used = b?.liveUsage ? b.liveUsage.input_tokens + b.liveUsage.output_tokens : null;
-  addToast(backgroundEndToast(backgroundName(id), failed));
-  for (const n of notices) addToast(n);
+  const errored = failed !== null || res?.is_error === true;
+  // The turn-end banner for an unfocused window (backlog 079), as the
+  // screen's turn posts it — A4: a background end posted none.
+  notifyEnd({
+    chat: name,
+    events: b?.events ?? [],
+    segs: b?.live?.segments ?? [],
+    usage: b?.liveUsage ?? null,
+    ranIn: id,
+    error: failed,
+    cliError: res?.is_error === true,
+  });
+  addToast(backgroundEndToast(name, failed));
+  for (const n of res?.notices ?? []) addToast(n);
   void refreshSessions();
   void refreshNotes();
   void refreshPlanUsage(true);
   noteAgentTurnEnd(id, used, app.connection?.contextLimit ?? null, null);
+  // Was it sleep that ended it (backlog 101)? A4: a background turn's end
+  // reached the watch not at all.
+  sleepTurnEnded(errored, b?.events ?? [], id, t.stopped === true);
 }
 
 /**
@@ -5648,21 +5785,45 @@ function bannerChat(): string {
  * `notify.ts`'s decision.
  */
 function notifyTurnEnded(error: string | null): void {
-  const sent = [...app.events].reverse().find((e) => e.event === "user_message");
+  const ranIn = app.parked ? app.parked.session : app.activeSessionId;
+  // The running chat's own state when he browsed away (A4: the parked
+  // chat's reply, not the empty one of the chat on screen).
+  const host = liveHost(app);
+  notifyEnd({
+    chat: app.parked ? (ranIn ? backgroundName(ranIn, app.parked.events) : "New chat") : bannerChat(),
+    events: app.parked ? app.parked.events : app.events,
+    segs: host.live?.segments ?? [],
+    usage: host.liveUsage,
+    ranIn,
+    error,
+    cliError: app.agentTurn?.is_error === true,
+  });
+}
+
+/** The banner for a turn's end in any chat (A4): the screen's or one
+ *  that ran off screen, from that chat's own log and live state. */
+function notifyEnd(t: {
+  chat: string;
+  events: SessionEvent[];
+  segs: Segment[];
+  usage: Usage | null;
+  ranIn: string | null;
+  error: string | null;
+  cliError: boolean;
+}): void {
+  const sent = [...t.events].reverse().find((e) => e.event === "user_message");
   const since = sent?.event === "user_message" ? Date.parse(sent.at) : NaN;
   // The wrap-up's own turn (backlog 079's third banner, with 193): the
   // hand-off is still `wrapping` in the chat the turn ran in — the turn's
   // end moves it on only after this. A turn the CLI ended with an error
   // wrote no hand-off worth announcing.
-  const ranIn = app.parked ? app.parked.session : app.activeSessionId;
-  const wrapUp =
-    ranIn !== null && handoff.chat === ranIn && handoff.stage === "wrapping" && app.agentTurn?.is_error !== true;
+  const wrapUp = t.ranIn !== null && handoff.chat === t.ranIn && handoff.stage === "wrapping" && !t.cliError;
   void notifyTurnEnd({
-    chat: bannerChat(),
-    segs: app.live?.segments ?? [],
-    outTokens: app.liveUsage?.output_tokens ?? null,
+    chat: t.chat,
+    segs: t.segs,
+    outTokens: t.usage?.output_tokens ?? null,
     elapsedMs: Number.isNaN(since) ? null : Date.now() - since,
-    error,
+    error: t.error,
     handoffFill: wrapUp ? handoff.fill : null,
   });
 }
@@ -5822,7 +5983,7 @@ async function sendAgent(
     // Off screen at its end (A2): the chat on screen is another's, and
     // nothing below is about it.
     if (turn.detached) {
-      endBackground(turn, null, res.notices);
+      endBackground(turn, null, res);
       return;
     }
     app.agentTurn = res;
@@ -5853,7 +6014,7 @@ async function sendAgent(
   } catch (e) {
     failed = String(e);
     if (turn.detached) {
-      endBackground(turn, failed, []);
+      endBackground(turn, failed, null);
       return;
     }
     app.error = failed;
@@ -6286,15 +6447,21 @@ export async function resumeAfterSleep(chat: string | null = app.activeSessionId
 
 /** Report a turn's end to `sleepWatch`: when it started (the log's own
  *  `user_message`, the way the banner reads it), when it ended, how. */
-function sleepTurnEnded(errored: boolean): void {
-  const sent = [...app.events].reverse().find((e) => e.event === "user_message");
+function sleepTurnEnded(
+  errored: boolean,
+  events: SessionEvent[] = app.events,
+  chat: string | null = app.activeSessionId,
+  wasStopped: boolean = stopped,
+): void {
+  // A background chat's end (A4) passes its own log, id and Stop.
+  const sent = [...events].reverse().find((e) => e.event === "user_message");
   const started = sent?.event === "user_message" ? Date.parse(sent.at) : NaN;
   sleepWatch.turnEnded({
     startedAtMs: Number.isNaN(started) ? Date.now() : started,
     endedAtMs: Date.now(),
     errored,
-    stopped,
-    chat: app.activeSessionId,
+    stopped: wasStopped,
+    chat,
   });
 }
 
@@ -6317,6 +6484,9 @@ export async function cancelTurn(chat?: string | null): Promise<void> {
   // screen's turn, its queue flag and its prompts are left alone.
   const bg = chat ? backgroundTurnOf(chat) : null;
   if (bg) {
+    // Marked before the call, as the screen's `stopped` (A4).
+    const t = bgTurns.get(bg);
+    if (t) t.stopped = true;
     try {
       await api.cancel(bg);
       const b = app.background[bg];
@@ -6428,46 +6598,46 @@ function closeThinking(segments: Segment[]): void {
   }
 }
 
-/** A background chat's event (backlog 159, A2): its stream and usage,
- *  the way `applyTurnEvent` builds the chat on screen's — through it,
- *  with the background's state in the host's place for the moment. */
-function applyBackgroundEvent(bg: Background<Segment, ApprovalRequest>, ev: TurnEvent): void {
-  if (ev.type === "usage") {
-    bg.liveUsage = ev.usage;
-    return;
-  }
-  if (ev.type === "tool_denied" || ev.type === "tool_result") {
-    const i = bg.approvals.findIndex((r) => r.id === ev.tool_use_id);
-    if (i >= 0) bg.approvals.splice(i, 1);
-  }
-  // A background chat's subagents are rows of that chat (backlog 160).
-  if (ev.type === "subagent_status") {
-    upsertSubagentRow(ev, bg.session);
-    return;
-  }
-  if (!bg.live) return;
-  // The stream's own shapes are one function's (`applyStream`), shared
-  // with the chat on screen; the app-wide rows (agent init, suggestions)
-  // stay the chat on screen's.
-  if (ev.type === "agent_init" || ev.type === "prompt_suggestion") return;
-  // Without its `chat`, or it would be routed here again.
-  const { chat: _chat, ...plain } = ev as TurnEvent & { chat?: string };
-  const saved = app.parked;
-  app.parked = bg;
-  try {
-    applyTurnEvent(plain as TurnEvent);
-  } finally {
-    app.parked = saved;
-  }
+/**
+ * Where a turn's event lands (backlog 159, A4): the chat on screen (or
+ * parked), or a chat running off screen. ~~A background chat's event went
+ * through the screen's code with its record swapped into `app.parked` for
+ * the moment~~ — A4: one function takes the host it writes to.
+ */
+export interface TurnHost {
+  /** The live state the stream builds: `app` or `app.parked` for the
+   *  screen's running chat, the record for a background one. */
+  state: { live: { segments: Segment[] } | null; liveUsage: Usage | null };
+  /** The prompts it waits on; an answered one leaves this list. */
+  approvals: ApprovalRequest[];
+  /** Its chat, when known (a New chat's first turn: not yet). */
+  chat: string | null;
+  /** The background record, or null for the chat on screen. */
+  bg: Background<Segment, ApprovalRequest> | null;
 }
 
-/** Exported for the tests of what a turn's events do to the state. */
+/** The screen's running chat as a host: parked or on screen. */
+function screenHost(): TurnHost {
+  return {
+    state: liveHost(app),
+    approvals: app.pendingApprovals,
+    chat: fg?.chat ?? (app.parked ? app.parked.session : app.activeSessionId),
+    bg: null,
+  };
+}
+
+/** A chat running off screen as a host. */
+function backgroundHost(bg: Background<Segment, ApprovalRequest>): TurnHost {
+  return { state: bg, approvals: bg.approvals, chat: bg.session, bg };
+}
+
+/** Exported for the tests of what a turn's events do to the state: the
+ *  router — which chat an event is for — then `applyTurnEventTo`. */
 export function applyTurnEvent(ev: TurnEvent & { chat?: string }): void {
-  // A background chat's event lands in its own state (backlog 159, A2);
-  // what else an event does is for the chat on screen, so it stops here.
+  // A background chat's event lands in its own state (backlog 159, A2).
   const bg = eventHost(app.background, ev.chat);
   if (bg) {
-    applyBackgroundEvent(bg, ev);
+    applyTurnEventTo(backgroundHost(bg), ev);
     return;
   }
   // The turn on screen learns its chat from its first event (a New
@@ -6482,45 +6652,60 @@ export function applyTurnEvent(ev: TurnEvent & { chat?: string }): void {
     if (app.parked) promoteParked();
     if (fg === null) {
       const moved = eventHost(app.background, ev.chat);
-      if (moved) applyBackgroundEvent(moved, ev);
+      if (moved) applyTurnEventTo(backgroundHost(moved), ev);
       return;
     }
   }
-  // The running chat's live state, parked or on screen (backlog 159).
-  const host = liveHost(app);
+  applyTurnEventTo(screenHost(), ev);
+}
+
+/**
+ * One turn event into one chat's state (A4): its stream, its usage, its
+ * prompts, its subagent rows. What belongs to the window rather than a
+ * chat — the composer's suggestion, the context window's look-up, the
+ * transcript's redraw — is done for the chat on screen alone; a chat off
+ * screen keeps its init line in its record for when it comes back.
+ */
+export function applyTurnEventTo(host: TurnHost, ev: TurnEvent & { chat?: string }): void {
+  const onScreen = host.bg === null;
+  const s = host.state;
   if (ev.type === "usage") {
-    host.liveUsage = ev.usage;
+    s.liveUsage = ev.usage;
     return;
   }
   if (ev.type === "compacted") {
     // The Compaction event itself arrives with the post-turn transcript
     // re-sync and renders there; this only makes the moment visible, matching
     // what the manual compact button reports.
-    addToast("context compacted by the model");
-    // Noted here, acted on when `send` settles: a dream that started while
-    // the turn was still re-syncing would race the transcript for nothing.
-    compactedThisTurn = true;
-    if (host.live) {
-      closeThinking(host.live.segments);
-      host.live.segments.push({
+    if (onScreen) {
+      addToast("context compacted by the model");
+      // Noted here, acted on when `send` settles: a dream that started while
+      // the turn was still re-syncing would race the transcript for nothing.
+      compactedThisTurn = true;
+    } else {
+      addToast(`context compacted by the model in ${backgroundName(host.bg!.session, host.bg!.events)}`);
+    }
+    if (s.live) {
+      closeThinking(s.live.segments);
+      s.live.segments.push({
         kind: "notice",
         text: "context compacted — earlier turns replaced by a summary",
       });
-      app.liveVersion++;
+      if (onScreen) app.liveVersion++;
     }
     return;
   }
   if (ev.type === "tool_denied" || ev.type === "tool_result") {
     // The gate answered this one, whoever decided it — a prompt still on
     // screen for it (cancellation denies server-side) can no longer be used.
-    const i = app.pendingApprovals.findIndex((r) => r.id === ev.tool_use_id);
-    if (i >= 0) app.pendingApprovals.splice(i, 1);
+    const i = host.approvals.findIndex((r) => r.id === ev.tool_use_id);
+    if (i >= 0) host.approvals.splice(i, 1);
   }
   // The Running-tasks rows outlive the live message (backlog 160): a
   // status or a child's event that lands after it ended still reaches its
   // row, which is the chat's and not the message's.
   if (ev.type === "subagent_status") {
-    upsertSubagentRow(ev, ev.chat ?? fg?.chat ?? app.activeSessionId);
+    upsertSubagentRow(ev, ev.chat ?? host.chat);
     app.liveVersion++;
     return;
   }
@@ -6528,8 +6713,8 @@ export function applyTurnEvent(ev: TurnEvent & { chat?: string }): void {
     const row = subagentRow(ev.parent_tool_use_id);
     if (row) applyToSegments(row.segments, ev.event);
   }
-  if (!host.live) return;
-  const segments = host.live.segments;
+  if (!s.live) return;
+  const segments = s.live.segments;
   switch (ev.type) {
     case "text_delta":
     case "thinking_delta":
@@ -6562,19 +6747,25 @@ export function applyTurnEvent(ev: TurnEvent & { chat?: string }): void {
       break;
     case "agent_init":
       // The CLI's init line (nightshift backlog 077): kept whole for the
-      // Context page. Nothing in the transcript changes.
-      app.agentInit = ev;
-      void windowFromInit(ev.model);
+      // Context page. Nothing in the transcript changes. A chat off screen
+      // keeps it for when it comes back (A4).
+      if (host.bg) {
+        host.bg.agentInit = ev;
+      } else {
+        app.agentInit = ev;
+        void windowFromInit(ev.model);
+      }
       break;
     case "prompt_suggestion":
-      // After the result (backlog 083): the composer's ghost line.
-      app.suggestion = ev.text;
+      // After the result (backlog 083): the composer's ghost line — the
+      // chat on screen's composer only.
+      if (onScreen) app.suggestion = ev.text;
       break;
     default:
       // Unknown turn-event types are ignored by contract.
       break;
   }
-  app.liveVersion++;
+  if (onScreen) app.liveVersion++;
 }
 
 /** The Running-tasks row for the `Agent` call `id`, if the CLI has

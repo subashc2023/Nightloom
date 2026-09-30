@@ -21,7 +21,7 @@
   import { foldToFit } from "./fold";
   const POP_WIDTH = 340;
   import NotificationCentre from "./NotificationCentre.svelte";
-  import { chatKind, kindLabel, openSession } from "./state.svelte";
+  import { chatKind, kindLabel, liveChats, openSession } from "./state.svelte";
   import { forkLine } from "./edit";
 
   /**
@@ -317,6 +317,10 @@
   /** The chip's own rows (backlog 160): the chat's latest turn that had
    *  agents, so `1 agent · done · 31k` stays after the turn and the next. */
   const chipAgents = $derived(latestSubagents());
+  /** Chats whose turns run off screen (nightshift backlog 159, A4): the
+   *  chip shows while any does, so the Running-tasks panel that lists
+   *  them is a click away even in a chat with no subagents. */
+  const offScreen = $derived(liveChats().filter((c) => !c.onScreen).length);
   const agentsTail = $derived(
     agents.rows.length > 0
       ? ` · + subagents: ${agents.tokens.toLocaleString()} tokens (${agents.rows.length}, not in the window)`
@@ -468,6 +472,7 @@
       plan == null,
       planAgeMark,
       openTasks,
+      offScreen,
     ];
     refold();
   });
@@ -582,18 +587,22 @@
          agent's transcript stays a click away — ~~until the next turn~~
          since backlog 160 until a later turn spawns agents: the chip reads
          the chat's latest turn that had any (`chipAgents`). -->
-    {#if chipAgents.rows.length > 0}
+    {#if chipAgents.rows.length > 0 || offScreen > 0}
       <button
         class="ns-chip mono agents"
-        class:live={chipAgents.running > 0}
+        class:live={chipAgents.running > 0 || offScreen > 0}
         class:open={app.showTasks}
         aria-expanded={app.showTasks}
-        use:tip={`${chipAgents.rows.length} subagent${chipAgents.rows.length === 1 ? '' : 's'} in this chat's latest turn with agents${chipAgents.running > 0 ? `, ${chipAgents.running} running` : ', all done'} · ${chipAgents.tokens.toLocaleString()} tokens (the CLI's figure per agent, not in the context gauge) — click for the Running-tasks panel${app.turnBudget ? `\n${budgetTitle(app.turnBudget)}` : ''}`}
+        use:tip={`${offScreen > 0 ? `${offScreen} chat${offScreen === 1 ? "" : "s"} running off screen · ` : ""}${chipAgents.rows.length} subagent${chipAgents.rows.length === 1 ? '' : 's'} in this chat's latest turn with agents${chipAgents.running > 0 ? `, ${chipAgents.running} running` : ', all done'} · ${chipAgents.tokens.toLocaleString()} tokens (the CLI's figure per agent, not in the context gauge) — click for the Running-tasks panel${app.turnBudget ? `\n${budgetTitle(app.turnBudget)}` : ''}`}
         onclick={toggleTasks}
       >
         <span class="figure">
-          <span>{chipAgents.rows.length} agent{chipAgents.rows.length === 1 ? "" : "s"}</span>
-          {#if chipAgents.running === 0}<span class="of fold1">· done</span>{/if}
+          {#if chipAgents.rows.length > 0}
+            <span>{chipAgents.rows.length} agent{chipAgents.rows.length === 1 ? "" : "s"}</span>
+            {#if chipAgents.running === 0}<span class="of fold1">· done</span>{/if}
+          {/if}
+          <!-- Chats running off screen (A4). -->
+          {#if offScreen > 0}<span class:of={chipAgents.rows.length > 0}>{chipAgents.rows.length > 0 ? "· " : ""}{offScreen} chat{offScreen === 1 ? "" : "s"} running</span>{/if}
           <!-- No figure when none is known (a row rebuilt from a log whose
                result carried none), rather than a bare `· 0`. -->
           {#if chipAgents.tokens > 0}<span class="of fold3">· {tokens(chipAgents.tokens)}</span>{/if}

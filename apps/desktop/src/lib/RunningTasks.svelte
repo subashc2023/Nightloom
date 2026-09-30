@@ -18,19 +18,45 @@
    * cache write). *tool uses* is the CLI's count. *elapsed* is the CLI's
    * `duration_ms` once it has reported one, the window's clock until then.
    */
-  import { app, openChatSubagents, openContent, subagentRunning, type SubagentRow } from "./state.svelte";
+  import {
+    app,
+    liveChats,
+    openChatSubagents,
+    openContent,
+    openSession,
+    subagentRunning,
+    type LiveChat,
+    type SubagentRow,
+  } from "./state.svelte";
   import { fmtTokens } from "./tokens";
   import { budgetChip, budgetTitle } from "./budget";
   import { wrapAsk, wrapTarget, wrapUp } from "./budgetWrap.svelte";
   import Icon from "./Icon.svelte";
 
-  /** A ticking clock for the elapsed column while any child runs. */
+  /** A ticking clock for the elapsed column while any child or chat runs. */
   let now = $state(Date.now());
   $effect(() => {
-    if (!mine.some(subagentRunning)) return;
+    if (!mine.some(subagentRunning) && chats.length === 0) return;
     const t = setInterval(() => (now = Date.now()), 1000);
     return () => clearInterval(t);
   });
+
+  /** The chats whose turns run now (nightshift backlog 159, A4): the
+   *  chat on screen's and each one off screen, so a turn left running in
+   *  another chat is a row here and a click away. */
+  const chats = $derived(liveChats());
+  function chatElapsed(c: LiveChat): string {
+    if (c.startedAt === null) return "";
+    const s = Math.max(0, Math.round((now - c.startedAt) / 1000));
+    if (s < 60) return `${s} s`;
+    const m = Math.floor(s / 60);
+    return `${m} min ${s - m * 60} s`;
+  }
+  async function openChat(c: LiveChat) {
+    if (!c.session || c.onScreen) return;
+    app.showTasks = false;
+    await openSession(c.session);
+  }
 
   /** The open chat's rows (backlog 160: the store holds every chat's). */
   const mine = $derived(openChatSubagents());
@@ -143,6 +169,31 @@
     <button class="close" use:tip={"Close"} aria-label="Close running tasks" onclick={close}><Icon name="x" size={14} /></button>
   </div>
   <div class="pane">
+    {#if chats.length > 0}
+      <h3 class="sub">Chats running · {chats.length}</h3>
+      <table class="tasks chats">
+        <tbody>
+          {#each chats as c (c.session ?? "new")}
+            <tr class="running">
+              <td class="agent">
+                <span class="desc chat-name" use:tip={c.session ?? "New chat, first turn"}>{c.name}</span>
+              </td>
+              <td class="state">
+                <span class="dot live"></span>{c.onScreen ? "on screen" : "in the background"}{#if c.waiting > 0}<span class="ask"> · waiting on you</span>{/if}
+              </td>
+              <td class="num mono">{chatElapsed(c)}</td>
+              <td class="num mono" use:tip={"Tokens so far this turn: the latest request and reply"}>{c.usage ? fmtTokens(c.usage.input_tokens + c.usage.output_tokens) : ""}</td>
+              <td class="act">
+                {#if !c.onScreen && c.session}
+                  <button class="ns-btn ghost small" onclick={() => void openChat(c)} use:tip={"Bring this chat on screen, still streaming"}>Open</button>
+                {/if}
+              </td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+      <h3 class="sub">Subagents in this chat</h3>
+    {/if}
     {#if rows.length === 0}
       <p class="note">
         When the model spawns a subagent (its Agent tool), it is listed here with
@@ -334,5 +385,19 @@
   .act {
     text-align: right;
     white-space: nowrap;
+  }
+  .sub {
+    margin: 10px 0 4px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--dim);
+    font-family: var(--mono);
+  }
+  .chat-name {
+    color: var(--ink);
+    font-size: 13px;
+  }
+  .ask {
+    color: var(--accent, var(--ink));
   }
 </style>

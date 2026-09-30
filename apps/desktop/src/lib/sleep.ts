@@ -143,13 +143,20 @@ export function sleptThrough(turn: TurnEnd, wake: Woke): boolean {
 }
 
 /**
- * The latest wake and the latest turn end, matched whichever arrives
- * first. A match is reported once and both halves are forgotten, so the
- * resumed turn cannot match the same wake again.
+ * The latest wake and the latest turn end **per chat**, matched whichever
+ * arrives first. A match is reported once and that end is forgotten, so
+ * the resumed turn cannot match the same wake again (it starts after the
+ * wake, which `sleptThrough` refuses anyway).
+ *
+ * ~~One end at a time, and the wake forgotten at the first match~~ — since
+ * backlog 159 A4 (2026-09-30) two chats may run at once, and a sleep cuts
+ * both: each chat's end is kept and matched on its own, and the wake stays
+ * for the other chat's end that may still be on its way.
  */
 export class SleepWatch {
   private wake: Woke | null = null;
-  private end: TurnEnd | null = null;
+  /** The latest end per chat; `null` chats share one slot. */
+  private ends = new Map<string | null, TurnEnd>();
 
   constructor(
     private readonly onInterrupted: (turn: TurnEnd, wake: Woke) => void,
@@ -161,15 +168,20 @@ export class SleepWatch {
   }
 
   turnEnded(t: TurnEnd): void {
-    this.end = t;
+    this.ends.delete(t.chat);
+    this.ends.set(t.chat, t);
+    // Bounded: only the newest few chats' ends can still match a wake.
+    while (this.ends.size > 8) this.ends.delete(this.ends.keys().next().value as string | null);
     this.check();
   }
 
   private check(): void {
-    if (!this.wake || !this.end || !sleptThrough(this.end, this.wake)) return;
-    const [t, w] = [this.end, this.wake];
-    this.end = null;
-    this.wake = null;
-    this.onInterrupted(t, w);
+    const w = this.wake;
+    if (!w) return;
+    for (const [chat, t] of [...this.ends]) {
+      if (!sleptThrough(t, w)) continue;
+      this.ends.delete(chat);
+      this.onInterrupted(t, w);
+    }
   }
 }

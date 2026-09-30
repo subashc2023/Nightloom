@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { backgroundAskToast, backgroundEndToast, canDetach, eventHost } from "./browse";
-import { app, applyTurnEvent } from "./state.svelte";
+import { backgroundAskToast, backgroundEndToast, canDetach, eventHost, firstUserText } from "./browse";
+import { app, applyTurnEvent, chatRuns, liveChats, turnsRunning } from "./state.svelte";
 import type { TurnEvent } from "./types";
 
 /**
@@ -84,5 +84,69 @@ describe("two chats streaming at once (state)", () => {
       chat: string;
     });
     expect(app.background.a.approvals).toHaveLength(0);
+  });
+});
+
+describe("a chat off screen acts as the screen's does (backlog 159, A4)", () => {
+  beforeEach(() => {
+    app.busy = false;
+    app.parked = null;
+    app.live = null;
+    app.liveUsage = null;
+    app.agentInit = null;
+    app.suggestion = null;
+    app.pendingApprovals = [];
+    app.sessions = [];
+    app.background = {
+      a: {
+        session: "a",
+        pendingMode: "ephemeral",
+        pendingKind: "build",
+        events: [{ event: "user_message", text: "Count to 2500 in Spanish\nplease", at: "2026-09-30T08:00:00Z" }],
+        live: { segments: [] },
+        liveUsage: { input_tokens: 10, output_tokens: 20 },
+        approvals: [],
+      },
+    };
+  });
+
+  it("keeps a background chat's init line in its record, not the screen's", () => {
+    const init = { type: "agent_init", model: "claude-haiku-4-5", tools: [], slash_commands: ["/x"], skills: [], chat: "a" };
+    applyTurnEvent(init as unknown as TurnEvent & { chat: string });
+    expect(app.background.a.agentInit).toMatchObject({ slash_commands: ["/x"] });
+    expect(app.agentInit).toBeNull();
+  });
+
+  it("leaves the screen's composer suggestion alone", () => {
+    applyTurnEvent({ type: "prompt_suggestion", text: "next?", chat: "a" } as unknown as TurnEvent & { chat: string });
+    expect(app.suggestion).toBeNull();
+  });
+
+  it("answers a background prompt in its own list only", () => {
+    app.pendingApprovals = [{ id: "toolu_2", name: "Bash", input: {}, effect: "mutating" }];
+    app.background.a.approvals = [{ id: "toolu_1", name: "Bash", input: {}, effect: "mutating", chat: "a" }];
+    applyTurnEvent({ type: "tool_result", tool_use_id: "toolu_1", content: "ok", is_error: false, chat: "a" } as unknown as TurnEvent & {
+      chat: string;
+    });
+    expect(app.background.a.approvals).toHaveLength(0);
+    expect(app.pendingApprovals).toHaveLength(1);
+  });
+
+  it("names a chat with no sidebar row by its first message", () => {
+    expect(firstUserText(app.background.a.events)).toBe("Count to 2500 in Spanish\nplease");
+    expect(firstUserText([])).toBeNull();
+    const rows = liveChats();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ session: "a", onScreen: false, name: "“Count to 2500 in Spanish”", waiting: 0 });
+    expect(rows[0].usage).toEqual({ input_tokens: 10, output_tokens: 20 });
+  });
+
+  it("counts a turn off screen as a running turn, for that chat only", () => {
+    expect(app.busy).toBe(false);
+    expect(turnsRunning()).toBe(true);
+    expect(chatRuns("a")).toBe(true);
+    expect(chatRuns("b")).toBe(false);
+    app.background = {};
+    expect(turnsRunning()).toBe(false);
   });
 });
