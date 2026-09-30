@@ -21,9 +21,12 @@
 //!
 //! # What is not here
 //!
-//! No LAN or public binding, no option for one. No TLS: the tailnet is
-//! WireGuard end to end, and a certificate the phone would have to trust
-//! is a setup step this page exists to not have. No Tailscale identity
+//! No LAN or public binding, no option for one. No TLS by default: the
+//! tailnet is WireGuard end to end, and a certificate the phone would have
+//! to trust is a setup step this page exists to not have. HTTPS is served
+//! only when `tailscale cert`'s `cert.pem` + `key.pem` are in
+//! `<config>/remote/` (item 246 wave 3, [`crate::tls`]; the phone's
+//! microphone needs a secure page). No Tailscale identity
 //! headers yet (they need `tailscale serve` in front of the port; later).
 
 pub mod api;
@@ -419,7 +422,18 @@ impl Server {
         if !tailnet::is_tailnet(ip) {
             return Err(Error::NotTailnet(ip));
         }
-        Self::start_at(SocketAddr::new(ip, port), token, host).await
+        let addr = SocketAddr::new(ip, port);
+        // HTTPS when `tailscale cert`'s files are in `<config>/remote/`
+        // (item 246 wave 3, blocker 660); plain HTTP otherwise, as before.
+        // Unreadable files are an error, not a silent fall back to HTTP.
+        let tls = crate::tls::dir()
+            .and_then(|d| crate::tls::load(&d))
+            .transpose()
+            .map_err(|e| Error::Bind {
+                addr,
+                source: std::io::Error::other(e),
+            })?;
+        Self::start_at(addr, token, host, tls).await
     }
 
     /// The crate's own tests bind loopback; nothing else may. The check
@@ -431,10 +445,17 @@ impl Server {
         token: String,
         host: Arc<dyn Host>,
     ) -> Result<Self, Error> {
-        Self::start_at(addr, token, host).await
+        // Plain HTTP always: the tests must not turn to TLS on a machine
+        // whose real `<config>/remote/cert.pem` exists (3A's patch note).
+        Self::start_at(addr, token, host, None).await
     }
 
-    async fn start_at(addr: SocketAddr, token: String, host: Arc<dyn Host>) -> Result<Self, Error> {
+    async fn start_at(
+        addr: SocketAddr,
+        token: String,
+        host: Arc<dyn Host>,
+        tls: Option<Arc<rustls::ServerConfig>>,
+    ) -> Result<Self, Error> {
         let listener = tokio::net::TcpListener::bind(addr)
             .await
             .map_err(|source| Error::Bind { addr, source })?;
@@ -448,16 +469,6 @@ impl Server {
             token: token.clone(),
             closing: closing.clone(),
         }));
-        // HTTPS when `tailscale cert`'s files are in `<config>/remote/`
-        // (item 246 wave 3, blocker 660); plain HTTP otherwise, as before.
-        // Unreadable files are an error, not a silent fall back to HTTP.
-        let tls = crate::tls::dir()
-            .and_then(|d| crate::tls::load(&d))
-            .transpose()
-            .map_err(|e| Error::Bind {
-                addr,
-                source: std::io::Error::other(e),
-            })?;
         let https = tls.is_some();
         let task = match tls {
             Some(config) => tokio::spawn(async move {
