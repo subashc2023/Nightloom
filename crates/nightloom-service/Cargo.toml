@@ -31,9 +31,19 @@ keyring = { workspace = true, optional = true }
 # already compile — so it adds no second HTTP stack. The QR code that
 # carries the token to the phone: `qrcode` with only its SVG renderer, which
 # pulls in nothing (`image` is its optional dependency, left off).
-axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "ws"] }
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 async-stream.workspace = true
+# HTTPS on the phone listener from `tailscale cert`'s files (item 246 wave
+# 3, blocker 660): the rustls reqwest already compiles, on its ring
+# provider, so no second TLS stack and no aws-lc build.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+
+[dev-dependencies]
+# A WebSocket client for the voice socket's tests (`remote/voice_ws.rs`);
+# the same version axum's `ws` feature already compiles.
+tokio-tungstenite = "0.29"
 
 [features]
 default = ["keyring"]

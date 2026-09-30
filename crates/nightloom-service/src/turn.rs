@@ -451,8 +451,35 @@ impl Chat {
         cancel: &CancellationToken,
         on_event: &mut (dyn FnMut(TurnEvent) + Send),
     ) -> Result<TurnOutcome, ProviderError> {
+        self.run_turn_as(session, input.into(), false, cancel, on_event)
+            .await
+    }
+
+    /// [`run_turn`](Self::run_turn) for a message the phone's voice mode
+    /// heard (nightshift backlog 246, wave 3): recorded `spoken`, so the
+    /// sidecar carries the "answer for the ear" note (`voice.md`) on this
+    /// turn's request and on no later typed one.
+    pub async fn run_spoken_turn(
+        &self,
+        session: &mut Session,
+        input: impl Into<TurnInput>,
+        cancel: &CancellationToken,
+        on_event: &mut (dyn FnMut(TurnEvent) + Send),
+    ) -> Result<TurnOutcome, ProviderError> {
+        self.run_turn_as(session, input.into(), true, cancel, on_event)
+            .await
+    }
+
+    async fn run_turn_as(
+        &self,
+        session: &mut Session,
+        input: TurnInput,
+        spoken: bool,
+        cancel: &CancellationToken,
+        on_event: &mut (dyn FnMut(TurnEvent) + Send),
+    ) -> Result<TurnOutcome, ProviderError> {
         let outcome = self
-            .turn_rounds(session, input.into(), cancel, on_event)
+            .turn_rounds(session, input, spoken, cancel, on_event)
             .await;
         // The request is taken either way: a compaction the model asked for
         // during a turn that then failed is stale, and leaving the flag up
@@ -495,10 +522,11 @@ impl Chat {
         &self,
         session: &mut Session,
         input: TurnInput,
+        spoken: bool,
         cancel: &CancellationToken,
         on_event: &mut (dyn FnMut(TurnEvent) + Send),
     ) -> Result<TurnOutcome, ProviderError> {
-        session.record_user_with_attachments(input.text, input.images, input.documents);
+        session.record_user_message(input.text, input.images, input.documents, spoken);
         let mut turn_usage = Usage::default();
 
         for round in 1..=self.max_rounds.max(1) {
@@ -2910,5 +2938,49 @@ pub(crate) mod tests {
         session.record_user("just asked");
         let cancel = CancellationToken::new();
         assert!(chat.title(&mut session, &cancel).await.is_err());
+    }
+
+    /// A spoken turn (nightshift backlog 246, wave 3): logged with
+    /// `spoken`, his words alone in the log, the ear note on that turn's
+    /// request after the status block — and not on the next typed turn.
+    #[tokio::test]
+    async fn a_spoken_turn_is_logged_spoken_and_asks_for_an_answer_for_the_ear() {
+        crate::project::set_config_dir(
+            std::env::temp_dir().join(format!("nightloom-home-{}", std::process::id())),
+        );
+        let note = crate::voice::note();
+        assert!(!note.is_empty());
+        let (chat, seen) = chat_recording(vec![says("Sunny."), says("Noted.")]);
+        let mut session = Session::new();
+        let cancel = CancellationToken::new();
+        chat.run_spoken_turn(&mut session, "what's the weather", &cancel, &mut |_| {})
+            .await
+            .unwrap();
+        chat.run_turn(&mut session, "typed now", &cancel, &mut |_| {})
+            .await
+            .unwrap();
+        let requests = seen.lock().unwrap().clone();
+        let first = tail_text(&requests, 0);
+        assert!(first.starts_with("what's the weather"), "{first}");
+        assert!(
+            first.contains(&format!("<spoken-turn>\n{note}\n</spoken-turn>")),
+            "{first}"
+        );
+        assert!(!tail_text(&requests, 1).contains("spoken-turn"));
+        let spoken: Vec<(String, bool)> = session
+            .events()
+            .iter()
+            .filter_map(|e| match e {
+                SessionEvent::UserMessage { text, spoken, .. } => Some((text.clone(), *spoken)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            spoken,
+            vec![
+                ("what's the weather".to_string(), true),
+                ("typed now".to_string(), false)
+            ]
+        );
     }
 }

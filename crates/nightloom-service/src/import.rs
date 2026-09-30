@@ -1658,6 +1658,7 @@ fn write_conversation(dir: &Path, conv: &ExportedConversation) -> Result<Option<
                 text: user_text(message),
                 images: Vec::new(),
                 documents: Vec::new(),
+                spoken: false,
                 at,
             }),
             "assistant" => session.record(SessionEvent::AssistantMessage {

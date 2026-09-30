@@ -233,6 +233,15 @@ pub enum SessionEvent {
         /// Documents the user attached, on the same terms as `images`.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         documents: Vec<DocumentInput>,
+        /// The message was spoken, not typed: the phone's voice mode heard
+        /// it (nightshift backlog 246, wave 3). The text is his words only —
+        /// the note that asks the model to answer for the ear rides the
+        /// turn's sidecar or the CLI's `-p`, never the log — and a shell
+        /// marks the message with a small mic. Absent from every log
+        /// written before voice existed and from every typed message after,
+        /// so those lines stay byte-identical.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        spoken: bool,
         at: DateTime<Utc>,
     },
     AssistantMessage {
@@ -1595,12 +1604,40 @@ impl Session {
         images: Vec<ImageInput>,
         documents: Vec<DocumentInput>,
     ) {
+        self.record_user_message(text, images, documents, false);
+    }
+
+    /// Record a user message, `spoken` when the phone's voice mode heard it
+    /// (nightshift backlog 246, wave 3). The two shorter forms above are this
+    /// with `spoken: false`.
+    pub fn record_user_message(
+        &mut self,
+        text: impl Into<String>,
+        images: Vec<ImageInput>,
+        documents: Vec<DocumentInput>,
+        spoken: bool,
+    ) {
         self.record(SessionEvent::UserMessage {
             text: text.into(),
             images,
             documents,
+            spoken,
             at: Utc::now(),
         });
+    }
+
+    /// Whether the last live user message was spoken — the question the
+    /// per-turn "answer for the ear" note asks of the tail, as
+    /// [`kind_switch_note`](Self::kind_switch_note) asks its own.
+    pub fn last_user_spoken(&self) -> bool {
+        self.live_events()
+            .into_iter()
+            .rev()
+            .find_map(|(_, e)| match e {
+                SessionEvent::UserMessage { spoken, .. } => Some(*spoken),
+                _ => None,
+            })
+            .unwrap_or(false)
     }
 
     pub fn record_assistant(
@@ -1922,6 +1959,7 @@ impl Session {
                     images,
                     documents,
                     at,
+                    ..
                 } => Some(Checkpoint {
                     index,
                     text: text.clone(),
@@ -3669,6 +3707,27 @@ mod tests {
     }
 
     /// Logs written before attachments existed have no `images` key at all.
+    /// `spoken` (nightshift backlog 246): an old line reads as typed and
+    /// writes back byte-identical; a spoken one round-trips.
+    #[test]
+    fn a_user_message_is_typed_unless_it_says_spoken() {
+        let json = r#"{"event":"user_message","text":"hi","at":"2026-01-01T00:00:00Z"}"#;
+        let event: SessionEvent = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            &event,
+            SessionEvent::UserMessage { spoken: false, .. }
+        ));
+        assert_eq!(serde_json::to_string(&event).unwrap(), json);
+        let said =
+            r#"{"event":"user_message","text":"hi","spoken":true,"at":"2026-01-01T00:00:00Z"}"#;
+        let event: SessionEvent = serde_json::from_str(said).unwrap();
+        assert!(matches!(
+            &event,
+            SessionEvent::UserMessage { spoken: true, .. }
+        ));
+        assert_eq!(serde_json::to_string(&event).unwrap(), said);
+    }
+
     #[test]
     fn a_user_message_without_images_loads_and_stays_that_shape() {
         let json = r#"{"event":"user_message","text":"hi","at":"2026-01-01T00:00:00Z"}"#;

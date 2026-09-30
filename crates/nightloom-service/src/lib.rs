@@ -32,9 +32,11 @@ pub mod remote;
 pub mod sidecar;
 pub mod store;
 pub mod tidy;
+pub mod tls;
 pub mod tools;
 pub mod turn;
 pub mod usage;
+pub mod voice;
 
 pub use agent::{
     AgentError, AgentOutcome, AgentSpec, ClaudeCodeAgent, PassSpec, Recorder, carry_transcript,
