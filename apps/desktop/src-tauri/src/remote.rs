@@ -53,8 +53,23 @@ use crate::{AppState, power};
 /// `lagged` event and re-reads rather than trusting what it missed.
 const RELAY_CAPACITY: usize = 256;
 
-/// The window events the phone's stream carries, unchanged.
-const RELAYED: [&str; 3] = ["turn-event", "tool-approval", "turn-notice"];
+/// The window events the phone's stream carries, unchanged. `aside-event`
+/// (item 246, wave 2) is the window's word that an exchange the phone
+/// asked has ended (`remoteHandlers.ts`); the backend's `aside-delta`s go
+/// out under the same name, re-shaped by [`aside_delta_event`].
+const RELAYED: [&str; 4] = ["turn-event", "tool-approval", "turn-notice", "aside-event"];
+
+/// A backend `aside-delta` (`{seq, text}`) as the phone's `aside-event`
+/// (`{kind: "delta", seq, text}`); `None` for a payload that is not one.
+fn aside_delta_event(payload: &str) -> Option<String> {
+    let mut v = serde_json::from_str::<serde_json::Value>(payload).ok()?;
+    let o = v.as_object_mut()?;
+    if !o.get("seq").is_some_and(|s| s.is_u64()) || !o.get("text").is_some_and(|t| t.is_string()) {
+        return None;
+    }
+    o.insert("kind".into(), serde_json::json!("delta"));
+    Some(v.to_string())
+}
 
 /// How long `Host::send` waits for the window's answer to a `remote-send`
 /// before the phone is told the desktop did not take it. The window's
@@ -82,7 +97,15 @@ pub struct DesktopHost {
     /// `replies`, from the one counter.
     calls: Mutex<HashMap<u64, tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>>>,
     next_send: AtomicU64,
+    /// The voice engine (item 246 wave 3, 3C), made on first ask and kept:
+    /// its programs start on a socket's `hello` and stop after
+    /// [`VOICE_IDLE`] unused. `None` until `bin/voice-setup.sh` has run.
+    voice: Mutex<Option<Arc<nightloom_service::voice::Engine>>>,
 }
+
+/// The voice programs (two whisper servers and Piper, ~700 MB between
+/// them) stop after this long unused; the next socket starts them again.
+const VOICE_IDLE: Duration = Duration::from_secs(600);
 
 impl DesktopHost {
     fn new(app: AppHandle) -> Arc<Self> {
@@ -95,6 +118,7 @@ impl DesktopHost {
             replies: Mutex::new(HashMap::new()),
             calls: Mutex::new(HashMap::new()),
             next_send: AtomicU64::new(1),
+            voice: Mutex::new(None),
         })
     }
 
@@ -122,6 +146,17 @@ impl DesktopHost {
                 });
             });
         }
+        // An aside's answer as it streams (item 246, wave 2): every one,
+        // the Mac's own included — the phone keeps the `seq`s it asked.
+        let host = self.clone();
+        self.app.listen("aside-delta", move |ev| {
+            if let Some(payload) = aside_delta_event(ev.payload()) {
+                let _ = host.tx.send(Event {
+                    name: "aside-event".to_string(),
+                    payload,
+                });
+            }
+        });
     }
 
     fn state_of(&self) -> State<'_, AppState> {
@@ -436,6 +471,35 @@ impl Host for DesktopHost {
         self.tx.subscribe()
     }
 
+    /// Through the window's send, as a typed phone message goes, marked
+    /// `spoken`: the window passes it to `send_agent`/`send`.
+    async fn send_spoken(&self, chat: Option<&str>, text: &str) -> Result<Handed, String> {
+        DesktopHost::send_to(
+            self,
+            chat,
+            serde_json::json!({ "text": text, "spoken": true }),
+        )
+        .await
+    }
+
+    /// The engine over `~/.nightloom/voice/`, found on the first ask and
+    /// kept with its idle reaper; looked for again while it is absent, so
+    /// running the setup script needs no relaunch. Finding it starts no
+    /// program — the socket's `hello` does (`Engine::warm`).
+    fn voice(&self) -> Option<Arc<nightloom_service::voice::Engine>> {
+        let mut slot = self.voice.lock().unwrap_or_else(|p| p.into_inner());
+        if slot.is_none() {
+            let engine = nightloom_service::voice::Engine::find()?;
+            // The listener's routes run on the runtime, where the reaper's
+            // task is spawned.
+            if tokio::runtime::Handle::try_current().is_ok() {
+                engine.spawn_idle_reaper(VOICE_IDLE);
+            }
+            *slot = Some(engine);
+        }
+        slot.clone()
+    }
+
     /// A file of the page from the bundle (or, under `tauri dev`, from
     /// `dist/` on disk — the resolver does that itself). The bundle's
     /// resolver answers `index.html` for any path it does not have, so a
@@ -584,7 +648,7 @@ const RAIL_WAIT: Duration = Duration::from_secs(30);
 
 /// What this host serves of §4 (item 246 design), for `/api/state`'s
 /// `features`: the phone greys out what a host lacks.
-pub const FEATURES: [&str; 14] = [
+pub const FEATURES: [&str; 15] = [
     "act",
     "context",
     "layers",
@@ -599,6 +663,8 @@ pub const FEATURES: [&str; 14] = [
     "documents",
     "council",
     "spoken",
+    // Wave 2 (2A): `POST /api/chats/{id}/aside`, `GET …/asides`.
+    "aside",
 ];
 
 /// The phone's note deletes go here, never gone (the never-lose-work
@@ -741,6 +807,56 @@ impl DesktopHost {
         .await
     }
 
+    /// An aside on `chat` (item 246, wave 2): `{text, thread?}` →
+    /// `{chat, thread, seq}` once the exchange exists. The answer streams
+    /// on the relay as `aside-event`s. The window opens the chat first (an
+    /// aside forks the open chat).
+    ///
+    /// Not reached by a route yet: the service crate's `aside`,
+    /// `aside_cancel` and `asides` Host methods and routes are in
+    /// `246w2-patch-p2a-to-orchestrator`, whose diff adds the trait
+    /// forwards and drops these `allow`s.
+    #[allow(dead_code)]
+    pub async fn aside(
+        &self,
+        chat: &str,
+        req: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        self.call_chat(
+            "remote-aside",
+            chat,
+            serde_json::json!({ "aside": req }),
+            ACT_WAIT,
+        )
+        .await
+    }
+
+    /// Stop exchange `seq` of an aside on `chat`, as the card's × does
+    /// while it asks; nothing is opened.
+    #[allow(dead_code)]
+    pub async fn aside_cancel(&self, chat: &str, seq: u64) -> Result<(), String> {
+        self.call(
+            "remote-aside",
+            serde_json::json!({ "chat": chat, "aside": { "cancel": seq } }),
+            READ_WAIT,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// `chat`'s aside exchanges, newest last: the closed threads' under
+    /// Past, then the open cards' — read from the window without opening
+    /// the chat.
+    #[allow(dead_code)]
+    pub async fn asides(&self, chat: &str) -> Result<serde_json::Value, String> {
+        self.call(
+            "remote-asides",
+            serde_json::json!({ "chat": chat }),
+            READ_WAIT,
+        )
+        .await
+    }
+
     /// The chats running now and the open chat's subagents, from the
     /// window's Running tasks.
     pub async fn running(&self) -> Result<serde_json::Value, String> {
@@ -859,7 +975,7 @@ impl DesktopHost {
 
     /// `send` with §4's `SendRequest`: `project` opens that project first,
     /// `images`/`documents`/`council` go with the message as the Mac's
-    /// composer sends them; `spoken` is accepted and ignored until wave 3.
+    /// composer sends them; `spoken` marks a message said aloud (wave 3).
     pub async fn send_to(
         &self,
         chat: Option<&str>,
@@ -1028,7 +1144,16 @@ const NO_TAILSCALE: &str =
 /// and the QR render all block, and on a runtime worker they held a
 /// streaming turn with them (review 2026-09-17 FA7). `status` is the
 /// `spawn_blocking` wrapper every command uses.
-fn status_of(port: u16, keep_awake: bool, bound: Option<std::net::SocketAddr>) -> RemoteStatus {
+///
+/// `https_name` is the machine's `<machine>.<tailnet>.ts.net` when the
+/// running listener serves HTTPS (item 246 wave 3, blocker 660): the
+/// certificate is for that name, so the QR carries it, not the address.
+fn status_of(
+    port: u16,
+    keep_awake: bool,
+    bound: Option<std::net::SocketAddr>,
+    https_name: Option<String>,
+) -> RemoteStatus {
     let on = bound.is_some();
     let address = match bound {
         Some(addr) => Some(addr.ip()),
@@ -1036,8 +1161,9 @@ fn status_of(port: u16, keep_awake: bool, bound: Option<std::net::SocketAddr>) -
     };
     let port = bound.map(|a| a.port()).unwrap_or(port);
     let token = credentials::remote_token();
-    let setup_url = match (&address, &token) {
-        (Some(ip), Some(t)) => Some(token::setup_url(&ip.to_string(), port, t)),
+    let setup_url = match (&address, &token, &https_name) {
+        (_, Some(t), Some(name)) if on => Some(https_setup_url(name, port, t)),
+        (Some(ip), Some(t), _) => Some(token::setup_url(&ip.to_string(), port, t)),
         _ => None,
     };
     let qr_svg = setup_url.as_deref().and_then(|u| token::qr_svg(u).ok());
@@ -1053,6 +1179,12 @@ fn status_of(port: u16, keep_awake: bool, bound: Option<std::net::SocketAddr>) -
     }
 }
 
+/// The QR's link on an HTTPS listener: the certificate's name, not the
+/// address, so the phone's browser accepts it.
+fn https_setup_url(name: &str, port: u16, token: &str) -> String {
+    format!("https://{name}:{port}/#token={token}")
+}
+
 /// `status_of` off the runtime, with the card's settings read first.
 async fn status(
     remote: &Remote,
@@ -1060,7 +1192,19 @@ async fn status(
 ) -> Result<RemoteStatus, String> {
     let port = remote.port();
     let keep_awake = remote.keep_awake();
-    crate::blocking(move || Ok::<_, String>(status_of(port, keep_awake, bound))).await
+    let https = bound.is_some()
+        && remote
+            .server
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(Server::https);
+    let https_name = if https {
+        nightloom_service::tls::tailnet_domain().await
+    } else {
+        None
+    };
+    crate::blocking(move || Ok::<_, String>(status_of(port, keep_awake, bound, https_name))).await
 }
 
 /// The card's read: is the listener up, where, and the token.
@@ -1149,9 +1293,30 @@ async fn start_listener(
             t
         }
     };
+    renew_certificate().await;
     let bound = rebind(remote, IpAddr::V4(ip), port, token).await?;
     remote.apply_awake(app, remote.keep_awake());
     status(remote, Some(bound)).await
+}
+
+/// Renew Tailscale's certificate at each start (item 246 wave 3, design
+/// §2.7) — only where HTTPS is already set up, i.e. `tailscale cert`'s
+/// files are in `~/.nightloom/remote/` (blocker 660 is his switch; nothing
+/// runs without them). Tailscale replaces the files only near expiry. A
+/// failure is logged and the listener starts on the files it has.
+async fn renew_certificate() {
+    use nightloom_service::tls;
+    let Some(dir) = tls::dir() else { return };
+    let (cert, key) = tls::files(&dir);
+    if !cert.is_file() || !key.is_file() {
+        return;
+    }
+    let Some(name) = tls::tailnet_domain().await else {
+        return;
+    };
+    if let Err(e) = tls::refresh(&dir, &name).await {
+        eprintln!("remote: could not renew the HTTPS certificate: {e}");
+    }
 }
 
 /// Start the listener at `ip:port` with `token`, in place of the one
@@ -1212,6 +1377,16 @@ pub async fn remote_stop(
     if let Some(server) = remote.server.lock().await.take() {
         server.stop().await;
     }
+    // The voice programs go with the listener (item 246 wave 3).
+    let voice = remote
+        .host
+        .voice
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone();
+    if let Some(engine) = voice {
+        engine.stop().await;
+    }
     remote.apply_awake(&app, false);
     remote.persist(false);
     status(&remote, None).await
@@ -1265,6 +1440,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_https_listeners_link_names_the_certificates_machine() {
+        assert_eq!(
+            https_setup_url("mac.tail1234.ts.net", 8642, "tok"),
+            "https://mac.tail1234.ts.net:8642/#token=tok"
+        );
+    }
+
+    #[test]
     fn a_done_answer_is_the_reply_or_the_windows_sentence() {
         let reply = serde_json::json!({ "chat": "c2", "events": [] });
         assert_eq!(done_outcome(true, Some(reply.clone())), Ok(reply));
@@ -1298,8 +1481,23 @@ mod tests {
     }
 
     #[test]
+    fn an_aside_delta_goes_to_the_phone_as_an_aside_event() {
+        let out = aside_delta_event(r#"{"seq":4,"text":"hel"}"#).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({ "kind": "delta", "seq": 4, "text": "hel" })
+        );
+        assert!(aside_delta_event("[1]").is_none());
+        assert!(aside_delta_event(r#"{"text":"x"}"#).is_none());
+        assert!(RELAYED.contains(&"aside-event"));
+    }
+
+    #[test]
     fn features_name_every_route_this_host_serves() {
-        for f in ["act", "rail", "running", "usage", "notes", "images"] {
+        for f in [
+            "act", "rail", "running", "usage", "notes", "images", "aside",
+        ] {
             assert!(FEATURES.contains(&f), "{f}");
         }
     }

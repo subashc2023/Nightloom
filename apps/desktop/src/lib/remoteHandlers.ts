@@ -22,11 +22,19 @@
  * toast's words are the phone's sentence.
  */
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import * as api from "./api";
+import { pastOf } from "./asideHistory.svelte";
 import {
   app,
   applyDraft,
+  askAside,
+  asideAsking,
+  asidesOf,
+  dismissAside,
+  followUpAside,
+  type Aside,
+  type AsideTurn,
   cancelTurn,
   chatKind,
   chooseLayerVersion,
@@ -64,6 +72,7 @@ import {
   useEngine,
   useProject,
 } from "./state.svelte";
+import { EDITABLE_LAYERS } from "./types";
 import { MAX_SEATS, MIN_SEATS, type CouncilPrefs, type CouncilRequest } from "./council";
 import type { ApprovalDecision, ChatKind, DocumentInput, EditableLayer, ImageInput, LayerChoice, PromptLayer, SessionEvent } from "./types";
 import type { SubagentLimits } from "./catalog";
@@ -319,14 +328,21 @@ export async function runAct(chat: string, project: string | null, action: ChatA
   throw new Error(`no chat action ${(action as { op: string }).op}`);
 }
 
-/** The Context page's reads for the open chat. */
+/** The Context page's reads for the open chat. `layers.sources` (wave 2,
+ *  2B's patch note) is each editable layer's file text — what the Mac's
+ *  editor opens with when the chat has no text of its own — so the
+ *  phone's editor never seeds from the segment as sent, which is wrapped
+ *  and would be saved back double-wrapped. Inside `layers` because the
+ *  service passes that through as JSON; a top-level field would drop. */
 async function contextOf(): Promise<{ view: unknown; layers: unknown; pending: unknown }> {
-  const [view, layers, pending] = await Promise.all([
+  const [view, layers, pending, ...files] = await Promise.all([
     api.contextView(),
     api.promptLayers(),
     api.promptPending().catch(() => null),
+    ...EDITABLE_LAYERS.map((k) => api.promptLayerFile(k).catch(() => null)),
   ]);
-  return { view, layers, pending };
+  const sources = Object.fromEntries(EDITABLE_LAYERS.map((k, i) => [k, files[i] ?? null]));
+  return { view, layers: { ...(layers as object), sources }, pending };
 }
 
 export async function runContext(chat: string, project: string | null): Promise<unknown> {
@@ -457,6 +473,10 @@ export function runningNow(): unknown {
     })),
     subagents: openChatSubagents(),
     budget: app.turnBudget,
+    // Wave 2 (2A): the service's `Running` has these slots.
+    asides: asidesRunning(),
+    dream: app.dreaming ? { running: true } : null,
+    capture: app.capturing ? { running: true } : null,
   };
 }
 
@@ -497,6 +517,196 @@ export async function runProject(p: ProjectOp): Promise<unknown> {
   }
 }
 
+// ---- asides (item 246, wave 2, 2A) ----
+// The wire shapes are 2C's (`246w2-patch-2c-to-2a.md`), with the thread
+// added so the phone can follow up in one: `246w2-patch-p2a-to-p2c.md`.
+
+/** `remote-aside`'s body: a question (`POST …/aside`), or a stop of the
+ *  exchange numbered `cancel` (`POST …/aside/cancel {seq}`). */
+export type AsideOp = { text: string; thread?: number | null } | { cancel: number };
+
+/** The 202's body: the chat, the thread asked in, and the exchange's
+ *  number, which its `aside-event`s carry (`null` for a stop). */
+export interface AsideStarted {
+  chat: string;
+  thread: number;
+  seq: number | null;
+}
+
+/** `aside-event`'s payload on the phone's stream. `delta` is relayed by
+ *  `remote.rs` from the backend's `aside-delta` (no `chat`: the backend
+ *  does not know it); `done` and `error` are told from here when an
+ *  exchange the phone asked ends. */
+export type AsideEvent =
+  | { kind: "delta"; seq: number; text: string }
+  | { kind: "done"; chat: string; thread: number; seq: number; answer: string; is_error: false; cost_usd: null }
+  | { kind: "error"; chat: string; thread: number; seq: number; error: string; answer: string; cancelled: boolean };
+
+/** One exchange as `GET /api/chats/{id}/asides` lists it, newest last:
+ *  the closed threads' (Past) first, then the open cards'. */
+export interface AsideRow {
+  thread: number | null;
+  key: string | null;
+  open: boolean;
+  name: string | null;
+  quote: string | null;
+  seq: number | null;
+  question: string;
+  answer: string;
+  error: string | null;
+  cancelled: boolean;
+  asking: boolean;
+  /** When a Past thread was closed (ISO); null for an open card. */
+  at: string | null;
+}
+
+const stillAsking = (t: AsideTurn): boolean => t.answer === null && t.error === null && !t.cancelled;
+
+function newestSeq(list: readonly Aside[]): number {
+  let n = 0;
+  for (const a of list) for (const t of a.turns) n = Math.max(n, t.seq);
+  return n;
+}
+
+/** The exchange a call just opened: the one numbered past `before`. */
+function openedSince(list: readonly Aside[], before: number): { thread: Aside; turn: AsideTurn } | null {
+  for (const thread of list) {
+    for (const turn of thread.turns) if (turn.seq > before) return { thread, turn };
+  }
+  return null;
+}
+
+function emitAsideEvent(e: AsideEvent): void {
+  void emit("aside-event", e).catch(() => {});
+}
+
+/** How exchange `seq` of `chat`'s thread `thread` ended, as the card shows
+ *  it; a thread closed meanwhile reads as cancelled with nothing. */
+function endOf(chat: string, thread: number, seq: number): AsideEvent {
+  const t = asidesOf(chat)
+    .find((a) => a.id === thread)
+    ?.turns.find((u) => u.seq === seq);
+  const answer = t ? (t.answer ?? t.partial) : "";
+  if (t && !t.cancelled && t.error === null) {
+    return { kind: "done", chat, thread, seq, answer, is_error: false, cost_usd: null };
+  }
+  const cancelled = !t || t.cancelled;
+  return { kind: "error", chat, thread, seq, error: t?.error ?? "the aside was cancelled", answer, cancelled };
+}
+
+/**
+ * An aside from the phone, through the Mac's own functions: a question
+ * with no thread is what the composer's aside does (`askAside`: it follows
+ * up the newest answered composer thread, else opens a card); a named
+ * thread is its card's reply box (`followUpAside`), or its question box
+ * when it is a passage's draft; a cancel is the card's × while it asks
+ * (`dismissAside`: what had arrived stays, marked). The aside forks the
+ * open chat, so a question opens `chat` first (blocker 665's rule); a
+ * cancel opens nothing. Answers as soon as the exchange exists; its
+ * deltas and its end go out as `aside-event`s.
+ */
+export async function runAsideOp(
+  chat: string,
+  project: string | null,
+  op: AsideOp,
+  tell: (e: AsideEvent) => void = emitAsideEvent,
+): Promise<AsideStarted> {
+  if ("cancel" in op) {
+    const a = asidesOf(chat).find((x) => x.turns.some((t) => t.seq === op.cancel));
+    if (!a) throw new Error("that aside is not open on the Mac");
+    const t = asideAsking(a);
+    if (!t || t.seq !== op.cancel) throw new Error("that aside is not answering");
+    dismissAside(a);
+    return { chat, thread: a.id, seq: null };
+  }
+  const text = (op.text ?? "").trim();
+  if (!text) throw new Error("an aside needs a question");
+  await ensureChat(chat, project);
+  if (app.connection?.engine !== "claude-code") {
+    throw new Error("an aside runs on the Claude Code engine — switch the Mac to it first");
+  }
+  const here = app.activeSessionId ?? chat;
+  const before = newestSeq(app.asides);
+  let pending: Promise<void>;
+  if (op.thread !== undefined && op.thread !== null) {
+    const a = app.asides.find((x) => x.id === op.thread);
+    if (!a) throw new Error("that aside is not open on the Mac");
+    if (asideAsking(a)) throw new Error("that aside is still answering — wait for it, or stop it");
+    pending = a.draft ? askAside(text, a.quote, a) : followUpAside(text, a);
+  } else {
+    pending = askAside(text);
+  }
+  // Each of those numbers its exchange before its first wait.
+  const opened = openedSince(app.asides, before);
+  if (!opened) {
+    await pending;
+    throw new Error("the Mac did not ask the aside");
+  }
+  const thread = opened.thread.id;
+  const seq = opened.turn.seq;
+  const end = () => tell(endOf(here, thread, seq));
+  void pending.then(end, end);
+  return { chat: here, thread, seq };
+}
+
+/** `chat`'s aside exchanges for the phone, newest last: the closed
+ *  threads' under Past, then the open cards' (or a stashed chat's) —
+ *  read-only, no chat opened. Drafts are the Mac's question boxes and
+ *  stay there. */
+export function asideRows(chat: string): AsideRow[] {
+  const past: AsideRow[] = [...pastOf(chat)]
+    .sort((x, y) => x.closedAt - y.closedAt)
+    .flatMap((p) =>
+      p.thread.turns.map((t) => ({
+        thread: null,
+        key: p.key,
+        open: false,
+        name: p.thread.name ?? null,
+        quote: p.thread.quote?.text ?? null,
+        seq: null,
+        question: t.question,
+        answer: t.answer,
+        error: t.error,
+        cancelled: t.cancelled,
+        asking: false,
+        at: new Date(p.closedAt).toISOString(),
+      })),
+    );
+  const open: AsideRow[] = asidesOf(chat)
+    .filter((a) => !a.draft)
+    .flatMap((a) =>
+      a.turns.map((t, i) => ({
+        thread: a.id,
+        key: null,
+        open: true,
+        name: a.name ?? null,
+        quote: a.quote?.text ?? null,
+        seq: t.seq,
+        question: t.question,
+        answer: t.answer ?? t.partial,
+        error: t.error,
+        cancelled: t.cancelled,
+        asking: i === a.turns.length - 1 && stillAsking(t),
+        at: null,
+      })),
+    );
+  return [...past, ...open];
+}
+
+/** Every exchange still asking, in any chat this window holds. */
+function asidesRunning(): { chat: string; thread: number; seq: number; question: string }[] {
+  const ids = new Set<string>(app.sessions.map((s) => s.id));
+  if (app.activeSessionId) ids.add(app.activeSessionId);
+  const out: { chat: string; thread: number; seq: number; question: string }[] = [];
+  for (const chat of ids) {
+    for (const a of asidesOf(chat)) {
+      const t = asideAsking(a);
+      if (t) out.push({ chat, thread: a.id, seq: t.seq, question: t.question });
+    }
+  }
+  return out;
+}
+
 // ---- sending ----
 
 export interface RemoteSendPayload {
@@ -508,7 +718,7 @@ export interface RemoteSendPayload {
   images?: ImageInput[];
   documents?: DocumentInput[];
   council?: CouncilRequest | null;
-  /** Wave 3's; accepted and ignored here. */
+  /** Said aloud in voice mode (wave 3): the turn runs "for the ear". */
   spoken?: boolean;
 }
 
@@ -530,7 +740,7 @@ export async function runSend(p: RemoteSendPayload): Promise<"sent" | "queued"> 
   if (council && app.connection && app.connection.engine !== "claude-code") throw new Error("a council runs on the Claude Code engine — switch the Mac to it first");
   // Through `remoteSend` with its files (1B's patch note 1): the turn is
   // not his typed input, and a busy chat refuses rather than queues.
-  return remoteSend(p.chat, p.text, images, documents, council);
+  return remoteSend(p.chat, p.text, images, documents, council, p.spoken === true);
 }
 
 // ---- the listeners ----
@@ -594,4 +804,13 @@ export async function installRemoteHandlers(): Promise<void> {
   // A note written or deleted from the phone: the lists re-read. An open
   // note here keeps its editor and its draft.
   await listen("remote-notes-changed", () => void refreshNotes());
+  // Wave 2 (2A): an aside asked or stopped, and a chat's threads read.
+  await listen<Chatted & { aside: AsideOp }>("remote-aside", (e) => {
+    const { id, chat, project, aside } = e.payload;
+    void answer(id, () => runAsideOp(chat, project ?? null, aside));
+  });
+  await listen<{ id: number; chat: string }>("remote-asides", (e) => {
+    const { id, chat } = e.payload;
+    void answer(id, async () => asideRows(chat));
+  });
 }

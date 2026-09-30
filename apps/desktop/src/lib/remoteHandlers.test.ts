@@ -18,6 +18,10 @@ const fake = vi.hoisted(() => {
     checkpoint: null as unknown,
     agentTurn: null as unknown,
     turnBudget: null as unknown,
+    asides: [] as FakeAside[],
+    sessions: [{ id: "c1" }, { id: "c2" }] as { id: string }[],
+    dreaming: false,
+    capturing: false,
     draft: {
       engine: "claude-code",
       provider: "anthropic",
@@ -34,10 +38,14 @@ const fake = vi.hoisted(() => {
       agentForkMode: true,
     } as Record<string, unknown>,
   };
+  type FakeTurn = { seq: number; question: string; partial: string; answer: string | null; error: string | null; cancelled: boolean; cacheRead: number };
+  type FakeAside = { id: number; quote: { text: string } | null; draft: boolean; turns: FakeTurn[]; anchor: null; name?: string };
+  const stash = new Map<string, FakeAside[]>();
+  const aside = { seq: 0, finish: [] as (() => void)[], cancelled: [] as number[] };
   let toastSeq = 0;
   const toast = (text: string) => app.toasts.push({ id: ++toastSeq, text });
   const listeners = new Map<string, (e: { payload: unknown }) => void>();
-  return { app, toast, listeners };
+  return { app, toast, listeners, stash, aside };
 });
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -49,6 +57,9 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: async (name: string, cb: (e: { payload: unknown }) => void) => {
     fake.listeners.set(name, cb);
     return () => {};
+  },
+  emit: async (name: string, payload: unknown) => {
+    calls.push(`emit ${name} ${JSON.stringify(payload)}`);
   },
 }));
 vi.mock("./api", () => ({
@@ -64,12 +75,57 @@ vi.mock("./api", () => ({
   contextView: async () => ({ items: [] }),
   promptLayers: async () => ({ off: [] }),
   promptPending: async () => null,
+  promptLayerFile: async (kind: string) => (kind === "user_memory" ? "# memory file" : null),
   newProject: async (name: string) => ({ id: "p9", name }),
+}));
+vi.mock("./asideHistory.svelte", () => ({
+  pastOf: (chat: string) =>
+    chat === "c1"
+      ? [{ key: "k1", closedAt: 5, thread: { quote: null, name: "Old", turns: [{ question: "q0", answer: "a0", error: null, cancelled: false }] } }]
+      : [],
 }));
 vi.mock("./state.svelte", () => {
   const a = fake.app;
+  type T = (typeof a.asides)[number]["turns"][number];
+  const asking = (x: (typeof a.asides)[number]): T | null => {
+    const t = x.turns[x.turns.length - 1] ?? null;
+    return t && t.answer === null && t.error === null && !t.cancelled ? t : null;
+  };
+  // Like the real ones: the exchange is numbered and on its card before
+  // the first wait; it ends when a test calls `fake.aside.finish`.
+  const run = (t: T) =>
+    new Promise<void>((res) =>
+      fake.aside.finish.push(() => {
+        t.answer = `answer to ${t.question}`;
+        t.partial = t.answer;
+        res();
+      }),
+    );
+  const turn = (q: string): T => ({ seq: ++fake.aside.seq, question: q, partial: "", answer: null, error: null, cancelled: false, cacheRead: 0 });
   return {
     app: a,
+    askAside: (q: string, quote: unknown = null, draft: (typeof a.asides)[number] | null = null) => {
+      const t = turn(q);
+      if (draft) {
+        draft.draft = false;
+        draft.turns.push(t);
+      } else a.asides.push({ id: 100 + t.seq, quote: quote as null, draft: false, turns: [t], anchor: null });
+      return run(t);
+    },
+    followUpAside: (q: string, thread: (typeof a.asides)[number]) => {
+      const t = turn(q);
+      thread.turns.push(t);
+      return run(t);
+    },
+    asideAsking: asking,
+    asidesOf: (chat: string) => (chat === a.activeSessionId ? a.asides : (fake.stash.get(chat) ?? [])),
+    dismissAside: (x: (typeof a.asides)[number]) => {
+      const t = asking(x);
+      if (t) {
+        t.cancelled = true;
+        fake.aside.cancelled.push(t.seq);
+      }
+    },
     applyDraft: async () => calls.push("applyDraft"),
     cancelTurn: async () => {},
     chatKind: () => "build",
@@ -95,8 +151,18 @@ vi.mock("./state.svelte", () => {
     refreshProjects: async () => calls.push("refreshProjects"),
     refreshSessions: async () => {},
     remoteNewChat: async () => "sent",
-    remoteSend: async (chat: string | null, text: string, images: unknown[] = []) => {
-      calls.push(images.length ? `remoteSend ${chat} ${text} ${images.length}` : `remoteSend ${chat} ${text}`);
+    remoteSend: async (
+      chat: string | null,
+      text: string,
+      images: unknown[] = [],
+      _documents: unknown[] = [],
+      _council: unknown = null,
+      spoken = false,
+    ) => {
+      calls.push(
+        (images.length ? `remoteSend ${chat} ${text} ${images.length}` : `remoteSend ${chat} ${text}`) +
+          (spoken ? " spoken" : ""),
+      );
       return "sent";
     },
     removeBlock: async () => true,
@@ -139,7 +205,11 @@ import {
   ensureChat,
   installRemoteHandlers,
   railOf,
+  asideRows,
   runAct,
+  runAsideOp,
+  runContext,
+  runningNow,
   runProject,
   runSend,
   runSetRail,
@@ -156,7 +226,13 @@ beforeEach(() => {
     error: null,
     toasts: [],
     connection: { engine: "claude-code" },
+    asides: [],
+    dreaming: false,
+    capturing: false,
   });
+  fake.stash.clear();
+  fake.aside.finish.length = 0;
+  fake.aside.cancelled.length = 0;
   Object.assign(fake.app.draft, { engine: "claude-code", agentModel: "opus", agentEffort: "", agentAsk: false, agentPlan: false });
 });
 
@@ -230,6 +306,15 @@ describe("a chat action from the phone", () => {
   });
 });
 
+describe("the Context page from the phone", () => {
+  it("carries each editable layer's file text beside the layers (2B's patch note)", async () => {
+    const r = (await runContext("c1", null)) as { layers: { off: unknown[]; sources: Record<string, string | null> } };
+    expect(r.layers.off).toEqual([]);
+    expect(r.layers.sources.user_memory).toBe("# memory file");
+    expect(Object.keys(r.layers.sources).length).toBeGreaterThan(1);
+  });
+});
+
 describe("the rail from the phone", () => {
   it("a bad field changes nothing", async () => {
     expect(() => checkRail({ effort: "turbo" })).toThrow("no effort level turbo");
@@ -263,6 +348,11 @@ describe("a message from the phone", () => {
   it("text alone goes the way it always went", async () => {
     expect(await runSend({ id: 1, chat: "c1", text: "hello" })).toBe("sent");
     expect(calls).toEqual(["remoteSend c1 hello"]);
+  });
+
+  it("a message said aloud in voice mode goes marked spoken (wave 3)", async () => {
+    expect(await runSend({ id: 1, chat: "c1", text: "what's the weather", spoken: true })).toBe("sent");
+    expect(calls).toEqual(["remoteSend c1 what's the weather spoken"]);
   });
 
   it("a photo goes with the message through the phone's own send path", async () => {
@@ -307,5 +397,81 @@ describe("the listeners answer through remote_done", () => {
     fake.listeners.get("remote-project")!({ payload: { id: 11, op: "open", pid: "p2" } });
     await vi.waitFor(() => expect(calls.some((c) => c.startsWith("invoke remote_done"))).toBe(true));
     expect(calls.find((c) => c.startsWith("invoke remote_done"))).toContain('"id":11,"ok":true');
+  });
+});
+
+describe("an aside from the phone (wave 2, 2A)", () => {
+  it("asks as the composer does, answers at once, and tells the end", async () => {
+    const told: unknown[] = [];
+    const r = await runAsideOp("c7", null, { text: " why? " }, (e) => told.push(e));
+    expect(calls).toContain("open c7");
+    expect(r.chat).toBe("c7");
+    expect(r.seq).toBe(fake.aside.seq);
+    expect(fake.app.asides.map((x) => x.id)).toEqual([r.thread]);
+    expect(told).toEqual([]);
+    fake.aside.finish.shift()!();
+    await vi.waitFor(() => expect(told).toHaveLength(1));
+    expect(told[0]).toEqual({ kind: "done", chat: "c7", thread: r.thread, seq: r.seq, answer: "answer to why?", is_error: false, cost_usd: null });
+  });
+
+  it("a named thread is its card's reply box; one still answering is refused", async () => {
+    const first = await runAsideOp("c1", null, { text: "one" }, () => {});
+    await expect(runAsideOp("c1", null, { text: "two", thread: first.thread }, () => {})).rejects.toThrow(/still answering/);
+    fake.aside.finish.shift()!();
+    await vi.waitFor(() => expect(fake.app.asides[0]!.turns[0]!.answer).not.toBeNull());
+    const second = await runAsideOp("c1", null, { text: "two", thread: first.thread }, () => {});
+    expect(second.thread).toBe(first.thread);
+    expect(fake.app.asides[0]!.turns.map((t) => t.question)).toEqual(["one", "two"]);
+    await expect(runAsideOp("c1", null, { text: "x", thread: 999 }, () => {})).rejects.toThrow(/not open/);
+  });
+
+  it("cancels a running exchange as the card's × does, tells it as an error, and nothing else", async () => {
+    const told: { kind: string }[] = [];
+    const r = await runAsideOp("c1", null, { text: "long" }, (e) => told.push(e));
+    expect(await runAsideOp("c1", null, { cancel: r.seq! })).toEqual({ chat: "c1", thread: r.thread, seq: null });
+    expect(fake.aside.cancelled).toEqual([r.seq]);
+    await expect(runAsideOp("c1", null, { cancel: r.seq! })).rejects.toThrow(/not answering/);
+    fake.aside.finish.shift()!();
+    await vi.waitFor(() => expect(told).toHaveLength(1));
+    expect(told[0]).toMatchObject({ kind: "error", seq: r.seq, cancelled: true, error: "the aside was cancelled" });
+  });
+
+  it("is refused in words off Claude Code, and with no question", async () => {
+    await expect(runAsideOp("c1", null, { text: "  " })).rejects.toThrow(/needs a question/);
+    fake.app.connection = { engine: "api" };
+    await expect(runAsideOp("c1", null, { text: "q" })).rejects.toThrow(/Claude Code engine/);
+    expect(fake.app.asides).toEqual([]);
+  });
+
+  it("lists the exchanges newest last — Past first, then the open cards; no drafts; opens nothing", async () => {
+    fake.app.asides.push({ id: 1, quote: { text: "passage" }, draft: false, anchor: null, turns: [{ seq: 4, question: "q", partial: "so f", answer: null, error: null, cancelled: false, cacheRead: 0 }] });
+    fake.app.asides.push({ id: 2, quote: { text: "p2" }, draft: true, anchor: null, turns: [] });
+    expect(asideRows("c1")).toEqual([
+      { thread: null, key: "k1", open: false, name: "Old", quote: null, seq: null, question: "q0", answer: "a0", error: null, cancelled: false, asking: false, at: new Date(5).toISOString() },
+      { thread: 1, key: null, open: true, name: null, quote: "passage", seq: 4, question: "q", answer: "so f", error: null, cancelled: false, asking: true, at: null },
+    ]);
+    expect(calls.some((c) => c.startsWith("open"))).toBe(false);
+  });
+
+  it("Running tasks names every exchange still asking, in any chat", async () => {
+    await runAsideOp("c1", null, { text: "here" }, () => {});
+    fake.stash.set("c2", [{ id: 9, quote: null, draft: false, anchor: null, turns: [{ seq: 50, question: "there", partial: "", answer: null, error: null, cancelled: false, cacheRead: 0 }] }]);
+    fake.app.dreaming = true;
+    const r = runningNow() as { asides: { chat: string; question: string }[]; dream: unknown; capture: unknown };
+    expect(r.asides.map((x) => `${x.chat} ${x.question}`)).toEqual(["c1 here", "c2 there"]);
+    expect(r.dream).toEqual({ running: true });
+    expect(r.capture).toBeNull();
+  });
+
+  it("the listener answers through remote_done, and the end goes out as aside-event", async () => {
+    await installRemoteHandlers();
+    fake.listeners.get("remote-aside")!({ payload: { id: 21, chat: "c1", project: null, aside: { text: "hm" } } });
+    fake.listeners.get("remote-asides")!({ payload: { id: 22, chat: "c1" } });
+    await vi.waitFor(() => expect(calls.filter((c) => c.startsWith("invoke remote_done"))).toHaveLength(2));
+    const done = calls.filter((c) => c.startsWith("invoke remote_done"));
+    expect(done).toContainEqual(expect.stringContaining('"id":21,"ok":true,"json":{"chat":"c1","thread"'));
+    expect(done).toContainEqual(expect.stringContaining('"id":22,"ok":true'));
+    fake.aside.finish.shift()!();
+    await vi.waitFor(() => expect(calls.some((c) => c.startsWith('emit aside-event {"kind":"done"'))).toBe(true));
   });
 });
