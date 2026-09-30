@@ -134,7 +134,8 @@ pub struct ServeConfig {
     pub assets: Option<PathBuf>,
     /// Where unfiled chats live (`<config>/unfiled/sessions`).
     pub unfiled_dir: PathBuf,
-    /// The folder an unfiled Build chat runs in.
+    /// The folder an unfiled Build chat runs in (`serve`'s working
+    /// directory by default).
     pub unfiled_workspace: PathBuf,
 }
 
@@ -147,9 +148,9 @@ impl ServeConfig {
             hook_exe: None,
             assets: None,
             unfiled_dir: config.join("unfiled").join(project::SESSIONS_DIR),
-            unfiled_workspace: std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from(".")),
+            // As the desktop's connect falls back when no project is open
+            // and the rail names no folder: the working directory.
+            unfiled_workspace: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         }
     }
 }
