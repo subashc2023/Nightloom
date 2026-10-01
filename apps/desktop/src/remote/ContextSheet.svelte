@@ -217,6 +217,7 @@
   import { onMount, untrack } from "svelte";
   import { lineDiff } from "../lib/diff";
   import { Unreachable } from "./client";
+  import { missingSentence } from "./hosts";
   import LayerEditor, { heldLayerDraft, heldLayerKinds } from "./LayerEditor.svelte";
 
   interface Props {
@@ -231,9 +232,11 @@
     busy: boolean;
     /** The host serves `layers` (switches, own text, the mark's choices). */
     canLayers: boolean;
+    /** `/api/state`'s `host`, for the sentence when a feature is missing. */
+    host?: string | null;
     onclose: () => void;
   }
-  let { api, chat, project, title, engine, busy, canLayers, onclose }: Props = $props();
+  let { api, chat, project, title, engine, busy, canLayers, host = undefined, onclose }: Props = $props();
 
   let reply = $state<ContextReply | null>(null);
   let loading = $state(true);
@@ -397,7 +400,7 @@
       {/if}
       {#if layers?.mode && MODE_NOTE[layers.mode]}<p class="cx-note">{MODE_NOTE[layers.mode]}</p>{/if}
       {#if due}<p class="cx-note accent">Changed — the Mac applies it with this chat's next message.</p>{/if}
-      {#if !canLayers}<p class="cx-note">This Mac's Nightloom is older than the phone page: the layers can be read here, not changed.</p>{/if}
+      {#if !canLayers}<p class="cx-note">{missingSentence(host, "This Mac's Nightloom is older than the phone page: the layers can be read here, not changed.")}</p>{/if}
 
       <h3 class="cx-h">Prompt layers</h3>
       <div class="cx-cards">

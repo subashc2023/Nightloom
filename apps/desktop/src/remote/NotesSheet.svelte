@@ -29,18 +29,21 @@
     type NoteRow,
     type NoteScope,
   } from "./client";
+  import { missingSentence } from "./hosts";
 
   interface Props {
     client: Client;
     /** The host serves `/api/notes` (`features`). */
     available: boolean;
+    /** `/api/state`'s `host`, for the sentence when a feature is missing. */
+    host?: string | null;
     /** Open straight on this note (a search hit), else the list. */
     start?: { scope: NoteScope; name: string } | null;
     onnote: (text: string) => void;
     /** The sheet is taller while a note is open or edited. */
     ontall?: (tall: boolean) => void;
   }
-  let { client, available, start = null, onnote, ontall }: Props = $props();
+  let { client, available, host = undefined, start = null, onnote, ontall }: Props = $props();
 
   type View =
     | { v: "list" }
@@ -91,7 +94,7 @@
     list = null;
     drafts = noteDraftKeys();
     if (!available) {
-      problem = "This Mac's Nightloom is older than the phone page: update it to read notes here.";
+      problem = missingSentence(host, "This Mac's Nightloom is older than the phone page: update it to read notes here.");
       return;
     }
     try {
