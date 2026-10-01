@@ -39,8 +39,8 @@ use std::time::Duration;
 use nightloom_core::SessionEvent;
 use nightloom_service::credentials;
 use nightloom_service::remote::{
-    ApproveRequest, Asset, ChatRow, DEFAULT_PORT, Event, Handed, Host, ProjectRow, RemoteState,
-    Server, api, tailnet, token,
+    ApproveRequest, Asset, ChatRow, DEFAULT_PORT, Event, Handed, Host, NightshiftProject,
+    ProjectRow, RemoteState, Server, api, tailnet, token,
 };
 use nightloom_service::store;
 use serde::Serialize;
@@ -57,7 +57,15 @@ const RELAY_CAPACITY: usize = 256;
 /// (item 246, wave 2) is the window's word that an exchange the phone
 /// asked has ended (`remoteHandlers.ts`); the backend's `aside-delta`s go
 /// out under the same name, re-shaped by [`aside_delta_event`].
-const RELAYED: [&str; 4] = ["turn-event", "tool-approval", "turn-notice", "aside-event"];
+/// `pass-event` (wave 5) is the window's word on a dream or a capture the
+/// phone started: `{kind, state: started|done|failed, text}`.
+const RELAYED: [&str; 5] = [
+    "turn-event",
+    "tool-approval",
+    "turn-notice",
+    "aside-event",
+    "pass-event",
+];
 
 /// A backend `aside-delta` (`{seq, text}`) as the phone's `aside-event`
 /// (`{kind: "delta", seq, text}`); `None` for a payload that is not one.
@@ -101,7 +109,35 @@ pub struct DesktopHost {
     /// its programs start on a socket's `hello` and stop after
     /// [`VOICE_IDLE`] unused. `None` until `bin/voice-setup.sh` has run.
     voice: Mutex<Option<Arc<nightloom_service::voice::Engine>>>,
+    /// The ids the window claimed before starting a turn (backlog 132 (d),
+    /// [`remote_claim`]): a wait that runs out on a claimed id waits on,
+    /// since the turn has started; an unclaimed one is abandoned, and a
+    /// late claim for it is refused, so the window starts no turn.
+    claimed: Mutex<std::collections::HashSet<u64>>,
+    /// What the window last said of itself (wave 5): the palette (blocker
+    /// 577) and a turn the usage limit paused (backlog 164), for
+    /// `/api/state`. Sent by `remoteHandlers.ts` as `remote-window-state`.
+    window: Mutex<WindowState>,
+    /// The Nightshift projects as last detected, and when (detection
+    /// reads every project's folder; `/api/state` asks on every poll).
+    nightshift: Mutex<Option<(std::time::Instant, Vec<NightshiftProject>)>>,
 }
+
+/// The window's `remote-window-state` payload.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+struct WindowState {
+    #[serde(default)]
+    palette: Option<String>,
+    #[serde(default)]
+    limit_pause: Option<api::LimitPause>,
+}
+
+/// How long a detected Nightshift list is reused.
+const NIGHTSHIFT_FRESH: Duration = Duration::from_secs(5);
+
+/// A claimed call's wait runs on this much longer: the window said it was
+/// starting, so its answer is coming (a chat open, a send).
+const CLAIMED_GRACE: Duration = Duration::from_secs(20);
 
 /// The voice programs (two whisper servers and Piper, ~700 MB between
 /// them) stop after this long unused; the next socket starts them again.
@@ -119,6 +155,9 @@ impl DesktopHost {
             calls: Mutex::new(HashMap::new()),
             next_send: AtomicU64::new(1),
             voice: Mutex::new(None),
+            claimed: Mutex::new(std::collections::HashSet::new()),
+            window: Mutex::new(WindowState::default()),
+            nightshift: Mutex::new(None),
         })
     }
 
@@ -146,6 +185,14 @@ impl DesktopHost {
                 });
             });
         }
+        // The window's palette and limit pause (wave 5), kept for
+        // `/api/state`; a payload that does not read is ignored.
+        let host = self.clone();
+        self.app.listen("remote-window-state", move |ev| {
+            if let Ok(w) = serde_json::from_str::<WindowState>(ev.payload()) {
+                *host.window.lock().unwrap_or_else(|p| p.into_inner()) = w;
+            }
+        });
         // An aside's answer as it streams (item 246, wave 2): every one,
         // the Mac's own included — the phone keeps the `seq`s it asked.
         let host = self.clone();
@@ -175,6 +222,40 @@ impl DesktopHost {
         }
     }
 
+    /// The window asks, just before it starts a turn for call `id`,
+    /// whether the phone is still waiting (backlog 132 (d)). Yes while the
+    /// call is pending — and from then on its wait runs on; no once the
+    /// wait has run out, and the window then starts nothing (the phone was
+    /// told it failed and will send again).
+    fn claim(&self, id: u64) -> bool {
+        let pending = self
+            .replies
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains_key(&id)
+            || self
+                .calls
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .contains_key(&id);
+        if pending {
+            self.claimed
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .insert(id);
+        }
+        pending
+    }
+
+    /// Whether call `id`'s wait may run on past its deadline: the window
+    /// claimed it. Forgets the claim either way.
+    fn was_claimed(&self, id: u64) -> bool {
+        self.claimed
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&id)
+    }
+
     /// The window's answer to any other call (from `remote_done`).
     fn finish(&self, id: u64, outcome: Result<serde_json::Value, String>) {
         let tx = self
@@ -186,6 +267,25 @@ impl DesktopHost {
             let _ = tx.send(outcome);
         }
     }
+}
+
+/// Wait `wait` for the window's answer on `rx`; past it, wait `grace`
+/// more only if the window claimed the call (`claimed()`: it was starting
+/// the turn — backlog 132 (d)). `None`: no answer, and the call is
+/// abandoned (the caller forgets its id, so a late claim is refused).
+async fn await_answer<T>(
+    mut rx: tokio::sync::oneshot::Receiver<T>,
+    wait: Duration,
+    grace: Duration,
+    claimed: impl FnOnce() -> bool,
+) -> Option<Result<T, tokio::sync::oneshot::error::RecvError>> {
+    if let Ok(got) = tokio::time::timeout(wait, &mut rx).await {
+        return Some(got);
+    }
+    if !claimed() {
+        return None;
+    }
+    tokio::time::timeout(grace, rx).await.ok()
 }
 
 fn lowercase<T: Serialize>(v: T) -> String {
@@ -232,10 +332,13 @@ impl DesktopHost {
                 "the desktop window could not take the message: {e}"
             ));
         }
-        match tokio::time::timeout(wait, rx).await {
-            Ok(Ok(outcome)) => outcome,
-            Ok(Err(_)) => Err("the desktop window dropped the message".into()),
-            Err(_) => {
+        let outcome = await_answer(rx, wait, CLAIMED_GRACE, || self.was_claimed(id)).await;
+        self.was_claimed(id);
+        match outcome {
+            Some(Ok(outcome)) => outcome,
+            Some(Err(_)) => Err("the desktop window dropped the message".into()),
+            None => {
+                // Abandoned: a claim after this is refused (132 (d)).
                 self.replies
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
@@ -265,10 +368,12 @@ impl DesktopHost {
             self.finish(id, Err(String::new()));
             return Err(format!("the desktop window could not take it: {e}"));
         }
-        match tokio::time::timeout(wait, rx).await {
-            Ok(Ok(outcome)) => outcome,
-            Ok(Err(_)) => Err("the desktop window dropped it".into()),
-            Err(_) => {
+        let outcome = await_answer(rx, wait, CLAIMED_GRACE, || self.was_claimed(id)).await;
+        self.was_claimed(id);
+        match outcome {
+            Some(Ok(outcome)) => outcome,
+            Some(Err(_)) => Err("the desktop window dropped it".into()),
+            None => {
                 self.calls
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
@@ -447,10 +552,17 @@ impl Host for DesktopHost {
         Ok(())
     }
 
+    /// Open in the window and say whether it opened (backlog 132 (a)):
+    /// the window runs `ensureChat` (blocker 665's rule — refused while a
+    /// turn runs in the chat on its screen) and answers, so "Opened on the
+    /// Mac" is shown only when it did.
     async fn open(&self, chat: &str) -> Result<(), String> {
-        self.app
-            .emit("remote-open", serde_json::json!({ "chat": chat }))
-            .map_err(|e| format!("the desktop window could not take it: {e}"))
+        if chat.trim().is_empty() {
+            return Err("no chat named".into());
+        }
+        self.call_chat("remote-open", chat, serde_json::json!({}), ACT_WAIT)
+            .await
+            .map(|_| ())
     }
 
     async fn approve(&self, req: ApproveRequest) -> Result<(), String> {
@@ -642,6 +754,84 @@ impl Host for DesktopHost {
     async fn note_delete(&self, scope: &str, name: &str) -> Result<(), String> {
         DesktopHost::note_delete(self, scope, name).await
     }
+
+    // ---- wave 5 (wave 3 B1) ----
+
+    /// Every registered project whose folder detects as a Nightshift
+    /// root, by its project id — what the Mac's Nightshift list shows.
+    async fn nightshift_roots(&self) -> Vec<NightshiftProject> {
+        if let Some((at, list)) = self
+            .nightshift
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            && at.elapsed() < NIGHTSHIFT_FRESH
+        {
+            return list.clone();
+        }
+        let projects = self.state_of().workspaces.lock().await.registry.projects();
+        let list = crate::blocking(move || {
+            Ok::<_, String>(
+                projects
+                    .into_iter()
+                    .filter_map(|p| {
+                        let root = p
+                            .workspace
+                            .as_deref()
+                            .and_then(nightloom_service::nightshift::detect)?;
+                        Some(NightshiftProject {
+                            id: p.id,
+                            name: p.name,
+                            root,
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .await
+        .unwrap_or_default();
+        *self.nightshift.lock().unwrap_or_else(|p| p.into_inner()) =
+            Some((std::time::Instant::now(), list.clone()));
+        list
+    }
+
+    async fn palette(&self) -> Option<String> {
+        self.window
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .palette
+            .clone()
+    }
+
+    async fn limit_pause(&self) -> Option<api::LimitPause> {
+        self.window
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .limit_pause
+            .clone()
+    }
+
+    /// The Mac's Dream button, from the phone: the window starts
+    /// `runDream` with the rail's settings and answers once it has begun.
+    async fn dream(&self) -> Result<(), String> {
+        self.call(
+            "remote-pass",
+            serde_json::json!({ "kind": "dream" }),
+            READ_WAIT,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    async fn capture(&self) -> Result<(), String> {
+        self.call(
+            "remote-pass",
+            serde_json::json!({ "kind": "capture" }),
+            READ_WAIT,
+        )
+        .await
+        .map(|_| ())
+    }
 }
 
 /// How long a chat action may take in the window: the chat opened (in
@@ -659,8 +849,9 @@ const READ_WAIT: Duration = Duration::from_secs(5);
 const RAIL_WAIT: Duration = Duration::from_secs(30);
 
 /// What this host serves of §4 (item 246 design), for `/api/state`'s
-/// `features`: the phone greys out what a host lacks.
-pub const FEATURES: [&str; 15] = [
+/// `features`: the phone greys out what a host lacks. (`nightshift` the
+/// listener adds itself, while a project has it.)
+pub const FEATURES: [&str; 21] = [
     "act",
     "context",
     "layers",
@@ -677,6 +868,14 @@ pub const FEATURES: [&str; 15] = [
     "spoken",
     // Wave 2 (2A): `POST /api/chats/{id}/aside`, `GET …/asides`.
     "aside",
+    // Wave 5 (wave 3 B1): the Dream and Capture buttons, and the act ops
+    // by name (the away server lacks some of them).
+    "dream",
+    "capture",
+    "compact",
+    "checkpoint",
+    "budget",
+    "resume_limit",
 ];
 
 /// The phone's note deletes go here, never gone (the never-lose-work
@@ -745,7 +944,11 @@ impl DesktopHost {
         chat: &str,
         action: serde_json::Value,
     ) -> Result<serde_json::Value, String> {
-        let wait = match action.get("op").and_then(|o| o.as_str()) {
+        let op = action.get("op").and_then(|o| o.as_str());
+        if matches!(op, Some("delete" | "undelete")) {
+            self.whole_id(chat).await?;
+        }
+        let wait = match op {
             Some("compact") => COMPACT_WAIT,
             _ => ACT_WAIT,
         };
@@ -756,6 +959,42 @@ impl DesktopHost {
             wait,
         )
         .await
+    }
+
+    /// A delete or its undo names a whole chat id, never a blank or a
+    /// prefix that happens to match one (132's prefix finding; `serve`'s
+    /// `locate` since 090b1f1): an empty id is a prefix of every chat.
+    async fn whole_id(&self, chat: &str) -> Result<(), String> {
+        if !store::is_log_id(chat) {
+            return Err("no chat named".into());
+        }
+        let state = self.state_of();
+        let mut dirs = vec![state.log_dir().await];
+        dirs.extend(
+            state
+                .workspaces
+                .lock()
+                .await
+                .registry
+                .projects()
+                .into_iter()
+                .map(|p| p.session_dir()),
+        );
+        let id = chat.to_string();
+        let stem = crate::blocking(move || {
+            Ok::<_, String>(dirs.iter().find_map(|d| {
+                store::find_by_prefix(d, &id)
+                    .ok()
+                    .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
+            }))
+        })
+        .await?;
+        match stem {
+            Some(s) if s != chat => {
+                Err(format!("name the whole chat id to delete it, not `{chat}`"))
+            }
+            _ => Ok(()),
+        }
     }
 
     /// `{ view, layers, pending }` of `chat` — the Context page's reads.
@@ -1203,12 +1442,22 @@ async fn status(
             .await
             .as_ref()
             .is_some_and(Server::https);
-    let https_name = if https {
-        nightloom_service::tls::tailnet_domain().await
-    } else {
-        None
-    };
+    let https_name = if https { tailnet_name().await } else { None };
     crate::blocking(move || Ok::<_, String>(status_of(port, keep_awake, bound, https_name))).await
+}
+
+/// The machine's `<machine>.<tailnet>.ts.net`, or `None` — also when
+/// `tailscale status` does not answer within [`tailnet::CLI_TIMEOUT`]
+/// (132's FA7 variant: a hung CLI left the card spinning, or the start
+/// hanging, with no end).
+async fn tailnet_name() -> Option<String> {
+    tokio::time::timeout(
+        tailnet::CLI_TIMEOUT,
+        nightloom_service::tls::tailnet_domain(),
+    )
+    .await
+    .ok()
+    .flatten()
 }
 
 /// The card's read: is the listener up, where, and the token.
@@ -1229,6 +1478,18 @@ pub fn remote_sent(remote: State<'_, Remote>, id: u64, queued: bool, error: Opti
         None => Ok(Handed::Sent),
     };
     remote.host.answer(id, outcome);
+}
+
+/// The window, just before it starts a turn for a phone's call `id`: is
+/// the phone still waiting? `false` once the wait ran out — the phone was
+/// told it failed and may send again, so the window starts nothing
+/// (backlog 132 (d); a re-send was a second turn).
+// Registered in `main.rs`'s handler by the integrate agent
+// (`w3-patch-b1-to-integrate.md` §1), which drops this allow.
+#[allow(dead_code)]
+#[tauri::command]
+pub fn remote_claim(remote: State<'_, Remote>, id: u64) -> bool {
+    remote.host.claim(id)
 }
 
 /// The window's answer to any other call (item 246, wave 1: `remote-act`,
@@ -1315,7 +1576,7 @@ async fn renew_certificate() {
     if !cert.is_file() || !key.is_file() {
         return;
     }
-    let Some(name) = tls::tailnet_domain().await else {
+    let Some(name) = tailnet_name().await else {
         return;
     };
     if let Err(e) = tls::refresh(&dir, &name).await {
@@ -1493,11 +1754,7 @@ pub async fn remote_self_test(remote: State<'_, Remote>) -> Result<SelfTest, Str
             }
         }
     };
-    let name = if https {
-        nightloom_service::tls::tailnet_domain().await
-    } else {
-        None
-    };
+    let name = if https { tailnet_name().await } else { None };
     let url = self_test_url(addr, name.as_deref());
     let answer = nightloom_service::sync::probe(&url, Some(&token)).await;
     Ok(self_test_of(&url, answer))
@@ -1576,6 +1833,51 @@ mod tests {
         assert!(aside_delta_event("[1]").is_none());
         assert!(aside_delta_event(r#"{"text":"x"}"#).is_none());
         assert!(RELAYED.contains(&"aside-event"));
+    }
+
+    #[tokio::test]
+    async fn a_call_past_its_deadline_waits_on_only_when_the_window_claimed_it() {
+        // Answered in time: the answer.
+        let (tx, rx) = tokio::sync::oneshot::channel::<u8>();
+        tx.send(1).unwrap();
+        let got = await_answer(
+            rx,
+            Duration::from_millis(50),
+            Duration::from_secs(5),
+            || panic!("no claim asked for an answer in time"),
+        )
+        .await;
+        assert!(matches!(got, Some(Ok(1))));
+        // Not claimed by the deadline: abandoned, even if the answer
+        // would have come later.
+        let (tx, rx) = tokio::sync::oneshot::channel::<u8>();
+        let late = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let _ = tx.send(2);
+        });
+        let got = await_answer(
+            rx,
+            Duration::from_millis(50),
+            Duration::from_secs(5),
+            || false,
+        )
+        .await;
+        assert!(got.is_none());
+        late.await.unwrap();
+        // Claimed: the turn started, so the wait runs on to its answer.
+        let (tx, rx) = tokio::sync::oneshot::channel::<u8>();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let _ = tx.send(3);
+        });
+        let got = await_answer(
+            rx,
+            Duration::from_millis(50),
+            Duration::from_secs(5),
+            || true,
+        )
+        .await;
+        assert!(matches!(got, Some(Ok(3))));
     }
 
     #[test]
