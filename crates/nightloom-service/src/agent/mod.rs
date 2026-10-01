@@ -1259,6 +1259,11 @@ pub struct ClaudeCodeAgent {
     /// caller has decided the chair runs, taken by that one turn. Without
     /// it a turn starts its own ledger, whatever the seats left behind.
     chair: std::sync::Mutex<Option<i64>>,
+    /// The message's timing line (nightshift item 256): set by
+    /// `run_agent_turn` around the chat's own processes — not a council
+    /// seat's, an aside's or a name's — which mark when the CLI was
+    /// spawned, said `init`, and sent its first text.
+    timing: Option<std::sync::Arc<crate::turn_timing::TurnTiming>>,
 }
 
 impl ClaudeCodeAgent {
@@ -1268,7 +1273,14 @@ impl ClaudeCodeAgent {
             resolved: None,
             refused: None,
             chair: std::sync::Mutex::new(None),
+            timing: None,
         }
+    }
+
+    /// Mark this turn's stages on `timing` from the next process on, until
+    /// set back to `None` (item 256).
+    pub fn set_timing(&mut self, timing: Option<std::sync::Arc<crate::turn_timing::TurnTiming>>) {
+        self.timing = timing;
     }
 
     /// The next `run_turn` is the chair of the council whose seats just
@@ -1614,6 +1626,14 @@ impl ClaudeCodeAgent {
             binary: spec.binary.clone(),
             source,
         })?;
+        // The turn's timing line (item 256): the spawn, the CLI's `init`
+        // line and its first text. Only the chat's own turn sets it.
+        let timing = self.timing.clone();
+        if let Some(t) = &timing {
+            t.mark(crate::turn_timing::Mark::Spawned);
+        }
+        let mut init_seen = timing.is_none();
+        let mut text_seen = timing.is_none();
 
         // Written from its own task and then closed. A PDF near the cap is
         // tens of megabytes of base64, far past what a pipe buffers, and the
@@ -1660,7 +1680,19 @@ impl ClaudeCodeAgent {
             };
             match next {
                 Ok(Some(line)) => {
+                    if !init_seen && line.contains(r#""subtype":"init""#) {
+                        init_seen = true;
+                        if let Some(t) = &timing {
+                            t.mark(crate::turn_timing::Mark::Init);
+                        }
+                    }
                     for event in translator.push(&line) {
+                        if !text_seen && matches!(event, TurnEvent::TextDelta { .. }) {
+                            text_seen = true;
+                            if let Some(t) = &timing {
+                                t.mark(crate::turn_timing::Mark::FirstText);
+                            }
+                        }
                         on_event(event);
                     }
                 }

@@ -85,6 +85,8 @@
   import Icon from "./Icon.svelte";
   import Navigator from "./Navigator.svelte";
   import { arrive, hasLaunch } from "./sendMotion";
+  // The first-paint mark of the message's timing line (item 256).
+  import { hasText, turnClock } from "./turnTiming";
 
   interface AssistantFooter {
     model: string;
@@ -675,6 +677,11 @@
     void app.liveVersion;
     void app.pendingApprovals.length;
     void tick().then(() => {
+      // The live reply's first words are in the DOM now; the frame that
+      // draws them is its first paint (item 256's timing line).
+      if (turnClock.waitingForPaint() && hasText(app.live?.segments)) {
+        requestAnimationFrame(() => turnClock.painted());
+      }
       if (pinned && viewport) {
         scrollingSelf = true;
         viewport.scrollTop = viewport.scrollHeight;
