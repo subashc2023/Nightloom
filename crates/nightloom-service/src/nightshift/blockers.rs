@@ -130,8 +130,23 @@ pub fn answer_blocker(root: &Path, id: &str, answer: &str) -> Result<Blocker, St
 }
 
 /// The body with its `## Answer` section's text replaced (or the section
-/// appended when absent). Everything else is byte-identical.
+/// appended when absent). Everything else is byte-identical. A line of the
+/// answer that starts `## ` gets one leading space, so it stays inside the
+/// section: unescaped it began a section of its own, which the next
+/// re-answer left behind (review B1 finding 5).
 fn replace_answer(body: &str, answer: &str) -> String {
+    let answer = answer
+        .split('\n')
+        .map(|l| {
+            if l.starts_with("## ") {
+                format!(" {l}")
+            } else {
+                l.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let answer = answer.as_str();
     let heading = regex::Regex::new(r"(?m)^## Answer[^\n]*\n").expect("answer regex");
     let Some(m) = heading.find(body) else {
         let mut out = body.to_string();
@@ -232,6 +247,23 @@ mod tests {
             "## Q\nq\n\n## Answer\nnew\n"
         );
         assert_eq!(replace_answer("## Q\nq", "a"), "## Q\nq\n\n## Answer\na\n");
+    }
+
+    #[test]
+    fn an_answer_with_a_heading_line_stays_in_its_section() {
+        let once = replace_answer(
+            "## Q\nq\n\n## Answer\n\n## Later\nl\n",
+            "yes\n## Not a section\nok",
+        );
+        assert_eq!(
+            once,
+            "## Q\nq\n\n## Answer\nyes\n ## Not a section\nok\n\n## Later\nl\n"
+        );
+        // A re-answer replaces all of it: nothing stray is left behind.
+        assert_eq!(
+            replace_answer(&once, "no"),
+            "## Q\nq\n\n## Answer\nno\n\n## Later\nl\n"
+        );
     }
 
     #[test]
