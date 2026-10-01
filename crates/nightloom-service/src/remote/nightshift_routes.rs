@@ -352,6 +352,9 @@ async fn new_item(
     if req.title.trim().is_empty() {
         return (StatusCode::BAD_REQUEST, "an item needs a title").into_response();
     }
+    if let Some(why) = front_matter_problem(&req.title, req.kind.as_deref()) {
+        return (StatusCode::BAD_REQUEST, why).into_response();
+    }
     let root = match root(&shared, &p).await {
         Ok(r) => r,
         Err(f) => return failed(f),
@@ -376,6 +379,20 @@ async fn new_item(
         Ok(v) => (StatusCode::CREATED, Json(v)).into_response(),
         Err(f) => failed(f),
     }
+}
+
+/// A title or kind that would break the item's front matter: a newline
+/// (or any control character) would start a key of its own, such as
+/// `status: done` (review B1 finding 4). The phone's one-line field never
+/// sends one; the API refuses it rather than write it.
+fn front_matter_problem(title: &str, kind: Option<&str>) -> Option<&'static str> {
+    if title.chars().any(char::is_control) {
+        return Some("a title is one line, with no control characters");
+    }
+    if kind.is_some_and(|k| k.chars().any(char::is_control)) {
+        return Some("a kind is one word, with no control characters");
+    }
+    None
 }
 
 async fn blocker_list(State(shared): State<Arc<Shared>>, Path(p): Path<String>) -> Response {
@@ -504,6 +521,22 @@ async fn morning(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_title_or_kind_with_a_control_character_is_refused() {
+        assert_eq!(
+            front_matter_problem("Answer blockers from the phone", None),
+            None
+        );
+        assert_eq!(
+            front_matter_problem("Fix \"quotes\" — and dashes", Some("build")),
+            None
+        );
+        assert!(front_matter_problem("x\nstatus: done", None).is_some());
+        assert!(front_matter_problem("x\rstatus: done", None).is_some());
+        assert!(front_matter_problem("tab\there", None).is_some());
+        assert!(front_matter_problem("x", Some("build\nstatus: done")).is_some());
+    }
 
     #[test]
     fn a_new_items_body_keeps_his_words_under_his_heading() {

@@ -3207,6 +3207,15 @@ mod tests {
         )
         .await;
         assert_eq!(code, 400, "{v}");
+        // A newline in the title would write a front-matter key of its own.
+        let (code, v) = post_json(
+            &c,
+            format!("{base}/api/nightshift/p1/items"),
+            &token,
+            serde_json::json!({"title": "Sneaky\nstatus: done", "said": "x"}),
+        )
+        .await;
+        assert_eq!(code, 400, "{v}");
         let (code, v) = post_json(
             &c,
             format!("{base}/api/nightshift/p1/items"),
