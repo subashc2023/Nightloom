@@ -143,6 +143,9 @@ export interface Rail {
   engine?: string;
   provider?: string;
   model?: string;
+  /** The models the picker offers (item 272, the host's `model-list.json`);
+   *  absent from an older host, which leaves the built-in aliases. */
+  models?: string[];
   effort?: string;
   fallback?: string;
   thinking?: string;

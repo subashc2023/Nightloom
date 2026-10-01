@@ -57,6 +57,7 @@ mod draft_count;
 /// A file card's Open as a tab: which paths may be read, and reading them
 /// (nightshift backlog 161).
 mod filetab;
+mod model_list;
 /// Nightshift: the unattended runner's file contract, as commands.
 mod nightshift;
 /// Edit a note by prompt (nightshift backlog 151).
@@ -7107,6 +7108,8 @@ fn main() {
             away::away_set_url,
             away::away_sync_now,
             away::away_set_project,
+            model_list::model_list_get,
+            model_list::model_list_set,
             terminal::terminal_open,
             terminal::terminal_write,
             terminal::terminal_resize,

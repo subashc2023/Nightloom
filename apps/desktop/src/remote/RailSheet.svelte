@@ -13,8 +13,9 @@
    * limits and sent on Apply. Keys, folder pickers and the CLI update stay
    * on the Mac.
    */
-  import { AGENT_MODELS, SUBAGENT_MODELS, SUBAGENT_MODEL_LABELS, thinkingSupport, type SubagentLimits, type SubagentModel } from "../lib/catalog";
-  import { COUNCIL_MODELS, MAX_SEATS, councilProblem, type CouncilSeat, type Rail, type RailPatch } from "./client";
+  import { SUBAGENT_MODELS, SUBAGENT_MODEL_LABELS, thinkingSupport, type SubagentLimits, type SubagentModel } from "../lib/catalog";
+  import { modelsOr } from "../lib/modelList";
+  import { MAX_SEATS, councilProblem, type CouncilSeat, type Rail, type RailPatch } from "./client";
 
   interface Props {
     rail: Rail | null;
@@ -27,7 +28,9 @@
   let { rail, problem, busy, onpatch }: Props = $props();
 
   const EFFORTS = ["", "low", "medium", "high", "xhigh", "max"];
-  const ALIASES = AGENT_MODELS.filter(Boolean);
+  // Item 272: the host's list (`model-list.json`, sent on the rail);
+  // the built-in aliases from a host that sends none.
+  const ALIASES = $derived(modelsOr(rail?.models));
   const LIMIT_ROWS: { key: "per_turn" | "concurrent" | "depth"; label: string; min: number; max: number }[] = [
     { key: "per_turn", label: "Subagents a turn", min: 0, max: 50 },
     { key: "concurrent", label: "At once", min: 1, max: 20 },
@@ -212,7 +215,7 @@
             <button class="rs-x" aria-label="Remove seat {i + 1}" disabled={saving} onclick={() => editCouncil((c) => c.seats.splice(i, 1))}>×</button>
           </span>
           <div class="rs-seg small" role="radiogroup" aria-label="Seat {i + 1} model">
-            {#each COUNCIL_MODELS as m (m)}
+            {#each ALIASES as m (m)}
               <button class:on={seat.model === m} disabled={saving} onclick={() => editCouncil((c) => (c.seats[i] = { ...c.seats[i], model: m }))}>{m}</button>
             {/each}
           </div>

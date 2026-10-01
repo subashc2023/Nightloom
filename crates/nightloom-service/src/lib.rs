@@ -23,6 +23,7 @@ pub mod dream;
 pub mod import;
 pub mod knowledge;
 pub mod mcp_server;
+pub mod model_list;
 pub mod nightshift;
 pub mod note_edit;
 pub mod observe;

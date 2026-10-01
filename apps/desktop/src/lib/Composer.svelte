@@ -24,7 +24,8 @@
     switchModelAt,
     turnWasStopped,
   } from "./state.svelte";
-  import { AGENT_MODELS, MODEL_KEYS, modelChipLabel, thinkingSupport } from "./catalog";
+  import { MODEL_KEYS, modelChipLabel, thinkingSupport } from "./catalog";
+  import { modelList } from "./modelList.svelte";
   import { effortDefaultLabel } from "./effortDefaults";
   import { cacheLine, cacheState, nextTickMs, remainingText } from "./cache";
   import { HIDDEN_THINKING_TITLE, thinkingToggleDead } from "./activity";
@@ -1077,7 +1078,8 @@
   const locked = $derived(app.busy || app.connecting);
   const mod = isMac ? "⌘" : "Ctrl+";
   const shift = isMac ? "⇧" : "Shift+";
-  const AGENT_PILLS = AGENT_MODELS.filter(Boolean);
+  // Item 272: the list Settings edits (`model-list.json`), not a constant.
+  const AGENT_PILLS = $derived(modelList.models);
   /** The same list `switchModelAt` counts, so row n's cap is ⌘⇧n. */
   const models = $derived(pickerModels());
   function agentKey(alias: string): string | null {

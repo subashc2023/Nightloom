@@ -314,6 +314,11 @@ pub struct Rail {
     /// The engine's model: the agent's alias on `claude-code`, the
     /// provider's model id otherwise.
     pub model: String,
+    /// The models the picker offers on `claude-code`, in order (item 272:
+    /// `model-list.json`, which he edits without a build). Empty from a
+    /// host that predates it; the phone then offers its built-in aliases.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<String>,
     /// `low` … `max`, or empty for the CLI's own.
     pub effort: String,
     pub fallback: String,
