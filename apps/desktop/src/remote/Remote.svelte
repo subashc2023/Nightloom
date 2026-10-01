@@ -74,6 +74,7 @@
     canOp,
     clock12,
     limitCard,
+    resetMs,
     replyLine,
     replySizes,
     resumeAction,
@@ -90,6 +91,7 @@
   import UsageLine from "./UsageLine.svelte";
   import MicButton from "./voice/MicButton.svelte";
   import NotesSheet from "./NotesSheet.svelte";
+  import NightshiftSheet from "./NightshiftSheet.svelte";
   import AsideSheet from "./AsideSheet.svelte";
   import CouncilSheet from "./CouncilSheet.svelte";
   import Hosts from "./Hosts.svelte";
@@ -212,6 +214,7 @@
     | "newproject"
     | "hosts"
     | "compact"
+    | "nightshift"
   >(null);
   // ---- wave 2C: notes, asides, council, new project, search, gestures ----
   /** The notes sheet opens on this note (a search hit), else its list. */
@@ -510,6 +513,15 @@
           note(JSON.parse(data));
         } catch {
           note(data);
+        }
+        break;
+      case "pass-event":
+        // The Mac's dream or capture pass (wave 3 B1): its own toast on the end.
+        try {
+          const p = JSON.parse(data) as { kind?: string; state?: string; text?: string | null };
+          if ((p.state === "done" || p.state === "failed") && p.text) note(p.text);
+        } catch {
+          /* a malformed event says nothing */
         }
         break;
       case "lagged":
@@ -1398,6 +1410,23 @@
     sheet = "notes";
   }
 
+  // ---- wave 3 B1: the Nightshift sheet, the Mac's dream and capture passes ----
+  function openNightshift() {
+    drawer = false;
+    sheetTall = false;
+    sheet = "nightshift";
+  }
+
+  async function startPass(kind: "dream" | "capture") {
+    drawer = false;
+    try {
+      await client!.pass(kind);
+      note(kind === "dream" ? "Dreaming on the Mac" : "Capturing on the Mac");
+    } catch (e) {
+      note(String(e instanceof Error ? e.message : e));
+    }
+  }
+
   async function openAside() {
     if (!chatId) return;
     asideProblem = null;
@@ -1855,7 +1884,7 @@
   const toolCount = (tools: ToolRow[]): number => tools.reduce((n, t) => n + 1 + toolCount(t.children), 0);
 </script>
 
-{#snippet icon(name: "menu" | "new" | "more" | "up" | "stop" | "chev" | "x" | "search" | "check" | "mac" | "pencil" | "sliders" | "plus" | "trash" | "play" | "swap" | "pulse" | "note" | "aside" | "council" | "folder" | "compact" | "flag")}
+{#snippet icon(name: "menu" | "new" | "more" | "up" | "stop" | "chev" | "x" | "search" | "check" | "mac" | "pencil" | "sliders" | "plus" | "trash" | "play" | "swap" | "pulse" | "note" | "aside" | "council" | "folder" | "compact" | "flag" | "moon")}
   <svg class="ico" viewBox="0 0 24 24" aria-hidden="true">
     {#if name === "menu"}<path d="M4 7h16M4 12h16M4 17h10" />
     {:else if name === "new"}<path d="M12 20h8M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
@@ -1880,6 +1909,7 @@
     {:else if name === "folder"}<path d="M3 6h6l2 2h10v11H3Z" /><path d="M12 11v5M9.5 13.5h5" />
     {:else if name === "compact"}<path d="M4 9h16M4 15h16M12 3v4l-2-2M12 7l2-2M12 21v-4l-2 2M12 17l2 2" />
     {:else if name === "flag"}<path d="M5 21V4M5 4h11l-2 4 2 4H5" />
+    {:else if name === "moon"}<path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5Z" />
     {/if}
   </svg>
 {/snippet}
@@ -2045,7 +2075,7 @@
       {#if limitHere}
         <!-- Item 164 on the phone: the turn the usage limit paused. -->
         {@const lc = limitCard(limitHere, now)}
-        {@const set = chatId ? limitSet[chatId] : undefined}
+        {@const set = (chatId ? limitSet[chatId] : undefined) ?? resetMs(limitHere.resume_at) ?? undefined}
         <section class="card" data-card="limit" in:fly={{ y: 16, duration: motion(260), easing: cubicOut }}>
           <div class="card-head">{lc.label}</div>
           {#if set}
@@ -2256,6 +2286,15 @@
           {#if hasFeature(remote, "notes")}
             <button class="new-row quiet" onclick={() => openNotes()}>{@render icon("note")} Notes</button>
           {/if}
+          {#if hasFeature(remote, "nightshift")}
+            <button class="new-row quiet" onclick={openNightshift}>{@render icon("moon")} Nightshift</button>
+          {/if}
+          {#if hasFeature(remote, "dream")}
+            <button class="new-row quiet" onclick={() => startPass("dream")}>{@render icon("pulse")} Dream</button>
+          {/if}
+          {#if hasFeature(remote, "capture")}
+            <button class="new-row quiet" onclick={() => startPass("capture")}>{@render icon("pulse")} Capture</button>
+          {/if}
         {/if}
         {#if searchOn}
           <div class="drawer-list found">
@@ -2457,6 +2496,8 @@
           <RailSheet {rail} problem={railProblem} busy={remote.busy} onpatch={patchRail} />
         {:else if sheet === "notes" && client}
           <NotesSheet {client} host={remote.host} available={hasFeature(remote, "notes")} start={notesStart} onnote={note} ontall={(t) => (sheetTall = t)} />
+        {:else if sheet === "nightshift" && client}
+          <NightshiftSheet {client} host={remote.host} available={hasFeature(remote, "nightshift")} onnote={note} ontall={(t) => (sheetTall = t)} />
         {:else if sheet === "aside" && chatId}
           <AsideSheet
             chat={chatId}

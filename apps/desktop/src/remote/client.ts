@@ -79,13 +79,20 @@ export interface RemoteState {
   limit_pause?: LimitPauseWire | null;
 }
 
-/** `/api/state.limit_pause` (B1's `{ chat, resets_at, window }`). The
- *  reset is read in whichever form the host sends: unix seconds (the
- *  CLI's), unix ms (the window's `resetsAtMs`) or an ISO time. */
+/** `/api/state.limit_pause` (B1's `{ chat, resets_at, window, text,
+ *  subagents, resume_at }`, times unix seconds). The reset is read in
+ *  whichever form the host sends: unix seconds (the CLI's), unix ms (the
+ *  window's `resetsAtMs`) or an ISO time. */
 export interface LimitPauseWire {
   chat: string | null;
   resets_at: number | string | null;
   window?: string | null;
+  /** The host's own sentence for the pause. */
+  text?: string;
+  /** Subagents the pause stopped. */
+  subagents?: string[];
+  /** Set while the host has a resume scheduled (reset + 30 s). */
+  resume_at?: number | string | null;
 }
 
 /** Whether the host serves `name` (design §4's `features`). */
@@ -734,6 +741,12 @@ export class Client {
 
   async search(q: string, scope: SearchScope, signal?: AbortSignal): Promise<SearchResult> {
     return (await this.call(`/search?q=${encodeURIComponent(q)}&scope=${scope}`, { signal })).json();
+  }
+
+  /** Start the Mac's dream or capture pass (wave 5): 202 `{status:"started"}`; a 409 is why not
+   *  ("a dream is already running"); a 501 is a host without it (the away server). */
+  async pass(kind: "dream" | "capture"): Promise<void> {
+    await this.call(`/${kind}`, { method: "POST" });
   }
 
   /** A new project by name in the Mac's projects folder (no folder
