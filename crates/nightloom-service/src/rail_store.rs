@@ -26,6 +26,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::agent::AgentSpec;
 use crate::agent::brief::SubagentLimits;
+use crate::model_list::{self, ModelList};
 use crate::remote::api::{Rail, RailCouncil, RailPatch};
 
 /// The folder under the home the away server keeps its own state in.
@@ -91,6 +92,10 @@ pub struct RailSettings {
     pub fork_mode: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub council: Option<RailCouncil>,
+    /// The pickers' models and the away default (item 272), read from
+    /// `model-list.json` when the rail is loaded — never written here.
+    #[serde(skip)]
+    pub model_list: ModelList,
 }
 
 impl Default for RailSettings {
@@ -111,6 +116,7 @@ impl Default for RailSettings {
             subagents_auto: crate::agent::ask::SUBAGENTS_AUTO_DEFAULT,
             fork_mode: false,
             council: None,
+            model_list: ModelList::default(),
         }
     }
 }
@@ -137,12 +143,19 @@ pub fn load(home: &Path) -> Result<RailSettings, String> {
             )
         }),
     }
+    .map(|mut s: RailSettings| {
+        s.model_list = model_list::load(home);
+        s
+    })
 }
 
 /// The saved settings, or the defaults when the file does not read — what
 /// a turn runs on: a broken settings file costs the settings, not the turn.
 pub fn load_or_default(home: &Path) -> RailSettings {
-    load(home).unwrap_or_default()
+    load(home).unwrap_or_else(|_| RailSettings {
+        model_list: model_list::load(home),
+        ..RailSettings::default()
+    })
 }
 
 /// Write `settings` atomically: a temporary file beside the real one, then
@@ -307,7 +320,8 @@ impl RailSettings {
     }
 
     /// The rail as the phone reads it. `cli_model` is the server's
-    /// `--model`, shown when no model is saved; `busy` says a turn is
+    /// `--model`, shown when no model is saved and `model-list.json` names
+    /// no away default (item 272); `busy` says a turn is
     /// running, which keeps its settings — a change applies from the next
     /// turn (`deferred`, as on the Mac).
     pub fn to_rail(&self, cli_model: Option<&str>, busy: bool) -> Rail {
@@ -315,10 +329,14 @@ impl RailSettings {
             engine: self.engine.clone(),
             provider: String::new(),
             model: if self.model.is_empty() {
-                cli_model.unwrap_or_default().to_string()
+                self.model_list
+                    .default_or(cli_model)
+                    .unwrap_or_default()
+                    .to_string()
             } else {
                 self.model.clone()
             },
+            models: self.model_list.models.clone(),
             effort: self.effort.clone(),
             fallback: self.fallback.clone(),
             thinking: self.thinking.clone(),
@@ -341,12 +359,13 @@ impl RailSettings {
     }
 
     /// The model, effort, fallback and limits a turn runs on: the saved
-    /// model, else `cli_model` (`--model`), else the CLI's default. Call
+    /// model, else `model-list.json`'s away default (item 272), else
+    /// `cli_model` (`--model`), else the CLI's default. Call
     /// where `spec.model` is set, before the preamble reads it.
     pub fn apply_model(&self, spec: &mut AgentSpec, cli_model: Option<&str>) {
         spec.model = Some(self.model.as_str())
             .filter(|m| !m.is_empty())
-            .or(cli_model.filter(|m| !m.trim().is_empty()))
+            .or(self.model_list.default_or(cli_model))
             .map(str::to_string);
         spec.effort = Some(self.effort.clone()).filter(|e| !e.is_empty());
         spec.fallback_model = Some(self.fallback.clone()).filter(|f| !f.is_empty());
@@ -408,4 +427,57 @@ pub fn apply(home: &Path, patch: &RailPatch) -> Result<RailSettings, String> {
     let next = load(home)?.merged(patch)?;
     save(home, &next)?;
     Ok(next)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch() -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("nightloom-rail-models-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Item 272's Definition of done, on the away server: an id added to
+    /// the file the list reads is offered on the phone's rail and becomes
+    /// the turn's model, with no build in between.
+    #[test]
+    fn a_model_added_to_the_list_file_is_offered_and_is_the_away_default() {
+        let home = scratch();
+        let before = load_or_default(&home);
+        assert_eq!(
+            before.to_rail(Some("claude-sonnet-5-5"), false).model,
+            "claude-sonnet-5-5"
+        );
+        assert!(
+            !before
+                .to_rail(None, false)
+                .models
+                .contains(&"claude-fake-9".to_string())
+        );
+
+        std::fs::write(
+            model_list::path(&home),
+            r#"{"models": ["sonnet", "claude-fake-9"], "away_default": "claude-fake-9"}"#,
+        )
+        .unwrap();
+        let after = load_or_default(&home);
+        let rail = after.to_rail(Some("claude-sonnet-5-5"), false);
+        assert_eq!(rail.models, vec!["sonnet", "claude-fake-9"]);
+        assert_eq!(rail.model, "claude-fake-9");
+        let mut spec = AgentSpec::new(&home);
+        after.apply_model(&mut spec, Some("claude-sonnet-5-5"));
+        assert_eq!(spec.model.as_deref(), Some("claude-fake-9"));
+
+        // A model the phone chose still wins over the default.
+        let chosen = RailSettings {
+            model: "opus".into(),
+            ..after
+        };
+        chosen.apply_model(&mut spec, Some("claude-sonnet-5-5"));
+        assert_eq!(spec.model.as_deref(), Some("opus"));
+        let _ = std::fs::remove_dir_all(&home);
+    }
 }

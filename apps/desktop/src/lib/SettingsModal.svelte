@@ -46,7 +46,6 @@
     transcript,
   } from "./transcriptPrefs.svelte";
   import {
-    AGENT_MODELS,
     CURATED,
     PROVIDER_NOTES,
     formatWindow,
@@ -59,6 +58,8 @@
     type ModelEntry,
     type ModelSection,
   } from "./catalog";
+  import { modelList, saveModelList } from "./modelList.svelte";
+  import { addModel as addListModel, moveModel, removeModel } from "./modelList";
   import type { CouncilTurnRow, Note, ProviderCredit, ProviderInfo, RemoteStatus, SearchBackendInfo, UsageSummary } from "./types";
   import {
     awayHeadline,
@@ -297,7 +298,7 @@
     { kind: AGENT_KIND, label: "Subscription engine" },
   ]);
   const pickModels = $derived.by(() => {
-    if (pickProvider === AGENT_KIND) return AGENT_MODELS.filter((m) => m !== "");
+    if (pickProvider === AGENT_KIND) return modelList.models;
     const p = app.providers.find((p) => p.kind === pickProvider);
     const seen = new Set<string>();
     const all: string[] = [];
@@ -892,7 +893,21 @@
    * own roster is the window's, in `state.svelte.ts`.
    */
   let council = $state<CouncilPrefs>(loadCouncilPrefs());
-  const councilModels = AGENT_MODELS.filter((m) => m !== "");
+  const councilModels = $derived(modelList.models);
+
+  // Item 272: the Models card (Subscription pane) — the list every Claude
+  // Code picker offers and the away server's default, saved to
+  // `~/.nightloom/model-list.json` on each change, so a new model is a
+  // choice without a new build.
+  let newModelId = $state("");
+  function setModelList(models: string[], awayDefault: string | null = modelList.awayDefault) {
+    void saveModelList(models, awayDefault);
+  }
+  function addModelId() {
+    const next = addListModel(modelList.models, newModelId);
+    if (next !== modelList.models) setModelList(next);
+    newModelId = "";
+  }
   function keepCouncil(): void {
     saveCouncilPrefs(council);
   }
@@ -1627,6 +1642,71 @@
         half-done, writes <code>HANDOFF.md</code>, and ends with a start prompt
         that a linked new chat opens with, never sent by itself.
       </p>
+
+      <section class="card">
+        <div class="ch"><span class="t">Models</span>
+          <span class="spacer"></span>
+          <button
+            class="ns-btn ghost small"
+            use:tip={"Back to the built-in aliases: fable, opus, sonnet, haiku"}
+            onclick={() => setModelList([])}>Reset to built-in</button
+          >
+        </div>
+        <p class="note small">
+          What every model picker on this engine offers — the rail, the
+          composer's chip, the council, and the phone — in this order. An
+          alias (<code>sonnet</code>) follows the CLI to the newest model of
+          its family; a full id (<code>claude-sonnet-5-5</code>) stays put.
+          A model released after this build: add its id here.
+        </p>
+        <ul class="model-list">
+          {#each modelList.models as m, i (m)}
+            <li class="model-row">
+              <code>{m}</code>
+              <span class="spacer"></span>
+              <button class="ns-btn ghost small" aria-label="Move {m} up" disabled={i === 0} onclick={() => setModelList(moveModel(modelList.models, m, -1))}>↑</button>
+              <button class="ns-btn ghost small" aria-label="Move {m} down" disabled={i === modelList.models.length - 1} onclick={() => setModelList(moveModel(modelList.models, m, 1))}>↓</button>
+              <button class="ns-btn ghost small" aria-label="Remove {m}" disabled={modelList.models.length === 1} onclick={() => setModelList(removeModel(modelList.models, m))}><Icon name="trash" size={12} /></button>
+            </li>
+          {/each}
+        </ul>
+        <div class="model-row">
+          <input
+            class="model-add"
+            type="text"
+            autocorrect="off"
+            autocapitalize="off"
+            spellcheck="false"
+            placeholder="an alias or a full id, e.g. claude-sonnet-5-5"
+            aria-label="A model to add"
+            bind:value={newModelId}
+            onkeydown={(e) => e.key === "Enter" && addModelId()}
+          />
+          <button class="ns-btn ghost small" disabled={!newModelId.trim()} onclick={addModelId}><Icon name="plus" size={12} /> Add</button>
+        </div>
+        <label class="handoff-row">
+          <span>Away server's default</span>
+          <select
+            value={modelList.awayDefault ?? ""}
+            aria-label="The away server's default model"
+            onchange={(e) => setModelList(modelList.models, e.currentTarget.value || null)}
+          >
+            <option value="">the server's own (its --model)</option>
+            {#each modelList.models as m (m)}
+              <option value={m}>{m}</option>
+            {/each}
+            {#if modelList.awayDefault && !modelList.models.includes(modelList.awayDefault)}
+              <option value={modelList.awayDefault}>{modelList.awayDefault}</option>
+            {/if}
+          </select>
+        </label>
+        <p class="note small">
+          What a turn on the away server runs on when the phone's rail names
+          no model. The server reads this file from the copy the Mac's sync
+          sends; until one arrives it uses the model it was deployed with.
+        </p>
+        {#if modelList.error}<p class="note small">{modelList.error}</p>{/if}
+      </section>
 
       <section class="card">
         <div class="ch"><span class="t">Hand-off</span></div>
@@ -3299,6 +3379,28 @@
     width: 100%;
     height: 100%;
     display: block;
+  }
+  .model-list {
+    list-style: none;
+    margin: 0 0 6px;
+    padding: 0;
+  }
+  .model-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    padding: 2px 0;
+  }
+  .model-add {
+    flex: 1;
+    font-family: var(--mono);
+    font-size: 12px;
+    background: var(--paper);
+    color: var(--ink);
+    border: 1px solid var(--line2);
+    border-radius: 6px;
+    padding: 3px 6px;
   }
   .handoff-row {
     display: flex;

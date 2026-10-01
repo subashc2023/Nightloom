@@ -10,7 +10,7 @@
    * is ordinary unless the button is used again.
    */
   import { app, councilFor, setCouncilFor } from "./state.svelte";
-  import { AGENT_MODELS } from "./catalog";
+  import { modelList } from "./modelList.svelte";
   import { councilBudgetLine } from "./budget";
   import { MAX_SEATS, MIN_SEATS, lastCouncil, type CouncilMode, type CouncilPrefs, type Seat } from "./council";
 
@@ -35,7 +35,8 @@
   function keep(): void {
     setCouncilFor(app.activeSessionId, prefs);
   }
-  const models = AGENT_MODELS.filter((m) => m !== "");
+  // Item 272: the list Settings edits (`model-list.json`), not a constant.
+  const models = $derived(modelList.models);
   function setModel(i: number, model: string): void {
     prefs.seats[i] = { ...prefs.seats[i], model };
     keep();

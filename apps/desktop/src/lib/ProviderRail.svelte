@@ -29,7 +29,6 @@
   import { fmtTokens } from "./tokens";
   import { connectorLabel, connectorNames, setConnectorAllowed } from "./connectors";
   import {
-    AGENT_MODELS,
     MODEL_KEYS,
     SUBAGENT_MODELS,
     SUBAGENT_MODEL_LABELS,
@@ -41,6 +40,7 @@
     thinkingSupport,
   } from "./catalog";
   import { effortDefaultLabel } from "./effortDefaults";
+  import { modelList } from "./modelList.svelte";
   import Hint from "./Hint.svelte";
   import Icon from "./Icon.svelte";
   import Kbd from "./Kbd.svelte";
@@ -201,7 +201,8 @@
    * the field the pills replaced. The field stays for anything the pills
    * do not name, so nothing the old box accepted is refused.
    */
-  const AGENT_PILLS = AGENT_MODELS.filter(Boolean);
+  // Item 272: the list Settings edits (`model-list.json`), not a constant.
+  const AGENT_PILLS = $derived(modelList.models);
   let agentOther = $state(false);
   const agentIsAlias = $derived(AGENT_PILLS.includes(app.draft.agentModel.trim()));
   const showAgentField = $derived(agentOther || (!agentIsAlias && app.draft.agentModel.trim() !== ""));

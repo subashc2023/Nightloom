@@ -373,6 +373,14 @@ describe("the rail from the phone", () => {
     expect(calls).not.toContain("applyDraft");
   });
 
+  it("carries the model list Settings edits (item 272)", async () => {
+    const { modelList } = await import("./modelList.svelte");
+    const was = modelList.models;
+    modelList.models = [...was, "claude-fake-9"];
+    expect(railOf().models).toContain("claude-fake-9");
+    modelList.models = was;
+  });
+
   it("names no key or folder", () => {
     const keys = Object.keys(railOf());
     expect(keys).not.toContain("workspace");

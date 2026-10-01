@@ -78,6 +78,7 @@ import { EDITABLE_LAYERS } from "./types";
 import { MAX_SEATS, MIN_SEATS, type CouncilPrefs, type CouncilRequest } from "./council";
 import type { ApprovalDecision, ChatKind, DocumentInput, EditableLayer, ImageInput, LayerChoice, PromptLayer, SessionEvent } from "./types";
 import type { SubagentLimits } from "./catalog";
+import { modelList } from "./modelList.svelte";
 
 // ---- the wire shapes (design §4; 1A's `remote/api.rs` is the contract) ----
 
@@ -114,6 +115,8 @@ export interface RemoteRail {
   engine: "provider" | "claude-code";
   provider: string;
   model: string;
+  /** The Claude Code picker's models (item 272, `model-list.json`). */
+  models: string[];
   effort: string;
   fallback: string;
   thinking: string;
@@ -446,6 +449,7 @@ export function railOf(): RemoteRail {
     engine: d.engine,
     provider: d.provider,
     model: d.engine === "claude-code" ? d.agentModel : d.model,
+    models: [...modelList.models],
     effort: d.agentEffort,
     fallback: d.agentFallback,
     thinking: d.thinkingMode,
