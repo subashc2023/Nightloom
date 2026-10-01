@@ -89,6 +89,13 @@ pub struct StateReply {
     pub state: super::RemoteState,
     #[serde(default)]
     pub features: Vec<String>,
+    /// Which host answered: `mac` or `serve` ([`super::Host::kind`]).
+    #[serde(default = "mac")]
+    pub host: String,
+}
+
+fn mac() -> String {
+    "mac".into()
 }
 
 /// Whether an edited message is only saved or saved and sent (the Mac's
@@ -595,10 +602,12 @@ mod tests {
                 ..Default::default()
             },
             features: vec![feature::ACT.into()],
+            host: "serve".into(),
         };
         let v = serde_json::to_value(&r).unwrap();
         assert_eq!(v["busy"], true);
         assert_eq!(v["features"], json!(["act"]));
+        assert_eq!(v["host"], "serve");
         // An old host's reply, with no list, still reads.
         let old: StateReply = serde_json::from_value(json!({
             "project": null, "active_chat": null, "busy": false, "connected": false,
@@ -606,6 +615,8 @@ mod tests {
         }))
         .unwrap();
         assert!(old.features.is_empty());
+        // A host from before `host` was there is the Mac's.
+        assert_eq!(old.host, "mac");
     }
 
     #[test]

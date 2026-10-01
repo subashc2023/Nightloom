@@ -11,11 +11,22 @@ use nightloom_core::{
     DocumentInput, ImageInput, ProviderError, SegmentKind, Session, SessionEvent, SystemPrompt,
     Thinking, WireView,
 };
-use nightloom_service::agent::cli_session::{self, Block, CliSession, Target};
+use nightloom_service::agent::cli_session::{self, CliSession};
+// The CLI-history helpers the desktop's tests drive directly; their bodies
+// moved to the service crate with the commands' (item 246 wave 4, 4A).
+#[cfg(test)]
+use nightloom_service::agent::cli_session::{Block, Target};
 use nightloom_service::agent_turn::{
     AgentTurnEnd, AgentTurnRun, ApprovalPrompt, ProjectGrant, TurnEnv, run_agent_turn,
 };
 use nightloom_service::approval::{Approver, AutoApprove, Decision, PendingCall};
+use nightloom_service::chat_ops::{self, MessageEdit, OnCli, turns_after};
+#[cfg(test)]
+use nightloom_service::chat_ops::{
+    CliChange, agent_session_before, cli_block, cli_target, edit_cli_file, edit_on_cli,
+    is_narrative_block, restore_cli_file, restore_on_cli,
+};
+use nightloom_service::context_ops::{self, ContextEdit, PromptLayersInfo};
 use nightloom_service::credentials::{self, KeySource};
 use nightloom_service::import;
 use nightloom_service::project::{self, Note, Project, Registry};
@@ -1676,9 +1687,7 @@ const AGENT_BINARY: &str = "claude";
 async fn not_in_agent_mode(state: &AppState, what: &str) -> Result<(), String> {
     // The flag, not the lock (backlog 159, A1): a turn holds the agent.
     if state.agent_live.load(std::sync::atomic::Ordering::SeqCst) {
-        return Err(format!(
-            "cannot {what} on the Claude Code engine: it keeps its own history, and this log is a record of it"
-        ));
+        return Err(context_ops::not_on_claude_code(what));
     }
     Ok(())
 }
@@ -3395,16 +3404,7 @@ async fn rewind(state: State<'_, AppState>, to: usize) -> Result<Vec<SessionEven
     let session = session_guard
         .as_mut()
         .ok_or_else(|| "no active session".to_string())?;
-    let workspace = agent_guard.as_ref().map(|a| a.spec().workspace.clone());
-    let (turns, before) = turn_texts(session, to)?;
-    let change = match &workspace {
-        Some(cwd) => edit_on_cli(session, cwd, |cli| {
-            cli.truncate_by_text(&turns, before.as_deref())
-        })?,
-        None => CliChange::Untouched,
-    };
-    session.rewind(to)?;
-    change.adopt(session, agent_guard.as_mut());
+    chat_ops::rewind(session, agent_guard.as_mut().map(OnCli::of), to)?;
     Ok(session.events().to_vec())
 }
 
@@ -3462,292 +3462,8 @@ async fn unrewind(state: State<'_, AppState>, of: usize) -> Result<Vec<SessionEv
     let session = session_guard
         .as_mut()
         .ok_or_else(|| "no active session".to_string())?;
-    session.unrewind(of)?;
-    if agent_guard.is_some() {
-        let before = agent_session_before(session, of);
-        let current = session
-            .agent_session()
-            .filter(|(agent, _)| *agent == AGENT)
-            .map(|(_, id)| id.to_string());
-        let change = match (before, current) {
-            (Some(b), Some(c)) if b == c => CliChange::Untouched,
-            (Some(b), _) => CliChange::Resume(b),
-            (None, Some(_)) => CliChange::Fresh,
-            (None, None) => CliChange::Untouched,
-        };
-        change.adopt(session, agent_guard.as_mut());
-    }
+    chat_ops::unrewind(session, agent_guard.as_mut().map(OnCli::of), of)?;
     Ok(session.events().to_vec())
-}
-
-/// The Claude Code session id in force just before the marker at `at`:
-/// the latest live `AgentSession` line recorded before it. `None` when
-/// the chat had no CLI session then.
-fn agent_session_before(session: &Session, at: usize) -> Option<String> {
-    session
-        .live_events()
-        .into_iter()
-        .rev()
-        .filter(|(i, _)| *i < at)
-        .find_map(|(_, e)| match e {
-            SessionEvent::AgentSession { agent, id, .. } if agent == AGENT => Some(id.clone()),
-            _ => None,
-        })
-}
-
-/// What an edit did to Claude Code's history, for the log and the agent
-/// to follow.
-enum CliChange {
-    /// No CLI session behind this chat; the marker is the whole edit.
-    Untouched,
-    /// A copy under this id; the next turn resumes it.
-    Resume(String),
-    /// The cut left the CLI no turn to resume; the next turn starts a
-    /// conversation of its own, and the chat records it when it lands.
-    Fresh,
-}
-
-impl CliChange {
-    /// Record the new handle on `session` and point the agent at it.
-    /// `Fresh` records nothing — an id is written after the turn that
-    /// opened it, as `send_agent` does — and lets the agent go of the old.
-    fn adopt(self, session: &mut Session, agent: Option<&mut ClaudeCodeAgent>) {
-        match self {
-            CliChange::Untouched => {}
-            CliChange::Resume(id) => {
-                session.record_agent_session(AGENT, &id);
-                if let Some(agent) = agent {
-                    agent.set_resume(Some(id));
-                }
-            }
-            CliChange::Fresh => {
-                if let Some(agent) = agent {
-                    agent.set_resume(None);
-                }
-            }
-        }
-    }
-}
-
-/// How many live user turns follow event `index` — the "from the newest"
-/// count [`Target`] addresses a CLI node by. For an assistant reply it is
-/// counted from the user turn that produced it.
-fn turns_after(session: &Session, index: usize) -> Result<usize, String> {
-    let live = session.live_events();
-    let turn = live
-        .iter()
-        .rposition(|(i, e)| *i <= index && matches!(e, SessionEvent::UserMessage { .. }))
-        .ok_or_else(|| format!("event {index} is not part of a turn"))?;
-    Ok(live[turn + 1..]
-        .iter()
-        .filter(|(_, e)| matches!(e, SessionEvent::UserMessage { .. }))
-        .count())
-}
-
-/// What the log's live user turns read now (edits applied), from the turn
-/// event `index` belongs to through the newest, and the turn just before
-/// it — what [`CliSession::truncate_by_text`] finds the cut by (nightshift
-/// backlog 255), in place of the count [`turns_after`] gives, which a turn
-/// the CLI never recorded throws off by one.
-fn turn_texts(session: &Session, index: usize) -> Result<(Vec<String>, Option<String>), String> {
-    let edited = session.edit_texts();
-    let users: Vec<(usize, String)> = session
-        .live_events()
-        .into_iter()
-        .filter_map(|(i, e)| match e {
-            SessionEvent::UserMessage { text, .. } => {
-                Some((i, edited[i].unwrap_or(text).to_string()))
-            }
-            _ => None,
-        })
-        .collect();
-    let turn = users
-        .iter()
-        .rposition(|(i, _)| *i <= index)
-        .ok_or_else(|| format!("event {index} is not part of a turn"))?;
-    Ok((
-        users[turn..].iter().map(|(_, t)| t.clone()).collect(),
-        turn.checked_sub(1).map(|b| users[b].1.clone()),
-    ))
-}
-
-/// The CLI node that stands for event `index`, addressed from the newest
-/// turn and by the text the log projects for it now — the check that
-/// keeps an edit from landing on the wrong node when the two histories
-/// have drifted (a chat that ran on the other engine first, a turn the
-/// CLI never saw).
-fn cli_target(session: &Session, index: usize) -> Result<Target, String> {
-    let from_last = turns_after(session, index)?;
-    let edited = session.edit_texts();
-    match session.events().get(index) {
-        Some(SessionEvent::UserMessage { text, .. }) => Ok(Target::User {
-            from_last,
-            text: edited[index].unwrap_or(text).to_string(),
-        }),
-        // The reply's text as its per-block markers leave it (backlog
-        // 066): edits applied, removed blocks out, removed calls leaving
-        // no mark — which is what the CLI's copy reads after the same
-        // edits, so the two histories still agree on the reply.
-        //
-        // Without the subagents' narratives (nightshift item 252): the
-        // recorder writes one `<subagent …>` text block per running child
-        // into each round of the parent's reply, for the window; the CLI's
-        // file never has them, so a reply with any never matched and every
-        // edit of it refused.
-        Some(SessionEvent::AssistantMessage { .. }) => Ok(Target::Assistant {
-            from_last,
-            text: cli_reply_text(session, index),
-        }),
-        Some(_) => Err(format!(
-            "event {index} is not a user message or an assistant reply"
-        )),
-        None => Err(format!("no event at {index}")),
-    }
-}
-
-/// What the CLI's copy of the reply at `index` reads: `Session::reply_text`
-/// (edits applied, removed blocks out) less the subagents' narratives,
-/// which are the window's and never the model's (item 252).
-fn cli_reply_text(session: &Session, index: usize) -> String {
-    let Some(SessionEvent::AssistantMessage { blocks, .. }) = session.events().get(index) else {
-        return String::new();
-    };
-    let edits = session.block_edits();
-    let gone = session.block_elisions();
-    let mut out = String::new();
-    for (n, b) in blocks.iter().enumerate() {
-        if gone[index].contains(&n) || b.is_subagent_narrative() {
-            continue;
-        }
-        if let nightloom_core::ContentBlock::Text { text } = b {
-            out.push_str(edits[index].get(&n).copied().unwrap_or(text.as_str()));
-        }
-    }
-    if let Some(text) = edits[index].get(&blocks.len()) {
-        out.push_str(text);
-    }
-    out
-}
-
-/// Whether block `block` of the reply at `index` is a subagent's narrative
-/// (item 252): the window's alone, so removing or restoring it changes
-/// nothing in the CLI's file.
-fn is_narrative_block(session: &Session, index: usize, block: usize) -> bool {
-    matches!(
-        session.events().get(index),
-        Some(SessionEvent::AssistantMessage { blocks, .. })
-            if blocks.get(block).is_some_and(|b| b.is_subagent_narrative())
-    )
-}
-
-/// The CLI's address for block `block` of the reply at `index`
-/// (nightshift backlog 066): a text block by its count among the reply's
-/// text blocks, a call by its id — the two things both histories agree
-/// on. Refuses anything else, as the core's `edit_block` / `elide_block`
-/// would.
-fn cli_block(session: &Session, index: usize, block: usize) -> Result<Block, String> {
-    let Some(SessionEvent::AssistantMessage { blocks, .. }) = session.events().get(index) else {
-        return Err(format!("event {index} is not a reply"));
-    };
-    match blocks.get(block) {
-        // Counted among the text blocks the CLI's copy has (item 252): not
-        // the subagents' narratives, which it never had, and not a text
-        // block already removed, which its copy dropped when it was.
-        Some(b) if b.is_subagent_narrative() => Err(format!(
-            "block {block} of event {index} is a subagent's steps, which Claude Code's history does not hold"
-        )),
-        Some(nightloom_core::ContentBlock::Text { .. }) => {
-            let gone = session.block_elisions();
-            Ok(Block::Text(
-                blocks[..block]
-                    .iter()
-                    .enumerate()
-                    .filter(|(n, b)| {
-                        matches!(b, nightloom_core::ContentBlock::Text { .. })
-                            && !b.is_subagent_narrative()
-                            && !gone[index].contains(n)
-                    })
-                    .count(),
-            ))
-        }
-        Some(nightloom_core::ContentBlock::ToolUse { id, .. }) => Ok(Block::ToolUse(id.clone())),
-        Some(_) => Err(format!(
-            "block {block} of event {index} is not text or a tool call"
-        )),
-        None => Err(format!("event {index} has no block {block}")),
-    }
-}
-
-/// Change Claude Code's history to match an edit to the log, by copy.
-///
-/// The log this session is a record of has a CLI session behind it
-/// (`SessionEvent::AgentSession`); `change` is applied to a parse of that
-/// file and the result written beside it under a fresh id, which comes
-/// back as [`CliChange::Resume`] for the caller to record and resume. The
-/// original file is never opened for writing. `Untouched` when there is
-/// no CLI session to change — an ephemeral chat, whose turns the shell
-/// replays itself, or a chat that has not yet run a turn on this engine
-/// — so the marker alone is the edit, as on the other engine; `Fresh`
-/// when `change` cut every turn the CLI had.
-///
-/// Refusals are the module's own sentences, shown as notices: a file
-/// written by a CLI whose shape this build was not measured against, a
-/// turn the CLI's history does not have, a file that is not where it
-/// should be.
-fn edit_on_cli(
-    session: &Session,
-    workspace: &Path,
-    change: impl FnOnce(&CliSession) -> Result<Option<CliSession>, cli_session::CliSessionError>,
-) -> Result<CliChange, String> {
-    // An ephemeral chat has a CLI session id — the CLI reports one even
-    // under `--no-session-persistence` — but no file behind it, and the
-    // next turn replays the log anyway; the id alone was read as "a file
-    // to edit" and rewind on one refused (his report, 2026-09-17).
-    if session.mode() == ChatMode::Ephemeral {
-        return Ok(CliChange::Untouched);
-    }
-    let Some(id) = session
-        .agent_session()
-        .filter(|(agent, _)| *agent == AGENT)
-        .map(|(_, id)| id.to_string())
-    else {
-        return Ok(CliChange::Untouched);
-    };
-    let projects = cli_session::projects_dir()
-        .ok_or_else(|| "no home directory, so no ~/.claude/projects to look in".to_string())?;
-    edit_cli_file(&projects, workspace, &id, change)
-}
-
-/// The pure half of [`edit_on_cli`]: the projects root is a parameter so a
-/// test can point it at a directory of its own.
-fn edit_cli_file(
-    projects: &Path,
-    workspace: &Path,
-    id: &str,
-    change: impl FnOnce(&CliSession) -> Result<Option<CliSession>, cli_session::CliSessionError>,
-) -> Result<CliChange, String> {
-    let path = cli_session::find(projects, workspace, id).map_err(|e| e.to_string())?;
-    let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    let parsed = CliSession::parse(&text).map_err(|e| e.to_string())?;
-    match change(&parsed).map_err(|e| e.to_string())? {
-        Some(edited) => cli_session::write_copy(&path, &edited)
-            .map(CliChange::Resume)
-            .map_err(|e| e.to_string()),
-        None => Ok(CliChange::Fresh),
-    }
-}
-
-/// What an edit to a turn changed: the transcript, and the id of the chat
-/// now open — the same one, or the fork.
-#[derive(Serialize)]
-struct MessageEdit {
-    events: Vec<SessionEvent>,
-    /// The open chat's id after the edit. Differs from the one before
-    /// exactly when a fork was made (`mode: "send"`, `fork_session`), and
-    /// the UI then sends the edited text as that chat's next turn.
-    session: String,
-    /// Whether a fork was made.
-    forked: bool,
 }
 
 /// Reword the turn at `index` (nightshift backlog 062, 2026-09-15).
@@ -3788,42 +3504,13 @@ async fn edit_message(
             let session = session_guard
                 .as_mut()
                 .ok_or_else(|| "no active session".to_string())?;
-            if text.trim().is_empty() {
-                return Err("an edit cannot be empty; remove the turn instead".into());
-            }
-            if !session.is_editable(index) {
-                return Err(
-                    "only user messages and assistant replies with text can be edited; a tool result can be removed instead".into(),
-                );
-            }
-            let workspace = agent_guard.as_ref().map(|a| a.spec().workspace.clone());
-            let change = match &workspace {
-                Some(cwd) => {
-                    let target = cli_target(session, index)?;
-                    let nth = match block {
-                        Some(b) => match cli_block(session, index, b)? {
-                            Block::Text(nth) => Some(nth),
-                            Block::ToolUse(_) => {
-                                return Err(format!(
-                                    "block {b} of event {index} is a tool call, which cannot be reworded; it can be removed"
-                                ));
-                            }
-                        },
-                        None => None,
-                    };
-                    let new_text = text.clone();
-                    edit_on_cli(session, cwd, move |cli| match nth {
-                        Some(nth) => cli.rewrite_block(&target, nth, &new_text).map(Some),
-                        None => cli.rewrite(&target, &new_text).map(Some),
-                    })?
-                }
-                None => CliChange::Untouched,
-            };
-            match block {
-                Some(b) => session.edit_block(index, b, text)?,
-                None => session.edit(index, text)?,
-            }
-            change.adopt(session, agent_guard.as_mut());
+            chat_ops::edit_saved(
+                session,
+                agent_guard.as_mut().map(OnCli::of),
+                index,
+                text,
+                block,
+            )?;
             Ok(MessageEdit {
                 events: session.events().to_vec(),
                 session: session.id.clone(),
@@ -3849,24 +3536,7 @@ async fn remove_message(state: State<'_, AppState>, index: usize) -> Result<Mess
     let session = session_guard
         .as_mut()
         .ok_or_else(|| "no active session".to_string())?;
-    if !matches!(
-        session.events().get(index),
-        Some(SessionEvent::UserMessage { .. } | SessionEvent::AssistantMessage { .. })
-    ) {
-        return Err(format!(
-            "event {index} is not a turn; the context panel removes tool results"
-        ));
-    }
-    let workspace = agent_guard.as_ref().map(|a| a.spec().workspace.clone());
-    let change = match &workspace {
-        Some(cwd) => {
-            let target = cli_target(session, index)?;
-            edit_on_cli(session, cwd, move |cli| cli.remove(&target).map(Some))?
-        }
-        None => CliChange::Untouched,
-    };
-    session.elide([index])?;
-    change.adopt(session, agent_guard.as_mut());
+    chat_ops::remove_message(session, agent_guard.as_mut().map(OnCli::of), index)?;
     Ok(MessageEdit {
         events: session.events().to_vec(),
         session: session.id.clone(),
@@ -3896,16 +3566,7 @@ async fn restore_message(state: State<'_, AppState>, index: usize) -> Result<Mes
     let session = session_guard
         .as_mut()
         .ok_or_else(|| "no active session".to_string())?;
-    if !session.elide_flags().get(index).copied().unwrap_or(false) {
-        return Err(format!("event {index} is not removed from the context"));
-    }
-    let workspace = agent_guard.as_ref().map(|a| a.spec().workspace.clone());
-    let change = match &workspace {
-        Some(cwd) => restore_on_cli(session, cwd, index, None)?,
-        None => CliChange::Untouched,
-    };
-    session.unelide([index])?;
-    change.adopt(session, agent_guard.as_mut());
+    chat_ops::restore_message(session, agent_guard.as_mut().map(OnCli::of), index)?;
     Ok(MessageEdit {
         events: session.events().to_vec(),
         session: session.id.clone(),
@@ -3931,21 +3592,7 @@ async fn remove_block(
     let session = session_guard
         .as_mut()
         .ok_or_else(|| "no active session".to_string())?;
-    let workspace = agent_guard.as_ref().map(|a| a.spec().workspace.clone());
-    let change = match &workspace {
-        // A subagent's steps are the window's; the CLI never had them.
-        Some(_) if is_narrative_block(session, index, block) => CliChange::Untouched,
-        Some(cwd) => {
-            let target = cli_target(session, index)?;
-            let which = cli_block(session, index, block)?;
-            edit_on_cli(session, cwd, move |cli| {
-                cli.remove_block(&target, &which).map(Some)
-            })?
-        }
-        None => CliChange::Untouched,
-    };
-    session.elide_block(index, block)?;
-    change.adopt(session, agent_guard.as_mut());
+    chat_ops::remove_block(session, agent_guard.as_mut().map(OnCli::of), index, block)?;
     Ok(MessageEdit {
         events: session.events().to_vec(),
         session: session.id.clone(),
@@ -3967,108 +3614,12 @@ async fn restore_block(
     let session = session_guard
         .as_mut()
         .ok_or_else(|| "no active session".to_string())?;
-    if !session
-        .block_elisions()
-        .get(index)
-        .is_some_and(|gone| gone.contains(&block))
-    {
-        return Err(format!(
-            "block {block} of event {index} is not removed from the context"
-        ));
-    }
-    let workspace = agent_guard.as_ref().map(|a| a.spec().workspace.clone());
-    let change = match &workspace {
-        Some(cwd) => restore_on_cli(session, cwd, index, Some(block))?,
-        None => CliChange::Untouched,
-    };
-    session.unelide_block(index, block)?;
-    change.adopt(session, agent_guard.as_mut());
+    chat_ops::restore_block(session, agent_guard.as_mut().map(OnCli::of), index, block)?;
     Ok(MessageEdit {
         events: session.events().to_vec(),
         session: session.id.clone(),
         forked: false,
     })
-}
-
-/// [`edit_on_cli`]'s counterpart for a restore: the current file and the
-/// one the turn was removed from, the turn's nodes put back, a copy
-/// written. `Untouched` when the chat has no CLI session now, or had none
-/// when the turn was removed (no `AgentSession` before the marker, or the
-/// same one as now — the removal then made no copy). With `block`, the
-/// marker looked for is the one that named that block of the reply, and
-/// only that block's nodes come back.
-fn restore_on_cli(
-    session: &Session,
-    workspace: &Path,
-    index: usize,
-    block: Option<usize>,
-) -> Result<CliChange, String> {
-    // As in `edit_on_cli`: an ephemeral chat has an id but no file.
-    if session.mode() == ChatMode::Ephemeral {
-        return Ok(CliChange::Untouched);
-    }
-    let Some(current) = session
-        .agent_session()
-        .filter(|(agent, _)| *agent == AGENT)
-        .map(|(_, id)| id.to_string())
-    else {
-        return Ok(CliChange::Untouched);
-    };
-    let marker = session
-        .live_events()
-        .into_iter()
-        .rev()
-        .find(|(_, e)| {
-            matches!(e, SessionEvent::Elide { targets, block: b, .. } if targets.contains(&index) && *b == block)
-        })
-        .map(|(i, _)| i)
-        .ok_or_else(|| format!("event {index} is not removed from the context"))?;
-    let Some(original) = agent_session_before(session, marker).filter(|id| *id != current) else {
-        return Ok(CliChange::Untouched);
-    };
-    if block.is_some_and(|b| is_narrative_block(session, index, b)) {
-        return Ok(CliChange::Untouched);
-    }
-    let target = cli_target(session, index)?;
-    let which = block.map(|b| cli_block(session, index, b)).transpose()?;
-    let projects = cli_session::projects_dir()
-        .ok_or_else(|| "no home directory, so no ~/.claude/projects to look in".to_string())?;
-    restore_cli_file(
-        &projects,
-        workspace,
-        &current,
-        &original,
-        &target,
-        which.as_ref(),
-    )
-}
-
-/// The pure half of [`restore_on_cli`], with the projects root as a
-/// parameter for the test's sake, like [`edit_cli_file`].
-fn restore_cli_file(
-    projects: &Path,
-    workspace: &Path,
-    current: &str,
-    original: &str,
-    target: &Target,
-    block: Option<&Block>,
-) -> Result<CliChange, String> {
-    let read = |id: &str| -> Result<(PathBuf, CliSession), String> {
-        let path = cli_session::find(projects, workspace, id).map_err(|e| e.to_string())?;
-        let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-        let parsed = CliSession::parse(&text).map_err(|e| e.to_string())?;
-        Ok((path, parsed))
-    };
-    let (path, current) = read(current)?;
-    let (_, original) = read(original)?;
-    let restored = match block {
-        Some(block) => current.restore_block(&original, target, block),
-        None => current.restore(&original, target),
-    }
-    .map_err(|e| e.to_string())?;
-    cli_session::write_copy(&path, &restored)
-        .map(CliChange::Resume)
-        .map_err(|e| e.to_string())
 }
 
 /// Fork the open chat before the user turn at `upto` and make the fork
@@ -4089,29 +3640,7 @@ async fn fork_session(state: State<'_, AppState>, upto: usize) -> Result<Message
     let parent = session_guard
         .as_ref()
         .ok_or_else(|| "no active session".to_string())?;
-    let workspace = agent_guard.as_ref().map(|a| a.spec().workspace.clone());
-    let (turns, before) = turn_texts(parent, upto)?;
-    // The CLI copy first, so a refusal makes no fork.
-    let change = match &workspace {
-        Some(cwd) => edit_on_cli(parent, cwd, |cli| {
-            cli.truncate_by_text(&turns, before.as_deref())
-        })?,
-        None => CliChange::Untouched,
-    };
-    let mut fork = parent
-        .fork_from(&log_dir, upto)
-        .map_err(|e| e.to_string())?;
-    match change {
-        // The fork carries no handle of the parent's, so anything but a
-        // copy to resume means the fork's first turn opens a CLI
-        // conversation of its own.
-        CliChange::Untouched | CliChange::Fresh => {
-            if let Some(agent) = agent_guard.as_mut() {
-                agent.set_resume(None);
-            }
-        }
-        resume => resume.adopt(&mut fork, agent_guard.as_mut()),
-    }
+    let fork = chat_ops::fork(parent, &log_dir, agent_guard.as_mut().map(OnCli::of), upto)?;
     let events = fork.events().to_vec();
     let id = fork.id.clone();
     // The new chat is held and focused; the parent's lock goes with the
@@ -4143,10 +3672,7 @@ async fn continue_session(state: State<'_, AppState>) -> Result<MessageEdit, Str
     let parent = session_guard
         .as_ref()
         .ok_or_else(|| "no active session".to_string())?;
-    let next = parent.continued_from(&log_dir).map_err(|e| e.to_string())?;
-    if let Some(agent) = agent_guard.as_mut() {
-        agent.set_resume(None);
-    }
+    let next = chat_ops::continue_from(parent, &log_dir, agent_guard.as_mut())?;
     let events = next.events().to_vec();
     let id = next.id.clone();
     // The new chat is held and focused; the parent's lock goes with the
@@ -4259,17 +3785,6 @@ async fn ask_aside(
     })
 }
 
-/// What removing items changed: the new view, plus the transcript, because
-/// an elision moves both.
-#[derive(Serialize)]
-struct ContextEdit {
-    view: WireView,
-    events: Vec<SessionEvent>,
-    /// How many items the call actually changed. Zero is not an error — a UI
-    /// re-sending a selection that is already hidden is not a mistake.
-    changed: usize,
-}
-
 /// Itemize the request the active chat would send right now.
 ///
 /// Needs both locks because the view is the *request*, not the log: the
@@ -4340,37 +3855,12 @@ async fn edit_context(
         .as_mut()
         .ok_or_else(|| "no active session".to_string())?;
 
-    let changed = if remove {
-        session.elide(targets)?
-    } else {
-        session.unelide(targets)?
-    };
+    let changed = context_ops::edit_context(session, targets, remove)?;
     Ok(ContextEdit {
         view: chat.context_view(session),
         events: session.events().to_vec(),
         changed,
     })
-}
-
-/// The chat's switched-off layers and its own texts, beside the set and
-/// the texts the live engine was built with. The UI reconnects when either
-/// pair differs — after opening another chat, or a new one — so the prompt
-/// on the wire is always the open chat's.
-#[derive(Serialize)]
-struct PromptLayersInfo {
-    off: Vec<SegmentKind>,
-    built: Vec<SegmentKind>,
-    edits: BTreeMap<SegmentKind, String>,
-    built_edits: BTreeMap<SegmentKind, String>,
-    /// The open chat's mode and the mode the engine was built for, the
-    /// third pair the UI compares (2026-09-15): an incognito chat's engine
-    /// has no writers, and the normal chat opened after it needs them back.
-    mode: ChatMode,
-    built_mode: ChatMode,
-    /// The fourth pair (nightshift backlog 102): the open chat's kind and
-    /// the kind the engine was built for.
-    kind: ChatKind,
-    built_kind: ChatKind,
 }
 
 #[tauri::command]
@@ -4449,7 +3939,7 @@ async fn set_prompt_layers(
         .lock_or_start(pending, pending_kind, &log_dir)
         .await?;
     let session: &mut Session = &mut held;
-    session.record_prompt_layers(off);
+    context_ops::set_layers_off(session, off);
     Ok(session.events().to_vec())
 }
 
@@ -4477,15 +3967,7 @@ async fn set_chat_kind(
     kind: ChatKind,
     workspace: Option<String>,
 ) -> Result<Vec<SessionEvent>, String> {
-    let workspace = workspace
-        .map(|w| w.trim().to_string())
-        .filter(|w| !w.is_empty())
-        .map(PathBuf::from);
-    if let Some(dir) = &workspace
-        && !dir.is_dir()
-    {
-        return Err(format!("{} is not a folder", dir.display()));
-    }
+    let workspace = chat_ops::kind_folder(workspace)?;
     let log_dir = state.log_dir().await;
     let pending = *state.pending_mode.lock().await;
     let pending_kind = *state.pending_kind.lock().await;
@@ -4494,7 +3976,7 @@ async fn set_chat_kind(
         .lock_or_start(pending, pending_kind, &log_dir)
         .await?;
     let session: &mut Session = &mut held;
-    session.record_kind(kind, workspace);
+    chat_ops::set_kind(session, kind, workspace);
     Ok(session.events().to_vec())
 }
 
@@ -4575,9 +4057,7 @@ async fn set_prompt_layer_text(
     kind: SegmentKind,
     text: Option<String>,
 ) -> Result<Vec<SessionEvent>, String> {
-    if !SegmentKind::EDITABLE.contains(&kind) {
-        return Err(format!("{kind:?} is not a layer a chat can rewrite"));
-    }
+    context_ops::check_editable(kind)?;
     let log_dir = state.log_dir().await;
     let pending = *state.pending_mode.lock().await;
     let pending_kind = *state.pending_kind.lock().await;
@@ -4586,16 +4066,7 @@ async fn set_prompt_layer_text(
         .lock_or_start(pending, pending_kind, &log_dir)
         .await?;
     let session: &mut Session = &mut held;
-    let mut edits = session.prompt_layer_edits().clone();
-    match text.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()) {
-        Some(text) => {
-            edits.insert(kind, text);
-        }
-        None => {
-            edits.remove(&kind);
-        }
-    }
-    session.record_prompt_layer_edits(edits);
+    context_ops::set_layer_text(session, kind, text)?;
     Ok(session.events().to_vec())
 }
 
@@ -4826,21 +4297,7 @@ async fn delete_session(
     if was_active {
         adopt_agent_session(&state, None).await;
     }
-    let trash = log_dir.join("trash");
-    std::fs::create_dir_all(&trash).map_err(|e| e.to_string())?;
-    let name = path
-        .file_name()
-        .ok_or_else(|| "session log has no file name".to_string())?;
-    let mut dest = trash.join(name);
-    // A second deletion of a re-imported chat with the same id keeps both.
-    if dest.exists() {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        dest = trash.join(format!("{full_id}.{stamp}.jsonl"));
-    }
-    std::fs::rename(&path, &dest).map_err(|e| e.to_string())?;
+    chat_ops::move_to_trash(&log_dir, &path, &full_id)?;
     Ok(full_id)
 }
 
@@ -4854,38 +4311,8 @@ async fn delete_session(
 /// copy stays where it is rather than replace a chat that exists.
 #[tauri::command]
 async fn restore_session(state: State<'_, AppState>, id: String) -> Result<String, String> {
-    // The id becomes two file names below; a `../name` from the webview
-    // would move a live log out of the store (review 2026-09-17 FC-e,
-    // backlog 134).
-    if !store::is_log_id(&id) {
-        return Err(format!("not a chat id: {id:?}"));
-    }
     let log_dir = state.log_dir().await;
-    let trash = log_dir.join("trash");
-    let plain = trash.join(format!("{id}.jsonl"));
-    let stamped = std::fs::read_dir(&trash)
-        .map_err(|e| e.to_string())?
-        .filter_map(|entry| entry.ok().map(|e| e.path()))
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with(&format!("{id}.")) && n.ends_with(".jsonl"))
-                && *p != plain
-        })
-        .max();
-    let source = match (plain.exists(), stamped) {
-        (_, Some(newest)) => newest,
-        (true, None) => plain,
-        (false, None) => return Err(format!("no deleted chat {id} in the trash")),
-    };
-    let dest = log_dir.join(format!("{id}.jsonl"));
-    if dest.exists() {
-        return Err(format!(
-            "a chat {id} already exists; the deleted one stays in the trash"
-        ));
-    }
-    std::fs::rename(&source, &dest).map_err(|e| e.to_string())?;
-    Ok(id)
+    chat_ops::restore_from_trash(&log_dir, &id)
 }
 
 // ---- projects ----------------------------------------------------------
