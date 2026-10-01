@@ -7101,6 +7101,7 @@ fn main() {
             remote::remote_token,
             remote::remote_sent,
             remote::remote_done,
+            remote::remote_claim,
             remote::remote_self_test,
             away::away_status,
             away::away_set_url,

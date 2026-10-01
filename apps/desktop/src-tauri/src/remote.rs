@@ -1484,9 +1484,6 @@ pub fn remote_sent(remote: State<'_, Remote>, id: u64, queued: bool, error: Opti
 /// the phone still waiting? `false` once the wait ran out — the phone was
 /// told it failed and may send again, so the window starts nothing
 /// (backlog 132 (d); a re-send was a second turn).
-// Registered in `main.rs`'s handler by the integrate agent
-// (`w3-patch-b1-to-integrate.md` §1), which drops this allow.
-#[allow(dead_code)]
 #[tauri::command]
 pub fn remote_claim(remote: State<'_, Remote>, id: u64) -> bool {
     remote.host.claim(id)
