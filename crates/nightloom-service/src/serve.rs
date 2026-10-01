@@ -775,13 +775,12 @@ impl ServeHost {
                         if !mine {
                             return;
                         }
-                        if let Err(e) = me.resume_now(&p).await {
+                        if let Err(e) = me.resume_now(&p).await
+                            && let Some(text) = scheduled_resume_notice(&e)
+                        {
                             me.emit(
                                 "turn-notice",
-                                serde_json::to_string(&format!(
-                                    "the scheduled resume could not start: {e} — press Resume again"
-                                ))
-                                .unwrap_or_default(),
+                                serde_json::to_string(&text).unwrap_or_default(),
                             );
                         }
                     });
@@ -805,7 +804,7 @@ impl ServeHost {
         {
             let mut pause = lock(&self.pause);
             if pause.as_ref().is_none_or(|q| q.seq != p.seq) {
-                return Err("the pause is over".into());
+                return Err(PAUSE_OVER.into());
             }
             *pause = None;
         }
@@ -1141,6 +1140,18 @@ impl ServeHost {
 /// The sentence for an action on a chat whose turn is running here (the
 /// Mac's `RUNNING_HERE`, blocker 672's one-turn rule).
 const RUNNING_HERE: &str = "a turn is running in this chat — try again when it ends";
+/// [`ServeHost::resume_now`]'s refusal when the pause it was for has gone.
+const PAUSE_OVER: &str = "the pause is over";
+
+/// What a scheduled resume that could not start tells the phone: nothing
+/// when its pause is already over (a turn in the chat ended it, so there
+/// is nothing to press again — review B1 finding 3), else why, and to
+/// press Resume again.
+fn scheduled_resume_notice(err: &str) -> Option<String> {
+    (err != PAUSE_OVER)
+        .then(|| format!("the scheduled resume could not start: {err} — press Resume again"))
+}
+
 /// A change to a chat the Mac owns (item 268 step 3).
 const MAC_OWNS: &str = "this chat is the Mac's; send a message to continue it as a copy";
 
@@ -2509,6 +2520,13 @@ esac
 
     /// The one-holder rule: a second holder of a home is refused, with the
     /// first named; the lock goes with its holder.
+    #[test]
+    fn a_scheduled_resume_whose_pause_is_over_says_nothing() {
+        assert_eq!(scheduled_resume_notice(PAUSE_OVER), None);
+        let said = scheduled_resume_notice("a turn is running in another chat").unwrap();
+        assert!(said.contains("press Resume again"), "{said}");
+    }
+
     #[test]
     fn a_home_has_one_holder_at_a_time() {
         let home = std::env::temp_dir().join(format!("nightloom-lock-{}", uuid::Uuid::new_v4()));
