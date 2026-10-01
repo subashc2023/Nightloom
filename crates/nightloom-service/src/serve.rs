@@ -506,6 +506,12 @@ impl ServeHost {
 
     /// The chat `chat` (an id or its prefix): its project and its log.
     fn locate(&self, chat: &str) -> Result<(Option<Project>, PathBuf), String> {
+        // An empty id is a prefix of every chat: with one chat on disk it
+        // matched that one (measured in the A1 live pass, where a blank id
+        // deleted the only chat, to the trash).
+        if chat.trim().is_empty() {
+            return Err("no chat named".into());
+        }
         for place in self.places() {
             if let Ok(path) = self.find_chat(place.as_ref(), chat) {
                 return Ok((place, path));
@@ -1095,6 +1101,11 @@ impl Host for ServeHost {
             return Err(not_yet(&action));
         }
         let (project, path, session) = self.load(chat).await?;
+        // A delete names the whole chat, never a prefix that happens to
+        // match one.
+        if matches!(action, ChatAction::Delete) && session.id != chat {
+            return Err(format!("name the whole chat id to delete it, not `{chat}`"));
+        }
         let _held = self.hold(&session.id).map_err(|e| {
             if matches!(action, ChatAction::Delete) && e == RUNNING_HERE {
                 "that chat is running a turn — delete it when the turn ends".to_string()
@@ -1865,6 +1876,25 @@ esac
         })
         .await;
 
+        // A blank id or a prefix never deletes a chat (the live pass found
+        // a blank id matching the only chat).
+        let (code, _) = post(
+            &c,
+            format!("{base}/api/chats/%20/act"),
+            &token,
+            serde_json::json!({"op": "delete"}),
+        )
+        .await;
+        assert_ne!(code, 200);
+        let (code, _) = post(
+            &c,
+            format!("{base}/api/chats/{}/act", &chat[..8]),
+            &token,
+            serde_json::json!({"op": "delete"}),
+        )
+        .await;
+        assert_eq!(code, 409);
+        assert!(path.exists());
         // Delete moves the log to the trash folder; undelete brings it back.
         let (code, reply) =
             post(&c, act.clone(), &token, serde_json::json!({"op": "delete"})).await;
