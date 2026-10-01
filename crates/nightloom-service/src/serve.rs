@@ -20,6 +20,17 @@
 //! it, so `serve` on the default home also refuses while any
 //! `nightloom-desktop` process runs ([`desktop_running`]).
 //!
+//! # The chat's actions, Context and layers (item 246 wave 4, 4A)
+//!
+//! `act`, `context` and `layers` run the functions the desktop's commands
+//! run ([`crate::chat_ops`], [`crate::context_ops`]) on the chat's log,
+//! with the CLI's history edited by copy as the desktop does; no live agent
+//! is pointed anywhere, because each turn here resumes what the log
+//! records. An action on a chat whose turn is running is refused (409),
+//! as on the Mac. Compact, resume-after-limit, budget and checkpoint answer
+//! "not on the away server yet" (wave B). To add a route group: one Host
+//! method below, one name in `features`.
+//!
 //! # What step 1 leaves out
 //!
 //! One turn at a time (Keepsake's `CallLock` lesson, and all a phone
@@ -27,13 +38,16 @@
 //! prompt hold (the preamble is built fresh each turn, so a chat's cache
 //! may be cold after a layer changed on the Mac), no chat naming pass.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 
-use nightloom_core::{ChatKind, ChatMode, SegmentKind, Session, SessionEvent, TitleBy};
+use nightloom_core::context::WireView;
+use nightloom_core::{
+    ChatKind, ChatMode, SegmentKind, Session, SessionEvent, SystemPrompt, TitleBy,
+};
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
@@ -42,8 +56,10 @@ use crate::agent_turn::{
     AGENT, AgentTurnEnd, AgentTurnRun, ApprovalPrompt, ChatEvent, ProjectGrant, TurnEnv,
     run_agent_turn,
 };
+use crate::chat_ops::{self, OnCli};
+use crate::context_ops::{self, PromptLayersInfo};
 use crate::project::{self, Project, Registry};
-use crate::remote::api::feature;
+use crate::remote::api::{ActReply, ChatAction, ContextReply, EditMode, LayerChange, feature};
 use crate::remote::{
     ApproveRequest, Asset, ChatRow, Event, Handed, Host, ProjectRow, RemoteState, SendRequest,
 };
@@ -171,6 +187,10 @@ pub struct ServeHost {
     /// The chat the phone last worked in.
     active_chat: Mutex<Option<String>>,
     turn: Mutex<Option<Turn>>,
+    /// Chats a phone action is changing now (wave 3, A1): a turn does not
+    /// start in one, and a second action on it waits its turn. Locked
+    /// after `turn`, never before.
+    acting: Mutex<HashSet<String>>,
     ask: AskGate,
     /// The approval prompts still waiting, as the window's payloads.
     pending: Mutex<HashMap<String, serde_json::Value>>,
@@ -187,6 +207,7 @@ impl ServeHost {
             active_project: Mutex::new(None),
             active_chat: Mutex::new(None),
             turn: Mutex::new(None),
+            acting: Mutex::new(HashSet::new()),
             ask: AskGate::new(),
             pending: Mutex::new(HashMap::new()),
             tx,
@@ -233,15 +254,7 @@ impl ServeHost {
     /// chat's recorded CLI session resumed.
     pub fn spec_for(&self, project: Option<&Project>, session: &Session) -> AgentSpec {
         let declared = session.declared_kind();
-        let base = session
-            .kind_workspace()
-            .map(Path::to_path_buf)
-            .or_else(|| project.map(Project::workspace_dir))
-            .unwrap_or_else(|| self.cfg.unfiled_workspace.clone());
-        let workspace = match declared {
-            ChatKind::Build => base,
-            ChatKind::Chat => crate::prompt::chat_dir().unwrap_or(base),
-        };
+        let workspace = self.workspace_for(project, session);
         let mut spec = AgentSpec::new(workspace.clone());
         spec.binary = self.cfg.binary.clone();
         spec.model = self.cfg.model.clone();
@@ -250,41 +263,12 @@ impl ServeHost {
         // A chat does not compact (backlog 086).
         spec.auto_compact = false;
         let off: Vec<SegmentKind> = session.prompt_layers_off().to_vec();
-        let edits = session.prompt_layer_edits().clone();
         spec.auto_memory = !off.contains(&SegmentKind::CliMemory);
         let knowledge = crate::knowledge::vault_dir();
         spec.add_dirs = knowledge.iter().cloned().collect();
-        let mut granted: Vec<PathBuf> =
-            project.map(|p| p.extra_folders.clone()).unwrap_or_default();
-        granted.extend(session.folders().iter().cloned());
+        let granted = granted_folders(project, session);
         spec.add_dirs.extend(granted.iter().cloned());
-        let prompt = crate::agent_prompt_with(
-            &crate::PromptConfig {
-                identity: false,
-                environment: false,
-                project_instructions: true,
-                user_memory: true,
-                model: spec.model.clone(),
-                chat_instructions: declared == ChatKind::Chat,
-                project: project.map(|p| crate::ProjectContext {
-                    name: p.name.clone(),
-                    notes_dir: p.notes_dir(),
-                }),
-                knowledge: knowledge.map(|dir| crate::KnowledgeContext { dir }),
-                cwd: workspace,
-                custom: None,
-                edits,
-            }
-            .without(&off),
-            None,
-            crate::EngineLayers {
-                engine_note: !off.contains(&SegmentKind::EngineNote),
-                pacing: !off.contains(&SegmentKind::Pacing),
-                subagents: !off.contains(&SegmentKind::Subagents),
-                reusable: false,
-                subagent_model: spec.subagent_limits.unwrap_or_default().model,
-            },
-        );
+        let prompt = self.prompt_for(project, session, &workspace, &spec);
         spec.append_system_prompt = prompt.render_flat();
         if !granted.is_empty() && !off.contains(&SegmentKind::EngineNote) {
             let list: Vec<String> = granted.iter().map(|p| p.display().to_string()).collect();
@@ -338,6 +322,63 @@ impl ServeHost {
         spec
     }
 
+    /// The folder a turn in `session` runs in — the one Claude Code files
+    /// the chat's history under: the chat's own (a kind switch's), else the
+    /// project's, else `serve`'s; a Chat's is the chat folder.
+    pub fn workspace_for(&self, project: Option<&Project>, session: &Session) -> PathBuf {
+        let base = session
+            .kind_workspace()
+            .map(Path::to_path_buf)
+            .or_else(|| project.map(Project::workspace_dir))
+            .unwrap_or_else(|| self.cfg.unfiled_workspace.clone());
+        match session.declared_kind() {
+            ChatKind::Build => base,
+            ChatKind::Chat => crate::prompt::chat_dir().unwrap_or(base),
+        }
+    }
+
+    /// The preamble a turn in `session` appends, by the chat's layers —
+    /// what the Context page itemises (the desktop's `built.agent`).
+    fn prompt_for(
+        &self,
+        project: Option<&Project>,
+        session: &Session,
+        workspace: &Path,
+        spec: &AgentSpec,
+    ) -> SystemPrompt {
+        let declared = session.declared_kind();
+        let off: Vec<SegmentKind> = session.prompt_layers_off().to_vec();
+        let edits = session.prompt_layer_edits().clone();
+        let knowledge = crate::knowledge::vault_dir();
+        crate::agent_prompt_with(
+            &crate::PromptConfig {
+                identity: false,
+                environment: false,
+                project_instructions: true,
+                user_memory: true,
+                model: spec.model.clone(),
+                chat_instructions: declared == ChatKind::Chat,
+                project: project.map(|p| crate::ProjectContext {
+                    name: p.name.clone(),
+                    notes_dir: p.notes_dir(),
+                }),
+                knowledge: knowledge.map(|dir| crate::KnowledgeContext { dir }),
+                cwd: workspace.to_path_buf(),
+                custom: None,
+                edits,
+            }
+            .without(&off),
+            None,
+            crate::EngineLayers {
+                engine_note: !off.contains(&SegmentKind::EngineNote),
+                pacing: !off.contains(&SegmentKind::Pacing),
+                subagents: !off.contains(&SegmentKind::Subagents),
+                reusable: false,
+                subagent_model: spec.subagent_limits.unwrap_or_default().model,
+            },
+        )
+    }
+
     /// Take the one turn slot for `chat`, or say what holds it.
     fn claim(&self, chat: &str) -> Result<CancellationToken, String> {
         let mut turn = lock(&self.turn);
@@ -347,6 +388,9 @@ impl ServeHost {
             } else {
                 "a turn is running in another chat; send again when it ends".into()
             });
+        }
+        if lock(&self.acting).contains(chat) {
+            return Err("this chat is being changed; send again in a moment".into());
         }
         let cancel = CancellationToken::new();
         *turn = Some(Turn {
@@ -442,6 +486,299 @@ impl ServeHost {
     fn find_chat(&self, project: Option<&Project>, chat: &str) -> Result<PathBuf, String> {
         store::find_by_prefix(&self.log_dir(project), chat).map_err(|e| e.to_string())
     }
+
+    /// The places a chat may live, the phone's project first: it, then the
+    /// unfiled chats, then every other project (an action names a chat,
+    /// not its project).
+    fn places(&self) -> Vec<Option<Project>> {
+        let open = self.project(None).ok().flatten();
+        let mut out = vec![open.clone()];
+        if open.is_some() {
+            out.push(None);
+        }
+        for p in lock(&self.registry).projects() {
+            if open.as_ref().is_none_or(|o| o.id != p.id) {
+                out.push(Some(p));
+            }
+        }
+        out
+    }
+
+    /// The chat `chat` (an id or its prefix): its project and its log.
+    fn locate(&self, chat: &str) -> Result<(Option<Project>, PathBuf), String> {
+        for place in self.places() {
+            if let Ok(path) = self.find_chat(place.as_ref(), chat) {
+                return Ok((place, path));
+            }
+        }
+        Err(format!("no chat {chat}"))
+    }
+
+    /// Hold `chat` for one action: refused while a turn runs in it
+    /// (blocker 672's rule, as the Mac refuses mid-turn) or while another
+    /// action changes it. Let go on drop.
+    fn hold(&self, chat: &str) -> Result<Acting<'_>, String> {
+        let turn = lock(&self.turn);
+        if turn.as_ref().is_some_and(|t| t.chat == chat) {
+            return Err(RUNNING_HERE.into());
+        }
+        if !lock(&self.acting).insert(chat.to_string()) {
+            return Err("another change to this chat is being made; try again in a moment".into());
+        }
+        Ok(Acting {
+            host: self,
+            chat: chat.to_string(),
+        })
+    }
+
+    /// Make `chat` (in `project`) the phone's chat, as the Mac's window
+    /// follows a fork or a continue.
+    fn follow(&self, project: Option<&Project>, chat: &str) {
+        *lock(&self.active_chat) = Some(chat.to_string());
+        *lock(&self.active_project) = project.map(|p| p.id.clone());
+    }
+
+    /// Edit and send: a fork cut before the turn, the new text sent as the
+    /// fork's first turn — the Mac's `sendEdit` steps. The turn slot is
+    /// taken before the fork is made, so a refusal makes no fork and a
+    /// fork never waits without its message.
+    fn edit_and_send(
+        &self,
+        project: Option<Project>,
+        parent: &Session,
+        index: usize,
+        text: String,
+    ) -> Result<ActReply, String> {
+        let cancel = self.claim(FORKING)?;
+        let log_dir = self.log_dir(project.as_ref());
+        let cli = OnCli::at(self.workspace_for(project.as_ref(), parent));
+        let fork = match chat_ops::fork(parent, &log_dir, Some(cli), index) {
+            Ok(f) => f,
+            Err(e) => {
+                *lock(&self.turn) = None;
+                return Err(e);
+            }
+        };
+        if let Some(t) = lock(&self.turn).as_mut() {
+            t.chat = fork.id.clone();
+        }
+        self.follow(project.as_ref(), &fork.id);
+        let reply = ActReply {
+            chat: fork.id.clone(),
+            events: fork.events().to_vec(),
+        };
+        self.spawn_turn(
+            project,
+            fork,
+            SendRequest {
+                text,
+                ..SendRequest::default()
+            },
+            cancel,
+        );
+        Ok(reply)
+    }
+
+    /// Put a deleted chat back, from whichever place's trash holds it.
+    fn undelete(&self, chat: &str) -> Result<ActReply, String> {
+        for place in self.places() {
+            let dir = self.log_dir(place.as_ref());
+            if chat_ops::in_trash(&dir, chat) {
+                let id = chat_ops::restore_from_trash(&dir, chat)?;
+                return Ok(ActReply {
+                    chat: id,
+                    events: Vec::new(),
+                });
+            }
+        }
+        Err(format!("no deleted chat {chat} in the trash"))
+    }
+
+    /// One action on a held chat, on its log (blocking file work).
+    fn act_on(
+        &self,
+        project: Option<Project>,
+        path: PathBuf,
+        mut session: Session,
+        action: ChatAction,
+    ) -> Result<ActReply, String> {
+        let id = session.id.clone();
+        let log_dir = self.log_dir(project.as_ref());
+        let cli = || Some(OnCli::at(self.workspace_for(project.as_ref(), &session)));
+        let here = |s: &Session| ActReply {
+            chat: s.id.clone(),
+            events: s.events().to_vec(),
+        };
+        match action {
+            ChatAction::Edit {
+                mode: EditMode::Send,
+                block: Some(_),
+                ..
+            } => Err("a reply's block is saved, not sent".into()),
+            ChatAction::Edit {
+                mode: EditMode::Send,
+                index,
+                text,
+                ..
+            } => self.edit_and_send(project, &session, index, text),
+            ChatAction::Edit {
+                mode: EditMode::Save,
+                index,
+                text,
+                block,
+            } => {
+                let c = cli();
+                chat_ops::edit_saved(&mut session, c, index, text, block)?;
+                Ok(here(&session))
+            }
+            ChatAction::Remove { index } => {
+                let c = cli();
+                chat_ops::remove_message(&mut session, c, index)?;
+                Ok(here(&session))
+            }
+            ChatAction::Restore { index } => {
+                let c = cli();
+                chat_ops::restore_message(&mut session, c, index)?;
+                Ok(here(&session))
+            }
+            ChatAction::RemoveBlock { index, block } => {
+                let c = cli();
+                chat_ops::remove_block(&mut session, c, index, block)?;
+                Ok(here(&session))
+            }
+            ChatAction::RestoreBlock { index, block } => {
+                let c = cli();
+                chat_ops::restore_block(&mut session, c, index, block)?;
+                Ok(here(&session))
+            }
+            ChatAction::Rewind { to } => {
+                let c = cli();
+                chat_ops::rewind(&mut session, c, to)?;
+                Ok(here(&session))
+            }
+            ChatAction::Unrewind { of } => {
+                let c = cli();
+                chat_ops::unrewind(&mut session, c, of)?;
+                Ok(here(&session))
+            }
+            ChatAction::Fork { upto } => {
+                let fork = chat_ops::fork(&session, &log_dir, cli(), upto)?;
+                self.follow(project.as_ref(), &fork.id);
+                Ok(here(&fork))
+            }
+            ChatAction::Continue => {
+                let next = chat_ops::continue_from(&session, &log_dir, None)?;
+                self.follow(project.as_ref(), &next.id);
+                Ok(here(&next))
+            }
+            ChatAction::Kind { kind } => {
+                let kind = match kind.as_str() {
+                    "build" => ChatKind::Build,
+                    "chat" => ChatKind::Chat,
+                    other => return Err(format!("no chat kind {other}")),
+                };
+                if session.kind() != kind {
+                    chat_ops::set_kind(&mut session, kind, None);
+                }
+                Ok(here(&session))
+            }
+            ChatAction::Delete => {
+                drop(session);
+                chat_ops::move_to_trash(&log_dir, &path, &id)?;
+                let mut active = lock(&self.active_chat);
+                if active.as_deref() == Some(id.as_str()) {
+                    *active = None;
+                }
+                Ok(ActReply {
+                    chat: id,
+                    events: Vec::new(),
+                })
+            }
+            ChatAction::Undelete => self.undelete(&id),
+            ChatAction::Compact
+            | ChatAction::ResumeLimit
+            | ChatAction::Budget { .. }
+            | ChatAction::Checkpoint { .. } => Err(not_yet(&action)),
+        }
+    }
+
+    /// `chat`'s Context page: the preamble its next turn appends, itemised
+    /// (Claude Code holds the conversation, so the view has no messages —
+    /// the desktop's answer on that engine), its layers as built (each
+    /// turn is built fresh from the log here, so the pairs agree), each
+    /// editable layer's file text as `layers.sources`, and no held change
+    /// (`serve` keeps no prompt hold).
+    fn context_of(&self, project: Option<&Project>, session: &Session) -> ContextReply {
+        let workspace = self.workspace_for(project, session);
+        let mut spec = AgentSpec::new(workspace.clone());
+        spec.model = self.cfg.model.clone();
+        let prompt = self.prompt_for(project, session, &workspace, &spec);
+        let view = WireView::assemble(Some(&prompt), &Session::new(), None, None);
+        let mut layers = serde_json::to_value(PromptLayersInfo::as_built(session))
+            .unwrap_or(serde_json::Value::Null);
+        if let Some(obj) = layers.as_object_mut() {
+            let sources = context_ops::layer_sources(self.cfg.model.as_deref(), &workspace);
+            obj.insert(
+                "sources".into(),
+                serde_json::to_value(sources).unwrap_or_default(),
+            );
+        }
+        ContextReply {
+            view,
+            layers,
+            pending: serde_json::Value::Null,
+        }
+    }
+
+    /// Load `chat`'s log wherever it lives.
+    async fn load(&self, chat: &str) -> Result<(Option<Project>, PathBuf, Session), String> {
+        let (project, path) = self.locate(chat)?;
+        let p = path.clone();
+        let session = tokio::task::spawn_blocking(move || Session::load(p))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+        Ok((project, path, session))
+    }
+}
+
+/// The sentence for an action on a chat whose turn is running here (the
+/// Mac's `RUNNING_HERE`, blocker 672's one-turn rule).
+const RUNNING_HERE: &str = "a turn is running in this chat — try again when it ends";
+
+/// The turn slot's holder while an edit-and-send makes its fork.
+const FORKING: &str = "(forking)";
+
+/// What `serve` does not do yet (wave B adds these).
+fn not_yet(action: &ChatAction) -> String {
+    let what = match action {
+        ChatAction::Compact => "compacting a chat",
+        ChatAction::ResumeLimit => "resuming after a usage limit",
+        ChatAction::Budget { .. } => "answering a turn's budget",
+        ChatAction::Checkpoint { .. } => "setting a checkpoint",
+        _ => "this action",
+    };
+    format!("{what} is not on the away server yet — do it on the Mac")
+}
+
+/// A chat held by [`ServeHost::hold`] for one action.
+struct Acting<'a> {
+    host: &'a ServeHost,
+    chat: String,
+}
+
+impl Drop for Acting<'_> {
+    fn drop(&mut self) {
+        lock(&self.host.acting).remove(&self.chat);
+    }
+}
+
+/// The extra folders a turn in `session` may see: the project's, then the
+/// chat's own.
+fn granted_folders(project: Option<&Project>, session: &Session) -> Vec<PathBuf> {
+    let mut granted: Vec<PathBuf> = project.map(|p| p.extra_folders.clone()).unwrap_or_default();
+    granted.extend(session.folders().iter().cloned());
+    granted
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -744,8 +1081,78 @@ impl Host for ServeHost {
         })
     }
 
+    async fn act(&self, chat: &str, action: ChatAction) -> Result<ActReply, String> {
+        if matches!(action, ChatAction::Undelete) {
+            return self.undelete(chat);
+        }
+        if matches!(
+            action,
+            ChatAction::Compact
+                | ChatAction::ResumeLimit
+                | ChatAction::Budget { .. }
+                | ChatAction::Checkpoint { .. }
+        ) {
+            return Err(not_yet(&action));
+        }
+        let (project, path, session) = self.load(chat).await?;
+        let _held = self.hold(&session.id).map_err(|e| {
+            if matches!(action, ChatAction::Delete) && e == RUNNING_HERE {
+                "that chat is running a turn — delete it when the turn ends".to_string()
+            } else {
+                e
+            }
+        })?;
+        self.act_on(project, path, session, action)
+    }
+
+    async fn context(&self, chat: &str) -> Result<ContextReply, String> {
+        let (project, _, session) = self.load(chat).await?;
+        Ok(self.context_of(project.as_ref(), &session))
+    }
+
+    /// Refused, as the Mac refuses it on the Claude Code engine — the only
+    /// engine `serve` runs.
+    async fn edit_context(
+        &self,
+        chat: &str,
+        _targets: Vec<usize>,
+        _remove: bool,
+    ) -> Result<WireView, String> {
+        self.locate(chat)?;
+        Err(context_ops::not_on_claude_code("edit the context"))
+    }
+
+    async fn layers(&self, chat: &str, change: LayerChange) -> Result<ContextReply, String> {
+        let (project, _, mut session) = self.load(chat).await?;
+        let _held = self.hold(&session.id)?;
+        match change {
+            LayerChange::Off { off } => context_ops::set_layers_off(&mut session, off),
+            LayerChange::Text { kind, text } => {
+                context_ops::set_layer_text(&mut session, kind, text)?
+            }
+            LayerChange::Choice { .. } => {
+                return Err(
+                    "the away server builds each turn's prompt fresh from the chat, \
+                     so there is no held version to choose"
+                        .into(),
+                );
+            }
+        }
+        if let Some(f) = session.write_failure() {
+            return Err(f.summary());
+        }
+        Ok(self.context_of(project.as_ref(), &session))
+    }
+
+    fn kind(&self) -> &'static str {
+        "serve"
+    }
+
     fn features(&self) -> Vec<String> {
         [
+            feature::ACT,
+            feature::CONTEXT,
+            feature::LAYERS,
             feature::SEND_PROJECT,
             feature::IMAGES,
             feature::DOCUMENTS,
@@ -1064,6 +1471,417 @@ esac
         .await;
         let chats = texts(&get(&c, format!("{base}/api/chats"), &token).await);
         assert!(chats.contains("a fresh one"), "{chats}");
+
+        server.stop().await;
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A log's events as JSON with what differs between two writes of the
+    /// same edit taken out: every `at`, and a new chat's own id.
+    fn shape(events: &[SessionEvent]) -> Vec<serde_json::Value> {
+        events
+            .iter()
+            .map(|e| {
+                let mut v = serde_json::to_value(e).unwrap();
+                if let Some(o) = v.as_object_mut() {
+                    o.remove("at");
+                    if o.get("event").and_then(|x| x.as_str()) == Some("session_created") {
+                        o.remove("id");
+                    }
+                }
+                v
+            })
+            .collect()
+    }
+
+    /// A copy of the log at `path` in a scratch folder of its own, loaded:
+    /// what the Mac's command would act on.
+    fn mirror(path: &Path, scratch: &Path) -> Session {
+        let dir = scratch.join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        let copy = dir.join(path.file_name().unwrap());
+        std::fs::copy(path, &copy).unwrap();
+        Session::load(&copy).unwrap()
+    }
+
+    fn on_disk(unfiled: &Path, chat: &str) -> Vec<SessionEvent> {
+        let path = store::find_by_prefix(unfiled, chat).unwrap();
+        Session::load(&path).unwrap().events().to_vec()
+    }
+
+    /// Wave 3, A1: every chat action, the Context page and the layers on
+    /// the away server, over HTTP with the stand-in `claude`. Each action's
+    /// log is checked against the shared function the Mac's command runs
+    /// (`chat_ops` / `context_ops`) applied to a copy of the log taken just
+    /// before — not a copy of the function.
+    #[tokio::test]
+    async fn serve_answers_the_chat_actions_context_and_layers_as_the_mac_does() {
+        use nightloom_core::{ContentBlock, Usage};
+        crate::project::set_config_dir(
+            std::env::temp_dir().join(format!("nightloom-home-{}", std::process::id())),
+        );
+        let root =
+            std::env::temp_dir().join(format!("nightloom-serve-ops-{}", uuid::Uuid::new_v4()));
+        let unfiled = root.join("unfiled").join("sessions");
+        let workspace = root.join("ws");
+        let scratch = root.join("mac");
+        std::fs::create_dir_all(&unfiled).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        let text = |s: &str| ContentBlock::Text { text: s.into() };
+        let mut seeded = Session::start(&unfiled, ChatMode::Normal, ChatKind::Build).unwrap();
+        seeded.record_user("first"); // 1
+        seeded.record_assistant("m", vec![text("a1"), text("a2")], None, Usage::default()); // 2
+        seeded.record_user("second"); // 3
+        seeded.record_assistant("m", vec![text("b1")], None, Usage::default()); // 4
+        let chat = seeded.id.clone();
+        drop(seeded);
+        let path = store::find_by_prefix(&unfiled, &chat).unwrap();
+
+        let cfg = ServeConfig {
+            binary: stand_in(&root),
+            model: None,
+            hook_exe: None,
+            assets: None,
+            unfiled_dir: unfiled.clone(),
+            unfiled_workspace: workspace.clone(),
+        };
+        let host = ServeHost::new(cfg, Registry::load_from(root.join("projects.json")));
+        let token = "t0k3n".to_string();
+        let server = Server::start_for_test(
+            "127.0.0.1:0".parse().unwrap(),
+            token.clone(),
+            host.clone() as Arc<dyn Host>,
+        )
+        .await
+        .unwrap();
+        let base = format!("http://{}", server.addr());
+        let c = client();
+        let act = format!("{base}/api/chats/{chat}/act");
+        let ws = || Some(OnCli::at(workspace.clone()));
+
+        // The host and what it serves: exactly the routes answered below.
+        let state = get(&c, format!("{base}/api/state"), &token).await;
+        assert_eq!(state["host"], "serve");
+        assert_eq!(
+            state["features"],
+            serde_json::json!([
+                "act",
+                "context",
+                "layers",
+                "send_project",
+                "images",
+                "documents",
+                "council",
+                "spoken"
+            ])
+        );
+
+        // Each in-place action: the log equals the shared function's.
+        type Op = Box<dyn Fn(&mut Session)>;
+        let w = workspace.clone();
+        let cli = move || Some(OnCli::at(w.clone()));
+        let cases: Vec<(serde_json::Value, Op)> = vec![
+            (
+                serde_json::json!({"op": "edit", "index": 1, "text": "first, better", "mode": "save"}),
+                Box::new({
+                    let cli = cli.clone();
+                    move |s| {
+                        chat_ops::edit_saved(s, cli(), 1, "first, better".into(), None).unwrap()
+                    }
+                }),
+            ),
+            (
+                serde_json::json!({"op": "edit", "index": 2, "text": "a2 better", "mode": "save", "block": 1}),
+                Box::new({
+                    let cli = cli.clone();
+                    move |s| chat_ops::edit_saved(s, cli(), 2, "a2 better".into(), Some(1)).unwrap()
+                }),
+            ),
+            (
+                serde_json::json!({"op": "remove", "index": 3}),
+                Box::new({
+                    let cli = cli.clone();
+                    move |s| chat_ops::remove_message(s, cli(), 3).unwrap()
+                }),
+            ),
+            (
+                serde_json::json!({"op": "restore", "index": 3}),
+                Box::new({
+                    let cli = cli.clone();
+                    move |s| chat_ops::restore_message(s, cli(), 3).unwrap()
+                }),
+            ),
+            (
+                serde_json::json!({"op": "remove_block", "index": 2, "block": 0}),
+                Box::new({
+                    let cli = cli.clone();
+                    move |s| chat_ops::remove_block(s, cli(), 2, 0).unwrap()
+                }),
+            ),
+            (
+                serde_json::json!({"op": "restore_block", "index": 2, "block": 0}),
+                Box::new({
+                    let cli = cli.clone();
+                    move |s| chat_ops::restore_block(s, cli(), 2, 0).unwrap()
+                }),
+            ),
+            (
+                serde_json::json!({"op": "rewind", "to": 3}),
+                Box::new({
+                    let cli = cli.clone();
+                    move |s| chat_ops::rewind(s, cli(), 3).unwrap()
+                }),
+            ),
+            (
+                serde_json::json!({"op": "kind", "kind": "chat"}),
+                Box::new(|s| chat_ops::set_kind(s, ChatKind::Chat, None)),
+            ),
+            (
+                serde_json::json!({"op": "kind", "kind": "build"}),
+                Box::new(|s| chat_ops::set_kind(s, ChatKind::Build, None)),
+            ),
+        ];
+        for (body, mac) in cases {
+            let mut expected = mirror(&path, &scratch);
+            mac(&mut expected);
+            let (code, reply) = post(&c, act.clone(), &token, body.clone()).await;
+            assert_eq!(code, 200, "{body}: {reply}");
+            let reply: ActReply = serde_json::from_str(&reply).unwrap();
+            assert_eq!(reply.chat, chat, "{body}");
+            let got = on_disk(&unfiled, &chat);
+            assert_eq!(shape(&got), shape(expected.events()), "{body}");
+            assert_eq!(
+                shape(&reply.events),
+                shape(&got),
+                "{body}: the reply is the log"
+            );
+        }
+        // Unrewind lifts the rewind just recorded (its marker's index).
+        let marker = on_disk(&unfiled, &chat)
+            .iter()
+            .rposition(|e| matches!(e, SessionEvent::Rewind { .. }))
+            .unwrap();
+        let mut expected = mirror(&path, &scratch);
+        chat_ops::unrewind(&mut expected, ws(), marker).unwrap();
+        let (code, reply) = post(
+            &c,
+            act.clone(),
+            &token,
+            serde_json::json!({"op": "unrewind", "of": marker}),
+        )
+        .await;
+        assert_eq!(code, 200, "{reply}");
+        assert_eq!(shape(&on_disk(&unfiled, &chat)), shape(expected.events()));
+
+        // A fork: the reply names the new chat, whose log is the shared
+        // function's fork; the parent is untouched.
+        let before = on_disk(&unfiled, &chat);
+        let expected = chat_ops::fork(&mirror(&path, &scratch), &scratch, ws(), 3).unwrap();
+        let (code, reply) = post(
+            &c,
+            act.clone(),
+            &token,
+            serde_json::json!({"op": "fork", "upto": 3}),
+        )
+        .await;
+        assert_eq!(code, 200, "{reply}");
+        let reply: ActReply = serde_json::from_str(&reply).unwrap();
+        assert_ne!(reply.chat, chat);
+        assert_eq!(
+            shape(&on_disk(&unfiled, &reply.chat)),
+            shape(expected.events())
+        );
+        assert_eq!(shape(&on_disk(&unfiled, &chat)), shape(&before));
+        let state = get(&c, format!("{base}/api/state"), &token).await;
+        assert_eq!(
+            state["active_chat"],
+            reply.chat.as_str(),
+            "the phone follows the fork"
+        );
+
+        // Continue: a new, linked chat.
+        let expected = chat_ops::continue_from(&mirror(&path, &scratch), &scratch, None).unwrap();
+        let (code, reply) = post(
+            &c,
+            act.clone(),
+            &token,
+            serde_json::json!({"op": "continue"}),
+        )
+        .await;
+        assert_eq!(code, 200, "{reply}");
+        let reply: ActReply = serde_json::from_str(&reply).unwrap();
+        assert_ne!(reply.chat, chat);
+        assert_eq!(
+            shape(&on_disk(&unfiled, &reply.chat)),
+            shape(expected.events())
+        );
+
+        // Layers: switched off, a layer's own text — the log as the Mac's
+        // command writes it, the Context page after in the reply.
+        let layers = format!("{base}/api/chats/{chat}/layers");
+        let mut expected = mirror(&path, &scratch);
+        context_ops::set_layers_off(&mut expected, vec![SegmentKind::Pacing]);
+        let (code, reply) = post(
+            &c,
+            layers.clone(),
+            &token,
+            serde_json::json!({"off": ["pacing"]}),
+        )
+        .await;
+        assert_eq!(code, 200, "{reply}");
+        assert_eq!(shape(&on_disk(&unfiled, &chat)), shape(expected.events()));
+        let v: serde_json::Value = serde_json::from_str(&reply).unwrap();
+        assert_eq!(v["layers"]["off"], serde_json::json!(["pacing"]));
+        let mut expected = mirror(&path, &scratch);
+        context_ops::set_layer_text(&mut expected, SegmentKind::UserMemory, Some("mine".into()))
+            .unwrap();
+        let (code, reply) = post(
+            &c,
+            layers.clone(),
+            &token,
+            serde_json::json!({"kind": "user_memory", "text": "mine"}),
+        )
+        .await;
+        assert_eq!(code, 200, "{reply}");
+        assert_eq!(shape(&on_disk(&unfiled, &chat)), shape(expected.events()));
+        // No prompt hold here: a choice is refused with a sentence.
+        let (code, reply) = post(
+            &c,
+            layers.clone(),
+            &token,
+            serde_json::json!({"kind": "user_memory", "choice": "keep"}),
+        )
+        .await;
+        assert_eq!(code, 409, "{reply}");
+
+        // The Context page: the preamble itemised, the layers as built,
+        // each editable layer's file as `sources`, no held change.
+        let ctx = get(&c, format!("{base}/api/chats/{chat}/context"), &token).await;
+        assert!(ctx["view"].is_object(), "{ctx}");
+        assert_eq!(ctx["layers"]["off"], ctx["layers"]["built"]);
+        assert!(
+            ctx["layers"]["sources"]
+                .as_object()
+                .is_some_and(|o| o.len() == 4),
+            "{ctx}"
+        );
+        assert!(ctx["pending"].is_null());
+        // Hiding items is refused on Claude Code, as on the Mac.
+        let (code, reply) = post(
+            &c,
+            format!("{base}/api/chats/{chat}/context"),
+            &token,
+            serde_json::json!({"targets": [1], "remove": true}),
+        )
+        .await;
+        assert_eq!(code, 409);
+        assert!(reply.contains("Claude Code engine"), "{reply}");
+        // Wave B's: answered with a sentence, never a 200.
+        let (code, reply) = post(
+            &c,
+            act.clone(),
+            &token,
+            serde_json::json!({"op": "compact"}),
+        )
+        .await;
+        assert_eq!(code, 409);
+        assert!(reply.contains("not on the away server yet"), "{reply}");
+
+        // Edit and send: a fork cut before the turn, the new text its first
+        // turn, run by the stand-in.
+        std::fs::write(root.join("mode"), "reply").unwrap();
+        let (code, reply) = post(
+            &c,
+            act.clone(),
+            &token,
+            serde_json::json!({"op": "edit", "index": 3, "text": "second, resent", "mode": "send"}),
+        )
+        .await;
+        assert_eq!(code, 200, "{reply}");
+        let fork: ActReply = serde_json::from_str(&reply).unwrap();
+        assert_ne!(fork.chat, chat);
+        until(&c, &base, &token, Duration::from_secs(10), |s| {
+            s["busy"] == false
+        })
+        .await;
+        let log = serde_json::to_string(&on_disk(&unfiled, &fork.chat)).unwrap();
+        assert!(log.contains("second, resent"), "{log}");
+        assert!(log.contains("hi from the stand-in"), "{log}");
+
+        // Mid-turn: every change to the running chat is a 409 with the
+        // sentence, and the log is as it was.
+        std::fs::write(root.join("mode"), "park").unwrap();
+        let (code, body) = post(
+            &c,
+            format!("{base}/api/chats/{chat}/send"),
+            &token,
+            serde_json::json!({"text": "wait"}),
+        )
+        .await;
+        assert_eq!(code, 202, "{body}");
+        until(&c, &base, &token, Duration::from_secs(10), |s| {
+            s["busy"] == true
+        })
+        .await;
+        let before = on_disk(&unfiled, &chat);
+        for body in [
+            serde_json::json!({"op": "remove", "index": 1}),
+            serde_json::json!({"op": "delete"}),
+        ] {
+            let (code, reply) = post(&c, act.clone(), &token, body.clone()).await;
+            assert_eq!(code, 409, "{body}: {reply}");
+            assert!(
+                reply.contains("running a turn") || reply.contains("turn is running"),
+                "{reply}"
+            );
+        }
+        let (code, _) = post(&c, layers.clone(), &token, serde_json::json!({"off": []})).await;
+        assert_eq!(code, 409);
+        // The turn records its own message; no action's marker landed.
+        let markers = |es: &[SessionEvent]| {
+            es.iter()
+                .filter(|e| {
+                    matches!(
+                        e,
+                        SessionEvent::Elide { .. } | SessionEvent::PromptLayers { .. }
+                    )
+                })
+                .count()
+        };
+        assert_eq!(markers(&on_disk(&unfiled, &chat)), markers(&before));
+        while !root.join("last-args").exists() {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        post(
+            &c,
+            format!("{base}/api/chats/{chat}/cancel"),
+            &token,
+            serde_json::json!({}),
+        )
+        .await;
+        until(&c, &base, &token, Duration::from_secs(15), |s| {
+            s["busy"] == false
+        })
+        .await;
+
+        // Delete moves the log to the trash folder; undelete brings it back.
+        let (code, reply) =
+            post(&c, act.clone(), &token, serde_json::json!({"op": "delete"})).await;
+        assert_eq!(code, 200, "{reply}");
+        assert!(!path.exists());
+        assert!(chat_ops::in_trash(&unfiled, &chat));
+        let chats = texts(&get(&c, format!("{base}/api/chats"), &token).await);
+        assert!(!chats.contains(&chat), "{chats}");
+        let (code, reply) = post(
+            &c,
+            act.clone(),
+            &token,
+            serde_json::json!({"op": "undelete"}),
+        )
+        .await;
+        assert_eq!(code, 200, "{reply}");
+        assert!(path.exists());
 
         server.stop().await;
         let _ = std::fs::remove_dir_all(&root);
