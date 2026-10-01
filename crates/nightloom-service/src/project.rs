@@ -145,6 +145,13 @@ pub struct Project {
     /// Absent from every registry written before the field existed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_folders: Vec<PathBuf>,
+    /// Marked "available away" (nightshift item 268 step 3, blocker 651):
+    /// the Mac sends this project's `AGENTS.md`, chat logs and their
+    /// Claude Code session files to the away server when it syncs. Off by
+    /// default and absent from the file while off, so a registry written
+    /// before the mark existed reads as "nothing sent" — the safe default.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub available_away: bool,
     pub created: DateTime<Utc>,
     /// Bumped by [`Registry::touch`], so the picker can lead with what the
     /// user was last working on.
@@ -434,6 +441,7 @@ impl Registry {
             workspace,
             source,
             extra_folders: Vec::new(),
+            available_away: false,
             created: now,
             last_opened: now,
         };
@@ -495,6 +503,37 @@ impl Registry {
         let out = project.clone();
         self.save()?;
         Ok(out)
+    }
+
+    /// Mark a project "available away", or unmark it (item 268 step 3):
+    /// what the Mac's sync sends up. Saved like a rename — a change he made
+    /// and watched succeed — so a save that fails is an error, and the mark
+    /// is put back in memory, since an "off" that did not stick would keep
+    /// sending a project he turned off.
+    pub fn set_available_away(&mut self, id: &str, on: bool) -> Result<Project, String> {
+        let project = self
+            .projects
+            .iter_mut()
+            .find(|p| p.id == id)
+            .ok_or_else(|| format!("no project {id}"))?;
+        let was = project.available_away;
+        project.available_away = on;
+        let out = project.clone();
+        if let Err(e) = self.save() {
+            if let Some(p) = self.projects.iter_mut().find(|p| p.id == id) {
+                p.available_away = was;
+            }
+            return Err(e);
+        }
+        Ok(out)
+    }
+
+    /// The projects marked "available away", newest-opened first.
+    pub fn away_projects(&self) -> Vec<Project> {
+        self.projects()
+            .into_iter()
+            .filter(|p| p.available_away)
+            .collect()
     }
 
     /// Drop a project from the registry.
@@ -1631,6 +1670,7 @@ mod tests {
             workspace: Some(normalize(&dir)),
             source: None,
             extra_folders: Vec::new(),
+            available_away: false,
             created: Utc::now(),
             last_opened: Utc::now(),
         };
@@ -1829,6 +1869,39 @@ mod tests {
         assert!(!fs::read_to_string(&path).unwrap().contains("extra_folders"));
     }
 
+    /// Item 268 step 3: the "available away" mark is off by default,
+    /// absent from the file while off, kept across a reload when on, and
+    /// refused for a project that is not there.
+    #[test]
+    fn the_available_away_mark_is_off_by_default_and_kept_when_set() {
+        let dir = temp_dir("away-mark");
+        let path = dir.join("projects.json");
+        let home = dir.join("home");
+        fs::create_dir_all(&home).unwrap();
+        let mut reg = Registry::load_from(&path);
+        let p = reg.add(&home, None).unwrap();
+        assert!(!p.available_away);
+        assert!(reg.away_projects().is_empty());
+        assert!(
+            !fs::read_to_string(&path)
+                .unwrap()
+                .contains("available_away")
+        );
+        assert!(reg.set_available_away(&p.id, true).unwrap().available_away);
+        assert!(reg.set_available_away("nope", true).is_err());
+        let reloaded = Registry::load_from(&path);
+        assert!(reloaded.find(&p.id).unwrap().available_away);
+        assert_eq!(reloaded.away_projects().len(), 1);
+        let mut reg = Registry::load_from(&path);
+        reg.set_available_away(&p.id, false).unwrap();
+        assert!(
+            !fs::read_to_string(&path)
+                .unwrap()
+                .contains("available_away")
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
     /// Backlog 219: a save that cannot write (a full disk) leaves the old
     /// file whole. The temp file's name is taken by a folder, so the write
     /// fails the way a full disk makes it fail: before the rename.
@@ -1961,6 +2034,7 @@ mod tests {
                 workspace: Some(projects_folder.join(slug)),
                 source: Some(format!("claude:{slug}")),
                 extra_folders: Vec::new(),
+                available_away: false,
                 created: import_day,
                 last_opened: import_day,
             })
@@ -1971,6 +2045,7 @@ mod tests {
             workspace: Some(elsewhere.to_path_buf()),
             source: None,
             extra_folders: Vec::new(),
+            available_away: false,
             created: later,
             last_opened: later,
         });
@@ -1993,6 +2068,7 @@ mod tests {
             workspace: Some(PathBuf::from("/tmp/projects/Unfiled-chats")),
             source: source.map(str::to_string),
             extra_folders: Vec::new(),
+            available_away: false,
             created: at,
             last_opened: at,
         };
@@ -2034,6 +2110,7 @@ mod tests {
             workspace: Some(PathBuf::from("/new/projects/Neural-MCP-test")),
             source: None,
             extra_folders: Vec::new(),
+            available_away: false,
             created: newer,
             last_opened: newer,
         });

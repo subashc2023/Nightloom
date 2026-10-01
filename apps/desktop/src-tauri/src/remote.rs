@@ -1439,9 +1439,90 @@ pub async fn remote_token(
     status(&remote, None).await
 }
 
+/// What "Test from this Mac" found (backlog 154's Mac half).
+#[derive(Serialize, Clone, Debug)]
+pub struct SelfTest {
+    pub ok: bool,
+    /// The round trip, when it answered.
+    pub ms: Option<u64>,
+    /// The line the card shows: "answers in N ms" or the reason it does not.
+    pub message: String,
+}
+
+/// The URL the self-test asks: the running listener's own address and
+/// port (`/api/state`), or on an HTTPS listener the certificate's name —
+/// the same place the phone's link points.
+fn self_test_url(addr: std::net::SocketAddr, https_name: Option<&str>) -> String {
+    match https_name {
+        Some(name) => format!("https://{name}:{}/api/state", addr.port()),
+        None => format!("http://{addr}/api/state"),
+    }
+}
+
+/// The self-test's line from the probe's answer.
+fn self_test_of(url: &str, answer: Result<u128, String>) -> SelfTest {
+    match answer {
+        Ok(ms) => SelfTest {
+            ok: true,
+            ms: Some(u64::try_from(ms).unwrap_or(u64::MAX)),
+            message: format!("answers in {ms} ms at {url}"),
+        },
+        Err(e) => SelfTest {
+            ok: false,
+            ms: None,
+            message: e,
+        },
+    }
+}
+
+/// "Test from this Mac": connect to the listener's own address and port
+/// from this process, with the listener's own token, and say how long it
+/// took or why it did not answer. Never shows the token.
+#[tauri::command]
+pub async fn remote_self_test(remote: State<'_, Remote>) -> Result<SelfTest, String> {
+    let (addr, token, https) = {
+        let slot = remote.server.lock().await;
+        match slot.as_ref() {
+            Some(s) => (s.addr(), s.token().to_string(), s.https()),
+            None => {
+                return Ok(SelfTest {
+                    ok: false,
+                    ms: None,
+                    message: "the listener is off — switch it on above, then test".into(),
+                });
+            }
+        }
+    };
+    let name = if https {
+        nightloom_service::tls::tailnet_domain().await
+    } else {
+        None
+    };
+    let url = self_test_url(addr, name.as_deref());
+    let answer = nightloom_service::sync::probe(&url, Some(&token)).await;
+    Ok(self_test_of(&url, answer))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_self_test_asks_the_listeners_own_address_and_says_what_it_found() {
+        let addr: std::net::SocketAddr = "100.64.0.7:8642".parse().unwrap();
+        assert_eq!(
+            self_test_url(addr, None),
+            "http://100.64.0.7:8642/api/state"
+        );
+        assert_eq!(
+            self_test_url(addr, Some("mac.tail1.ts.net")),
+            "https://mac.tail1.ts.net:8642/api/state"
+        );
+        let ok = self_test_of("u", Ok(12));
+        assert!(ok.ok && ok.ms == Some(12) && ok.message.starts_with("answers in 12 ms"));
+        let no = self_test_of("u", Err("nothing answers at u".into()));
+        assert!(!no.ok && no.ms.is_none() && no.message == "nothing answers at u");
+    }
 
     #[test]
     fn an_https_listeners_link_names_the_certificates_machine() {

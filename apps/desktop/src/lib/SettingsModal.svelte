@@ -61,6 +61,22 @@
   } from "./catalog";
   import type { CouncilTurnRow, Note, ProviderCredit, ProviderInfo, RemoteStatus, SearchBackendInfo, UsageSummary } from "./types";
   import {
+    awayHeadline,
+    awaySetProject,
+    awaySetUrl,
+    awayStatus,
+    awaySyncNow,
+    clock12,
+    markedLine,
+    orderedProjects,
+    remoteSelfTest,
+    selfTestLine,
+    tokenLine,
+    urlProblem,
+    type AwayStatus,
+    type SelfTest,
+  } from "./awaySettings";
+  import {
     MAX_SEATS as COUNCIL_MAX_SEATS,
     MIN_SEATS as COUNCIL_MIN_SEATS,
     loadCouncilPrefs,
@@ -674,6 +690,63 @@
     if (selected === "remote") untrack(remoteRefresh);
   });
 
+  // "Test from this Mac" (backlog 154's Mac half): the listener asked at
+  // its own address and port, from this process.
+  let selfTest = $state<SelfTest | null>(null);
+  let selfTesting = $state(false);
+  async function runSelfTest() {
+    if (selfTesting) return;
+    selfTesting = true;
+    try {
+      selfTest = await remoteSelfTest();
+    } catch (e) {
+      selfTest = { ok: false, ms: null, message: String(e) };
+    } finally {
+      selfTesting = false;
+    }
+  }
+
+  // The away server (item 268 step 3): the sync's URL, its token's
+  // presence, Sync now, the last push / pull, and which projects go up.
+  // The state lives in Rust (`away.rs`); the card reads it on open and
+  // every 20 s while open, so a background pass shows up.
+  let away = $state<AwayStatus | null>(null);
+  let awayBusy = $state(false);
+  let awayError = $state<string | null>(null);
+  let awayUrl = $state("");
+  let awayUrlTouched = $state(false);
+  let awayFilter = $state("");
+  async function awayRun(call: () => Promise<AwayStatus>) {
+    if (awayBusy) return;
+    awayBusy = true;
+    awayError = null;
+    try {
+      away = await call();
+      if (!awayUrlTouched) awayUrl = away.url;
+    } catch (e) {
+      awayError = String(e);
+    } finally {
+      awayBusy = false;
+    }
+  }
+  function awaySaveUrl() {
+    const problem = urlProblem(awayUrl);
+    if (problem) {
+      awayError = problem;
+      return;
+    }
+    awayUrlTouched = false;
+    void awayRun(() => awaySetUrl(awayUrl));
+  }
+  $effect(() => {
+    if (selected !== "away") return;
+    untrack(() => void awayRun(awayStatus));
+    const timer = setInterval(() => {
+      if (!awayBusy) void awayStatus().then((s) => (away = s)).catch(() => {});
+    }, 20_000);
+    return () => clearInterval(timer);
+  });
+
   // Sleep-safe turns (nightshift backlog 101): the same idiom as the
   // banner switches — read when the modal opens, written on each change;
   // `saveSleepPrefs` also hands the keep-awake pair to Rust.
@@ -1151,6 +1224,17 @@
         {remote?.on ? "on" : "off"}
       </span>
     </button>
+    <button
+      class="nav-item"
+      class:active={selected === "away"}
+      onclick={() => select("away")}
+    >
+      <span class="nav-label">Away server</span>
+      <span class="st">
+        <span class="dot" class:ok={!!away?.url && !away?.last_error && !!away?.last_push}></span>
+        {away?.url ? "on" : "off"}
+      </span>
+    </button>
     <div class="nav-spacer"></div>
     <div class="nav-foot">Esc or click outside to close</div>
   </nav>
@@ -1404,6 +1488,16 @@
           <span>Keep the Mac awake while remote is on (needs Palette → Sleep's first switch; a closed lid on battery still sleeps it)</span>
         </label>
         {#if remoteError}<p class="error">{remoteError}</p>{/if}
+        <div class="remote-actions">
+          <button class="ns-btn" disabled={selfTesting || !remote?.on} onclick={() => void runSelfTest()}>
+            {selfTesting ? "Testing…" : "Test from this Mac"}
+          </button>
+        </div>
+        {#if selfTest}
+          <!-- The listener asked at its own address from this Mac: if this
+               fails, the phone cannot reach it either (backlog 154). -->
+          <p class="note small" class:error={!selfTest.ok}>{selfTestLine(selfTest)}</p>
+        {/if}
       </section>
 
       <section class="card">
@@ -1435,6 +1529,83 @@
           </button>
         </div>
         {#if remoteRevealed && remote?.token}<p class="note small remote-mono">{remote.token}</p>{/if}
+      </section>
+    </div>
+  {:else if selected === "away"}
+    <!-- The away server (item 268 step 3): the phone keeps working when the
+         Mac sleeps. The Mac sends copies up — memory, the vault, and the
+         projects marked below — and takes the chats started there back
+         down. The token is read from a file by the app and never shown. -->
+    <div class="pane">
+      <div class="pane-head">
+        <h2 class="pane-title">Away server</h2>
+        <span class="slug">{awayHeadline(away)}</span>
+        <span class="spacer"></span>
+        <button class="close" use:tip={"Close"} aria-label="Close settings" onclick={close}><Icon name="x" size={14} /></button>
+      </div>
+      <p class="note">
+        A copy of Nightloom on a server, for when the Mac is asleep. While
+        the app is open the Mac sends it your memory, the vault and the
+        projects marked "available away" every {away?.interval_minutes ?? 15} minutes
+        and at quit, and brings home the chats you started there. A Mac
+        chat continued from the phone comes back as a copy beside the
+        original; the original is never changed on the server.
+      </p>
+
+      <section class="card">
+        <div class="ch"><span class="t">Server</span></div>
+        <label class="handoff-row">
+          <span>Address</span>
+          <input
+            type="url"
+            placeholder="https://… (empty = off)"
+            bind:value={awayUrl}
+            oninput={() => (awayUrlTouched = true)}
+            onkeydown={(e) => {
+              if (e.key === "Enter") awaySaveUrl();
+            }}
+            disabled={awayBusy}
+            aria-label="The away server's address"
+          />
+          <button class="ns-btn" disabled={awayBusy || !awayUrlTouched} onclick={awaySaveUrl}>Save</button>
+        </label>
+        <p class="note small remote-mono">{tokenLine(away)}</p>
+        <div class="remote-actions">
+          <button class="ns-btn" disabled={awayBusy || !away?.url} onclick={() => void awayRun(awaySyncNow)}>
+            {awayBusy || away?.running ? "Syncing…" : "Sync now"}
+          </button>
+        </div>
+        <p class="note small">
+          Last sent up: {clock12(away?.last_push ?? null)} · Last brought down: {clock12(away?.last_pull ?? null)}
+        </p>
+        {#if away?.last_summary && !away?.last_error}<p class="note small">{away.last_summary}</p>{/if}
+        {#if away?.last_error}<p class="error">{away.last_error}</p>{/if}
+        {#if awayError}<p class="error">{awayError}</p>{/if}
+      </section>
+
+      <section class="card">
+        <div class="ch"><span class="t">Projects available away</span></div>
+        <p class="note small">
+          {markedLine(away?.projects ?? [])} A project that is not marked sends
+          nothing; unmarking one removes its copies from the server at the next
+          sync. Incognito chats are never sent.
+        </p>
+        {#if (away?.projects.length ?? 0) > 8}
+          <input class="away-filter" type="search" placeholder="Filter projects" bind:value={awayFilter} aria-label="Filter projects" />
+        {/if}
+        <div class="away-projects">
+          {#each orderedProjects(away?.projects ?? [], awayFilter) as p (p.id)}
+            <label class="dream-auto">
+              <input
+                type="checkbox"
+                checked={p.available}
+                disabled={awayBusy}
+                onchange={(e) => void awayRun(() => awaySetProject(p.id, e.currentTarget.checked))}
+              />
+              <span>{p.name}</span>
+            </label>
+          {/each}
+        </div>
       </section>
     </div>
   {:else if selected === "claude-code"}
@@ -3100,6 +3271,15 @@
     gap: 8px;
     flex-wrap: wrap;
     margin-top: 6px;
+  }
+  .away-projects {
+    max-height: 320px;
+    overflow-y: auto;
+  }
+  .away-filter {
+    width: 100%;
+    margin: 4px 0 6px;
+    box-sizing: border-box;
   }
   .remote-mono {
     font-family: var(--mono, ui-monospace, monospace);
