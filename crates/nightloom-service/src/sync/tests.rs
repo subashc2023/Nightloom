@@ -333,6 +333,50 @@ async fn a_push_writes_only_under_mirror_sends_only_changes_and_nothing_unmarked
     fs::remove_dir_all(&root).ok();
 }
 
+/// The Mac's model list (item 272) goes up as `mirror/model-list.json`,
+/// byte for byte, even with no project marked; a change is sent again; a
+/// list deleted on the Mac leaves the server at the next push.
+#[tokio::test]
+async fn the_model_list_goes_up_as_is_and_leaves_when_the_mac_drops_it() {
+    let root = scratch("models");
+    let m = mac(&root, Vec::new());
+    let list = m.snap.config.join(MODEL_LIST_FILE);
+    fs::write(&list, r#"{"models": ["opus", "a-fake-model"]}"#).unwrap();
+
+    let home = root.join("server-home");
+    fs::create_dir_all(&home).unwrap();
+    let sync = Arc::new(SyncServer::new(&home, root.join("server-claude")));
+    let (server, client) = listen(sync).await;
+    let mirrored = home.join(MIRROR_DIR).join("model-list.json");
+
+    let mut cache = PushCache::default();
+    let mut skipped = Vec::new();
+    let out = push::collect(&m.snap, &mut cache, &mut skipped);
+    assert!(skipped.is_empty(), "{skipped:?}");
+    assert!(out.iter().any(|o| o.entry.path == "model-list.json"));
+    push::send(&client, out, skipped).await.unwrap();
+    assert_eq!(fs::read(&mirrored).unwrap(), fs::read(&list).unwrap());
+
+    // Changed on the Mac: it alone is sent.
+    fs::write(&list, r#"{"models": ["sonnet"], "away_default": "sonnet"}"#).unwrap();
+    let mut skipped = Vec::new();
+    let out = push::collect(&m.snap, &mut cache, &mut skipped);
+    let report = push::send(&client, out, skipped).await.unwrap();
+    assert_eq!(report.sent, 1);
+    assert_eq!(fs::read(&mirrored).unwrap(), fs::read(&list).unwrap());
+
+    // Gone from the Mac: gone from the server.
+    fs::remove_file(&list).unwrap();
+    let mut skipped = Vec::new();
+    let out = push::collect(&m.snap, &mut cache, &mut skipped);
+    let report = push::send(&client, out, skipped).await.unwrap();
+    assert_eq!(report.removed, 1, "{report:?}");
+    assert!(!mirrored.exists());
+
+    server.stop().await;
+    fs::remove_dir_all(&root).ok();
+}
+
 /// The server refuses a path outside the mirror's shapes and a body whose
 /// hash does not match.
 #[test]
@@ -644,6 +688,7 @@ fn the_layout_allows_only_its_shapes() {
     for ok in [
         "AGENTS.md",
         "projects.json",
+        "model-list.json",
         "knowledge/a.md",
         "knowledge/x/y/z.md",
         "projects/p1/AGENTS.md",
@@ -659,6 +704,8 @@ fn the_layout_allows_only_its_shapes() {
         "claude/abc.jsonl",
         "holder.lock",
         "remote/serve-token",
+        "knowledge/../model-list.json",
+        "projects/p1/model-list.json",
     ] {
         assert!(!Layout::allowed(bad), "{bad}");
     }

@@ -132,6 +132,18 @@ pub fn collect(
     if agents.is_file() {
         add_file("AGENTS.md".into(), agents, &mut out, cache, skipped);
     }
+    // The model list (item 272): no file on the Mac, none on the server,
+    // and the server's pickers fall back to the built-in list.
+    let models = snap.config.join(super::MODEL_LIST_FILE);
+    if models.is_file() {
+        add_file(
+            super::MODEL_LIST_FILE.into(),
+            models,
+            &mut out,
+            cache,
+            skipped,
+        );
+    }
     for (rel, path) in walk(&snap.vault) {
         add_file(format!("knowledge/{rel}"), path, &mut out, cache, skipped);
     }

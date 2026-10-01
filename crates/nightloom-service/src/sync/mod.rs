@@ -49,6 +49,11 @@ pub const AWAY_TOKEN_FILE: &str = "away-token";
 /// The mirror's generated project list: `[{id, name}]` of the marked
 /// projects, so the server can name them.
 pub const PROJECTS_FILE: &str = "projects.json";
+/// The Mac's model list (`<config>/model-list.json`, item 272, wave 4 B),
+/// sent as is so the away server's pickers offer the same models. The
+/// same name as `model_list::FILE` on branch w4-b; one may name the other
+/// once both are merged.
+pub const MODEL_LIST_FILE: &str = "model-list.json";
 /// The `reason` on the creation line of a chat forked on the server.
 pub const FORK_REASON: &str = "away";
 
@@ -59,6 +64,7 @@ pub const FORK_REASON: &str = "away";
 /// <home>/mirror/AGENTS.md                         user memory
 /// <home>/mirror/knowledge/…                       the vault
 /// <home>/mirror/projects.json                     the marked projects
+/// <home>/mirror/model-list.json                   the Mac's model list
 /// <home>/mirror/projects/<id>/AGENTS.md           a project's memory
 /// <home>/mirror/projects/<id>/sessions/<c>.jsonl  its chat logs
 /// <home>/mirror/claude/<cwd-slug>/<sid>.jsonl     the CLI session files
@@ -124,7 +130,7 @@ impl Layout {
         }
         let parts: Vec<&str> = rel.split('/').collect();
         match parts.as_slice() {
-            ["AGENTS.md"] | ["projects.json"] => true,
+            ["AGENTS.md"] | ["projects.json"] | ["model-list.json"] => true,
             ["knowledge", _, ..] => true,
             ["projects", _, "AGENTS.md"] => true,
             ["projects", _, "sessions", name] => {
