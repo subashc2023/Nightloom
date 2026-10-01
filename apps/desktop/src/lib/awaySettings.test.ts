@@ -6,6 +6,7 @@ import {
   awayHeadline,
   clock12,
   markedLine,
+  NO_PROJECT_ID,
   orderedProjects,
   selfTestLine,
   tokenLine,
@@ -88,6 +89,12 @@ describe("the project list", () => {
   it("counts what goes up", () => {
     expect(markedLine(projects)).toBe("1 of 3 projects available away.");
     expect(markedLine([])).toMatch(/only memory and the vault/);
+  });
+  it("keeps No project first, marked or not (item 275)", () => {
+    const withNone = [...projects, { id: NO_PROJECT_ID, name: "No project", available: false }];
+    expect(orderedProjects(withNone)[0].id).toBe(NO_PROJECT_ID);
+    expect(orderedProjects(withNone, "no p").map((p) => p.id)).toEqual([NO_PROJECT_ID]);
+    expect(markedLine(withNone)).toBe("1 of 4 projects available away.");
   });
 });
 

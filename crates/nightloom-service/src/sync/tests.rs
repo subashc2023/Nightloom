@@ -174,6 +174,7 @@ fn mac(root: &Path, projects: Vec<Project>) -> Mac {
             vault,
             projects,
             claude_projects: root.join("claude-projects"),
+            unfiled: None,
         },
     }
 }
@@ -371,6 +372,97 @@ async fn the_model_list_goes_up_as_is_and_leaves_when_the_mac_drops_it() {
     let out = push::collect(&m.snap, &mut cache, &mut skipped);
     let report = push::send(&client, out, skipped).await.unwrap();
     assert_eq!(report.removed, 1, "{report:?}");
+    assert!(!mirrored.exists());
+
+    server.stop().await;
+    fs::remove_dir_all(&root).ok();
+}
+
+/// Item 275: "No project" marked, the Mac's no-project chats go up as a
+/// marked project's do — the log under `mirror/unfiled/sessions/`, its CLI
+/// file under `mirror/claude/`, an incognito one not at all — and a
+/// no-project chat started on the server still comes down into the Mac's
+/// no-project folder. Unmarked, the copies leave at the next push.
+#[tokio::test]
+async fn no_project_marked_sends_the_macs_no_project_chats_and_server_ones_come_down() {
+    let root = scratch("unfiled");
+    let mut m = mac(&root, Vec::new());
+    let mac_unfiled = m.snap.config.join(UNFILED_DIR).join("sessions");
+    m.snap.unfiled = Some(mac_unfiled.clone());
+
+    // On the Mac: a no-project chat with a CLI file, and an incognito one.
+    let sid = uuid::Uuid::new_v4().to_string();
+    let chat = chat_with_cli(&mac_unfiled, &sid);
+    let mac_home = root.join("mac-home");
+    let slug = cli_session::project_folder(&mac_home);
+    fs::create_dir_all(m.snap.claude_projects.join(&slug)).unwrap();
+    let mac_cli = m
+        .snap
+        .claude_projects
+        .join(&slug)
+        .join(format!("{sid}.jsonl"));
+    fs::write(&mac_cli, cli_fixture(&sid, &mac_home.to_string_lossy())).unwrap();
+    let mut incognito = Session::start(&mac_unfiled, ChatMode::Incognito, ChatKind::Build).unwrap();
+    incognito.record_user("incognito words");
+
+    // On the server: a no-project chat of its own, for the Mac to take down.
+    let home = root.join("server-home");
+    let server_claude = root.join("server-claude");
+    let server_chat = chat_with_cli(
+        &home.join(UNFILED_DIR).join("sessions"),
+        &uuid::Uuid::new_v4().to_string(),
+    );
+    let sync = Arc::new(SyncServer::new(&home, &server_claude));
+    let (server, client) = listen(sync.clone()).await;
+
+    // Up.
+    let mut cache = PushCache::default();
+    let mut skipped = Vec::new();
+    let out = push::collect(&m.snap, &mut cache, &mut skipped);
+    assert!(skipped.is_empty(), "{skipped:?}");
+    assert!(
+        out.iter().all(|o| !o.entry.path.contains(&incognito.id)),
+        "an incognito chat is never sent"
+    );
+    push::send(&client, out, skipped).await.unwrap();
+    let layout = Layout::new(&home);
+    let mirrored = layout.unfiled_sessions().join(format!("{}.jsonl", chat.id));
+    assert_eq!(
+        fs::read(&mirrored).unwrap(),
+        fs::read(chat.log_path().unwrap()).unwrap()
+    );
+    assert_eq!(
+        fs::read(layout.claude().join(&slug).join(format!("{sid}.jsonl"))).unwrap(),
+        fs::read(&mac_cli).unwrap()
+    );
+    assert!(
+        layout.needs_fork(&mirrored),
+        "the Mac's copy is read-only on the server"
+    );
+    // The server's own chat is not the mirror's, and stays in the outbox.
+    assert!(
+        sync.outbox()
+            .unwrap()
+            .iter()
+            .any(|e| e.chat == server_chat.id && e.project.is_none())
+    );
+
+    // Down: the server's no-project chat lands in the Mac's no-project folder.
+    let side = pull::mac_side(&m.snap.config, Vec::new());
+    assert_eq!(side.unfiled_sessions, mac_unfiled);
+    let report = pull::run(&client, &side).await.unwrap();
+    assert_eq!(report.placed.len(), 1, "{report:?}");
+    assert_eq!(
+        report.placed[0].log,
+        mac_unfiled.join(format!("{}.jsonl", server_chat.id))
+    );
+
+    // Unmarked: the mirrored no-project chats leave the server.
+    m.snap.unfiled = None;
+    let mut skipped = Vec::new();
+    let out = push::collect(&m.snap, &mut cache, &mut skipped);
+    let report = push::send(&client, out, skipped).await.unwrap();
+    assert!(report.removed >= 1, "{report:?}");
     assert!(!mirrored.exists());
 
     server.stop().await;
@@ -693,6 +785,7 @@ fn the_layout_allows_only_its_shapes() {
         "knowledge/x/y/z.md",
         "projects/p1/AGENTS.md",
         "projects/p1/sessions/0b6e-a.jsonl",
+        "unfiled/sessions/0b6e-a.jsonl",
         "claude/-Users-me-x/abc.jsonl",
     ] {
         assert!(Layout::allowed(ok), "{ok}");
@@ -701,6 +794,8 @@ fn the_layout_allows_only_its_shapes() {
         "knowledge",
         "projects/p1/sessions/a.txt",
         "projects/p1/notes/a.md",
+        "unfiled/AGENTS.md",
+        "unfiled/sessions/a.txt",
         "claude/abc.jsonl",
         "holder.lock",
         "remote/serve-token",

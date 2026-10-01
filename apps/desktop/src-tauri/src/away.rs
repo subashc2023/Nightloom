@@ -17,6 +17,8 @@
 //! (the URL and the last pass's times and error); the "available away"
 //! mark is written through the app's own registry (`AppState`), never a
 //! second `Registry` (two writers of `projects.json` would lose a mark).
+//! "No project" (item 275) is the card's first row, id
+//! [`NO_PROJECT_ID`]; its mark lives in `away.json`, on unless he turns it off.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -24,6 +26,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use nightloom_service::project;
+use nightloom_service::serve::{NO_PROJECT_ID, NO_PROJECT_NAME};
 use nightloom_service::sync::{self, Client, pull, push};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
@@ -54,6 +57,16 @@ struct Saved {
     /// The last pass's result in a line ("12 files, 2 sent; 1 chat came down").
     #[serde(default)]
     last_summary: Option<String>,
+    /// "No project" marked available away (item 275): the Mac's no-project
+    /// chats go up as a marked project's do. Absent = on (his default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    no_project: Option<bool>,
+}
+
+impl Saved {
+    fn no_project_on(&self) -> bool {
+        self.no_project.unwrap_or(true)
+    }
 }
 
 /// The managed state.
@@ -130,6 +143,7 @@ pub struct AwayStatus {
 async fn status_of(app: &AppHandle) -> AwayStatus {
     let away = app.state::<Away>();
     let s = away.saved();
+    let no_project = s.no_project_on();
     let projects = {
         let state = app.state::<AppState>();
         let guard = state.workspaces.lock().await;
@@ -152,15 +166,23 @@ async fn status_of(app: &AppHandle) -> AwayStatus {
         last_error: s.last_error,
         last_summary: s.last_summary,
         interval_minutes: INTERVAL.as_secs() / 60,
-        projects: projects
-            .into_iter()
-            .filter(|p| !p.is_unfiled_holder())
-            .map(|p| AwayProject {
-                id: p.id,
-                name: p.name,
-                available: p.available_away,
-            })
-            .collect(),
+        // "No project" first, as a row like any project's (item 275).
+        projects: std::iter::once(AwayProject {
+            id: NO_PROJECT_ID.into(),
+            name: NO_PROJECT_NAME.into(),
+            available: no_project,
+        })
+        .chain(
+            projects
+                .into_iter()
+                .filter(|p| !p.is_unfiled_holder())
+                .map(|p| AwayProject {
+                    id: p.id,
+                    name: p.name,
+                    available: p.available_away,
+                }),
+        )
+        .collect(),
     }
 }
 
@@ -239,6 +261,7 @@ async fn pass(app: &AppHandle, away: &Away, url: &str, pull_too: bool) -> Result
         let guard = state.workspaces.lock().await;
         guard.registry.projects()
     };
+    let no_project = away.saved().no_project_on();
 
     // Up.
     let snap = push::MacSnapshot {
@@ -251,6 +274,7 @@ async fn pass(app: &AppHandle, away: &Away, url: &str, pull_too: bool) -> Result
             .collect(),
         claude_projects: nightloom_service::agent::cli_session::projects_dir()
             .unwrap_or_else(|| config.join("claude")),
+        unfiled: no_project.then(|| config.join(sync::UNFILED_DIR).join(project::SESSIONS_DIR)),
     };
     let cache = away.cache.clone();
     let (outgoing, skipped) = crate::blocking(move || {
@@ -346,6 +370,13 @@ pub async fn away_set_project(
     id: String,
     on: bool,
 ) -> Result<AwayStatus, String> {
+    if id == NO_PROJECT_ID {
+        // Kept in away.json (this module's file), not projects.json: No
+        // project is not in the registry. Unmarking drops the server's
+        // copies of the Mac's no-project chats at the next pass.
+        app.state::<Away>().update(|s| s.no_project = Some(on));
+        return Ok(status_of(&app).await);
+    }
     {
         let mut guard = state.workspaces.lock().await;
         let project = guard.registry.set_available_away(&id, on)?;

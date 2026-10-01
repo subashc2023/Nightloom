@@ -7,6 +7,10 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 
+/** The card's "No project" row (item 275): the Mac's no-project chats, marked
+ *  like a project; the same id as `serve`'s row on the phone. */
+export const NO_PROJECT_ID = "unfiled";
+
 export interface AwayProject {
   id: string;
   name: string;
@@ -100,20 +104,26 @@ export function urlProblem(url: string): string | null {
 /** How many projects are marked, as the card's sub-heading says it. */
 export function markedLine(projects: AwayProject[]): string {
   const n = projects.filter((p) => p.available).length;
-  if (n === 0) return "No project is available away; only memory and the vault go up.";
+  if (n === 0) return "Nothing is marked; only memory and the vault go up.";
   return `${n} of ${projects.length} project${projects.length === 1 ? "" : "s"} available away.`;
 }
 
 /**
- * The projects in the card's order: marked first, then by name — so the
- * ones that go up are at the top of a long list. `filter` narrows by name.
+ * The projects in the card's order: "No project" first, then marked, then by
+ * name — so the ones that go up are at the top of a long list. `filter`
+ * narrows by name.
  */
 export function orderedProjects(projects: AwayProject[], filter = ""): AwayProject[] {
   const f = filter.trim().toLowerCase();
   return projects
     .filter((p) => !f || p.name.toLowerCase().includes(f))
     .slice()
-    .sort((a, b) => Number(b.available) - Number(a.available) || a.name.localeCompare(b.name));
+    .sort(
+      (a, b) =>
+        Number(b.id === NO_PROJECT_ID) - Number(a.id === NO_PROJECT_ID) ||
+        Number(b.available) - Number(a.available) ||
+        a.name.localeCompare(b.name),
+    );
 }
 
 /** The self-test's line for the Remote card. */

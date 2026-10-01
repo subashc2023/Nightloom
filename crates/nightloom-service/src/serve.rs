@@ -941,11 +941,21 @@ impl ServeHost {
         let own = store::find_by_prefix(&self.log_dir(project), chat).map_err(|e| e.to_string());
         match (own, project) {
             (Ok(path), _) => Ok(path),
-            // A marked project's chat as the Mac last sent it.
-            (Err(e), Some(p)) => {
-                store::find_by_prefix(&self.sync.layout().sessions(&p.id), chat).map_err(|_| e)
+            // A marked project's chat (or, No project marked, a
+            // no-project chat) as the Mac last sent it.
+            (Err(e), project) => {
+                store::find_by_prefix(&self.mirror_dir(project), chat).map_err(|_| e)
             }
-            (Err(e), None) => Err(e),
+        }
+    }
+
+    /// Where the Mac's copies of `project`'s chats are: a marked project's
+    /// mirrored sessions, or for no project the mirrored no-project chats
+    /// (item 275). Read-only here.
+    fn mirror_dir(&self, project: Option<&Project>) -> PathBuf {
+        match project {
+            Some(p) => self.sync.layout().sessions(&p.id),
+            None => self.sync.layout().unfiled_sessions(),
         }
     }
 
@@ -1358,10 +1368,7 @@ impl Host for ServeHost {
     async fn chats(&self, project: Option<&str>) -> Result<Vec<ChatRow>, String> {
         let project = self.project(project)?;
         let dir = self.log_dir(project.as_ref());
-        let mirror = project
-            .as_ref()
-            .map(|p| self.sync.layout().sessions(&p.id))
-            .filter(|d| d.is_dir());
+        let mirror = Some(self.mirror_dir(project.as_ref())).filter(|d| d.is_dir());
         let rows = tokio::task::spawn_blocking(move || -> Result<_, store::StoreError> {
             let own = store::list(&dir)?;
             let Some(mirror) = mirror else {
@@ -3010,6 +3017,96 @@ esac
         let row = host.project_open(NO_PROJECT_ID).await.unwrap();
         assert!(row.active && lock(&host.active_project).is_none());
         assert!(lock(&host.active_chat).is_none());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Item 275 on the server: the Mac's no-project chats, mirrored, list
+    /// under "No project" beside the server's own; a send to one forks it
+    /// into the server's unfiled folder and the Mac's copy stays as sent;
+    /// a change to it is refused.
+    #[tokio::test]
+    async fn serve_lists_the_macs_no_project_chats_and_forks_before_writing_one() {
+        crate::project::set_config_dir(
+            std::env::temp_dir().join(format!("nightloom-home-{}", std::process::id())),
+        );
+        let root = std::env::temp_dir().join(format!("nightloom-serve-{}", uuid::Uuid::new_v4()));
+        let unfiled = root.join("unfiled").join("sessions");
+        let workspace = root.join("ws");
+        std::fs::create_dir_all(&unfiled).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(root.join("mode"), "reply").unwrap();
+        let mut own = Session::start(&unfiled, ChatMode::Normal, ChatKind::Build).unwrap();
+        own.record_user("started on the server");
+        let own_id = own.id.clone();
+        drop(own);
+        let layout = crate::sync::Layout::new(&root);
+        let mut mac =
+            Session::start(layout.unfiled_sessions(), ChatMode::Normal, ChatKind::Build).unwrap();
+        mac.record_user("asked on the mac");
+        let chat = mac.id.clone();
+        drop(mac);
+        let original = store::find_by_prefix(&layout.unfiled_sessions(), &chat).unwrap();
+        let before = std::fs::read(&original).unwrap();
+
+        let cfg = ServeConfig {
+            binary: stand_in(&root),
+            model: None,
+            hook_exe: None,
+            assets: None,
+            unfiled_dir: unfiled.clone(),
+            home: root.clone(),
+            unfiled_workspace: workspace.clone(),
+            nightshift_root: None,
+        };
+        let host = ServeHost::new(cfg, Registry::load_from(root.join("projects.json")));
+
+        let rows = host.chats(Some(NO_PROJECT_ID)).await.unwrap();
+        assert!(
+            rows.iter().any(|r| r.id == chat),
+            "the Mac's chat is listed"
+        );
+        assert!(rows.iter().any(|r| r.id == own_id), "the server's own too");
+        let log = host.transcript(None, &chat).await.unwrap();
+        assert!(
+            serde_json::to_string(&log)
+                .unwrap()
+                .contains("asked on the mac")
+        );
+
+        let err = host.rename(&chat, "renamed away").await.unwrap_err();
+        assert_eq!(err, MAC_OWNS);
+
+        let handed = host
+            .send_with(
+                Some(&chat),
+                SendRequest {
+                    text: "continue away".into(),
+                    project: Some(NO_PROJECT_ID.into()),
+                    ..SendRequest::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(matches!(handed, Handed::Sent));
+        let start = Instant::now();
+        while host.busy() {
+            assert!(start.elapsed() < Duration::from_secs(10), "the turn ends");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(
+            std::fs::read(&original).unwrap(),
+            before,
+            "the Mac's copy is untouched"
+        );
+        let fork = lock(&host.active_chat).clone().unwrap();
+        assert_ne!(fork, chat);
+        let forked = store::find_by_prefix(&unfiled, &fork).unwrap();
+        assert!(
+            std::fs::read_to_string(&forked)
+                .unwrap()
+                .contains("continue away")
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }

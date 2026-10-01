@@ -6,6 +6,8 @@
 //! session file each log currently resumes. An unmarked project sends
 //! nothing — not a name, not a count. An incognito chat is not sent even
 //! from a marked project: its mode promises that no other reader sees it.
+//! "No project" is markable too (item 275, on by default on the Mac): its
+//! chats go under `unfiled/` exactly as a marked project's do.
 //!
 //! The manifest goes first; the server answers with what it lacks; only
 //! those files follow, one `PUT` each.
@@ -52,6 +54,9 @@ pub struct MacSnapshot {
     pub projects: Vec<Project>,
     /// The CLI's projects folder (`cli_session::projects_dir()`).
     pub claude_projects: PathBuf,
+    /// The Mac's no-project chats (`<config>/unfiled/sessions`) when "No
+    /// project" is marked available away (item 275); `None` sends none.
+    pub unfiled: Option<PathBuf>,
 }
 
 /// What one log says that the push needs, kept by (size, mtime) so a log
@@ -128,6 +133,71 @@ pub fn collect(
         }
     }
 
+    /// One folder's chat logs, under `<base>/sessions/`, and the CLI
+    /// session file each names, under `claude/<its folder>/`.
+    fn add_logs(
+        dir: &Path,
+        base: &str,
+        cwd: &Path,
+        claude_projects: &Path,
+        out: &mut Vec<Outgoing>,
+        cache: &mut PushCache,
+        skipped: &mut Vec<String>,
+    ) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        let mut logs: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|l| {
+                l.is_file()
+                    && l.extension().is_some_and(|x| x == "jsonl")
+                    && l.file_name()
+                        .is_some_and(|n| !n.to_string_lossy().starts_with('.'))
+            })
+            .collect();
+        logs.sort();
+        for log in logs {
+            let Some(facts) = cache.facts(&log) else {
+                skipped.push(format!("{} could not be read", log.display()));
+                continue;
+            };
+            if facts.mode != ChatMode::Normal {
+                continue;
+            }
+            let name = log
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            add_file(
+                format!("{base}/{SESSIONS_DIR}/{name}"),
+                log.clone(),
+                out,
+                cache,
+                skipped,
+            );
+            if let Some(sid) = facts.cli {
+                // A chat whose CLI file is gone (cleaned up by the CLI) still
+                // goes; a fork of it starts from the log alone.
+                if let Ok(file) = cli_session::find(claude_projects, cwd, &sid) {
+                    let folder = file
+                        .parent()
+                        .and_then(Path::file_name)
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    add_file(
+                        format!("claude/{folder}/{sid}.jsonl"),
+                        file,
+                        out,
+                        cache,
+                        skipped,
+                    );
+                }
+            }
+        }
+    }
+
     let agents = snap.config.join("AGENTS.md");
     if agents.is_file() {
         add_file("AGENTS.md".into(), agents, &mut out, cache, skipped);
@@ -165,59 +235,29 @@ pub fn collect(
                 skipped,
             );
         }
-        let Ok(entries) = fs::read_dir(p.session_dir()) else {
-            continue;
-        };
-        let mut logs: Vec<PathBuf> = entries
-            .flatten()
-            .map(|e| e.path())
-            .filter(|l| {
-                l.is_file()
-                    && l.extension().is_some_and(|x| x == "jsonl")
-                    && l.file_name()
-                        .is_some_and(|n| !n.to_string_lossy().starts_with('.'))
-            })
-            .collect();
-        logs.sort();
-        for log in logs {
-            let Some(facts) = cache.facts(&log) else {
-                skipped.push(format!("{} could not be read", log.display()));
-                continue;
-            };
-            if facts.mode != ChatMode::Normal {
-                continue;
-            }
-            let name = log
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            add_file(
-                format!("{base}/{SESSIONS_DIR}/{name}"),
-                log.clone(),
-                &mut out,
-                cache,
-                skipped,
-            );
-            if let Some(sid) = facts.cli {
-                // A chat whose CLI file is gone (cleaned up by the CLI) still
-                // goes; a fork of it starts from the log alone.
-                if let Ok(file) = cli_session::find(&snap.claude_projects, &p.workspace_dir(), &sid)
-                {
-                    let folder = file
-                        .parent()
-                        .and_then(Path::file_name)
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_default();
-                    add_file(
-                        format!("claude/{folder}/{sid}.jsonl"),
-                        file,
-                        &mut out,
-                        cache,
-                        skipped,
-                    );
-                }
-            }
-        }
+        add_logs(
+            &p.session_dir(),
+            &base,
+            &p.workspace_dir(),
+            &snap.claude_projects,
+            &mut out,
+            cache,
+            skipped,
+        );
+    }
+    // No project, when marked (item 275): its chats go as a marked
+    // project's do, under `unfiled/`.
+    if let Some(dir) = &snap.unfiled {
+        let cwd = snap.config.parent().unwrap_or(&snap.config).to_path_buf();
+        add_logs(
+            dir,
+            super::UNFILED_DIR,
+            &cwd,
+            &snap.claude_projects,
+            &mut out,
+            cache,
+            skipped,
+        );
     }
     listed.sort_by(|a, b| a.id.cmp(&b.id));
     let body = serde_json::to_vec_pretty(&listed).unwrap_or_default();

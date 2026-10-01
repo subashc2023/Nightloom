@@ -7,7 +7,8 @@
 //! - **Up** ([`push`]): when the Mac is awake it sends a snapshot of user
 //!   memory (`AGENTS.md`), the vault, and — only for projects he marks
 //!   "available away" (blocker 651) — each project's `AGENTS.md`, its chat
-//!   logs and the Claude Code session files those logs name. A manifest
+//!   logs and the Claude Code session files those logs name; "No project"
+//!   is markable the same way (item 275, on by default). A manifest
 //!   goes first ([`manifest`]); only changed files follow. The server keeps
 //!   them under `<home>/mirror/` ([`Layout`]) and never writes a mirrored
 //!   file except when the Mac sends it.
@@ -54,6 +55,9 @@ pub const PROJECTS_FILE: &str = "projects.json";
 /// same name as `model_list::FILE` on branch w4-b; one may name the other
 /// once both are merged.
 pub const MODEL_LIST_FILE: &str = "model-list.json";
+/// The no-project chats' folder name, on the Mac (`<config>/unfiled`),
+/// on the server (`<home>/unfiled`) and in the mirror (item 275).
+pub const UNFILED_DIR: &str = "unfiled";
 /// The `reason` on the creation line of a chat forked on the server.
 pub const FORK_REASON: &str = "away";
 
@@ -67,6 +71,7 @@ pub const FORK_REASON: &str = "away";
 /// <home>/mirror/model-list.json                   the Mac's model list
 /// <home>/mirror/projects/<id>/AGENTS.md           a project's memory
 /// <home>/mirror/projects/<id>/sessions/<c>.jsonl  its chat logs
+/// <home>/mirror/unfiled/sessions/<c>.jsonl        no-project chat logs
 /// <home>/mirror/claude/<cwd-slug>/<sid>.jsonl     the CLI session files
 /// ```
 #[derive(Debug, Clone)]
@@ -104,6 +109,15 @@ impl Layout {
             .join(crate::project::SESSIONS_DIR)
     }
 
+    /// `<home>/mirror/unfiled/sessions` — the Mac's no-project chats, as
+    /// it last sent them when "No project" is marked available away (item
+    /// 275). Read-only to everything on the server, like [`Self::sessions`].
+    pub fn unfiled_sessions(&self) -> PathBuf {
+        self.root()
+            .join(UNFILED_DIR)
+            .join(crate::project::SESSIONS_DIR)
+    }
+
     /// `<home>/mirror/claude`: the Mac's CLI session files, under the Mac's
     /// folder slugs.
     pub fn claude(&self) -> PathBuf {
@@ -133,7 +147,7 @@ impl Layout {
             ["AGENTS.md"] | ["projects.json"] | ["model-list.json"] => true,
             ["knowledge", _, ..] => true,
             ["projects", _, "AGENTS.md"] => true,
-            ["projects", _, "sessions", name] => {
+            ["projects", _, "sessions", name] | ["unfiled", "sessions", name] => {
                 name.ends_with(".jsonl") && crate::store::is_log_id(name.trim_end_matches(".jsonl"))
             }
             ["claude", _, name] => name.ends_with(".jsonl"),
