@@ -59,10 +59,15 @@ use crate::agent_turn::{
 use crate::chat_ops::{self, OnCli};
 use crate::context_ops::{self, PromptLayersInfo};
 use crate::project::{self, Project, Registry};
-use crate::remote::api::{ActReply, ChatAction, ContextReply, EditMode, LayerChange, feature};
+use crate::rail_store;
+use crate::remote::api::{
+    ActReply, ChatAction, ContextReply, EditMode, LayerChange, NewProjectRequest, Rail, RailPatch,
+    Running, SearchScope, UsageReply, feature,
+};
 use crate::remote::{
     ApproveRequest, Asset, ChatRow, Event, Handed, Host, ProjectRow, RemoteState, SendRequest,
 };
+use crate::serve_reads;
 use crate::store;
 use crate::turn::{TurnEvent, TurnInput};
 
@@ -247,6 +252,20 @@ impl ServeHost {
         lock(&self.turn).is_some()
     }
 
+    /// Where the phone's reads look: the home, the unfiled chats, the
+    /// projects and the phone's current project (no lock held after).
+    /// (A1's `places` is the act's search order; this is the reads'.)
+    fn read_places(&self) -> Result<serve_reads::Places, String> {
+        let active = lock(&self.active_project).clone();
+        let registry = lock(&self.registry);
+        Ok(serve_reads::Places::of(
+            serve_reads::home()?,
+            &self.cfg.unfiled_dir,
+            &registry,
+            active.as_deref(),
+        ))
+    }
+
     /// The spec a turn in `session` runs under: the desktop's connect,
     /// cut to what a turn needs — the folder by the chat's kind, the vault
     /// and extra folders granted, the preamble by the chat's layers, `auto`
@@ -257,7 +276,11 @@ impl ServeHost {
         let workspace = self.workspace_for(project, session);
         let mut spec = AgentSpec::new(workspace.clone());
         spec.binary = self.cfg.binary.clone();
-        spec.model = self.cfg.model.clone();
+        // The phone's rail (`<home>/serve/rail.json`), else `--model`.
+        let rail = serve_reads::home()
+            .map(|h| rail_store::load_or_default(&h))
+            .unwrap_or_default();
+        rail.apply_model(&mut spec, self.cfg.model.as_deref());
         // No checkpoint helper on this host (the desktop's `sync_checkpoint`).
         spec.fork_mode = false;
         // A chat does not compact (backlog 086).
@@ -310,6 +333,7 @@ impl ServeHost {
                 .to_string(),
             );
         }
+        rail.apply_ask(&mut spec);
         spec.apply_mode(session.mode());
         spec.apply_kind(declared);
         spec.apply_kind_policy(session.kind(), declared);
@@ -1155,6 +1179,79 @@ impl Host for ServeHost {
         Ok(self.context_of(project.as_ref(), &session))
     }
 
+    async fn rail(&self) -> Result<Rail, String> {
+        let saved = rail_store::load(&serve_reads::home()?)?;
+        Ok(saved.to_rail(self.cfg.model.as_deref(), self.busy()))
+    }
+
+    async fn set_rail(&self, patch: RailPatch) -> Result<Rail, String> {
+        let saved = rail_store::apply(&serve_reads::home()?, &patch)?;
+        Ok(saved.to_rail(self.cfg.model.as_deref(), self.busy()))
+    }
+
+    async fn running(&self) -> Result<Running, String> {
+        let chat = lock(&self.turn).as_ref().map(|t| t.chat.clone());
+        let waiting = lock(&self.pending).len();
+        let busy = chat
+            .map(|chat| serve_reads::Busy { chat, waiting })
+            .into_iter()
+            .collect();
+        serve_reads::running(self.read_places()?, busy).await
+    }
+
+    async fn usage(&self) -> Result<UsageReply, String> {
+        serve_reads::usage().await
+    }
+
+    async fn search(
+        &self,
+        q: &str,
+        scope: SearchScope,
+    ) -> Result<crate::store::search::SearchResult, String> {
+        serve_reads::search(self.read_places()?, q, scope).await
+    }
+
+    async fn project_new(&self, req: NewProjectRequest) -> Result<ProjectRow, String> {
+        let active = lock(&self.active_project).clone();
+        let home = serve_reads::home()?;
+        serve_reads::project_new(&home, &mut lock(&self.registry), &req, active.as_deref())
+    }
+
+    async fn project_open(&self, id: &str) -> Result<ProjectRow, String> {
+        let mut registry = lock(&self.registry);
+        let mut active = lock(&self.active_project);
+        let mut chat = lock(&self.active_chat);
+        serve_reads::project_open(&mut registry, &mut active, &mut chat, id)
+    }
+
+    async fn project_rename(&self, id: &str, name: &str) -> Result<ProjectRow, String> {
+        let active = lock(&self.active_project).clone();
+        serve_reads::project_rename(&mut lock(&self.registry), active.as_deref(), id, name)
+    }
+
+    async fn project_forget(&self, id: &str) -> Result<(), String> {
+        let mut registry = lock(&self.registry);
+        let mut active = lock(&self.active_project);
+        let mut chat = lock(&self.active_chat);
+        serve_reads::project_forget(&mut registry, &mut active, &mut chat, id)
+    }
+
+    async fn notes_list(&self, scope: &str) -> Result<Vec<crate::project::Note>, String> {
+        serve_reads::notes_list(&self.read_places()?, scope)
+    }
+
+    async fn note_read(&self, scope: &str, name: &str) -> Result<String, String> {
+        serve_reads::note_read(&self.read_places()?, scope, name)
+    }
+
+    async fn note_write(&self, scope: &str, name: &str, text: &str) -> Result<(), String> {
+        serve_reads::note_write(&self.read_places()?, scope, name, text)
+    }
+
+    async fn note_delete(&self, scope: &str, name: &str) -> Result<(), String> {
+        serve_reads::note_delete(&self.read_places()?, scope, name)
+    }
+
     fn kind(&self) -> &'static str {
         "serve"
     }
@@ -1169,6 +1266,12 @@ impl Host for ServeHost {
             feature::DOCUMENTS,
             feature::COUNCIL,
             feature::SPOKEN,
+            feature::RAIL,
+            feature::RUNNING,
+            feature::USAGE,
+            feature::SEARCH,
+            feature::PROJECTS,
+            feature::NOTES,
         ]
         .into_iter()
         .map(String::from)
