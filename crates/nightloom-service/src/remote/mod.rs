@@ -281,6 +281,13 @@ pub trait Host: Send + Sync + 'static {
     fn features(&self) -> Vec<String> {
         Vec::new()
     }
+    /// Which host this is, on `/api/state` as `host` (wave 3, A1): `mac`
+    /// (the desktop app's listener, the default) or `serve` (the away
+    /// server). The page says "not on the away server yet" rather than
+    /// "this Mac is older" when a feature is missing on `serve`.
+    fn kind(&self) -> &'static str {
+        "mac"
+    }
     /// A send with everything the phone can attach. The default takes a
     /// plain text send through [`Host::send`] (`spoken` is ignored before
     /// wave 3) and answers [`NOT_AVAILABLE`] for the rest.
@@ -602,7 +609,10 @@ fn router(shared: Arc<Shared>) -> Router {
         .layer(middleware::from_fn_with_state(
             shared.clone(),
             require_token,
-        ));
+        ))
+        // Outside the bearer check, so a preflight passes without the
+        // token and a 401 still carries the header the caller can read.
+        .layer(middleware::from_fn(cors));
     Router::new()
         .route("/", get(page))
         .route("/remote.html", get(page))
@@ -614,6 +624,48 @@ fn router(shared: Arc<Shared>) -> Router {
         .route("/api/voice", get(voice_ws::voice))
         .nest("/api", api)
         .with_state(shared)
+}
+
+/// Cross-origin calls to `/api` (wave 3, A1; blocker 740, its default
+/// taken): the page one host serves calls the other host too (the Mac and
+/// the away server), so any origin may call — but with **no credentials**:
+/// no cookies are read or allowed, and the bearer token stays the only key,
+/// so a request without it is 401 whatever page sent it. A preflight
+/// (`OPTIONS` with `Origin` and `Access-Control-Request-Method`) is
+/// answered 204 here, before the token check, since a browser never sends
+/// the token on one; it answers the same for every path, so it maps no
+/// routes. Any other `OPTIONS` goes to the token check as before (review
+/// 2026-09-17: 401 without the token).
+async fn cors(req: Request, next: Next) -> Response {
+    let preflight = req.method() == axum::http::Method::OPTIONS
+        && req.headers().contains_key(header::ORIGIN)
+        && req
+            .headers()
+            .contains_key(header::ACCESS_CONTROL_REQUEST_METHOD);
+    let mut resp = if preflight {
+        let mut r = StatusCode::NO_CONTENT.into_response();
+        let h = r.headers_mut();
+        h.insert(
+            header::ACCESS_CONTROL_ALLOW_METHODS,
+            HeaderValue::from_static("GET, POST, PUT, DELETE, OPTIONS"),
+        );
+        h.insert(
+            header::ACCESS_CONTROL_ALLOW_HEADERS,
+            HeaderValue::from_static("authorization, content-type"),
+        );
+        h.insert(
+            header::ACCESS_CONTROL_MAX_AGE,
+            HeaderValue::from_static("600"),
+        );
+        r
+    } else {
+        next.run(req).await
+    };
+    resp.headers_mut().insert(
+        header::ACCESS_CONTROL_ALLOW_ORIGIN,
+        HeaderValue::from_static("*"),
+    );
+    resp
 }
 
 /// `Authorization: Bearer <token>` on every `/api` route, or 401. The page
@@ -675,6 +727,7 @@ async fn state(State(shared): State<Arc<Shared>>) -> Json<StateReply> {
     Json(StateReply {
         state,
         features: shared.host.features(),
+        host: shared.host.kind().to_string(),
     })
 }
 
@@ -2173,6 +2226,82 @@ mod tests {
         let features: Vec<String> = serde_json::from_value(v["features"].clone()).unwrap();
         assert_eq!(features.len(), api::feature::ALL.len());
         assert!(features.iter().any(|f| f == "act"));
+        server.stop().await;
+    }
+
+    /// Wave 3, A1: `/api/state` says which host answered; the desktop's
+    /// listener is `mac` by the trait's default.
+    #[tokio::test]
+    async fn state_names_the_host() {
+        let (server, _host, _tx, token) = up().await;
+        let base = format!("http://{}", server.addr());
+        let (status, v) = get_json(&client(), format!("{base}/api/state"), &token).await;
+        assert_eq!(status, 200);
+        assert_eq!(v["host"], "mac");
+        server.stop().await;
+    }
+
+    /// Blocker 740's default: a preflight is answered without the token,
+    /// any origin may call, nothing about credentials is allowed — and a
+    /// cross-origin call without the token is still 401, readable by the
+    /// caller.
+    #[tokio::test]
+    async fn cross_origin_calls_need_the_token_and_nothing_else() {
+        let (server, _host, _tx, token) = up().await;
+        let base = format!("http://{}", server.addr());
+        let c = client();
+        let r = c
+            .request(
+                reqwest::Method::OPTIONS,
+                format!("{base}/api/chats/abc/act"),
+            )
+            .header("Origin", "https://away.example.ts.net")
+            .header("Access-Control-Request-Method", "POST")
+            .header(
+                "Access-Control-Request-Headers",
+                "authorization, content-type",
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 204);
+        let h = r.headers();
+        assert_eq!(h["access-control-allow-origin"], "*");
+        let allowed = h["access-control-allow-headers"].to_str().unwrap();
+        assert!(allowed.contains("authorization"), "{allowed}");
+        assert!(allowed.contains("content-type"), "{allowed}");
+        assert!(
+            h["access-control-allow-methods"]
+                .to_str()
+                .unwrap()
+                .contains("POST")
+        );
+        assert!(h.get("access-control-allow-credentials").is_none());
+        // No token from another origin: 401, with the header so the page
+        // can read why.
+        let r = c
+            .get(format!("{base}/api/state"))
+            .header("Origin", "https://away.example.ts.net")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 401);
+        assert_eq!(r.headers()["access-control-allow-origin"], "*");
+        assert!(
+            r.headers()
+                .get("access-control-allow-credentials")
+                .is_none()
+        );
+        // With it: 200.
+        let r = c
+            .get(format!("{base}/api/state"))
+            .header("Origin", "https://away.example.ts.net")
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        assert_eq!(r.headers()["access-control-allow-origin"], "*");
         server.stop().await;
     }
 
