@@ -9,7 +9,9 @@ import {
   liveFlags,
   loadDraft,
   loadQueue,
+  newNonce,
   newQueued,
+  nonceFor,
   parseSendReply,
   questionAnswer,
   saveDraft,
@@ -151,6 +153,28 @@ describe("the transcript's rows", () => {
     expect(rows).toHaveLength(2);
     expect(rows[1].kind === "assistant" && rows[1].text).toBe("one\n\ntwo");
     expect(rows[1].kind === "assistant" && rows[1].tools.map((t) => t.id)).toEqual(["t1", "t2"]);
+  });
+});
+
+describe("a message's tries (wave 4 C1)", () => {
+  it("a fresh nonce is 32 hex digits, and two differ", () => {
+    const a = newNonce();
+    expect(a).toMatch(/^[0-9a-f]{32}$/);
+    expect(newNonce()).not.toBe(a);
+  });
+
+  it("the same message again keeps its nonce; another message gets a new one", () => {
+    const first = nonceFor(null, "send:c1\nhello");
+    expect(nonceFor(first, "send:c1\nhello")).toBe(first);
+    const other = nonceFor(first, "send:c1\nhello again");
+    expect(other.nonce).not.toBe(first.nonce);
+  });
+
+  it("rides in the send body only when given, and a held message keeps its try's", () => {
+    expect(sendBody("hi", { nonce: "n-1" })).toEqual({ text: "hi", nonce: "n-1" });
+    expect(sendBody("hi", { nonce: "" })).toEqual({ text: "hi" });
+    expect(newQueued("c1", "later", new Date(), null, null, "n-2").nonce).toBe("n-2");
+    expect(newQueued("c1", "later").nonce).toMatch(/^[0-9a-f]{32}$/);
   });
 });
 

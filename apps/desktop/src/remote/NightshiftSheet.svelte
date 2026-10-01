@@ -12,7 +12,7 @@
    */
   import { onMount, tick } from "svelte";
   import { renderMarkdown } from "../lib/markdown";
-  import { shortWhen, type Client } from "./client";
+  import { nonceFor, shortWhen, type Client, type Try } from "./client";
   import BlockerAnswer from "./BlockerAnswer.svelte";
   import {
     NightshiftClient,
@@ -174,12 +174,20 @@
     if (project) saveNsDraft(itemDraftKey(project.id), { title, text: said });
   }
 
+  /** The last Create that did not come back (wave 4 C1): pressed again on
+   *  the same draft, it carries the same nonce, so an item the host wrote
+   *  before the reply was lost is not written twice. */
+  let lastTry: Try | null = null;
+
   async function create() {
     if (!project || !title.trim() || busy) return;
     busy = true;
     problem = null;
+    const attempt = nonceFor(lastTry, `${project.id}\n${title}\n${said}`);
+    lastTry = attempt;
     try {
-      const id = await ns.newItem(project.id, title, said);
+      const id = await ns.newItem(project.id, title, said, attempt.nonce);
+      lastTry = null;
       // Written on the host: only now does the draft go.
       saveNsDraft(itemDraftKey(project.id), null);
       drafts = nsDraftKeys();

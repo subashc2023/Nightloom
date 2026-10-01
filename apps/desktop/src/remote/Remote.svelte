@@ -74,12 +74,14 @@
     canOp,
     clock12,
     limitCard,
+    nonceFor,
     resetMs,
     replyLine,
     replySizes,
     resumeAction,
     speakText,
     type ExtraOp,
+    type Try,
   } from "./client";
   import { renderMarkdown } from "../lib/markdown";
   import { arrive, launch, reducedMotion } from "../lib/sendMotion";
@@ -859,6 +861,13 @@
   }
 
   // ---- send, the queue, stop ------------------------------------------------
+  /** The last message tried and not known to have landed (wave 4 C1): when
+   *  its text went back into the box and he sends it again, the try
+   *  carries the same nonce, so a first try whose reply was lost is not
+   *  run twice. Cleared when a try lands, or when a held copy takes the
+   *  nonce with it. */
+  let lastTry: Try | null = null;
+
   async function sendNow() {
     const text = draft.trim();
     if (!text || readOnly) return;
@@ -867,8 +876,10 @@
       return;
     }
     const images = photos.map((p) => p.image);
+    const attempt = nonceFor(lastTry, `send:${chatId}\n${text}`);
+    lastTry = attempt;
     if (!sameHost) {
-      await sendElsewhere(text, images);
+      await sendElsewhere(text, images, attempt.nonce);
       return;
     }
     if ((link !== "online" || remote.busy) && images.length > 0) {
@@ -879,14 +890,15 @@
     }
     setDraft("");
     if (link !== "online" || remote.busy) {
-      hold(text);
+      hold(text, attempt.nonce);
       return;
     }
     const project = sendProject;
     const sentPhotos = photos;
     photos = [];
     try {
-      const status = await chatClient!.send(chatId, text, { project, images });
+      const status = await chatClient!.send(chatId, text, { project, images, nonce: attempt.nonce });
+      lastTry = null;
       remote = { ...remote, busy: true };
       // The Mac opened the chat's project to send (blocker 665).
       if (project) void refreshProjects();
@@ -911,7 +923,7 @@
     } catch (e) {
       // Nothing sent: the photos go back into the composer.
       photos = [...sentPhotos, ...photos];
-      if (e instanceof Unreachable && images.length === 0) hold(text);
+      if (e instanceof Unreachable && images.length === 0) hold(text, attempt.nonce);
       else if (e instanceof Unreachable) {
         note("The Mac is unreachable — your message and photos stay here");
         if (!draft) setDraft(text);
@@ -938,8 +950,11 @@
     }
     const before = remote.active_chat;
     const images = photos.map((p) => p.image);
+    const attempt = nonceFor(lastTry, `new:${newProject}\n${text}`);
+    lastTry = attempt;
     try {
-      const status = await client!.newChat(newProject, text, images);
+      const status = await client!.newChat(newProject, text, images, attempt.nonce);
+      lastTry = null;
       pendingNew = { before };
       setDraft("");
       photos = [];
@@ -954,8 +969,11 @@
     }
   }
 
-  function hold(text: string) {
-    queue = [...queue, newQueued(chatId, text, new Date(), sendProject, chatRole)];
+  /** Hold `text` for later; `nonce` is its first try's, when it had one
+   *  (the held copy is that message, not another). */
+  function hold(text: string, nonce: string | null = null) {
+    if (nonce && lastTry?.nonce === nonce) lastTry = null;
+    queue = [...queue, newQueued(chatId, text, new Date(), sendProject, chatRole, nonce)];
     saveQueue(queue);
     const who = chatRole === "away" ? "Away" : "the Mac";
     note(link === "online" && sameHost ? "Held — goes when the turn ends" : `Held — goes when ${who} is reachable`);
@@ -966,19 +984,20 @@
    * that chat's own host, never the answering one. When that host cannot
    * be reached it is held for it (photos stay in the composer).
    */
-  async function sendElsewhere(text: string, images: ImageInput[]) {
+  async function sendElsewhere(text: string, images: ImageInput[], nonce: string) {
     if (!chatClient || !chatId) return;
     const sentPhotos = photos;
     setDraft("");
     photos = [];
     try {
-      const status = await chatClient.send(chatId, text, { project: sendProject, images });
+      const status = await chatClient.send(chatId, text, { project: sendProject, images, nonce });
+      lastTry = null;
       note(status === "queued" ? `Sent to ${chatRole === "away" ? "Away" : "the Mac"} — it goes when its turn ends` : `Sent to ${chatRole === "away" ? "Away" : "the Mac"}`);
       events = [...events, { event: "user_message", text, at: new Date().toISOString(), ...(images.length > 0 ? { images } : {}) }];
       scrollToEnd();
     } catch (e) {
       photos = [...sentPhotos, ...photos];
-      if (e instanceof Unreachable && images.length === 0) hold(text);
+      if (e instanceof Unreachable && images.length === 0) hold(text, nonce);
       else {
         if (!(e instanceof Unreachable)) fail(e);
         else note(`${chatRole === "away" ? "Away" : "The Mac"} is unreachable — your message and photos stay here`);
@@ -1003,7 +1022,7 @@
     const next = nextHeldFor(queue, active);
     if (!next) return;
     try {
-      const status = await client.send(next.chat, next.text, { project: next.project ?? null });
+      const status = await client.send(next.chat, next.text, { project: next.project ?? null, nonce: next.nonce ?? next.id });
       queue = queue.filter((q) => q.id !== next.id);
       saveQueue(queue);
       remote = { ...remote, busy: true };
@@ -1499,8 +1518,11 @@
     if (!chatClient || !chatId || !text) return false;
     const project = sendProject;
     councilProblem = null;
+    const attempt = nonceFor(lastTry, `council:${chatId}\n${text}`);
+    lastTry = attempt;
     try {
-      const status = await chatClient.send(chatId, text, { project, council });
+      const status = await chatClient.send(chatId, text, { project, council, nonce: attempt.nonce });
+      lastTry = null;
       setDraft("");
       sheet = null;
       remote = { ...remote, busy: true };
