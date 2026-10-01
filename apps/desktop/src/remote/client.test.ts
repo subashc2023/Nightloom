@@ -615,3 +615,164 @@ describe("a client per host (wave 3)", () => {
     }
   });
 });
+
+describe("wave 3 B2: the missing buttons, the limit card, speak the reply", () => {
+  const T = "0123456789abcdef0123456789abcdef";
+  /** Each `act` call's path and body, through a stand-in fetch. */
+  async function acted(run: (c: InstanceType<typeof import("./client").Client>) => Promise<unknown>) {
+    const { Client } = await import("./client");
+    const seen: { url: string; body: unknown }[] = [];
+    const real = globalThis.fetch;
+    globalThis.fetch = (async (url: string, init: RequestInit) => {
+      seen.push({ url, body: init.body ? JSON.parse(String(init.body)) : null });
+      return new Response(JSON.stringify({ chat: "c1", events: [] }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      await run(new Client(T));
+    } finally {
+      globalThis.fetch = real;
+    }
+    return seen;
+  }
+
+  it("sends each new button's action through act, as the Mac's buttons run it", async () => {
+    const { budgetAction, checkpointAction, resumeAction } = await import("./client");
+    const seen = await acted(async (c) => {
+      await c.act("c1", { op: "compact" });
+      await c.act("c1", checkpointAction(7));
+      await c.act("c1", budgetAction("continue"));
+      await c.act("c1", budgetAction("wrap"));
+      await c.act("c1", budgetAction("stop"));
+      await c.act("c1", resumeAction(), "p-keep");
+    });
+    expect(seen.map((s) => s.body)).toEqual([
+      { op: "compact" },
+      { op: "checkpoint", index: 7 },
+      { op: "budget", decision: "continue", text: null },
+      { op: "budget", decision: "wrap", text: null },
+      { op: "budget", decision: "stop", text: null },
+      { op: "resume_limit" },
+    ]);
+    const { rowCheckpoint } = await import("./client");
+    const rows = transcriptRows([
+      { event: "user_message", text: "hi", at: "2026-09-30T10:00:00Z" },
+      { event: "assistant_message", model: "m", at: "2026-09-30T10:00:00Z", usage: { input_tokens: 1, output_tokens: 1 }, stop_reason: null, blocks: [{ type: "text", text: "a" }] },
+      { event: "assistant_message", model: "m", at: "2026-09-30T10:00:00Z", usage: { input_tokens: 1, output_tokens: 1 }, stop_reason: null, blocks: [{ type: "text", text: "b" }] },
+    ] as unknown as SessionEvent[]);
+    expect(rowCheckpoint(rows[0])).toBe(0);
+    expect(rowCheckpoint(rows[1])).toBe(2);
+    expect(rowCheckpoint({ kind: "note", text: "x", at: "" })).toBe(null);
+    expect(seen[0].url).toBe("/api/chats/c1/act");
+    expect(seen[5].url).toBe("/api/chats/c1/act?project=p-keep");
+  });
+
+  it("greys an op serve does not name, and offers every op on a Mac that acts", async () => {
+    const { canOp } = await import("./client");
+    const mac = { project: null, active_chat: null, busy: false, connected: true, engine: null, pending: [], host: "mac" as const, features: ["act"] };
+    expect(canOp(mac, "compact")).toBe(true);
+    expect(canOp(mac, "budget")).toBe(true);
+    expect(canOp({ ...mac, host: undefined }, "checkpoint")).toBe(true);
+    expect(canOp({ ...mac, features: [] }, "compact")).toBe(false);
+    const serve = { ...mac, host: "serve" as const, features: ["act", "resume_limit"] };
+    expect(canOp(serve, "compact")).toBe(false);
+    expect(canOp(serve, "resume_limit")).toBe(true);
+  });
+
+  it("reads the limit's reset in seconds, ms or ISO, and says the time in 12-hour", async () => {
+    const { clock12, resetMs } = await import("./client");
+    const at = new Date(2026, 8, 30, 3, 10).getTime();
+    expect(resetMs(at / 1000)).toBe(at);
+    expect(resetMs(at)).toBe(at);
+    expect(resetMs(new Date(at).toISOString())).toBe(at);
+    expect(resetMs(String(at / 1000))).toBe(at);
+    expect(resetMs(null)).toBe(null);
+    expect(resetMs("soon")).toBe(null);
+    expect(clock12(at, at - 3600_000)).toBe("3:10 AM");
+    expect(clock12(new Date(2026, 8, 30, 15, 5).getTime(), at)).toBe("3:05 PM");
+    expect(clock12(new Date(2026, 9, 1, 3, 10).getTime(), at)).toBe("Oct 1, 3:10 AM");
+  });
+
+  it("labels the limit card, and Resume before the reset reads its time and never goes sooner", async () => {
+    const { limitCard, resumeAction, RESUME_MARGIN_MS } = await import("./client");
+    const at = new Date(2026, 8, 30, 3, 10).getTime();
+    const p = { chat: "c1", resets_at: at / 1000, window: "five_hour" };
+    const before = limitCard(p, at - 40 * 60_000);
+    expect(before).toEqual({ label: "Paused by the 5-hour limit · resumes at 3:10 AM", button: "Resume at 3:10 AM", early: true, at });
+    // Inside the margin after the reset it is still early: the host's clock may lag.
+    expect(limitCard(p, at + RESUME_MARGIN_MS - 1).early).toBe(true);
+    const after = limitCard(p, at + RESUME_MARGIN_MS + 1);
+    expect(after.label).toBe("Paused by the 5-hour limit · the window has reset");
+    expect(after.button).toBe("Resume");
+    expect(after.early).toBe(false);
+    expect(limitCard({ ...p, window: "seven_day" }, at - 1).label).toBe("Paused by the weekly limit · resumes at 3:10 AM");
+    expect(limitCard({ chat: "c1", resets_at: null }, at)).toEqual({ label: "Paused by the usage limit", button: "Resume", early: false, at: null });
+    // Early or not, Resume is the host's resume — it schedules; the page sends no message of its own.
+    expect(resumeAction()).toEqual({ op: "resume_limit" });
+  });
+
+  it("shows the budget card only while a call is held, in the Mac's words", async () => {
+    const { budgetHeld, budgetCard } = await import("./client");
+    const now = 1_000_000;
+    const ledger = { budget_pct: 35, stop_at: 85, start_pct: 50, latest_pct: 86, resets_at: new Date(2026, 8, 30, 3, 10).getTime() / 1000, pending_since_ms: now - 5000, holds: [now + 60_000] };
+    expect(budgetHeld(ledger, now)).toBe(ledger);
+    expect(budgetHeld({ ...ledger, holds: [now - 1] }, now)).toBe(null);
+    expect(budgetHeld({ ...ledger, pending_since_ms: null }, now)).toBe(null);
+    expect(budgetHeld(null, now)).toBe(null);
+    const card = budgetCard(ledger, new Date(2026, 8, 30, 2, 0).getTime());
+    expect(card.title).toBe("Stopped at 85% of the 5-hour window");
+    expect(card.detail).toBe("the window is at 86% · this message has spent 36% of its 35% · it resets at 3:10 AM");
+  });
+
+  const at = "2026-09-30T10:00:00Z";
+  const usage = (o: number, i = 1000) => ({ input_tokens: i, output_tokens: o });
+
+  it("speaks the last reply's prose, its code blocks said once as on screen", async () => {
+    const { speakText, CODE_ON_SCREEN } = await import("./client");
+    const ev = [
+      { event: "user_message", text: "hi", at },
+      { event: "assistant_message", model: "m", at, usage: usage(5), stop_reason: null, blocks: [{ type: "text", text: "An old reply." }] },
+      { event: "user_message", text: "and the fix?", at },
+      {
+        event: "assistant_message",
+        model: "m",
+        at,
+        usage: usage(5),
+        stop_reason: null,
+        blocks: [
+          { type: "tool_use", id: "t1", name: "Read", input: {} },
+          { type: "text", text: "Set the width.\n```css\n.a { min-width: 0 }\n```\nThen this:\n```ts\nx()\n```\nDone." },
+        ],
+      },
+    ] as unknown as SessionEvent[];
+    const said = speakText(ev)!;
+    expect(said).toBe(`Set the width.\n${CODE_ON_SCREEN}\nThen this:\nDone.`);
+    expect(said).not.toContain("min-width");
+    expect(said).not.toContain("An old reply");
+    // His message last: nothing to speak yet.
+    expect(speakText([...ev, { event: "user_message", text: "more", at }] as unknown as SessionEvent[])).toBe(null);
+    // A removed block is not in the context, so not spoken.
+    const gone = [...ev, { event: "elide", targets: [3], block: 1, at }] as unknown as SessionEvent[];
+    expect(speakText(gone)).toBe(null);
+  });
+
+  it("writes the model and token line under a reply, as the Mac's footer figures it", async () => {
+    const { replyLine, replySizes, shortModel } = await import("./client");
+    expect(shortModel("claude-opus-5-5")).toBe("opus 5.5");
+    expect(shortModel("sonnet")).toBe("sonnet");
+    const ev = [
+      { event: "user_message", text: "hi", at },
+      { event: "assistant_message", model: "claude-opus-5-5", at, usage: usage(200, 12000), stop_reason: null, cost: 0.0412, blocks: [{ type: "text", text: "Hello." }] },
+      { event: "user_message", text: "more", at },
+      { event: "assistant_message", model: "claude-opus-5-5", at, usage: usage(300, 12500), stop_reason: null, blocks: [{ type: "text", text: "More." }] },
+    ] as unknown as SessionEvent[];
+    const rows = transcriptRows(ev);
+    const sizes = replySizes(ev);
+    expect(replyLine(ev, rows[1], sizes)).toBe("opus 5.5 · 200 tokens · $0.04");
+    // 12500 in − (12000 + 200) = 300 from his message; the reply's own 300.
+    expect(replyLine(ev, rows[3], sizes)).toBe("opus 5.5 · 300 tokens");
+    expect(replyLine(ev, rows[0], sizes)).toBe("");
+    // No usage recorded: the model alone.
+    const bare = [{ event: "assistant_message", model: "haiku", at, usage: usage(0, 0), stop_reason: null, blocks: [{ type: "text", text: "x" }] }] as unknown as SessionEvent[];
+    expect(replyLine(bare, transcriptRows(bare)[0], replySizes(bare))).toBe("haiku");
+  });
+});

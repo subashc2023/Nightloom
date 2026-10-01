@@ -68,6 +68,17 @@
     type Queued,
     type RemoteState,
     type ToolRow,
+    budgetAction,
+    budgetCard,
+    budgetHeld,
+    canOp,
+    clock12,
+    limitCard,
+    replyLine,
+    replySizes,
+    resumeAction,
+    speakText,
+    type ExtraOp,
   } from "./client";
   import { renderMarkdown } from "../lib/markdown";
   import { arrive, launch, reducedMotion } from "../lib/sendMotion";
@@ -146,6 +157,10 @@
 
   // ---- what the Mac says ---------------------------------------------------
   let remote = $state<RemoteState>({ project: null, active_chat: null, busy: false, connected: false, engine: null, pending: [] });
+  /** The state of the host whose chat is on screen when that is not the
+   *  answering host (wave 3 B2, 132 finding g): polled while one of its
+   *  chats is shown, so its approval prompts and limit pause show here. */
+  let otherState = $state<RemoteState | null>(null);
   let projects = $state<ProjectRow[]>([]);
   /** Chats by project id; `""` is the open project's when the Mac has
    *  none (its unfiled chats). */
@@ -196,6 +211,7 @@
     | "council"
     | "newproject"
     | "hosts"
+    | "compact"
   >(null);
   // ---- wave 2C: notes, asides, council, new project, search, gestures ----
   /** The notes sheet opens on this note (a search hit), else its list. */
@@ -286,8 +302,33 @@
       sameHost &&
       ((chatId !== null && chatId === remote.active_chat) || (chatId === null && pendingNew !== null)),
   );
-  const pendingHere = $derived(!readOnly && sameHost && chatId !== null && chatId === remote.active_chat ? remote.pending : []);
+  /** The state of the chat's own host: the answering host's, or the
+   *  other's as last polled (null until read). */
+  const chatState = $derived(sameHost ? remote : otherState);
+  const pendingHere = $derived(
+    readOnly || chatId === null || !chatState || chatId !== chatState.active_chat ? [] : chatState.pending,
+  );
+  /** The other host's turn may be waiting on an approval in a chat this
+   *  page is not showing it for (132 g, "at the least" line). */
+  const otherWaiting = $derived(!sameHost && otherState !== null && otherState.pending.length > 0 && pendingHere.length === 0);
+  /** Wave B's buttons: the chat's own host serves the op (`canOp`). */
+  const opOk = (op: ExtraOp) => canOp(chatState ?? remote, op);
+  const opMissing = (op: ExtraOp, older: string) => (opOk(op) ? null : missingSentence((chatState ?? remote).host, older));
+  /** A clock for the cards whose words change with time (the limit's
+   *  reset, a held call's deadline). */
+  let now = $state(Date.now());
+  /** The limit pause on the chat shown (item 164), from its host. */
+  const limitHere = $derived(
+    chatId !== null && chatState?.limit_pause && chatState.limit_pause.chat === chatId ? chatState.limit_pause : null,
+  );
+  /** Resume was asked before the reset and the host holds it (per chat). */
+  let limitSet = $state<Record<string, number>>({});
+  let limitBusy = $state(false);
+  let budgetBusy = $state(false);
+  const sizes = $derived(replySizes(events));
   const busyHere = $derived(remote.busy && !readOnly && sameHost && chatId !== null && chatId === remote.active_chat);
+  /** The budget hook holds a call in the running chat on screen. */
+  const heldHere = $derived(busyHere ? budgetHeld(running?.budget, now) : null);
   const status = $derived(
     link === "off"
       ? "not paired"
@@ -606,6 +647,11 @@
   function pollLoop() {
     setInterval(() => {
       if (link === "online" && (remote.busy || live !== null || queue.length > 0 || pendingNew)) void refreshState();
+      // Wave 3 B2: the other host's state while one of its chats is shown
+      // (its approvals, its limit pause), and the running turn's budget
+      // ledger while a turn runs in the chat on screen.
+      if (link === "online" && !sameHost && chatClient) void refreshOther();
+      if (link === "online" && busyHere && hasFeature(remote, "running") && sheet !== "running") void refreshBudget();
       const prefer = paired[0];
       if (link === "online" && prefer && active !== prefer && !mixedBlocked(origin, hosts[prefer]!.base) && Date.now() - lastPreferProbe > 30000) {
         lastPreferProbe = Date.now();
@@ -683,17 +729,51 @@
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible" && client && link !== "off") void everything();
     });
+    const clock = setInterval(() => (now = Date.now()), 15000);
+    // The phone's own light or dark decides which (blocker 577): read here
+    // rather than by a media query, so the palette blocks key on one
+    // attribute; a change of the phone's setting follows at once.
+    const mq = window.matchMedia("(prefers-color-scheme: light)");
+    const scheme = () => (document.documentElement.dataset.scheme = mq.matches ? "light" : "dark");
+    scheme();
+    mq.addEventListener?.("change", scheme);
+    return () => {
+      clearInterval(clock);
+      mq.removeEventListener?.("change", scheme);
+    };
+  });
+
+  // A card that appears at the foot (the limit's, the budget's) is
+  // brought into view when he was already at the end, as a reply is.
+  let cardsSeen = "";
+  // Before the DOM changes: "at the end" is judged without the new card.
+  $effect.pre(() => {
+    const key = `${limitHere ? "L" : ""}${heldHere ? "B" : ""}`;
+    if (key && key !== cardsSeen && nearBottom()) void tick().then(scrollToEnd);
+    cardsSeen = key;
+  });
+
+  // The desktop's palette (blocker 577, `/api/state.palette` from B1): B–D
+  // as an attribute the style blocks select; A, none or an unknown id is
+  // the default. Serve sends none, so Away draws palette A.
+  $effect(() => {
+    const p = remote.palette;
+    if (p === "B" || p === "C" || p === "D") document.documentElement.dataset.palette = p;
+    else delete document.documentElement.dataset.palette;
   });
 
   // ---- the screens ----------------------------------------------------------
   /** Show `id` (of `project` when it is not the Mac's open one). */
-  async function openChat(id: string, project: string | null = null) {
+  async function openChat(id: string, project: string | null = null, host: HostRole | null = active) {
     chose = true;
     drawer = false;
-    if (id === chatId && project === chatProject && chatHost === active) return;
+    if (id === chatId && project === chatProject && chatHost === host) return;
     chatId = id;
-    // Listed by the host answering now: it is that host's chat.
-    chatHost = active;
+    // Listed by the host answering now: it is that host's chat — or, an
+    // Undo of a delete, the host it was deleted on (132 f), set before the
+    // transcript is read so the read goes there.
+    chatHost = host;
+    otherState = null;
     chatLabel = (chatsBy[project ?? activePid] ?? []).find((c) => c.id === id)?.label ?? null;
     chatProject = project && project !== activePid ? project : null;
     pendingNew = null;
@@ -702,6 +782,7 @@
     draft = loadDraft(draftKey(id, null));
     void grow();
     await refreshTranscript(true);
+    if (chatHost !== active) void refreshOther();
   }
 
   function startNew(project: string | null = null) {
@@ -1173,8 +1254,7 @@
     trashed = null;
     await refreshProjects();
     await refreshChats();
-    await openChat(t.id, null);
-    chatHost = t.host ?? active;
+    await openChat(t.id, null, t.host ?? active);
   }
 
   async function continueTurn() {
@@ -1186,6 +1266,69 @@
     const next = currentChat?.kind === "build" ? "chat" : "build";
     sheet = null;
     if (await act([{ op: "kind", kind: next }], next === "build" ? "Now a build chat" : "Now a plain chat")) void refreshChats();
+  }
+
+  // ---- wave 3 B2: the other host's state, the cards, Compact, Speak it --------
+  /** The state of the chat's host when it is not the one answering. */
+  async function refreshOther() {
+    const via = chatClient;
+    const id = chatId;
+    if (!via || sameHost || !id) return;
+    try {
+      const st = await via.state();
+      if (id === chatId && !sameHost) otherState = st;
+    } catch {
+      // Unreachable: no cards from it; the send path says the rest.
+      if (id === chatId) otherState = null;
+    }
+  }
+
+  /** `/api/running` for its budget ledger only (quiet on failure). */
+  async function refreshBudget() {
+    if (!client) return;
+    try {
+      running = await client.running();
+    } catch {
+      // The card stays as it was; the Mac's own card still answers.
+    }
+  }
+
+  /** Resume a turn the usage limit paused: the host's own resume, which
+   *  before the reset is scheduled there for the reset — the page sends
+   *  nothing sooner (item 164). Pressed once: the Mac's resume cancels a
+   *  scheduled one on a second press, so the button holds after. */
+  async function resumeLimit() {
+    const p = limitHere;
+    const id = chatId;
+    if (!p || !id || limitBusy) return;
+    const card = limitCard(p, Date.now());
+    limitBusy = true;
+    const ok = await act([resumeAction()], card.early && card.at ? `Resume set for ${clock12(card.at)}` : "Resuming", !card.early);
+    limitBusy = false;
+    if (ok && card.early && card.at) limitSet = { ...limitSet, [id]: card.at };
+  }
+
+  /** The budget card's answer, as the Mac's card sends it. */
+  async function answerBudget(decision: "continue" | "wrap" | "stop") {
+    if (budgetBusy) return;
+    budgetBusy = true;
+    const words = { continue: "Continuing past the line", wrap: "Wrapping up", stop: "Stopped here" }[decision];
+    if (await act([budgetAction(decision)], words)) await refreshBudget();
+    budgetBusy = false;
+  }
+
+  async function compactChat() {
+    sheet = null;
+    if (await act([{ op: "compact" }], "Compacted on the Mac")) void refreshChats();
+  }
+
+  /** The chat's last reply, read again, for voice mode's "Speak it"; null
+   *  while a turn still runs in it or it ends with his message. */
+  async function lastReply(): Promise<string | null> {
+    await refreshState();
+    await refreshTranscript();
+    if (busyHere) return null;
+    return speakText(events);
   }
 
   // ---- wave 1C: the rail, running tasks, usage ---------------------------------
@@ -1658,14 +1801,17 @@
     then?: "ask" | "auto",
     fallback?: string,
   ) {
-    if (!client) return;
+    // The chat's own host (132 g): an approval for Away's turn goes to Away.
+    const via = sameHost ? client : chatClient;
+    if (!via) return;
     const text = (notes[req.id] ?? "").trim();
     // The note rides as the deny reason; with an accepting button it is
     // the next message, as the desktop's card does it (`routeNote`).
     const reason = decision === "deny" ? text || fallback : undefined;
-    remote = { ...remote, pending: remote.pending.filter((p) => p.id !== req.id) };
+    if (sameHost) remote = { ...remote, pending: remote.pending.filter((p) => p.id !== req.id) };
+    else if (otherState) otherState = { ...otherState, pending: otherState.pending.filter((p) => p.id !== req.id) };
     try {
-      await client.approve({ id: req.id, name: req.name, decision, reason, answer: answerPayload, then });
+      await via.approve({ id: req.id, name: req.name, decision, reason, answer: answerPayload, then });
       if (decision !== "deny" && text) hold(text);
     } catch (e) {
       fail(e);
@@ -1709,7 +1855,7 @@
   const toolCount = (tools: ToolRow[]): number => tools.reduce((n, t) => n + 1 + toolCount(t.children), 0);
 </script>
 
-{#snippet icon(name: "menu" | "new" | "more" | "up" | "stop" | "chev" | "x" | "search" | "check" | "mac" | "pencil" | "sliders" | "plus" | "trash" | "play" | "swap" | "pulse" | "note" | "aside" | "council" | "folder")}
+{#snippet icon(name: "menu" | "new" | "more" | "up" | "stop" | "chev" | "x" | "search" | "check" | "mac" | "pencil" | "sliders" | "plus" | "trash" | "play" | "swap" | "pulse" | "note" | "aside" | "council" | "folder" | "compact" | "flag")}
   <svg class="ico" viewBox="0 0 24 24" aria-hidden="true">
     {#if name === "menu"}<path d="M4 7h16M4 12h16M4 17h10" />
     {:else if name === "new"}<path d="M12 20h8M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
@@ -1732,6 +1878,8 @@
     {:else if name === "aside"}<path d="M4 5h16v10H9l-5 4Z" /><path d="M8 9h8" />
     {:else if name === "council"}<circle cx="7" cy="9" r="2.5" /><circle cx="17" cy="9" r="2.5" /><circle cx="12" cy="6" r="2.5" /><path d="M3 19c0-3 2-5 4-5M21 19c0-3-2-5-4-5M8 19c0-3 2-5 4-5s4 2 4 5" />
     {:else if name === "folder"}<path d="M3 6h6l2 2h10v11H3Z" /><path d="M12 11v5M9.5 13.5h5" />
+    {:else if name === "compact"}<path d="M4 9h16M4 15h16M12 3v4l-2-2M12 7l2-2M12 21v-4l-2 2M12 17l2 2" />
+    {:else if name === "flag"}<path d="M5 21V4M5 4h11l-2 4 2 4H5" />
     {/if}
   </svg>
 {/snippet}
@@ -1794,9 +1942,13 @@
         </span>
       </button>
       <Hosts mode="chip" {hosts} {active} {link} onopen={() => (sheet = "hosts")} />
-      <button class="icon-btn" onclick={openRail} aria-label="Model and settings">{@render icon("sliders")}</button>
+      <!-- One button in this slot (wave 3 B2): the title had lost the
+           sliders' width. With a chat open, Model and settings is the
+           first row of its ⋯ sheet. -->
       {#if chatId}
         <button class="icon-btn" onclick={() => (sheet = "chat")} aria-label="Chat actions">{@render icon("more")}</button>
+      {:else}
+        <button class="icon-btn" onclick={openRail} aria-label="Model and settings">{@render icon("sliders")}</button>
       {/if}
       <button class="icon-btn" onclick={() => startNew(chatProject ?? newProject)} aria-label="New chat">{@render icon("new")}</button>
     </header>
@@ -1873,7 +2025,8 @@
                 <div class="md" use:press={() => openMenu(r, part)}>{@html renderMarkdown(part.text)}</div>
               {/if}
             {/each}
-            {#if r.removed}<div class="stamp">removed from the context — long-press to restore</div>{/if}
+            {#if r.removed}<div class="stamp">removed from the context — long-press to restore</div>
+            {:else}{@const line = replyLine(events, r, sizes)}{#if line}<div class="stamp reply-line">{line}</div>{/if}{/if}
           </div>
         {:else}
           <div class="turn note">{r.text}</div>
@@ -1889,6 +2042,48 @@
         <div class="turn note">A turn is running on the Mac</div>
       {/if}
 
+      {#if limitHere}
+        <!-- Item 164 on the phone: the turn the usage limit paused. -->
+        {@const lc = limitCard(limitHere, now)}
+        {@const set = chatId ? limitSet[chatId] : undefined}
+        <section class="card" data-card="limit" in:fly={{ y: 16, duration: motion(260), easing: cubicOut }}>
+          <div class="card-head">{lc.label}</div>
+          {#if set}
+            <p class="card-note">Resume is set on the {chatRole === "away" ? "away server" : "Mac"} for {clock12(set)} — it goes then, never sooner.</p>
+          {:else if lc.early}
+            <p class="card-note">Resume now and it waits on the {chatRole === "away" ? "away server" : "Mac"} until the window opens.</p>
+          {/if}
+          {#if opMissing("resume_limit", "This Mac's Nightloom is older than the phone page: press Resume on the Mac.")}
+            <p class="card-note">{opMissing("resume_limit", "This Mac's Nightloom is older than the phone page: press Resume on the Mac.")}</p>
+          {/if}
+          <div class="actions end">
+            <button class="btn accent" data-act="resume" disabled={!opOk("resume_limit") || !!set || limitBusy || link !== "online"} onclick={resumeLimit}>
+              {set ? `Set for ${clock12(set)}` : lc.button}
+            </button>
+          </div>
+        </section>
+      {/if}
+      {#if heldHere}
+        <!-- The Mac's stop card (backlog 189) on the phone: a call is held
+             at the stop line for his answer. -->
+        {@const bc = budgetCard(heldHere, now)}
+        <section class="card" data-card="budget" in:fly={{ y: 16, duration: motion(260), easing: cubicOut }}>
+          <div class="card-head">{bc.title}</div>
+          {#if bc.detail}<p class="card-note">{bc.detail}</p>{/if}
+          <p class="card-note">A call is waiting for your answer. Continue lets this chat run past the line while you are here; Wrap up has it finish and write its hand-off; Stop refuses the call.</p>
+          {#if opMissing("budget", "This Mac's Nightloom is older than the phone page: answer on the Mac.")}
+            <p class="card-note">{opMissing("budget", "This Mac's Nightloom is older than the phone page: answer on the Mac.")}</p>
+          {/if}
+          <div class="actions">
+            <button class="btn" data-act="budget-stop" disabled={!opOk("budget") || budgetBusy} onclick={() => answerBudget("stop")}>Stop here</button>
+            <button class="btn" data-act="budget-wrap" disabled={!opOk("budget") || budgetBusy} onclick={() => answerBudget("wrap")}>Wrap up</button>
+            <button class="btn accent" data-act="budget-continue" disabled={!opOk("budget") || budgetBusy} onclick={() => answerBudget("continue")}>Continue anyway</button>
+          </div>
+        </section>
+      {/if}
+      {#if otherWaiting}
+        <div class="turn note">{chatRole === "away" ? "The away server" : "The Mac"} may be waiting for you in another chat — open it from the drawer.</div>
+      {/if}
       {#each pendingHere as req (req.id)}
         {@const kind = cardKind(req)}
         <section class="card" in:fly={{ y: 16, duration: motion(260), easing: cubicOut }}>
@@ -2009,6 +2204,7 @@
             {still}
             send={() => void sendNow()}
             onkeep={(t) => setDraft(draft.trim() ? `${draft}\n${t}` : t)}
+            reply={lastReply}
           />
           {#if busyHere && link === "online" && !draft.trim()}
             <button class="send stop" onclick={stop} aria-label="Stop the turn">{@render icon("stop")}</button>
@@ -2175,6 +2371,7 @@
           <div class="sheet-title">{title}</div>
           <div class="sheet-sub">{projectName(chatProject)}{currentChat ? ` · ${currentChat.user_turns} messages · ${shortWhen(currentChat.modified)}` : ""}</div>
           <div class="menu">
+            <button data-act="rail" onclick={openRail}>{@render icon("sliders")} Model and settings</button>
             {#if !readOnly}
               <button onclick={beginRename}>{@render icon("pencil")} Rename</button>
               <button onclick={openOnMac} disabled={remote.busy && chatId !== remote.active_chat}>{@render icon("mac")} Open on the Mac</button>
@@ -2198,6 +2395,12 @@
                 <span class="tag">{currentChat?.kind ?? "chat"}</span>
               </button>
             {/if}
+            {#if !readOnly && canAct}
+              <button data-act="compact" onclick={() => (sheet = "compact")} disabled={!!actBlocked || !opOk("compact")}>
+                {@render icon("compact")}
+                <span class="grow">Compact{#if opMissing("compact", "")}<small class="why">{opMissing("compact", "")}</small>{/if}</span>
+              </button>
+            {/if}
             {#if !readOnly && hasFeature(remote, "context")}
               <button data-act="context" onclick={() => (closeSheet(), (contextOn = true))}>{@render icon("pulse")} Context</button>
             {/if}
@@ -2217,6 +2420,13 @@
             <button class="btn" onclick={() => (sheet = "chat")}>Cancel</button>
             <button class="btn accent" disabled={!renameText.trim()} onclick={saveRename}>Save</button>
           </div>
+        {:else if sheet === "compact"}
+          <div class="sheet-title">Compact “{title}”?</div>
+          <p class="sheet-note">The Mac summarises the earlier turns for the model, as its own Compact does; the log keeps every message.</p>
+          <div class="actions end">
+            <button class="btn" onclick={() => (sheet = "chat")}>Cancel</button>
+            <button class="btn accent" data-act="compact-go" disabled={!!actBlocked} onclick={compactChat}>Compact</button>
+          </div>
         {:else if sheet === "delete"}
           <div class="sheet-title">Delete “{title}”?</div>
           <p class="sheet-note">It moves to the trash on the Mac; Restore brings it back.</p>
@@ -2234,7 +2444,8 @@
             rewind={target.rewind}
             fork={target.fork}
             {canAct}
-            host={remote.host}
+            host={(chatState ?? remote).host}
+            checkpoint={opOk("checkpoint")}
             blocked={actBlocked}
             problem={error}
             onact={(actions, label, starts) => act(actions, label, starts)}
@@ -2335,7 +2546,12 @@
 
 <style>
   /* The desktop's palette A (app.css), and a light counterpart for a phone
-     in light mode (item 246, blocker 577's default). */
+     in light mode (item 246, blocker 577's default). Wave 3 B2: the
+     desktop's chosen palette (`/api/state.palette`) as `data-palette`, its
+     dark tokens as app.css has them and a light counterpart of each; the
+     phone's own light/dark decides which, as `data-scheme` (set from
+     `prefers-color-scheme` in onMount — one attribute, so a palette's
+     light block need not repeat inside a media query). */
   :global(:root) {
     --paper: #1b1916;
     --sheet: #232019;
@@ -2359,27 +2575,115 @@
     --ease: cubic-bezier(0.32, 0.72, 0, 1);
     color-scheme: dark;
   }
-  @media (prefers-color-scheme: light) {
-    :global(:root) {
-      --paper: #f6f2ea;
-      --sheet: #fffdf8;
-      --well: #ece6da;
-      --ink: #2a251d;
-      --ink2: #4a4337;
-      --dim: #857d6e;
-      --line: #e3dccd;
-      --line2: #cfc6b4;
-      --accent: #b8762a;
-      --accent-ink: #9a5f1c;
-      --accent-soft: #f3e3cc;
-      --on-accent: #fffdf8;
-      --done: #3f8f50;
-      --failed: #c0453f;
-      --live: #3b78c4;
-      --bubble: color-mix(in srgb, var(--paper) 80%, var(--ink) 8%);
-      --scrim: rgba(40, 30, 20, 0.28);
-      color-scheme: light;
-    }
+  /* B–D dark: app.css's surfaces and accent; status colours are shared. */
+  :global(:root[data-palette="B"]) {
+    --paper: #15181d;
+    --sheet: #1c2027;
+    --well: #252a33;
+    --ink: #e6e9ee;
+    --ink2: #c0c6cf;
+    --dim: #7f8794;
+    --line: #2a3039;
+    --line2: #3c434e;
+    --accent: #d38b5d;
+    --accent-ink: #e8a87c;
+    --accent-soft: #3a2a1f;
+    --on-accent: #15181d;
+  }
+  :global(:root[data-palette="C"]) {
+    --paper: #131313;
+    --sheet: #1b1b1b;
+    --well: #242424;
+    --ink: #e9e9e6;
+    --ink2: #bebebb;
+    --dim: #7e7e7a;
+    --line: #2b2b2b;
+    --line2: #3e3e3e;
+    --accent: #5fc4c0;
+    --accent-ink: #8fdcd8;
+    --accent-soft: #193233;
+    --on-accent: #131313;
+  }
+  :global(:root[data-palette="D"]) {
+    --paper: #1a1412;
+    --sheet: #221a17;
+    --well: #2c2320;
+    --ink: #f0e6dc;
+    --ink2: #cbbfb3;
+    --dim: #9a8b80;
+    --line: #352a26;
+    --line2: #4a3b35;
+    --accent: #d4a24c;
+    --accent-ink: #e8bd6e;
+    --accent-soft: #3c2e17;
+    --on-accent: #1a1412;
+  }
+  :global(:root[data-scheme="light"]) {
+    --paper: #f6f2ea;
+    --sheet: #fffdf8;
+    --well: #ece6da;
+    --ink: #2a251d;
+    --ink2: #4a4337;
+    --dim: #857d6e;
+    --line: #e3dccd;
+    --line2: #cfc6b4;
+    --accent: #b8762a;
+    --accent-ink: #9a5f1c;
+    --accent-soft: #f3e3cc;
+    --on-accent: #fffdf8;
+    --done: #3f8f50;
+    --failed: #c0453f;
+    --live: #3b78c4;
+    --bubble: color-mix(in srgb, var(--paper) 80%, var(--ink) 8%);
+    --scrim: rgba(40, 30, 20, 0.28);
+    color-scheme: light;
+  }
+  /* Light counterparts (inferred, after 577's A: paper and ink stay warm-
+     neutral per palette, the accent darkened to read on paper). */
+  :global(:root[data-scheme="light"][data-palette="B"]) {
+    --paper: #f3f5f8;
+    --sheet: #fcfdfe;
+    --well: #e6eaf0;
+    --ink: #1f242c;
+    --ink2: #3e4652;
+    --dim: #6f7885;
+    --line: #dde2e9;
+    --line2: #c5ccd6;
+    --accent: #b0663a;
+    --accent-ink: #934f28;
+    --accent-soft: #f2e1d5;
+    --on-accent: #fcfdfe;
+    --bubble: color-mix(in srgb, var(--paper) 80%, var(--ink) 8%);
+  }
+  :global(:root[data-scheme="light"][data-palette="C"]) {
+    --paper: #f5f5f3;
+    --sheet: #fdfdfc;
+    --well: #e8e8e5;
+    --ink: #1f1f1e;
+    --ink2: #40403e;
+    --dim: #767673;
+    --line: #e0e0dc;
+    --line2: #c9c9c4;
+    --accent: #23807c;
+    --accent-ink: #1a6662;
+    --accent-soft: #d6ecea;
+    --on-accent: #fdfdfc;
+    --bubble: color-mix(in srgb, var(--paper) 80%, var(--ink) 8%);
+  }
+  :global(:root[data-scheme="light"][data-palette="D"]) {
+    --paper: #f7f0e8;
+    --sheet: #fffaf4;
+    --well: #ece2d6;
+    --ink: #2b211d;
+    --ink2: #4d4039;
+    --dim: #87786d;
+    --line: #e6dacd;
+    --line2: #d2c3b3;
+    --accent: #a87a22;
+    --accent-ink: #8a6219;
+    --accent-soft: #f3e6c9;
+    --on-accent: #fffaf4;
+    --bubble: color-mix(in srgb, var(--paper) 80%, var(--ink) 8%);
   }
   :global(html, body) {
     margin: 0;
@@ -2830,6 +3134,21 @@
   }
   .card-head {
     font-weight: 600;
+  }
+  .card-note {
+    margin: -4px 0 0;
+    font-size: 14px;
+    color: var(--ink2);
+  }
+  .reply-line {
+    margin-top: 2px;
+    font-family: var(--mono);
+    font-size: 11px;
+  }
+  .menu small.why {
+    display: block;
+    font-size: 12px;
+    color: var(--dim);
   }
   .args {
     display: flex;

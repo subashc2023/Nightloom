@@ -9,6 +9,8 @@
     held?: string | null;
     problem?: string | null;
     note?: string | null;
+    /** The "Speak it" button beside the note (wave 3 B2). */
+    speakIt?: boolean;
   }
 
   export const SILENCE_KEY = "nightloom.remote.voice.silence";
@@ -50,6 +52,7 @@
     preview = null,
     onclose,
     onkeep,
+    reply = undefined,
   }: {
     token: string;
     chat: string | null;
@@ -61,6 +64,9 @@
     onclose: (keyboard: boolean) => void;
     /** His words the host could not send: into the composer, not lost. */
     onkeep?: (text: string) => void;
+    /** The chat's last reply as speakable text, read fresh from the host
+     *  (`speakText`); null while there is none or the turn still runs. */
+    reply?: () => Promise<string | null>;
   } = $props();
 
   // Shown.
@@ -75,6 +81,9 @@
   let muted = $state(false);
   let silence = $state(loadSilence());
   let leaving = $state(false);
+  /** The reply that finished while the page was away, offered as
+   *  "Speak it" (design §2.6). */
+  let speakable = $state<string | null>(null);
 
   // The machinery (not drawn).
   let socket: VoiceSocket | null = null;
@@ -105,6 +114,7 @@
     held = shown0.held ?? null;
     problem = shown0.problem ?? null;
     note = shown0.note ?? null;
+    speakable = shown0.speakIt ? "preview" : null;
     muted = shown0.state === "muted";
   }
 
@@ -173,6 +183,7 @@
     if (ev?.kind === "start") {
       partial = "";
       note = null;
+      speakable = null;
       if (player?.busy) {
         // Barge-in: he spoke over the reply — stop it at once.
         player.hush();
@@ -326,10 +337,36 @@
       uplink.reset();
     } else if (!socket) {
       leaving = false;
+      // A reply was coming when the page went: it landed in the chat
+      // while away (or is still running). The new socket has none.
+      const missed = !replyOver;
+      replyOver = true;
       note = "Back — the reply is in the chat";
       connect();
       void wake();
+      if (missed) void offerReply();
     }
+  }
+
+  /** Read the chat again; when its reply is whole, offer to speak it. */
+  async function offerReply() {
+    if (!reply) return;
+    try {
+      const text = await reply();
+      if (text && !leaving && note) speakable = text;
+    } catch {
+      // The chat could not be read: the note alone says where the reply is.
+    }
+  }
+
+  /** "Speak it": the host reads the reply aloud through the same voice. */
+  function speakIt() {
+    if (preview || !speakable || !socket?.open) return;
+    socket.speak(speakable);
+    speakable = null;
+    note = null;
+    replyOver = false;
+    if (orb !== "error") orb = "thinking";
   }
 
   async function wake() {
@@ -422,7 +459,10 @@
     {#if problem}
       <p class="problem">{problem}</p>
     {:else if note}
-      <p class="note">{note}</p>
+      <p class="note">
+        {note}
+        {#if speakable}<button class="speak-it" onclick={speakIt}>Speak it</button>{/if}
+      </p>
     {/if}
   </div>
 
@@ -532,6 +572,18 @@
   .note {
     font-size: 15px;
     color: #8193b5;
+  }
+  .speak-it {
+    margin-left: 8px;
+    min-height: 36px;
+    padding: 0 16px;
+    border-radius: 18px;
+    border: 1px solid #3b82f6;
+    background: color-mix(in srgb, #3b82f6 18%, transparent);
+    color: #cfe0ff;
+    font: inherit;
+    font-size: 15px;
+    vertical-align: middle;
   }
   .problem {
     font-size: 15px;

@@ -21,6 +21,14 @@
 //!   (the text keeps streaming on screen).
 //! - `{"t":"unqueue"}` — drop the message held behind the running turn.
 //! - `{"t":"chat","chat":…}` — speak into another chat from now on.
+//! - `{"t":"speak","text":…}` — "Speak it" (wave 3 B2, design §2.6): read
+//!   this text aloud through the same voice, as reply audio — `audio`
+//!   frames from sequence 0, then `reply_end`. The page sends the last
+//!   reply's prose when it comes back from the background after the reply
+//!   finished; nothing is sent to the chat. Refused with an `error` while
+//!   a spoken turn's reply is still coming (that reply is spoken as it
+//!   arrives); `hush` stops it as it stops a reply. Over
+//!   [`MAX_SPEAK_CHARS`] the rest is cut at a character boundary.
 //!
 //! From the host:
 //! - `{"t":"ready","chat","sample_rate","mic_rate"}` after the hello.
@@ -127,6 +135,21 @@ impl Deps {
 
 fn frame(v: Value) -> Outbound {
     Outbound::Text(v.to_string())
+}
+
+/// The longest text a `speak` frame reads aloud (~5 minutes of speech):
+/// a reply longer than that is better read on screen.
+pub const MAX_SPEAK_CHARS: usize = 6000;
+
+/// The sentences a `speak` frame's text becomes — the reply splitter's,
+/// so a code block is "I've put the code on screen." here too.
+fn speak_lines(text: &str) -> Vec<String> {
+    let cut: String = text.chars().take(MAX_SPEAK_CHARS).collect();
+    let mut s = Splitter::new();
+    let mut out = s.push(&cut);
+    out.extend(s.push("\n"));
+    out.extend(s.finish());
+    out
 }
 
 /// A transcription's result, back from its task.
@@ -264,8 +287,29 @@ pub async fn run(deps: Deps, mut inbound: mpsc::Receiver<Inbound>, out: mpsc::Se
                             "hush" => {
                                 if replying {
                                     hushed = true;
-                                    current_reply.fetch_add(1, Ordering::SeqCst);
                                 }
+                                // A reply, or a `speak` being read: either
+                                // stops (a later reply takes a new number).
+                                current_reply.fetch_add(1, Ordering::SeqCst);
+                            }
+                            "speak" => {
+                                let text = v["text"].as_str().unwrap_or("").trim();
+                                if replying {
+                                    let _ = out.send(frame(json!({"t": "error", "text": "a reply is still coming — it is spoken as it arrives"}))).await;
+                                    continue;
+                                }
+                                let lines = speak_lines(text);
+                                if lines.is_empty() {
+                                    let _ = out.send(frame(json!({"t": "error", "text": "nothing to speak in that reply"}))).await;
+                                    continue;
+                                }
+                                // Its own number: a hush, or another speak,
+                                // drops what is left of this one.
+                                let reply = current_reply.fetch_add(1, Ordering::SeqCst) + 1;
+                                for (n, sentence) in lines.into_iter().enumerate() {
+                                    let _ = say_tx.send(Line { reply, seq: n as u64, sentence, ended: None, first_text: None });
+                                }
+                                let _ = say_tx.send(Line { reply: u64::MAX, seq: 0, sentence: String::new(), ended: None, first_text: None });
                             }
                             "unqueue" => {
                                 held = None;
@@ -824,6 +868,94 @@ mod tests {
         });
         r.delta("Mine. ");
         assert_eq!(r.until("audio").await["sentence"], "Mine.");
+    }
+
+    /// Text frames until `reply_end`, the audio headers' sentences in
+    /// order, each checked against the WAV after it (the stub speaks a
+    /// sentence as its own bytes).
+    async fn spoken_until_end(r: &mut Rig) -> Vec<(u64, String)> {
+        let mut said = Vec::new();
+        loop {
+            let f = tokio::time::timeout(Duration::from_secs(3), r.from_host.recv())
+                .await
+                .expect("no reply_end")
+                .expect("socket closed");
+            let Outbound::Text(t) = f else { continue };
+            let v: Value = serde_json::from_str(&t).unwrap();
+            match v["t"].as_str().unwrap() {
+                "audio" => {
+                    let s = v["sentence"].as_str().unwrap().to_string();
+                    assert_eq!(
+                        r.from_host.recv().await,
+                        Some(Outbound::Binary(s.as_bytes().to_vec()))
+                    );
+                    said.push((v["seq"].as_u64().unwrap(), s));
+                }
+                "reply_end" => return said,
+                other => panic!("unexpected frame {other}: {v}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn speak_reads_a_given_text_aloud_as_reply_audio_and_sends_nothing() {
+        let mut r = rig();
+        r.hello().await;
+        r.say(json!({"t": "speak", "text": "The fix is in. Set the width:\n```css\n.a { min-width: 0 }\n```\nThat is all."})).await;
+        let said = spoken_until_end(&mut r).await;
+        assert_eq!(
+            said,
+            vec![
+                (0, "The fix is in.".to_string()),
+                (1, "Set the width:".to_string()),
+                (2, crate::voice::split::CODE_ON_SCREEN.to_string()),
+                (3, "That is all.".to_string()),
+            ]
+        );
+        assert!(
+            r.turns.sent.lock().unwrap().is_empty(),
+            "a speak is never a message"
+        );
+        // Again: a second speak starts from sequence 0 too.
+        r.say(json!({"t": "speak", "text": "Once more."})).await;
+        assert_eq!(
+            spoken_until_end(&mut r).await,
+            vec![(0, "Once more.".to_string())]
+        );
+    }
+
+    #[tokio::test]
+    async fn speak_is_refused_while_a_reply_is_coming_and_when_empty() {
+        let mut r = rig();
+        r.hello().await;
+        r.say(json!({"t": "speak", "text": "   "})).await;
+        assert!(
+            r.until("error").await["text"]
+                .as_str()
+                .unwrap()
+                .contains("nothing to speak")
+        );
+        r.speech(1, 800).await;
+        r.say(json!({"t": "end"})).await;
+        r.until("sent").await;
+        r.say(json!({"t": "speak", "text": "Not now."})).await;
+        assert!(
+            r.until("error").await["text"]
+                .as_str()
+                .unwrap()
+                .contains("still coming")
+        );
+        // The turn's own reply is still spoken.
+        r.delta("Mine. ");
+        assert_eq!(r.until("audio").await["sentence"], "Mine.");
+    }
+
+    #[test]
+    fn a_long_speak_is_cut_at_a_character_boundary() {
+        let long = "é".repeat(MAX_SPEAK_CHARS + 50) + ".";
+        let lines = speak_lines(&long);
+        let total: usize = lines.iter().map(|l| l.chars().count()).sum();
+        assert!(total <= MAX_SPEAK_CHARS, "{total}");
     }
 
     #[tokio::test]

@@ -147,6 +147,11 @@ export class VoiceSocket {
   chat(chat: string | null): void {
     this.say({ t: "chat", chat });
   }
+  /** "Speak it" (wave 3 B2): the host reads `text` aloud as reply audio
+   *  (`audio` frames, then `reply_end`) — nothing goes to the chat. */
+  speak(text: string): void {
+    this.say({ t: "speak", text });
+  }
 
   close(): void {
     this.closing = true;
