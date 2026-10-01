@@ -381,12 +381,20 @@ pub trait Host: Send + Sync + 'static {
     }
 }
 
+/// The shortest bearer [`Server::start_public`] accepts (a 32-byte random
+/// token is 64 hex characters; this refuses a typo'd or test value).
+pub const PUBLIC_TOKEN_MIN: usize = 32;
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(
         "{0} is not a tailnet address; the phone page binds only to the Mac's Tailscale address"
     )]
     NotTailnet(IpAddr),
+    #[error(
+        "a public listener needs a token of at least {PUBLIC_TOKEN_MIN} characters; this one has {0}"
+    )]
+    WeakToken(usize),
     #[error("could not listen on {addr}: {source}")]
     Bind {
         addr: SocketAddr,
@@ -449,9 +457,28 @@ impl Server {
         Self::start_at(addr, token, host, tls).await
     }
 
-    /// The crate's own tests bind loopback; nothing else may. The check
-    /// lives in [`Server::start`] and this stays `cfg(test)` so no caller
-    /// can reach a binding the rule refuses.
+    /// Bind `ip:port` on any address, plain HTTP: the away server on Fly
+    /// (item 268 step 2, blocker 673), where Fly's proxy terminates TLS and
+    /// the internet reaches the port. The bearer layer is unchanged — every
+    /// `/api` route and the voice socket need the token; the page and its
+    /// files do not, as on the tailnet — and the token must be long enough
+    /// to face the internet ([`PUBLIC_TOKEN_MIN`]). Only `nightloom serve`
+    /// with `NIGHTLOOM_SERVE_PUBLIC=1` calls this.
+    pub async fn start_public(
+        ip: IpAddr,
+        port: u16,
+        token: String,
+        host: Arc<dyn Host>,
+    ) -> Result<Self, Error> {
+        if token.len() < PUBLIC_TOKEN_MIN {
+            return Err(Error::WeakToken(token.len()));
+        }
+        Self::start_at(SocketAddr::new(ip, port), token, host, None).await
+    }
+
+    /// The crate's own tests bind loopback without a long token. The checks
+    /// live in [`Server::start`] and [`Server::start_public`], and this
+    /// stays `cfg(test)` so no caller can reach a binding they refuse.
     #[cfg(test)]
     pub(crate) async fn start_for_test(
         addr: SocketAddr,
@@ -1580,6 +1607,34 @@ mod tests {
                 .expect(ip);
             assert!(matches!(err, Error::NotTailnet(_)), "{ip}: {err}");
         }
+    }
+
+    #[tokio::test]
+    async fn a_public_listener_needs_a_long_token_and_still_guards_the_api() {
+        let (host, _) = FakeHost::new();
+        let lo: IpAddr = "127.0.0.1".parse().unwrap();
+        let err = Server::start_public(lo, 0, "short".into(), host.clone())
+            .await
+            .err()
+            .expect("a short token is refused");
+        assert!(matches!(err, Error::WeakToken(5)), "{err}");
+        let token = "a".repeat(PUBLIC_TOKEN_MIN);
+        let server = Server::start_public(lo, 0, token.clone(), host)
+            .await
+            .unwrap();
+        assert!(!server.https());
+        let base = format!("http://{}", server.addr());
+        let c = client();
+        let r = c.get(format!("{base}/api/state")).send().await.unwrap();
+        assert_eq!(r.status(), 401);
+        let r = c
+            .get(format!("{base}/api/state"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        server.stop().await;
     }
 
     #[tokio::test]

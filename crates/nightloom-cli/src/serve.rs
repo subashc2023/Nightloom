@@ -1,7 +1,8 @@
 //! `nightloom serve`: the phone page and Claude Code turns with the desktop
 //! app closed (nightshift item 268, step 1; `nightloom_service::serve`).
 //!
-//! Binds the Mac's tailnet address only (the listener's own rule), takes
+//! Binds the Mac's tailnet address only (the listener's own rule) unless
+//! `NIGHTLOOM_SERVE_PUBLIC=1` (the Fly image, `deploy/`), takes
 //! the Nightloom home's holder lock, and runs until Ctrl-C. Never reads the
 //! keychain: the phone's token comes from `NIGHTLOOM_REMOTE_TOKEN` or a file
 //! (`<config>/remote/serve-token`, made on first run, mode 0600).
@@ -20,7 +21,8 @@ pub struct ServeArgs {
     /// desktop runs on a different home).
     #[arg(long, default_value_t = remote::DEFAULT_PORT)]
     port: u16,
-    /// The tailnet address to bind; found from Tailscale when absent.
+    /// The tailnet address to bind; found from Tailscale when absent. Any
+    /// address with `NIGHTLOOM_SERVE_PUBLIC=1` (behind a TLS proxy).
     #[arg(long)]
     ip: Option<std::net::IpAddr>,
     /// The Claude Code binary.
@@ -61,10 +63,16 @@ pub async fn run(args: ServeArgs) -> Result<()> {
     cfg.model = args.model.filter(|m| !m.trim().is_empty());
     cfg.hook_exe = std::env::current_exe().ok();
     cfg.assets = args.assets;
-    let host = ServeHost::new(cfg, Registry::load());
-    let server = Server::start(ip, args.port, token.clone(), host as Arc<dyn remote::Host>)
-        .await
-        .map_err(|e| anyhow!(e))?;
+    let host = ServeHost::new(cfg, Registry::load()) as Arc<dyn remote::Host>;
+    // The away server on Fly (item 268 step 2, blocker 673): any address,
+    // behind Fly's TLS, only when asked for by name; the tailnet rule
+    // otherwise.
+    let server = if public() {
+        Server::start_public(ip, args.port, token.clone(), host).await
+    } else {
+        Server::start(ip, args.port, token.clone(), host).await
+    }
+    .map_err(|e| anyhow!(e))?;
     let scheme = if server.https() { "https" } else { "http" };
     println!(
         "nightloom serve: {scheme}://{} (home {}, lock {})",
@@ -87,6 +95,12 @@ pub async fn run(args: ServeArgs) -> Result<()> {
     server.stop().await;
     drop(lock);
     Ok(())
+}
+
+/// `NIGHTLOOM_SERVE_PUBLIC=1`: bind `--ip` even when it is not a tailnet
+/// address (the Fly image sets it with `--ip 0.0.0.0`).
+fn public() -> bool {
+    std::env::var("NIGHTLOOM_SERVE_PUBLIC").is_ok_and(|v| v.trim() == "1")
 }
 
 /// The bearer: `NIGHTLOOM_REMOTE_TOKEN`, else the file, made on first run.
