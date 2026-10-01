@@ -1686,7 +1686,13 @@ esac
                 "images",
                 "documents",
                 "council",
-                "spoken"
+                "spoken",
+                "rail",
+                "running",
+                "usage",
+                "search",
+                "projects",
+                "notes"
             ])
         );
 
