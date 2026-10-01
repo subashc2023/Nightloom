@@ -30,7 +30,7 @@
 //! another runs. `busy` is whether the session lock is held (a turn holds it
 //! for its length), read with `try_lock` so the phone never waits on a turn.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -139,6 +139,12 @@ const NIGHTSHIFT_FRESH: Duration = Duration::from_secs(5);
 /// starting, so its answer is coming (a chat open, a send).
 const CLAIMED_GRACE: Duration = Duration::from_secs(20);
 
+/// A claimed call with no answer after [`CLAIMED_GRACE`]: it started on
+/// the Mac, so the phone is told so — never "did not answer", which
+/// invites a second press (review B1 finding 2).
+const STARTED_LATE: &str =
+    "started on the Mac; its answer is late — look at the chat before doing it again";
+
 /// The voice programs (two whisper servers and Piper, ~700 MB between
 /// them) stop after this long unused; the next socket starts them again.
 const VOICE_IDLE: Duration = Duration::from_secs(600);
@@ -228,32 +234,15 @@ impl DesktopHost {
     /// wait has run out, and the window then starts nothing (the phone was
     /// told it failed and will send again).
     fn claim(&self, id: u64) -> bool {
-        let pending = self
-            .replies
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .contains_key(&id)
-            || self
-                .calls
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .contains_key(&id);
-        if pending {
-            self.claimed
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .insert(id);
-        }
-        pending
+        claim_in(&self.replies, &self.claimed, id) || claim_in(&self.calls, &self.claimed, id)
     }
 
-    /// Whether call `id`'s wait may run on past its deadline: the window
-    /// claimed it. Forgets the claim either way.
-    fn was_claimed(&self, id: u64) -> bool {
+    /// Forget any claim on `id` (its wait is over).
+    fn forget_claim(&self, id: u64) {
         self.claimed
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .remove(&id)
+            .remove(&id);
     }
 
     /// The window's answer to any other call (from `remote_done`).
@@ -269,23 +258,74 @@ impl DesktopHost {
     }
 }
 
+/// The window claims call `id` (backlog 132 (d)): yes, and recorded,
+/// only while `id` is still in `pending` — checked and recorded under
+/// `pending`'s lock, the same lock [`give_up_unless_claimed`] removes it
+/// under, so a claim lands wholly before the phone is let go (its wait
+/// runs on) or wholly after (refused; the window starts nothing).
+/// Lock order: the pending map, then `claimed`.
+fn claim_in<V>(pending: &Mutex<HashMap<u64, V>>, claimed: &Mutex<HashSet<u64>>, id: u64) -> bool {
+    let pending = pending.lock().unwrap_or_else(|p| p.into_inner());
+    if !pending.contains_key(&id) {
+        return false;
+    }
+    claimed.lock().unwrap_or_else(|p| p.into_inner()).insert(id);
+    true
+}
+
+/// At call `id`'s deadline: `true` when the window claimed it (the wait
+/// runs on; the claim is forgotten), else the call is removed from
+/// `pending` — one step under `pending`'s lock (see [`claim_in`]).
+fn give_up_unless_claimed<V>(
+    pending: &Mutex<HashMap<u64, V>>,
+    claimed: &Mutex<HashSet<u64>>,
+    id: u64,
+) -> bool {
+    let mut pending = pending.lock().unwrap_or_else(|p| p.into_inner());
+    let was = claimed
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .remove(&id);
+    if !was {
+        pending.remove(&id);
+    }
+    was
+}
+
+/// How a wait for the window ended.
+#[derive(Debug)]
+enum Waited<T> {
+    /// The window answered (or dropped the call).
+    Answer(Result<T, tokio::sync::oneshot::error::RecvError>),
+    /// No answer by the deadline and no claim: given up, and a later
+    /// claim is refused, so nothing starts.
+    Abandoned,
+    /// Claimed — the window was starting it — but still no answer after
+    /// the grace. It started: never "did not answer" (132 (d), review B1
+    /// finding 2), so the phone does not send it again.
+    Late,
+}
+
 /// Wait `wait` for the window's answer on `rx`; past it, wait `grace`
-/// more only if the window claimed the call (`claimed()`: it was starting
-/// the turn — backlog 132 (d)). `None`: no answer, and the call is
-/// abandoned (the caller forgets its id, so a late claim is refused).
+/// more only if `keep()` says the window claimed the call (it was
+/// starting the turn — backlog 132 (d)); `keep()` gives the call up
+/// otherwise.
 async fn await_answer<T>(
     mut rx: tokio::sync::oneshot::Receiver<T>,
     wait: Duration,
     grace: Duration,
-    claimed: impl FnOnce() -> bool,
-) -> Option<Result<T, tokio::sync::oneshot::error::RecvError>> {
+    keep: impl FnOnce() -> bool,
+) -> Waited<T> {
     if let Ok(got) = tokio::time::timeout(wait, &mut rx).await {
-        return Some(got);
+        return Waited::Answer(got);
     }
-    if !claimed() {
-        return None;
+    if !keep() {
+        return Waited::Abandoned;
     }
-    tokio::time::timeout(grace, rx).await.ok()
+    match tokio::time::timeout(grace, rx).await {
+        Ok(got) => Waited::Answer(got),
+        Err(_) => Waited::Late,
+    }
 }
 
 fn lowercase<T: Serialize>(v: T) -> String {
@@ -332,18 +372,27 @@ impl DesktopHost {
                 "the desktop window could not take the message: {e}"
             ));
         }
-        let outcome = await_answer(rx, wait, CLAIMED_GRACE, || self.was_claimed(id)).await;
-        self.was_claimed(id);
+        let outcome = await_answer(rx, wait, CLAIMED_GRACE, || {
+            give_up_unless_claimed(&self.replies, &self.claimed, id)
+        })
+        .await;
+        self.forget_claim(id);
         match outcome {
-            Some(Ok(outcome)) => outcome,
-            Some(Err(_)) => Err("the desktop window dropped the message".into()),
-            None => {
-                // Abandoned: a claim after this is refused (132 (d)).
+            Waited::Answer(Ok(outcome)) => outcome,
+            Waited::Answer(Err(_)) => Err("the desktop window dropped the message".into()),
+            // Removed under the map's lock: a claim after this is refused.
+            Waited::Abandoned => {
+                Err("the desktop window did not answer — is Nightloom's window open?".into())
+            }
+            // The window claimed it — the turn is starting on the Mac. Said
+            // as sent, so the phone neither keeps the text to send again
+            // nor sends a held copy: its events arrive on the stream.
+            Waited::Late => {
                 self.replies
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
                     .remove(&id);
-                Err("the desktop window did not answer — is Nightloom's window open?".into())
+                Ok(Handed::Sent)
             }
         }
     }
@@ -368,20 +417,23 @@ impl DesktopHost {
             self.finish(id, Err(String::new()));
             return Err(format!("the desktop window could not take it: {e}"));
         }
-        let outcome = await_answer(rx, wait, CLAIMED_GRACE, || self.was_claimed(id)).await;
-        self.was_claimed(id);
+        let outcome = await_answer(rx, wait, CLAIMED_GRACE, || {
+            give_up_unless_claimed(&self.calls, &self.claimed, id)
+        })
+        .await;
+        self.forget_claim(id);
         match outcome {
-            Some(Ok(outcome)) => outcome,
-            Some(Err(_)) => Err("the desktop window dropped it".into()),
-            None => {
+            Waited::Answer(Ok(outcome)) => outcome,
+            Waited::Answer(Err(_)) => Err("the desktop window dropped it".into()),
+            Waited::Abandoned => Err(
+                "the desktop window did not answer in time — is Nightloom's window open?".into(),
+            ),
+            Waited::Late => {
                 self.calls
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
                     .remove(&id);
-                Err(
-                    "the desktop window did not answer in time — is Nightloom's window open?"
-                        .into(),
-                )
+                Err(STARTED_LATE.into())
             }
         }
     }
@@ -1844,7 +1896,7 @@ mod tests {
             || panic!("no claim asked for an answer in time"),
         )
         .await;
-        assert!(matches!(got, Some(Ok(1))));
+        assert!(matches!(got, Waited::Answer(Ok(1))));
         // Not claimed by the deadline: abandoned, even if the answer
         // would have come later.
         let (tx, rx) = tokio::sync::oneshot::channel::<u8>();
@@ -1859,7 +1911,7 @@ mod tests {
             || false,
         )
         .await;
-        assert!(got.is_none());
+        assert!(matches!(got, Waited::Abandoned));
         late.await.unwrap();
         // Claimed: the turn started, so the wait runs on to its answer.
         let (tx, rx) = tokio::sync::oneshot::channel::<u8>();
@@ -1874,7 +1926,60 @@ mod tests {
             || true,
         )
         .await;
-        assert!(matches!(got, Some(Ok(3))));
+        assert!(matches!(got, Waited::Answer(Ok(3))));
+        // Claimed and still silent after the grace: late, never "did not
+        // answer" (review B1 finding 2).
+        let (_tx, rx) = tokio::sync::oneshot::channel::<u8>();
+        let got = await_answer(
+            rx,
+            Duration::from_millis(20),
+            Duration::from_millis(50),
+            || true,
+        )
+        .await;
+        assert!(matches!(got, Waited::Late));
+    }
+
+    /// Review B1 finding 1: a claim and the deadline's give-up are one step
+    /// each under the pending map's lock, so they never both win.
+    #[test]
+    fn a_claim_and_a_give_up_never_both_win() {
+        // The claim first: the give-up keeps the call, and forgets the claim.
+        let pending: Mutex<HashMap<u64, ()>> = Mutex::new(HashMap::from([(7, ())]));
+        let claimed = Mutex::new(HashSet::new());
+        assert!(claim_in(&pending, &claimed, 7));
+        assert!(give_up_unless_claimed(&pending, &claimed, 7));
+        assert!(
+            pending.lock().unwrap().contains_key(&7),
+            "kept for its answer"
+        );
+        assert!(claimed.lock().unwrap().is_empty(), "no claim left behind");
+        // The give-up first: the call is gone and a late claim is refused,
+        // and records nothing.
+        let pending: Mutex<HashMap<u64, ()>> = Mutex::new(HashMap::from([(8, ())]));
+        let claimed = Mutex::new(HashSet::new());
+        assert!(!give_up_unless_claimed(&pending, &claimed, 8));
+        assert!(!pending.lock().unwrap().contains_key(&8));
+        assert!(!claim_in(&pending, &claimed, 8));
+        assert!(claimed.lock().unwrap().is_empty());
+        // Raced from many threads: every outcome is one of the two orders —
+        // the claim won and the call is kept, or it lost and the call is
+        // gone — never a claim granted on a call that was given up.
+        for _ in 0..500 {
+            let pending: std::sync::Arc<Mutex<HashMap<u64, ()>>> =
+                std::sync::Arc::new(Mutex::new(HashMap::from([(9, ())])));
+            let claimed = std::sync::Arc::new(Mutex::new(HashSet::new()));
+            let (p, c) = (pending.clone(), claimed.clone());
+            let window = std::thread::spawn(move || claim_in(&p, &c, 9));
+            let kept = give_up_unless_claimed(&pending, &claimed, 9);
+            let granted = window.join().unwrap();
+            let still = pending.lock().unwrap().contains_key(&9);
+            assert!(
+                !(granted && !kept),
+                "a claim was granted on a call already given up"
+            );
+            assert_eq!(kept, still, "kept exactly when the claim came first");
+        }
     }
 
     #[test]
