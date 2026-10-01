@@ -1,7 +1,11 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   activateTab,
   app,
+  applyTurnEvent,
+  loadPaneLog,
+  paneChat,
+  send,
   asideInTab,
   closeNote,
   closeTab,
@@ -442,5 +446,147 @@ describe("openContent and dropContent", () => {
     expect(vi.mocked(api.peekSession).mock.calls.length).toBe(peeks);
     app.busy = false;
     app.live = null;
+  });
+});
+
+/**
+ * Both panes live (nightshift backlog 159, piece 5, 2026-09-30): with two
+ * panes, each pane's chat shows its own live stream when its turn runs,
+ * wherever that stream is kept; focus decides only where the composer
+ * types. Two Claude Code turns are started through `send` (the agent call
+ * stubbed to run until the test ends it) and their events are stubbed.
+ */
+describe("both panes live (backlog 159, piece 5)", () => {
+  const texts = (id: string): string =>
+    (paneChat(id)?.live?.segments ?? [])
+      .map((s) => ((s as { kind: string; text?: string }).kind === "text" ? (s as { text: string }).text : ""))
+      .join("");
+  const delta = (text: string, chat: string) => ({ type: "text_delta", text, chat }) as Parameters<typeof applyTurnEvent>[0];
+  /** The chat each pane shows, left to right. */
+  const paneChats = () =>
+    app.tabs.panes.map((p) => {
+      const c = tabs.activeTab(p).content;
+      return c.kind === "chat" ? c.session : null;
+    });
+
+  let was: typeof app.connection;
+  let ends: Array<(why: string) => void>;
+  beforeEach(() => {
+    was = app.connection;
+    app.connection = { engine: "claude-code" } as typeof app.connection;
+    app.parked = null;
+    app.background = {};
+    app.paneLogs = {};
+    app.pendingApprovals = [];
+    app.live = null;
+    ends = [];
+    vi.spyOn(api, "sendAgent").mockImplementation(
+      () => new Promise((_, reject) => ends.push((why) => reject(why))),
+    );
+  });
+  afterEach(() => {
+    for (const end of ends) end("test over");
+    vi.mocked(api.sendAgent).mockRestore();
+    app.connection = was;
+    app.busy = false;
+    app.background = {};
+  });
+
+  /** Chat a in the left pane, chat b in the right one, b focused. */
+  async function twoPanes(): Promise<void> {
+    await openSession("a");
+    reflectTabs();
+    app.openNext = "new";
+    await openSession("b");
+    reflectTabs();
+    await splitTab(app.tabs.panes[0].tabs[1].id, "right");
+    expect(paneChats()).toEqual(["a", "b"]);
+    expect(app.activeSessionId).toBe("b");
+  }
+
+  it("draws two chats streaming at once, each in its own pane", async () => {
+    await twoPanes();
+    // The left pane shows a, not the open chat: its log, read for the pane.
+    expect(paneChat("a")?.where).toBe("idle");
+    // A turn in a: a click in the left pane opens it there.
+    focusPane(app.tabs.panes[0].id);
+    await vi.waitFor(() => expect(app.activeSessionId).toBe("a"));
+    void send("count in a");
+    await vi.waitFor(() => expect(ends).toHaveLength(1));
+    expect(app.busy).toBe(true);
+    // Back to the right pane: a's turn goes off screen and keeps running;
+    // b's turn starts on screen.
+    focusPane(app.tabs.panes[1].id);
+    await vi.waitFor(() => expect(app.activeSessionId).toBe("b"));
+    expect(app.background.a).toBeDefined();
+    void send("count in b");
+    await vi.waitFor(() => expect(ends).toHaveLength(2));
+    // Interleaved events, each named by its chat.
+    applyTurnEvent(delta("one ", "a"));
+    applyTurnEvent(delta("uno ", "b"));
+    applyTurnEvent(delta("two", "a"));
+    applyTurnEvent(delta("dos", "b"));
+    const [left, right] = paneChats();
+    expect(texts(left as string)).toBe("one two");
+    expect(texts(right as string)).toBe("uno dos");
+    expect(paneChat("a")).toMatchObject({ where: "background", running: true });
+    expect(paneChat("b")).toMatchObject({ where: "screen", running: true });
+    // The tabs keep their places: focus moved, nothing else did.
+    expect(paneChats()).toEqual(["a", "b"]);
+  });
+
+  it("sends a pane's running chat off screen when the pane switches to a third chat, as today", async () => {
+    await twoPanes();
+    void send("count in b");
+    await vi.waitFor(() => expect(ends).toHaveLength(1));
+    applyTurnEvent(delta("uno ", "b"));
+    // The right pane opens c mid-turn: b's turn goes to the background.
+    await openSession("c");
+    reflectTabs();
+    expect(paneChats()).toEqual(["a", "c"]);
+    expect(app.activeSessionId).toBe("c");
+    expect(app.busy).toBe(false);
+    expect(app.background.b).toBeDefined();
+    // Its stream keeps landing in its own record, not on screen.
+    applyTurnEvent(delta("dos", "b"));
+    expect(texts("b")).toBe("uno dos");
+    expect(app.live).toBeNull();
+    // And back: b comes on screen with the reply where it got to.
+    await openSession("b");
+    reflectTabs();
+    expect(app.busy).toBe(true);
+    expect(texts("b")).toBe("uno dos");
+    expect(paneChat("b")?.where).toBe("screen");
+  });
+
+  it("queues in the focused pane's composer while its chat runs, and sends at once in an idle one", async () => {
+    await twoPanes();
+    void send("count in b");
+    await vi.waitFor(() => expect(ends).toHaveLength(1));
+    // Focused on the running chat: the composer's queue rule (`app.busy`)
+    // holds, and a send does not start a second turn.
+    expect(app.busy).toBe(true);
+    await send("more");
+    expect(api.sendAgent).toHaveBeenCalledTimes(1);
+    // The other pane focused: its chat is idle, so its composer sends at
+    // once (A2), while b keeps running off screen in the right pane.
+    focusPane(app.tabs.panes[0].id);
+    await vi.waitFor(() => expect(app.activeSessionId).toBe("a"));
+    expect(app.busy).toBe(false);
+    expect(paneChat("b")?.running).toBe(true);
+    void send("now in a");
+    await vi.waitFor(() => expect(api.sendAgent).toHaveBeenCalledTimes(2));
+  });
+
+  it("reads an idle pane's log once, and keeps what it drew when the re-read is empty", async () => {
+    vi.mocked(api.transcript).mockResolvedValueOnce([{ event: "user_message", at: "2026-01-01T00:00:00Z", text: "from disk" }]);
+    await twoPanes();
+    app.paneLogs = {};
+    expect(paneChat("a")).toBeNull();
+    await loadPaneLog("a");
+    expect(paneChat("a")?.events.map((e) => (e as { text?: string }).text)).toEqual(["from disk"]);
+    // An ephemeral chat let go reads back empty: the pane keeps its log.
+    await loadPaneLog("a");
+    expect(paneChat("a")?.events).toHaveLength(1);
   });
 });

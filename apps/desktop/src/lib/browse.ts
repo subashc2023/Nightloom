@@ -183,3 +183,128 @@ export function backgroundEndToast(name: string, failed: string | null): string 
 export function backgroundAskToast(name: string): string {
   return `${name} is waiting on you`;
 }
+
+/*
+ * Both panes live (nightshift backlog 159, piece 5, 2026-09-30).
+ *
+ * With two panes, each pane's chat shows its own live state when its turn
+ * runs — not only the focused pane's. Nothing new is streamed: A2's
+ * per-chat agents already land each chat's events in its own record
+ * (`eventHost`). What changes is the drawing: a pane draws the live state
+ * of the chat it shows, wherever that state lives — the screen's globals
+ * for the open chat, `app.parked` for a parked one, `app.background[id]`
+ * for one running off screen, and a log read from disk (`paneLogs`) for an
+ * idle chat that is not the open one. Focus decides only where the
+ * composer types: a click in the other pane opens its chat there, and
+ * whatever ran on screen goes to the background as it always has.
+ */
+
+/** What a pane draws of one chat. `where` says which state it came from. */
+export interface PaneChat<Segment = unknown, Approval = unknown> {
+  events: SessionEvent[];
+  live: { segments: Segment[] } | null;
+  liveUsage: Usage | null;
+  /** The prompts it waits on. A pane that is not the open chat names them
+   *  and does not answer them: the click that answers opens the chat. */
+  approvals: Approval[];
+  budget: TurnBudget | null;
+  running: boolean;
+  where: "screen" | "parked" | "background" | "idle";
+}
+
+/**
+ * The live state of chat `id`, for the pane that shows it: its background
+ * record first (a chat running off screen), then the parked turn, then the
+ * open chat's globals, then its log read for the pane. Null when none of
+ * these has it yet — the pane reads its log.
+ */
+export function paneChatOf<Segment, Approval extends { chat?: string | null }>(
+  app: {
+    activeSessionId: string | null;
+    events: SessionEvent[];
+    live: { segments: Segment[] } | null;
+    liveUsage: Usage | null;
+    busy: boolean;
+    parked: Parked<Segment> | null;
+    background: Record<string, Background<Segment, Approval>>;
+    pendingApprovals: Approval[];
+    budgetSession: string | null;
+    turnBudget: TurnBudget | null;
+    paneLogs: Record<string, SessionEvent[]>;
+  },
+  id: string,
+): PaneChat<Segment, Approval> | null {
+  const b = app.background[id];
+  if (b) {
+    return {
+      events: b.events,
+      live: b.live,
+      liveUsage: b.liveUsage,
+      approvals: b.approvals,
+      budget: b.budget ?? null,
+      running: true,
+      where: "background",
+    };
+  }
+  const budget = app.budgetSession === id ? app.turnBudget : null;
+  const p = app.parked;
+  if (p && p.session === id) {
+    return {
+      events: p.events,
+      live: p.live,
+      liveUsage: p.liveUsage,
+      // While a turn is parked the chat on screen runs nothing: the
+      // screen's prompts are the parked turn's.
+      approvals: app.pendingApprovals.filter((r) => !r.chat || r.chat === id),
+      budget,
+      running: true,
+      where: "parked",
+    };
+  }
+  if (id === app.activeSessionId) {
+    return {
+      events: app.events,
+      live: app.live,
+      liveUsage: app.liveUsage,
+      approvals: app.pendingApprovals,
+      budget,
+      running: app.busy && !p,
+      where: "screen",
+    };
+  }
+  const log = app.paneLogs[id];
+  if (log) {
+    return { events: log, live: null, liveUsage: null, approvals: [], budget: null, running: false, where: "idle" };
+  }
+  return null;
+}
+
+/** The pane logs worth keeping: those of the chats a pane shows now. */
+export function keptPaneLogs(logs: Record<string, SessionEvent[]>, shown: Iterable<string>): Record<string, SessionEvent[]> {
+  const keep = new Set(shown);
+  const out: Record<string, SessionEvent[]> = {};
+  for (const [id, events] of Object.entries(logs)) if (keep.has(id)) out[id] = events;
+  return out;
+}
+
+/** The line over a pane whose chat is not the open one: what it is doing,
+ *  and that a click there types into it. */
+export function paneLine(v: {
+  running: boolean;
+  approvals: unknown[];
+  tokens: number | null;
+  /** Its budget meter's chip (`budgetChip`), when its turn has a ledger. */
+  budget?: string | null;
+}): string {
+  const tail = "click to type here";
+  if (v.approvals.length > 0) {
+    const n = v.approvals.length;
+    return `Waiting on you — ${n === 1 ? "a prompt" : `${n} prompts`} · ${tail} to answer`;
+  }
+  if (v.running) {
+    const tokens = v.tokens !== null ? ` · ${v.tokens.toLocaleString("en-US")} tokens` : "";
+    const budget = v.budget ? ` · ${v.budget}` : "";
+    return `Running${tokens}${budget} · ${tail}`;
+  }
+  return `Not the open chat · ${tail}`;
+}

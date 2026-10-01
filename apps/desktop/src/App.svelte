@@ -15,6 +15,7 @@
     init,
     inTextField,
     moveTab,
+    paneChat,
     paneWidth,
     reflectTabs,
     runMenuCommand,
@@ -32,6 +33,8 @@
     SIDEBAR_MIN,
   } from "./lib/state.svelte";
   import * as tabs from "./lib/tabs";
+  import { paneLine } from "./lib/browse";
+  import { budgetChip } from "./lib/budget";
   import { draggedShell, dropLabel } from "./lib/terminal.svelte";
   import "./lib/tabsKeeper.svelte";
   import TabStrip from "./lib/TabStrip.svelte";
@@ -728,10 +731,35 @@
               {#if !blank}
                 <Composer />
               {/if}
+            {:else if t.content.kind === "chat" && t.content.session !== null}
+              <!-- A chat that is not the open one, live (backlog 159,
+                   piece 5): ~~a card until it is brought forward (blocker
+                   182)~~ — its transcript, streaming when its turn runs
+                   off screen, drawn from its own state. Read-only: a
+                   click anywhere in the pane focuses it, which opens the
+                   chat here with the composer under it. Keyed by the
+                   chat, so a tab retargeted to another chat draws fresh. -->
+              {@const session = t.content.session}
+              {@const v = paneChat(session)}
+              <div class="content">
+                {#key session}
+                  <Transcript chat={session} />
+                {/key}
+                {#if focused}<FindBar bind:this={findBar} />{/if}
+              </div>
+              <div class="pane-line" class:waiting={(v?.approvals.length ?? 0) > 0} class:running={!!v?.running} role="status">
+                {paneLine({
+                  running: !!v?.running,
+                  approvals: v?.approvals ?? [],
+                  tokens: v?.liveUsage ? v.liveUsage.input_tokens + v.liveUsage.output_tokens : null,
+                  budget: v?.budget ? budgetChip(v.budget) : null,
+                })}
+              </div>
             {:else}
               <!-- A chat that is not the open one (blocker 182): the
                    backend holds one session, so this tab is a card until
-                   it is brought forward. -->
+                   it is brought forward. Since piece 5 only a New chat
+                   tab that is not the open one is a card. -->
               <div class="content">
                 <div class="tab-card">
                   <div class="tab-card-title">{tabs.tabTitle(t.content, app.sessions)}</div>
@@ -1072,6 +1100,24 @@
   .tab-card-hint {
     margin-top: 10px;
     font-size: 12px;
+  }
+  /* The line under a pane whose chat is not the open one (backlog 159,
+     piece 5), where its composer would be: what it is doing, and that a
+     click there types into it. */
+  .pane-line {
+    flex: none;
+    padding: 8px 16px 10px;
+    border-top: 1px solid var(--line);
+    color: var(--dim);
+    font-size: 12px;
+    text-align: center;
+    cursor: text;
+  }
+  .pane-line.running {
+    color: var(--ink);
+  }
+  .pane-line.waiting {
+    color: var(--accent);
   }
   /* The terminal's dock under a pane (agent M mounts into it). */
   .pane-dock:empty {

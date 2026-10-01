@@ -25,6 +25,8 @@
     runningChatName,
     setAsideRewound,
     keepRewound,
+    loadPaneLog,
+    paneChat,
   } from "./state.svelte";
   import type { Segment, ToolCallView } from "./state.svelte";
   import { checkpointLine, checkpointOwner } from "./checkpoint";
@@ -136,6 +138,34 @@
     originals?: (string | null)[];
   };
 
+  /**
+   * Both panes live (nightshift backlog 159, piece 5, 2026-09-30): given
+   * `chat`, this transcript draws that chat in a pane that is not the open
+   * chat's — its log and its live stream from wherever they are kept
+   * (`paneChat`: off screen, parked, on screen, or its log read for the
+   * pane), read-only. No editor, no rewind, no prompts to answer, no
+   * asides, no window keys: a click in the pane opens the chat there
+   * (`focusPane`), and this gives way to the open chat's transcript.
+   * Without `chat` it is the open chat's, as it always was.
+   */
+  let { chat }: { chat?: string } = $props();
+  const inPane = $derived(chat !== undefined);
+  const paneView = $derived(chat !== undefined ? paneChat(chat) : null);
+  /** The events drawn: the open chat's, or the pane's chat's. */
+  const evs = $derived(chat !== undefined ? (paneView?.events ?? []) : app.events);
+  /** The live turn drawn. */
+  const liveNow = $derived(chat !== undefined ? (paneView?.live ?? null) : app.live);
+  /** The prompts answered here: none in a pane (the click opens the chat). */
+  const approvalsNow = $derived(chat !== undefined ? [] : app.pendingApprovals);
+  /** The per-message controls are off while a turn runs, and in a pane. */
+  const locked = $derived(chat !== undefined || app.busy);
+  /** The chat drawn. */
+  const chatId = $derived(chat !== undefined ? chat : app.activeSessionId);
+  // A pane's chat whose log has not been read yet: read it.
+  $effect(() => {
+    if (chat !== undefined && paneView === null) void loadPaneLog(chat);
+  });
+
   // Project SessionEvents into renderable items. tool_result events are
   // consumed by lookup against tool_use blocks and never rendered standalone.
   const items: Item[] = $derived.by(() => {
@@ -143,7 +173,7 @@
       string,
       { content: string; is_error: boolean; denied: boolean }
     >();
-    for (const e of app.events) {
+    for (const e of evs) {
       if (e.event === "tool_result") {
         const isError = e.is_error ?? false;
         // A refused call is logged as an error result; read the refusal back
@@ -157,11 +187,11 @@
       }
     }
     const out: Item[] = [];
-    const live = liveFlags(app.events);
-    const edited = editTexts(app.events);
-    const removed = elideFlags(app.events);
-    const edits = blockEdits(app.events);
-    const gone = blockElisions(app.events);
+    const live = liveFlags(evs);
+    const edited = editTexts(evs);
+    const removed = elideFlags(evs);
+    const edits = blockEdits(evs);
+    const gone = blockElisions(evs);
     let index = -1;
     const push = (body: Body, original: string | null = null, originals?: (string | null)[]) =>
       out.push({
@@ -170,10 +200,10 @@
         superseded: !live[index],
         original,
         removed: removed[index],
-        editable: isEditable(app.events, index),
+        editable: isEditable(evs, index),
         ...(originals ? { originals } : {}),
       });
-    for (const e of app.events) {
+    for (const e of evs) {
       index++;
       if (e.event === "user_message") {
         // Sessions logged before attachments existed carry neither key.
@@ -320,10 +350,10 @@
    */
   const stranded: ApprovalRequest[] = $derived.by(() => {
     const shown = new Set<string>();
-    for (const seg of app.live?.segments ?? []) {
+    for (const seg of liveNow?.segments ?? []) {
       if (seg.kind === "tool") shown.add(seg.call.id);
     }
-    return app.pendingApprovals.filter((r) => !shown.has(r.id));
+    return approvalsNow.filter((r) => !shown.has(r.id));
   });
 
   // What each turn added to the context (nightshift backlog 090): a
@@ -331,7 +361,7 @@
   // event, null where nothing can be said; the share is against the
   // connected model's window, which the picker rows carry and the top-bar
   // gauge already scales by. Null window: the figure, no bar.
-  const sizes = $derived(turnSizes(app.events, liveFlags(app.events)));
+  const sizes = $derived(turnSizes(evs, liveFlags(evs)));
   const windowLimit = $derived(app.connection?.contextLimit ?? null);
 
   // Runs of replies (nightshift backlog 121): a reply that follows a reply
@@ -359,9 +389,9 @@
   // nothing is live, or when the log has no such message (a turn started
   // some other way); the message then counts from its own mount.
   const liveSince: number | null = $derived.by(() => {
-    if (!app.live) return null;
-    for (let i = app.events.length - 1; i >= 0; i--) {
-      const e = app.events[i];
+    if (!liveNow) return null;
+    for (let i = evs.length - 1; i >= 0; i--) {
+      const e = evs[i];
       if (e.event === "user_message") {
         const t = new Date(e.at).getTime();
         return Number.isNaN(t) ? null : t;
@@ -379,7 +409,7 @@
   // A Wrap up pressed during a turn that no tool call carried goes as the
   // next message when the turn ends (nightshift backlog 192).
   $effect(() => {
-    if (!app.busy && wrapAsk.session) void afterWrapTurn();
+    if (!inPane && !app.busy && wrapAsk.session) void afterWrapTurn();
   });
   $effect(() => {
     const t = setInterval(() => (now = Date.now()), 30_000);
@@ -500,11 +530,11 @@
     const text = item.kind === "user" ? item.text : item.kind === "assistant" ? textOf(item.segs) : "";
     const parts =
       item.kind === "assistant"
-        ? editParts(app.events, item.index, (b) => `${b.name} ${toolInputSummary(b.input)}`.trim())
+        ? editParts(evs, item.index, (b) => `${b.name} ${toolInputSummary(b.input)}`.trim())
         : undefined;
     void keepPlace(item.index, () => {
       editing = editReduce(editing, { type: "begin", index: item.index, text, parts });
-      editCacheLine = editLine(cacheState(app.events, Date.now()));
+      editCacheLine = editLine(cacheState(evs, Date.now()));
     }).then(() => {
       const first = editorEl ?? editorEls.find((el) => el);
       // Not `focus()` bare: that scrolls the textarea's top edge into view,
@@ -587,6 +617,8 @@
   // the edited turn is where it was.
   $effect(() => {
     const busy = app.busy;
+    // A pane opens no editor (piece 5): the open chat's transcript holds it.
+    if (inPane) return;
     untrack(() => {
       if (busy) {
         if (editing) stashEdit(sessionKey, { editing, line: editCacheLine });
@@ -673,13 +705,16 @@
   }
 
   $effect(() => {
-    void app.events.length;
+    void evs.length;
     void app.liveVersion;
-    void app.pendingApprovals.length;
+    void approvalsNow.length;
+    // A pane follows its chat's stream off screen too (piece 5).
+    if (inPane) void app.paneVersion;
     void tick().then(() => {
       // The live reply's first words are in the DOM now; the frame that
-      // draws them is its first paint (item 256's timing line).
-      if (turnClock.waitingForPaint() && hasText(app.live?.segments)) {
+      // draws them is its first paint (item 256's timing line) — the open
+      // chat's transcript's frame, not a pane's.
+      if (!inPane && turnClock.waitingForPaint() && hasText(liveNow?.segments)) {
         requestAnimationFrame(() => turnClock.painted());
       }
       if (pinned && viewport) {
@@ -706,7 +741,7 @@
   // switch: the key goes from "new" to the created id while this same
   // transcript is on screen (the composer's `blank` test mounts it on the
   // send), and the entry follows the key rather than being restored.
-  const sessionKey = $derived(scrollKey(app.activeSessionId));
+  const sessionKey = $derived(scrollKey(chatId));
   let lastKey: string | null = null;
   let scrollFrame = 0;
 
@@ -743,9 +778,10 @@
       moveScroll(from, key);
       return;
     }
-    if (from !== key) {
+    if (from !== key && !inPane) {
       // Untracked: this effect is about the key, and a keystroke in the
-      // editor must not re-run the scroll restore below.
+      // editor must not re-run the scroll restore below. (A pane's
+      // transcript leaves the chat's stashed edit for the open one.)
       untrack(() => {
         if (from !== null && editing) stashEdit(from, { editing, line: editCacheLine });
         const back = takeEdit(key);
@@ -770,7 +806,7 @@
   // the live tab went to the other pane — the draft is stashed for the
   // next mount on this chat (backlog 137).
   onDestroy(() => {
-    if (editing && lastKey !== null) stashEdit(lastKey, { editing, line: editCacheLine });
+    if (!inPane && editing && lastKey !== null) stashEdit(lastKey, { editing, line: editCacheLine });
   });
 
   // ---- The sent message's entrance (nightshift backlog 095, 2026-09-16) ----
@@ -795,8 +831,11 @@
   let enterLen = 0;
   $effect(() => {
     const key = sessionKey;
-    const len = app.events.length;
-    const live = app.live !== null;
+    const len = evs.length;
+    const live = liveNow !== null;
+    // A pane does not play the send's entrance (piece 5): the launch from
+    // the box is the open chat's transcript's to take.
+    if (inPane) return;
     if (key !== enterKey) {
       // A new chat's first send mounts this transcript (or moves its key
       // off "new") with the turn already in it; a launch from the box is
@@ -842,7 +881,7 @@
   let ghostTimer = 0;
   let lastLive: Shown | null = null;
   const shown = $derived<Shown | null>(
-    app.live ? { segments: app.live.segments, since: liveSince } : ghost,
+    liveNow ? { segments: liveNow.segments, since: liveSince } : ghost,
   );
 
   function dropGhost(anchored: boolean): void {
@@ -855,7 +894,7 @@
   }
 
   $effect.pre(() => {
-    const live = app.live;
+    const live = liveNow;
     const since = liveSince;
     untrack(() => {
       if (live) {
@@ -880,8 +919,8 @@
   // its length), which is the moment to swap. Before the DOM updates, so
   // the anchor is measured against the ghost and the swap is one flush.
   $effect.pre(() => {
-    void app.events;
-    void app.events.length;
+    void evs;
+    void evs.length;
     const key = sessionKey;
     untrack(() => {
       if (!ghost) return;
@@ -940,7 +979,7 @@
   // viewport's scroll space, which one is being read, whether the view
   // scrolls at all — measured once per frame on scroll and again after
   // the events change. `data-turn` on each turn is the anchor.
-  const navTicks = $derived(tickModel(app.events, liveFlags(app.events), displayTexts(app.events)));
+  const navTicks = $derived(tickModel(evs, liveFlags(evs), displayTexts(evs)));
   let navActive = $state<number | null>(null);
   let navScrolls = $state(false);
   const showNav = $derived(navScrolls && navTicks.length >= MIN_TICKS);
@@ -1039,7 +1078,7 @@
    * the board draws it.
    */
   const continuedFrom = $derived.by(() => {
-    const session = app.sessions.find((s) => s.id === app.activeSessionId) ?? null;
+    const session = app.sessions.find((s) => s.id === chatId) ?? null;
     if (!session?.forked_from || session.forked_from.reason !== "handoff") return null;
     const line = forkLine(session, app.sessions) ?? "from an earlier chat";
     return { id: session.forked_from.session, name: line.replace(/^from /, "") };
@@ -1076,7 +1115,7 @@
   // (2026-09-25) the pill also carries *Reply*, which works on any engine
   // and mid-turn (the composer queues), so the pill stays; only its Ask
   // aside half needs the Claude Code engine and an idle chat.
-  const canAsk = $derived(onClaudeCode && !app.busy);
+  const canAsk = $derived(onClaudeCode && !locked);
 
   // Per turn index, the message's 1-based place among the live messages
   // of its kind — "your 3rd reply" in the framing. Rewound and removed
@@ -1147,7 +1186,8 @@
   }
 
   function placePill() {
-    if (!viewport) {
+    // A pane offers no Ask aside or Reply (piece 5): the click opens it.
+    if (!viewport || inPane) {
       asidePill = null;
       return;
     }
@@ -1212,7 +1252,7 @@
 
   function asideChord(e: KeyboardEvent): void {
     const primary = isMac ? e.metaKey : e.ctrlKey;
-    if (!primary || !e.shiftKey || e.altKey || e.code !== "KeyA") return;
+    if (inPane || !primary || !e.shiftKey || e.altKey || e.code !== "KeyA") return;
     if (!asidePill || !canAsk) return;
     e.preventDefault();
     askAboutSelection();
@@ -1416,7 +1456,7 @@
                 {/if}
               {/if}
               {#if !item.removed}
-                {@const council = councilOfTurn(app.events, item.index)}
+                {@const council = councilOfTurn(evs, item.index)}
                 {#if council}
                   <!-- The council chip (nightshift backlog 149): this
                        message went to the seats the reply's record names. -->
@@ -1456,7 +1496,7 @@
                 </button>
               </span>
             {/if}
-            {#if !item.superseded && !app.busy && editing?.index !== item.index}
+            {#if !item.superseded && !locked && editing?.index !== item.index}
               <!-- Offered on both engines since 2026-09-15 (backlog 062): on
                    Claude Code each of these rewrites the CLI's history by copy
                    and the next turn resumes the copy — the title says so.
@@ -1516,7 +1556,7 @@
                 {/if}
               </span>
             {/if}
-            {#if app.checkpoint && checkpointOwner(userIndexes, app.checkpoint) === item.index}
+            {#if !inPane && app.checkpoint && checkpointOwner(userIndexes, app.checkpoint) === item.index}
               <!-- The checkpoint's marker (backlog 104): on the exchange
                    helpers fork from, always drawn, not only on hover. -->
               <span class="checkpoint-mark" use:tip={checkpointLine(app.checkpoint, true)}>
@@ -1603,7 +1643,7 @@
               </div>
             </div>
           {:else}
-            {@const editable = !item.superseded && !app.busy && !item.removed}
+            {@const editable = !item.superseded && !locked && !item.removed}
             <!-- The reply's own Edit and Remove ride its footer row since
                  backlog 121 (they were a row of their own below); Restore
                  for a removed reply stays a row under the placeholder. -->
@@ -1640,7 +1680,7 @@
               </div>
             {/if}
           {/if}
-          {#if !item.superseded && !app.busy && item.removed}
+          {#if !item.superseded && !locked && item.removed}
             <span class="turn-tools assistant-tools" use:tip={controlsTitle}>
               <button
                 class="tool-btn"
@@ -1694,7 +1734,7 @@
           segs={shown.segments}
           streaming
           since={shown.since}
-          approvals={app.pendingApprovals}
+          approvals={approvalsNow}
         />
       {/if}
     {/if}
@@ -1705,19 +1745,19 @@
          backlog 189): ~~only in the chat the turn runs in~~ — since 192 in
          the chat on screen whichever it is, naming the running chat when
          that is another (review 2026-09-23 finding 3), while it runs. -->
-    {#if app.busy && app.budgetSession && app.turnBudget?.pending_since_ms}
+    {#if !inPane && app.busy && app.budgetSession && app.turnBudget?.pending_since_ms}
       <BudgetStopCard
         session={app.budgetSession}
         elsewhere={app.parked && app.activeSessionId !== app.budgetSession ? runningChatName() : null}
       />
     {/if}
-    {#if app.error}
+    {#if !inPane && app.error}
       <div class="error-banner">{app.error}</div>
     {/if}
     <!-- The files the rewound turns wrote (item 259): the next run would
          read them as real. Ticked ones move to a dated folder outside the
          project, never deleted; Keep leaves them all. -->
-    {#if app.rewoundWrites && app.rewoundWrites.session === app.activeSessionId}
+    {#if !inPane && app.rewoundWrites && app.rewoundWrites.session === app.activeSessionId}
       {@const rw = app.rewoundWrites}
       <div class="limit-card" role="status">
         <div class="limit-head">
@@ -1758,7 +1798,7 @@
     <!-- Not connected, and why (item 261): a failed connect used to leave
          every chat saying "not connected" with nothing to press but a
          relaunch. One Retry connects again with the rail as it is. -->
-    {#if !app.connection && app.connectError && !app.connecting}
+    {#if !inPane && !app.connection && app.connectError && !app.connecting}
       <div class="limit-card" role="status">
         <div class="limit-head">
           <span class="ns-chip mono">not connected</span>
@@ -1774,7 +1814,7 @@
          continues the turn then (scheduled if pressed early, never into
          an exhausted window), naming the subagents that died so they are
          resumed rather than relaunched. -->
-    {#if app.limitPause && app.limitPause.session === app.activeSessionId && !app.busy}
+    {#if !inPane && app.limitPause && app.limitPause.session === app.activeSessionId && !app.busy}
       {@const pause = app.limitPause}
       <div class="limit-card" role="status">
         <div class="limit-head">
@@ -1799,7 +1839,9 @@
     <!-- The floating aside cards (backlog 141; several since 176): the
          column's last children, absolute under their passages, stuck
          above the composer when there is none. -->
-    <AsideLayer {viewport} {inner} {proseBlocks} version={items.length} />
+    {#if !inPane}
+      <AsideLayer {viewport} {inner} {proseBlocks} version={items.length} />
+    {/if}
   </div>
 </div>
 {#if showNav}

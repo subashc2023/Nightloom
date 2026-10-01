@@ -76,10 +76,13 @@ import {
   eventHost,
   firstUserText,
   inOtherProject,
+  keptPaneLogs,
   liveHost,
+  paneChatOf,
   queuedElsewhereToast,
   settlePlan,
   type Background,
+  type PaneChat,
   type Parked,
 } from "./browse";
 import { SEARCH_COLUMN_MAX, searchGrowth } from "./search.svelte";
@@ -831,6 +834,18 @@ export const app = $state({
    * idle unless it runs a turn of its own.
    */
   background: {} as Record<string, Background<Segment, ApprovalRequest>>,
+  /**
+   * The logs of idle chats a pane shows while another chat is the open one
+   * (nightshift backlog 159, piece 5; `browse.ts` `paneChatOf`): kept as
+   * the chat leaves the screen, read from disk when a pane first needs
+   * one, re-read when a turn that ran off screen ends. Only the chats a
+   * pane shows are kept.
+   */
+  paneLogs: {} as Record<string, SessionEvent[]>,
+  /** Bumped on each stream event of a chat off screen (piece 5): what a
+   *  pane showing it follows, as the open chat's transcript follows
+   *  `liveVersion`. */
+  paneVersion: 0,
   /**
    * The running message's budget ledger (nightshift backlog 165, pass 2):
    * the hook's `turn-budget.json`, read every `TURN_BUDGET_EVERY_MS`
@@ -3450,9 +3465,15 @@ export async function dropContent(
 
 /**
  * Focus a pane without changing its tab (a click inside it). A note in
- * front becomes the open note, so the Notes list and ⌘S follow it; a chat
+ * front becomes the open note, so the Notes list and ⌘S follow it; ~~a chat
  * in front that is not the open one stays a card — focus alone must not
- * swap the backend's session under a running turn.
+ * swap the backend's session under a running turn~~. Since backlog 159
+ * piece 5 (2026-09-30) both panes are live and focus decides where the
+ * composer types: a chat in front that is not the open one opens, as its
+ * tab's click opens it — a turn on screen goes to the background (A2) and
+ * keeps streaming in the pane it is in, and one running off screen comes
+ * back on screen. The backend's session per chat (A1) is what made the
+ * old rule unnecessary.
  */
 export function focusPane(paneId: string): void {
   const ws = app.tabs;
@@ -3462,8 +3483,13 @@ export function focusPane(paneId: string): void {
   ws.focused = paneId;
   const c = tabs.activeTab(pane).content;
   if (c.kind === "chat") {
-    // The live chat in front: the view follows it; a card stays a card.
-    if (c.session === app.activeSessionId && app.view !== "chat") leaveNote();
+    // The live chat in front: the view follows it. ~~A card stays a
+    // card.~~ Another chat opens here (piece 5), through its tab.
+    if (c.session === app.activeSessionId) {
+      if (app.view !== "chat") leaveNote();
+    } else {
+      void activateTab(tabs.activeTab(pane).id);
+    }
   } else if (c.kind !== "project" && c.kind !== "aside" && c.kind !== "attachment") {
     // A note or one of the whole-centre pages (backlog 140): the view
     // follows the pane, as it did for a note. A project card, an aside
@@ -5185,6 +5211,10 @@ interface TurnCtx {
   /** A provider (API key) turn (A4): one runs at a time, so a message in
    *  another chat queues while it runs off screen. */
   provider?: boolean;
+  /** The context window of the connection it started on (A4 review,
+   *  2026-09-30): its end off screen fills the wrap-up against this, not
+   *  against whatever connection is on screen by then. */
+  contextLimit?: number | null;
 }
 
 let turnKeys = 0;
@@ -5337,11 +5367,74 @@ export function chatRuns(id: string): boolean {
 
 /** Whether chat `id` can be deleted now (A4's gates audit): ~~never while
  *  any turn runs~~ — any chat but a running one, on the Claude Code engine,
- *  where each chat has its own lock. A provider turn, or a parked one,
- *  keeps the old rule. */
+ *  where each chat has its own lock. ~~A provider turn, or a parked one,
+ *  keeps the old rule.~~ Since A4 `browseFree()` is true on either engine,
+ *  so a provider turn no longer keeps the old rule either: the backend's
+ *  `forget` refuses only the chat whose lock is held (A4 review, struck
+ *  2026-09-30). A parked turn still keeps it. */
 export function canDeleteChat(id: string): boolean {
   if (chatRuns(id)) return false;
   return !app.busy || (browseFree() && !app.parked);
+}
+
+/**
+ * What a pane draws of chat `id` (nightshift backlog 159, piece 5): its
+ * live state wherever it is kept — off screen, parked, on screen — or its
+ * log read for the pane. Null until that log has been read
+ * (`loadPaneLog`).
+ */
+export function paneChat(id: string): PaneChat<Segment, ApprovalRequest> | null {
+  return paneChatOf<Segment, ApprovalRequest>(app, id);
+}
+
+/** The chats the panes show now: each pane's active chat tab. */
+function shownPaneChats(): Set<string> {
+  const out = new Set<string>();
+  for (const p of app.tabs.panes) {
+    const c = tabs.activeTab(p).content;
+    if (c.kind === "chat" && c.session) out.add(c.session);
+  }
+  return out;
+}
+
+/** Keep `events` as the pane log of chat `id` when a pane shows it, and
+ *  let go of the logs no pane shows any more. */
+function keepPaneLog(id: string | null, events: SessionEvent[]): void {
+  const shown = shownPaneChats();
+  const next = keptPaneLogs(app.paneLogs, shown);
+  if (id && shown.has(id)) next[id] = events;
+  app.paneLogs = next;
+}
+
+const paneReads = new Set<string>();
+/**
+ * Read chat `id`'s log for the pane that shows it (piece 5): through
+ * `transcript` with the chat named — held in memory (an ephemeral chat
+ * too) or on disk, and never waiting on a turn. A failed read keeps what
+ * the pane had; an empty log draws an empty pane.
+ */
+export async function loadPaneLog(id: string): Promise<void> {
+  if (paneReads.has(id)) return;
+  paneReads.add(id);
+  try {
+    const events = await api.transcript(false, id);
+    // An ephemeral chat let go has no log anywhere: what the pane drew
+    // stays rather than going blank.
+    if (events.length === 0 && app.paneLogs[id]?.length) return;
+    keepPaneLog(id, events);
+  } catch {
+    // The pane keeps what it had; the next turn's end reads it again.
+  } finally {
+    paneReads.delete(id);
+  }
+}
+
+/** A turn that ran off screen has ended (piece 5): the pane showing its
+ *  chat keeps the record it drew, then reads the log with the reply. */
+function refreshPaneLog(id: string, events: SessionEvent[]): void {
+  if (!shownPaneChats().has(id)) return;
+  keepPaneLog(id, events);
+  void loadPaneLog(id);
 }
 
 /** Whether a chat can be opened while a turn runs without parking it —
@@ -5482,6 +5575,9 @@ async function attach(id: string): Promise<void> {
     app.openNext = "replace";
     return;
   }
+  // The chat being left, for the other pane when it shows it (piece 5).
+  const leaving = app.activeSessionId;
+  if (leaving && leaving !== id) keepPaneLog(leaving, app.events);
   delete app.background[id];
   bgTurns.delete(id);
   t.detached = false;
@@ -5515,6 +5611,9 @@ function endBackground(t: TurnCtx, failed: string | null, res: AgentTurnResult |
   const b = app.background[id];
   // Named before its record goes: an ephemeral chat is named from it (A4).
   const name = backgroundName(id, b?.events);
+  // A pane showing it keeps drawing it, then reads the reply from its log
+  // (piece 5) — before the record goes, so the pane never goes blank.
+  if (b) refreshPaneLog(id, b.events);
   delete app.background[id];
   bgTurns.delete(id);
   const used = b?.liveUsage ? b.liveUsage.input_tokens + b.liveUsage.output_tokens : null;
@@ -5550,7 +5649,9 @@ function endBackground(t: TurnCtx, failed: string | null, res: AgentTurnResult |
     void providerDrains.at(-1)?.();
   } else {
     void refreshPlanUsage(true);
-    noteAgentTurnEnd(id, used, app.connection?.contextLimit ?? null, null);
+    // ~~`app.connection?.contextLimit`~~ — the connection at the turn's
+    // end, possibly another engine's (A4 review): the turn's own.
+    noteAgentTurnEnd(id, used, t.contextLimit !== undefined ? t.contextLimit : (app.connection?.contextLimit ?? null), null);
   }
   // Was it sleep that ended it (backlog 101)? A4: a background turn's end
   // reached the watch not at all.
@@ -5657,6 +5758,8 @@ async function settleTurnView(
   choice: ChatChoice | null = null,
 ): Promise<void> {
   const parked = app.parked;
+  // A pane showing the parked chat reads its reply from its log (piece 5).
+  if (parked?.session) refreshPaneLog(parked.session, parked.events);
   app.parked = null;
   try {
     // The chat the turn ran in, whichever is open now (backlog 159, A1:
@@ -5701,12 +5804,16 @@ export async function openSession(id: string): Promise<void> {
   // stay armed and the *next* plain click would open a tab (review E,
   // 2026-09-17). Both paths hand it back here; `newTab` does the same.
   const inFront = id === app.activeSessionId && app.view === "chat";
+  // The chat being left, for the other pane when it shows it (piece 5).
+  const leaving = app.activeSessionId;
+  const leavingEvents = app.events;
   try {
     app.events = await api.openSession(id);
     // The aside thread stays with the chat being left and the opened
     // chat's comes back (backlog 130).
     switchAside(id);
     app.activeSessionId = id;
+    if (leaving && leaving !== id) keepPaneLog(leaving, leavingEvents);
     app.error = null;
     // The chat's checkpoint, for the transcript's marker (backlog 104).
     void readCheckpoint(id);
@@ -6126,6 +6233,7 @@ async function sendAgent(
     detached: false,
     key: newTurnKey(),
     choice: choiceOf(app.draft),
+    contextLimit: app.connection?.contextLimit ?? null,
   };
   fg = turn;
   // The budget meter (backlog 165, pass 2) follows this chat's ledger
@@ -6857,6 +6965,7 @@ export function applyTurnEventTo(host: TurnHost, ev: TurnEvent & { chat?: string
         text: "context compacted — earlier turns replaced by a summary",
       });
       if (onScreen) app.liveVersion++;
+      else app.paneVersion++;
     }
     return;
   }
@@ -6931,6 +7040,8 @@ export function applyTurnEventTo(host: TurnHost, ev: TurnEvent & { chat?: string
       break;
   }
   if (onScreen) app.liveVersion++;
+  // A pane showing a chat off screen follows its stream (piece 5).
+  else app.paneVersion++;
 }
 
 /** The Running-tasks row for the `Agent` call `id`, if the CLI has
