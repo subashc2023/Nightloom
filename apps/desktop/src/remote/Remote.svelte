@@ -282,7 +282,7 @@
   const chatRole = $derived(routeFor(chatHost, active));
   const chatClient = $derived(chatRole ? (clients[chatRole] ?? null) : null);
   const projectName = (pid: string | null) =>
-    pid === null || pid === activePid ? (remote.project ?? "Unfiled") : (projects.find((p) => p.id === pid)?.name ?? "project");
+    pid === null || pid === activePid ? (remote.project ?? projects.find((p) => p.active)?.name ?? "Unfiled") : (projects.find((p) => p.id === pid)?.name ?? "project");
   /** A wave-1 host takes actions and sends on any chat, opening it on the
    *  Mac first (blocker 665's default); an older one only reads a chat in
    *  another project. */
