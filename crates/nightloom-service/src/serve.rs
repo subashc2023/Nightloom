@@ -969,7 +969,7 @@ impl Host for ServeHost {
             let mut rows = store::list(&mirror)?;
             let seen: HashSet<String> = rows.iter().map(|s| s.id.clone()).collect();
             rows.extend(own.into_iter().filter(|s| !seen.contains(&s.id)));
-            rows.sort_by(|a, b| b.modified.cmp(&a.modified));
+            rows.sort_by_key(|a| std::cmp::Reverse(a.modified));
             Ok(rows)
         })
         .await
