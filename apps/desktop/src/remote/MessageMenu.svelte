@@ -12,6 +12,7 @@
    * confirmed Discard drops it.
    */
   import { editAction, loadDraft, rowRemoval, saveDraft, type ChatAction, type Row, type TextPart, type ToolRow } from "./client";
+  import { missingSentence } from "./hosts";
 
   interface Props {
     chat: string;
@@ -24,6 +25,8 @@
     fork: number | null;
     /** The host serves `act` and nothing refuses it now. */
     canAct: boolean;
+    /** `/api/state`'s `host`, for the sentence when a feature is missing. */
+    host?: string | null;
     /** Why the log cannot be changed now, when it cannot (a turn runs). */
     blocked: string | null;
     onact: (actions: ChatAction[], label: string, starts?: boolean) => Promise<boolean>;
@@ -35,7 +38,7 @@
     onwhole?: () => void;
     onclose: () => void;
   }
-  let { chat, row, part = null, tool = null, rewind, fork, canAct, blocked, problem = null, onact, oncopy, onwhole, onclose }: Props = $props();
+  let { chat, row, part = null, tool = null, rewind, fork, canAct, host = undefined, blocked, problem = null, onact, oncopy, onwhole, onclose }: Props = $props();
 
   /** What an Edit changes: his message, or one text block of a reply. */
   const editTarget = $derived.by((): { index: number; block: number | null; text: string } | null => {
@@ -135,7 +138,7 @@
   <div class="mm-title">{heading}</div>
   <div class="mm-quote" class:removed>{copyText || "—"}</div>
   {#if problem}<p class="mm-problem">{problem}</p>{/if}
-  {#if blocked}<p class="mm-note">{blocked}</p>{:else if !canAct}<p class="mm-note">This Mac's Nightloom is older than the phone page: only Copy works until it updates.</p>{/if}
+  {#if blocked}<p class="mm-note">{blocked}</p>{:else if !canAct}<p class="mm-note">{missingSentence(host, "This Mac's Nightloom is older than the phone page: only Copy works until it updates.")}</p>{/if}
   <div class="mm-menu">
     <button onclick={() => (oncopy(copyText), onclose())}>{@render ico("copy")} Copy</button>
     {#if editTarget && !removed}

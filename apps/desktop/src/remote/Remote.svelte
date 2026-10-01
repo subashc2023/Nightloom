@@ -32,12 +32,10 @@
     rowTarget,
     loadDraft,
     loadQueue,
-    loadToken,
     newQueued,
     questionAnswer,
     saveDraft,
     saveQueue,
-    saveToken,
     shortWhen,
     tokenFromHash,
     transcriptRows,
@@ -83,17 +81,68 @@
   import NotesSheet from "./NotesSheet.svelte";
   import AsideSheet from "./AsideSheet.svelte";
   import CouncilSheet from "./CouncilSheet.svelte";
+  import Hosts from "./Hosts.svelte";
+  import {
+    PROBE_MS,
+    chooseHost,
+    forgetHost,
+    guessRole,
+    hostName,
+    loadHosts,
+    missingSentence,
+    mixedBlocked,
+    nextHeldFor,
+    offlineLine,
+    order,
+    pair,
+    pairLink,
+    routeFor,
+    saveHosts,
+    settleRole,
+    type HostEntry,
+    type HostRole,
+    type Hosts as HostMap,
+    type Tried,
+  } from "./hosts";
 
-  // ---- the token and the connection --------------------------------------
-  let token = $state<string | null>(null);
+  // ---- the hosts and the connection (wave 3: the Mac and Away) ------------
+  /** The page's own origin; empty outside a browser. */
+  const origin = typeof location === "undefined" ? "" : location.origin;
+  /** The paired hosts, each a base URL and its own token (`hosts.ts`). */
+  let hosts = $state<HostMap>({});
+  /** The host answering now: the state, the stream and the lists are its. */
+  let active = $state<HostRole | null>(null);
+  /** What the last host choice found on the hosts it did not take. */
+  let tried = $state<Tried[]>([]);
+  /** The host being tried right now, for the offline bar. */
+  let trying = $state<HostRole | null>(null);
+  const paired = $derived(order(hosts));
+  /** Voice talks to the page's own host (its socket is built from the
+   *  page's address), so the mic is offered only when that host answers. */
+  const micToken = $derived(active && hosts[active]?.base === origin ? hosts[active]!.token : null);
   let box = $state<HTMLTextAreaElement | null>(null);
   let paste = $state("");
-  let client = $state<Client | null>(null);
-  /** `online` while the event stream is open; `off` after the listener
-   *  answered 401 (the token is wrong — a new scan is the way back). */
+  /** One client per paired host. */
+  const clients = $derived.by(() => {
+    const out: Partial<Record<HostRole, Client>> = {};
+    for (const r of paired) out[r] = new Client(hosts[r]!.token, hosts[r]!.base === origin ? "" : hosts[r]!.base);
+    return out;
+  });
+  /** The active host's client. */
+  const client = $derived(active ? (clients[active] ?? null) : null);
+  /** `online` while the event stream is open; `off` after every paired
+   *  host answered 401 (the token is wrong — a new scan is the way back). */
   let link = $state<"connecting" | "online" | "offline" | "off">("connecting");
   let failures = 0;
   let abort: AbortController | null = null;
+  /** Bumped to end a stream loop (a new pairing, Try again). */
+  let loopId = 0;
+  /** Wakes the loop from its wait between tries (Try again). */
+  let wake: (() => void) | null = null;
+  /** The host the drawer's lists were last read from. */
+  let lastActive: HostRole | null = null;
+  /** When the preferred host was last probed while another answered. */
+  let lastPreferProbe = 0;
 
   // ---- what the Mac says ---------------------------------------------------
   let remote = $state<RemoteState>({ project: null, active_chat: null, busy: false, connected: false, engine: null, pending: [] });
@@ -109,6 +158,13 @@
   /** The project of the chat on screen when it is not the one open on the
    *  Mac (read-only here: sending would switch his desktop's project). */
   let chatProject = $state<string | null>(null);
+  /** The host whose chat is on screen (wave 3): a chat belongs to the host
+   *  that listed it, and its sends, actions and reads go there even when
+   *  the other host is the one answering. Null for a new chat. */
+  let chatHost = $state<HostRole | null>(null);
+  /** The chat's label as the drawer had it, for when its host's list is
+   *  not the one loaded. */
+  let chatLabel = $state<string | null>(null);
   /** The project a new chat starts in; `null` is the Mac's open project. */
   let newProject = $state<string | null>(null);
   /** A new chat was sent and the Mac has not yet named its id. */
@@ -127,7 +183,19 @@
   let drawer = $state(false);
   let search = $state("");
   let sheet = $state<
-    null | "chat" | "rename" | "project" | "message" | "rail" | "running" | "delete" | "notes" | "aside" | "council" | "newproject"
+    | null
+    | "chat"
+    | "rename"
+    | "project"
+    | "message"
+    | "rail"
+    | "running"
+    | "delete"
+    | "notes"
+    | "aside"
+    | "council"
+    | "newproject"
+    | "hosts"
   >(null);
   // ---- wave 2C: notes, asides, council, new project, search, gestures ----
   /** The notes sheet opens on this note (a search hit), else its list. */
@@ -177,7 +245,7 @@
   let photoSeq = 0;
   let picker = $state<HTMLInputElement | null>(null);
   /** The chat just moved to the trash, offered back until dismissed. */
-  let trashed = $state<{ id: string; label: string; project: string | null } | null>(null);
+  let trashed = $state<{ id: string; label: string; project: string | null; host: HostRole | null } | null>(null);
   let renameText = $state("");
   let openTools = $state<Record<string, boolean>>({});
 
@@ -188,7 +256,12 @@
     const list = chatsBy[chatProject ?? activePid] ?? [];
     return list.find((c) => c.id === chatId) ?? null;
   });
-  const title = $derived(chatId ? (currentChat?.label ?? "Chat") : "New chat");
+  const title = $derived(chatId ? (currentChat?.label ?? chatLabel ?? "Chat") : "New chat");
+  /** The chat on screen is the answering host's (or a new chat). */
+  const sameHost = $derived(chatHost === null || chatHost === active);
+  /** The host a chat-addressed call goes to, and its client. */
+  const chatRole = $derived(routeFor(chatHost, active));
+  const chatClient = $derived(chatRole ? (clients[chatRole] ?? null) : null);
   const projectName = (pid: string | null) =>
     pid === null || pid === activePid ? (remote.project ?? "Unfiled") : (projects.find((p) => p.id === pid)?.name ?? "project");
   /** A wave-1 host takes actions and sends on any chat, opening it on the
@@ -208,15 +281,20 @@
   /** The live turn belongs to the desktop's running (or open) chat; another
    *  chat's view shows nothing live and re-reads when the turn ends. */
   const liveHere = $derived(
-    live !== null && !readOnly && ((chatId !== null && chatId === remote.active_chat) || (chatId === null && pendingNew !== null)),
+    live !== null &&
+      !readOnly &&
+      sameHost &&
+      ((chatId !== null && chatId === remote.active_chat) || (chatId === null && pendingNew !== null)),
   );
-  const pendingHere = $derived(!readOnly && chatId !== null && chatId === remote.active_chat ? remote.pending : []);
-  const busyHere = $derived(remote.busy && !readOnly && chatId !== null && chatId === remote.active_chat);
+  const pendingHere = $derived(!readOnly && sameHost && chatId !== null && chatId === remote.active_chat ? remote.pending : []);
+  const busyHere = $derived(remote.busy && !readOnly && sameHost && chatId !== null && chatId === remote.active_chat);
   const status = $derived(
     link === "off"
       ? "not paired"
       : link !== "online"
-        ? "Mac unreachable"
+        ? paired.length > 1
+          ? "no host answering"
+          : `${active === "away" || paired[0] === "away" ? "Away" : "Mac"} unreachable`
         : remote.busy
           ? busyHere || pendingNew
             ? "working…"
@@ -237,12 +315,21 @@
    *  other failure shows its sentence — unless `quiet`, for the background
    *  reads, whose failure the offline bar already says. */
   function fail(e: unknown, quiet = false) {
-    if (e instanceof ApiError && e.status === 401) {
-      link = "off";
+    // A host other than the one answering (a chat of the other host's) does
+    // not change the link: its call fails with its own sentence, or holds.
+    const other = (e instanceof ApiError || e instanceof Unreachable) && client !== null && e.base !== client.base;
+    if (e instanceof ApiError && e.status === 401 && !other) {
+      // The answering host refused its token: try the other, if paired.
+      if (active) tried = [...tried.filter((t) => t.role !== active), { role: active, base: hosts[active]?.base ?? "", why: "refused", message: e.message }];
       error = e.message;
+      abort?.abort();
       return;
     }
     if (e instanceof Unreachable) {
+      if (other) {
+        if (!quiet) error = `${chatRole === "away" ? "Away" : "The Mac"} is unreachable.`;
+        return;
+      }
       if (link !== "off") link = "offline";
       return;
     }
@@ -260,6 +347,7 @@
         const typed = draft;
         pendingNew = null;
         chatId = id;
+        chatHost = active;
         chatProject = null;
         // What he typed while it started stays his, under the new chat.
         if (typed.trim()) saveDraft(draftKey(id, null), typed);
@@ -303,10 +391,10 @@
   }
 
   async function refreshTranscript(stick = false) {
-    if (!client || !chatId) return;
+    if (!chatClient || !chatId) return;
     const id = chatId;
     try {
-      const got = await client.transcript(id, sendProject);
+      const got = await chatClient.transcript(id, sendProject);
       if (id !== chatId) return;
       const near = nearBottom();
       events = got;
@@ -335,6 +423,7 @@
     if (!chose && chatId === null && !pendingNew && remote.active_chat) {
       // The first screen: the chat the Mac is on (blocker 576's default).
       chatId = remote.active_chat;
+      chatHost = active;
       draft = loadDraft(draftKey(chatId, null));
       await refreshTranscript(true);
       void grow();
@@ -412,65 +501,184 @@
     }
   }
 
+  /**
+   * Choose the host (wave 3): the Mac first with a 1.5 s deadline, then
+   * Away; a host this page cannot call at all (mixed content) is skipped
+   * and said. The host that answers carries the state, the stream and the
+   * lists; its own word on what it is (`host`) settles which role it is.
+   */
+  async function choose(run: number): Promise<boolean> {
+    const roles = order(hosts);
+    if (roles.length === 0) return false;
+    const got = await chooseHost(
+      roles,
+      hosts,
+      (role, signal) => clients[role]!.state(signal),
+      (role) => mixedBlocked(origin, hosts[role]!.base),
+      PROBE_MS,
+      (role, sofar) => {
+        if (run !== loopId) return;
+        trying = role;
+        tried = sofar;
+      },
+    );
+    if (run !== loopId) return false;
+    trying = null;
+    tried = got.tried;
+    if (got.role === null) {
+      active = null;
+      link = got.tried.length > 0 && got.tried.every((t) => t.why === "refused") ? "off" : "offline";
+      if (link === "off") error = got.tried.find((t) => t.message)?.message ?? "The token is wrong.";
+      return false;
+    }
+    const settled = settleRole(hosts, got.role, got.state.host);
+    if (settled.hosts !== hosts) {
+      hosts = settled.hosts;
+      saveHosts(hosts, origin);
+    }
+    active = settled.role;
+    if (lastActive !== settled.role) {
+      const was = lastActive;
+      // The chat on screen keeps its name though its host's list goes.
+      if (chatId) chatLabel = currentChat?.label ?? chatLabel;
+      lastActive = settled.role;
+      // Another host's lists: the drawer reloads from the one answering.
+      projects = [];
+      chatsBy = {};
+      expanded = {};
+      if (was !== null) note(`Now on ${hostName(settled.role)}`);
+    }
+    remote = got.state;
+    return true;
+  }
+
   // A function, not the variable: `fail` sets `link` from under the loop,
   // and a direct read after the assignment is narrowed past that.
   const tokenRefused = () => link === "off";
 
   async function streamLoop() {
+    const run = ++loopId;
     for (;;) {
-      if (!client || tokenRefused()) return;
-      abort = new AbortController();
+      if (run !== loopId) return;
       link = failures === 0 ? "connecting" : "offline";
-      try {
-        await client.events(onEvent, abort.signal);
-        // The stream ended cleanly: the listener went off. Try again.
-      } catch (e) {
-        fail(e, true);
-      }
+      const ok = await choose(run);
+      if (run !== loopId) return;
       if (tokenRefused()) return;
+      if (ok && client) {
+        abort = new AbortController();
+        try {
+          await client.events(onEvent, abort.signal);
+          // The stream ended cleanly: the listener went off. Try again.
+        } catch (e) {
+          fail(e, true);
+        }
+        if (run !== loopId) return;
+      }
       failures += 1;
       link = "offline";
-      await new Promise((r) => setTimeout(r, backoffMs(failures)));
+      // A host that dropped: the other is tried at once; only when neither
+      // answered does the page wait before the next round.
+      if (ok && failures <= 1) continue;
+      await new Promise<void>((r) => {
+        const t = setTimeout(r, backoffMs(failures));
+        wake = () => {
+          clearTimeout(t);
+          r();
+        };
+      });
+      wake = null;
     }
   }
 
+  /** Try every host again now (the offline bar's button). */
+  function retry() {
+    failures = 0;
+    error = null;
+    abort?.abort();
+    if (wake) wake();
+    else void streamLoop();
+  }
+
   /** While a turn runs the stream carries no "done": the state is polled
-   *  every three seconds and the flip of `busy` is the end. */
+   *  every three seconds and the flip of `busy` is the end. While a host
+   *  other than the preferred one answers, the preferred one is asked
+   *  every 30 s, and the page moves back when it answers. */
   function pollLoop() {
     setInterval(() => {
       if (link === "online" && (remote.busy || live !== null || queue.length > 0 || pendingNew)) void refreshState();
+      const prefer = paired[0];
+      if (link === "online" && prefer && active !== prefer && !mixedBlocked(origin, hosts[prefer]!.base) && Date.now() - lastPreferProbe > 30000) {
+        lastPreferProbe = Date.now();
+        const ctl = new AbortController();
+        const t = setTimeout(() => ctl.abort(), PROBE_MS);
+        clients[prefer]
+          ?.state(ctl.signal)
+          .then(() => {
+            clearTimeout(t);
+            if (active !== prefer) retry();
+          })
+          .catch(() => clearTimeout(t));
+      }
     }, 3000);
   }
 
-  function start(t: string) {
-    token = t;
-    saveToken(t);
-    client = new Client(t);
+  /** Pair `entry` as `role` (a scanned link, a paste) and connect. */
+  function pairHost(role: HostRole, entry: HostEntry) {
+    hosts = pair(hosts, role, entry);
+    saveHosts(hosts, origin);
+    tried = tried.filter((t) => t.role !== role);
     error = null;
     failures = 0;
+    abort?.abort();
     void streamLoop();
   }
 
-  function forget() {
-    abort?.abort();
-    token = null;
-    client = null;
-    saveToken(null);
-    link = "connecting";
+  function start(t: string) {
+    pairHost(guessRole(origin), { base: origin, token: t });
+  }
+
+  /** Forget `role`'s token (the hosts sheet, or Scan again on a refusal). */
+  function forgetRole(role: HostRole) {
+    hosts = forgetHost(hosts, role);
+    saveHosts(hosts, origin);
+    tried = tried.filter((t) => t.role !== role);
+    if (active === role) active = null;
     error = null;
+    failures = 0;
+    abort?.abort();
+    if (paired.length > 0) void streamLoop();
+    else {
+      loopId += 1;
+      link = "connecting";
+    }
+  }
+
+  /** Scan again after a refusal: every refused token goes. */
+  function forget() {
+    const refused = tried.filter((t) => t.why === "refused").map((t) => t.role);
+    for (const r of refused.length > 0 ? refused : paired) hosts = forgetHost(hosts, r);
+    saveHosts(hosts, origin);
+    tried = [];
+    active = null;
+    abort?.abort();
+    error = null;
+    failures = 0;
+    if (paired.length > 0) void streamLoop();
+    else {
+      loopId += 1;
+      link = "connecting";
+    }
   }
 
   onMount(() => {
+    hosts = loadHosts(origin);
     const fromHash = tokenFromHash(location.hash);
     if (fromHash) {
       // Off the address bar the moment it is read: a token in the history
       // is a token in a screenshot.
       history.replaceState(null, "", location.pathname + location.search);
       start(fromHash);
-    } else {
-      const stored = loadToken();
-      if (stored) start(stored);
-    }
+    } else if (paired.length > 0) void streamLoop();
     pollLoop();
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible" && client && link !== "off") void everything();
@@ -482,8 +690,11 @@
   async function openChat(id: string, project: string | null = null) {
     chose = true;
     drawer = false;
-    if (id === chatId && project === chatProject) return;
+    if (id === chatId && project === chatProject && chatHost === active) return;
     chatId = id;
+    // Listed by the host answering now: it is that host's chat.
+    chatHost = active;
+    chatLabel = (chatsBy[project ?? activePid] ?? []).find((c) => c.id === id)?.label ?? null;
     chatProject = project && project !== activePid ? project : null;
     pendingNew = null;
     events = [];
@@ -498,6 +709,8 @@
     drawer = false;
     sheet = null;
     chatId = null;
+    chatHost = null;
+    chatLabel = null;
     chatProject = null;
     newProject = project && project !== activePid ? project : null;
     pendingNew = null;
@@ -561,6 +774,10 @@
       return;
     }
     const images = photos.map((p) => p.image);
+    if (!sameHost) {
+      await sendElsewhere(text, images);
+      return;
+    }
     if ((link !== "online" || remote.busy) && images.length > 0) {
       // A photo is too big to hold on the phone: the message stays in the
       // composer, photos and all, until the Mac can take it.
@@ -576,7 +793,7 @@
     const sentPhotos = photos;
     photos = [];
     try {
-      const status = await client!.send(chatId, text, { project, images });
+      const status = await chatClient!.send(chatId, text, { project, images });
       remote = { ...remote, busy: true };
       // The Mac opened the chat's project to send (blocker 665).
       if (project) void refreshProjects();
@@ -645,9 +862,36 @@
   }
 
   function hold(text: string) {
-    queue = [...queue, newQueued(chatId, text, new Date(), sendProject)];
+    queue = [...queue, newQueued(chatId, text, new Date(), sendProject, chatRole)];
     saveQueue(queue);
-    note(link === "online" ? "Held — goes when the turn ends" : "Held — goes when the Mac is reachable");
+    const who = chatRole === "away" ? "Away" : "the Mac";
+    note(link === "online" && sameHost ? "Held — goes when the turn ends" : `Held — goes when ${who} is reachable`);
+  }
+
+  /**
+   * A message in a chat of the host not answering now (wave 3): it goes to
+   * that chat's own host, never the answering one. When that host cannot
+   * be reached it is held for it (photos stay in the composer).
+   */
+  async function sendElsewhere(text: string, images: ImageInput[]) {
+    if (!chatClient || !chatId) return;
+    const sentPhotos = photos;
+    setDraft("");
+    photos = [];
+    try {
+      const status = await chatClient.send(chatId, text, { project: sendProject, images });
+      note(status === "queued" ? `Sent to ${chatRole === "away" ? "Away" : "the Mac"} — it goes when its turn ends` : `Sent to ${chatRole === "away" ? "Away" : "the Mac"}`);
+      events = [...events, { event: "user_message", text, at: new Date().toISOString(), ...(images.length > 0 ? { images } : {}) }];
+      scrollToEnd();
+    } catch (e) {
+      photos = [...sentPhotos, ...photos];
+      if (e instanceof Unreachable && images.length === 0) hold(text);
+      else {
+        if (!(e instanceof Unreachable)) fail(e);
+        else note(`${chatRole === "away" ? "Away" : "The Mac"} is unreachable — your message and photos stay here`);
+        if (!draft) setDraft(text);
+      }
+    }
   }
 
   function takeBack(id: string) {
@@ -661,10 +905,13 @@
    *  next waits for that turn's end. */
   async function drainQueue() {
     if (!client || link !== "online" || remote.busy || queue.length === 0) return;
-    const [next, ...rest] = queue;
+    // Only the answering host's held messages: one for the other host
+    // waits for it (a chat from Away is never sent to the Mac).
+    const next = nextHeldFor(queue, active);
+    if (!next) return;
     try {
       const status = await client.send(next.chat, next.text, { project: next.project ?? null });
-      queue = rest;
+      queue = queue.filter((q) => q.id !== next.id);
       saveQueue(queue);
       remote = { ...remote, busy: true };
       if (status === "queued") {
@@ -686,7 +933,7 @@
     sheet = null;
     try {
       // The chat this page shows (backlog 159, A3), not the Mac's screen.
-      await client.cancel(chatId);
+      await (chatClient ?? client).cancel(chatId);
       remote = { ...remote, pending: [] };
     } catch (e) {
       fail(e);
@@ -701,9 +948,9 @@
 
   async function saveRename() {
     const t = renameText.trim();
-    if (!client || !chatId || !t) return;
+    if (!chatClient || !chatId || !t) return;
     try {
-      await client.rename(chatId, t);
+      await chatClient.rename(chatId, t);
       sheet = null;
       note("Renamed");
       await refreshChats();
@@ -714,10 +961,10 @@
   }
 
   async function openOnMac() {
-    if (!client || !chatId) return;
+    if (!chatClient || !chatId) return;
     sheet = null;
     try {
-      await client.open(chatId);
+      await chatClient.open(chatId);
       note("Opened on the Mac");
     } catch (e) {
       fail(e);
@@ -732,11 +979,20 @@
    * the live fold opens. A refusal (409: a turn running, blocker 665) is
    * the Mac's sentence in the error bar, and nothing on the page changes.
    */
-  async function actOn(chat: string, project: string | null, actions: ChatAction[], label: string, starts = false): Promise<boolean> {
-    if (!client) return false;
+  async function actOn(
+    chat: string,
+    project: string | null,
+    actions: ChatAction[],
+    label: string,
+    starts = false,
+    role: HostRole | null = chatRole,
+  ): Promise<boolean> {
+    // The chat's own host (wave 3), never the other.
+    const via = role ? clients[role] : null;
+    if (!via) return false;
     try {
       let reply = null;
-      for (const a of actions) reply = await client.act(chat, a, project);
+      for (const a of actions) reply = await via.act(chat, a, project);
       // The Mac opened the chat's project to act on it (665).
       if (project) await refreshProjects();
       if (reply && chat === chatId) {
@@ -897,13 +1153,14 @@
     const id = chatId;
     const label = currentChat?.label ?? "Chat";
     const project = sendProject;
+    const host = chatRole;
     const ok = await actOn(id, project, [{ op: "delete" }], "Moved to the trash");
     if (!ok) {
       sheet = "chat";
       return;
     }
     sheet = null;
-    trashed = { id, label, project };
+    trashed = { id, label, project, host };
     startNew(null);
     void refreshChats();
   }
@@ -911,12 +1168,13 @@
   async function undeleteChat() {
     const t = trashed;
     if (!t) return;
-    const ok = await actOn(t.id, t.project, [{ op: "undelete" }], "Restored");
+    const ok = await actOn(t.id, t.project, [{ op: "undelete" }], "Restored", false, t.host);
     if (!ok) return;
     trashed = null;
     await refreshProjects();
     await refreshChats();
     await openChat(t.id, null);
+    chatHost = t.host ?? active;
   }
 
   async function continueTurn() {
@@ -935,7 +1193,7 @@
     sheet = "rail";
     if (!client) return;
     if (!hasFeature(remote, "rail")) {
-      railProblem = "This Mac's Nightloom is older than the phone page: update it to change the model from here.";
+      railProblem = missingSentence(remote.host, "This Mac's Nightloom is older than the phone page: update it to change the model from here.");
       return;
     }
     railProblem = null;
@@ -969,7 +1227,7 @@
   async function refreshRunning() {
     if (!client) return;
     if (!hasFeature(remote, "running")) {
-      runningProblem = "This Mac's Nightloom is older than the phone page: update it to see running tasks here.";
+      runningProblem = missingSentence(remote.host, "This Mac's Nightloom is older than the phone page: update it to see running tasks here.");
       return;
     }
     runningProblem = null;
@@ -1002,9 +1260,9 @@
     asideProblem = null;
     asidePast = null;
     sheet = "aside";
-    if (!client || !hasFeature(remote, "aside")) return;
+    if (!chatClient || !hasFeature(remote, "aside")) return;
     try {
-      asidePast = pastAsides(await client.asides(chatId), asides[chatId]?.seq ?? null);
+      asidePast = pastAsides(await chatClient.asides(chatId), asides[chatId]?.seq ?? null);
     } catch {
       // A host without the list: the sheet leaves "Earlier asides" out.
     }
@@ -1012,7 +1270,7 @@
 
   /** Ask an aside on the chat on screen; true when the Mac took it. */
   async function askAside(text: string): Promise<boolean> {
-    if (!client || !chatId) return false;
+    if (!chatClient || !chatId) return false;
     if (link !== "online") {
       asideProblem = "The Mac is unreachable — your question stays here.";
       return false;
@@ -1020,7 +1278,7 @@
     const chat = chatId;
     asideProblem = null;
     try {
-      const started = await client.aside(chat, text, sendProject);
+      const started = await chatClient.aside(chat, text, sendProject);
       if (started.seq === null) {
         asideProblem = "The Mac took the question but did not say which answer is its — look on the Mac.";
         return true;
@@ -1039,9 +1297,9 @@
 
   async function stopAside() {
     const a = chatId ? asides[chatId] : null;
-    if (!client || !a || a.state !== "asking") return;
+    if (!chatClient || !a || a.state !== "asking") return;
     try {
-      await client.stopAside(a.chat, a.seq);
+      await chatClient.stopAside(a.chat, a.seq);
     } catch (e) {
       asideProblem = e instanceof ApiError && (e.status === 404 || e.status === 501) ? "Stop is not available on this Mac." : String(e instanceof Error ? e.message : e);
     }
@@ -1066,11 +1324,11 @@
    *  box until the Mac can take it. */
   async function sendCouncil(council: CouncilSend): Promise<boolean> {
     const text = draft.trim();
-    if (!client || !chatId || !text) return false;
+    if (!chatClient || !chatId || !text) return false;
     const project = sendProject;
     councilProblem = null;
     try {
-      const status = await client.send(chatId, text, { project, council });
+      const status = await chatClient.send(chatId, text, { project, council });
       setDraft("");
       sheet = null;
       remote = { ...remote, busy: true };
@@ -1507,13 +1765,21 @@
 {/snippet}
 
 <div class="page">
-  {#if !token}
+  {#if paired.length === 0}
     <div class="gate">
       <div class="gate-mark">N</div>
       <h1>Nightloom</h1>
-      <p>Open the link from <b>Settings → Remote</b> on the Mac — scan its QR code with the camera — or paste the token here.</p>
-      <input type="text" placeholder="Token" bind:value={paste} autocapitalize="off" autocomplete="off" spellcheck="false" />
-      <button class="btn accent wide" disabled={!/^[0-9a-fA-F]{16,128}$/.test(paste.trim())} onclick={() => start(paste.trim().toLowerCase())}>
+      <p>Open the link from <b>Settings → Remote</b> on the Mac — scan its QR code with the camera — or paste the token or the link here.</p>
+      <input type="text" placeholder="Token or link" bind:value={paste} autocapitalize="off" autocomplete="off" spellcheck="false" />
+      <button
+        class="btn accent wide"
+        disabled={!pairLink(paste, origin)}
+        onclick={() => {
+          const e = pairLink(paste, origin);
+          if (e) pairHost(guessRole(e.base), e);
+          paste = "";
+        }}
+      >
         Connect
       </button>
     </div>
@@ -1527,6 +1793,7 @@
           {chatId ? projectName(chatProject) : projectName(newProject)} · {status}
         </span>
       </button>
+      <Hosts mode="chip" {hosts} {active} {link} onopen={() => (sheet = "hosts")} />
       <button class="icon-btn" onclick={openRail} aria-label="Model and settings">{@render icon("sliders")}</button>
       {#if chatId}
         <button class="icon-btn" onclick={() => (sheet = "chat")} aria-label="Chat actions">{@render icon("more")}</button>
@@ -1539,9 +1806,14 @@
         <span>{error ?? "The token is wrong."}</span>
         <button class="btn small" onclick={forget}>Scan again</button>
       </div>
-    {:else if link === "offline"}
+    {:else if link === "offline" || (link === "connecting" && trying !== null && tried.length > 0)}
+      <!-- Item 154's page half: the address tried, the host, what next. -->
       <div class="bar" transition:fly={{ y: -12, duration: motion(200) }}>
-        <span>Can't reach the Mac — is Tailscale on, and Remote switched on? Messages you send are held.</span>
+        <span class="offline-line">
+          {offlineLine(tried, trying, paired)}
+          {#if trying === null}Messages you send are held.{/if}
+        </span>
+        {#if trying === null}<button class="btn small" onclick={retry}>Try again</button>{/if}
       </div>
     {/if}
     {#if trashed}
@@ -1558,7 +1830,7 @@
       </div>
     {/if}
 
-    {#if token && !drawer && !sheet}
+    {#if paired.length > 0 && !drawer && !sheet}
       <!-- Wave 2C: a swipe right from the left edge opens the drawer. -->
       <div class="edge" use:drag={edgeDrag} aria-hidden="true"></div>
     {/if}
@@ -1728,7 +2000,7 @@
           <!-- Voice (item 246 wave 3B, its patch note): the orb, or keyboard
                dictation with auto-send; shown while the box is empty. -->
           <MicButton
-            {token}
+            token={micToken}
             chat={chatId}
             {title}
             voice={remote.voice ?? null}
@@ -1865,21 +2137,22 @@
         <UsageLine {usage} />
         <div class="drawer-foot">
           <span class="dot" class:ok={link === "online"} class:bad={link !== "online"}></span>
-          {link === "online" ? `Connected to the Mac${remote.engine ? ` · ${remote.engine === "claude-code" ? "Claude Code" : remote.engine}` : ""}` : status}
+          {link === "online" ? `Connected to ${active ? hostName(active) : "the Mac"}${remote.engine ? ` · ${remote.engine === "claude-code" ? "Claude Code" : remote.engine}` : ""}` : status}
         </div>
       </nav>
     {/if}
 
-    {#if contextOn && chatId && client}
+    {#if contextOn && chatId && chatClient}
       {#key chatId}
         <ContextSheet
-          api={client}
+          api={chatClient}
           chat={chatId}
           project={chatProject}
           {title}
           engine={remote.engine}
           busy={busyHere}
           canLayers={hasFeature(remote, "layers")}
+          host={remote.host}
           onclose={() => (contextOn = false)}
         />
       {/key}
@@ -1961,6 +2234,7 @@
             rewind={target.rewind}
             fork={target.fork}
             {canAct}
+            host={remote.host}
             blocked={actBlocked}
             problem={error}
             onact={(actions, label, starts) => act(actions, label, starts)}
@@ -1971,12 +2245,13 @@
         {:else if sheet === "rail"}
           <RailSheet {rail} problem={railProblem} busy={remote.busy} onpatch={patchRail} />
         {:else if sheet === "notes" && client}
-          <NotesSheet {client} available={hasFeature(remote, "notes")} start={notesStart} onnote={note} ontall={(t) => (sheetTall = t)} />
+          <NotesSheet {client} host={remote.host} available={hasFeature(remote, "notes")} start={notesStart} onnote={note} ontall={(t) => (sheetTall = t)} />
         {:else if sheet === "aside" && chatId}
           <AsideSheet
             chat={chatId}
             {title}
             available={hasFeature(remote, "aside")}
+            host={remote.host}
             aside={asides[chatId] ?? null}
             past={asidePast}
             problem={asideProblem}
@@ -1987,6 +2262,7 @@
         {:else if sheet === "council"}
           <CouncilSheet
             available={hasFeature(remote, "council") && chatId !== null}
+            host={remote.host}
             initial={rail?.council ?? null}
             text={draft}
             blocked={link !== "online" ? "The Mac is unreachable." : busyHere ? "A turn is running in this chat — wait for it to end." : null}
@@ -2015,6 +2291,21 @@
             <button class="btn" onclick={closeSheet}>Cancel</button>
             <button class="btn accent" disabled={!projName.trim() || projBusy} onclick={createProject}>Create</button>
           </div>
+        {:else if sheet === "hosts"}
+          <Hosts
+            mode="sheet"
+            {hosts}
+            {active}
+            {link}
+            {tried}
+            {origin}
+            onpair={(role, entry) => pairHost(role, entry)}
+            onforget={forgetRole}
+            onretry={() => {
+              sheet = null;
+              retry();
+            }}
+          />
         {:else if sheet === "running"}
           <RunningSheet
             {running}

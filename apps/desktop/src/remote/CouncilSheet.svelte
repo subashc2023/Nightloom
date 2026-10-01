@@ -11,10 +11,13 @@
    */
   import { untrack } from "svelte";
   import { COUNCIL_MODELS, MAX_SEATS, councilProblem, type CouncilSeat, type CouncilSend } from "./client";
+  import { missingSentence } from "./hosts";
 
   interface Props {
     /** The host takes a council on a send (`features`). */
     available: boolean;
+    /** `/api/state`'s `host`, for the sentence when a feature is missing. */
+    host?: string | null;
     /** The rail's seats and mode, if the Mac said. */
     initial: { seats: CouncilSeat[]; mode: "answer" | "disproof" } | null;
     /** The composer's text. */
@@ -24,7 +27,7 @@
     problem: string | null;
     onsend: (council: CouncilSend) => Promise<boolean>;
   }
-  let { available, initial, text, blocked, problem, onsend }: Props = $props();
+  let { available, host = undefined, initial, text, blocked, problem, onsend }: Props = $props();
 
   const LAST = "nightloom.remote.council";
   function remembered(): { seats: CouncilSeat[]; mode: "answer" | "disproof" } | null {
@@ -73,7 +76,7 @@
 <div class="cs-title">Ask the council</div>
 <div class="cs-sub">Each seat answers on its own; a chair joins the answers.</div>
 {#if !available}
-  <p class="cs-note">This Mac's Nightloom is older than the phone page: update it to run a council from here.</p>
+  <p class="cs-note">{missingSentence(host, "This Mac's Nightloom is older than the phone page: update it to run a council from here.")}</p>
 {:else}
   <div class="cs-seg" role="radiogroup" aria-label="What the council does">
     <button role="radio" aria-checked={mode === "answer"} class:on={mode === "answer"} onclick={() => ((mode = "answer"), keep())}>

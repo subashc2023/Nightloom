@@ -12,12 +12,15 @@
   import { onMount } from "svelte";
   import { renderMarkdown } from "../lib/markdown";
   import { loadDraft, saveDraft, type Aside, type PastAside } from "./client";
+  import { missingSentence } from "./hosts";
 
   interface Props {
     chat: string;
     title: string;
     /** The host serves asides (`features`). */
     available: boolean;
+    /** `/api/state`'s `host`, for the sentence when it does not. */
+    host?: string | null;
     /** The aside asked from this page on this chat, if any. */
     aside: Aside | null;
     past: PastAside[] | null;
@@ -27,7 +30,7 @@
     onstop: () => void;
     oncopy: (text: string) => void;
   }
-  let { chat, title, available, aside, past, problem, onask, onstop, oncopy }: Props = $props();
+  let { chat, title, available, host = undefined, aside, past, problem, onask, onstop, oncopy }: Props = $props();
 
   const key = $derived(`aside:${chat}`);
   let text = $state("");
@@ -57,7 +60,7 @@
 <div class="as-title">Ask aside</div>
 <div class="as-sub">Beside “{title}” — the answer stays out of the chat.</div>
 {#if !available}
-  <p class="as-note">This Mac's Nightloom is older than the phone page: update it to ask asides from here.</p>
+  <p class="as-note">{missingSentence(host, "This Mac's Nightloom is older than the phone page: update it to ask asides from here.")}</p>
 {:else}
   {#if aside}
     <div class="as-card">

@@ -573,3 +573,45 @@ describe("wave 2: a council turn from the phone", () => {
     expect(rows).toHaveLength(3);
   });
 });
+
+describe("a client per host (wave 3)", () => {
+  // A generated test value.
+  const T = "0123456789abcdef0123456789abcdef";
+  it("calls its own host's address with its own token, the token never in the URL", async () => {
+    const { Client } = await import("./client");
+    const seen: { url: string; auth: string | null }[] = [];
+    const real = globalThis.fetch;
+    globalThis.fetch = (async (url: string, init: RequestInit) => {
+      seen.push({ url, auth: new Headers(init.headers).get("Authorization") });
+      return new Response(JSON.stringify({ host: "serve" }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      const st = await new Client(T, "https://nightloom-test.fly.dev").state();
+      expect(st.host).toBe("serve");
+      await new Client(T).state();
+    } finally {
+      globalThis.fetch = real;
+    }
+    expect(seen[0].url).toBe("https://nightloom-test.fly.dev/api/state");
+    expect(seen[0].auth).toBe(`Bearer ${T}`);
+    expect(seen[1].url).toBe("/api/state");
+    expect(seen.every((s) => !s.url.includes(T))).toBe(true);
+  });
+
+  it("says which host could not be reached", async () => {
+    const { Client, Unreachable } = await import("./client");
+    const real = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      throw new TypeError("Load failed");
+    }) as typeof fetch;
+    try {
+      await new Client(T, "http://100.101.102.103:8642").state();
+      expect.unreachable();
+    } catch (e) {
+      expect(e).toBeInstanceOf(Unreachable);
+      expect((e as InstanceType<typeof Unreachable>).base).toBe("http://100.101.102.103:8642");
+    } finally {
+      globalThis.fetch = real;
+    }
+  });
+});

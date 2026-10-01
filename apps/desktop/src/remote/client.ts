@@ -62,6 +62,11 @@ export interface RemoteState {
   /** This host's voice (item 246 wave 3), or null when its programs are
    *  not set up — the page then offers keyboard dictation instead. */
   voice?: import("./voice/socket").VoiceInfo | null;
+  /** Which kind of host this is (wave 3, item 246 wave 4B): the Mac's
+   *  listener or the away server (`nightloom serve`). Absent: a Mac from
+   *  before the field — the only host "older than the phone page" is true
+   *  of (`missingSentence` in `hosts.ts`). */
+  host?: "mac" | "serve";
 }
 
 /** Whether the host serves `name` (design §4's `features`). */
@@ -565,21 +570,35 @@ export class ApiError extends Error {
   constructor(
     public status: number,
     message: string,
+    /** The host that answered (`Client.base`). */
+    public base = "",
   ) {
     super(message);
   }
 }
 
-/** Thrown when the Mac could not be reached at all — the queue's cue. */
-export class Unreachable extends Error {}
+/** Thrown when the host could not be reached at all — the queue's cue.
+ *  `base` says which host (wave 3: the page knows two). */
+export class Unreachable extends Error {
+  constructor(
+    message: string,
+    public base = "",
+  ) {
+    super(message);
+  }
+}
 
 export class Client {
-  constructor(public token: string) {}
+  /** `base`: the host's origin (`hosts.ts`); empty is the page's own. */
+  constructor(
+    public token: string,
+    public base = "",
+  ) {}
 
   private async call(path: string, init: RequestInit = {}): Promise<Response> {
     let r: Response;
     try {
-      r = await fetch(`/api${path}`, {
+      r = await fetch(`${this.base}/api${path}`, {
         ...init,
         headers: {
           ...(init.headers ?? {}),
@@ -589,14 +608,15 @@ export class Client {
         cache: "no-store",
       });
     } catch (e) {
-      throw new Unreachable(String(e));
+      throw new Unreachable(String(e), this.base);
     }
-    if (!r.ok) throw new ApiError(r.status, (await r.text()) || r.statusText);
+    if (!r.ok) throw new ApiError(r.status, (await r.text()) || r.statusText, this.base);
     return r;
   }
 
-  async state(): Promise<RemoteState> {
-    return (await this.call("/state")).json();
+  /** `signal`: the host choice's 1.5 s deadline (`hosts.ts`). */
+  async state(signal?: AbortSignal): Promise<RemoteState> {
+    return (await this.call("/state", signal ? { signal } : {})).json();
   }
 
   /** The open project's chats, or `project`'s (item 246's drawer). */
@@ -779,7 +799,7 @@ export class Client {
    */
   async events(onEvent: (name: string, data: string) => void, signal?: AbortSignal): Promise<void> {
     const r = await this.call("/events", { headers: { Accept: "text/event-stream" }, signal });
-    if (!r.body) throw new Unreachable("no stream body");
+    if (!r.body) throw new Unreachable("no stream body", this.base);
     const reader = r.body.getReader();
     const decoder = new TextDecoder();
     const parser = new SseParser();
@@ -1265,6 +1285,9 @@ export interface Queued {
   at: string;
   /** The chat's project when the Mac had another open (blocker 665). */
   project?: string | null;
+  /** The host whose chat it is (wave 3); absent (held before wave 3) is
+   *  the Mac's. It is only ever sent to that host. */
+  host?: "mac" | "away";
 }
 
 export function loadQueue(): Queued[] {
@@ -1296,10 +1319,17 @@ export function saveQueue(queue: Queued[]): void {
 }
 
 let seq = 0;
-export function newQueued(chat: string | null, text: string, now = new Date(), project: string | null = null): Queued {
+export function newQueued(
+  chat: string | null,
+  text: string,
+  now = new Date(),
+  project: string | null = null,
+  host: "mac" | "away" | null = null,
+): Queued {
   seq += 1;
   const q: Queued = { id: `${now.getTime().toString(36)}-${seq}`, chat, text, at: now.toISOString() };
   if (project) q.project = project;
+  if (host) q.host = host;
   return q;
 }
 
