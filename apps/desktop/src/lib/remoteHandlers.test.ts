@@ -3,6 +3,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // The phone's handlers in the Mac's window (item 246, wave 1, 1B) against a
 // stand-in for the app's state, the backend and Tauri's event bus.
 const calls: string[] = [];
+/** `remote_claim`'s ids (132 (d)), apart from `calls` so the older
+ *  tests' exact call lists stand as they were. */
+const claims: number[] = [];
 const fake = vi.hoisted(() => {
   const app = {
     busy: false,
@@ -22,6 +25,10 @@ const fake = vi.hoisted(() => {
     sessions: [{ id: "c1" }, { id: "c2" }] as { id: string }[],
     dreaming: false,
     capturing: false,
+    dreamActivity: "",
+    palette: "A" as string,
+    limitPause: null as null | { session: string | null; resetsAtMs: number | null; window: string | null; text: string; subagents: string[]; hitAtMs: number },
+    limitResumeAt: null as number | null,
     draft: {
       engine: "claude-code",
       provider: "anthropic",
@@ -45,11 +52,18 @@ const fake = vi.hoisted(() => {
   let toastSeq = 0;
   const toast = (text: string) => app.toasts.push({ id: ++toastSeq, text });
   const listeners = new Map<string, (e: { payload: unknown }) => void>();
-  return { app, toast, listeners, stash, aside };
+  /** What `remote_claim` answers (132 (d)); how `resumeAfterLimit` acts;
+   *  what a dream's run toasts. */
+  const knobs = { claim: true as boolean, resume: "now" as "now" | "schedule" | "refuse", passToast: "dream: consolidated 2 observations", sendOut: "sent" as "sent" | "queued" };
+  return { app, toast, listeners, stash, aside, knobs };
 });
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: async (cmd: string, args: unknown) => {
+    if (cmd === "remote_claim") {
+      claims.push((args as { id: number }).id);
+      return fake.knobs.claim;
+    }
     calls.push(`invoke ${cmd} ${JSON.stringify(args)}`);
   },
 }));
@@ -163,7 +177,7 @@ vi.mock("./state.svelte", () => {
         (images.length ? `remoteSend ${chat} ${text} ${images.length}` : `remoteSend ${chat} ${text}`) +
           (spoken ? " spoken" : ""),
       );
-      return "sent";
+      return fake.knobs.sendOut;
     },
     removeBlock: async () => true,
     removeTurn: async (i: number) => {
@@ -177,7 +191,19 @@ vi.mock("./state.svelte", () => {
     resolveApproval: async () => {},
     restoreBlock: async () => {},
     restoreTurn: async () => {},
-    resumeAfterLimit: () => calls.push("resume"),
+    resumeAfterLimit: () => {
+      calls.push("resume");
+      if (fake.knobs.resume === "schedule") a.limitResumeAt = (a.limitPause?.resetsAtMs ?? 0) + 30_000;
+      else if (fake.knobs.resume === "refuse") fake.toast("The paused chat is not open or is busy — open it and press Resume again.");
+      else a.limitPause = null;
+    },
+    runDream: async () => {
+      calls.push("runDream");
+      fake.toast(fake.knobs.passToast);
+    },
+    runCapture: async () => {
+      calls.push("runCapture");
+    },
     rewindTo: async () => {},
     saveEdit: async (i: number, t: string) => {
       a.events = [{ event: "edit", index: i, text: t }];
@@ -201,9 +227,15 @@ vi.mock("./state.svelte", () => {
 });
 
 import {
+  GAVE_UP,
   checkRail,
+  clock,
   ensureChat,
   installRemoteHandlers,
+  runPass,
+  sendWindowState,
+  stopWindowStateFeed,
+  windowState,
   railOf,
   asideRows,
   runAct,
@@ -217,6 +249,7 @@ import {
 
 beforeEach(() => {
   calls.length = 0;
+  claims.length = 0;
   Object.assign(fake.app, {
     busy: false,
     connecting: false,
@@ -231,6 +264,9 @@ beforeEach(() => {
     capturing: false,
   });
   fake.stash.clear();
+  Object.assign(fake.app, { limitPause: null, limitResumeAt: null, palette: "A", dreamActivity: "" });
+  Object.assign(fake.knobs, { claim: true, resume: "now", passToast: "dream: consolidated 2 observations", sendOut: "sent" });
+  stopWindowStateFeed();
   fake.aside.finish.length = 0;
   fake.aside.cancelled.length = 0;
   Object.assign(fake.app.draft, { engine: "claude-code", agentModel: "opus", agentEffort: "", agentAsk: false, agentPlan: false });
@@ -473,5 +509,152 @@ describe("an aside from the phone (wave 2, 2A)", () => {
     expect(done).toContainEqual(expect.stringContaining('"id":22,"ok":true'));
     fake.aside.finish.shift()!();
     await vi.waitFor(() => expect(calls.some((c) => c.startsWith('emit aside-event {"kind":"done"'))).toBe(true));
+  });
+});
+
+// ---- wave 5 (wave 3 B1): 132 (a–d), the pause, Dream/Capture, the window state ----
+
+describe("a call the phone stopped waiting for (132 (d))", () => {
+  it("a window answering after the deadline starts no turn", async () => {
+    fake.knobs.claim = false;
+    await expect(runSend({ id: 41, chat: "c1", text: "late" })).rejects.toThrow(GAVE_UP);
+    expect(claims).toContain(41);
+    expect(calls.some((c) => c.startsWith("remoteSend"))).toBe(false);
+    await expect(runSend({ id: 42, chat: null, text: "late", new: true })).rejects.toThrow(GAVE_UP);
+    await expect(runAct("c1", null, { op: "fork", upto: 0 }, 43)).rejects.toThrow(GAVE_UP);
+    await expect(runAct("c5", null, { op: "delete" }, 44)).rejects.toThrow(GAVE_UP);
+    await expect(runAct("c1", null, { op: "edit", index: 0, text: "x", mode: "send" }, 45)).rejects.toThrow(GAVE_UP);
+    expect(calls.filter((c) => /^(remoteSend|delete|editMessage)/.test(c))).toEqual([]);
+    expect(fake.app.activeSessionId).toBe("c1");
+  });
+
+  it("a claimed call goes ahead as before", async () => {
+    expect(await runSend({ id: 46, chat: "c1", text: "on time" })).toBe("sent");
+    expect(calls).toContain("remoteSend c1 on time");
+  });
+
+  it("the listener passes the call's id to the claim", async () => {
+    await installRemoteHandlers();
+    fake.knobs.claim = false;
+    fake.listeners.get("remote-act")!({ payload: { id: 47, chat: "c1", project: null, action: { op: "fork", upto: 0 } } });
+    await vi.waitFor(() => expect(calls.some((c) => c.startsWith("invoke remote_done"))).toBe(true));
+    expect(claims).toContain(47);
+    expect(calls.find((c) => c.startsWith("invoke remote_done"))).toContain('"ok":false');
+  });
+});
+
+describe("open on the Mac is answered (132 (a))", () => {
+  it("opens, or says why not", async () => {
+    await installRemoteHandlers();
+    fake.listeners.get("remote-open")!({ payload: { id: 50, chat: "c2", project: null } });
+    await vi.waitFor(() => expect(calls.some((c) => c.startsWith("invoke remote_done"))).toBe(true));
+    expect(calls).toContain('invoke remote_done {"id":50,"ok":true,"json":{"chat":"c2"}}');
+    calls.length = 0;
+    fake.app.busy = true;
+    fake.listeners.get("remote-open")!({ payload: { id: 51, chat: "c3", project: null } });
+    await vi.waitFor(() => expect(calls.some((c) => c.startsWith("invoke remote_done"))).toBe(true));
+    expect(calls.find((c) => c.startsWith("invoke remote_done"))).toContain('"id":51,"ok":false');
+    expect(calls).not.toContain("open c3");
+  });
+});
+
+describe("resume after the usage limit from the phone (132 (b))", () => {
+  const pause = (session: string) => ({ session, resetsAtMs: Date.UTC(2026, 8, 30, 22, 42), window: "five_hour", text: "You've hit your session limit", subagents: [], hitAtMs: 0 });
+
+  it("is refused when nothing in this chat is paused", async () => {
+    await expect(runAct("c1", null, { op: "resume_limit" })).rejects.toThrow(/nothing in this chat is paused/);
+    fake.app.limitPause = pause("c2");
+    await expect(runAct("c1", null, { op: "resume_limit" })).rejects.toThrow(/nothing in this chat is paused/);
+    expect(calls).not.toContain("resume");
+  });
+
+  it("resumes at once after the reset", async () => {
+    fake.app.limitPause = pause("c1");
+    const r = await runAct("c1", null, { op: "resume_limit" });
+    expect(r.note).toBe("resumed");
+    expect(calls).toContain("resume");
+  });
+
+  it("before the reset it is scheduled, and a second press says so without cancelling it", async () => {
+    fake.app.limitPause = pause("c1");
+    fake.knobs.resume = "schedule";
+    const r = await runAct("c1", null, { op: "resume_limit" });
+    expect(r.note).toMatch(/^scheduled for \d{1,2}:\d\d [AP]M, 30 s after the window resets$/);
+    calls.length = 0;
+    const again = await runAct("c1", null, { op: "resume_limit" });
+    expect(again.note).toBe(`already scheduled for ${clock(fake.app.limitResumeAt!)}`);
+    expect(calls).not.toContain("resume");
+    expect(fake.app.limitResumeAt).not.toBeNull();
+  });
+
+  it("a resume the Mac refuses is the Mac's sentence", async () => {
+    fake.app.limitPause = pause("c1");
+    fake.knobs.resume = "refuse";
+    await expect(runAct("c1", null, { op: "resume_limit" })).rejects.toThrow(/not open or is busy/);
+  });
+});
+
+describe("edit and send says when its send was queued (132 (c))", () => {
+  it("a sent edit has no note; a queued one says so", async () => {
+    const sent = await runAct("c1", null, { op: "edit", index: 0, text: "again", mode: "send" });
+    expect(sent.note).toBeUndefined();
+    fake.knobs.sendOut = "queued";
+    const queued = await runAct("fork-2", null, { op: "edit", index: 0, text: "again", mode: "send" });
+    expect(queued.note).toMatch(/^queued/);
+  });
+});
+
+describe("Dream and Capture from the phone (wave 5)", () => {
+  it("starts, answers at once, and tells the end with the Mac's toast", async () => {
+    expect(await runPass("dream")).toEqual({ status: "started" });
+    expect(calls).toContain("runDream");
+    await vi.waitFor(() => expect(calls.some((c) => c.includes('"state":"done"'))).toBe(true));
+    expect(calls).toContain('emit pass-event {"kind":"dream","state":"started","text":null}');
+    expect(calls).toContain('emit pass-event {"kind":"dream","state":"done","text":"dream: consolidated 2 observations"}');
+  });
+
+  it("a failed pass goes out as failed", async () => {
+    fake.knobs.passToast = "dream failed: no provider";
+    await runPass("dream");
+    await vi.waitFor(() => expect(calls.some((c) => c.includes('"state":"failed"'))).toBe(true));
+  });
+
+  it("is refused while either runs (one lock)", async () => {
+    fake.app.dreaming = true;
+    await expect(runPass("capture")).rejects.toThrow("a dream is already running");
+    fake.app.dreaming = false;
+    fake.app.capturing = true;
+    await expect(runPass("dream")).rejects.toThrow("a capture is already running");
+    expect(calls.filter((c) => c.startsWith("run"))).toEqual([]);
+  });
+
+  it("the listener answers through remote_done", async () => {
+    await installRemoteHandlers();
+    fake.listeners.get("remote-pass")!({ payload: { id: 60, kind: "capture" } });
+    await vi.waitFor(() => expect(calls.some((c) => c.startsWith("invoke remote_done"))).toBe(true));
+    expect(calls).toContain('invoke remote_done {"id":60,"ok":true,"json":{"status":"started"}}');
+  });
+});
+
+describe("what the window tells remote.rs (palette 577, the pause 164)", () => {
+  it("maps the pause to Unix seconds and the scheduled resume beside it", () => {
+    expect(windowState()).toEqual({ palette: "A", limit_pause: null });
+    fake.app.palette = "C";
+    fake.app.limitPause = { session: "c1", resetsAtMs: 1_789_714_200_000, window: "five_hour", text: "t", subagents: ["toolu_a"], hitAtMs: 0 };
+    fake.app.limitResumeAt = 1_789_714_230_000;
+    expect(windowState()).toEqual({
+      palette: "C",
+      limit_pause: { chat: "c1", resets_at: 1_789_714_200, window: "five_hour", text: "t", subagents: ["toolu_a"], resume_at: 1_789_714_230 },
+    });
+  });
+
+  it("sends only when something changed", () => {
+    sendWindowState();
+    sendWindowState();
+    expect(calls.filter((c) => c.startsWith("emit remote-window-state"))).toHaveLength(1);
+    fake.app.palette = "B";
+    sendWindowState();
+    expect(calls.filter((c) => c.startsWith("emit remote-window-state"))).toHaveLength(2);
+    expect(calls.at(-1)).toBe('emit remote-window-state {"palette":"B","limit_pause":null}');
   });
 });
