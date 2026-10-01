@@ -205,6 +205,17 @@ impl ServeConfig {
     }
 }
 
+/// The project id `serve` lists for its unfiled chats ("No project"), so
+/// the phone can show and start them beside the projects the Mac marked
+/// "available away" (item 268, wave 4 A): the phone page shows an unfiled
+/// row only when the host lists no project at all, so before this a
+/// server holding three marked projects hid its no-project chats, and
+/// once the phone worked in a project there was no way back to them.
+/// Never a real project's id (those are UUIDs).
+pub const NO_PROJECT_ID: &str = "unfiled";
+/// The name of that row: the desktop sidebar's words for it.
+pub const NO_PROJECT_NAME: &str = "No project";
+
 /// The environment variable naming the away server's Nightshift root.
 pub const NIGHTSHIFT_ROOT_ENV: &str = "NIGHTLOOM_NIGHTSHIFT_ROOT";
 
@@ -361,6 +372,7 @@ impl ServeHost {
 
     fn project(&self, id: Option<&str>) -> Result<Option<Project>, String> {
         let id = match id {
+            Some(NO_PROJECT_ID) => return Ok(None),
             Some(id) => Some(id.to_string()),
             None => lock(&self.active_project).clone(),
         };
@@ -1320,6 +1332,15 @@ impl Host for ServeHost {
                 });
             }
         }
+        // The unfiled chats, always listed (wave 4 A; see NO_PROJECT_ID).
+        rows.insert(
+            0,
+            ProjectRow {
+                active: open.is_none(),
+                id: NO_PROJECT_ID.into(),
+                name: NO_PROJECT_NAME.into(),
+            },
+        );
         Ok(rows)
     }
 
@@ -1646,6 +1667,18 @@ impl Host for ServeHost {
     }
 
     async fn project_open(&self, id: &str) -> Result<ProjectRow, String> {
+        if id == NO_PROJECT_ID {
+            let mut active = lock(&self.active_project);
+            if active.is_some() {
+                *lock(&self.active_chat) = None;
+            }
+            *active = None;
+            return Ok(ProjectRow {
+                active: true,
+                id: NO_PROJECT_ID.into(),
+                name: NO_PROJECT_NAME.into(),
+            });
+        }
         let mut registry = lock(&self.registry);
         let mut active = lock(&self.active_project);
         let mut chat = lock(&self.active_chat);
@@ -2651,6 +2684,117 @@ esac
         let _ = std::fs::remove_dir_all(home.join("mirror").join("projects").join(&pid));
         let _ = std::fs::remove_dir_all(home.join("projects").join(&pid));
         let _ = std::fs::remove_dir_all(home.join("workspaces").join(&pid));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// His question after marking three projects available away (wave 4
+    /// A): "I hope that means I'm still able to create new chats in the no
+    /// project section." `serve` lists a "No project" row beside the marked
+    /// projects; its chats list, a new chat in it lands in the unfiled
+    /// folder, and the phone's place goes back to no project — also after
+    /// it worked in a marked project.
+    #[tokio::test]
+    async fn serve_keeps_no_project_chats_beside_marked_projects() {
+        crate::project::set_config_dir(
+            std::env::temp_dir().join(format!("nightloom-home-{}", std::process::id())),
+        );
+        let root = std::env::temp_dir().join(format!("nightloom-serve-{}", uuid::Uuid::new_v4()));
+        let unfiled = root.join("unfiled").join("sessions");
+        let workspace = root.join("ws");
+        std::fs::create_dir_all(&unfiled).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(root.join("mode"), "reply").unwrap();
+        let mut seeded = Session::start(&unfiled, ChatMode::Normal, ChatKind::Build).unwrap();
+        seeded.record_user("an unfiled chat");
+        let old = seeded.id.clone();
+        drop(seeded);
+
+        // Three projects the Mac marked, as a push leaves them.
+        let layout = crate::sync::Layout::new(&root);
+        std::fs::create_dir_all(layout.root()).unwrap();
+        let pids: Vec<String> = (0..3)
+            .map(|_| format!("p-{}", uuid::Uuid::new_v4().simple()))
+            .collect();
+        std::fs::write(
+            layout.root().join("projects.json"),
+            serde_json::json!(
+                pids.iter()
+                    .map(|p| serde_json::json!({ "id": p, "name": p }))
+                    .collect::<Vec<_>>()
+            )
+            .to_string(),
+        )
+        .unwrap();
+
+        let cfg = ServeConfig {
+            binary: stand_in(&root),
+            model: None,
+            hook_exe: None,
+            assets: None,
+            unfiled_dir: unfiled.clone(),
+            home: root.clone(),
+            unfiled_workspace: workspace.clone(),
+            nightshift_root: None,
+        };
+        let host = ServeHost::new(cfg, Registry::load_from(root.join("projects.json")));
+        let wait = |host: Arc<ServeHost>| async move {
+            let start = Instant::now();
+            while host.busy() {
+                assert!(start.elapsed() < Duration::from_secs(10), "the turn ends");
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        };
+
+        let projects = host.projects().await.unwrap();
+        assert_eq!(projects.len(), 4, "no project + the three marked");
+        assert_eq!(projects[0].id, NO_PROJECT_ID);
+        assert_eq!(projects[0].name, NO_PROJECT_NAME);
+        assert!(
+            projects[0].active,
+            "nothing worked in yet: no project is open"
+        );
+        assert!(pids.iter().all(|p| projects.iter().any(|r| &r.id == p)));
+
+        // The phone works in a marked project; no project is still listed
+        // and its chats still read.
+        host.new_chat(Some(&pids[0]), "in a marked project")
+            .await
+            .unwrap();
+        wait(host.clone()).await;
+        let projects = host.projects().await.unwrap();
+        assert!(!projects[0].active && projects.iter().any(|r| r.id == pids[0] && r.active));
+        let rows = host.chats(Some(NO_PROJECT_ID)).await.unwrap();
+        assert!(
+            rows.iter().any(|r| r.id == old),
+            "the unfiled chat is listed"
+        );
+
+        // A new chat in no project lands in the unfiled folder, and no
+        // project is the phone's place again.
+        host.new_chat(Some(NO_PROJECT_ID), "a new no-project chat")
+            .await
+            .unwrap();
+        wait(host.clone()).await;
+        let new = lock(&host.active_chat).clone().unwrap();
+        assert!(lock(&host.active_project).is_none());
+        let log = store::find_by_prefix(&unfiled, &new).unwrap();
+        assert!(
+            std::fs::read_to_string(&log)
+                .unwrap()
+                .contains("a new no-project chat")
+        );
+        assert!(host.projects().await.unwrap()[0].active);
+        assert!(host.chats(None).await.unwrap().iter().any(|r| r.id == new));
+
+        // Opening no project from a marked one goes back too.
+        host.new_chat(Some(&pids[1]), "again in a marked project")
+            .await
+            .unwrap();
+        wait(host.clone()).await;
+        let row = host.project_open(NO_PROJECT_ID).await.unwrap();
+        assert!(row.active && lock(&host.active_project).is_none());
+        assert!(lock(&host.active_chat).is_none());
+
         let _ = std::fs::remove_dir_all(&root);
     }
 
