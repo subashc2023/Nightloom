@@ -46,6 +46,7 @@ use tokio_util::sync::CancellationToken;
 
 /// The Claude Code agents the window holds, one per chat (backlog 159, A2).
 mod agents;
+mod away;
 mod chat_name;
 /// The chats the backend holds, one lock per chat (backlog 159, A1).
 mod chats;
@@ -6918,6 +6919,8 @@ fn main() {
             // The phone page's host and relay (nightshift backlog 091): the
             // listener itself is off until Settings → Remote switches it on.
             remote::Remote::install(app.handle());
+            // The away server's sync (item 268 step 3): off until a URL is set.
+            away::start(app.handle());
             // The terminal pane's shells (nightshift backlog 113): none
             // open until the window asks; every one dies with the app.
             app.manage(terminal::Terminals::default());
@@ -7057,6 +7060,11 @@ fn main() {
             remote::remote_token,
             remote::remote_sent,
             remote::remote_done,
+            remote::remote_self_test,
+            away::away_status,
+            away::away_set_url,
+            away::away_sync_now,
+            away::away_set_project,
             terminal::terminal_open,
             terminal::terminal_write,
             terminal::terminal_resize,
@@ -7112,8 +7120,14 @@ fn main() {
             webtab::web_focused,
             webtab::web_find,
         ]))
-        .run(tauri::generate_context!())
-        .expect("error while running Nightloom");
+        .build(tauri::generate_context!())
+        .expect("error while building Nightloom")
+        .run(|app, event| {
+            // The away server's quit push (item 268 step 3), best effort.
+            if let tauri::RunEvent::Exit = event {
+                away::on_exit(app);
+            }
+        });
 }
 
 #[cfg(test)]

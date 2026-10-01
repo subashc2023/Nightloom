@@ -30,6 +30,7 @@
 //! headers yet (they need `tailscale serve` in front of the port; later).
 
 pub mod api;
+pub mod sync_routes;
 pub mod tailnet;
 pub mod token;
 mod voice_ws;
@@ -263,6 +264,12 @@ pub trait Host: Send + Sync + 'static {
     }
     /// The voice engine, when this host has one (`crate::voice::Engine::find`).
     fn voice(&self) -> Option<Arc<crate::voice::Engine>> {
+        None
+    }
+    /// The away server's sync home, when this host is one (`serve`): the
+    /// `/api/sync/*` routes ([`sync_routes`], item 268 step 3). `None` —
+    /// the desktop — serves none of them.
+    fn sync(&self) -> Option<Arc<crate::sync::SyncServer>> {
         None
     }
     /// A fresh subscriber to the event relay.
@@ -600,6 +607,7 @@ fn router(shared: Arc<Shared>) -> Router {
             "/notes/{scope}/{*name}",
             get(note_read).put(note_write).delete(note_delete),
         )
+        .merge(sync_routes::router(shared.host.sync()))
         // An explicit fallback so the bearer layer below covers a miss
         // too: without one an unknown `/api` path fell through to the
         // outer router's 404 *before* the token check, which let a caller

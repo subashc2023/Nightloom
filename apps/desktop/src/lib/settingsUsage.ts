@@ -62,7 +62,7 @@ export function settingsGroups(providerKinds: string[], searchBackendNames: stri
     { title: "Providers", panes: [...providerKinds] },
     { title: "Web search", panes: searchBackendNames.map((n) => "search:" + n) },
     { title: "Appearance", panes: ["appearance"] },
-    { title: "Remote", panes: ["remote"] },
+    { title: "Remote", panes: ["remote", "away"] },
   ];
 }
 
