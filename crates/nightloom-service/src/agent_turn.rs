@@ -16,6 +16,7 @@
 //! caller builds from the outcome (the desktop's `AgentTurn`, a chat name).
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use nightloom_core::{ChatMode, ContentBlock, Session, SessionEvent};
 use serde::Serialize;
@@ -27,6 +28,7 @@ use crate::agent::{
 };
 use crate::council::{self, CouncilRequest};
 use crate::turn::{TurnEvent, TurnInput};
+use crate::turn_timing::{self, Mark, TurnTiming};
 use crate::{ProviderKind, mcp_server, project};
 
 /// Which agent a recorded [`SessionEvent::AgentSession`] belongs to.
@@ -101,6 +103,12 @@ pub trait TurnEnv: Send + Sync {
     /// Keep `dir` on the turn's project (the card's *let the project see
     /// it*).
     async fn grant_to_project(&self, dir: &Path) -> ProjectGrant;
+    /// The message's timing line, begun where the host's command was
+    /// entered (item 256); `None` begins one at the turn's first line, as
+    /// `serve` does, with no window stages.
+    fn timing(&self) -> Option<Arc<TurnTiming>> {
+        None
+    }
 }
 
 /// One turn's inputs besides the environment.
@@ -137,9 +145,35 @@ pub enum AgentTurnEnd {
 
 /// Run one user turn on the agent engine, streaming `turn-event`s through
 /// `env` and recording into the session log (see [`Recorder`]).
+///
+/// Every turn writes its timing line (item 256, [`turn_timing`]) when it
+/// returns, whichever way.
 pub async fn run_agent_turn(
     run: AgentTurnRun<'_>,
     env: &dyn TurnEnv,
+) -> Result<AgentTurnEnd, String> {
+    let timing = env
+        .timing()
+        .unwrap_or_else(|| TurnTiming::begin(turn_timing::SERVE, None, turn_timing::log_path()));
+    timing.set_chat(run.chat_id);
+    timing.mark(Mark::Started);
+    let cancel = run.cancel;
+    let result = turn_body(run, env, &timing).await;
+    let outcome = match &result {
+        _ if cancel.is_cancelled() => "stopped",
+        Ok(AgentTurnEnd::StoppedInCouncil) => "stopped",
+        Ok(AgentTurnEnd::Done { outcome, .. }) if outcome.is_error => "error",
+        Ok(_) => "ok",
+        Err(_) => "error",
+    };
+    timing.end(outcome);
+    result
+}
+
+async fn turn_body(
+    run: AgentTurnRun<'_>,
+    env: &dyn TurnEnv,
+    timing: &Arc<TurnTiming>,
 ) -> Result<AgentTurnEnd, String> {
     let AgentTurnRun {
         agent,
@@ -286,10 +320,19 @@ pub async fn run_agent_turn(
         .unwrap_or_else(|| AGENT.into());
     // Rendered live and recorded in one pass.
     let mut recorder = Recorder::new(session, seed);
+    // The first text handed to the window (or the phone) — item 256.
+    let mut emitted = false;
     let mut on_event = |e: TurnEvent| {
         env.event(chat_id, &e);
+        if !emitted && matches!(e, TurnEvent::TextDelta { .. }) {
+            emitted = true;
+            timing.mark(Mark::Emitted);
+        }
         recorder.push(&e);
     };
+    // The chat's own processes mark the spawn, `init` and the first text;
+    // a council's seats above ran without it.
+    agent.set_timing(Some(timing.clone()));
     let mut result = agent.run_turn(input, cancel, &mut on_event).await;
 
     // The Ask position's round trip (backlog 084): one Nightloom turn spans
@@ -379,6 +422,8 @@ pub async fn run_agent_turn(
         }
     }
 
+    agent.set_timing(None);
+
     // The council's blocks (backlog 149), whichever way the chair ended.
     if let Some((request, results)) = &council_run {
         for r in results {
@@ -467,6 +512,187 @@ pub async fn run_agent_turn(
             // `finish` closes the calls a killed round left open.
             recorder.finish(Some("error"));
             Err(e.to_string())
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::agent::AgentSpec;
+    use crate::turn_timing::{Stages, TurnTiming, median};
+    use nightloom_core::{ChatKind, Usage};
+
+    /// A stand-in `claude`: the `init` line, one word streamed, the result.
+    fn stand_in(dir: &Path) -> String {
+        let body = r##"#!/bin/sh
+printf '%s\n' '{"type":"system","subtype":"init","cwd":"x","tools":[],"mcp_servers":[],"model":"claude-haiku-4-5","permissionMode":"default","session_id":"s-1"}'
+printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}},"parent_tool_use_id":null,"session_id":"s-1"}'
+printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hi"}]},"parent_tool_use_id":null}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"hi","session_id":"s-1","stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":2}}'
+"##;
+        let path = dir.join("claude-stand-in");
+        std::fs::write(&path, body).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    struct Env {
+        timing: Arc<TurnTiming>,
+    }
+
+    #[async_trait::async_trait]
+    impl TurnEnv for Env {
+        fn event(&self, _chat: &str, _event: &TurnEvent) {}
+        fn notice(&self, _text: String) {}
+        fn approval(&self, _prompt: &ApprovalPrompt<'_>) {}
+        async fn grant_to_project(&self, _dir: &Path) -> ProjectGrant {
+            ProjectGrant::NoProject
+        }
+        fn timing(&self) -> Option<Arc<TurnTiming>> {
+            Some(self.timing.clone())
+        }
+    }
+
+    /// `turns` stand-in turns in one chat whose log already holds
+    /// `history` exchanges; each turn's stages.
+    async fn run_turns(turns: usize, history: usize) -> (Vec<Stages>, String) {
+        crate::project::set_config_dir(
+            std::env::temp_dir().join(format!("nightloom-home-{}", std::process::id())),
+        );
+        let root = std::env::temp_dir().join(format!("nightloom-256-{}", uuid::Uuid::new_v4()));
+        let logs = root.join("sessions");
+        std::fs::create_dir_all(&logs).unwrap();
+        let mut session = Session::start(&logs, ChatMode::Normal, ChatKind::Build).unwrap();
+        for i in 0..history {
+            session.record_user_message(
+                format!("question {i} {}", "x".repeat(400)),
+                vec![],
+                vec![],
+                false,
+            );
+            session.record_assistant(
+                "claude-haiku-4-5",
+                vec![ContentBlock::Text {
+                    text: format!("answer {i} {}", "y".repeat(1600)),
+                }],
+                Some("end_turn".into()),
+                Usage::default(),
+            );
+        }
+        let mut spec = AgentSpec::new(&root);
+        spec.binary = stand_in(&root);
+        let mut agent = ClaudeCodeAgent::new(spec);
+        let ask = AskGate::new();
+        let log = root.join("turn-timing.log");
+        let chat = session.id.clone();
+        let mut all = Vec::new();
+        for _ in 0..turns {
+            let timing = TurnTiming::begin(turn_timing::DESKTOP, None, Some(log.clone()));
+            let env = Env {
+                timing: timing.clone(),
+            };
+            let cancel = CancellationToken::new();
+            let end = run_agent_turn(
+                AgentTurnRun {
+                    agent: &mut agent,
+                    session: &mut session,
+                    chat_id: &chat,
+                    input: TurnInput::from("hello"),
+                    spoken: false,
+                    council: None,
+                    cancel: &cancel,
+                    ask_dir: None,
+                    ask: &ask,
+                },
+                &env,
+            )
+            .await;
+            assert!(matches!(end, Ok(AgentTurnEnd::Done { .. })));
+            all.push(timing.stages());
+        }
+        (all, std::fs::read_to_string(&log).unwrap_or_default())
+    }
+
+    /// Item 256: every turn writes one line with each Rust stage reached,
+    /// in order, and no message text.
+    #[tokio::test]
+    async fn each_turn_writes_one_timing_line_with_every_stage_in_order() {
+        let (stages, text) = run_turns(3, 0).await;
+        assert_eq!(text.lines().count(), 3, "{text}");
+        for l in text.lines() {
+            assert!(l.contains("turn desktop chat "), "{l}");
+            assert!(
+                !l.contains("hello") && !l.contains(" hi"),
+                "message text on the line: {l}"
+            );
+            for stage in [
+                "turn +",
+                "spawned +",
+                "init +",
+                "first text +",
+                "emitted +",
+                "end +",
+            ] {
+                assert!(l.contains(stage), "{stage} missing: {l}");
+            }
+            // No window here: its stages are absent, not zero.
+            assert!(l.contains("sent -") && l.contains("painted -"), "{l}");
+            assert!(l.trim_end().ends_with("; ok"), "{l}");
+        }
+        for s in &stages {
+            let order = [
+                s.entered,
+                s.turn,
+                s.spawned,
+                s.init,
+                s.first_text,
+                s.emitted,
+                s.end,
+            ];
+            let v: Vec<u64> = order
+                .iter()
+                .map(|x| x.expect("every stage reached"))
+                .collect();
+            assert!(v.windows(2).all(|w| w[0] <= w[1]), "{v:?}");
+        }
+    }
+
+    /// Two stages of a turn, the span between them.
+    type Span = dyn Fn(&Stages) -> (Option<u64>, Option<u64>);
+
+    /// The 256 measurement (`cargo test … measure_ -- --ignored
+    /// --nocapture`): the medians of Nightloom's own stages over 10
+    /// stand-in turns, on a fresh chat and on one with 400 exchanges.
+    #[tokio::test]
+    #[ignore]
+    async fn measure_nightloom_stages_over_ten_stand_in_turns() {
+        for history in [0usize, 400] {
+            let (stages, _) = run_turns(10, history).await;
+            let d = |f: &Span| {
+                median(
+                    stages
+                        .iter()
+                        .map(|s| {
+                            let (a, b) = f(s);
+                            b.unwrap() as i64 - a.unwrap() as i64
+                        })
+                        .collect(),
+                )
+                .unwrap()
+            };
+            println!(
+                "history {history}: entered→turn {} ms, turn→spawned {} ms, spawned→init {} ms, \
+                 init→first text {} ms, first text→emitted {} ms, emitted→end {} ms, total {} ms",
+                d(&|s| (s.entered, s.turn)),
+                d(&|s| (s.turn, s.spawned)),
+                d(&|s| (s.spawned, s.init)),
+                d(&|s| (s.init, s.first_text)),
+                d(&|s| (s.first_text, s.emitted)),
+                d(&|s| (s.emitted, s.end)),
+                d(&|s| (s.entered, s.end)),
+            );
         }
     }
 }

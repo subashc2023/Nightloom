@@ -91,6 +91,7 @@ import { CONNECT_DEADLINE_MS, withDeadline } from "./deadline";
 import { rewoundWrites, setAsideFiles } from "./rewoundFiles";
 import type { TabContent, Workspace } from "./tabs";
 import { UNFILED_TABS, loadSavedWorkspaces, rebuild, saveWorkspaceFor, snapshot } from "./tabsStore";
+import { turnClock } from "./turnTiming";
 import {
   buildNotices,
   dailyDue,
@@ -5967,6 +5968,8 @@ export async function send(
   council: CouncilRequest | null = null,
 ): Promise<void> {
   if (!app.connection || app.busy) return;
+  // Send pressed: the timing line's zero (item 256).
+  turnClock.sent();
   const spoken = turnSpoken;
   stopped = false;
   // A turn the model answers is not undoable, and nothing under it is:
@@ -6131,6 +6134,7 @@ async function sendAgent(
   startBudgetPoll(app.activeSessionId, turnTyped);
   let failed: string | null = null;
   try {
+    turnClock.invoked(turn.key);
     const res = await api.sendAgent(
       text,
       images.length > 0 ? images : undefined,
@@ -6178,6 +6182,8 @@ async function sendAgent(
     }
     app.error = failed;
   } finally {
+    // The window's timing marks, if no paint sent them (item 256).
+    turnClock.ended(turn.key);
     if (!turn.detached) await endForeground();
   }
   /** The turn's end with its chat on screen (or parked) — everything that

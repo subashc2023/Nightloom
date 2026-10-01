@@ -3080,6 +3080,15 @@ async fn send_agent(
     // keeps his words marked `spoken`; the CLI gets them with the note.
     spoken: Option<bool>,
 ) -> Result<AgentTurn, String> {
+    // The message's timing line (nightshift item 256): begun here, before
+    // any lock, under the window's name for the turn — its Send, call and
+    // first-paint marks arrive by `turn_timing_window`.
+    let timing = nightloom_service::turn_timing::TurnTiming::begin(
+        nightloom_service::turn_timing::DESKTOP,
+        stop_key.clone(),
+        nightloom_service::turn_timing::log_path(),
+    );
+    let _timing_end = timing.end_guard();
     if let Some(c) = &council {
         c.validate().map_err(|e| e.to_string())?;
     }
@@ -3197,6 +3206,7 @@ async fn send_agent(
         app: &app,
         state: &state,
         turn_project,
+        timing: timing.clone(),
     };
     let end = run_agent_turn(
         AgentTurnRun {
@@ -3294,6 +3304,22 @@ async fn send_agent(
     })
 }
 
+/// The window's marks for one agent turn (nightshift item 256): when Send
+/// was pressed, when `send_agent` was called, and the frame that drew the
+/// first text, as epoch ms (`turnTiming.ts`). `key` is the turn's stop key.
+/// The line in `turn-timing.log` is written with them.
+#[tauri::command]
+fn turn_timing_window(key: String, sent: u64, invoked: Option<u64>, painted: Option<u64>) {
+    nightloom_service::turn_timing::window_marks(
+        &key,
+        nightloom_service::turn_timing::WindowMarks {
+            sent,
+            invoked,
+            painted,
+        },
+    );
+}
+
 /// What [`run_agent_turn`] needs of the window (item 268, step 1): its
 /// events, and the project registry a folder granted "for the project"
 /// is kept in — the turn's own project (backlog 159, A4), which may no
@@ -3302,6 +3328,8 @@ struct DesktopTurnEnv<'a> {
     app: &'a AppHandle,
     state: &'a AppState,
     turn_project: Option<String>,
+    /// Begun at `send_agent`'s first line (item 256).
+    timing: Arc<nightloom_service::turn_timing::TurnTiming>,
 }
 
 #[async_trait::async_trait]
@@ -3316,6 +3344,10 @@ impl TurnEnv for DesktopTurnEnv<'_> {
 
     fn approval(&self, prompt: &ApprovalPrompt<'_>) {
         let _ = self.app.emit("tool-approval", prompt);
+    }
+
+    fn timing(&self) -> Option<Arc<nightloom_service::turn_timing::TurnTiming>> {
+        Some(self.timing.clone())
     }
 
     async fn grant_to_project(&self, dir: &Path) -> ProjectGrant {
@@ -6856,6 +6888,14 @@ fn main() {
                 AGENT_BINARY.to_string(),
                 |b: String| async move { agent_version(&b).await },
             ));
+            // Item 256: and the binary it hands the CLI as its MCP server
+            // and hooks — this one — run once the way the CLI runs it.
+            if let Ok(exe) = std::env::current_exe() {
+                tauri::async_runtime::spawn(connect_deadline::warm_hook(
+                    exe,
+                    connect_deadline::log_path(),
+                ));
+            }
             // App-data is now the *previous* home for unfiled chats, kept
             // only long enough to move them. A user who has been running this
             // app has a sidebar full of them, and a release that silently
@@ -6955,6 +6995,7 @@ fn main() {
             turn_session,
             send,
             send_agent,
+            turn_timing_window,
             council_turns,
             provider_credits,
             ask_aside,

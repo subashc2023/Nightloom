@@ -300,6 +300,36 @@ where
     }
 }
 
+/// At launch (nightshift item 256): run the binary Nightloom hands the CLI
+/// as its MCP server and hooks — this app's own executable — once, the
+/// way the CLI will, so a first-run cost the OS charges a new executable
+/// (11.2 s measured for a fresh build's `--subagent-hook`, 2026-09-30;
+/// 13–15 ms after) is not paid inside his first message's tool call or
+/// MCP start. `--subagent-hook` with no directory exits at once with a
+/// usage error, touching nothing. The time goes on connect.log beside
+/// `warm_probe`'s, so the installed app says whether its own launch had
+/// already paid it.
+pub async fn warm_hook(exe: PathBuf, log: Option<PathBuf>) {
+    let started = Instant::now();
+    let status = tokio::process::Command::new(&exe)
+        .arg("--subagent-hook")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .status()
+        .await;
+    if let Some(log) = log {
+        let line = format!(
+            "{} warm_hook: {} total {} ms",
+            chrono::Utc::now().to_rfc3339(),
+            if status.is_ok() { "ran" } else { "error" },
+            started.elapsed().as_millis()
+        );
+        append(&log, &line);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -522,5 +552,21 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
+    }
+
+    /// Item 256: the hook warm-up runs the binary once and says how long
+    /// it took on the log, whatever the binary answered.
+    #[tokio::test]
+    async fn the_hook_warm_up_runs_the_binary_once_and_logs_its_time() {
+        let dir = scratch("warm-hook");
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("connect.log");
+        warm_hook(PathBuf::from("/usr/bin/false"), Some(log.clone())).await;
+        warm_hook(dir.join("no-such-binary"), Some(log.clone())).await;
+        let text = std::fs::read_to_string(&log).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2, "{text}");
+        assert!(lines[0].contains("warm_hook: ran total "), "{text}");
+        assert!(lines[1].contains("warm_hook: error total "), "{text}");
     }
 }
