@@ -135,6 +135,15 @@ describe("socket", () => {
     s.close();
     expect(closedClean).toBe(true);
   });
+
+  it("Speak it sends the text in a speak frame (wave 3 B2)", () => {
+    const { w, sent } = wire();
+    const s = new VoiceSocket("tok", "c1", { onFrame: () => {}, onAudio: () => {}, onClose: () => {} }, () => w);
+    w.readyState = 1;
+    w.onopen!({} as Event);
+    s.speak("The fix is in. I've put the code on screen.");
+    expect(JSON.parse(sent[1] as string)).toEqual({ t: "speak", text: "The fix is in. I've put the code on screen." });
+  });
 });
 
 describe("dictation fallback", () => {

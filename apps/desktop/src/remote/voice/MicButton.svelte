@@ -23,6 +23,7 @@
     still = false,
     send,
     onkeep,
+    reply,
   }: {
     token: string | null;
     chat: string | null;
@@ -35,6 +36,9 @@
     send: () => void;
     /** His words the host could not send, for the composer. */
     onkeep: (text: string) => void;
+    /** The chat's last reply as speakable text, read fresh (wave 3 B2's
+     *  "Speak it"); null while there is none or a turn still runs. */
+    reply?: () => Promise<string | null>;
   } = $props();
 
   let open = $state(false);
@@ -107,7 +111,7 @@
 {/if}
 
 {#if open && token}
-  <Voice {token} {chat} {title} {ctx} {still} onclose={closed} {onkeep} />
+  <Voice {token} {chat} {title} {ctx} {still} onclose={closed} {onkeep} {reply} />
 {/if}
 
 <style>

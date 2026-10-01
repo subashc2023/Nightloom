@@ -10,6 +10,9 @@ import type { SubagentLimits } from "../lib/catalog";
 import type { WireView } from "../lib/types";
 import type { ContextReply, LayerChange } from "./ContextSheet.svelte";
 import { isCouncilBlock } from "../lib/council";
+// Pure over the log (only a type import inside): the desktop's per-reply
+// sizes, so the phone's line under a reply says the Mac's number.
+import { fmtTokens, turnSizes, type TurnSize } from "../lib/tokens";
 
 export const TOKEN_KEY = "nightloom.remote.token";
 export const QUEUE_KEY = "nightloom.remote.queue";
@@ -67,6 +70,22 @@ export interface RemoteState {
    *  before the field — the only host "older than the phone page" is true
    *  of (`missingSentence` in `hosts.ts`). */
   host?: "mac" | "serve";
+  /** The desktop's chosen palette id (wave 3 B1, blocker 577): "A"–"D";
+   *  absent or null on serve and on a Mac from before the field. */
+  palette?: string | null;
+  /** A turn the plan's usage limit paused (wave 3 B1, item 164): the
+   *  chat, when the window resets and which window. Absent or null when
+   *  nothing is paused. */
+  limit_pause?: LimitPauseWire | null;
+}
+
+/** `/api/state.limit_pause` (B1's `{ chat, resets_at, window }`). The
+ *  reset is read in whichever form the host sends: unix seconds (the
+ *  CLI's), unix ms (the window's `resetsAtMs`) or an ISO time. */
+export interface LimitPauseWire {
+  chat: string | null;
+  resets_at: number | string | null;
+  window?: string | null;
 }
 
 /** Whether the host serves `name` (design §4's `features`). */
@@ -1433,4 +1452,200 @@ export function shortWhen(iso: string, now = new Date()): string {
   const days = (now.getTime() - d.getTime()) / 86400000;
   if (days < 7 && days > 0) return d.toLocaleDateString("en-US", { weekday: "long" });
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+// ---- wave 3 B2: the missing buttons, the limit card, speak the reply --------
+
+/** A clock time for him, 12-hour (practices §4): "3:10 AM"; another day's
+ *  gets its date ("Oct 1, 3:10 AM"). */
+export function clock12(ms: number, nowMs: number = Date.now()): string {
+  const d = new Date(ms);
+  const hm = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  return d.toDateString() === new Date(nowMs).toDateString() ? hm : `${d.toLocaleDateString("en-US", { month: "short", day: "numeric" })}, ${hm}`;
+}
+
+/** `limit_pause.resets_at` as unix ms, whatever form it came in; null
+ *  when unknown or unreadable. Under 10^12 is seconds (the CLI's number). */
+export function resetMs(at: number | string | null | undefined): number | null {
+  if (at == null || at === "") return null;
+  if (typeof at === "number") return Number.isFinite(at) && at > 0 ? (at < 1e12 ? at * 1000 : at) : null;
+  const n = Number(at);
+  if (Number.isFinite(n) && /^\d+(\.\d+)?$/.test(at.trim())) return resetMs(n);
+  const t = Date.parse(at);
+  return Number.isNaN(t) ? null : t;
+}
+
+/** The margin after the reset before a resume may go — the desktop's
+ *  `RESUME_MARGIN_MS` (limit.ts): the clocks are two. */
+export const RESUME_MARGIN_MS = 30_000;
+
+/** The limit card on the phone (item 164): what it says and what its
+ *  button says. `early`: the window has not reset yet, so Resume asks
+ *  the host to schedule the continue for the reset — the page never
+ *  sends anything sooner itself. */
+export interface LimitCard {
+  label: string;
+  button: string;
+  early: boolean;
+  /** When the resume will go (the reset), ms; null when unknown. */
+  at: number | null;
+}
+
+export function limitCard(p: LimitPauseWire, nowMs: number = Date.now()): LimitCard {
+  const which = p.window === "seven_day" ? "weekly" : p.window === "five_hour" ? "5-hour" : "usage";
+  const at = resetMs(p.resets_at);
+  if (at == null) return { label: `Paused by the ${which} limit`, button: "Resume", early: false, at: null };
+  const early = at + RESUME_MARGIN_MS > nowMs;
+  const when = clock12(at, nowMs);
+  return early
+    ? { label: `Paused by the ${which} limit · resumes at ${when}`, button: `Resume at ${when}`, early, at }
+    : { label: `Paused by the ${which} limit · the window has reset`, button: "Resume", early, at };
+}
+
+/** What Resume sends: always the host's own resume, which schedules it
+ *  for the reset when early (never a plain message from the page). */
+export function resumeAction(): ChatAction {
+  return { op: "resume_limit" };
+}
+
+/** The chat actions wave B adds buttons for. On the Mac `act` carries
+ *  every op; serve names each op it serves in `features` (B1: "truthfully
+ *  absent" until it does), so a missing name there greys the button. */
+export type ExtraOp = "compact" | "checkpoint" | "budget" | "resume_limit";
+
+export function canOp(state: RemoteState, op: ExtraOp): boolean {
+  if (!hasFeature(state, "act")) return false;
+  return state.host !== "serve" || hasFeature(state, op);
+}
+
+/** The budget hook's ledger as `/api/running.budget` carries it (the
+ *  desktop's `TurnBudget`); only the fields the phone reads. */
+export interface BudgetLedger {
+  budget_pct: number;
+  stop_at: number;
+  start_pct: number | null;
+  latest_pct: number | null;
+  resets_at: number | null;
+  pending_since_ms?: number | null;
+  holds?: number[];
+}
+
+/** A call is held at the stop line for his answer — the desktop's
+ *  `heldNow` (budget.ts): the pending mark, and a hold not yet past. */
+export function budgetHeld(b: unknown, nowMs: number = Date.now()): BudgetLedger | null {
+  if (!b || typeof b !== "object") return null;
+  const l = b as BudgetLedger;
+  if (!l.pending_since_ms) return null;
+  const holds = Array.isArray(l.holds) ? l.holds : [];
+  return holds.length === 0 || holds.some((d) => d > nowMs) ? l : null;
+}
+
+/** The Mac's stop card in words, 12-hour (backlog 189). */
+export function budgetCard(l: BudgetLedger, nowMs: number = Date.now()): { title: string; detail: string } {
+  const spent = l.start_pct != null && l.latest_pct != null ? Math.max(0, l.latest_pct - l.start_pct) : null;
+  const detail = [
+    l.latest_pct == null ? "" : `the window is at ${l.latest_pct}%`,
+    spent == null ? "" : `this message has spent ${spent}% of its ${l.budget_pct}%`,
+    l.resets_at ? `it resets at ${clock12(l.resets_at * 1000, nowMs)}` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return { title: `Stopped at ${l.stop_at}% of the 5-hour window`, detail };
+}
+
+/** The budget card's three answers, as the Mac's card sends them. */
+export function budgetAction(decision: "continue" | "wrap" | "stop"): ChatAction {
+  return { op: "budget", decision, text: null };
+}
+
+export function checkpointAction(index: number): ChatAction {
+  return { op: "checkpoint", index };
+}
+
+/** What a code block becomes when spoken — `split.rs`'s `CODE_ON_SCREEN`. */
+export const CODE_ON_SCREEN = "I've put the code on screen.";
+
+/** The text "Speak it" reads aloud: the last reply's prose as it stands in
+ *  the context (removed parts left out, edits in), every fenced code block
+ *  replaced by `CODE_ON_SCREEN` — once per reply, as `split.rs` does.
+ *  Null when the chat ends without a reply to speak (his message last). */
+export function speakText(events: SessionEvent[]): string | null {
+  const rows = transcriptRows(events);
+  let last: Row | null = null;
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const r = rows[i];
+    if (r.kind === "note") continue;
+    last = r;
+    break;
+  }
+  if (!last || last.kind !== "assistant") return null;
+  const raw = last.parts
+    .filter((p) => !p.removed && p.text)
+    .map((p) => p.text)
+    .join("\n\n");
+  const out: string[] = [];
+  let fence = false;
+  let saidCode = false;
+  for (const line of raw.split("\n")) {
+    if (/^\s*(```|~~~)/.test(line)) {
+      if (!fence && !saidCode) {
+        out.push(CODE_ON_SCREEN);
+        saidCode = true;
+      }
+      fence = !fence;
+      continue;
+    }
+    if (!fence) out.push(line);
+  }
+  const text = out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  return text ? text : null;
+}
+
+/** `claude-opus-5-5` → `opus 5.5` (the desktop's `shortModel`). */
+export function shortModel(m: string | undefined | null): string {
+  if (!m) return "";
+  const x = /^claude-([a-z]+)-(\d+)-(\d+)/.exec(m);
+  return x ? `${x[1]} ${x[2]}.${x[3]}` : m;
+}
+
+/** The line under a reply (as the Mac's model header and footer say it):
+ *  "opus 5.5 · 1.2k tokens · $0.04". The figure is what the reply added
+ *  to the context (`turnSizes`), else its output; the cost when recorded.
+ *  "" for a reply with nothing recorded. */
+export function replyLine(events: SessionEvent[], row: Row, sizes: (TurnSize | null)[]): string {
+  if (row.kind !== "assistant") return "";
+  let tokens = 0;
+  let sized = false;
+  let out = 0;
+  let cost: number | null = null;
+  for (const i of row.indexes) {
+    const e = events[i];
+    if (!e || e.event !== "assistant_message") continue;
+    const s = sizes[i];
+    if (s) {
+      tokens += s.tokens;
+      sized = true;
+    }
+    out += e.usage?.output_tokens ?? 0;
+    if (typeof e.cost === "number") cost = (cost ?? 0) + e.cost;
+  }
+  const parts = [shortModel(row.model)];
+  if (sized) parts.push(`${fmtTokens(tokens)} tokens`);
+  else if (out > 0) parts.push(`${out.toLocaleString("en-US")} out`);
+  if (cost != null) parts.push(cost > 0 && cost < 0.01 ? `$${cost.toFixed(4)}` : `$${cost.toFixed(2)}`);
+  return parts.filter(Boolean).join(" · ");
+}
+
+/** Every event's size (`tokens.ts`), for `replyLine`. */
+export function replySizes(events: SessionEvent[]): (TurnSize | null)[] {
+  return turnSizes(events, liveFlags(events));
+}
+
+/** The log index "Checkpoint here" names for a message (the Mac's
+ *  `setCheckpoint(index)`: a fork starts after the exchange it belongs
+ *  to): his message's own index, a reply's last event. Null on a note. */
+export function rowCheckpoint(row: Row): number | null {
+  if (row.kind === "user") return row.index;
+  if (row.kind === "assistant") return row.indexes.length > 0 ? row.indexes[row.indexes.length - 1] : null;
+  return null;
 }

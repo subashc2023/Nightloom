@@ -7,9 +7,14 @@
    * Mac merges the patch and reconnects); the limits' numbers gather here
    * and go on Apply, so a run of taps is one reconnect. Rendered inside the
    * page's sheet; the page talks to the Mac (`onpatch`).
+   *
+   * Wave 3 B2 (666): thinking, on a provider engine (Claude Code thinks by
+   * its effort), and the council's seats and mode — gathered like the
+   * limits and sent on Apply. Keys, folder pickers and the CLI update stay
+   * on the Mac.
    */
-  import { AGENT_MODELS, SUBAGENT_MODELS, SUBAGENT_MODEL_LABELS, type SubagentLimits, type SubagentModel } from "../lib/catalog";
-  import type { Rail, RailPatch } from "./client";
+  import { AGENT_MODELS, SUBAGENT_MODELS, SUBAGENT_MODEL_LABELS, thinkingSupport, type SubagentLimits, type SubagentModel } from "../lib/catalog";
+  import { COUNCIL_MODELS, MAX_SEATS, councilProblem, type CouncilSeat, type Rail, type RailPatch } from "./client";
 
   interface Props {
     rail: Rail | null;
@@ -35,6 +40,34 @@
   let limits = $state<SubagentLimits | null>(null);
 
   const shown = $derived(limits ?? rail?.limits ?? null);
+
+  /** Thinking's choices for the Mac's provider and model; a token budget
+   *  needs its number, set on the Mac, so it is offered only as shown. */
+  const thinking = $derived.by(() => {
+    if (!rail || rail.thinking === undefined || rail.engine === "claude-code") return null;
+    const support = thinkingSupport(rail.provider ?? "", rail.model ?? "");
+    return { choices: support.choices.filter((c) => c.value !== "budget"), note: support.note, budget: rail.thinking === "budget" };
+  });
+
+  /** The council as edited here, before Apply; null when untouched. */
+  let council = $state<{ seats: CouncilSeat[]; mode: "answer" | "disproof" } | null>(null);
+  const seats = $derived(council ?? (rail?.council ? { seats: rail.council.seats, mode: rail.council.mode } : null));
+  const seatProblem = $derived(council ? councilProblem(council.seats) : null);
+
+  function editCouncil(f: (c: { seats: CouncilSeat[]; mode: "answer" | "disproof" }) => void) {
+    const base = seats ?? { seats: [{ model: "opus" }, { model: "sonnet" }], mode: "answer" as const };
+    const next = { seats: base.seats.map((x) => ({ ...x })), mode: base.mode };
+    f(next);
+    council = next;
+  }
+
+  async function applyCouncil() {
+    if (!council || saving || seatProblem) return;
+    saving = true;
+    const ok = await onpatch({ council });
+    saving = false;
+    if (ok) council = null;
+  }
   const approval = $derived(rail?.plan ? "plan" : rail?.ask ? "ask" : "auto");
   const otherModel = $derived(rail?.model && !ALIASES.includes(rail.model) ? rail.model : null);
 
@@ -102,6 +135,17 @@
     </div>
   {/if}
 
+  {#if thinking}
+    <div class="rs-label">Thinking</div>
+    <div class="rs-pills" role="radiogroup" aria-label="Thinking">
+      {#each thinking.choices as c (c.value)}
+        <button class:on={(rail.thinking ?? "default") === c.value} disabled={saving} onclick={() => apply({ thinking: c.value })}>{c.label}</button>
+      {/each}
+      {#if thinking.budget}<button class="on" disabled>budget (set on the Mac)</button>{/if}
+    </div>
+    <small class="rs-small">{thinking.note}</small>
+  {/if}
+
   {#if rail.ask !== undefined || rail.plan !== undefined}
     <div class="rs-label">Approvals</div>
     <div class="rs-seg" role="radiogroup" aria-label="Approvals">
@@ -150,9 +194,65 @@
       </div>
     {/if}
   {/if}
+
+  {#if rail.council !== undefined}
+    <div class="rs-label">Council</div>
+    <div class="rs-box" data-part="council">
+      <div class="rs-row col">
+        <span>What it does</span>
+        <div class="rs-seg small" role="radiogroup" aria-label="Council mode">
+          <button class:on={(seats?.mode ?? "answer") === "answer"} disabled={saving} onclick={() => editCouncil((c) => (c.mode = "answer"))}>answer</button>
+          <button class:on={seats?.mode === "disproof"} disabled={saving} onclick={() => editCouncil((c) => (c.mode = "disproof"))}>disproof</button>
+        </div>
+      </div>
+      {#each seats?.seats ?? [] as seat, i (i)}
+        <div class="rs-row col">
+          <span class="rs-seat">
+            Seat {i + 1}
+            <button class="rs-x" aria-label="Remove seat {i + 1}" disabled={saving} onclick={() => editCouncil((c) => c.seats.splice(i, 1))}>×</button>
+          </span>
+          <div class="rs-seg small" role="radiogroup" aria-label="Seat {i + 1} model">
+            {#each COUNCIL_MODELS as m (m)}
+              <button class:on={seat.model === m} disabled={saving} onclick={() => editCouncil((c) => (c.seats[i] = { ...c.seats[i], model: m }))}>{m}</button>
+            {/each}
+          </div>
+        </div>
+      {/each}
+      <button class="rs-btn" disabled={saving || (seats?.seats.length ?? 0) >= MAX_SEATS} onclick={() => editCouncil((c) => c.seats.push({ model: "sonnet" }))}>Add a seat</button>
+      {#if seatProblem}<p class="rs-bad">{seatProblem}</p>{/if}
+    </div>
+    {#if council}
+      <div class="rs-actions">
+        <button class="rs-btn" disabled={saving} onclick={() => (council = null)}>Undo changes</button>
+        <span class="rs-grow"></span>
+        <button class="rs-btn accent" data-act="council-apply" disabled={saving || !!seatProblem} onclick={applyCouncil}>Apply council</button>
+      </div>
+    {/if}
+  {/if}
 {/if}
 
 <style>
+  .rs-small {
+    font-size: 12px;
+    color: var(--dim);
+    margin-top: -4px;
+  }
+  .rs-seat {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .rs-x {
+    all: unset;
+    cursor: pointer;
+    width: 32px;
+    height: 32px;
+    text-align: center;
+    line-height: 32px;
+    border-radius: 16px;
+    color: var(--dim);
+    font-size: 20px;
+  }
   .rs-title {
     font-weight: 600;
     font-size: 17px;

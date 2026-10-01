@@ -11,7 +11,7 @@
    * refused Save leaves it there to be offered back; only Save, Send or a
    * confirmed Discard drops it.
    */
-  import { editAction, loadDraft, rowRemoval, saveDraft, type ChatAction, type Row, type TextPart, type ToolRow } from "./client";
+  import { checkpointAction, editAction, loadDraft, rowCheckpoint, rowRemoval, saveDraft, type ChatAction, type Row, type TextPart, type ToolRow } from "./client";
   import { missingSentence } from "./hosts";
 
   interface Props {
@@ -27,6 +27,8 @@
     canAct: boolean;
     /** `/api/state`'s `host`, for the sentence when a feature is missing. */
     host?: string | null;
+    /** The host serves "Checkpoint here" (wave 3 B2, `canOp`). */
+    checkpoint?: boolean;
     /** Why the log cannot be changed now, when it cannot (a turn runs). */
     blocked: string | null;
     onact: (actions: ChatAction[], label: string, starts?: boolean) => Promise<boolean>;
@@ -38,7 +40,7 @@
     onwhole?: () => void;
     onclose: () => void;
   }
-  let { chat, row, part = null, tool = null, rewind, fork, canAct, host = undefined, blocked, problem = null, onact, oncopy, onwhole, onclose }: Props = $props();
+  let { chat, row, part = null, tool = null, rewind, fork, canAct, host = undefined, checkpoint = false, blocked, problem = null, onact, oncopy, onwhole, onclose }: Props = $props();
 
   /** What an Edit changes: his message, or one text block of a reply. */
   const editTarget = $derived.by((): { index: number; block: number | null; text: string } | null => {
@@ -65,6 +67,9 @@
   );
   const copyText = $derived(tool ? tool.summary : part ? part.text : row.kind === "note" ? row.text : row.text);
   const dead = $derived(!canAct || blocked !== null);
+  /** Where "Checkpoint here" points: helpers fork from after this
+   *  message's exchange (the Mac's "fork from here" checkpoint). */
+  const mark = $derived(tool || part ? null : rowCheckpoint(row));
 
   function beginEdit(send: boolean) {
     if (!editTarget) return;
@@ -121,7 +126,7 @@
   }
 </script>
 
-{#snippet ico(name: "copy" | "pencil" | "send" | "minus" | "restore" | "rewind" | "fork")}
+{#snippet ico(name: "copy" | "pencil" | "send" | "minus" | "restore" | "rewind" | "fork" | "flag")}
   <svg class="ico" viewBox="0 0 24 24" aria-hidden="true">
     {#if name === "copy"}<rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" />
     {:else if name === "pencil"}<path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
@@ -129,6 +134,7 @@
     {:else if name === "minus"}<circle cx="12" cy="12" r="9" /><path d="M8 12h8" />
     {:else if name === "restore"}<path d="M4 12a8 8 0 1 0 2.3-5.6M4 4v4h4" />
     {:else if name === "rewind"}<path d="M11 18 5 12l6-6M19 18l-6-6 6-6" />
+    {:else if name === "flag"}<path d="M5 21V4M5 4h11l-2 4 2 4H5" />
     {:else if name === "fork"}<circle cx="6" cy="5" r="2" /><circle cx="6" cy="19" r="2" /><circle cx="18" cy="8" r="2" /><path d="M6 7v10M18 10c0 4-6 3-11 7" />
     {/if}
   </svg>
@@ -162,6 +168,12 @@
       {#if fork !== null}
         <button disabled={dead || working} onclick={() => run([{ op: "fork", upto: fork! }], "Forked — this is the new chat")}>{@render ico("fork")} Fork here</button>
       {/if}
+      {#if mark !== null && canAct && !removed}
+        <button data-act="checkpoint" disabled={dead || working || !checkpoint} onclick={() => run([checkpointAction(mark!)], "Checkpoint set — helpers fork from here")}>
+          {@render ico("flag")}
+          <span class="mm-grow">Checkpoint here{#if !checkpoint}<small class="mm-why">{missingSentence(host, "This Mac's Nightloom is older than the phone page.")}</small>{/if}</span>
+        </button>
+      {/if}
     {/if}
   </div>
   {#if !part && !tool && rewind !== null}
@@ -191,6 +203,11 @@
 {/if}
 
 <style>
+  .mm-why {
+    display: block;
+    font-size: 12px;
+    color: var(--dim);
+  }
   .mm-title {
     font-weight: 600;
     font-size: 17px;
