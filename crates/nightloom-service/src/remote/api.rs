@@ -59,6 +59,21 @@ pub mod feature {
     /// `POST /api/chats/{id}/aside`, `…/aside/cancel`, `GET …/asides`
     /// (wave 2).
     pub const ASIDE: &str = "aside";
+    /// `/api/nightshift/…` (wave 5, blocker 669's default): the queue, an
+    /// item, a new item, open blockers and their answers, the mornings.
+    /// The listener lists it itself, only while the host has a Nightshift
+    /// project ([`super::Host::nightshift_roots`]); a host never names it.
+    pub const NIGHTSHIFT: &str = "nightshift";
+    /// `POST /api/dream`, `POST /api/capture` (wave 5).
+    pub const DREAM: &str = "dream";
+    pub const CAPTURE: &str = "capture";
+    /// The `act` ops a host may lack while it has `act` (wave 5): one name
+    /// each, so the phone can grey out Compact on the away server (Claude
+    /// Code keeps its own history) and still offer Budget.
+    pub const COMPACT: &str = "compact";
+    pub const CHECKPOINT: &str = "checkpoint";
+    pub const BUDGET: &str = "budget";
+    pub const RESUME_LIMIT: &str = "resume_limit";
     /// Every name, for a host that serves the lot and for tests.
     pub const ALL: &[&str] = &[
         ACT,
@@ -77,6 +92,13 @@ pub mod feature {
         SPOKEN,
         VOICE,
         ASIDE,
+        NIGHTSHIFT,
+        DREAM,
+        CAPTURE,
+        COMPACT,
+        CHECKPOINT,
+        BUDGET,
+        RESUME_LIMIT,
     ];
 }
 
@@ -92,6 +114,38 @@ pub struct StateReply {
     /// Which host answered: `mac` or `serve` ([`super::Host::kind`]).
     #[serde(default = "mac")]
     pub host: String,
+    /// The desktop's chosen colour palette (`A`–`D`, Settings →
+    /// Appearance; blocker 577), for the page to follow. `None` on the
+    /// away server, and from a Mac whose window has not said yet.
+    #[serde(default)]
+    pub palette: Option<String>,
+    /// A turn paused by the plan's usage limit (backlog 164), the same
+    /// shape from both hosts; `None` when nothing is paused.
+    #[serde(default)]
+    pub limit_pause: Option<LimitPause>,
+}
+
+/// A turn the plan's usage limit paused (nightshift backlog 164), as
+/// `/api/state` carries it: the Mac's from its window's `app.limitPause`,
+/// the away server's from its own last turn. Times are Unix seconds.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct LimitPause {
+    /// The chat the turn ran in (`None`: the Mac's pending new chat).
+    pub chat: Option<String>,
+    /// When the window opens again, when the CLI said.
+    pub resets_at: Option<i64>,
+    /// `five_hour`, `seven_day`, when the CLI said.
+    pub window: Option<String>,
+    /// The CLI's own sentence.
+    #[serde(default)]
+    pub text: String,
+    /// The spawning calls of the subagents that died on it.
+    #[serde(default)]
+    pub subagents: Vec<String>,
+    /// A resume is scheduled for this time (the reset plus 30 s); `None`
+    /// when none is.
+    #[serde(default)]
+    pub resume_at: Option<i64>,
 }
 
 fn mac() -> String {
@@ -188,6 +242,19 @@ impl ChatAction {
 pub struct ActReply {
     pub chat: String,
     pub events: Vec<SessionEvent>,
+    /// A sentence for the phone when the action did something other than
+    /// change the log now (wave 5): a resume after the limit "scheduled for
+    /// 3:42 PM", or "already scheduled". Absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// The 202's body for a dream or a capture started (wave 5): it runs on
+/// the host, and says how it went as the host's own notices.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PassStarted {
+    /// `started`.
+    pub status: String,
 }
 
 /// A chat's Context page: the request it would send now, itemised; its
@@ -603,11 +670,23 @@ mod tests {
             },
             features: vec![feature::ACT.into()],
             host: "serve".into(),
+            palette: Some("B".into()),
+            limit_pause: Some(LimitPause {
+                chat: Some("c1".into()),
+                resets_at: Some(1_789_714_200),
+                window: Some("five_hour".into()),
+                ..Default::default()
+            }),
         };
         let v = serde_json::to_value(&r).unwrap();
         assert_eq!(v["busy"], true);
         assert_eq!(v["features"], json!(["act"]));
         assert_eq!(v["host"], "serve");
+        assert_eq!(v["palette"], "B");
+        assert_eq!(v["limit_pause"]["chat"], "c1");
+        assert_eq!(v["limit_pause"]["resets_at"], 1_789_714_200);
+        assert_eq!(v["limit_pause"]["window"], "five_hour");
+        assert_eq!(v["limit_pause"]["resume_at"], serde_json::Value::Null);
         // An old host's reply, with no list, still reads.
         let old: StateReply = serde_json::from_value(json!({
             "project": null, "active_chat": null, "busy": false, "connected": false,
@@ -617,6 +696,7 @@ mod tests {
         assert!(old.features.is_empty());
         // A host from before `host` was there is the Mac's.
         assert_eq!(old.host, "mac");
+        assert!(old.palette.is_none() && old.limit_pause.is_none());
     }
 
     #[test]

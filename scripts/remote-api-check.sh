@@ -101,12 +101,14 @@ for route in "GET /api/chats" "GET /api/projects" "GET /api/events" "POST /api/s
   "GET /api/usage" "GET /api/search?q=x" "POST /api/projects" "POST /api/projects/x/open" \
   "POST /api/projects/x/rename" "POST /api/projects/x/forget" "GET /api/notes" \
   "GET /api/notes/project/x.md" "PUT /api/notes/project/x.md" "DELETE /api/notes/project/x.md" \
+  "GET /api/nightshift" "GET /api/nightshift/x/queue" "POST /api/nightshift/x/blockers/x/answer" \
+  "POST /api/dream" "POST /api/capture" \
   "GET /api/not-a-route"; do
   call ${route% *} "${route#* }" "" noauth
   if [ "$STATUS" = 401 ]; then OPEN_OK=$((${OPEN_OK:-0} + 1))
   else fail "$route without a token" "HTTP $STATUS, not 401"; fi
 done
-[ "${OPEN_OK:-0}" = 22 ] && pass "every route says 401 without a token (22 checked)"
+[ "${OPEN_OK:-0}" = 27 ] && pass "every route says 401 without a token (27 checked)"
 
 call GET /api/not-a-route
 [ "$STATUS" = 404 ] && pass "an unknown route with the token is 404" || fail "unknown route" "HTTP $STATUS"
@@ -128,6 +130,16 @@ call GET '/api/search'
 call GET '/api/notes?scope=project'; expect "GET /api/notes" notes 'type == "array"'
 if [ -n "${ACTIVE:-}" ]; then
   call GET "/api/chats/$ACTIVE/context"; expect "GET the open chat's context" context '.view | has("messages") and has("totals")'
+fi
+
+# --- wave 5: Nightshift, read only (blocker 669: the phone reads and answers;
+# this script never answers a blocker or adds an item) ---
+call GET /api/nightshift
+expect "GET /api/nightshift" nightshift 'type == "array" and (length == 0 or (.[0] | has("id") and has("name") and has("open_blockers")))'
+if [ "$STATUS" = 200 ] && NS="$(jq -r '.[0].id // empty' "$BODY")" && [ -n "$NS" ]; then
+  call GET "/api/nightshift/$NS/queue";    expect "GET a Nightshift queue" nightshift '.items | type == "array"'
+  call GET "/api/nightshift/$NS/blockers"; expect "GET its open blockers" nightshift '.blockers | type == "array"'
+  call GET "/api/nightshift/$NS/mornings"; expect "GET its morning pages" nightshift 'type == "array"'
 fi
 
 # --- wave 1: input the listener itself refuses (400/422, whatever the host) ---

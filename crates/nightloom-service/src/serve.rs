@@ -27,9 +27,27 @@
 //! with the CLI's history edited by copy as the desktop does; no live agent
 //! is pointed anywhere, because each turn here resumes what the log
 //! records. An action on a chat whose turn is running is refused (409),
-//! as on the Mac. Compact, resume-after-limit, budget and checkpoint answer
-//! "not on the away server yet" (wave B). To add a route group: one Host
-//! method below, one name in `features`.
+//! as on the Mac. To add a route group: one Host method below, one name in
+//! `features`.
+//!
+//! # The rest of the chat ops (item 246 wave 5, wave 3 B1)
+//!
+//! - **Budget** answers write the same file the Mac's card writes
+//!   (`agent::brief::write_answer` under the chat's `ask/` folder, which
+//!   is this host's turns' Ask folder too).
+//! - **Resume after a usage limit** (backlog 164): a turn that ends on the
+//!   plan's limit leaves a pause ([`ServeHost::limit_pause`], on
+//!   `/api/state` as `limit_pause`); Resume sends `limit.ts`'s message at
+//!   once when the window has reset, else schedules it for the reset plus
+//!   30 s — never into a window still exhausted. A resumed turn that hits
+//!   the limit again pauses again; nothing resumes on its own.
+//! - **Compact** is refused with the Mac's own Claude Code sentence (the
+//!   CLI keeps its own history; the Mac refuses it on that engine too),
+//!   and **checkpoint** is "not on the away server yet": `serve` runs no
+//!   checkpoint helper (`fork_mode` is off), so a checkpoint set here would
+//!   do nothing. Neither is in `features`.
+//! - **Nightshift** (`/api/nightshift/…`): only the contract root named by
+//!   `NIGHTLOOM_NIGHTSHIFT_ROOT`, when it detects as one.
 //!
 //! # What step 1 leaves out
 //!
@@ -161,6 +179,10 @@ pub struct ServeConfig {
     /// The folder an unfiled Build chat runs in (`serve`'s working
     /// directory by default).
     pub unfiled_workspace: PathBuf,
+    /// A Nightshift contract root the phone may read and answer
+    /// (`NIGHTLOOM_NIGHTSHIFT_ROOT`; wave 5). `None`: Nightshift is not on
+    /// this host.
+    pub nightshift_root: Option<PathBuf>,
 }
 
 impl ServeConfig {
@@ -176,7 +198,88 @@ impl ServeConfig {
             // As the desktop's connect falls back when no project is open
             // and the rail names no folder: the working directory.
             unfiled_workspace: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            nightshift_root: std::env::var_os(NIGHTSHIFT_ROOT_ENV)
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from),
         }
+    }
+}
+
+/// The environment variable naming the away server's Nightshift root.
+pub const NIGHTSHIFT_ROOT_ENV: &str = "NIGHTLOOM_NIGHTSHIFT_ROOT";
+
+/// A resume goes this long after the window resets (`limit.ts`'s
+/// `RESUME_MARGIN_MS`): the clocks are two, and a resume one second early
+/// is the 429 loop this guards.
+pub const RESUME_MARGIN_SECS: i64 = 30;
+
+/// A turn paused by the plan's usage limit (backlog 164).
+#[derive(Debug, Clone)]
+struct Pause {
+    /// Which pause this is: a scheduled resume fires only for its own.
+    seq: u64,
+    chat: String,
+    hit: crate::agent::LimitHit,
+}
+
+/// A resume waiting for the reset.
+struct Scheduled {
+    seq: u64,
+    /// Unix seconds.
+    at: i64,
+    cancel: CancellationToken,
+}
+
+fn now_secs() -> i64 {
+    chrono::Utc::now().timestamp()
+}
+
+/// "in 42 min": a wait the phone can read whatever this machine's zone
+/// (the away server runs in UTC).
+fn wait_words(secs: i64) -> String {
+    let m = (secs.max(0) + 59) / 60;
+    if secs < 60 {
+        "in under a minute".into()
+    } else if m < 60 {
+        format!("in {m} min")
+    } else if m % 60 == 0 {
+        format!("in {} h", m / 60)
+    } else {
+        format!("in {} h {} min", m / 60, m % 60)
+    }
+}
+
+/// What Resume sends — `limit.ts`'s `resumeMessage`, word for word: the
+/// turn was cut by the limit, the window has opened, and the subagents
+/// that died are resumed by SendMessage, not relaunched.
+pub fn resume_message(subagents: &[String]) -> String {
+    let head = "The last turn was paused by the plan's usage limit and the window has now reset. Continue exactly where it stopped; everything before the limit stands.";
+    if subagents.is_empty() {
+        return head.to_string();
+    }
+    let ids = subagents
+        .iter()
+        .map(|id| format!("`{id}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let one = subagents.len() == 1;
+    format!(
+        "{head} {} died on the limit (spawned by {ids}): resume {} with SendMessage by id or name rather than launching a new one; if that fails, read its transcript (this session's subagents folder under ~/.claude/projects, agent-<id>.jsonl, the .meta.json beside it names the spawning call) and take up from its last result instead of repeating the search.",
+        if one {
+            "One subagent".to_string()
+        } else {
+            format!("{} subagents", subagents.len())
+        },
+        if one { "it" } else { "each" },
+    )
+}
+
+/// The card's words for a window: `limit.ts`'s `pauseLabel`.
+fn window_words(window: Option<&str>) -> &'static str {
+    match window {
+        Some("seven_day") => "weekly",
+        Some("five_hour") => "5-hour",
+        _ => "usage",
     }
 }
 
@@ -207,6 +310,11 @@ pub struct ServeHost {
     /// The away server's sync home (item 268 step 3): the Mac's mirrored
     /// projects and chats, read-only here, and the outbox it pulls.
     sync: Arc<crate::sync::SyncServer>,
+    /// The turn the usage limit paused, if any (backlog 164), and the
+    /// resume scheduled for its reset. Locked one at a time.
+    pause: Mutex<Option<Pause>>,
+    resume: Mutex<Option<Scheduled>>,
+    pause_gen: std::sync::atomic::AtomicU64,
 }
 
 impl ServeHost {
@@ -237,6 +345,9 @@ impl ServeHost {
                 pending: Mutex::new(HashMap::new()),
                 tx,
                 sync,
+                pause: Mutex::new(None),
+                resume: Mutex::new(None),
+                pause_gen: std::sync::atomic::AtomicU64::new(1),
             }
         })
     }
@@ -560,12 +671,194 @@ impl ServeHost {
                 for n in outcome.notices {
                     env.notice(n);
                 }
+                self.after_turn(&chat_id, outcome.limit);
             }
             Ok(AgentTurnEnd::StoppedInCouncil) => {
                 env.notice("stopped during the council's seats; no chair ran".into());
             }
             Err(e) => env.notice(format!("the turn failed: {e}")),
         }
+    }
+
+    /// A turn in `chat` ended: on the plan's limit it leaves a pause (a
+    /// new one, so a resume scheduled for an older one does not fire);
+    /// otherwise a pause in this chat is over.
+    fn after_turn(&self, chat: &str, limit: Option<crate::agent::LimitHit>) {
+        let mut pause = lock(&self.pause);
+        // A turn ran in the paused chat (his own message, or the resume):
+        // a resume still waiting for that pause has nothing to resume.
+        if pause.as_ref().is_some_and(|p| p.chat == chat) {
+            let mut resume = lock(&self.resume);
+            if resume
+                .as_ref()
+                .is_some_and(|s| pause.as_ref().is_some_and(|p| p.seq == s.seq))
+                && let Some(s) = resume.take()
+            {
+                s.cancel.cancel();
+            }
+        }
+        match limit {
+            Some(hit) => {
+                let seq = self
+                    .pause_gen
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let words = format!(
+                    "paused by the {} limit — Resume goes 30 s after the window resets",
+                    window_words(hit.window.as_deref())
+                );
+                *pause = Some(Pause {
+                    seq,
+                    chat: chat.to_string(),
+                    hit,
+                });
+                drop(pause);
+                self.emit(
+                    "turn-notice",
+                    serde_json::to_string(&words).unwrap_or_default(),
+                );
+            }
+            None => {
+                if pause.as_ref().is_some_and(|p| p.chat == chat) {
+                    *pause = None;
+                }
+            }
+        }
+    }
+
+    /// Resume the paused turn in `chat` (backlog 164): at once when the
+    /// window has reset (or the CLI gave no time — his press is the
+    /// consent), else scheduled for the reset plus [`RESUME_MARGIN_SECS`].
+    /// A second press while one waits says so and changes nothing (the
+    /// phone never cancels it).
+    async fn resume_limit(&self, chat: &str) -> Result<ActReply, String> {
+        let (_, _, session) = self.load(chat).await?;
+        let id = session.id.clone();
+        let reply = |note: String| ActReply {
+            chat: id.clone(),
+            events: session.events().to_vec(),
+            note: Some(note),
+        };
+        let Some(p) = lock(&self.pause).clone().filter(|p| p.chat == id) else {
+            return Err("nothing in this chat is paused by the usage limit".into());
+        };
+        let now = now_secs();
+        if let Some(s) = lock(&self.resume).as_ref().filter(|s| s.seq == p.seq) {
+            return Ok(reply(format!(
+                "a resume is already scheduled — it goes {}",
+                wait_words(s.at - now)
+            )));
+        }
+        let at = p.hit.resets_at.map(|r| r + RESUME_MARGIN_SECS);
+        match at {
+            Some(at) if at > now => {
+                let cancel = CancellationToken::new();
+                *lock(&self.resume) = Some(Scheduled {
+                    seq: p.seq,
+                    at,
+                    cancel: cancel.clone(),
+                });
+                if let Some(me) = self.me.upgrade() {
+                    let wait = std::time::Duration::from_secs((at - now) as u64);
+                    tokio::spawn(async move {
+                        tokio::select! {
+                            _ = cancel.cancelled() => return,
+                            _ = tokio::time::sleep(wait) => {}
+                        }
+                        let mine = {
+                            let mut slot = lock(&me.resume);
+                            let mine = slot.as_ref().is_some_and(|s| s.seq == p.seq);
+                            if mine {
+                                *slot = None;
+                            }
+                            mine
+                        };
+                        if !mine {
+                            return;
+                        }
+                        if let Err(e) = me.resume_now(&p).await {
+                            me.emit(
+                                "turn-notice",
+                                serde_json::to_string(&format!(
+                                    "the scheduled resume could not start: {e} — press Resume again"
+                                ))
+                                .unwrap_or_default(),
+                            );
+                        }
+                    });
+                }
+                Ok(reply(format!(
+                    "scheduled — it goes {}, 30 s after the window resets",
+                    wait_words(at - now)
+                )))
+            }
+            _ => {
+                self.resume_now(&p).await?;
+                Ok(reply("resumed".into()))
+            }
+        }
+    }
+
+    /// Send the resume for pause `p`, if it is still the pause. The pause
+    /// is taken first: a resumed turn that meets the limit again leaves a
+    /// new one, and nothing resumes it but another press (never a loop).
+    async fn resume_now(&self, p: &Pause) -> Result<(), String> {
+        {
+            let mut pause = lock(&self.pause);
+            if pause.as_ref().is_none_or(|q| q.seq != p.seq) {
+                return Err("the pause is over".into());
+            }
+            *pause = None;
+        }
+        let sent = self
+            .send_with(
+                Some(&p.chat),
+                SendRequest {
+                    text: resume_message(&p.hit.subagents),
+                    ..SendRequest::default()
+                },
+            )
+            .await;
+        if let Err(e) = sent {
+            // Not sent: the pause stands, for another press.
+            let mut pause = lock(&self.pause);
+            if pause.is_none() {
+                *pause = Some(p.clone());
+            }
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// His answer on the budget card (backlog 189/192): the file the Mac's
+    /// `budget_override` writes, under the chat's `ask/` folder — the one
+    /// this host's turns run their hook with.
+    async fn budget(
+        &self,
+        chat: &str,
+        decision: &str,
+        text: Option<String>,
+    ) -> Result<ActReply, String> {
+        if !matches!(decision, "continue" | "stop" | "wrap") {
+            return Err(format!("unknown decision: {decision}"));
+        }
+        let (project, path, session) = self.load(chat).await?;
+        let stem = path
+            .file_stem()
+            .map(|s| s.to_os_string())
+            .ok_or("that chat's log has no name")?;
+        let dir = self.log_dir(project.as_ref()).join("ask").join(stem);
+        let decision = decision.to_string();
+        let now = chrono::Utc::now().timestamp_millis();
+        tokio::task::spawn_blocking(move || {
+            crate::agent::brief::write_answer(&dir, &decision, text, now)
+        })
+        .await
+        .map_err(|e| format!("writing the answer failed: {e}"))??;
+        Ok(ActReply {
+            chat: session.id.clone(),
+            events: session.events().to_vec(),
+            note: None,
+        })
     }
 
     fn find_chat(&self, project: Option<&Project>, chat: &str) -> Result<PathBuf, String> {
@@ -665,6 +958,7 @@ impl ServeHost {
         let reply = ActReply {
             chat: fork.id.clone(),
             events: fork.events().to_vec(),
+            note: None,
         };
         self.spawn_turn(
             project,
@@ -687,6 +981,7 @@ impl ServeHost {
                 return Ok(ActReply {
                     chat: id,
                     events: Vec::new(),
+                    note: None,
                 });
             }
         }
@@ -707,6 +1002,7 @@ impl ServeHost {
         let here = |s: &Session| ActReply {
             chat: s.id.clone(),
             events: s.events().to_vec(),
+            note: None,
         };
         match action {
             ChatAction::Edit {
@@ -791,6 +1087,7 @@ impl ServeHost {
                 Ok(ActReply {
                     chat: id,
                     events: Vec::new(),
+                    note: None,
                 })
             }
             ChatAction::Undelete => self.undelete(&id),
@@ -850,10 +1147,12 @@ const MAC_OWNS: &str = "this chat is the Mac's; send a message to continue it as
 /// The turn slot's holder while an edit-and-send makes its fork.
 const FORKING: &str = "(forking)";
 
-/// What `serve` does not do yet (wave B adds these).
+/// What `serve` does not do: compact is the Mac's own Claude Code refusal
+/// (the CLI keeps its history; the Mac refuses it on that engine too); a
+/// checkpoint is "not yet" (no checkpoint helper runs here).
 fn not_yet(action: &ChatAction) -> String {
     let what = match action {
-        ChatAction::Compact => "compacting a chat",
+        ChatAction::Compact => return context_ops::not_on_claude_code("compact"),
         ChatAction::ResumeLimit => "resuming after a usage limit",
         ChatAction::Budget { .. } => "answering a turn's budget",
         ChatAction::Checkpoint { .. } => "setting a checkpoint",
@@ -1231,17 +1530,14 @@ impl Host for ServeHost {
     }
 
     async fn act(&self, chat: &str, action: ChatAction) -> Result<ActReply, String> {
-        if matches!(action, ChatAction::Undelete) {
-            return self.undelete(chat);
-        }
-        if matches!(
-            action,
-            ChatAction::Compact
-                | ChatAction::ResumeLimit
-                | ChatAction::Budget { .. }
-                | ChatAction::Checkpoint { .. }
-        ) {
-            return Err(not_yet(&action));
+        match &action {
+            ChatAction::Undelete => return self.undelete(chat),
+            ChatAction::ResumeLimit => return self.resume_limit(chat).await,
+            ChatAction::Budget { decision, text } => {
+                return self.budget(chat, decision, text.clone()).await;
+            }
+            ChatAction::Compact | ChatAction::Checkpoint { .. } => return Err(not_yet(&action)),
+            _ => {}
         }
         let (project, path, session) = self.load(chat).await?;
         self.refuse_mirrored(&path)?;
@@ -1381,6 +1677,49 @@ impl Host for ServeHost {
         "serve"
     }
 
+    async fn limit_pause(&self) -> Option<crate::remote::api::LimitPause> {
+        let p = lock(&self.pause).clone()?;
+        let resume_at = lock(&self.resume)
+            .as_ref()
+            .filter(|s| s.seq == p.seq)
+            .map(|s| s.at);
+        Some(crate::remote::api::LimitPause {
+            chat: Some(p.chat),
+            resets_at: p.hit.resets_at,
+            window: p.hit.window,
+            text: p.hit.text,
+            subagents: p.hit.subagents,
+            resume_at,
+        })
+    }
+
+    async fn nightshift_roots(&self) -> Vec<crate::remote::NightshiftProject> {
+        let Some(dir) = self.cfg.nightshift_root.clone() else {
+            return Vec::new();
+        };
+        tokio::task::spawn_blocking(move || {
+            crate::nightshift::detect(&dir)
+                .map(|root| {
+                    let name = if root.config.name.trim().is_empty() {
+                        dir.file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| "Nightshift".into())
+                    } else {
+                        root.config.name.clone()
+                    };
+                    crate::remote::NightshiftProject {
+                        id: "away".into(),
+                        name,
+                        root,
+                    }
+                })
+                .into_iter()
+                .collect()
+        })
+        .await
+        .unwrap_or_default()
+    }
+
     fn features(&self) -> Vec<String> {
         [
             feature::ACT,
@@ -1397,6 +1736,10 @@ impl Host for ServeHost {
             feature::SEARCH,
             feature::PROJECTS,
             feature::NOTES,
+            // Wave 5 (wave 3 B1): not compact, checkpoint, dream or
+            // capture; `nightshift` the listener names itself.
+            feature::BUDGET,
+            feature::RESUME_LIMIT,
         ]
         .into_iter()
         .map(String::from)
@@ -1421,6 +1764,7 @@ mod tests {
             r##"#!/bin/sh
 D="{d}"
 printf '%s\n' "$@" > "$D/last-args"
+echo run >> "$D/runs"
 say() {{ printf '%s\n' "{{\"type\":\"stream_event\",\"event\":{{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":\"$1\"}}}},\"parent_tool_use_id\":null,\"session_id\":\"s-1\"}}"; printf '%s\n' "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"$1\"}}]}},\"parent_tool_use_id\":null}}"; }}
 done_() {{ printf '%s\n' "{{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"num_turns\":1,\"result\":\"$1\",\"session_id\":\"s-1\",\"stop_reason\":\"end_turn\",\"usage\":{{\"input_tokens\":3,\"output_tokens\":2}}}}"; }}
 printf '%s\n' '{{"type":"system","subtype":"init","cwd":"x","tools":["Write"],"mcp_servers":[],"model":"claude-haiku-4-5","permissionMode":"default","session_id":"s-1"}}'
@@ -1435,6 +1779,11 @@ case "$(cat "$D/mode")" in
 reply)
   say "hi from the stand-in"
   done_ "hi from the stand-in"
+  ;;
+limit)
+  R="$(cat "$D/resets")"
+  printf '%s\n' "{{\"type\":\"assistant\",\"message\":{{\"id\":\"9cd2b807\",\"model\":\"<synthetic>\",\"role\":\"assistant\",\"stop_reason\":\"stop_sequence\",\"content\":[{{\"type\":\"text\",\"text\":\"You've hit your session limit · resets 11:50pm (America/Los_Angeles)\"}}],\"usage\":{{\"input_tokens\":0,\"output_tokens\":0}}}},\"parent_tool_use_id\":null,\"error\":\"rate_limit\",\"isApiErrorMessage\":true,\"apiErrorStatus\":429,\"quotaLimits\":{{\"status\":\"rejected\",\"resetsAt\":$R,\"rateLimitType\":\"five_hour\",\"overageStatus\":\"rejected\",\"isUsingOverage\":false}},\"session_id\":\"s-1\"}}"
+  printf '%s\n' '{{"type":"result","subtype":"success","is_error":true,"num_turns":1,"result":"You have hit your session limit","session_id":"s-1","stop_reason":"stop_sequence","usage":{{"input_tokens":0,"output_tokens":0}}}}'
   ;;
 defer)
   printf '%s\n' '{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"toolu_w","name":"Write","input":{{"file_path":"/tmp/serve-test.txt","content":"hello"}}}}]}},"parent_tool_use_id":null}}'
@@ -1536,6 +1885,7 @@ esac
             unfiled_dir: unfiled.clone(),
             home: root.clone(),
             unfiled_workspace: workspace.clone(),
+            nightshift_root: None,
         };
         let host = ServeHost::new(cfg, Registry::load_from(root.join("projects.json")));
         let token = "t0k3n".to_string();
@@ -1785,6 +2135,7 @@ esac
             unfiled_dir: unfiled.clone(),
             home: root.clone(),
             unfiled_workspace: workspace.clone(),
+            nightshift_root: None,
         };
         let host = ServeHost::new(cfg, Registry::load_from(root.join("projects.json")));
         let token = "t0k3n".to_string();
@@ -1819,7 +2170,9 @@ esac
                 "usage",
                 "search",
                 "projects",
-                "notes"
+                "notes",
+                "budget",
+                "resume_limit"
             ])
         );
 
@@ -2023,7 +2376,8 @@ esac
         .await;
         assert_eq!(code, 409);
         assert!(reply.contains("Claude Code engine"), "{reply}");
-        // Wave B's: answered with a sentence, never a 200.
+        // Compact: the Mac's own refusal on the Claude Code engine (wave
+        // B, B1; was "not on the away server yet"), never a 200.
         let (code, reply) = post(
             &c,
             act.clone(),
@@ -2032,7 +2386,7 @@ esac
         )
         .await;
         assert_eq!(code, 409);
-        assert!(reply.contains("not on the away server yet"), "{reply}");
+        assert!(reply.contains("on the Claude Code engine"), "{reply}");
 
         // Edit and send: a fork cut before the turn, the new text its first
         // turn, run by the stand-in.
@@ -2213,6 +2567,7 @@ esac
             unfiled_dir: unfiled.clone(),
             home: home.clone(),
             unfiled_workspace: workspace.clone(),
+            nightshift_root: None,
         };
         let host = ServeHost::new(cfg, Registry::load_from(root.join("projects.json")));
 
@@ -2278,6 +2633,259 @@ esac
         let _ = std::fs::remove_dir_all(home.join("mirror").join("projects").join(&pid));
         let _ = std::fs::remove_dir_all(home.join("projects").join(&pid));
         let _ = std::fs::remove_dir_all(home.join("workspaces").join(&pid));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Backlog 164 on the away server (wave 3 B1): a turn that ends on the
+    /// plan's limit leaves a pause on `/api/state`; Resume after the reset
+    /// sends `limit.ts`'s message at once; before it, it is scheduled for
+    /// the reset + 30 s, and a second press neither sends nor cancels; a
+    /// resumed turn that meets the limit again pauses again and nothing
+    /// runs on its own (never a 429 loop). The stand-in emits the CLI's
+    /// 429 line (pass 1's fixture shape).
+    #[tokio::test]
+    async fn serve_pauses_on_the_limit_and_resumes_once_never_into_an_exhausted_window() {
+        crate::project::set_config_dir(
+            std::env::temp_dir().join(format!("nightloom-home-{}", std::process::id())),
+        );
+        let root = std::env::temp_dir().join(format!("nightloom-serve-{}", uuid::Uuid::new_v4()));
+        let unfiled = root.join("unfiled").join("sessions");
+        let workspace = root.join("ws");
+        std::fs::create_dir_all(&unfiled).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        let mut seeded = Session::start(&unfiled, ChatMode::Normal, ChatKind::Build).unwrap();
+        seeded.record_title_by("limit chat", TitleBy::User);
+        let chat = seeded.id.clone();
+        drop(seeded);
+        let mut other = Session::start(&unfiled, ChatMode::Normal, ChatKind::Build).unwrap();
+        other.record_title_by("other chat", TitleBy::User);
+        let other = other.id.clone();
+        let cfg = ServeConfig {
+            binary: stand_in(&root),
+            model: None,
+            hook_exe: None,
+            assets: None,
+            unfiled_dir: unfiled.clone(),
+            home: root.clone(),
+            unfiled_workspace: workspace.clone(),
+            nightshift_root: None,
+        };
+        let host = ServeHost::new(cfg, Registry::load_from(root.join("projects.json")));
+        let token = "t0k3n".to_string();
+        let server = Server::start_for_test(
+            "127.0.0.1:0".parse().unwrap(),
+            token.clone(),
+            host.clone() as Arc<dyn Host>,
+        )
+        .await
+        .unwrap();
+        let base = format!("http://{}", server.addr());
+        let c = client();
+        let runs = || {
+            std::fs::read_to_string(root.join("runs"))
+                .map(|t| t.lines().count())
+                .unwrap_or(0)
+        };
+        let act = |body: serde_json::Value, id: String| {
+            let c = c.clone();
+            let base = base.clone();
+            let token = token.clone();
+            async move { post(&c, format!("{base}/api/chats/{id}/act"), &token, body).await }
+        };
+        let resume = serde_json::json!({"op": "resume_limit"});
+        let st = get(&c, format!("{base}/api/state"), &token).await;
+        assert_eq!(st["limit_pause"], serde_json::Value::Null);
+        let features = st["features"].to_string();
+        assert!(features.contains("resume_limit") && features.contains("budget"));
+        assert!(!features.contains("compact") && !features.contains("checkpoint"));
+        assert!(!features.contains("nightshift") && !features.contains("dream"));
+
+        // Nothing paused: refused in words.
+        let (code, body) = act(resume.clone(), chat.clone()).await;
+        assert_eq!(code, 409, "{body}");
+        assert!(body.contains("nothing in this chat is paused"), "{body}");
+
+        // 1. The limit, with the window already reset: a pause, then a
+        //    resume at once that sends limit.ts's words.
+        let past = chrono::Utc::now().timestamp() - 100;
+        std::fs::write(root.join("mode"), "limit").unwrap();
+        std::fs::write(root.join("resets"), past.to_string()).unwrap();
+        let (code, body) = post(
+            &c,
+            format!("{base}/api/chats/{chat}/send"),
+            &token,
+            serde_json::json!({"text": "scan everything"}),
+        )
+        .await;
+        assert_eq!(code, 202, "{body}");
+        let st = until(&c, &base, &token, Duration::from_secs(10), |s| {
+            s["busy"] == false && !s["limit_pause"].is_null()
+        })
+        .await;
+        assert_eq!(st["limit_pause"]["chat"], chat.as_str());
+        assert_eq!(st["limit_pause"]["resets_at"], past);
+        assert_eq!(st["limit_pause"]["window"], "five_hour");
+        assert_eq!(st["limit_pause"]["resume_at"], serde_json::Value::Null);
+        assert!(
+            st["limit_pause"]["text"]
+                .as_str()
+                .unwrap()
+                .starts_with("You've hit your")
+        );
+        assert_eq!(runs(), 1);
+        // Another chat has nothing paused.
+        let (code, _) = act(resume.clone(), other.clone()).await;
+        assert_eq!(code, 409);
+
+        std::fs::write(root.join("mode"), "reply").unwrap();
+        let (code, body) = act(resume.clone(), chat.clone()).await;
+        assert_eq!(code, 200, "{body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["note"], "resumed");
+        until(&c, &base, &token, Duration::from_secs(10), |s| {
+            s["busy"] == false && s["limit_pause"].is_null()
+        })
+        .await;
+        assert_eq!(runs(), 2);
+        let log = get(&c, format!("{base}/api/chats/{chat}/transcript"), &token).await;
+        assert!(
+            texts(&log).contains(&resume_message(&[])),
+            "the resume is limit.ts's message: {log}"
+        );
+
+        // 2. The limit with the window still exhausted: scheduled for the
+        //    reset + 30 s; a second press says so and changes nothing.
+        let future = chrono::Utc::now().timestamp() + 3600;
+        std::fs::write(root.join("mode"), "limit").unwrap();
+        std::fs::write(root.join("resets"), future.to_string()).unwrap();
+        post(
+            &c,
+            format!("{base}/api/chats/{chat}/send"),
+            &token,
+            serde_json::json!({"text": "again"}),
+        )
+        .await;
+        until(&c, &base, &token, Duration::from_secs(10), |s| {
+            s["busy"] == false && s["limit_pause"]["resets_at"] == future
+        })
+        .await;
+        assert_eq!(runs(), 3);
+        let (code, body) = act(resume.clone(), chat.clone()).await;
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("scheduled — it goes in 1 h"), "{body}");
+        let st = get(&c, format!("{base}/api/state"), &token).await;
+        assert_eq!(st["limit_pause"]["resume_at"], future + RESUME_MARGIN_SECS);
+        let (code, body) = act(resume.clone(), chat.clone()).await;
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("already scheduled"), "{body}");
+        let st = get(&c, format!("{base}/api/state"), &token).await;
+        assert_eq!(
+            st["limit_pause"]["resume_at"],
+            future + RESUME_MARGIN_SECS,
+            "never toggled off from the phone"
+        );
+        assert_eq!(st["busy"], false);
+        assert_eq!(runs(), 3, "nothing sent into the exhausted window");
+
+        // 3. His own message in the chat ends that pause (and the waiting
+        //    resume); a resumed turn that meets the limit again pauses
+        //    again, and nothing runs on its own.
+        std::fs::write(root.join("resets"), past.to_string()).unwrap();
+        post(
+            &c,
+            format!("{base}/api/chats/{chat}/send"),
+            &token,
+            serde_json::json!({"text": "once more"}),
+        )
+        .await;
+        until(&c, &base, &token, Duration::from_secs(10), |s| {
+            s["busy"] == false && s["limit_pause"]["resets_at"] == past
+        })
+        .await;
+        let st = get(&c, format!("{base}/api/state"), &token).await;
+        assert_eq!(st["limit_pause"]["resume_at"], serde_json::Value::Null);
+        assert_eq!(runs(), 4);
+        let (code, body) = act(resume.clone(), chat.clone()).await;
+        assert_eq!(code, 200, "{body}");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        until(&c, &base, &token, Duration::from_secs(10), |s| {
+            s["busy"] == false && !s["limit_pause"].is_null()
+        })
+        .await;
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        assert_eq!(runs(), 5, "re-paused, not looped");
+        let st = get(&c, format!("{base}/api/state"), &token).await;
+        assert_eq!(st["limit_pause"]["chat"], chat.as_str());
+        assert_eq!(st["limit_pause"]["resume_at"], serde_json::Value::Null);
+
+        // Budget: the Mac's file, under the chat's ask folder. With no
+        // ledger there it says so, as the Mac's command does.
+        let (code, body) = act(
+            serde_json::json!({"op": "budget", "decision": "continue"}),
+            chat.clone(),
+        )
+        .await;
+        assert_eq!(code, 409, "{body}");
+        assert!(body.contains("no budget ledger"), "{body}");
+        let (code, body) = act(
+            serde_json::json!({"op": "budget", "decision": "maybe"}),
+            chat.clone(),
+        )
+        .await;
+        assert_eq!(code, 409, "{body}");
+        // Compact: the Mac's own Claude Code sentence; checkpoint: not yet.
+        let (code, body) = act(serde_json::json!({"op": "compact"}), chat.clone()).await;
+        assert_eq!(code, 409);
+        assert!(body.contains("on the Claude Code engine"), "{body}");
+        let (code, body) = act(
+            serde_json::json!({"op": "checkpoint", "index": 0}),
+            chat.clone(),
+        )
+        .await;
+        assert_eq!(code, 409);
+        assert!(body.contains("not on the away server yet"), "{body}");
+
+        server.stop().await;
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_resume_message_is_limit_ts_word_for_word() {
+        assert_eq!(
+            resume_message(&[]),
+            "The last turn was paused by the plan's usage limit and the window has now reset. Continue exactly where it stopped; everything before the limit stands."
+        );
+        let two = resume_message(&["toolu_a".into(), "toolu_b".into()]);
+        assert!(two.contains(" 2 subagents died on the limit (spawned by `toolu_a`, `toolu_b`): resume each with SendMessage"), "{two}");
+        let one = resume_message(&["toolu_a".into()]);
+        assert!(
+            one.contains(" One subagent died on the limit (spawned by `toolu_a`): resume it with"),
+            "{one}"
+        );
+        assert_eq!(wait_words(30), "in under a minute");
+        assert_eq!(wait_words(42 * 60), "in 42 min");
+        assert_eq!(wait_words(3630), "in 1 h 1 min");
+        assert_eq!(wait_words(7200), "in 2 h");
+    }
+
+    /// Nightshift on the away server is the one root the environment
+    /// names, and only when it detects as one.
+    #[tokio::test]
+    async fn serve_offers_nightshift_only_from_the_named_root() {
+        let root = std::env::temp_dir().join(format!("nightloom-serve-{}", uuid::Uuid::new_v4()));
+        let mut cfg = ServeConfig::for_home(&root);
+        cfg.nightshift_root = None;
+        let none = ServeHost::new(cfg.clone(), Registry::load_from(root.join("projects.json")));
+        assert!(none.nightshift_roots().await.is_empty());
+        cfg.nightshift_root = Some(root.join("not-a-root"));
+        let bad = ServeHost::new(cfg.clone(), Registry::load_from(root.join("projects.json")));
+        assert!(bad.nightshift_roots().await.is_empty());
+        cfg.nightshift_root = Some(crate::nightshift::testutil::fixture());
+        let one = ServeHost::new(cfg, Registry::load_from(root.join("projects.json")));
+        let roots = one.nightshift_roots().await;
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].id, "away");
+        assert_eq!(roots[0].name, "Value generalization");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -61,6 +61,8 @@ import {
   restoreTurn,
   resumeAfterLimit,
   rewindTo,
+  runCapture,
+  runDream,
   saveEdit,
   saveReplyEdit,
   setCheckpoint,
@@ -98,10 +100,13 @@ export type ChatAction =
   | { op: "budget"; decision: string; text?: string | null }
   | { op: "checkpoint"; index: number };
 
-/** The chat now showing (a fork's new id) and its log. */
+/** The chat now showing (a fork's new id) and its log; `note` when the
+ *  action did something other than change the log now (wave 5: a resume
+ *  scheduled, an edit's send queued). */
 export interface ActReply {
   chat: string | null;
   events: SessionEvent[];
+  note?: string;
 }
 
 /** What the rail shows the phone (blocker 666: no keys, no folders). */
@@ -196,6 +201,34 @@ async function attempt(what: string, run: () => Promise<unknown>, changed?: () =
 
 const RUNNING_HERE = "this chat is running a turn on the Mac — try again when it ends";
 
+/** Said when the phone stopped waiting before the window started (132 (d)). */
+export const GAVE_UP = "the phone stopped waiting before the Mac began, so nothing was started — send it again";
+
+/**
+ * Just before a turn starts for the phone's call `id`: is the phone still
+ * waiting (backlog 132 (d), `remote_claim`)? After its deadline it was
+ * told the Mac did not answer and may send again — a turn started now
+ * would be a second one. No id (a call from before wave 5), or a backend
+ * without the command, keeps today's behaviour: yes.
+ */
+export async function claim(id: number | undefined): Promise<boolean> {
+  if (id == null) return true;
+  try {
+    return (await invoke<boolean>("remote_claim", { id })) !== false;
+  } catch {
+    return true;
+  }
+}
+
+async function mustClaim(id: number | undefined): Promise<void> {
+  if (!(await claim(id))) throw new Error(GAVE_UP);
+}
+
+/** A clock time for him: 12-hour, "3:42 PM". */
+export function clock(ms: number): string {
+  return new Date(ms).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+}
+
 /**
  * Make `chat` the open chat, in `project` when the chat lives there
  * (blocker 665's default: the window follows the phone). Refused while a
@@ -216,6 +249,8 @@ export async function ensureChat(chat: string, project: string | null): Promise<
 }
 
 const reply = (): ActReply => ({ chat: app.activeSessionId, events: app.events });
+/** The reply for `chat` without opening it: its log when it is open. */
+const replyOf = (chat: string): ActReply => (chat === app.activeSessionId ? reply() : { chat, events: [] });
 
 /** A fork is now the open chat: as `sendEdit` does it, without the send. */
 function takeFork(res: { events: SessionEvent[]; session: string }): void {
@@ -227,12 +262,15 @@ function takeFork(res: { events: SessionEvent[]; session: string }): void {
   void refreshSessions();
 }
 
-/** One `ChatAction` on `chat`, as the Mac's own button runs it. */
-export async function runAct(chat: string, project: string | null, action: ChatAction): Promise<ActReply> {
+/** One `ChatAction` on `chat`, as the Mac's own button runs it. `id` is
+ *  the phone's call, claimed (132 (d)) before anything that starts a turn
+ *  or cannot be taken back by the phone's retry: a fork, a delete, a send. */
+export async function runAct(chat: string, project: string | null, action: ChatAction, id?: number): Promise<ActReply> {
   // By id, no open needed: the delete and its undo work on the list, and
   // a budget answer on the running turn's own chat.
   switch (action.op) {
     case "delete": {
+      await mustClaim(id);
       const mark = newestToast();
       await deleteSession(chat);
       const why = toastSince(mark);
@@ -249,6 +287,15 @@ export async function runAct(chat: string, project: string | null, action: ChatA
       if (d !== "continue" && d !== "stop" && d !== "wrap") throw new Error(`no budget answer ${d}`);
       await api.budgetOverride(chat, d, action.text ?? undefined);
       return chat === app.activeSessionId ? reply() : { chat, events: [] };
+    }
+    case "resume_limit": {
+      // 132 (b): refused when nothing in this chat is paused, and never
+      // toggled off from the phone (a second press on the Mac cancels).
+      const p = app.limitPause;
+      if (!p || p.session !== chat) throw new Error("nothing in this chat is paused by the usage limit");
+      if (app.limitResumeAt != null) {
+        return { ...replyOf(chat), note: `already scheduled for ${clock(app.limitResumeAt)}` };
+      }
     }
   }
   await ensureChat(chat, project);
@@ -271,10 +318,12 @@ export async function runAct(chat: string, project: string | null, action: ChatA
       // `sendEdit`'s steps, with the send the phone's (untyped) one so the
       // answer comes back now and not at the turn's end.
       if (!app.connection) throw new Error("no engine is connected on the Mac — connect one there first");
+      await mustClaim(id);
       const res = await api.editMessage(action.index, action.text, "send");
       takeFork(res);
-      await remoteSend(null, action.text);
-      return reply();
+      // 132 (c): a queued send is said, so the phone draws no live turn.
+      const out = await remoteSend(null, action.text);
+      return out === "queued" ? { ...reply(), note: "queued — it goes when the Mac's running turn ends" } : reply();
     }
     case "remove":
       await attempt("remove it", () => removeTurn(action.index));
@@ -295,6 +344,7 @@ export async function runAct(chat: string, project: string | null, action: ChatA
       app.events = await api.unrewind(action.of);
       return reply();
     case "fork":
+      await mustClaim(id);
       takeFork(await api.forkSession(action.upto));
       return reply();
     case "continue": {
@@ -314,9 +364,17 @@ export async function runAct(chat: string, project: string | null, action: ChatA
       await attempt("switch the chat's kind", () => switchChatKind(kind), () => chatKind(app.events) === kind);
       return reply();
     }
-    case "resume_limit":
+    case "resume_limit": {
+      const p = app.limitPause;
+      const mark = newestToast();
       resumeAfterLimit();
-      return reply();
+      if (app.limitResumeAt != null) {
+        return { ...reply(), note: `scheduled for ${clock(app.limitResumeAt)}, 30 s after the window resets` };
+      }
+      // Sent at once — or refused by the Mac with a toast, the pause kept.
+      if (app.limitPause === p && p) throw new Error(toastSince(mark) ?? "the Mac did not resume the chat");
+      return { ...reply(), note: "resumed" };
+    }
     case "checkpoint": {
       const mark = newestToast();
       const before = app.checkpoint;
@@ -478,6 +536,96 @@ export function runningNow(): unknown {
     dream: app.dreaming ? { running: true } : null,
     capture: app.capturing ? { running: true } : null,
   };
+}
+
+// ---- dream and capture (wave 5) ----
+
+export type PassKind = "dream" | "capture";
+
+/** A `pass-event` for the phone's stream: started, then done or failed
+ *  with the toast the Mac showed. */
+export interface PassEvent {
+  kind: PassKind;
+  state: "started" | "done" | "failed";
+  text: string | null;
+}
+
+/**
+ * The Mac's Dream or Capture button, from the phone: refused while either
+ * runs (they share one lock), else started — the answer comes at once —
+ * and its end goes out as a `pass-event` with the Mac's own toast.
+ */
+export async function runPass(kind: PassKind): Promise<{ status: "started" }> {
+  if (kind !== "dream" && kind !== "capture") throw new Error(`no pass ${String(kind)}`);
+  if (app.dreaming) throw new Error("a dream is already running");
+  if (app.capturing) throw new Error("a capture is already running");
+  const mark = newestToast();
+  const run = kind === "dream" ? runDream() : runCapture();
+  void emit("pass-event", { kind, state: "started", text: null } satisfies PassEvent).catch(() => {});
+  void run.then(() => {
+    const text = toastSince(mark);
+    const failed = !!text && /^(dream|capture) failed/.test(text);
+    void emit("pass-event", { kind, state: failed ? "failed" : "done", text } satisfies PassEvent).catch(() => {});
+  });
+  return { status: "started" };
+}
+
+// ---- what the window says of itself (wave 5) ----
+
+/** `/api/state`'s `limit_pause` (the service's `LimitPause`, Unix seconds). */
+export interface LimitPauseWire {
+  chat: string | null;
+  resets_at: number | null;
+  window: string | null;
+  text: string;
+  subagents: string[];
+  resume_at: number | null;
+}
+
+/** The window's palette and pause as `remote.rs` keeps them. */
+export function windowState(): { palette: string | null; limit_pause: LimitPauseWire | null } {
+  const p = app.limitPause;
+  const secs = (ms: number | null | undefined) => (ms == null ? null : Math.floor(ms / 1000));
+  return {
+    palette: app.palette ?? null,
+    limit_pause: p
+      ? {
+          chat: p.session,
+          resets_at: secs(p.resetsAtMs),
+          window: p.window,
+          text: p.text,
+          subagents: p.subagents,
+          resume_at: secs(app.limitResumeAt),
+        }
+      : null,
+  };
+}
+
+let lastWindowState = "";
+let windowFeed: ReturnType<typeof setInterval> | null = null;
+
+/** Tell `remote.rs` the palette and the pause when either changed. */
+export function sendWindowState(): void {
+  const now = JSON.stringify(windowState());
+  if (now === lastWindowState) return;
+  lastWindowState = now;
+  void emit("remote-window-state", JSON.parse(now)).catch(() => {
+    lastWindowState = "";
+  });
+}
+
+/** Every second, cheaply: a JSON compare, an event only on a change. */
+export function startWindowStateFeed(everyMs = 1000): void {
+  if (windowFeed !== null) return;
+  lastWindowState = "";
+  sendWindowState();
+  windowFeed = setInterval(sendWindowState, everyMs);
+}
+
+export function stopWindowStateFeed(): void {
+  if (windowFeed !== null) clearInterval(windowFeed);
+  windowFeed = null;
+  lastWindowState = "";
 }
 
 /** `pid` is the project's id (`id` is the call's, on the wire). */
@@ -730,10 +878,16 @@ export interface RemoteSendPayload {
  * chat runs a turn, since the Mac's queue holds text (the phone keeps it).
  */
 export async function runSend(p: RemoteSendPayload): Promise<"sent" | "queued"> {
-  if (p.new) return remoteNewChat(p.project ?? null, p.text);
+  if (p.new) {
+    await mustClaim(p.id);
+    return remoteNewChat(p.project ?? null, p.text);
+  }
   if (p.project && p.project !== app.project?.id && p.chat) {
     await ensureChat(p.chat, p.project);
   }
+  // The chat is open: still wanted? (132 (d) — a late window starts no
+  // second turn the phone's retry would also start.)
+  await mustClaim(p.id);
   const images = p.images ?? [];
   const documents = p.documents ?? [];
   const council = p.council ?? null;
@@ -771,14 +925,20 @@ export async function installRemoteHandlers(): Promise<void> {
   // The phone names the chat it shows (backlog 159, A3); `null` is the
   // chat on screen.
   await listen<{ chat?: string | null } | null>("remote-cancel", (e) => void cancelTurn(e.payload?.chat ?? null));
-  await listen<{ chat: string }>("remote-open", (e) => {
-    if (e.payload?.chat && !app.busy) void openSession(e.payload.chat);
+  // 132 (a): the open is answered — opened, or why not (blocker 665's
+  // rule: never away from a chat running on the Mac's screen).
+  await listen<Chatted>("remote-open", (e) => {
+    const { id, chat, project } = e.payload;
+    void answer(id, async () => {
+      await ensureChat(chat, project ?? null);
+      return { chat: app.activeSessionId };
+    });
   });
   await listen("remote-renamed", () => void refreshSessions());
   // Item 246, wave 1: every answered call.
   await listen<Chatted & { action: ChatAction }>("remote-act", (e) => {
     const { id, chat, project, action } = e.payload;
-    void answer(id, () => runAct(chat, project ?? null, action));
+    void answer(id, () => runAct(chat, project ?? null, action, id));
   });
   await listen<Chatted>("remote-context", (e) => {
     const { id, chat, project } = e.payload;
@@ -813,4 +973,11 @@ export async function installRemoteHandlers(): Promise<void> {
     const { id, chat } = e.payload;
     void answer(id, async () => asideRows(chat));
   });
+  // Wave 5: Dream and Capture from the phone; the palette and the pause
+  // for `/api/state`.
+  await listen<{ id: number; kind: PassKind }>("remote-pass", (e) => {
+    const { id, kind } = e.payload;
+    void answer(id, () => runPass(kind));
+  });
+  startWindowStateFeed();
 }

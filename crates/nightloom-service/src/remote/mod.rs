@@ -30,6 +30,7 @@
 //! headers yet (they need `tailscale serve` in front of the port; later).
 
 pub mod api;
+pub mod nightshift_routes;
 pub mod sync_routes;
 pub mod tailnet;
 pub mod token;
@@ -54,9 +55,10 @@ use serde::{Deserialize, Serialize};
 use crate::council::CouncilRequest;
 use api::{
     ActReply, AsideCancel, AsideRequest, AsideStarted, ChatAction, ContextEditRequest,
-    ContextReply, LayerChange, NOT_AVAILABLE, NewProjectRequest, NoteText, ProjectRenameRequest,
-    Rail, RailPatch, Running, SearchScope, StateReply, UsageReply,
+    ContextReply, LayerChange, LimitPause, NOT_AVAILABLE, NewProjectRequest, NoteText, PassStarted,
+    ProjectRenameRequest, Rail, RailPatch, Running, SearchScope, StateReply, UsageReply,
 };
+pub use nightshift_routes::NightshiftProject;
 use tokio::sync::{broadcast, oneshot};
 
 /// The port the card proposes (nightshift blocker 172, its default taken).
@@ -393,6 +395,36 @@ pub trait Host: Send + Sync + 'static {
     async fn asides(&self, _chat: &str) -> Result<Vec<serde_json::Value>, String> {
         Err(NOT_AVAILABLE.into())
     }
+
+    // ---- item 246, wave 5 (wave 3 B1) ----
+
+    /// The Nightshift projects this host may show the phone
+    /// ([`nightshift_routes`], blocker 669's default: read the queue, items,
+    /// mornings and blockers; answer a blocker; add an item — no diffs,
+    /// reverts or launches). Empty — the default — and every
+    /// `/api/nightshift` route answers [`NOT_AVAILABLE`], and `features`
+    /// does not list `nightshift`.
+    async fn nightshift_roots(&self) -> Vec<NightshiftProject> {
+        Vec::new()
+    }
+    /// The desktop's chosen palette (blocker 577), for `/api/state`.
+    async fn palette(&self) -> Option<String> {
+        None
+    }
+    /// A turn the plan's usage limit paused (backlog 164), for
+    /// `/api/state`.
+    async fn limit_pause(&self) -> Option<LimitPause> {
+        None
+    }
+    /// Start one dream (the memory pass) as the Mac's Dream button does.
+    /// `Ok` once it has started; how it went goes out as `pass-event`s.
+    async fn dream(&self) -> Result<(), String> {
+        Err(NOT_AVAILABLE.into())
+    }
+    /// Start one capture pass, as the Mac's Capture button does.
+    async fn capture(&self) -> Result<(), String> {
+        Err(NOT_AVAILABLE.into())
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -607,6 +639,9 @@ fn router(shared: Arc<Shared>) -> Router {
             "/notes/{scope}/{*name}",
             get(note_read).put(note_write).delete(note_delete),
         )
+        .route("/dream", post(dream))
+        .route("/capture", post(capture))
+        .merge(nightshift_routes::router())
         .merge(sync_routes::router(shared.host.sync()))
         // An explicit fallback so the bearer layer below covers a miss
         // too: without one an unknown `/api` path fell through to the
@@ -728,15 +763,46 @@ fn done(r: Result<(), String>) -> Response {
     }
 }
 
-/// The state, and what this host serves (item 246: `features`).
+/// The state, and what this host serves (item 246: `features`). The
+/// listener names `nightshift` itself, while the host has a Nightshift
+/// project, so the list cannot claim routes that would answer 501.
 async fn state(State(shared): State<Arc<Shared>>) -> Json<StateReply> {
     let mut state = shared.host.state().await;
     state.voice = shared.host.voice().map(|v| v.info());
+    let mut features = shared.host.features();
+    features.retain(|f| f != api::feature::NIGHTSHIFT);
+    if !shared.host.nightshift_roots().await.is_empty() {
+        features.push(api::feature::NIGHTSHIFT.to_string());
+    }
     Json(StateReply {
         state,
-        features: shared.host.features(),
+        features,
         host: shared.host.kind().to_string(),
+        palette: shared.host.palette().await,
+        limit_pause: shared.host.limit_pause().await,
     })
+}
+
+/// A dream or a capture started: 202 `{status: "started"}`.
+fn started(r: Result<(), String>) -> Response {
+    match r {
+        Ok(()) => (
+            StatusCode::ACCEPTED,
+            Json(PassStarted {
+                status: "started".into(),
+            }),
+        )
+            .into_response(),
+        Err(e) => refused(e),
+    }
+}
+
+async fn dream(State(shared): State<Arc<Shared>>) -> Response {
+    started(shared.host.dream().await)
+}
+
+async fn capture(State(shared): State<Arc<Shared>>) -> Response {
+    started(shared.host.capture().await)
 }
 
 async fn chats(State(shared): State<Arc<Shared>>) -> Response {
@@ -1176,6 +1242,10 @@ mod tests {
         notes: Mutex<std::collections::BTreeMap<(String, String), String>>,
         forgotten: Mutex<Vec<String>>,
         tx: broadcast::Sender<Event>,
+        /// Wave 5: a scratch copy of the service crate's Nightshift
+        /// fixture (never the real repo), and each dream/capture started.
+        nightshift: std::path::PathBuf,
+        passes: Mutex<Vec<String>>,
     }
 
     impl FakeHost {
@@ -1208,8 +1278,17 @@ mod tests {
                 ),
                 forgotten: Mutex::new(Vec::new()),
                 tx: tx.clone(),
+                nightshift: crate::nightshift::testutil::scratch(),
+                passes: Mutex::new(Vec::new()),
             });
             (host, tx)
+        }
+    }
+
+    /// The fixture copy goes with the host.
+    impl Drop for FakeHost {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.nightshift);
         }
     }
 
@@ -1345,6 +1424,41 @@ mod tests {
         fn features(&self) -> Vec<String> {
             api::feature::ALL.iter().map(|s| s.to_string()).collect()
         }
+        async fn nightshift_roots(&self) -> Vec<NightshiftProject> {
+            crate::nightshift::detect(&self.nightshift)
+                .map(|root| NightshiftProject {
+                    id: "p1".into(),
+                    name: root.config.name.clone(),
+                    root,
+                })
+                .into_iter()
+                .collect()
+        }
+        async fn palette(&self) -> Option<String> {
+            Some("C".into())
+        }
+        async fn limit_pause(&self) -> Option<LimitPause> {
+            Some(LimitPause {
+                chat: Some("abc".into()),
+                resets_at: Some(1_789_714_200),
+                window: Some("five_hour".into()),
+                text: "You've hit your session limit".into(),
+                subagents: vec![],
+                resume_at: None,
+            })
+        }
+        async fn dream(&self) -> Result<(), String> {
+            let mut p = self.passes.lock().unwrap();
+            if p.iter().any(|x| x == "dream") {
+                return Err("a dream is already running".into());
+            }
+            p.push("dream".into());
+            Ok(())
+        }
+        async fn capture(&self) -> Result<(), String> {
+            self.passes.lock().unwrap().push("capture".into());
+            Ok(())
+        }
         async fn send_with(&self, chat: Option<&str>, req: SendRequest) -> Result<Handed, String> {
             if req.is_plain() {
                 return self.send(chat, &req.text).await;
@@ -1372,6 +1486,7 @@ mod tests {
                     _ => chat.to_string(),
                 },
                 events: self.transcript(None, "abc").await?,
+                note: None,
             })
         }
         async fn context(&self, chat: &str) -> Result<ContextReply, String> {
@@ -2891,6 +3006,7 @@ mod tests {
         );
         assert!(!text.contains("LACKS"), "{text}");
         assert!(text.contains("PASS  DELETE the scratch note"), "{text}");
+        assert!(text.contains("PASS  GET its open blockers"), "{text}");
         server.stop().await;
 
         let (fake, _tx) = FakeHost::new();
@@ -2910,6 +3026,302 @@ mod tests {
             text.contains("LACKS GET /api/rail (feature rail)"),
             "{text}"
         );
+        assert!(
+            text.contains("LACKS GET /api/nightshift (feature nightshift)"),
+            "{text}"
+        );
+        server.stop().await;
+    }
+
+    // ---- item 246 wave 5 (wave 3 B1): Nightshift, Dream/Capture, state ----
+
+    /// The body of `text` with its `## Answer` section taken out, and its
+    /// front matter's lines but `status` — what an answer must not touch.
+    fn without_answer(text: &str) -> (Vec<String>, String) {
+        let split = crate::nightshift::frontmatter::split(text);
+        let fm: Vec<String> = split
+            .raw
+            .iter()
+            .filter(|l| !l.starts_with("status:"))
+            .cloned()
+            .collect();
+        let body = split.body;
+        let Some(start) = body.find("## Answer") else {
+            return (fm, body);
+        };
+        let rest = &body[start + 2..];
+        let end = rest
+            .find("\n## ")
+            .map(|i| start + 2 + i + 1)
+            .unwrap_or(body.len());
+        (fm, format!("{}{}", &body[..start], &body[end..]))
+    }
+
+    #[tokio::test]
+    async fn nightshift_routes_read_the_queue_mornings_and_blockers_and_take_an_answer() {
+        let (server, host, _tx, token) = up().await;
+        let base = format!("http://{}", server.addr());
+        let c = client();
+
+        // Every route needs the bearer.
+        for (m, path) in [
+            ("GET", "/api/nightshift"),
+            ("GET", "/api/nightshift/p1/queue"),
+            ("GET", "/api/nightshift/p1/items/017"),
+            ("POST", "/api/nightshift/p1/items"),
+            ("GET", "/api/nightshift/p1/blockers"),
+            ("GET", "/api/nightshift/p1/blockers/021"),
+            ("POST", "/api/nightshift/p1/blockers/021/answer"),
+            ("GET", "/api/nightshift/p1/mornings"),
+            ("GET", "/api/nightshift/p1/mornings/2026-09-11.md"),
+            ("POST", "/api/dream"),
+            ("POST", "/api/capture"),
+        ] {
+            let r = c
+                .request(m.parse().unwrap(), format!("{base}{path}"))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(r.status(), 401, "{m} {path}");
+        }
+
+        // The state names it, with the palette and the pause.
+        let (_, st) = get_json(&c, format!("{base}/api/state"), &token).await;
+        let features: Vec<String> = serde_json::from_value(st["features"].clone()).unwrap();
+        assert_eq!(features.iter().filter(|f| *f == "nightshift").count(), 1);
+        assert_eq!(st["palette"], "C");
+        assert_eq!(st["limit_pause"]["chat"], "abc");
+        assert_eq!(st["limit_pause"]["window"], "five_hour");
+
+        let (code, v) = get_json(&c, format!("{base}/api/nightshift"), &token).await;
+        assert_eq!(code, 200, "{v}");
+        assert_eq!(v[0]["id"], "p1");
+        assert_eq!(v[0]["name"], "Value generalization");
+        assert_eq!(v[0]["kind"], "research");
+        assert_eq!(v[0]["live"], false);
+        assert_eq!(v[0]["items"], 1);
+        assert_eq!(v[0]["open_blockers"], 1);
+        assert_eq!(v[0]["newest_morning"], "2026-09-11.md");
+
+        let (code, q) = get_json(&c, format!("{base}/api/nightshift/p1/queue"), &token).await;
+        assert_eq!(code, 200, "{q}");
+        assert_eq!(q["items"][0]["id"], "017");
+        assert_eq!(q["items"][0]["order"], 0);
+
+        let (code, item) =
+            get_json(&c, format!("{base}/api/nightshift/p1/items/017"), &token).await;
+        assert_eq!(code, 200, "{item}");
+        assert!(
+            item["title"].as_str().unwrap().contains("Stuart Armstrong"),
+            "{item}"
+        );
+        assert!(item["body"].as_str().unwrap().contains("## "), "{item}");
+        assert!(!item["body"].as_str().unwrap().starts_with("---"));
+        let (code, _) = get_json(&c, format!("{base}/api/nightshift/p1/items/999"), &token).await;
+        assert_eq!(code, 404);
+        let (code, _) = get_json(&c, format!("{base}/api/nightshift/p9/queue"), &token).await;
+        assert_eq!(code, 404);
+
+        let (code, bl) = get_json(&c, format!("{base}/api/nightshift/p1/blockers"), &token).await;
+        assert_eq!(code, 200, "{bl}");
+        assert_eq!(bl["blockers"][0]["id"], "021");
+        assert!(
+            bl["blockers"][0]["question"]
+                .as_str()
+                .unwrap()
+                .contains("METHOD")
+        );
+        let (code, b) =
+            get_json(&c, format!("{base}/api/nightshift/p1/blockers/021"), &token).await;
+        assert_eq!(code, 200, "{b}");
+        assert!(b["guess"].as_str().unwrap().contains("narrow curl"), "{b}");
+        assert_eq!(b["status"], "open");
+
+        let (code, m) = get_json(&c, format!("{base}/api/nightshift/p1/mornings"), &token).await;
+        assert_eq!(code, 200, "{m}");
+        assert_eq!(m[0]["name"], "2026-09-11.md");
+        assert_eq!(
+            m.as_array().unwrap().len(),
+            1,
+            "LATEST.md is the same page twice"
+        );
+        let (code, page) = get_json(
+            &c,
+            format!("{base}/api/nightshift/p1/mornings/2026-09-11.md"),
+            &token,
+        )
+        .await;
+        assert_eq!(code, 200, "{page}");
+        assert!(!page["text"].as_str().unwrap().is_empty());
+        let (code, _) = get_json(
+            &c,
+            format!("{base}/api/nightshift/p1/mornings/nope.md"),
+            &token,
+        )
+        .await;
+        assert_eq!(code, 404);
+
+        // An answer writes the Answer section and the status, nothing else.
+        let file = host.nightshift.join("blockers");
+        let file = std::fs::read_dir(&file)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| p.to_string_lossy().contains("021-"))
+            .unwrap();
+        let before = std::fs::read_to_string(&file).unwrap();
+        let (code, _) = post_json(
+            &c,
+            format!("{base}/api/nightshift/p1/blockers/021/answer"),
+            &token,
+            serde_json::json!({"answer": "   "}),
+        )
+        .await;
+        assert_eq!(code, 400);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), before);
+        let (code, v) = post_json(
+            &c,
+            format!("{base}/api/nightshift/p1/blockers/021/answer"),
+            &token,
+            serde_json::json!({"answer": "Grant the narrow curl."}),
+        )
+        .await;
+        assert_eq!(code, 200, "{v}");
+        assert_eq!(v["status"], "answered");
+        assert_eq!(v["answer"], "Grant the narrow curl.");
+        let after = std::fs::read_to_string(&file).unwrap();
+        assert!(after.contains("status: answered"), "{after}");
+        assert!(
+            after.contains("## Answer\nGrant the narrow curl."),
+            "{after}"
+        );
+        assert_eq!(without_answer(&before), without_answer(&after));
+        let (_, bl) = get_json(&c, format!("{base}/api/nightshift/p1/blockers"), &token).await;
+        assert_eq!(bl["blockers"], serde_json::json!([]), "no longer open");
+
+        // A new item: his words under his heading, appended to the queue.
+        let (code, v) = post_json(
+            &c,
+            format!("{base}/api/nightshift/p1/items"),
+            &token,
+            serde_json::json!({"title": "  ", "said": "x"}),
+        )
+        .await;
+        assert_eq!(code, 400, "{v}");
+        let (code, v) = post_json(
+            &c,
+            format!("{base}/api/nightshift/p1/items"),
+            &token,
+            serde_json::json!({"title": "Answer blockers from the phone", "said": "most answers are one word"}),
+        )
+        .await;
+        assert_eq!(code, 201, "{v}");
+        let id = v["id"].as_str().unwrap().to_string();
+        assert!(id.parse::<u32>().unwrap() > 17, "{id}");
+        let (_, item) = get_json(&c, format!("{base}/api/nightshift/p1/items/{id}"), &token).await;
+        assert_eq!(item["kind"], "research", "the project's kind");
+        assert_eq!(item["status"], "todo");
+        assert!(
+            item["body"]
+                .as_str()
+                .unwrap()
+                .contains("## What Swaraag said\n\nmost answers are one word\n"),
+            "{item}"
+        );
+        let (_, q) = get_json(&c, format!("{base}/api/nightshift/p1/queue"), &token).await;
+        let ids: Vec<&str> = q["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["017", id.as_str()], "appended to the queue");
+        server.stop().await;
+        let _ = std::fs::remove_dir_all(&host.nightshift);
+    }
+
+    #[tokio::test]
+    async fn a_host_without_nightshift_says_not_on_this_host_and_lists_no_feature() {
+        let (fake, _tx) = FakeHost::new();
+        let scratch = fake.nightshift.clone();
+        let token = token::generate();
+        let server = Server::start_for_test(
+            "127.0.0.1:0".parse().unwrap(),
+            token.clone(),
+            Arc::new(BareHost(fake)),
+        )
+        .await
+        .unwrap();
+        let base = format!("http://{}", server.addr());
+        let c = client();
+        let (_, st) = get_json(&c, format!("{base}/api/state"), &token).await;
+        assert!(
+            !st["features"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|f| f == "nightshift")
+        );
+        assert_eq!(st["palette"], serde_json::Value::Null);
+        assert_eq!(st["limit_pause"], serde_json::Value::Null);
+        for path in [
+            "/api/nightshift",
+            "/api/nightshift/p1/queue",
+            "/api/nightshift/p1/blockers/021",
+        ] {
+            let (code, v) = get_json(&c, format!("{base}{path}"), &token).await;
+            assert_eq!((code, v.as_str()), (501, Some(NOT_AVAILABLE)), "{path}");
+        }
+        let (code, v) = post_json(
+            &c,
+            format!("{base}/api/nightshift/p1/blockers/021/answer"),
+            &token,
+            serde_json::json!({"answer": "yes"}),
+        )
+        .await;
+        assert_eq!((code, v.as_str()), (501, Some(NOT_AVAILABLE)));
+        for path in ["/api/dream", "/api/capture"] {
+            let (code, v) =
+                post_json(&c, format!("{base}{path}"), &token, serde_json::json!({})).await;
+            assert_eq!((code, v.as_str()), (501, Some(NOT_AVAILABLE)), "{path}");
+        }
+        server.stop().await;
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    #[tokio::test]
+    async fn dream_and_capture_start_with_202_or_say_why_not() {
+        let (server, host, _tx, token) = up().await;
+        let base = format!("http://{}", server.addr());
+        let c = client();
+        let (code, v) = post_json(
+            &c,
+            format!("{base}/api/dream"),
+            &token,
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(code, 202, "{v}");
+        assert_eq!(v["status"], "started");
+        let (code, v) = post_json(
+            &c,
+            format!("{base}/api/dream"),
+            &token,
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(
+            (code, v.as_str()),
+            (409, Some("a dream is already running"))
+        );
+        let (code, _) = post_json(
+            &c,
+            format!("{base}/api/capture"),
+            &token,
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(code, 202);
+        assert_eq!(*host.passes.lock().unwrap(), vec!["dream", "capture"]);
         server.stop().await;
     }
 }
