@@ -112,6 +112,10 @@ pub struct NewItem {
     pub said: String,
     #[serde(default)]
     pub kind: Option<String>,
+    /// The phone's nonce, the same on every try of one item (wave 4 C1):
+    /// a try after a lost reply gets the first try's id, not a second item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nonce: Option<String>,
 }
 
 /// The new item's id.
@@ -359,6 +363,21 @@ async fn new_item(
         Ok(r) => r,
         Err(f) => return failed(f),
     };
+    let once = format!("item:{p}");
+    let nonce = req.nonce.clone();
+    match shared.items.claim(&once, nonce.as_deref()) {
+        super::resent::Seen::First => {}
+        super::resent::Seen::Done(id) => {
+            return (StatusCode::CREATED, Json(NewItemReply { id })).into_response();
+        }
+        super::resent::Seen::Running => {
+            return (
+                StatusCode::CONFLICT,
+                "this item is being added now — look at the queue in a moment",
+            )
+                .into_response();
+        }
+    }
     let resp = blocking(move || {
         let kind = req
             .kind
@@ -375,6 +394,11 @@ async fn new_item(
             .map_err(|e| (StatusCode::CONFLICT, e))
     })
     .await;
+    shared.items.settle(
+        &once,
+        nonce.as_deref(),
+        &resp.as_ref().map(|r| r.id.clone()),
+    );
     match resp {
         Ok(v) => (StatusCode::CREATED, Json(v)).into_response(),
         Err(f) => failed(f),

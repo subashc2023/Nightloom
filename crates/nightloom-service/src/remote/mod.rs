@@ -31,6 +31,7 @@
 
 pub mod api;
 pub mod nightshift_routes;
+pub mod resent;
 pub mod sync_routes;
 pub mod tailnet;
 pub mod token;
@@ -459,6 +460,11 @@ struct Shared {
     /// token, which restarts the listener) left every phone that held a
     /// stream still receiving the desktop's events (review 2026-09-17).
     closing: tokio_util::sync::CancellationToken,
+    /// The sends and new chats taken lately, by the phone's nonce, so a
+    /// resend after a lost reply is answered, not run again (wave 4 C1).
+    sends: resent::Resent<Handed>,
+    /// The same for a new Nightshift item: the item's id.
+    items: resent::Resent<String>,
 }
 
 /// A running listener. Dropping it, or [`Server::stop`], closes the port;
@@ -554,6 +560,8 @@ impl Server {
             host,
             token: token.clone(),
             closing: closing.clone(),
+            sends: resent::Resent::default(),
+            items: resent::Resent::default(),
         }));
         let https = tls.is_some();
         let task = match tls {
@@ -856,18 +864,38 @@ async fn projects(State(shared): State<Arc<Shared>>) -> Response {
 
 /// A new chat (item 246): 202 with `sent`/`queued` as a send, 409 with
 /// the desktop's sentence when it could not start one.
-async fn new_chat(State(shared): State<Arc<Shared>>, Json(req): Json<NewChatRequest>) -> Response {
+async fn new_chat(
+    State(shared): State<Arc<Shared>>,
+    Json(body): Json<resent::WithNonce<NewChatRequest>>,
+) -> Response {
+    let resent::WithNonce { req, nonce } = body;
     if req.text.trim().is_empty() {
         return bad("nothing to send".into());
     }
-    match shared
+    if let Some(again) = answered_before(&shared, "new", nonce.as_deref()) {
+        return again;
+    }
+    let outcome = shared
         .host
         .new_chat(req.project.as_deref(), &req.text)
-        .await
-    {
+        .await;
+    shared.sends.settle("new", nonce.as_deref(), &outcome);
+    match outcome {
         Ok(status) => (StatusCode::ACCEPTED, Json(SendReply { status })).into_response(),
         Err(e) => (StatusCode::CONFLICT, e).into_response(),
     }
+}
+
+/// A resend the listener has seen (wave 4 C1): the first try's answer,
+/// or — while the first still runs — "sent", which is what it is doing.
+/// `None`: this is the first try, and it runs.
+fn answered_before(shared: &Shared, kind: &str, nonce: Option<&str>) -> Option<Response> {
+    let status = match shared.sends.claim(kind, nonce) {
+        resent::Seen::First => return None,
+        resent::Seen::Running => Handed::Sent,
+        resent::Seen::Done(status) => status,
+    };
+    Some((StatusCode::ACCEPTED, Json(SendReply { status })).into_response())
 }
 
 async fn rename(
@@ -911,16 +939,24 @@ async fn project_transcript(
 async fn send_to(
     State(shared): State<Arc<Shared>>,
     Path(id): Path<String>,
-    Json(req): Json<SendRequest>,
+    Json(req): Json<resent::WithNonce<SendRequest>>,
 ) -> Response {
     send_impl(&shared, Some(&id), req).await
 }
 
-async fn send_active(State(shared): State<Arc<Shared>>, Json(req): Json<SendRequest>) -> Response {
+async fn send_active(
+    State(shared): State<Arc<Shared>>,
+    Json(req): Json<resent::WithNonce<SendRequest>>,
+) -> Response {
     send_impl(&shared, None, req).await
 }
 
-async fn send_impl(shared: &Shared, chat: Option<&str>, req: SendRequest) -> Response {
+async fn send_impl(
+    shared: &Shared,
+    chat: Option<&str>,
+    body: resent::WithNonce<SendRequest>,
+) -> Response {
+    let resent::WithNonce { req, nonce } = body;
     // A photo or a document with no caption is a message (item 246); an
     // empty text alone is not.
     if req.text.trim().is_empty() && req.images.is_empty() && req.documents.is_empty() {
@@ -931,7 +967,12 @@ async fn send_impl(shared: &Shared, chat: Option<&str>, req: SendRequest) -> Res
     {
         return bad(e.to_string());
     }
-    match shared.host.send_with(chat, req).await {
+    if let Some(again) = answered_before(shared, "send", nonce.as_deref()) {
+        return again;
+    }
+    let outcome = shared.host.send_with(chat, req).await;
+    shared.sends.settle("send", nonce.as_deref(), &outcome);
+    match outcome {
         // Accepted, not done: the turn runs on the Mac and its progress
         // comes down the event stream; the body says whether it started
         // or waits behind the running turn.
@@ -2069,6 +2110,79 @@ mod tests {
         // And none of them without the bearer.
         let r = c.get(format!("{base}/api/projects")).send().await.unwrap();
         assert_eq!(r.status(), 401);
+        server.stop().await;
+    }
+
+    /// A lost reply's resend (wave 4 C1): the same nonce again is answered
+    /// with the first answer and reaches the host once; another nonce, or
+    /// none, is another message; a refused try is tried again for real.
+    #[tokio::test]
+    async fn a_resend_with_the_same_nonce_reaches_the_host_once() {
+        let (server, host, _tx, token) = up().await;
+        let base = format!("http://{}", server.addr());
+        let c = client();
+        let post = |path: &str, body: serde_json::Value| {
+            c.post(format!("{base}/api{path}"))
+                .bearer_auth(&token)
+                .json(&body)
+                .send()
+        };
+        for _ in 0..3 {
+            let r = post(
+                "/chats/abc/send",
+                serde_json::json!({ "text": "queue me once", "nonce": "n-1" }),
+            )
+            .await
+            .unwrap();
+            assert_eq!(r.status(), 202);
+            // The first answer, every time — queued, not a fresh "sent".
+            assert_eq!(r.json::<SendReply>().await.unwrap().status, Handed::Queued);
+        }
+        let r = post(
+            "/send",
+            serde_json::json!({ "text": "queue me once", "nonce": "n-2" }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(r.status(), 202);
+        let r = post("/send", serde_json::json!({ "text": "queue me once" }))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 202);
+        let sent = host.sent.lock().unwrap().clone();
+        assert_eq!(
+            sent.iter().filter(|(_, t)| t == "queue me once").count(),
+            3,
+            "n-1 once, n-2 once, no nonce once: {sent:?}"
+        );
+
+        // A refusal forgets the nonce: the next try reaches the host.
+        for _ in 0..2 {
+            let r = post(
+                "/chats/abc/send",
+                serde_json::json!({ "text": "refuse me", "nonce": "n-3" }),
+            )
+            .await
+            .unwrap();
+            assert_eq!(r.status(), 409);
+        }
+
+        // A new chat: once per nonce.
+        for _ in 0..2 {
+            let r = post(
+                "/new",
+                serde_json::json!({ "text": "start once", "project": "p1", "nonce": "n-4" }),
+            )
+            .await
+            .unwrap();
+            assert_eq!(r.status(), 202);
+        }
+        let started = host.started.lock().unwrap().clone();
+        assert_eq!(
+            started.iter().filter(|(_, t)| t == "start once").count(),
+            1,
+            "{started:?}"
+        );
         server.stop().await;
     }
 
@@ -3275,12 +3389,23 @@ mod tests {
             &c,
             format!("{base}/api/nightshift/p1/items"),
             &token,
-            serde_json::json!({"title": "Answer blockers from the phone", "said": "most answers are one word"}),
+            serde_json::json!({"title": "Answer blockers from the phone", "said": "most answers are one word", "nonce": "item-n1"}),
         )
         .await;
         assert_eq!(code, 201, "{v}");
         let id = v["id"].as_str().unwrap().to_string();
         assert!(id.parse::<u32>().unwrap() > 17, "{id}");
+        // The phone's Create again after a lost reply (wave 4 C1): the same
+        // nonce gets the same id, and no second item is written.
+        let (code, again) = post_json(
+            &c,
+            format!("{base}/api/nightshift/p1/items"),
+            &token,
+            serde_json::json!({"title": "Answer blockers from the phone", "said": "most answers are one word", "nonce": "item-n1"}),
+        )
+        .await;
+        assert_eq!(code, 201, "{again}");
+        assert_eq!(again["id"], v["id"]);
         let (_, item) = get_json(&c, format!("{base}/api/nightshift/p1/items/{id}"), &token).await;
         assert_eq!(item["kind"], "research", "the project's kind");
         assert_eq!(item["status"], "todo");

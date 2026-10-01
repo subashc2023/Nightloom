@@ -70,6 +70,9 @@ describe("the Nightshift client", () => {
     ]);
     expect(seen.every((s) => s.auth === "Bearer tok")).toBe(true);
     expect(seen[3].body).toEqual({ title: "A title", said: "his words" });
+    // Wave 4 C1: a nonce rides along when the sheet gives one.
+    await c.newItem("p 1", "A title", "his words", "n-1");
+    expect(seen[seen.length - 1].body).toEqual({ title: "A title", said: "his words", nonce: "n-1" });
     expect(seen[6].body).toEqual({ answer: "Yes." });
   });
 

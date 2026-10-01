@@ -225,6 +225,31 @@ export interface SendExtras {
   spoken?: boolean;
   /** Wave 2C: the message goes to a council of seats, not one model. */
   council?: CouncilSend | null;
+  /** Wave 4 C1: the same on every try of one message, so a try after a
+   *  lost reply is answered, not run again ([`nonceFor`]). */
+  nonce?: string;
+}
+
+/** A fresh nonce: 32 hex digits. `crypto.getRandomValues`, not
+ *  `randomUUID` — the page is plain HTTP over the tailnet, where
+ *  `randomUUID` (secure contexts only) is absent. */
+export function newNonce(): string {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** One message's tries (wave 4 C1): `key` names the message (its chat or
+ *  project and its text), `nonce` rides on every try of it. */
+export interface Try {
+  key: string;
+  nonce: string;
+}
+
+/** The try for `key`: the last one again when it was this message (a try
+ *  after a failure that may have been a lost reply), else a fresh one. */
+export function nonceFor(last: Try | null, key: string): Try {
+  return last && last.key === key ? last : { key, nonce: newNonce() };
 }
 
 /** The body of a send: absent fields are left out, so a pass-1 listener
@@ -235,6 +260,7 @@ export function sendBody(text: string, extras: SendExtras = {}): Record<string, 
   if (extras.images && extras.images.length > 0) body.images = extras.images;
   if (extras.spoken) body.spoken = true;
   if (extras.council) body.council = { seats: extras.council.seats, mode: extras.council.mode, areas: extras.council.areas ?? [] };
+  if (extras.nonce) body.nonce = extras.nonce;
   return body;
 }
 
@@ -658,8 +684,8 @@ export class Client {
   }
 
   /** A new chat on the Mac, in `project` or the open one (item 246). */
-  async newChat(project: string | null, text: string, images: ImageInput[] = []): Promise<"sent" | "queued"> {
-    const r = await this.call("/new", { method: "POST", body: JSON.stringify({ ...sendBody(text, { images }), project }) });
+  async newChat(project: string | null, text: string, images: ImageInput[] = [], nonce?: string): Promise<"sent" | "queued"> {
+    const r = await this.call("/new", { method: "POST", body: JSON.stringify({ ...sendBody(text, { images, nonce }), project }) });
     return parseSendReply(await r.text());
   }
 
@@ -1323,6 +1349,10 @@ export interface Queued {
   /** The host whose chat it is (wave 3); absent (held before wave 3) is
    *  the Mac's. It is only ever sent to that host. */
   host?: "mac" | "away";
+  /** The nonce its first try carried (wave 4 C1), so the held copy's
+   *  send is recognised if that try reached the host after all. Absent
+   *  (held before wave 4): the id stands in. */
+  nonce?: string;
 }
 
 export function loadQueue(): Queued[] {
@@ -1360,11 +1390,13 @@ export function newQueued(
   now = new Date(),
   project: string | null = null,
   host: "mac" | "away" | null = null,
+  nonce: string | null = null,
 ): Queued {
   seq += 1;
   const q: Queued = { id: `${now.getTime().toString(36)}-${seq}`, chat, text, at: now.toISOString() };
   if (project) q.project = project;
   if (host) q.host = host;
+  q.nonce = nonce ?? newNonce();
   return q;
 }
 

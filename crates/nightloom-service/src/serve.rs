@@ -92,6 +92,12 @@ use crate::turn::{TurnEvent, TurnInput};
 /// The lock file both holders honour, in the config dir.
 pub const LOCK_FILE: &str = "holder.lock";
 
+/// How long [`HomeLock::take`] keeps asking before it names the holder,
+/// and how often (a real holder costs the second process this much more
+/// before its refusal; both callers take the lock once, at start).
+const HOLD_RE_ASK_FOR: std::time::Duration = std::time::Duration::from_millis(500);
+const HOLD_RE_ASK_EVERY: std::time::Duration = std::time::Duration::from_millis(20);
+
 /// The process that holds a Nightloom home: the desktop app or `serve`.
 /// Held for the process's life; the OS lets go when it exits.
 #[derive(Debug)]
@@ -102,7 +108,12 @@ pub struct HomeLock {
 
 impl HomeLock {
     /// Take `<config>/holder.lock` for `who` (`desktop` or `serve`), or say
-    /// who holds it.
+    /// who holds it — after asking again for [`HOLD_RE_ASK_FOR`]: any
+    /// `Command` spawn in this process holds a copy of every open fd until
+    /// the child execs, a just-dropped lock's included, so a take right
+    /// after a drop can read the lock as held for that instant (the
+    /// `a_home_has_one_holder_at_a_time` flake; `pass_lock::take` is the
+    /// same fix for the same race, backlog 168).
     pub fn take(config: &Path, who: &str) -> Result<Self, String> {
         std::fs::create_dir_all(config).map_err(|e| format!("{}: {e}", config.display()))?;
         let path = config.join(LOCK_FILE);
@@ -113,7 +124,15 @@ impl HomeLock {
             .truncate(false)
             .open(&path)
             .map_err(|e| format!("{}: {e}", path.display()))?;
-        match file.try_lock() {
+        let deadline = std::time::Instant::now() + HOLD_RE_ASK_FOR;
+        let mut locked = file.try_lock();
+        while matches!(locked, Err(std::fs::TryLockError::WouldBlock))
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(HOLD_RE_ASK_EVERY);
+            locked = file.try_lock();
+        }
+        match locked {
             Ok(()) => {}
             Err(std::fs::TryLockError::WouldBlock) => {
                 let mut held = String::new();
@@ -455,15 +474,20 @@ impl ServeHost {
     /// and extra folders granted, the preamble by the chat's layers, `auto`
     /// with the Ask position when this binary can be the hook, and the
     /// chat's recorded CLI session resumed.
+    /// The phone's rail (`<home>/serve/rail.json`), or the defaults.
+    fn rail(&self) -> rail_store::RailSettings {
+        serve_reads::home()
+            .map(|h| rail_store::load_or_default(&h))
+            .unwrap_or_default()
+    }
+
     pub fn spec_for(&self, project: Option<&Project>, session: &Session) -> AgentSpec {
         let declared = session.declared_kind();
         let workspace = self.workspace_for(project, session);
         let mut spec = AgentSpec::new(workspace.clone());
         spec.binary = self.cfg.binary.clone();
         // The phone's rail (`<home>/serve/rail.json`), else `--model`.
-        let rail = serve_reads::home()
-            .map(|h| rail_store::load_or_default(&h))
-            .unwrap_or_default();
+        let rail = self.rail();
         rail.apply_model(&mut spec, self.cfg.model.as_deref());
         // No checkpoint helper on this host (the desktop's `sync_checkpoint`).
         spec.fork_mode = false;
@@ -547,6 +571,40 @@ impl ServeHost {
 
     /// The preamble a turn in `session` appends, by the chat's layers —
     /// what the Context page itemises (the desktop's `built.agent`).
+    /// A mirror-only project's project instructions (wave 3's leftover:
+    /// its turns run in an empty `<home>/workspaces/<id>`, so the walk
+    /// found none of the Mac's): the server's walk from that folder, then
+    /// the `AGENTS.md` the Mac sent to `mirror/projects/<id>/`, last —
+    /// most specific, as it sits in the project's own folder on the Mac.
+    /// Read in place on every turn, so the Mac's next push is the next
+    /// turn's text, and nothing is written. `None` for a project in this
+    /// server's registry (its folder holds its own), or when the Mac sent
+    /// no file.
+    fn mirrored_instructions(&self, project: Option<&Project>, workspace: &Path) -> Option<String> {
+        let p = project?;
+        if lock(&self.registry).find(&p.id).is_some() {
+            return None;
+        }
+        let file = self
+            .sync
+            .layout()
+            .root()
+            .join(project::PROJECTS_DIR)
+            .join(&p.id)
+            .join("AGENTS.md");
+        let mac = std::fs::read_to_string(file).ok()?;
+        let mac = mac.trim();
+        if mac.is_empty() {
+            return None;
+        }
+        Some(
+            match crate::layer_source(SegmentKind::ProjectInstructions, None, workspace) {
+                Some(walk) => format!("{walk}\n\n{mac}"),
+                None => mac.to_string(),
+            },
+        )
+    }
+
     fn prompt_for(
         &self,
         project: Option<&Project>,
@@ -556,7 +614,14 @@ impl ServeHost {
     ) -> SystemPrompt {
         let declared = session.declared_kind();
         let off: Vec<SegmentKind> = session.prompt_layers_off().to_vec();
-        let edits = session.prompt_layer_edits().clone();
+        let mut edits = session.prompt_layer_edits().clone();
+        // A mirror-only project's `AGENTS.md` is the Mac's, in the mirror:
+        // it stands in for the walk (the chat's own text still wins).
+        if !edits.contains_key(&SegmentKind::ProjectInstructions)
+            && let Some(text) = self.mirrored_instructions(project, workspace)
+        {
+            edits.insert(SegmentKind::ProjectInstructions, text);
+        }
         let knowledge = crate::knowledge::vault_dir();
         crate::agent_prompt_with(
             &crate::PromptConfig {
@@ -1116,15 +1181,31 @@ impl ServeHost {
     /// editable layer's file text as `layers.sources`, and no held change
     /// (`serve` keeps no prompt hold).
     fn context_of(&self, project: Option<&Project>, session: &Session) -> ContextReply {
+        self.context_with(&self.rail(), project, session)
+    }
+
+    /// [`Self::context_of`] under `rail`: the model (and subagent limits)
+    /// a turn would run with — the rail's, else `--model`, as
+    /// [`Self::spec_for`] sets them — so the page shows that model's
+    /// instructions, not `--model`'s.
+    fn context_with(
+        &self,
+        rail: &rail_store::RailSettings,
+        project: Option<&Project>,
+        session: &Session,
+    ) -> ContextReply {
         let workspace = self.workspace_for(project, session);
         let mut spec = AgentSpec::new(workspace.clone());
-        spec.model = self.cfg.model.clone();
+        rail.apply_model(&mut spec, self.cfg.model.as_deref());
         let prompt = self.prompt_for(project, session, &workspace, &spec);
         let view = WireView::assemble(Some(&prompt), &Session::new(), None, None);
         let mut layers = serde_json::to_value(PromptLayersInfo::as_built(session))
             .unwrap_or(serde_json::Value::Null);
         if let Some(obj) = layers.as_object_mut() {
-            let sources = context_ops::layer_sources(self.cfg.model.as_deref(), &workspace);
+            let mut sources = context_ops::layer_sources(spec.model.as_deref(), &workspace);
+            if let Some(text) = self.mirrored_instructions(project, &workspace) {
+                sources.insert(SegmentKind::ProjectInstructions, Some(text));
+            }
             obj.insert(
                 "sources".into(),
                 serde_json::to_value(sources).unwrap_or_default(),
@@ -2558,6 +2639,141 @@ esac
         assert_eq!(scheduled_resume_notice(PAUSE_OVER), None);
         let said = scheduled_resume_notice("a turn is running in another chat").unwrap();
         assert!(said.contains("press Resume again"), "{said}");
+    }
+
+    /// A host on its own home, for the prompt tests below.
+    fn prompt_host(model: Option<&str>) -> (Arc<ServeHost>, PathBuf) {
+        crate::project::set_config_dir(
+            std::env::temp_dir().join(format!("nightloom-home-{}", std::process::id())),
+        );
+        let root = std::env::temp_dir().join(format!("nightloom-serve-{}", uuid::Uuid::new_v4()));
+        let unfiled = root.join("unfiled").join("sessions");
+        let workspace = root.join("ws");
+        std::fs::create_dir_all(&unfiled).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        let cfg = ServeConfig {
+            binary: "claude".into(),
+            model: model.map(str::to_string),
+            hook_exe: None,
+            assets: None,
+            unfiled_dir: unfiled,
+            home: root.clone(),
+            unfiled_workspace: workspace,
+            nightshift_root: None,
+        };
+        let host = ServeHost::new(cfg, Registry::load_from(root.join("projects.json")));
+        (host, root)
+    }
+
+    /// Serve's Context page shows the model a turn would run with: the
+    /// rail's, else `--model` (wave 3's leftover: it always used
+    /// `--model`). Seen through each model's instructions file.
+    #[tokio::test]
+    async fn the_context_page_follows_the_rails_model() {
+        let tag = uuid::Uuid::new_v4().simple().to_string();
+        let flag = format!("w4c-flag-{tag}");
+        let railed = format!("w4c-rail-{tag}");
+        let (host, root) = prompt_host(Some(&flag));
+        let models = crate::prompt::model_instructions_dir().unwrap();
+        std::fs::create_dir_all(&models).unwrap();
+        let flag_file = models.join(crate::prompt::model_instruction_file(&flag));
+        let rail_file = models.join(crate::prompt::model_instruction_file(&railed));
+        std::fs::write(&flag_file, "the flag model's rules").unwrap();
+        std::fs::write(&rail_file, "the rail model's rules").unwrap();
+
+        let mut rail = rail_store::RailSettings {
+            model: railed.clone(),
+            ..Default::default()
+        };
+        let page = serde_json::to_string(&host.context_with(&rail, None, &Session::new())).unwrap();
+        assert!(page.contains("the rail model's rules"), "{page}");
+        assert!(!page.contains("the flag model's rules"), "{page}");
+
+        rail.model.clear();
+        let page = serde_json::to_string(&host.context_with(&rail, None, &Session::new())).unwrap();
+        assert!(page.contains("the flag model's rules"), "{page}");
+
+        let _ = std::fs::remove_file(flag_file);
+        let _ = std::fs::remove_file(rail_file);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A mirror-only project's `AGENTS.md` — the one the Mac sent — reaches
+    /// the turn's preamble and the Context page (wave 3's leftover: its
+    /// turns ran in an empty server folder and read none); a chat's own
+    /// project instructions still win.
+    #[tokio::test]
+    async fn a_mirror_only_project_reads_the_macs_agents_md() {
+        let (host, root) = prompt_host(None);
+        let pid = format!("p-{}", uuid::Uuid::new_v4().simple());
+        let layout = crate::sync::Layout::new(&root);
+        let dir = layout.root().join(project::PROJECTS_DIR).join(&pid);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            layout.root().join("projects.json"),
+            serde_json::json!([{ "id": pid, "name": "Marked away" }]).to_string(),
+        )
+        .unwrap();
+        std::fs::write(dir.join("AGENTS.md"), "the mac's project rules\n").unwrap();
+
+        let p = host.project(Some(&pid)).unwrap().unwrap();
+        let session = Session::new();
+        let prompt = host
+            .spec_for(Some(&p), &session)
+            .append_system_prompt
+            .unwrap_or_default();
+        assert!(prompt.contains("the mac's project rules"), "{prompt}");
+        let page = serde_json::to_string(&host.context_of(Some(&p), &session)).unwrap();
+        assert!(page.contains("the mac's project rules"), "{page}");
+
+        let mut own = Session::new();
+        own.record_user("q");
+        context_ops::set_layer_text(
+            &mut own,
+            SegmentKind::ProjectInstructions,
+            Some("the chat's own rules".into()),
+        )
+        .unwrap();
+        let prompt = host
+            .spec_for(Some(&p), &own)
+            .append_system_prompt
+            .unwrap_or_default();
+        assert!(prompt.contains("the chat's own rules"), "{prompt}");
+        assert!(!prompt.contains("the mac's project rules"), "{prompt}");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// The flake's race, made to happen: while another thread spawns
+    /// processes, a take right after a drop must still win. Without the
+    /// re-ask in [`HomeLock::take`] this lost 406 of 3000 rounds
+    /// (measured 2026-10-01), and this test lost 99 in its 400 ms; with it,
+    /// none.
+    #[test]
+    fn a_take_right_after_a_drop_wins_while_children_spawn() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let stop = Arc::new(AtomicBool::new(false));
+        let spawning = stop.clone();
+        let spawner = std::thread::spawn(move || {
+            while !spawning.load(Ordering::Relaxed) {
+                let _ = std::process::Command::new("/usr/bin/true").status();
+            }
+        });
+        let home = std::env::temp_dir().join(format!("nightloom-lock-{}", uuid::Uuid::new_v4()));
+        let mut lost = Vec::new();
+        let start = std::time::Instant::now();
+        let mut round = 0;
+        while start.elapsed() < std::time::Duration::from_millis(400) {
+            round += 1;
+            match HomeLock::take(&home, "the Nightloom desktop app") {
+                Ok(first) => drop(first),
+                Err(e) => lost.push(format!("{round}: {e}")),
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        spawner.join().unwrap();
+        let _ = std::fs::remove_dir_all(&home);
+        assert!(lost.is_empty(), "{} lost: {:?}", lost.len(), lost.first());
     }
 
     #[test]

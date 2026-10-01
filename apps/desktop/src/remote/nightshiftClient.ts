@@ -120,9 +120,13 @@ export class NightshiftClient {
     return (await this.call(`/${NightshiftClient.id(project)}/items/${NightshiftClient.id(id)}`)).json();
   }
 
-  /** A new item: his title and his words, under `## What Swaraag said`. */
-  async newItem(project: string, title: string, said: string): Promise<string> {
-    const r = await this.call(`/${NightshiftClient.id(project)}/items`, { method: "POST", body: JSON.stringify({ title, said }) });
+  /** A new item: his title and his words, under `## What Swaraag said`.
+   *  `nonce` (wave 4 C1) is the same on every try of one item: a try after
+   *  a lost reply gets the first try's id instead of a second item. */
+  async newItem(project: string, title: string, said: string, nonce?: string): Promise<string> {
+    const body: Record<string, string> = { title, said };
+    if (nonce) body.nonce = nonce;
+    const r = await this.call(`/${NightshiftClient.id(project)}/items`, { method: "POST", body: JSON.stringify(body) });
     return ((await r.json()) as { id: string }).id;
   }
 
