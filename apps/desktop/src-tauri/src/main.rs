@@ -6888,6 +6888,14 @@ fn main() {
                 AGENT_BINARY.to_string(),
                 |b: String| async move { agent_version(&b).await },
             ));
+            // Item 256: and the binary it hands the CLI as its MCP server
+            // and hooks — this one — run once the way the CLI runs it.
+            if let Ok(exe) = std::env::current_exe() {
+                tauri::async_runtime::spawn(connect_deadline::warm_hook(
+                    exe,
+                    connect_deadline::log_path(),
+                ));
+            }
             // App-data is now the *previous* home for unfiled chats, kept
             // only long enough to move them. A user who has been running this
             // app has a sidebar full of them, and a release that silently
