@@ -639,28 +639,28 @@ pub fn best_message(line: &str, said: &[Said]) -> Option<DateTime<Utc>> {
     best.map(|(_, at)| at)
 }
 
-/// "2 refused — named something his messages do not contain (…log)", the
-/// clause both shells print after a capture or a dream, or `None` when the
-/// check sent nothing back. One function so the CLI and the toast cannot
-/// drift.
+/// "6 lines sent back for a second look …; 1 refused and dropped, listed
+/// in …", the line both CLI commands print after a capture or a dream, or
+/// `None` when the check sent nothing back. (The toasts print the count
+/// alone, from the reports' `refused`.)
 pub fn refused_line(refused: usize, retried: usize, config: &Path) -> Option<String> {
     if refused == 0 && retried == 0 {
         return None;
     }
-    let fixed = retried.saturating_sub(refused);
-    Some(format!(
-        "{refused} refused — named something his messages do not contain{}{}",
-        if fixed > 0 {
-            format!("; {fixed} more fixed on a second look")
-        } else {
-            String::new()
-        },
-        if refused > 0 {
-            format!(" (listed in {})", log_path(config).display())
-        } else {
-            String::new()
-        }
-    ))
+    let plural = |n: usize| if n == 1 { "" } else { "s" };
+    let mut out = format!(
+        "{retried} line{} sent back for a second look (named something his messages do not contain)",
+        plural(retried)
+    );
+    if refused > 0 {
+        out.push_str(&format!(
+            "; {refused} refused and dropped, listed in {}",
+            log_path(config).display()
+        ));
+    } else {
+        out.push_str("; none refused");
+    }
+    Some(out)
 }
 
 /// Where refused lines are logged: `<config>/logs/dream-refusals.log`.
@@ -865,6 +865,22 @@ mod tests {
         assert_eq!(
             missing("Uses RStudio on a Mac.", &e, &[]),
             vec!["RStudio", "Mac"]
+        );
+    }
+
+    #[test]
+    fn the_count_sentence() {
+        let c = Path::new("/c");
+        assert_eq!(refused_line(0, 0, c), None);
+        assert_eq!(
+            refused_line(0, 6, c).unwrap(),
+            "6 lines sent back for a second look (named something his messages do not \
+             contain); none refused"
+        );
+        assert!(
+            refused_line(1, 1, c)
+                .unwrap()
+                .ends_with("1 refused and dropped, listed in /c/logs/dream-refusals.log")
         );
     }
 
