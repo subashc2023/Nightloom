@@ -95,6 +95,7 @@ import { rewoundWrites, setAsideFiles } from "./rewoundFiles";
 import type { TabContent, Workspace } from "./tabs";
 import { UNFILED_TABS, loadSavedWorkspaces, rebuild, saveWorkspaceFor, snapshot } from "./tabsStore";
 import { turnClock } from "./turnTiming";
+import { handoffPassDue, nightlyReady, turnWroteHandoff } from "./autoPass";
 import {
   buildNotices,
   dailyDue,
@@ -207,7 +208,10 @@ const DREAM_PREFS_KEY = "nightloom.dream";
 export const DREAM_ENGINE = "claude-code";
 
 export interface DreamPrefs {
-  /** Dream automatically after a compaction, when the inbox has entries. */
+  /** ~~Dream automatically after a compaction, when the inbox has entries.~~
+   *  Since nightshift item 278 (2026-10-02): capture and dream by themselves
+   *  — at a hand-off, after a compaction, and (with the daily switch) once a
+   *  night when the Mac is idle. On by default, his yes. */
   auto: boolean;
   /** Provider that dreams — a provider kind or `DREAM_ENGINE`; "" means
    *  whatever the rail is connected to, the Claude Code engine included. */
@@ -217,13 +221,21 @@ export interface DreamPrefs {
   model: string;
 }
 
+/**
+ * The preference's version. A stored value without it predates item 278,
+ * when `auto` defaulted off and meant "after a compaction" — a trigger he
+ * never fires — so it is read as on, the new default (his yes, 2026-10-02);
+ * the switch he sets from now on is saved with the version and kept.
+ */
+export const DREAM_PREFS_VERSION = 2;
+
 /** The stored preference read back, or the default when absent or malformed. */
 export function parseDreamPrefs(raw: string | null): DreamPrefs {
   try {
     if (raw) {
-      const p = JSON.parse(raw) as Partial<DreamPrefs>;
+      const p = JSON.parse(raw) as Partial<DreamPrefs> & { v?: unknown };
       return {
-        auto: !!p.auto,
+        auto: p.v === DREAM_PREFS_VERSION ? !!p.auto : true,
         provider: typeof p.provider === "string" ? p.provider : "",
         model: typeof p.model === "string" ? p.model : "",
       };
@@ -231,7 +243,7 @@ export function parseDreamPrefs(raw: string | null): DreamPrefs {
   } catch {
     // A malformed preference costs the preference, not the feature.
   }
-  return { auto: false, provider: "", model: "" };
+  return { auto: true, provider: "", model: "" };
 }
 
 function loadDreamPrefs(): DreamPrefs {
@@ -244,7 +256,7 @@ function loadDreamPrefs(): DreamPrefs {
 
 export function saveDreamPrefs(): void {
   try {
-    localStorage.setItem(DREAM_PREFS_KEY, JSON.stringify(app.dreamPrefs));
+    localStorage.setItem(DREAM_PREFS_KEY, JSON.stringify({ ...app.dreamPrefs, v: DREAM_PREFS_VERSION }));
   } catch {
     // best-effort
   }
@@ -1787,12 +1799,15 @@ function passTarget(): api.PassArgs {
  * on the backend, sharing the dream's one-at-a-time lock, since the two are
  * one pipeline.
  */
-export async function runCapture(): Promise<void> {
+export async function runCapture(quiet = false): Promise<void> {
   if (app.capturing || app.dreaming) return;
   const target = passTarget();
   app.capturing = true;
   try {
     const r = await api.capture(target);
+    // An automatic pass that read nothing (every chat deferred) says
+    // nothing (item 278: "skip silently when nothing is pending").
+    if (quiet && r.logs_read === 0 && r.observations === 0 && !r.interrupted) return;
     // "3 from Lanternfish, 1 unfiled": the split by source.
     const split = r.per_project
       .map((p) =>
@@ -1811,7 +1826,9 @@ export async function runCapture(): Promise<void> {
         (r.cost_usd != null ? ` ($${r.cost_usd.toFixed(4)})` : ""),
     );
   } catch (e) {
-    addToast(`capture failed: ${String(e)}`);
+    // Another Nightloom's pass holding the lock is not news on an
+    // automatic run; anything else is.
+    if (!(quiet && String(e).includes("already running"))) addToast(`capture failed: ${String(e)}`);
   } finally {
     app.capturing = false;
   }
@@ -1875,6 +1892,10 @@ export async function runDream(): Promise<void> {
 }
 
 /**
+ * The automatic pass, from every trigger (since nightshift item 278, a
+ * hand-off as well — `maybeHandoffPass` — and on by default; the rest of
+ * this comment is the compaction trigger it started as).
+ *
  * The auto-dream trigger: a compaction just landed, which is the moment the
  * evidence supports — the conversation's detail is already being traded for
  * a summary, so a background consolidation interrupts nothing the user was
@@ -1887,16 +1908,31 @@ export async function runDream(): Promise<void> {
  * its watermark, which is fine.
  */
 async function maybeAutoDream(): Promise<void> {
-  if (!app.dreamPrefs.auto || app.dreaming || app.capturing) return;
+  if (!app.dreamPrefs.auto || app.dreaming || app.capturing || app.centre.dailyRunning) return;
   await refreshCaptureStatus();
-  if (app.capturePending > 0) {
-    addToast("auto-dream: reading the chats into the memory inbox");
-    await runCapture();
-  }
+  // Quiet (item 278): a capture that reads nothing — the open chat has one
+  // new turn, too little to be worth one — spends nothing and says nothing.
+  if (app.capturePending > 0) await runCapture(true);
   await refreshDreamStatus();
   if (app.dreamPending === 0) return;
   addToast("auto-dream: consolidating the memory inbox");
   await runDream();
+}
+
+/**
+ * The hand-off trigger (nightshift item 278): a turn that wrote
+ * `HANDOFF.md`, or *Continue in a new chat*. The two land minutes apart
+ * for one hand-off, so `handoffPassDue` makes them one pass. Runs on the
+ * same connection and switch as every automatic pass (`passTargetFor`,
+ * Settings → Knowledge).
+ */
+let lastHandoffPass: number | null = null;
+export function maybeHandoffPass(): void {
+  if (!app.dreamPrefs.auto) return;
+  const now = Date.now();
+  if (!handoffPassDue(lastHandoffPass, now)) return;
+  lastHandoffPass = now;
+  void maybeAutoDream();
 }
 
 /** Interrupt the in-flight dream. Nothing is consumed; the batch returns. */
@@ -2085,6 +2121,11 @@ export async function runDailyPass(): Promise<void> {
 /** Run the daily pass if its hour has come and it has not run since. */
 export async function maybeDailyPass(): Promise<void> {
   if (!dailyDue(app.centre.daily, app.centre.lastDaily, new Date())) return;
+  // Once a night when the Mac is idle (item 278): the hour decides the
+  // day, and the pass then waits for an idle Mac unless the last one is
+  // stale. The minute clock asks again until it is.
+  const idle = await api.macIdleMs().catch(() => null);
+  if (!nightlyReady(idle, app.centre.lastDaily, Date.now())) return;
   await runDailyPass();
 }
 
@@ -5123,6 +5164,8 @@ export async function continueChat(): Promise<void> {
     carryReadOrder(from, res.session);
     const first = firstMessage(lead, start);
     if (first) setDraftText(res.session, first);
+    // The chat just left is finished as far as memory is concerned (item 278).
+    maybeHandoffPass();
     if (!start) {
       handoff.noStartPromptChat = res.session;
       addToast(
@@ -6349,6 +6392,8 @@ async function sendAgent(
       app.connection?.contextLimit ?? null,
       browsed ? null : app.events,
     );
+    // A turn that wrote HANDOFF.md is a hand-off (item 278).
+    if (!browsed && turnWroteHandoff(app.events)) maybeHandoffPass();
     // Last, once the turn is fully over: was it sleep that ended it
     // (nightshift backlog 101)? The CLI reports a mid-turn network death
     // as its `result` line with `is_error`, not as a rejected send, so

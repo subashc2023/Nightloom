@@ -955,6 +955,7 @@ fn dream_spec(args: &ChatArgs) -> Result<crate::dream::DreamSpec> {
             .flatten(),
         thinking: None,
         max_tokens: 8192,
+        agent: None,
     })
 }
 

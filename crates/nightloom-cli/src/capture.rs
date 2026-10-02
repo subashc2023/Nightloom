@@ -41,16 +41,50 @@ pub struct CaptureArgs {
     /// and move no watermark. The provider is still called.
     #[arg(long)]
     dry_run: bool,
+
+    /// Run on the Claude Code engine with this binary (e.g. `claude`)
+    /// instead of a provider: one no-tool `claude -p` per batch, billed to
+    /// the subscription — `ANTHROPIC_API_KEY` is kept out of its
+    /// environment. `--model` is then a CLI alias (`opus`, `sonnet`).
+    #[arg(long)]
+    agent: Option<String>,
+
+    /// Read only chats last written on or after this day (YYYY-MM-DD,
+    /// UTC), and keep it as the standing cutoff in `capture.json`, so the
+    /// app's passes skip the older chats too; `--since none` clears it.
+    #[arg(long)]
+    since: Option<String>,
 }
 
 pub async fn run(args: CaptureArgs) -> Result<()> {
     let Some(config) = project::config_dir() else {
         bail!("no user config directory — there are no session logs to read");
     };
+    if let Some(since) = args.since.as_deref() {
+        let at = if since.eq_ignore_ascii_case("none") {
+            None
+        } else {
+            let day = chrono::NaiveDate::parse_from_str(since, "%Y-%m-%d")
+                .with_context(|| format!("--since {since}: expected YYYY-MM-DD"))?;
+            Some(day.and_hms_opt(0, 0, 0).expect("midnight exists").and_utc())
+        };
+        capture::set_since_in(&config, at).map_err(anyhow::Error::msg)?;
+        match at {
+            Some(t) => println!(
+                "{DIM}cutoff: chats last written before {} are not read{RESET}",
+                t.format("%Y-%m-%d")
+            ),
+            None => println!("{DIM}cutoff cleared: every chat is read{RESET}"),
+        }
+    }
     let pending = capture::pending_count_in(&config);
     if pending == 0 {
         println!("nothing to capture — every chat is read up to its last line.");
         return Ok(());
+    }
+
+    if let Some(binary) = args.agent.as_deref() {
+        return run_on_agent(&args, binary, &config, pending).await;
     }
 
     let (provider, model) = nightloom_service::connect(
@@ -98,6 +132,64 @@ pub async fn run(args: CaptureArgs) -> Result<()> {
     }
     println!();
 
+    report(&args, result)
+}
+
+/// The Claude Code engine's run (item 278): the same pass and report as a
+/// provider's, through `capture::run_on_agent`, which the desktop's
+/// Capture button also calls when it is on the engine.
+async fn run_on_agent(
+    args: &CaptureArgs,
+    binary: &str,
+    config: &std::path::Path,
+    pending: usize,
+) -> Result<()> {
+    let exe =
+        std::env::current_exe().context("cannot find this binary to name as the MCP server")?;
+    let mut pass = nightloom_service::agent::PassSpec::new(
+        binary,
+        vec![exe.to_string_lossy().into_owned(), "mcp-serve".into()],
+    );
+    pass.model = args.model.clone();
+    println!(
+        "capturing from {pending} chat{} with something new — Claude Code engine ({}{}){}",
+        if pending == 1 { "" } else { "s" },
+        binary,
+        args.model
+            .as_deref()
+            .map(|m| format!(", {m}"))
+            .unwrap_or_default(),
+        if args.dry_run {
+            " (dry run: nothing is appended)"
+        } else {
+            ""
+        }
+    );
+    let cancel = CancellationToken::new();
+    let trigger = cancel.clone();
+    let ctrl_c = tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            trigger.cancel();
+        }
+    });
+    let mut stdout = io::stdout();
+    let mut in_thinking = false;
+    let result = capture::run_on_agent(&pass, config, args.dry_run, &cancel, &mut |event| {
+        let _ = chat::render(&mut stdout, &mut in_thinking, event);
+    })
+    .await;
+    ctrl_c.abort();
+    if in_thinking {
+        print!("{RESET}");
+    }
+    println!();
+    report(args, result)
+}
+
+fn report(
+    args: &CaptureArgs,
+    result: std::result::Result<Option<capture::CaptureOutcome>, String>,
+) -> Result<()> {
     let outcome = match result {
         Ok(Some(outcome)) => outcome,
         // Checked non-empty above; a concurrent capture is the only way here.
@@ -114,8 +206,9 @@ pub async fn run(args: CaptureArgs) -> Result<()> {
         }
         for obs in &outcome.drafted {
             let source = obs.source.as_deref().unwrap_or("—");
+            let chat: String = obs.chat.as_deref().unwrap_or("—").chars().take(8).collect();
             println!(
-                "{DIM}  {} · {source} · {}:{RESET} {}",
+                "{DIM}  {} · {source} · chat {chat} · {}:{RESET} {}",
                 obs.at.format("%Y-%m-%d %H:%M"),
                 obs.kind.as_str(),
                 obs.text

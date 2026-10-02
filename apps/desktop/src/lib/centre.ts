@@ -19,8 +19,10 @@ export const DISMISSED_KEY = "nightloom.centre.dismissed";
 export const BUILD_KEY = "nightloom.centre.build";
 
 export interface DailyPrefs {
-  /** Capture and dream once a day. Off until he says otherwise: the pass
-   *  runs unattended and bills whatever engine runs it. */
+  /** Capture and dream once a day. ~~Off until he says otherwise: the pass
+   *  runs unattended and bills whatever engine runs it.~~ On by default
+   *  since nightshift item 278 (2026-10-02, his yes): the pass waits for
+   *  the day's hour and then for an idle Mac (`autoPass.ts`). */
   on: boolean;
   /** The hour, 0–23, local time. */
   hour: number;
@@ -41,7 +43,7 @@ export function parseDailyPrefs(raw: string | null): DailyPrefs {
   } catch {
     // A malformed preference costs the preference, not the feature.
   }
-  return { on: false, hour: DEFAULT_HOUR, notifyMac: false };
+  return { on: true, hour: DEFAULT_HOUR, notifyMac: false };
 }
 
 export function loadDailyPrefs(): DailyPrefs {

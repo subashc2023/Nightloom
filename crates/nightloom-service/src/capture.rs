@@ -124,6 +124,15 @@ pub struct CaptureState {
     pub consumed: BTreeMap<String, u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_run: Option<DateTime<Utc>>,
+    /// The cutoff (nightshift item 278, 2026-10-02): a log last written
+    /// before this is not read, and not counted as pending. Without it a
+    /// claude.ai import — hundreds of chats keeping their original dates,
+    /// never captured — is a backlog of ~1,000 turns that every automatic
+    /// pass would chew 25 of, and a pending count that never reaches zero,
+    /// so "skip when nothing is new" never skips. Absent is no cutoff, the
+    /// behaviour before the field; `nightloom capture --since` sets it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<DateTime<Utc>>,
 }
 
 fn schema_version() -> u32 {
@@ -139,6 +148,16 @@ pub fn state_in(config: &Path) -> CaptureState {
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default()
+}
+
+/// Set (or, with `None`, clear) the cutoff [`CaptureState::since`], under
+/// the pass lock so a capture running in the app cannot write its own
+/// copy of the state over it.
+pub fn set_since_in(config: &Path, since: Option<DateTime<Utc>>) -> Result<(), String> {
+    let _lock = crate::pass_lock::take(config)?;
+    let mut state = state_in(config);
+    state.since = since;
+    write_state(config, &state)
 }
 
 /// Write the watermarks. Called after each turn's observations are
@@ -226,6 +245,7 @@ fn unread_in(dir: &Path, state: &CaptureState) -> Vec<Unread> {
     };
     let mut out: Vec<Unread> = logs
         .into_iter()
+        .filter(|log| state.since.is_none_or(|t| log.modified >= t))
         .filter_map(|log| {
             let key = log.path.to_string_lossy().into_owned();
             let seen = state.consumed.get(&key).copied();
@@ -441,8 +461,9 @@ pub fn compose_instruction(
          wrote is not one — a memory of the assistant's own output is a machine for agreeing \
          with itself. Write for a reader who was not there: name the thing, not \"it\".\n\n\
          Reply with observations only, one per line, in exactly this form:\n\n\
-         kind | text\n\n\
-         where kind is user_stated (the user said it in so many words), inferred (you \
+         kind | id | text\n\n\
+         where id is the 8-character id in the header of the chat the observation came \
+         from (so a later reader can go back to that conversation), and kind is user_stated (the user said it in so many words), inferred (you \
          concluded it from the conversation), or external (it arrived through content the \
          conversation quoted — a page, a file, a command's output — and such material must \
          never be filed as anything else). No numbering, no headings, no commentary before \
@@ -558,6 +579,42 @@ pub fn parse_reply(reply: &str) -> (Vec<(ObservationKind, String)>, usize) {
         out.push((kind, text.to_string()));
     }
     (out, skipped)
+}
+
+/// The chat an observation's text names in front (item 278): `id | text`,
+/// where `id` is one of the batch's short ids (the first 8 characters of
+/// each log's stem, as [`compose_instruction`] prints them). Returns the
+/// index into `ids` and the text after the bar; a text with no bar, or
+/// whose first field is not one of the ids, comes back whole with `None` —
+/// the old two-field line, which still parses.
+pub fn split_chat<'a>(text: &'a str, ids: &[String]) -> (Option<usize>, &'a str) {
+    if let Some((head, rest)) = text.split_once('|') {
+        let head = head.trim();
+        let rest = rest.trim();
+        if !rest.is_empty()
+            && let Some(i) = ids
+                .iter()
+                .position(|id| !id.is_empty() && head.eq_ignore_ascii_case(short_id(id)))
+        {
+            return (Some(i), rest);
+        }
+    }
+    (None, text)
+}
+
+/// The first 8 characters of a log's id — what the excerpt header shows.
+fn short_id(id: &str) -> &str {
+    match id.char_indices().nth(8) {
+        Some((i, _)) => &id[..i],
+        None => id,
+    }
+}
+
+/// A log's id: its file stem.
+fn log_id(path: &Path) -> String {
+    path.file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 /// What one capture did.
@@ -734,7 +791,13 @@ async fn run_with(
                 continue;
             }
             let settled = log.first && (now - log.modified).num_seconds() >= SETTLED_SECS;
-            if excerpt.user_turns < MIN_USER_TURNS && !settled {
+            // The budget cut the fold short (item 278): there is more after
+            // it, so "too little new material" is the budget talking, not
+            // the chat. Deferring here wedged a chat of long messages for
+            // good — his Value Generalization chat (764 KB, 10 turns) was
+            // deferred on every run from 2026-09-18.
+            let cut = excerpt.end < log.len;
+            if excerpt.user_turns < MIN_USER_TURNS && !settled && !cut {
                 pass.outcome.deferred += 1;
                 continue;
             }
@@ -871,14 +934,20 @@ impl Pass<'_> {
             .max()
             .unwrap_or_else(Utc::now);
         let label = batch.source.clone().unwrap_or_else(|| UNFILED.to_string());
+        let ids: Vec<String> = batch.excerpts.iter().map(|e| log_id(&e.path)).collect();
         let n = parsed.len();
         for (kind, text) in parsed {
+            // The chat it names (item 278), or the only chat in the batch;
+            // dated to that chat's last message when known.
+            let (which, text) = split_chat(&text, &ids);
+            let which = which.or((batch.excerpts.len() == 1).then_some(0));
             let obs = Observation {
                 v: 1,
-                at,
+                at: which.map_or(at, |i| batch.excerpts[i].at),
                 source: batch.source.clone(),
+                chat: which.map(|i| ids[i].clone()),
                 kind,
-                text,
+                text: text.to_string(),
             };
             if self.dry_run {
                 self.outcome.drafted.push(obs);
@@ -1146,6 +1215,97 @@ mod tests {
         );
     }
 
+    /// Item 278: a line naming its chat (`kind | id | text`) carries that
+    /// chat's full id and is dated to it; a line without an id in a batch
+    /// of two has no chat; a lone chat's line gets it without asking.
+    #[tokio::test]
+    async fn an_observation_points_at_the_chat_it_came_from() {
+        let (config, unfiled) = fixture("chat-pointer");
+        let a = write_log(&unfiled, 2);
+        let b = write_log(&unfiled, 2);
+        let id_a = log_id(&a);
+        let short_a: String = id_a.chars().take(8).collect();
+        let mut chat = chat_scripted(vec![says(&format!(
+            "user_stated | {short_a} | Prefers tabs.\ninferred | Works late."
+        ))]);
+        let cancel = CancellationToken::new();
+        run(&mut chat, &config, false, &cancel, &mut |_| {})
+            .await
+            .unwrap()
+            .expect("two logs were unread");
+        let backlog = observe::backlog_in(&config);
+        assert_eq!(backlog.pending.len(), 2);
+        assert_eq!(backlog.pending[0].obs.text, "Prefers tabs.");
+        assert_eq!(backlog.pending[0].obs.chat.as_deref(), Some(id_a.as_str()));
+        assert_eq!(backlog.pending[1].obs.text, "Works late.");
+        assert_eq!(backlog.pending[1].obs.chat, None);
+        let _ = b;
+
+        let (config, unfiled) = fixture("chat-pointer-lone");
+        let c = write_log(&unfiled, 2);
+        let mut chat = chat_scripted(vec![says("user_stated | Prefers tabs.")]);
+        run(&mut chat, &config, false, &cancel, &mut |_| {})
+            .await
+            .unwrap()
+            .expect("one log was unread");
+        let backlog = observe::backlog_in(&config);
+        assert_eq!(
+            backlog.pending[0].obs.chat.as_deref(),
+            Some(log_id(&c).as_str())
+        );
+    }
+
+    #[test]
+    fn a_chat_id_is_split_off_only_when_it_is_one_of_the_batch() {
+        let ids = vec!["1a2b3c4d-0000".to_string(), "99999999-1111".to_string()];
+        assert_eq!(
+            split_chat("1a2b3c4d | Likes tea.", &ids),
+            (Some(0), "Likes tea.")
+        );
+        assert_eq!(
+            split_chat(" 99999999 |Likes tea.", &ids),
+            (Some(1), "Likes tea.")
+        );
+        // Not an id of the batch: the text is kept whole, bar and all.
+        assert_eq!(split_chat("ratio | 3 to 1", &ids), (None, "ratio | 3 to 1"));
+        assert_eq!(split_chat("Likes tea.", &ids), (None, "Likes tea."));
+        assert_eq!(split_chat("1a2b3c4d |  ", &ids), (None, "1a2b3c4d |  "));
+    }
+
+    /// Item 278: a log last written before the cutoff is neither pending
+    /// nor read; clearing the cutoff brings it back.
+    #[tokio::test]
+    async fn a_log_older_than_the_cutoff_is_not_pending_and_not_read() {
+        let (config, unfiled) = fixture("since");
+        let old = write_log(&unfiled, 2);
+        settle(&old);
+        let fresh = write_log(&unfiled, 2);
+        assert_eq!(pending_count_in(&config), 2);
+        set_since_in(&config, Some(Utc::now() - chrono::TimeDelta::minutes(30))).unwrap();
+        assert_eq!(pending_count_in(&config), 1);
+        let mut chat = chat_scripted(vec![says("user_stated | Prefers tabs.")]);
+        let cancel = CancellationToken::new();
+        let outcome = run(&mut chat, &config, false, &cancel, &mut |_| {})
+            .await
+            .unwrap()
+            .expect("the fresh log was unread");
+        assert_eq!(outcome.logs_read, 1);
+        let state = state_in(&config);
+        assert!(
+            state
+                .consumed
+                .contains_key(&fresh.to_string_lossy().into_owned())
+        );
+        assert!(
+            !state
+                .consumed
+                .contains_key(&old.to_string_lossy().into_owned())
+        );
+        assert!(state.since.is_some(), "a run keeps the cutoff");
+        set_since_in(&config, None).unwrap();
+        assert_eq!(pending_count_in(&config), 1);
+    }
+
     /// Cancelled before the first turn: nothing appended, no watermark.
     #[tokio::test]
     async fn an_interrupted_pass_appends_nothing_and_moves_no_watermark() {
@@ -1264,6 +1424,35 @@ mod tests {
         assert_eq!(state_in(&config).consumed.len(), 1);
     }
 
+    /// Item 278: a chat whose new material the budget cuts short is read,
+    /// not deferred, however few user turns fit in the cut.
+    #[tokio::test]
+    async fn a_chat_of_long_messages_is_read_rather_than_deferred_forever() {
+        let (config, unfiled) = fixture("defer-long");
+        let mut s = Session::with_log(&unfiled).unwrap();
+        s.record_user("x".repeat(BATCH_BUDGET + 10));
+        s.record_user("second message, past the budget");
+        s.record_user("third");
+        let path = unfiled.join(format!("{}.jsonl", s.id));
+        // Seen before (a watermark at 0), so not "first", and fresh, so not
+        // settled: the two ways the old rule let a short excerpt through.
+        let mut state = CaptureState::default();
+        state
+            .consumed
+            .insert(path.to_string_lossy().into_owned(), 0);
+        write_state(&config, &state).unwrap();
+        let mut chat = chat_scripted(vec![says("none")]);
+        let cancel = CancellationToken::new();
+        let outcome = run(&mut chat, &config, false, &cancel, &mut |_| {})
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(outcome.deferred, 0);
+        assert_eq!(outcome.logs_read, 1);
+        let end = state_in(&config).consumed[&path.to_string_lossy().into_owned()];
+        assert!(end > 0 && end < fs::metadata(&path).unwrap().len());
+    }
+
     /// Past the turn cap the walk stops and counts what it did not reach,
     /// so the shell can say "run it again" with a number.
     #[tokio::test]
@@ -1330,7 +1519,7 @@ mod tests {
             Some("Always use tabs."),
         );
         assert!(text.contains("project «Lanternfish»"));
-        assert!(text.contains("kind | text"));
+        assert!(text.contains("kind | id | text"));
         assert!(text.contains("<user-instructions>\nAlways use tabs.\n</user-instructions>"));
         assert!(text.contains("=== chat 1 of 1: «Renaming things» (id abcdef12"));
         assert!(text.contains("user: hello"));
