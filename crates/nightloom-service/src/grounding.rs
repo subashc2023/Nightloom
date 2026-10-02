@@ -203,6 +203,23 @@ const STOP: &[&str] = &[
     "nightloom",
 ];
 
+/// The user's own name, which the memory passes write ("Swaraag prefers
+/// …") and he never types: the account's full name (`id -F` on macOS),
+/// read once, lowercased word by word. Empty where `id -F` is not a thing.
+static OWN_NAME: LazyLock<Vec<String>> = LazyLock::new(|| {
+    std::process::Command::new("id")
+        .arg("-F")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            WORD.find_iter(&String::from_utf8_lossy(&o.stdout))
+                .map(|m| norm_word(m.as_str()))
+                .collect()
+        })
+        .unwrap_or_default()
+});
+
 const NUMBER_WORDS: &[&str] = &[
     "zero",
     "one",
@@ -355,7 +372,7 @@ fn initial_at(text: &str, at: usize) -> bool {
     let before = text[..at].trim_end();
     before.is_empty()
         || before.ends_with([
-            '.', '!', '?', ':', ';', '—', '–', '-', '(', '"', '“', '|', '*', '>', '#',
+            '.', '!', '?', ':', ';', '—', '–', '-', '(', '"', '“', '|', '*', '>', '#', ']',
         ])
         || before.rsplit(char::is_whitespace).next().is_some_and(|p| {
             p.chars()
@@ -462,7 +479,7 @@ fn claims_in(line: &str, exempt: &[String]) -> Claims {
             continue;
         }
         let n = norm_word(w);
-        if STOP.contains(&n.as_str()) || exempt.contains(&n) {
+        if STOP.contains(&n.as_str()) || exempt.contains(&n) || OWN_NAME.contains(&n) {
             continue;
         }
         let shown = w.trim_end_matches("'s").trim_end_matches("’s").to_string();
@@ -849,6 +866,17 @@ mod tests {
             missing("Uses RStudio on a Mac.", &e, &[]),
             vec!["RStudio", "Mac"]
         );
+    }
+
+    #[test]
+    fn a_leading_tag_opens_the_sentence() {
+        // The memory's own "[stated]" tag: the word after it is capitalised
+        // because it starts the claim, not because it names anything. A
+        // capitalised month there is a verb, not May.
+        let e = Evidence::from_said(&[said("2026-09-30T10:00:00Z", "the goal is accuracy")]);
+        assert!(missing("- [stated] Ideal goal: accuracy.", &e, &[]).is_empty());
+        assert!(missing("May work on accuracy.", &e, &[]).is_empty());
+        assert_eq!(missing("Works on it in May.", &e, &[]), vec!["May"]);
     }
 
     #[test]
