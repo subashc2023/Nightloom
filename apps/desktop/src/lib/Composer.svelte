@@ -1688,6 +1688,7 @@
         {onpaste}
         {onkeydown}
         onblur={() => (clipOpen = false)}
+        onresize={autogrow}
       />
     {:else}
     {#if quoted}

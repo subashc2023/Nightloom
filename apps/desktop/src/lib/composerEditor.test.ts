@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { EditorSelection, type EditorState } from "@codemirror/state";
-import { composerState, liveSpans, setFocused, type LiveKind } from "./composerEditor";
+import { composerDecorations, composerState, liveSpans, setFocused, type LiveKind } from "./composerEditor";
 import { loadComposerFormat, saveComposerFormat } from "./composerFormat.svelte";
 
 // The formatted message box (nightshift item 276). What matters most: the
@@ -76,9 +76,12 @@ describe("the source opens under the cursor", () => {
     liveSpans(
       composerState(text, [], pos, true).update({ effects: setFocused.of(focused) }).state,
     ).find((s) => s.kind === "math")!.open;
-  it("inside or at the start: open; just past the end: drawn", () => {
+  it("strictly inside: open; just before or just past it: drawn", () => {
     expect(at(4)).toBe(true);
-    expect(at(2)).toBe(true);
+    expect(at(3)).toBe(true);
+    // Fix pass: the caret just before a formula is where he puts it to type
+    // in front of one — the formula stays drawn there (was: open).
+    expect(at(2)).toBe(false);
     expect(at(7)).toBe(false);
     expect(at(0)).toBe(false);
   });
@@ -127,5 +130,100 @@ describe("sent text equals typed text", () => {
     expect(loadComposerFormat(storage)).toBe(true);
     saveComposerFormat(false, storage);
     expect(loadComposerFormat(storage)).toBe(false);
+  });
+});
+
+// Fix pass (2026-10-01): the two bugs he found in five seconds, and the ones
+// found typing and clicking in the real composer after them.
+describe("fix pass: unclosed and mismatched dollars never render", () => {
+  const mathKinds = (t: string) => kinds(t).filter((k) => k.startsWith("math"));
+  it("his input: $$dflkjdsl$ is text, not a $ and then $dflkjdsl$", () => {
+    expect(mathKinds("$$dflkjdsl$")).toEqual([]);
+  });
+  it("$$…$ is not math, wherever it stands", () => {
+    expect(mathKinds("so $$abc$ here")).toEqual([]);
+    expect(mathKinds("$$\\hat{p}$")).toEqual([]);
+    expect(mathKinds("$$a $b$")).toEqual(["math"]);
+  });
+  it("a closing $ followed by $ is not a one-dollar close", () => {
+    expect(mathKinds("$a$$")).toEqual([]);
+    expect(mathKinds("$a$$b$")).toEqual([]);
+  });
+  it("a half-typed $$ before a real formula does not swallow it", () => {
+    const s = liveSpans(composerState("$$x$ and $y$", [], 0, false)).filter((x) => x.kind === "math");
+    expect(s.map((x) => [x.from, x.to])).toEqual([[9, 12]]);
+  });
+  it("typing $$\\hat{p}$$ one key at a time: nothing renders until the last $", () => {
+    const keys = "$$\\hat{p}$$";
+    let s = composerState("", [], 0, true);
+    for (let i = 0; i < keys.length; i++) {
+      s = typeInto(s, keys[i]);
+      const m = liveSpans(s).filter((x) => x.kind.startsWith("math"));
+      expect(m.length, JSON.stringify(s.doc.toString())).toBe(i === keys.length - 1 ? 1 : 0);
+    }
+  });
+  it("deleting it one key at a time from the end: drawn only while whole", () => {
+    let s = composerState("$$\\hat{p}$$", [], 11, true);
+    for (let n = 11; n > 0; n--) {
+      const m = liveSpans(s).filter((x) => x.kind.startsWith("math"));
+      expect(m.length, JSON.stringify(s.doc.toString())).toBe(n === 11 ? 1 : 0);
+      s = s.update({ changes: { from: n - 1, to: n }, userEvent: "delete.backward" }).state;
+    }
+  });
+});
+
+describe("fix pass: a formula is an inline widget over its own span", () => {
+  /** Every replace decoration with a widget: its range and whether it is a block. */
+  function widgets(text: string, cursor = text.length, focus = true) {
+    const set = composerDecorations(composerState(text, [], cursor, focus));
+    const out: { from: number; to: number; block: boolean }[] = [];
+    set.between(0, text.length, (from, to, d) => {
+      if (d.spec.widget) out.push({ from, to, block: !!d.spec.block });
+    });
+    return out;
+  }
+  it("a lone display formula: as wide as its span, never a block over the row", () => {
+    expect(widgets("$$\\hat{p}$$")).toEqual([{ from: 0, to: 11, block: false }]);
+  });
+  it("a multi-line $$ … $$ is one inline widget over its line breaks", () => {
+    const t = "Then:\n$$\n\\sum_i i\n$$\nafter";
+    expect(widgets(t)).toEqual([{ from: 6, to: 20, block: false }]);
+  });
+  it("the caret just before and just after a lone formula leaves it drawn", () => {
+    const t = "$$\\hat{p}$$";
+    for (const at of [0, t.length]) {
+      const s = composerState(t, [], at, true);
+      expect(liveSpans(s).find((x) => x.kind.startsWith("math"))!.open).toBe(false);
+    }
+  });
+  it("only the formula opens: the caret elsewhere on its row leaves it drawn", () => {
+    const t = "$$x$$ then words";
+    expect(liveSpans(composerState(t, [], 12, true)).find((x) => x.kind.startsWith("math"))!.open).toBe(false);
+    expect(liveSpans(composerState(t, [], 3, true)).find((x) => x.kind.startsWith("math"))!.open).toBe(true);
+  });
+  it("the caret just after a multi-line formula leaves it drawn", () => {
+    const t = "$$\nx^2\n$$";
+    expect(liveSpans(composerState(t, [], t.length, true))[0].open).toBe(false);
+  });
+});
+
+describe("fix pass: emphasis half typed does not flash", () => {
+  it("**bold* is not italic, *a** is not italic", () => {
+    expect(kinds("**bold*")).toEqual([]);
+    expect(kinds("*a**")).toEqual([]);
+    expect(kinds("__a_")).toEqual([]);
+  });
+  it("nested runs still draw", () => {
+    expect(kinds("***a***").sort()).toEqual(["em", "strong"]);
+    expect(kinds("**bold *it* more**").sort()).toEqual(["em", "strong"]);
+  });
+  it("typing **bold** one key at a time: no italic on the way, bold at the end", () => {
+    let s = composerState("a ", [], 2, true);
+    for (const ch of "**bold**") {
+      s = typeInto(s, ch);
+      const k = liveSpans(s).map((x) => x.kind);
+      expect(k.includes("em"), JSON.stringify(s.doc.toString())).toBe(false);
+    }
+    expect(liveSpans(s).map((x) => x.kind)).toEqual(["strong"]);
   });
 });

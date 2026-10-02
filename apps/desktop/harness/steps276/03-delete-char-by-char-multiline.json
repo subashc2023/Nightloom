@@ -1,0 +1,80 @@
+[
+ {
+  "label": "typed over the selection",
+  "doc": "see $$\\frac{a}{b}$$",
+  "anchor": 19,
+  "head": 19
+ },
+ {
+  "label": "⌫ 1: closing $ gone, text",
+  "doc": "see $$\\frac{a}{b}$",
+  "anchor": 18,
+  "head": 18
+ },
+ {
+  "label": "⌫ 2",
+  "doc": "see $$\\frac{a}{b}",
+  "anchor": 17,
+  "head": 17
+ },
+ {
+  "label": "⌫ 3",
+  "doc": "see $$\\frac{a}{b",
+  "anchor": 16,
+  "head": 16
+ },
+ {
+  "label": "⌫ 12",
+  "doc": "see $$\\",
+  "anchor": 7,
+  "head": 7
+ },
+ {
+  "label": "⌫ 13: one $ left",
+  "doc": "see $$",
+  "anchor": 6,
+  "head": 6
+ },
+ {
+  "label": "⌘Z",
+  "doc": "$$\\hat{p}$$\nnext $x^2$also and $y$",
+  "anchor": 0,
+  "head": 34
+ },
+ {
+  "label": "multi-line display, unclosed",
+  "doc": "Then:\n$$\n\\sum_{i=1}^n i",
+  "anchor": 23,
+  "head": 23
+ },
+ {
+  "label": "multi-line display, closed: caret after it",
+  "doc": "Then:\n$$\n\\sum_{i=1}^n i\n$$",
+  "anchor": 26,
+  "head": 26
+ },
+ {
+  "label": "Home: caret before the multi-line formula, still drawn",
+  "doc": "Then:\n$$\n\\sum_{i=1}^n i\n$$",
+  "anchor": 6,
+  "head": 6
+ },
+ {
+  "label": "↑ to Then:",
+  "doc": "Then:\n$$\n\\sum_{i=1}^n i\n$$",
+  "anchor": 0,
+  "head": 0
+ },
+ {
+  "label": "↓ back to the formula row",
+  "doc": "Then:\n$$\n\\sum_{i=1}^n i\n$$",
+  "anchor": 6,
+  "head": 6
+ },
+ {
+  "label": "End, Shift-Enter, words after",
+  "doc": "Then:\n$$\n\\sum_{i=1}^n i\n$$\nwhich is it.",
+  "anchor": 39,
+  "head": 39
+ }
+]

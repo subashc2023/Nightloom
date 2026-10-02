@@ -17,12 +17,12 @@
  * is not loaded into the box at all.
  */
 import { EditorSelection, EditorState, Prec, StateEffect, StateField, type Extension, type Range } from "@codemirror/state";
-import { Decoration, EditorView, keymap, type DecorationSet } from "@codemirror/view";
+import { Decoration, EditorView, WidgetType, keymap, type DecorationSet } from "@codemirror/view";
 import { LanguageSupport, ensureSyntaxTree, syntaxTree } from "@codemirror/language";
 import { markdownLanguage } from "@codemirror/lang-markdown";
 import { history, historyKeymap, insertNewline, standardKeymap } from "@codemirror/commands";
 import { findMath, type MathSpan } from "./math";
-import { MathWidget } from "./noteEditor";
+import { renderMathHtml } from "./markdown";
 import { quoteLine } from "./replyQuote.svelte";
 
 /** Node types whose content is code: nothing inside is math or emphasis. */
@@ -63,6 +63,22 @@ function touches(state: EditorState, from: number, to: number): boolean {
   return false;
 }
 
+/**
+ * A formula's open rule (fix pass, 2026-10-01): open only with the caret
+ * strictly inside it or a selection over it. The caret just before a
+ * formula is a place he puts it to type in front of one (Home, a click at
+ * the row's start, ← off the source), so the formula stays drawn there, as
+ * it does with the caret just past it. ← and → still step into the source
+ * one character at a time from either side, and a click on it opens it.
+ */
+function inside(state: EditorState, from: number, to: number): boolean {
+  if (!focused(state)) return false;
+  for (const r of state.selection.ranges) {
+    if (r.empty ? r.head > from && r.head < to : r.from < to && r.to > from) return true;
+  }
+  return false;
+}
+
 /** Is the cursor (any range) on one of the lines `[from, to]` covers, ends included? */
 function onLines(state: EditorState, from: number, to: number): boolean {
   if (!focused(state)) return false;
@@ -85,6 +101,10 @@ export function composerMathOk(text: string, m: MathSpan): boolean {
   if (m.display || m.openLen !== 1) return true;
   const before = m.from > 0 ? text[m.from - 1] : "";
   const after = m.to < text.length ? text[m.to] : "";
+  // A `$` touching another `$` is part of a `$$` run, never a one-dollar
+  // delimiter: `$$abc$` is a display formula half typed, not a `$` and
+  // then `$abc$` (his first bug, 2026-10-01), and `$a$$` is not `$a$`.
+  if (before === "$" || after === "$") return false;
   return !WORD.test(before) && !WORD.test(after);
 }
 
@@ -111,6 +131,31 @@ function intrawordStar(doc: string, from: number, to: number): boolean {
   const before = from > 0 ? doc[from - 1] : "";
   const after = to < doc.length ? doc[to] : "";
   return /[A-Za-z0-9]/.test(before) || /[A-Za-z0-9]/.test(after);
+}
+
+/**
+ * An emphasis run with its own mark character just outside it — `**bold*`
+ * is `*` then `*bold*` to CommonMark, `*a**` is `*a*` then `*` — is a run
+ * half typed (or half deleted), not the one he means: drawn, `**bold*`
+ * would flash italic for one keystroke before `**bold**` turns bold. A mark
+ * outside that belongs to an enclosing run (`***a***`) does not count.
+ */
+interface TreeNode {
+  readonly from: number;
+  readonly to: number;
+  readonly name: string;
+  readonly parent: TreeNode | null;
+}
+function strayMark(node: TreeNode, text: string): boolean {
+  const ch = text[node.from];
+  const parent = node.parent;
+  const nested = (side: "from" | "to") =>
+    parent !== null &&
+    /Emphasis|Strikethrough/.test(parent.name) &&
+    (side === "from" ? parent.from < node.from : parent.to > node.to);
+  if (node.from > 0 && text[node.from - 1] === ch && !nested("from")) return true;
+  if (node.to < text.length && text[node.to] === ch && !nested("to")) return true;
+  return false;
 }
 
 /**
@@ -143,10 +188,13 @@ export function liveSpans(state: EditorState): LiveSpan[] {
       m.display &&
       doc.sliceString(first.from, m.from).trim() === "" &&
       doc.sliceString(m.to, last.to).trim() === "";
+    // Open by the formula's own span, never its whole row: the rest of
+    // the row is his to click into (his second bug, 2026-10-01).
+    const open = inside(state, m.from, m.to);
     if (alone && (m.block || first.number !== last.number)) {
-      out.push({ kind: "math-block", from: m.from, to: m.to, open: touches(state, first.from, last.to) });
+      out.push({ kind: "math-block", from: m.from, to: m.to, open });
     } else {
-      out.push({ kind: "math", from: m.from, to: m.to, open: touches(state, m.from, m.to) });
+      out.push({ kind: "math", from: m.from, to: m.to, open });
     }
   }
 
@@ -170,6 +218,7 @@ export function liveSpans(state: EditorState): LiveSpan[] {
         case "Strikethrough": {
           if (inMath(from, to)) return false;
           if (name !== "Strikethrough" && intrawordStar(text, from, to)) return;
+          if (strayMark(node.node, text)) return;
           const kind = name === "Emphasis" ? "em" : name === "StrongEmphasis" ? "strong" : "strike";
           out.push({ kind, from, to, open: touches(state, from, to) });
           return;
@@ -195,6 +244,45 @@ export function liveSpans(state: EditorState): LiveSpan[] {
   }
 
   return out.sort((a, b) => a.from - b.from || a.to - b.to);
+}
+
+/**
+ * A formula drawn in the box: an inline element as wide as the formula. A
+ * click on it opens the source with the caret just inside the opening
+ * delimiter; a click anywhere else is CodeMirror's, so it places the caret.
+ */
+class ComposerMathWidget extends WidgetType {
+  constructor(
+    readonly tex: string,
+    readonly display: boolean,
+    readonly openLen: number,
+  ) {
+    super();
+  }
+  eq(other: ComposerMathWidget): boolean {
+    return other.tex === this.tex && other.display === this.display && other.openLen === this.openLen;
+  }
+  toDOM(view: EditorView): HTMLElement {
+    const el = document.createElement("span");
+    el.className = this.display ? "cm-nmath cm-cmath-display" : "cm-nmath";
+    el.innerHTML = renderMathHtml(this.tex, this.display);
+    el.dataset.tip = "Click to edit the formula";
+    el.addEventListener("mousedown", (e: MouseEvent) => {
+      if (e.button !== 0 || e.shiftKey) return;
+      e.preventDefault();
+      // Read from the DOM, not kept on the widget: an equal widget is
+      // reused after an edit that moved it.
+      const at = view.posAtDOM(el);
+      view.dispatch({ selection: EditorSelection.cursor(Math.min(view.state.doc.length, at + this.openLen)) });
+      view.focus();
+    });
+    return el;
+  }
+  ignoreEvent(e: Event): boolean {
+    // Its own mousedown handles a plain click; a shift-click extends the
+    // selection as it would over text.
+    return !(e instanceof MouseEvent && e.shiftKey);
+  }
 }
 
 const hide = Decoration.replace({});
@@ -233,7 +321,7 @@ export function composerDecorations(state: EditorState): DecorationSet {
         out.push(
           // A `$$…$$` among words is set in text style: a display block
           // would split the line it stands in.
-          Decoration.replace({ widget: new MathWidget(m.tex, false, false, m.openLen) }).range(s.from, s.to),
+          Decoration.replace({ widget: new ComposerMathWidget(m.tex, false, m.openLen) }).range(s.from, s.to),
         );
         break;
       }
@@ -244,14 +332,14 @@ export function composerDecorations(state: EditorState): DecorationSet {
         }
         const m = findMath(doc.sliceString(s.from, s.to))[0];
         if (!m) break;
-        const first = doc.lineAt(s.from);
-        const last = doc.lineAt(s.to);
-        out.push(
-          Decoration.replace({ widget: new MathWidget(m.tex, true, true, m.openLen), block: true }).range(
-            first.from,
-            last.to,
-          ),
-        );
+        // Set display-style, but as an inline widget over the formula's own
+        // span — never a block over its rows. Pass 1 drew a block widget over
+        // the whole row: it filled the box's width, took every click on the
+        // row, and left no caret position before or after it (his second
+        // bug). Inline, the widget is as wide as the formula, a click beside
+        // it places the caret, and Home / End / ← / → reach both sides. A
+        // multi-line `$$ … $$` is one inline widget over its line breaks.
+        out.push(Decoration.replace({ widget: new ComposerMathWidget(m.tex, true, m.openLen) }).range(s.from, s.to));
         break;
       }
       case "heading": {
@@ -432,21 +520,31 @@ export const composerTheme = EditorView.theme({
   ".cm-nmath": { cursor: "pointer" },
   // KaTeX's 1.21em is a document's; beside 15px message text it reads big.
   ".cm-nmath .katex": { fontSize: "1.05em" },
-  // A display formula alone on its lines: left-aligned like the text it
-  // sits in, scrolling sideways inside the box when wider than it — never
-  // widening the box.
-  ".cm-nmath-block": {
-    display: "block",
+  // A display formula alone on its lines: an inline box as wide as the
+  // formula (never the row), left where the text starts, scrolling sideways
+  // inside itself when wider than the box — never widening the box.
+  ".cm-cmath-display": {
+    display: "inline-block",
     maxWidth: "100%",
-    padding: "0.15em 0",
+    // No vertical padding: the row must not grow when the closing `$$` is
+    // typed (measured: 0.15em made the row ~5px taller the moment it drew).
+    // A little room at the sides, taken back by the margin: KaTeX's accents
+    // and italic corrections reach ~2px past the formula's box, which made
+    // `\hat{p}` scroll sideways and drew a 6px scroll bar under it.
+    padding: "0 0.25em",
+    margin: "0 -0.25em",
     overflowX: "auto",
     overflowY: "hidden",
+    verticalAlign: "middle",
   },
-  ".cm-nmath-block .katex-display": { margin: "0", textAlign: "left" },
-  ".cm-nmath-block .katex-display > .katex": { textAlign: "left" },
-  ".cm-nmath-block::-webkit-scrollbar": { height: "6px" },
-  ".cm-nmath-block::-webkit-scrollbar-thumb": { background: "transparent", borderRadius: "3px" },
-  ".cm-nmath-block:hover::-webkit-scrollbar-thumb": { background: "var(--border)" },
+  // A block inside the inline box, so the box is exactly the formula's
+  // height: an inline-block here sat on its own line box and made the row
+  // 6px taller than a text row the moment `$$\hat{p}$$` closed (measured).
+  ".cm-cmath-display .katex-display": { margin: "0", textAlign: "left", display: "block" },
+  ".cm-cmath-display .katex-display > .katex": { textAlign: "left" },
+  ".cm-cmath-display::-webkit-scrollbar": { height: "6px" },
+  ".cm-cmath-display::-webkit-scrollbar-thumb": { background: "transparent", borderRadius: "3px" },
+  ".cm-cmath-display:hover::-webkit-scrollbar-thumb": { background: "var(--border)" },
   ".cm-nmath .katex-error, .cm-nmath .math-error": {
     fontFamily: "var(--mono)",
     fontSize: "0.85em",

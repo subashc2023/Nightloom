@@ -13,7 +13,7 @@
    * state, caret at the end, as a textarea's value set does.
    */
   import { onMount, untrack } from "svelte";
-  import { Compartment, Prec, type Extension } from "@codemirror/state";
+  import { Compartment, EditorSelection, Prec, type Extension } from "@codemirror/state";
   import { EditorView, placeholder as placeholderExt } from "@codemirror/view";
   import { composerKeymap, composerState, composerTheme, LiveBoxHandle, type ComposerBox } from "./composerEditor";
 
@@ -29,6 +29,8 @@
     onkeydown?: (e: KeyboardEvent) => void;
     onpaste?: (e: ClipboardEvent) => void;
     onblur?: () => void;
+    /** The text's height may have changed without his typing (a chat switch): re-measure the box. */
+    onresize?: () => void;
     handle?: ComposerBox | null;
   }
   let {
@@ -42,6 +44,7 @@
     onkeydown,
     onpaste,
     onblur,
+    onresize,
     handle = $bindable(null),
   }: Props = $props();
 
@@ -100,6 +103,40 @@
     ];
   }
 
+  /**
+   * A click in the box but below or beside the text (the box is taller than
+   * its text after a drag, or for a frame after a chat switch) lands on
+   * CodeMirror's scroller, not its text: the browser focused the scroller
+   * and every key typed after it went nowhere (fix pass, 2026-10-01). As a
+   * textarea does, such a click puts the caret at the nearest place in the
+   * text, and keeps the focus in the text.
+   */
+  function clickOutsideText(v: EditorView, e: MouseEvent): void {
+    if (e.button !== 0 || v.contentDOM.contains(e.target as Node)) return;
+    e.preventDefault();
+    const at = v.posAtCoords({ x: e.clientX, y: e.clientY }, false);
+    const sel = v.state.selection.main;
+    v.dispatch({
+      selection: e.shiftKey ? EditorSelection.range(sel.anchor, at) : EditorSelection.cursor(at),
+      scrollIntoView: true,
+    });
+    v.focus();
+  }
+
+  /**
+   * After a text set from outside, the box's height is measured once
+   * CodeMirror has laid the new text out — its next measure, not this
+   * frame, in which the old chat's height still stands (a box left at the
+   * last chat's five lines for one line of text, fix pass).
+   */
+  function resizeAfterLayout(v: EditorView): void {
+    v.requestMeasure({
+      key: "composer-resize",
+      read: () => null,
+      write: () => requestAnimationFrame(() => onresize?.()),
+    });
+  }
+
   onMount(() => {
     if (!host) return;
     const v = new EditorView({
@@ -107,9 +144,12 @@
       parent: host,
     });
     view = v;
+    const onDown = (e: MouseEvent) => clickOutsideText(v, e);
+    v.dom.addEventListener("mousedown", onDown);
     const mine = new LiveBoxHandle(v);
     handle = mine;
     return () => {
+      v.dom.removeEventListener("mousedown", onDown);
       v.destroy();
       view = null;
       // Only if the composer still points here: on a toggle the textarea
@@ -125,6 +165,7 @@
       if (!view) return;
       if (next.replace(/\r\n?/g, "\n") === view.state.doc.toString()) return;
       view.setState(composerState(next, extensions(), next.length, view.hasFocus));
+      resizeAfterLayout(view);
     });
   });
 

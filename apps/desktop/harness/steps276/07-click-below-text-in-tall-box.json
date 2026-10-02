@@ -1,0 +1,20 @@
+[
+ {
+  "label": "tall box (dragged floor), click below the text",
+  "doc": "one line $x$",
+  "anchor": 12,
+  "head": 12
+ },
+ {
+  "label": "typed: lands at the end",
+  "doc": "one line $x$ ok",
+  "anchor": 15,
+  "head": 15
+ },
+ {
+  "label": "click in the left padding of line 1",
+  "doc": "one line $x$ ok",
+  "anchor": 0,
+  "head": 0
+ }
+]
