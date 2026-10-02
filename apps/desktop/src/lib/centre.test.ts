@@ -6,8 +6,11 @@ const at = (h: number, m = 0, day = 16) => new Date(2026, 8, day, h, m);
 
 describe("the daily switch", () => {
   it("defaults off at 4 with no banner, and survives a malformed preference", () => {
-    expect(parseDailyPrefs(null)).toEqual({ on: false, hour: 4, notifyMac: false });
-    expect(parseDailyPrefs("{nope")).toEqual({ on: false, hour: 4, notifyMac: false });
+    // On by default since item 278 (his yes, 2026-10-02).
+    expect(parseDailyPrefs(null)).toEqual({ on: true, hour: 4, notifyMac: false });
+    expect(parseDailyPrefs("{nope")).toEqual({ on: true, hour: 4, notifyMac: false });
+    // A switch he turned off stays off.
+    expect(parseDailyPrefs(JSON.stringify({ on: false, hour: 4 }))).toEqual({ on: false, hour: 4, notifyMac: false });
     expect(parseDailyPrefs(JSON.stringify({ on: true, hour: 27 }))).toEqual({ on: true, hour: 4, notifyMac: false });
     expect(parseDailyPrefs(JSON.stringify({ on: true, hour: 9.7, notifyMac: true }))).toEqual({
       on: true,

@@ -2333,12 +2333,12 @@
         <p class="note small">
           A dream pass consolidates the memory inbox into the vault — the
           Dream button in the Notes panel runs one by hand. Switched on here,
-          one also runs after a compaction: the moment a conversation's detail
-          is already being traded for a summary, and the trigger the
-          consolidation evidence points at. A capture pass runs first, reading
-          the chats since the last one into the inbox, on the same engine. Both
-          run unattended and bill whatever runs them, so it is off until you
-          say otherwise.
+          one also runs at every hand-off — a turn that writes HANDOFF.md, or
+          Continue in a new chat — and after a compaction, the moments a chat
+          is finished as far as memory is concerned. A capture pass runs first,
+          reading the chats since the last one into the inbox, on the same
+          engine (the Claude Code engine bills the subscription). When there
+          is nothing new, nothing runs and nothing is said.
         </p>
         <label class="dream-auto">
           <input
@@ -2346,7 +2346,7 @@
             bind:checked={app.dreamPrefs.auto}
             onchange={saveDreamPrefs}
           />
-          <span>Dream automatically after a compaction</span>
+          <span>Capture and dream automatically at a hand-off</span>
         </label>
         <!-- The pass reads no chat context, so it does not need the chat's
              model — a cheap one does this job well, and an automatic pass is
@@ -2399,17 +2399,19 @@
       </section>
 
       <!-- The daily pass (nightshift backlog 069): capture → dream → tidy
-           once a day, on the engine the rows above choose. Off until he
-           says otherwise — it runs unattended. -->
+           once a day, on the engine the rows above choose. ~~Off until he
+           says otherwise~~ — on by default since item 278 (his yes,
+           2026-10-02), waiting for an idle Mac. -->
       <section class="card">
         <div class="ch"><span class="t">Every day</span></div>
         <p class="note small">
           Once a day, capture the chats since the last pass into the memory
           inbox, dream them into the vault and each project's memory, and
           archive struck-through lines older than 30 days — on the engine
-          chosen above. At the hour if Nightloom is open; otherwise on the
-          next launch or wake after it. What the pass proposed and changed
-          lands in the bell.
+          chosen above. After the hour, once the Mac has been idle for ten
+          minutes (or at once if the last pass is more than a day and a half
+          old); if Nightloom is closed or the Mac asleep, on the next launch or
+          wake after it. What the pass proposed and changed lands in the bell.
         </p>
         <label class="dream-auto">
           <input

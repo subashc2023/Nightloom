@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DREAM_ENGINE, parseDreamPrefs, passTargetFor } from "./state.svelte";
+import { DREAM_ENGINE, DREAM_PREFS_VERSION, parseDreamPrefs, passTargetFor } from "./state.svelte";
 import { defaultDraft } from "./catalog";
 
 // Settings → Knowledge's dream row can name the Claude Code engine since
@@ -12,14 +12,24 @@ describe("dream preferences", () => {
     expect(p).toEqual({ auto: true, provider: "claude-code", model: "haiku" });
   });
 
-  it("read a missing or malformed preference as the default", () => {
-    expect(parseDreamPrefs(null)).toEqual({ auto: false, provider: "", model: "" });
-    expect(parseDreamPrefs("{not json")).toEqual({ auto: false, provider: "", model: "" });
+  it("read a missing or malformed preference as the default, which is on (item 278)", () => {
+    expect(parseDreamPrefs(null)).toEqual({ auto: true, provider: "", model: "" });
+    expect(parseDreamPrefs("{not json")).toEqual({ auto: true, provider: "", model: "" });
     expect(parseDreamPrefs(JSON.stringify({ provider: 3 }))).toEqual({
-      auto: false,
+      auto: true,
       provider: "",
       model: "",
     });
+  });
+
+  it("read a pre-278 off as on, and keep an off saved since", () => {
+    // Stored before the version existed, when off was the default and
+    // meant "after a compaction" — a trigger he never fires.
+    expect(parseDreamPrefs(JSON.stringify({ auto: false, provider: "", model: "" })).auto).toBe(true);
+    expect(parseDreamPrefs(JSON.stringify({ auto: false, provider: "", model: "", v: DREAM_PREFS_VERSION })).auto).toBe(
+      false,
+    );
+    expect(parseDreamPrefs(JSON.stringify({ auto: true, v: DREAM_PREFS_VERSION })).auto).toBe(true);
   });
 });
 

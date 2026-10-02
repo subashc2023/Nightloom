@@ -40,6 +40,13 @@ pub struct DreamArgs {
     /// Print the pending observations and exit; consolidate nothing
     #[arg(long)]
     dry_run: bool,
+
+    /// Run on the Claude Code engine with this binary (e.g. `claude`)
+    /// instead of a provider: one `claude -p` per target, billed to the
+    /// subscription — `ANTHROPIC_API_KEY` is kept out of its environment.
+    /// `--model` is then a CLI alias (`opus`, `sonnet`).
+    #[arg(long)]
+    agent: Option<String>,
 }
 
 /// Everything a dream pass needs to know about which model runs it.
@@ -54,6 +61,8 @@ pub struct DreamSpec {
     pub base_url: Option<String>,
     pub thinking: Option<Thinking>,
     pub max_tokens: u32,
+    /// The Claude Code binary, when the pass runs on that engine (item 278).
+    pub agent: Option<String>,
 }
 
 pub async fn run(args: DreamArgs) -> Result<()> {
@@ -72,8 +81,16 @@ pub async fn run(args: DreamArgs) -> Result<()> {
             );
             for p in &backlog.pending {
                 let source = p.obs.source.as_deref().unwrap_or("—");
+                let chat: String = p
+                    .obs
+                    .chat
+                    .as_deref()
+                    .unwrap_or("—")
+                    .chars()
+                    .take(8)
+                    .collect();
                 println!(
-                    "{DIM}  {} · {source} · {}:{RESET} {}",
+                    "{DIM}  {} · {source} · chat {chat} · {}:{RESET} {}",
                     p.obs.at.format("%Y-%m-%d %H:%M"),
                     p.obs.kind.as_str(),
                     p.obs.text
@@ -95,6 +112,7 @@ pub async fn run(args: DreamArgs) -> Result<()> {
         base_url: args.base_url,
         thinking: args.thinking,
         max_tokens: args.max_tokens,
+        agent: args.agent,
     })
     .await
 }
@@ -128,29 +146,6 @@ pub async fn consolidate(spec: DreamSpec) -> Result<()> {
     std::fs::create_dir_all(&vault)
         .with_context(|| format!("cannot create the vault at {}", vault.display()))?;
 
-    let (provider, model) = nightloom_service::connect(
-        spec.provider,
-        spec.model.clone(),
-        credentials::provider_key(spec.provider),
-        spec.base_url.clone(),
-        None,
-    )
-    .with_context(|| format!("cannot build provider {}", spec.provider))?;
-    let mut chat = Chat::new(provider, model);
-    chat.thinking = spec.thinking.clone().unwrap_or(Thinking::Default);
-    chat.max_tokens = spec.max_tokens;
-    chat.context_limit = nightloom_service::context_limit(spec.provider, &chat.model);
-    chat.price = nightloom_service::price(spec.provider, &chat.model);
-
-    println!(
-        "dreaming over {} observation{} — {}:{} into {} and the projects' memory folders",
-        backlog.pending.len(),
-        if backlog.pending.len() == 1 { "" } else { "s" },
-        chat.provider.name(),
-        chat.model,
-        vault.display()
-    );
-
     let cancel = CancellationToken::new();
     let trigger = cancel.clone();
     let ctrl_c = tokio::spawn(async move {
@@ -160,10 +155,59 @@ pub async fn consolidate(spec: DreamSpec) -> Result<()> {
     });
     let mut stdout = io::stdout();
     let mut in_thinking = false;
-    let result = dream::run(&mut chat, &vault, &config, &cancel, &mut |event| {
-        let _ = chat::render(&mut stdout, &mut in_thinking, event);
-    })
-    .await;
+    let result = if let Some(binary) = spec.agent.as_deref() {
+        // The Claude Code engine (item 278): the same pass the desktop's
+        // Dream button runs on that engine, this binary as the MCP server.
+        let exe =
+            std::env::current_exe().context("cannot find this binary to name as the MCP server")?;
+        let mut pass = nightloom_service::agent::PassSpec::new(
+            binary,
+            vec![exe.to_string_lossy().into_owned(), "mcp-serve".into()],
+        );
+        pass.model = spec.model.clone();
+        println!(
+            "dreaming over {} observation{} — Claude Code engine ({binary}{}) into {} and the projects' memory folders",
+            backlog.pending.len(),
+            if backlog.pending.len() == 1 { "" } else { "s" },
+            spec.model
+                .as_deref()
+                .map(|m| format!(", {m}"))
+                .unwrap_or_default(),
+            vault.display()
+        );
+        dream::run_on_agent(&pass, &vault, &config, &cancel, &mut |event| {
+            let _ = chat::render(&mut stdout, &mut in_thinking, event);
+        })
+        .await
+    } else {
+        let (provider, model) = nightloom_service::connect(
+            spec.provider,
+            spec.model.clone(),
+            credentials::provider_key(spec.provider),
+            spec.base_url.clone(),
+            None,
+        )
+        .with_context(|| format!("cannot build provider {}", spec.provider))?;
+        let mut chat = Chat::new(provider, model);
+        chat.thinking = spec.thinking.clone().unwrap_or(Thinking::Default);
+        chat.max_tokens = spec.max_tokens;
+        chat.context_limit = nightloom_service::context_limit(spec.provider, &chat.model);
+        chat.price = nightloom_service::price(spec.provider, &chat.model);
+
+        println!(
+            "dreaming over {} observation{} — {}:{} into {} and the projects' memory folders",
+            backlog.pending.len(),
+            if backlog.pending.len() == 1 { "" } else { "s" },
+            chat.provider.name(),
+            chat.model,
+            vault.display()
+        );
+
+        dream::run(&mut chat, &vault, &config, &cancel, &mut |event| {
+            let _ = chat::render(&mut stdout, &mut in_thinking, event);
+        })
+        .await
+    };
     ctrl_c.abort();
     if in_thinking {
         print!("{RESET}");
@@ -215,6 +259,29 @@ pub async fn consolidate(spec: DreamSpec) -> Result<()> {
             None => "vault".to_string(),
         };
         print_git(&what, &filed.git_before, &filed.git_after);
+    }
+    // Size caps flag, never trim (item 278): a note past the cap is named
+    // here and left whole for a deliberate split.
+    let mut dirs = vec![vault.clone()];
+    dirs.extend(
+        outcome
+            .filed
+            .iter()
+            .filter(|f| f.project.is_some())
+            .filter_map(|f| {
+                let name = f.project.as_deref()?;
+                project::Registry::load_in(&config)
+                    .find_by_name(name)
+                    .map(|p| dream::Target::project(p).dir())
+            }),
+    );
+    for dir in dirs {
+        for (path, lines, chars) in dream::oversize_notes(&dir) {
+            println!(
+                "{DIM}over size (flagged, not trimmed): {} — {lines} lines, {chars} characters{RESET}",
+                path.display()
+            );
+        }
     }
     let mut spend = format!(
         "{} in, {} out",

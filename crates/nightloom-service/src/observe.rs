@@ -81,6 +81,13 @@ pub struct Observation {
     /// a workspace folder name. Absent for an unfiled chat.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// The chat it was read from: the session log's id (its file stem),
+    /// set by the capture pass since nightshift item 278 (2026-10-02) so a
+    /// consolidated claim can point back at the conversation it came from.
+    /// Absent on observations written before, and on `remember`'s, which
+    /// knows its project but not its log.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat: Option<String>,
     pub kind: ObservationKind,
     pub text: String,
 }
@@ -242,6 +249,7 @@ mod tests {
             v: 1,
             at: Utc::now(),
             source: Some("test".into()),
+            chat: None,
             kind,
             text: text.into(),
         }

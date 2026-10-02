@@ -1101,6 +1101,12 @@ export function captureStatus(): Promise<number> {
   return invoke("capture_status");
 }
 
+/** Milliseconds since the Mac last saw a key or the pointer, or null when
+ *  it cannot be read (nightshift item 278: the nightly pass waits for it). */
+export function macIdleMs(): Promise<number | null> {
+  return invoke("mac_idle_ms");
+}
+
 /**
  * Run one capture pass over the session logs. Streams `capture-event`s (the
  * `TurnEvent` shape, on its own channel) while it works, and resolves with

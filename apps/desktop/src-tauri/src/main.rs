@@ -5963,6 +5963,14 @@ async fn capture_status() -> Result<usize, String> {
     blocking(move || Ok::<_, String>(nightloom_service::capture::pending_count_in(&config))).await
 }
 
+/// Milliseconds since the Mac last saw a key or the pointer — the HID
+/// system's idle time, no permission needed — or `None` when it cannot be
+/// read. The nightly pass waits for an idle Mac (nightshift item 278).
+#[tauri::command]
+async fn mac_idle_ms() -> Result<Option<i64>, String> {
+    blocking(|| Ok::<_, String>(nightloom_service::agent::brief::mac_idle_ms())).await
+}
+
 /// What one capture did, flattened for the toast. `per_project` is the
 /// split by source in the order the dirs were walked, "unfiled" for the
 /// chats with no project.
@@ -7322,6 +7330,7 @@ fn main() {
             dream,
             cancel_dream,
             capture_status,
+            mac_idle_ms,
             capture,
             cancel_capture,
             centre_proposals,
