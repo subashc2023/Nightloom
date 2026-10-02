@@ -245,6 +245,24 @@ fn report(
             "{DIM}the chat it stopped in appended nothing; the ones before it are kept{RESET}"
         );
     }
+    // The no-invention check (item 280): what it refused, and on a dry run
+    // the lines themselves, since nothing was logged.
+    if let Some(line) = nightloom_service::grounding::refused_line(
+        outcome.refused,
+        outcome.retried,
+        &project::config_dir().unwrap_or_default(),
+    ) {
+        println!("{DIM}{line}{RESET}");
+    }
+    if args.dry_run {
+        for r in &outcome.refusals {
+            println!(
+                "{DIM}  refused: {} — not in his messages: {}{RESET}",
+                r.line,
+                r.missing.join(", ")
+            );
+        }
+    }
     if outcome.deferred > 0 {
         println!(
             "{DIM}{} chat{} waiting for more turns before being read{RESET}",

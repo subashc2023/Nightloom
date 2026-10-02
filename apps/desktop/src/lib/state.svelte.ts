@@ -1823,6 +1823,7 @@ export async function runCapture(quiet = false): Promise<void> {
         `captured ${r.observations} observation${r.observations === 1 ? "" : "s"}` +
         ` from ${r.logs_read} chat${r.logs_read === 1 ? "" : "s"}` +
         (r.skipped > 0 ? ` (${r.skipped} line${r.skipped === 1 ? "" : "s"} skipped)` : "") +
+        (r.refused > 0 ? ` (${r.refused} refused)` : "") +
         (split ? ` — ${split}` : "") +
         (r.deferred > 0 ? `; ${r.deferred} waiting for more turns` : "") +
         (r.incognito > 0 ? `; ${r.incognito} incognito, not read` : "") +
@@ -1880,6 +1881,8 @@ export async function runDream(): Promise<void> {
             // "… and proposed a change to Lanternfish's instructions": the
             // one thing a dream leaves that is not yet in effect.
             (r.proposed ? ` — and ${r.proposed}` : "") +
+            // Item 280: lines that named what his messages do not contain.
+            (r.refused > 0 ? ` — ${r.refused} refused` : "") +
             (r.cost_usd != null ? ` ($${r.cost_usd.toFixed(4)})` : ""),
     );
   } catch (e) {

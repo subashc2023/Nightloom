@@ -244,6 +244,12 @@ pub async fn consolidate(spec: DreamSpec) -> Result<()> {
     if let Some(line) = dream::proposed_line(&outcome.filed) {
         println!("{DIM}{line} in the app{RESET}");
     }
+    // The no-invention check (item 280).
+    if let Some(line) =
+        nightloom_service::grounding::refused_line(outcome.refused, outcome.retried, &config)
+    {
+        println!("{DIM}{line}{RESET}");
+    }
     if outcome.unreadable > 0 {
         println!(
             "{DIM}{} log line{} this build could not read were skipped{RESET}",

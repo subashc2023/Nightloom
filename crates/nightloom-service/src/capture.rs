@@ -62,6 +62,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent::{AgentSpec, ClaudeCodeAgent, PassSpec};
 use crate::dream::Engine;
+use crate::grounding;
 use crate::observe::{self, Observation, ObservationKind};
 use crate::project::{PROJECTS_DIR, Registry, SESSIONS_DIR};
 use crate::prompt;
@@ -295,6 +296,10 @@ pub struct Excerpt {
     pub end: u64,
     /// The chat's name, if a title event was among the new lines.
     pub title: Option<String>,
+    /// The user's own messages among the folded lines, with their times:
+    /// what the no-invention check reads (item 280), and what dates an
+    /// observation to the message it came from.
+    pub said: Vec<grounding::Said>,
 }
 
 /// Fold a log's new lines into an excerpt, from a byte offset, reading at
@@ -326,6 +331,7 @@ pub fn fold(path: &Path, from: u64, budget: usize) -> Result<Excerpt, String> {
         at: Utc::now(),
         end: from,
         title: None,
+        said: Vec::new(),
     };
     let mut dated = false;
     let mut pos = 0usize;
@@ -359,6 +365,10 @@ pub fn fold(path: &Path, from: u64, budget: usize) -> Result<Excerpt, String> {
                 ));
                 if said.who == "you" {
                     excerpt.user_turns += 1;
+                    excerpt.said.push(grounding::Said {
+                        at: said.at,
+                        text: said.text.trim().to_string(),
+                    });
                 }
                 excerpt.at = said.at;
                 dated = true;
@@ -460,6 +470,17 @@ pub fn compose_instruction(
          Every observation is about the user. What the assistant explained, suggested or \
          wrote is not one — a memory of the assistant's own output is a machine for agreeing \
          with itself. Write for a reader who was not there: name the thing, not \"it\".\n\n\
+         Copy, never supply. Every proper name, number and date in an observation must \
+         appear in the user's own messages in the chat it names, as he wrote it; a \
+         mechanical check compares them before anything is written and refuses the line \
+         otherwise. The assistant's replies are not his words: a name, a link between \
+         people, or a fact the assistant found, researched or guessed is never recorded as \
+         something the user said or believes — that is how a contact he listed as \
+         \"Jiewen Wang\", with no context, was once filed as \"Wickey Wang, tied to \
+         Stuart\". If he did not say it, leave it out. A line that is not his words or a \
+         direct report of them is inferred, and says so in its kind. A date in a line is \
+         the date of the message that says it (the [time] in front of that message), \
+         never the chat's last activity and never today.\n\n\
          Reply with observations only, one per line, in exactly this form:\n\n\
          kind | id | text\n\n\
          where id is the 8-character id in the header of the chat the observation came \
@@ -516,6 +537,37 @@ pub fn compose_instruction(
             e.at.format("%Y-%m-%d %H:%M UTC")
         );
         out.push_str(&e.text);
+    }
+    out
+}
+
+/// The second look (item 280): the same instruction and excerpts, then the
+/// lines the no-invention check refused, each with what it named that his
+/// messages do not contain. The model may correct them or leave them out;
+/// a line that fails again is dropped and logged by the caller.
+pub fn compose_retry(
+    batch: &[Excerpt],
+    source: Option<&str>,
+    standing: Option<&str>,
+    refused: &[(String, Vec<String>)],
+) -> String {
+    use std::fmt::Write as _;
+    let mut out = compose_instruction(batch, source, standing);
+    let _ = write!(
+        out,
+        "\n=== a second look ===\nAn earlier reply to this same instruction included the \
+         lines below, and they were not written: each names something, listed under it, \
+         that the user's own messages in the chat it names do not contain. Reply with \
+         corrected versions of these lines only, in the same kind | id | text form, using \
+         only names, numbers and dates his messages contain — or leave a line out if it \
+         cannot be said that way. Reply none if none can.\n\n"
+    );
+    for (line, missing) in refused {
+        let _ = writeln!(
+            out,
+            "- {line}\n  not in his messages: {}",
+            missing.join(", ")
+        );
     }
     out
 }
@@ -654,6 +706,24 @@ pub struct CaptureOutcome {
     pub usage: Usage,
     /// What the turns' recorded costs sum to, when the chat had a price.
     pub cost_usd: Option<f64>,
+    /// Lines the no-invention check refused on their second look and that
+    /// were dropped (item 280): each is in `logs/dream-refusals.log`.
+    pub refused: usize,
+    /// Lines refused on the first look and sent back once with the missing
+    /// tokens named — what a second look cost, whether or not it fixed them.
+    pub retried: usize,
+    /// The dropped lines themselves, for a dry run or a report.
+    pub refusals: Vec<Refused>,
+}
+
+/// A captured line that was not written: the chat it named (8 characters,
+/// empty when none), the line as the model wrote it, and the names,
+/// numbers and dates the user's messages there do not contain.
+#[derive(Debug, Clone)]
+pub struct Refused {
+    pub chat: String,
+    pub line: String,
+    pub missing: Vec<String>,
 }
 
 /// One turn's worth of excerpts, all from one source.
@@ -864,91 +934,49 @@ impl Pass<'_> {
             batch.source.as_deref(),
             self.standing.as_deref(),
         );
-        let mut reply = String::new();
-        let on_event = &mut *self.on_event;
-        let mut forward = |event: TurnEvent| {
-            if let TurnEvent::TextDelta { text } = &event {
-                reply.push_str(text);
-            }
-            on_event(event);
-        };
-        let interrupted = match &mut self.engine {
-            Engine::Provider(chat) => {
-                prepare(chat, batch.source.as_deref());
-                let mut session = Session::new();
-                let done = chat
-                    .run_turn(
-                        &mut session,
-                        instruction.as_str(),
-                        self.cancel,
-                        &mut forward,
-                    )
-                    .await
-                    .map_err(|e| format!("the capture's provider call failed: {e}"))?;
-                self.outcome.usage.add(done.usage);
-                let cost = session.cost();
-                self.usd += cost.usd;
-                self.unpriced += cost.unpriced_exchanges;
-                done.interrupted
-            }
-            Engine::Agent(pass) => {
-                let spec = agent_spec_for(pass, self.config, batch.source.as_deref());
-                let done = ClaudeCodeAgent::new(spec)
-                    .run_turn(instruction.as_str(), self.cancel, &mut forward)
-                    .await
-                    .map_err(|e| format!("the capture's Claude Code turn failed: {e}"))?;
-                let interrupted = self.cancel.is_cancelled();
-                if done.is_error && !interrupted {
-                    return Err(format!(
-                        "the capture's Claude Code turn failed: {}",
-                        done.text.trim()
-                    ));
-                }
-                self.outcome.usage.add(done.usage);
-                // The subscription: no price per token, so the outcome's
-                // cost stays `None` the way an unpriced exchange leaves it.
-                self.unpriced += 1;
-                // The reply arrives as deltas when the CLI streams and as
-                // the result's text either way; the deltas are what
-                // `forward` collected, and an empty collection means the
-                // CLI did not stream this turn.
-                if reply.is_empty() {
-                    reply = done.text.clone();
-                }
-                interrupted
-            }
-        };
-        if interrupted {
-            self.outcome.interrupted = true;
+        let Some(reply) = self.ask(batch, &instruction).await? else {
             return Ok(false);
-        }
-
+        };
         let (parsed, skipped) = parse_reply(&reply);
         self.outcome.skipped += skipped;
-        // Dated to the batch's most recent message: what the observation
-        // is about happened then, not when this pass ran.
-        let at = batch
-            .excerpts
-            .iter()
-            .map(|e| e.at)
-            .max()
-            .unwrap_or_else(Utc::now);
-        let label = batch.source.clone().unwrap_or_else(|| UNFILED.to_string());
-        let ids: Vec<String> = batch.excerpts.iter().map(|e| log_id(&e.path)).collect();
-        let n = parsed.len();
-        for (kind, text) in parsed {
-            // The chat it names (item 278), or the only chat in the batch;
-            // dated to that chat's last message when known.
-            let (which, text) = split_chat(&text, &ids);
-            let which = which.or((batch.excerpts.len() == 1).then_some(0));
-            let obs = Observation {
-                v: 1,
-                at: which.map_or(at, |i| batch.excerpts[i].at),
-                source: batch.source.clone(),
-                chat: which.map(|i| ids[i].clone()),
-                kind,
-                text: text.to_string(),
+        // The no-invention check (item 280): a line naming a name, number
+        // or date his messages in that chat do not contain is not written.
+        // The model gets one second look with the missing tokens named; a
+        // line that fails again is dropped and logged.
+        let mut kept = Vec::new();
+        let mut refused = Vec::new();
+        self.screen(batch, parsed, &mut kept, &mut refused);
+        if !refused.is_empty() {
+            self.outcome.retried += refused.len();
+            let named: Vec<(String, Vec<String>)> = refused
+                .iter()
+                .map(|r| (r.line.clone(), r.missing.clone()))
+                .collect();
+            let retry = compose_retry(
+                &batch.excerpts,
+                batch.source.as_deref(),
+                self.standing.as_deref(),
+                &named,
+            );
+            let Some(reply) = self.ask(batch, &retry).await? else {
+                return Ok(false);
             };
+            let (parsed, skipped) = parse_reply(&reply);
+            self.outcome.skipped += skipped;
+            let mut again = Vec::new();
+            self.screen(batch, parsed, &mut kept, &mut again);
+            for r in &again {
+                if !self.dry_run {
+                    grounding::log_refusal(self.config, "capture", &r.chat, &r.line, &r.missing);
+                }
+            }
+            self.outcome.refused += again.len();
+            self.outcome.refusals.extend(again);
+        }
+
+        let label = batch.source.clone().unwrap_or_else(|| UNFILED.to_string());
+        let n = kept.len();
+        for obs in kept {
             if self.dry_run {
                 self.outcome.drafted.push(obs);
             } else {
@@ -977,6 +1005,131 @@ impl Pass<'_> {
             write_state(self.config, &self.state)?;
         }
         Ok(true)
+    }
+
+    /// One model turn over `batch` with `instruction`: the reply, or `None`
+    /// when the pass was interrupted (nothing from the batch is appended
+    /// then and no watermark moves).
+    async fn ask(&mut self, batch: &Batch, instruction: &str) -> Result<Option<String>, String> {
+        let mut reply = String::new();
+        let on_event = &mut *self.on_event;
+        let mut forward = |event: TurnEvent| {
+            if let TurnEvent::TextDelta { text } = &event {
+                reply.push_str(text);
+            }
+            on_event(event);
+        };
+        let interrupted = match &mut self.engine {
+            Engine::Provider(chat) => {
+                prepare(chat, batch.source.as_deref());
+                let mut session = Session::new();
+                let done = chat
+                    .run_turn(&mut session, instruction, self.cancel, &mut forward)
+                    .await
+                    .map_err(|e| format!("the capture's provider call failed: {e}"))?;
+                self.outcome.usage.add(done.usage);
+                let cost = session.cost();
+                self.usd += cost.usd;
+                self.unpriced += cost.unpriced_exchanges;
+                done.interrupted
+            }
+            Engine::Agent(pass) => {
+                let spec = agent_spec_for(pass, self.config, batch.source.as_deref());
+                let done = ClaudeCodeAgent::new(spec)
+                    .run_turn(instruction, self.cancel, &mut forward)
+                    .await
+                    .map_err(|e| format!("the capture's Claude Code turn failed: {e}"))?;
+                let interrupted = self.cancel.is_cancelled();
+                if done.is_error && !interrupted {
+                    return Err(format!(
+                        "the capture's Claude Code turn failed: {}",
+                        done.text.trim()
+                    ));
+                }
+                self.outcome.usage.add(done.usage);
+                // The subscription: no price per token, so the outcome's
+                // cost stays `None` the way an unpriced exchange leaves it.
+                self.unpriced += 1;
+                // The reply arrives as deltas when the CLI streams and as
+                // the result's text either way; the deltas are what
+                // `forward` collected, and an empty collection means the
+                // CLI did not stream this turn.
+                if reply.is_empty() {
+                    reply = done.text.clone();
+                }
+                interrupted
+            }
+        };
+        if interrupted {
+            self.outcome.interrupted = true;
+            return Ok(None);
+        }
+        Ok(Some(reply))
+    }
+
+    /// Sort parsed lines into observations that pass the no-invention check
+    /// ([`grounding`], item 280) and refusals. A line is checked against
+    /// the user's own messages in the excerpt of the chat it names; one
+    /// naming no chat in a batch of several has nothing to be checked
+    /// against, and is refused when it holds a name, number or date. A
+    /// kept line is dated to the message it most likely came from, not the
+    /// chat's last activity (the 278 sample's Sep 22 claim dated Oct 2).
+    fn screen(
+        &self,
+        batch: &Batch,
+        parsed: Vec<(ObservationKind, String)>,
+        kept: &mut Vec<Observation>,
+        refused: &mut Vec<Refused>,
+    ) {
+        let ids: Vec<String> = batch.excerpts.iter().map(|e| log_id(&e.path)).collect();
+        let exempt: Vec<String> = batch.source.iter().cloned().collect();
+        // Dated to the batch's most recent message when nothing better is
+        // known: what the observation is about happened then, not when
+        // this pass ran.
+        let latest = batch
+            .excerpts
+            .iter()
+            .map(|e| e.at)
+            .max()
+            .unwrap_or_else(Utc::now);
+        for (kind, text) in parsed {
+            // The chat it names (item 278), or the only chat in the batch.
+            let (which, body) = split_chat(&text, &ids);
+            let which = which.or((batch.excerpts.len() == 1).then_some(0));
+            let at = match which {
+                Some(i) => {
+                    let e = &batch.excerpts[i];
+                    let evidence = grounding::Evidence::from_said(&e.said);
+                    let missing = grounding::missing(body, &evidence, &exempt);
+                    if !missing.is_empty() {
+                        refused.push(Refused {
+                            chat: short_id(&ids[i]).to_string(),
+                            line: format!("{} | {} | {body}", kind.as_str(), short_id(&ids[i])),
+                            missing,
+                        });
+                        continue;
+                    }
+                    grounding::best_message(body, &e.said).unwrap_or(e.at)
+                }
+                None if grounding::needs_pointer(body, &exempt) => {
+                    refused.push(Refused {
+                        chat: String::new(),
+                        line: format!("{} | {body}", kind.as_str()),
+                        missing: vec!["no chat id".into()],
+                    });
+                    continue;
+                }
+                None => latest,
+            };
+            kept.push(Observation {
+                v: 1,
+                at,
+                source: batch.source.clone(),
+                chat: which.map(|i| ids[i].clone()),
+                kind,
+                text: body.to_string(),
+            });
+        }
     }
 }
 
@@ -1162,6 +1315,100 @@ mod tests {
     /// in the inbox with the right kinds, no source (unfiled), and the
     /// excerpt's date; the malformed line is counted; both watermarks
     /// advance; a second run finds nothing.
+    /// A log holding the 278 sample's Stuart-contacts exchange, redacted to
+    /// what the test needs: his message (Sep 22) names "Jiewen Wang" and
+    /// has "wickey" only inside an email address; the assistant's research
+    /// reply is where `Jiewen "Wickey" Wang` and Stuart came from.
+    fn write_stuart_log(dir: &Path) -> PathBuf {
+        let mut s = Session::with_log(dir).unwrap();
+        s.record_user(
+            "can you look up these people, i might end up working with some combination of \
+             them, no context: Anders Sandberg, Adam Bell, Jiewen Wang <wickeyxx@gmail.com>, \
+             Charles Pattison"
+                .to_string(),
+        );
+        s.record_assistant(
+            "scripted",
+            vec![ContentBlock::Text {
+                text: "Here is what I found. Jiewen \"Wickey\" Wang works with Stuart on \
+                       his venture; Anders Sandberg is at Oxford."
+                    .into(),
+            }],
+            Some("end_turn".into()),
+            Usage::default(),
+        );
+        s.record_user("ok thanks, that helps".to_string());
+        dir.join(format!("{}.jsonl", s.id))
+    }
+
+    const WICKEY: &str = "user_stated | The user may work with a group of contacts (Anders \
+         Sandberg, Adam Bell, Wickey Wang, Charles Pattison) tied to Stuart.";
+
+    #[tokio::test]
+    async fn the_wickey_line_is_refused_twice_then_dropped_and_logged() {
+        let (config, unfiled) = fixture("wickey");
+        let log = write_stuart_log(&unfiled);
+        settle(&log);
+        let (mut chat, seen) = chat_recording(vec![says(WICKEY), says(WICKEY)]);
+        let cancel = CancellationToken::new();
+        let outcome = run(&mut chat, &config, false, &cancel, &mut |_| {})
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(outcome.observations, 0);
+        assert_eq!(outcome.retried, 1);
+        assert_eq!(outcome.refused, 1);
+        assert!(outcome.refusals[0].missing.contains(&"Wickey".to_string()));
+        assert!(outcome.refusals[0].missing.contains(&"Stuart".to_string()));
+        // The second look named what was missing.
+        assert_eq!(seen.lock().unwrap().len(), 2);
+        let shown = all_text(&seen);
+        assert_eq!(shown.matches("a second look").count(), 1);
+        assert!(shown.contains("not in his messages: Wickey, Stuart"));
+        assert!(observe::backlog_in(&config).pending.is_empty());
+        let logged = fs::read_to_string(grounding::log_path(&config)).unwrap();
+        assert_eq!(logged.lines().count(), 1);
+        assert!(logged.contains("Wickey, Stuart\tcapture"));
+        // The chat is still consumed: a refused line is not a reason to
+        // read the chat again.
+        assert_eq!(pending_count_in(&config), 0);
+    }
+
+    #[tokio::test]
+    async fn a_corrected_second_look_is_written_and_dated_to_his_message() {
+        let (config, unfiled) = fixture("wickey-fixed");
+        let log = write_stuart_log(&unfiled);
+        settle(&log);
+        let fixed = "user_stated | The user may work with some combination of Anders \
+                     Sandberg, Adam Bell, Jiewen Wang and Charles Pattison, no context given.";
+        let mut chat = chat_scripted(vec![says(WICKEY), says(fixed)]);
+        let cancel = CancellationToken::new();
+        let outcome = run(&mut chat, &config, false, &cancel, &mut |_| {})
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (outcome.observations, outcome.retried, outcome.refused),
+            (1, 1, 0)
+        );
+        let pending = observe::backlog_in(&config).pending;
+        assert!(pending[0].obs.text.contains("Jiewen Wang"));
+        // His first message, not the chat's last.
+        let said = &fold(&log, 0, BATCH_BUDGET).unwrap().said;
+        assert_eq!(said.len(), 2);
+        assert_eq!(pending[0].obs.at, said[0].at);
+        assert!(!grounding::log_path(&config).exists());
+    }
+
+    #[test]
+    fn the_instruction_says_copy_never_supply() {
+        let text = compose_instruction(&[], None, None);
+        assert!(text.contains("Copy, never supply"));
+        assert!(text.contains("The assistant's replies are not his words"));
+        assert!(text.contains("is inferred, and says so in its kind"));
+        assert!(text.contains("the date of the message that says it"));
+    }
+
     #[tokio::test]
     async fn a_reply_becomes_observations_and_the_watermarks_advance_per_log() {
         let (config, unfiled) = fixture("reply");
@@ -1169,7 +1416,9 @@ mod tests {
         let b = write_log(&unfiled, 2);
 
         let mut chat = chat_scripted(vec![says(
-            "user_stated | Prefers tabs.\ninferred | Is working on a Rust crate.\nthis line has no kind",
+            // No name, number or date in either line: nothing for the
+            // no-invention check (item 280) to hold against a batch of two.
+            "user_stated | Prefers tabs.\ninferred | Asks a lot of questions about tabs.\nthis line has no kind",
         )]);
         let cancel = CancellationToken::new();
         let outcome = run(&mut chat, &config, false, &cancel, &mut |_| {})
@@ -1512,6 +1761,7 @@ mod tests {
             at: Utc::now(),
             end: 10,
             title: Some("Renaming things".into()),
+            said: Vec::new(),
         };
         let text = compose_instruction(
             std::slice::from_ref(&e),

@@ -21,6 +21,7 @@ pub mod council;
 pub mod credentials;
 pub mod credits;
 pub mod dream;
+pub mod grounding;
 pub mod import;
 pub mod knowledge;
 pub mod mcp_server;

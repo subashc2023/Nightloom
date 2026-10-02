@@ -395,6 +395,8 @@ export interface DreamReport {
    *  own clause, null when no turn proposed. */
   proposed: string | null;
   cost_usd: number | null;
+  /** Lines the no-invention check took out and kept out (item 280). */
+  refused: number;
 }
 
 /** The two scopes the dream may propose a change to: the fixed files. */
@@ -428,6 +430,8 @@ export interface CaptureReport {
   observations: number;
   logs_read: number;
   skipped: number;
+  /** Lines the no-invention check refused twice and dropped (item 280). */
+  refused: number;
   deferred: number;
   remaining: number;
   /** Incognito chats seen and deliberately not read. */

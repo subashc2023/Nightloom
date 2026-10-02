@@ -5768,6 +5768,8 @@ struct DreamReport {
     /// proposed — a finished clause like `git`, for the same reason.
     proposed: Option<String>,
     cost_usd: Option<f64>,
+    /// Lines the no-invention check took out and kept out (item 280).
+    refused: usize,
 }
 
 /// One target's count. `project` is `None` for the vault.
@@ -5874,6 +5876,7 @@ async fn dream(
         remaining: outcome.remaining,
         interrupted: outcome.interrupted,
         proposed: nightloom_service::dream::proposed_line(&outcome.filed),
+        refused: outcome.refused,
         git: outcome
             .filed
             .iter()
@@ -5979,6 +5982,8 @@ struct CaptureReport {
     observations: usize,
     logs_read: usize,
     skipped: usize,
+    /// Lines the no-invention check refused twice and dropped (item 280).
+    refused: usize,
     deferred: usize,
     remaining: usize,
     /// Incognito chats seen and deliberately not read (2026-09-15).
@@ -6069,6 +6074,7 @@ async fn capture(
         observations: outcome.observations,
         logs_read: outcome.logs_read,
         skipped: outcome.skipped,
+        refused: outcome.refused,
         deferred: outcome.deferred,
         incognito: outcome.incognito,
         remaining: outcome.remaining,

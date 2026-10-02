@@ -97,6 +97,7 @@ use nightloom_core::{Segment, SegmentKind, Session, SystemPrompt, Usage};
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::{AgentSpec, ClaudeCodeAgent, PassSpec};
+use crate::grounding;
 use crate::mcp_server::{self, DreamServe};
 use crate::observe::{self, Observation};
 use crate::project::{AGENTS_DIR, Project, Registry};
@@ -314,6 +315,9 @@ const AGENT_DISCIPLINE: &str = "You are running as one Claude Code turn. The fol
      with Edit at claim granularity; never rewrite a note whole and never delete one. When a \
      claim was simply wrong, replace it in place with no date and no strike; when it was true \
      and has changed, keep both with their dates (until 2026-09, …; since 2026-09-20, …). \
+     Every name, number and date you write must appear in the user's own messages in the \
+     chat the line cites, and a line that is not his words is tagged inferred; a check \
+     after your turn takes out any line that fails. \
      mcp__nightloom__propose_instructions is the propose_instructions the instructions name: \
      call it at most once, only when an observation contradicts or extends the standing \
      instructions, and never to restate what the notes here hold. Nobody is watching; do not \
@@ -470,6 +474,13 @@ pub struct DreamOutcome {
     /// batch had nothing for the vault.
     pub git_before: GitNote,
     pub git_after: GitNote,
+    /// Lines the no-invention check took out and that stayed out after the
+    /// second look (item 280); each is in `logs/dream-refusals.log`.
+    pub refused: usize,
+    /// Lines taken out after a first turn and sent back for a second look.
+    pub retried: usize,
+    /// The refused lines themselves.
+    pub refusals: Vec<NoteRefused>,
 }
 
 /// One target's share of a dream.
@@ -700,6 +711,17 @@ async fn run_with(
     let mut usd = 0.0;
     let mut unpriced = 0usize;
     let mut interrupted = false;
+    let mut retried = 0usize;
+    let mut refusals: Vec<NoteRefused> = Vec::new();
+    // His messages per cited chat, read once per dream.
+    let mut chats: std::collections::HashMap<String, Option<Vec<grounding::Said>>> =
+        std::collections::HashMap::new();
+    let mut messages = |id: &str| {
+        chats
+            .entry(id.to_string())
+            .or_insert_with(|| grounding::user_messages_of(config, id))
+            .clone()
+    };
 
     for (i, g) in groups.iter().enumerate() {
         // Created on demand: a project's memory folder does not exist until
@@ -714,6 +736,13 @@ async fn run_with(
         // and handed to the tool, so its guard judges against the same text.
         let current = read_capped(&g.target.instructions_path(config));
         let instruction = compose_instruction(&g.batch, &g.target, current.as_deref());
+        let exempt: Vec<String> = g
+            .target
+            .project_name()
+            .map(String::from)
+            .into_iter()
+            .collect();
+        let notes_before = snapshot_notes(&dir);
 
         let mut forward = |event: TurnEvent| {
             if let TurnEvent::TextDelta { text } = &event {
@@ -731,17 +760,56 @@ async fn run_with(
             &mut forward,
         )
         .await?;
-        // A turn's commentary ends without a newline; the next target's
-        // begins on its own line rather than mid-sentence.
-        if !summary.is_empty() && !summary.ends_with('\n') {
-            summary.push('\n');
-        }
         usage.add(outcome.usage);
         match outcome.cost {
             Some(c) => usd += c,
             None => unpriced += 1,
         }
         filed[i].proposed = outcome.proposed;
+
+        // The no-invention check (item 280), after the turn whatever its
+        // ending: a line naming what his messages in the cited chat do not
+        // contain is taken back out. One second look when the turn ended
+        // normally; what fails again is dropped and logged.
+        let first = screen_notes(&dir, &notes_before, &exempt, &mut messages);
+        let mut dropped = Vec::new();
+        let mut outcome = outcome;
+        if !first.is_empty() && !outcome.interrupted {
+            retried += first.len();
+            let retry = compose_retry(&g.batch, &g.target, &first);
+            // The second look's commentary on its own line.
+            forward(TurnEvent::TextDelta { text: "\n".into() });
+            let notes_mid = snapshot_notes(&dir);
+            let second = turn_on(
+                &mut engine,
+                &g.target,
+                config,
+                current.as_deref(),
+                &retry,
+                cancel,
+                &mut forward,
+            )
+            .await?;
+            usage.add(second.usage);
+            match second.cost {
+                Some(c) => usd += c,
+                None => unpriced += 1,
+            }
+            filed[i].proposed |= second.proposed;
+            outcome.interrupted = second.interrupted;
+            dropped = screen_notes(&dir, &notes_mid, &exempt, &mut messages);
+        } else {
+            dropped.extend(first);
+        }
+        for r in &dropped {
+            grounding::log_refusal(config, "dream", &r.chat, &r.line, &r.missing);
+        }
+        refusals.extend(dropped);
+        // A turn's commentary ends without a newline; the next target's
+        // begins on its own line rather than mid-sentence.
+        if !summary.is_empty() && !summary.ends_with('\n') {
+            summary.push('\n');
+        }
 
         if outcome.interrupted {
             interrupted = true;
@@ -783,6 +851,9 @@ async fn run_with(
         cost_usd: (unpriced == 0 && usd > 0.0).then_some(usd),
         git_before,
         git_after,
+        refused: refusals.len(),
+        retried,
+        refusals,
     }))
 }
 
@@ -918,7 +989,19 @@ pub fn compose_instruction(
          kind, the date, the project and the chat when the observation names one: \
          (user_stated 2026-08-30, project nightloom, chat 1a2b3c4d) — so a reader can tell \
          the user's own words from an inference, a consolidated claim from a hand-written \
-         one, and go back to the conversation it came from.\n\
+         one, and go back to the conversation it came from. The date in a cite is the \
+         observation's date — the day his message was sent — never the chat's last \
+         activity and never today.\n\
+         - Copy, never supply (the user's rule, 2026-10-02, after a memory named a contact \
+         \"Wickey Wang\" where his message said \"Jiewen Wang\", and tied the group to a \
+         person his message never named). Every proper name, number and date in a line you \
+         add or change must appear in the user's own messages in the chat the line cites — \
+         not in the assistant's replies, and not from what you know. A check reads those \
+         messages after your turn and takes back out any line that fails, and any line that \
+         holds a name, number or date and cites no chat; you get one second look at what it \
+         took out. A line that is not his words or a direct report of them is tagged \
+         inferred in its cite, whatever the observation was tagged — a conclusion you draw \
+         across observations is inferred and cites every chat it rests on.\n\
          - Size flags, never trims. A note past about 150 lines or 12,000 characters is \
          not cut to fit: name it in your summary as over size, and leave the splitting to \
          a deliberate pass.\n\
@@ -1315,6 +1398,255 @@ fn snapshot_in(repo: &Path, pathspec: Option<&Path>, message: &str) -> GitNote {
     }
 }
 
+// ---- the no-invention check (nightshift item 280) -------------------------
+
+/// A line the dream wrote and the check took back out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoteRefused {
+    /// The note, relative to the target's folder.
+    pub file: PathBuf,
+    pub line: String,
+    /// The chats the line cited, joined; empty when it cited none.
+    pub chat: String,
+    /// What it named that his messages there do not contain.
+    pub missing: Vec<String>,
+}
+
+/// Every markdown note under `dir` and its text, hidden folders (`.git`,
+/// `.obsidian`) skipped: the "before" a turn's lines are judged against.
+pub fn snapshot_notes(dir: &Path) -> std::collections::BTreeMap<PathBuf, String> {
+    let mut out = std::collections::BTreeMap::new();
+    let walk = walkdir::WalkDir::new(dir)
+        .into_iter()
+        .filter_entry(|e| e.depth() == 0 || !e.file_name().to_string_lossy().starts_with('.'));
+    for entry in walk.flatten() {
+        let path = entry.path();
+        if entry.file_type().is_file()
+            && path.extension().is_some_and(|x| x == "md")
+            && let Ok(text) = std::fs::read_to_string(path)
+        {
+            out.insert(path.to_path_buf(), text);
+        }
+    }
+    out
+}
+
+/// Which lines of a note are claims: not blank, not a heading, not a rule
+/// or a table separator, not front matter, not inside a code fence, not a
+/// struck-claim pointer the tidy left. Structure is not something a check
+/// on names, numbers and dates has anything to say about.
+fn claim_lines(lines: &[&str]) -> Vec<bool> {
+    let mut out = Vec::with_capacity(lines.len());
+    let mut front = lines.first().is_some_and(|l| l.trim() == "---");
+    let mut fence = false;
+    for (i, raw) in lines.iter().enumerate() {
+        let t = raw.trim();
+        if front {
+            out.push(false);
+            if i > 0 && t == "---" {
+                front = false;
+            }
+            continue;
+        }
+        if t.starts_with("```") || t.starts_with("~~~") {
+            fence = !fence;
+            out.push(false);
+            continue;
+        }
+        let structural = t.is_empty()
+            || fence
+            || t.starts_with('#')
+            || t == "---"
+            || t == "***"
+            || t.chars().all(|c| matches!(c, '|' | '-' | ':' | ' '))
+            || t.starts_with("[struck");
+        out.push(!structural);
+    }
+    out
+}
+
+/// The line diff of `old` against `new` as runs: `(old lines, new lines)`
+/// for a changed run, and an unchanged line as a run whose two sides are
+/// the same single line. A plain longest-common-subsequence table: notes
+/// are capped near 150 lines, so the square is small.
+fn line_runs<'a>(old: &[&'a str], new: &[&'a str]) -> Vec<(Vec<&'a str>, Vec<&'a str>, bool)> {
+    let (n, m) = (old.len(), new.len());
+    let mut lcs = vec![vec![0u32; m + 1]; n + 1];
+    for i in (0..n).rev() {
+        for j in (0..m).rev() {
+            lcs[i][j] = if old[i] == new[j] {
+                lcs[i + 1][j + 1] + 1
+            } else {
+                lcs[i + 1][j].max(lcs[i][j + 1])
+            };
+        }
+    }
+    let mut runs: Vec<(Vec<&str>, Vec<&str>, bool)> = Vec::new();
+    let (mut i, mut j) = (0, 0);
+    let open = |runs: &mut Vec<(Vec<&'a str>, Vec<&'a str>, bool)>| {
+        if !runs.last().is_some_and(|r| !r.2) {
+            runs.push((Vec::new(), Vec::new(), false));
+        }
+    };
+    while i < n || j < m {
+        if i < n && j < m && old[i] == new[j] {
+            runs.push((vec![old[i]], vec![new[j]], true));
+            i += 1;
+            j += 1;
+        } else if j < m && (i == n || lcs[i][j + 1] >= lcs[i + 1][j]) {
+            open(&mut runs);
+            runs.last_mut().unwrap().1.push(new[j]);
+            j += 1;
+        } else {
+            open(&mut runs);
+            runs.last_mut().unwrap().0.push(old[i]);
+            i += 1;
+        }
+    }
+    runs
+}
+
+/// Check every line the turn added or changed under `dir` against the
+/// user's messages in the chats it cites ([`grounding::check_memory_line`])
+/// and take back out what fails: a changed run holding a refused line goes
+/// back to what it was before the turn, whole, so a wrong replacement
+/// leaves the old line rather than a hole; a note the turn created keeps
+/// its passing lines and is removed if none are left. A line already
+/// anywhere in the folder before the turn is not new (a move is not a
+/// claim). Returns what was refused.
+pub fn screen_notes(
+    dir: &Path,
+    before: &std::collections::BTreeMap<PathBuf, String>,
+    exempt: &[String],
+    messages: &mut dyn FnMut(&str) -> Option<Vec<grounding::Said>>,
+) -> Vec<NoteRefused> {
+    let known: std::collections::HashSet<&str> = before
+        .values()
+        .flat_map(|t| t.lines().map(str::trim))
+        .collect();
+    let mut refused = Vec::new();
+    for (path, text) in snapshot_notes(dir) {
+        let old = before.get(&path);
+        if old == Some(&text) {
+            continue;
+        }
+        let rel = path.strip_prefix(dir).unwrap_or(&path).to_path_buf();
+        let new_lines: Vec<&str> = text.lines().collect();
+        let is_claim = claim_lines(&new_lines);
+        let claim_set: std::collections::HashSet<*const str> = new_lines
+            .iter()
+            .zip(&is_claim)
+            .filter(|(_, c)| **c)
+            .map(|(l, _)| *l as *const str)
+            .collect();
+        let old_lines: Vec<&str> = old.map(|t| t.lines().collect()).unwrap_or_default();
+        let mut out: Vec<&str> = Vec::with_capacity(new_lines.len());
+        let mut changed = false;
+        for (was, now, same) in line_runs(&old_lines, &new_lines) {
+            if same {
+                out.extend(now);
+                continue;
+            }
+            let mut bad = false;
+            for line in &now {
+                if !claim_set.contains(&(*line as *const str)) || known.contains(line.trim()) {
+                    continue;
+                }
+                if let Err(r) = grounding::check_memory_line(line, exempt, messages) {
+                    refused.push(NoteRefused {
+                        file: rel.clone(),
+                        line: line.trim().to_string(),
+                        chat: r.chat,
+                        missing: r.missing,
+                    });
+                    bad = true;
+                }
+            }
+            if bad {
+                changed = true;
+                if old.is_some() {
+                    out.extend(was);
+                } else {
+                    // A note this turn created: keep what passed.
+                    let gone: Vec<&str> = refused
+                        .iter()
+                        .filter(|r| r.file == rel)
+                        .map(|r| r.line.as_str())
+                        .collect();
+                    out.extend(now.into_iter().filter(|l| !gone.contains(&l.trim())));
+                }
+            } else {
+                out.extend(now);
+            }
+        }
+        if !changed {
+            continue;
+        }
+        let left_claims = claim_lines(&out).into_iter().any(|c| c);
+        if old.is_none() && !left_claims {
+            let _ = std::fs::remove_file(&path);
+            continue;
+        }
+        let mut body = out.join("\n");
+        if text.ends_with('\n') {
+            body.push('\n');
+        }
+        let _ = std::fs::write(&path, body);
+    }
+    refused
+}
+
+/// The second look for a dream turn (item 280): the refused lines with
+/// what each named that his messages do not contain, and the batch they
+/// were filed from. A fresh turn on the same folder, told to rewrite those
+/// lines from the evidence or leave them out, and to touch nothing else.
+pub fn compose_retry(batch: &[&Observation], target: &Target, refused: &[NoteRefused]) -> String {
+    use std::fmt::Write as _;
+    let home = target.described();
+    let mut out = String::new();
+    let _ = write!(
+        out,
+        "A second look at your last pass over {home}. The lines below were taken back out \
+         after it: a check read the user's own messages in the chat each line cites, and \
+         each named something — listed under it — that those messages do not contain, or \
+         held a name, number or date and cited no chat. Where a line replaced an older one, \
+         the older one is back.\n\n\
+         For each, either write it again using only names, numbers and dates his messages \
+         in the cited chat contain, ending with its cite (kind, the date of his message, the \
+         project, the chat: (user_stated 2026-09-22, project X, chat 1a2b3c4d)), or leave it \
+         out. Tag it inferred if it is not his words or a direct report of them. Change \
+         nothing else in the folder. The same check runs after this turn; a line that fails \
+         again is dropped and logged. End with one sentence saying what you rewrote and what \
+         you left out.\n\n"
+    );
+    for r in refused {
+        let _ = writeln!(
+            out,
+            "- {}: {}\n  not in his messages: {}",
+            r.file.display(),
+            r.line,
+            r.missing.join(", ")
+        );
+    }
+    let _ = write!(out, "\nThe observations they were filed from:\n\n");
+    for obs in batch {
+        let short: String = obs.chat.as_deref().unwrap_or("").chars().take(8).collect();
+        let _ = writeln!(
+            out,
+            "{} · {}{}: {}",
+            obs.at.format("%Y-%m-%d %H:%M UTC"),
+            if short.is_empty() {
+                String::new()
+            } else {
+                format!("chat {short} · ")
+            },
+            obs.kind.as_str(),
+            obs.text
+        );
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1365,6 +1697,184 @@ mod tests {
 
     fn write_note(name: &str, content: &str) -> Vec<nightloom_core::StreamEvent> {
         tool_call("write_file", json!({ "path": name, "content": content }))
+    }
+
+    // ---- item 280: the no-invention check ----
+
+    /// The 278 sample's Stuart-contacts exchange, redacted to what the test
+    /// needs, as an unfiled session log; returns its 8-character id. His
+    /// message names "Jiewen Wang" and has "wickey" only in an email
+    /// address; `Jiewen "Wickey" Wang` and Stuart are the assistant's.
+    fn stuart_log(config: &Path) -> String {
+        let dir = config
+            .join(crate::capture::UNFILED)
+            .join(crate::project::SESSIONS_DIR);
+        fs::create_dir_all(&dir).unwrap();
+        let mut s = nightloom_core::Session::with_log(&dir).unwrap();
+        s.record_user(
+            "can you look up these people, i might end up working with some combination of \
+             them, no context: Anders Sandberg, Adam Bell, Jiewen Wang <wickeyxx@gmail.com>, \
+             Charles Pattison"
+                .to_string(),
+        );
+        s.record_assistant(
+            "scripted",
+            vec![nightloom_core::ContentBlock::Text {
+                text: "Jiewen \"Wickey\" Wang works with Stuart.".into(),
+            }],
+            Some("end_turn".into()),
+            Usage::default(),
+        );
+        s.id.to_string().chars().take(8).collect()
+    }
+
+    fn cite(chat: &str) -> String {
+        format!(
+            "(user_stated {}, chat {chat})",
+            Utc::now().format("%Y-%m-%d")
+        )
+    }
+
+    fn wickey(chat: &str) -> String {
+        format!(
+            "- May work with a group of contacts (Anders Sandberg, Wickey Wang) tied to Stuart. {}",
+            cite(chat)
+        )
+    }
+
+    fn right(chat: &str) -> String {
+        format!(
+            "- May work with some combination of Anders Sandberg, Adam Bell, Jiewen Wang and \
+             Charles Pattison; no context given. {}",
+            cite(chat)
+        )
+    }
+
+    fn stuart_obs(config: &Path, chat: &str) {
+        let mut o = obs(
+            "May work with Anders Sandberg, Jiewen Wang and others.",
+            ObservationKind::UserStated,
+            None,
+        );
+        o.chat = Some(format!("{chat}-full-id"));
+        observe::append_in(config, &o).unwrap();
+    }
+
+    #[test]
+    fn a_refused_replacement_puts_the_old_line_back() {
+        let (config, vault, _) = fixture("screen-revert", "Lanternfish");
+        let chat = stuart_log(&config);
+        let note = vault.join("contacts.md");
+        fs::write(&note, "# Contacts\n\n- An older line.\n- Kept as is.\n").unwrap();
+        let before = snapshot_notes(&vault);
+        // The turn replaced the older line with the Wickey line, and added
+        // a correct one in a new note.
+        fs::write(
+            &note,
+            format!("# Contacts\n\n{}\n- Kept as is.\n", wickey(&chat)),
+        )
+        .unwrap();
+        fs::write(
+            vault.join("people.md"),
+            format!("# People\n\n{}\n{}\n", right(&chat), wickey(&chat)),
+        )
+        .unwrap();
+        fs::write(
+            vault.join("only-bad.md"),
+            format!("# Bad\n\n{}\n", wickey(&chat)),
+        )
+        .unwrap();
+        let mut lookup = |id: &str| grounding::user_messages_of(&config, id);
+        let refused = screen_notes(&vault, &before, &[], &mut lookup);
+        assert_eq!(refused.len(), 3, "{refused:?}");
+        assert!(
+            refused
+                .iter()
+                .all(|r| r.missing.contains(&"Wickey".to_string())
+                    && r.missing.contains(&"Stuart".to_string()))
+        );
+        assert_eq!(
+            fs::read_to_string(&note).unwrap(),
+            "# Contacts\n\n- An older line.\n- Kept as is.\n"
+        );
+        let people = fs::read_to_string(vault.join("people.md")).unwrap();
+        assert!(people.contains("Jiewen Wang") && !people.contains("Wickey"));
+        assert!(!vault.join("only-bad.md").exists());
+    }
+
+    #[test]
+    fn a_moved_line_and_a_plain_line_are_not_claims_to_check() {
+        let (config, vault, _) = fixture("screen-moved", "Lanternfish");
+        fs::write(vault.join("a.md"), "- Old fact about Zanzibar 1999.\n").unwrap();
+        let before = snapshot_notes(&vault);
+        fs::write(vault.join("a.md"), "- See [[b]].\n").unwrap();
+        fs::write(
+            vault.join("b.md"),
+            "---\nname: Zanzibar\n---\n# Zanzibar\n\n- Old fact about Zanzibar 1999.\n- a plain line with nothing to check\n",
+        )
+        .unwrap();
+        let mut lookup = |id: &str| grounding::user_messages_of(&config, id);
+        assert!(screen_notes(&vault, &before, &[], &mut lookup).is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_dream_gets_one_second_look_and_a_fixed_line_stays() {
+        let (config, vault, _) = fixture("second-look", "Lanternfish");
+        let chat = stuart_log(&config);
+        stuart_obs(&config, &chat);
+        let mut chat_ = chat_scripted(vec![
+            write_note("contacts.md", &format!("# Contacts\n\n{}\n", wickey(&chat))),
+            says("filed"),
+            write_note("contacts.md", &format!("# Contacts\n\n{}\n", right(&chat))),
+            says("rewrote it from his message"),
+        ]);
+        let cancel = CancellationToken::new();
+        let outcome = run(&mut chat_, &vault, &config, &cancel, &mut |_| {})
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((outcome.retried, outcome.refused), (1, 0));
+        let text = fs::read_to_string(vault.join("contacts.md")).unwrap();
+        assert!(text.contains("Jiewen Wang") && !text.contains("Wickey"));
+        assert!(outcome.summary.contains("rewrote it"));
+        assert!(!grounding::log_path(&config).exists());
+    }
+
+    #[tokio::test]
+    async fn a_line_that_fails_twice_is_dropped_and_logged() {
+        let (config, vault, _) = fixture("fails-twice", "Lanternfish");
+        let chat = stuart_log(&config);
+        stuart_obs(&config, &chat);
+        let mut chat_ = chat_scripted(vec![
+            write_note("contacts.md", &format!("# Contacts\n\n{}\n", wickey(&chat))),
+            says("filed"),
+            write_note("contacts.md", &format!("# Contacts\n\n{}\n", wickey(&chat))),
+            says("same again"),
+        ]);
+        let cancel = CancellationToken::new();
+        let outcome = run(&mut chat_, &vault, &config, &cancel, &mut |_| {})
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((outcome.retried, outcome.refused), (1, 1));
+        assert!(!vault.join("contacts.md").exists());
+        let log = fs::read_to_string(grounding::log_path(&config)).unwrap();
+        assert_eq!(log.lines().count(), 1);
+        assert!(log.contains(&format!("\t{chat}\t")) && log.contains("Wickey, Stuart\tdream"));
+        // Consumed all the same: the inbox is not re-offered for a refusal.
+        assert!(observe::backlog_in(&config).pending.is_empty());
+    }
+
+    #[test]
+    fn the_instruction_says_copy_never_supply_and_the_cli_hears_it() {
+        let text = compose_instruction(&[], &vault_target(), None);
+        assert!(text.contains("Copy, never supply"));
+        assert!(text.contains("not in the assistant's replies"));
+        assert!(text.contains("tagged \ninferred") || text.contains("tagged inferred"));
+        assert!(text.contains("the day his message was sent"));
+        // 278's correction rule is intact beside it.
+        assert!(text.contains("Wrong and changed are different"));
+        assert!(agent_system_prompt(&vault_target()).contains("a check after your turn"));
     }
 
     #[test]
