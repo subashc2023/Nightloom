@@ -2418,6 +2418,28 @@ mod tests {
         assert_eq!(content[2]["title"], "notes.pdf");
     }
 
+    /// A text attachment goes to the CLI as text, as it goes to every
+    /// provider (item 277), never as a `document` of a text type.
+    #[test]
+    fn a_text_attachment_rides_the_stdin_line_as_text() {
+        let input = TurnInput {
+            text: "run it".into(),
+            images: Vec::new(),
+            documents: vec![nightloom_core::DocumentInput {
+                media_type: "text/x-python".into(),
+                name: "fib.py".into(),
+                data: "cHJpbnQoMSk=".into(),
+            }],
+        };
+        let v: serde_json::Value = serde_json::from_str(&protocol::user_line(&input)).unwrap();
+        let content = v["message"]["content"].as_array().unwrap();
+        assert_eq!(content[1]["type"], "text");
+        assert_eq!(
+            content[1]["text"],
+            "<attached-file name=\"fib.py\">\nprint(1)\n</attached-file>"
+        );
+    }
+
     /// A text-only turn is untouched by all of this: `-p <prompt>`, no
     /// `--input-format`. That is the shape every caller outside the desktop
     /// still uses, and the one the resume path was tested on.

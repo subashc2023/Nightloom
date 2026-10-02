@@ -5,7 +5,7 @@
  * while the Mac is unreachable. Nothing here touches the DOM, so all of it
  * is under `client.test.ts`; `Remote.svelte` is the screen over it.
  */
-import type { ApprovalRequest, ImageInput, SessionEvent, TurnEvent } from "../lib/types";
+import type { ApprovalRequest, DocumentInput, ImageInput, SessionEvent, TurnEvent } from "../lib/types";
 import type { SubagentLimits } from "../lib/catalog";
 import type { WireView } from "../lib/types";
 import type { ContextReply, LayerChange } from "./ContextSheet.svelte";
@@ -222,6 +222,9 @@ export interface CouncilSend {
 export interface SendExtras {
   project?: string | null;
   images?: ImageInput[];
+  /** Item 277: a PDF, a text file as `text/plain`, or an office file as
+   *  it was — the server puts its text in its place. */
+  documents?: DocumentInput[];
   spoken?: boolean;
   /** Wave 2C: the message goes to a council of seats, not one model. */
   council?: CouncilSend | null;
@@ -258,6 +261,7 @@ export function sendBody(text: string, extras: SendExtras = {}): Record<string, 
   const body: Record<string, unknown> = { text };
   if (extras.project) body.project = extras.project;
   if (extras.images && extras.images.length > 0) body.images = extras.images;
+  if (extras.documents && extras.documents.length > 0) body.documents = extras.documents;
   if (extras.spoken) body.spoken = true;
   if (extras.council) body.council = { seats: extras.council.seats, mode: extras.council.mode, areas: extras.council.areas ?? [] };
   if (extras.nonce) body.nonce = extras.nonce;
@@ -684,8 +688,17 @@ export class Client {
   }
 
   /** A new chat on the Mac, in `project` or the open one (item 246). */
-  async newChat(project: string | null, text: string, images: ImageInput[] = [], nonce?: string): Promise<"sent" | "queued"> {
-    const r = await this.call("/new", { method: "POST", body: JSON.stringify({ ...sendBody(text, { images, nonce }), project }) });
+  async newChat(
+    project: string | null,
+    text: string,
+    images: ImageInput[] = [],
+    nonce?: string,
+    documents: DocumentInput[] = [],
+  ): Promise<"sent" | "queued"> {
+    const r = await this.call("/new", {
+      method: "POST",
+      body: JSON.stringify({ ...sendBody(text, { images, nonce, documents }), project }),
+    });
     return parseSendReply(await r.text());
   }
 

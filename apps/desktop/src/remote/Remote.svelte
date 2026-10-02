@@ -85,7 +85,8 @@
   } from "./client";
   import { renderMarkdown } from "../lib/markdown";
   import { arrive, launch, reducedMotion } from "../lib/sendMotion";
-  import type { ApprovalRequest, AskQuestion, ImageInput, SessionEvent, TurnEvent } from "../lib/types";
+  import type { ApprovalRequest, AskQuestion, DocumentInput, ImageInput, SessionEvent, TurnEvent } from "../lib/types";
+  import { badgeOf, extOf, looksLikeText, MAX_TEXT_BYTES, notebookText, routeOf } from "../lib/attachKinds";
   import MessageMenu from "./MessageMenu.svelte";
   import RailSheet from "./RailSheet.svelte";
   import ContextSheet from "./ContextSheet.svelte";
@@ -262,7 +263,10 @@
   /** Photos in the composer, scaled and base64'd (wave 1C). Page state
    *  only: a photo is too big for localStorage, so a reload drops it —
    *  his text, which is small, is the draft that persists. */
-  let photos = $state<{ id: number; image: ImageInput; url: string }[]>([]);
+  let photos = $state<{ id: number; image?: ImageInput; doc?: DocumentInput; url: string }[]>([]);
+  /** The wire halves of what is in the composer (item 277: files too). */
+  const imagesOf = (list: typeof photos) => list.flatMap((p) => (p.image ? [p.image] : []));
+  const docsOf = (list: typeof photos) => list.flatMap((p) => (p.doc ? [p.doc] : []));
   let photoSeq = 0;
   let picker = $state<HTMLInputElement | null>(null);
   /** The chat just moved to the trash, offered back until dismissed. */
@@ -292,6 +296,8 @@
   const readOnly = $derived(chatProject !== null && chatProject !== activePid && !hasFeature(remote, "send_project"));
   /** A host from before wave 1 would drop a photo without a word. */
   const canPhoto = $derived(hasFeature(remote, "images"));
+  /** And one that takes documents (item 277): PDFs, text, office files. */
+  const canFile = $derived(hasFeature(remote, "documents"));
   /** The chat's project to send with when the Mac has another open. */
   const sendProject = $derived(chatProject !== null && chatProject !== activePid ? chatProject : null);
   /** Why the log cannot be changed now: a turn running (the desktop's
@@ -875,14 +881,15 @@
       await sendNew(text);
       return;
     }
-    const images = photos.map((p) => p.image);
+    const images = imagesOf(photos);
+    const documents = docsOf(photos);
     const attempt = nonceFor(lastTry, `send:${chatId}\n${text}`);
     lastTry = attempt;
     if (!sameHost) {
-      await sendElsewhere(text, images, attempt.nonce);
+      await sendElsewhere(text, images, attempt.nonce, documents);
       return;
     }
-    if ((link !== "online" || remote.busy) && images.length > 0) {
+    if ((link !== "online" || remote.busy) && images.length + documents.length > 0) {
       // A photo is too big to hold on the phone: the message stays in the
       // composer, photos and all, until the Mac can take it.
       note(link !== "online" ? "The Mac is unreachable — your message and photos stay here" : "A turn is running — send the photos when it ends");
@@ -897,7 +904,7 @@
     const sentPhotos = photos;
     photos = [];
     try {
-      const status = await chatClient!.send(chatId, text, { project, images, nonce: attempt.nonce });
+      const status = await chatClient!.send(chatId, text, { project, images, documents, nonce: attempt.nonce });
       lastTry = null;
       remote = { ...remote, busy: true };
       // The Mac opened the chat's project to send (blocker 665).
@@ -917,13 +924,19 @@
       // the one thing on the page he already knows the text of.
       events = [
         ...events,
-        { event: "user_message", text, at: new Date().toISOString(), ...(images.length > 0 ? { images } : {}) },
+        {
+          event: "user_message",
+          text,
+          at: new Date().toISOString(),
+          ...(images.length > 0 ? { images } : {}),
+          ...(documents.length > 0 ? { documents } : {}),
+        },
       ];
       scrollToEnd();
     } catch (e) {
       // Nothing sent: the photos go back into the composer.
       photos = [...sentPhotos, ...photos];
-      if (e instanceof Unreachable && images.length === 0) hold(text, attempt.nonce);
+      if (e instanceof Unreachable && images.length + documents.length === 0) hold(text, attempt.nonce);
       else if (e instanceof Unreachable) {
         note("The Mac is unreachable — your message and photos stay here");
         if (!draft) setDraft(text);
@@ -949,11 +962,12 @@
       return;
     }
     const before = remote.active_chat;
-    const images = photos.map((p) => p.image);
+    const images = imagesOf(photos);
+    const documents = docsOf(photos);
     const attempt = nonceFor(lastTry, `new:${newProject}\n${text}`);
     lastTry = attempt;
     try {
-      const status = await client!.newChat(newProject, text, images, attempt.nonce);
+      const status = await client!.newChat(newProject, text, images, attempt.nonce, documents);
       lastTry = null;
       pendingNew = { before };
       setDraft("");
@@ -962,7 +976,15 @@
       if (status === "queued") return;
       live = emptyTurn();
       launch("phone", box);
-      events = [{ event: "user_message", text, at: new Date().toISOString(), ...(images.length > 0 ? { images } : {}) }];
+      events = [
+        {
+          event: "user_message",
+          text,
+          at: new Date().toISOString(),
+          ...(images.length > 0 ? { images } : {}),
+          ...(documents.length > 0 ? { documents } : {}),
+        },
+      ];
       scrollToEnd();
     } catch (e) {
       fail(e);
@@ -984,20 +1006,29 @@
    * that chat's own host, never the answering one. When that host cannot
    * be reached it is held for it (photos stay in the composer).
    */
-  async function sendElsewhere(text: string, images: ImageInput[], nonce: string) {
+  async function sendElsewhere(text: string, images: ImageInput[], nonce: string, documents: DocumentInput[] = []) {
     if (!chatClient || !chatId) return;
     const sentPhotos = photos;
     setDraft("");
     photos = [];
     try {
-      const status = await chatClient.send(chatId, text, { project: sendProject, images, nonce });
+      const status = await chatClient.send(chatId, text, { project: sendProject, images, documents, nonce });
       lastTry = null;
       note(status === "queued" ? `Sent to ${chatRole === "away" ? "Away" : "the Mac"} — it goes when its turn ends` : `Sent to ${chatRole === "away" ? "Away" : "the Mac"}`);
-      events = [...events, { event: "user_message", text, at: new Date().toISOString(), ...(images.length > 0 ? { images } : {}) }];
+      events = [
+        ...events,
+        {
+          event: "user_message",
+          text,
+          at: new Date().toISOString(),
+          ...(images.length > 0 ? { images } : {}),
+          ...(documents.length > 0 ? { documents } : {}),
+        },
+      ];
       scrollToEnd();
     } catch (e) {
       photos = [...sentPhotos, ...photos];
-      if (e instanceof Unreachable && images.length === 0) hold(text, nonce);
+      if (e instanceof Unreachable && images.length + documents.length === 0) hold(text, nonce);
       else {
         if (!(e instanceof Unreachable)) fail(e);
         else note(`${chatRole === "away" ? "Away" : "The Mac"} is unreachable — your message and photos stay here`);
@@ -1817,9 +1848,44 @@
     });
   }
 
+  /** A file that is not a photo (item 277): a PDF as it is, an office
+   *  file as it is (the server reads its text — no converter there), a
+   *  text file as text. Anything else is not something the phone can
+   *  send; the Mac's composer can, on the Claude Code engine. */
+  async function addFile(f: File): Promise<boolean> {
+    const route = routeOf(f.name, f.type);
+    const bytes = new Uint8Array(await f.arrayBuffer());
+    // The send body's limit is 32 MB, and base64 is 4/3 of the file.
+    if (bytes.length > 20 * 1024 * 1024) {
+      note(`${f.name} is too big to send from the phone (20 MB)`);
+      return true;
+    }
+    let bin = "";
+    const b64 = (b: Uint8Array) => {
+      bin = "";
+      for (let i = 0; i < b.length; i += 0x8000) bin += String.fromCharCode(...b.subarray(i, i + 0x8000));
+      return btoa(bin);
+    };
+    let doc: DocumentInput | null = null;
+    if (route === "pdf") doc = { media_type: "application/pdf", name: f.name, data: b64(bytes) };
+    else if (route === "office") doc = { media_type: f.type || "application/octet-stream", name: f.name, data: b64(bytes) };
+    else if (route === "text" || route === "maybe-text") {
+      if (!looksLikeText(bytes) || bytes.length > MAX_TEXT_BYTES) {
+        note(`${f.name}: the phone sends photos, PDFs, office files and text — this one needs the Mac`);
+        return true;
+      }
+      const text = extOf(f.name) === "ipynb" ? notebookText(new TextDecoder().decode(bytes)) : null;
+      doc = { media_type: "text/plain", name: f.name, data: b64(text === null ? bytes : new TextEncoder().encode(text)) };
+    } else return false;
+    photoSeq += 1;
+    photos = [...photos, { id: photoSeq, doc, url: "" }];
+    return true;
+  }
+
   async function addPhotos(files: FileList | null) {
     for (const f of Array.from(files ?? [])) {
       try {
+        if (canFile && routeOf(f.name, f.type) !== "image" && !f.type.startsWith("image/") && (await addFile(f))) continue;
         const image = await scalePhoto(f);
         photoSeq += 1;
         photos = [...photos, { id: photoSeq, image, url: `data:${image.media_type};base64,${image.data}` }];
@@ -2218,14 +2284,18 @@
           <div class="photos">
             {#each photos as p (p.id)}
               <div class="photo">
-                <img src={p.url} alt="" />
+                {#if p.doc}
+                  <span class="photo-file"><b>{badgeOf({ kind: "document", ...p.doc })}</b>{p.doc.name}</span>
+                {:else}
+                  <img src={p.url} alt="" />
+                {/if}
                 <button class="photo-x" onclick={() => (photos = photos.filter((q) => q.id !== p.id))} aria-label="Remove the photo">{@render icon("x")}</button>
               </div>
             {/each}
           </div>
         {/if}
         <div class="composer">
-          <input bind:this={picker} class="picker" type="file" accept="image/*" multiple onchange={(e) => void addPhotos(e.currentTarget.files)} />
+          <input bind:this={picker} class="picker" type="file" accept={canFile ? "*/*" : "image/*"} multiple onchange={(e) => void addPhotos(e.currentTarget.files)} />
           {#if canPhoto}
             <button class="attach" onclick={() => picker?.click()} aria-label="Attach a photo">{@render icon("plus")}</button>
           {/if}
@@ -3948,6 +4018,26 @@
     border-radius: 12px;
     display: block;
     border: 1px solid var(--line);
+  }
+  /* A file in the composer (item 277): its badge over its name. */
+  .photo-file {
+    width: 64px;
+    height: 64px;
+    box-sizing: border-box;
+    padding: 6px;
+    border-radius: 12px;
+    border: 1px solid var(--line);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 10px;
+    overflow: hidden;
+    word-break: break-all;
+  }
+  .photo-file b {
+    font-size: 9px;
+    letter-spacing: 0.05em;
+    opacity: 0.7;
   }
   .photo-x {
     all: unset;

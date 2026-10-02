@@ -172,7 +172,7 @@ function isAttachment(v: unknown): v is Attachment {
   const a = v as Record<string, unknown>;
   return (
     typeof a.id === "number" &&
-    (a.kind === "image" || a.kind === "document") &&
+    (a.kind === "image" || a.kind === "document" || a.kind === "file") &&
     typeof a.media_type === "string" &&
     typeof a.name === "string" &&
     typeof a.data === "string"
@@ -222,9 +222,19 @@ export function serializeDrafts(map: Record<string, Draft>): string {
   const keep = (list: Attachment[]): Attachment[] => {
     const kept: Attachment[] = [];
     for (const a of list) {
+      // A chip still converting has no bytes to keep (item 277); his file
+      // is still where he dropped it from.
+      if (a.pending) continue;
       if (a.data.length > PERSIST_ATTACHMENT_MAX || a.data.length > budget) continue;
       budget -= a.data.length;
-      kept.push({ id: a.id, kind: a.kind, media_type: a.media_type, name: a.name, data: a.data });
+      kept.push({
+        id: a.id,
+        kind: a.kind,
+        media_type: a.media_type,
+        name: a.name,
+        data: a.data,
+        ...(a.label ? { label: a.label } : {}),
+      });
     }
     return kept;
   };
@@ -349,6 +359,16 @@ export function setDraftText(key: string, text: string): void {
 export function addAttachment(key: string, a: Attachment): void {
   draftFor(key).attachments.push(a);
   schedule();
+}
+
+/** Change a chip in place — a conversion finishing (item 277). A chip
+ *  removed meanwhile stays removed; `false` says so. */
+export function updateAttachment(key: string, id: number, patch: Partial<Attachment>): boolean {
+  const a = drafts[key]?.attachments.find((x) => x.id === id);
+  if (!a) return false;
+  Object.assign(a, patch);
+  schedule();
+  return true;
 }
 
 export function removeAttachment(key: string, id: number): void {

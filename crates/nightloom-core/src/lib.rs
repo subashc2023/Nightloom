@@ -18,7 +18,8 @@ pub use context::{
     estimate_tokens,
 };
 pub use message::{
-    ContentBlock, DocumentInput, ImageInput, Message, Role, SUBAGENT_OPEN, undeliverable_document,
+    ContentBlock, DocumentInput, ImageInput, Message, Role, SUBAGENT_OPEN, text_attachment,
+    undeliverable_document,
 };
 pub use prompt::{Segment, SegmentKind, SystemPrompt};
 pub use provider::{

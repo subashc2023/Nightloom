@@ -339,6 +339,10 @@ describe("wave 1: the message menu over the log", () => {
       images: [{ media_type: "image/jpeg", data: "AA" }],
     });
     expect(sendBody("hi", { project: null, images: [] })).toEqual({ text: "hi" });
+    // Item 277: a file rides as a document; none, no key.
+    const deck = { media_type: "application/vnd.ms-powerpoint", name: "l.pptx", data: "UEs=" };
+    expect(sendBody("hi", { documents: [deck] })).toEqual({ text: "hi", documents: [deck] });
+    expect(sendBody("hi", { documents: [] })).toEqual({ text: "hi" });
   });
 
   it("reads features, absent on a pass-1 listener", () => {

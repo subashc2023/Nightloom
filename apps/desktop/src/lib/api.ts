@@ -17,6 +17,7 @@ import type {
   ProviderCredit,
   ConnectResult,
   DocumentInput,
+  FileInput,
   DreamReport,
   FolderGrant,
   ImageInput,
@@ -194,11 +195,34 @@ export function sendAgent(
   council?: CouncilRequest,
   stopKey?: string,
   spoken?: boolean,
+  files?: FileInput[],
 ): Promise<AgentTurnResult> {
   // `stopKey` (backlog 159, A3): the window's name for this turn, which a
   // Stop can use before the turn's first event names its chat. `spoken`
   // (item 246 wave 3): said aloud on the phone — answered for the ear.
-  return invoke("send_agent", { text, images, documents, council, stopKey, spoken });
+  // `files` (item 277): saved in the chat's folder, named in the message.
+  return invoke("send_agent", { text, images, documents, council, stopKey, spoken, files });
+}
+
+/** What an office file became (item 277): a PDF, or its text. */
+export interface PreparedOffice {
+  media_type: string;
+  name: string;
+  data: string;
+  via: "pdf" | "text";
+  count: number | null;
+  note: string | null;
+}
+
+/** An office file as a PDF (LibreOffice) or its text; `textOnly` skips the
+ *  converter — for a PDF that came out over the engine's cap. */
+export function prepareOfficeAttachment(name: string, data: string, textOnly = false): Promise<PreparedOffice> {
+  return invoke("prepare_office_attachment", { name, data, textOnly });
+}
+
+/** Whether LibreOffice is installed: an office file becomes a PDF. */
+export function officeConverter(): Promise<boolean> {
+  return invoke("office_converter");
 }
 
 /**

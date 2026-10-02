@@ -587,6 +587,13 @@ pub(super) fn user_line(input: &crate::TurnInput) -> String {
         })
     }));
     content.extend(input.documents.iter().map(|doc| {
+        // A text attachment goes as text, as on every provider (item 277).
+        if doc.is_text() {
+            return serde_json::json!({
+                "type": "text",
+                "text": nightloom_core::text_attachment(&doc.name, &doc.decoded_text()),
+            });
+        }
         serde_json::json!({
             "type": "document",
             "source": { "type": "base64", "media_type": doc.media_type, "data": doc.data },

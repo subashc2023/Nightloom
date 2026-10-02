@@ -969,8 +969,22 @@ export interface DocumentInput {
  */
 export interface Attachment {
   id: number;
-  kind: "image" | "document";
+  /** `file` (nightshift item 277): neither an image, a PDF nor text — on
+   *  the Claude Code engine, saved in the chat's folder for the model to
+   *  open. A text file is a `document` with a `text/*` media type. */
+  kind: "image" | "document" | "file";
   media_type: string;
+  name: string;
+  data: string;
+  /** What will happen to it, on the chip: "slides → PDF · 12 pages",
+   *  "text", "file for Claude Code". Absent on an image or a plain PDF. */
+  label?: string;
+  /** An office file still converting: no `data` yet, and Send waits. */
+  pending?: boolean;
+}
+
+/** A file for the Claude Code engine (item 277), as `send_agent` takes it. */
+export interface FileInput {
   name: string;
   data: string;
 }

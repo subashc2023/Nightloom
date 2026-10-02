@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tip } from "./tip";
+  import { badgeOf } from "./attachKinds";
   import { rewoundRuns } from "./rewindDraft.svelte";
   // Every Copy button goes through the in-app clipboard ring (backlog 173).
   import { copyText } from "./clipRing.svelte";
@@ -1425,7 +1426,7 @@
                         );
                       }}
                     >
-                      <span class="user-file-ext">PDF</span>
+                      <span class="user-file-ext">{badgeOf({ kind: "document", ...doc })}</span>
                       {doc.name}
                     </button>
                   {/each}

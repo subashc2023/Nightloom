@@ -2549,6 +2549,7 @@ name = "nightloom-core"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "chrono",
  "futures",
  "serde",
@@ -2632,6 +2633,7 @@ dependencies = [
  "async-stream",
  "async-trait",
  "axum",
+ "base64 0.22.1",
  "chrono",
  "futures",
  "globset",

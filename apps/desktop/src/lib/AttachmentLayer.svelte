@@ -36,7 +36,7 @@
   const tab = $derived(app.tabs.floating ?? null);
   const content = $derived(tab?.content.kind === "attachment" ? tab.content : null);
   const bytes = $derived(content ? attachmentBytes(content) : null);
-  const src = $derived(bytes ? `data:${bytes.media_type};base64,${bytes.data}` : null);
+  const src = $derived(bytes ? `data:${bytes.media_type}${bytes.media_type.startsWith("text/") ? ";charset=utf-8" : ""};base64,${bytes.data}` : null);
 
   let card = $state<HTMLElement | null>(null);
   /** The image at its own size (a second click), scrolling in the card. */

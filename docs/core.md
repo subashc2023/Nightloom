@@ -549,9 +549,16 @@ dialects (OpenAI Responses' `input_file` and chat/completions' `file` part both
 require a `filename`) and earns its place regardless, being what the model and
 the user call the thing ("clause 4 of contract.pdf") when a turn carries three.
 
-PDF is the only type offered: the only one every vendor that takes documents
+~~PDF is the only type offered: the only one every vendor that takes documents
 agrees on, and the only one a user cannot simply paste — a `.md` or `.csv` is
-text, and `read_file` already exists.
+text, and `read_file` already exists.~~ (2026-10-01, nightshift item 277) PDF
+is still the only *binary* type. A **text attachment** is a `DocumentInput`
+with a `text/*` media type (a `.csv`, code, a notebook's cells, the text of a
+slide deck without a converter): stored the same way, and projected by
+`DocumentInput::to_block` to a text block `<attached-file name="…">…
+</attached-file>` rather than a document block — text is the one thing every
+dialect carries, so no adapter changes, and the agent engine's stdin line does
+the same (`protocol::user_line`).
 
 Wire forms: Anthropic a `document` block with the name as `title`; Gemini the
 same `inlineData` shape an image uses (a blob part has no field for a filename,

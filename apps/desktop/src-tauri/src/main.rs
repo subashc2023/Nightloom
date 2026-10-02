@@ -3050,6 +3050,44 @@ struct AgentTurn {
     folders: Option<Vec<FolderInfo>>,
 }
 
+/// An office file made sendable (nightshift item 277): a PDF through
+/// LibreOffice when it is installed, its text otherwise or when the
+/// conversion fails or passes `CONVERT_TIMEOUT` (the result's `note` says
+/// why). `data` is the file's base64; his file on disk is never touched —
+/// the bytes go into a temporary folder that is removed after.
+#[tauri::command]
+async fn prepare_office_attachment(
+    name: String,
+    data: String,
+    // The text whatever is installed: the PDF came out over the engine's
+    // cap, and the words are what can still go.
+    text_only: Option<bool>,
+) -> Result<nightloom_service::attach::Prepared, String> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data.trim())
+        .map_err(|e| format!("{name}: {e}"))?;
+    let soffice = if text_only == Some(true) {
+        None
+    } else {
+        nightloom_service::attach::find_soffice()
+    };
+    nightloom_service::attach::prepare_office(
+        &name,
+        &bytes,
+        soffice.as_deref(),
+        nightloom_service::attach::CONVERT_TIMEOUT,
+    )
+    .await
+}
+
+/// Whether an office file will become a PDF (LibreOffice is installed) or
+/// text — what the composer's chip says before the conversion starts.
+#[tauri::command]
+fn office_converter() -> bool {
+    nightloom_service::attach::find_soffice().is_some()
+}
+
 /// Run one user turn on the agent engine, streaming the same `turn-event`s
 /// the provider path does.
 ///
@@ -3080,6 +3118,10 @@ async fn send_agent(
     // Said aloud in the phone's voice mode (item 246 wave 3, 3C): the log
     // keeps his words marked `spoken`; the CLI gets them with the note.
     spoken: Option<bool>,
+    // Files neither an image, a PDF nor text (nightshift item 277, layer
+    // 3): copied into the chat's own folder under the workspace, and the
+    // message names where, for the model to open with its tools.
+    files: Option<Vec<nightloom_service::attach::FileInput>>,
 ) -> Result<AgentTurn, String> {
     // The message's timing line (nightshift item 256): begun here, before
     // any lock, under the window's name for the turn — its Send, call and
@@ -3150,6 +3192,21 @@ async fn send_agent(
     }
     // (Whether the log was sealed before the turn is sampled in
     // `run_agent_turn`, before its first append.)
+    // The files go where the CLI can read them (its working directory),
+    // under this chat's id, before the turn; the note is part of what he
+    // sent, so the log and the transcript say where they went too.
+    let mut text = text;
+    let files = files.unwrap_or_default();
+    if !files.is_empty() {
+        let paths =
+            nightloom_service::attach::save_chat_files(&agent.spec().workspace, &chat_id, &files)?;
+        let note = nightloom_service::attach::files_note(&paths);
+        text = if text.trim().is_empty() {
+            note
+        } else {
+            format!("{text}\n\n{note}")
+        };
+    }
     let input = TurnInput {
         text,
         images: images.unwrap_or_default(),
@@ -6996,6 +7053,8 @@ fn main() {
             turn_session,
             send,
             send_agent,
+            prepare_office_attachment,
+            office_converter,
             turn_timing_window,
             council_turns,
             provider_credits,

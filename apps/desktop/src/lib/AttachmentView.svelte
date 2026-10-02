@@ -17,7 +17,7 @@
   let { content }: { content: AttachmentContent } = $props();
 
   const bytes = $derived(attachmentBytes(content));
-  const src = $derived(bytes ? `data:${bytes.media_type};base64,${bytes.data}` : null);
+  const src = $derived(bytes ? `data:${bytes.media_type}${bytes.media_type.startsWith("text/") ? ";charset=utf-8" : ""};base64,${bytes.data}` : null);
   const open = $derived(content.session === app.activeSessionId);
   const chatName = $derived.by(() => {
     const s = app.sessions.find((x) => x.id === content.session);

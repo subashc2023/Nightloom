@@ -16,3 +16,6 @@ async-trait.workspace = true
 tokio-util.workspace = true
 chrono.workspace = true
 uuid.workspace = true
+# Decoding a text attachment (nightshift item 277) into the text block it
+# projects to.
+base64.workspace = true

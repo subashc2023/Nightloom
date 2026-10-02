@@ -2931,16 +2931,13 @@ impl Session {
                                 )
                             })
                             .collect();
-                        content.extend(documents.iter().map(|doc| {
-                            SourcedBlock::event(
-                                ContentBlock::Document {
-                                    media_type: doc.media_type.clone(),
-                                    name: doc.name.clone(),
-                                    data: doc.data.clone(),
-                                },
-                                i,
-                            )
-                        }));
+                        // A text attachment is a text block on the wire
+                        // (`DocumentInput::to_block`, item 277).
+                        content.extend(
+                            documents
+                                .iter()
+                                .map(|doc| SourcedBlock::event(doc.to_block(), i)),
+                        );
                         // Attachments lead, as both Anthropic and OpenAI
                         // advise, and an empty caption is omitted rather than
                         // sent: an empty text block is rejected on the wire,
@@ -3659,6 +3656,34 @@ mod tests {
             session.messages()[0].content.as_slice(),
             [ContentBlock::Document { .. }, ContentBlock::Text { .. }]
         ));
+    }
+
+    /// A text attachment (item 277) is a text block on the wire, the
+    /// file's name on its wrapper — every dialect carries text, and only
+    /// one takes a `document` of type text.
+    #[test]
+    fn a_text_attachment_projects_as_a_named_text_block() {
+        let mut session = Session::new();
+        let csv = DocumentInput {
+            media_type: "text/csv".into(),
+            name: "data.csv".into(),
+            // "city,pop\nIrvine,314621"
+            data: "Y2l0eSxwb3AKSXJ2aW5lLDMxNDYyMQ==".into(),
+        };
+        session.record_user_with_attachments("total?", Vec::new(), vec![csv]);
+        match session.messages()[0].content.as_slice() {
+            [
+                ContentBlock::Text { text: file },
+                ContentBlock::Text { text: caption },
+            ] => {
+                assert_eq!(
+                    file,
+                    "<attached-file name=\"data.csv\">\ncity,pop\nIrvine,314621\n</attached-file>"
+                );
+                assert_eq!(caption, "total?");
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     /// Attachments of both kinds lead, and the caption still trails them.

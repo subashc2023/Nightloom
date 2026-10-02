@@ -956,12 +956,15 @@ async fn send_impl(
     chat: Option<&str>,
     body: resent::WithNonce<SendRequest>,
 ) -> Response {
-    let resent::WithNonce { req, nonce } = body;
+    let resent::WithNonce { mut req, nonce } = body;
     // A photo or a document with no caption is a message (item 246); an
     // empty text alone is not.
     if req.text.trim().is_empty() && req.images.is_empty() && req.documents.is_empty() {
         return bad("nothing to send".into());
     }
+    // An office file from the phone goes in as its text (item 277): the
+    // server has no converter, on the Mac's host or the away one alike.
+    crate::attach::normalize_documents(&mut req.documents);
     if let Some(council) = &req.council
         && let Err(e) = council.validate()
     {

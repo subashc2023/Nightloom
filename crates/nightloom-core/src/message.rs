@@ -115,6 +115,54 @@ pub struct ImageInput {
     pub data: String,
 }
 
+impl DocumentInput {
+    /// A text attachment (nightshift item 277): a `text/*` media type whose
+    /// bytes are UTF-8 — a `.csv`, a `.py`, a notebook's cells, or the text
+    /// pulled out of a slide deck when no converter could render it. Stored
+    /// like a PDF (base64 in the log, a chip in the transcript) and sent as
+    /// a *text block*, because text is the one thing every dialect carries:
+    /// a `document` block of type text exists on Anthropic alone, and a
+    /// `text/csv` blob 400s on the hosts that take only PDFs.
+    pub fn is_text(&self) -> bool {
+        self.media_type.starts_with("text/")
+    }
+
+    /// The block this attachment projects to: a text block for a text
+    /// attachment ([`text_attachment`]), a [`ContentBlock::Document`] for
+    /// everything else.
+    pub fn to_block(&self) -> ContentBlock {
+        if self.is_text() {
+            return ContentBlock::Text {
+                text: text_attachment(&self.name, &self.decoded_text()),
+            };
+        }
+        ContentBlock::Document {
+            media_type: self.media_type.clone(),
+            name: self.name.clone(),
+            data: self.data.clone(),
+        }
+    }
+
+    /// The text of a text attachment. Bytes that are not valid base64 say
+    /// so rather than vanishing, for the reason `undeliverable_document`
+    /// gives; invalid UTF-8 is replaced, not refused.
+    pub fn decoded_text(&self) -> String {
+        use base64::Engine as _;
+        match base64::engine::general_purpose::STANDARD.decode(self.data.trim()) {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+            Err(_) => "[the attachment's bytes could not be decoded]".to_string(),
+        }
+    }
+}
+
+/// A text attachment as the model reads it: the file's name on a wrapper
+/// around its contents, so a turn carrying three files keeps them apart and
+/// the model can call each by name — the job `title` does on a PDF.
+pub fn text_attachment(name: &str, text: &str) -> String {
+    let name = name.replace('"', "'");
+    format!("<attached-file name=\"{name}\">\n{text}\n</attached-file>")
+}
+
 /// A document attached to a user turn, as the session log stores it.
 ///
 /// The [`ImageInput`] argument applies unchanged: the log records a user

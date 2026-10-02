@@ -10,6 +10,7 @@
 pub mod agent;
 pub mod agent_turn;
 pub mod approval;
+pub mod attach;
 pub mod capture;
 pub mod centre;
 pub mod chat_name;

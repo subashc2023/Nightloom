@@ -123,6 +123,7 @@ import type {
   ChatKind,
   ChatMode,
   DocumentInput,
+  FileInput,
   FolderGrant,
   FolderInfo,
   ImageInput,
@@ -6073,6 +6074,7 @@ export async function send(
   images: ImageInput[] = [],
   documents: DocumentInput[] = [],
   council: CouncilRequest | null = null,
+  files: FileInput[] = [],
 ): Promise<void> {
   if (!app.connection || app.busy) return;
   // Send pressed: the timing line's zero (item 256).
@@ -6085,7 +6087,13 @@ export async function send(
   history.clear(chatScope());
   app.undoTick++;
   if (app.connection.engine === "claude-code") {
-    return sendAgent(text, images, documents, council, spoken);
+    return sendAgent(text, images, documents, council, spoken, files);
+  }
+  // A file for Claude Code cannot go on this engine (item 277); the
+  // composer refuses before here, so this is a caller that did not ask.
+  if (files.length > 0) {
+    app.error = `${files.map((f) => f.name).join(", ")}: only the Claude Code engine can take a file it opens itself`;
+    return;
   }
   // One provider turn at a time (A4): a turn running off screen holds the
   // engine. The composer queues before it gets here; any other caller's
@@ -6187,6 +6195,7 @@ async function sendAgent(
   documents: DocumentInput[] = [],
   council: CouncilRequest | null = null,
   spoken = false,
+  files: FileInput[] = [],
 ): Promise<void> {
   // ~~The hand-off's wrap-up rides this message when the window has crossed
   // the chat's threshold (nightshift backlog 086); `withWrapUp` also moves
@@ -6250,6 +6259,7 @@ async function sendAgent(
       council ?? undefined,
       turn.key,
       spoken || undefined,
+      files.length > 0 ? files : undefined,
     );
     // Off screen at its end (A2): the chat on screen is another's, and
     // nothing below is about it.

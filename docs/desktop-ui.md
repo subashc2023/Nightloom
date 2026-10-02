@@ -1214,9 +1214,30 @@ a turn is running, on rewind's reasoning.
 
 `Composer.svelte` takes images and PDFs by paste and drop, reads them to base64
 (stripping the `data:` prefix — the backend stores raw base64 and each adapter
-builds its own wire form), and refuses anything outside png/jpeg/webp/gif/pdf or
-over its cap (~10 MB for an image, ~32 MB for a PDF, both Anthropic's) with a
-named toast rather than dropping it silently.
+builds its own wire form), and ~~refuses anything outside png/jpeg/webp/gif/pdf
+or~~ refuses anything over its cap (~10 MB for an image, ~32 MB for a PDF, both
+Anthropic's) with a named toast rather than dropping it silently.
+
+**Any file claude.ai takes (2026-10-01, nightshift item 277).** His class
+`.pptx` said "not supported" here and went straight into claude.ai. The routes
+are `attachKinds.ts` (pure, tested), by extension first and media type second
+(macOS often gives a drop an empty type):
+
+| file | becomes | chip says |
+|---|---|---|
+| png/jpeg/webp/gif, pdf | as before | — |
+| `.pptx .docx .xlsx` (+ `.odp/.odt/.ods`; `.ppt .doc .xls .key` with the converter only) | a PDF by LibreOffice when installed (`attach::prepare_office`, Tauri `prepare_office_attachment`, 60 s timeout, temp folder), else its text — slide text in order with slide numbers, speaker notes, tables, sheet cells | `slides → PDF…` while converting (Send waits, with a toast), then `slides → PDF · 12 pages` or `slides → text · 3 slides` |
+| text (known extension, `text/*`, or any bytes that are UTF-8 with no NUL; a notebook as its cells) | a `document` of `text/plain`, sent as a text block (core `DocumentInput::to_block`) | `text` |
+| anything else, Claude Code engine | saved in `<workspace>/.nightloom/attachments/<chat id>/` (`attach::save_chat_files`, never overwriting; `.gitignore` of `*`; a dot folder sync skips) and the message names the path | `file for Claude Code` |
+| anything else, API engine | refused with a toast naming the engine that can take it | — |
+
+A converted PDF over the engine's document cap goes again as its text, with a
+toast saying so; a conversion that fails or times out goes as text with its
+reason in a toast. Text over 600 KB is a file on the Claude Code engine and
+refused on the API engine. A chip still converting is not written to the
+drafts store. The phone takes PDFs, text and office files as documents and
+the server (`attach::normalize_documents`, in `send_impl`) puts an office
+file's text in its place — no converter on the Fly image.
 
 `Attachment.kind` is carried rather than sniffed from the media type: a document
 has no thumbnail, and a chip that guessed wrong would render a broken `<img>`. The
