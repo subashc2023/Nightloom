@@ -99,7 +99,15 @@ import { rewoundWrites, setAsideFiles } from "./rewoundFiles";
 import type { TabContent, Workspace } from "./tabs";
 import { UNFILED_TABS, loadSavedWorkspaces, rebuild, saveWorkspaceFor, snapshot } from "./tabsStore";
 import { turnClock } from "./turnTiming";
-import { handoffPassDue, nightlyReady, turnWroteHandoff } from "./autoPass";
+import {
+  DEFAULT_USAGE_LIMITS,
+  deferredRecheckAt,
+  handoffPassDue,
+  nightlyReady,
+  parseLimit,
+  turnWroteHandoff,
+  usageGate,
+} from "./autoPass";
 import {
   buildNotices,
   dailyDue,
@@ -223,6 +231,11 @@ export interface DreamPrefs {
   /** Model that dreams; "" means the provider's default. On `DREAM_ENGINE`
    *  a CLI alias (`haiku`, `sonnet`) and "" the CLI's default. */
   model: string;
+  /** Automatic passes wait while the plan's five-hour window is above
+   *  this percent (nightshift item 279; default 50). Run now ignores it. */
+  limitFiveHour: number;
+  /** … or the week above this percent (default 80). */
+  limitWeek: number;
 }
 
 /**
@@ -242,12 +255,22 @@ export function parseDreamPrefs(raw: string | null): DreamPrefs {
         auto: p.v === DREAM_PREFS_VERSION ? !!p.auto : true,
         provider: typeof p.provider === "string" ? p.provider : "",
         model: typeof p.model === "string" ? p.model : "",
+        // Item 279: a value stored before the limits existed reads them as
+        // the defaults; the version is not bumped, so his switch is kept.
+        limitFiveHour: parseLimit(p.limitFiveHour, DEFAULT_USAGE_LIMITS.fiveHour),
+        limitWeek: parseLimit(p.limitWeek, DEFAULT_USAGE_LIMITS.week),
       };
     }
   } catch {
     // A malformed preference costs the preference, not the feature.
   }
-  return { auto: true, provider: "", model: "" };
+  return {
+    auto: true,
+    provider: "",
+    model: "",
+    limitFiveHour: DEFAULT_USAGE_LIMITS.fiveHour,
+    limitWeek: DEFAULT_USAGE_LIMITS.week,
+  };
 }
 
 function loadDreamPrefs(): DreamPrefs {
@@ -941,6 +964,12 @@ export const app = $state({
   dreamActivity: "",
   /** Auto-dream and the dream model, Settings → Knowledge. */
   dreamPrefs: loadDreamPrefs(),
+  /**
+   * The usage gate's last word on an automatic pass (nightshift item 279),
+   * for Settings → Knowledge: "deferred 3:41 PM — usage 5h 63 % (limit
+   * 50 %)…", or that it ran without a check and why. "" until a gate ran.
+   */
+  autoPassNote: "",
   /**
    * The notification centre and the daily pass (nightshift backlog 069).
    * The notices are derived from their sources on every `refreshCentre`;
@@ -1911,16 +1940,94 @@ export async function runDream(): Promise<void> {
  * empty on this machine. The compacted chat is among the logs read — up to
  * its watermark, which is fine.
  */
-async function maybeAutoDream(): Promise<void> {
-  if (!app.dreamPrefs.auto || app.dreaming || app.capturing || app.centre.dailyRunning) return;
+async function maybeAutoDream(kind: AutoPassKind = "compaction"): Promise<boolean> {
+  if (!app.dreamPrefs.auto || app.dreaming || app.capturing || app.centre.dailyRunning) return false;
   await refreshCaptureStatus();
+  await refreshDreamStatus();
+  // Nothing to read and nothing to dream: no pass, so nothing to defer.
+  if (app.capturePending === 0 && app.dreamPending === 0) return false;
+  // Usage headroom (item 279): over a limit, the pass waits for the next
+  // trigger, or the reset of the window that holds it.
+  if (!(await autoPassMayRun(kind))) {
+    autoPassDeferred = true;
+    return true;
+  }
+  autoPassDeferred = false;
   // Quiet (item 278): a capture that reads nothing — the open chat has one
   // new turn, too little to be worth one — spends nothing and says nothing.
   if (app.capturePending > 0) await runCapture(true);
   await refreshDreamStatus();
-  if (app.dreamPending === 0) return;
+  if (app.dreamPending === 0) return false;
   addToast("auto-dream: consolidating the memory inbox");
   await runDream();
+  return false;
+}
+
+/*
+ * The usage gate's wiring (nightshift item 279); the rules are pure in
+ * `autoPass.ts` (`usageGate`, `deferredRecheckAt`).
+ */
+export type AutoPassKind = "hand-off" | "compaction" | "nightly" | "reset";
+
+/** A hand-off or compaction pass the gate held, still owed. */
+let autoPassDeferred = false;
+/** When the gate first held the pass now owed, for the Settings line. */
+let deferredSince: number | null = null;
+let recheckTimer: ReturnType<typeof setTimeout> | null = null;
+
+const clockTime = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+
+/**
+ * May an automatic pass start? Reads the plan's figure the way the top
+ * bar's chip does (`refreshPlanUsage`; a live `/usage` only when the held
+ * reading is older than the chip's own five-minute tick), then asks
+ * `usageGate`. Held: the Settings line says why, and a timer re-checks at
+ * the reset of the window that holds it. Let through without a check: the
+ * line and the console say why.
+ */
+async function autoPassMayRun(kind: AutoPassKind): Promise<boolean> {
+  const limits = { fiveHour: app.dreamPrefs.limitFiveHour, week: app.dreamPrefs.limitWeek };
+  const onPlan = passTarget().provider === DREAM_ENGINE;
+  if (onPlan) {
+    const u = app.planUsage;
+    if (!u || u.sampled_at_ms == null || Date.now() - u.sampled_at_ms > PLAN_USAGE_LIVE_EVERY_MS) {
+      await refreshPlanUsage(true);
+    }
+  }
+  const now = Date.now();
+  const v = usageGate(app.planUsage, limits, onPlan, now);
+  if (!v.run) {
+    deferredSince ??= now;
+    app.autoPassNote =
+      `automatic pass deferred ${clockTime(deferredSince)} — ${v.why}; ` +
+      "it runs at the next trigger under the limits";
+    scheduleRecheck(deferredRecheckAt(app.planUsage, limits));
+    return false;
+  }
+  if (v.why) {
+    console.info(`automatic ${kind} pass ran without a usage check: ${v.why}`);
+    app.autoPassNote = `${kind} pass ${clockTime(now)} ran without a usage check — ${v.why}`;
+  } else if (deferredSince !== null) {
+    app.autoPassNote = `${kind} pass ran ${clockTime(now)}, usage under the limits (deferred since ${clockTime(deferredSince)})`;
+  }
+  deferredSince = null;
+  if (recheckTimer) clearTimeout(recheckTimer);
+  recheckTimer = null;
+  return true;
+}
+
+/** Look again at `at` (a window's reset): the owed hand-off pass, and the
+ *  nightly one if its day has come. */
+function scheduleRecheck(at: number | null): void {
+  if (recheckTimer) clearTimeout(recheckTimer);
+  recheckTimer = null;
+  if (at === null) return;
+  const delay = Math.min(Math.max(60_000, at - Date.now()), 2 ** 31 - 1);
+  recheckTimer = setTimeout(() => {
+    recheckTimer = null;
+    if (autoPassDeferred) void maybeAutoDream("reset");
+    else void maybeDailyPass();
+  }, delay);
 }
 
 /**
@@ -1936,7 +2043,11 @@ export function maybeHandoffPass(): void {
   const now = Date.now();
   if (!handoffPassDue(lastHandoffPass, now)) return;
   lastHandoffPass = now;
-  void maybeAutoDream();
+  // A pass the usage gate held does not count against the spacing: the
+  // Continue that follows the wrap-up minutes later asks again (item 279).
+  void maybeAutoDream("hand-off").then((deferred) => {
+    if (deferred && lastHandoffPass === now) lastHandoffPass = null;
+  });
 }
 
 /** Interrupt the in-flight dream. Nothing is consumed; the batch returns. */
@@ -2148,6 +2259,10 @@ export async function maybeDailyPass(): Promise<void> {
   // stale. The minute clock asks again until it is.
   const idle = await api.macIdleMs().catch(() => null);
   if (!nightlyReady(idle, app.centre.lastDaily, Date.now())) return;
+  // Usage headroom (item 279): over a limit, the minute clock asks again;
+  // the day is not stamped, so the pass is owed until it runs.
+  if (app.centre.dailyRunning || app.dreaming || app.capturing) return;
+  if (!(await autoPassMayRun("nightly"))) return;
   await runDailyPass();
 }
 

@@ -38,6 +38,7 @@
     PALETTES,
   } from "./state.svelte";
   import * as api from "./api";
+  import { DEFAULT_USAGE_LIMITS, parseLimit } from "./autoPass";
   import {
     TRANSCRIPT_FONTS,
     TRANSCRIPT_SIZES,
@@ -2348,6 +2349,54 @@
           />
           <span>Capture and dream automatically at a hand-off</span>
         </label>
+        <!-- Usage headroom (nightshift item 279): an automatic pass — this
+             switch's, a compaction's, the daily one — waits while the plan
+             is above either limit, and runs at the next trigger under both
+             or when the window resets. The buttons and Run now ignore it. -->
+        <div class="usage-limits">
+          <span>Wait while the plan's usage is above</span>
+          <label>
+            <input
+              type="number"
+              min="1"
+              max="100"
+              step="1"
+              aria-label="Five-hour window limit, percent"
+              value={app.dreamPrefs.limitFiveHour}
+              onchange={(e) => {
+                app.dreamPrefs.limitFiveHour = parseLimit(e.currentTarget.valueAsNumber, DEFAULT_USAGE_LIMITS.fiveHour);
+                e.currentTarget.value = String(app.dreamPrefs.limitFiveHour);
+                saveDreamPrefs();
+              }}
+            />
+            % of the 5-hour window
+          </label>
+          <span>or</span>
+          <label>
+            <input
+              type="number"
+              min="1"
+              max="100"
+              step="1"
+              aria-label="Weekly limit, percent"
+              value={app.dreamPrefs.limitWeek}
+              onchange={(e) => {
+                app.dreamPrefs.limitWeek = parseLimit(e.currentTarget.valueAsNumber, DEFAULT_USAGE_LIMITS.week);
+                e.currentTarget.value = String(app.dreamPrefs.limitWeek);
+                saveDreamPrefs();
+              }}
+            />
+            % of the week
+          </label>
+        </div>
+        <p class="note small">
+          Applies to automatic passes on the Claude Code engine (the plan); a
+          pass on an API provider, or one whose usage cannot be read, runs.
+          Run now and the Dream button never wait.
+        </p>
+        {#if app.autoPassNote}
+          <p class="dim small auto-pass-note">{app.autoPassNote}</p>
+        {/if}
         <!-- The pass reads no chat context, so it does not need the chat's
              model — a cheap one does this job well, and an automatic pass is
              exactly where cost compounds. The Claude Code engine is a real
@@ -3311,6 +3360,33 @@
   }
   .cli-auto {
     margin-top: 8px;
+  }
+  .usage-limits {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px 8px;
+    margin-top: 8px;
+    font-size: 13px;
+    color: var(--ink);
+  }
+  .usage-limits label {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .usage-limits input {
+    width: 3.6em;
+    font: inherit;
+    font-size: 12.5px;
+    background: var(--well);
+    color: var(--ink);
+    border: 1px solid var(--line2);
+    border-radius: 6px;
+    padding: 2px 6px;
+  }
+  .auto-pass-note {
+    margin: 4px 0 0;
   }
   .cli-out summary {
     font-size: 12px;
