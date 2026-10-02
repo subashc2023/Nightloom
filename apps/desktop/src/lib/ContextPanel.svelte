@@ -5,6 +5,7 @@
   import * as api from "./api";
   import Icon from "./Icon.svelte";
   import LayerVersionMark from "./LayerVersionMark.svelte";
+  import ThreadPicker from "./ThreadPicker.svelte";
   import { pendingFor } from "./promptVersions";
   import { fmtTokens } from "./tokens";
   import {
@@ -242,6 +243,12 @@
       kind: "project_notes",
       label: "Notes index",
       gloss: "The project's shared notes, by name. The contents are read on demand.",
+      engines: "both",
+    },
+    {
+      kind: "thread",
+      label: "Thread",
+      gloss: "The research thread this chat works from — the \"## Start here\" of .agents/threads/<name>/thread.md; the rest of the thread is read on demand. Pick one below; none sends nothing.",
       engines: "both",
     },
     {
@@ -1182,6 +1189,8 @@
                 </button>
               {/if}
             </div>
+            <!-- Backlog 271: which thread the layer loads, chosen here. -->
+            {#if layer.kind === "thread"}<div class="thread-pick"><ThreadPicker /></div>{/if}
             <!-- Backlog 174: the file changed while this chat ran on the old text. -->
             {#if mark}<LayerVersionMark pending={mark} />{/if}
             {#if isEdited && !isOff && !isEditing}
@@ -2230,5 +2239,9 @@
   }
   .row.elided .sizebar {
     opacity: 0.15;
+  }
+  /* The thread picker inside the Thread card (backlog 271). */
+  .thread-pick {
+    padding: 2px 0 6px 30px;
   }
 </style>

@@ -120,6 +120,11 @@ pub struct PromptConfig {
     /// the vault is not the project's: it is the same vault in every project
     /// and in a chat with no project at all, which is the case it exists for.
     pub knowledge: Option<KnowledgeContext>,
+    /// The research thread the chat is bound to (nightshift backlog 271,
+    /// step 1): its `## Start here` becomes the thread layer, after the
+    /// notes index. `None` for a chat with no thread — every caller but a
+    /// shell that reads a chat's log.
+    pub thread: Option<crate::thread::ThreadContext>,
     /// Directory the assembly is relative to.
     pub cwd: PathBuf,
     /// Shell-supplied text, appended last (CLI --system, desktop textarea).
@@ -151,6 +156,7 @@ impl Default for PromptConfig {
             chat_instructions: false,
             project: None,
             knowledge: None,
+            thread: None,
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             custom: None,
             edits: BTreeMap::new(),
@@ -181,6 +187,7 @@ impl PromptConfig {
                 SegmentKind::ProjectInstructions => self.project_instructions = false,
                 SegmentKind::ProjectNotes => self.project = None,
                 SegmentKind::Knowledge => self.knowledge = None,
+                SegmentKind::Thread => self.thread = None,
                 _ => {}
             }
         }
@@ -268,6 +275,14 @@ pub fn assemble(config: &PromptConfig) -> SystemPrompt {
     }
     if let Some(project) = &config.project {
         prompt.push(project_notes_segment(project));
+    }
+    // The thread's Start here (backlog 271), after the notes index it sits
+    // inside: the chat's own text where it has one, else the file's.
+    if let Some(thread) = &config.thread {
+        prompt.push(match config.edits.get(&SegmentKind::Thread) {
+            Some(body) => crate::thread::thread_segment_from(thread, body),
+            None => crate::thread::thread_segment(thread),
+        });
     }
     // After the docspace, so that the sentence telling the two apart arrives
     // with both indexes already read.
@@ -1375,6 +1390,7 @@ mod tests {
             chat_instructions: false,
             project: None,
             knowledge: None,
+            thread: None,
             cwd,
             custom: None,
             edits: BTreeMap::new(),
@@ -2057,6 +2073,79 @@ the body text",
         );
         assert_eq!(agent_preamble(&bare(dir.clone()), Some("   ")), None);
         assert_eq!(agent_preamble(&bare(dir.clone()), None), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The thread layer (nightshift backlog 271, step 1): after the notes
+    /// index, carrying the thread's Start here and not the rest of the
+    /// file; dropped by its switch without touching the notes index; the
+    /// chat's own text stands in for the file's; and it rides the Claude
+    /// Code bridge like the other layers.
+    #[test]
+    fn the_thread_layer_loads_start_here_only_and_switches_like_a_layer() {
+        let dir = temp_dir("thread-layer");
+        let notes = dir.join(".agents");
+        let tdir = notes.join("threads").join("stuart");
+        std::fs::create_dir_all(&tdir).unwrap();
+        std::fs::write(
+            tdir.join("thread.md"),
+            "# Thread: S
+
+## Start here
+As of now — the front.
+
+## Queue
+| T-01 | deep queue item | live | ev 1 |
+",
+        )
+        .unwrap();
+        let config = PromptConfig {
+            project: Some(ProjectContext {
+                name: "p".into(),
+                notes_dir: notes.clone(),
+            }),
+            thread: crate::thread::ThreadContext::new(&notes, "stuart"),
+            ..bare(dir.clone())
+        };
+        let kinds = |p: &SystemPrompt| p.segments().iter().map(|s| s.kind).collect::<Vec<_>>();
+        let all = assemble(&config);
+        assert_eq!(
+            kinds(&all),
+            vec![SegmentKind::ProjectNotes, SegmentKind::Thread]
+        );
+        let text = all.render_flat().unwrap();
+        assert!(text.contains("As of now — the front."), "{text}");
+        assert!(text.contains(".agents/threads/stuart/thread.md"), "{text}");
+        assert!(
+            !text.contains("deep queue item"),
+            "only Start here is loaded"
+        );
+
+        let off = assemble(&config.clone().without(&[SegmentKind::Thread]));
+        assert_eq!(kinds(&off), vec![SegmentKind::ProjectNotes]);
+        // The notes index off leaves the thread on: two switches.
+        let notes_off = assemble(&config.clone().without(&[SegmentKind::ProjectNotes]));
+        assert_eq!(kinds(&notes_off), vec![SegmentKind::Thread]);
+
+        let mut edited = config.clone();
+        edited
+            .edits
+            .insert(SegmentKind::Thread, "this chat's own front".into());
+        let text = assemble(&edited).render_flat().unwrap();
+        assert!(
+            text.contains("this chat's own front") && !text.contains("As of now"),
+            "{text}"
+        );
+
+        let bridged = agent_prompt(&config, None, true);
+        assert!(
+            bridged
+                .segments()
+                .iter()
+                .any(|s| s.kind == SegmentKind::Thread)
+        );
+        assert!(SegmentKind::LAYERS.contains(&SegmentKind::Thread));
+        assert!(SegmentKind::EDITABLE.contains(&SegmentKind::Thread));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

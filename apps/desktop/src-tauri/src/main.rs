@@ -31,6 +31,7 @@ use nightloom_service::credentials::{self, KeySource};
 use nightloom_service::import;
 use nightloom_service::project::{self, Note, Project, Registry};
 use nightloom_service::store::{self, SessionMatch, SessionSummary};
+use nightloom_service::thread::ThreadContext;
 use nightloom_service::tools::{ChatDir, ChatDirs, Reviewer, Root, SearchBackend};
 use nightloom_service::{
     AgentSpec, Chat, ClaudeCodeAgent, CompactOutcome, KnowledgeContext, PassSpec, Price,
@@ -246,6 +247,10 @@ struct PromptBuilt {
     /// Chat instructions; the Build chat opened after it needs its folder
     /// and tools back — the same reconnect comparison as `mode`.
     kind: ChatKind,
+    /// The research thread the prompt was built with (nightshift backlog
+    /// 271): compared with the open chat's like `off`, and read by
+    /// `prompt_layer_file` to seed the thread layer's edit.
+    thread: Option<ThreadContext>,
 }
 
 /// The registry, plus the project currently open.
@@ -969,6 +974,10 @@ struct ChatSpec {
     /// as `layers_off`: what this chat says instead of the file, whatever
     /// the file says.
     layer_edits: BTreeMap<SegmentKind, String>,
+    /// The chat's research thread (`Session::thread`, nightshift backlog
+    /// 271), in the open project's docspace; read at connect time like
+    /// `layers_off`.
+    thread: Option<ThreadContext>,
     /// What the open chat was started as (`Session::mode`), read at connect
     /// time like the two above. A chat that writes nothing gets no writer
     /// in `build_chat`, and subagents and reviewers inherit it with the
@@ -1071,6 +1080,9 @@ fn build_chat(
             .preamble
             .then(|| spec.knowledge.clone().map(|dir| KnowledgeContext { dir }))
             .flatten(),
+        // The thread layer (backlog 271) rides the preamble like the notes
+        // index it sits beside.
+        thread: spec.preamble.then(|| spec.thread.clone()).flatten(),
         cwd: spec.workspace.clone(),
         custom: spec.system.clone(),
         // The chat's own text per layer, in place of the file's for the
@@ -1426,6 +1438,7 @@ async fn connect(
         chats: Some(chats),
         layers_off: layers_off(&state).await,
         layer_edits: layer_edits(&state).await,
+        thread: thread_context(active.as_ref(), chat_thread(&state).await.as_deref()),
         mode: session_mode(&state).await,
         chat_kind,
         declared_kind,
@@ -1515,6 +1528,7 @@ async fn connect(
     *state.prompt.lock().await = PromptBuilt {
         off: spec.layers_off,
         edits: spec.layer_edits,
+        thread: spec.thread,
         // The id the prompt looked its file up by — the chat's, which
         // `build_chat` filled in from the provider's default when the rail
         // sent none.
@@ -1550,6 +1564,36 @@ async fn layer_edits(state: &AppState) -> BTreeMap<SegmentKind, String> {
         .as_ref()
         .map(|s| s.prompt_layer_edits().clone())
         .unwrap_or_default()
+}
+
+/// The open chat's research thread (nightshift backlog 271), or none —
+/// the same terms as [`layers_off`].
+async fn chat_thread(state: &AppState) -> Option<String> {
+    state
+        .chats
+        .lock_focused()
+        .await
+        .as_ref()
+        .and_then(|s| s.thread().map(str::to_string))
+}
+
+/// A thread slug as the prompt's context, in the open project's docspace;
+/// `None` without a project or for a slug that is not one.
+fn thread_context(active: Option<&Project>, slug: Option<&str>) -> Option<ThreadContext> {
+    ThreadContext::new(&active?.notes_dir(), slug?)
+}
+
+/// Whether the thread layer names a different thread (or none) from the
+/// one the chat's CLI conversation holds — a binding he changed, taken at
+/// once rather than held for the cold moment (backlog 271). The segment's
+/// name carries the slug (`thread/<slug>`).
+fn thread_rebound(held: Option<&prompt_hold::Hold>, fresh: &SystemPrompt) -> bool {
+    let name = |segs: &[nightloom_core::Segment]| {
+        segs.iter()
+            .find(|s| s.kind == SegmentKind::Thread)
+            .map(|s| s.name.clone())
+    };
+    held.is_some_and(|h| name(&h.segments) != name(fresh.segments()))
 }
 
 /// What the open chat was started as, or — when no chat is open yet — the
@@ -1951,6 +1995,10 @@ async fn connect_agent_body(
                 })
                 .flatten(),
             knowledge: knowledge.map(|dir| KnowledgeContext { dir }),
+            // The thread layer (backlog 271), on the preamble switch.
+            thread: preamble
+                .then(|| thread_context(active.as_ref(), open.thread.as_deref()))
+                .flatten(),
             cwd: workspace.clone(),
             custom: None,
             edits: edits.clone(),
@@ -1996,6 +2044,11 @@ async fn connect_agent_body(
                     .chain(edits.keys().copied())
                     // The Preamble switch off is every layer at once.
                     .chain(SegmentKind::LAYERS.iter().copied().filter(|_| !preamble))
+                    // A thread bound, unbound or switched (backlog 271) is
+                    // his click too; a Start here the model rewrote under
+                    // the same thread waits for the cold moment like any
+                    // changed file.
+                    .chain(thread_rebound(held.as_ref(), &prompt).then_some(SegmentKind::Thread))
                     .collect(),
             },
         );
@@ -2306,6 +2359,7 @@ async fn connect_agent_body(
     *state.prompt.lock().await = PromptBuilt {
         off,
         edits,
+        thread: thread_context(active.as_ref(), open.thread.as_deref()),
         // By the alias, as the prompt above looked it up.
         model: spec_model,
         cwd: Some(workspace),
@@ -2334,6 +2388,8 @@ struct OpenChat {
     candidates: FolderCandidates,
     off: Vec<SegmentKind>,
     edits: BTreeMap<SegmentKind, String>,
+    /// The chat's research thread (backlog 271).
+    thread: Option<String>,
     mode: ChatMode,
     /// The chat the connection is built for, whatever its mode.
     chat: Option<String>,
@@ -2374,6 +2430,7 @@ fn open_chat_of(
         edits: session
             .map(|s| s.prompt_layer_edits().clone())
             .unwrap_or_default(),
+        thread: session.and_then(|s| s.thread().map(str::to_string)),
         mode: mode_of(session, pending_mode),
         chat,
         hold_id,
@@ -3960,8 +4017,11 @@ async fn prompt_layers(state: State<'_, AppState>) -> Result<PromptLayersInfo, S
     let edits = layer_edits(&state).await;
     let mode = session_mode(&state).await;
     let kind = session_kind(&state).await;
+    let thread = chat_thread(&state).await;
     let built = state.prompt.lock().await;
     Ok(PromptLayersInfo {
+        thread,
+        built_thread: built.thread.as_ref().map(|t| t.slug.clone()),
         off,
         built: built.off.clone(),
         edits,
@@ -4108,6 +4168,119 @@ async fn set_chat_folders(
     Ok(session.events().to_vec())
 }
 
+/// Bind the open chat to a research thread, or unbind it with `None`
+/// (nightshift backlog 271, step 1), returning the transcript. The same
+/// shape and rules as [`set_chat_folders`]: only the log is written — a
+/// `thread` event, the latest live one winning — the caller reconnects and
+/// both connects read the binding back for the thread layer; a session is
+/// created if the chat has none. Refused for a slug that is not a thread
+/// in the open project, so a binding always names a folder that exists.
+#[tauri::command]
+async fn set_chat_thread(
+    state: State<'_, AppState>,
+    thread: Option<String>,
+) -> Result<Vec<SessionEvent>, String> {
+    let thread = thread
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty());
+    if let Some(slug) = &thread {
+        let project = state
+            .active()
+            .await
+            .ok_or_else(|| "open a project first — threads live in a project".to_string())?;
+        let dir = nightloom_service::thread::thread_dir(&project.notes_dir(), slug)
+            .ok_or_else(|| format!("{slug:?} is not a thread name"))?;
+        if !dir.join(nightloom_service::thread::THREAD_FILE).is_file() {
+            return Err(format!("no thread {slug} in {}", project.name));
+        }
+    }
+    let log_dir = state.log_dir().await;
+    let pending = *state.pending_mode.lock().await;
+    let pending_kind = *state.pending_kind.lock().await;
+    let (mut held, _) = state
+        .chats
+        .lock_or_start(pending, pending_kind, &log_dir)
+        .await?;
+    let session: &mut Session = &mut held;
+    session.record_thread(thread);
+    Ok(session.events().to_vec())
+}
+
+/// The open project's threads (backlog 271) for the picker, most recently
+/// touched first; empty without a project.
+#[tauri::command]
+async fn list_threads(
+    state: State<'_, AppState>,
+) -> Result<Vec<nightloom_service::thread::ThreadInfo>, String> {
+    let Some(project) = state.active().await else {
+        return Ok(Vec::new());
+    };
+    let notes = project.notes_dir();
+    blocking(move || Ok::<_, String>(nightloom_service::thread::list_threads(&notes))).await
+}
+
+/// Start a thread from the template in the open project (backlog 271):
+/// `threads/<slug>/thread.md` and `log.md`, the index rewritten. Refused
+/// for a slug that exists — nothing is overwritten.
+#[tauri::command]
+async fn new_thread(
+    state: State<'_, AppState>,
+    slug: String,
+    name: String,
+) -> Result<nightloom_service::thread::ThreadInfo, String> {
+    let project = state
+        .active()
+        .await
+        .ok_or_else(|| "open a project first — threads live in a project".to_string())?;
+    let notes = project.notes_dir();
+    blocking(move || nightloom_service::thread::create_thread(&notes, slug.trim(), &name)).await
+}
+
+/// One thread's upkeep in the open project (backlog 271): a dry run for
+/// the wrap-up's flags (`apply` false), or the mechanical moves — struck
+/// lines from earlier rounds to `archive.md`, duplicate queue rows merged —
+/// and the index rewritten (`apply` true), which the shell runs at
+/// *Continue*, when no chat is writing the thread.
+#[tauri::command]
+async fn thread_upkeep(
+    state: State<'_, AppState>,
+    slug: String,
+    apply: bool,
+) -> Result<nightloom_service::thread::Upkeep, String> {
+    let project = state
+        .active()
+        .await
+        .ok_or_else(|| "open a project first — threads live in a project".to_string())?;
+    let notes = project.notes_dir();
+    blocking(move || -> Result<_, String> {
+        let dir = nightloom_service::thread::thread_dir(&notes, &slug)
+            .ok_or_else(|| format!("{slug:?} is not a thread name"))?;
+        let today = chrono::Local::now().date_naive();
+        let up = nightloom_service::thread::upkeep(&dir, today, apply)?;
+        if apply {
+            nightloom_service::thread::write_index(&notes)?;
+        }
+        Ok(up)
+    })
+    .await
+}
+
+/// The daily pass's thread step (backlog 271): every registered project's
+/// threads, upkeep then index. Shares the dream's lock like `tidy_memory`.
+#[tauri::command]
+async fn tidy_threads(
+    state: State<'_, AppState>,
+    apply: bool,
+) -> Result<Vec<nightloom_service::dream::ThreadTidy>, String> {
+    let Some(config) = project::config_dir() else {
+        return Ok(Vec::new());
+    };
+    let Ok(_running) = state.dreaming.try_lock() else {
+        return Err("a dream or a capture is already running".into());
+    };
+    blocking(move || nightloom_service::dream::tidy_threads(&config, None, apply)).await
+}
+
 /// Set a project's extra folders (nightshift backlog 143) — the whole
 /// list, replacing the registry's; applies to the project's chats at their
 /// next connect, which the caller fires for the open one. Returns the
@@ -4172,6 +4345,14 @@ async fn prompt_layer_file(
     kind: SegmentKind,
 ) -> Result<Option<String>, String> {
     let built = state.prompt.lock().await;
+    // The thread's Start here (backlog 271), from the thread the prompt
+    // was built with.
+    if kind == SegmentKind::Thread {
+        return Ok(built
+            .thread
+            .as_ref()
+            .and_then(nightloom_service::thread::layer_source));
+    }
     let cwd = built
         .cwd
         .clone()
@@ -7079,6 +7260,11 @@ fn main() {
             set_prompt_layers,
             set_chat_kind,
             set_chat_folders,
+            set_chat_thread,
+            list_threads,
+            new_thread,
+            thread_upkeep,
+            tidy_threads,
             set_project_folders,
             set_prompt_layer_text,
             prompt_layer_file,
@@ -7237,6 +7423,41 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A thread bound, unbound or switched is taken at once on the Claude
+    /// Code engine (backlog 271); the same thread with a rewritten Start
+    /// here is not — it waits for the cold moment like a changed file.
+    #[test]
+    fn a_thread_rebinding_is_taken_now_and_a_rewritten_start_here_is_not() {
+        let seg =
+            |name: &str, text: &str| nightloom_core::Segment::new(SegmentKind::Thread, name, text);
+        let held = |segs: Vec<nightloom_core::Segment>| prompt_hold::Hold {
+            segments: segs,
+            ..prompt_hold::Hold::default()
+        };
+        let fresh = |segs: Vec<nightloom_core::Segment>| {
+            let mut p = SystemPrompt::new();
+            for s in segs {
+                p.push(s);
+            }
+            p
+        };
+        let a = held(vec![seg("thread/a", "old front")]);
+        assert!(!thread_rebound(
+            Some(&a),
+            &fresh(vec![seg("thread/a", "new front")])
+        ));
+        assert!(thread_rebound(Some(&a), &fresh(vec![seg("thread/b", "b")])));
+        assert!(thread_rebound(Some(&a), &fresh(vec![])));
+        assert!(thread_rebound(
+            Some(&held(vec![])),
+            &fresh(vec![seg("thread/a", "x")])
+        ));
+        assert!(
+            !thread_rebound(None, &fresh(vec![seg("thread/a", "x")])),
+            "no hold: all taken anyway"
+        );
+    }
 
     /// A fresh, empty log directory per test, so "unchanged" means "still
     /// empty" and one test's log is never another's.

@@ -40,6 +40,7 @@ pub mod serve_reads;
 pub mod sidecar;
 pub mod store;
 pub mod sync;
+pub mod thread;
 pub mod tidy;
 pub mod tls;
 pub mod tools;

@@ -55,8 +55,12 @@
     setReadOrder,
     setThreshold,
     stayHere,
+    threadFor,
     threshold,
+    noteThread,
   } from "./handoff.svelte";
+  import ThreadPicker from "./ThreadPicker.svelte";
+  import { chatThread, refreshThreadFlags } from "./state.svelte";
   import { draftEstimate, draftEstimateTitle, draftExact, draftExactTitle, EXACT_TOKENS_FROM, fmtTokens } from "./tokens";
   import { exactCounter, type ExactResult } from "./draftCount";
   import { countDraftTokens, officeConverter, prepareOfficeAttachment } from "./api";
@@ -529,7 +533,23 @@
   const handoffThresholdPct = $derived(Math.round(threshold(app.activeSessionId) * 100));
   const handoffDefaultPct = $derived(Math.round(threshold(null) * 100));
   const reAskPct = Math.round(RE_ASK * 100);
-  /** The wrap-up this chat would send: its own edit, else the Settings default. */
+  /*
+   * The research thread (nightshift backlog 271): the open chat's binding,
+   * read from its log, is noted for the hand-off so the wrap-up and the
+   * read order follow it; when the notice comes up, a dry-run upkeep puts
+   * the thread's flags into the wrap-up.
+   */
+  const boundThread = $derived(chatThread(app.events));
+  $effect(() => {
+    const [chat, slug] = [app.activeSessionId, boundThread];
+    untrack(() => noteThread(chat, slug));
+  });
+  $effect(() => {
+    if (handoff.stage === "due" && boundThread) untrack(() => void refreshThreadFlags(boundThread));
+  });
+  /** Whether the hand-off writes the thread's files rather than HANDOFF.md. */
+  const threadHandoff = $derived(threadFor(app.activeSessionId) !== null);
+  /** The wrap-up this chat would send: its own edit, else its thread's, else the Settings default. */
   const wrapUpText = $derived(message(app.activeSessionId));
   /** The read order this chat's continuation opens with (backlog 193). */
   const readOrderText = $derived(readOrder(app.activeSessionId));
@@ -1711,10 +1731,12 @@
           its × takes it back.
         {:else}
           <strong>Wrap up now</strong> sends the message below as a turn of its own: the model finishes what is
-          half-done, writes <code>HANDOFF.md</code>, and ends with a start prompt for the new chat. Or raise this
-          chat's mark and keep going. Nothing is sent by itself while this notice is open.
+          half-done, {#if threadHandoff}updates the thread's files{:else}writes <code>HANDOFF.md</code>{/if}, and
+          ends with a start prompt for the new chat. Or raise this chat's mark and keep going. Nothing is sent by
+          itself while this notice is open.
         {/if}
       </p>
+      <ThreadPicker />
       <label class="handoff-row">
         <span>Hand off this chat at</span>
         <input
@@ -1755,13 +1777,13 @@
     </div>
   {:else if handoffHere && handoff.stage === "wrapping"}
     <div class="handoff" role="status">
-      <div class="handoff-head"><span>Wrapping up — the model is finishing what is half-done, writing <code>HANDOFF.md</code>, and ending with the start prompt for the new chat.</span></div>
+      <div class="handoff-head"><span>Wrapping up — the model is finishing what is half-done, {#if threadHandoff}updating the thread's files{:else}writing <code>HANDOFF.md</code>{/if}, and ending with the start prompt for the new chat.</span></div>
     </div>
   {:else if handoffHere && handoff.stage === "wrapped"}
     <div class="handoff" role="status" aria-label="Hand-off done">
       <div class="handoff-head">
         <span class="handoff-mark" aria-hidden="true"><Icon name="branch" size={15} /></span>
-        <strong>HANDOFF.md written</strong>
+        <strong>{threadHandoff ? "Thread updated" : "HANDOFF.md written"}</strong>
         <span class="spacer"></span>
         <span class="mono handoff-fill">{fmtTokens(handoff.used)} of {fmtTokens(handoff.limit)} · {handoffPct}%</span>
       </div>
@@ -1771,7 +1793,9 @@
           in the box, not sent{:else if readOrderText.trim()}the read order below in the box, not sent — the reply had no
           <code>start-prompt</code> block, so add what to do first{:else}an empty box — the reply had no
           <code>start-prompt</code> block, so say what to read first{/if}. This chat stays readable.
+        {#if threadHandoff}The new chat opens on the same thread.{/if}
       </p>
+      <ThreadPicker compact />
       <!-- The read order (backlog 193): the fixed text above the model's
            start prompt in the new chat's box; this chat's own copy, the
            default in Settings → Subscription. -->

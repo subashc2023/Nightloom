@@ -480,6 +480,21 @@ pub enum SessionEvent {
         folders: Vec<PathBuf>,
         at: DateTime<Utc>,
     },
+    /// The research thread this chat works from (nightshift backlog 271,
+    /// step 1, 2026-10-02): a slug naming `<project>/.agents/threads/<slug>/`,
+    /// or `None` for "no thread" — the latest live one wins, like
+    /// [`Folders`], so unbinding is recording `None` and a rewind past a
+    /// binding takes it back. A fact about the chat, read at connect time
+    /// for the thread prompt layer and by the shell for the thread-aware
+    /// wrap-up and read order. Carried to the chat that continues this one
+    /// after a hand-off ([`Session::continued_from`]).
+    ///
+    /// [`Folders`]: SessionEvent::Folders
+    Thread {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        thread: Option<String>,
+        at: DateTime<Utc>,
+    },
     /// The listed events keep their place in the conversation but stop
     /// carrying their content: the projection substitutes a marker naming
     /// roughly what was removed.
@@ -1364,6 +1379,9 @@ impl Session {
     /// at its whole length and `reason: "handoff"`, so the sidebar's
     /// lineage and the top bar's "continued from" have their trace. The
     /// same mode as the parent; the parent is untouched and stays readable.
+    /// ~~nothing is carried~~ — since 2026-10-02 (backlog 271) the research
+    /// thread binding is: the new log's second line is a `thread` event when
+    /// the parent had one.
     pub fn continued_from(&self, dir: impl AsRef<Path>) -> io::Result<Self> {
         let mode = self.mode();
         let kind = self.kind();
@@ -1372,7 +1390,7 @@ impl Session {
             ChatMode::Ephemeral => None,
             _ => Some(JsonlLog::create(dir.as_ref().join(format!("{id}.jsonl")))?),
         };
-        Ok(Self::create_from(
+        let mut next = Self::create_from(
             id,
             Utc::now(),
             log,
@@ -1383,7 +1401,14 @@ impl Session {
                 index: self.events.len(),
                 reason: Some("handoff".into()),
             }),
-        ))
+        );
+        // The research thread goes on to the chat that continues this one
+        // (nightshift backlog 271, step 1): the next chat in the line opens
+        // bound to the same thread, its layer and wrap-up with it.
+        if let Some(thread) = self.thread() {
+            next.record_thread(Some(thread.to_string()));
+        }
+        Ok(next)
     }
 
     /// Where this chat was forked from, if it was — read off the creation
@@ -1837,6 +1862,22 @@ impl Session {
         }
         self.record(SessionEvent::Folders {
             folders: wanted,
+            at: Utc::now(),
+        });
+    }
+
+    /// Bind this chat to a research thread (nightshift backlog 271), or
+    /// unbind it with `None`; a blank slug is `None`. A no-op when it is
+    /// what the log already says.
+    pub fn record_thread(&mut self, thread: Option<String>) {
+        let thread = thread
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty());
+        if self.thread() == thread.as_deref() {
+            return;
+        }
+        self.record(SessionEvent::Thread {
+            thread,
             at: Utc::now(),
         });
     }
@@ -2730,6 +2771,20 @@ impl Session {
         };
         let now = self.kind();
         (told != now).then(|| now.switch_note())
+    }
+
+    /// Projection: the research thread this chat works from — the most
+    /// recent live [`SessionEvent::Thread`], or none (nightshift backlog
+    /// 271). Read off the live events like the folders.
+    pub fn thread(&self) -> Option<&str> {
+        self.live_events()
+            .into_iter()
+            .rev()
+            .find_map(|(_, e)| match e {
+                SessionEvent::Thread { thread, .. } => Some(thread.as_deref()),
+                _ => None,
+            })
+            .flatten()
     }
 
     /// Projection: the extra folders this chat may see — the most recent
@@ -4833,6 +4888,68 @@ mod tests {
         let eph = Session::start(&dir, ChatMode::Ephemeral, ChatKind::Chat).unwrap();
         assert_eq!(eph.kind(), ChatKind::Chat);
         assert!(eph.log_path().is_none());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The research-thread binding (nightshift backlog 271, step 1): the
+    /// latest live `thread` event wins, a blank or repeated binding writes
+    /// nothing, it comes back through `load`, a rewind past it takes it
+    /// back, and a hand-off continuation inherits it — a log line of its
+    /// own after the creation line — while a chat with none writes none.
+    #[test]
+    fn the_thread_binding_is_an_event_and_a_handoff_inherits_it() {
+        let dir = std::env::temp_dir().join(format!("nightloom-thread-{}", uuid::Uuid::new_v4()));
+        let mut s = Session::start(&dir, ChatMode::Normal, ChatKind::Build).unwrap();
+        assert_eq!(s.thread(), None);
+        s.record_thread(Some("  ".into()));
+        assert_eq!(s.events().len(), 1, "a blank binding is no binding");
+        s.record_user("q");
+        s.record_thread(Some("stuart-brainstorm".into()));
+        s.record_thread(Some("stuart-brainstorm".into()));
+        assert_eq!(s.thread(), Some("stuart-brainstorm"));
+        assert_eq!(
+            s.events()
+                .iter()
+                .filter(|e| matches!(e, SessionEvent::Thread { .. }))
+                .count(),
+            1,
+            "a repeated binding writes nothing"
+        );
+        let back = Session::load(dir.join(format!("{}.jsonl", s.id))).unwrap();
+        assert_eq!(back.thread(), Some("stuart-brainstorm"));
+
+        let next = back.continued_from(&dir).unwrap();
+        assert_eq!(next.thread(), Some("stuart-brainstorm"));
+        assert_eq!(
+            next.forked_from().and_then(|f| f.reason.as_deref()),
+            Some("handoff")
+        );
+        let raw = fs::read_to_string(dir.join(format!("{}.jsonl", next.id))).unwrap();
+        let lines: Vec<&str> = raw.lines().collect();
+        assert_eq!(lines.len(), 2, "{raw}");
+        assert!(lines[1].contains(r#""event":"thread""#) && lines[1].contains("stuart-brainstorm"));
+        // And on down the line.
+        assert_eq!(
+            next.continued_from(&dir).unwrap().thread(),
+            Some("stuart-brainstorm")
+        );
+
+        // Unbinding is a `None` that wins; the continuation then has none.
+        let mut s2 = Session::load(dir.join(format!("{}.jsonl", s.id))).unwrap();
+        s2.record_thread(None);
+        assert_eq!(s2.thread(), None);
+        let plain = s2.continued_from(&dir).unwrap();
+        assert_eq!(plain.thread(), None);
+        assert_eq!(plain.events().len(), 1);
+
+        // A rewind past the binding takes it back.
+        let mut r = Session::start(&dir, ChatMode::Normal, ChatKind::Build).unwrap();
+        r.record_user("one");
+        r.record_thread(Some("t".into()));
+        r.record_user("two");
+        assert_eq!(r.thread(), Some("t"));
+        r.rewind(1).unwrap();
+        assert_eq!(r.thread(), None, "{:?}", r.events());
         fs::remove_dir_all(&dir).ok();
     }
 

@@ -83,6 +83,7 @@
     { kind: "chat_instructions", label: "Chat instructions", gloss: "How a Chat talks — ~/.nightloom/CHAT.md, read by chats of the Chat kind only.", engines: "both", editable: true },
     { kind: "project_instructions", label: "Project instructions", gloss: "The project's AGENTS.md — every one between the drive's root and the workspace, outermost first.", engines: "both", editable: true },
     { kind: "project_notes", label: "Notes index", gloss: "The project's shared notes, by name. The contents are read on demand.", engines: "both", editable: false },
+    { kind: "thread", label: "Thread", gloss: "The bound research thread's Start here; the rest is read on demand. Bound on the Mac.", engines: "both", editable: true },
     { kind: "knowledge", label: "Vault index", gloss: "Your knowledge vault, by folder. The contents are read on demand.", engines: "both", editable: false },
     { kind: "engine_note", label: "Engine note", gloss: "How the names above read on Claude Code: its Read, Write and Edit, and where @kb points.", engines: "agent", editable: false },
     { kind: "pacing", label: "Pacing", gloss: "This message's usage budget and the stop line. The figures come in the usage line beside tool calls.", engines: "agent", editable: false },

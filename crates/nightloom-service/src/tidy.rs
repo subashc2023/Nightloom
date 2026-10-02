@@ -246,7 +246,7 @@ fn apply_file(
 /// rename. A plain `fs::write` truncates before it writes, and a quit in
 /// between leaves an empty note — or an empty archive, which is the only
 /// copy of every span an earlier run moved.
-fn write_whole(path: &Path, body: &str) -> Result<(), String> {
+pub(crate) fn write_whole(path: &Path, body: &str) -> Result<(), String> {
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())

@@ -229,6 +229,9 @@ fn build_chat(args: &ChatArgs, mcp_tools: &[Arc<dyn Tool>]) -> Result<Chat> {
         // The CLI has no chat kinds (nightshift backlog 102): every run is a
         // build chat in the folder it was started from.
         chat_instructions: false,
+        // Threads are bound per chat in the desktop (backlog 271); the CLI
+        // has no binding.
+        thread: None,
         cwd: cwd.clone(),
         custom: args.system.clone(),
         // A chat's own text for a layer is read from a chat's log, which the

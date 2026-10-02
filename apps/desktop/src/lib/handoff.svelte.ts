@@ -469,6 +469,102 @@ function save(): void {
   }
 }
 
+// ---- research threads (nightshift backlog 271, step 1) ----
+//
+// A chat bound to a thread (`<project>/.agents/threads/<slug>/`, the
+// session's `thread` event) wraps up into the thread's files instead of
+// HANDOFF.md, and its continuation opens with the thread's read order.
+// Order of choice, for the wrap-up and the read order alike: the chat's
+// own text, else the thread's, else the Settings default (`pickText`).
+// The binding is noted here by the shell (`noteThread`) from the chat's
+// log; the upkeep flags (`noteThreadFlags`) from a dry-run upkeep.
+
+/** The folder a thread's files live in, as the model types it. */
+export function threadDir(slug: string): string {
+  return `.agents/threads/${slug}`;
+}
+
+/**
+ * The research wrap-up for a bound chat: step 0's TEMPLATE.md message
+ * (Value-Generalization), plus the practices mirrors — a dated "As of"
+ * line on Start here, condensing claim by claim, a start prompt with no
+ * placeholders — and the upkeep flags Nightloom found, when there are any.
+ */
+export function threadWrapUp(slug: string, flags: readonly string[] = []): string {
+  const dir = threadDir(slug);
+  const lines = [
+    `This chat's context is filling, so let's hand off to a new chat. This chat works from the thread ${dir}/. Before anything else:`,
+    "1. Finish or save any half-done edit, so every file is coherent. Long outputs (literature scans, code, results) go under .agents/notes/ or another durable path in the project folder, never /tmp.",
+    `2. Update ${dir}/thread.md by small edits, never a rewrite. Move each Queue item to its current status (live, parked, rejected with my reason quoted, conceded and by whom, done). Add new claims with an id, a provenance tag (user_stated, inferred, or external written as "source X claims Y" with its verification state) and a pointer (chat id + event index, plus a file path when there is one; find them with search_chats / read_chat if you do not know them). Strike superseded claims with today's date and the replacement's id beside them; never delete. In "## His view" add only my words, verbatim, at most about three sentences per quote, each with its chat-event pointer; your paraphrase of my view goes in "## The model's reading of his view". Add terms I coined to "## Vocabulary". Rewrite only "## Start here": at most 600 words, opening with a line "As of <date, time AM/PM> — <one line>", then the question, the front of the queue and what changed in this chat; condense it claim by claim, each claim keeping its pointer, and move detail down into Claims or Queue rather than deleting it.`,
+    `3. Append one dated paragraph to ${dir}/log.md: this chat's id, what was asked, which ids changed in thread.md, where the long outputs are. Never edit earlier entries.`,
+    "4. Do not write HANDOFF.md for this chat.",
+    "5. End your reply with a short start prompt for the new chat (what to do first, and only what thread.md's Start here does not already say), ready to paste as is — no [brackets] or placeholders — in a fenced code block tagged start-prompt (a line of three backticks followed by start-prompt, the prompt, then a line of three backticks).",
+  ];
+  if (flags.length > 0) {
+    lines.push("Upkeep Nightloom found in the thread files (fix these in the same small edits):");
+    for (const f of flags) lines.push(`- ${f}`);
+  }
+  lines.push("Then stop; do not start the next step.");
+  return lines.join("\n");
+}
+
+/** The read order a bound chat's continuation opens with. */
+export function threadReadOrder(slug: string): string {
+  const dir = threadDir(slug);
+  return (
+    `This chat continues the research thread ${dir}/. Its "## Start here" is in your context as the thread layer (if it is not, read that section of ${dir}/thread.md first). Then read, one per command and by line range rather than whole:\n` +
+    `1. the "## Queue" section of ${dir}/thread.md;\n` +
+    `2. the newest entry of ${dir}/log.md.\n` +
+    "Read the rest of thread.md, the notes it points at, and source chats (read_chat at the cited event) only when a task needs them. Then do what the start prompt below says."
+  );
+}
+
+/** The choice, pure: the chat's own text (blank included), else the
+ *  thread's, else the default. */
+export function pickText(own: string | undefined, thread: string | null, fallback: string): string {
+  if (own !== undefined) return own;
+  return thread ?? fallback;
+}
+
+/** Each chat's bound thread, as the shell last read it from the log. */
+const threadOf = $state<Record<string, string>>({});
+/** Each thread's upkeep flags from the last dry run. */
+const threadFlags = $state<Record<string, string[]>>({});
+
+/** Note the chat's thread (null: none), read from its log by the shell. */
+export function noteThread(chat: string | null, slug: string | null): void {
+  if (!chat) return;
+  if (slug) threadOf[chat] = slug;
+  else delete threadOf[chat];
+}
+
+/** The chat's thread, as noted; null when none. */
+export function threadFor(chat: string | null): string | null {
+  return (chat && threadOf[chat]) || null;
+}
+
+/** Note a thread's upkeep flags, for its wrap-up. */
+export function noteThreadFlags(slug: string, flags: string[]): void {
+  threadFlags[slug] = flags;
+}
+
+/** The wrap-up a chat starts from before its own edit: the thread's, else Settings'. */
+function baseMessage(chat: string | null): string {
+  return pickText(undefined, threadMessage(chat), defaultMessage());
+}
+
+/** The chat's thread's research wrap-up, flags included; null when unbound. */
+function threadMessage(chat: string | null): string | null {
+  const t = threadFor(chat);
+  return t ? threadWrapUp(t, threadFlags[t] ?? []) : null;
+}
+
+/** The read order a chat starts from before its own edit. */
+function baseReadOrder(chat: string | null): string {
+  const t = threadFor(chat);
+  return pickText(undefined, t ? threadReadOrder(t) : null, defaultReadOrder());
+}
+
 /** The chat's threshold, 0..1: its own if set, else the default. */
 export function threshold(chat: string | null): number {
   if (chat && isRatio(stored.perChat[chat])) return stored.perChat[chat];
@@ -510,10 +606,10 @@ export function setDefaultMessage(text: string): void {
   save();
 }
 
-/** The wrap-up this chat sends: its own if edited, else the Settings default. */
+/** The wrap-up this chat sends: its own if edited, else its thread's
+ *  research wrap-up (backlog 271), else the Settings default. */
 export function message(chat: string | null): string {
-  if (chat && chat in stored.messages) return stored.messages[chat];
-  return defaultMessage();
+  return pickText(chat ? stored.messages[chat] : undefined, threadMessage(chat), defaultMessage());
 }
 
 /** Whether the chat has a wrap-up of its own. */
@@ -525,7 +621,7 @@ export function hasOwnMessage(chat: string | null): boolean {
  *  it. A blank is kept for this launch, as in Settings. */
 export function setMessage(chat: string | null, text: string): void {
   if (!chat) return;
-  if (text !== defaultMessage()) stored.messages[chat] = text;
+  if (text !== baseMessage(chat)) stored.messages[chat] = text;
   else delete stored.messages[chat];
   save();
 }
@@ -565,10 +661,10 @@ export function clearDefaultReadOrder(): void {
   save();
 }
 
-/** The read order this chat's continuation opens with: its own if edited, else the Settings default. */
+/** The read order this chat's continuation opens with: its own if edited,
+ *  else its thread's (backlog 271), else the Settings default. */
 export function readOrder(chat: string | null): string {
-  if (chat && chat in stored.readOrders) return stored.readOrders[chat];
-  return defaultReadOrder();
+  return pickText(chat ? stored.readOrders[chat] : undefined, null, baseReadOrder(chat));
 }
 
 /** Whether the chat has a read order of its own. */
@@ -580,7 +676,7 @@ export function hasOwnReadOrder(chat: string | null): boolean {
  *  blank is kept: this chat's continuation opens with the start prompt only. */
 export function setReadOrder(chat: string | null, text: string): void {
   if (!chat) return;
-  if (text !== defaultReadOrder()) stored.readOrders[chat] = text;
+  if (text !== baseReadOrder(chat)) stored.readOrders[chat] = text;
   else delete stored.readOrders[chat];
   save();
 }

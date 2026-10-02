@@ -1103,6 +1103,70 @@ pub fn tidy_targets(
     Ok(targets)
 }
 
+/// What the daily pass's thread step did in one project (nightshift
+/// backlog 271, step 1).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ThreadTidy {
+    pub project: String,
+    pub threads: Vec<crate::thread::Upkeep>,
+    pub errors: Vec<String>,
+    /// The snapshot clause, as [`TidyOutcome::git`].
+    pub git: String,
+}
+
+/// The daily pass's thread step: every registered project with a
+/// `.agents/threads/` folder gets [`crate::thread::tidy_threads`] — struck
+/// lines from earlier rounds to each thread's `archive.md`, duplicate
+/// queue rows merged, `threads/INDEX.md` rewritten — and a project whose
+/// threads changed is snapshotted like the memory tidy. Mechanical: no
+/// model turn, so no cost beyond the disk. What needs judgement
+/// (condensing a long Start here, replacing a pasted block) is flagged in
+/// the index and the thread layer for the next bound chat's wrap-up.
+/// Never age-based (his word, 2026-10-02: threads live days, not months).
+pub fn tidy_threads(
+    config: &Path,
+    today: Option<chrono::NaiveDate>,
+    apply: bool,
+) -> Result<Vec<ThreadTidy>, String> {
+    let _lock = if apply {
+        Some(crate::pass_lock::take(config)?)
+    } else {
+        None
+    };
+    let today = today.unwrap_or_else(|| chrono::Local::now().date_naive());
+    let mut out = Vec::new();
+    for p in Registry::load_in(config).projects() {
+        let notes = p.notes_dir();
+        if !crate::thread::threads_dir(&notes).is_dir() {
+            continue;
+        }
+        let (threads, errors) = crate::thread::tidy_threads(&notes, today, apply);
+        let changed: usize = threads
+            .iter()
+            .map(|u| u.struck_moved + u.merged.len())
+            .sum();
+        let git = if apply && changed > 0 {
+            snapshot_target(
+                &Target::project(&p),
+                &format!(
+                    "nightloom: thread upkeep — {changed} line{} archived or merged",
+                    if changed == 1 { "" } else { "s" }
+                ),
+            )
+            .brief()
+        } else {
+            String::new()
+        };
+        out.push(ThreadTidy {
+            project: p.name.clone(),
+            threads,
+            errors,
+            git,
+        });
+    }
+    Ok(out)
+}
+
 /// Snapshot one target: the whole vault, or a workspace's `.agents/` alone.
 ///
 /// A workspace is the user's code, and sweeping their uncommitted source

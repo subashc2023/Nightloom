@@ -67,6 +67,10 @@ pub struct PromptLayersInfo {
     /// the kind the engine was built for.
     pub kind: ChatKind,
     pub built_kind: ChatKind,
+    /// The fifth pair (nightshift backlog 271): the open chat's research
+    /// thread and the one the engine was built with.
+    pub thread: Option<String>,
+    pub built_thread: Option<String>,
 }
 
 impl PromptLayersInfo {
@@ -85,6 +89,8 @@ impl PromptLayersInfo {
             built_mode: session.mode(),
             kind: session.kind(),
             built_kind: session.kind(),
+            thread: session.thread().map(str::to_string),
+            built_thread: session.thread().map(str::to_string),
         }
     }
 }

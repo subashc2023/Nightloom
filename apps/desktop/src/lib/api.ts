@@ -59,6 +59,9 @@ import type {
   DreamCommit,
   BuildStamp,
   TidyOutcome,
+  ThreadInfo,
+  ThreadTidy,
+  ThreadUpkeep,
   RevertPreview,
   Schedules,
   SearchBackendInfo,
@@ -578,6 +581,37 @@ export function setChatKind(kind: ChatKind, workspace?: string): Promise<Session
  */
 export function setChatFolders(folders: string[]): Promise<SessionEvent[]> {
   return invoke("set_chat_folders", { folders });
+}
+
+/**
+ * Bind the open chat to a research thread, or unbind it with null
+ * (nightshift backlog 271). Resolves with the new transcript; the caller
+ * reconnects (`setChatThread` in state.svelte.ts). Refused for a thread
+ * the open project does not have.
+ */
+export function setChatThread(thread: string | null): Promise<SessionEvent[]> {
+  return invoke("set_chat_thread", { thread });
+}
+
+/** The open project's research threads, most recently touched first. */
+export function listThreads(): Promise<ThreadInfo[]> {
+  return invoke("list_threads");
+}
+
+/** Start a thread from the template in the open project; never overwrites. */
+export function newThread(slug: string, name: string): Promise<ThreadInfo> {
+  return invoke("new_thread", { slug, name });
+}
+
+/** One thread's upkeep: a dry run for the wrap-up's flags, or (apply) the
+ *  mechanical moves and the index rewritten. */
+export function threadUpkeep(slug: string, apply: boolean): Promise<ThreadUpkeep> {
+  return invoke("thread_upkeep", { slug, apply });
+}
+
+/** The daily pass's thread step over every project. */
+export function tidyThreads(apply: boolean): Promise<ThreadTidy[]> {
+  return invoke("tidy_threads", { apply });
 }
 
 /**

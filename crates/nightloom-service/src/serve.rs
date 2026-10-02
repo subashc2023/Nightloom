@@ -636,6 +636,10 @@ impl ServeHost {
                     notes_dir: p.notes_dir(),
                 }),
                 knowledge: knowledge.map(|dir| crate::KnowledgeContext { dir }),
+                // The chat's research thread (backlog 271), in its project.
+                thread: project
+                    .zip(session.thread())
+                    .and_then(|(p, slug)| crate::thread::ThreadContext::new(&p.notes_dir(), slug)),
                 cwd: workspace.to_path_buf(),
                 custom: None,
                 edits,
@@ -2494,7 +2498,8 @@ esac
         assert!(
             ctx["layers"]["sources"]
                 .as_object()
-                .is_some_and(|o| o.len() == 4),
+                // Five since the thread's Start here became editable (271).
+                .is_some_and(|o| o.len() == 5),
             "{ctx}"
         );
         assert!(ctx["pending"].is_null());

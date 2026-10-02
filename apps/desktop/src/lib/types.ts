@@ -1131,6 +1131,11 @@ export type SessionEvent =
   // Not a turn: read at connect time and granted on the engine in use. See
   // `chatFolders`.
   | { event: "folders"; folders: string[]; at: string }
+  // The research thread this chat works from (nightshift backlog 271): a
+  // slug under `<project>/.agents/threads/`, absent for "no thread"; the
+  // latest live one wins like `folders`. Read at connect time for the
+  // thread layer. See `chatThread`.
+  | { event: "thread"; thread?: string | null; at: string }
   // Content markers, not deletions: the listed events keep their place in the
   // conversation and project a stand-in instead of their payload. The log
   // still holds the content. ~~The transcript renders these turns in full
@@ -1407,6 +1412,9 @@ export type PromptLayer =
   | "chat_instructions"
   | "project_instructions"
   | "project_notes"
+  /** The bound research thread's `## Start here` (nightshift backlog 271).
+   *  Both engines; present only in a chat bound to a thread. */
+  | "thread"
   | "knowledge"
   | "engine_note"
   /** How to pace a message against its usage budget (nightshift backlog
@@ -1437,12 +1445,15 @@ export type EditableLayer =
   | "user_memory"
   | "model_instructions"
   | "chat_instructions"
-  | "project_instructions";
+  | "project_instructions"
+  /** The thread's Start here (backlog 271): a section of a file. */
+  | "thread";
 export const EDITABLE_LAYERS: readonly EditableLayer[] = [
   "user_memory",
   "model_instructions",
   "chat_instructions",
   "project_instructions",
+  "thread",
 ];
 
 /** A chat's own text per layer, by the backend's `SegmentKind` name. */
@@ -1467,6 +1478,47 @@ export interface PromptLayersInfo {
    *  opened after it needs its folder and tools back. */
   kind: ChatKind;
   built_kind: ChatKind;
+  /** The fifth pair (nightshift backlog 271): the open chat's research
+   *  thread and the one the engine was built with. Absent from an older
+   *  backend, which reads as none. */
+  thread?: string | null;
+  built_thread?: string | null;
+}
+
+/** One research thread as the picker shows it (backlog 271). */
+export interface ThreadInfo {
+  slug: string;
+  title: string;
+  /** One line from its Start here. */
+  status: string;
+  /** `thread.md`'s last change, YYYY-MM-DD. */
+  touched: string | null;
+  start_here_words: number;
+  tokens: number;
+  /** How many upkeep flags it has. */
+  flags: number;
+}
+
+/** What one thread's upkeep found and (applied) did (backlog 271). */
+export interface ThreadUpkeep {
+  slug: string;
+  /** Plain sentences for the model: what to condense or point at. */
+  flags: string[];
+  struck_moved: number;
+  struck_kept: number;
+  struck_undated: number;
+  /** [kept id, merged id] pairs. */
+  merged: [string, string][];
+  saved: number;
+  last_round: string | null;
+}
+
+/** The daily pass's thread step in one project (backlog 271). */
+export interface ThreadTidy {
+  project: string;
+  threads: ThreadUpkeep[];
+  errors: string[];
+  git: string;
 }
 
 /** What `editContext` changed: both projections, plus how many items moved. */

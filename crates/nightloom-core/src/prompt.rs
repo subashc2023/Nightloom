@@ -44,6 +44,12 @@ pub enum SegmentKind {
     /// standing knowledge are not the same thing. The index only, like the
     /// docspace and for the same reason.
     Knowledge,
+    /// The `## Start here` section of the research thread the chat is bound
+    /// to (nightshift backlog 271, step 1, 2026-10-02):
+    /// `<project>/.agents/threads/<slug>/thread.md`. Only that section is
+    /// loaded; the rest of the file is read on demand. A sibling of
+    /// [`SegmentKind::ProjectNotes`] in the ladder, after it.
+    Thread,
     /// User-level standing preferences, from the config dir.
     UserMemory,
     /// Standing instructions for the one model this chat runs on, from the
@@ -99,7 +105,7 @@ impl SegmentKind {
     /// offers as switches. Excludes [`SegmentKind::Custom`]: the shell's own
     /// text is chosen by the shell's own control (a dropdown, a flag), not by
     /// a layer switch, and offering it twice would leave the two disagreeing.
-    pub const LAYERS: [SegmentKind; 11] = [
+    pub const LAYERS: [SegmentKind; 12] = [
         SegmentKind::Identity,
         SegmentKind::Environment,
         SegmentKind::UserMemory,
@@ -107,6 +113,7 @@ impl SegmentKind {
         SegmentKind::ChatInstructions,
         SegmentKind::ProjectInstructions,
         SegmentKind::ProjectNotes,
+        SegmentKind::Thread,
         SegmentKind::Knowledge,
         SegmentKind::EngineNote,
         SegmentKind::Pacing,
@@ -118,11 +125,16 @@ impl SegmentKind {
     /// listings the shell computes, the identity and environment are the
     /// harness's, and the engine note is the bridge's: none of those is a
     /// text a user edits, so a chat's override for them is not a thing.
-    pub const EDITABLE: [SegmentKind; 4] = [
+    ///
+    /// Since 2026-10-02 (backlog 271) also the thread's `## Start here`: a
+    /// section of a file the model and the user write, so a chat may say
+    /// something else in its place like any file-backed layer.
+    pub const EDITABLE: [SegmentKind; 5] = [
         SegmentKind::UserMemory,
         SegmentKind::ModelInstructions,
         SegmentKind::ChatInstructions,
         SegmentKind::ProjectInstructions,
+        SegmentKind::Thread,
     ];
 }
 

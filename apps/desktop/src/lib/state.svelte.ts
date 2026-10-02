@@ -6,9 +6,13 @@ import {
   firstMessage,
   handoff,
   noteAgentTurnEnd,
+  noteThread,
+  noteThreadFlags,
   readOrder,
   resetHandoff,
+  threadFor,
 } from "./handoff.svelte";
+import { replaceStartHere, threadOfEvents } from "./thread";
 import { suggestions } from "./suggestions.svelte";
 import { isMac } from "./platform";
 import {
@@ -2064,6 +2068,24 @@ export async function runDailyPass(): Promise<void> {
       );
     } catch (e) {
       said.push(`tidy failed: ${String(e)}`);
+    }
+    // Research threads (backlog 271): struck lines from earlier rounds to
+    // each thread's archive.md, duplicate queue rows merged, the index
+    // rewritten. Mechanical; what needs a model is flagged for the next
+    // bound chat's wrap-up.
+    try {
+      const tidied = await api.tidyThreads(true);
+      const ups = tidied.flatMap((t) => t.threads);
+      if (ups.length > 0) {
+        const moved = ups.reduce((n, u) => n + u.struck_moved + u.merged.length, 0);
+        const flagged = ups.reduce((n, u) => n + u.flags.length, 0);
+        said.push(
+          `threads: ${moved} line${moved === 1 ? "" : "s"} archived or merged` +
+            (flagged > 0 ? `, ${flagged} flag${flagged === 1 ? "" : "s"} for the next wrap-up` : ""),
+        );
+      }
+    } catch (e) {
+      said.push(`thread upkeep failed: ${String(e)}`);
     }
   } catch (e) {
     // A capture or a dream that failed — the pass lock held by another
@@ -4989,6 +5011,99 @@ export async function setChatFolders(folders: string[]): Promise<void> {
   });
 }
 
+/**
+ * The open chat's research thread (nightshift backlog 271), projected
+ * from the log like the folders: the latest live `thread` event, or null.
+ */
+export function chatThread(events: SessionEvent[]): string | null {
+  return threadOfEvents(events, liveFlags(events));
+}
+
+/**
+ * Bind the open chat to a research thread, or unbind it (null) — the same
+ * two steps as the folders: the log first, creating the chat's log if the
+ * first send has not yet, then the reconnect that builds the thread layer.
+ * Undoable, scoped to the chat. The binding is noted for the hand-off at
+ * once, so the wrap-up and the read order follow it without a reload.
+ */
+export async function setChatThread(slug: string | null): Promise<boolean> {
+  if (app.busy || app.connecting) return false;
+  const current = chatThread(app.events);
+  const wanted = slug || null;
+  if (wanted === current) return true;
+  if (!(await applyThread(wanted))) return false;
+  pushUndo(chatScope(), {
+    label: wanted ? `bind thread ${wanted}` : "unbind thread",
+    undo: async () => {
+      await applyThread(current);
+    },
+    redo: async () => {
+      await applyThread(wanted);
+    },
+  });
+  return true;
+}
+
+async function applyThread(slug: string | null): Promise<boolean> {
+  try {
+    app.events = await api.setChatThread(slug);
+    const first = app.events[0];
+    if (first && first.event === "session_created") app.activeSessionId = first.id;
+    app.error = null;
+    noteThread(app.activeSessionId, slug);
+    if (slug) void refreshThreadFlags(slug);
+  } catch (e) {
+    addToast(String(e));
+    return false;
+  }
+  await applyDraft();
+  void refreshSessions();
+  return true;
+}
+
+/** Start a thread from the project's template and bind the open chat to it. */
+export async function createThread(name: string, slug: string): Promise<boolean> {
+  try {
+    await api.newThread(slug, name);
+  } catch (e) {
+    addToast(String(e));
+    return false;
+  }
+  return setChatThread(slug);
+}
+
+/** A dry-run upkeep of a thread, for its wrap-up's flags. Best-effort. */
+export async function refreshThreadFlags(slug: string): Promise<void> {
+  try {
+    const up = await api.threadUpkeep(slug, false);
+    noteThreadFlags(slug, up.flags);
+  } catch {
+    // No project open, or the thread is gone: the wrap-up goes without flags.
+  }
+}
+
+/**
+ * *Make this the file* for the thread layer: the chat's text spliced into
+ * `thread.md`'s `## Start here`, put in the editor as a draft — never a
+ * write; Save is his. The rest of the file is what is on disk now.
+ */
+async function promoteThreadText(text: string): Promise<void> {
+  const slug = chatThread(app.events);
+  if (!slug || !app.project) {
+    addToast("This chat is not bound to a thread in an open project");
+    return;
+  }
+  const name = `threads/${slug}/thread.md`;
+  try {
+    const file = await api.readNote("project", name);
+    app.noteDrafts[noteDraftKey("project", name)] = replaceStartHere(file, text);
+    app.showContext = false;
+    showNote("project", name);
+  } catch (e) {
+    addToast(String(e));
+  }
+}
+
 async function applyFolders(folders: string[]): Promise<boolean> {
   try {
     app.events = await api.setChatFolders(folders);
@@ -5109,6 +5224,7 @@ export async function continueChat(): Promise<void> {
     const start = handoff.startPrompt;
     const from = handoff.chat ?? app.activeSessionId;
     const lead = readOrder(from);
+    const thread = threadFor(from);
     const res = await api.continueSession();
     // The aside thread stays with the chat being left (backlog 130).
     switchAside(res.session);
@@ -5121,6 +5237,11 @@ export async function continueChat(): Promise<void> {
     app.suggestion = null;
     resetHandoff();
     carryReadOrder(from, res.session);
+    // The research thread went on with the chat (backlog 271; the log's
+    // `thread` event). Its mechanical upkeep runs now, while neither chat
+    // is writing it: the wrapped one has stopped, the new one has not begun.
+    noteThread(res.session, thread);
+    if (thread) void applyThreadUpkeep(thread);
     const first = firstMessage(lead, start);
     if (first) setDraftText(res.session, first);
     if (!start) {
@@ -5137,6 +5258,21 @@ export async function continueChat(): Promise<void> {
     return;
   }
   void refreshSessions();
+}
+
+/** The mechanical upkeep of a thread at *Continue*: a toast when it moved
+ *  anything; failures are a toast, never a lost continuation. */
+async function applyThreadUpkeep(slug: string): Promise<void> {
+  try {
+    const up = await api.threadUpkeep(slug, true);
+    noteThreadFlags(slug, up.flags);
+    const parts: string[] = [];
+    if (up.struck_moved > 0) parts.push(`${up.struck_moved} struck line${up.struck_moved === 1 ? "" : "s"} moved to archive.md`);
+    if (up.merged.length > 0) parts.push(`${up.merged.length} duplicate queue row${up.merged.length === 1 ? "" : "s"} merged`);
+    if (parts.length > 0) addToast(`Thread ${slug}: ${parts.join(", ")}`);
+  } catch (e) {
+    addToast(`Thread upkeep for ${slug} failed: ${String(e)}`);
+  }
 }
 
 /** The running chat's name, for the toast that says where the turn is. */
@@ -7254,6 +7390,7 @@ const LAYER_ORDER: PromptLayer[] = [
   "model_instructions",
   "project_instructions",
   "project_notes",
+  "thread",
   "knowledge",
   "engine_note",
   "pacing",
@@ -7402,6 +7539,10 @@ async function applyLayerText(layer: EditableLayer, text: string | null): Promis
 export function promoteLayerText(layer: EditableLayer, text: string): boolean {
   let scope: NoteScope;
   let name: string;
+  if (layer === "thread") {
+    void promoteThreadText(text);
+    return true;
+  }
   if (layer === "user_memory") {
     scope = "memory";
     name = "AGENTS.md";
@@ -7472,7 +7613,7 @@ export async function syncPromptLayers(): Promise<void> {
     return;
   }
   try {
-    const { off, built, edits, built_edits, mode, built_mode, kind, built_kind } =
+    const { off, built, edits, built_edits, mode, built_mode, kind, built_kind, thread, built_thread } =
       await api.promptLayers();
     // The mode is the third pair (2026-09-15): an incognito chat's engine
     // was built with no writers, and the ordinary chat opened after it
@@ -7484,7 +7625,9 @@ export async function syncPromptLayers(): Promise<void> {
       !sameLayers(off, built) ||
       !sameEdits(edits ?? {}, built_edits ?? {}) ||
       (mode ?? "normal") !== (built_mode ?? "normal") ||
-      (kind ?? "build") !== (built_kind ?? "build")
+      (kind ?? "build") !== (built_kind ?? "build") ||
+      // The fifth pair (backlog 271): the chat's research thread.
+      (thread ?? null) !== (built_thread ?? null)
     ) {
       // A provider connect that fails leaves the built set as it was, so
       // the pairs still disagree, `connecting` flips, the effect re-runs
@@ -7492,7 +7635,14 @@ export async function syncPromptLayers(): Promise<void> {
       // review E's FE8). The one pair that just failed is not retried;
       // another chat, another set, or a rail change (which clears
       // `connectError`) tries afresh.
-      const pair = JSON.stringify([app.activeSessionId, off, edits ?? {}, mode ?? "normal", kind ?? "build"]);
+      const pair = JSON.stringify([
+        app.activeSessionId,
+        off,
+        edits ?? {},
+        mode ?? "normal",
+        kind ?? "build",
+        thread ?? null,
+      ]);
       if (lastFailedSync === pair && app.connectError) return;
       await applyDraft();
       lastFailedSync = app.connectError ? pair : null;
