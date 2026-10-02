@@ -26,6 +26,7 @@
  * the whole store, is kept in memory only, so a relaunch drops that row.
  */
 import { app, chatMode } from "./state.svelte";
+import { EditorView } from "@codemirror/view";
 
 export type ClipSource = "copied" | "pasted" | "sent";
 
@@ -172,6 +173,12 @@ function selectedText(): string {
     const e = el.selectionEnd ?? 0;
     return e > s ? el.value.slice(s, e) : "";
   }
+  // A CodeMirror editor — the formatted message box (item 276), a note in
+  // formatted mode: its source text, not the drawn page (a typeset formula
+  // reads back as KaTeX's glyphs).
+  const cm = el instanceof HTMLElement ? el.closest<HTMLElement>(".cm-editor") : null;
+  const view = cm ? EditorView.findFromDOM(cm) : null;
+  if (view) return view.state.selection.ranges.map((r) => view.state.sliceDoc(r.from, r.to)).join("\n");
   return window.getSelection()?.toString() ?? "";
 }
 

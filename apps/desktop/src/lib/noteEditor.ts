@@ -61,7 +61,7 @@ function onLines(state: EditorState, from: number, to: number): boolean {
 }
 
 /** A typeset formula standing where its source is. */
-class MathWidget extends WidgetType {
+export class MathWidget extends WidgetType {
   constructor(
     readonly tex: string,
     readonly display: boolean,

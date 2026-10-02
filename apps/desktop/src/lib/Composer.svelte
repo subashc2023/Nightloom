@@ -30,6 +30,9 @@
   import { cacheLine, cacheState, nextTickMs, remainingText } from "./cache";
   import { HIDDEN_THINKING_TITLE, thinkingToggleDead } from "./activity";
   import { toggleTranscriptPref, transcript } from "./transcriptPrefs.svelte";
+  import { composerFormat, toggleComposerFormat } from "./composerFormat.svelte";
+  import { boxElement, type ComposerBox } from "./composerEditor";
+  import LiveBox from "./LiveBox.svelte";
   import { isMac } from "./platform";
   import {
     RE_ASK,
@@ -189,7 +192,12 @@
    * 062, and this is the half that needs nothing from it.
    */
   const queue = $derived(draft.queue);
-  let ta = $state<HTMLTextAreaElement | null>(null);
+  /*
+   * The box he types in: the textarea, or — with the format toggle on
+   * (item 276) — the formatted editor's `LiveBoxHandle`, which answers the
+   * same calls (caret, focus, size), so everything below drives either.
+   */
+  let ta = $state<ComposerBox | null>(null);
   /*
    * The quote styled in place (item 223, his pick "A": not a card). While
    * the draft has a `> ` line, a layer behind the textarea draws the whole
@@ -373,8 +381,25 @@
 
   /** One line of the box's text, for ⌥⌘↑ / ⌥⌘↓. */
   function lineHeight(): number {
-    const lh = ta ? parseFloat(getComputedStyle(ta).lineHeight) : NaN;
+    const el = boxElement(ta);
+    const lh = el ? parseFloat(getComputedStyle(el).lineHeight) : NaN;
     return Number.isFinite(lh) && lh > 0 ? lh : 22;
+  }
+
+  /*
+   * The format toggle (item 276): the box swaps between the textarea and
+   * the formatted editor with the same draft, the caret where it was.
+   */
+  let formatCaret = $state<number | null>(null);
+  function flipFormat(): void {
+    formatCaret = ta ? ta.selectionEnd : null;
+    toggleComposerFormat();
+    void tick().then(() => {
+      if (!ta) return;
+      ta.focus();
+      if (formatCaret !== null) ta.selectionStart = ta.selectionEnd = Math.min(formatCaret, ta.value.length);
+      autogrow();
+    });
   }
 
   /** Grow or shrink the box by a line from the keyboard (backlog 111). */
@@ -623,9 +648,9 @@
   // The layer follows the box: its size (a drag, the 40% line, a resized
   // window) and its text (the scroll after a keystroke) — item 223.
   $effect(() => {
-    if (!ta || !mirror) return;
+    const box = boxElement(ta);
+    if (!box || !mirror) return;
     void text;
-    const box = ta;
     const ro = new ResizeObserver(() => syncMirror());
     ro.observe(box);
     void tick().then(syncMirror);
@@ -979,7 +1004,7 @@
     const t = text.trim();
     if (!t || attachments.length > 0 || app.busy) return;
     // The words fly from the box into the aside's card (backlog 194).
-    launch("aside", ta);
+    launch("aside", boxElement(ta));
     clearDraft(key);
     afterSend(key);
     await askAside(t);
@@ -1006,7 +1031,7 @@
     const typed = text;
     // Where the words were, for the send motion (backlog 194): measured
     // before the box clears.
-    launch("chat", ta);
+    launch("chat", boxElement(ta));
     clearDraft(key);
     afterSend(key);
     await dispatch(typed, pending);
@@ -1030,7 +1055,7 @@
     const pending = attachments.slice();
     const typed = text;
     recordText("sent", typed);
-    launch("chat", ta);
+    launch("chat", boxElement(ta));
     clearDraft(key);
     afterSend(key);
     await dispatch(typed, pending, false, prefs);
@@ -1643,6 +1668,28 @@
       </button>
     {/if}
     <div class="ta-wrap">
+    {#if composerFormat.on}
+      <!-- Item 276: the same draft with its formatting drawn in place —
+           math typeset, bold / italic / headings styled, the source back
+           under the cursor. The text, the keys and the draft are the
+           textarea's; only the drawing differs. -->
+      <LiveBox
+        bind:handle={ta}
+        value={text}
+        onchange={(v) => setDraftText(key, v)}
+        placeholder={app.connection ? "Message…" : ""}
+        disabled={!app.connection}
+        {floating}
+        initialCaret={formatCaret}
+        oninput={() => {
+          noteActivity();
+          autogrow();
+        }}
+        {onpaste}
+        {onkeydown}
+        onblur={() => (clipOpen = false)}
+      />
+    {:else}
     {#if quoted}
       <!-- Item 223: the draft drawn behind the textarea, quote lines as the
            bubble draws them. An empty line holds a zero-width space so it
@@ -1669,6 +1716,7 @@
       {onkeydown}
       onblur={() => (clipOpen = false)}
     ></textarea>
+    {/if}
     </div>
     <div class="row" bind:this={rowEl} data-fold={rowFold}>
       <input
@@ -1862,6 +1910,19 @@
         onclick={() => toggleTranscriptPref("tool")}
       >
         <span class="bottom-mark" aria-hidden="true">⚒</span>tools
+      </button>
+      <!-- Item 276: formatting drawn in the box. Off is the plain box; the
+           message sent is the text as typed either way. -->
+      <button
+        class="ns-chip bottom-toggle"
+        class:on={composerFormat.on}
+        aria-pressed={composerFormat.on}
+        use:tip={composerFormat.on
+          ? "Formatting drawn in the box — $…$ math, **bold**, *italic*, # headings; the source shows where the cursor is, and the message sent is the text as typed. Click for the plain box"
+          : "Plain box — click to draw $…$ math, **bold**, *italic* and # headings in place as you type; the message sent stays the text as typed"}
+        onclick={flipFormat}
+      >
+        <span class="bottom-mark" aria-hidden="true">∑</span>format
       </button>
       <!-- One chip for the cache (his ask, 2026-09-16): the share of the
            last request served from it, then the timer from backlog 063 —
