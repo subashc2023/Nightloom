@@ -597,12 +597,71 @@ impl ServeHost {
         if mac.is_empty() {
             return None;
         }
-        Some(
-            match crate::layer_source(SegmentKind::ProjectInstructions, None, workspace) {
-                Some(walk) => format!("{walk}\n\n{mac}"),
-                None => mac.to_string(),
-            },
-        )
+        Some(match self.walk_text(workspace) {
+            Some(walk) => format!("{walk}\n\n{mac}"),
+            None => mac.to_string(),
+        })
+    }
+
+    /// `serve`'s own user memory file, `<home>/AGENTS.md` (on the away
+    /// server the home is also the config dir, so this is the file the
+    /// library's user-memory read opens).
+    fn home_memory_file(&self) -> PathBuf {
+        self.cfg.home.join(crate::prompt::INSTRUCTION_FILE)
+    }
+
+    /// The user memory a turn here reads, once (item 274): the Mac's, as
+    /// the sync sent it to `mirror/AGENTS.md`, whenever that file exists —
+    /// an empty one is the Mac's memory being empty, not a reason to read
+    /// the server's — else the server's own `<home>/AGENTS.md`. Read in
+    /// place on every turn, never copied. `None`: no memory at all.
+    fn user_memory_text(&self) -> Option<String> {
+        let mac = self
+            .sync
+            .layout()
+            .root()
+            .join(crate::prompt::INSTRUCTION_FILE);
+        if mac.is_file() {
+            return crate::prompt::read_capped(&mac);
+        }
+        crate::prompt::read_capped(&self.home_memory_file())
+    }
+
+    /// Whether `path` is the server's own memory file — which the
+    /// `AGENTS.md` walk from a folder under the home climbs through, and
+    /// which is memory, never project instructions (item 274: it was read
+    /// twice). Compared as written, then resolved, so a symlinked spelling
+    /// of the home still matches.
+    fn is_home_memory(&self, path: &Path) -> bool {
+        let home = self.home_memory_file();
+        if path == home {
+            return true;
+        }
+        match (std::fs::canonicalize(path), std::fs::canonicalize(&home)) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        }
+    }
+
+    /// The project-instructions walk from `workspace` as one text — the
+    /// library's [`crate::layer_source`] for that layer, outermost first —
+    /// without the server's own memory file (item 274).
+    fn walk_text(&self, workspace: &Path) -> Option<String> {
+        let mut bodies: Vec<String> = Vec::new();
+        for dir in workspace.ancestors() {
+            let path = dir.join(crate::prompt::INSTRUCTION_FILE);
+            if self.is_home_memory(&path) {
+                continue;
+            }
+            if let Some(content) = crate::prompt::read_capped(&path) {
+                bodies.push(content.trim().to_string());
+            }
+        }
+        if bodies.is_empty() {
+            return None;
+        }
+        bodies.reverse();
+        Some(bodies.join("\n\n"))
     }
 
     fn prompt_for(
@@ -622,13 +681,25 @@ impl ServeHost {
         {
             edits.insert(SegmentKind::ProjectInstructions, text);
         }
+        // User memory, once (item 274): the Mac's when the sync sent it,
+        // else this server's; the chat's own text still wins.
+        let memory = match edits.get(&SegmentKind::UserMemory) {
+            Some(_) => true,
+            None => match self.user_memory_text() {
+                Some(text) => {
+                    edits.insert(SegmentKind::UserMemory, text);
+                    true
+                }
+                None => false,
+            },
+        };
         let knowledge = crate::knowledge::vault_dir();
-        crate::agent_prompt_with(
+        let prompt = crate::agent_prompt_with(
             &crate::PromptConfig {
                 identity: false,
                 environment: false,
                 project_instructions: true,
-                user_memory: true,
+                user_memory: memory,
                 model: spec.model.clone(),
                 chat_instructions: declared == ChatKind::Chat,
                 project: project.map(|p| crate::ProjectContext {
@@ -649,7 +720,39 @@ impl ServeHost {
                 reusable: false,
                 subagent_model: spec.subagent_limits.unwrap_or_default().model,
             },
-        )
+        );
+        self.without_home_memory(prompt)
+    }
+
+    /// `prompt` without the walk's segment for the server's own memory
+    /// file (item 274): that file is the memory layer, read above, and the
+    /// walk from a folder under the home found it a second time. The cache
+    /// anchor moves to the new last segment if it was on the one dropped.
+    fn without_home_memory(&self, prompt: SystemPrompt) -> SystemPrompt {
+        let drop = |s: &nightloom_core::Segment| {
+            s.kind == SegmentKind::ProjectInstructions && self.is_home_memory(Path::new(&s.name))
+        };
+        if !prompt.segments().iter().any(drop) {
+            return prompt;
+        }
+        let mut kept: Vec<nightloom_core::Segment> = prompt
+            .segments()
+            .iter()
+            .filter(|s| !drop(s))
+            .cloned()
+            .collect();
+        let anchored = prompt.segments().iter().any(|s| drop(s) && s.cache_anchor);
+        if anchored
+            && !kept.iter().any(|s| s.cache_anchor)
+            && let Some(last) = kept.pop()
+        {
+            kept.push(last.anchored());
+        }
+        let mut out = SystemPrompt::new();
+        for seg in kept {
+            out.push(seg);
+        }
+        out
     }
 
     /// Take the one turn slot for `chat`, or say what holds it.
@@ -1213,8 +1316,16 @@ impl ServeHost {
             .unwrap_or(serde_json::Value::Null);
         if let Some(obj) = layers.as_object_mut() {
             let mut sources = context_ops::layer_sources(spec.model.as_deref(), &workspace);
-            if let Some(text) = self.mirrored_instructions(project, &workspace) {
-                sources.insert(SegmentKind::ProjectInstructions, Some(text));
+            // The files a turn here reads (item 274): the memory it reads
+            // once, and the walk without the server's memory file.
+            if sources.contains_key(&SegmentKind::UserMemory) {
+                sources.insert(SegmentKind::UserMemory, self.user_memory_text());
+            }
+            if sources.contains_key(&SegmentKind::ProjectInstructions) {
+                let walk = self
+                    .mirrored_instructions(project, &workspace)
+                    .or_else(|| self.walk_text(&workspace));
+                sources.insert(SegmentKind::ProjectInstructions, walk);
             }
             obj.insert(
                 "sources".into(),
@@ -2747,6 +2858,133 @@ esac
             .unwrap_or_default();
         assert!(prompt.contains("the chat's own rules"), "{prompt}");
         assert!(!prompt.contains("the mac's project rules"), "{prompt}");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// How often `needle` appears in `hay`.
+    fn count(hay: &str, needle: &str) -> usize {
+        hay.matches(needle).count()
+    }
+
+    /// A turn's preamble, the Context page's itemised view of it, and the
+    /// page's `sources`, for an unfiled chat (its folder, `<home>/ws`, sits
+    /// under the home, so the walk climbs through `<home>/AGENTS.md`).
+    fn memory_seen(host: &ServeHost) -> (String, String, serde_json::Value) {
+        let session = Session::new();
+        let turn = host
+            .spec_for(None, &session)
+            .append_system_prompt
+            .unwrap_or_default();
+        let page = serde_json::to_value(host.context_of(None, &session)).unwrap();
+        // The page's preamble as one text (each segment also carries a
+        // preview, which would count twice).
+        let view = page["view"]["system_text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        (turn, view, page["layers"]["sources"].clone())
+    }
+
+    /// Item 274: with the Mac's memory synced to `mirror/AGENTS.md`, a turn
+    /// reads it, once, and not the server's own `<home>/AGENTS.md` (which
+    /// the walk from a folder under the home used to read a second time,
+    /// as project instructions); the Context page shows the same. An empty
+    /// mirror copy is the Mac's memory being empty: no memory, still not
+    /// the server's. A chat's own memory text still wins.
+    #[tokio::test]
+    async fn serve_reads_the_macs_memory_once_when_the_mirror_has_it() {
+        let tag = uuid::Uuid::new_v4().simple().to_string();
+        let (host, root) = prompt_host(None);
+        let mac = format!("mac-memory-{tag}");
+        let server = format!("server-memory-{tag}");
+        std::fs::write(root.join("AGENTS.md"), &server).unwrap();
+        let mirror = crate::sync::Layout::new(&root).root();
+        std::fs::create_dir_all(&mirror).unwrap();
+        std::fs::write(mirror.join("AGENTS.md"), &mac).unwrap();
+
+        let (turn, view, sources) = memory_seen(&host);
+        assert_eq!(count(&turn, &mac), 1, "{turn}");
+        assert_eq!(count(&turn, &server), 0, "{turn}");
+        assert_eq!(count(&view, &mac), 1, "{view}");
+        assert_eq!(count(&view, &server), 0, "{view}");
+        assert_eq!(sources["user_memory"], serde_json::json!(mac), "{sources}");
+        assert!(
+            !sources["project_instructions"]
+                .to_string()
+                .contains(&server),
+            "{sources}"
+        );
+
+        // A mirror-only project's turn, in `<home>/workspaces/<id>`: the
+        // same memory, once.
+        let pid = format!("p-{tag}");
+        std::fs::write(
+            mirror.join("projects.json"),
+            serde_json::json!([{ "id": pid, "name": "Marked away" }]).to_string(),
+        )
+        .unwrap();
+        let p = host.project(Some(&pid)).unwrap().unwrap();
+        let turn = host
+            .spec_for(Some(&p), &Session::new())
+            .append_system_prompt
+            .unwrap_or_default();
+        assert_eq!(count(&turn, &mac), 1, "{turn}");
+        assert_eq!(count(&turn, &server), 0, "{turn}");
+
+        // The chat's own memory text wins over the Mac's.
+        let mut own = Session::new();
+        own.record_user("q");
+        context_ops::set_layer_text(&mut own, SegmentKind::UserMemory, Some("mine".into()))
+            .unwrap();
+        let turn = host
+            .spec_for(None, &own)
+            .append_system_prompt
+            .unwrap_or_default();
+        assert!(turn.contains("mine"), "{turn}");
+        assert_eq!(count(&turn, &mac), 0, "{turn}");
+
+        // An emptied mirror copy: no memory, and not the server's.
+        std::fs::write(mirror.join("AGENTS.md"), "  \n").unwrap();
+        let (turn, view, sources) = memory_seen(&host);
+        assert_eq!(count(&turn, &server), 0, "{turn}");
+        assert_eq!(count(&view, &server), 0, "{view}");
+        assert!(!turn.contains("<user-instructions>"), "{turn}");
+        assert!(sources["user_memory"].is_null(), "{sources}");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Item 274: with no mirror copy, a turn reads the server's own
+    /// `<home>/AGENTS.md` as memory, once — no longer a second time as
+    /// project instructions from the walk — and a real project file in
+    /// the folder still reaches the turn; the Context page agrees.
+    #[tokio::test]
+    async fn serve_reads_its_own_memory_once_without_a_mirror_copy() {
+        let tag = uuid::Uuid::new_v4().simple().to_string();
+        let (host, root) = prompt_host(None);
+        let server = format!("server-memory-{tag}");
+        let rules = format!("folder-rules-{tag}");
+        std::fs::write(root.join("AGENTS.md"), &server).unwrap();
+        std::fs::write(root.join("ws").join("AGENTS.md"), &rules).unwrap();
+
+        let (turn, view, sources) = memory_seen(&host);
+        assert_eq!(count(&turn, &server), 1, "{turn}");
+        assert_eq!(count(&view, &server), 1, "{view}");
+        let memory_at = turn.find("<user-instructions>").expect("memory layer");
+        assert!(turn.find(&server).unwrap() > memory_at, "{turn}");
+        assert_eq!(count(&turn, &rules), 1, "{turn}");
+        assert_eq!(count(&view, &rules), 1, "{view}");
+        assert_eq!(
+            sources["user_memory"],
+            serde_json::json!(server),
+            "{sources}"
+        );
+        assert_eq!(
+            sources["project_instructions"],
+            serde_json::json!(rules),
+            "{sources}"
+        );
 
         let _ = std::fs::remove_dir_all(root);
     }
