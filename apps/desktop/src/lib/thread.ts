@@ -6,6 +6,7 @@
  * cases.
  */
 import type { ChatMode, SessionEvent, ThreadInfo } from "./types";
+import type { SidebarRow } from "./forkTree";
 
 /** A slug names a folder: lowercase letters, digits, `-` and `_`, starting
  *  with a letter or digit, at most 64 characters. Never a path. */
@@ -115,4 +116,95 @@ export interface ThreadChip {
 export function threadChip(bound: string | null, hasProject: boolean, mode: ChatMode): ThreadChip | null {
   if (!hasProject || mode === "ephemeral") return null;
   return bound ? { label: `◇ ${bound}`, bound: true } : { label: "Thread", bound: false };
+}
+
+// ---- threads in the sidebar (nightshift backlog 288) ----
+
+/** One thread's group in the sidebar: its row, and the chats bound to it. */
+export interface ThreadGroup {
+  slug: string;
+  /** The thread's name, the slug when it has none. */
+  title: string;
+  /** Its Start-here status line ("As of …"), empty when it has none. */
+  status: string;
+  /** A slug chats are bound to that the project has no thread.md for. */
+  missing: boolean;
+  /** Its chats' rows, in the list's order (newest first), forks under their origin. */
+  rows: SidebarRow[];
+  /** How many chats are bound to it (top-level rows). */
+  chats: number;
+  /** Its chats are shown. */
+  open: boolean;
+}
+
+/** The key a thread's collapsed state is kept under: per project. */
+export function threadKey(project: string, slug: string): string {
+  return `${project}/${slug}`;
+}
+
+/** Where the sidebar keeps which thread groups are closed, across launches. */
+export const THREADS_CLOSED_KEY = "nightloom.threadsClosed";
+
+/**
+ * The sidebar's rows split by thread: a group per thread of the project
+ * (the backend's order, most recently touched first — empty ones too, so a
+ * thread can be dropped onto and started from), then a group per slug a
+ * chat is bound to that the project no longer has (marked missing, so a
+ * binding never hides), and the unbound chats as before. A chat's forks
+ * stay under it, in its group, whatever their own binding. A closed group
+ * holding the open chat shows open, as a closed fork group does.
+ */
+export function threadGroups(
+  rows: SidebarRow[],
+  threads: ThreadInfo[],
+  closed: ReadonlySet<string>,
+  project: string,
+  active: string | null = null,
+): { groups: ThreadGroup[]; loose: SidebarRow[] } {
+  const groups = new Map<string, ThreadGroup>();
+  const group = (slug: string, info?: ThreadInfo): ThreadGroup => {
+    let g = groups.get(slug);
+    if (!g) {
+      g = {
+        slug,
+        title: info?.title || slug,
+        status: info?.status ?? "",
+        missing: !info,
+        rows: [],
+        chats: 0,
+        open: !closed.has(threadKey(project, slug)),
+      };
+      groups.set(slug, g);
+    }
+    return g;
+  };
+  for (const t of threads) group(t.slug, t);
+  const loose: SidebarRow[] = [];
+  let into: SidebarRow[] = loose;
+  for (const r of rows) {
+    if (r.depth === 0) {
+      const slug = r.meta.thread;
+      if (slug) {
+        const g = group(slug, threads.find((t) => t.slug === slug));
+        g.chats++;
+        into = g.rows;
+      } else {
+        into = loose;
+      }
+    }
+    into.push(r);
+  }
+  for (const g of groups.values()) {
+    if (!g.open && active && g.rows.some((r) => r.meta.id === active)) g.open = true;
+  }
+  return { groups: [...groups.values()], loose };
+}
+
+/** The tooltip that says the two weights apart (backlog 288): this one is light. */
+export function newInThreadTip(slug: string): string {
+  return (
+    `A new chat bound to ◇ ${slug}: its Start here loaded, the thread's read order in the box, unsent. ` +
+    "No wrap-up runs — the chat you are in stays as it is. " +
+    "To hand this chat's work over first, use Wrap up → Continue: a wrap-up turn updates the thread's files, then the next chat opens."
+  );
 }

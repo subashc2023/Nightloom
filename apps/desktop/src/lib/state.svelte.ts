@@ -10,7 +10,9 @@ import {
   noteThreadFlags,
   readOrder,
   resetHandoff,
+  THEN_HIS_ASK,
   threadFor,
+  threadReadOrder,
 } from "./handoff.svelte";
 import { replaceStartHere, threadOfEvents } from "./thread";
 import type { AsideFold, FoldRecord } from "./asideFold";
@@ -5237,6 +5239,65 @@ async function applyThread(slug: string | null): Promise<boolean> {
   }
   await applyDraft();
   void refreshSessions();
+  return true;
+}
+
+/**
+ * Move a listed chat into a thread, or out of its thread (null) — the
+ * sidebar's drag and its row menu's *Move to thread ▸* / *Remove from
+ * thread* (nightshift backlog 288). The open chat goes the picker's way
+ * (`setChatThread`: the reconnect that loads the thread layer, undoable);
+ * any other chat gets the same `thread` line on its log through the
+ * backend, and its row moves at once. Only a log line is written, so a
+ * failed or refused move leaves the chat where it was — never dropped.
+ */
+export async function moveChatToThread(id: string, slug: string | null): Promise<boolean> {
+  const wanted = slug || null;
+  if (id === app.activeSessionId) {
+    if (chatThread(app.events) === wanted) return true;
+    if (app.busy || app.connecting) {
+      addToast("This chat is running a turn — move it when the turn ends");
+      return false;
+    }
+    return setChatThread(wanted);
+  }
+  const row = app.sessions.find((s) => s.id === id);
+  if (row && (row.thread ?? null) === wanted) return true;
+  try {
+    await api.setSessionThread(id, wanted);
+  } catch (e) {
+    addToast(String(e));
+    return false;
+  }
+  if (row) row.thread = wanted ?? undefined;
+  noteThread(id, wanted);
+  void refreshSessions();
+  return true;
+}
+
+/**
+ * *New chat in this thread* (nightshift backlog 288) — the light hand-off:
+ * a new chat of the project's default kind, bound to `slug` at once (its
+ * log is made then, as a binding on a pending chat makes it), so the
+ * connect loads the thread layer; the thread's read order in its box,
+ * unsent, ending "do what I ask below" since no wrap-up ran and there is
+ * no start prompt. The chat he was in is left as it is — no wrap-up turn,
+ * no upkeep (a chat bound to the thread may still be writing it). A draft
+ * typed on the plain New chat stays under its own key.
+ */
+export async function newChatInThread(slug: string): Promise<boolean> {
+  if (!app.project) return false;
+  if (app.busy || app.connecting) {
+    addToast("A turn is running — start the new chat in this thread when it ends");
+    return false;
+  }
+  await newSession();
+  if (app.activeSessionId !== null) return false;
+  if (!(await applyThread(slug))) return false;
+  const id = app.activeSessionId;
+  if (!id) return false;
+  setDraftText(id, threadReadOrder(slug, THEN_HIS_ASK));
+  requestComposerFocus();
   return true;
 }
 

@@ -9,13 +9,23 @@
    * project (threads live in one) or in an ephemeral chat (no log to bind
    * in). The Context page's Thread card and the hand-off picker stay.
    */
-  import { app, chatMode, chatThread } from "./state.svelte";
-  import { threadChip } from "./thread";
+  import { app, chatMode, chatThread, newChatInThread } from "./state.svelte";
+  import { newInThreadTip, threadChip } from "./thread";
   import { portal } from "./portal";
   import { tip } from "./tip";
   import ThreadPicker from "./ThreadPicker.svelte";
 
-  const chip = $derived(threadChip(chatThread(app.events), app.project !== null, chatMode(app.events)));
+  const bound = $derived(chatThread(app.events));
+  const chip = $derived(threadChip(bound, app.project !== null, chatMode(app.events)));
+
+  // *New chat in this thread* (backlog 288), the card's first row on a
+  // bound chat: the light hand-off — no wrap-up turn here.
+  async function newInThread(): Promise<void> {
+    const slug = bound;
+    if (!slug) return;
+    open = false;
+    await newChatInThread(slug);
+  }
 
   let open = $state(false);
   let chipEl = $state<HTMLElement | null>(null);
@@ -90,6 +100,21 @@
     use:portal
     style="top: {pos.top}px; left: {pos.left}px; width: {WIDTH}px"
   >
+    {#if bound}
+      <button
+        class="tc-new"
+        disabled={app.busy || app.connecting}
+        use:tip={newInThreadTip(bound)}
+        onclick={() => void newInThread()}
+      >
+        <span class="tc-plus" aria-hidden="true">+</span>
+        <span class="tc-new-text">
+          <span class="tc-new-name">New chat in this thread</span>
+          <span class="tc-new-line">read order in the box, unsent · no wrap-up</span>
+        </span>
+      </button>
+      <div class="tc-sep"></div>
+    {/if}
     <div class="tc-head">Research thread</div>
     <ThreadPicker list onpicked={() => (open = false)} />
   </div>
@@ -152,5 +177,50 @@
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: var(--dim);
+  }
+  .tc-new {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 7px 8px;
+    background: transparent;
+    border: 1px solid var(--line2);
+    border-radius: 8px;
+    color: var(--ink);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .tc-new:hover:not(:disabled) {
+    border-color: var(--accent);
+    background: var(--well);
+  }
+  .tc-new:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .tc-plus {
+    flex: none;
+    width: 1.1em;
+    color: var(--accent);
+    font-size: 14px;
+    line-height: 1.1;
+  }
+  .tc-new-text {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .tc-new-name {
+    font-size: 12.5px;
+  }
+  .tc-new-line {
+    font-size: 11px;
+    color: var(--dim);
+  }
+  .tc-sep {
+    height: 1px;
+    background: var(--line);
+    margin: 0 4px;
   }
 </style>

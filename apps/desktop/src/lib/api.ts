@@ -603,6 +603,15 @@ export function setChatThread(thread: string | null): Promise<SessionEvent[]> {
   return invoke("set_chat_thread", { thread });
 }
 
+/**
+ * Bind any listed chat (not the open one) to a thread, or unbind it with
+ * null (nightshift backlog 288: the sidebar's drag and row menu). Writes
+ * the same `thread` event; refused while that chat runs a turn.
+ */
+export function setSessionThread(id: string, thread: string | null): Promise<void> {
+  return invoke("set_session_thread", { id, thread });
+}
+
 /** The open project's research threads, most recently touched first. */
 export function listThreads(): Promise<ThreadInfo[]> {
   return invoke("list_threads");
