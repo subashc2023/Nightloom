@@ -62,6 +62,14 @@
 //! card shows the plan, and the approval's resume is run in `plan` mode
 //! still (the tool errors "not in plan mode" under any other) with the
 //! chat's next position decided by the card ([`PlanThen`]).
+//!
+//! **The Auto position asks questions too** (2026-10-03, nightshift
+//! backlog 294): the same hook and prompt tool under `--permission-mode
+//! auto`, the hook on [`AUTO_MATCHER`] — `AskUserQuestion` alone — so the
+//! model's question shows the card and every other call stays the
+//! classifier's. The plan tools the flag also offers are refused there in
+//! words ([`PLAN_TOOLS_ON_AUTO`]); a subagent's question is refused in
+//! every position ([`SUBAGENT_QUESTION_DENIED`]).
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -149,6 +157,41 @@ pub const MATCHER: &str = "Bash|Write|Edit|MultiEdit|NotebookEdit|WebFetch|WebSe
 
 /// The plan tool's name, as the CLI reports it in `deferred_tool_use`.
 pub const EXIT_PLAN_TOOL: &str = "ExitPlanMode";
+
+/// The model's multiple-choice question, as the CLI names the tool.
+pub const QUESTION_TOOL: &str = "AskUserQuestion";
+
+/// The hook's matcher on the Auto position (nightshift backlog 294,
+/// 2026-10-03): the question alone. The prompt tool is named on Auto too,
+/// so the CLI offers `AskUserQuestion`; a call defers, the window shows
+/// the same question card as under Ask, and the resume carries his
+/// answers in `updatedInput`. Every other call is the CLI's `auto` mode's
+/// to decide, unpaused — the hook is not even run for it.
+pub const AUTO_MATCHER: &str = "AskUserQuestion";
+
+/// The plan tools, which the prompt tool's flag offers on Auto as well
+/// (the CLI lists all three or none, 084's M1). Refused there by an
+/// `echo` hook ([`PLAN_TOOLS_ON_AUTO`]): an `EnterPlanMode` the classifier
+/// let through would leave the chat in plan mode with an `ExitPlanMode`
+/// nobody's hook defers, which headless is the prompt tool's refusal — a
+/// chat that can no longer edit. Nightshift blocker 1030 has the default.
+pub const PLAN_TOOLS_MATCHER: &str = "EnterPlanMode|ExitPlanMode";
+
+/// The Auto position's line in the system prompt (backlog 294, nightshift
+/// blocker 1034): the Ask position's `<ask-note>` cut to what is true on
+/// Auto — the question pauses, nothing else does. The CLI's own tool
+/// description assumes a terminal.
+pub const AUTO_NOTE: &str = "<ask-note>\nA person is watching this chat in Nightloom: AskUserQuestion shows them a form and the turn waits for their answer; every other call runs without pausing. When a choice is theirs to make — a design call, a tradeoff, an ambiguous request — ask with AskUserQuestion rather than guessing.\n</ask-note>";
+
+/// What the model reads when it reaches for a plan on Auto.
+pub const PLAN_TOOLS_ON_AUTO: &str = "This chat is on Auto, where plans are not offered: carry on without one, or ask the user with AskUserQuestion whether to switch the chat to Plan.";
+
+/// What a subagent's `AskUserQuestion` is refused with, in every position
+/// (backlog 294, nightshift blocker 1031). A subagent's call is never
+/// deferred — the CLI drops a deferral at that depth (see [`decide`]) — and
+/// an `allow` with no answers in it would hand the subagent an empty form.
+/// So the question goes back to the parent, which can ask.
+pub const SUBAGENT_QUESTION_DENIED: &str = "a subagent cannot ask the user — put the question and its options in your report, and the main conversation will ask";
 
 /// The matcher for the one resume that leaves plan mode for the Auto
 /// position (2026-09-16, backlog 085): the hook is registered for the
@@ -622,7 +665,10 @@ impl HookReply {
 /// only position until the switch. A standing "allow for this chat" rule
 /// still covers it, checked first; whether it should is blocker 100's
 /// question. The hook still sees every subagent call either way (the
-/// item's "not to do": never bypass the hook).
+/// item's "not to do": never bypass the hook). A subagent's
+/// `AskUserQuestion` is refused under either position of the switch
+/// ([`SUBAGENT_QUESTION_DENIED`], backlog 294): allowed, it would run with
+/// no answers in it.
 pub fn decide(dir: &Path, stdin_json: &str) -> HookReply {
     let input: HookInput = match serde_json::from_str(stdin_json) {
         Ok(i) => i,
@@ -642,6 +688,11 @@ pub fn decide(dir: &Path, stdin_json: &str) -> HookReply {
         return HookReply::allow(None);
     }
     if input.agent_id.as_deref().is_some_and(|id| !id.is_empty()) {
+        // A subagent's question goes back to the parent (backlog 294,
+        // blocker 1031), whatever the switch says.
+        if input.tool_name == QUESTION_TOOL {
+            return HookReply::deny(SUBAGENT_QUESTION_DENIED.into());
+        }
         return if rules.subagents_auto.unwrap_or(SUBAGENTS_AUTO_DEFAULT) {
             HookReply::allow(None)
         } else {
@@ -931,6 +982,34 @@ mod tests {
         assert_eq!(decide(&dir, &bash), HookReply::allow(None));
         ask.set_subagents_auto(false).unwrap();
         assert_eq!(decide(&dir, &bash).decision(), "deny");
+    }
+
+    /// A subagent's question (backlog 294, blocker 1031): refused with the
+    /// reason that sends it to the parent, under either position of the
+    /// switch — never deferred (dropped at depth) and never allowed empty.
+    /// The main conversation's question defers, which is the card.
+    #[test]
+    fn a_subagents_question_goes_back_to_the_parent() {
+        let dir = scratch();
+        let ask = AskDir::new(&dir);
+        let question = STDIN
+            .replace(r#""tool_name":"Write""#, r#""tool_name":"AskUserQuestion""#)
+            .replace(
+                r#""tool_input":{"file_path":"/tmp/b.txt","content":"hello"}"#,
+                r#""tool_input":{"questions":[{"question":"Which?","options":[{"label":"A"},{"label":"B"}]}]}"#,
+            );
+        assert_eq!(decide(&dir, &question), HookReply::defer());
+        let from_subagent = question.replacen(
+            r#""permission_mode":"acceptEdits""#,
+            r#""permission_mode":"auto","agent_id":"ae0b73db3d9ffbc33""#,
+            1,
+        );
+        for on in [true, false] {
+            ask.set_subagents_auto(on).unwrap();
+            let reply = decide(&dir, &from_subagent);
+            assert_eq!(reply.decision(), "deny", "switch {on}");
+            assert_eq!(reply.reason(), Some(SUBAGENT_QUESTION_DENIED));
+        }
     }
 
     /// "Allow for this chat" is a rule that outlives the decision: the

@@ -378,18 +378,23 @@ impl RailSettings {
 
     /// The Ask / Plan position and *subagents on auto*, on a spec whose Ask
     /// hook is already set (the desktop's mapping: Plan only with Ask; Ask
-    /// off is no hook, the CLI's `auto`, and the MCP server without
-    /// `--ask`). Nothing to do on a spec with no hook — this binary could
-    /// not be the hook, so nothing was ever asked.
+    /// off is the Auto position, the CLI's `auto` with the hook on the
+    /// model's question alone — nightshift backlog 294; ~~no hook, and the
+    /// MCP server without `--ask`~~ until 2026-10-03). Nothing to do on a
+    /// spec with no hook — this binary could not be the hook, so nothing
+    /// was ever asked. A spec not on `auto` (the switch's Off) with Ask off
+    /// still loses the hook and `--ask`.
     pub fn apply_ask(&self, spec: &mut AgentSpec) {
-        if !self.ask {
+        if !self.ask && spec.permission_mode.as_deref() != Some("auto") {
             if spec.ask.take().is_some() {
                 spec.mcp_config = spec.mcp_config.take().map(|c| without_ask_flag(&c));
             }
             return;
         }
         if let Some(ask) = spec.ask.as_mut() {
-            ask.mode = if self.plan {
+            ask.mode = if !self.ask {
+                crate::agent::AskMode::Auto
+            } else if self.plan {
                 crate::agent::AskMode::Plan
             } else {
                 crate::agent::AskMode::Ask
