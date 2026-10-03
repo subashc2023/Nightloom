@@ -58,6 +58,8 @@
   import { thinkingToggleDead } from "./lib/activity";
   import { initZoom, runZoom, zoomChord } from "./lib/zoom";
   import { findChord } from "./lib/find";
+  import { isFocusChord, mayCmdL } from "./lib/composerCaret";
+  import { summonComposer } from "./lib/composerSummon.svelte";
   import FindBar from "./lib/FindBar.svelte";
   import Grip from "./lib/Grip.svelte";
   import Sidebar from "./lib/Sidebar.svelte";
@@ -503,6 +505,17 @@
       // The Context page has its own bar (backlog 242): ⌘F over it opens
       // that one, never the transcript's behind the modal.
       if (!app.showContext) void findBar?.show();
+      return true;
+    }
+    // ⌘L (Ctrl+L elsewhere) puts the focus in the open chat's box, its
+    // kept caret back, else the end of the draft (nightshift backlog 290).
+    // Unbound before: no menu accelerator, no handler, and CodeMirror's
+    // selectLine is Alt-L / Ctrl-L on macOS. From a text field too — it is
+    // an explicit ask — but not under a modal, and not from the terminal,
+    // whose shell owns Ctrl+L.
+    if (isFocusChord(e, isMac)) {
+      if (!mayCmdL(document as never)) return false;
+      summonComposer();
       return true;
     }
     // Tabs (nightshift backlog 099): ⌘T, ⌘W, ⌘⇧], ⌘⇧[ are File and View

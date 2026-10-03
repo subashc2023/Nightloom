@@ -100,6 +100,7 @@
     addAttachment,
     clearDraft,
     draftKey,
+    draftSelection,
     dropQueued,
     enqueueMessage,
     historyFor,
@@ -110,6 +111,7 @@
     requeueFront,
     restoreDraft,
     setDraftAttachments,
+    setDraftSelection,
     setDraftText,
     shiftQueue,
     takeBackQueued,
@@ -130,6 +132,8 @@
   import { composerConnectHint, launch as launchState } from "./launch.svelte";
   import { hasQuoteLine, insertQuote, mirrorLines, replyRequest, takeReply } from "./replyQuote.svelte";
   import { composerFocus } from "./rewindDraft.svelte";
+  import { CaretKeeper, mayAutoFocus } from "./composerCaret";
+  import { chatBoxCount, chatBoxMounted, composerSummon } from "./composerSummon.svelte";
   import { requestWrapUp } from "./wrapAsides.svelte";
   // Backlog 283: the same composer in an aside.
   import {
@@ -156,6 +160,7 @@
     aside = null,
     asideChat = null,
     compact = false,
+    takeFocus = undefined,
   }: {
     floating?: boolean;
     /**
@@ -177,6 +182,12 @@
     asideChat?: string | null;
     /** The floating card: a shorter box, so the card keeps its thread. */
     compact?: boolean;
+    /**
+     * Take the focus when a chat arrives (backlog 290): the chat's box and
+     * an aside tab's, not a floating aside card's — that one sits beside
+     * the chat and would pull the focus off its box.
+     */
+    takeFocus?: boolean;
   } = $props();
 
   /**
@@ -798,6 +809,75 @@
       if (!ta) return;
       ta.focus();
       ta.selectionStart = ta.selectionEnd = ta.value.length;
+      autogrow();
+    });
+  });
+
+  /*
+   * The caret, per draft key, and the focus when a chat arrives (nightshift
+   * backlog 290; the logic is `composerCaret.ts`). The caret is kept in the
+   * drafts store beside the text as he moves it, and once more just before
+   * the key changes (`$effect.pre` runs while the box still shows the old
+   * draft). A key arriving — this box mounting, a chat switch, a new chat,
+   * Ctrl+Tab, Continue — puts its caret back and takes the focus, unless
+   * another field, a modal, a menu or the find bar has it.
+   */
+  let root = $state<HTMLDivElement | null>(null);
+  /** The chat's box and an aside tab's take the focus; a floating card's does not. */
+  const wantsFocus = $derived(takeFocus ?? aside === null);
+  const keeper = new CaretKeeper({ get: draftSelection, set: setDraftSelection });
+  let shownKey: string | null = null;
+  /** The box's text just before the key changed. */
+  let valueBefore: string | null = null;
+  /** A pointer press inside the box just now: its focus is the click's. */
+  let pointerDown = false;
+  function recordCaret(): void {
+    keeper.record(key, ta, text);
+  }
+  $effect.pre(() => {
+    const k = key;
+    untrack(() => {
+      if (shownKey !== null && shownKey !== k) {
+        valueBefore = ta?.value ?? null;
+        keeper.record(shownKey, ta, readDraft(shownKey).text);
+      }
+    });
+  });
+  $effect(() => {
+    const k = key;
+    untrack(() => {
+      if (shownKey === k) return;
+      shownKey = k;
+      keeper.arrive(k);
+      void tick().then(() => {
+        if (key !== k || !ta || typeof document === "undefined") return;
+        const box = boxElement(ta);
+        const had = !!box && !!document.activeElement && box.contains(document.activeElement);
+        // Typing on through the switch (the first send's draft moving to
+        // the chat it made): the caret is his already.
+        if (had && valueBefore !== null && valueBefore === ta.value) keeper.settle(k);
+        valueBefore = null;
+        if (had || (wantsFocus && !ta.closest("[inert]") && mayAutoFocus(document as never, root))) {
+          keeper.focus(k, ta, had, false);
+          autogrow();
+        }
+      });
+    });
+  });
+  // ⌘L (backlog 290): the chat's box — or an aside tab's, when no chat
+  // box is drawn; never a floating aside card's.
+  $effect(() => (aside ? undefined : untrack(() => chatBoxMounted())));
+  let summonSeen = untrack(() => composerSummon.seq);
+  $effect(() => {
+    const seq = composerSummon.seq;
+    if (seq === summonSeen) return;
+    summonSeen = seq;
+    if (aside && (!wantsFocus || untrack(() => chatBoxCount()) > 0)) return;
+    untrack(() => {
+      if (!ta) return;
+      const box = boxElement(ta);
+      const had = !!box && !!document.activeElement && box.contains(document.activeElement);
+      keeper.focus(key, ta, had, true);
       autogrow();
     });
   });
@@ -2095,6 +2175,7 @@
 </script>
 
 <div
+  bind:this={root}
   class="composer"
   class:floating
   class:aside={aside !== null}
@@ -2320,7 +2401,26 @@
         <span class="ghost-key">Tab</span>
       </button>
     {/if}
-    <div class="ta-wrap">
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="ta-wrap"
+      onkeyup={recordCaret}
+      onmouseup={() => {
+        recordCaret();
+        pointerDown = false;
+      }}
+      onmousedown={() => (pointerDown = true)}
+      onselect={recordCaret}
+      oninput={recordCaret}
+      onfocusin={() => {
+        if (ta) keeper.focusIn(key, ta, pointerDown);
+        recordCaret();
+      }}
+      onfocusout={() => {
+        recordCaret();
+        pointerDown = false;
+      }}
+    >
     {#if composerFormat.on}
       <!-- Item 276: the same draft with its formatting drawn in place —
            math typeset, bold / italic / headings styled, the source back

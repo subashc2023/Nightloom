@@ -171,7 +171,7 @@
     <div class="aside-view-foot">
       <div class="aside-view-foot-inner">
         <!-- Since backlog 283 the chat's composer, in the aside's frame. -->
-        <Composer {aside} asideChat={session} />
+        <Composer {aside} asideChat={session} takeFocus />
       </div>
     </div>
   {/if}

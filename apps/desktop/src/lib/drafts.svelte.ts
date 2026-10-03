@@ -93,6 +93,28 @@ export interface Draft {
   attachments: Attachment[];
   /** Messages sent during a turn, oldest first; empty when none. */
   queue: QueuedMessage[];
+  /**
+   * Where the caret and selection were in the box (backlog 290): offsets
+   * into `text`, kept with the draft so a switch back, a reload and a quit
+   * all put the caret where he left it. Absent until he has placed one.
+   * Read through `clampSel` — never trusted past the text's length, and
+   * never a reason to change the text.
+   */
+  sel?: DraftSel;
+}
+
+/** A caret (`start === end`) or a selection, in characters of the draft. */
+export interface DraftSel {
+  start: number;
+  end: number;
+}
+
+function readSel(v: unknown): DraftSel | undefined {
+  if (v === null || typeof v !== "object") return undefined;
+  const m = v as Record<string, unknown>;
+  const ok = (n: unknown): n is number => typeof n === "number" && Number.isInteger(n) && n >= 0;
+  if (!ok(m.start) || !ok(m.end)) return undefined;
+  return { start: Math.min(m.start, m.end), end: Math.max(m.start, m.end) };
 }
 
 /** One held message: what a send would have carried, plus a row id. */
@@ -193,13 +215,14 @@ export function loadDrafts(storage: Pick<Storage, "getItem"> = localStorage): Re
       const text = typeof d.text === "string" ? d.text : "";
       const attachments = Array.isArray(d.attachments) ? d.attachments.filter(isAttachment) : [];
       const queue = readQueue(d.queue);
+      const sel = readSel(d.sel);
       if (!text && attachments.length === 0 && queue.length === 0) continue;
       // The pre-094 pending key, read once into the unfiled ordinary slot.
       // Appended if that slot is already in the store, so neither is lost.
       const k = raw_k === LEGACY_NEW_DRAFT_KEY ? newDraftKey(null) : raw_k;
       const prior = out[k];
       if (!prior) {
-        out[k] = { text, attachments, queue };
+        out[k] = sel ? { text, attachments, queue, sel } : { text, attachments, queue };
       } else {
         prior.text = prior.text ? (text ? `${prior.text}\n${text}` : prior.text) : text;
         prior.attachments.push(...attachments);
@@ -251,6 +274,7 @@ export function serializeDrafts(map: Record<string, Draft>): string {
       text: d.text,
       attachments: keep(d.attachments),
       queue: queue.map((q) => ({ id: q.id, text: q.text, attachments: keep(q.attachments) })),
+      ...(d.sel ? { sel: { start: d.sel.start, end: d.sel.end } } : {}),
     };
   }
   return JSON.stringify(out);
@@ -274,6 +298,7 @@ export function saveDrafts(
           text: d.text,
           attachments: pastedOnly(d.attachments),
           queue: (d.queue ?? []).map((q) => ({ id: q.id, text: q.text, attachments: pastedOnly(q.attachments) })),
+          ...(d.sel ? { sel: d.sel } : {}),
         };
       storage.setItem(KEY, serializeDrafts(bare));
     } catch {
@@ -363,6 +388,27 @@ export function setDraftText(key: string, text: string): void {
   schedule();
 }
 
+/**
+ * Keep where the caret is (backlog 290). Only on an entry that exists: an
+ * empty box has nowhere else for the caret to be, so it never makes one —
+ * and it never touches the text.
+ */
+export function setDraftSelection(key: string, start: number, end: number): void {
+  const d = drafts[key];
+  if (!d) return;
+  const a = Math.max(0, Math.min(start, end));
+  const b = Math.max(0, Math.max(start, end));
+  if (d.sel && d.sel.start === a && d.sel.end === b) return;
+  d.sel = { start: a, end: b };
+  schedule();
+}
+
+/** The kept caret, as stored (unclamped); null when none. */
+export function draftSelection(key: string): DraftSel | null {
+  const s = drafts[key]?.sel;
+  return s ? { start: s.start, end: s.end } : null;
+}
+
 export function addAttachment(key: string, a: Attachment): void {
   draftFor(key).attachments.push(a);
   schedule();
@@ -403,6 +449,7 @@ export function clearDraft(key: string): void {
   } else {
     d.text = "";
     d.attachments = [];
+    delete d.sel;
   }
   schedule();
 }
@@ -497,7 +544,12 @@ export function moveDraft(from: string, to: string): void {
   if (!src) return;
   const dst = drafts[to];
   if (!dst) {
-    drafts[to] = { text: src.text, attachments: src.attachments.slice(), queue: src.queue.slice() };
+    drafts[to] = {
+      text: src.text,
+      attachments: src.attachments.slice(),
+      queue: src.queue.slice(),
+      ...(src.sel ? { sel: { ...src.sel } } : {}),
+    };
   } else {
     dst.text = dst.text ? (src.text ? `${dst.text}\n${src.text}` : dst.text) : src.text;
     dst.attachments.push(...src.attachments);
