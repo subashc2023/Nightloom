@@ -513,15 +513,21 @@ export function threadWrapUp(slug: string, flags: readonly string[] = []): strin
 }
 
 /** The read order a bound chat's continuation opens with. */
-export function threadReadOrder(slug: string): string {
+export function threadReadOrder(slug: string, then: string = THEN_START_PROMPT): string {
   const dir = threadDir(slug);
   return (
     `This chat continues the research thread ${dir}/. Its "## Start here" is in your context as the thread layer (if it is not, read that section of ${dir}/thread.md first). Then read, one per command and by line range rather than whole:\n` +
     `1. the "## Queue" section of ${dir}/thread.md;\n` +
     `2. the newest entry of ${dir}/log.md.\n` +
-    "Read the rest of thread.md, the notes it points at, and source chats (read_chat at the cited event) only when a task needs them. Then do what the start prompt below says."
+    `Read the rest of thread.md, the notes it points at, and source chats (read_chat at the cited event) only when a task needs them. ${then}`
   );
 }
+
+/** The read order's last sentence after a wrap-up: a start prompt follows. */
+export const THEN_START_PROMPT = "Then do what the start prompt below says.";
+/** Its last sentence for *New chat in this thread* (backlog 288): no wrap-up
+ *  ran, so there is no start prompt — he types what to do under it. */
+export const THEN_HIS_ASK = "Then do what I ask below.";
 
 /** The choice, pure: the chat's own text (blank included), else the
  *  thread's, else the default. */

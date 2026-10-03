@@ -9,6 +9,9 @@
     addToast,
     deleteSession,
     endContentDrag,
+    droppedContent,
+    moveChatToThread,
+    newChatInThread,
     startContentDrag,
     enableNightshift,
     MODE_GLYPH,
@@ -29,6 +32,9 @@
   import { hasDraft, newDraftKey } from "./drafts.svelte";
   import TerminalButton from "./TerminalButton.svelte";
   import { forkLine } from "./edit";
+  import type { SidebarRow } from "./forkTree";
+  import { THREADS_CLOSED_KEY, newInThreadTip, threadGroups, threadKey } from "./thread";
+  import type { ThreadInfo } from "./types";
   import {
     sidebarRows,
     loadOpen as loadForksOpen,
@@ -96,6 +102,93 @@
   function toggleForks(id: string) {
     forksOpen = toggledForks(forksOpen, id);
     saveForksOpen(forksOpen);
+  }
+
+  // Threads in the sidebar (nightshift backlog 288): under the project, a
+  // group per research thread — its name and Start-here status line, its
+  // bound chats inside, newest first — then the chats in no thread, as
+  // before. Which groups are closed is kept per project and thread across
+  // launches; a closed group holding the open chat shows anyway.
+  let threads = $state<ThreadInfo[]>([]);
+  let threadsClosed = $state<Set<string>>(loadForksOpen(THREADS_CLOSED_KEY));
+  const projectKey = $derived(app.project?.id ?? "");
+  const split = $derived(
+    app.project
+      ? threadGroups(rows, threads, threadsClosed, projectKey, app.activeSessionId)
+      : { groups: [], loose: rows },
+  );
+  const groups = $derived(split.groups);
+  const loose = $derived(split.loose);
+  // Re-read the project's threads when the project changes and whenever
+  // the listing does (a binding, a new thread from the picker, a wrap-up).
+  $effect(() => {
+    void projectKey;
+    void app.sessions;
+    if (!app.project) {
+      threads = [];
+      return;
+    }
+    api.listThreads().then(
+      (t) => (threads = t),
+      () => {},
+    );
+  });
+  function toggleThread(slug: string) {
+    threadsClosed = toggledForks(threadsClosed, threadKey(projectKey, slug));
+    saveForksOpen(threadsClosed, THREADS_CLOSED_KEY);
+  }
+
+  // A chat row dragged onto a thread's group binds it there; onto "Not in
+  // a thread", unbinds it — the same `thread` line the picker writes
+  // (`moveChatToThread`). The drag is the tab drag's (`{kind: "chat"}`),
+  // so it still opens a tab or a pane when dropped there instead. Only a
+  // log line is written: a refused move leaves the chat where it was.
+  let dropOn = $state<string | null>(null);
+  function threadOfRow(id: string): string | null {
+    return app.sessions.find((s) => s.id === id)?.thread ?? null;
+  }
+  function overDrop(e: DragEvent, slug: string | null) {
+    const c = app.draggingContent;
+    if (!app.project || c?.kind !== "chat" || !c.session) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+    const target = slug ?? "";
+    const here = (threadOfRow(c.session) ?? "") === target;
+    dropOn = here ? null : target;
+  }
+  function leaveDrop(e: DragEvent) {
+    const el = e.currentTarget as HTMLElement;
+    if (e.relatedTarget instanceof Node && el.contains(e.relatedTarget)) return;
+    dropOn = null;
+  }
+  function onDropChat(e: DragEvent, slug: string | null) {
+    dropOn = null;
+    const c = droppedContent(e);
+    if (!app.project || c?.kind !== "chat" || !c.session) return;
+    e.preventDefault();
+    e.stopPropagation();
+    endContentDrag();
+    void moveChatToThread(c.session, slug);
+  }
+  $effect(() => {
+    if (!app.draggingContent) dropOn = null;
+  });
+
+  // The row menu's *Move to thread ▸*: opens the project's threads inside
+  // the menu; one click binds.
+  let moveOpen = $state(false);
+  $effect(() => {
+    if (!rowMenu) moveOpen = false;
+  });
+  function rowMove(slug: string | null) {
+    const s = rowMenu?.s;
+    rowMenu = null;
+    if (s) void moveChatToThread(s.id, slug);
+  }
+  function startInThread(slug: string) {
+    kinds = false;
+    void newChatInThread(slug);
   }
 
   function confirmDelete() {
@@ -351,6 +444,110 @@
 
 <svelte:window onkeydown={windowKeys} />
 
+  {#snippet chatRow(r: SidebarRow, group: string | null = null)}
+    {@const s = r.meta}
+    <div class="session-item" class:active={s.id === app.activeSessionId} class:fork={r.depth > 0} style:--depth={r.depth > 0 ? r.depth : undefined}>
+      {#if renaming === s.id}
+        <!-- svelte-ignore a11y_autofocus -->
+        <input
+          class="rename"
+          aria-label="Session name"
+          bind:value={draft}
+          autofocus
+          onblur={() => void commitRename(s.id)}
+          onkeydown={(e) => {
+            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+            else if (e.key === "Escape") {
+              renaming = null;
+              draft = "";
+            }
+          }}
+        />
+      {:else}
+        <!-- Draggable (backlog 140 pass 2): onto a strip for a tab
+             of this chat at that slot, onto a pane's half to open
+             it beside. The drag carries `{kind: "chat", session}`. -->
+        <button
+          class="session-row"
+          onclick={(e) => {
+            // ⌘-click opens the chat in a new tab (nightshift
+            // backlog 099, blocker 140); a plain click replaces the
+            // active tab, as it replaced the centre before tabs.
+            if (e.metaKey || e.ctrlKey) app.openNext = "new";
+            void openSession(s.id);
+          }}
+          ondblclick={() =>
+            startRename(s.id, s.title ?? s.first_user ?? "")}
+          oncontextmenu={(e) => openRowMenu(e, s)}
+          draggable="true"
+          ondragstart={(e) => startContentDrag(e, { kind: "chat", session: s.id })}
+          ondragend={endContentDrag}
+        >
+          <span class="snippet"
+            >{#if s.mode === "incognito"}<span class="mark" use:tip={"Incognito: writes nothing, unread by other chats"}>{MODE_GLYPH.incognito}</span> {/if}{#if hasDraft(s.id)}<span class="mark draft" role="img" aria-label="has a draft" use:tip={"has a draft"}></span> {/if}{s.title ?? s.first_user ?? "empty session"}</span
+          >
+          <!-- A fork says where it came from (backlog 062): the
+               parent's name as its own row shows it, or that the
+               parent is gone. -->
+          <span class="meta"
+            >{s.id.slice(0, 8)}{#if s.kind === "chat"} · chat{/if}{#if s.mode === "incognito"} · incognito{/if} · {relativeTime(s.modified)}{#if s.thread && s.thread !== group} · <span class="thread" use:tip={`Works from the research thread ${s.thread}`}>◇ {s.thread}</span>{/if}{#if r.depth === 0 && forkLine(s, app.sessions)} · <span class="from" use:tip={"Forked from that chat; the parent is unchanged"}>{forkLine(s, app.sessions)}</span>{/if}</span
+          >
+        </button>
+        <!-- The origin's forks (backlog 207): a chevron and the count,
+             always shown on a row that has any; closed by default. -->
+        {#if r.forks > 0}
+          {@const shown = r.expanded}
+          <button
+            class="forks-btn"
+            class:open={shown}
+            aria-expanded={shown}
+            aria-label={`${shown ? "Hide" : "Show"} ${r.forks} fork${r.forks === 1 ? "" : "s"}`}
+            use:tip={`${shown ? "Hide" : "Show"} the ${r.forks === 1 ? "chat" : `${r.forks} chats`} forked from this one`}
+            onclick={() => toggleForks(s.id)}
+          >
+            <Icon name="chevr" size={11} />{r.forks}
+          </button>
+        {/if}
+        <!-- Its asides (item 265): a toggle of their own beside the
+             forks', the asides glyph and the count. -->
+        {@const nAsides = asidesListedOf(s.id).length}
+        {#if nAsides > 0}
+          {@const shownA = asidesShown.open.has(s.id)}
+          <button
+            class="forks-btn asides-btn"
+            class:open={shownA}
+            aria-expanded={shownA}
+            aria-label={`${shownA ? "Hide" : "Show"} ${nAsides} aside${nAsides === 1 ? "" : "s"}`}
+            use:tip={`${shownA ? "Hide" : "Show"} this chat's ${nAsides === 1 ? "aside" : `${nAsides} asides`}`}
+            onclick={() => toggleAsidesOf(s.id)}
+          >
+            <Icon name="chevr" size={11} /><Icon name="think" size={11} />{nAsides}
+          </button>
+        {/if}
+        <!-- The row's one tool (backlog 208, design C): ··· opens the
+             right-click menu — Open, new tab, beside, Rename, Delete…
+             (Delete still confirms and moves to the trash folder). It
+             replaced a ✎ and a bin he found clunky, most on the
+             highlighted row. -->
+        {@const menuHere = rowMenu?.s.id === s.id}
+        <button
+          class="more-btn"
+          class:open={menuHere}
+          use:tip={"Open, rename, delete…"}
+          aria-label="More for this chat"
+          aria-haspopup="menu"
+          aria-expanded={menuHere}
+          onclick={(e) => openRowMenuFrom(e, s)}
+        >
+          <svg viewBox="0 0 20 20" aria-hidden="true" width="14" height="14" fill="currentColor"
+            ><circle cx="4.5" cy="10" r="1.6" /><circle cx="10" cy="10" r="1.6" /><circle cx="15.5" cy="10" r="1.6" /></svg
+          >
+        </button>
+      {/if}
+    </div>
+    {#if asidesShown.open.has(s.id)}<SidebarAsides session={s.id} depth={r.depth} />{/if}
+  {/snippet}
+
 <aside class="sidebar">
   <div class="project">
     <button
@@ -504,6 +701,30 @@
               {#if k.key}<span class="kind-key">{k.key}</span>{/if}
             </button>
           {/each}
+          {#if app.project && threads.length > 0}
+            <!-- New chat in a thread (backlog 288): one row per thread of
+                 the project, most recently touched first — a new chat
+                 bound to it with the read order in its box, unsent. -->
+            <div class="kind-sep"></div>
+            <div class="kinds-head">New chat in a thread</div>
+            <div class="kind-threads">
+              {#each threads as t (t.slug)}
+                <button
+                  class="kind"
+                  role="menuitem"
+                  disabled={app.busy || app.connecting}
+                  use:tip={newInThreadTip(t.slug)}
+                  onclick={() => startInThread(t.slug)}
+                >
+                  <span class="kind-glyph" aria-hidden="true">◇</span>
+                  <span class="kind-text">
+                    <span class="kind-name">{t.title}</span>
+                    <span class="kind-line">{t.status || t.slug}</span>
+                  </span>
+                </button>
+              {/each}
+            </div>
+          {/if}
         </div>
       {/if}
     </div>
@@ -524,7 +745,7 @@
         {/if}
       </div>
     {/if}
-    {#if app.sessions.length === 0}
+    {#if app.sessions.length === 0 && groups.length === 0}
       <p class="hint">
         No chats {app.project ? "in this project" : "yet"}.
         {#if !app.project}
@@ -537,109 +758,74 @@
       </p>
     {:else}
       <div class="session-list">
-        {#each rows as r (r.meta.id)}
-          {@const s = r.meta}
-          <div class="session-item" class:active={s.id === app.activeSessionId} class:fork={r.depth > 0} style:--depth={r.depth > 0 ? r.depth : undefined}>
-            {#if renaming === s.id}
-              <!-- svelte-ignore a11y_autofocus -->
-              <input
-                class="rename"
-                aria-label="Session name"
-                bind:value={draft}
-                autofocus
-                onblur={() => void commitRename(s.id)}
-                onkeydown={(e) => {
-                  if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                  else if (e.key === "Escape") {
-                    renaming = null;
-                    draft = "";
-                  }
-                }}
-              />
-            {:else}
-              <!-- Draggable (backlog 140 pass 2): onto a strip for a tab
-                   of this chat at that slot, onto a pane's half to open
-                   it beside. The drag carries `{kind: "chat", session}`. -->
+        {#each groups as g (g.slug)}
+          <div
+            class="thread-group"
+            class:drop={dropOn === g.slug}
+            role="group"
+            aria-label={`Thread ${g.title}`}
+            ondragover={(e) => overDrop(e, g.slug)}
+            ondragleave={leaveDrop}
+            ondrop={(e) => onDropChat(e, g.slug)}
+          >
+            <div class="tg-head">
               <button
-                class="session-row"
-                onclick={(e) => {
-                  // ⌘-click opens the chat in a new tab (nightshift
-                  // backlog 099, blocker 140); a plain click replaces the
-                  // active tab, as it replaced the centre before tabs.
-                  if (e.metaKey || e.ctrlKey) app.openNext = "new";
-                  void openSession(s.id);
-                }}
-                ondblclick={() =>
-                  startRename(s.id, s.title ?? s.first_user ?? "")}
-                oncontextmenu={(e) => openRowMenu(e, s)}
-                draggable="true"
-                ondragstart={(e) => startContentDrag(e, { kind: "chat", session: s.id })}
-                ondragend={endContentDrag}
+                class="tg-toggle"
+                class:open={g.open}
+                aria-expanded={g.open}
+                use:tip={`${g.open ? "Hide" : "Show"} the chats in the thread ${g.slug}${g.missing ? " (no thread.md in this project)" : ""}`}
+                onclick={() => toggleThread(g.slug)}
               >
-                <span class="snippet"
-                  >{#if s.mode === "incognito"}<span class="mark" use:tip={"Incognito: writes nothing, unread by other chats"}>{MODE_GLYPH.incognito}</span> {/if}{#if hasDraft(s.id)}<span class="mark draft" role="img" aria-label="has a draft" use:tip={"has a draft"}></span> {/if}{s.title ?? s.first_user ?? "empty session"}</span
-                >
-                <!-- A fork says where it came from (backlog 062): the
-                     parent's name as its own row shows it, or that the
-                     parent is gone. -->
-                <span class="meta"
-                  >{s.id.slice(0, 8)}{#if s.kind === "chat"} · chat{/if}{#if s.mode === "incognito"} · incognito{/if} · {relativeTime(s.modified)}{#if s.thread} · <span class="thread" use:tip={`Works from the research thread ${s.thread}`}>◇ {s.thread}</span>{/if}{#if r.depth === 0 && forkLine(s, app.sessions)} · <span class="from" use:tip={"Forked from that chat; the parent is unchanged"}>{forkLine(s, app.sessions)}</span>{/if}</span
-                >
+                <span class="tg-chev"><Icon name="chevr" size={11} /></span>
+                <span class="tg-text">
+                  <span class="tg-name"><span class="tg-mark" aria-hidden="true">◇</span> {g.title}</span>
+                  <span class="tg-status">{g.missing ? "no thread.md in this project" : g.status || "no status line yet"}</span>
+                </span>
+                <span class="tg-count" aria-label={`${g.chats} chat${g.chats === 1 ? "" : "s"}`}>{g.chats}</span>
               </button>
-              <!-- The origin's forks (backlog 207): a chevron and the count,
-                   always shown on a row that has any; closed by default. -->
-              {#if r.forks > 0}
-                {@const shown = r.expanded}
+              {#if !g.missing}
                 <button
-                  class="forks-btn"
-                  class:open={shown}
-                  aria-expanded={shown}
-                  aria-label={`${shown ? "Hide" : "Show"} ${r.forks} fork${r.forks === 1 ? "" : "s"}`}
-                  use:tip={`${shown ? "Hide" : "Show"} the ${r.forks === 1 ? "chat" : `${r.forks} chats`} forked from this one`}
-                  onclick={() => toggleForks(s.id)}
-                >
-                  <Icon name="chevr" size={11} />{r.forks}
-                </button>
+                  class="tg-new"
+                  aria-label={`New chat in the thread ${g.slug}`}
+                  use:tip={newInThreadTip(g.slug)}
+                  disabled={app.busy || app.connecting}
+                  onclick={() => void newChatInThread(g.slug)}
+                >+</button>
               {/if}
-              <!-- Its asides (item 265): a toggle of their own beside the
-                   forks', the asides glyph and the count. -->
-              {@const nAsides = asidesListedOf(s.id).length}
-              {#if nAsides > 0}
-                {@const shownA = asidesShown.open.has(s.id)}
-                <button
-                  class="forks-btn asides-btn"
-                  class:open={shownA}
-                  aria-expanded={shownA}
-                  aria-label={`${shownA ? "Hide" : "Show"} ${nAsides} aside${nAsides === 1 ? "" : "s"}`}
-                  use:tip={`${shownA ? "Hide" : "Show"} this chat's ${nAsides === 1 ? "aside" : `${nAsides} asides`}`}
-                  onclick={() => toggleAsidesOf(s.id)}
-                >
-                  <Icon name="chevr" size={11} /><Icon name="think" size={11} />{nAsides}
-                </button>
-              {/if}
-              <!-- The row's one tool (backlog 208, design C): ··· opens the
-                   right-click menu — Open, new tab, beside, Rename, Delete…
-                   (Delete still confirms and moves to the trash folder). It
-                   replaced a ✎ and a bin he found clunky, most on the
-                   highlighted row. -->
-              {@const menuHere = rowMenu?.s.id === s.id}
-              <button
-                class="more-btn"
-                class:open={menuHere}
-                use:tip={"Open, rename, delete…"}
-                aria-label="More for this chat"
-                aria-haspopup="menu"
-                aria-expanded={menuHere}
-                onclick={(e) => openRowMenuFrom(e, s)}
-              >
-                <svg viewBox="0 0 20 20" aria-hidden="true" width="14" height="14" fill="currentColor"
-                  ><circle cx="4.5" cy="10" r="1.6" /><circle cx="10" cy="10" r="1.6" /><circle cx="15.5" cy="10" r="1.6" /></svg
-                >
-              </button>
+            </div>
+            {#if g.open}
+              <div class="tg-rows">
+                {#each g.rows as r (r.meta.id)}{@render chatRow(r, g.slug)}{/each}
+                {#if g.rows.length === 0}
+                  <p class="tg-empty">No chats yet — + starts one, or drag a chat here.</p>
+                {/if}
+              </div>
             {/if}
           </div>
-          {#if asidesShown.open.has(s.id)}<SidebarAsides session={s.id} depth={r.depth} />{/if}
         {/each}
+        {#if groups.length > 0}
+          <div
+            class="loose-head"
+            class:drop={dropOn === ""}
+            role="group"
+            aria-label="Chats in no thread"
+            ondragover={(e) => overDrop(e, null)}
+            ondragleave={leaveDrop}
+            ondrop={(e) => onDropChat(e, null)}
+          >
+            {loose.length > 0 ? "Not in a thread" : "Drop a chat here to take it out of its thread"}
+          </div>
+        {/if}
+        <div
+          class="loose"
+          role="group"
+          aria-label="Chats"
+          ondragover={(e) => groups.length > 0 && overDrop(e, null)}
+          ondragleave={leaveDrop}
+          ondrop={(e) => groups.length > 0 && onDropChat(e, null)}
+        >
+          {#each loose as r (r.meta.id)}{@render chatRow(r)}{/each}
+        </div>
       </div>
       {#if rowMenu}
         <button class="scrim" aria-label="Close" onclick={() => (rowMenu = null)} oncontextmenu={(e) => { e.preventDefault(); rowMenu = null; }}></button>
@@ -655,6 +841,29 @@
           <button role="menuitem" onclick={() => rowOpen("beside")}>Open beside <span class="row-key">drag</span></button>
           <div class="row-sep"></div>
           <button role="menuitem" onclick={rowRename}>Rename</button>
+          {#if app.project && rowMenu.s.mode !== "ephemeral"}
+            {@const inThread = rowMenu.s.thread ?? null}
+            {@const others = threads.filter((t) => t.slug !== inThread)}
+            {#if others.length > 0}
+              <button
+                role="menuitem"
+                aria-haspopup="menu"
+                aria-expanded={moveOpen}
+                class:on={moveOpen}
+                onclick={() => (moveOpen = !moveOpen)}
+              >Move to thread <span class="row-key">{moveOpen ? "▾" : "▸"}</span></button>
+              {#if moveOpen}
+                <div class="row-threads" role="group" aria-label="Move to thread">
+                  {#each others as t (t.slug)}
+                    <button role="menuitem" class="row-thread" use:tip={t.status || t.slug} onclick={() => rowMove(t.slug)}>◇ {t.title}</button>
+                  {/each}
+                </div>
+              {/if}
+            {/if}
+            {#if inThread}
+              <button role="menuitem" onclick={() => rowMove(null)}>Remove from thread <span class="row-key">◇ {inThread}</span></button>
+            {/if}
+          {/if}
           <button role="menuitem" disabled={!!rowMenu?.s && !canDeleteChat(rowMenu.s.id)} onclick={rowDelete}>Delete…</button>
           <AsideMenuItems session={rowMenu.s.id} onpick={() => (rowMenu = null)} />
         </div>
@@ -1502,5 +1711,176 @@
   }
   .forks-btn.asides-btn.open :global(.ns-ico + .ns-ico) {
     transform: none;
+  }
+  /* Threads in the sidebar (backlog 288): a group per thread — a header
+     row (chevron, ◇ name, its status line, the count, a + for a new chat
+     in it) over its chats, indented a step — then "Not in a thread". A
+     group lights while a chat dragged over it would move there. */
+  .thread-group {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    border-radius: 8px;
+    outline: 1px dashed transparent;
+    outline-offset: -1px;
+  }
+  .thread-group.drop,
+  .loose-head.drop {
+    outline-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+  }
+  .tg-head {
+    display: flex;
+    align-items: stretch;
+    border-radius: 8px;
+  }
+  .tg-head:hover {
+    background: var(--well);
+  }
+  .tg-toggle {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: flex-start;
+    gap: 4px;
+    padding: 6px 4px 6px 4px;
+    background: transparent;
+    border: none;
+    border-radius: 8px;
+    color: var(--ink2);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .tg-chev {
+    flex: none;
+    display: inline-flex;
+    padding-top: 3px;
+    color: var(--dim);
+  }
+  .tg-chev :global(.ns-ico) {
+    transition: transform 0.12s;
+  }
+  .tg-toggle.open .tg-chev :global(.ns-ico) {
+    transform: rotate(90deg);
+  }
+  .tg-text {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .tg-name {
+    font-size: 0.82rem;
+    color: var(--ink);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .tg-mark {
+    color: var(--accent);
+  }
+  .tg-status {
+    font-size: 0.7rem;
+    line-height: 1.35;
+    color: var(--dim);
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .tg-count {
+    flex: none;
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    color: var(--dim);
+    padding-top: 2px;
+  }
+  .tg-new {
+    flex: none;
+    align-self: flex-start;
+    width: 22px;
+    height: 22px;
+    margin: 4px 4px 0 2px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--dim);
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .tg-head:hover .tg-new {
+    border-color: var(--line2);
+    color: var(--ink2);
+  }
+  .tg-new:hover:not(:disabled) {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .tg-new:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+  .tg-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-left: 10px;
+    padding-left: 4px;
+    border-left: 1px solid var(--line);
+  }
+  .tg-empty {
+    margin: 0;
+    padding: 4px 8px 6px;
+    font-size: 0.7rem;
+    color: var(--dim);
+  }
+  .loose-head {
+    margin-top: 6px;
+    padding: 6px 8px 2px;
+    border-radius: 8px;
+    outline: 1px dashed transparent;
+    outline-offset: -1px;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--dim);
+  }
+  .loose {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-height: 8px;
+  }
+  .row-menu button.on {
+    background: var(--well);
+  }
+  .row-threads {
+    display: flex;
+    flex-direction: column;
+    max-height: 180px;
+    overflow-y: auto;
+    margin: 0 0 2px 10px;
+    border-left: 1px solid var(--line);
+  }
+  .row-menu .row-thread {
+    justify-content: flex-start;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .kind-threads {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    max-height: 220px;
+    overflow-y: auto;
+  }
+  .kind:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
 </style>

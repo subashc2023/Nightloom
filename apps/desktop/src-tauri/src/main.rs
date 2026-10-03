@@ -4249,6 +4249,50 @@ async fn set_chat_thread(
     Ok(session.events().to_vec())
 }
 
+/// Bind any listed chat to a research thread, or unbind it with `None`
+/// (nightshift backlog 288: a drag in the sidebar, or a row's Move to
+/// thread ▸ / Remove from thread). The same `thread` event the picker
+/// writes and the same refusal for a slug that is not a thread in the open
+/// project. Like [`rename_session`]: a held chat is written through its
+/// one writer, refused while its turn holds it; any other chat is a file
+/// no one is writing. Never creates a log — the chat must exist. The
+/// window's open chat goes through [`set_chat_thread`] instead, which the
+/// shell follows with the reconnect that loads the thread layer.
+#[tauri::command]
+async fn set_session_thread(
+    state: State<'_, AppState>,
+    id: String,
+    thread: Option<String>,
+) -> Result<(), String> {
+    let thread = thread
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty());
+    if let Some(slug) = &thread {
+        let project = state
+            .active()
+            .await
+            .ok_or_else(|| "open a project first — threads live in a project".to_string())?;
+        let dir = nightloom_service::thread::thread_dir(&project.notes_dir(), slug)
+            .ok_or_else(|| format!("{slug:?} is not a thread name"))?;
+        if !dir.join(nightloom_service::thread::THREAD_FILE).is_file() {
+            return Err(format!("no thread {slug} in {}", project.name));
+        }
+    }
+    if let Some((_, log)) = state.chats.find(&id) {
+        return match log.try_lock() {
+            Ok(mut open) => {
+                open.record_thread(thread);
+                Ok(())
+            }
+            Err(_) => Err("that chat is running a turn — move it when the turn ends".into()),
+        };
+    }
+    let path = store::find_by_prefix(&state.log_dir().await, &id).map_err(|e| e.to_string())?;
+    let mut session = Session::load(&path).map_err(|e| e.to_string())?;
+    session.record_thread(thread);
+    Ok(())
+}
+
 /// The open project's threads (backlog 271) for the picker, most recently
 /// touched first; empty without a project.
 #[tauri::command]
@@ -7378,6 +7422,7 @@ fn main() {
             set_chat_kind,
             set_chat_folders,
             set_chat_thread,
+            set_session_thread,
             list_threads,
             new_thread,
             append_thread_log,
