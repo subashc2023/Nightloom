@@ -1,16 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "svelte/server";
 import * as api from "./api";
-import { app } from "./state.svelte";
+import { app, closeTab } from "./state.svelte";
+import * as tabs from "./tabs";
+import { parseSaved, rebuild, snapshot } from "./tabsStore";
 import { THREADS_CLOSED_KEY, fileSections, openingSection, threadNoteName } from "./thread";
 import {
-  closeThreadView,
   editThreadFile,
   openThreadView,
-  showThreadFile,
-  showThreadSection,
+  readThreadFile,
+  resetThreadViews,
+  setThreadPlace,
   threadList,
-  threadView,
+  threadPlace,
+  threadRead,
 } from "./threadPanel.svelte";
 import Sidebar from "./Sidebar.svelte";
 import ThreadView from "./ThreadView.svelte";
@@ -82,7 +85,8 @@ const info = (slug: string, title: string): ThreadInfo => ({
 });
 
 beforeEach(() => {
-  closeThreadView();
+  resetThreadViews();
+  app.tabs = tabs.emptyWorkspace();
   localStorage.clear();
   app.project = project;
   app.view = "chat";
@@ -116,44 +120,72 @@ describe("fileSections", () => {
   });
 });
 
-describe("the thread view's store", () => {
-  it("opens on thread.md's Start here, read through the project's notes", async () => {
+const threadTabs = () => tabs.allTabs(app.tabs).filter((t) => t.content.kind === "thread");
+
+describe("the thread tab (blocker 1020: a tab, not a panel)", () => {
+  it("the name opens a tab for the thread beside the front tab, focused", async () => {
     await openThreadView("stuart", "Stuart brainstorm");
-    expect(api.readNote).toHaveBeenCalledWith("project", "threads/stuart/thread.md");
-    const v = threadView.open!;
-    expect(v.title).toBe("Stuart brainstorm");
-    expect(v.file).toBe("thread.md");
-    expect(v.sections[v.section].heading).toBe("Start here");
-    showThreadSection(2);
-    expect(threadView.open!.sections[threadView.open!.section].heading).toBe("Queue");
-    showThreadSection(99);
-    expect(threadView.open!.section).toBe(2);
+    const pane = tabs.focusedPane(app.tabs);
+    expect(pane.tabs.length).toBe(2);
+    expect(tabs.activeTab(pane).content).toEqual({ kind: "thread", slug: "stuart", title: "Stuart brainstorm" });
+    expect(tabs.tabTitle(tabs.activeTab(pane).content, [], [])).toBe("◇ Stuart brainstorm");
+    expect(tabs.tabGlyph(tabs.activeTab(pane).content)).toBe("branch");
   });
-  it("log.md is shown whole; a missing archive.md is a sentence, not a throw", async () => {
+  it("a second click focuses the open tab, in whichever pane, rather than opening another", async () => {
+    await openThreadView("stuart", "Stuart brainstorm");
+    const t = threadTabs()[0];
+    expect(tabs.split(app.tabs, t.id, "right")).toBe(true);
+    // Focus back on the chat's pane, then click the name again.
+    const chatPane = app.tabs.panes.find((p) => !p.tabs.some((x) => x.id === t.id))!;
+    app.tabs.focused = chatPane.id;
+    await openThreadView("stuart", "Stuart brainstorm");
+    expect(threadTabs().length).toBe(1);
+    expect(tabs.focusedPane(app.tabs).active).toBe(t.id);
+    await openThreadView("ace");
+    expect(threadTabs().length).toBe(2);
+  });
+  it("is saved and restored with the layout (a split beside the chat survives)", async () => {
+    await openThreadView("stuart", "Stuart brainstorm");
+    tabs.split(app.tabs, threadTabs()[0].id, "right");
+    const saved = parseSaved(JSON.parse(JSON.stringify(snapshot(app.tabs))))!;
+    const back = rebuild(saved, (c) => c)!;
+    const kinds = back.ws.panes.map((p) => p.tabs.map((t) => t.content.kind));
+    expect(kinds).toEqual([["chat"], ["thread"]]);
+    expect(tabs.parseContentDrag(JSON.stringify({ kind: "thread", slug: "../etc" }))).toBeNull();
+    expect(tabs.sameContent({ kind: "thread", slug: "a", title: "A" }, { kind: "thread", slug: "a" })).toBe(true);
+  });
+  it("closes like any tab (⌘W is closeTab on the front tab)", async () => {
     await openThreadView("stuart");
-    await showThreadFile("log.md");
-    expect(threadView.open!.text).toContain("round two");
-    expect(threadView.open!.sections).toEqual([]);
-    await showThreadFile("archive.md");
-    expect(threadView.open!.text).toBeNull();
-    expect(threadView.open!.error).toMatch(/cannot read threads\/stuart\/archive\.md/);
-  });
-  it("a read that lands after the view closed is dropped", async () => {
-    const p = openThreadView("stuart");
-    closeThreadView();
-    await p;
-    expect(threadView.open).toBeNull();
+    await closeTab();
+    expect(threadTabs().length).toBe(0);
   });
   it("needs a project", async () => {
     app.project = null;
     await openThreadView("stuart");
-    expect(threadView.open).toBeNull();
-    expect(api.readNote).not.toHaveBeenCalled();
+    expect(threadTabs().length).toBe(0);
   });
-  it("Open in the editor is the note editor on the file shown, and closes the view", async () => {
-    await openThreadView("stuart");
-    editThreadFile();
-    expect(threadView.open).toBeNull();
+});
+
+describe("the thread view's store", () => {
+  it("reads through the project's notes and keeps the last read", async () => {
+    expect(threadRead("stuart", "thread.md")).toBeNull();
+    await readThreadFile("stuart", "thread.md");
+    expect(api.readNote).toHaveBeenCalledWith("project", "threads/stuart/thread.md");
+    expect(threadRead("stuart", "thread.md")).toEqual({ text: THREAD_MD });
+  });
+  it("a missing archive.md is a sentence, not a throw", async () => {
+    const r = await readThreadFile("stuart", "archive.md");
+    expect(r).toEqual({ error: expect.stringMatching(/cannot read threads\/stuart\/archive\.md/) });
+  });
+  it("remembers the file and section per thread, Start here until chosen", () => {
+    expect(threadPlace("stuart")).toEqual({ file: "thread.md", section: -1 });
+    setThreadPlace("stuart", { section: 2 });
+    setThreadPlace("stuart", { file: "log.md" });
+    expect(threadPlace("stuart")).toEqual({ file: "log.md", section: 2 });
+    expect(threadPlace("ace")).toEqual({ file: "thread.md", section: -1 });
+  });
+  it("Open in the editor is the note editor on the file shown", () => {
+    editThreadFile("stuart", "thread.md");
     expect(app.view).toBe("note");
     expect(app.openNote).toEqual({ scope: "project", name: "threads/stuart/thread.md" });
   });
@@ -215,14 +247,15 @@ describe("the sidebar's sections (server-rendered)", () => {
   it("wiring: the chevron folds (toggleThread), the name opens the view (openThreadView)", () => {
     expect(sidebarSource).toMatch(/class="tg-toggle"[\s\S]{0,400}onclick=\{\(\) => toggleThread\(g\.slug\)\}/);
     expect(sidebarSource).toMatch(/class="tg-open"[\s\S]{0,500}openThreadView\(g\.slug, g\.title\)/);
-    expect(sidebarSource).toContain("<ThreadView />");
   });
 });
 
 describe("the thread view (server-rendered)", () => {
-  it("shows the section list and Start here, with the files' switch", async () => {
-    await openThreadView("stuart", "Stuart brainstorm");
-    const html = render(ThreadView).body;
+  const view = (title?: string) =>
+    render(ThreadView, { props: { content: title ? { kind: "thread", slug: "stuart", title } : { kind: "thread", slug: "stuart" } } }).body;
+  it("thread.md opens on Start here: the section list, the files' switch, the actions", async () => {
+    await readThreadFile("stuart", "thread.md");
+    const html = view("Stuart brainstorm");
     expect(html).toContain("Stuart brainstorm");
     expect(html).toContain(".agents/threads/stuart/");
     for (const f of ["thread.md", "log.md", "archive.md"]) expect(html).toContain(`>${f}</button>`);
@@ -231,13 +264,20 @@ describe("the thread view (server-rendered)", () => {
     expect(html).not.toContain("Size the replay set"); // the Queue is one click away, not shown
     expect(html).toContain("read-only");
     expect(html).toContain("Open in the editor");
+    expect(html).toContain("+ New chat in this thread");
   });
-  it("a missing archive.md says so", async () => {
-    await openThreadView("stuart");
-    await showThreadFile("archive.md");
-    expect(render(ThreadView).body).toContain("No archive.md yet");
+  it("a chosen section is shown; log.md whole; a missing archive.md says so", async () => {
+    await readThreadFile("stuart", "thread.md");
+    setThreadPlace("stuart", { section: 2 });
+    expect(view()).toContain("Size the replay set");
+    await readThreadFile("stuart", "log.md");
+    setThreadPlace("stuart", { file: "log.md" });
+    expect(view()).toContain("round two");
+    await readThreadFile("stuart", "archive.md");
+    setThreadPlace("stuart", { file: "archive.md" });
+    expect(view()).toContain("No archive.md yet");
   });
-  it("draws nothing when closed", () => {
-    expect(render(ThreadView).body.replace(/<!--[^>]*-->/g, "").trim()).toBe("");
+  it("before the first read lands it says it is reading", () => {
+    expect(view()).toContain("Reading thread.md");
   });
 });

@@ -34,8 +34,7 @@
   import { forkLine } from "./edit";
   import type { SidebarRow } from "./forkTree";
   import { THREADS_CLOSED_KEY, newInThreadTip, threadGroups, threadKey } from "./thread";
-  import { closeThreadView, openThreadView, refreshThreadList, threadList, threadView } from "./threadPanel.svelte";
-  import ThreadView from "./ThreadView.svelte";
+  import { openThreadView, refreshThreadList, threadList } from "./threadPanel.svelte";
   import {
     sidebarRows,
     loadOpen as loadForksOpen,
@@ -129,11 +128,6 @@
     void app.sessions;
     if (!app.project) return;
     void refreshThreadList();
-  });
-  // The thread view (backlog 292) belongs to the project it was opened in.
-  $effect(() => {
-    const v = threadView.open;
-    if (v && v.project !== projectKey) untrack(closeThreadView);
   });
   function toggleThread(slug: string) {
     threadsClosed = toggledForks(threadsClosed, threadKey(projectKey, slug));
@@ -774,7 +768,7 @@
             ondrop={(e) => onDropChat(e, g.slug)}
           >
             <!-- Backlog 292: the chevron folds the group; the name (and status
-                 line) opens the thread view — what the thread stores. A slug
+                 line) opens the thread's tab — what the thread stores. A slug
                  with no thread.md has nothing to show, so its name folds too. -->
             <div class="tg-head">
               <button
@@ -1013,7 +1007,6 @@
     />
   {/if}
 
-  <ThreadView />
 </aside>
 
 <style>
