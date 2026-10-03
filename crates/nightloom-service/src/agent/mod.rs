@@ -36,6 +36,7 @@ pub mod fork;
 mod protocol;
 mod record;
 mod translate;
+pub mod warm;
 
 pub use ask::{
     Answer, AskDir, AskGate, DeferredCall, FolderGrant, GrantScope, PlanThen, outside_folder,
@@ -1284,6 +1285,9 @@ pub struct ClaudeCodeAgent {
     /// seat's, an aside's or a name's — which mark when the CLI was
     /// spawned, said `init`, and sent its first text.
     timing: Option<std::sync::Arc<crate::turn_timing::TurnTiming>>,
+    /// The next message's process, started while he types (item 256,
+    /// [`warm`]); taken by [`Self::run_turn`] when it is the same command.
+    warm: warm::WarmSlot,
 }
 
 impl ClaudeCodeAgent {
@@ -1294,7 +1298,18 @@ impl ClaudeCodeAgent {
             refused: None,
             chair: std::sync::Mutex::new(None),
             timing: None,
+            warm: warm::WarmSlot::default(),
         }
+    }
+
+    /// Start the next message's `claude` process now, so the start-up
+    /// (the CLI, his hooks, the MCP servers) is done before Send (item
+    /// 256, [`warm`]). `true` when one was started; `false` when the same
+    /// one is already waiting. The turn uses it only if nothing about the
+    /// command changed by then.
+    pub fn prewarm(&self) -> std::io::Result<bool> {
+        self.warm
+            .fill(warm::Key::of(&self.spec, &self.spec.stdin_args()))
     }
 
     /// Mark this turn's stages on `timing` from the next process on, until
@@ -1528,7 +1543,9 @@ impl ClaudeCodeAgent {
         {
             translator.usage_sink = Some(brief.dir.clone());
         }
-        self.drive(&self.spec, Some(input), translator, cancel, on_event)
+        // The chat's own turn: its text on stdin, and the waiting process
+        // taken if it is this command (item 256).
+        self.drive_as(&self.spec, Some(input), translator, true, cancel, on_event)
             .await
     }
 
@@ -1610,55 +1627,65 @@ impl ClaudeCodeAgent {
         &self,
         spec: &AgentSpec,
         input: Option<TurnInput>,
+        translator: Translator,
+        cancel: &CancellationToken,
+        on_event: &mut (dyn FnMut(TurnEvent) + Send),
+    ) -> Result<AgentOutcome, AgentError> {
+        self.drive_as(spec, input, translator, false, cancel, on_event)
+            .await
+    }
+
+    /// [`Self::drive`]; `chat` for the chat's own turn, whose text goes on
+    /// stdin and which may take the waiting process (item 256, [`warm`]).
+    async fn drive_as(
+        &self,
+        spec: &AgentSpec,
+        input: Option<TurnInput>,
         mut translator: Translator,
+        chat: bool,
         cancel: &CancellationToken,
         on_event: &mut (dyn FnMut(TurnEvent) + Send),
     ) -> Result<AgentOutcome, AgentError> {
         let attached = input
             .as_ref()
             .is_some_and(|i| !i.images.is_empty() || !i.documents.is_empty());
-        let mut cmd = Command::new(resolve_binary(&spec.binary));
-        match &input {
-            Some(_) if attached => {
-                cmd.args(spec.stdin_args()).stdin(Stdio::piped());
-            }
-            Some(input) => {
-                cmd.args(spec.args(&input.text))
-                    // Null rather than inherited: with a terminal on the
-                    // other end the CLI waits three seconds for piped input
-                    // that is never coming, on every turn.
-                    .stdin(Stdio::null());
-            }
-            None => {
-                cmd.args(spec.resume_args()).stdin(Stdio::null());
-            }
-        }
-        cmd.current_dir(&spec.workspace)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        // The environment, spelled once for this process and for the
-        // checkpoint fork's (`AgentSpec::env_removed` / `env_set`, backlog
-        // 104): the key kept out so the subscription is what pays, the
-        // compaction switch, the CLI's own subagent limits, fork mode.
-        for k in spec.env_removed() {
-            cmd.env_remove(k);
-        }
-        for (k, v) in spec.env_set() {
-            cmd.env(k, v);
-        }
-
-        let mut child = cmd.spawn().map_err(|source| AgentError::Spawn {
-            binary: spec.binary.clone(),
-            source,
-        })?;
-        // The turn's timing line (item 256): the spawn, the CLI's `init`
-        // line and its first text. Only the chat's own turn sets it.
+        let piped =
+            attached || (chat && input.as_ref().is_some_and(|i| warm::suits_stdin(&i.text)));
+        let (args, stdin) = match &input {
+            Some(_) if piped => (spec.stdin_args(), Stdio::piped()),
+            // Null rather than inherited: with a terminal on the other end
+            // the CLI waits three seconds for piped input that is never
+            // coming, on every turn.
+            Some(input) => (spec.args(&input.text), Stdio::null()),
+            None => (spec.resume_args(), Stdio::null()),
+        };
+        let key = warm::Key::of(spec, &args);
+        let taken = if chat && piped {
+            self.warm.take(&key)
+        } else {
+            None
+        };
+        let warm_start = taken.is_some();
+        let mut child = match taken {
+            Some(child) => child,
+            None => key
+                .command(stdin)
+                .spawn()
+                .map_err(|source| AgentError::Spawn {
+                    binary: spec.binary.clone(),
+                    source,
+                })?,
+        };
+        // The turn's timing line (item 256): the spawn (or the waiting
+        // process taken), the CLI's `init` line, the model's first streamed
+        // event and its first text. Only the chat's own turn sets it.
         let timing = self.timing.clone();
         if let Some(t) = &timing {
             t.mark(crate::turn_timing::Mark::Spawned);
+            t.set_warm(warm_start);
         }
         let mut init_seen = timing.is_none();
+        let mut event_seen = timing.is_none();
         let mut text_seen = timing.is_none();
 
         // Written from its own task and then closed. A PDF near the cap is
@@ -1669,7 +1696,7 @@ impl ClaudeCodeAgent {
         // the handle is the EOF that tells the CLI the turn's input is
         // complete; without it the process stays open waiting for a second
         // message.
-        if attached
+        if piped
             && let Some(input) = &input
             && let Some(mut stdin) = child.stdin.take()
         {
@@ -1710,6 +1737,12 @@ impl ClaudeCodeAgent {
                         init_seen = true;
                         if let Some(t) = &timing {
                             t.mark(crate::turn_timing::Mark::Init);
+                        }
+                    }
+                    if !event_seen && line.contains(r#""type":"stream_event""#) {
+                        event_seen = true;
+                        if let Some(t) = &timing {
+                            t.mark(crate::turn_timing::Mark::FirstEvent);
                         }
                     }
                     for event in translator.push(&line) {

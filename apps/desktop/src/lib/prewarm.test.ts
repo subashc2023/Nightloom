@@ -1,0 +1,50 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve(true)) }));
+
+import { Prewarmer, wantsWarm } from "./prewarm";
+
+describe("wantsWarm (item 256)", () => {
+  const base = { engine: "claude-code", busy: false, aside: false, text: "hello" };
+  it("asks for a draft in the chat's own box on the agent engine", () => {
+    expect(wantsWarm(base)).toBe(true);
+  });
+  it("does not while a turn runs, in an aside, on a provider, or with no draft", () => {
+    expect(wantsWarm({ ...base, busy: true })).toBe(false);
+    expect(wantsWarm({ ...base, aside: true })).toBe(false);
+    expect(wantsWarm({ ...base, engine: "anthropic" })).toBe(false);
+    expect(wantsWarm({ ...base, engine: null })).toBe(false);
+    expect(wantsWarm({ ...base, text: "   " })).toBe(false);
+  });
+  it("does not for a slash command, which goes on argv", () => {
+    expect(wantsWarm({ ...base, text: " /compact" })).toBe(false);
+  });
+});
+
+describe("Prewarmer (item 256)", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("asks at once, then at most once per window, keeping the last poke", () => {
+    let t = 0;
+    const ask = vi.fn();
+    const p = new Prewarmer(ask, 1000, () => t);
+    p.poke();
+    expect(ask).toHaveBeenCalledTimes(1);
+    t = 200;
+    p.poke();
+    t = 400;
+    p.poke();
+    expect(ask).toHaveBeenCalledTimes(1);
+    // The trailing ask, at the window's end.
+    t = 1000;
+    vi.advanceTimersByTime(800);
+    expect(ask).toHaveBeenCalledTimes(2);
+    // Quiet afterwards.
+    vi.advanceTimersByTime(5000);
+    expect(ask).toHaveBeenCalledTimes(2);
+    t = 2500;
+    p.poke();
+    expect(ask).toHaveBeenCalledTimes(3);
+  });
+});

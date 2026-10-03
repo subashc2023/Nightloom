@@ -17,10 +17,15 @@
 //! | `turn` | [`run_agent_turn`](crate::agent_turn::run_agent_turn) | its first line, after the chat's locks and the checkpoint |
 //! | `spawned` | the agent | the `claude` process started |
 //! | `init` | the agent | the CLI's `system/init` line read (hooks and MCP servers done) |
+//! | `first event` | the agent | the model's first streamed event (`stream_event`; added 2026-10-03) |
 //! | `first text` | the agent | the first `text_delta` translated |
 //! | `emitted` | the turn | that event handed to the window (or the phone) |
 //! | `painted` | the window | the frame that draws the first text |
 //! | `end` | the turn | the turn returned |
+//!
+//! After the stages, `spawn warm` or `spawn cold` (2026-10-03): whether the
+//! turn took the process started while he typed (`agent::warm`) or
+//! started its own. Absent when no process was reached.
 //!
 //! On `serve` there is no window: `sent`, `invoked` and `painted` are
 //! absent (`-`), never zero, and the offsets count from `entered`. No
@@ -52,9 +57,10 @@ pub enum Mark {
     Init,
     FirstText,
     Emitted,
+    FirstEvent,
 }
 
-const MARKS: usize = 6;
+const MARKS: usize = 7;
 
 impl Mark {
     fn slot(self) -> usize {
@@ -81,15 +87,19 @@ pub struct Stages {
     pub turn: Option<u64>,
     pub spawned: Option<u64>,
     pub init: Option<u64>,
+    pub first_event: Option<u64>,
     pub first_text: Option<u64>,
     pub emitted: Option<u64>,
     pub painted: Option<u64>,
     pub end: Option<u64>,
+    /// The turn took the waiting process (`Some(true)`) or spawned its
+    /// own (`Some(false)`); `None` when no process was reached.
+    pub warm: Option<bool>,
 }
 
 impl Stages {
     /// In the line's order, with the line's names.
-    pub fn named(&self) -> [(&'static str, Option<u64>); 10] {
+    pub fn named(&self) -> [(&'static str, Option<u64>); 11] {
         [
             ("sent", self.sent),
             ("invoked", self.invoked),
@@ -97,6 +107,7 @@ impl Stages {
             ("turn", self.turn),
             ("spawned", self.spawned),
             ("init", self.init),
+            ("first event", self.first_event),
             ("first text", self.first_text),
             ("emitted", self.emitted),
             ("painted", self.painted),
@@ -129,7 +140,12 @@ pub fn line(host: &str, chat: &str, stages: &Stages, outcome: &str) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     let chat = if chat.is_empty() { "-" } else { chat };
-    format!("turn {host} chat {chat}: from {from}; {parts} ms; {outcome}")
+    let spawn = match stages.warm {
+        Some(true) => "; spawn warm",
+        Some(false) => "; spawn cold",
+        None => "",
+    };
+    format!("turn {host} chat {chat}: from {from}; {parts} ms{spawn}; {outcome}")
 }
 
 /// Milliseconds since the epoch: the one clock the window (`Date.now()`)
@@ -171,6 +187,7 @@ struct Inner {
     window: Option<WindowMarks>,
     end: Option<(u64, String)>,
     written: bool,
+    warm: Option<bool>,
 }
 
 /// One turn's marks, shared by the command, the turn and the agent.
@@ -203,6 +220,7 @@ impl TurnTiming {
                 window: None,
                 end: None,
                 written: false,
+                warm: None,
             }),
         });
         t.mark(Mark::Entered);
@@ -236,6 +254,15 @@ impl TurnTiming {
         self.lock().marks[mark.slot()].is_some()
     }
 
+    /// Whether the turn's process was the waiting one (`agent::warm`);
+    /// the first call wins, as a mark's.
+    pub fn set_warm(&self, warm: bool) {
+        let mut inner = self.lock();
+        if inner.warm.is_none() {
+            inner.warm = Some(warm);
+        }
+    }
+
     pub fn set_chat(&self, chat: &str) {
         self.lock().chat = chat.to_string();
     }
@@ -252,10 +279,12 @@ impl TurnTiming {
             turn: m[Mark::Started.slot()],
             spawned: m[Mark::Spawned.slot()],
             init: m[Mark::Init.slot()],
+            first_event: m[Mark::FirstEvent.slot()],
             first_text: m[Mark::FirstText.slot()],
             emitted: m[Mark::Emitted.slot()],
             painted: w.and_then(|w| w.painted),
             end: inner.end.as_ref().map(|e| e.0),
+            warm: inner.warm,
         }
     }
 
@@ -379,16 +408,24 @@ mod tests {
             turn: Some(1009),
             spawned: Some(1012),
             init: Some(1500),
+            first_event: Some(2400),
             first_text: Some(2900),
             emitted: Some(2901),
             painted: None,
             end: Some(3200),
+            warm: Some(true),
         };
         assert_eq!(
             line(DESKTOP, "c-1", &s, "ok"),
             "turn desktop chat c-1: from send; sent +0, invoked +4, entered +6, turn +9, \
-             spawned +12, init +500, first text +1900, emitted +1901, painted -, end +2200 ms; ok"
+             spawned +12, init +500, first event +1400, first text +1900, emitted +1901, \
+             painted -, end +2200 ms; spawn warm; ok"
         );
+        let cold = Stages {
+            warm: Some(false),
+            ..s.clone()
+        };
+        assert!(line(DESKTOP, "c-1", &cold, "ok").ends_with("ms; spawn cold; ok"));
     }
 
     #[test]

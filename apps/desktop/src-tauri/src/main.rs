@@ -3435,6 +3435,56 @@ fn turn_timing_window(key: String, sent: u64, invoked: Option<u64>, painted: Opt
     );
 }
 
+/// Start the open chat's next `claude` process while he types (nightshift
+/// item 256, `agent::warm`): the CLI, his hooks and the MCP servers are
+/// then done by Send, and the message's first text comes ~1 s sooner
+/// (measured 2026-10-03). The window calls this as the composer gets a
+/// draft. Nothing waits: a chat whose turn or aside holds its agent, or
+/// whose log is busy, is skipped (`false`), and the turn spawns as before.
+/// The ask folder is pointed as `send_agent` points it, so the chat's
+/// first message after opening it is the same command too.
+#[tauri::command]
+async fn prewarm_agent(state: State<'_, AppState>) -> Result<bool, String> {
+    let target = state.chats.target();
+    let slot = match state.agents.slot(target.id()) {
+        agents::Found::Off => return Ok(false),
+        agents::Found::Ready(slot) => slot,
+        agents::Found::Make => {
+            // The chat's lock taken and let go before the agent's, as in
+            // `lock_agent_at`.
+            let resume = match target.try_lock() {
+                Ok(open) => open.as_ref().and_then(resume_of),
+                Err(_) => return Ok(false),
+            };
+            match state.agents.make(target.id(), resume) {
+                Some(slot) => slot,
+                None => return Ok(false),
+            }
+        }
+    };
+    let Ok(mut agent) = slot.try_lock() else {
+        return Ok(false);
+    };
+    let log_dir = state.log_dir().await;
+    let ask_dir = match target.try_lock() {
+        Ok(open) => open
+            .as_ref()
+            .and_then(|s| s.log_path())
+            .and_then(|p| p.file_stem().map(|s| s.to_os_string()))
+            .map(|stem| log_dir.join("ask").join(stem)),
+        Err(_) => return Ok(false),
+    };
+    if let Some(dir) = ask_dir {
+        let spec = agent.spec();
+        let pointed = spec.ask.as_ref().is_none_or(|a| a.dir == dir)
+            && spec.brief.as_ref().is_none_or(|b| b.dir == dir);
+        if !pointed {
+            agent.set_ask_dir(dir);
+        }
+    }
+    agent.prewarm().map_err(|e| e.to_string())
+}
+
 /// What [`run_agent_turn`] needs of the window (item 268, step 1): its
 /// events, and the project registry a folder granted "for the project"
 /// is kept in — the turn's own project (backlog 159, A4), which may no
@@ -7398,6 +7448,7 @@ fn main() {
             prepare_office_attachment,
             office_converter,
             turn_timing_window,
+            prewarm_agent,
             council_turns,
             provider_credits,
             ask_aside,

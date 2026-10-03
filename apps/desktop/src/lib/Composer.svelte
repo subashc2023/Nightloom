@@ -148,6 +148,7 @@
   import { asideDraftKey } from "./asides";
   import { composerShows } from "./asideControls";
   import { scheduleAsideSave } from "./asides.svelte";
+  import { prewarmer, wantsWarm } from "./prewarm";
 
   /**
    * `floating` drops the docked chrome (top border, panel fill) for the
@@ -250,6 +251,11 @@
   });
   /** The chat's turn or this thread's answer: what Queue / Stop are about. */
   const busy = $derived(aside ? asideBusy : app.busy);
+  // Item 256: the next message's process starts while he types, so Send
+  // finds the CLI, his hooks and the MCP servers already done.
+  $effect(() => {
+    if (wantsWarm({ engine: app.connection?.engine, busy: app.busy, aside: !!aside, text })) prewarmer.poke();
+  });
   /**
    * The draft's live token estimate (nightshift backlog 155): characters ÷ 4,
    * shown beside Send from ~50 tokens up. Debounced so a fast typist or a

@@ -631,6 +631,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns"
                 "turn +",
                 "spawned +",
                 "init +",
+                "first event +",
                 "first text +",
                 "emitted +",
                 "end +",
@@ -640,6 +641,8 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns"
             // No window here: its stages are absent, not zero.
             assert!(l.contains("sent -") && l.contains("painted -"), "{l}");
             assert!(l.trim_end().ends_with("; ok"), "{l}");
+            // Nothing was warmed in this test: each turn spawned its own.
+            assert!(l.contains("ms; spawn cold; ok"), "{l}");
         }
         for s in &stages {
             let order = [
