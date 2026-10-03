@@ -603,6 +603,13 @@ export function newThread(slug: string, name: string): Promise<ThreadInfo> {
   return invoke("new_thread", { slug, name });
 }
 
+/** Append an aside's fold entry to a thread's log.md in the open project
+ *  (backlog 282); append-only, refused for a thread with no thread.md.
+ *  Resolves to the bytes appended. */
+export function appendThreadLog(slug: string, entry: string): Promise<number> {
+  return invoke("append_thread_log", { slug, entry });
+}
+
 /** One thread's upkeep: a dry run for the wrap-up's flags, or (apply) the
  *  mechanical moves and the index rewritten. */
 export function threadUpkeep(slug: string, apply: boolean): Promise<ThreadUpkeep> {

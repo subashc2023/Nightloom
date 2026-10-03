@@ -18,6 +18,7 @@ import { app, addToast, readTurnBudget, send } from "./state.svelte";
 import { message } from "./handoff.svelte";
 import { budgetOverride } from "./api";
 import { usageWrapUp } from "./budget";
+import { requestWrapUp } from "./wrapAsides.svelte";
 
 /** The chat whose running turn was asked to wrap up, until the turn ends. */
 export const wrapAsk = $state<{ session: string | null }>({ session: null });
@@ -52,7 +53,16 @@ export async function wrapUp(session: string): Promise<void> {
       addToast("Wrap up: open the chat first");
       return;
     }
-    await send(text);
+    // Item 285: no turn running, so the chat's open asides can chip in —
+    // their picker first. (Mid-turn, above, they cannot: an aside waits
+    // for the running turn; blocker 950.)
+    await requestWrapUp(session, async (extra) => {
+      if (app.busy || app.activeSessionId !== session) {
+        addToast("The wrap-up did not go — the chat was busy or no longer open; press Wrap up again");
+        return;
+      }
+      await send(extra ? `${text}\n\n${extra}` : text);
+    });
   } catch (e) {
     addToast(String(e));
   }

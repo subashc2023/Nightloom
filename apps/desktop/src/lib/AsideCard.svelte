@@ -27,6 +27,7 @@
   import Icon from "./Icon.svelte";
   import MoveZone from "./MoveZone.svelte";
   import AsideBox from "./AsideBox.svelte";
+  import AsideFoldPanel from "./AsideFoldPanel.svelte";
   import { roomForBox } from "./boxGrow";
 
   /**
@@ -472,6 +473,10 @@
         onclick={goHome}>back</button
       >
     {/if}
+    {#if !folded}
+      <!-- Fold into thread (nightshift backlog 282). -->
+      <AsideFoldPanel {aside} part="button" open={!readOnly} />
+    {/if}
     {#if last && last.partial.trim()}
       <button
         class="ns-btn ghost small"
@@ -543,6 +548,7 @@
           </div>
         {/if}
       {/each}
+      <AsideFoldPanel {aside} part="panel" open={!readOnly} />
       {#if readOnly}
         <div class="aside-card-mark">
           This chat is not the open one — the thread reads as it was. Open the chat to follow up.

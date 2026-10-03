@@ -4236,6 +4236,29 @@ async fn new_thread(
     blocking(move || nightloom_service::thread::create_thread(&notes, slug.trim(), &name)).await
 }
 
+/// Append an aside's fold entry to a thread's `log.md` in the open project
+/// (backlog 282). The shell builds the entry (dated, the aside and chat
+/// named, the model's summary as he approved or edited it); this only
+/// appends — `thread.md` stays the bound chat's to write.
+#[tauri::command]
+async fn append_thread_log(
+    state: State<'_, AppState>,
+    slug: String,
+    entry: String,
+) -> Result<usize, String> {
+    let project = state
+        .active()
+        .await
+        .ok_or_else(|| "open a project first — threads live in a project".to_string())?;
+    let notes = project.notes_dir();
+    blocking(move || -> Result<_, String> {
+        let dir = nightloom_service::thread::thread_dir(&notes, &slug)
+            .ok_or_else(|| format!("{slug:?} is not a thread name"))?;
+        nightloom_service::thread::append_log(&dir, &entry)
+    })
+    .await
+}
+
 /// One thread's upkeep in the open project (backlog 271): a dry run for
 /// the wrap-up's flags (`apply` false), or the mechanical moves — struck
 /// lines from earlier rounds to `archive.md`, duplicate queue rows merged —
@@ -7277,6 +7300,7 @@ fn main() {
             set_chat_thread,
             list_threads,
             new_thread,
+            append_thread_log,
             thread_upkeep,
             tidy_threads,
             set_project_folders,

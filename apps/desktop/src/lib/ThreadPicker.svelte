@@ -25,7 +25,18 @@
   import ConfirmDialog from "./ConfirmDialog.svelte";
   import { tip } from "./tip";
 
-  let { compact = false }: { compact?: boolean } = $props();
+  /*
+   * `list` (nightshift backlog 281): the rows drawn as buttons, each with
+   * its status line, for the top bar's thread chip and the aside's fold
+   * panel — one click binds. `onpicked` runs after a thread (or No
+   * thread) is bound, so a popover can close; never for *New thread…*,
+   * whose form stays open.
+   */
+  let {
+    compact = false,
+    list = false,
+    onpicked,
+  }: { compact?: boolean; list?: boolean; onpicked?: () => void } = $props();
 
   let threads = $state<ThreadInfo[]>([]);
   let loadError = $state<string | null>(null);
@@ -60,11 +71,13 @@
       return;
     }
     working = true;
+    let ok = false;
     try {
-      await setChatThread(value || null);
+      ok = await setChatThread(value || null);
     } finally {
       working = false;
     }
+    if (ok) onpicked?.();
   }
 
   function setName(name: string): void {
@@ -103,7 +116,28 @@
   }
 </script>
 
-<div class="thread-picker" class:compact>
+<div class="thread-picker" class:compact class:list>
+  {#if list}
+    <div class="tp-list" role="listbox" aria-label="The research thread this chat works from">
+      {#each options as o (o.value)}
+        {@const on = form?.open ? o.value === NEW_THREAD : o.value === (bound ?? "")}
+        <button
+          class="tp-opt"
+          class:on
+          role="option"
+          aria-selected={on}
+          disabled={working || app.busy || app.connecting || !app.project}
+          onclick={() => void pick(o.value)}
+        >
+          <span class="tp-opt-label">{o.label}</span>
+          {#if o.detail && o.value !== NEW_THREAD}<span class="tp-opt-detail">{o.detail}</span>{/if}
+        </button>
+      {/each}
+    </div>
+    {#if app.busy || app.connecting}
+      <p class="tp-detail">The binding changes once the chat's turn ends.</p>
+    {/if}
+  {:else}
   <label class="tp-row">
     <span class="tp-label">Thread</span>
     <select
@@ -121,7 +155,8 @@
       {/each}
     </select>
   </label>
-  {#if !compact && current && current.value !== NEW_THREAD && !form?.open}
+  {/if}
+  {#if !list && !compact && current && current.value !== NEW_THREAD && !form?.open}
     <p class="tp-detail">{current.detail}</p>
   {/if}
   {#if loadError}
@@ -225,5 +260,53 @@
   }
   .tp-error {
     color: var(--failed);
+  }
+  /* The list form (backlog 281): one row per option, the bound one lit. */
+  .tp-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    max-height: 18rem;
+    overflow-y: auto;
+  }
+  .tp-opt {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1px;
+    text-align: left;
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    padding: 5px 8px;
+    color: var(--ink2);
+    font: inherit;
+    font-size: 12.5px;
+    cursor: pointer;
+    min-width: 0;
+  }
+  .tp-opt:hover:not(:disabled) {
+    background: var(--well);
+    color: var(--ink);
+  }
+  .tp-opt.on {
+    background: var(--well);
+    color: var(--ink);
+    box-shadow: inset 2px 0 0 var(--accent);
+  }
+  .tp-opt:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+  .tp-opt-label,
+  .tp-opt-detail {
+    max-width: 100%;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .tp-opt-detail {
+    color: var(--dim);
+    font-size: 11.5px;
   }
 </style>

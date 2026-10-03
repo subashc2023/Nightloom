@@ -93,6 +93,11 @@ if (typeof window !== "undefined") {
         // debounced save, as a composer draft's does.
         void a.unsent;
         void a.name;
+        // A fold's stage and text (backlog 282), his edit included.
+        void a.fold?.stage;
+        void a.fold?.text;
+        void a.fold?.editing;
+        void a.foldedInto?.length;
         for (const t of a.turns) {
           void t.partial;
           void t.answer;

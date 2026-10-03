@@ -424,12 +424,75 @@ pub struct Upkeep {
     pub last_round: Option<NaiveDate>,
 }
 
-/// The newest `YYYY-MM-DD` in `log.md`: the date of the last round.
+/// The newest `YYYY-MM-DD` in `log.md`: the date of the last round. An
+/// aside's fold entry (between [`FOLD_BEGIN`] and [`FOLD_END`], backlog
+/// 282) is not a round — the bound chat's wrap-up is — so its dates do not
+/// count.
 pub fn last_round(log: &str) -> Option<NaiveDate> {
     let re = regex::Regex::new(r"\b(20\d{2}-\d{2}-\d{2})\b").expect("valid regex");
-    re.captures_iter(log)
-        .filter_map(|c| NaiveDate::parse_from_str(&c[1], "%Y-%m-%d").ok())
-        .max()
+    let mut inside = false;
+    let mut newest = None;
+    for line in log.lines() {
+        let t = line.trim();
+        if t.starts_with(FOLD_END) {
+            inside = false;
+            continue;
+        }
+        if t.starts_with(FOLD_BEGIN) {
+            inside = true;
+            continue;
+        }
+        if inside {
+            continue;
+        }
+        for c in re.captures_iter(line) {
+            if let Ok(d) = NaiveDate::parse_from_str(&c[1], "%Y-%m-%d") {
+                newest = newest.max(Some(d));
+            }
+        }
+    }
+    newest
+}
+
+/// The first line of an aside's fold entry in `log.md` (backlog 282); the
+/// rest of the marker line names the chat and the aside.
+pub const FOLD_BEGIN: &str = "<!-- aside fold";
+/// The fold entry's last line.
+pub const FOLD_END: &str = "<!-- /aside fold -->";
+
+/// Append an aside's fold entry to a thread's `log.md` (backlog 282) — the
+/// app writes it, not the model, so `thread.md` keeps its one writer (the
+/// bound chat, whose next wrap-up folds the entry in). Append-only: the
+/// file is opened for appending and nothing before the entry is touched;
+/// a blank line separates it from what was there. Refused for a folder
+/// with no `thread.md`. Returns the bytes appended.
+pub fn append_log(dir: &Path, entry: &str) -> Result<usize, String> {
+    use std::io::Write as _;
+    if !dir.join(THREAD_FILE).is_file() {
+        return Err(format!("{} has no {THREAD_FILE}", dir.display()));
+    }
+    let entry = entry.trim_matches('\n');
+    if entry.trim().is_empty() {
+        return Err("nothing to append".to_string());
+    }
+    let path = dir.join(LOG_FILE);
+    let before = std::fs::read(&path).unwrap_or_default();
+    let sep = if before.is_empty() || before.ends_with(b"\n\n") {
+        ""
+    } else if before.ends_with(b"\n") {
+        "\n"
+    } else {
+        "\n\n"
+    };
+    let text = format!("{sep}{entry}\n");
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    f.write_all(text.as_bytes())
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(text.len())
 }
 
 /// The upkeep of one thread folder. A dry run (`apply` false) reports what
@@ -1137,5 +1200,37 @@ The question.
             2,
             "TEMPLATE.md and INDEX.md are not threads"
         );
+    }
+
+    #[test]
+    fn a_fold_entry_is_appended_and_is_not_a_round() {
+        let tmp = scratch();
+        let dir = tmp.join("fold");
+        write_fixture(&dir, FIXTURE, "# Log: Fixture\n\n2026-09-30 — round one.\n");
+        let entry = "<!-- aside fold chat=c1 aside=\"idea\" -->\n## 2026-10-02, 5:41 PM — aside 'idea' from chat 'Stuart 9'\nHis words (2026-10-02).\n<!-- /aside fold -->";
+        append_log(&dir, entry).unwrap();
+        let log = std::fs::read_to_string(dir.join(LOG_FILE)).unwrap();
+        assert!(
+            log.starts_with("# Log: Fixture\n\n2026-09-30 — round one.\n\n<!-- aside fold"),
+            "{log}"
+        );
+        assert!(log.ends_with("<!-- /aside fold -->\n"));
+        // The fold's dates, heading included, are not a round.
+        assert_eq!(last_round(&log), Some(day("2026-09-30")));
+        assert_eq!(
+            last_round(&format!("{log}\n2026-10-03 — wrap-up.\n")),
+            Some(day("2026-10-03"))
+        );
+        // Twice appends twice; nothing earlier changes.
+        append_log(&dir, entry).unwrap();
+        let again = std::fs::read_to_string(dir.join(LOG_FILE)).unwrap();
+        assert!(again.starts_with(&log));
+        assert_eq!(again.matches("<!-- /aside fold -->").count(), 2);
+        // No thread.md: refused, nothing written.
+        let bare = tmp.join("bare");
+        std::fs::create_dir_all(&bare).unwrap();
+        assert!(append_log(&bare, entry).is_err());
+        assert!(!bare.join(LOG_FILE).exists());
+        assert!(append_log(&dir, "\n\n").is_err());
     }
 }

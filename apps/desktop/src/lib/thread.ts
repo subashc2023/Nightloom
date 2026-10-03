@@ -5,7 +5,7 @@
  * `slug_from`); the two must agree, and the tests pin both to the same
  * cases.
  */
-import type { SessionEvent, ThreadInfo } from "./types";
+import type { ChatMode, SessionEvent, ThreadInfo } from "./types";
 
 /** A slug names a folder: lowercase letters, digits, `-` and `_`, starting
  *  with a letter or digit, at most 64 characters. Never a path. */
@@ -100,4 +100,19 @@ export function replaceStartHere(file: string, body: string): string {
     return [...lines, "", "## Start here", ...block, ""].join("\n");
   }
   return [...lines.slice(0, start), ...block, "", ...lines.slice(end)].join("\n");
+}
+
+/**
+ * The thread chip in the chat's top bar (nightshift backlog 281): what it
+ * reads, or null when it is not drawn. Threads live in a project, so a
+ * chat with no project open has no chip; an ephemeral chat has no log to
+ * bind in. Bound, "◇ <slug>"; unbound, a dim "Thread".
+ */
+export interface ThreadChip {
+  label: string;
+  bound: boolean;
+}
+export function threadChip(bound: string | null, hasProject: boolean, mode: ChatMode): ThreadChip | null {
+  if (!hasProject || mode === "ephemeral") return null;
+  return bound ? { label: `◇ ${bound}`, bound: true } : { label: "Thread", bound: false };
 }

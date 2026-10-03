@@ -23,6 +23,9 @@
   import NotificationCentre from "./NotificationCentre.svelte";
   import { chatKind, kindLabel, liveChats, openSession } from "./state.svelte";
   import { forkLine } from "./edit";
+  import ThreadChip from "./ThreadChip.svelte";
+  import { threadChip } from "./thread";
+  import { chatThread } from "./state.svelte";
 
   /**
    * The chat top bar in the redesign (item 036, the mock-up's Chat artboard):
@@ -99,6 +102,9 @@
     return { id: session.forked_from.session, line: line.replace(/^from /, "") };
   });
   const mode = $derived(chatMode(app.events));
+  /** Whether the thread chip draws (backlog 281), so the left group is
+   *  there for it; the chip decides its own text. */
+  const threadChipShown = $derived(threadChip(chatThread(app.events), app.project !== null, mode) !== null);
   const modeText = $derived(
     mode === "incognito"
       ? "incognito"
@@ -485,8 +491,12 @@
   <!-- ~~The title and the short id~~ — board d (backlog 175): the tab is
        the title, its hover the id. The mode mark and "continued from"
        stay, at the bar's left, when a chat has one. -->
-  {#if modeText || continuedFrom}
+  {#if modeText || continuedFrom || threadChipShown}
     <div class="left">
+      <!-- The chat's research thread (nightshift backlog 281): first on
+           the left, where the title row's name used to be — the tab names
+           the chat, this says what it works from. -->
+      <ThreadChip />
       {#if modeText}
         <span class="mode {mode}" use:tip={modeTitle}
           ><span aria-hidden="true">{MODE_GLYPH[mode]}</span><span class="fold2"> {modeText}</span></span

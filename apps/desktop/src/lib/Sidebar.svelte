@@ -583,7 +583,7 @@
                      parent's name as its own row shows it, or that the
                      parent is gone. -->
                 <span class="meta"
-                  >{s.id.slice(0, 8)}{#if s.kind === "chat"} · chat{/if}{#if s.mode === "incognito"} · incognito{/if} · {relativeTime(s.modified)}{#if r.depth === 0 && forkLine(s, app.sessions)} · <span class="from" use:tip={"Forked from that chat; the parent is unchanged"}>{forkLine(s, app.sessions)}</span>{/if}</span
+                  >{s.id.slice(0, 8)}{#if s.kind === "chat"} · chat{/if}{#if s.mode === "incognito"} · incognito{/if} · {relativeTime(s.modified)}{#if s.thread} · <span class="thread" use:tip={`Works from the research thread ${s.thread}`}>◇ {s.thread}</span>{/if}{#if r.depth === 0 && forkLine(s, app.sessions)} · <span class="from" use:tip={"Forked from that chat; the parent is unchanged"}>{forkLine(s, app.sessions)}</span>{/if}</span
                 >
               </button>
               <!-- The origin's forks (backlog 207): a chevron and the count,
@@ -1375,6 +1375,11 @@
   .meta .from {
     font-family: var(--sans);
     font-style: italic;
+  }
+  /* The bound research thread (backlog 281): small and muted, as the
+     rest of the line. */
+  .meta .thread {
+    font-family: var(--sans);
   }
 
   .search {

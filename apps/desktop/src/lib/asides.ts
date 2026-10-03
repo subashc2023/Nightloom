@@ -49,6 +49,7 @@ import type { Aside, AsideTurn } from "./state.svelte";
 import type { ChatMode } from "./types";
 import type { AsideQuote } from "./asideQuote";
 import type { AsideAnchor } from "./asideCard";
+import { loadFold, loadFoldRecords, storedFold, type AsideFold, type FoldRecord } from "./asideFold";
 
 export const ASIDES_KEY = "nightloom.asides";
 let loadedSeq = 0;
@@ -111,6 +112,11 @@ interface StoredAside {
   unsent?: string;
   /** The name he gave the thread (item 265); absent when unnamed. */
   name?: string;
+  /** *Fold into thread* under way (backlog 282): the picker or the text
+   *  to review, his edit included; never a running turn. */
+  fold?: AsideFold;
+  /** The folds already appended (282), for the "already folded" line. */
+  foldedInto?: FoldRecord[];
 }
 
 function storeTurn(t: AsideTurn): StoredTurn | null {
@@ -142,6 +148,12 @@ function storeAside(a: Aside): StoredAside | null {
   if (unsent !== null) out.unsent = unsent;
   const name = cleanAsideName(a.name);
   if (name !== null) out.name = name;
+  // Backlog 282: the fold's text and the folds done ride with the thread,
+  // a closed one's too (`storedAsideOf` keeps them), so closing the card
+  // never loses a summary he has not appended.
+  const fold = a.draft ? null : storedFold(a.fold);
+  if (fold) out.fold = fold;
+  if (!a.draft && a.foldedInto && a.foldedInto.length > 0) out.foldedInto = a.foldedInto.map((r) => ({ ...r }));
   return out;
 }
 
@@ -230,6 +242,10 @@ function loadAside(v: unknown): Aside | null {
   const out: Aside = { id: nextAsideId(), quote, draft: false, turns, anchor };
   if (unsent !== null) out.unsent = unsent;
   if (name !== null) out.name = name;
+  const fold = loadFold(a.fold);
+  if (fold) out.fold = fold;
+  const done = loadFoldRecords(a.foldedInto);
+  if (done.length > 0) out.foldedInto = done;
   return out;
 }
 
