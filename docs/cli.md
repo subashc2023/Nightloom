@@ -106,7 +106,33 @@ opens the app.
 `--dry-run` to print the pending batch and spend nothing): connect a provider,
 wire Ctrl-C, render through `chat::render`, report. Everything that decides what
 a dream may touch lives in `service::dream`, where the enforcement sits next to
-the decision.
+the decision — including, since 2026-09-14, the split of the batch by project:
+observations recorded in a registered project go to
+`<workspace>/.agents/memory/`, the rest to the vault, one turn each. The report
+line reads *consolidated 5 observations — 3 into Lanternfish, 2 into the vault*,
+followed by one rollback line per folder (a workspace is committed only if it is
+a repository, and only its `.agents/`). Since 2026-09-14 a turn may also
+*propose* a replacement for the target's always-loaded file — the project's
+`AGENTS.md`, or `~/.nightloom/AGENTS.md` for the vault — and the CLI then
+prints *proposed a change to Lanternfish's instructions — review it under
+Notes in the app* (`dream::proposed_line`, the same clause the desktop toast
+uses). The file is never written by the pass: the proposal sits under the
+store's `proposals/` and is applied only through the desktop editor, as a
+draft the user saves (see [service-data.md](service-data.md), *Proposals*).
+
+**`capture.rs`** is the pass that fills the inbox the dream drains (`nightloom
+capture`, `--dry-run` to print the would-be observations and append nothing —
+the provider is still called): it reads every session log since its watermark
+(each registered project's chats and the unfiled ones), folds the new
+conversation text — never a tool result — into excerpts, and asks the model
+for observations one per line, `kind | text`. The same provider flags as
+`dream`; the same thin shell — connect, Ctrl-C, render, report. The report
+line reads *captured 4 observations from 3 chats (1 line skipped) — 3 from
+Lanternfish, 1 unfiled*, then how many chats are waiting for more turns and
+how many the turn cap left for the next run. Everything that decides what is
+read and when a log's watermark moves lives in `service::capture`; the
+mechanics are in [service-data.md](service-data.md) under *Capture*.
+`--auto-dream` is unchanged and runs the dream alone.
 
 A startup line names the pending observation count when there is one — the nudge
 that makes dreaming periodic without making it automatic, since an unattended
@@ -120,6 +146,32 @@ the REPL.
 **`probe.rs`** is the matrix runner (`--target
 provider:model:thinking-spec[:tools]`).
 
+**`mcp_serve.rs`** is `nightloom mcp-serve [--project <id>]`: Nightloom's own
+tools — `search_chats`, `read_chat`, `remember`, `fetch_page` — as an MCP server
+on stdin and stdout, for `claude -p --mcp-config` on the Claude Code engine.
+**Corrected 2026-09-16:** the tools are five — `context_status` since
+2026-09-16 (nightshift backlog 073) — and the subcommand also takes
+`--no-remember` (2026-09-15), `--dream <json>` (2026-09-16, a dream's
+one-tool server) and `--ask` (2026-09-16, the Ask position's `ask` prompt
+tool); the flags are `mcp_server::parse_args`'s and the inventory is
+[mcp.md](mcp.md)'s.
+Hidden from `--help`, because nothing about it is for a person: run by hand it
+prints nothing and waits for JSON-RPC. The config dir and the two streams are
+all it supplies; the tools, the framing and the errors are
+`nightloom_service::mcp_server` ([mcp.md](mcp.md), *The server*). The desktop
+binary carries the same server as `--mcp-serve`, which is the one the app
+actually launches, since the CLI is usually not on PATH.
+
+**`permission-hook <dir>`** (2026-09-16, nightshift backlog 084; in
+`main.rs`, no file of its own) is the Claude Code `PreToolUse` hook behind
+the desktop's Ask position: reads the CLI's JSON on stdin, answers from the
+chat's ask directory (`rules.json`, `decision.json`), prints one line.
+Hidden from `--help` for the reason `mcp-serve` is — a binary the CLI can
+spawn without the desktop app built. The logic is
+`nightloom_service::agent::ask` ([service-agent.md](service-agent.md) "The
+Ask position"); the desktop binary carries the same hook as
+`--permission-hook <dir>`.
+
 ## `agent.rs` — the `--agent claude-code` REPL
 
 It maps the flags the chat REPL already takes onto an `AgentSpec` (`--model`,
@@ -127,8 +179,9 @@ It maps the flags the chat REPL already takes onto an `AgentSpec` (`--model`,
 through `chat::render` unchanged — which is the point: the terminal cannot tell
 which engine produced a turn. `--agent-binary` and `--agent-budget` are its own.
 
-Headless has no way to ask, so `--tools` maps to `--permission-mode dontAsk` and
-`--no-approval` to `bypassPermissions`, and the startup lines say that
+Headless has no way to ask, so `--tools` maps to `--permission-mode auto` (the
+CLI's classifier decides; what it cannot approve is denied, never left waiting —
+~~`dontAsk`~~ until 2026-09-14) and `--no-approval` to `bypassPermissions`, and the startup lines say that
 Nightloom's approval prompt does not apply here rather than letting the familiar
 flag imply the familiar gate.
 

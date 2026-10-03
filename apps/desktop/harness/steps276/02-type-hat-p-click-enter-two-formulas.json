@@ -1,0 +1,116 @@
+[
+ {
+  "label": "empty",
+  "doc": "",
+  "anchor": 0,
+  "head": 0
+ },
+ {
+  "label": "$$",
+  "doc": "$$",
+  "anchor": 2,
+  "head": 2
+ },
+ {
+  "label": "backslash",
+  "doc": "$$\\",
+  "anchor": 3,
+  "head": 3
+ },
+ {
+  "label": "hat",
+  "doc": "$$\\hat",
+  "anchor": 6,
+  "head": 6
+ },
+ {
+  "label": "{",
+  "doc": "$$\\hat{",
+  "anchor": 7,
+  "head": 7
+ },
+ {
+  "label": "p}",
+  "doc": "$$\\hat{p}",
+  "anchor": 9,
+  "head": 9
+ },
+ {
+  "label": "$ (half closed: text)",
+  "doc": "$$\\hat{p}$",
+  "anchor": 10,
+  "head": 10
+ },
+ {
+  "label": "$ (closed: drawn) h=23",
+  "doc": "$$\\hat{p}$$",
+  "anchor": 11,
+  "head": 11
+ },
+ {
+  "label": "click ON the formula: opens, caret inside",
+  "doc": "$$\\hat{p}$$",
+  "anchor": 2,
+  "head": 2
+ },
+ {
+  "label": "click empty row right of it: caret after, drawn",
+  "doc": "$$\\hat{p}$$",
+  "anchor": 11,
+  "head": 11
+ },
+ {
+  "label": "Shift-Enter after the formula",
+  "doc": "$$\\hat{p}$$\n",
+  "anchor": 12,
+  "head": 12
+ },
+ {
+  "label": "type next",
+  "doc": "$$\\hat{p}$$\nnext",
+  "anchor": 16,
+  "head": 16
+ },
+ {
+  "label": "↑ to the formula row",
+  "doc": "$$\\hat{p}$$\nnext",
+  "anchor": 11,
+  "head": 11
+ },
+ {
+  "label": "inline: $x",
+  "doc": "$$\\hat{p}$$\nnext $x",
+  "anchor": 19,
+  "head": 19
+ },
+ {
+  "label": "$x^2",
+  "doc": "$$\\hat{p}$$\nnext $x^2",
+  "anchor": 21,
+  "head": 21
+ },
+ {
+  "label": "$x^2$ closed",
+  "doc": "$$\\hat{p}$$\nnext $x^2$",
+  "anchor": 22,
+  "head": 22
+ },
+ {
+  "label": "two formulas on one line",
+  "doc": "$$\\hat{p}$$\nnext $x^2$ and $y$",
+  "anchor": 30,
+  "head": 30
+ },
+ {
+  "label": "8×←: between the two formulas",
+  "doc": "$$\\hat{p}$$\nnext $x^2$ and $y$",
+  "anchor": 22,
+  "head": 22
+ },
+ {
+  "label": "type between them",
+  "doc": "$$\\hat{p}$$\nnext $x^2$also and $y$",
+  "anchor": 26,
+  "head": 26
+ }
+]

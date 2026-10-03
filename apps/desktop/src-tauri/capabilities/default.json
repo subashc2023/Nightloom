@@ -1,7 +1,7 @@
 {
   "identifier": "default",
-  "description": "The window's frame is off on Windows and Linux and its title bar is drawn in the webview, so everything a system caption bar used to do is now an IPC call and has to be allowed here. `core:window:default` carries only the questions (is-maximized, is-focused) and `allow-internal-toggle-maximize`, which is what double-clicking a drag region invokes; dragging the window, the three caption buttons and naming the taskbar entry are each a permission of their own. Resizing is not among them: `tauri-runtime-wry`'s `undecorated_resizing` already hit-tests the edges of an undecorated window on both platforms, so nothing in the webview asks for it.",
-  "windows": ["main"],
+  "description": "The window's frame is off on Windows and Linux and its title bar is drawn in the webview, so everything a system caption bar used to do is now an IPC call and has to be allowed here. `core:window:default` carries only the questions (is-maximized, is-focused) and `allow-internal-toggle-maximize`, which is what double-clicking a drag region invokes; dragging the window, the three caption buttons and naming the taskbar entry are each a permission of their own. Resizing is not among them: `tauri-runtime-wry`'s `undecorated_resizing` already hit-tests the edges of an undecorated window on both platforms, so nothing in the webview asks for it. Granted to the `main` webview, not the window (nightshift backlog 172 pass 2, 2026-09-25): a web tab's page is a second webview in the same window, and a window grant would reach it too if it ever counted as local.",
+  "webviews": ["main"],
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",

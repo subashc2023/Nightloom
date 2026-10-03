@@ -1,0 +1,37 @@
+<!doctype html>
+<!-- Backlog 292: the real Sidebar with its Threads and Not in a thread headings, and the real ThreadView panel (a
+     thread name clicked), served by vite on a spare port and snapped with nightshift-code bin/snap (WebKit). Fixture threads and
+     chats; the Tauri backend is a stub in threads292.ts.
+     ?p=A|B|C|D (palette)  &view=sections|fold. (view|queue|log drew the panel, struck 2026-10-03: the view is a
+     tab now, which needs the App around it — see threadtab292.html.) -->
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      body { margin: 0; background: var(--paper, #111); }
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+      #wrap { display: flex; height: 100vh; }
+      #side { position: relative; display: flex; flex-direction: column; width: 280px; height: 100vh; flex: none; }
+      #main { flex: 1; display: flex; flex-direction: column; background: var(--sheet); }
+      #bar { display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 12px; border-bottom: 1px solid var(--line); }
+      #cap { position: fixed; left: 300px; bottom: 0; right: 0; font: 11px/1.4 ui-monospace, monospace; color: #ddd; background: #000c; padding: 4px 8px; white-space: pre-wrap; z-index: 99; }
+    </style>
+    <script>
+      window.__NIGHTLOOM_PLATFORM__ = "macos";
+      window.__TAURI_INTERNALS__ = {
+        invoke: (cmd, args) => (window.__stub ? window.__stub(cmd, args) : Promise.reject("no stub")),
+        transformCallback: () => 0,
+        metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
+      };
+    </script>
+  </head>
+  <body>
+    <div id="wrap"><div id="side"></div><div id="main"><div id="bar"></div></div></div>
+    <div id="cap"></div>
+    <script>
+      window.addEventListener("error", (e) => (document.getElementById("cap").textContent = "error: " + e.message));
+      window.addEventListener("unhandledrejection", (e) => (document.getElementById("cap").textContent += "\nrejection: " + e.reason));
+    </script>
+    <script type="module" src="./threads292.ts"></script>
+  </body>
+</html>
