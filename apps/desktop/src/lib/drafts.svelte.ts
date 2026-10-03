@@ -225,8 +225,12 @@ export function serializeDrafts(map: Record<string, Draft>): string {
       // A chip still converting has no bytes to keep (item 277); his file
       // is still where he dropped it from.
       if (a.pending) continue;
-      if (a.data.length > PERSIST_ATTACHMENT_MAX || a.data.length > budget) continue;
-      budget -= a.data.length;
+      // Pasted text (item 284) is kept like the box's text, past the caps:
+      // there is no file to drop again, and the clipboard may have moved on.
+      if (!a.pasted) {
+        if (a.data.length > PERSIST_ATTACHMENT_MAX || a.data.length > budget) continue;
+        budget -= a.data.length;
+      }
       kept.push({
         id: a.id,
         kind: a.kind,
@@ -234,6 +238,7 @@ export function serializeDrafts(map: Record<string, Draft>): string {
         name: a.name,
         data: a.data,
         ...(a.label ? { label: a.label } : {}),
+        ...(a.pasted ? { pasted: true } : {}),
       });
     }
     return kept;
@@ -259,14 +264,16 @@ export function saveDrafts(
     storage.setItem(KEY, serializeDrafts(map));
   } catch {
     // Over quota, most likely. Try once more with the text alone: the text
-    // is the part that cannot be re-pasted.
+    // is the part that cannot be re-pasted — and so is text pasted as an
+    // attachment (item 284), which stays with it.
     try {
+      const pastedOnly = (list: Attachment[]) => list.filter((a) => a.pasted);
       const bare: Record<string, Draft> = {};
       for (const [k, d] of Object.entries(map))
         bare[k] = {
           text: d.text,
-          attachments: [],
-          queue: (d.queue ?? []).map((q) => ({ id: q.id, text: q.text, attachments: [] })),
+          attachments: pastedOnly(d.attachments),
+          queue: (d.queue ?? []).map((q) => ({ id: q.id, text: q.text, attachments: pastedOnly(q.attachments) })),
         };
       storage.setItem(KEY, serializeDrafts(bare));
     } catch {
