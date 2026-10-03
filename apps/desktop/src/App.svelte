@@ -547,6 +547,17 @@
     }
     if (onShortcut(e)) e.preventDefault();
   }}
+  onkeydowncapture={(e) => {
+    // Ctrl+Tab / Ctrl+Shift+Tab step through the tabs (nightshift backlog
+    // 286), on every platform and from inside a text box: taken in the
+    // capture phase so the composer's editor never sees it as a Tab, and
+    // the draft is untouched.
+    const dir = tabs.ctrlTabStep(e);
+    if (dir === 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    runMenuCommand(dir === 1 ? "next_tab" : "prev_tab");
+  }}
   onfocusin={() => void syncUndoMenu()}
   onfocusout={() => void syncUndoMenu()}
 />

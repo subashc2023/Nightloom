@@ -534,3 +534,21 @@ describe("aside threads, several per chat (backlog 176)", () => {
     expect(parseContentDrag(JSON.stringify({ kind: "aside", session: "a" }))).toEqual({ kind: "aside", session: "a" });
   });
 });
+
+describe("ctrlTabStep (backlog 286)", () => {
+  const k = (o: Partial<KeyboardEvent>) =>
+    ({ key: "Tab", ctrlKey: false, shiftKey: false, metaKey: false, altKey: false, ...o }) as KeyboardEvent;
+  it("Ctrl+Tab steps forward, Ctrl+Shift+Tab back", async () => {
+    const { ctrlTabStep } = await import("./tabs");
+    expect(ctrlTabStep(k({ ctrlKey: true }))).toBe(1);
+    expect(ctrlTabStep(k({ ctrlKey: true, shiftKey: true }))).toBe(-1);
+  });
+  it("leaves plain Tab, ⌘Tab, Ctrl+Alt+Tab and other Ctrl keys alone", async () => {
+    const { ctrlTabStep } = await import("./tabs");
+    expect(ctrlTabStep(k({}))).toBe(0);
+    expect(ctrlTabStep(k({ shiftKey: true }))).toBe(0);
+    expect(ctrlTabStep(k({ metaKey: true }))).toBe(0);
+    expect(ctrlTabStep(k({ ctrlKey: true, altKey: true }))).toBe(0);
+    expect(ctrlTabStep(k({ key: "a", ctrlKey: true }))).toBe(0);
+  });
+});

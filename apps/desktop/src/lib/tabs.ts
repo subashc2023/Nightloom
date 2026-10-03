@@ -504,6 +504,15 @@ export function step(ws: Workspace, dir: 1 | -1): Tab | null {
 }
 
 /**
+ * Ctrl+Tab → 1, Ctrl+Shift+Tab → −1, anything else → 0 (nightshift backlog
+ * 286). Ctrl exactly — not ⌘, not Alt — on every platform, as in browsers.
+ */
+export function ctrlTabStep(e: Pick<KeyboardEvent, "key" | "ctrlKey" | "shiftKey" | "metaKey" | "altKey">): 1 | -1 | 0 {
+  if (e.key !== "Tab" || !e.ctrlKey || e.metaKey || e.altKey) return 0;
+  return e.shiftKey ? -1 : 1;
+}
+
+/**
  * Whether dropping `tabId` at `index` in its own pane's strip leaves it
  * where it is — the slot before it or the one after it (nightshift backlog
  * 195: a drag that ends in its own slot is nothing, not a click).
