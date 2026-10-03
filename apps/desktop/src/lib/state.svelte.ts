@@ -27,6 +27,8 @@ import {
   recordDraft,
   setDraftAttachments,
   setDraftText,
+  hasDraft,
+  discardDraft,
 } from "./drafts.svelte";
 import { requestComposerFocus, rewoundMessage, swapIn, untouched, type BoxSwap } from "./rewindDraft.svelte";
 import {
@@ -70,7 +72,7 @@ import { chatName, notifyNeedsYou, notifyTurnEnd } from "./notify";
 import { RESUME_TEXT, SleepWatch, loadSleepPrefs, pushPowerPrefs, type Woke } from "./sleep";
 import { asideFollowUp, asideQuestion, type AsideQuote } from "./asideQuote";
 import type { AsideAnchor } from "./asideCard";
-import { asideKept, isPrivateChat, loadAsides, markChatMode, nextAsideId } from "./asides";
+import { asideDraftKey, asideKept, ensureAsideUid, isPrivateChat, loadAsides, markChatMode, nextAsideId } from "./asides";
 import { MAX_OPEN_ASIDES, foldTheOldest } from "./asideCard";
 import { loadCouncilPrefs, type CouncilPrefs, type CouncilRequest } from "./council";
 import { limitPauseFrom, resumeDelayMs, resumeMessage, type LimitPause } from "./limit";
@@ -127,6 +129,7 @@ import type {
   AgentInfo,
   AgentInit,
   Attachment,
+  AsideSendOptions,
   AgentTurnResult,
   SubagentStatus,
   PlanUsage,
@@ -569,6 +572,16 @@ export interface AsideTurn {
   /** × pressed mid-stream: the partial text stays on the card, marked. */
   cancelled: boolean;
   cacheRead: number;
+  /** What the question carried from the composer (backlog 283), drawn in
+   *  his bubble as the chat's are. In memory with their bytes (a follow-up
+   *  sends them again, blocker 960); the store keeps names and kinds only. */
+  attachments?: Attachment[];
+  /** The model that answered and its tokens (backlog 283), for the reply's
+   *  header and footer; absent while asking and on a stored turn. */
+  model?: string | null;
+  usage?: { input_tokens: number; output_tokens: number; cache_read_tokens?: number };
+  /** When the answer ended (ISO), for the footer's time. */
+  at?: string;
 }
 
 /** The open chat's aside (backlog 081, the passage form backlog 107) — see
@@ -614,6 +627,14 @@ export interface Aside {
   /** Each time this aside was folded into a thread's log.md (282), for
    *  the "already folded at …" warning. */
   foldedInto?: FoldRecord[];
+  /** A stable name for the thread (backlog 283), written with it: the key
+   *  its composer's chips and held messages live under in the drafts store
+   *  (`asideDraftKey`), which must outlive a relaunch, as `id` does not. */
+  uid?: string;
+  /** His model / effort for this aside (backlog 283), picked in its
+   *  composer; absent or null is the chat's own. */
+  model?: string | null;
+  effort?: string | null;
 }
 
 /** The aside's live exchange — the last turn while it is still asking. */
@@ -6678,44 +6699,69 @@ async function sendAgent(
  * opens a new card.
  */
 let asideSeq = 0;
-export async function askAside(question: string, quote: AsideQuote | null = null, draft: Aside | null = null): Promise<void> {
+/**
+ * What the aside's composer sends besides the words (backlog 283): the
+ * chips — kept on the exchange, so his bubble shows them as the chat's
+ * do — and the thread's own model / effort, absent for the chat's.
+ */
+export interface AsideAsk {
+  attachments?: Attachment[];
+}
+export async function askAside(
+  question: string,
+  quote: AsideQuote | null = null,
+  draft: Aside | null = null,
+  ask: AsideAsk = {},
+): Promise<void> {
   const q = question.trim();
-  if ((!q && !quote) || app.connection?.engine !== "claude-code") return;
+  const chips = ask.attachments ?? [];
+  if ((!q && !quote && chips.length === 0) || app.connection?.engine !== "claude-code") return;
+  const own = draft && draft.draft && app.asides.includes(draft) ? draft : null;
   // From the composer, with an answered thread on the card (backlog 137,
   // blocker 201): the question continues that thread rather than
   // replacing it — the thread is written nowhere else. With several open
   // (backlog 176, blocker 319): the newest composer thread, the one with
-  // no passage; a passage's thread is about its passage, not this.
+  // no passage; a passage's thread is about its passage, not this. Not
+  // when a thread's own composer asks (283): its draft is the thread.
   const on = [...app.asides].reverse().find((a) => a.quote === null && !a.draft) ?? null;
-  if (!quote && q && on && !asideAsking(on) && on.turns.some((t) => t.partial.trim())) {
-    await followUpAside(q, on);
+  if (!own && !quote && q && on && !asideAsking(on) && on.turns.some((t) => t.partial.trim())) {
+    await followUpAside(q, on, ask);
     return;
   }
   // About a passage (backlog 107): the highlighted text rides inside the
   // one string the backend takes, framed as a selection and quoted
   // exactly (`asideQuestion`); the card keeps his words and the quote
   // apart. The backend is 081's, untouched.
-  const sent = quote ? asideQuestion(quote, q) : q;
+  const words = q || ATTACHMENTS_ONLY;
+  const sent = quote ? asideQuestion(quote, words) : words;
   const seq = ++asideSeq;
   const turn: AsideTurn = { seq, question: q, partial: "", answer: null, error: null, cancelled: false, cacheRead: 0 };
+  if (chips.length > 0) turn.attachments = chips.map((c) => ({ ...c }));
   // ~~A running exchange is replaced (one at a time): cancelled on the
   // backend~~ — nothing is replaced since backlog 176: the other cards
   // keep their threads, and a running one runs on.
-  const own = draft && draft.draft && app.asides.includes(draft) ? draft : null;
+  let thread: Aside;
   if (own) {
     // The card's draft (backlog 141): asked under its passage, in place.
     own.quote = quote;
     own.draft = false;
     own.turns.push(turn);
+    thread = own;
   } else {
-    openAsideThread({ id: nextAsideId(), quote, draft: false, turns: [turn], anchor: null });
+    thread = openAsideThread({ id: nextAsideId(), quote, draft: false, turns: [turn], anchor: null });
   }
-  await runAside(turn, sent);
+  await runAside(turn, sent, thread, chips);
 }
+
+/** The words sent for a question that is chips alone (backlog 283): the
+ *  CLI takes no empty prompt. His bubble shows the chips, not this. */
+export const ATTACHMENTS_ONLY = "(The user sent only the attachments above.)";
 
 /** A new card for the open chat (backlog 176): appended, the newest, and
  *  the oldest folded past `MAX_OPEN_ASIDES` (blocker 318). */
 function openAsideThread(a: Aside): Aside {
+  // Its drafts-store name (backlog 283), before anything keys by it.
+  ensureAsideUid(a);
   app.asides.push(a);
   const live = app.asides[app.asides.length - 1]!;
   foldCrowd(live);
@@ -6768,20 +6814,45 @@ export function asideWaiting(a: Aside | null): boolean {
  * shows the whole answer even where a delta was lost. A turn cancelled
  * from the card keeps its partial text and ignores the late result.
  */
-async function runAside(turn: AsideTurn, sent: string): Promise<void> {
+async function runAside(turn: AsideTurn, sent: string, thread: Aside | null = null, chips: Attachment[] = []): Promise<void> {
   const live = () => findAsideTurn(turn.seq);
   try {
-    const res = await api.askAside(sent, turn.seq);
+    const res = await api.askAside(sent, turn.seq, asideWire(thread, chips));
     const t = live();
     if (!t || t.cancelled) return; // dismissed, replaced or cancelled meanwhile
     t.answer = res.answer;
     t.partial = res.answer;
     t.error = res.is_error ? (res.notices.join("; ") || "the aside failed") : null;
     t.cacheRead = res.cache_read;
+    // Backlog 283: drawn as a reply, under its model, with its figure.
+    if (res.model) t.model = res.model;
+    if (res.output_tokens !== undefined)
+      t.usage = { input_tokens: res.input_tokens ?? 0, output_tokens: res.output_tokens, cache_read_tokens: res.cache_read };
+    t.at = new Date().toISOString();
   } catch (e) {
     const t = live();
     if (t && !t.cancelled) t.error = String(e);
   }
+}
+
+/**
+ * The wire form of an aside's question (backlog 283): its chips split as
+ * a turn's are, and the thread's own model / effort when he picked one.
+ * A chip without bytes (one read back from the store, names only) is not
+ * sent. Pure; exported for the suite.
+ */
+export function asideWire(thread: Pick<Aside, "model" | "effort"> | null, chips: readonly Attachment[]): AsideSendOptions {
+  const out: AsideSendOptions = {};
+  const live = chips.filter((c) => c.data && !c.pending);
+  const images = live.filter((c) => c.kind === "image").map(({ media_type, data }) => ({ media_type, data }));
+  const documents = live.filter((c) => c.kind === "document").map(({ media_type, name, data }) => ({ media_type, name, data }));
+  const files = live.filter((c) => c.kind === "file").map(({ name, data }) => ({ name, data }));
+  if (images.length) out.images = images;
+  if (documents.length) out.documents = documents;
+  if (files.length) out.files = files;
+  if (thread?.model != null && thread.model !== "") out.model = thread.model;
+  if (thread?.effort != null) out.effort = thread.effort;
+  return out;
 }
 
 /**
@@ -6791,17 +6862,61 @@ async function runAside(turn: AsideTurn, sent: string): Promise<void> {
  * when there is one — travels inside the new question (`asideFollowUp`),
  * and the chat's context is the fork's as before. The new exchange is
  * appended to the card; nothing enters the chat or the CLI's files.
+ *
+ * Chips (backlog 283; blocker 960's default): the earlier exchanges'
+ * chips go again with the new question, as their words do — the fork
+ * never saw them otherwise — so "the image above" means something. Only
+ * chips still holding their bytes: one read back after a relaunch is a
+ * name, and the words say it was there.
  */
-export async function followUpAside(question: string, thread: Aside | null = null): Promise<void> {
+export async function followUpAside(question: string, thread: Aside | null = null, ask: AsideAsk = {}): Promise<void> {
   const q = question.trim();
+  const chips = ask.attachments ?? [];
   // The card's own thread (backlog 176); the front one when none is named.
   const a = thread ?? app.aside;
-  if (!q || !a || a.draft || asideAsking(a) || app.connection?.engine !== "claude-code") return;
-  const prior = a.turns.filter((t) => t.partial.trim()).map((t) => ({ question: t.question, answer: t.partial }));
-  const sent = asideFollowUp(a.quote, prior, q);
+  if ((!q && chips.length === 0) || !a || a.draft || asideAsking(a) || app.connection?.engine !== "claude-code") return;
+  const prior = a.turns
+    .filter((t) => t.partial.trim())
+    .map((t) => ({ question: t.question || ATTACHMENTS_ONLY, answer: t.partial }));
+  const sent = asideFollowUp(a.quote, prior, q || ATTACHMENTS_ONLY);
+  const earlier = a.turns.flatMap((t) => t.attachments ?? []).filter((c) => c.data);
   const turn: AsideTurn = { seq: ++asideSeq, question: q, partial: "", answer: null, error: null, cancelled: false, cacheRead: 0 };
+  if (chips.length > 0) turn.attachments = chips.map((c) => ({ ...c }));
   a.turns.push(turn);
-  await runAside(turn, sent);
+  await runAside(turn, sent, a, [...earlier, ...chips]);
+}
+
+/**
+ * Rewind an aside to before exchange `index` (backlog 283, the message
+ * menu's Rewind): that exchange and every later one leave the thread, and
+ * his question goes back into the aside's box — in front of anything
+ * typed there, as the chat's rewind puts his message back (247) — with its
+ * chips. Returns what left, for Undo (`restoreAsideTurns`). With no
+ * exchange left the thread is a question box again (`draft`).
+ */
+export function rewindAside(a: Aside, index: number, intoBox = true): AsideTurn[] {
+  if (index < 0 || index >= a.turns.length || asideAsking(a)) return [];
+  const gone = a.turns.splice(index);
+  const first = gone[0]!;
+  if (a.turns.length === 0) a.draft = true;
+  if (intoBox) {
+    const key = asideDraftKey(a);
+    const now = readDraft(key).text;
+    const q = first.question;
+    setAsideUnsent(a, q ? (now ? `${q}\n${now}` : q) : now);
+    const chips = (first.attachments ?? []).filter((c) => c.data).map((c) => ({ ...c, id: nextAttachmentId() }));
+    if (chips.length > 0) setDraftAttachments(key, [...readDraft(key).attachments, ...chips]);
+  }
+  return gone;
+}
+
+/** Undo a rewind (backlog 283): the exchanges back at the thread's end,
+ *  in order, when nothing was asked since; `false` when the thread moved on. */
+export function restoreAsideTurns(a: Aside, at: number, turns: AsideTurn[]): boolean {
+  if (turns.length === 0 || a.turns.length !== at || asideAsking(a)) return false;
+  a.turns.push(...turns);
+  a.draft = false;
+  return true;
 }
 
 /**
@@ -6895,7 +7010,9 @@ export function dismissAside(thread: Aside | null = null): void {
   const t = asideAsking(a);
   if (t) {
     void api.cancelAside(t.seq).catch(() => {});
-    if (t.partial.trim()) {
+    // What arrived stays, and so does a card whose box holds his next
+    // words (backlog 283: the box is there while it answers).
+    if (t.partial.trim() || asideHasDraft(a)) {
       t.cancelled = true;
       return;
     }
@@ -6923,12 +7040,35 @@ export function dismissAside(thread: Aside | null = null): void {
   if (app.asidePanelThread === a.id) app.asidePanelThread = null;
   if (app.asideFocus === a.id) app.asideFocus = null;
   if (app.asideDiscard === a) app.asideDiscard = null;
+  // Its composer's entry goes with it (backlog 283): every close with
+  // anything in the box went through the Discard question; the words go
+  // to the box's ring of earlier drafts on the way, as a send's do.
+  discardDraft(asideDraftKey(a), closedIn ?? undefined);
   if (closedIn !== null) for (const fn of asideClosedListeners) fn(closedIn, a);
 }
 
-/** The text typed in a thread's box, into app state (backlog 228). */
+/** Stop the thread's answer where it is (backlog 283, the aside
+ *  composer's Stop): what arrived stays, marked; the card stays. */
+export function stopAside(a: Aside): void {
+  const t = asideAsking(a);
+  if (!t) return;
+  void api.cancelAside(t.seq).catch(() => {});
+  t.cancelled = true;
+}
+
+/** The text typed in a thread's box, into app state (backlog 228). Since
+ *  backlog 283 the box is the chat's composer, whose text lives in the
+ *  drafts store under the thread's key; `unsent` is kept equal to it, for
+ *  the store's keep rule, the discard question and the lists. */
 export function setAsideUnsent(a: Aside, text: string): void {
   a.unsent = text;
+  setDraftText(asideDraftKey(a), text);
+}
+
+/** Whether the thread's composer holds anything of his (backlog 283):
+ *  text, a chip, or a held message. */
+export function asideHasDraft(a: Aside): boolean {
+  return !!(a.unsent ?? "").trim() || hasDraft(asideDraftKey(a));
 }
 
 /**
@@ -6942,7 +7082,7 @@ export function setAsideUnsent(a: Aside, text: string): void {
 export function requestDismissAside(thread: Aside | null = null): void {
   const a = thread ?? app.aside;
   if (!a) return;
-  if (!asideAsking(a) && (a.unsent ?? "").trim()) {
+  if (!asideAsking(a) && asideHasDraft(a)) {
     // The box keeps the caret otherwise, and its Enter and Escape would
     // act on the card behind the dialog.
     if (typeof document !== "undefined") (document.activeElement as HTMLElement | null)?.blur?.();

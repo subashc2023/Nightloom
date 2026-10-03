@@ -15,7 +15,15 @@
 import { untrack } from "svelte";
 import { app, asideStash, chatMode } from "./state.svelte";
 import type { Aside } from "./state.svelte";
-import { cleanAsideName, isPrivateChat, markChatMode, saveAsides } from "./asides";
+import { asideDraftKey, cleanAsideName, isPrivateChat, markChatMode, saveAsides, setAsideHeld } from "./asides";
+import { drafts } from "./drafts.svelte";
+
+// Backlog 283: a thread's composer keeps its chips and held messages in
+// the drafts store; a draft card holding only those is still his.
+setAsideHeld((a) => {
+  const d = drafts[asideDraftKey(a)];
+  return d !== undefined && (d.attachments.length > 0 || d.queue.length > 0);
+});
 
 /** Record the open chat's mode. Its log and its id change together in
  *  every opener, so the pair read here belongs to one chat. */
@@ -98,6 +106,10 @@ if (typeof window !== "undefined") {
         void a.fold?.text;
         void a.fold?.editing;
         void a.foldedInto?.length;
+        // His model / effort picks (backlog 283).
+        void a.model;
+        void a.effort;
+        void a.uid;
         for (const t of a.turns) {
           void t.partial;
           void t.answer;

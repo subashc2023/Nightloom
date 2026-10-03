@@ -1,14 +1,12 @@
 <script lang="ts">
   import { tip } from "./tip";
-  import { app, asideAsking, asideOf, asideTabThread, asideWaiting, askAside, followUpAside, openContent, setAsideUnsent } from "./state.svelte";
+  import { app, asideAsking, asideOf, asideTabThread } from "./state.svelte";
   import { quoteLabel } from "./asideQuote";
-  import { renderMarkdown } from "./markdown";
-  import { arrive, launch } from "./sendMotion";
   import Icon from "./Icon.svelte";
-  import AsideBox from "./AsideBox.svelte";
   import { tick, untrack } from "svelte";
-  import { scheduleAsideSave } from "./asides.svelte";
-  import { asideComposer } from "./asideComposer";
+  // Backlog 283: the chat's composer and message pieces.
+  import Composer from "./Composer.svelte";
+  import AsideThread from "./AsideThread.svelte";
   import { asideScrollKey, recallScroll, rememberScroll, restoreTop } from "./scroll.svelte";
   import { asideLabel } from "./asides";
   import { renameAside } from "./asides.svelte";
@@ -41,7 +39,6 @@
   let { session, thread = null }: { session: string; thread?: number | null } = $props();
 
   const aside = $derived(asideOf(session, thread));
-  const waiting = $derived(asideWaiting(aside));
   const open = $derived(session === app.activeSessionId);
   const asking = $derived(asideAsking(aside));
   const last = $derived(aside?.turns[aside.turns.length - 1] ?? null);
@@ -84,54 +81,11 @@
     });
   });
 
-  // A draft dragged into the tab before anything was asked (backlog 148):
-  // the box is here, the send is the card's own `askAside`, which reads the
-  // open chat's aside — so it asks only while this tab's chat is the open one.
-  // ~~`askDraft` / `followDraft` here~~ — the thread's own `unsent` since
-  // backlog 228, shared with its card and written with the thread.
-  const unsent = $derived(aside?.unsent ?? "");
-  function typed(e: Event) {
-    if (!aside) return;
-    setAsideUnsent(aside, (e.currentTarget as HTMLTextAreaElement).value);
-    // A stashed thread (its chat not the open one) is not watched by the
-    // keeper's effect; tell it (backlog 238, 228's rule).
-    if (!open) scheduleAsideSave();
-  }
-  // One box since backlog 238: the tab's composer, for the first question
-  // and every follow-up.
-  let box = $state<HTMLTextAreaElement | null>(null);
-  const composer = $derived(
-    asideComposer(aside, { open, asking: !!asking, claudeCode: app.connection?.engine === "claude-code", text: unsent }),
-  );
-  function send() {
-    if (aside?.draft) submitAsk();
-    else submitFollowUp();
-  }
-  function sendKeys(e: KeyboardEvent) {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      send();
-    }
-  }
-  function submitAsk() {
-    const q = unsent.trim();
-    if (!q || !open || !aside || !aside.draft) return;
-    // Off the Claude Code engine the ask does nothing; the text stays (228).
-    if (app.connection?.engine !== "claude-code") return;
-    launch("aside", box);
-    setAsideUnsent(aside, "");
-    void askAside(q, aside.quote, aside);
-  }
-
-  function submitFollowUp() {
-    const q = unsent.trim();
-    if (!q || !open || !aside || aside.draft || asking) return;
-    // Off the Claude Code engine the ask does nothing; the text stays (228).
-    if (app.connection?.engine !== "claude-code") return;
-    launch("aside", box);
-    setAsideUnsent(aside, "");
-    void followUpAside(q, aside);
-  }
+  // ~~The tab's own box (`AsideBox`, `asideComposer`), `submitAsk` /
+  // `submitFollowUp`~~ — the chat's composer since backlog 283 (`Composer`
+  // with `aside`): the same box for the first question and every
+  // follow-up (238's rule), now with the chat's controls; it types on a
+  // chat that is not the open one and says to open it, as before.
 </script>
 
 <div class="aside-view" role="note" aria-label="aside, not part of the chat">
@@ -159,8 +113,9 @@
       </div>
     {/if}
     <div class="aside-view-head">
-      <span class="ns-chip mono">aside · not in the chat</span>
-      <span class="ns-chip mono" use:tip={"The chat this side conversation is beside"}>{chatName}</span>
+      <span class="aside-view-of" use:tip={"An aside: answered from this chat's context, never part of it"}
+        >Aside of <em>{chatName}</em></span
+      >
       {#if aside?.quote}
         <span class="ns-chip mono">about {quoteLabel(aside.quote, "card")}</span>
       {/if}
@@ -197,24 +152,7 @@
       {/if}
       {#if !aside.draft}
         <div class="aside-view-turns">
-          {#each aside.turns as turn (turn.seq)}
-            <div class="aside-view-q" use:arrive={{ channel: "aside", bubble: ".aside-view-qtext" }}><div class="aside-view-qtext">{turn.question}</div></div>
-            {#if turn.partial}
-              <div class="aside-view-a markdown">{@html renderMarkdown(turn.partial)}</div>
-            {/if}
-            {#if turn.cancelled}
-              <div class="aside-view-mark">stopped here</div>
-            {/if}
-            {#if turn.error}
-              <div class="aside-view-err">{turn.error}</div>
-            {/if}
-            {#if turn === asking}
-              <div class="aside-view-wait" role="status" aria-label="Waiting for the answer">
-                <span class="roll" aria-hidden="true"><Icon name="moon" size={16} /></span>
-                <span>{waiting ? "waiting — one aside answers at a time" : "thinking…"}</span>
-              </div>
-            {/if}
-          {/each}
+          <AsideThread {aside} {open} />
           <AsideFoldPanel {aside} part="panel" {open} />
         </div>
       {/if}
@@ -232,51 +170,8 @@
          it. -->
     <div class="aside-view-foot">
       <div class="aside-view-foot-inner">
-        <AsideBox
-          bind:box
-          variant="view"
-          edge="top"
-          value={unsent}
-          oninput={typed}
-          onkeydown={sendKeys}
-          placeholder={aside.draft
-            ? aside.quote
-              ? "Ask about the passage… (Enter sends)"
-              : "Ask aside… (Enter sends)"
-            : "Follow up in the aside… (Enter sends)"}
-          label={aside.draft ? "Your question about the highlighted passage" : "A follow-up in the aside"}
-        />
-        <div class="aside-view-foot-row">
-          {#if composer.note === "not-open"}
-            <span class="aside-view-foot-note"
-              >An aside answers from its chat's context, so it sends only while <em>{chatName}</em> is the open chat.</span
-            >
-            <button class="ns-btn ghost small" onclick={() => void openContent({ kind: "chat", session }, "new")}
-              >Open the chat</button
-            >
-          {:else if composer.note === "answering"}
-            <span class="aside-view-foot-note">Sends when this answer ends.</span>
-          {:else if composer.note === "engine"}
-            <span class="aside-view-foot-note">Asides run on the Claude Code engine.</span>
-          {:else if composer.note === "ready"}
-            <!-- Backlog 240: the bar keeps a line once the chat is open (after
-                 Open the chat), instead of dropping to a bare Send. -->
-            <span class="aside-view-foot-note"
-              >Answers from <em>{chatName}</em>'s context; nothing here enters the chat.</span
-            >
-          {/if}
-          <span class="spacer"></span>
-          <button
-            class="ns-btn accent small aside-view-send"
-            disabled={!composer.canSend}
-            use:tip={aside.draft
-              ? "Ask this about the passage, off the chat's context: no changes, recorded nowhere"
-              : "Continue the aside: the exchanges above go with this question, off the chat's context; recorded nowhere"}
-            onclick={send}
-          >
-            Send
-          </button>
-        </div>
+        <!-- Since backlog 283 the chat's composer, in the aside's frame. -->
+        <Composer {aside} asideChat={session} />
       </div>
     </div>
   {/if}
@@ -285,6 +180,15 @@
 <style>
   /* The tab: the thread scrolls, the composer stays at the foot (238). */
   .aside-view {
+    /* The aside's face (backlog 283), as the card's: the page tinted
+       toward the accent and a dashed accent rule over the composer, so a
+       tab of an aside never reads as a chat now their controls match. */
+    --aside-tint: color-mix(in srgb, var(--paper) 89%, var(--accent));
+    --aside-edge: color-mix(in srgb, var(--accent) 50%, var(--line2));
+    --aside-well: color-mix(in srgb, var(--sheet) 94%, var(--accent));
+    --user-bubble-bg: color-mix(in srgb, var(--aside-tint) 86%, var(--ink));
+    background: var(--aside-tint);
+    box-shadow: inset 3px 0 0 var(--aside-edge);
     flex: 1;
     min-height: 0;
     display: flex;
@@ -304,31 +208,15 @@
   }
   .aside-view-foot {
     flex: none;
-    padding: 10px 24px 14px;
-    border-top: 1px solid var(--line);
-    background: var(--paper);
+    padding: 2px 24px 14px;
+    border-top: 1px dashed var(--aside-edge);
+    background: var(--aside-tint);
   }
   .aside-view-foot-inner {
     max-width: 760px;
     display: flex;
     flex-direction: column;
     gap: 8px;
-  }
-  .aside-view-foot-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-height: 26px;
-  }
-  .aside-view-foot-row .spacer {
-    flex: 1;
-  }
-  .aside-view-foot-note {
-    color: var(--dim);
-    font-size: 12px;
-  }
-  .aside-view-send {
-    padding: 4px 16px;
   }
   .aside-view-title {
     display: flex;
@@ -391,51 +279,15 @@
     gap: 10px;
     max-width: 760px;
   }
-  .aside-view-q {
-    display: flex;
-    justify-content: flex-end;
+  /* ~~`.aside-view-q` / `-a` / `-wait`~~ — `AsideThread.svelte` since
+     backlog 283; the box is the chat's composer. */
+  .aside-view-of {
+    font-size: 12.5px;
+    color: var(--ink2, var(--dim));
   }
-  .aside-view-qtext {
-    max-width: 80%;
-    padding: 8px 12px;
-    border-radius: 12px 12px 4px 12px;
-    background: var(--well);
+  .aside-view-of em {
+    font-style: normal;
+    font-weight: 600;
     color: var(--ink);
-    white-space: pre-wrap;
   }
-  .aside-view-a {
-    line-height: 1.55;
-  }
-  .aside-view-mark,
-  .aside-view-err {
-    font-size: 12px;
-    color: var(--dim);
-  }
-  .aside-view-err {
-    color: var(--failed, #d66);
-  }
-  .aside-view-wait {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    color: var(--dim);
-    font-size: 13px;
-  }
-  .aside-view-wait .roll {
-    display: inline-flex;
-    animation: aside-view-roll 1.6s linear infinite;
-  }
-  @keyframes aside-view-roll {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .aside-view-wait .roll {
-      animation: none;
-    }
-  }
-  /* The question box is `AsideBox.svelte` since backlog 226 (it keeps
-     backlog 170's no-sideways-scroll rule). ~~`.aside-view-row`, the Ask
-     aside / Follow up row~~ — the foot's row since backlog 238. */
 </style>

@@ -1272,6 +1272,23 @@ export interface AsideResult {
   cache_read: number;
   is_error: boolean;
   notices: string[];
+  /** The model the CLI resolved, and the tokens (backlog 283): the answer
+   *  is drawn as a reply is, under its model's name. Absent from an older
+   *  backend. */
+  model?: string | null;
+  input_tokens?: number;
+  output_tokens?: number;
+}
+
+/** What an aside's question carries besides its words (backlog 283): the
+ *  composer's chips and the aside's own model / effort picks — absent,
+ *  the chat's. */
+export interface AsideSendOptions {
+  images?: ImageInput[];
+  documents?: DocumentInput[];
+  files?: FileInput[];
+  model?: string | null;
+  effort?: string | null;
 }
 
 /** A piece of an aside's answer as it streams (nightshift backlog 128),

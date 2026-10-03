@@ -53,13 +53,16 @@ export interface Placement {
 
 /** The height a card is given room for when its side is chosen: a head
  *  row, a question, a few lines of answer. Past it the card scrolls. */
-export const PREFERRED_CARD_HEIGHT = 240;
+export const PREFERRED_CARD_HEIGHT = 300;
 /** The gap between the passage and the card's edge. */
 export const CARD_GAP = 8;
 /** The card's width when the column allows it. */
 export const CARD_WIDTH = 440;
-/** Below this the card scrolls rather than shrinks. */
-export const MIN_CARD_HEIGHT = 160;
+/** Below this the card scrolls rather than shrinks. ~~160~~ 200 and a
+ *  preferred ~~240~~ 300 since backlog 283: the card's foot is the chat's
+ *  composer (box, chips, toolbar, line), ~130 px, and the thread above
+ *  it needs room to be read. */
+export const MIN_CARD_HEIGHT = 200;
 /** Kept between the card and the viewport's edge on its side. */
 export const EDGE_MARGIN = 12;
 

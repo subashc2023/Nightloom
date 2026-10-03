@@ -2,17 +2,13 @@
   import { tip } from "./tip";
   // Every Copy button goes through the in-app clipboard ring (backlog 173).
   import { copyText } from "./clipRing.svelte";
-  import { arrive, launch } from "./sendMotion";
   import {
     app,
-    askAside,
     asideAsking,
     asideWaiting,
     dropContent,
     requestDismissAside,
-    setAsideUnsent,
     endContentDrag,
-    followUpAside,
     startContentDrag,
     unfoldAside,
   } from "./state.svelte";
@@ -22,13 +18,11 @@
   import { tick } from "svelte";
   import type { Aside } from "./state.svelte";
   import type { Placement } from "./asideCard";
-  import { quoteLabel } from "./asideQuote";
-  import { renderMarkdown } from "./markdown";
-  import Icon from "./Icon.svelte";
   import MoveZone from "./MoveZone.svelte";
-  import AsideBox from "./AsideBox.svelte";
   import AsideFoldPanel from "./AsideFoldPanel.svelte";
-  import { roomForBox } from "./boxGrow";
+  // Backlog 283: the chat's composer and the chat's message pieces.
+  import Composer from "./Composer.svelte";
+  import AsideThread from "./AsideThread.svelte";
 
   /**
    * The floating aside card (nightshift backlog 141, 2026-09-17; blocker
@@ -106,50 +100,10 @@
 
   let root = $state<HTMLElement | null>(null);
   let body = $state<HTMLElement | null>(null);
-  let askBox = $state<HTMLTextAreaElement | null>(null);
-  let followBox = $state<HTMLTextAreaElement | null>(null);
-  // ~~`askDraft` / `followDraft`, the card's own `$state`~~ — lost on an
-  // unmount and on quit (backlog 228, 2026-09-26). The text lives on the
-  // thread (`aside.unsent`), which the aside store writes; the two boxes
-  // never show at once, so one field serves both.
-  const unsent = $derived(aside.unsent ?? "");
-  /** The box's drag edge (backlog 226): the top on a card stuck above the
-   *  composer, which grows upward; the bottom everywhere else. */
-  const boxEdge = $derived(placement === null && !panel && !aside.moved ? "top" : "bottom");
-  /**
-   * The most the question box may take (nightshift backlog 233): the
-   * card's height limit less its head and borders, the body's top padding
-   * and everything under the box — the gap and the Ask aside / Cancel (or
-   * Follow up) row — so the buttons always show; `null` when the card has
-   * no limit to meet. Earlier answers above a follow-up box are not
-   * counted: the body scrolls them away, as it always has.
-   */
-  function boxRoom(min: number): number | null {
-    const card = root;
-    const inner = body;
-    const box = askBox ?? followBox;
-    const wrap = box?.parentElement;
-    if (!card || !inner || !wrap) return null;
-    const cs = getComputedStyle(card);
-    // A card in the side panel has no max-height; its own height is the
-    // column's, and that is its limit.
-    const max = parseFloat(cs.maxHeight);
-    const limit = Number.isFinite(max) ? max : panel ? card.getBoundingClientRect().height : NaN;
-    if (!Number.isFinite(limit)) return null;
-    const cardRect = card.getBoundingClientRect();
-    const bodyRect = inner.getBoundingClientRect();
-    const frame = cardRect.height - bodyRect.height;
-    const above = parseFloat(getComputedStyle(inner).paddingTop) || 0;
-    // The body's content ends at its top, less what is scrolled, plus
-    // its whole scroll height; what lies between that and the box's
-    // bottom is what must stay in view under it.
-    const contentBottom = bodyRect.top - inner.scrollTop + inner.scrollHeight;
-    const below = Math.max(0, contentBottom - wrap.getBoundingClientRect().bottom);
-    return roomForBox(limit, frame, above, below, min);
-  }
-  function typed(e: Event): void {
-    setAsideUnsent(aside, (e.currentTarget as HTMLTextAreaElement).value);
-  }
+  // ~~`askBox` / `followBox`, `AsideBox` and its room~~ — the card's box
+  // is the chat's composer since backlog 283 (`Composer` with `aside`),
+  // pinned at the card's foot under the thread; its text, chips and held
+  // messages are kept in the drafts store under the thread's key.
   let copied = $state(false);
 
   const asking = $derived(asideAsking(aside));
@@ -157,10 +111,16 @@
   const waiting = $derived(asideWaiting(aside));
   const folded = $derived(!panel && aside.folded === true);
   const last = $derived(aside.turns[aside.turns.length - 1] ?? null);
-  const onClaudeCode = $derived(app.connection?.engine === "claude-code");
   /** The chat the thread belongs to: the panel's, else the open one. */
   const owner = $derived(panel ? session : app.activeSessionId);
   const readOnly = $derived(panel && session !== app.activeSessionId);
+  /** "Aside of ‹chat›" (backlog 283): the head names the chat it hangs off,
+   *  so the card never reads as the chat itself. */
+  const chatName = $derived.by(() => {
+    if (!owner) return "this chat";
+    const s = app.sessions.find((x) => x.id === owner);
+    return s?.title ?? s?.first_user ?? "this chat";
+  });
   // A draft drags too (backlog 148, his ask on 5847cca): the card sits
   // under the passage and can cover what he is reading before a word is
   // typed; the tab and the panel draw the question box for a draft.
@@ -176,9 +136,6 @@
   const moved = $derived(panel ? null : (aside.moved ?? null));
   const pos = $derived(dragPos ?? moved);
   /** Whatever may change the card's room, so the box measures again. */
-  const roomKey = $derived(
-    `${placement?.maxHeight ?? ""}|${pos?.top ?? ""}|${footCount}|${footBottom ?? ""}|${panel}`,
-  );
 
   function headDown(e: PointerEvent): void {
     if (!movable || !root || folded) return;
@@ -250,18 +207,6 @@
     if (!body) return;
     bodyPinned = body.scrollHeight - body.scrollTop - body.clientHeight < 4;
   }
-  /** The box grew or shrank (backlog 233): the box and its button row
-   *  are the body's last things, so while he types in it — or while the
-   *  body is held at its foot — the foot stays in view and the buttons
-   *  with it; a longer question never pushes them out of the card. */
-  function boxGrew(): void {
-    const el = body;
-    if (!el) return;
-    const box = askBox ?? followBox;
-    if (bodyPinned || (box !== null && document.activeElement === box)) {
-      el.scrollTop = el.scrollHeight;
-    }
-  }
   // A card whose room shrinks — a shorter window, more cards stacked
   // above the composer — keeps its foot where it was: held at the bottom
   // before the change, held there after, so the buttons stay (backlog
@@ -299,43 +244,13 @@
 
   /** The transcript puts the caret here once the card is placed. */
   export function focusBox(): void {
-    askBox?.focus({ preventScroll: true });
+    const box = root?.querySelector<HTMLElement>(".composer textarea, .composer [contenteditable='true']");
+    box?.focus({ preventScroll: true });
   }
 
   /** The card's own element, for the transcript to measure. */
   export function element(): HTMLElement | null {
     return root;
-  }
-
-  function submitAsk(): void {
-    const q = unsent.trim();
-    if (!q || !aside.quote || !aside.draft) return;
-    // Off the Claude Code engine the ask does nothing; the text stays (228).
-    if (app.connection?.engine !== "claude-code") return;
-    launch("aside", askBox);
-    setAsideUnsent(aside, "");
-    void askAside(q, aside.quote, aside);
-  }
-  function askKeys(e: KeyboardEvent): void {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      submitAsk();
-    }
-  }
-  function submitFollowUp(): void {
-    const q = unsent.trim();
-    if (!q || aside.draft || asking) return;
-    // Off the Claude Code engine the ask does nothing; the text stays (228).
-    if (app.connection?.engine !== "claude-code") return;
-    launch("aside", followBox);
-    setAsideUnsent(aside, "");
-    void followUpAside(q, aside);
-  }
-  function followKeys(e: KeyboardEvent): void {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      submitFollowUp();
-    }
   }
 
   /** Escape inside the card: closed here, and stopped here. In the
@@ -411,7 +326,7 @@
     : placement
       ? `${placement.maxHeight}px`
       : !panel && footCount > 1
-        ? `max(120px, calc(60vh / ${footCount}))`
+        ? `max(200px, calc(60vh / ${footCount}))`
         : undefined}
   style:bottom={!pos && !placement && !panel && footBottom !== null ? `${footBottom}px` : undefined}
   onkeydown={cardKeys}
@@ -450,13 +365,16 @@
       <!-- Its name (item 265), where he gave it one. -->
       <span class="ns-chip aside-card-name" use:tip={"This aside's name — rename it from the sidebar, the asides list or its tab"}>{aside.name}</span>
     {/if}
-    <span class="ns-chip mono">aside · not in the chat</span>
+    <span class="aside-card-of" use:tip={"An aside: answered from this chat's context, never part of it"}
+      >Aside of <em>{chatName}</em></span
+    >
     {#if folded && asking}
       <span class="ns-chip mono">{waiting ? "waiting" : "asking…"}</span>
     {/if}
-    {#if aside.quote}
-      <span class="ns-chip mono" use:tip={"The highlighted passage, sent with the question exactly as selected"}>about {quoteLabel(aside.quote, "card")}</span>
-    {/if}
+    <!-- ~~"about ‹passage›"~~ — not in the head since backlog 283: under
+         its passage the passage is marked right above, and the panel
+         quotes it at the top of the thread; the head's room goes to
+         "Aside of ‹chat›". -->
     {#if last && last.answer !== null && last.cacheRead > 0}
       <span class="ns-chip mono">{last.cacheRead.toLocaleString()} read from cache</span>
     {/if}
@@ -497,89 +415,26 @@
     {/if}
   </div>
   {#if !folded}
-  <div class="aside-card-body" bind:this={body} onscroll={bodyScrolled}>
-    {#if aside.draft}
-      <AsideBox
-        bind:box={askBox}
-        value={unsent}
-        oninput={typed}
-        onkeydown={askKeys}
-        edge={boxEdge}
-        room={boxRoom}
-        {roomKey}
-        ongrow={boxGrew}
-        placeholder={aside.quote ? "Ask about the passage… (Enter asks)" : "Ask aside… (Enter asks)"}
-        label="Your question about the highlighted passage"
-      />
-      <div class="aside-card-row">
-        <button
-          class="ns-btn small"
-          disabled={!unsent.trim()}
-          use:tip={"Ask this about the passage, off the chat's context: no changes, recorded nowhere"}
-          onclick={submitAsk}
-        >
-          Ask aside
-        </button>
-        <button class="ns-btn ghost small" onclick={() => requestDismissAside(aside)}>Cancel</button>
-      </div>
-    {:else}
-      {#each aside.turns as turn (turn.seq)}
-        <div class="aside-card-q" use:arrive={{ channel: "aside", bubble: ".aside-card-qtext" }}><div class="aside-card-qtext">{turn.question}</div></div>
-        {#if turn.partial}
-          <div class="aside-card-a markdown">{@html renderMarkdown(turn.partial)}</div>
-        {/if}
-        {#if turn.cancelled}
-          <div class="aside-card-mark">stopped here</div>
-        {/if}
-        {#if turn.error}
-          <div class="aside-card-err">{turn.error}</div>
-        {/if}
-        {#if turn === asking}
-          <!-- The same moon a turn waits with (backlog 049): where the
-               answer will be, and under the text while it arrives. -->
-          <div class="aside-card-wait" role="status" aria-label="Waiting for the answer">
-            <span class="roll" aria-hidden="true"><Icon name="moon" size={16} /></span>
-            <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
-            {#if waiting}
-              <!-- Blocker 317: one aside answers at a time; this one is
-                   next in line, not stuck. -->
-              <span class="aside-card-queued">waiting — one aside answers at a time</span>
-            {/if}
-          </div>
-        {/if}
-      {/each}
-      <AsideFoldPanel {aside} part="panel" open={!readOnly} />
-      {#if readOnly}
-        <div class="aside-card-mark">
-          This chat is not the open one — the thread reads as it was. Open the chat to follow up.
-        </div>
-      {:else if last && !asking && !onClaudeCode}
-        <div class="aside-card-mark">Follow up on the Claude Code engine</div>
-      {:else if last && !asking}
-        <AsideBox
-          bind:box={followBox}
-          value={unsent}
-          oninput={typed}
-          onkeydown={followKeys}
-          edge={boxEdge}
-        room={boxRoom}
-        {roomKey}
-        ongrow={boxGrew}
-          placeholder="Follow up in the aside… (Enter asks)"
-          label="A follow-up in the aside"
-        />
-        <div class="aside-card-row">
-          <button
-            class="ns-btn small"
-            disabled={!unsent.trim()}
-            use:tip={"Continue the aside: the exchanges above go with this question, off the chat's context; recorded nowhere"}
-            onclick={submitFollowUp}
-          >
-            Follow up
-          </button>
-        </div>
+  {#if !aside.draft || panel}
+    <div class="aside-card-body" bind:this={body} onscroll={bodyScrolled}>
+      {#if aside.quote && panel}
+        <!-- The passage it hangs off (283): under its passage the card
+             needs none — the passage is marked right above — but in the
+             side panel it is far from it. -->
+        <blockquote class="aside-card-quote">{aside.quote.text}</blockquote>
       {/if}
-    {/if}
+      {#if !aside.draft}
+        <AsideThread {aside} open={!readOnly} />
+        <AsideFoldPanel {aside} part="panel" open={!readOnly} />
+      {/if}
+    </div>
+  {/if}
+  <!-- The chat's composer (backlog 283), at the card's foot: the first
+       question of a draft, every follow-up, chips, the model and effort
+       pickers; in another chat's panel it types and its line says to open
+       the chat (238's rule for the tab). -->
+  <div class="aside-card-foot" class:draft={aside.draft && !panel}>
+    <Composer {aside} asideChat={owner} compact={!panel} />
   </div>
   {/if}
 </div>
@@ -590,12 +445,21 @@
   /* The card: the sheet's face, raised over the transcript, dashed as the
      foot card was so it never reads as a turn. */
   .aside-card {
+    /* The aside's own face (backlog 283, his "they should look visibly
+       different"): the sheet tinted toward the accent, a dashed accent
+       edge — the chat is never tinted, so the two never read alike even
+       now the controls inside are the same. The composer and the thread
+       inside read these. */
+    --aside-tint: color-mix(in srgb, var(--sheet) 89%, var(--accent));
+    --aside-edge: color-mix(in srgb, var(--accent) 50%, var(--line2));
+    --aside-well: color-mix(in srgb, var(--well, var(--sheet)) 94%, var(--accent));
+    --user-bubble-bg: color-mix(in srgb, var(--aside-tint) 86%, var(--ink));
     display: flex;
     flex-direction: column;
     box-sizing: border-box;
-    border: 1px dashed var(--line2);
+    border: 1px dashed var(--aside-edge);
     border-radius: 10px;
-    background: var(--sheet);
+    background: var(--aside-tint);
     box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
     font-family: var(--transcript-font, var(--sans));
     font-size: var(--transcript-size, 14px);
@@ -616,7 +480,9 @@
     border-radius: 0;
     box-shadow: none;
     animation: none;
-    background: transparent;
+    /* The panel keeps the aside's tint (283): beside the chat, it must
+       not read as a second chat. */
+    background: var(--aside-tint);
   }
   /* Above the composer (blocker 225): the column's last child, stuck to
      the viewport's foot, so it stays while he scrolls up to read. */
@@ -635,9 +501,6 @@
   .aside-card.folded .aside-card-head {
     border-bottom: none;
     cursor: pointer;
-  }
-  .aside-card-queued {
-    font-size: 12px;
   }
   @keyframes aside-card-in {
     from {
@@ -665,7 +528,7 @@
   }
   .aside-card-name {
     font-weight: 600;
-    max-width: 16em;
+    max-width: 11em;
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
@@ -727,66 +590,39 @@
     overflow-y: auto;
     min-height: 0;
   }
-  .aside-card-q {
-    display: flex;
-    justify-content: flex-end;
+  /* ~~`.aside-card-q` / `-a` / `-wait` / `-row`~~ — the thread is
+     `AsideThread.svelte` and the box the chat's composer since backlog 283. */
+  /* The foot: the composer pinned under the thread, never scrolled away. */
+  .aside-card-foot {
+    flex: none;
+    padding: 0 10px 8px;
+    border-top: 1px dashed var(--aside-edge);
   }
-  .aside-card-qtext {
-    max-width: 85%;
-    padding: 7px 11px;
-    border-radius: 12px 12px 4px 12px;
-    background: var(--well);
-    white-space: pre-wrap;
-    word-break: break-word;
+  .aside-card-foot.draft {
+    border-top: none;
   }
-  .aside-card-a {
-    line-height: 1.55;
-  }
-  .aside-card-mark,
-  .aside-card-err {
+  .aside-card-of {
+    flex-shrink: 1;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
     font-size: 12px;
+    color: var(--ink2, var(--dim));
+  }
+  .aside-card-of em {
+    font-style: normal;
+    font-weight: 600;
+    color: var(--ink);
+  }
+  .aside-card-quote {
+    margin: 0;
+    padding: 4px 0 4px 10px;
+    border-left: 3px solid var(--accent);
     color: var(--dim);
-  }
-  .aside-card-err {
-    color: var(--failed, #d66);
-  }
-  .aside-card-wait {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    color: var(--dim);
-    height: 22px;
-  }
-  .aside-card-wait .roll {
-    display: inline-flex;
-    animation: aside-card-roll 1.6s linear infinite;
-  }
-  .aside-card-wait .dots {
-    display: none;
-  }
-  @keyframes aside-card-roll {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .aside-card-wait .roll {
-      display: none;
-    }
-    .aside-card-wait .dots {
-      display: inline-flex;
-      gap: 4px;
-    }
-    .aside-card-wait .dots i {
-      width: 5px;
-      height: 5px;
-      border-radius: 50%;
-      background: var(--dim);
-    }
-  }
-  /* The question box is `AsideBox.svelte` since backlog 226. */
-  .aside-card-row {
-    display: flex;
-    gap: 8px;
+    font-size: 12.5px;
+    white-space: pre-wrap;
+    max-height: 7.5em;
+    overflow: auto;
   }
 </style>

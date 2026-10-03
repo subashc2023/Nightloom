@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AsideResult,
+  AsideSendOptions,
   CliStatus,
   CliUpdateResult,
   AgentConnectArgs,
@@ -253,8 +254,15 @@ export function providerCredits(): Promise<ProviderCredit[]> {
  * card's number, echoed on each `aside-delta` event while the answer
  * streams (nightshift backlog 128).
  */
-export function askAside(text: string, seq: number): Promise<AsideResult> {
-  return invoke("ask_aside", { text, seq });
+export function askAside(text: string, seq: number, opts: AsideSendOptions = {}): Promise<AsideResult> {
+  // Only what is set crosses (backlog 283): an older call stays `{ text, seq }`.
+  const extra: Record<string, unknown> = {};
+  if (opts.images?.length) extra.images = opts.images;
+  if (opts.documents?.length) extra.documents = opts.documents;
+  if (opts.files?.length) extra.files = opts.files;
+  if (opts.model != null) extra.model = opts.model;
+  if (opts.effort != null) extra.effort = opts.effort;
+  return invoke("ask_aside", { text, seq, ...extra });
 }
 
 /**

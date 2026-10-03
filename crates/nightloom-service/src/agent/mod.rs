@@ -833,6 +833,26 @@ impl AgentSpec {
         Some(spec)
     }
 
+    /// An aside's spec with his own model or effort for it (nightshift
+    /// backlog 283, 2026-10-02): the aside's composer has the main chat's
+    /// pickers, defaulting to the chat's own. `None` keeps the chat's,
+    /// which is the default and the cheap case — the prefix is read back
+    /// from the chat's cache only by the model that wrote it, so another
+    /// model pays to write the chat's context again (the picker says so).
+    /// An empty string is the CLI's default: no flag.
+    pub fn aside_with(&self, model: Option<&str>, effort: Option<&str>) -> Option<AgentSpec> {
+        let mut spec = self.aside()?;
+        if let Some(m) = model {
+            let m = m.trim();
+            spec.model = (!m.is_empty()).then(|| m.to_string());
+        }
+        if let Some(e) = effort {
+            let e = e.trim();
+            spec.effort = (!e.is_empty()).then(|| e.to_string());
+        }
+        Some(spec)
+    }
+
     /// The spec for a **checkpoint fork** (nightshift backlog 104, pass 3;
     /// the module doc of [`fork`] has the design): a second CLI process on
     /// the chat's session, forked (`--fork-session`) from a chosen message
@@ -1541,14 +1561,20 @@ impl ClaudeCodeAgent {
     /// Events stream as for a turn, into a caller's own sink — the chat's
     /// recorder must not see them. Nothing of the agent changes: not the
     /// session it resumes, not the model it resolved.
+    ///
+    /// Since backlog 283 the question is a whole [`TurnInput`] — the
+    /// aside's composer attaches images and documents as the chat's does —
+    /// and `model` / `effort` override the chat's for this aside only
+    /// ([`AgentSpec::aside_with`]).
     pub async fn ask_aside(
         &self,
-        question: &str,
+        input: TurnInput,
+        model: Option<&str>,
+        effort: Option<&str>,
         cancel: &CancellationToken,
         on_event: &mut (dyn FnMut(TurnEvent) + Send),
     ) -> Option<Result<AgentOutcome, AgentError>> {
-        let spec = self.spec.aside()?;
-        let input = TurnInput::from(question);
+        let spec = self.spec.aside_with(model, effort)?;
         Some(
             self.drive(&spec, Some(input), Translator::new(), cancel, on_event)
                 .await,
@@ -2482,6 +2508,34 @@ mod tests {
         agent.follow_on(&outcome);
         assert_eq!(agent.spec().resume.as_deref(), Some("sess-1"));
         assert!(agent.spec().args("hi").iter().any(|x| x == "sess-1"));
+    }
+
+    /// An aside's own model and effort (backlog 283): `None` keeps the
+    /// chat's, a value replaces it, an empty string sends no flag; the
+    /// throwaway flags stay either way.
+    #[test]
+    fn an_aside_may_pick_its_own_model_and_effort() {
+        let mut s = spec();
+        s.model = Some("opus".into());
+        s.effort = Some("high".into());
+        s.resume = Some("sess-9".into());
+        let kept = s.aside_with(None, None).unwrap();
+        assert_eq!(kept.model.as_deref(), Some("opus"));
+        assert_eq!(kept.effort.as_deref(), Some("high"));
+        let own = s.aside_with(Some("haiku"), Some("low")).unwrap();
+        assert_eq!(own.model.as_deref(), Some("haiku"));
+        assert_eq!(own.effort.as_deref(), Some("low"));
+        let a = own.args("q");
+        let i = a.iter().position(|x| x == "--model").unwrap();
+        assert_eq!(a[i + 1], "haiku");
+        assert!(a.iter().any(|x| x == "--fork-session"), "{a:?}");
+        let bare = s.aside_with(Some(""), Some(" ")).unwrap();
+        assert_eq!(bare.model, None);
+        assert_eq!(bare.effort, None);
+        assert!(
+            spec().aside_with(Some("haiku"), None).is_none(),
+            "no session, no aside"
+        );
     }
 
     /// An aside is the chat's own command line — model, tools, servers,

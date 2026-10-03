@@ -1,7 +1,5 @@
 <script lang="ts">
   import { tip } from "./tip";
-  import { badgeOf } from "./attachKinds";
-  import { decodeText, pastedLabel } from "./pasteAttach";
   import { rewoundRuns } from "./rewindDraft.svelte";
   // Every Copy button goes through the in-app clipboard ring (backlog 173).
   import { copyText } from "./clipRing.svelte";
@@ -56,7 +54,7 @@
   import { wordDiff } from "./textdiff";
   import { continuedFlags } from "./runs";
   import { samePassage, selectionText, type AsideQuote } from "./asideQuote";
-  import { pillParts, requestReply, splitQuotes } from "./replyQuote.svelte";
+  import { pillParts, requestReply } from "./replyQuote.svelte";
   import { PREFERRED_CARD_HEIGHT, chooseSide, offsetsOf, type AsideAnchor } from "./asideCard";
   import { isMac } from "./platform";
   import { fmtShare, shareOf, turnSizes, userFigure } from "./tokens";
@@ -81,6 +79,7 @@
     Usage,
   } from "./types";
   import AssistantMessage from "./AssistantMessage.svelte";
+  import UserBubble from "./UserBubble.svelte";
   import AsideLayer from "./AsideLayer.svelte";
   import { openAttachment } from "./attachments.svelte";
   import ApprovalPrompt from "./ApprovalPrompt.svelte";
@@ -429,10 +428,8 @@
   // through, what it added marked — rather than as the plain text. Per
   // turn index, this screen only; a click on the mark flips it.
   let diffOpen = $state<Record<number, boolean>>({});
-  // A text attachment's words, opened under its chip (item 284): collapsed
-  // by default, so pasted text does not take over the transcript. Per
-  // `turn:index`, this screen only.
-  let textOpen = $state<Record<string, boolean>>({});
+  // ~~`textOpen`~~ — a text attachment's fold (item 284) is the bubble's
+  // own state since backlog 283 (`UserBubble.svelte`).
   // The toggle keeps the reader's place (backlog 115): the diff view is a
   // different height from the rendered text even for a one-word change —
   // struck and added spans, and the source's lines against the markdown's
@@ -1386,83 +1383,45 @@
               </div>
             </div>
           {:else}
-            <div class="user-bubble">
-              <!-- A click on an attachment opens it in front (nightshift
-                   backlog 145): the floating tab zooms up from the
-                   thumbnail's rect, so the rect and the image's decoded
-                   size go with the click. The address is the event's
-                   index and the attachment's; the bytes stay in the log. -->
-              {#if item.images.length > 0}
-                <div class="user-images">
-                  {#each item.images as img, j (j)}
-                    <button
-                      class="user-image-btn"
-                      use:tip={"Open in front"}
-                      onclick={(e) => {
-                        const el = e.currentTarget.querySelector("img");
-                        if (!app.activeSessionId) return;
-                        openAttachment(
-                          { kind: "attachment", session: app.activeSessionId, turn: item.index, index: j, media: "image", name: "image" },
-                          e.currentTarget.getBoundingClientRect(),
-                          el && el.naturalWidth > 0 ? { width: el.naturalWidth, height: el.naturalHeight } : null,
-                        );
-                      }}
-                    >
-                      <img
-                        class="user-image"
-                        src={`data:${img.media_type};base64,${img.data}`}
-                        alt="attachment"
-                      />
-                    </button>
-                  {/each}
-                </div>
-              {/if}
-              {#if item.documents.length > 0}
-                <div class="user-files">
-                  {#each item.documents as doc, j (j)}
-                    <button
-                      class="user-file"
-                      use:tip={`${doc.media_type} — open in front`}
-                      onclick={(e) => {
-                        if (!app.activeSessionId) return;
-                        openAttachment(
-                          { kind: "attachment", session: app.activeSessionId, turn: item.index, index: j, media: "document", name: doc.name },
-                          e.currentTarget.getBoundingClientRect(),
-                        );
-                      }}
-                    >
-                      <span class="user-file-ext">{badgeOf({ kind: "document", ...doc })}</span>
-                      {doc.name}
-                    </button>
-                    {#if doc.media_type.startsWith("text/")}
-                      {@const tk = `${item.index}:${j}`}
-                      <button
-                        class="user-file-toggle"
-                        aria-expanded={!!textOpen[tk]}
-                        use:tip={textOpen[tk] ? "Fold the text away" : "Show the text here"}
-                        onclick={() => (textOpen[tk] = !textOpen[tk])}
-                        >{textOpen[tk] ? "▾ hide" : `▸ ${pastedLabel(decodeText(doc.data))}`}</button
-                      >
-                    {/if}
-                  {/each}
-                </div>
-                {#each item.documents as doc, j (j)}
-                  {#if textOpen[`${item.index}:${j}`] && doc.media_type.startsWith("text/")}
-                    <pre class="user-file-text">{decodeText(doc.data)}</pre>
-                  {/if}
-                {/each}
-              {/if}
-              {#if diffOpen[item.index] && item.original !== null && !item.removed}
-                <!-- The edit as a diff over the current text (backlog 105):
-                     the bubble's own face, the code diff view's colours. -->
-                <div class="user-text textdiff">
-                  {#each wordDiff(item.original, item.text) as op, k (k)}
-                    {#if op.kind === "del"}<del>{op.text}</del>{:else if op.kind === "add"}<ins>{op.text}</ins>{:else}{op.text}{/if}
-                  {/each}
-                </div>
-              {:else if item.text}
-                {@const adoptedMsg = splitAdopted(item.text)}
-                {#if adoptedMsg.carried}
+            <!-- The bubble is `UserBubble` since backlog 283 — an aside's
+                 questions are drawn by the same piece. The address of an
+                 attachment is the event's index and its own; the bytes
+                 stay in the log. -->
+            {@const adoptedMsg = splitAdopted(item.text)}
+            {@const diffShown = !!diffOpen[item.index] && item.original !== null && !item.removed}
+            <UserBubble
+              images={item.images}
+              documents={item.documents}
+              text={item.text}
+              custom={diffShown || !!adoptedMsg.carried}
+              onopenimage={(j, rect, size) => {
+                if (!app.activeSessionId) return;
+                openAttachment(
+                  { kind: "attachment", session: app.activeSessionId, turn: item.index, index: j, media: "image", name: "image" },
+                  rect,
+                  size,
+                );
+              }}
+              onopendoc={(j, rect) => {
+                if (!app.activeSessionId) return;
+                const doc = item.documents[j];
+                if (!doc) return;
+                openAttachment(
+                  { kind: "attachment", session: app.activeSessionId, turn: item.index, index: j, media: "document", name: doc.name },
+                  rect,
+                );
+              }}
+            >
+              {#snippet body()}
+                {#if diffShown && item.original !== null}
+                  <!-- The edit as a diff over the current text (backlog 105):
+                       the bubble's own face, the code diff view's colours. -->
+                  <div class="user-text textdiff">
+                    {#each wordDiff(item.original, item.text) as op, k (k)}
+                      {#if op.kind === "del"}<del>{op.text}</del>{:else if op.kind === "add"}<ins>{op.text}</ins>{:else}{op.text}{/if}
+                    {/each}
+                  </div>
+                {:else if adoptedMsg.carried}
                   <!-- An adopted agent's run (backlog 157): what this chat
                        was given, folded; his question below it. -->
                   <details class="adopted-carry">
@@ -1470,25 +1429,23 @@
                     <pre>{adoptedMsg.carried}</pre>
                   </details>
                   {#if adoptedMsg.said}<div class="user-text">{adoptedMsg.said}</div>{/if}
-                {:else}
-                  <!-- `> ` lines are quotes he placed with Reply (backlog
-                       215), drawn as quotes where they sit in his words. -->
-                  <div class="user-text">{#each splitQuotes(item.text) as seg, k (k)}{#if seg.kind === "quote"}<blockquote class="user-quote">{seg.text}</blockquote>{:else}{seg.text}{/if}{/each}</div>
                 {/if}
-              {/if}
-              {#if !item.removed}
-                {@const council = councilOfTurn(evs, item.index)}
-                {#if council}
-                  <!-- The council chip (nightshift backlog 149): this
-                       message went to the seats the reply's record names. -->
-                  <span
-                    class="ns-chip mono council-chip"
-                    use:tip={`Sent to a council of ${council.seats.length}: ${rosterLabel(council.seats)} · ${council.mode} pass`}
-                    >council · {council.seats.length}</span
-                  >
+              {/snippet}
+              {#snippet extra()}
+                {#if !item.removed}
+                  {@const council = councilOfTurn(evs, item.index)}
+                  {#if council}
+                    <!-- The council chip (nightshift backlog 149): this
+                         message went to the seats the reply's record names. -->
+                    <span
+                      class="ns-chip mono council-chip"
+                      use:tip={`Sent to a council of ${council.seats.length}: ${rosterLabel(council.seats)} · ${council.mode} pass`}
+                      >council · {council.seats.length}</span
+                    >
+                  {/if}
                 {/if}
-              {/if}
-            </div>
+              {/snippet}
+            </UserBubble>
             {#if item.original !== null && item.removed}
               <details class="original">
                 <summary>what was removed</summary>
@@ -2195,7 +2152,7 @@
   }
   /* Removed from the context: the placeholder, greyed like a superseded
      turn, with the original a click away. */
-  .removed .user-bubble,
+  .removed :global(.user-bubble),
   .removed :global(.assistant) {
     opacity: 0.45;
     font-style: italic;
@@ -2278,33 +2235,11 @@
     font-size: 10.5px;
     color: var(--dim);
   }
-  .user-bubble {
-    /* A rounded, borderless tint, the way claude.ai draws the user's turn
-       (nightshift backlog 126): the old 1px line and near-square corner
-       read as a box. The tint is the sheet lifted a step toward the ink so
-       it holds on every palette without a token of its own. */
-    background: color-mix(in srgb, var(--sheet) 88%, var(--ink));
-    border: 1px solid transparent;
-    border-radius: 18px;
-    padding: 12px 18px;
-    max-width: 560px;
-    /* The reply's face, one size down: the two sides of a conversation in
-       one type, with the question a little quieter than the answer. */
-    font-family: var(--transcript-font, var(--sans));
-    font-size: calc(var(--transcript-size, 16px) - 1px);
-    line-height: 1.5;
-  }
-  /* pre-wrap sits on the text, not the bubble: with it on the bubble the
-     markup's own newlines around the image strip would render as blank lines. */
+  /* The bubble's own rules moved to `UserBubble.svelte` (backlog 283);
+     the words drawn here (an edit's diff, an adopted run's) keep these. */
   .user-text {
     white-space: pre-wrap;
     word-break: break-word;
-  }
-  .user-quote {
-    margin: 0.3rem 0;
-    padding: 0.1rem 0 0.1rem 0.7rem;
-    border-left: 3px solid var(--accent);
-    color: var(--dim);
   }
   .adopted-carry {
     margin-bottom: 0.4rem;
@@ -2322,100 +2257,6 @@
     word-break: break-word;
     font-family: var(--mono);
     font-size: 11.5px;
-  }
-  .user-images {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.4rem;
-    margin-bottom: 0.4rem;
-  }
-  .user-images:last-child {
-    margin-bottom: 0;
-  }
-  .user-image {
-    max-width: 12rem;
-    max-height: 12rem;
-    object-fit: contain;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    display: block;
-  }
-  /* The thumbnail is a button since backlog 145 (a click opens it in
-     front); the button is invisible, the image is the control. */
-  .user-image-btn {
-    padding: 0;
-    border: none;
-    background: none;
-    cursor: zoom-in;
-    display: block;
-    border-radius: 8px;
-  }
-  .user-image-btn:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-  }
-  /* Nothing to render of a PDF, so the turn shows what was attached rather
-     than nothing at all — a caption asking about a file the transcript does
-     not mention reads as a question about nothing. */
-  .user-files {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.4rem;
-    margin-bottom: 0.4rem;
-  }
-  .user-files:last-child {
-    margin-bottom: 0;
-  }
-  .user-file {
-    display: inline-flex;
-    align-items: baseline;
-    gap: 0.35rem;
-    padding: 0.2rem 0.5rem;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    font-size: 0.8rem;
-    word-break: break-all;
-    /* A button since backlog 145 (a click opens the PDF in front), in
-       the chip's own face. */
-    background: none;
-    color: inherit;
-    font-family: inherit;
-    cursor: pointer;
-    text-align: left;
-  }
-  .user-file:hover {
-    border-color: var(--line2);
-  }
-  /* Item 284: a text attachment's fold — its word count, a click opens it. */
-  .user-file-toggle {
-    align-self: center;
-    padding: 0.1rem 0.35rem;
-    border: none;
-    background: none;
-    color: var(--dim);
-    font-family: inherit;
-    font-size: 0.72rem;
-    cursor: pointer;
-  }
-  .user-file-toggle:hover {
-    color: var(--ink);
-  }
-  .user-file-text {
-    max-height: 24rem;
-    overflow: auto;
-    margin: 0 0 0.4rem;
-    padding: 0.5rem 0.65rem;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    font-family: var(--mono);
-    font-size: 0.78rem;
-    white-space: pre-wrap;
-    word-break: break-word;
-  }
-  .user-file-ext {
-    font-size: 0.62rem;
-    letter-spacing: 0.05em;
-    color: var(--dim);
   }
   .compaction {
     font-size: 0.78rem;
