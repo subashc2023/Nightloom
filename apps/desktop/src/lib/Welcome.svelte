@@ -64,7 +64,12 @@
   // 720, up from 560 (his 2026-09-16 review: a long prompt "feels kinda
   // compressed horizontally") — near the open chat's composer width, still
   // held inside the inner ring on a narrow window.
-  const colMax = $derived(rings ? Math.min(720, 2 * (innerR.rx - 60)) : 720);
+  // ~~`rings ? Math.min(720, 2 * (innerR.rx - 60)) : 720`~~ — item 289
+  // (2026-10-02, his "off centered or on different rows"): inside the ring
+  // the column was ~340 px at his zoom and the composer's controls split
+  // into two lopsided rows. The column is the chat composer's width now
+  // (its card is 760 px), the pane's less a margin; the rings pass behind.
+  const colMax = $derived(Math.max(320, Math.min(760, w - 40)));
 
   function ellipse(rx: number, ry: number): string {
     return `M ${cx + rx} ${cy} A ${rx} ${ry} 0 1 1 ${cx - rx} ${cy} A ${rx} ${ry} 0 1 1 ${cx + rx} ${cy}`;

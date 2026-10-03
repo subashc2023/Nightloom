@@ -1891,7 +1891,15 @@
    * one to the actions (Ask aside, Council, Send / Queue, Stop) and take a
    * row of their own beneath, folded as at level 3. Every shed word is in its button's title.
    */
-  const ROW_FOLD_MAX = 4;
+  // Item 289 (2026-10-02): ~~4~~ 6 levels. Levels 1–3 saved almost nothing
+  // once the model and effort names were short, so the row hit the floor
+  // (two rows) at ~580 px on the new-chat page. Now, in order: 1 the
+  // pickers' key words; 2 the draft's token estimate (its figure is in
+  // Send's hover); 3 Attach to its icon, Ask aside to "Aside", Council to
+  // its icon; 4 the pickers' values at 72 px; 5 at 48 px; 6 the floor —
+  // pickers on row one at the left, the actions on row two at the right,
+  // both rows the same height.
+  const ROW_FOLD_MAX = 6;
   let rowEl = $state<HTMLElement | null>(null);
   let rowFold = $state("0");
   function refoldRow(): void {
@@ -1917,6 +1925,7 @@
       agentMode,
       history.length,
       app.busy,
+      busy,
       app.parked,
       app.connection?.engine,
       app.events.length > 0,
@@ -2475,7 +2484,7 @@
       {/if}
       <span class="spacer"></span>
       {#if shown}
-        <span class="draft-tokens mono act" use:tip={shown.title}
+        <span class="draft-tokens mono act" data-fold-step="tokens" use:tip={shown.title}
           ><span class="fold-word">{shown.long}</span><span class="short-word">{shown.short}</span></span
         >
       {/if}
@@ -2529,9 +2538,11 @@
               use:tip={"Send this message to a council: several models answer it independently, then this chat's model chairs their answers"}
               aria-haspopup="dialog"
               aria-expanded={councilOpen}
+              aria-label="Council"
               onclick={() => (councilOpen = !councilOpen)}
             >
-              Council
+              <!-- Item 289: its icon alone at fold 3 and past. -->
+              <span class="council-ico" aria-hidden="true"><Icon name="agent" size={13} /></span><span class="council-word">Council</span>
             </button>
             {#if councilOpen}
               <CouncilPopover
@@ -2551,7 +2562,8 @@
         <span class="send-split act">
           <button
             class="ns-btn accent send act"
-            use:tip={sendTip(!!app.connection, !text.trim() && attachments.length === 0, sendHeld())}
+            use:tip={sendTip(!!app.connection, !text.trim() && attachments.length === 0, sendHeld()) +
+              (shown && Number(rowFold) >= 2 ? ` · ${shown.long}` : "")}
             onclick={() => void submit()}
             disabled={!app.connection || sendHeld() || (!text.trim() && attachments.length === 0)}
           >
@@ -3151,29 +3163,50 @@
   .short-word {
     display: none;
   }
-  .row:is([data-fold="1"], [data-fold="2"], [data-fold="3"], [data-fold="4"]) .pick-k {
+  /* The fold levels (item 289: six, the floor last). */
+  .row:not([data-fold="0"]) .pick-k {
     display: none;
   }
-  .row:is([data-fold="2"], [data-fold="3"], [data-fold="4"]) .fold-word {
+  .row:is([data-fold="2"], [data-fold="3"], [data-fold="4"], [data-fold="5"], [data-fold="6"]) .draft-tokens {
     display: none;
   }
-  .row:is([data-fold="2"], [data-fold="3"], [data-fold="4"]) .short-word {
+  .council-ico {
+    display: none;
+  }
+  .row:is([data-fold="3"], [data-fold="4"], [data-fold="5"], [data-fold="6"]) .fold-word,
+  .row:is([data-fold="3"], [data-fold="4"], [data-fold="5"], [data-fold="6"]) .council-word {
+    display: none;
+  }
+  .row:is([data-fold="3"], [data-fold="4"], [data-fold="5"], [data-fold="6"]) .short-word {
     display: inline;
   }
-  .row:is([data-fold="3"], [data-fold="4"]) .pick-name {
+  .row:is([data-fold="3"], [data-fold="4"], [data-fold="5"], [data-fold="6"]) .council-ico {
+    display: inline-flex;
+  }
+  .row:is([data-fold="4"]) .pick-name {
     max-width: 72px;
   }
-  /* The floor: the actions keep row one, right-aligned by the spacer;
-     a zero-height break (the row's ::after, a full-width flex item) sends
-     the pickers to a row of their own beneath. */
-  .row[data-fold="4"] > :not(.act):not(.spacer) {
+  .row:is([data-fold="5"], [data-fold="6"]) .pick-name {
+    max-width: 48px;
+  }
+  /* The floor: the pickers keep row one at the left; a zero-height break
+     (the row's ::after, a full-width flex item) sends the actions to row
+     two, right-aligned by the spacer — read left to right, top to bottom,
+     as on one row. Both rows are the buttons' height. */
+  .row[data-fold="6"] > .act {
     order: 2;
   }
-  .row[data-fold="4"]::after {
+  .row[data-fold="6"] > .spacer {
+    order: 2;
+  }
+  .row[data-fold="6"]::after {
     content: "";
     order: 1;
     flex-basis: 100%;
     height: 0;
+  }
+  .row[data-fold="6"] > * {
+    min-height: 28px;
   }
   .spacer {
     flex: 1;
