@@ -83,6 +83,14 @@ describe("the words", () => {
     expect(choicesFor(layer("auto"), false).map((c) => c.choice)).toEqual(["cold", "keep"]);
     expect(choicesFor(layer("keep"), true)).toEqual([{ choice: "auto", label: "Update at the next cold moment" }]);
   });
+  // Backlog 293: the subagent rules have no Keep; warm says the note.
+  it("says the subagent rules ride the next message while warm and land at cold", () => {
+    const rules = { ...layer("auto"), kind: "subagent_rules" as const };
+    expect(choicesFor(rules, true)).toEqual([]);
+    expect(choicesFor(rules, false)).toEqual([]);
+    expect(markLine(rules, false, false)).toMatch(/next message carries them as a note.*enforced either way/);
+    expect(markLine(rules, true, true)).toMatch(/rewritten with this chat's next message/);
+  });
   it("finds a layer's mark", () => {
     expect(pendingFor(view("a", [layer("auto")]), "user_memory", "a")?.held).toBe("old");
     expect(pendingFor(view("a", [layer("auto")]), "knowledge", "a")).toBeNull();

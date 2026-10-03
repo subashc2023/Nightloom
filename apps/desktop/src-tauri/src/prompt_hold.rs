@@ -26,6 +26,15 @@
 //!
 //! The library prompt (`Custom`) is not held: it changes only by his click
 //! on the rail, which is the click.
+//!
+//! **The subagent rules layer** (nightshift backlog 291 + 293, 2026-10-03)
+//! is held like a file but has its own rule, his: a change is always taken
+//! at the next cold moment (Keep and the Settings default do not apply —
+//! the limits are enforced whatever the prompt says), and while the cache
+//! is warm the chat's next message carries the new rules as an appended
+//! note ([`Pending::take_rules_note`]) — once per change, recorded in the
+//! hold as `rules_noted`. This is blocker 322's append route, built for
+//! this layer only.
 
 use nightloom_core::{Segment, SegmentKind, SystemPrompt};
 use serde::{Deserialize, Serialize};
@@ -47,6 +56,11 @@ pub struct Hold {
     /// The chat has taken a layer: the CLI's record is off for it.
     #[serde(default)]
     pub snapshot_off: bool,
+    /// The subagent rules text (the layer's newer text) a warm message
+    /// has already carried as a note (backlog 293): not carried again.
+    /// Cleared when the layer is taken or the change is undone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rules_noted: Option<String>,
 }
 
 /// What a pending layer's mark offers, as the Context page shows it.
@@ -78,6 +92,11 @@ pub struct PendingView {
     /// That chat's id; `None` for a chat not yet created.
     pub session: Option<String>,
     pub layers: Vec<PendingLayer>,
+    /// The note the chat's next message carries (backlog 293): the
+    /// subagent rules changed while the cache is warm, and no message has
+    /// carried them yet. `None` once one has.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rules_note: Option<String>,
 }
 
 /// Managed beside `AppState`: the last connect's [`PendingView`] and the
@@ -116,6 +135,31 @@ impl Pending {
         }
         view.session = Some(session.to_string());
         *self.file.lock().await = file;
+    }
+
+    /// The subagent rules note for this message of `session` (backlog
+    /// 293), taken once: the view forgets it and the chat's hold records
+    /// which text was carried, so the next message does not repeat it.
+    /// `None` when the connection is another chat's or nothing changed.
+    pub async fn take_rules_note(&self, session: &str) -> Option<String> {
+        let mut view = self.view.lock().await;
+        if view.session.as_deref() != Some(session) {
+            return None;
+        }
+        let note = view.rules_note.take()?;
+        let newer = view
+            .layers
+            .iter()
+            .find(|l| l.kind == SegmentKind::SubagentRules)
+            .map(|l| l.newer.clone());
+        if let (Some(file), Some(newer)) = (self.file.lock().await.clone(), newer) {
+            let mut hold = load(&file).unwrap_or_default();
+            hold.rules_noted = Some(newer);
+            if let Err(e) = save(&file, &hold) {
+                eprintln!("prompt hold not saved at {}: {e}", file.display());
+            }
+        }
+        Some(note)
     }
 
     /// A click on a mark of `session`'s layer `kind`, written to that
@@ -166,6 +210,8 @@ pub struct Resolved {
     /// The hold to write back.
     pub hold: Hold,
     pub pending: Vec<PendingLayer>,
+    /// The note the next message carries (backlog 293), if any.
+    pub rules_note: Option<String>,
 }
 
 /// Where a chat's hold lives.
@@ -232,6 +278,7 @@ pub fn resolve(fresh: &SystemPrompt, hold: Option<&Hold>, has_cli: bool, ask: &A
                 ..Hold::default()
             },
             pending: Vec::new(),
+            rules_note: None,
         };
     };
 
@@ -259,13 +306,37 @@ pub fn resolve(fresh: &SystemPrompt, hold: Option<&Hold>, has_cli: bool, ask: &A
         kept: BTreeSet::new(),
         scheduled: BTreeSet::new(),
         snapshot_off: hold.snapshot_off,
+        rules_noted: None,
     };
     let mut pending = Vec::new();
+    let mut rules_note = None;
     for kind in kinds {
         let new_group = group(&layers, kind);
         let held_group = group(&hold.segments, kind);
         if text_of(&new_group) == text_of(&held_group) {
             next.segments.extend(new_group);
+            continue;
+        }
+        // The subagent rules (backlog 293): always at the cold moment;
+        // warm, held, with a note for the next message once per change.
+        if kind == SegmentKind::SubagentRules {
+            let newer = text_of(&new_group);
+            if ask.now.contains(&kind) || ask.cold {
+                next.segments.extend(new_group);
+                next.snapshot_off = true;
+                continue;
+            }
+            if hold.rules_noted.as_deref() != Some(newer.as_str()) && !newer.is_empty() {
+                rules_note = Some(nightloom_service::subagent_rules_update_note(&newer));
+            }
+            next.rules_noted = hold.rules_noted.clone();
+            pending.push(PendingLayer {
+                kind,
+                held: text_of(&held_group),
+                newer,
+                choice: Choice::Auto,
+            });
+            next.segments.extend(held_group);
             continue;
         }
         let kept = hold.kept.contains(&kind);
@@ -310,6 +381,7 @@ pub fn resolve(fresh: &SystemPrompt, hold: Option<&Hold>, has_cli: bool, ask: &A
         prompt,
         hold: next,
         pending,
+        rules_note,
     }
 }
 
@@ -544,6 +616,116 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// [`prompt`] with a subagent rules layer before the library prompt.
+    fn with_rules(rules: &str) -> SystemPrompt {
+        let base = prompt("memory");
+        let mut out = SystemPrompt::new();
+        for s in base
+            .segments()
+            .iter()
+            .filter(|s| s.kind != SegmentKind::Custom)
+        {
+            out.push(s.clone());
+        }
+        out.push(Segment::new(
+            SegmentKind::SubagentRules,
+            "subagent-rules",
+            format!("<subagent-rules>\n{rules}\n</subagent-rules>"),
+        ));
+        out.push(Segment::new(SegmentKind::Custom, "library", "library"));
+        out
+    }
+
+    /// Backlog 293, cold: a changed subagent rules layer is rewritten in
+    /// place before the turn — even under a Keep, and with the Settings
+    /// default off — and no note rides the message.
+    #[test]
+    fn cold_rules_are_rewritten_in_place_whatever_the_marks_say() {
+        let mut hold = resolve(&with_rules("old rules"), None, true, &Ask::default()).hold;
+        choose(&mut hold, SegmentKind::SubagentRules, Choice::Keep);
+        let ask = Ask {
+            cold: true,
+            auto: false,
+            now: vec![],
+        };
+        let r = resolve(&with_rules("new rules"), Some(&hold), true, &ask);
+        assert_eq!(flat(&r), with_rules("new rules").render_flat().unwrap());
+        assert!(r.pending.is_empty());
+        assert!(r.rules_note.is_none());
+        assert!(r.hold.snapshot_off);
+        assert!(r.hold.rules_noted.is_none());
+    }
+
+    /// Backlog 293, warm: the held layer goes out byte for byte (the cache
+    /// holds), the next message carries the note once, and the cold moment
+    /// after rewrites the layer.
+    #[tokio::test]
+    async fn warm_rules_ride_the_next_message_once_then_land_at_cold() {
+        let dir = scratch("rules-warm");
+        let path = file_for(&dir, "a");
+        let hold = resolve(&with_rules("old rules"), None, true, &Ask::default()).hold;
+        save(&path, &hold).unwrap();
+        let warm = Ask {
+            cold: false,
+            auto: true,
+            now: vec![],
+        };
+        let r = resolve(&with_rules("new rules"), Some(&hold), true, &warm);
+        assert_eq!(flat(&r), with_rules("old rules").render_flat().unwrap());
+        assert_eq!(r.pending.len(), 1);
+        assert_eq!(r.pending[0].kind, SegmentKind::SubagentRules);
+        let note = r.rules_note.clone().expect("a note for the next message");
+        assert!(
+            note.contains("new rules") && note.contains("These are the new rules"),
+            "{note}"
+        );
+        assert!(note.contains("either way"), "{note}");
+        save(&path, &r.hold).unwrap();
+
+        // The send takes it once, for this chat only.
+        let holds = Pending::default();
+        *holds.view.lock().await = PendingView {
+            session: Some("a".into()),
+            layers: r.pending.clone(),
+            rules_note: r.rules_note.clone(),
+        };
+        *holds.file.lock().await = Some(path.clone());
+        assert!(holds.take_rules_note("b").await.is_none());
+        assert_eq!(
+            holds.take_rules_note("a").await.as_deref(),
+            Some(note.as_str())
+        );
+        assert!(holds.take_rules_note("a").await.is_none());
+        let after = load(&path).unwrap();
+        assert_eq!(
+            after.rules_noted.as_deref(),
+            Some(r.pending[0].newer.as_str())
+        );
+
+        // A later warm connect with the same change: no second note.
+        let again = resolve(&with_rules("new rules"), Some(&after), true, &warm);
+        assert!(again.rules_note.is_none());
+        assert_eq!(flat(&again), with_rules("old rules").render_flat().unwrap());
+        // Changed again while warm: a new note.
+        let third = resolve(&with_rules("newest rules"), Some(&again.hold), true, &warm);
+        assert!(third.rules_note.unwrap().contains("newest rules"));
+
+        // The cold moment: the layer is rewritten, the record cleared.
+        let cold = Ask {
+            cold: true,
+            auto: true,
+            now: vec![],
+        };
+        let landed = resolve(&with_rules("new rules"), Some(&again.hold), true, &cold);
+        assert_eq!(
+            flat(&landed),
+            with_rules("new rules").render_flat().unwrap()
+        );
+        assert!(landed.pending.is_empty() && landed.rules_note.is_none());
+        assert!(landed.hold.rules_noted.is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// Batch review 2026-09-23, finding 3: a click on another chat's mark
     /// is refused and its hold file untouched.
     #[tokio::test]
@@ -555,6 +737,7 @@ mod tests {
         *holds.view.lock().await = PendingView {
             session: Some("a".into()),
             layers: resolve(&prompt("new"), Some(&held("old")), true, &Ask::default()).pending,
+            rules_note: None,
         };
         *holds.file.lock().await = Some(path.clone());
 

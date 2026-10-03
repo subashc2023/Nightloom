@@ -72,8 +72,8 @@ pub mod mcp {
 pub use knowledge::{LinkGraph, vault_dir};
 pub use project::{Note, Project, Registry};
 pub use prompt::{
-    EngineLayers, KnowledgeContext, ProjectContext, PromptConfig, agent_preamble, agent_prompt,
-    agent_prompt_with, assemble, layer_source,
+    EngineLayers, KnowledgeContext, ProjectContext, PromptConfig, SubagentRules, agent_preamble,
+    agent_prompt, agent_prompt_with, assemble, layer_source, subagent_rules_update_note,
 };
 pub use sidecar::{SidecarContext, SidecarPart};
 pub use turn::{Chat, CompactOutcome, TurnEvent, TurnInput, TurnOutcome};

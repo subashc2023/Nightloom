@@ -374,8 +374,10 @@ pub fn agent_prompt(
 /// The Claude Code engine's own layers, each a chat's switch (the Context
 /// page's rows): the engine note, and since 2026-09-27 the pacing rule
 /// (nightshift backlog 250) and the subagent practices (backlog 251).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct EngineLayers {
+/// ~~`Eq`~~ — 2026-10-03 (backlog 293): the subagent rules carry the
+/// limits, which are `PartialEq` only; and a lifetime, for his words.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EngineLayers<'a> {
     pub engine_note: bool,
     pub pacing: bool,
     pub subagents: bool,
@@ -387,16 +389,32 @@ pub struct EngineLayers {
     /// The rail's "Subagents use" (nightshift 257, blocker 584): what the
     /// subagents layer says about naming a model.
     pub subagent_model: crate::agent::brief::SubagentModel,
+    /// This chat's subagent rules layer (nightshift backlog 291 + 293):
+    /// `None` when it is switched off or the shell does not offer it.
+    pub subagent_rules: Option<SubagentRules<'a>>,
 }
 
-impl EngineLayers {
-    pub const NONE: EngineLayers = EngineLayers {
+impl EngineLayers<'static> {
+    pub const NONE: EngineLayers<'static> = EngineLayers {
         engine_note: false,
         pacing: false,
         subagents: false,
         reusable: false,
         subagent_model: crate::agent::brief::SubagentModel::Choose,
+        subagent_rules: None,
     };
+}
+
+/// What the subagent rules layer states (nightshift backlog 291 + 293,
+/// 2026-10-03): his rules in his words, the limits as the rail has them
+/// (each switched-off one said to be off), and the fork switch.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SubagentRules<'a> {
+    /// The rail's *Subagent rules* box, as he wrote it; empty is none.
+    pub words: &'a str,
+    pub limits: crate::agent::brief::SubagentLimits,
+    /// The rail's *Helpers fork from this chat* (backlog 104).
+    pub fork_mode: bool,
 }
 
 /// [`agent_prompt`] with every engine layer's switch given. The pacing and
@@ -406,7 +424,7 @@ impl EngineLayers {
 pub fn agent_prompt_with(
     config: &PromptConfig,
     library: Option<&str>,
-    layers: EngineLayers,
+    layers: EngineLayers<'_>,
 ) -> SystemPrompt {
     let engine_note = layers.engine_note;
     let assembled = assemble(&PromptConfig {
@@ -431,6 +449,9 @@ pub fn agent_prompt_with(
     }
     if layers.subagents && preamble {
         prompt.push(subagents_segment(layers.reusable, layers.subagent_model));
+    }
+    if let Some(rules) = layers.subagent_rules.filter(|_| preamble) {
+        prompt.push(subagent_rules_segment(&rules));
     }
     if let Some(library) = library {
         prompt.push(Segment::new(SegmentKind::Custom, "custom", library));
@@ -516,6 +537,158 @@ fn subagents_segment(reusable: bool, model: crate::agent::brief::SubagentModel) 
          </subagents>"
     );
     Segment::new(SegmentKind::Subagents, "subagents", text)
+}
+
+/// What each helper kind starts with and why to pick it (nightshift
+/// backlog 293's definition of done, in its words): the one source for the
+/// rules layer and the `checkpoint` roster entry (`agent::fork::agents_json`),
+/// so the two cannot say different things.
+pub const CHECKPOINT_WHY: &str = "it starts with this chat's instructions and opening exchange \
+     only, none of the later turns, so a research helper's priors stay independent of the \
+     discussion since";
+pub const FORK_WHY: &str = "it starts with the whole conversation so far, for a short task \
+     that builds on points made recently";
+pub const GENERAL_WHY: &str = "it starts with nothing of this chat but the brief you write, for \
+     a task that needs no context of it";
+
+/// The subagent rules layer (nightshift backlog 291 + 293, 2026-10-03):
+/// his rules in his words, the limits Nightloom enforces as the rail has
+/// them, the subagents' model, and the helper kinds with the reason to
+/// pick each. Built from the rail's settings alone, so the same settings
+/// render the same bytes and the cached prefix holds until one changes;
+/// a change waits for the cold moment like a file (`prompt_hold`), and a
+/// warm chat is told by [`subagent_rules_update_note`] instead.
+pub fn subagent_rules_segment(rules: &SubagentRules<'_>) -> Segment {
+    Segment::new(
+        SegmentKind::SubagentRules,
+        "subagent-rules",
+        format!(
+            "<subagent-rules>\n{}\n</subagent-rules>",
+            subagent_rules_body(rules)
+        ),
+    )
+}
+
+/// The layer's text without its tags: what the warm note repeats.
+pub fn subagent_rules_body(rules: &SubagentRules<'_>) -> String {
+    use crate::agent::brief::SubagentModel;
+    let l = &rules.limits;
+    let words = rules.words.trim();
+    let mut out = String::new();
+    if words.is_empty() {
+        out.push_str(
+            "The user has written no subagent rules for this chat; the limits below apply.\n",
+        );
+    } else {
+        out.push_str("The user's subagent rules for this chat, in their words. Follow them:\n");
+        out.push_str(words);
+        out.push('\n');
+    }
+    out.push_str(
+        "\nLimits Nightloom enforces whatever you do (a launch past one is refused, and the \
+         refusal says which):\n",
+    );
+    let line = |out: &mut String, on: bool, yes: String, no: &str| {
+        out.push_str("- ");
+        out.push_str(if on { yes.as_str() } else { no });
+        out.push('\n');
+    };
+    line(
+        &mut out,
+        !l.off.per_turn,
+        format!("At most {} subagent launches per message.", l.per_turn),
+        "No cap on launches per message.",
+    );
+    line(
+        &mut out,
+        !l.off.concurrent,
+        format!("At most {} running at once.", l.concurrent),
+        "No cap on how many run at once.",
+    );
+    line(
+        &mut out,
+        !l.off.depth,
+        format!(
+            "Nesting at most {} deep (a subagent's own subagents count).",
+            l.depth
+        ),
+        "No cap on nesting depth.",
+    );
+    line(
+        &mut out,
+        !l.off.per_day && l.per_day > 0,
+        format!("At most {} launches a day in this chat.", l.per_day),
+        "No daily cap.",
+    );
+    line(
+        &mut out,
+        !l.off.slow,
+        format!(
+            "From {}% of the five-hour usage window, at most {} launches per message.",
+            l.slow_at, l.slow_to
+        ),
+        "No slowdown as the five-hour window fills.",
+    );
+    line(
+        &mut out,
+        !l.off.stop_at,
+        format!(
+            "At {}% of the five-hour window every launch is refused until it resets.",
+            l.stop_at
+        ),
+        "No stop line on the five-hour window.",
+    );
+    line(
+        &mut out,
+        !l.off.budget_pct && l.budget_pct > 0,
+        format!(
+            "One message (you, every subagent and council seat) may spend {}% of the five-hour \
+             window; past it every tool call is refused: stop and report.",
+            l.budget_pct
+        ),
+        "No per-message share of the five-hour window.",
+    );
+    out.push_str(match l.model {
+        SubagentModel::Choose => "- Subagents' model: yours to choose on each launch.\n",
+        SubagentModel::Same => "- Subagents' model: always this chat's; Nightloom sets it.\n",
+        SubagentModel::Sonnet => {
+            "- Subagents' model: sonnet (haiku if you name it); Nightloom sets it.\n"
+        }
+    });
+    if rules.fork_mode {
+        out.push_str(&format!(
+            "\nHelper kinds (subagent_type), what each starts with, and why to pick it:\n\
+             - checkpoint: {CHECKPOINT_WHY}. Pick it for long research or a many-step side task.\n\
+             - fork: {FORK_WHY}.\n\
+             - general-purpose: {GENERAL_WHY}."
+        ));
+    } else {
+        out.push_str(&format!(
+            "\nHelpers do not fork from this chat (the user switched it off): checkpoint and \
+             fork are not on the roster. general-purpose: {GENERAL_WHY}."
+        ));
+    }
+    out
+}
+
+/// The note a warm chat's next message carries when its subagent rules
+/// changed (nightshift backlog 293; his words: "These are the new rules.
+/// Make sure you follow them. They will be enforced even if you don't").
+/// Appended after the message on the wire, never the log; the layer itself
+/// is rewritten at the chat's next cold moment. `layer` is the new layer's
+/// whole text, tags included.
+pub fn subagent_rules_update_note(layer: &str) -> String {
+    let body = layer
+        .trim()
+        .trim_start_matches("<subagent-rules>")
+        .trim_end_matches("</subagent-rules>")
+        .trim();
+    format!(
+        "<subagent-rules-update>\n\
+         The user changed this chat's subagent rules. These are the new rules; they replace \
+         the <subagent-rules> section of your instructions. Follow them: Nightloom enforces \
+         the limits either way.\n\n{body}\n</subagent-rules-update>"
+    )
 }
 
 /// How the names in the preamble read on Claude Code — see
@@ -2297,6 +2470,7 @@ As of now — the front.
             subagents: true,
             reusable: true,
             subagent_model: crate::agent::brief::SubagentModel::Choose,
+            subagent_rules: None,
         };
         let full = agent_prompt_with(&config, Some("Be terse."), all);
         assert_eq!(
@@ -2418,6 +2592,125 @@ As of now — the front.
         // A preamble with nothing in it sends none of Nightloom's layers.
         let empty = agent_prompt_with(&bare(dir.clone()), None, all);
         assert!(empty.segments().is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Backlog 291 + 293: the subagent rules layer comes after the
+    /// subagent practices and before the library prompt, states his words,
+    /// every limit as the rail has it (a switched-off one said to be off),
+    /// the model, and each helper kind with why to pick it; fork mode off
+    /// says the forks are not on the roster. Same settings, same bytes.
+    #[test]
+    fn the_subagent_rules_layer_is_built_from_the_rail_settings() {
+        use crate::agent::brief::{SubagentLimits, SubagentModel};
+        let dir = temp_dir("agent-subagent-rules");
+        std::fs::write(dir.join("AGENTS.md"), "a project rule").unwrap();
+        let config = PromptConfig {
+            project_instructions: true,
+            ..bare(dir.clone())
+        };
+        let limits = SubagentLimits::default();
+        let rules = SubagentRules {
+            words: "  Never more than two scans at once; ask before a third.  ",
+            limits,
+            fork_mode: true,
+        };
+        let layers = EngineLayers {
+            subagents: true,
+            subagent_rules: Some(rules),
+            ..EngineLayers::NONE
+        };
+        let p = agent_prompt_with(&config, Some("Be terse."), layers);
+        let kinds: Vec<_> = p.segments().iter().map(|s| s.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                SegmentKind::ProjectInstructions,
+                SegmentKind::Subagents,
+                SegmentKind::SubagentRules,
+                SegmentKind::Custom,
+            ]
+        );
+        let text = &p.segments()[2].text;
+        assert!(text.starts_with("<subagent-rules>"), "{text}");
+        assert!(text.ends_with("</subagent-rules>"), "{text}");
+        assert!(
+            text.contains("in their words. Follow them:\nNever more than two scans at once; ask before a third.\n"),
+            "{text}"
+        );
+        for want in [
+            "At most 6 subagent launches per message.",
+            "At most 4 running at once.",
+            "Nesting at most 3 deep",
+            "No daily cap.",
+            "From 70% of the five-hour usage window, at most 4 launches per message.",
+            "At 85% of the five-hour window every launch is refused",
+            "may spend 35% of the five-hour",
+            "Subagents' model: yours to choose",
+            CHECKPOINT_WHY,
+            FORK_WHY,
+            GENERAL_WHY,
+            "priors stay independent",
+        ] {
+            assert!(text.contains(want), "{want} missing from {text}");
+        }
+        // The same settings render the same bytes (the cached prefix).
+        assert_eq!(
+            agent_prompt_with(&config, Some("Be terse."), layers).render_flat(),
+            p.render_flat()
+        );
+        // A switched-off limit is said to be off; fork mode off says so;
+        // no words says so; the model follows the rail.
+        let mut off = limits;
+        off.off.stop_at = true;
+        off.off.per_turn = true;
+        off.model = SubagentModel::Same;
+        let seg = subagent_rules_segment(&SubagentRules {
+            words: "",
+            limits: off,
+            fork_mode: false,
+        });
+        assert!(seg.text.contains("No stop line"), "{}", seg.text);
+        assert!(
+            seg.text.contains("No cap on launches per message."),
+            "{}",
+            seg.text
+        );
+        assert!(!seg.text.contains("At 85%"), "{}", seg.text);
+        assert!(
+            seg.text.contains("written no subagent rules"),
+            "{}",
+            seg.text
+        );
+        assert!(
+            seg.text
+                .contains("checkpoint and fork are not on the roster"),
+            "{}",
+            seg.text
+        );
+        assert!(!seg.text.contains(CHECKPOINT_WHY), "{}", seg.text);
+        assert!(seg.text.contains("always this chat's"), "{}", seg.text);
+        // Switched off (None): no layer. With the preamble empty: none.
+        let none = agent_prompt_with(&config, None, EngineLayers::NONE);
+        assert!(
+            !none
+                .segments()
+                .iter()
+                .any(|s| s.kind == SegmentKind::SubagentRules)
+        );
+        assert!(
+            agent_prompt_with(&bare(dir.clone()), None, layers)
+                .segments()
+                .is_empty()
+        );
+        assert!(SegmentKind::LAYERS.contains(&SegmentKind::SubagentRules));
+        // The warm note carries the new rules and his sentence, untagged.
+        let note = subagent_rules_update_note(text);
+        assert!(note.starts_with("<subagent-rules-update>"), "{note}");
+        assert!(note.contains("These are the new rules"), "{note}");
+        assert!(note.contains("enforces the limits either way"), "{note}");
+        assert!(note.contains("Never more than two scans"), "{note}");
+        assert!(!note.contains("</subagent-rules>\n"), "{note}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

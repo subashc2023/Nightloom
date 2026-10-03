@@ -723,6 +723,9 @@ impl ServeHost {
                 subagents: !off.contains(&SegmentKind::Subagents),
                 reusable: false,
                 subagent_model: spec.subagent_limits.unwrap_or_default().model,
+                // The subagent rules layer (backlog 291 + 293) is the
+                // Mac's: the phone's rail has no rules box yet.
+                subagent_rules: None,
             },
         );
         self.without_home_memory(prompt)
@@ -842,6 +845,7 @@ impl ServeHost {
                     documents: req.documents,
                 },
                 spoken: req.spoken,
+                wire_note: None,
                 council: req.council,
                 cancel: &cancel,
                 ask_dir,

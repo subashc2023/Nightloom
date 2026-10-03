@@ -66,6 +66,17 @@ import {
   type ChatChoices,
 } from "./chatChoice";
 import { madeChatRow, refreshWithin, withNote, withoutNote } from "./afterWrite";
+import {
+  adoptNewChat,
+  emptyRules,
+  hasOwnRules,
+  loadRules,
+  rulesFor,
+  saveRules,
+  setRulesFor,
+  useDefaultFor,
+  type SubagentRulesStore,
+} from "./subagentRules";
 import { runLaunch } from "./launch.svelte";
 import { withProject, withoutProject } from "./projectRows";
 import { EDITABLE_LAYERS } from "./types";
@@ -3113,6 +3124,62 @@ function saveChatChoices(): void {
 }
 
 /**
+ * His subagent rules in words (nightshift backlog 291): each chat's text
+ * and the Settings default (`subagentRules.ts`). Saved on every keystroke;
+ * a pause in typing reconnects, which states them in the chat's subagent
+ * rules layer (293) — at once on a cold chat, as a note on the next
+ * message on a warm one.
+ */
+export const subagentRules = $state({
+  store: (typeof localStorage === "undefined" ? emptyRules() : loadRules(localStorage)) as SubagentRulesStore,
+});
+
+function saveSubagentRules(): void {
+  if (typeof localStorage !== "undefined") saveRules(localStorage, subagentRules.store);
+}
+
+/** How long typing in a rules box waits before it reconnects. */
+export const RULES_DEBOUNCE_MS = 1_500;
+let rulesTimer: ReturnType<typeof setTimeout> | null = null;
+function rulesChanged(): void {
+  saveSubagentRules();
+  if (app.draft.engine !== "claude-code") return;
+  if (rulesTimer !== null) clearTimeout(rulesTimer);
+  rulesTimer = setTimeout(() => {
+    rulesTimer = null;
+    scheduleApply();
+  }, RULES_DEBOUNCE_MS);
+}
+
+/** The open chat's rules (New chat's when none is open). */
+export function openChatRules(): string {
+  return rulesFor(subagentRules.store, app.activeSessionId);
+}
+/** Whether the open chat has text of its own, not the default. */
+export function openChatHasOwnRules(): boolean {
+  return hasOwnRules(subagentRules.store, app.activeSessionId);
+}
+/** He typed in the rail's box. */
+export function setOpenChatRules(text: string): void {
+  setRulesFor(subagentRules.store, app.activeSessionId, text);
+  rulesChanged();
+}
+/** *Use the default* on the rail (asked first when there is text). */
+export function useDefaultRules(): void {
+  useDefaultFor(subagentRules.store, app.activeSessionId);
+  rulesChanged();
+}
+/** Settings' default for chats with no text of their own. */
+export function setDefaultRules(text: string): void {
+  subagentRules.store.default = text;
+  rulesChanged();
+}
+/** A New chat's first turn made `chat`: its typed rules become its own. */
+function adoptChatRules(chat: string): void {
+  if (adoptNewChat(subagentRules.store, chat)) saveSubagentRules();
+}
+
+/**
  * The window from the id the CLI names in its init line (backlog 216), when
  * the connection does not know it yet — a chat's first turn on an alias, or
  * the first on a newly picked family. The turn's end sets it again from the
@@ -3174,7 +3241,8 @@ export function scheduleApply(): void {
  *  the draft moved on from this. */
 let lastSent: string | null = null;
 function sentKey(): string {
-  return JSON.stringify([app.activeSessionId, app.draft]);
+  // The chat's subagent rules too (backlog 291): edited, they reconnect.
+  return JSON.stringify([app.activeSessionId, app.draft, rulesFor(subagentRules.store, app.activeSessionId)]);
 }
 
 /** A connect is starting: note what it is built from, and the pending
@@ -3351,6 +3419,8 @@ async function applyAgentDraft(updateNow: PromptLayer[] = [], take = true): Prom
       cold: take && chatIsCold(app.events, Date.now()),
       autoLayers: app.layerPrefs.autoAtCold,
       updateNow,
+      // His subagent rules in words (backlog 291), for the rules layer.
+      subagentRules: rulesFor(subagentRules.store, chat),
     });
     const res = await withDeadline(connecting, CONNECT_DEADLINE_MS, "Connecting to Claude Code");
     app.promptPending = await withDeadline(api.promptPending(), 5_000, "The held prompt").catch(() => null);
@@ -6178,6 +6248,8 @@ async function settleTurnView(
       noteMade(chatChoice.choices, made, choice);
       saveChatChoices();
     }
+    // And the subagent rules typed in its box (backlog 291).
+    if (made) adoptChatRules(made);
     if (plan.moveDraft) moveDraft(plan.moveDraft[0], plan.moveDraft[1]);
     if (plan.adopt) app.events = events;
     if (plan.activeSessionId !== undefined) app.activeSessionId = plan.activeSessionId;
@@ -7452,6 +7524,7 @@ export function applyTurnEvent(ev: TurnEvent & { chat?: string }): void {
       noteMade(chatChoice.choices, ev.chat, fg.choice);
       saveChatChoices();
     }
+    adoptChatRules(ev.chat);
     if (app.parked) promoteParked();
     if (fg === null) {
       const moved = eventHost(app.background, ev.chat);
@@ -7779,6 +7852,7 @@ const LAYER_ORDER: PromptLayer[] = [
   "engine_note",
   "pacing",
   "subagents",
+  "subagent_rules",
 ];
 
 /** Whether two layer sets are the same set, whatever order they came in. */

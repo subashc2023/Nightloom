@@ -183,6 +183,7 @@ export function connectAgent(args: AgentConnectArgs): Promise<ConnectResult> {
     cold: args.cold,
     autoLayers: args.autoLayers,
     updateNow: args.updateNow,
+    subagentRules: args.subagentRules,
   });
 }
 

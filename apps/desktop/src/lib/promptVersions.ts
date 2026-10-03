@@ -104,6 +104,12 @@ export function saveLayerPrefs(p: LayerPrefs): void {
 
 /** The mark's state line. */
 export function markLine(layer: PendingLayer, auto: boolean, cold: boolean): string {
+  // The subagent rules (backlog 293): always taken at the cold moment; a
+  // warm chat is told by a note on its next message meanwhile.
+  if (layer.kind === "subagent_rules")
+    return cold
+      ? "The rules changed: rewritten with this chat's next message (its cache is cold, so it costs nothing extra)."
+      : "The rules changed: this chat's next message carries them as a note at its end, and this layer is rewritten at the next cold moment. They are enforced either way.";
   if (layer.choice === "keep") return "Keeping this chat's version — the file has a newer one.";
   const gone = layer.newer === "" ? "The file is gone" : "Newer version exists";
   if (takenAtCold(layer, auto))
@@ -123,6 +129,8 @@ export function updateNowCost(tokens: number | null, cold: boolean): string {
 /** The choices a mark offers besides *Update now*, in order. */
 export function choicesFor(layer: PendingLayer, auto: boolean): { choice: LayerChoice; label: string }[] {
   const out: { choice: LayerChoice; label: string }[] = [];
+  // The subagent rules have no Keep and no schedule: always at cold (293).
+  if (layer.kind === "subagent_rules") return out;
   if (layer.choice === "keep") out.push({ choice: auto ? "auto" : "cold", label: "Update at the next cold moment" });
   else {
     if (!takenAtCold(layer, auto)) out.push({ choice: "cold", label: "Update at the next cold moment" });

@@ -87,6 +87,14 @@ pub enum SegmentKind {
     /// Claude Code engine only, after [`SegmentKind::Pacing`]; each
     /// sentence was measured to hold in a Nightloom chat.
     Subagents,
+    /// This chat's subagent rules (nightshift backlog 291 + 293,
+    /// 2026-10-03): the user's own rules in words, the limits Nightloom
+    /// enforces, the fork switch and what each helper kind starts with.
+    /// Claude Code engine only, after [`SegmentKind::Subagents`]. Changed
+    /// by a rail setting, it waits for the chat's cold moment like a file;
+    /// while the cache is warm the next message carries the new rules as
+    /// an appended note instead.
+    SubagentRules,
     /// Claude Code's own auto memory for the chat's folder
     /// (`~/.claude/projects/<cwd>/memory/MEMORY.md` and its topic files;
     /// nightshift backlog 088, 2026-09-16). Never a segment of a
@@ -105,7 +113,7 @@ impl SegmentKind {
     /// offers as switches. Excludes [`SegmentKind::Custom`]: the shell's own
     /// text is chosen by the shell's own control (a dropdown, a flag), not by
     /// a layer switch, and offering it twice would leave the two disagreeing.
-    pub const LAYERS: [SegmentKind; 12] = [
+    pub const LAYERS: [SegmentKind; 13] = [
         SegmentKind::Identity,
         SegmentKind::Environment,
         SegmentKind::UserMemory,
@@ -118,6 +126,7 @@ impl SegmentKind {
         SegmentKind::EngineNote,
         SegmentKind::Pacing,
         SegmentKind::Subagents,
+        SegmentKind::SubagentRules,
     ];
 
     /// The kinds whose text a chat may replace with its own — the four

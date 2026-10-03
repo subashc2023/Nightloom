@@ -136,15 +136,18 @@ pub fn write_fork_spec(dir: &Path, spec: &ForkSpec) -> std::io::Result<()> {
 /// when it picks a `subagent_type`), and the prompt a *fresh* spawn gets
 /// when the hook could not fork — it says so, rather than let the helper
 /// answer as if it knew the chat.
+///
+/// 2026-10-03 (nightshift backlog 293): the description says *why* as well
+/// as how, in the words the chat's subagent rules layer uses
+/// (`prompt::CHECKPOINT_WHY`, `FORK_WHY`, `GENERAL_WHY`).
 pub fn agents_json() -> String {
+    use crate::prompt::{CHECKPOINT_WHY, FORK_WHY, GENERAL_WHY};
     serde_json::json!({
         CHECKPOINT_AGENT: {
-            "description": "Long research or a many-step side task, as a fork of this chat from its \
-                checkpoint: the helper starts with the chat's general context (instructions and the \
-                opening exchange) at cache-read cost and none of the later turns, and its report comes \
-                back as this call's result. Pick this for a helper that will read many files or run many \
-                steps. For a short side task that needs the whole conversation so far, use subagent_type \
-                fork instead; for a task that needs no context of this chat, general-purpose.",
+            "description": format!("Long research or a many-step side task, as a fork of this chat from \
+                its checkpoint at cache-read cost: {CHECKPOINT_WHY}. Its report comes back as this \
+                call's result. Pick this for a helper that will read many files or run many steps. \
+                The others: subagent_type fork, {FORK_WHY}; general-purpose, {GENERAL_WHY}."),
             "prompt": "You are a research helper spawned from a chat running in Nightloom. Nightloom meant \
                 to fork you from the chat's checkpoint so you would start with its general context; that \
                 fork did not happen, so you have only the task below and any brief in front of it. Read by \
@@ -416,6 +419,10 @@ mod tests {
                 .unwrap()
                 .contains("subagent_type fork")
         );
+        // Backlog 293: the why, in the rules layer's words.
+        let desc = v[CHECKPOINT_AGENT]["description"].as_str().unwrap();
+        assert!(desc.contains(crate::prompt::CHECKPOINT_WHY), "{desc}");
+        assert!(desc.contains("priors stay independent"), "{desc}");
         assert!(
             v[CHECKPOINT_AGENT]["prompt"]
                 .as_str()
