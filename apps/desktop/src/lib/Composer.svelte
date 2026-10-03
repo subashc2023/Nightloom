@@ -9,7 +9,6 @@
     app,
     addToast,
     applyDraft,
-    askAside,
     cacheHitRate,
     cancelTurn,
     continueChat,
@@ -132,6 +131,19 @@
   import { hasQuoteLine, insertQuote, mirrorLines, replyRequest, takeReply } from "./replyQuote.svelte";
   import { composerFocus } from "./rewindDraft.svelte";
   import { requestWrapUp } from "./wrapAsides.svelte";
+  // Backlog 283: the same composer in an aside.
+  import {
+    asideAsking,
+    asideWaiting,
+    askAside,
+    followUpAside,
+    openContent,
+    stopAside,
+    type Aside,
+  } from "./state.svelte";
+  import { asideDraftKey } from "./asides";
+  import { composerShows } from "./asideControls";
+  import { scheduleAsideSave } from "./asides.svelte";
 
   /**
    * `floating` drops the docked chrome (top border, panel fill) for the
@@ -139,7 +151,33 @@
    * than at the bottom of a transcript. One component either way: a second
    * composer would be a second place to fix a paste bug.
    */
-  let { floating = false }: { floating?: boolean } = $props();
+  let {
+    floating = false,
+    aside = null,
+    asideChat = null,
+    compact = false,
+  }: {
+    floating?: boolean;
+    /**
+     * An aside's thread (nightshift backlog 283, 2026-10-02 — his "why the
+     * functionality … is so much more limited"): the same composer, every
+     * control the chat's has that means something in an aside — attach,
+     * paste as an attachment, the model and effort pickers (the aside's
+     * own, defaulting to the chat's), earlier drafts, the slash list, the
+     * ⌘⇧V ring, the format toggle, the queue — sending into the thread
+     * instead of the chat. Its text, chips and held messages live in the
+     * drafts store under the thread's key (`asideDraftKey`), so they are
+     * kept as a chat's are; `aside.unsent` mirrors the text. What is the
+     * chat's alone is not drawn: the hand-off notice, the schedule ▾, the
+     * council, Ask aside, the CLI's predicted prompt, the thinking / tools
+     * toggles and the cache chip.
+     */
+    aside?: Aside | null;
+    /** The chat the thread belongs to; null is the open one. */
+    asideChat?: string | null;
+    /** The floating card: a shorter box, so the card keeps its thread. */
+    compact?: boolean;
+  } = $props();
 
   /**
    * The draft is the open chat's, not the box's (nightshift backlog 065,
@@ -151,9 +189,56 @@
    * entry moves to the chat its first message creates (the one line in
    * `send`). Sending clears the entry, and nothing else does.
    */
-  const key = $derived(draftKey(app.activeSessionId, app.project?.id, app.pendingMode));
+  const key = $derived(aside ? asideDraftKey(aside) : draftKey(app.activeSessionId, app.project?.id, app.pendingMode));
   const draft = $derived(readDraft(key));
   const text = $derived(draft.text);
+
+  /*
+   * The aside's composer (backlog 283). Its words were the thread's
+   * `unsent` before (228); a thread typed into before this build has
+   * them there and nothing under its key, so they move in once. From then
+   * the drafts entry is the box's, and `unsent` follows it — the aside
+   * store's keep rule, the Discard question and the lists read it.
+   */
+  $effect(() => {
+    const a = aside;
+    const k = key;
+    if (!a) return;
+    untrack(() => {
+      const u = a.unsent ?? "";
+      if (u.trim() && !readDraft(k).text) setDraftText(k, u);
+    });
+  });
+  $effect(() => {
+    const a = aside;
+    const t = text;
+    if (!a) return;
+    untrack(() => {
+      if ((a.unsent ?? "") === t) return;
+      a.unsent = t;
+      // A stashed chat's thread is not watched by the keeper's effect.
+      scheduleAsideSave();
+    });
+  });
+  /** The aside's chat: the one named, else the open one. */
+  const asideOwner = $derived(aside ? (asideChat ?? app.activeSessionId) : null);
+  /** The thread is the open chat's — an aside answers from the open
+   *  chat's context, so only then does Send ask. */
+  const asideOpen = $derived(!!aside && asideOwner === app.activeSessionId && app.asides.includes(aside));
+  const asideOnEngine = $derived(app.connection?.engine === "claude-code");
+  /** An answer is coming in this thread: Send queues, Stop stops it. */
+  const asideBusy = $derived(!!aside && asideAsking(aside) !== null);
+  /** What blocks an aside's Send, if anything; the text stays. */
+  const asideBlock = $derived<"not-open" | "engine" | null>(
+    !aside ? null : !asideOnEngine ? "engine" : !asideOpen ? "not-open" : null,
+  );
+  const asideChatName = $derived.by(() => {
+    if (!asideOwner) return "the chat";
+    const s = app.sessions.find((x) => x.id === asideOwner);
+    return s?.title ?? s?.first_user ?? "this chat";
+  });
+  /** The chat's turn or this thread's answer: what Queue / Stop are about. */
+  const busy = $derived(aside ? asideBusy : app.busy);
   /**
    * The draft's live token estimate (nightshift backlog 155): characters ÷ 4,
    * shown beside Send from ~50 tokens up. Debounced so a fast typist or a
@@ -275,6 +360,8 @@
    * Double-click clears both. ⌥⌘↑ / ⌥⌘↓ in the box do the same by a line.
    */
   const FLOATING_MAX = 200; // ~8 rows
+  /** The aside card's box (283): ~5 rows, then it scrolls inside. */
+  const ASIDE_CARD_MAX = 120;
   const CAP_FRACTION = 0.4;
   const CAP_MIN = 72;
   const CAP_KEY = "nightloom.composer.max";
@@ -341,6 +428,8 @@
 
   function maxHeight(): number {
     if (floating) return FLOATING_MAX;
+    // The aside card (283): a few lines, so the thread above keeps the card.
+    if (compact) return Math.min(300, Math.max(CAP_MIN, floorPx ?? ASIDE_CARD_MAX));
     const auto = Math.round(columnHeight() * CAP_FRACTION);
     // The cap never sits under the floor: a box dragged to 300px is 300px.
     return Math.max(CAP_MIN, capPx ?? auto, floorPx ?? 0);
@@ -544,7 +633,10 @@
    * is the one that fills.
    */
   const handoffHere = $derived(
-    app.connection?.engine === "claude-code" && handoff.chat === app.activeSessionId && handoff.chat !== null,
+    composerShows("handoff", !!aside) &&
+      app.connection?.engine === "claude-code" &&
+      handoff.chat === app.activeSessionId &&
+      handoff.chat !== null,
   );
   const handoffPct = $derived(Math.round(handoff.fill * 100));
   const handoffThresholdPct = $derived(Math.round(threshold(app.activeSessionId) * 100));
@@ -557,11 +649,14 @@
    * the thread's flags into the wrap-up.
    */
   const boundThread = $derived(chatThread(app.events));
+  // The chat's composer only (283): an aside's has no hand-off.
   $effect(() => {
+    if (aside) return;
     const [chat, slug] = [app.activeSessionId, boundThread];
     untrack(() => noteThread(chat, slug));
   });
   $effect(() => {
+    if (aside) return;
     if (handoff.stage === "due" && boundThread) untrack(() => void refreshThreadFlags(boundThread));
   });
   /** Whether the hand-off writes the thread's files rather than HANDOFF.md. */
@@ -607,7 +702,7 @@
    * again from `state.svelte.ts`.
    */
   $effect(() => {
-    if (!app.busy || app.connection?.engine !== "claude-code" || !app.activeSessionId) return;
+    if (aside || !app.busy || app.connection?.engine !== "claude-code" || !app.activeSessionId) return;
     const used = contextUsed();
     const limit = app.connection?.contextLimit ?? null;
     if (used == null || !limit) return;
@@ -621,7 +716,8 @@
    * prompt, dimmed in the empty box; Tab puts it in the box, Esc drops
    * it, typing hides it. Never sent on its own.
    */
-  const ghost = $derived(ghostFor(app.suggestion, text));
+  // The chat's predicted next prompt; not an aside's (283).
+  const ghost = $derived(composerShows("ghost", !!aside) ? ghostFor(app.suggestion, text) : null);
   function acceptGhost(): void {
     if (!ghost) return;
     setDraftText(key, ghost);
@@ -672,6 +768,8 @@
    */
   $effect(() => {
     void replyRequest.seq;
+    // Reply is to the chat (283): an aside's box must not take the quote.
+    if (aside) return;
     const passage = untrack(() => takeReply());
     if (passage === null) return;
     untrack(() => {
@@ -694,7 +792,7 @@
   let focusSeen = untrack(() => composerFocus.seq);
   $effect(() => {
     const seq = composerFocus.seq;
-    if (seq === focusSeen) return;
+    if (aside || seq === focusSeen) return;
     focusSeen = seq;
     void tick().then(() => {
       if (!ta) return;
@@ -1302,7 +1400,7 @@
   }
 
   /** Why the queue is waiting rather than sending itself, if it is. */
-  const hold = $derived(queueHold(handoffHere ? handoff.stage : "idle", turnWasStopped()));
+  const hold = $derived(aside ? null : queueHold(handoffHere ? handoff.stage : "idle", turnWasStopped()));
 
   /**
    * Send the oldest held message as the next turn, if there is one. At a
@@ -1310,6 +1408,7 @@
    * the explicit choice and goes regardless.
    */
   async function drain(explicit = false): Promise<void> {
+    if (aside) return asideDrain();
     // A provider turn off screen holds the engine (backlog 159, A4).
     if (app.busy || !app.connection || providerElsewhereName()) return;
     if (!explicit && hold) return;
@@ -1327,10 +1426,11 @@
   // Scheduled send (backlog 224): a due message joins this chat's queue
   // and goes through `drain`, which gives the words back on a failure.
   // Untracked: the first tick reads the store, which is not this effect's.
-  $effect(() => untrack(() => registerScheduleDrain(() => drain())));
+  // The chat's composer only (283): an aside's queue waits for its answer.
+  $effect(() => untrack(() => (aside ? undefined : registerScheduleDrain(() => drain()))));
   // And when a provider turn off screen ends (A4 review): the message
   // queued behind it here goes, as its notice said.
-  $effect(() => untrack(() => registerProviderDrain(() => drain())));
+  $effect(() => untrack(() => (aside ? undefined : registerProviderDrain(() => drain()))));
   /** Why nothing can be scheduled from this box, if nothing can. */
   const scheduleBlocked = $derived(
     key.startsWith(NEW_DRAFT_PREFIX)
@@ -1358,6 +1458,10 @@
     if (!(await conversionsDone(key))) return;
     enqueueMessage(key, readDraft(key).text, readDraft(key).attachments.slice());
     clearDraft(key);
+    if (aside) {
+      afterSend(key);
+      return;
+    }
     if (app.parked) addToast(queuedElsewhereToast(runningChatName()));
     else if (!app.busy) {
       const elsewhere = providerElsewhereName();
@@ -1374,15 +1478,74 @@
 
   async function submitAside() {
     const t = text.trim();
-    if (!t || attachments.length > 0 || app.busy) return;
+    if ((!t && attachments.length === 0) || app.busy) return;
+    // The chips go with it since backlog 283: an aside takes what a turn
+    // takes (images, documents, files), drawn in its bubble.
+    const sendKey = key;
+    if (!(await conversionsDone(sendKey))) return;
+    if (sendKey !== key || app.busy) return;
+    const chips = attachments.map((c) => $state.snapshot(c) as Attachment);
     // The words fly from the box into the aside's card (backlog 194).
     launch("aside", boxElement(ta));
     clearDraft(key);
     afterSend(key);
-    await askAside(t);
+    await askAside(t, null, null, { attachments: chips });
   }
 
+  /*
+   * The aside's send (backlog 283): the first question of a draft thread
+   * (`askAside`, in place) or a follow-up (`followUpAside`), with the
+   * box's chips. While the thread answers, ↵ holds the message in its
+   * queue, which goes when the answer ends (`asideDrain`). Off the open
+   * chat or the Claude Code engine nothing goes and the box keeps all.
+   */
+  async function asideSubmit(): Promise<void> {
+    const a = aside;
+    if (!a) return;
+    const t = text.trim();
+    if (!t && attachments.length === 0) return;
+    if (asideBlock) return;
+    recordText("sent", text);
+    if (asideBusy) {
+      await enqueue();
+      return;
+    }
+    const sendKey = key;
+    if (!(await conversionsDone(sendKey))) return;
+    if (sendKey !== key || asideBusy || asideBlock) return;
+    const pending = attachments.map((c) => $state.snapshot(c) as Attachment);
+    const typed = text;
+    launch("aside", boxElement(ta));
+    clearDraft(key);
+    afterSend(key);
+    await asideDispatch(a, typed, pending);
+  }
+  async function asideDispatch(a: Aside, typed: string, chips: Attachment[]): Promise<void> {
+    if (a.draft) await askAside(typed, a.quote, a, { attachments: chips });
+    else await followUpAside(typed, a, { attachments: chips });
+    await asideDrain();
+  }
+  /** The thread's oldest held message, once its answer has ended. */
+  async function asideDrain(): Promise<void> {
+    const a = aside;
+    if (!a || asideBusy || asideBlock) return;
+    const head = queue[0];
+    if (head) launch("aside", document.querySelector(`.queue-row[data-queue-id="${head.id}"] .queue-text`));
+    const q = shiftQueue(key);
+    if (!q) return;
+    await asideDispatch(a, q.text, q.attachments);
+  }
+  // An answer that ends while a message is held sends the next (283).
+  let wasBusy = untrack(() => asideBusy);
+  $effect(() => {
+    const now = asideBusy;
+    const before = wasBusy;
+    wasBusy = now;
+    if (aside && before && !now) untrack(() => void asideDrain());
+  });
+
   async function submit() {
+    if (aside) return asideSubmit();
     const t = text.trim();
     const empty = !t && attachments.length === 0;
     if (empty || !app.connection) return;
@@ -1481,7 +1644,9 @@
    * it is the rail's Thinking segment, since that engine has no `--effort`
    * and the chip's `thinking …` tail is gone from the top bar.
    */
-  const agentMode = $derived(app.draft.engine === "claude-code");
+  // An aside runs on Claude Code only (081), so its pickers are always
+  // the subscription engine's model and effort.
+  const agentMode = $derived(!!aside || app.draft.engine === "claude-code");
   const locked = $derived(app.busy || app.connecting);
   const mod = isMac ? "⌘" : "Ctrl+";
   const shift = isMac ? "⇧" : "Shift+";
@@ -1607,6 +1772,80 @@
         })),
   );
 
+  /*
+   * The aside's own pickers (backlog 283): the chat's model and effort
+   * unless he picks one for this aside — the first row, "the chat's", is
+   * the default and puts it back. Kept on the thread (`aside.model`,
+   * `aside.effort`, written with it), sent with each question
+   * (`asideWire`); the chat's own pick is untouched. Another model than
+   * the chat's cannot read the chat's prompt cache, so its first answer
+   * pays to read the whole context: the row says so.
+   */
+  const chatModelName = $derived(app.draft.agentModel.trim() || "default");
+  const chatEffortName = $derived(app.draft.agentEffort || `default · ${effortDefaultText}`);
+  const asideModelLabel = $derived(aside?.model ? aside.model : `chat's · ${chatModelName}`);
+  const asideEffortLabel = $derived(
+    aside && aside.effort != null ? aside.effort || "default" : `chat's · ${chatEffortName}`,
+  );
+  const asideModelTitle = $derived(
+    `This aside's model — the chat's (${chatModelName}) unless picked here. Another model cannot read the chat's prompt cache, so its first answer reads the whole context fresh.`,
+  );
+  function pickAside(field: "model" | "effort", v: string | null): void {
+    const a = aside;
+    if (!a) return;
+    if (v === null) delete a[field];
+    else a[field] = v;
+    scheduleAsideSave();
+  }
+  const asideModelRows = $derived.by((): MenuRow[] => {
+    const cur = aside?.model ?? null;
+    const rows: MenuRow[] = [
+      { id: "chat", label: "the chat's", detail: `${chatModelName} · reads the chat's cache`, on: cur === null, run: () => pickAside("model", null) },
+    ];
+    for (const m of AGENT_PILLS) {
+      rows.push({
+        id: m,
+        label: m,
+        detail: m === chatModelName ? "the chat's model, picked for this aside" : "its own model — no cache from the chat",
+        on: cur === m,
+        run: () => pickAside("model", m),
+      });
+    }
+    if (cur !== null && !AGENT_PILLS.includes(cur)) rows.push({ id: cur, label: cur, on: true, run: () => {} });
+    return rows;
+  });
+  const asideEffortRows = $derived.by((): MenuRow[] => {
+    const cur = aside?.effort ?? null;
+    return [
+      { id: "chat", label: "the chat's", detail: chatEffortName, on: cur === null, run: () => pickAside("effort", null) },
+      ...EFFORTS.map((e) => ({
+        id: e || "default",
+        label: e || "default",
+        detail: e ? `--effort ${e}` : "no flag, the model's own",
+        on: cur === e,
+        run: () => pickAside("effort", e),
+      })),
+    ];
+  });
+  const boxPlaceholder = $derived(
+    !aside
+      ? "Message…"
+      : aside.draft
+        ? aside.quote
+          ? "Ask about the passage… (↵ asks)"
+          : "Ask aside… (↵ asks)"
+        : "Follow up in the aside… (↵ asks)",
+  );
+  const asideSendTip = $derived(
+    asideBlock === "not-open"
+      ? `Sends only while ${asideChatName} is the open chat — an aside answers from its context`
+      : asideBlock === "engine"
+        ? "Asides run on the Claude Code engine"
+        : aside?.draft
+          ? "Ask this off the chat's context: no changes to the chat, recorded nowhere"
+          : "Continue the aside: the exchanges above go with this question, off the chat's context; recorded nowhere",
+  );
+
   /**
    * One menu open at a time. It closes on a pick, on ⎋ (focus back on its
    * button), on Tab, and on a click anywhere else — the top bar's rule for
@@ -1652,7 +1891,15 @@
    * one to the actions (Ask aside, Council, Send / Queue, Stop) and take a
    * row of their own beneath, folded as at level 3. Every shed word is in its button's title.
    */
-  const ROW_FOLD_MAX = 4;
+  // Item 289 (2026-10-02): ~~4~~ 6 levels. Levels 1–3 saved almost nothing
+  // once the model and effort names were short, so the row hit the floor
+  // (two rows) at ~580 px on the new-chat page. Now, in order: 1 the
+  // pickers' key words; 2 the draft's token estimate (its figure is in
+  // Send's hover); 3 Attach to its icon, Ask aside to "Aside", Council to
+  // its icon; 4 the pickers' values at 72 px; 5 at 48 px; 6 the floor —
+  // pickers on row one at the left, the actions on row two at the right,
+  // both rows the same height.
+  const ROW_FOLD_MAX = 6;
   let rowEl = $state<HTMLElement | null>(null);
   let rowFold = $state("0");
   function refoldRow(): void {
@@ -1678,6 +1925,7 @@
       agentMode,
       history.length,
       app.busy,
+      busy,
       app.parked,
       app.connection?.engine,
       app.events.length > 0,
@@ -1693,7 +1941,17 @@
   let effortBtn = $state<HTMLElement | null>(null);
   let historyBtn = $state<HTMLElement | null>(null);
   const menuRows = $derived(
-    menu === "model" ? modelRows : menu === "effort" ? effortRows : menu === "history" ? historyRows : [],
+    menu === "model"
+      ? aside
+        ? asideModelRows
+        : modelRows
+      : menu === "effort"
+        ? aside
+          ? asideEffortRows
+          : effortRows
+        : menu === "history"
+          ? historyRows
+          : [],
   );
   function menuButton(): HTMLElement | null {
     return menu === "model" ? modelBtn : menu === "effort" ? effortBtn : menu === "history" ? historyBtn : null;
@@ -1839,9 +2097,11 @@
 <div
   class="composer"
   class:floating
+  class:aside={aside !== null}
+  class:compact
   class:dropping={dragDepth > 0}
   role="group"
-  aria-label="message composer"
+  aria-label={aside ? "aside composer" : "message composer"}
   {ondragenter}
   {ondragover}
   {ondragleave}
@@ -1860,13 +2120,15 @@
       onreset={handleReset}
     />
   {/if}
-  <ScheduledChip {key} onedit={scheduleEdited} />
+  {#if composerShows("schedule", !!aside)}
+    <ScheduledChip {key} onedit={scheduleEdited} />
+  {/if}
   {#if queue.length > 0}
     <div class="queue" role="list" aria-label="queued messages">
       <div class="queue-head">
-        <span class="ns-chip mono">queued · {app.busy ? "sent when this turn ends" : hold === "stopped" ? "waiting — the turn was stopped" : hold === "wrapped" ? "waiting — HANDOFF.md is written; continue in a new chat, or Send next here" : "waiting"}</span>
-        {#if !app.busy}
-          <button class="ns-btn ghost small" disabled={!app.connection} onclick={() => void drain(true)}>Send next</button>
+        <span class="ns-chip mono">queued · {aside ? (asideBusy ? "sent when this answer ends" : asideBlock === "not-open" ? "waiting — open the chat to send" : "waiting") : app.busy ? "sent when this turn ends" : hold === "stopped" ? "waiting — the turn was stopped" : hold === "wrapped" ? "waiting — HANDOFF.md is written; continue in a new chat, or Send next here" : "waiting"}</span>
+        {#if !busy}
+          <button class="ns-btn ghost small" disabled={!app.connection || asideBlock !== null} onclick={() => void drain(true)}>Send next</button>
         {/if}
       </div>
       {#each queue as q, i (q.id)}
@@ -2068,7 +2330,7 @@
         bind:handle={ta}
         value={text}
         onchange={(v) => setDraftText(key, v)}
-        placeholder={app.connection ? "Message…" : ""}
+        placeholder={app.connection ? boxPlaceholder : ""}
         disabled={!app.connection}
         {floating}
         initialCaret={formatCaret}
@@ -2097,7 +2359,7 @@
       autocorrect="off"
       autocapitalize="off"
       spellcheck="false"
-      placeholder={app.connection ? "Message…" : ""}
+      placeholder={app.connection ? boxPlaceholder : ""}
       disabled={!app.connection}
       oninput={() => {
         // A keystroke is presence, for the hand-off's away rule (backlog 086).
@@ -2163,15 +2425,15 @@
           disabled={!app.connection}
           aria-haspopup="menu"
           aria-expanded={menu === "model"}
-          use:tip={modelTitle}
+          use:tip={aside ? asideModelTitle : modelTitle}
           onclick={() => openMenu("model")}
         >
           <span class="pick-dot" class:unknown={!app.connection}></span>
-          <span class="pick-name">{modelLabel}</span>
+          <span class="pick-name">{aside ? asideModelLabel : modelLabel}</span>
           <span class="pick-chev" aria-hidden="true"><Icon name="chev" size={11} /></span>
         </button>
         {#if menu === "model"}
-          {@render pickMenu("Model", agentMode ? "an alias the CLI resolves" : `${models.length} in the picker · Settings picks which`)}
+          {@render pickMenu(aside ? "This aside's model" : "Model", aside ? "the chat's unless picked here" : agentMode ? "an alias the CLI resolves" : `${models.length} in the picker · Settings picks which`)}
         {/if}
       </span>
       <span class="pick-wrap">
@@ -2182,17 +2444,19 @@
           disabled={!app.connection}
           aria-haspopup="menu"
           aria-expanded={menu === "effort"}
-          use:tip={agentMode
-            ? "Effort (--effort) — how hard the model thinks per turn; default sends no flag and leaves it to the model. Kept on this chat."
-            : `Thinking — ${thinkingSup.note}`}
+          use:tip={aside
+            ? "This aside's effort (--effort) — the chat's unless picked here; kept on this aside"
+            : agentMode
+              ? "Effort (--effort) — how hard the model thinks per turn; default sends no flag and leaves it to the model. Kept on this chat."
+              : `Thinking — ${thinkingSup.note}`}
           onclick={() => openMenu("effort")}
         >
           <span class="pick-k">{agentMode ? "effort" : "thinking"}</span>
-          <span class="pick-name">{agentMode ? effortLabel : thinkingLabel}</span>
+          <span class="pick-name">{aside ? asideEffortLabel : agentMode ? effortLabel : thinkingLabel}</span>
           <span class="pick-chev" aria-hidden="true"><Icon name="chev" size={11} /></span>
         </button>
         {#if menu === "effort"}
-          {@render pickMenu(agentMode ? "Effort" : "Thinking", agentMode ? "--effort · kept on this chat" : "kept on this chat")}
+          {@render pickMenu(aside ? "This aside's effort" : agentMode ? "Effort" : "Thinking", aside ? "--effort · kept on this aside" : agentMode ? "--effort · kept on this chat" : "kept on this chat")}
         {/if}
       </span>
       <!-- Earlier drafts (nightshift backlog 158): the ring of texts that
@@ -2220,29 +2484,44 @@
       {/if}
       <span class="spacer"></span>
       {#if shown}
-        <span class="draft-tokens mono act" use:tip={shown.title}
+        <span class="draft-tokens mono act" data-fold-step="tokens" use:tip={shown.title}
           ><span class="fold-word">{shown.long}</span><span class="short-word">{shown.short}</span></span
         >
       {/if}
-      {#if app.busy}
+      {#if busy}
         <button
           class="ns-btn ghost small act"
-          use:tip={"Hold this message; it goes when the turn ends"}
+          use:tip={aside ? "Hold this message; it goes when this answer ends" : "Hold this message; it goes when the turn ends"}
           onclick={enqueue}
           disabled={!text.trim() && attachments.length === 0}>Queue</button
         >
-        <button class="ns-btn danger small act" use:tip={app.parked ? `Stop the turn running in ${runningChatName()}` : "Stop this turn"} onclick={() => void cancelTurn()}>Stop</button>
+        {#if aside}
+          <button class="ns-btn danger small act" use:tip={"Stop this answer; what has arrived stays"} onclick={() => aside && stopAside(aside)}>Stop</button>
+        {:else}
+          <button class="ns-btn danger small act" use:tip={app.parked ? `Stop the turn running in ${runningChatName()}` : "Stop this turn"} onclick={() => void cancelTurn()}>Stop</button>
+        {/if}
+      {:else if aside}
+        <!-- The aside's Send (backlog 283): no schedule ▾, no council. -->
+        <button
+          class="ns-btn accent send act"
+          use:tip={asideSendTip}
+          onclick={() => void submit()}
+          disabled={!app.connection || asideBlock !== null || (!text.trim() && attachments.length === 0)}
+        >
+          Send
+        </button>
       {:else}
         {#if app.connection?.engine === "claude-code" && app.events.length > 0}
           <!-- Ask aside (nightshift backlog 081): the typed question goes
                to the chat's context off its warm cache and is recorded
-               nowhere — the CLI's /btw. Text only; attachments are a turn's.
+               nowhere — the CLI's /btw. ~~Text only; attachments are a
+               turn's~~ — with the box's chips since backlog 283.
                Not before the first turn: an empty chat has no context to
                ask (the Welcome screen showed it — his report, 2026-09-17). -->
           <button
             class="ns-btn ghost small act"
             use:tip={"Ask this of the chat without adding it to the chat: answered from what is already in context, no changes, recorded nowhere (Claude Code's /btw)"}
-            disabled={!text.trim() || attachments.length > 0}
+            disabled={!text.trim() && attachments.length === 0}
             onclick={() => void submitAside()}
           >
             <span class="fold-word">Ask aside</span><span class="short-word">Aside</span>
@@ -2259,9 +2538,11 @@
               use:tip={"Send this message to a council: several models answer it independently, then this chat's model chairs their answers"}
               aria-haspopup="dialog"
               aria-expanded={councilOpen}
+              aria-label="Council"
               onclick={() => (councilOpen = !councilOpen)}
             >
-              Council
+              <!-- Item 289: its icon alone at fold 3 and past. -->
+              <span class="council-ico" aria-hidden="true"><Icon name="agent" size={13} /></span><span class="council-word">Council</span>
             </button>
             {#if councilOpen}
               <CouncilPopover
@@ -2281,7 +2562,8 @@
         <span class="send-split act">
           <button
             class="ns-btn accent send act"
-            use:tip={sendTip(!!app.connection, !text.trim() && attachments.length === 0, sendHeld())}
+            use:tip={sendTip(!!app.connection, !text.trim() && attachments.length === 0, sendHeld()) +
+              (shown && Number(rowFold) >= 2 ? ` · ${shown.long}` : "")}
             onclick={() => void submit()}
             disabled={!app.connection || sendHeld() || (!text.trim() && attachments.length === 0)}
           >
@@ -2291,7 +2573,37 @@
       {/if}
     </div>
   </div>
-  {#if !floating}
+  {#if aside}
+    <!-- The aside's bottom row (backlog 283): its line — where it answers
+         from, or why Send waits — and the format toggle, the one bottom
+         chip that is about the box rather than the chat's transcript. -->
+    <div class="bottom-row aside-row">
+      <span class="aside-line" role="status">
+        {#if asideBlock === "not-open"}
+          Sends only while <em>{asideChatName}</em> is the open chat — an aside answers from its context.
+          <button class="ns-btn ghost small" onclick={() => asideOwner && void openContent({ kind: "chat", session: asideOwner }, "new")}>Open the chat</button>
+        {:else if asideBlock === "engine"}
+          Asides run on the Claude Code engine; the box keeps what is typed.
+        {:else if asideBusy}
+          {aside && asideWaiting(aside) ? "Waiting — one aside answers at a time; ↵ holds the next message." : "Answering — ↵ holds the next message for when it ends."}
+        {:else}
+          Answers from <em>{asideChatName}</em>'s context; nothing here enters the chat.
+        {/if}
+      </span>
+      <span class="spacer"></span>
+      <button
+        class="ns-chip bottom-toggle"
+        class:on={composerFormat.on}
+        aria-pressed={composerFormat.on}
+        use:tip={composerFormat.on
+          ? "Formatting drawn in the box — $…$ math, **bold**, *italic*, # headings; the message sent is the text as typed. Click for the plain box"
+          : "Plain box — click to draw $…$ math, **bold**, *italic* and # headings in place as you type"}
+        onclick={flipFormat}
+      >
+        <span class="bottom-mark" aria-hidden="true">∑</span>format
+      </button>
+    </div>
+  {:else if !floating}
     <!-- The bottom row (backlog 112, board 10's C): the two transcript
          toggles (backlog 052) and the cache chip (063), under the box,
          right-aligned as drawn. A click on any single block still
@@ -2370,7 +2682,7 @@
     </div>
   {:else if dragDepth > 0}
     <div class="hint">drop images or PDFs to attach</div>
-  {:else if handoff.noStartPromptChat !== null && handoff.noStartPromptChat === app.activeSessionId && !text}
+  {:else if !aside && handoff.noStartPromptChat !== null && handoff.noStartPromptChat === app.activeSessionId && !text}
     <!-- The continued chat whose box was left empty (backlog 086 pass 2):
          the note lives here, under the box, until he types. -->
     <div class="hint">continued from the earlier chat — its wrap-up reply had no start-prompt block, so the box is empty; say which files to read first (HANDOFF.md is in the project)</div>
@@ -2636,6 +2948,45 @@
   .composer.dropping .card {
     border-color: var(--accent);
   }
+  /* In an aside (backlog 283): the chat's composer inside the aside's
+     frame — no panel fill of its own, the card on the aside's tint with a
+     dashed edge, so the box he types in never reads as the chat's. */
+  .composer.aside {
+    background: transparent;
+    padding: 8px 0 0;
+  }
+  .composer.aside .card,
+  .composer.aside .attachments,
+  .composer.aside .queue,
+  .composer.aside .bottom-row {
+    max-width: none;
+  }
+  .composer.aside .card {
+    border-style: dashed;
+    background: var(--aside-well, var(--sheet));
+    padding: 8px 10px;
+    gap: 6px;
+  }
+  .composer.aside .card:focus-within {
+    border-style: solid;
+  }
+  .composer.aside .bottom-row {
+    margin-top: 5px;
+    justify-content: space-between;
+    flex-wrap: nowrap;
+  }
+  .aside-line {
+    min-width: 0;
+    color: var(--dim);
+    font-size: 11.5px;
+    line-height: 1.35;
+  }
+  .aside-line .ns-btn {
+    margin-left: 4px;
+  }
+  .composer.aside.compact textarea {
+    font-size: inherit;
+  }
   .composer.floating.dropping {
     background: transparent;
   }
@@ -2812,29 +3163,50 @@
   .short-word {
     display: none;
   }
-  .row:is([data-fold="1"], [data-fold="2"], [data-fold="3"], [data-fold="4"]) .pick-k {
+  /* The fold levels (item 289: six, the floor last). */
+  .row:not([data-fold="0"]) .pick-k {
     display: none;
   }
-  .row:is([data-fold="2"], [data-fold="3"], [data-fold="4"]) .fold-word {
+  .row:is([data-fold="2"], [data-fold="3"], [data-fold="4"], [data-fold="5"], [data-fold="6"]) .draft-tokens {
     display: none;
   }
-  .row:is([data-fold="2"], [data-fold="3"], [data-fold="4"]) .short-word {
+  .council-ico {
+    display: none;
+  }
+  .row:is([data-fold="3"], [data-fold="4"], [data-fold="5"], [data-fold="6"]) .fold-word,
+  .row:is([data-fold="3"], [data-fold="4"], [data-fold="5"], [data-fold="6"]) .council-word {
+    display: none;
+  }
+  .row:is([data-fold="3"], [data-fold="4"], [data-fold="5"], [data-fold="6"]) .short-word {
     display: inline;
   }
-  .row:is([data-fold="3"], [data-fold="4"]) .pick-name {
+  .row:is([data-fold="3"], [data-fold="4"], [data-fold="5"], [data-fold="6"]) .council-ico {
+    display: inline-flex;
+  }
+  .row:is([data-fold="4"]) .pick-name {
     max-width: 72px;
   }
-  /* The floor: the actions keep row one, right-aligned by the spacer;
-     a zero-height break (the row's ::after, a full-width flex item) sends
-     the pickers to a row of their own beneath. */
-  .row[data-fold="4"] > :not(.act):not(.spacer) {
+  .row:is([data-fold="5"], [data-fold="6"]) .pick-name {
+    max-width: 48px;
+  }
+  /* The floor: the pickers keep row one at the left; a zero-height break
+     (the row's ::after, a full-width flex item) sends the actions to row
+     two, right-aligned by the spacer — read left to right, top to bottom,
+     as on one row. Both rows are the buttons' height. */
+  .row[data-fold="6"] > .act {
     order: 2;
   }
-  .row[data-fold="4"]::after {
+  .row[data-fold="6"] > .spacer {
+    order: 2;
+  }
+  .row[data-fold="6"]::after {
     content: "";
     order: 1;
     flex-basis: 100%;
     height: 0;
+  }
+  .row[data-fold="6"] > * {
+    min-height: 28px;
   }
   .spacer {
     flex: 1;

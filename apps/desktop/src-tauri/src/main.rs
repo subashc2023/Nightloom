@@ -3845,6 +3845,11 @@ struct AsideResult {
     cache_read: u64,
     is_error: bool,
     notices: Vec<String>,
+    /// The model the CLI resolved (backlog 283): the aside's answer is
+    /// drawn as the chat's replies are, under the model's name.
+    model: Option<String>,
+    input_tokens: u64,
+    output_tokens: u64,
 }
 
 /// A piece of an aside's answer as it streams (nightshift backlog 128):
@@ -3878,6 +3883,13 @@ struct AsideDelta {
 /// to the window as an `aside-delta` event carrying `seq`, the way a
 /// turn's events go out as `turn-event`; the answer is still collected
 /// here so the result is whole for the card's final state.
+///
+/// Since backlog 283 (2026-10-02) the aside's composer is the chat's: its
+/// images and documents go as a turn's do (a stdin line), files the CLI
+/// opens itself are saved under the workspace's `asides` folder and named
+/// in the question, and `model` / `effort` are the aside's own picks —
+/// absent, the chat's (`AgentSpec::aside_with`).
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn ask_aside(
     app: AppHandle,
@@ -3885,6 +3897,11 @@ async fn ask_aside(
     power: State<'_, power::Holder>,
     text: String,
     seq: u64,
+    images: Option<Vec<ImageInput>>,
+    documents: Option<Vec<DocumentInput>>,
+    files: Option<Vec<nightloom_service::attach::FileInput>>,
+    model: Option<String>,
+    effort: Option<String>,
 ) -> Result<AsideResult, String> {
     // Its own token, by `seq` (backlog 176): the entry goes when this ends.
     let registered = state.aside_cancel.begin(seq);
@@ -3912,8 +3929,31 @@ async fn ask_aside(
             );
         }
     };
+    let mut text = text;
+    let files = files.unwrap_or_default();
+    if !files.is_empty() {
+        let paths =
+            nightloom_service::attach::save_chat_files(&agent.spec().workspace, "asides", &files)?;
+        let note = nightloom_service::attach::files_note(&paths);
+        text = if text.trim().is_empty() {
+            note
+        } else {
+            format!("{text}\n\n{note}")
+        };
+    }
+    let input = TurnInput {
+        text,
+        images: images.unwrap_or_default(),
+        documents: documents.unwrap_or_default(),
+    };
     let outcome = agent
-        .ask_aside(&text, &cancel, &mut on_event)
+        .ask_aside(
+            input,
+            model.as_deref(),
+            effort.as_deref(),
+            &cancel,
+            &mut on_event,
+        )
         .await
         .ok_or_else(|| {
             "this chat has no Claude Code session to ask beside yet — send a message first"
@@ -3930,6 +3970,9 @@ async fn ask_aside(
         cache_read: outcome.usage.cache_read_tokens.unwrap_or(0),
         is_error: outcome.is_error,
         notices: outcome.notices,
+        model: outcome.model,
+        input_tokens: outcome.usage.input_tokens,
+        output_tokens: outcome.usage.output_tokens,
     })
 }
 

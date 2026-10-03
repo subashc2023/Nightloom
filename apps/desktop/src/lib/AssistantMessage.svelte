@@ -64,6 +64,9 @@
     cost?: number;
     /** When the reply was recorded — its completion (backlog 123). */
     at?: string;
+    /** No figure to show (backlog 283: an aside's answer read back from
+     *  the store keeps its words, not its tokens): Copy and the time only. */
+    bare?: boolean;
   }
 
   /** The turn's text segments, for Copy — thinking and tool traffic are not
@@ -752,7 +755,9 @@
     {@const share = size ? shareOf(size.tokens, limit) : null}
     <div class="footer">
       <button class="ns-btn ghost small" onclick={() => void copy()}>{copied ? "Copied" : "Copy"}</button>
-      <span class="meta" use:tip={footerTitle(footer, size)}>{fmtFigure(footer.usage, size)}{fmtCost(footer.cost)}</span>
+      {#if !footer.bare}
+        <span class="meta" use:tip={footerTitle(footer, size)}>{fmtFigure(footer.usage, size)}{fmtCost(footer.cost)}</span>
+      {/if}
       {#if footer.stop_reason?.startsWith("error: ")}
         <!-- Why the reply stopped (backlog 202): the API error the CLI
              ended it with, as the log recorded it. -->

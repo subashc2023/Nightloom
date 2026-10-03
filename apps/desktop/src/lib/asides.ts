@@ -50,6 +50,7 @@ import type { ChatMode } from "./types";
 import type { AsideQuote } from "./asideQuote";
 import type { AsideAnchor } from "./asideCard";
 import { loadFold, loadFoldRecords, storedFold, type AsideFold, type FoldRecord } from "./asideFold";
+import type { Attachment } from "./types";
 
 export const ASIDES_KEY = "nightloom.asides";
 let loadedSeq = 0;
@@ -97,6 +98,45 @@ interface StoredTurn {
   answer: string;
   error: string | null;
   cancelled: boolean;
+  /** The chips the question carried (backlog 283): names and kinds only —
+   *  the bytes stay in memory, under the store's cap. */
+  files?: { kind: Attachment["kind"]; name: string; media_type: string }[];
+  model?: string;
+}
+
+// ---- Backlog 283 (2026-10-02): the aside's composer is the chat's ----
+
+/** The prefix of an aside's key in the drafts store: its composer's text,
+ *  chips and held messages live there as a chat's do. */
+export const ASIDE_DRAFT_PREFIX = "aside:";
+
+/** A thread's stable name, written with it; random, so two windows or a
+ *  reopened past thread never meet another's drafts entry. */
+export function newAsideUid(): string {
+  const r = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  return r.replace(/-/g, "").slice(0, 16);
+}
+
+/** The drafts-store key of a thread's composer. A thread made before
+ *  283 (no `uid` yet) is keyed by its window id until the keeper gives it
+ *  one — `ensureAsideUid` runs wherever a thread is opened. */
+export function asideDraftKey(a: { uid?: string; id: number }): string {
+  return `${ASIDE_DRAFT_PREFIX}${a.uid ?? `w${a.id}`}`;
+}
+
+/** Give a thread its `uid` if it has none. Not from a `$derived`. */
+export function ensureAsideUid<T extends { uid?: string }>(a: T): T {
+  if (!a.uid) a.uid = newAsideUid();
+  return a;
+}
+
+function cleanUid(v: unknown): string | null {
+  return typeof v === "string" && /^[A-Za-z0-9_-]{4,64}$/.test(v) ? v : null;
+}
+function cleanPick(v: unknown): string | null {
+  if (typeof v !== "string") return null;
+  const t = v.trim();
+  return t && t.length <= 80 ? t : null;
 }
 
 interface StoredAside {
@@ -117,13 +157,21 @@ interface StoredAside {
   fold?: AsideFold;
   /** The folds already appended (282), for the "already folded" line. */
   foldedInto?: FoldRecord[];
+  /** Backlog 283: the drafts-store name, and his model / effort picks. */
+  uid?: string;
+  model?: string;
+  effort?: string;
 }
 
 function storeTurn(t: AsideTurn): StoredTurn | null {
   const asking = t.answer === null && t.error === null && !t.cancelled;
   const answer = t.answer ?? t.partial;
   if (asking && !answer.trim()) return null;
-  return { question: t.question, answer, error: t.error, cancelled: t.cancelled || asking };
+  const out: StoredTurn = { question: t.question, answer, error: t.error, cancelled: t.cancelled || asking };
+  if (t.attachments && t.attachments.length > 0)
+    out.files = t.attachments.map((x) => ({ kind: x.kind, name: x.name, media_type: x.media_type }));
+  if (t.model) out.model = t.model;
+  return out;
 }
 
 /** Unsent text worth keeping: anything but whitespace, kept as typed. */
@@ -132,12 +180,24 @@ function unsentOf(a: Aside): string | null {
   return u.trim() ? u : null;
 }
 
+/**
+ * Whether a thread's composer holds something besides its text — chips or
+ * held messages in the drafts store (backlog 283). The keeper sets it
+ * (`setAsideHeld`), so this file stays pure; a draft card holding only a
+ * chip is then kept, as one holding text is.
+ */
+let heldElsewhere: (a: Aside) => boolean = () => false;
+export function setAsideHeld(fn: (a: Aside) => boolean): void {
+  heldElsewhere = fn;
+}
+
 function storeAside(a: Aside): StoredAside | null {
   const unsent = unsentOf(a);
   let out: StoredAside;
   if (a.draft) {
-    // A draft card with nothing typed holds nothing of his (backlog 228).
-    if (unsent === null) return null;
+    // A draft card with nothing typed holds nothing of his (backlog 228)
+    // — unless its composer holds a chip or a held message (283).
+    if (unsent === null && !heldElsewhere(a)) return null;
     out = { quote: a.quote, turns: [], draft: true };
   } else {
     const turns = a.turns.map(storeTurn).filter((t): t is StoredTurn => t !== null);
@@ -154,6 +214,10 @@ function storeAside(a: Aside): StoredAside | null {
   const fold = a.draft ? null : storedFold(a.fold);
   if (fold) out.fold = fold;
   if (!a.draft && a.foldedInto && a.foldedInto.length > 0) out.foldedInto = a.foldedInto.map((r) => ({ ...r }));
+  if (a.uid) out.uid = a.uid;
+  const model = cleanPick(a.model);
+  if (model !== null) out.model = model;
+  if (typeof a.effort === "string") out.effort = a.effort.trim().slice(0, 80);
   return out;
 }
 
@@ -218,7 +282,7 @@ function loadAside(v: unknown): Aside | null {
     const question = typeof m.question === "string" ? m.question : "";
     const answer = typeof m.answer === "string" ? m.answer : "";
     if (!question && !answer) continue;
-    turns.push({
+    const turn: AsideTurn = {
       seq: --loadedSeq,
       question,
       partial: answer,
@@ -226,20 +290,43 @@ function loadAside(v: unknown): Aside | null {
       error: typeof m.error === "string" ? m.error : null,
       cancelled: m.cancelled === true,
       cacheRead: 0,
-    });
+    };
+    // Backlog 283: the chips by name — the bytes were never written, so a
+    // loaded chip is drawn and not sent again (`data` empty).
+    if (Array.isArray(m.files)) {
+      const files: Attachment[] = [];
+      for (const f of m.files) {
+        if (f === null || typeof f !== "object") continue;
+        const x = f as Record<string, unknown>;
+        if ((x.kind !== "image" && x.kind !== "document" && x.kind !== "file") || typeof x.name !== "string") continue;
+        files.push({ id: 0, kind: x.kind, name: x.name, media_type: typeof x.media_type === "string" ? x.media_type : "", data: "" });
+      }
+      if (files.length > 0) turn.attachments = files;
+    }
+    if (typeof m.model === "string" && m.model) turn.model = m.model;
+    turns.push(turn);
   }
   const anchor = isAnchor(a.anchor) ? a.anchor : null;
   const unsent = typeof a.unsent === "string" && a.unsent.trim() ? a.unsent : null;
   const name = cleanAsideName(a.name);
   // A draft card kept for its unsent question (backlog 228).
+  const uid = cleanUid(a.uid) ?? newAsideUid();
+  const picks = (x: Aside): Aside => {
+    const m = cleanPick(a.model);
+    if (m !== null) x.model = m;
+    if (typeof a.effort === "string") x.effort = a.effort.trim().slice(0, 80);
+    return x;
+  };
   if (a.draft === true) {
-    if (unsent === null) return null;
-    const d: Aside = { id: nextAsideId(), quote, draft: true, turns: [], anchor, unsent };
+    // Kept for its text, or (283) for chips its composer holds — the
+    // keeper only writes such a draft, so a draft read back is his.
+    const d: Aside = { id: nextAsideId(), uid, quote, draft: true, turns: [], anchor };
+    if (unsent !== null) d.unsent = unsent;
     if (name !== null) d.name = name;
-    return d;
+    return picks(d);
   }
   if (turns.length === 0) return null;
-  const out: Aside = { id: nextAsideId(), quote, draft: false, turns, anchor };
+  const out: Aside = picks({ id: nextAsideId(), uid, quote, draft: false, turns, anchor });
   if (unsent !== null) out.unsent = unsent;
   if (name !== null) out.name = name;
   const fold = loadFold(a.fold);
@@ -297,6 +384,9 @@ export function storedAsideOf(a: Aside): StoredAsideForm | null {
   const out = storeAside(a);
   if (out === null || out.draft) return null;
   delete out.unsent;
+  // A reopened past thread gets a fresh drafts-store name (backlog 283):
+  // what its box held was discarded with the close.
+  delete out.uid;
   return out;
 }
 

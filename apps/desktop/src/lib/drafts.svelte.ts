@@ -407,6 +407,27 @@ export function clearDraft(key: string): void {
   schedule();
 }
 
+/**
+ * Drop a key's whole entry — text, chips, held messages (backlog 283: an
+ * aside closed after its Discard question). The words go to `ring`'s
+ * ring of earlier drafts first (the chat's, for an aside — a key that is
+ * gone has no box to recall them into), under the ring's usual length
+ * rule, so a long discarded question can still be fetched back.
+ */
+export function discardDraft(key: string, ring: string = key): void {
+  const d = drafts[key];
+  if (d) {
+    recordDraft(ring, d.text);
+    for (const q of d.queue) recordDraft(ring, q.text);
+    delete drafts[key];
+    schedule();
+  }
+  if (ring !== key && draftHistory[key]) {
+    delete draftHistory[key];
+    scheduleHistory();
+  }
+}
+
 /** Hold a message for the next turn, after any already held. */
 export function enqueueMessage(key: string, text: string, attachments: Attachment[]): QueuedMessage {
   const q: QueuedMessage = { id: nextQueueId(), text, attachments };
