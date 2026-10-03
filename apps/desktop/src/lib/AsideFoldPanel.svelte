@@ -71,7 +71,7 @@
       use:tip={blocked
         ? FOLD_BLOCK_TEXT[blocked]
         : (bound
-            ? `Fold this aside into ◇ ${bound}: one turn here writes a summary (his words verbatim with pointers); you review it, then Nightloom appends it to the thread's log.md`
+            ? `Fold this aside into ◇ ${bound}: one turn here writes a summary (your words verbatim, with pointers); you review it, then Nightloom appends it to the thread's log.md`
             : "Fold this aside into a research thread — this chat has none yet, so you pick one first") +
           (warning ? `\n${warning}` : "")}
       onclick={() => void startFold(aside)}><Icon name="think" size={11} /> Fold into thread</button

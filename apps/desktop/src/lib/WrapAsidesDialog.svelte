@@ -45,10 +45,10 @@
       </div>
       <p class="lead">
         {#if slug}
-          Each ticked aside writes a summary of itself (his words verbatim, with pointers); Nightloom appends it to
+          Each ticked aside writes a summary of itself (your words verbatim, with pointers); Nightloom appends it to
           <code>.agents/threads/{slug}/log.md</code>, and the wrap-up folds it into thread.md.
         {:else}
-          Each ticked aside writes a summary of itself (his words verbatim, with pointers); the wrap-up puts the summaries
+          Each ticked aside writes a summary of itself (your words verbatim, with pointers); the wrap-up puts the summaries
           in the HANDOFF section it writes.
         {/if}
         Unticked asides stay open, untouched.

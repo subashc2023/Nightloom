@@ -238,7 +238,9 @@ fn segment(ctx: &ThreadContext, body: Option<&str>, flags: &[String]) -> Segment
          files you keep. Only its \"## Start here\" is below. Read the rest of \
          {rel}/{THREAD_FILE} (Queue, Claims, His view, Vocabulary), {rel}/{LOG_FILE} and the \
          chats it cites (read_chat at the cited event) only when a task needs them, by section \
-         rather than whole.\n\n\
+         rather than whole: list the headings first (`grep -n '^## '`), then read one section \
+         by its line range, one file per command — never print the whole file, since a \
+         command's output is cut past about 10,000 characters.\n\n\
          Keep it as you go, not only at the wrap-up: after each round that changes the queue \
          or the claims, edit {THREAD_FILE} in small deltas (never a rewrite; only Start here \
          is rewritten, at most {START_HERE_WORDS} words, starting with an \"As of <date, \
