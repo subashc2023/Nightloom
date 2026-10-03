@@ -849,6 +849,9 @@ export interface SessionMeta {
    *  062): the parent's id and the position in the parent's log the fork
    *  was cut at. The row shows "from <parent>"; see `forkLine` in edit.ts. */
   forked_from?: ForkedFrom;
+  /** The research thread the chat is bound to (nightshift backlog 281),
+   *  its slug; absent when unbound. The row shows it, small and muted. */
+  thread?: string;
 }
 
 /** Where a fork came from — the parent's id and the cut, as the creation

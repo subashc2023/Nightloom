@@ -13,6 +13,7 @@ import {
   threadFor,
 } from "./handoff.svelte";
 import { replaceStartHere, threadOfEvents } from "./thread";
+import type { AsideFold, FoldRecord } from "./asideFold";
 import { suggestions } from "./suggestions.svelte";
 import { isMac } from "./platform";
 import {
@@ -606,6 +607,13 @@ export interface Aside {
    *  `asides.ts`; absent when unnamed (`asideLabel` then calls it by its
    *  first question). Set through `renameAside` (`asides.svelte.ts`). */
   name?: string;
+  /** *Fold into thread* under way (nightshift backlog 282): the picker,
+   *  the running turn, or the summary to review — written with the thread
+   *  by `asides.ts`, so closing the card or a relaunch keeps the text. */
+  fold?: AsideFold;
+  /** Each time this aside was folded into a thread's log.md (282), for
+   *  the "already folded at …" warning. */
+  foldedInto?: FoldRecord[];
 }
 
 /** The aside's live exchange — the last turn while it is still asking. */

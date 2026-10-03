@@ -66,6 +66,11 @@ pub struct SessionSummary {
     /// have been deleted, which the picker says rather than hides.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forked_from: Option<ForkedFrom>,
+    /// The research thread the chat is bound to (nightshift backlog 281):
+    /// the latest `thread` event's slug, `None` when unbound. Latest wins
+    /// over the raw log, like `title`; a sidebar row shows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread: Option<String>,
 }
 
 fn is_normal(mode: &ChatMode) -> bool {
@@ -214,6 +219,11 @@ enum Peek {
     Title {
         text: String,
     },
+    /// A thread binding (backlog 281); `None` unbinds.
+    Thread {
+        #[serde(default)]
+        thread: Option<String>,
+    },
     /// Everything else. Present so a line that gets past [`peek`]'s prefilter
     /// parses to "not interesting" rather than to an error.
     #[serde(other)]
@@ -230,10 +240,11 @@ enum Peek {
 /// pins against `Session`'s own output rather than against a literal here.
 ///
 /// A false positive is harmless — it parses to [`Peek::Other`] and is dropped.
-const LISTED: [&str; 3] = [
+const LISTED: [&str; 4] = [
     r#""event":"session_created""#,
     r#""event":"user_message""#,
     r#""event":"title""#,
+    r#""event":"thread""#,
 ];
 
 /// One log line as the listing sees it, or `None` for the ~95% of lines that
@@ -319,6 +330,9 @@ struct Summarizing {
     /// From the first line too; `None` for every chat that is not a fork.
     #[serde(default)]
     forked_from: Option<ForkedFrom>,
+    /// Latest wins (backlog 281); `None` when never bound or unbound.
+    #[serde(default)]
+    thread: Option<String>,
 }
 
 impl Summarizing {
@@ -347,6 +361,7 @@ impl Summarizing {
             // practice anyway: a rewind that supersedes a name leaves the
             // session unnamed, and the next turn records a fresh one after it.
             Peek::Title { text } => self.title = Some(text),
+            Peek::Thread { thread } => self.thread = thread.filter(|t| !t.trim().is_empty()),
             Peek::Other => {}
         }
     }
@@ -367,6 +382,7 @@ impl Summarizing {
             mode: self.mode,
             kind: self.kind,
             forked_from: self.forked_from.clone(),
+            thread: self.thread.clone(),
         }
     }
 
@@ -451,8 +467,9 @@ const LISTING_FILE: &str = ".listing.json";
 /// (2026-09-15): an entry without it would read as normal for a log that is
 /// not, which is the one thing the listing must not get wrong. 3 since the
 /// fork line (2026-09-15, later the same day), on the same reasoning. 4
-/// since the kind (2026-09-16, nightshift backlog 102), likewise.
-const LISTING_VERSION: u32 = 4;
+/// since the kind (2026-09-16, nightshift backlog 102), likewise. 5 since
+/// the thread binding (2026-10-02, backlog 281).
+const LISTING_VERSION: u32 = 5;
 
 impl Listing {
     fn read(dir: &Path) -> BTreeMap<String, Cached> {
@@ -499,6 +516,9 @@ fn peek_at(event: &SessionEvent) -> Option<Peek> {
         }),
         SessionEvent::UserMessage { text, .. } => Some(Peek::UserMessage { text: text.clone() }),
         SessionEvent::Title { text, .. } => Some(Peek::Title { text: text.clone() }),
+        SessionEvent::Thread { thread, .. } => Some(Peek::Thread {
+            thread: thread.clone(),
+        }),
         _ => None,
     }
 }
@@ -979,6 +999,7 @@ mod tests {
             mode: ChatMode::Normal,
             kind: ChatKind::Build,
             forked_from: None,
+            thread: None,
         };
         assert_eq!(s.label(60), "can you help me rename a function everywhere");
 
@@ -1329,6 +1350,9 @@ mod tests {
         nightloom_core::Session::load(&path)
             .unwrap()
             .record_title("A name");
+        nightloom_core::Session::load(&path)
+            .unwrap()
+            .record_thread(Some("alpha".into()));
 
         let raw = fs::read_to_string(&path).unwrap();
         for tag in LISTED {
@@ -1344,6 +1368,13 @@ mod tests {
             Some("the opening question")
         );
         assert_eq!(listed[0].title.as_deref(), Some("A name"));
+        assert_eq!(listed[0].thread.as_deref(), Some("alpha"));
+
+        // Unbinding is latest-wins too (backlog 281).
+        nightloom_core::Session::load(&path)
+            .unwrap()
+            .record_thread(None);
+        assert_eq!(list(&dir).unwrap()[0].thread, None);
 
         fs::remove_dir_all(&dir).ok();
     }

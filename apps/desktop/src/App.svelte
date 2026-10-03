@@ -64,6 +64,7 @@
   import TitleBar from "./lib/TitleBar.svelte";
   import TopBar from "./lib/TopBar.svelte";
   import SettingsModal from "./lib/SettingsModal.svelte";
+  import WrapAsidesDialog from "./lib/WrapAsidesDialog.svelte";
   import ContextPanel from "./lib/ContextPanel.svelte";
   import PromptLibrary from "./lib/PromptLibrary.svelte";
   import Transcript from "./lib/Transcript.svelte";
@@ -869,6 +870,8 @@
       <div class="settings-overlay" onmousedown={(e) => { if (e.target === e.currentTarget) app.showTasks = false; }}><RunningTasks /></div>
     {/if}
     <Palette />
+    <!-- The wrap-up's aside picker (nightshift item 285). -->
+    <WrapAsidesDialog />
     <!-- Closing an aside with unsent text (backlog 228, practices §7):
          only an explicit, confirmed Discard drops what he typed. -->
     {#if app.asideDiscard}

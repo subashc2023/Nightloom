@@ -115,6 +115,7 @@
   import { composerConnectHint, launch as launchState } from "./launch.svelte";
   import { hasQuoteLine, insertQuote, mirrorLines, replyRequest, takeReply } from "./replyQuote.svelte";
   import { composerFocus } from "./rewindDraft.svelte";
+  import { requestWrapUp } from "./wrapAsides.svelte";
 
   /**
    * `floating` drops the docked chrome (top border, panel fill) for the
@@ -561,8 +562,17 @@
     if (app.busy || !app.connection || !wrapUpText.trim()) return;
     noteActivity();
     const chat = app.activeSessionId;
-    beginWrapUp(chat);
-    await dispatch(wrapUpText, [], true);
+    // Item 285: with open asides, their picker first; each ticked aside's
+    // summary rides in (log.md for a bound chat, the message otherwise).
+    const text = wrapUpText;
+    await requestWrapUp(chat, async (extra) => {
+      if (app.busy || !app.connection || app.activeSessionId !== chat) {
+        addToast("The wrap-up did not go — the chat was busy or no longer open; press Wrap up now again");
+        return;
+      }
+      beginWrapUp(chat);
+      await dispatch(extra ? `${text}\n\n${extra}` : text, [], true);
+    });
   }
 
   /** The per-chat mark on the notice: raising it above the fill puts the notice away. */

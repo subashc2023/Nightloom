@@ -14,6 +14,7 @@
   import { renameAside } from "./asides.svelte";
   import { closeAsideToChat } from "./asideSidebar.svelte";
   import AsideNameEdit from "./AsideNameEdit.svelte";
+  import AsideFoldPanel from "./AsideFoldPanel.svelte";
   import * as tabs from "./tabs";
 
   /**
@@ -168,6 +169,10 @@
       {/if}
       <span class="spacer"></span>
       {#if aside}
+        <!-- Fold into thread (nightshift backlog 282). -->
+        <AsideFoldPanel {aside} part="button" {open} />
+      {/if}
+      {#if aside}
         <!-- ~~× (only while the chat was open): "Dismiss the aside — the
              thread ends"~~ — item 266 (2026-09-29, blocker 640): Close, on
              every aside tab, moves the thread to the chat's Past list (the
@@ -210,6 +215,7 @@
               </div>
             {/if}
           {/each}
+          <AsideFoldPanel {aside} part="panel" {open} />
         </div>
       {/if}
     {/if}
