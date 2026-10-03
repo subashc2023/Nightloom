@@ -1286,6 +1286,18 @@ export function runMenuCommand(id: string): void {
       if (inTextField()) document.execCommand("redo");
       else void redo();
       break;
+    // ⌘F (nightshift backlog 287): since web tabs pass 2 (backlog 172) the
+    // Edit menu's Find… holds ⌘F, so on macOS the key never reaches the
+    // page; when no web page has the keyboard the item lands here. Replay
+    // it as the key so the chat's find bar and the Context page's — each
+    // listening for ⌘F on the window — open exactly as they did before.
+    case "find_in_page": {
+      const mac = navigator.platform.toUpperCase().includes("MAC");
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "f", code: "KeyF", metaKey: mac, ctrlKey: !mac, bubbles: true }),
+      );
+      break;
+    }
     default:
       // ⌘1…9: the n-th provider pill; ⌘⇧1…9: the n-th model in the picker
       // (review round 1, 2026-09-13/14).
