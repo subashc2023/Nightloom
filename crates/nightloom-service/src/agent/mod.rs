@@ -601,6 +601,18 @@ pub enum AskMode {
     /// registered, since a deferral would park the aside on a prompt, and
     /// the mode is `dontAsk`, which refuses anything that would prompt.
     Aside,
+    /// The Auto position (nightshift backlog 294, 2026-10-03):
+    /// `--permission-mode auto`, the prompt tool named so the CLI offers
+    /// `AskUserQuestion`, and the hook on that tool alone
+    /// ([`ask::AUTO_MATCHER`]) — the model's question shows the card and
+    /// waits for his answer; nothing else pauses. The plan tools the flag
+    /// also offers are refused in words ([`ask::PLAN_TOOLS_ON_AUTO`]).
+    Auto,
+    /// A checkpoint fork of an Auto chat (backlog 294): `auto` still, the
+    /// prompt tool named (the prefix), the plan refusal kept, and no Ask
+    /// hook — a question from a side process has no card waiting for it,
+    /// so it falls to the prompt tool, which refuses in words.
+    AutoFork,
 }
 
 impl AskMode {
@@ -609,9 +621,15 @@ impl AskMode {
         match self {
             Self::Ask => "default",
             Self::Plan => "plan",
-            Self::ExitingToAuto => "auto",
+            Self::ExitingToAuto | Self::Auto | Self::AutoFork => "auto",
             Self::Aside => "dontAsk",
         }
+    }
+
+    /// Whether this is the Auto position, a fork of one included: the
+    /// plan tools are refused (backlog 294).
+    pub fn is_auto(self) -> bool {
+        matches!(self, Self::Auto | Self::AutoFork)
     }
 
     /// The hook's matcher.
@@ -619,8 +637,9 @@ impl AskMode {
         match self {
             Self::Ask | Self::Plan => ask::MATCHER,
             Self::ExitingToAuto => ask::EXIT_PLAN_MATCHER,
-            // Never registered; see the variant.
-            Self::Aside => "",
+            Self::Auto => ask::AUTO_MATCHER,
+            // Never registered; see the variants.
+            Self::Aside | Self::AutoFork => "",
         }
     }
 }
@@ -879,8 +898,14 @@ impl AgentSpec {
         spec.fork_session = true;
         spec.no_session_persistence = true;
         if let Some(ask) = &mut spec.ask {
-            ask.mode = AskMode::Aside;
-            spec.permission_mode = Some("dontAsk".into());
+            if ask.mode.is_auto() {
+                // An Auto chat's fork stays on `auto`, as it ran before
+                // the position asked questions (backlog 294).
+                ask.mode = AskMode::AutoFork;
+            } else {
+                ask.mode = AskMode::Aside;
+                spec.permission_mode = Some("dontAsk".into());
+            }
         }
         Some(spec)
     }
@@ -1068,6 +1093,37 @@ impl AgentSpec {
             .to_string();
             let entry = serde_json::json!({
                 "matcher": CHAT_POLICY_MATCHER,
+                "hooks": [{ "type": "command", "command": chat_policy_command(&reply) }]
+            });
+            let hooks = settings
+                .entry("hooks")
+                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+            if let serde_json::Value::Object(hooks) = hooks {
+                let pre = hooks
+                    .entry("PreToolUse")
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+                if let serde_json::Value::Array(pre) = pre {
+                    pre.push(entry);
+                }
+            }
+        }
+        // The plan tools on Auto (backlog 294, blocker 1030): offered with
+        // the prompt tool, refused in words. Not beside the Chat policy,
+        // whose own deny already covers them.
+        if let Some(ask) = &self.ask
+            && ask.mode.is_auto()
+            && !self.chat_policy
+        {
+            let reply = serde_json::json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": ask::PLAN_TOOLS_ON_AUTO,
+                }
+            })
+            .to_string();
+            let entry = serde_json::json!({
+                "matcher": ask::PLAN_TOOLS_MATCHER,
                 "hooks": [{ "type": "command", "command": chat_policy_command(&reply) }]
             });
             let hooks = settings
@@ -1480,8 +1536,13 @@ impl ClaudeCodeAgent {
                     ask.mode = AskMode::Ask;
                 }
             }
+            // ~~`ask = None`, the Auto position with no hook~~ — since
+            // backlog 294 (2026-10-03) the Auto position keeps the hook on
+            // the question alone ([`AskMode::Auto`]).
             Some(AskMode::ExitingToAuto) => {
-                self.spec.ask = None;
+                if let Some(ask) = &mut self.spec.ask {
+                    ask.mode = AskMode::Auto;
+                }
                 self.spec.permission_mode = Some(Self::auto_mode().into());
             }
             _ => {}
@@ -3344,7 +3405,8 @@ mod tests {
     /// Approve → Auto: one resume in `auto` with the hook narrowed to
     /// the plan tool — a resume with no hook at all is refused by the
     /// CLI (`tool_deferred_unavailable`, measured) — and then the Auto
-    /// position proper: no hook, no prompt tool, `auto`.
+    /// position proper: ~~no hook, no prompt tool, `auto`~~ since backlog
+    /// 294 (2026-10-03), `auto` with the hook on the question alone.
     #[test]
     fn approving_a_plan_into_auto_narrows_the_hook_for_one_resume_then_drops_it() {
         let mut agent = ClaudeCodeAgent::new(asking(AskMode::Plan));
@@ -3354,13 +3416,11 @@ mod tests {
         assert_eq!(matcher_of(&r), "ExitPlanMode");
         assert!(r.iter().any(|x| x == "--permission-prompt-tool"), "{r:?}");
         agent.plan_exited();
-        assert!(agent.spec().ask.is_none());
+        assert_eq!(agent.spec().ask.as_ref().unwrap().mode, AskMode::Auto);
         let a = agent.spec().args("next");
         assert_eq!(mode_of(&a), AgentSpec::headless_permission_mode(true));
-        assert!(!a.iter().any(|x| x == "--permission-prompt-tool"), "{a:?}");
-        // A `--settings` may stay for a chat's auto-compact switch
-        // (backlog 086); the hook is what must be gone.
-        assert!(!a.iter().any(|x| x.contains("hooks")), "{a:?}");
+        assert!(a.iter().any(|x| x == "--permission-prompt-tool"), "{a:?}");
+        assert_eq!(matcher_of(&a), ask::AUTO_MATCHER);
         // Neither call does anything on a connection that is not asking,
         // nor on one in the Ask position (a plan the model entered on its
         // own): the chat stays where the rail shows it.
@@ -3373,6 +3433,134 @@ mod tests {
         assert_eq!(mode_of(&asking_chat.spec().resume_args()), "default");
         asking_chat.plan_exited();
         assert_eq!(mode_of(&asking_chat.spec().args("next")), "default");
+    }
+
+    /// Every `PreToolUse` entry on the line: (matcher, command).
+    fn pre_tool_use(a: &[String]) -> Vec<(String, String)> {
+        let Some(i) = a.iter().position(|x| x == "--settings") else {
+            return Vec::new();
+        };
+        let v: serde_json::Value = serde_json::from_str(&a[i + 1]).unwrap();
+        v["hooks"]["PreToolUse"]
+            .as_array()
+            .map(|entries| {
+                entries
+                    .iter()
+                    .map(|e| {
+                        (
+                            e["matcher"].as_str().unwrap_or_default().to_string(),
+                            e["hooks"][0]["command"]
+                                .as_str()
+                                .unwrap_or_default()
+                                .to_string(),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The Auto position (nightshift backlog 294): `auto`, the prompt tool
+    /// named so the CLI offers `AskUserQuestion`, the Ask hook on that
+    /// tool alone — so nothing else pauses — and the plan tools refused in
+    /// words by a second entry. The same on the resume shape, which is how
+    /// his answer travels back.
+    #[test]
+    fn the_auto_position_asks_the_models_question_and_nothing_else() {
+        let s = asking(AskMode::Auto);
+        for a in [s.args("hi"), s.resume_args()] {
+            assert_eq!(mode_of(&a), "auto");
+            let i = a
+                .iter()
+                .position(|x| x == "--permission-prompt-tool")
+                .expect("prompt tool");
+            assert_eq!(a[i + 1], ask::PROMPT_TOOL);
+            let entries = pre_tool_use(&a);
+            let ask_entries: Vec<_> = entries
+                .iter()
+                .filter(|(_, c)| c.contains("--permission-hook"))
+                .collect();
+            assert_eq!(ask_entries.len(), 1, "{entries:?}");
+            assert_eq!(ask_entries[0].0, "AskUserQuestion");
+            let plan = entries
+                .iter()
+                .find(|(m, _)| m == ask::PLAN_TOOLS_MATCHER)
+                .expect("plan refusal");
+            assert!(plan.1.contains("\"deny\""), "{plan:?}");
+            assert!(plan.1.contains(ask::PLAN_TOOLS_ON_AUTO), "{plan:?}");
+            // Quoted for the shell: no single quote inside the reply.
+            assert!(!ask::PLAN_TOOLS_ON_AUTO.contains('\''));
+        }
+        // None of the tools that pause under Ask is in the Auto matcher.
+        for tool in ask::MATCHER.split('|').filter(|t| *t != ask::QUESTION_TOOL) {
+            assert!(
+                !ask::AUTO_MATCHER.split('|').any(|m| m == tool),
+                "{tool} would pause on Auto"
+            );
+        }
+        // Not planning, and Ask stays Ask: no plan refusal there.
+        assert!(!ClaudeCodeAgent::new(asking(AskMode::Auto)).planning());
+        let b = asking(AskMode::Ask).args("hi");
+        assert!(
+            !pre_tool_use(&b)
+                .iter()
+                .any(|(m, _)| m == ask::PLAN_TOOLS_MATCHER)
+        );
+    }
+
+    /// An aside of an Auto chat (backlog 294): as an aside of an Ask chat —
+    /// `dontAsk`, no hook of any kind — with the prompt tool still named,
+    /// so the offered tools, and the cached prefix, are the chat's.
+    #[test]
+    fn an_aside_of_an_auto_chat_asks_nothing() {
+        let mut s = asking(AskMode::Auto);
+        s.resume = Some("sess-1".into());
+        let a = s.aside().unwrap().args("q");
+        assert_eq!(mode_of(&a), "dontAsk");
+        assert!(a.iter().any(|x| x == "--permission-prompt-tool"), "{a:?}");
+        assert!(pre_tool_use(&a).is_empty(), "{:?}", pre_tool_use(&a));
+        // And the Ask chat's aside is as it was.
+        let mut s = asking(AskMode::Ask);
+        s.resume = Some("sess-1".into());
+        let a = s.aside().unwrap().args("q");
+        assert_eq!(mode_of(&a), "dontAsk");
+        assert!(pre_tool_use(&a).is_empty());
+    }
+
+    /// A checkpoint fork of an Auto chat stays on `auto` (as before 294),
+    /// with no Ask hook — a question there has no card to wait on — and
+    /// the plan refusal kept.
+    #[test]
+    fn a_checkpoint_fork_of_an_auto_chat_stays_on_auto_without_the_ask_hook() {
+        let mut s = asking(AskMode::Auto);
+        s.resume = Some("sess-1".into());
+        let f = s.checkpoint_fork().unwrap();
+        assert_eq!(f.ask.as_ref().unwrap().mode, AskMode::AutoFork);
+        let a = f.args("");
+        assert_eq!(mode_of(&a), "auto");
+        assert!(a.iter().any(|x| x == "--permission-prompt-tool"));
+        let entries = pre_tool_use(&a);
+        assert!(
+            !entries.iter().any(|(_, c)| c.contains("--permission-hook")),
+            "{entries:?}"
+        );
+        assert!(entries.iter().any(|(m, _)| m == ask::PLAN_TOOLS_MATCHER));
+    }
+
+    /// Beside the Chat policy (backlog 147's narrowing), the Auto position
+    /// registers no Ask entry — the policy refuses the question, as it
+    /// does under Ask (blocker 1032) — and no second plan refusal.
+    #[test]
+    fn under_the_chat_policy_the_auto_position_adds_no_hook() {
+        let mut s = asking(AskMode::Auto);
+        s.apply_kind_policy(ChatKind::Chat, ChatKind::Build);
+        let entries = pre_tool_use(&s.args("hi"));
+        assert!(
+            !entries.iter().any(|(_, c)| c.contains("--permission-hook")),
+            "{entries:?}"
+        );
+        assert!(!entries.iter().any(|(m, _)| m == ask::PLAN_TOOLS_MATCHER));
+        assert!(entries.iter().any(|(m, _)| m == CHAT_POLICY_MATCHER));
     }
 
     /// A stand-in CLI for the stop path: announces a call, then parks. On

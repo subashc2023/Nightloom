@@ -2120,6 +2120,12 @@ async fn connect_agent_body(
         // is approved — so it implies Ask and is subject to the same rule.
         let plan = plan.unwrap_or(false) && approval.unwrap_or(true);
         let ask = (ask.unwrap_or(false) || plan) && approval.unwrap_or(true);
+        // The Auto position asks the model's questions too (nightshift
+        // backlog 294, 2026-10-03): the same hook and prompt tool, the hook
+        // on `AskUserQuestion` alone, so any position with approval on
+        // carries them. Off (`bypassPermissions`) stays without (blocker
+        // 1033).
+        let questions = approval.unwrap_or(true);
         // The CLI lists AskUserQuestion and the plan tools only when a
         // prompt tool is named (084's M1), but its descriptions assume a
         // terminal; nothing tells the model a person is here and sees a
@@ -2134,6 +2140,14 @@ async fn connect_agent_body(
                         — a design call, a tradeoff, an ambiguous request — ask with \
                         AskUserQuestion rather than guessing; they expect it here.\n\
                         </ask-note>";
+            spec.append_system_prompt = Some(match spec.append_system_prompt.take() {
+                Some(s) => format!("{s}\n\n{note}"),
+                None => note.to_string(),
+            });
+        } else if questions && !off.contains(&SegmentKind::EngineNote) {
+            // The Auto position's form of it (backlog 294, blocker 1034):
+            // nothing else pauses there, so the note says only the question.
+            let note = nightloom_service::agent::ask::AUTO_NOTE;
             spec.append_system_prompt = Some(match spec.append_system_prompt.take() {
                 Some(s) => format!("{s}\n\n{note}"),
                 None => note.to_string(),
@@ -2189,7 +2203,7 @@ async fn connect_agent_body(
             if mode.writes_nothing() {
                 args.push("--no-remember".into());
             }
-            if ask {
+            if questions {
                 // The permission host the CLI is pointed at, which must be a
                 // tool that exists (`agent::ask::PROMPT_TOOL` has the
                 // measurement); served by the same process as the rest.
@@ -2204,8 +2218,10 @@ async fn connect_agent_body(
                     dir: PathBuf::new(),
                     mode: if plan {
                         nightloom_service::agent::AskMode::Plan
-                    } else {
+                    } else if ask {
                         nightloom_service::agent::AskMode::Ask
+                    } else {
+                        nightloom_service::agent::AskMode::Auto
                     },
                     // *Subagents run on auto* (nightshift backlog 152): the
                     // rail's switch, on unless it said off; written into
@@ -2326,6 +2342,7 @@ async fn connect_agent_body(
             // field says; Plan is `plan` with the same hook (backlog 085).
             permission_mode: match spec.ask.as_ref().map(|a| a.mode) {
                 Some(nightloom_service::agent::AskMode::Plan) => Some("plan (ask)".into()),
+                Some(nightloom_service::agent::AskMode::Auto) => Some("auto (questions)".into()),
                 Some(_) => Some("default (ask)".into()),
                 None => spec.permission_mode.clone(),
             },

@@ -638,6 +638,38 @@ mod tests {
         assert!(!spec.mcp_config.unwrap().contains("--ask"));
     }
 
+    /// Ask off on `auto` — the spec `serve` builds — is the Auto position
+    /// (nightshift backlog 294): the hook stays, on the question alone,
+    /// and the MCP server keeps `--ask` so the prompt tool resolves.
+    #[test]
+    fn ask_off_on_auto_keeps_the_hook_for_the_models_question() {
+        let home = scratch();
+        let settings = rail_store::apply(
+            &home,
+            &RailPatch {
+                ask: Some(false),
+                ..RailPatch::default()
+            },
+        )
+        .unwrap();
+        let mut spec = crate::agent::AgentSpec::new(home.clone());
+        spec.permission_mode = Some("auto".into());
+        spec.ask = Some(crate::agent::AskSpec {
+            hook: vec!["x".into()],
+            dir: PathBuf::new(),
+            mode: crate::agent::AskMode::Ask,
+            subagents_auto: true,
+        });
+        spec.mcp_config = Some(
+            serde_json::json!({ "mcpServers": { "nightloom": { "command": "x",
+                "args": ["mcp-serve", "--ask"] } } })
+            .to_string(),
+        );
+        settings.apply_ask(&mut spec);
+        assert_eq!(spec.ask.as_ref().unwrap().mode, crate::agent::AskMode::Auto);
+        assert!(spec.mcp_config.unwrap().contains("--ask"));
+    }
+
     #[test]
     fn a_note_written_reads_back_and_its_delete_leaves_a_trash_copy() {
         let home = scratch();
