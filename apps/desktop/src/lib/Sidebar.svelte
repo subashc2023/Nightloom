@@ -34,7 +34,7 @@
   import { forkLine } from "./edit";
   import type { SidebarRow } from "./forkTree";
   import { THREADS_CLOSED_KEY, newInThreadTip, threadGroups, threadKey } from "./thread";
-  import type { ThreadInfo } from "./types";
+  import { openThreadView, refreshThreadList, threadList } from "./threadPanel.svelte";
   import {
     sidebarRows,
     loadOpen as loadForksOpen,
@@ -109,7 +109,9 @@
   // bound chats inside, newest first — then the chats in no thread, as
   // before. Which groups are closed is kept per project and thread across
   // launches; a closed group holding the open chat shows anyway.
-  let threads = $state<ThreadInfo[]>([]);
+  // The listing is kept with the project it was read for (backlog 292,
+  // `threadPanel.svelte.ts`), so a late answer never shows under another project.
+  const threads = $derived(threadList.project === (app.project?.id ?? "") ? threadList.list : []);
   let threadsClosed = $state<Set<string>>(loadForksOpen(THREADS_CLOSED_KEY));
   const projectKey = $derived(app.project?.id ?? "");
   const split = $derived(
@@ -124,14 +126,8 @@
   $effect(() => {
     void projectKey;
     void app.sessions;
-    if (!app.project) {
-      threads = [];
-      return;
-    }
-    api.listThreads().then(
-      (t) => (threads = t),
-      () => {},
-    );
+    if (!app.project) return;
+    void refreshThreadList();
   });
   function toggleThread(slug: string) {
     threadsClosed = toggledForks(threadsClosed, threadKey(projectKey, slug));
@@ -758,6 +754,9 @@
       </p>
     {:else}
       <div class="session-list">
+        {#if groups.length > 0}
+          <div class="section-head threads-head" role="heading" aria-level="3">Threads</div>
+        {/if}
         {#each groups as g (g.slug)}
           <div
             class="thread-group"
@@ -768,15 +767,27 @@
             ondragleave={leaveDrop}
             ondrop={(e) => onDropChat(e, g.slug)}
           >
+            <!-- Backlog 292: the chevron folds the group; the name (and status
+                 line) opens the thread's tab — what the thread stores. A slug
+                 with no thread.md has nothing to show, so its name folds too. -->
             <div class="tg-head">
               <button
                 class="tg-toggle"
                 class:open={g.open}
                 aria-expanded={g.open}
-                use:tip={`${g.open ? "Hide" : "Show"} the chats in the thread ${g.slug}${g.missing ? " (no thread.md in this project)" : ""}`}
+                aria-label={`${g.open ? "Hide" : "Show"} the chats in the thread ${g.slug}`}
+                use:tip={`${g.open ? "Hide" : "Show"} the chats in the thread ${g.slug}`}
                 onclick={() => toggleThread(g.slug)}
               >
                 <span class="tg-chev"><Icon name="chevr" size={11} /></span>
+              </button>
+              <button
+                class="tg-open"
+                use:tip={g.missing
+                  ? `${g.open ? "Hide" : "Show"} the chats bound to ${g.slug} (no thread.md in this project)`
+                  : `Open what the thread ${g.slug} stores: thread.md (Start here, Queue, Claims, His view…), log.md, archive.md`}
+                onclick={() => (g.missing ? toggleThread(g.slug) : void openThreadView(g.slug, g.title))}
+              >
                 <span class="tg-text">
                   <span class="tg-name"><span class="tg-mark" aria-hidden="true">◇</span> {g.title}</span>
                   <span class="tg-status">{g.missing ? "no thread.md in this project" : g.status || "no status line yet"}</span>
@@ -805,7 +816,7 @@
         {/each}
         {#if groups.length > 0}
           <div
-            class="loose-head"
+            class="loose-head section-head"
             class:drop={dropOn === ""}
             role="group"
             aria-label="Chats in no thread"
@@ -813,7 +824,10 @@
             ondragleave={leaveDrop}
             ondrop={(e) => onDropChat(e, null)}
           >
-            {loose.length > 0 ? "Not in a thread" : "Drop a chat here to take it out of its thread"}
+            <span role="heading" aria-level="3">Not in a thread</span>
+            {#if loose.length === 0}
+              <span class="loose-hint">Drop a chat here to take it out of its thread</span>
+            {/if}
           </div>
         {/if}
         <div
@@ -1737,13 +1751,29 @@
   .tg-head:hover {
     background: var(--well);
   }
+  /* Backlog 292: two buttons where 288 had one — the chevron folds, the
+     name opens the thread view. */
   .tg-toggle {
+    flex: none;
+    display: flex;
+    align-items: flex-start;
+    padding: 6px 2px 6px 4px;
+    background: transparent;
+    border: none;
+    border-radius: 8px;
+    color: var(--dim);
+    cursor: pointer;
+  }
+  .tg-toggle:hover .tg-chev {
+    color: var(--ink);
+  }
+  .tg-open {
     flex: 1;
     min-width: 0;
     display: flex;
     align-items: flex-start;
     gap: 4px;
-    padding: 6px 4px 6px 4px;
+    padding: 6px 4px 6px 2px;
     background: transparent;
     border: none;
     border-radius: 8px;
@@ -1751,6 +1781,11 @@
     font: inherit;
     text-align: left;
     cursor: pointer;
+  }
+  .tg-open:hover .tg-name {
+    text-decoration: underline;
+    text-decoration-color: var(--line2);
+    text-underline-offset: 2px;
   }
   .tg-chev {
     flex: none;
@@ -1837,6 +1872,25 @@
     padding: 4px 8px 6px;
     font-size: 0.7rem;
     color: var(--dim);
+  }
+  /* Backlog 292: "Threads" over the groups and "Not in a thread" over the
+     rest, the same small uppercase label. */
+  .section-head {
+    padding: 6px 8px 2px;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--dim);
+  }
+  .threads-head {
+    margin-top: 2px;
+  }
+  .loose-hint {
+    display: block;
+    margin-top: 2px;
+    font-size: 0.7rem;
+    letter-spacing: 0;
+    text-transform: none;
   }
   .loose-head {
     margin-top: 6px;

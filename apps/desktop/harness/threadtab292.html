@@ -1,0 +1,32 @@
+<!doctype html>
+<!-- Backlog 292 (tab): the real App with a stubbed Tauri backend — a chat on the left pane, the thread's tab
+     (opened by a real click on its name in the sidebar) split to the right. Fixture chats, threads and files in
+     threadtab292.ts.  ?p=A|B|C|D (palette)  &view=split|tab|log|restore (restore = reload after split) -->
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+      #cap { position: fixed; left: 0; bottom: 0; right: 0; font: 11px/1.4 ui-monospace, monospace; color: #ddd; background: #000c; padding: 4px 8px; white-space: pre-wrap; z-index: 999; }
+    </style>
+    <script>
+      window.__NIGHTLOOM_PLATFORM__ = "macos";
+      window.__TAURI_INTERNALS__ = {
+        invoke: (cmd, args) => (window.__stub ? window.__stub(cmd, args) : Promise.reject("no stub")),
+        transformCallback: () => 0,
+        unregisterCallback: () => {},
+        metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
+      };
+      window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="cap"></div>
+    <script>
+      window.addEventListener("error", (e) => (document.getElementById("cap").textContent += "\nerror: " + e.message));
+      window.addEventListener("unhandledrejection", (e) => (document.getElementById("cap").textContent += "\nrejection: " + e.reason));
+    </script>
+    <script type="module" src="./threadtab292.ts"></script>
+  </body>
+</html>

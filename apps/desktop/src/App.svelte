@@ -50,6 +50,7 @@
   import SubagentView from "./lib/SubagentView.svelte";
   import { agentAsk, deliverDue } from "./lib/subagentAsk.svelte";
   import FileView from "./lib/FileView.svelte";
+  import ThreadView from "./lib/ThreadView.svelte";
   import WebView from "./lib/WebView.svelte";
   import { closeOrphans, initWebTabs, routeLink } from "./lib/webtabs.svelte";
   import RunningTasks from "./lib/RunningTasks.svelte";
@@ -733,6 +734,13 @@
                    Open, read-only. -->
               <div class="content">
                 <FileView content={t.content} />
+                {#if focused}<FindBar bind:this={findBar} />{/if}
+              </div>
+            {:else if t.content.kind === "thread"}
+              <!-- What a research thread stores (backlog 292): its name
+                   clicked in the sidebar, read-only. -->
+              <div class="content">
+                <ThreadView content={t.content} />
                 {#if focused}<FindBar bind:this={findBar} />{/if}
               </div>
             {:else if t.content.kind === "web"}

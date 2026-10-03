@@ -80,7 +80,12 @@ export type TabContent =
    *  is what makes the tab one per file; `session` is the chat whose card
    *  opened it, whose log may grant a file its own tools wrote outside its
    *  folders (guess pass 2026-09-25, question 17). */
-  | { kind: "file"; path: string; session?: string };
+  | { kind: "file"; path: string; session?: string }
+  /** What a research thread stores (nightshift backlog 292): its name
+   *  clicked in the sidebar. Read-only (`ThreadView.svelte`); one tab per
+   *  slug; `title` is the thread's name, for the strip. A workspace is a
+   *  project's, so the slug is the open project's. */
+  | { kind: "thread"; slug: string; title?: string };
 
 export type TabKind = TabContent["kind"];
 
@@ -179,6 +184,11 @@ export function parseContentDrag(json: string | null | undefined): TabContent | 
           ? { kind: "file", path: f.path, session: f.session }
           : { kind: "file", path: f.path };
       }
+      case "thread": {
+        const t = c as { slug?: unknown; title?: unknown };
+        if (typeof t.slug !== "string" || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(t.slug)) return null;
+        return typeof t.title === "string" ? { kind: "thread", slug: t.slug, title: t.title } : { kind: "thread", slug: t.slug };
+      }
       case "web": {
         const w = c as { url?: unknown; title?: unknown };
         if (typeof w.url !== "string" || !isWebUrl(w.url)) return null;
@@ -254,6 +264,8 @@ export function sameContent(a: TabContent, b: TabContent): boolean {
   if (a.kind === "web" && b.kind === "web") return a.url === b.url;
   // One tab per file (backlog 161), whichever chat's card opened it.
   if (a.kind === "file" && b.kind === "file") return a.path === b.path;
+  // One tab per thread (backlog 292), whatever name it was opened under.
+  if (a.kind === "thread" && b.kind === "thread") return a.slug === b.slug;
   // The singletons carry nothing but their kind.
   return isSingleton(a);
 }
@@ -694,6 +706,8 @@ export function tabTitle(
       return `Agent · ${content.name}`;
     case "file":
       return baseName(content.path);
+    case "thread":
+      return `◇ ${content.title?.trim() || content.slug}`;
     case "web": {
       if (content.title?.trim()) return content.title.trim();
       try {
@@ -725,6 +739,8 @@ export function tabGlyph(content: TabContent): IconName {
       return "think";
     case "file":
       return "read";
+    case "thread":
+      return "branch";
     case "web":
       return "ext";
     case "chat":

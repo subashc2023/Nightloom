@@ -208,3 +208,67 @@ export function newInThreadTip(slug: string): string {
     "To hand this chat's work over first, use Wrap up → Continue: a wrap-up turn updates the thread's files, then the next chat opens."
   );
 }
+
+// ---- what a thread stores, read in the sidebar's thread view (nightshift backlog 292) ----
+
+/** The three files of a thread folder the view can show, in its switch's order. */
+export const THREAD_FILES = ["thread.md", "log.md", "archive.md"] as const;
+export type ThreadFile = (typeof THREAD_FILES)[number];
+
+/** A thread file's path as a project note name (under `<project>/.agents/`). */
+export function threadNoteName(slug: string, file: ThreadFile): string {
+  return `threads/${slug}/${file}`;
+}
+
+/** One `## ` section of a file: its heading and the markdown under it. */
+export interface FileSection {
+  heading: string;
+  body: string;
+}
+
+/**
+ * A file split at its `## ` headings, in the file's order, for reading
+ * one section at a time. What comes before the first heading (the
+ * `# Thread: …` title and the pointer-form line) is a section headed
+ * "About" when anything but the title is in it; the `# ` title line itself
+ * is dropped, the view says the name. `## ` lines inside fences are not
+ * headings (as `replaceStartHere`). A file with no headings is one
+ * section, "Whole file". Empty sections are kept: an empty Queue is
+ * information.
+ */
+export function fileSections(text: string): FileSection[] {
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  const out: FileSection[] = [];
+  let heading: string | null = null;
+  let body: string[] = [];
+  let fence = false;
+  const flush = () => {
+    if (heading === null) {
+      const pre = body.filter((l) => !/^# /.test(l)).join("\n").trim();
+      if (pre) out.push({ heading: "About", body: pre });
+    } else {
+      out.push({ heading, body: body.join("\n").trim() });
+    }
+  };
+  for (const line of lines) {
+    if (line.trimStart().startsWith("```")) fence = !fence;
+    if (!fence && line.startsWith("## ")) {
+      flush();
+      heading = line.slice(3).trim();
+      body = [];
+      continue;
+    }
+    body.push(line);
+  }
+  flush();
+  if (out.length === 1 && out[0].heading === "About") return [{ heading: "Whole file", body: out[0].body }];
+  return out;
+}
+
+/** Which section thread.md opens on: Start here (the status), else the first.
+ *  log.md and archive.md are not split: both are appended to, so the view
+ *  shows each whole, scrolled to its newest end. */
+export function openingSection(sections: FileSection[]): number {
+  const i = sections.findIndex((s) => s.heading.toLowerCase() === "start here");
+  return i >= 0 ? i : 0;
+}

@@ -3665,6 +3665,7 @@ async function showContentOf(c: TabContent): Promise<void> {
     case "attachment":
     case "subagent":
     case "file":
+    case "thread":
       return;
   }
 }
@@ -3684,7 +3685,8 @@ export async function openContent(content: TabContent, how: tabs.LandHow = "new"
     content.kind === "aside" ||
     content.kind === "attachment" ||
     content.kind === "subagent" ||
-    content.kind === "file"
+    content.kind === "file" ||
+    content.kind === "thread"
   ) {
     const t = tabs.land(app.tabs, tabs.focusedPane(app.tabs), content, how);
     await activateTab(t.id);
@@ -4022,6 +4024,8 @@ function resolveTabContent(c: TabContent): TabContent | null {
     // A file tab comes back like the rest (guess pass 2026-09-25, question
     // 20); a file gone since says so in its tab, which reads it again.
     case "file":
+    // A thread tab (backlog 292) likewise: a thread gone says so in its tab.
+    case "thread":
       return c;
   }
 }
