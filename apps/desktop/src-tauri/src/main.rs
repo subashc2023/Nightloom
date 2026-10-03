@@ -1782,6 +1782,7 @@ async fn connect_agent(
     cold: Option<bool>,
     auto_layers: Option<bool>,
     update_now: Option<Vec<SegmentKind>>,
+    subagent_rules: Option<String>,
 ) -> Result<ConnectedInfo, String> {
     // Never a silent hang (nightshift item 220): the installed app sat at
     // "connecting…" for forty minutes with nothing to say what it waited
@@ -1823,6 +1824,7 @@ async fn connect_agent(
                 cold,
                 auto_layers,
                 update_now,
+                subagent_rules,
             ),
         ),
     )
@@ -1861,6 +1863,10 @@ async fn connect_agent_body(
     cold: Option<bool>,
     auto_layers: Option<bool>,
     update_now: Option<Vec<SegmentKind>>,
+    // His subagent rules in words for this chat (nightshift backlog 291):
+    // the rail's box, or the Settings default; stated in the subagent
+    // rules layer (293) with the limits and the fork switch.
+    subagent_rules: Option<String>,
 ) -> Result<ConnectedInfo, String> {
     // Same rule as `connect`: an open project wins over the rail's saved
     // folder, or a chat filed under a project would be running somewhere
@@ -2015,6 +2021,15 @@ async fn connect_agent_body(
             // What the layer says about the model follows the rail's
             // "Subagents use" (nightshift 257, blocker 584).
             subagent_model: spec.subagent_limits.unwrap_or_default().model,
+            // The subagent rules layer (backlog 291 + 293): his words, the
+            // limits and the fork switch; a row of its own on the Context page.
+            subagent_rules: (!off.contains(&SegmentKind::SubagentRules)).then_some(
+                nightloom_service::SubagentRules {
+                    words: subagent_rules.as_deref().unwrap_or(""),
+                    limits: spec.subagent_limits.unwrap_or_default(),
+                    fork_mode: spec.fork_mode,
+                },
+            ),
         },
     );
     // A changed layer waits for the chat's cold moment (nightshift backlog
@@ -2065,6 +2080,9 @@ async fn connect_agent_body(
         *holds.view.lock().await = prompt_hold::PendingView {
             session: chat,
             layers: r.pending,
+            // Changed subagent rules on a warm chat (backlog 293): carried
+            // by its next message (`send_agent`).
+            rules_note: r.rules_note,
         };
         *holds.file.lock().await = file;
         r.prompt
@@ -3334,6 +3352,9 @@ async fn send_agent(
     // `serve` runs too. What stays here is what only the window has: its
     // events, the project registry it holds, a chat name, the checkpoint,
     // and the rail's `AgentTurn`.
+    // Subagent rules changed while the cache is warm (nightshift backlog
+    // 293): the new rules ride after this message, on the wire only.
+    let wire_note = holds.take_rules_note(&chat_id).await;
     let env = DesktopTurnEnv {
         app: &app,
         state: &state,
@@ -3347,6 +3368,7 @@ async fn send_agent(
             chat_id: &chat_id,
             input,
             spoken: spoken == Some(true),
+            wire_note,
             council,
             cancel: &cancel,
             ask_dir: ask_dir.clone(),

@@ -23,7 +23,11 @@
     useEngine,
     usable,
     usePrompt,
+    subagentRules,
+    setOpenChatRules,
+    useDefaultRules,
   } from "./state.svelte";
+  import { hasOwnRules, limitsSummary, rulesFor } from "./subagentRules";
   import * as api from "./api";
   import { launch } from "./launch.svelte";
   import { fmtTokens } from "./tokens";
@@ -58,6 +62,15 @@
    */
 
   const agentMode = $derived(app.draft.engine === "claude-code");
+
+  // His subagent rules in words (nightshift backlog 291): the open chat's
+  // text, or the Settings default while it has none of its own.
+  const rulesText = $derived(rulesFor(subagentRules.store, app.activeSessionId));
+  const rulesOwn = $derived(hasOwnRules(subagentRules.store, app.activeSessionId));
+  /** *Use the default* asks first when it would drop typed text (§7). */
+  let droppingRules = $state(false);
+  // The exact limits fold open by themselves only when he opens them.
+  let exactOpen = $state(false);
   const agent = $derived(app.connection?.agent ?? null);
   // The open chat's own CLI session, off its log (backlog 159's label fix,
   // 2026-09-25): `agent.resume` is the chat that was open at connect time.
@@ -142,7 +155,7 @@
    *  asking positions sit together, Off last. */
   type ApprovalPosition = "auto" | "ask" | "plan" | "off";
   const APPROVAL: { value: ApprovalPosition; label: string; title: string }[] = [
-    { value: "auto", label: "Auto", title: "Claude Code's classifier decides each call (`auto`)" },
+    { value: "auto", label: "Auto", title: "Claude Code's classifier decides each call (`auto`); the model's questions still ask you" },
     { value: "ask", label: "Ask", title: "Pauses on each write, command, question or plan; the transcript asks" },
     { value: "plan", label: "Plan", title: "Reads only, until you approve the plan on its card (`plan`)" },
     { value: "off", label: "Off", title: "Every call runs unasked (`bypassPermissions`)" },
@@ -151,7 +164,7 @@
    *  2026-09-16 — "the line under the control changes with it"). Off's is
    *  the warning, drawn in the markup. */
   const APPROVAL_LINE: Record<ApprovalPosition, string> = {
-    auto: "The CLI's classifier decides each call; what it can't approve is denied, not asked.",
+    auto: "The CLI's classifier decides each call; what it can't approve is denied, not asked. The model's own questions still show their card.",
     ask: "Calls that change files, run commands or leave this machine wait for you — the card at the foot of the turn.",
     plan: "Reads only, then a plan for you to approve before anything is edited.",
     off: "Every call runs unasked, including bash.",
@@ -893,56 +906,112 @@
           />
         </label>
       {/if}
-      <!-- The subagent limits (nightshift backlog 165): the family behind
-           the first cap of 6. Two are the CLI's own (at once, depth) and
-           go out as its environment; the rest are Nightloom's hook, read
-           from the chat's directory at each spawn. Kept on the connection;
-           a reconnect applies them. -->
-      <div class="row limits">
-        <span class="lbl">Subagent limits</span>
-        <Hint
-          text="Per turn: how many subagents one reply may spawn (Nightloom's hook; the seventh is refused in words). At once and depth: Claude Code's own concurrency and nesting caps, passed to it. Per day: a running count for this chat across turns. Slow at / to: past this share of the 5-hour window, the per-turn cap drops to this number. Stop at: past this share every spawn — and, mid-flight, every tool call — is refused with the reset time. Budget: the share of the 5-hour window one message may spend, counting the main thread, every subagent and every council seat; past it every further tool call is refused with 'stop and report', and the chip in the top bar shows the spend as it runs. The window is the freshest of the gauge and the turn's own readings. Subagents use: the chat's own model, or Sonnet for read-heavy scans. The small switch beside each limit turns it off: that limit does not apply at all, and its number is kept for when you switch it back on (slow at and to share one switch). At once and depth off: no limit either — Claude Code has no off value, so Nightloom passes it a million."
-        />
+      <!-- Subagent rules in words (nightshift backlog 291, 2026-10-03; his
+           words: "if I could just tell the model in words what my rules
+           are on sub-agents, the same way I do to you"). Per chat; a chat
+           with none reads the default from Settings. Saved as he types;
+           a pause reconnects, and the chat's subagent rules layer (293)
+           states them with the limits below. Never disabled: typing
+           needs no connection. -->
+      <div class="rules">
+        <div class="swq">
+          <span class="t">Subagent rules</span>
+          <Hint
+            text="Your rules for subagents in this chat, in plain words, the way you would tell Claude Code: when to launch one, how many, which model, when to ask you first. They go into this chat's Subagent rules layer (the Context page) with the exact limits below, which Nightloom enforces whatever the words say. A change reaches a cold chat at once; on a warm chat the next message carries it as a note at its end, and the layer is rewritten at the next cold moment. A chat with no rules of its own uses the default in Settings → Subscription."
+          />
+        </div>
+        <textarea
+          class="rules-box"
+          rows="4"
+          placeholder="e.g. At most two subagents at once. Only for broad searches or long research; do bounded tasks yourself. Ask me before a third."
+          aria-label="Subagent rules for this chat"
+          value={rulesText}
+          oninput={(e) => {
+            droppingRules = false;
+            setOpenChatRules((e.currentTarget as HTMLTextAreaElement).value);
+          }}
+        ></textarea>
+        <div class="rules-foot">
+          {#if droppingRules}
+            <span class="note">Drop this chat's rules and use the default?</span>
+            <button
+              class="ns-btn ghost small"
+              onclick={() => {
+                droppingRules = false;
+                useDefaultRules();
+              }}>Drop them</button
+            >
+            <button class="ns-btn ghost small" onclick={() => (droppingRules = false)}>Cancel</button>
+          {:else if rulesOwn}
+            <span class="note">This chat's own rules.</span>
+            <button
+              class="ns-btn ghost small"
+              onclick={() => (rulesText.trim() ? (droppingRules = true) : useDefaultRules())}>Use the default</button
+            >
+          {:else}
+            <span class="note">{rulesText.trim() ? "The default from Settings; typing here gives this chat its own." : "No rules yet; the limits below apply."}</span>
+          {/if}
+        </div>
       </div>
-      <div class="limits-grid">
-        {#each [["per_turn", "per turn"], ["concurrent", "at once"], ["depth", "depth"], ["per_day", "per day"], ["slow_at", "slow at %"], ["slow_to", "to"], ["stop_at", "stop at %"], ["budget_pct", "budget %"]] as [k, label] (k)}
-          <!-- Backlog 253: a small switch per limit; off, the limit does not
-               apply at all (the number is kept for switching it back on).
-               The slow pair shares the switch on "slow at". A div, not a
-               label, so a click on the name does not flip the switch. -->
-          {@const sw = switchOf(k)}
-          {@const isOff = sw !== null && app.draft.agentLimits.off[sw]}
-          <div class="limit" class:off={isOff}>
-            <span class="limit-k">
-              {label}
-              {#if sw && k !== "slow_to"}
-                <input
-                  type="checkbox"
-                  class="sw mini"
-                  checked={!isOff}
-                  onchange={(e) => {
-                    app.draft.agentLimits.off[sw] = !(e.currentTarget as HTMLInputElement).checked;
-                    apply();
-                  }}
-                  disabled={locked}
-                  aria-label={`${label} limit on`}
-                  use:tip={isOff ? `Off — no ${label} limit applies. Switch on to use the number` : `On — switch off and no ${label} limit applies at all`}
-                />
-              {/if}
-            </span>
-            <input
-              type="number"
-              min="0"
-              max={k === "slow_at" || k === "stop_at" || k === "budget_pct" ? 100 : undefined}
-              step="1"
-              aria-label={`subagents ${label}`}
-              bind:value={app.draft.agentLimits[k as "per_turn" | "concurrent" | "depth" | "per_day" | "slow_at" | "slow_to" | "stop_at" | "budget_pct"]}
-              onchange={apply}
-              disabled={locked || isOff}
-            />
-          </div>
-        {/each}
-      </div>
+      <!-- Backlog 291: the eight numbers fold under "Exact limits", their
+           line saying what is in force. Folding is display only: the
+           numbers and switches are kept and enforced as before. -->
+      <details class="exact" bind:open={exactOpen}>
+        <summary>
+          <span class="t">Exact limits</span>
+          <span class="exact-sum">{limitsSummary(app.draft.agentLimits)}</span>
+        </summary>
+        <!-- The subagent limits (nightshift backlog 165): the family behind
+             the first cap of 6. Two are the CLI's own (at once, depth) and
+             go out as its environment; the rest are Nightloom's hook, read
+             from the chat's directory at each spawn. Kept on the connection;
+             a reconnect applies them. -->
+        <div class="row limits">
+          <span class="lbl">Subagent limits</span>
+          <Hint
+            text="Per turn: how many subagents one reply may spawn (Nightloom's hook; the seventh is refused in words). At once and depth: Claude Code's own concurrency and nesting caps, passed to it. Per day: a running count for this chat across turns. Slow at / to: past this share of the 5-hour window, the per-turn cap drops to this number. Stop at: past this share every spawn — and, mid-flight, every tool call — is refused with the reset time. Budget: the share of the 5-hour window one message may spend, counting the main thread, every subagent and every council seat; past it every further tool call is refused with 'stop and report', and the chip in the top bar shows the spend as it runs. The window is the freshest of the gauge and the turn's own readings. Subagents use: the chat's own model, or Sonnet for read-heavy scans. The small switch beside each limit turns it off: that limit does not apply at all, and its number is kept for when you switch it back on (slow at and to share one switch). At once and depth off: no limit either — Claude Code has no off value, so Nightloom passes it a million."
+          />
+        </div>
+        <div class="limits-grid">
+          {#each [["per_turn", "per turn"], ["concurrent", "at once"], ["depth", "depth"], ["per_day", "per day"], ["slow_at", "slow at %"], ["slow_to", "to"], ["stop_at", "stop at %"], ["budget_pct", "budget %"]] as [k, label] (k)}
+            <!-- Backlog 253: a small switch per limit; off, the limit does not
+                 apply at all (the number is kept for switching it back on).
+                 The slow pair shares the switch on "slow at". A div, not a
+                 label, so a click on the name does not flip the switch. -->
+            {@const sw = switchOf(k)}
+            {@const isOff = sw !== null && app.draft.agentLimits.off[sw]}
+            <div class="limit" class:off={isOff}>
+              <span class="limit-k">
+                {label}
+                {#if sw && k !== "slow_to"}
+                  <input
+                    type="checkbox"
+                    class="sw mini"
+                    checked={!isOff}
+                    onchange={(e) => {
+                      app.draft.agentLimits.off[sw] = !(e.currentTarget as HTMLInputElement).checked;
+                      apply();
+                    }}
+                    disabled={locked}
+                    aria-label={`${label} limit on`}
+                    use:tip={isOff ? `Off — no ${label} limit applies. Switch on to use the number` : `On — switch off and no ${label} limit applies at all`}
+                  />
+                {/if}
+              </span>
+              <input
+                type="number"
+                min="0"
+                max={k === "slow_at" || k === "stop_at" || k === "budget_pct" ? 100 : undefined}
+                step="1"
+                aria-label={`subagents ${label}`}
+                bind:value={app.draft.agentLimits[k as "per_turn" | "concurrent" | "depth" | "per_day" | "slow_at" | "slow_to" | "stop_at" | "budget_pct"]}
+                onchange={apply}
+                disabled={locked || isOff}
+              />
+            </div>
+          {/each}
+        </div>
+      </details>
       <!-- The subagents' model (backlog 165, pass 2; ~~blocker 280, his
            answer: the chat's own~~ nightshift 257, blocker 584: the main
            agent chooses by his rule, or always the chat's model, or
@@ -1639,6 +1708,75 @@
   }
   select,
   input[type="text"],
+  /* Subagent rules in words (backlog 291): a box, a line under it. */
+  .rules {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 0 0 0.5rem;
+  }
+  .rules-box {
+    width: 100%;
+    box-sizing: border-box;
+    resize: vertical;
+    min-height: 72px;
+    background: var(--paper);
+    color: var(--ink);
+    border: 1px solid var(--line2);
+    border-radius: 6px;
+    padding: 6px 8px;
+    font-size: 12.5px;
+    line-height: 1.4;
+    font-family: inherit;
+  }
+  .rules-foot {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .rules-foot .note {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+  }
+  /* Backlog 291: the exact limits, folded; the summary says what is on. */
+  .exact {
+    margin: 0 0 0.5rem;
+  }
+  .exact > summary {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--ink);
+    padding: 2px 0;
+  }
+  .exact > summary::-webkit-details-marker {
+    display: none;
+  }
+  .exact > summary::before {
+    content: "▸";
+    color: var(--dim);
+    font-size: 10px;
+  }
+  .exact[open] > summary::before {
+    content: "▾";
+  }
+  .exact-sum {
+    flex: 1;
+    min-width: 0;
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--dim);
+  }
+  .exact[open] > summary {
+    margin-bottom: 4px;
+  }
+  .exact[open] .exact-sum {
+    display: none;
+  }
   /* The subagent limits (backlog 165): seven small numbers in a grid. */
   .limits-grid {
     display: grid;

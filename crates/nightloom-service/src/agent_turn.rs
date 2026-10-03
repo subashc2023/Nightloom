@@ -120,6 +120,9 @@ pub struct AgentTurnRun<'a> {
     /// Heard by the phone's voice mode (item 246 wave 3): recorded
     /// `spoken`, and sent with the "answer for the ear" note on the wire.
     pub spoken: bool,
+    /// Appended after the message on the wire, never the log: the
+    /// subagent rules changed on a warm chat (nightshift backlog 293).
+    pub wire_note: Option<String>,
     pub council: Option<CouncilRequest>,
     pub cancel: &'a CancellationToken,
     /// The chat's ask directory (`<log dir>/ask/<chat id>/`), already
@@ -181,6 +184,7 @@ async fn turn_body(
         chat_id,
         mut input,
         spoken,
+        wire_note,
         council,
         cancel,
         ask_dir,
@@ -293,6 +297,9 @@ async fn turn_body(
     }
     if let Some(note) = switch_note {
         input.text = format!("{note}\n\n{}", input.text);
+    }
+    if let Some(note) = wire_note {
+        input.text = format!("{}\n\n{note}", input.text);
     }
     // `context_status` describes this chat before the turn (review
     // 2026-09-17 FC-d, backlog 134). Best-effort.
@@ -601,6 +608,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns"
                     chat_id: &chat,
                     input: TurnInput::from("hello"),
                     spoken: false,
+                    wire_note: None,
                     council: None,
                     cancel: &cancel,
                     ask_dir: None,

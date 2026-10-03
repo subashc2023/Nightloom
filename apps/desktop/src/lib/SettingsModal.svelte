@@ -36,6 +36,8 @@
     useProjectsFolder,
     loadContextLimits,
     PALETTES,
+    subagentRules,
+    setDefaultRules,
   } from "./state.svelte";
   import * as api from "./api";
   import { DEFAULT_USAGE_LIMITS, parseLimit } from "./autoPass";
@@ -1707,6 +1709,27 @@
           sends; until one arrives it uses the model it was deployed with.
         </p>
         {#if modelList.error}<p class="note small">{modelList.error}</p>{/if}
+      </section>
+
+      <!-- His subagent rules in words, the default (nightshift backlog
+           291): what a chat with no rules of its own states in its
+           subagent rules layer. Saved as he types. -->
+      <section class="card">
+        <div class="ch"><span class="t">Subagent rules</span></div>
+        <p class="note small">
+          Your rules for subagents in plain words, for every chat that has
+          none of its own (a chat's own are in the rail, under Subagent rules).
+          They reach the model beside the exact limits, which Nightloom enforces
+          whatever the words say.
+        </p>
+        <textarea
+          class="rules-default"
+          rows="5"
+          placeholder="e.g. At most two subagents at once. Only for broad searches or long research; do bounded tasks yourself."
+          aria-label="Default subagent rules"
+          value={subagentRules.store.default}
+          oninput={(e) => setDefaultRules((e.currentTarget as HTMLTextAreaElement).value)}
+        ></textarea>
       </section>
 
       <section class="card">
@@ -3952,5 +3975,19 @@
   .seg button.on {
     background: var(--accent);
     color: var(--paper);
+  }
+  /* Backlog 291: the default subagent rules box. */
+  .rules-default {
+    width: 100%;
+    box-sizing: border-box;
+    resize: vertical;
+    background: var(--paper);
+    color: var(--ink);
+    border: 1px solid var(--line2);
+    border-radius: 6px;
+    padding: 6px 8px;
+    font-size: 12.5px;
+    line-height: 1.4;
+    font-family: inherit;
   }
 </style>

@@ -275,6 +275,12 @@
       gloss: "When a subagent is worth launching, reusing one with SendMessage, retiring it, the 5-minute and 1-hour caches, naming the model, briefing by a short spec.",
       engines: "agent",
     },
+    {
+      kind: "subagent_rules",
+      label: "Subagent rules",
+      gloss: "Your subagent rules for this chat in your words (the rail's box), the limits Nightloom enforces, the fork switch, and what each helper kind starts with and why to pick it. A change is rewritten here at the next cold moment; while the cache is warm the next message carries it as a note.",
+      engines: "agent",
+    },
   ];
 
   /** The chat's switched-off layers, projected from the log like the todos. */

@@ -129,6 +129,9 @@ export interface AgentConnectArgs {
   autoLayers?: boolean;
   /** *Update now*, by layer: taken whatever the cache. */
   updateNow?: PromptLayer[];
+  /** His subagent rules in words for this chat (backlog 291): the rail's
+   *  box, or the Settings default. Stated in the subagent rules layer. */
+  subagentRules?: string;
 }
 
 /** A click on a *newer version exists* mark (backlog 174). */
@@ -148,6 +151,9 @@ export interface PendingLayer {
 export interface PendingView {
   session: string | null;
   layers: PendingLayer[];
+  /** Changed subagent rules on a warm chat (backlog 293): the note its
+   *  next message carries. Absent once a message has carried it. */
+  rules_note?: string;
 }
 
 /** The agent engine as the rail shows it; see the Rust `AgentInfo`. */
@@ -1450,6 +1456,10 @@ export type PromptLayer =
   /** How to use subagents on this engine (nightshift backlog 251). Claude
    *  Code engine only. */
   | "subagents"
+  /** This chat's subagent rules: his words, the limits in force, the fork
+   *  switch and the helper kinds (nightshift backlog 291 + 293). Claude
+   *  Code engine only. */
+  | "subagent_rules"
   /** Claude Code's own auto memory for the chat's folder (nightshift backlog
    *  088): a switch only — the CLI reads the file itself, and off is sent
    *  to it as a setting. Claude Code engine only. */

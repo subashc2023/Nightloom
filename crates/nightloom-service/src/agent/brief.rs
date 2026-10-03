@@ -691,6 +691,132 @@ pub fn context_tokens(transcript: &Path, agent_id: Option<&str>) -> Option<u64> 
     None
 }
 
+// ---- the chat's earlier subagents (nightshift backlog 293 addition, 2026-10-03) ----
+//
+// The subagents layer tells the model to reuse a finished subagent unless
+// it is past ~300k and to mind the cache's lifetime, but it never saw any
+// subagent's actual state. At each launch the usage line now lists the
+// chat's earlier subagents, newest first: id, what it was for, its context
+// now, minutes since it last ran, its cache lifetime and whether that is
+// still warm, and "past retirement" over 300k.
+
+/// Past this much context a subagent is retired (practices §3; the
+/// subagents layer's "about 300k").
+pub const RETIRE_TOKENS: u64 = 300_000;
+/// At most this many earlier subagents are listed.
+pub const EARLIER_CAP: usize = 8;
+
+/// One earlier subagent of this chat, as its files on disk say.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EarlierAgent {
+    pub id: String,
+    /// The spawning call's description (`.meta.json`), when there is one.
+    pub name: Option<String>,
+    /// Its context now: its transcript's last message usage.
+    pub context: Option<u64>,
+    /// When its transcript was last written (unix ms): when it last ran.
+    pub last_ms: i64,
+    /// `subagent_type: reusable` (a 1-hour cache) by its `.meta.json`
+    /// `agentType`; anything else, or no meta, is the 5-minute cache.
+    pub reusable: bool,
+}
+
+/// The chat's subagents beside its session file, `<transcript without
+/// .jsonl>/subagents/agent-<id>.jsonl` (+ `agent-<id>.meta.json` for some:
+/// `agentType`, `description` — the c6-157 report's reading of the CLI's
+/// files), newest first, at most [`EARLIER_CAP`]. `skip` is the id of the
+/// process asking, if it is a subagent: not listed as its own peer.
+pub fn earlier_agents(transcript: &Path, skip: Option<&str>) -> Vec<EarlierAgent> {
+    let dir = transcript.with_extension("").join("subagents");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<EarlierAgent> = Vec::new();
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let Some(id) = name
+            .strip_prefix("agent-")
+            .and_then(|n| n.strip_suffix(".jsonl"))
+        else {
+            continue;
+        };
+        if id.is_empty() || skip == Some(id) {
+            continue;
+        }
+        let last_ms = e
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |d| d.as_millis() as i64);
+        let meta: Option<Value> =
+            std::fs::read_to_string(dir.join(format!("agent-{id}.meta.json")))
+                .ok()
+                .and_then(|t| serde_json::from_str(&t).ok());
+        let field = |k: &str| {
+            meta.as_ref()
+                .and_then(|m| m.get(k))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        };
+        out.push(EarlierAgent {
+            id: id.to_string(),
+            name: field("description"),
+            context: context_tokens(transcript, Some(id)),
+            last_ms,
+            reusable: field("agentType").as_deref() == Some("reusable"),
+        });
+    }
+    out.sort_by(|a, b| b.last_ms.cmp(&a.last_ms).then_with(|| a.id.cmp(&b.id)));
+    out.truncate(EARLIER_CAP);
+    out
+}
+
+/// The list as the launch's context: one line per agent, `None` when the
+/// chat has none yet.
+pub fn earlier_agents_lines(agents: &[EarlierAgent], now_ms: i64) -> Option<String> {
+    if agents.is_empty() {
+        return None;
+    }
+    let mut out = String::from(
+        "This chat's earlier subagents, newest first (reuse one with SendMessage while its cache \
+         is warm and it is under 300k; retire it past that):",
+    );
+    for a in agents {
+        let mins = (now_ms - a.last_ms).max(0) / 60_000;
+        let ttl_min: i64 = if a.reusable { 60 } else { 5 };
+        let warm = now_ms - a.last_ms < ttl_min * 60_000;
+        let name = a
+            .name
+            .as_deref()
+            .map(|n| format!(" ({n})"))
+            .unwrap_or_default();
+        let ctx = match a.context {
+            Some(c) if c < 1000 => "context <1k".to_string(),
+            Some(c) => format!("context {}k", (c + 500) / 1000),
+            None => "context unknown".to_string(),
+        };
+        let cache = if a.reusable {
+            "1 h cache"
+        } else {
+            "5 min cache"
+        };
+        let state = if warm { "warm" } else { "cold" };
+        let retire = if a.context.is_some_and(|c| c > RETIRE_TOKENS) {
+            " · past retirement (over 300k)"
+        } else {
+            ""
+        };
+        out.push_str(&format!(
+            "\n- {}{name}: {ctx} · last ran {mins} min ago · {cache}, {state}{retire}",
+            a.id
+        ));
+    }
+    Some(out)
+}
+
 // ---- the per-message budget (nightshift backlog 165, pass 2, 2026-09-22) ----
 
 /// The turn's budget ledger, beside the brief: written when a turn
@@ -1922,7 +2048,18 @@ fn decide_holding(
             .transcript_path
             .as_deref()
             .and_then(|t| context_tokens(t, subagent.then_some(who)));
-        usage_line(read_turn_budget(dir).as_ref(), reading, week, context)
+        let usage = usage_line(read_turn_budget(dir).as_ref(), reading, week, context);
+        // At a launch, the chat's earlier subagents (backlog 293 addition).
+        let earlier = spawn
+            .then_some(input.transcript_path.as_deref())
+            .flatten()
+            .and_then(|t| {
+                earlier_agents_lines(&earlier_agents(t, subagent.then_some(who)), now_ms)
+            });
+        match (usage, earlier) {
+            (Some(u), Some(e)) => Some(format!("{u}\n{e}")),
+            (u, e) => u.or(e),
+        }
     } else {
         None
     };
@@ -3567,6 +3704,88 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Backlog 293 addition: a launch lists the chat's earlier subagents
+    /// from their files — newest first, at most eight, the asker skipped —
+    /// with context, minutes since, cache lifetime, warm or cold, and
+    /// "past retirement" over 300k.
+    #[test]
+    fn a_launch_lists_the_chats_earlier_subagents_newest_first() {
+        let dir = scratch();
+        let main = dir.join("s1.jsonl");
+        std::fs::write(&main, "").unwrap();
+        let sub = dir.join("s1").join("subagents");
+        std::fs::create_dir_all(&sub).unwrap();
+        let usage = |r: u64| {
+            serde_json::json!({"type":"assistant","isSidechain":true,"message":{"usage":{
+                "input_tokens":0,"cache_read_input_tokens":r,"cache_creation_input_tokens":0}}})
+            .to_string()
+        };
+        let base = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_800_000_000);
+        let base_ms = 1_800_000_000_000i64;
+        let put = |id: &str, ctx: u64, mins_ago: u64, meta: Option<&str>| {
+            let f = sub.join(format!("agent-{id}.jsonl"));
+            std::fs::write(&f, usage(ctx)).unwrap();
+            let t = base - std::time::Duration::from_secs(mins_ago * 60);
+            std::fs::File::options()
+                .write(true)
+                .open(&f)
+                .unwrap()
+                .set_modified(t)
+                .unwrap();
+            if let Some(m) = meta {
+                std::fs::write(sub.join(format!("agent-{id}.meta.json")), m).unwrap();
+            }
+        };
+        put(
+            "a1",
+            84_000,
+            12,
+            Some(r#"{"agentType":"reusable","description":"Survey the hold code"}"#),
+        );
+        put(
+            "a2",
+            320_000,
+            2,
+            Some(r#"{"agentType":"general-purpose","description":"Scan logs"}"#),
+        );
+        put("a3", 500, 30, None);
+        let agents = super::earlier_agents(&main, None);
+        assert_eq!(
+            agents.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(),
+            ["a2", "a1", "a3"]
+        );
+        let text = super::earlier_agents_lines(&agents, base_ms).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 4, "{text}");
+        assert!(lines[0].contains("newest first"), "{text}");
+        assert_eq!(
+            lines[1],
+            "- a2 (Scan logs): context 320k · last ran 2 min ago · 5 min cache, warm · past retirement (over 300k)"
+        );
+        assert_eq!(
+            lines[2],
+            "- a1 (Survey the hold code): context 84k · last ran 12 min ago · 1 h cache, warm"
+        );
+        assert_eq!(
+            lines[3],
+            "- a3: context <1k · last ran 30 min ago · 5 min cache, cold"
+        );
+        // The asker is not its own peer; none at all says nothing.
+        assert!(
+            super::earlier_agents(&main, Some("a2"))
+                .iter()
+                .all(|a| a.id != "a2")
+        );
+        assert_eq!(super::earlier_agents_lines(&[], base_ms), None);
+        assert!(super::earlier_agents(&dir.join("none.jsonl"), None).is_empty());
+        // At most eight.
+        for i in 0..10 {
+            put(&format!("b{i}"), 1_000, 40 + i, None);
+        }
+        assert_eq!(super::earlier_agents(&main, None).len(), super::EARLIER_CAP);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Through the hook: the line rides an allowed call as
     /// `additionalContext` with no decision, reaches a subagent's first call,
     /// and a refusal carries the weekly figure instead.
@@ -3636,6 +3855,28 @@ mod tests {
             r.additional_context()
                 .is_some_and(|c| c.starts_with("Usage: this message 8%"))
         );
+        // Backlog 293 addition: a spawn in a chat with an earlier subagent
+        // lists it under the line; a plain call does not.
+        let sub = dir.join("sess").join("subagents");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(
+            sub.join("agent-e1.jsonl"),
+            serde_json::json!({"type":"assistant","message":{"usage":{
+                "input_tokens":0,"cache_read_input_tokens":42_000,"cache_creation_input_tokens":0}}})
+            .to_string(),
+        )
+        .unwrap();
+        let mut spawn: serde_json::Value = serde_json::from_str(CALL).unwrap();
+        spawn["transcript_path"] = serde_json::json!(t);
+        let r = super::decide_with_week(&dir, &spawn.to_string(), reading(48, now + 5), Some(74));
+        let c = r.additional_context().unwrap_or_default().to_string();
+        assert!(c.starts_with("Usage: this message 8%"), "{c}");
+        assert!(
+            c.contains("\n- e1: context 42k · last ran 0 min ago · 5 min cache, warm"),
+            "{c}"
+        );
+        let r = super::decide_with_week(&dir, &read, reading(51, now + 5), Some(74));
+        assert!(!r.additional_context().unwrap_or_default().contains("e1"));
         // Past the budget: refused, the weekly figure in the reason, no context.
         let r = super::decide_with_week(&dir, &read, reading(75, now + 6), Some(74));
         assert_eq!(r.decision(), "deny");
