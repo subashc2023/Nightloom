@@ -7019,6 +7019,43 @@ async fn set_undo_menu(
     }
 }
 
+/// Paste, as Edit ▸ Paste does it (nightshift item 284): AppKit's `paste:`
+/// sent down the key window's responder chain, so the focused text box gets
+/// a real paste event with the clipboard's text and images. The composer
+/// asks for one on ⌥⌘V, having marked that the next paste is to become an
+/// attachment; the webview has no other way to read the clipboard without
+/// macOS's "Paste" confirmation bubble. `false` off macOS, where the
+/// frontend reads the clipboard itself.
+#[tauri::command]
+async fn paste_into_focus(app: AppHandle) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let sent = app.run_on_main_thread(move || {
+            use objc2::runtime::AnyObject;
+            use objc2::{class, msg_send, sel};
+            let none: *mut AnyObject = std::ptr::null_mut();
+            // SAFETY: main thread; `sendAction:to:from:` with a nil target
+            // walks the key window's responder chain, as a menu item does
+            // (the same call `webtab::menu_route` makes for undo:).
+            let ok: bool = unsafe {
+                let ns_app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
+                msg_send![ns_app, sendAction: sel!(paste:), to: none, from: none]
+            };
+            let _ = tx.send(ok);
+        });
+        if sent.is_err() {
+            return false;
+        }
+        rx.await.unwrap_or(false)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        false
+    }
+}
+
 /// Hands a menu click to the webview as a `menu` event carrying the item's id.
 ///
 /// Predefined items (quit, copy, minimize) are performed by the OS and arrive
@@ -7292,6 +7329,7 @@ fn main() {
             delete_session,
             restore_session,
             set_undo_menu,
+            paste_into_focus,
             approve_call,
             pick_folder,
             pick_export,

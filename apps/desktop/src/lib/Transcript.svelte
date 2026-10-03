@@ -1,6 +1,7 @@
 <script lang="ts">
   import { tip } from "./tip";
   import { badgeOf } from "./attachKinds";
+  import { decodeText, pastedLabel } from "./pasteAttach";
   import { rewoundRuns } from "./rewindDraft.svelte";
   // Every Copy button goes through the in-app clipboard ring (backlog 173).
   import { copyText } from "./clipRing.svelte";
@@ -428,6 +429,10 @@
   // through, what it added marked — rather than as the plain text. Per
   // turn index, this screen only; a click on the mark flips it.
   let diffOpen = $state<Record<number, boolean>>({});
+  // A text attachment's words, opened under its chip (item 284): collapsed
+  // by default, so pasted text does not take over the transcript. Per
+  // `turn:index`, this screen only.
+  let textOpen = $state<Record<string, boolean>>({});
   // The toggle keeps the reader's place (backlog 115): the diff view is a
   // different height from the rendered text even for a one-word change —
   // struck and added spans, and the source's lines against the markdown's
@@ -1429,8 +1434,23 @@
                       <span class="user-file-ext">{badgeOf({ kind: "document", ...doc })}</span>
                       {doc.name}
                     </button>
+                    {#if doc.media_type.startsWith("text/")}
+                      {@const tk = `${item.index}:${j}`}
+                      <button
+                        class="user-file-toggle"
+                        aria-expanded={!!textOpen[tk]}
+                        use:tip={textOpen[tk] ? "Fold the text away" : "Show the text here"}
+                        onclick={() => (textOpen[tk] = !textOpen[tk])}
+                        >{textOpen[tk] ? "▾ hide" : `▸ ${pastedLabel(decodeText(doc.data))}`}</button
+                      >
+                    {/if}
                   {/each}
                 </div>
+                {#each item.documents as doc, j (j)}
+                  {#if textOpen[`${item.index}:${j}`] && doc.media_type.startsWith("text/")}
+                    <pre class="user-file-text">{decodeText(doc.data)}</pre>
+                  {/if}
+                {/each}
               {/if}
               {#if diffOpen[item.index] && item.original !== null && !item.removed}
                 <!-- The edit as a diff over the current text (backlog 105):
@@ -2365,6 +2385,32 @@
   }
   .user-file:hover {
     border-color: var(--line2);
+  }
+  /* Item 284: a text attachment's fold — its word count, a click opens it. */
+  .user-file-toggle {
+    align-self: center;
+    padding: 0.1rem 0.35rem;
+    border: none;
+    background: none;
+    color: var(--dim);
+    font-family: inherit;
+    font-size: 0.72rem;
+    cursor: pointer;
+  }
+  .user-file-toggle:hover {
+    color: var(--ink);
+  }
+  .user-file-text {
+    max-height: 24rem;
+    overflow: auto;
+    margin: 0 0 0.4rem;
+    padding: 0.5rem 0.65rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    white-space: pre-wrap;
+    word-break: break-word;
   }
   .user-file-ext {
     font-size: 0.62rem;

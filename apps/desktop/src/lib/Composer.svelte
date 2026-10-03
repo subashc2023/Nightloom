@@ -63,7 +63,23 @@
   import { chatThread, refreshThreadFlags } from "./state.svelte";
   import { draftEstimate, draftEstimateTitle, draftExact, draftExactTitle, EXACT_TOKENS_FROM, fmtTokens } from "./tokens";
   import { exactCounter, type ExactResult } from "./draftCount";
-  import { countDraftTokens, officeConverter, prepareOfficeAttachment } from "./api";
+  import { countDraftTokens, officeConverter, pasteIntoFocus, prepareOfficeAttachment } from "./api";
+  import { menuInterceptors } from "./state.svelte";
+  import {
+    canUndo,
+    followOffer,
+    isPasteAsAttachmentKey,
+    longPasteOffer,
+    normalizeNewlines,
+    pastedFile,
+    pastedLabel,
+    pastedName,
+    pasteAction,
+    undoConverted,
+    withoutSpan,
+    type Converted,
+    type LongPaste,
+  } from "./pasteAttach";
   import {
     badgeOf,
     convertedLabel,
@@ -692,6 +708,20 @@
   });
 
   function onkeydown(e: KeyboardEvent) {
+    // ⌥⌘V: paste the clipboard's text as an attachment (item 284).
+    if (isPasteAsAttachmentKey(e)) {
+      e.preventDefault();
+      clipOpen = false;
+      void pasteAsAttachment();
+      return;
+    }
+    // ⌘Z right after "Make this an attachment" puts the text back (off the
+    // Mac; there the Edit menu's Undo arrives through `menuInterceptors`).
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "z" && undoable) {
+      e.preventDefault();
+      undoConvert();
+      return;
+    }
     if ((e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey && (e.code === "KeyV" || e.key.toLowerCase() === "v")) {
       e.preventDefault();
       clipOpen = !clipOpen;
@@ -988,6 +1018,22 @@
     // each image the paste attached.
     if (pastedText) recordText("pasted", pastedText);
     const files = Array.from(e.clipboardData?.files ?? []);
+    // Item 284: ⌥⌘V's paste puts the text in as an attachment. A clipboard
+    // holding a file (an image) is pasted as ⌘V would.
+    const act = pasteAction(takeAttachMark(), pastedText, files.length);
+    if (act !== "box") {
+      e.preventDefault();
+      if (act === "attach") void attachPastedText(pastedText);
+      else addToast("The clipboard holds no text to attach");
+      return;
+    }
+    // A long ⌘V paste: the text goes in as always, and an offer under the
+    // box can move it into an attachment.
+    if (pastedText && files.length === 0) {
+      const at = Math.min(ta?.selectionStart ?? text.length, ta?.selectionEnd ?? text.length);
+      offer = longPasteOffer(pastedText, at);
+      converted = null;
+    }
     if (files.length === 0) return;
     // Only swallow the paste when it carries no text of its own; some sources
     // put a screenshot and its caption on the clipboard together.
@@ -996,6 +1042,134 @@
       for (const c of chips) if (c.kind === "image") recordImage("pasted", c);
     });
   }
+
+  /*
+   * Paste as an attachment (nightshift item 284; blocker 941's default,
+   * 942's key). ⌥⌘V marks the next paste and asks the backend for one —
+   * Edit ▸ Paste's own `paste:` — so `onpaste` gets the clipboard as a ⌘V
+   * would and makes its text a chip. Off the Mac the clipboard is read
+   * here instead.
+   */
+  let attachMark = 0;
+  const ATTACH_MARK_MS = 1500;
+  function takeAttachMark(): boolean {
+    const on = attachMark > 0 && performance.now() - attachMark < ATTACH_MARK_MS;
+    attachMark = 0;
+    return on;
+  }
+  async function pasteAsAttachment(): Promise<void> {
+    attachMark = performance.now();
+    let asked = false;
+    try {
+      asked = await pasteIntoFocus();
+    } catch {
+      asked = false;
+    }
+    if (asked) return;
+    attachMark = 0;
+    try {
+      const t = await navigator.clipboard.readText();
+      if (t) await attachPastedText(t);
+      else addToast("The clipboard holds no text to attach");
+    } catch (e) {
+      addToast(`Could not read the clipboard: ${String(e)}`);
+    }
+  }
+
+  /** Pasted text as a chip, by item 277's text route (`accept`): named
+   *  "Pasted text", its words on the chip, kept with the draft. */
+  async function attachPastedText(raw: string): Promise<Attachment | null> {
+    const body = normalizeNewlines(raw);
+    const chatKey = key;
+    const name = pastedName(readDraft(chatKey).attachments.map((a) => a.name));
+    const [chip] = await accept([pastedFile(body, name)]);
+    if (!chip) return null;
+    updateAttachment(chatKey, chip.id, {
+      pasted: true,
+      ...(chip.kind === "document" ? { label: pastedLabel(body) } : {}),
+    });
+    return chip;
+  }
+
+  /*
+   * The long ⌘V paste's offer (item 284): "Make this an attachment" under
+   * the box while the box is as the paste left it; any edit, a send or a
+   * chat switch drops it. One click moves the span into a chip; "Undo"
+   * (or ⌘Z in the box) puts it back while nothing has changed since.
+   */
+  let offer = $state<LongPaste | null>(null);
+  let converted = $state<Converted | null>(null);
+  const undoable = $derived(canUndo(converted, text, attachments.map((a) => a.id)));
+  $effect(() => {
+    const t = text;
+    untrack(() => {
+      offer = followOffer(offer, t);
+    });
+  });
+  $effect(() => {
+    void key;
+    offer = null;
+    converted = null;
+  });
+
+  async function convertLongPaste(): Promise<void> {
+    const o = offer;
+    if (!o) return;
+    offer = null;
+    const chatKey = key;
+    if (withoutSpan(readDraft(chatKey).text, o) === null) return;
+    const chip = await attachPastedText(o.pasted);
+    // Refused (too long for this engine): the toast said why; the text stays.
+    if (!chip) return;
+    const now = readDraft(chatKey).text;
+    const after = withoutSpan(now, o);
+    if (after === null) {
+      // Typed into meanwhile: the text stays where he is working.
+      removeAttachment(chatKey, chip.id);
+      return;
+    }
+    setDraftText(chatKey, after);
+    if (chatKey !== key) return;
+    converted = { before: now, after, chipId: chip.id, caret: o.start };
+    void tick().then(() => {
+      if (!ta) return;
+      ta.focus();
+      ta.selectionStart = ta.selectionEnd = o.start;
+      autogrow();
+    });
+  }
+
+  function undoConvert(): boolean {
+    const c = converted;
+    converted = null;
+    if (!canUndo(c, text, attachments.map((a) => a.id))) return false;
+    const r = undoConverted(c);
+    removeAttachment(key, c.chipId);
+    setDraftText(key, r.text);
+    void tick().then(() => {
+      if (!ta) return;
+      ta.focus();
+      ta.selectionStart = ta.selectionEnd = r.caret;
+      autogrow();
+    });
+    return true;
+  }
+
+  // The Edit menu's Undo while the box has the keyboard and a conversion
+  // can be undone (macOS: the menu takes ⌘Z before the box sees it).
+  $effect(() => {
+    const take = (id: string): boolean => {
+      if (id !== "undo_app" || !undoable) return false;
+      const box = boxElement(ta);
+      if (!box || !box.contains(document.activeElement)) return false;
+      return undoConvert();
+    };
+    menuInterceptors.push(take);
+    return () => {
+      const i = menuInterceptors.indexOf(take);
+      if (i >= 0) menuInterceptors.splice(i, 1);
+    };
+  });
 
   function ondragenter(e: DragEvent) {
     if (!e.dataTransfer?.types.includes("Files")) return;
@@ -1031,7 +1205,15 @@
   }
 
   function remove(id: number) {
-    removeAttachment(key, id);
+    const chatKey = key;
+    const a = attachments.find((x) => x.id === id);
+    removeAttachment(chatKey, id);
+    // Pasted text has no file to drop again (item 284): × says so and
+    // offers it back.
+    if (a?.pasted) {
+      const copy = $state.snapshot(a) as Attachment;
+      addToast(`Removed ${copy.name}`, { label: "Undo", run: () => addAttachment(chatKey, copy) });
+    }
   }
 
   /** The wire shape of a set of chips. A chip still converting carries
@@ -1918,6 +2100,28 @@
     ></textarea>
     {/if}
     </div>
+    {#if offer && offer.after !== null}
+      <!-- Item 284: a long ⌘V paste, offered as an attachment. -->
+      <div class="paste-offer" role="status">
+        <span class="mono dim">long paste · {pastedLabel(offer.pasted)}</span>
+        <button
+          class="ns-btn ghost small"
+          use:tip={"Move the pasted text out of the box into an attachment — Undo puts it back. ⌥⌘V pastes as an attachment from the start."}
+          onmousedown={(e) => e.preventDefault()}
+          onclick={() => void convertLongPaste()}>Make this an attachment</button
+        >
+      </div>
+    {:else if undoable}
+      <div class="paste-offer" role="status">
+        <span class="mono dim">moved into an attachment</span>
+        <button
+          class="ns-btn ghost small"
+          use:tip={"Put the text back in the box (⌘Z)"}
+          onmousedown={(e) => e.preventDefault()}
+          onclick={() => undoConvert()}>Undo</button
+        >
+      </div>
+    {/if}
     <div class="row" bind:this={rowEl} data-fold={rowFold}>
       <input
         bind:this={picker}
@@ -2432,6 +2636,14 @@
   }
   .composer.floating textarea {
     font-size: 15.5px;
+  }
+  /* Item 284: the long paste's offer, a slim line under the box. */
+  .paste-offer {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 2px 10px 4px;
+    font-size: 12px;
   }
   /* The queue tray: joined to the top of the card, dashed so it reads as
      "not sent yet" (backlog 089). Plain rows; the real design is the

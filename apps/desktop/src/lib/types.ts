@@ -985,6 +985,9 @@ export interface Attachment {
   label?: string;
   /** An office file still converting: no `data` yet, and Send waits. */
   pending?: boolean;
+  /** Text pasted as an attachment (item 284): there is no file on disk to
+   *  drop again, so the drafts store keeps it like the box's own text. */
+  pasted?: boolean;
 }
 
 /** A file for the Claude Code engine (item 277), as `send_agent` takes it. */

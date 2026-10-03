@@ -392,6 +392,16 @@ export function setUndoMenu(
 }
 
 /**
+ * Paste into the focused box as Edit ▸ Paste would (nightshift item 284):
+ * the composer's ⌥⌘V marks the next paste as an attachment, then asks for
+ * one. `false` where the backend cannot (off macOS); the caller then reads
+ * the clipboard itself.
+ */
+export function pasteIntoFocus(): Promise<boolean> {
+  return invoke("paste_into_focus");
+}
+
+/**
  * New chat: leave the open one and say what kind the next one will be;
  * `mode` absent is an ordinary one (see `ChatMode`). Nothing is created —
  * the first message creates the log in that kind — so what comes back is

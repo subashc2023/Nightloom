@@ -1239,6 +1239,27 @@ drafts store. The phone takes PDFs, text and office files as documents and
 the server (`attach::normalize_documents`, in `send_impl`) puts an office
 file's text in its place — no converter on the Fly image.
 
+**Paste as an attachment (2026-10-02, nightshift item 284, blockers 941/942).**
+⌘V is unchanged: text goes into the box whatever its size. **⌥⌘V**
+(Ctrl+Alt+V elsewhere; ⌘⇧V stays the clipboard history of item 173) puts the
+clipboard's text in as a chip — `Pasted text`, `Pasted text (2)`…, its word
+count on the chip — through the same text route as a dropped `.txt`
+(`accept`), so the caps and engines are 277's. How: the key marks the next
+paste and calls `paste_into_focus` (`main.rs`: AppKit's `paste:` down the
+responder chain, as Edit ▸ Paste does), so `onpaste` gets a real paste event —
+the only clipboard read in WKWebView without macOS's "Paste" bubble; a
+clipboard holding an image pastes as ⌘V would. Off macOS the command answers
+`false` and the composer reads `navigator.clipboard`. A ⌘V paste over 2,000
+words shows **Make this an attachment** under the box while the box is as the
+paste left it; one click moves the span into a chip and offers **Undo** (also
+⌘Z in the box, via `menuInterceptors`), which puts the text back exactly. The
+chip is `pasted: true`: the drafts store keeps it like the box's text, past
+the per-attachment and total caps and through the over-quota fallback (there
+is no file to drop again), and × on it offers it back in a toast. In the
+transcript a text attachment shows its word count beside the chip; a click
+unfolds the text in place. Rules: `pasteAttach.ts` (pure, tested). The phone
+composer is not changed.
+
 `Attachment.kind` is carried rather than sniffed from the media type: a document
 has no thumbnail, and a chip that guessed wrong would render a broken `<img>`. The
 transcript lists an attached PDF by name for the same reason a turn shows its
