@@ -21,6 +21,8 @@
     kindLabel,
     newChatLabel,
     newChatSelected,
+    chatSelected,
+    threadSelected,
     newSession,
     openSession,
     refreshNightshift,
@@ -442,7 +444,7 @@
 
   {#snippet chatRow(r: SidebarRow, group: string | null = null)}
     {@const s = r.meta}
-    <div class="session-item" class:active={s.id === app.activeSessionId} class:fork={r.depth > 0} style:--depth={r.depth > 0 ? r.depth : undefined}>
+    <div class="session-item" class:active={chatSelected(s.id)} class:fork={r.depth > 0} style:--depth={r.depth > 0 ? r.depth : undefined}>
       {#if renaming === s.id}
         <!-- svelte-ignore a11y_autofocus -->
         <input
@@ -770,7 +772,7 @@
             <!-- Backlog 292: the chevron folds the group; the name (and status
                  line) opens the thread's tab — what the thread stores. A slug
                  with no thread.md has nothing to show, so its name folds too. -->
-            <div class="tg-head">
+            <div class="tg-head" class:active={threadSelected(g.slug)}>
               <button
                 class="tg-toggle"
                 class:open={g.open}
@@ -1750,6 +1752,11 @@
   }
   .tg-head:hover {
     background: var(--well);
+  }
+  /* Backlog 297: the thread's tab in front — the chat rows' selected look. */
+  .tg-head.active {
+    background: var(--sheet);
+    box-shadow: 0 0 0 1px var(--line2);
   }
   /* Backlog 292: two buttons where 288 had one — the chevron folds, the
      name opens the thread view. */

@@ -3598,6 +3598,33 @@ export function reflectTabs(): void {
 }
 
 /**
+ * Bring the open chat's tab forward when an opener asked for the chat
+ * already open (backlog 297). A thread, file, aside, subagent, attachment,
+ * project or web tab in front changes nothing global, so the chat behind
+ * it is still `app.activeSessionId` with the view "chat": opening it again
+ * changes nothing, the reflection never runs, and the click did nothing.
+ * Its tab in the focused pane, else in the other pane (focused there, as
+ * the thread's own tab is), comes forward; with none, one lands as the
+ * reflection would (⌘ beside, else in place) and the modifier is handed
+ * back.
+ */
+function frontOpenChat(): void {
+  if (activating > 0 || app.view !== "chat") return;
+  const content: TabContent = { kind: "chat", session: app.activeSessionId };
+  const ws = app.tabs;
+  const pane = tabs.focusedPane(ws);
+  const now = tabs.activeTab(pane)?.content;
+  if (!now || tabs.sameContent(now, content)) return;
+  const held = tabs.findTab(pane, content) ?? tabs.findAnywhere(ws, content);
+  if (held) {
+    tabs.activate(ws, held.id);
+    app.openNext = "replace";
+    return;
+  }
+  reflectTabs();
+}
+
+/**
  * Show a tab's content: the activation half. A chat tab opens its chat
  * (or the new-chat state), a note tab its note; a chat other than the open
  * one is refused while a turn runs — the backend holds one session, and
@@ -5100,6 +5127,8 @@ export async function newSession(mode?: ChatMode, kind?: ChatKind): Promise<void
   // there is none — never the backend's `build`, so the wide button and
   // the privacy rows make the kind the sidebar's dot shows.
   const wanted = kind ?? defaultKind();
+  // New chat already the open chat, maybe behind a thread's tab (297).
+  const inFront = app.activeSessionId === null && app.view === "chat";
   try {
     await api.newSession(mode, wanted);
     // The aside thread stays with the chat being left (backlog 130).
@@ -5114,6 +5143,7 @@ export async function newSession(mode?: ChatMode, kind?: ChatKind): Promise<void
     // ~~`app.subagents = []`~~ — rows are per chat since backlog 160.
     app.suggestion = null;
     leaveNote();
+    if (inFront) frontOpenChat();
   } catch (e) {
     app.error = String(e);
   }
@@ -5513,7 +5543,33 @@ export const KIND_LINES: Record<ChatKind, string> = {
  * suite can pin them without a DOM.
  */
 export function newChatSelected(): boolean {
-  return app.activeSessionId === null;
+  return chatSelected(null);
+}
+
+/**
+ * Whether the sidebar draws chat `id`'s row selected (null: New chat) —
+ * ~~whenever it is the open chat~~ (backlog 297, 2026-10-04: a thread,
+ * file, aside… tab in front leaves the chat behind it open, and the row
+ * stayed lit while the page shown was the thread): only when the focused
+ * pane's front tab is that chat (and it is the open chat). With no tab
+ * yet, the open chat.
+ */
+export function chatSelected(id: string | null): boolean {
+  if (app.activeSessionId !== id) return false;
+  const c = frontContent();
+  return !c || (c.kind === "chat" && c.session === id);
+}
+
+/** Whether the sidebar draws the thread `slug`'s name selected: its tab is
+ *  the focused pane's front one (backlog 297). */
+export function threadSelected(slug: string): boolean {
+  const c = frontContent();
+  return c?.kind === "thread" && c.slug === slug;
+}
+
+/** The focused pane's front tab's content, or null while it has none. */
+function frontContent(): TabContent | null {
+  return tabs.activeTab(tabs.focusedPane(app.tabs))?.content ?? null;
 }
 
 export function newChatLabel(): string {
@@ -6156,6 +6212,7 @@ async function peekSession(id: string): Promise<void> {
   }
   if (id === app.activeSessionId) {
     if (app.view !== "chat") leaveNote();
+    else frontOpenChat();
     app.openNext = "replace";
     return;
   }
@@ -6301,6 +6358,9 @@ export async function openSession(id: string): Promise<void> {
     app.subagents = mergeRows(app.subagents, rowsFromLog(app.events, id));
     app.suggestion = null;
     leaveNote();
+    // Backlog 297: in front as the open chat, but maybe behind a tab that
+    // changes nothing global (a thread's) — its tab comes forward.
+    if (inFront) frontOpenChat();
     if (inFront) app.openNext = "replace";
   } catch (e) {
     app.error = String(e);
