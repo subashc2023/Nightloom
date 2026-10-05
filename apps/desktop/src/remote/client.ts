@@ -531,8 +531,10 @@ export function councilProblem(seats: CouncilSeat[]): string | null {
 /** How far a pull or a drag must go, in CSS px, before letting go acts. */
 export const PULL_AT = 70;
 export const DISMISS_AT = 110;
-/** A touch this close to the left edge may open the drawer. */
-export const EDGE = 24;
+/** A touch this close to the left edge may open the drawer (item 300, A8:
+ *  wider than Safari's own back-swipe strip, so a thumb that lands a little
+ *  in from the edge still catches it). */
+export const EDGE = 32;
 
 /** A drag's shown distance: the finger's, damped past `at` so it slows. */
 export function damp(d: number, at = PULL_AT): number {
@@ -547,6 +549,49 @@ export function swipeVerdict(x0: number, dx: number, dy: number, open: boolean):
   if (!open && x0 <= EDGE && dx > 0) return "open";
   if (open && dx < 0) return "close";
   return null;
+}
+
+// ---- the drawer follows the finger (item 300, row A8) ------------------------------
+
+/** A let-go faster than this (CSS px per ms) settles the drawer the way the
+ *  finger was going, wherever it is; slower, it settles by position. */
+export const FLICK = 0.3;
+
+/** The axis a drag has taken once it has gone `slop` px: `x` for one more
+ *  across than down, `y` for one more down, null while still deciding. */
+export function dragAxis(dx: number, dy: number, slop = 8): "x" | "y" | null {
+  if (Math.hypot(dx, dy) < slop) return null;
+  return Math.abs(dx) > Math.abs(dy) ? "x" : "y";
+}
+
+/** Where the drawer's left edge sits (0 open, `-width` closed) for a finger
+ *  that has moved `dx` since a drag began on a drawer that was `fromOpen`:
+ *  1:1 with the finger, clamped to the drawer's travel. */
+export function drawerX(dx: number, width: number, fromOpen: boolean): number {
+  const x = (fromOpen ? 0 : -width) + dx;
+  return Math.max(-width, Math.min(0, x));
+}
+
+/** Whether the drawer, let go at `x` (as `drawerX` gives it) while the finger
+ *  moved at `v` px/ms (positive = rightward), settles open: a flick goes its
+ *  way; otherwise it opens past halfway. */
+export function settleOpen(x: number, width: number, v: number): boolean {
+  if (v >= FLICK) return true;
+  if (v <= -FLICK) return false;
+  return x + width > width / 2;
+}
+
+/** A finger's speed in px/ms over its last `window` ms of samples (`t` in
+ *  ms, `x` in px); 0 with fewer than two samples in reach. */
+export function fingerSpeed(samples: { t: number; x: number }[], window = 100): number {
+  if (samples.length < 2) return 0;
+  const last = samples[samples.length - 1];
+  // The oldest sample inside the window, or the one just before the last
+  // when the finger paused longer than the window.
+  let first = samples[samples.length - 2];
+  for (let i = samples.length - 2; i >= 0 && last.t - samples[i].t <= window; i--) first = samples[i];
+  const dt = last.t - first.t;
+  return dt > 0 ? (last.x - first.x) / dt : 0;
 }
 
 /** Whether a sheet let go after a `dy` drag down in `ms` dismisses it: past
