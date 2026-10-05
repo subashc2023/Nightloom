@@ -97,6 +97,8 @@
   import NightshiftSheet from "./NightshiftSheet.svelte";
   import AsideSheet from "./AsideSheet.svelte";
   import CouncilSheet from "./CouncilSheet.svelte";
+  import ChatMenu from "./ChatMenu.svelte";
+  import { chatSheetSub, fitVisual } from "./sheetLayout";
   import Hosts from "./Hosts.svelte";
   import {
     PROBE_MS,
@@ -2493,6 +2495,7 @@
         class:dragging={sheetDy !== 0}
         style:transform={sheetDy ? `translateY(${sheetDy}px)` : null}
         transition:fly={{ y: 400, duration: motion(300), easing: cubicOut, opacity: 1 }}
+        use:fitVisual
         role="dialog"
         aria-modal="true"
       >
@@ -2500,48 +2503,35 @@
         <div class="grab" use:drag={sheetDrag}><div class="grabber"></div></div>
         {#if sheet === "chat"}
           <div class="sheet-title">{title}</div>
-          <div class="sheet-sub">{projectName(chatProject)}{currentChat ? ` · ${currentChat.user_turns} messages · ${shortWhen(currentChat.modified)}` : ""}</div>
-          <div class="menu">
-            <button data-act="rail" onclick={openRail}>{@render icon("sliders")} Model and settings</button>
-            {#if !readOnly}
-              <button onclick={beginRename}>{@render icon("pencil")} Rename</button>
-              <button onclick={openOnMac} disabled={remote.busy && chatId !== remote.active_chat}>{@render icon("mac")} Open on the Mac</button>
-            {/if}
-            <button onclick={() => startNew(chatProject)}>{@render icon("new")} New chat{readOnly ? ` in ${projectName(chatProject)}` : ""}</button>
-            {#if !readOnly && hasFeature(remote, "aside")}
-              <button onclick={openAside}>
-                {@render icon("aside")}
-                <span class="grow">Ask aside</span>
-                {#if chatId && asides[chatId]?.state === "asking"}<span class="tag">answering</span>{:else if chatId && asides[chatId]}<span class="tag">answered</span>{/if}
-              </button>
-            {/if}
-            {#if !readOnly && hasFeature(remote, "council")}
-              <button onclick={openCouncil}>{@render icon("council")} Ask the council</button>
-            {/if}
-            {#if !readOnly && canAct}
-              <button onclick={continueTurn} disabled={!!actBlocked}>{@render icon("play")} Continue</button>
-              <button onclick={switchKind} disabled={!!actBlocked}>
-                {@render icon("swap")}
-                <span class="grow">{currentChat?.kind === "build" ? "Make it a plain chat" : "Make it a build chat"}</span>
-                <span class="tag">{currentChat?.kind ?? "chat"}</span>
-              </button>
-            {/if}
-            {#if !readOnly && canAct}
-              <button data-act="compact" onclick={() => (sheet = "compact")} disabled={!!actBlocked || !opOk("compact")}>
-                {@render icon("compact")}
-                <span class="grow">Compact{#if opMissing("compact", "")}<small class="why">{opMissing("compact", "")}</small>{/if}</span>
-              </button>
-            {/if}
-            {#if !readOnly && hasFeature(remote, "context")}
-              <button data-act="context" onclick={() => (closeSheet(), (contextOn = true))}>{@render icon("pulse")} Context</button>
-            {/if}
-            {#if busyHere}
-              <button class="danger" onclick={stop}>{@render icon("stop")} Stop the turn</button>
-            {/if}
-            {#if !readOnly && canAct}
-              <button class="danger" onclick={() => (sheet = "delete")} disabled={!!actBlocked}>{@render icon("trash")} Delete</button>
-            {/if}
-          </div>
+          <div class="sheet-sub">{chatSheetSub(projectName(chatProject), currentChat ? currentChat.user_turns : null, currentChat ? shortWhen(currentChat.modified) : null)}</div>
+          <ChatMenu
+            {icon}
+            {readOnly}
+            {canAct}
+            {busyHere}
+            blocked={actBlocked}
+            newLabel={["No project", "Unfiled"].includes(projectName(chatProject)) ? "New chat" : `New chat in ${projectName(chatProject)}`}
+            macRow={remote.host !== "serve"}
+            macDisabled={remote.busy && chatId !== remote.active_chat}
+            aside={hasFeature(remote, "aside")}
+            asideTag={chatId && asides[chatId]?.state === "asking" ? "answering" : chatId && asides[chatId] ? "answered" : null}
+            council={hasFeature(remote, "council")}
+            kind={currentChat?.kind}
+            compact={opOk("compact")}
+            context={hasFeature(remote, "context")}
+            onrail={openRail}
+            onrename={beginRename}
+            onmac={openOnMac}
+            onnew={() => startNew(chatProject)}
+            onaside={openAside}
+            oncouncil={openCouncil}
+            oncontinue={continueTurn}
+            onkind={switchKind}
+            oncompact={() => (sheet = "compact")}
+            oncontext={() => (closeSheet(), (contextOn = true))}
+            onstop={stop}
+            ondelete={() => (sheet = "delete")}
+          />
           {#if error}<p class="sheet-note bad">{error}</p>{:else if actBlocked && canAct}<p class="sheet-note">{actBlocked}</p>{/if}
         {:else if sheet === "rename"}
           <div class="sheet-title">Rename chat</div>
@@ -2587,7 +2577,7 @@
         {:else if sheet === "rail"}
           <RailSheet {rail} problem={railProblem} busy={remote.busy} onpatch={patchRail} />
         {:else if sheet === "notes" && client}
-          <NotesSheet {client} host={remote.host} available={hasFeature(remote, "notes")} start={notesStart} onnote={note} ontall={(t) => (sheetTall = t)} />
+          <NotesSheet {client} host={remote.host} available={hasFeature(remote, "notes")} start={notesStart} onnote={note} ontall={(t) => (sheetTall = t)} project={projects.length > 0 ? activePid || "unfiled" : null} />
         {:else if sheet === "nightshift" && client}
           <NightshiftSheet {client} host={remote.host} available={hasFeature(remote, "nightshift")} onnote={note} ontall={(t) => (sheetTall = t)} />
         {:else if sheet === "aside" && chatId}
@@ -3278,11 +3268,6 @@
     font-family: var(--mono);
     font-size: 11px;
   }
-  .menu small.why {
-    display: block;
-    font-size: 12px;
-    color: var(--dim);
-  }
   .args {
     display: flex;
     flex-direction: column;
@@ -3732,16 +3717,21 @@
     position: fixed;
     left: 0;
     right: 0;
-    bottom: 0;
+    /* 300 F4 (A10, A22): lifted over the keyboard and capped at what the
+       phone shows (sheetLayout.ts fitVisual), below the status bar. */
+    bottom: var(--sheet-lift, 0px);
     z-index: 12;
     background: var(--sheet);
     border-radius: 22px 22px 0 0;
-    padding: 8px 16px calc(16px + env(safe-area-inset-bottom, 0px));
+    padding: 8px 16px calc(16px + var(--sheet-kb, 0px) + env(safe-area-inset-bottom, 0px));
     display: flex;
     flex-direction: column;
     gap: 10px;
-    max-height: 80dvh;
+    --sheet-cap: calc(var(--sheet-vh, 100dvh) - env(safe-area-inset-top, 0px) - 8px);
+    max-height: min(80dvh, var(--sheet-cap));
     overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
     box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.3);
   }
   .grabber {
@@ -3771,6 +3761,9 @@
     background: var(--paper);
     border-radius: 16px;
     overflow: hidden;
+    /* 300 F4 (A10): never shrunk by the sheet's max-height — that clipped
+       its last rows (Delete) out of reach; the sheet scrolls instead. */
+    flex: none;
   }
   .menu button {
     all: unset;
@@ -3788,17 +3781,11 @@
   .menu button:disabled {
     opacity: 0.4;
   }
-  .menu button.danger {
-    color: var(--failed);
-  }
   .menu .grow {
     flex: 1;
   }
   .menu .ico {
     color: var(--ink2);
-  }
-  .menu button.danger .ico {
-    color: var(--failed);
   }
 
   /* ---- wave 1C: long-press, removed turns, photos ---- */
@@ -3870,7 +3857,13 @@
     margin: 0 auto;
   }
   .sheet.tall {
-    max-height: 94dvh;
+    max-height: min(94dvh, var(--sheet-cap));
+  }
+  .sheet > .sheet-title,
+  .sheet > .sheet-sub,
+  .sheet > .sheet-note,
+  .sheet > .actions {
+    flex: none;
   }
   .pull {
     position: sticky;
