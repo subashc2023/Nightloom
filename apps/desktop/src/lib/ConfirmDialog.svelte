@@ -52,7 +52,7 @@
     {#if lead}<p class="lead">{lead}</p>{/if}
     {#if facts.length > 0}
       <div class="facts">
-        {#each facts as [k, v] (k)}
+        {#each facts as [k, v], i (i)}
           <span class="ns-k">{k}</span>
           <span>{v}</span>
         {/each}

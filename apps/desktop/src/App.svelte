@@ -54,6 +54,8 @@
   import WebView from "./lib/WebView.svelte";
   import { closeOrphans, initWebTabs, routeLink } from "./lib/webtabs.svelte";
   import RunningTasks from "./lib/RunningTasks.svelte";
+  import { allRunning, cancelQuit, listenForQuit, pushQuitLines, quitAnyway, quitAsk } from "./lib/running.svelte";
+  import { quitBlockers } from "./lib/running";
   import { isMac } from "./lib/platform";
   import { toggleTranscriptPref } from "./lib/transcriptPrefs.svelte";
   import { thinkingToggleDead } from "./lib/activity";
@@ -98,6 +100,9 @@
     // The stored zoom back on the window, and the View menu's zoom items
     // (nightshift backlog 108).
     void initZoom();
+    // ⌘Q, the menu's Quit and the close button ask first while work runs
+    // (backlog 308): Rust cancels the quit and says so here.
+    void listenForQuit().catch(() => {});
     // ~~Every outside link in rendered text opens in the system browser~~
     // (his report, 2026-09-18: a reply's link took over the whole window
     // with no way back). Capture phase, so it runs before any renderer's
@@ -115,6 +120,12 @@
     };
     document.addEventListener("click", onLink, true);
     return () => document.removeEventListener("click", onLink, true);
+  });
+
+  // The quit guard's list (backlog 308): Rust holds what a quit would stop,
+  // re-sent whenever a run starts or ends anywhere.
+  $effect(() => {
+    pushQuitLines(allRunning());
   });
 
   // A web tab's page dies with its tab (backlog 172): any tab change —
@@ -900,6 +911,23 @@
     {#if app.showTasks}
       <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
       <div class="settings-overlay" onmousedown={(e) => { if (e.target === e.currentTarget) app.showTasks = false; }}><RunningTasks /></div>
+    {/if}
+    <!-- Quitting while work runs (nightshift backlog 308): what a quit
+         would stop, read live; Cancel keeps the app and every run going. -->
+    {#if quitAsk.open}
+      {@const stops = quitBlockers(allRunning())}
+      <ConfirmDialog
+        title={stops.length > 0 ? "Quit while work is running?" : "Quit Nightloom?"}
+        lead={stops.length > 0
+          ? `Quitting stops ${stops.length === 1 ? "this" : `these ${stops.length}`} where ${stops.length === 1 ? "it is" : "they are"}. Cancel keeps the app and all of it running. Drafts are kept either way.`
+          : "Nothing is running any more."}
+        facts={stops.map((r) => [[r.where, r.chat].filter(Boolean).join(" · "), `${r.kind} — ${r.doing}`] as [string, string])}
+        confirmLabel={stops.length > 0 ? "Quit anyway" : "Quit"}
+        busy={quitAsk.quitting}
+        busyLabel="Quitting…"
+        onconfirm={() => void quitAnyway()}
+        onclose={cancelQuit}
+      />
     {/if}
     <Palette />
     <!-- The wrap-up's aside picker (nightshift item 285). -->

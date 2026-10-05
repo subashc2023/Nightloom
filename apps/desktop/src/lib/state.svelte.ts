@@ -115,6 +115,8 @@ import { rewoundWrites, setAsideFiles } from "./rewoundFiles";
 import type { TabContent, Workspace } from "./tabs";
 import { UNFILED_TABS, loadSavedWorkspaces, rebuild, saveWorkspaceFor, snapshot } from "./tabsStore";
 import { turnClock } from "./turnTiming";
+import { FirstSeen, doingOf, quoteLine, sortRuns, type RunEntry, type RunKind } from "./running";
+import { rememberScroll } from "./scroll.svelte";
 import {
   DEFAULT_USAGE_LIMITS,
   deferredRecheckAt,
@@ -595,6 +597,9 @@ export interface AsideTurn {
   usage?: { input_tokens: number; output_tokens: number; cache_read_tokens?: number };
   /** When the answer ended (ISO), for the footer's time. */
   at?: string;
+  /** Clock when it was asked (backlog 309): the running list's elapsed.
+   *  In memory only; a stored turn is never running. */
+  startedAt?: number;
 }
 
 /** The open chat's aside (backlog 081, the passage form backlog 107) — see
@@ -974,6 +979,9 @@ export const app = $state({
   turnSeq: 0,
   /** The Running-tasks popover under the top bar's agents chip. */
   showTasks: false,
+  /** Bumped to send the chat on screen's transcript to its foot, where the
+   *  running turn is (backlog 309's jump from the running list). */
+  toLatest: 0,
   /** The CLI's predicted next prompt for the open chat (nightshift backlog
    *  083), the composer's ghost line; cleared by a send or a chat switch. */
   suggestion: null as string | null,
@@ -5898,6 +5906,206 @@ export function chatRuns(id: string): boolean {
   return running === id;
 }
 
+/** Start times for work that records none (backlog 309). */
+const runSeen = new FirstSeen();
+
+/** Where chat `id` lives, for the running list (backlog 309): an off-screen
+ *  turn's record says; the chat on screen (or parked) is the open
+ *  project's; else the project it was opened in this launch. */
+function homeOfChat(id: string | null): { project: string | null; where: string } {
+  const named = (project: string | null, name: string | null | undefined) => ({
+    project,
+    where: name ?? (project === null ? "unfiled chats" : "another project"),
+  });
+  const b = id ? app.background[id] : undefined;
+  if (b) return named(b.project ?? null, b.projectName);
+  const here = id === null || id === app.activeSessionId || id === app.parked?.session;
+  if (here || !id || !chatHome.has(id)) return named(app.project?.id ?? null, app.project?.name);
+  const h = chatHome.get(id)!;
+  return named(h.project, h.name);
+}
+
+/** A chat's name for the running list: its row's, its record's, its first
+ *  message's (`backgroundName`); "the new chat" before it has an id. */
+function chatLabel(id: string | null): string {
+  if (!id) return "the new chat";
+  const b = app.background[id];
+  if (b) {
+    const s = !inOtherProject(b, app.project?.id ?? null) ? app.sessions.find((x) => x.id === id) : undefined;
+    if (s) return chatName(s.title, s.first_user);
+    if (b.name) return b.name;
+    const first = firstUserText(b.events);
+    return first ? `“${chatName(null, first)}”` : "a chat off screen";
+  }
+  const s = app.sessions.find((x) => x.id === id);
+  if (s) return chatName(s.title, s.first_user);
+  if (id === app.parked?.session) return backgroundName(id, app.parked.events);
+  if (id === app.activeSessionId) return backgroundName(id, app.events);
+  return "a chat";
+}
+
+/**
+ * Everything running now, in every project (nightshift backlogs 308 and
+ * 309) — see `running.ts`. Read from the state that already says what runs,
+ * so it is never out of step with it: the turn on screen or parked and each
+ * off screen (a council when its seats are running), each running subagent
+ * of a chat whose turn still runs (a row left `running` by a turn that has
+ * ended is the CLI's and gone with it — `subagentAsk` reads them the same
+ * way), each asking aside (on screen and stashed), the dream, the capture,
+ * the daily pass, the Nightshift interview, and each project's live
+ * Nightshift run (detached: it outlives a quit). Note edits are
+ * `running.svelte.ts`'s, which adds them.
+ */
+export function runningWork(now: number = Date.now()): RunEntry[] {
+  void app.liveVersion;
+  void app.paneVersion;
+  const out: RunEntry[] = [];
+  const seatsRunning = (chat: string | null) =>
+    app.subagents.filter((r) => r.session === chat && r.subagent_type === SEAT_TYPE && subagentRunning(r)).length;
+  const turnRow = (
+    session: string | null,
+    segments: Segment[] | null | undefined,
+    events: SessionEvent[],
+    onScreen: boolean,
+    waiting: boolean,
+  ): void => {
+    const seats = seatsRunning(session);
+    const home = homeOfChat(session);
+    out.push({
+      id: `turn:${session ?? "new"}`,
+      kind: seats > 0 ? "council" : "turn",
+      ...home,
+      session,
+      chat: chatLabel(session),
+      doing: waiting ? "waiting on you" : seats > 0 ? `${seats} seat${seats === 1 ? "" : "s"} answering` : doingOf(segments),
+      startedAt: lastUserAt(events),
+      onScreen,
+      waiting,
+      survivesQuit: false,
+    });
+  };
+  if (app.busy) {
+    const session = app.parked ? app.parked.session : (fg?.chat ?? app.activeSessionId);
+    const host = liveHost(app);
+    turnRow(session, host.live?.segments, app.parked ? app.parked.events : app.events, !app.parked, app.pendingApprovals.length > 0);
+  }
+  for (const b of Object.values(app.background)) {
+    turnRow(b.session, b.live?.segments, b.events, false, b.approvals.length > 0 || !!b.budget?.pending_since_ms);
+  }
+  const turnOf = new Map(out.map((r) => [r.session, r]));
+  for (const r of app.subagents) {
+    if (!subagentRunning(r)) continue;
+    const parent = turnOf.get(r.session);
+    if (!parent) continue;
+    const seat = r.subagent_type === SEAT_TYPE;
+    const what = r.description || r.subagent_type || "agent";
+    out.push({
+      id: `agent:${r.tool_use_id}`,
+      kind: seat ? "council seat" : "subagent",
+      project: parent.project,
+      where: parent.where,
+      session: r.session,
+      chat: parent.chat,
+      doing: seat ? `${shortSeat(r.model)}${r.segments.length ? ` — ${doingOf(r.segments)}` : ""}` : `${what} — ${doingOf(r.segments)}`,
+      startedAt: r.startedAt,
+      onScreen: parent.onScreen,
+      waiting: false,
+      survivesQuit: false,
+    });
+  }
+  const asking = (t: AsideTurn) => t.answer === null && t.error === null && !t.cancelled;
+  const asideRows = (session: string | null, list: Aside[]) => {
+    for (const a of list) {
+      const t = a.turns.find(asking);
+      if (!t) continue;
+      out.push({
+        id: `aside:${a.id}:${t.seq}`,
+        kind: "aside",
+        ...homeOfChat(session),
+        session,
+        chat: chatLabel(session),
+        doing: quoteLine(t.question),
+        startedAt: t.startedAt ?? null,
+        onScreen: session === app.activeSessionId,
+        waiting: false,
+        survivesQuit: false,
+      });
+    }
+  };
+  asideRows(app.activeSessionId, app.asides);
+  for (const [session, list] of asideStash) if (session !== app.activeSessionId) asideRows(session, list);
+  const flag = (key: RunKind, running: boolean, where: string, doing: string, survivesQuit = false, project: string | null = null) => {
+    const startedAt = runSeen.mark(`${key}:${project ?? ""}`, running, now);
+    if (!running) return;
+    out.push({
+      id: `${key}:${project ?? ""}`,
+      kind: key,
+      project,
+      where,
+      session: null,
+      chat: "",
+      doing,
+      startedAt,
+      onScreen: false,
+      waiting: false,
+      survivesQuit,
+    });
+  };
+  // The daily pass sets the capture and dream flags in turn; it is the row.
+  flag("daily pass", app.centre.dailyRunning, "memory", "capture → dream → tidy");
+  flag("dream", app.dreaming && !app.centre.dailyRunning, "memory", app.dreamActivity || "sorting the inbox into memory");
+  flag("capture", app.capturing && !app.centre.dailyRunning, "memory", "reading chat logs into the inbox");
+  flag("interview", !!app.nightshift.interview?.busy, "Nightshift", "the item interview is answering");
+  for (const r of app.centre.rows) {
+    flag("nightshift", !!r.nightshift?.live, r.name, "a shift is running — it keeps running if the app quits", true, r.id);
+  }
+  return sortRuns(out);
+}
+
+/** The council seat's own row type (`council.rs` `SEAT_TASK_TYPE`). */
+const SEAT_TYPE = "council seat";
+function shortSeat(model: string | undefined): string {
+  return model ? `seat on ${model}` : "seat";
+}
+
+/** The newest message he sent in `events`, as a clock: a turn's start. */
+function lastUserAt(events: SessionEvent[]): number | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (e.event === "user_message") {
+      const t = Date.parse(e.at);
+      return Number.isNaN(t) ? null : t;
+    }
+  }
+  return null;
+}
+
+/**
+ * A click on a running row (backlog 309): its chat, in its own project,
+ * at the foot of the transcript where the running turn is. A turn running
+ * off screen comes back on screen streaming (`openRunningChat`); an aside's
+ * chat opens with its cards. App-wide work has no chat and does nothing.
+ */
+export async function openRun(r: Pick<RunEntry, "session" | "project" | "onScreen">): Promise<void> {
+  app.showTasks = false;
+  const id = r.session;
+  if (!id) return;
+  // Opened at its foot: a chat never scrolled this launch opens there anyway.
+  rememberScroll(id, 0, true);
+  if (!r.onScreen) {
+    if (app.background[id] || chatRuns(id)) {
+      await openRunningChat(id);
+    } else {
+      if ((app.project?.id ?? null) !== r.project) {
+        await useProject(r.project);
+        if ((app.project?.id ?? null) !== r.project) return;
+      }
+      if (app.activeSessionId !== id) await openSession(id);
+    }
+  }
+  app.toLatest++;
+}
+
 /** Whether chat `id` can be deleted now (A4's gates audit): ~~never while
  *  any turn runs~~ — any chat but a running one, on the Claude Code engine,
  *  where each chat has its own lock. ~~A provider turn, or a parked one,
@@ -6947,7 +7155,7 @@ export async function askAside(
   const words = q || ATTACHMENTS_ONLY;
   const sent = quote ? asideQuestion(quote, words) : words;
   const seq = ++asideSeq;
-  const turn: AsideTurn = { seq, question: q, partial: "", answer: null, error: null, cancelled: false, cacheRead: 0 };
+  const turn: AsideTurn = { seq, question: q, partial: "", answer: null, error: null, cancelled: false, cacheRead: 0, startedAt: Date.now() };
   if (chips.length > 0) turn.attachments = chips.map((c) => ({ ...c }));
   // ~~A running exchange is replaced (one at a time): cancelled on the
   // backend~~ — nothing is replaced since backlog 176: the other cards
@@ -7092,7 +7300,7 @@ export async function followUpAside(question: string, thread: Aside | null = nul
     .map((t) => ({ question: t.question || ATTACHMENTS_ONLY, answer: t.partial }));
   const sent = asideFollowUp(a.quote, prior, q || ATTACHMENTS_ONLY);
   const earlier = a.turns.flatMap((t) => t.attachments ?? []).filter((c) => c.data);
-  const turn: AsideTurn = { seq: ++asideSeq, question: q, partial: "", answer: null, error: null, cancelled: false, cacheRead: 0 };
+  const turn: AsideTurn = { seq: ++asideSeq, question: q, partial: "", answer: null, error: null, cancelled: false, cacheRead: 0, startedAt: Date.now() };
   if (chips.length > 0) turn.attachments = chips.map((c) => ({ ...c }));
   a.turns.push(turn);
   await runAside(turn, sent, a, [...earlier, ...chips]);
@@ -7152,6 +7360,10 @@ export const asideStash: Map<string, Aside[]> =
  * pattern, never persisted. The pending chat (no id yet) shares one slot.
  */
 const councilByChat: Map<string, CouncilPrefs> = new Map();
+
+/** Each chat opened in this launch, and the project it was opened in
+ *  (backlog 309): where a stashed aside's chat lives. Plain, per window. */
+const chatHome: Map<string, { project: string | null; name: string | null }> = new Map();
 const PENDING_COUNCIL = "\u0000pending";
 export function councilFor(chat: string | null): CouncilPrefs {
   return councilByChat.get(chat ?? PENDING_COUNCIL) ?? loadCouncilPrefs();
@@ -7164,6 +7376,10 @@ export function setCouncilFor(chat: string | null, prefs: CouncilPrefs): void {
  *  every open thread, not only the front one (backlog 176; 137's FE4).
  *  Exported for the suite; the chat openers call it. */
 export function switchAside(next: string | null): void {
+  // The project the chat being opened lives in (backlog 309): its asides,
+  // stashed when he leaves it — for another project, maybe — are listed
+  // under it in the running list.
+  if (next !== null) chatHome.set(next, { project: app.project?.id ?? null, name: app.project?.name ?? null });
   const from = app.activeSessionId;
   if (from !== null) {
     if (app.asides.length > 0) asideStash.set(from, app.asides);

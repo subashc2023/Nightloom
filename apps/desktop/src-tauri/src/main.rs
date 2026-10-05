@@ -67,6 +67,8 @@ mod note_edit;
 mod power;
 /// A changed prompt layer waits for the chat's cold moment (backlog 174).
 mod prompt_hold;
+/// Quitting while work runs asks first (nightshift backlog 308).
+mod quit_guard;
 /// The phone page over the tailnet (nightshift backlog 091, Shape B).
 mod remote;
 mod set_aside;
@@ -7679,6 +7681,9 @@ fn main() {
             // which resolve `State<AppState>` and panic if nothing has managed
             // it yet.
             build_window(app)?;
+            // Quitting while work runs asks first (backlog 308): the
+            // delegate's `applicationShouldTerminate:`, after tao set it.
+            quit_guard::install(app.handle());
             Ok(())
         })
         // Wrapped (backlog 172): no app command answers a web tab's page.
@@ -7752,6 +7757,9 @@ fn main() {
             restore_session,
             set_undo_menu,
             paste_into_focus,
+            quit_guard::set_running_work,
+            quit_guard::quit_dialog_shown,
+            quit_guard::quit_now,
             approve_call,
             pick_folder,
             pick_export,
@@ -7893,11 +7901,18 @@ fn main() {
         ]))
         .build(tauri::generate_context!())
         .expect("error while building Nightloom")
-        .run(|app, event| {
+        .run(|app, event| match event {
             // The away server's quit push (item 268 step 3), best effort.
-            if let tauri::RunEvent::Exit = event {
-                away::on_exit(app);
-            }
+            tauri::RunEvent::Exit => away::on_exit(app),
+            // The window's close button while work runs asks first (backlog
+            // 308); with nothing running it closes, and the app quits, as
+            // before.
+            tauri::RunEvent::WindowEvent {
+                label,
+                event: tauri::WindowEvent::CloseRequested { api, .. },
+                ..
+            } if label == "main" && !quit_guard::close_requested(app) => api.prevent_close(),
+            _ => {}
         });
 }
 

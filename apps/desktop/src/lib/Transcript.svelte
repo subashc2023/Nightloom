@@ -1070,6 +1070,17 @@
     }, 1500);
     viewport.focus({ preventScroll: true });
   }
+  /** A click on this chat's row in the running list (backlog 309): to
+   *  the running turn at the foot, as the ⌄ does. The window's own
+   *  transcript only (a split pane's draws `chat`); a bump from before
+   *  this transcript existed is not its to answer. */
+  let seenLatest = app.toLatest;
+  $effect(() => {
+    const n = app.toLatest;
+    if (n === seenLatest) return;
+    seenLatest = n;
+    if (chat === undefined) untrack(() => toBottom());
+  });
 
   // ⌥↑ / ⌥↓ step to the previous / next message. On the viewport rather
   // than the window: the composer's own ⌥↑ moves the caret by paragraph

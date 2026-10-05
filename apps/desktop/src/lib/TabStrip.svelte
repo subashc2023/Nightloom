@@ -16,6 +16,7 @@
   import { draggedShell } from "./terminal.svelte";
   import Icon from "./Icon.svelte";
   import TabChooser from "./TabChooser.svelte";
+  import RunningBadge from "./RunningBadge.svelte";
   import { isMac } from "./platform";
   import { web, webLabel } from "./webtabs.svelte";
   import { plan, startTabDrag } from "./tabDrag";
@@ -281,6 +282,9 @@
   }
   const canSplit = $derived(app.tabs.panes.length < tabs.MAX_PANES && pane.tabs.length > 1);
   const other = $derived(tabs.otherPane(app.tabs, pane.id));
+  /** The running badge (backlog 309) sits once, at the window's right:
+   *  the last pane's strip. */
+  const lastPane = $derived(app.tabs.panes[app.tabs.panes.length - 1]?.id === pane.id);
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions a11y_interactive_supports_focus -->
@@ -365,7 +369,10 @@
     <Icon name="plus" size={12} />
   </button>
   <!-- The terminal pane's dock button lives in `App.svelte`'s pane foot,
-       not here: the strip is the tabs' and stays the tabs'. -->
+       not here: the strip is the tabs' and stays the tabs'. The one
+       exception is the running badge (backlog 309): the strip is the only
+       bar drawn over every view. -->
+  {#if lastPane}<RunningBadge />{/if}
 </div>
 {#if ghost}
   <!-- The dragged tab under the pointer (backlog 195); after a drag that

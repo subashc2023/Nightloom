@@ -401,6 +401,26 @@ export function setUndoMenu(
 }
 
 /**
+ * The quit guard (nightshift backlog 308): what a quit would stop, one line
+ * each (`running.ts` `quitLines`), pushed whenever it changes; Rust's ⌘Q,
+ * menu Quit and close button read it and ask the window when it is not
+ * empty (`quit_guard.rs`).
+ */
+export function setRunningWork(lines: string[]): Promise<void> {
+  return invoke("set_running_work", { lines });
+}
+
+/** The quit dialog is up: a second quit waits for its answer. */
+export function quitDialogShown(): Promise<void> {
+  return invoke("quit_dialog_shown");
+}
+
+/** *Quit anyway*: the same `terminate:` ⌘Q sends, now let through. */
+export function quitNow(): Promise<void> {
+  return invoke("quit_now");
+}
+
+/**
  * Paste into the focused box as Edit ▸ Paste would (nightshift item 284):
  * the composer's ⌥⌘V marks the next paste as an attachment, then asks for
  * one. `false` where the backend cannot (off macOS); the caller then reads

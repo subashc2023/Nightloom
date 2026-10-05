@@ -24,13 +24,20 @@
    * down as the sum over the child's rounds (prompt, output, cache read,
    * cache write). *tool uses* is the CLI's count. *elapsed* is the CLI's
    * `duration_ms` once it has reported one, the window's clock until then.
+   *
+   * Everywhere (backlog 309, 2026-10-04): ~~"Chats running", the turns
+   * alone~~ — the first group is every run in every project (`allRunning`,
+   * the list the quit guard reads too): turns, councils, subagents, asides,
+   * note edits, the dream and capture, Nightshift. A row with a chat opens
+   * it — in its own project, at the running turn (`openRun`). Opened from
+   * the badge at the tab strip's end as well as the agents chip.
    */
   import {
     app,
     liveChats,
     openChatSubagents,
     openContent,
-    openRunningChat,
+    openRun,
     subagentRunning,
     type LiveChat,
     type SubagentRow,
@@ -41,28 +48,35 @@
   import { shortModel } from "./subagentRows";
   import { capsLine, fmtElapsed, groupAgents, rowElapsedMs, rowState, stateLabel, summaryLine } from "./taskGroups";
   import Icon from "./Icon.svelte";
+  import { allRunning } from "./running.svelte";
+  import type { RunEntry } from "./running";
 
   /** A ticking clock for the elapsed column while any child or chat runs. */
   let now = $state(Date.now());
   $effect(() => {
-    if (!mine.some(subagentRunning) && chats.length === 0) return;
+    if (!mine.some(subagentRunning) && runs.length === 0) return;
     const t = setInterval(() => (now = Date.now()), 1000);
     return () => clearInterval(t);
   });
 
   /** The chats whose turns run now (nightshift backlog 159, A4): the
-   *  chat on screen's and each one off screen, so a turn left running in
-   *  another chat is a row here and a click away. */
+   *  chat on screen's and each one off screen — the header's count and the
+   *  turn rows' tokens. */
   const chats = $derived(liveChats());
-  function chatElapsed(c: LiveChat): string {
-    if (c.startedAt === null) return "";
-    return fmtElapsed(now - c.startedAt);
+  /** Everything running, in every project (backlog 309), live: re-read
+   *  each second with the clock, and on every start and end. */
+  const runs = $derived(allRunning(now));
+  function usageOf(r: RunEntry): string {
+    if (r.kind !== "turn" && r.kind !== "council") return "";
+    const c: LiveChat | undefined = chats.find((x) => x.session === r.session);
+    return c?.usage ? fmtTokens(c.usage.input_tokens + c.usage.output_tokens) : "";
   }
-  async function openChat(c: LiveChat) {
-    if (!c.session || c.onScreen) return;
-    app.showTasks = false;
-    // In its own project first, when that is not the open one (A4).
-    await openRunningChat(c.session);
+  function runElapsed(r: RunEntry): string {
+    return r.startedAt === null ? "" : fmtElapsed(now - r.startedAt);
+  }
+  /** A row with a chat opens it, in its project, at the running turn. */
+  function canOpen(r: RunEntry): boolean {
+    return r.session !== null;
   }
 
   /** The open chat's rows (backlog 160: the store holds every chat's). */
@@ -147,6 +161,23 @@
   }
 </script>
 
+{#snippet runCells(r: RunEntry)}
+  <span class="state"><span class="dot"></span>{r.kind}</span>
+  <span class="name" use:tip={[r.where, r.chat, r.doing].filter(Boolean).join("\n")}>
+    {#if r.chat}<span class="desc">{r.chat}</span>{/if}
+    <span class="doing">{r.doing}</span>
+    {#if r.waiting}<span class="ask">waiting on you</span>{/if}
+    {#if r.onScreen}<span class="tag">on screen</span>{/if}
+  </span>
+  <span class="model" use:tip={r.survivesQuit ? "Keeps running if the app quits" : ""}>{r.where}</span>
+  <span class="num">{runElapsed(r)}</span>
+  <span class="num" use:tip={"Tokens so far this turn: the latest request and reply"}>{usageOf(r)}</span>
+  <span class="num"></span>
+  <span class="act">
+    {#if canOpen(r)}<span class="ns-btn ghost small" aria-hidden="true">Open <Icon name="chevr" size={11} /></span>{/if}
+  </span>
+{/snippet}
+
 {#snippet agentRow(r: SubagentRow)}
   {@const st = rowState(r)}
   <div class="row {st}">
@@ -193,35 +224,40 @@
     <div class="caps" use:tip={budgetTitle(app.turnBudget)}>{caps}</div>
   {/if}
   <div class="pane">
-    {#if chats.length > 0 || mine.length > 0}
+    {#if runs.length > 0 || mine.length > 0}
       <!-- One column head for every group below: they share the columns. -->
       <div class="cols" aria-hidden="true">
         <span>state</span><span>{mine.length > 0 ? "agent" : "chat"}</span><span>{mine.length > 0 ? "model" : ""}</span><span class="num">elapsed</span><span class="num">tokens</span><span class="num">{mine.length > 0 ? "tools" : ""}</span><span></span>
       </div>
     {/if}
-    {#if chats.length > 0}
-      <section class="group chats" data-group="chats">
+    {#if runs.length > 0}
+      <section class="group chats" data-group="everywhere">
         <header class="group-head">
-          <span class="ns-k">Chats running</span><span class="count">{chats.length}</span>
+          <span class="ns-k">Running everywhere</span><span class="count live">{runs.length}</span>
+          <span class="spacer"></span><span class="aside">every project · click a row to open it</span>
         </header>
         <div class="rows">
-          {#each chats as c (c.session ?? "new")}
-            <div class="row running">
-              <span class="state"><span class="dot"></span>{c.onScreen ? "on screen" : "background"}</span>
-              <span class="name" use:tip={c.session ?? "New chat, first turn"}>
-                <span class="desc">{c.name}</span>
-                {#if c.waiting > 0}<span class="ask">waiting on you</span>{/if}
-              </span>
-              <span class="model"></span>
-              <span class="num">{chatElapsed(c)}</span>
-              <span class="num" use:tip={"Tokens so far this turn: the latest request and reply"}>{c.usage ? fmtTokens(c.usage.input_tokens + c.usage.output_tokens) : ""}</span>
-              <span class="num"></span>
-              <span class="act">
-                {#if !c.onScreen && c.session}
-                  <button class="ns-btn ghost small" onclick={() => void openChat(c)} use:tip={"Bring this chat on screen, still streaming"}>Open <Icon name="chevr" size={11} /></button>
-                {/if}
-              </span>
-            </div>
+          {#each runs as r (r.id)}
+            {#if canOpen(r)}
+              <!-- The whole row opens its chat (a div: it holds the Open mark). -->
+              <div
+                class="row running clickable"
+                role="button"
+                tabindex="0"
+                data-run={r.kind}
+                onclick={() => void openRun(r)}
+                onkeydown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    void openRun(r);
+                  }
+                }}
+              >
+                {@render runCells(r)}
+              </div>
+            {:else}
+              <div class="row running" data-run={r.kind}>{@render runCells(r)}</div>
+            {/if}
           {/each}
         </div>
       </section>
@@ -539,6 +575,26 @@
   .row.running .desc,
   .chats .desc {
     color: var(--ink);
+  }
+  /* The everywhere group (309): what it is doing, dim beside the chat; the
+     whole row opens it. */
+  .doing {
+    min-width: 0;
+    flex: 1 1 auto;
+    color: var(--dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .row.clickable {
+    cursor: pointer;
+  }
+  .row.clickable:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+  .desc {
+    flex: 0 1 auto;
   }
   .type,
   .tag {
