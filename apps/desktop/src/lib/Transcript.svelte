@@ -87,6 +87,9 @@
   import { afterWrapTurn, wrapAsk } from "./budgetWrap.svelte";
   import Icon from "./Icon.svelte";
   import Navigator from "./Navigator.svelte";
+  // Edits as versions (item 299): ‹ n/N › under an edited message.
+  import { ensureForkInfo, openVersion, versionsOf } from "./versions.svelte";
+  import { versionPlace } from "./versions";
   import { arrive, hasLaunch } from "./sendMotion";
   // The first-paint mark of the message's timing line (item 256).
   import { hasText, turnClock } from "./turnTiming";
@@ -162,6 +165,15 @@
   const locked = $derived(chat !== undefined || app.busy);
   /** The chat drawn. */
   const chatId = $derived(chat !== undefined ? chat : app.activeSessionId);
+  // The versions under an edited message (item 299): the forks in this
+  // chat's lineage are read once each, so the arrows know where each one's
+  // edited message is.
+  $effect(() => {
+    const id = chatId;
+    const events = evs;
+    void app.sessions;
+    if (id) untrack(() => ensureForkInfo(id, events));
+  });
   // A pane's chat whose log has not been read yet: read it.
   $effect(() => {
     if (chat !== undefined && paneView === null) void loadPaneLog(chat);
@@ -1457,6 +1469,32 @@
                was sent, in words, the exact moment on hover. The time is
                always drawn; the tools only when the turn can be acted on. -->
           <div class="turn-foot">
+            {#if chatId && editing?.index !== item.index}
+              {@const vlist = versionsOf(chatId, item.index)}
+              {@const vplace = versionPlace(vlist, chatId)}
+              {#if vlist && vplace}
+                <!-- The versions of this message (item 299): ‹ n/N ›, the
+                     original first; an arrow opens that version's chat in
+                     this tab. Always drawn, not only on hover. -->
+                <span class="versions" role="group" aria-label="Versions of this message">
+                  <button
+                    class="ver-btn"
+                    disabled={vplace.n <= 1 || inPane}
+                    aria-label="Previous version"
+                    use:tip={"Open the previous version of this message"}
+                    onclick={() => openVersion(vlist[vplace.n - 2])}>‹</button
+                  >
+                  <span class="ver-count">{vplace.n}/{vplace.total}</span>
+                  <button
+                    class="ver-btn"
+                    disabled={vplace.n >= vplace.total || inPane}
+                    aria-label="Next version"
+                    use:tip={"Open the next version of this message"}
+                    onclick={() => openVersion(vlist[vplace.n])}>›</button
+                  >
+                </span>
+              {/if}
+            {/if}
             {#if item.text && editing?.index !== item.index}
               <!-- Copy his own message (nightshift backlog 181, 2026-09-22):
                    the text exactly as he typed it, never the rendered or
@@ -2035,6 +2073,44 @@
     align-items: center;
     gap: 8px;
     height: 22px;
+  }
+  /* The versions of an edited message (item 299): ‹ n/N ›, the foot's
+     dim 11px, the arrows the size of a tool button's glyph. */
+  .versions {
+    display: inline-flex;
+    align-items: center;
+    gap: 1px;
+    font-family: var(--sans);
+    font-size: 11px;
+    color: var(--dim);
+    font-variant-numeric: tabular-nums;
+  }
+  .ver-btn {
+    display: inline-grid;
+    place-items: center;
+    width: 18px;
+    height: 20px;
+    padding: 0;
+    background: none;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    color: var(--dim);
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .ver-btn:hover:not(:disabled),
+  .ver-btn:focus-visible {
+    color: var(--ink);
+    border-color: var(--line2);
+  }
+  .ver-btn:disabled {
+    opacity: 0.35;
+    cursor: default;
+  }
+  .ver-count {
+    min-width: 22px;
+    text-align: center;
   }
   .when {
     font-family: var(--sans);

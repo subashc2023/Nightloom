@@ -21,6 +21,9 @@
   import { plan, startTabDrag } from "./tabDrag";
   import { tabDrag } from "./tabDrag.svelte";
   import { asideTabName } from "./asideSidebar.svelte";
+  // Item 299: Make main on a fork's tab, as on its sidebar row.
+  import { canMakeMain } from "./versions";
+  import { makeMainChat, versions } from "./versions.svelte";
 
   /**
    * One pane's strip of tabs (nightshift backlog 099, boards 9a and 9d):
@@ -394,6 +397,10 @@
       <button role="menuitem" onclick={() => { menuFor = null; if (t) void moveTab(t.id, other.id, other.tabs.length); }}>Move to the other pane</button>
     {:else}
       <button role="menuitem" disabled={!canSplit} use:tip={canSplit ? "" : "A pane keeps at least one tab"} onclick={() => { menuFor = null; if (t) void splitTab(t.id, "right"); }}>Open beside</button>
+    {/if}
+    {#if t?.content.kind === "chat" && t.content.session && canMakeMain(app.sessions, versions.map, t.content.session)}
+      {@const sid = t.content.session}
+      <button role="menuitem" use:tip={"Put this fork in its original's row, name and place; the original stays a version under the edited message"} onclick={() => { menuFor = null; void makeMainChat(sid); }}>Make main</button>
     {/if}
   </div>
 {/if}
