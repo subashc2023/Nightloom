@@ -301,6 +301,11 @@ mod tests {
         let text = format!("{seg:?}");
         assert!(text.contains("files/1.3-assembly.pdf (PDF, "), "{text}");
         assert!(text.contains("page range"), "{text}");
+        // The path to type, said outright (a live Haiku turn missed `.agents/`).
+        assert!(
+            text.contains("here, .agents/files/1.3-assembly.pdf."),
+            "{text}"
+        );
         let _ = std::fs::remove_dir_all(ws);
     }
 

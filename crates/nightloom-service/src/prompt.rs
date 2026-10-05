@@ -1207,7 +1207,7 @@ The notes directory is currently empty.
         if shown < total {
             text.push_str(&more_line(total - shown));
         }
-        text.push_str(not_text_note(&notes[..shown]));
+        text.push_str(&not_text_note(&notes[..shown], Some(&rel)));
     }
     text.push_str("</project-notes>");
 
@@ -1476,7 +1476,7 @@ pub fn knowledge_segment(knowledge: &KnowledgeContext) -> Segment {
             }
         }
     }
-    text.push_str(not_text_note(&notes));
+    text.push_str(&not_text_note(&notes, None));
     text.push_str("</knowledge>");
 
     Segment::new(SegmentKind::Knowledge, "knowledge", text)
@@ -1512,14 +1512,26 @@ fn note_entry(prefix: &str, note: &crate::project::Note) -> String {
 /// Said once under a listing that holds a non-text file (backlog 307): what
 /// "not text" means for reading it. Empty when every file listed is text, so
 /// a folder of notes reads exactly as it did.
-fn not_text_note(notes: &[crate::project::Note]) -> &'static str {
-    if notes.iter().any(|n| n.kind.is_some()) {
+///
+/// `dir`, for the project's docspace (item 306): the folder the listed names
+/// are inside, said with a worked path — a live Haiku turn read a kept PDF
+/// at `files/x.pdf` beside the workspace's root, missing the `.agents/`.
+fn not_text_note(notes: &[crate::project::Note], dir: Option<&str>) -> String {
+    let Some(first) = notes.iter().find(|n| n.kind.is_some()) else {
+        return String::new();
+    };
+    let path = match dir {
+        Some(dir) => format!(
+            " A listed name is inside {dir}/, so its path is {dir}/<name> — here, {dir}/{}.",
+            first.name
+        ),
+        None => String::new(),
+    };
+    format!(
         "Files marked \"not text\" are binary: read_file returns nothing useful from them. \
          Read one with a tool that takes its kind if you have one (a PDF by page range), \
-         look for a text copy beside it, or ask the user.\n"
-    } else {
-        ""
-    }
+         look for a text copy beside it, or ask the user.{path}\n"
+    )
 }
 
 fn human_bytes(bytes: u64) -> String {

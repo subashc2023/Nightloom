@@ -3434,6 +3434,7 @@ async function applyAgentDraft(updateNow: PromptLayer[] = [], take = true): Prom
       subagentRules: rulesFor(subagentRules.store, chat),
     });
     const res = await withDeadline(connecting, CONNECT_DEADLINE_MS, "Connecting to Claude Code");
+    filesChangedSinceConnect = false;
     app.promptPending = await withDeadline(api.promptPending(), 5_000, "The held prompt").catch(() => null);
     app.connection = {
       provider: res.provider,
@@ -3468,12 +3469,29 @@ async function applyAgentDraft(updateNow: PromptLayer[] = [], take = true): Prom
   }
 }
 
+/** Set when a file is kept in the project (item 306), cleared by a connect:
+ *  the project-notes listing a connection carries is as old as the connect. */
+let filesChangedSinceConnect = false;
+
+/** A file landed in the project's docspace (item 306's Keep): the next New
+ *  chat turn connects first, so its prompt lists it. */
+export function projectFilesChanged(): void {
+  filesChangedSinceConnect = true;
+}
+
 /**
  * Before an agent turn (nightshift backlog 174): reconnect when the engine
  * was built for another chat, or when this chat's cache is cold and a
  * *newer version exists* mark is taken then — never on a warm cache.
  */
 async function layersBeforeTurn(): Promise<void> {
+  // A file kept in the project since the connect (item 306): a New chat's
+  // first turn would go with the listing built before it, so it connects
+  // again — nothing is cached yet, so it rewrites nothing.
+  if (filesChangedSinceConnect && app.activeSessionId === null && !app.busy && !app.connecting) {
+    await applyAgentDraft();
+    return;
+  }
   // A New chat's first turn hands its connection to the chat it created
   // (`bind_new_chat` in Rust): read that back rather than reconnect for it.
   if (app.promptPending && app.promptPending.session === null && app.activeSessionId !== null) {

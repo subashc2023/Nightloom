@@ -6,7 +6,7 @@
  * same bytes and writes nothing).
  */
 import { keepAttachment } from "./api";
-import { addToast } from "./state.svelte";
+import { addToast, projectFilesChanged } from "./state.svelte";
 import type { KeepState } from "./keep";
 
 export const keeps = $state<Record<string, KeepState>>({});
@@ -28,6 +28,7 @@ export async function keepNow(
   try {
     const kept = await keepAttachment(name, mediaType, from);
     keeps[key] = { phase: "kept", rel: kept.rel };
+    if (!kept.already) projectFilesChanged();
     addToast(
       kept.already
         ? `${name} was already in this project's files, as ${kept.rel}`
