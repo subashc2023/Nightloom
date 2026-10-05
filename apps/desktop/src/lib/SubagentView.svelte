@@ -19,7 +19,19 @@
   import { openSession } from "./state.svelte";
   import * as api from "./api";
   import { followUpsOf, type FollowUp } from "./subagentAsk";
-  import { adoptedChat, agentAsk, agentLive, askSubagent, keyOf, setAgentDraft, takeBackNote } from "./subagentAsk.svelte";
+  import {
+    adoptedChat,
+    agentAsk,
+    agentLive,
+    askSubagent,
+    keyOf,
+    setAgentDraft,
+    setTellMain,
+    takeBackNote,
+    takeBackSteered,
+    type Steered,
+  } from "./subagentAsk.svelte";
+  import { clock12 } from "./awaySettings";
 
   let { content }: { content: Extract<TabContent, { kind: "subagent" }> } = $props();
 
@@ -38,6 +50,22 @@
   const key = $derived(keyOf({ tool_use_id: content.toolUseId }));
   const live = $derived(row ? agentLive(row) : false);
   const held = $derived(agentAsk.notes[key] ?? []);
+  // Notes sent into it while it ran (backlog 295): those still on their
+  // way, and those delivered — drawn after the call they rode on, or here
+  // under the run when that call is not in the copy (a row from the log).
+  const steered = $derived(agentAsk.steered[key] ?? []);
+  const onTheWay = $derived(steered.filter((n) => !n.deliveredAt));
+  const callIds = $derived(new Set(idsOf(row?.segments ?? [])));
+  const arrivedLoose = $derived(steered.filter((n) => n.deliveredAt && !(n.toolUseId && callIds.has(n.toolUseId))));
+  function idsOf(segs: Segment[]): string[] {
+    return segs.flatMap((s) => (s.kind === "tool" ? [s.call.id] : []));
+  }
+  function arrivedWith(callId: string): Steered[] {
+    return steered.filter((n) => n.deliveredAt && n.toolUseId === callId);
+  }
+  function arrivedLabel(n: Steered): string {
+    return `Your note · reached it ${clock12(n.deliveredAt ?? null)}${n.tool ? ` with its ${shortToolName(n.tool)} call` : ""}${n.tellMain ? " · the main chat was told too" : ""}`;
+  }
   const adopted = $derived(row ? adoptedChat(row) : null);
   let followUps = $state<FollowUp[]>([]);
   $effect(() => {
@@ -131,6 +159,18 @@
           {/each}
         </div>
       {/if}
+      {#each arrivedLoose as n (n.id)}
+        <div class="arrived">
+          <span class="arrived-label">{arrivedLabel(n)}</span>
+          <span class="arrived-text">{n.text}</span>
+        </div>
+      {/each}
+      {#each onTheWay as n (n.id)}
+        <div class="held">
+          <span class="held-text">{n.text}<span class="waiting">· sent {clock12(n.at)}, reaches it with its next call</span></span>
+          <button class="link" use:tip={"Put this note back in the box below, if it has not reached the agent yet"} onclick={() => void takeBackSteered(key, n.id)}>Take back</button>
+        </div>
+      {/each}
       {#each held as n, k (k)}
         <div class="held">
           <span class="held-text">{n.text}</span>
@@ -139,8 +179,12 @@
       {/each}
       <p class="note small hint">
         {#if live}
-          It is still running, and nothing can reach it mid-run: what you write is held and goes as your first
-          question once it has finished (Stop ends it too).
+          It is still running: what you send reaches it with its next tool call, and is marked here when it does.
+          If it makes no further call, the note goes as your first question once it has finished.
+          <label class="tell-main">
+            <input type="checkbox" checked={agentAsk.tellMain} onchange={(e) => setTellMain(e.currentTarget.checked)} />
+            Tell the main chat too
+          </label>
         {:else if adopted}
           Your questions go to its own chat, which carries its run; the main chat is not told.
           <button class="link" onclick={() => adopted && openSession(adopted)}>Open that chat</button>
@@ -152,14 +196,14 @@
         <textarea
           class="ask"
           rows="2"
-          placeholder={live ? "A note for when it finishes" : "Ask this agent"}
-          aria-label={live ? "A note for when it finishes" : "Ask this agent"}
+          placeholder={live ? "A note for it while it runs" : "Ask this agent"}
+          aria-label={live ? "A note for it while it runs" : "Ask this agent"}
           value={agentAsk.drafts[key] ?? ""}
           oninput={(e) => setAgentDraft(key, e.currentTarget.value)}
           onkeydown={onKey}
         ></textarea>
         <button class="send" disabled={asking || !(agentAsk.drafts[key] ?? "").trim()} onclick={() => void ask()}>
-          {live ? "Hold" : "Ask"}
+          {live ? "Send" : "Ask"}
         </button>
       </div>
     </section>
@@ -189,6 +233,14 @@
         </details>
         {#if s.call.children?.length}
           {@render list(s.call.children, depth + 1)}
+        {/if}
+        {#if depth === 0}
+          {#each arrivedWith(s.call.id) as n (n.id)}
+            <div class="arrived inline">
+              <span class="arrived-label">{arrivedLabel(n)}</span>
+              <span class="arrived-text">{n.text}</span>
+            </div>
+          {/each}
         {/if}
       {:else if s.kind === "thinking"}
         <details class="thought">
@@ -338,6 +390,42 @@
   .held-text {
     flex: 1;
     min-width: 0;
+  }
+  .waiting {
+    margin-left: 0.4em;
+    color: var(--dim);
+    font-size: 12px;
+  }
+  /* A note that reached the running agent (backlog 295): his words, on his
+     side like a question, with when and on which call. */
+  .arrived {
+    align-self: flex-end;
+    max-width: 80%;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 6px 12px;
+    border-radius: 14px;
+    background: var(--well);
+    border: 1px solid var(--line);
+    font-size: 13.5px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .arrived.inline {
+    margin: 2px 0 4px;
+  }
+  .arrived-label {
+    color: var(--dim);
+    font-size: 11.5px;
+  }
+  .tell-main {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    margin-top: 6px;
+    width: fit-content;
+    cursor: pointer;
   }
   .hint {
     margin: 4px 0 0;

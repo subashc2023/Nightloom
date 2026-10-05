@@ -5335,6 +5335,88 @@ async fn budget_override(
     .map_err(|e| format!("writing the override failed: {e}"))?
 }
 
+/// A note he typed under a running subagent (nightshift backlog 295),
+/// queued in the chat's directory for the brief hook, which hands it to
+/// that subagent on its next call (`agent::steer`). `tell_main` queues a
+/// copy for the chat's own next call too. `Err` leaves the window to hold
+/// the note the old way, for when the agent finishes.
+#[tauri::command]
+async fn steer_subagent(
+    state: State<'_, AppState>,
+    session: String,
+    agent_id: String,
+    id: String,
+    text: String,
+    about: Option<String>,
+    tell_main: Option<bool>,
+) -> Result<(), String> {
+    use nightloom_service::agent::steer;
+    let dir = budget_dir(&state, &session)
+        .await
+        .ok_or_else(|| "no chat to steer in".to_string())?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let note = steer::Queued {
+        id,
+        text,
+        at_ms: now,
+        about,
+    };
+    tokio::task::spawn_blocking(move || {
+        steer::queue(&dir, &agent_id, note.clone())?;
+        if tell_main.unwrap_or(false) {
+            steer::queue(&dir, steer::MAIN, note)?;
+        }
+        Ok::<(), std::io::Error>(())
+    })
+    .await
+    .map_err(|e| format!("queueing the note failed: {e}"))?
+    .map_err(|e| format!("queueing the note failed: {e}"))
+}
+
+/// The chat's steering notes, queued and delivered (backlog 295), for
+/// the window to mark each delivered and when.
+#[tauri::command]
+async fn steer_state(
+    state: State<'_, AppState>,
+    session: String,
+) -> Result<nightloom_service::agent::steer::SteerState, String> {
+    let Some(dir) = budget_dir(&state, &session).await else {
+        return Ok(Default::default());
+    };
+    tokio::task::spawn_blocking(move || nightloom_service::agent::steer::read(&dir))
+        .await
+        .map_err(|e| format!("reading the notes failed: {e}"))
+}
+
+/// Take back a note not yet delivered (backlog 295): `true` when it was
+/// still waiting — the agent finished without another call, or he took
+/// it back — and `false` when it had already gone. The main thread's
+/// copy goes with it.
+#[tauri::command]
+async fn unsteer_subagent(
+    state: State<'_, AppState>,
+    session: String,
+    agent_id: String,
+    id: String,
+) -> Result<bool, String> {
+    use nightloom_service::agent::steer;
+    let Some(dir) = budget_dir(&state, &session).await else {
+        return Ok(false);
+    };
+    tokio::task::spawn_blocking(move || {
+        let took = steer::unqueue(&dir, &agent_id, &id);
+        if took {
+            steer::unqueue(&dir, steer::MAIN, &id);
+        }
+        took
+    })
+    .await
+    .map_err(|e| format!("taking the note back failed: {e}"))
+}
+
 #[tauri::command]
 async fn plan_usage() -> Result<nightloom_service::plan_usage::PlanUsage, String> {
     tokio::task::spawn_blocking(nightloom_service::plan_usage::read)
@@ -7550,6 +7632,9 @@ fn main() {
             turn_budget,
             note_presence,
             budget_override,
+            steer_subagent,
+            steer_state,
+            unsteer_subagent,
             checkpoint,
             set_checkpoint,
             resolve_new_project_path,
