@@ -558,13 +558,14 @@
     background: var(--paper);
     display: flex;
     flex-direction: column;
-    padding: env(safe-area-inset-top, 0px) 0 0;
   }
+  /* 300 F4 (A38): the header paints the strip under the status bar in its
+     own colour (it was the page's, under a grey band). */
   .cx-top {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 8px 12px;
+    padding: calc(8px + env(safe-area-inset-top, 0px)) calc(12px + env(safe-area-inset-right, 0px)) 8px calc(12px + env(safe-area-inset-left, 0px));
     border-bottom: 1px solid var(--line);
     background: var(--sheet);
     flex: none;

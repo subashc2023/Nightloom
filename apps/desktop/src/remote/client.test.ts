@@ -438,6 +438,23 @@ describe("notes (wave 2C)", () => {
     saveNoteDraft("new:project", null);
     expect(noteDraftKeys()).toEqual([]);
   });
+
+  it("keys a project's note drafts by the project (300 A20)", () => {
+    localStorage.clear();
+    expect(noteDraftKey("instructions", "AGENTS.md", "recipes")).toBe("project:recipes:instructions/AGENTS.md");
+    expect(noteDraftKey("project", null, "recipes")).toBe("project:recipes:new:project");
+    // Another project's draft is not this one's.
+    expect(noteDraftKey("instructions", "AGENTS.md", "garden")).not.toBe(noteDraftKey("instructions", "AGENTS.md", "recipes"));
+    // Notes that are not a project's keep their key; no project keeps the old one.
+    expect(noteDraftKey("memory", "AGENTS.md", "recipes")).toBe("memory/AGENTS.md");
+    expect(noteDraftKey("knowledge", "a.md", "recipes")).toBe("knowledge/a.md");
+    expect(noteDraftKey("instructions", "AGENTS.md", null)).toBe("instructions/AGENTS.md");
+    expect(noteDraftKey("instructions", "AGENTS.md", "")).toBe("instructions/AGENTS.md");
+    // An old unkeyed draft is still read back under its old key.
+    saveNoteDraft("instructions/AGENTS.md", { text: "Use metric units.", base: "" });
+    expect(loadNoteDraft(noteDraftKey("instructions", "AGENTS.md"))?.text).toBe("Use metric units.");
+    localStorage.clear();
+  });
 });
 
 describe("search (wave 2C)", () => {
