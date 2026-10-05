@@ -106,7 +106,7 @@
   import Hosts from "./Hosts.svelte";
   // Item 300 (wave 8B F1): the drawer follows the finger; Recents and Projects.
   import { dragAxis, drawerX, fingerSpeed, settleOpen } from "./client";
-  import { UNFILED, projectSummaries, recentRows } from "./recents";
+  import { UNFILED, lastActive as chatWhen, projectSummaries, recentRows } from "./recents";
   import ProjectsSheet from "./ProjectsSheet.svelte";
   import ProjectPage from "./ProjectPage.svelte";
   import {
@@ -133,6 +133,7 @@
   } from "./hosts";
   import { heldTap, joinDraft, loadPlace, placeFromHash, placeHash, plainError, samePlace, savePlace, triable, type Place } from "./place";
   import { NO_PROJECT, notesProject } from "./screenProject";
+  import { NEW_CHAT_TURN, turnEndedFor } from "./turnNotice";
 
   // ---- the hosts and the connection (wave 3: the Mac and Away) ------------
   /** The page's own origin; empty outside a browser. */
@@ -212,6 +213,11 @@
   let chose = false;
   let events = $state<SessionEvent[]>([]);
   let live = $state<LiveTurn | null>(null);
+  /** The chat whose turn the page started (300 A16/B2): the turn-end toast
+   *  asks this, not the host's current chat, which a send moves before the
+   *  page reads it again. A turn started elsewhere (the Mac, a curl) leaves
+   *  it null, and the host's current chat at the end names it. */
+  let turnChat: string | null = null;
   let toast = $state<string | null>(null);
   /** The chat a toast opens on a tap (300 A16), or null. */
   let toastChat = $state<string | null>(null);
@@ -303,7 +309,7 @@
   let renameText = $state("");
   let openTools = $state<Record<string, boolean>>({});
   /** The gap the chat's pull opens above the first message (300 A6). */
-  const pullGap = $derived(pullWhere === "chat" ? (refreshing ? 52 : Math.round(pullBy * 0.75)) : 0);
+  const pullGap = $derived(pullWhere === "chat" ? (refreshing ? 52 : Math.round(pullBy)) : 0);
   /** Agent cards whose subagent steps are open (300 A1), by call id. */
   let openSteps = $state<Record<string, boolean>>({});
 
@@ -412,9 +418,12 @@
    *  screen; when it ended in another chat, a toast naming it that opens
    *  it on a tap. */
   function turnEndedNotice() {
-    const ran = remote.active_chat;
-    if (!ran || ran === chatId) return;
-    const label = (chatsBy[activePid] ?? []).find((c) => c.id === ran)?.label;
+    const ran = turnEndedFor(turnChat, remote.active_chat, chatId, pendingNew !== null);
+    turnChat = null;
+    if (!ran) return;
+    const label = Object.values(chatsBy)
+      .flatMap((l) => l ?? [])
+      .find((c) => c.id === ran)?.label;
     note(label ? `Reply ready in “${label}”` : "Reply ready in another chat", ran);
   }
 
@@ -472,6 +481,7 @@
         chatHost = active;
         chatProject = null;
         chatPid = newProject ?? (activePid || null);
+        if (turnChat === NEW_CHAT_TURN) turnChat = id;
         place();
         // What he typed while it started stays his, under the new chat.
         if (typed.trim()) saveDraft(draftKey(id, null), typed);
@@ -543,6 +553,12 @@
    *  anything held in the queue can leave. */
   async function turnEnded() {
     live = null;
+    // The notice may come after the state read that saw the turn end; a
+    // chat remembered for a turn whose notice never came is dropped soon.
+    const was = turnChat;
+    setTimeout(() => {
+      if (turnChat === was) turnChat = null;
+    }, 5000);
     await refreshTranscript();
     await refreshChats();
     await drainQueue();
@@ -947,7 +963,7 @@
 
   /** Item 300 (A21, A37): the screen in the URL's hash — a history entry
    *  per chat, so Back returns to the chat before — and in storage. */
-  function place() {
+  function place(replace = false) {
     const p: Place = chatId
       ? { chat: chatId, project: chatPid, host: chatHost }
       : { chat: null, project: newProject ?? (activePid || null), host: null };
@@ -957,7 +973,7 @@
     if (samePlace(cur, p)) return;
     const url = location.pathname + location.search + placeHash(p);
     try {
-      if (cur === null) history.replaceState(p, "", url);
+      if (cur === null || replace) history.replaceState(p, "", url);
       else history.pushState(p, "", url);
     } catch {
       // A history the browser will not write (rate-limited): the screen still changes.
@@ -1223,6 +1239,7 @@
       const status = await chatClient!.send(chatId, text, { project, images, documents, nonce: attempt.nonce });
       lastTry = null;
       remote = { ...remote, busy: true };
+      if (status !== "queued") turnChat = chatId;
       // The Mac opened the chat's project to send (blocker 665).
       if (project) void refreshProjects();
       if (status === "queued") {
@@ -1290,6 +1307,7 @@
       photos = [];
       remote = { ...remote, busy: true };
       if (status === "queued") return;
+      turnChat = NEW_CHAT_TURN;
       live = emptyTurn();
       launch("phone", box);
       events = [
@@ -1408,6 +1426,7 @@
       queue = queue.filter((q) => q.id !== next.id);
       saveQueue(queue);
       remote = { ...remote, busy: true };
+      if (status !== "queued") turnChat = next.chat;
       if (status === "queued") {
         note("The Mac is mid-turn — the held message goes when it ends");
         return;
@@ -1514,6 +1533,7 @@
       if (reply && chat === chatId && reply.chat) remote = { ...remote, active_chat: reply.chat };
       if (starts) {
         live = emptyTurn();
+        turnChat = reply?.chat ?? chat;
         remote = { ...remote, busy: true };
         scrollToEnd();
       }
@@ -1655,6 +1675,9 @@
     const label = currentChat?.label ?? "Chat";
     const project = sendProject;
     const host = chatRole;
+    // The new chat after the delete is in the deleted chat's project, not
+    // the host's open one (300 B4); No project where the host lists it.
+    const home = chatPid ?? (projects.some((p) => p.id === NO_PROJECT) ? NO_PROJECT : null);
     const ok = await actOn(id, project, [{ op: "delete" }], "Moved to the trash");
     if (!ok) {
       sheet = "chat";
@@ -1662,7 +1685,7 @@
     }
     sheet = null;
     trashed = { id, label, project, host };
-    startNew(null);
+    startNew(home);
     void refreshChats();
   }
 
@@ -1918,6 +1941,7 @@
     try {
       const status = await chatClient.send(chatId, text, { project, council, nonce: attempt.nonce });
       lastTry = null;
+      if (status !== "queued") turnChat = chatId;
       setDraft("");
       sheet = null;
       remote = { ...remote, busy: true };
@@ -2301,6 +2325,9 @@
     // The text typed before the switch travels with him to the new project.
     draft = loadDraft(draftKey(null, newProject)) || was;
     typed();
+    // A reload keeps the project he chose (300 A21/B3); the same screen,
+    // so it replaces the history entry rather than adding one for Back.
+    place(true);
   }
 
   // ---- the cards --------------------------------------------------------------
@@ -2904,7 +2931,7 @@
               <span class="chat-label">{r.chat.label}</span>
               <span class="chat-meta">
                 {#if r.pid === activePid && r.chat.id === remote.active_chat}<span class="live-dot" class:run={remote.busy}></span>{/if}
-                <span>{shortWhen(r.chat.modified)}{r.chat.mode !== "normal" ? ` · ${r.chat.mode}` : ""}</span>
+                <span>{shortWhen(chatWhen(r.chat))}{r.chat.mode !== "normal" ? ` · ${r.chat.mode}` : ""}</span>
                 {#if r.project}<span class="tag">{r.project}</span>{/if}
               </span>
             </button>
@@ -2938,7 +2965,12 @@
             name={p?.name ?? "Project"}
             chats={chatsBy[pid] ?? null}
             here={chatProject === pid || (chatProject === null && activePid === pid) ? chatId : null}
-            instructions={hasFeature(remote, "notes") && (pid === activePid || hasFeature(remote, "notes_project")) ? () => ((projectsView = null), openNotes({ scope: "instructions", name: "AGENTS.md" }, pid)) : null}
+            instructions={hasFeature(remote, "notes") && (pid === activePid || hasFeature(remote, "notes_project")) ? () => {
+                    // Read before the page closes: `pid` is derived from `projectsView`.
+                    const id = pid;
+                    projectsView = null;
+                    openNotes({ scope: "instructions", name: "AGENTS.md" }, id);
+                  } : null}
             onrename={projectOps?.renameProject ? (name) => renameProject(pid, name) : null}
             onforget={projectOps?.forgetProject ? () => forgetProject(pid) : null}
             onchat={(id) => openProjectChat(id, pid)}
@@ -2981,7 +3013,7 @@
         <div class="grab" use:drag={sheetDrag}><div class="grabber"></div></div>
         {#if sheet === "chat"}
           <div class="sheet-title">{title}</div>
-          <div class="sheet-sub">{chatSheetSub(projectName(chatProject), currentChat ? currentChat.user_turns : null, currentChat ? shortWhen(currentChat.modified) : null)}</div>
+          <div class="sheet-sub">{chatSheetSub(projectName(chatProject), currentChat ? currentChat.user_turns : null, currentChat ? shortWhen(chatWhen(currentChat)) : null)}</div>
           <ChatMenu
             {icon}
             {readOnly}
@@ -3055,7 +3087,7 @@
         {:else if sheet === "rail"}
           <RailSheet {rail} problem={railProblem} busy={remote.busy} onpatch={patchRail} />
         {:else if sheet === "notes" && client}
-          <NotesSheet {client} host={remote.host} available={hasFeature(remote, "notes")} start={notesStart} onnote={note} ontall={(t) => (sheetTall = t)} project={notesPid} projectLabel={notesPid === null ? null : notesPid === NO_PROJECT ? "No project" : (projects.find((x) => x.id === notesPid)?.name ?? null)} />
+          <NotesSheet {client} where={hostName(active ?? "mac")} host={remote.host} available={hasFeature(remote, "notes")} start={notesStart} onnote={note} ontall={(t) => (sheetTall = t)} project={notesPid} projectLabel={notesPid === null ? null : notesPid === NO_PROJECT ? "No project" : (projects.find((x) => x.id === notesPid)?.name ?? null)} />
         {:else if sheet === "nightshift" && client}
           <NightshiftSheet {client} host={remote.host} available={hasFeature(remote, "nightshift")} onnote={note} ontall={(t) => (sheetTall = t)} />
         {:else if sheet === "aside" && chatId}
@@ -3123,6 +3155,7 @@
             {running}
             problem={runningProblem}
             onrefresh={refreshRunning}
+            where={hostName(active ?? "mac")}
             onopen={(id, project) => ((sheet = null), void openChat(id, project ?? projectOf(id)))}
           />
         {:else}

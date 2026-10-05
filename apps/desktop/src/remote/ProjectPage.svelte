@@ -10,6 +10,7 @@
    */
   import { untrack } from "svelte";
   import { loadDraft, saveDraft, shortWhen, type ChatRow } from "./client";
+  import { lastActive } from "./recents";
 
   interface Props {
     id: string;
@@ -43,7 +44,7 @@
   let busy = $state(false);
   let problem = $state<string | null>(null);
 
-  const sorted = $derived(chats ? [...chats].sort((a, b) => Date.parse(b.modified) - Date.parse(a.modified)) : null);
+  const sorted = $derived(chats ? [...chats].sort((a, b) => Date.parse(lastActive(b)) - Date.parse(lastActive(a))) : null);
 
   function startRename() {
     menu = false;
@@ -151,7 +152,7 @@
       {#each sorted as c (c.id)}
         <button class="pp-row" class:here={c.id === here} onclick={() => onchat(c.id)}>
           <span class="pp-row-label">{c.label}</span>
-          <span class="pp-row-meta">{shortWhen(c.modified)}{c.mode !== "normal" ? ` · ${c.mode}` : ""}</span>
+          <span class="pp-row-meta">{shortWhen(lastActive(c))}{c.mode !== "normal" ? ` · ${c.mode}` : ""}</span>
         </button>
       {:else}
         <p class="pp-empty">No chats yet — start one above.</p>
@@ -177,7 +178,9 @@
     gap: 8px;
     padding: calc(8px + env(safe-area-inset-top, 0px)) 8px 8px;
     border-bottom: 1px solid var(--line);
-    background: var(--sheet);
+    /* The colour of Safari's strip above it (theme-color = --paper) and
+       of the chat's header, so the top is one colour (300 B7). */
+    background: var(--paper);
     flex: none;
   }
   .pp-grow {

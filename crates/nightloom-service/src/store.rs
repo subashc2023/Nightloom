@@ -71,6 +71,12 @@ pub struct SessionSummary {
     /// over the raw log, like `title`; a sidebar row shows it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread: Option<String>,
+    /// When he last wrote in the chat (item 300 B8): the latest user
+    /// message's time, so a list ordered by it is not reshuffled by a
+    /// rename, a title or any other event that touches the file. `None`
+    /// for a chat with no message yet, or a line written without a time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_message: Option<DateTime<Utc>>,
 }
 
 fn is_normal(mode: &ChatMode) -> bool {
@@ -215,6 +221,8 @@ enum Peek {
     },
     UserMessage {
         text: String,
+        #[serde(default)]
+        at: Option<DateTime<Utc>>,
     },
     Title {
         text: String,
@@ -333,6 +341,9 @@ struct Summarizing {
     /// Latest wins (backlog 281); `None` when never bound or unbound.
     #[serde(default)]
     thread: Option<String>,
+    /// The latest user message's time (item 300 B8).
+    #[serde(default)]
+    last_message: Option<DateTime<Utc>>,
 }
 
 impl Summarizing {
@@ -349,11 +360,14 @@ impl Summarizing {
                 self.kind = kind;
                 self.forked_from = forked_from;
             }
-            Peek::UserMessage { text } => {
+            Peek::UserMessage { text, at } => {
                 if self.first_user.is_none() {
                     self.first_user = Some(text);
                 }
                 self.user_turns += 1;
+                if at.is_some() {
+                    self.last_message = self.last_message.max(at);
+                }
             }
             // Latest wins, matching `Session::title`. This is the raw log
             // rather than the live projection — like `user_turns` beside it,
@@ -383,6 +397,7 @@ impl Summarizing {
             kind: self.kind,
             forked_from: self.forked_from.clone(),
             thread: self.thread.clone(),
+            last_message: self.last_message,
         }
     }
 
@@ -469,7 +484,7 @@ const LISTING_FILE: &str = ".listing.json";
 /// fork line (2026-09-15, later the same day), on the same reasoning. 4
 /// since the kind (2026-09-16, nightshift backlog 102), likewise. 5 since
 /// the thread binding (2026-10-02, backlog 281).
-const LISTING_VERSION: u32 = 5;
+const LISTING_VERSION: u32 = 6;
 
 impl Listing {
     fn read(dir: &Path) -> BTreeMap<String, Cached> {
@@ -514,7 +529,10 @@ fn peek_at(event: &SessionEvent) -> Option<Peek> {
             kind: *kind,
             forked_from: forked_from.clone(),
         }),
-        SessionEvent::UserMessage { text, .. } => Some(Peek::UserMessage { text: text.clone() }),
+        SessionEvent::UserMessage { text, at, .. } => Some(Peek::UserMessage {
+            text: text.clone(),
+            at: Some(*at),
+        }),
         SessionEvent::Title { text, .. } => Some(Peek::Title { text: text.clone() }),
         SessionEvent::Thread { thread, .. } => Some(Peek::Thread {
             thread: thread.clone(),
@@ -985,6 +1003,34 @@ mod tests {
         assert!(list(&dir).unwrap().is_empty());
     }
 
+    /// Item 300 B8: the listing carries when he last wrote, and a rename
+    /// afterwards (which touches the file) does not move it.
+    #[test]
+    fn a_rename_does_not_change_when_he_last_wrote() {
+        use nightloom_core::Session;
+        let dir = scratch();
+        let mut session = Session::start(&dir, ChatMode::Normal, ChatKind::Build).unwrap();
+        session.record_user("first");
+        session.record_user("second");
+        drop(session);
+        let listed = list(&dir).unwrap();
+        let wrote = listed[0].last_message.expect("a message time");
+        assert!(wrote <= listed[0].modified);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let path = listed[0].path.clone();
+        let mut session = Session::load(path).unwrap();
+        session.record_title_by("renamed", nightloom_core::TitleBy::User);
+        drop(session);
+        let again = list(&dir).unwrap();
+        assert_eq!(again[0].label(60), "renamed");
+        assert_eq!(
+            again[0].last_message,
+            Some(wrote),
+            "the rename is not a message"
+        );
+        assert!(again[0].modified > wrote, "while the file's time moved");
+    }
+
     /// A named session is shown by its name; an unnamed one falls back to
     /// what was asked, which is all there was before.
     #[test]
@@ -1000,6 +1046,7 @@ mod tests {
             kind: ChatKind::Build,
             forked_from: None,
             thread: None,
+            last_message: None,
         };
         assert_eq!(s.label(60), "can you help me rename a function everywhere");
 

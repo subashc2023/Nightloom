@@ -2,7 +2,7 @@
 // and Projects in a stable order (A4, A23, A28).
 import { describe, expect, it } from "vitest";
 import { EDGE, FLICK, dragAxis, drawerX, fingerSpeed, settleOpen, type ChatRow, type ProjectRow } from "./client";
-import { UNFILED, chatCount, projectSummaries, recentRows } from "./recents";
+import { UNFILED, chatCount, lastActive, projectSummaries, recentRows } from "./recents";
 
 const W = 340;
 
@@ -71,6 +71,16 @@ describe("Recents (A23, A28)", () => {
     // The same list when the host's open project changes.
     const moved = projects.map((p) => ({ ...p, active: p.id === "g" }));
     expect(recentRows(moved, by).map((r) => r.chat.id)).toEqual(["t1", "u1", "g1", "u2"]);
+  });
+
+  it("a rename does not move a chat: Recents orders by his last message (300 B8)", () => {
+    // Tomato spacing was renamed at 20:33 (the file's time) but last written in at 19:52.
+    const renamed = { ...chat("g1", "Tomato rows", "2026-10-04T20:33:00Z"), last_message: "2026-10-04T19:52:00Z" };
+    const by = { g: [renamed], t: [{ ...chat("t1", "Lit review", "2026-10-04T20:00:00Z"), last_message: "2026-10-04T20:00:00Z" }] };
+    expect(recentRows(projects, by).map((r) => r.chat.id)).toEqual(["t1", "g1"]);
+    expect(lastActive(renamed)).toBe("2026-10-04T19:52:00Z");
+    // An older host sends no message time: the file's time, as before.
+    expect(lastActive(chat("o", "old", "2026-10-04T18:00:00Z"))).toBe("2026-10-04T18:00:00Z");
   });
 
   it("drops a forgotten project's chats and keeps an old host's open list", () => {

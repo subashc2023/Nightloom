@@ -50,8 +50,11 @@
     /** The name of `project` as the page shows it (item 300 B1), so the
      *  sheet says whose notes these are; "This project" when unknown. */
     projectLabel?: string | null;
+    /** The host's name in a sentence — "the Mac" or "Away" (300 A3/B5). */
+    where?: string;
   }
-  let { client, available, host = undefined, start = null, onnote, ontall, project = null, projectLabel = null }: Props = $props();
+  let { client, available, host = undefined, start = null, onnote, ontall, project = null, projectLabel = null, where = "the Mac" }: Props = $props();
+  const Where = $derived(where.charAt(0).toUpperCase() + where.slice(1));
 
   type View =
     | { v: "list" }
@@ -99,8 +102,8 @@
   const isFixed = (s: NoteScope) => FIXED_NOTES[s] !== undefined;
 
   function say(e: unknown): string {
-    if (e instanceof Unreachable) return "The Mac is unreachable.";
-    if (e instanceof ApiError && e.status === 404) return "This Mac's Nightloom has no notes route — update it.";
+    if (e instanceof Unreachable) return `${Where} is unreachable.`;
+    if (e instanceof ApiError && e.status === 404) return `${Where}'s Nightloom has no notes route — update it.`;
     return String(e instanceof Error ? e.message : e);
   }
 
@@ -200,7 +203,7 @@
       // Saved on the Mac: only now does the draft go.
       saveNoteDraft(key(s, view.v === "new" ? null : n), null);
       text = edit;
-      onnote(view.v === "new" ? "Note created on the Mac" : "Saved on the Mac");
+      onnote(view.v === "new" ? `Note created on ${where}` : `Saved on ${where}`);
       view = { v: "read", scope: s, name: n };
       drafts = noteDraftKeys();
       if (!isFixed(s)) void load(s);
@@ -250,7 +253,7 @@
     busy = true;
     try {
       await client.deleteNote(s, n, project);
-      onnote(`“${noteTitle(n)}” moved to the trash on the Mac`);
+      onnote(`“${noteTitle(n)}” moved to the trash on ${where}`);
       view = { v: "list" };
       await load(s);
     } catch (e) {
@@ -298,7 +301,7 @@
       {/each}
     </div>
     {#if list === null && !problem}
-      <p class="ns-note">Asking the Mac…</p>
+      <p class="ns-note">Asking {where}…</p>
     {:else if list}
       <div class="ns-list">
         {#each list as n (n.name)}
@@ -332,7 +335,7 @@
   <div class="ns-sub">{isFixed(v.scope) ? v.name : `${v.scope === "knowledge" ? "Vault" : "Project"} · ${v.name}`}</div>
   {#if problem}<p class="ns-problem">{problem}</p>{/if}
   {#if text === null && !problem}
-    <p class="ns-note">Asking the Mac…</p>
+    <p class="ns-note">Asking {where}…</p>
   {:else if text !== null}
     {#if text.trim()}
       <div class="ns-md">{@html renderMarkdown(text)}</div>
@@ -360,7 +363,7 @@
       </div>
     </div>
   {/if}
-  {#if drifted}<p class="ns-problem">The note changed on the Mac after this draft was begun — Save replaces the Mac's version.</p>{/if}
+  {#if drifted}<p class="ns-problem">The note changed on {where} after this draft was begun — Save replaces {where}’s version.</p>{/if}
   <textarea class="ns-box" bind:this={box} bind:value={edit} oninput={typed} placeholder="Write in Markdown…"></textarea>
   {#if problem}<p class="ns-problem">{problem}</p>{/if}
   {#if confirmDiscard}
@@ -380,7 +383,7 @@
 {:else if view.v === "delete"}
   {@const v = view}
   <div class="ns-title">Delete “{noteTitle(v.name)}”?</div>
-  <p class="ns-note">It moves to the trash on the Mac.</p>
+  <p class="ns-note">It moves to the trash on {where}.</p>
   {#if problem}<p class="ns-problem">{problem}</p>{/if}
   <div class="ns-actions">
     <span class="ns-grow"></span>

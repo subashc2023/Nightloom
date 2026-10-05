@@ -71,7 +71,9 @@
     /* The header paints the status bar's strip itself (no grey band, A38). */
     padding: calc(8px + env(safe-area-inset-top, 0px)) 12px 8px;
     border-bottom: 1px solid var(--line);
-    background: var(--sheet);
+    /* The colour of Safari's strip above it (theme-color = --paper) and
+       of the chat's header, so the top is one colour (300 B7). */
+    background: var(--paper);
     flex: none;
   }
   .pj-name {

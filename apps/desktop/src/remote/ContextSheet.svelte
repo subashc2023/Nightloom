@@ -567,7 +567,9 @@
     gap: 8px;
     padding: calc(8px + env(safe-area-inset-top, 0px)) calc(12px + env(safe-area-inset-right, 0px)) 8px calc(12px + env(safe-area-inset-left, 0px));
     border-bottom: 1px solid var(--line);
-    background: var(--sheet);
+    /* The colour of Safari's strip above it (theme-color = --paper) and
+       of the chat's header, so the top is one colour (300 B7). */
+    background: var(--paper);
     flex: none;
   }
   .cx-title {

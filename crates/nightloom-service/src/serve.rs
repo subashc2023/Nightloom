@@ -1595,6 +1595,7 @@ impl Host for ServeHost {
                 user_turns: s.user_turns,
                 kind: lowercase(s.kind),
                 mode: lowercase(s.mode),
+                last_message: s.last_message,
             })
             .collect())
     }

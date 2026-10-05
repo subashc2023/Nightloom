@@ -668,6 +668,8 @@ export interface ChatRow {
   user_turns: number;
   kind: string;
   mode: string;
+  /** When he last wrote in it (300 B8); absent from an older host. */
+  last_message?: string | null;
 }
 
 /** One row of `/api/projects` — `ProjectRow` in the service crate. */

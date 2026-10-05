@@ -18,8 +18,15 @@ export interface RecentRow {
   project: string | null;
 }
 
+/** When a chat was last used, for ordering and its row's time (300 B8):
+ *  his last message, not the file's time, which a rename moves. An older
+ *  host sends no message time: the file's time, as before. */
+export function lastActive(c: ChatRow): string {
+  return c.last_message ?? c.modified;
+}
+
 const when = (c: ChatRow): number => {
-  const t = Date.parse(c.modified);
+  const t = Date.parse(lastActive(c));
   return Number.isFinite(t) ? t : 0;
 };
 
@@ -62,7 +69,7 @@ export function projectSummaries(projects: ProjectRow[], chatsBy: Record<string,
     .map((p, i) => {
       const list = chatsBy[p.id];
       const newest = list && list.length > 0 ? list.reduce((a, b) => (when(b) > when(a) ? b : a)) : null;
-      return { s: { id: p.id, name: p.name, chats: list ? list.length : null, last: newest?.modified ?? null }, i, t: newest ? when(newest) : -1 };
+      return { s: { id: p.id, name: p.name, chats: list ? list.length : null, last: newest ? lastActive(newest) : null }, i, t: newest ? when(newest) : -1 };
     });
   return rows.sort((a, b) => b.t - a.t || a.i - b.i).map((r) => r.s);
 }

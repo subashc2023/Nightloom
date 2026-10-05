@@ -78,6 +78,11 @@ pub struct ChatRow {
     pub kind: String,
     /// `normal` or `incognito`; an ephemeral chat has no log to list.
     pub mode: String,
+    /// When he last wrote in it (item 300 B8): the phone orders Recents by
+    /// this, so a rename (which touches the file) does not move a chat.
+    /// Absent from an older host, and for a chat with no message yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_message: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// One row of the phone's project list (item 246): the drawer groups the
@@ -1476,6 +1481,7 @@ mod tests {
                 user_turns: 2,
                 kind: "build".into(),
                 mode: "normal".into(),
+                last_message: None,
             }])
         }
         async fn transcript(

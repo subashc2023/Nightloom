@@ -12,8 +12,10 @@
     problem: string | null;
     onopen: (chat: string, project: string | null) => void;
     onrefresh: () => void;
+    /** The host's name — "the Mac" or "Away" (300 B5). */
+    where?: string;
   }
-  let { running, problem, onopen, onrefresh }: Props = $props();
+  let { running, problem, onopen, onrefresh, where = "the Mac" }: Props = $props();
 
   /** Asides (2A: `{chat, thread, seq, question}`, labelled by the question), dream and capture: each
    *  section shows only when a host reports something. */
@@ -31,13 +33,13 @@
 </script>
 
 <div class="rn-head">
-  <span class="rn-title">Running on the Mac</span>
+  <span class="rn-title">Running on {where}</span>
   <button class="rn-refresh" onclick={onrefresh}>Refresh</button>
 </div>
 {#if problem}
   <p class="rn-note">{problem}</p>
 {:else if !running}
-  <p class="rn-note">Asking the Mac…</p>
+  <p class="rn-note">Asking {where}…</p>
 {:else if empty}
   <p class="rn-note">Nothing is running.</p>
 {:else}
@@ -50,7 +52,7 @@
           <span class="rn-grow">
             <span class="rn-name">{c.title}</span>
             <small>
-              {[c.on_screen ? "on the Mac's screen" : null, sinceText(c.since) || null, c.waiting ? `${c.waiting} waiting for you` : null]
+              {[c.on_screen ? `on ${where}’s screen` : null, sinceText(c.since) || null, c.waiting ? `${c.waiting} waiting for you` : null]
                 .filter(Boolean)
                 .join(" · ") || "running"}
             </small>
