@@ -23,6 +23,9 @@
   import NotificationCentre from "./NotificationCentre.svelte";
   import { chatKind, kindLabel, liveChats, openSession } from "./state.svelte";
   import { forkLine } from "./edit";
+  // Item 299: Make main on the open fork, from the bar.
+  import { canMakeMain } from "./versions";
+  import { makeMainChat, versions } from "./versions.svelte";
   import ThreadChip from "./ThreadChip.svelte";
   import { threadChip } from "./thread";
   import { chatThread } from "./state.svelte";
@@ -101,6 +104,11 @@
     const line = forkLine(session, app.sessions) ?? "from an earlier chat";
     return { id: session.forked_from.session, line: line.replace(/^from /, "") };
   });
+  /** The open chat is a fork (or a version) that can take its original's
+   *  place (item 299): the bar offers Make main beside the mode mark. */
+  const mainable = $derived(
+    !!app.activeSessionId && canMakeMain(app.sessions, versions.map, app.activeSessionId),
+  );
   const mode = $derived(chatMode(app.events));
   /** Whether the thread chip draws (backlog 281), so the left group is
    *  there for it; the chip decides its own text. */
@@ -491,7 +499,7 @@
   <!-- ~~The title and the short id~~ — board d (backlog 175): the tab is
        the title, its hover the id. The mode mark and "continued from"
        stay, at the bar's left, when a chat has one. -->
-  {#if modeText || continuedFrom || threadChipShown}
+  {#if modeText || continuedFrom || threadChipShown || mainable}
     <div class="left">
       <!-- The chat's research thread (nightshift backlog 281): first on
            the left, where the title row's name used to be — the tab names
@@ -509,6 +517,16 @@
           onclick={() => void openSession(continuedFrom.id)}
         >
           <span aria-hidden="true">↳</span><span class="fold1"> continued from {continuedFrom.line}</span>
+        </button>
+      {/if}
+      {#if mainable && app.activeSessionId}
+        {@const sid = app.activeSessionId}
+        <button
+          class="continued make-main"
+          use:tip={"This chat is a version of another: Make main puts it in that chat's row, name and place, and keeps the other as a version (‹ › under the edited message)"}
+          onclick={() => void makeMainChat(sid)}
+        >
+          <span aria-hidden="true">⑂</span><span class="fold1"> Make main</span>
         </button>
       {/if}
     </div>

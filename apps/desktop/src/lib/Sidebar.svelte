@@ -43,6 +43,10 @@
     saveOpen as saveForksOpen,
     toggled as toggledForks,
   } from "./forkTree";
+  // Edits as versions (item 299): Make main, and the chat made main in
+  // its original's row.
+  import { canMakeMain, mainOf, sidebarSessions } from "./versions";
+  import { makeMainChat, versions } from "./versions.svelte";
   // A chat's asides under its row and in its menu (item 265).
   import SidebarAsides from "./SidebarAsides.svelte";
   import AsideMenuItems from "./AsideMenuItems.svelte";
@@ -100,7 +104,20 @@
   // Forks under their origin (backlog 207): which origins are open is kept
   // across launches; a closed group holding the open chat shows anyway.
   let forksOpen = $state<Set<string>>(loadForksOpen());
-  const rows = $derived(sidebarRows(app.sessions, forksOpen, app.activeSessionId));
+  // ~~`sidebarRows(app.sessions, …)`~~ — since item 299 a chat made main
+  // stands in its original's row and the versions it replaced are not
+  // rows; the open chat, when it is such a version, lights its main's row.
+  const listedIds = $derived(new Set(app.sessions.map((s) => s.id)));
+  const activeMain = $derived(
+    app.activeSessionId ? mainOf(app.activeSessionId, versions.map, listedIds) : null,
+  );
+  const rows = $derived(sidebarRows(sidebarSessions(app.sessions, versions.map), forksOpen, activeMain));
+  /** The row is lit: its chat is in front, or a version it replaced is. */
+  function rowLit(id: string): boolean {
+    if (chatSelected(id)) return true;
+    const a = app.activeSessionId;
+    return !!a && a !== id && activeMain === id && chatSelected(a);
+  }
   function toggleForks(id: string) {
     forksOpen = toggledForks(forksOpen, id);
     saveForksOpen(forksOpen);
@@ -246,6 +263,11 @@
     const s = rowMenu?.s;
     rowMenu = null;
     if (s) startRename(s.id, s.title ?? s.first_user ?? "");
+  }
+  function rowMakeMain() {
+    const s = rowMenu?.s;
+    rowMenu = null;
+    if (s) void makeMainChat(s.id);
   }
   function rowDelete() {
     const s = rowMenu?.s;
@@ -444,7 +466,7 @@
 
   {#snippet chatRow(r: SidebarRow, group: string | null = null)}
     {@const s = r.meta}
-    <div class="session-item" class:active={chatSelected(s.id)} class:fork={r.depth > 0} style:--depth={r.depth > 0 ? r.depth : undefined}>
+    <div class="session-item" class:active={rowLit(s.id)} class:fork={r.depth > 0} style:--depth={r.depth > 0 ? r.depth : undefined}>
       {#if renaming === s.id}
         <!-- svelte-ignore a11y_autofocus -->
         <input
@@ -857,6 +879,15 @@
           <button role="menuitem" onclick={() => rowOpen("beside")}>Open beside <span class="row-key">drag</span></button>
           <div class="row-sep"></div>
           <button role="menuitem" onclick={rowRename}>Rename</button>
+          {#if canMakeMain(app.sessions, versions.map, rowMenu.s.id)}
+            <!-- Item 299: the fork takes this chat's place; the chat it
+                 replaces stays a version (‹ › under the edited message). -->
+            <button
+              role="menuitem"
+              use:tip={"Put this fork in its original's row, name and place; the original stays a version under the edited message"}
+              onclick={rowMakeMain}>Make main</button
+            >
+          {/if}
           {#if app.project && rowMenu.s.mode !== "ephemeral"}
             {@const inThread = rowMenu.s.thread ?? null}
             {@const others = threads.filter((t) => t.slug !== inThread)}
