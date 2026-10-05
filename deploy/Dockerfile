@@ -53,6 +53,7 @@ RUN chmod 0755 /usr/local/bin/nightloom-entrypoint
 ENV NIGHTLOOM_HOME=/data/nightloom \
     HOME=/data/user \
     NIGHTLOOM_SERVE_PUBLIC=1 \
+    NIGHTLOOM_SERVE_WORKSPACE=/data/work \
     DISABLE_AUTOUPDATER=1
 EXPOSE 8080
 ENTRYPOINT ["nightloom-entrypoint"]
