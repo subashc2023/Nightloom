@@ -113,3 +113,25 @@ describe("rename and open name the chat's project (A13, A29)", () => {
     expect(seen[3].body).toBeNull();
   });
 });
+
+describe("project rename and forget (A4, F1's patch note)", () => {
+  const T = "0123456789abcdef0123456789abcdef";
+  it("posts the name to rename, and nothing to forget", async () => {
+    const { Client } = await import("./client");
+    const seen: { url: string; body: string | null }[] = [];
+    const real = globalThis.fetch;
+    globalThis.fetch = (async (url: string, init: RequestInit) => {
+      seen.push({ url, body: typeof init.body === "string" ? init.body : null });
+      return new Response(JSON.stringify({ id: "p 1", name: "New", active: false }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      const c = new Client(T);
+      expect((await c.renameProject("p 1", "New")).name).toBe("New");
+      await c.forgetProject("p 1");
+    } finally {
+      globalThis.fetch = real;
+    }
+    expect(seen[0]).toEqual({ url: "/api/projects/p%201/rename", body: JSON.stringify({ name: "New" }) });
+    expect(seen[1]).toEqual({ url: "/api/projects/p%201/forget", body: null });
+  });
+});

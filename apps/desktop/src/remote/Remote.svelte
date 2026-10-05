@@ -315,6 +315,10 @@
   /** The host a chat-addressed call goes to, and its client. */
   const chatRole = $derived(routeFor(chatHost, active));
   const chatClient = $derived(chatRole ? (clients[chatRole] ?? null) : null);
+  /** Item 300 (A3): the host a chat's words name — "the Mac" or "Away" —
+   *  so the page never says "the Mac" while it talks to Away. */
+  const hostWord = $derived(hostName(chatRole ?? active ?? "mac"));
+  const HostWord = $derived(hostWord === "the Mac" ? "The Mac" : hostWord);
   const projectName = (pid: string | null) =>
     pid === null || pid === activePid ? (remote.project ?? projects.find((p) => p.active)?.name ?? "Unfiled") : (projects.find((p) => p.id === pid)?.name ?? "project");
   /** A wave-1 host takes actions and sends on any chat, opening it on the
@@ -331,7 +335,7 @@
   /** Why the log cannot be changed now: a turn running (the desktop's
    *  controls hide while one runs; the Mac refuses mid-turn, 665). */
   const actBlocked = $derived(
-    link !== "online" ? "The Mac is unreachable." : remote.busy ? "A turn is running on the Mac — wait for it to end." : null,
+    link !== "online" ? `${HostWord} is unreachable.` : remote.busy ? `A turn is running on ${hostWord} — wait for it to end.` : null,
   );
   /** The live turn belongs to the desktop's running (or open) chat; another
    *  chat's view shows nothing live and re-reads when the turn ends. */
@@ -388,7 +392,7 @@
             : "busy in another chat"
           : remote.connected
             ? "connected"
-            : "no engine on the Mac",
+            : `no engine on ${hostWord}`,
   );
 
   function note(text: string, open: string | null = null) {
@@ -1666,7 +1670,7 @@
 
   async function continueTurn() {
     sheet = null;
-    await act([{ op: "continue" }], "Continuing on the Mac", true);
+    await act([{ op: "continue" }], `Continuing on ${hostWord}`, true);
   }
 
   async function switchKind() {
@@ -1726,7 +1730,7 @@
 
   async function compactChat() {
     sheet = null;
-    if (await act([{ op: "compact" }], "Compacted on the Mac")) void refreshChats();
+    if (await act([{ op: "compact" }], `Compacted on ${hostWord}`)) void refreshChats();
   }
 
   /** The chat's last reply, read again, for voice mode's "Speak it"; null
@@ -1759,7 +1763,7 @@
     try {
       rail = { ...(rail ?? {}), ...(await client.setRail(patch)) };
       railProblem = null;
-      note("Set on the Mac");
+      note(`Set on ${hostWord}`);
       return true;
     } catch (e) {
       // The sheet says it: the error bar is under the scrim.
@@ -1816,7 +1820,7 @@
     drawer = false;
     try {
       await client!.pass(kind);
-      note(kind === "dream" ? "Dreaming on the Mac" : "Capturing on the Mac");
+      note(kind === "dream" ? `Dreaming on ${hostWord}` : `Capturing on ${hostWord}`);
     } catch (e) {
       note(String(e instanceof Error ? e.message : e));
     }
@@ -1847,7 +1851,7 @@
     try {
       const started = await chatClient.aside(chat, text, sendProject);
       if (started.seq === null) {
-        asideProblem = "The Mac took the question but did not say which answer is its — look on the Mac.";
+        asideProblem = `${HostWord} took the question but did not say which answer is its — look on ${hostWord}.`;
         return true;
       }
       let a: Aside = { chat, seq: started.seq, thread: started.thread, question: text, answer: "", state: "asking" };
@@ -1937,7 +1941,7 @@
       saveDraft("newproject:name", "");
       saveDraft("newproject:instructions", "");
       await refreshProjects();
-      note(`“${row.name}” created on the Mac`);
+      note(`“${row.name}” created on ${hostWord}`);
       startNew(row.id);
     } catch (e) {
       projProblem = e instanceof Unreachable ? "The Mac is unreachable — what you typed stays here." : String(e instanceof Error ? e.message : e);
@@ -2250,7 +2254,7 @@
     else if (route === "office") doc = { media_type: f.type || "application/octet-stream", name: f.name, data: b64(bytes) };
     else if (route === "text" || route === "maybe-text") {
       if (!looksLikeText(bytes) || bytes.length > MAX_TEXT_BYTES) {
-        note(`${f.name}: the phone sends photos, PDFs, office files and text — this one needs the Mac`);
+        note(`${f.name}: the phone sends photos, PDFs, office files and text — this one needs ${hostWord}`);
         return true;
       }
       const text = extOf(f.name) === "ipynb" ? notebookText(new TextDecoder().decode(bytes)) : null;
@@ -2573,7 +2577,7 @@
           {#if !live.text && live.tools.length === 0}<span class="thinking"><i></i><i></i><i></i></span>{/if}
         </div>
       {:else if busyHere}
-        <div class="turn note">A turn is running on the Mac</div>
+        <div class="turn note">A turn is running on {hostWord}</div>
       {/if}
 
       {#if limitHere}
@@ -2762,7 +2766,7 @@
           {#if busyHere && link === "online" && !draft.trim()}
             <button class="send stop" onclick={stop} aria-label="Stop the turn">{@render icon("stop")}</button>
           {:else}
-            <button class="send" disabled={!draft.trim()} onclick={sendNow} aria-label={link === "online" && !remote.busy ? "Send" : "Hold until the Mac is free"}>
+            <button class="send" disabled={!draft.trim()} onclick={sendNow} aria-label={link === "online" && !remote.busy ? "Send" : `Hold until ${hostWord} is free`}>
               {@render icon("up")}
             </button>
           {/if}
@@ -3009,7 +3013,7 @@
           </div>
         {:else if sheet === "delete"}
           <div class="sheet-title">Delete “{title}”?</div>
-          <p class="sheet-note">It moves to the trash on the Mac; Restore brings it back.</p>
+          <p class="sheet-note">It moves to the trash; Restore brings it back.</p>
           <div class="actions end">
             <button class="btn" onclick={() => (sheet = "chat")}>Cancel</button>
             <button class="btn danger" onclick={deleteChat}>Move to trash</button>
@@ -3064,7 +3068,7 @@
           />
         {:else if sheet === "newproject"}
           <div class="sheet-title">New project</div>
-          <p class="sheet-note">Made in the Mac's projects folder. A different folder is chosen on the Mac.</p>
+          <p class="sheet-note">Made in {hostWord}'s projects folder.{remote.host !== "serve" ? " A different folder is chosen on the Mac." : ""}</p>
           <input
             type="text"
             placeholder="Name"
@@ -3112,14 +3116,13 @@
             {#each projects as p (p.id)}
               <button onclick={() => chooseProject(p.id)}>
                 <span class="grow">{p.name}</span>
-                {#if p.active}<span class="tag">on the Mac</span>{/if}
                 {#if (newProject ?? activePid) === p.id}{@render icon("check")}{/if}
               </button>
             {:else}
-              <p class="empty">Only the Mac's open project ({remote.project ?? "Unfiled"}) is known.</p>
+              <p class="empty">Only the open project ({remote.project ?? "Unfiled"}) is known.</p>
             {/each}
           </div>
-          {#if newProject}<p class="sheet-note">Sending opens {projectName(newProject)} on the Mac.</p>{/if}
+          {#if newProject}<p class="sheet-note">The chat starts in {projectName(newProject)}.</p>{/if}
         {/if}
       </div>
     {/if}

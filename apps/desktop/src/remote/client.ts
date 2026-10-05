@@ -881,6 +881,17 @@ export class Client {
     await this.call(`/chats/${encodeURIComponent(chat)}/rename`, { method: "POST", body: JSON.stringify(body) });
   }
 
+  /** Rename a project (row A4, the project page's ⋯); the name in the
+   *  list only — the folder is not renamed. */
+  async renameProject(id: string, name: string): Promise<ProjectRow> {
+    return (await this.call(`/projects/${encodeURIComponent(id)}/rename`, { method: "POST", body: JSON.stringify({ name }) })).json();
+  }
+
+  /** Forget a project (row A4): off the list; its folder and chats stay. */
+  async forgetProject(id: string): Promise<void> {
+    await this.call(`/projects/${encodeURIComponent(id)}/forget`, { method: "POST" });
+  }
+
   /** Open `chat` in the Mac's window; `project` as `rename`'s. */
   async open(chat: string, project: string | null = null): Promise<void> {
     await this.call(`/chats/${encodeURIComponent(chat)}/open`, { method: "POST", ...(project ? { body: JSON.stringify({ project }) } : {}) });
