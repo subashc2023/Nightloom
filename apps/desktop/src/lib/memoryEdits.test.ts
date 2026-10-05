@@ -75,6 +75,19 @@ describe("memoryEditOf (backlog 305)", () => {
     // A relative path with nothing to resolve it, and the vault alias.
     expect(memoryEditOf({ name: "edit_file", input: { path: "AGENTS.md" }, result: ok() }, null)).toBeNull();
     expect(memoryEditOf({ name: "write_file", input: { path: "@kb/AGENTS.md" }, result: ok() }, "/w")).toBeNull();
+    // Dots that climb out of `.agents/memory/` land on a code file (review of 305).
+    expect(
+      memoryEditOf({ name: "Edit", input: { ...input, file_path: "/w/.agents/memory/../../src/a.ts" }, result: ok() }, null),
+    ).toBeNull();
+    expect(
+      memoryEditOf({ name: "Edit", input: { ...input, file_path: "C:\\w\\.agents\\memory\\..\\x.md" }, result: ok() }, null),
+    ).toBeNull();
+    expect(
+      memoryEditOf({ name: "Edit", input: { ...input, file_path: "/w/src/../.agents/memory/a.md" }, result: ok() }, null)?.path,
+    ).toBe("/w/.agents/memory/a.md");
+    // Odd inputs draw nothing and never throw.
+    for (const bad of [null, "x", 5, { file_path: 7 }, { file_path: "/w/AGENTS.md", edits: [null, 3] }])
+      expect(() => memoryEditOf({ name: "MultiEdit", input: bad, result: ok() }, "/w")).not.toThrow();
   });
 });
 

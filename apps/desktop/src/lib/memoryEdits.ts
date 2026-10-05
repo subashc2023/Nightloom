@@ -112,6 +112,10 @@ export function memoryEditOf(call: CallLike, workspace: string | null | undefine
   if (!isAbsolute(path)) {
     if (!workspace || path.startsWith("@")) return null;
     path = normalize(`${workspace.replace(/\\/g, "/").replace(/\/$/, "")}/${path.replace(/\\/g, "/")}`);
+  } else if (/(^|[\\/])\.\.?([\\/]|$)/.test(path)) {
+    // `…/.agents/memory/../../src/a.ts` is a code file: resolve the dots
+    // before asking what it is (review of 305).
+    path = normalize(path.replace(/\\/g, "/"));
   }
   const label = memoryPathLabel(path);
   if (!label) return null;
