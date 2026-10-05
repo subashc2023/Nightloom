@@ -77,9 +77,10 @@ export function sameHead(old: string, next: string): number {
   const a = old.split("\n");
   const b = next.split("\n");
   let n = 0;
-  // The last line of either may be a fragment; only lines both still go
-  // on past count as kept.
-  while (n < a.length - 1 && n < b.length - 1 && a[n] === b[n]) n++;
+  // The new text's last line may be a fragment, so only a line it goes on
+  // past counts as kept; the old text's last line counts when the new one
+  // keeps it whole and goes on (Haiku's "Week 2" → "Week 2\nWeek 3").
+  while (n < a.length && n < b.length - 1 && a[n] === b[n]) n++;
   return n;
 }
 

@@ -91,6 +91,9 @@ describe("lineOfNeedle (backlog 305)", () => {
     expect(lineOfNeedle(text, "- week 1 done\n- week 2 done\n", 1)).toBe(4);
     expect(sameHead("a", "b")).toBe(0);
     expect(sameHead("x\ny", "x\nyz")).toBe(1);
+    // As Haiku made it live: old ending mid-file without a newline.
+    expect(sameHead("- week 1 done\n- week 2 done", "- week 1 done\n- week 2 done\n- week 3")).toBe(2);
+    expect(lineOfNeedle(text, "- week 1 done\n- week 2 done", 2)).toBe(5);
   });
   it("falls back to the needle's first line, then the top", () => {
     expect(lineOfNeedle(text, "- week 2 done\n- something since changed")).toBe(4);
