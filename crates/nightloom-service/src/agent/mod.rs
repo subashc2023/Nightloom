@@ -35,6 +35,7 @@ pub mod connectors;
 pub mod fork;
 mod protocol;
 mod record;
+pub mod steer;
 mod translate;
 pub mod warm;
 

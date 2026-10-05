@@ -840,6 +840,44 @@ export function notePresence(session: string, input = false): Promise<void> {
   return invoke("note_presence", { session, input });
 }
 
+/** The chat's steering notes (backlog 295), as `agent::steer` keeps them:
+ *  queued per agent id (`main` for the chat's own thread) and delivered. */
+export interface SteerState {
+  queued: Record<string, Array<{ id: string; text: string; at_ms: number; about?: string }>>;
+  delivered: Array<{
+    id: string;
+    agent_id: string;
+    text: string;
+    at_ms: number;
+    delivered_at_ms: number;
+    tool: string;
+    tool_use_id: string;
+  }>;
+}
+
+/** Queue a note for a running subagent (backlog 295): the hook hands it to
+ *  that agent on its next tool call. `tellMain` queues a copy for the
+ *  chat's own next call. Rejects when it cannot be queued. */
+export function steerSubagent(
+  session: string,
+  agentId: string,
+  id: string,
+  text: string,
+  about: string | null,
+  tellMain: boolean,
+): Promise<void> {
+  return invoke("steer_subagent", { session, agentId, id, text, about, tellMain });
+}
+
+export function steerState(session: string): Promise<SteerState> {
+  return invoke("steer_state", { session });
+}
+
+/** Take back a note not yet delivered; `false` when it had already gone. */
+export function unsteerSubagent(session: string, agentId: string, id: string): Promise<boolean> {
+  return invoke("unsteer_subagent", { session, agentId, id });
+}
+
 /** His answer on the card at the stop line (backlog 189): `continue` lets
  *  this message's calls through to the end of the turn; `stop` refuses. */
 export function budgetOverride(session: string, decision: "continue" | "stop" | "wrap", text?: string): Promise<void> {

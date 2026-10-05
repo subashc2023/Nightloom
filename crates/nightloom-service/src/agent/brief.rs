@@ -1928,6 +1928,10 @@ struct HookInput {
     /// beside `agent_type` on the child's `Read`).
     #[serde(default)]
     agent_id: Option<String>,
+    /// The call's id (backlog 295: a steering note records the call it
+    /// rode on, so the window draws it after that call).
+    #[serde(default)]
+    tool_use_id: String,
     /// The main thread's session file (backlog 249: the context size).
     #[serde(default)]
     transcript_path: Option<PathBuf>,
@@ -2063,8 +2067,21 @@ fn decide_holding(
     } else {
         None
     };
+    // His steering notes (backlog 295): whatever he queued for this
+    // process — a subagent by its `agent_id`, the main thread under
+    // `steer::MAIN` — goes with this call, once. Taken only on a call that
+    // is let through (a deny's reason is all the model reads), so a
+    // refused call leaves them for the next.
+    let steered = |line: Option<String>| -> Option<String> {
+        let whose = if subagent { who } else { super::steer::MAIN };
+        let note = super::steer::take(dir, whose, &input.tool_name, &input.tool_use_id, now_ms);
+        match (line, note) {
+            (Some(l), Some(n)) => Some(format!("{l}\n\n{n}")),
+            (l, n) => l.or(n),
+        }
+    };
     if !spawn {
-        return HookReply::pass().with_context(line);
+        return HookReply::pass().with_context(steered(line));
     }
     // A chat wrapping up starts nothing new (backlog 192).
     if read_turn_budget(dir).is_some_and(|b| b.wrap_at_ms.is_some() && b.started_at_ms == turn) {
@@ -2098,8 +2115,8 @@ fn decide_holding(
     if limits.per_day > 0 && claim_day_spawn(dir, limits.per_day, &today).is_err() {
         return HookReply::deny(day_cap_reason(limits.per_day));
     }
-    let Value::Object(mut fields) = input.tool_input else {
-        return HookReply::pass().with_context(line);
+    let Value::Object(mut fields) = input.tool_input.clone() else {
+        return HookReply::pass().with_context(steered(line));
     };
     // A checkpoint fork (backlog 104, pass 3; `super::fork`): the spawn
     // asked for the `checkpoint` helper, and the chat's directory holds
@@ -2147,9 +2164,9 @@ fn decide_holding(
         }
     }
     if !changed {
-        return HookReply::pass().with_context(line);
+        return HookReply::pass().with_context(steered(line));
     }
-    HookReply::allow(Some(Value::Object(fields))).with_context(line)
+    HookReply::allow(Some(Value::Object(fields))).with_context(steered(line))
 }
 
 /// The process entry: `<binary> --subagent-hook <dir>`. Reads stdin to
@@ -3885,6 +3902,64 @@ mod tests {
                 .is_some_and(|s| s.contains("spent 35%") && s.contains("weekly figure is 74%"))
         );
         assert_eq!(r.additional_context(), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Backlog 295: a note he queued for a running subagent rides that
+    /// subagent's next allowed call as `additionalContext`, once; the
+    /// parent's call does not take it, a refused call leaves it, and a
+    /// note for the main thread rides the main thread's next call.
+    #[test]
+    fn a_steering_note_rides_its_agents_next_call_once() {
+        let dir = limits_dir("steer");
+        let l = super::SubagentLimits::default();
+        super::write_limits(&dir, &l).unwrap();
+        super::begin_turn(&dir, &l, super::TurnPhase::Turn);
+        let n = |id: &str, text: &str| super::super::steer::Queued {
+            id: id.into(),
+            text: text.into(),
+            at_ms: chrono::Utc::now().timestamp_millis(),
+            about: Some("Survey".into()),
+        };
+        super::super::steer::queue(&dir, "a1", n("n1", "also check the docs")).unwrap();
+        let main = r#"{"tool_name":"Read","tool_input":{},"tool_use_id":"t0"}"#;
+        let r = super::decide_with(&dir, main, None);
+        assert!(
+            !r.additional_context()
+                .unwrap_or_default()
+                .contains("also check the docs")
+        );
+        let sub = r#"{"tool_name":"Read","tool_input":{},"tool_use_id":"t1","agent_id":"a1"}"#;
+        let r = super::decide_with(&dir, sub, None);
+        assert_eq!(r.decision(), "pass");
+        assert!(
+            r.additional_context()
+                .unwrap_or_default()
+                .contains("also check the docs")
+        );
+        let r = super::decide_with(&dir, sub, None);
+        assert!(
+            !r.additional_context()
+                .unwrap_or_default()
+                .contains("also check the docs")
+        );
+        let s = super::super::steer::read(&dir);
+        assert_eq!(s.delivered.len(), 1);
+        assert_eq!(s.delivered[0].tool_use_id, "t1");
+        // The main thread's copy.
+        super::super::steer::queue(&dir, super::super::steer::MAIN, n("n2", "skip e2e")).unwrap();
+        let r = super::decide_with(&dir, sub, None);
+        assert!(
+            !r.additional_context()
+                .unwrap_or_default()
+                .contains("skip e2e")
+        );
+        let r = super::decide_with(&dir, main, None);
+        assert!(
+            r.additional_context()
+                .unwrap_or_default()
+                .contains("skip e2e")
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
