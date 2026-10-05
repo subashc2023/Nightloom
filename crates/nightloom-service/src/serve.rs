@@ -214,14 +214,59 @@ impl ServeConfig {
             assets: None,
             unfiled_dir: config.join("unfiled").join(project::SESSIONS_DIR),
             home: config.to_path_buf(),
-            // As the desktop's connect falls back when no project is open
-            // and the rail names no folder: the working directory.
-            unfiled_workspace: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            unfiled_workspace: unfiled_workspace_for(config),
             nightshift_root: std::env::var_os(NIGHTSHIFT_ROOT_ENV)
                 .filter(|v| !v.is_empty())
                 .map(PathBuf::from),
         }
     }
+}
+
+/// `NIGHTLOOM_SERVE_WORKSPACE`: the folder a No-project Build chat runs in
+/// (the Fly image's `/data/work`).
+pub const SERVE_WORKSPACE_ENV: &str = "NIGHTLOOM_SERVE_WORKSPACE";
+
+/// The folder a No-project Build chat runs in (H2, item 300):
+/// `NIGHTLOOM_SERVE_WORKSPACE` when set, else `<home>/ws` — never the
+/// folder `serve` happened to be started from, which on his Mac is a
+/// repository of his (a sandboxed run listed it). Made when missing, since
+/// a turn cannot start in a folder that is not there. Claude Code files a
+/// chat's history by this folder, so a host whose chats ran in another
+/// one sets the variable to that folder (the Fly image: `/data/work`).
+pub fn unfiled_workspace_for(config: &Path) -> PathBuf {
+    let dir = std::env::var_os(SERVE_WORKSPACE_ENV)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| config.join("ws"));
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
+/// Whether `NIGHTLOOM_HOME` names `serve`'s home (a sandbox, the Fly
+/// volume) rather than the default `~/.nightloom`.
+fn explicit_home() -> bool {
+    std::env::var_os("NIGHTLOOM_HOME").is_some_and(|h| !h.is_empty())
+}
+
+/// Where a new project's folder goes on a home `NIGHTLOOM_HOME` names (H1,
+/// item 300): the home's own setting, else the registry's hint (the
+/// desktop's rule: the folder named `projects` that its newest project
+/// sits in), else `<home>/projects`. The desktop's last fallback,
+/// `~/Documents/Nightloom/projects`, is his real folder and never this one.
+pub fn projects_folder_in_home(home: &Path, registry: &Registry) -> PathBuf {
+    if !project::is_default_projects_folder_in(home) {
+        return project::projects_folder_in(home, registry);
+    }
+    registry
+        .projects()
+        .iter()
+        .filter_map(|p| {
+            let parent = p.workspace.as_deref()?.parent()?;
+            (parent.file_name()? == "projects").then(|| (p.created, parent.to_path_buf()))
+        })
+        .max_by_key(|(created, _)| *created)
+        .map(|(_, parent)| parent)
+        .unwrap_or_else(|| home.join("projects"))
 }
 
 /// The project id `serve` lists for its unfiled chats ("No project"), so
@@ -1084,6 +1129,15 @@ impl ServeHost {
                 out.push(Some(p));
             }
         }
+        // And the projects the Mac marked that the registry lacks (item
+        // 300: a chat in one is found though another project is active).
+        for m in self.sync.layout().projects() {
+            if !out.iter().flatten().any(|p| p.id == m.id)
+                && let Ok(p) = self.mirrored_project(&m.id)
+            {
+                out.push(Some(p));
+            }
+        }
         out
     }
 
@@ -1101,6 +1155,25 @@ impl ServeHost {
             }
         }
         Err(format!("no chat {chat}"))
+    }
+
+    /// Where `chat` is: in `project` when the phone names it, else — or
+    /// when it is not there — wherever it lives ([`Self::locate`]). Item
+    /// 300 (A13, A26, A29, A30): the phone keeps its own place, and a call
+    /// for a chat must not depend on which project another phone, the
+    /// Mac's last send or a running turn last made active here.
+    fn chat_in(
+        &self,
+        project: Option<&str>,
+        chat: &str,
+    ) -> Result<(Option<Project>, PathBuf), String> {
+        if let Some(id) = project
+            && let Ok(p) = self.project(Some(id))
+            && let Ok(path) = self.find_chat(p.as_ref(), chat)
+        {
+            return Ok((p, path));
+        }
+        self.locate(chat)
     }
 
     /// Hold `chat` for one action: refused while a turn runs in it
@@ -1556,8 +1629,7 @@ impl Host for ServeHost {
         project: Option<&str>,
         id: &str,
     ) -> Result<Vec<SessionEvent>, String> {
-        let project = self.project(project)?;
-        let path = self.find_chat(project.as_ref(), id)?;
+        let (_, path) = self.chat_in(project, id)?;
         tokio::task::spawn_blocking(move || -> Result<Vec<SessionEvent>, String> {
             let session = Session::load(path).map_err(|e| e.to_string())?;
             Ok(session.events().to_vec())
@@ -1593,14 +1665,13 @@ impl Host for ServeHost {
         if req.text.trim().is_empty() && req.images.is_empty() && req.documents.is_empty() {
             return Err("nothing to send".into());
         }
-        let project = self.project(req.project.as_deref())?;
         let chat = match chat {
             Some(c) => c.to_string(),
             None => lock(&self.active_chat)
                 .clone()
                 .ok_or("no chat is open; start a new one")?,
         };
-        let mut path = self.find_chat(project.as_ref(), &chat)?;
+        let (project, mut path) = self.chat_in(req.project.as_deref(), &chat)?;
         // A chat the Mac owns (mirrored, or taken down) is continued as a
         // copy in this server's own folder (blocker 652); the original
         // stays byte-identical.
@@ -1663,6 +1734,15 @@ impl Host for ServeHost {
     }
 
     async fn rename(&self, chat: &str, title: &str) -> Result<(), String> {
+        self.rename_in(None, chat, title).await
+    }
+
+    async fn rename_in(
+        &self,
+        project: Option<&str>,
+        chat: &str,
+        title: &str,
+    ) -> Result<(), String> {
         let title = title.trim();
         if title.is_empty() {
             return Err("a name cannot be empty".into());
@@ -1673,8 +1753,7 @@ impl Host for ServeHost {
         {
             return Err("a turn is running in this chat; rename it when it ends".into());
         }
-        let project = self.project(None)?;
-        let path = self.find_chat(project.as_ref(), chat)?;
+        let (_, path) = self.chat_in(project, chat)?;
         self.refuse_mirrored(&path)?;
         let title = title.to_string();
         tokio::task::spawn_blocking(move || -> Result<(), String> {
@@ -1690,15 +1769,20 @@ impl Host for ServeHost {
     }
 
     async fn open(&self, chat: &str) -> Result<(), String> {
-        // No window: the phone's own last chat, for a send with none named.
-        let project = self.project(None)?;
-        let path = self.find_chat(project.as_ref(), chat)?;
+        self.open_in(None, chat).await
+    }
+
+    async fn open_in(&self, project: Option<&str>, chat: &str) -> Result<(), String> {
+        // No window: the phone's own last chat, for a send with none named
+        // — and its project with it, so the two never disagree.
+        let (project, path) = self.chat_in(project, chat)?;
         let id = path
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| chat.to_string());
         let id = Session::load(&path).map(|s| s.id).unwrap_or(id);
         *lock(&self.active_chat) = Some(id);
+        *lock(&self.active_project) = project.map(|p| p.id);
         Ok(())
     }
 
@@ -1870,7 +1954,29 @@ impl Host for ServeHost {
     async fn project_new(&self, req: NewProjectRequest) -> Result<ProjectRow, String> {
         let active = lock(&self.active_project).clone();
         let home = serve_reads::home()?;
-        serve_reads::project_new(&home, &mut lock(&self.registry), &req, active.as_deref())
+        if !explicit_home() {
+            return serve_reads::project_new(
+                &home,
+                &mut lock(&self.registry),
+                &req,
+                active.as_deref(),
+            );
+        }
+        // H1 (item 300): a home named by `NIGHTLOOM_HOME` keeps its new
+        // projects inside it, never in his real `~/Documents/Nightloom`.
+        let mut registry = lock(&self.registry);
+        let folder = projects_folder_in_home(&home, &registry);
+        let target = project::NewProjectPath::resolve(&req.name, &folder);
+        let made = registry.new_project(
+            &req.name,
+            project::NewProjectFolder::Resolved(target.path),
+            req.instructions.as_deref(),
+        )?;
+        Ok(ProjectRow {
+            active: active.as_deref() == Some(made.id.as_str()),
+            id: made.id,
+            name: made.name,
+        })
     }
 
     async fn project_open(&self, id: &str) -> Result<ProjectRow, String> {
@@ -3266,6 +3372,116 @@ esac
         assert!(lock(&host.active_chat).is_none());
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Item 300 (A13, A26, A29, A30): a call for a chat finds it whatever
+    /// project is active here — by the project the phone names, and, with
+    /// none named or a wrong one, wherever the chat lives. Before, rename
+    /// and open looked only in the active project and refused with the
+    /// unfiled folder's path once a turn elsewhere had moved it.
+    #[tokio::test]
+    async fn serve_finds_a_chat_by_its_own_project_not_the_active_one() {
+        crate::project::set_config_dir(
+            std::env::temp_dir().join(format!("nightloom-home-{}", std::process::id())),
+        );
+        let root = std::env::temp_dir().join(format!("nightloom-serve-{}", uuid::Uuid::new_v4()));
+        let unfiled = root.join("unfiled").join("sessions");
+        let workspace = root.join("ws");
+        std::fs::create_dir_all(&unfiled).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(root.join("mode"), "reply").unwrap();
+        let layout = crate::sync::Layout::new(&root);
+        std::fs::create_dir_all(layout.root()).unwrap();
+        let pid = format!("p-{}", uuid::Uuid::new_v4().simple());
+        std::fs::write(
+            layout.root().join("projects.json"),
+            serde_json::json!([{ "id": pid, "name": "Thesis" }]).to_string(),
+        )
+        .unwrap();
+        let cfg = ServeConfig {
+            binary: stand_in(&root),
+            model: None,
+            hook_exe: None,
+            assets: None,
+            unfiled_dir: unfiled.clone(),
+            home: root.clone(),
+            unfiled_workspace: workspace.clone(),
+            nightshift_root: None,
+        };
+        let host = ServeHost::new(cfg, Registry::load_from(root.join("projects.json")));
+        let wait = |host: Arc<ServeHost>| async move {
+            let start = Instant::now();
+            while host.busy() {
+                assert!(start.elapsed() < Duration::from_secs(10), "the turn ends");
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        };
+
+        // A chat in the project, then a turn in No project moves the
+        // active project away from it (A26's setup).
+        host.new_chat(Some(&pid), "in the thesis").await.unwrap();
+        wait(host.clone()).await;
+        let thesis = lock(&host.active_chat).clone().unwrap();
+        host.new_chat(Some(NO_PROJECT_ID), "elsewhere")
+            .await
+            .unwrap();
+        wait(host.clone()).await;
+        assert!(lock(&host.active_project).is_none());
+
+        // Named, unnamed, and named wrongly: each finds it.
+        host.rename_in(Some(&pid), &thesis, "Named").await.unwrap();
+        host.rename_in(None, &thesis, "Unnamed").await.unwrap();
+        host.rename_in(Some(NO_PROJECT_ID), &thesis, "Wrong")
+            .await
+            .unwrap();
+        let events = host.transcript(None, &thesis).await.unwrap();
+        assert!(!events.is_empty(), "the transcript reads with no project");
+
+        // A held message's send with no project lands in its own chat.
+        host.send_with(
+            Some(&thesis),
+            SendRequest {
+                text: "held".into(),
+                ..SendRequest::default()
+            },
+        )
+        .await
+        .unwrap();
+        wait(host.clone()).await;
+        assert_eq!(lock(&host.active_project).as_deref(), Some(pid.as_str()));
+        let events = host.transcript(Some(&pid), &thesis).await.unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, SessionEvent::UserMessage { text, .. } if text == "held"))
+        );
+
+        // Open names its project back as the active one.
+        host.project_open(NO_PROJECT_ID).await.unwrap();
+        host.open_in(Some(&pid), &thesis).await.unwrap();
+        assert_eq!(lock(&host.active_project).as_deref(), Some(pid.as_str()));
+        assert_eq!(lock(&host.active_chat).as_deref(), Some(thesis.as_str()));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// H1 and H2 (item 300): on a home `NIGHTLOOM_HOME` names, new projects
+    /// and No-project turns stay inside it.
+    #[test]
+    fn a_named_home_keeps_its_projects_and_turns_inside_it() {
+        let home = std::env::temp_dir().join(format!("nightloom-h1-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+        let registry = Registry::load_from(home.join("projects.json"));
+        assert_eq!(
+            projects_folder_in_home(&home, &registry),
+            home.join("projects")
+        );
+        if std::env::var_os(SERVE_WORKSPACE_ENV).is_none() {
+            let ws = unfiled_workspace_for(&home);
+            assert_eq!(ws, home.join("ws"));
+            assert!(ws.is_dir(), "made, so a turn can start in it");
+        }
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// Item 275 on the server: the Mac's no-project chats, mirrored, list

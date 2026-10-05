@@ -103,6 +103,19 @@ pub struct NewChatRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RenameRequest {
     pub title: String,
+    /// The chat's project (item 300, A13/A29): the phone keeps its own
+    /// place and names it, so the rename never depends on which project
+    /// the host has active. Absent from an older page: the host looks.
+    #[serde(default)]
+    pub project: Option<String>,
+}
+
+/// The optional body of `POST /chats/{id}/open` (item 300, A29): the
+/// chat's project. An older page sends no body at all.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct OpenRequest {
+    #[serde(default)]
+    pub project: Option<String>,
 }
 
 /// What the phone asks first and re-asks after every event: where the Mac
@@ -253,6 +266,23 @@ pub trait Host: Send + Sync + 'static {
     async fn rename(&self, chat: &str, title: &str) -> Result<(), String>;
     /// Open a chat in the Mac's window (item 246), so he finds it there.
     async fn open(&self, chat: &str) -> Result<(), String>;
+    /// `rename` with the chat's project named (item 300, A13/A29). The
+    /// default ignores the project — a host that finds chats by id alone.
+    async fn rename_in(
+        &self,
+        project: Option<&str>,
+        chat: &str,
+        title: &str,
+    ) -> Result<(), String> {
+        let _ = project;
+        self.rename(chat, title).await
+    }
+    /// `open` with the chat's project named (item 300, A29); the default
+    /// ignores it, as `rename_in`'s does.
+    async fn open_in(&self, project: Option<&str>, chat: &str) -> Result<(), String> {
+        let _ = project;
+        self.open(chat).await
+    }
     async fn approve(&self, req: ApproveRequest) -> Result<(), String>;
     /// Stop `chat`'s turn, or the open chat's when `None` (nightshift
     /// backlog 159, A3: two chats may run at once, and the phone's Stop
@@ -906,14 +936,22 @@ async fn rename(
     if req.title.trim().is_empty() {
         return bad("a name cannot be empty".into());
     }
-    match shared.host.rename(&id, req.title.trim()).await {
+    let project = req.project.as_deref().filter(|p| !p.is_empty());
+    match shared.host.rename_in(project, &id, req.title.trim()).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => (StatusCode::CONFLICT, e).into_response(),
     }
 }
 
-async fn open(State(shared): State<Arc<Shared>>, Path(id): Path<String>) -> Response {
-    match shared.host.open(&id).await {
+async fn open(
+    State(shared): State<Arc<Shared>>,
+    Path(id): Path<String>,
+    body: axum::body::Bytes,
+) -> Response {
+    // No body (a page from before item 300) or an unreadable one: no project.
+    let req: OpenRequest = serde_json::from_slice(&body).unwrap_or_default();
+    let project = req.project.as_deref().filter(|p| !p.is_empty());
+    match shared.host.open_in(project, &id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => (StatusCode::CONFLICT, e).into_response(),
     }
@@ -2076,6 +2114,7 @@ mod tests {
             .bearer_auth(&token)
             .json(&RenameRequest {
                 title: "  a new name ".into(),
+                project: None,
             })
             .send()
             .await
@@ -2084,7 +2123,10 @@ mod tests {
         let r = c
             .post(format!("{base}/api/chats/running/rename"))
             .bearer_auth(&token)
-            .json(&RenameRequest { title: "x".into() })
+            .json(&RenameRequest {
+                title: "x".into(),
+                project: None,
+            })
             .send()
             .await
             .unwrap();
@@ -2092,7 +2134,10 @@ mod tests {
         let r = c
             .post(format!("{base}/api/chats/abc/rename"))
             .bearer_auth(&token)
-            .json(&RenameRequest { title: " ".into() })
+            .json(&RenameRequest {
+                title: " ".into(),
+                project: None,
+            })
             .send()
             .await
             .unwrap();
