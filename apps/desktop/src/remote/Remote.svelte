@@ -1085,8 +1085,8 @@
         openNewProject();
         break;
       case "notes":
-        await openNotes(null, r.notesPid);
-        notesResume = r.notes;
+        // The place goes in with the opening: the sheet reads it once, as it mounts.
+        await openNotes(null, r.notesPid, r.notes);
         break;
       case "chat":
         if (chatId) sheet = "chat";
@@ -2024,9 +2024,9 @@
   }
 
   // ---- wave 2C: notes, asides, council, new project ---------------------------------
-  async function openNotes(start: { scope: NoteScope; name: string } | null = null, project: string | null = null) {
+  async function openNotes(start: { scope: NoteScope; name: string } | null = null, project: string | null = null, resume: NotesPlace | null = null) {
     drawer = false;
-    notesResume = null;
+    notesResume = resume;
     // Notes opened in the first moment after a load: the projects are read
     // first, so the sheet names the project on screen, not the host's open
     // one (300 review 4). An older host without them stays as it was.
