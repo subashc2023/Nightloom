@@ -186,7 +186,7 @@
     {sendAfter ? "Sends from a fork: a new chat with this text in place of the message, and this chat stays as it is." : "Save keeps the chat here with the new text; the model reads it from the next turn."}
   </p>
   <!-- svelte-ignore a11y_autofocus -->
-  <textarea class="mm-box" rows="6" bind:value={text} oninput={typed} autofocus></textarea>
+  <textarea class="mm-box" rows="6" data-kept={key ? "" : undefined} bind:value={text} oninput={typed} autofocus></textarea>
   <div class="mm-actions">
     <button class="mm-btn" onclick={discard} disabled={working}>Discard</button>
     <span class="mm-grow"></span>

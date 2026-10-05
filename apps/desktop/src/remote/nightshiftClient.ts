@@ -9,7 +9,7 @@
  * new item are kept in localStorage on every keystroke until Send (or
  * Create) lands, or a confirmed Discard drops them.
  */
-import { ApiError, Unreachable } from "./client";
+import { ApiError, Unreachable, countedFetch } from "./client";
 
 // ---- the wire ----
 
@@ -88,7 +88,7 @@ export class NightshiftClient {
   private async call(path: string, init: RequestInit = {}): Promise<Response> {
     let r: Response;
     try {
-      r = await fetch(`${this.base}/api/nightshift${path}`, {
+      r = await countedFetch(`${this.base}/api/nightshift${path}`, {
         ...init,
         headers: {
           ...(init.headers ?? {}),

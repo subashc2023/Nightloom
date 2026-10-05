@@ -702,6 +702,23 @@ export class Unreachable extends Error {
   }
 }
 
+/** Item 302: calls that change something on a host (any method but GET),
+ *  still on their way. The page does not reload for a scheme change while
+ *  one is out — a send cut short by a reload may never have arrived. */
+let writing = 0;
+export const writesInFlight = (): number => writing;
+
+/** `fetch`, counted in `writesInFlight` when it writes. */
+export async function countedFetch(url: string, init: RequestInit): Promise<Response> {
+  const write = (init.method ?? "GET").toUpperCase() !== "GET";
+  if (write) writing += 1;
+  try {
+    return await fetch(url, init);
+  } finally {
+    if (write) writing -= 1;
+  }
+}
+
 export class Client {
   /** `base`: the host's origin (`hosts.ts`); empty is the page's own. */
   constructor(
@@ -712,7 +729,7 @@ export class Client {
   private async call(path: string, init: RequestInit = {}): Promise<Response> {
     let r: Response;
     try {
-      r = await fetch(`${this.base}/api${path}`, {
+      r = await countedFetch(`${this.base}/api${path}`, {
         ...init,
         headers: {
           ...(init.headers ?? {}),

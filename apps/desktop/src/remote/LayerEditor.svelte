@@ -201,6 +201,7 @@
   </div>
 
   <textarea
+    data-kept={unsaved ? undefined : ""}
     bind:value={text}
     oninput={input}
     spellcheck="false"

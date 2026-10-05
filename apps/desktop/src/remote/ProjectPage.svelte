@@ -109,7 +109,7 @@
   <div class="pp-body">
     {#if renaming}
       <div class="pp-rename">
-        <input bind:value={renameText} oninput={typed} aria-label="Project name" autocomplete="off" />
+        <input data-kept bind:value={renameText} oninput={typed} aria-label="Project name" autocomplete="off" />
         <div class="pp-actions">
           <button class="pp-pill" onclick={discardRename}>{confirmDiscard ? "Discard the new name?" : "Cancel"}</button>
           <button class="pp-pill accent" disabled={busy || !renameText.trim()} onclick={saveRename}>Save</button>

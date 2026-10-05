@@ -111,6 +111,8 @@
 {/if}
 
 {#if open && token}
+  <!-- Item 302: no reload for a scheme change while the orb is open. -->
+  <span data-reload-hold hidden></span>
   <Voice {token} {chat} {title} {ctx} {still} onclose={closed} {onkeep} {reply} />
 {/if}
 

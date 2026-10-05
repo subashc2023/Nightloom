@@ -26,3 +26,31 @@ export function turnEndedFor(turnChat: string | null, hostChat: string | null, o
   if (turnChat === null && newPending) return null;
   return ran;
 }
+
+/** 300 review 2: a turn whose end the page's state read saw before the
+ *  host's "the turn ended" notice came. A held message may start the next
+ *  turn in between (`drainQueue`), so the late notice is judged by this,
+ *  not by the turn running now. */
+export interface EndedTurn {
+  /** The page's `turnChat` for it (`null`: not seen to start). */
+  turn: string | null;
+  /** The host's current chat as the read that saw it end had it. */
+  host: string | null;
+  at: number;
+}
+
+/** How long a notice may come after the read that saw its turn end. */
+export const LATE_NOTICE_MS = 5000;
+
+/** What a "the turn ended" notice is judged by: a turn seen ending in the
+ *  last `LATE_NOTICE_MS` and not yet noticed (`late`), else the running
+ *  turn's chat and the host's current one. */
+export function noticeFor(
+  ended: EndedTurn | null,
+  turnChat: string | null,
+  hostChat: string | null,
+  now: number,
+): { turn: string | null; host: string | null; late: boolean } {
+  if (ended && now - ended.at <= LATE_NOTICE_MS) return { turn: ended.turn, host: ended.host, late: true };
+  return { turn: turnChat, host: hostChat, late: false };
+}

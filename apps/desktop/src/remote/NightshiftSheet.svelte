@@ -363,8 +363,8 @@
   {/if}
 {:else if view.v === "new" && project}
   <div class="nz-title">New item in {project.name}</div>
-  <input class="nz-input" type="text" placeholder="Title" bind:this={titleBox} bind:value={title} oninput={typedNew} autocapitalize="sentences" />
-  <textarea class="nz-box" bind:value={said} oninput={typedNew} placeholder="What you said — kept word for word under “What Swaraag said”"></textarea>
+  <input class="nz-input" type="text" placeholder="Title" data-kept={project ? "" : undefined} bind:this={titleBox} bind:value={title} oninput={typedNew} autocapitalize="sentences" />
+  <textarea class="nz-box" data-kept={project ? "" : undefined} bind:value={said} oninput={typedNew} placeholder="What you said — kept word for word under “What Swaraag said”"></textarea>
   {#if project.live}<p class="nz-note">A shift is running; the item can be added when it ends. Your draft is kept.</p>{/if}
   {#if problem}<p class="nz-problem">{problem}</p>{/if}
   {#if confirmDiscard}

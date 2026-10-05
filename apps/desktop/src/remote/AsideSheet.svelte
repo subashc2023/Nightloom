@@ -85,6 +85,7 @@
   {/if}
   <textarea
     class="as-box"
+    data-kept
     rows="3"
     placeholder={asking ? "Wait for this answer…" : "A quick question, beside the chat…"}
     bind:value={text}

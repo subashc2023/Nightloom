@@ -31,6 +31,7 @@
     type NoteScope,
   } from "./client";
   import { missingSentence } from "./hosts";
+  import type { NotesPlace } from "./schemeReload";
 
   interface Props {
     client: Client;
@@ -52,8 +53,13 @@
     projectLabel?: string | null;
     /** The host's name in a sentence — "the Mac" or "Away" (300 A3/B5). */
     where?: string;
+    /** Item 302: the tab and note to open on, after the page reloaded for
+     *  a scheme change (the draft itself is in storage). */
+    resume?: NotesPlace | null;
+    /** Item 302: the tab and note open now, so a reload can put them back. */
+    onview?: (place: NotesPlace) => void;
   }
-  let { client, available, host = undefined, start = null, onnote, ontall, project = null, projectLabel = null, where = "the Mac" }: Props = $props();
+  let { client, available, host = undefined, start = null, onnote, ontall, project = null, projectLabel = null, where = "the Mac", resume = null, onview }: Props = $props();
   const Where = $derived(where.charAt(0).toUpperCase() + where.slice(1));
 
   type View =
@@ -109,6 +115,17 @@
 
   $effect(() => {
     ontall?.(view.v !== "list");
+  });
+
+  // Item 302: where the sheet is, for a reload to put back (a delete's
+  // confirmation comes back as the note it was asked on).
+  $effect(() => {
+    const tab = scope === "knowledge" ? "knowledge" : "project";
+    const v = view;
+    onview?.({
+      tab,
+      view: v.v === "list" ? { v: "list" } : v.v === "new" ? { v: "new", scope: v.scope } : { v: v.v === "edit" ? "edit" : "read", scope: v.scope, name: v.name },
+    });
   });
 
   async function load(s: NoteScope = scope) {
@@ -271,6 +288,18 @@
   }
 
   onMount(() => {
+    if (resume) {
+      // Item 302: back where he was before the reload.
+      const r = resume.view;
+      void load(resume.tab);
+      if (r.v === "read") void openNote(r.scope, r.name);
+      else if (r.v === "edit") void openNote(r.scope, r.name).then(() => beginEdit(r.scope, r.name));
+      else if (r.v === "new") {
+        scope = r.scope;
+        beginNew();
+      }
+      return;
+    }
     if (start) {
       if (start.scope === "project" || start.scope === "knowledge") scope = start.scope;
       void load(scope);
@@ -350,7 +379,7 @@
   {@const v = view}
   <div class="ns-title">{v.v === "new" ? `New note in ${v.scope === "knowledge" ? "the vault" : "this project"}` : titleOf(v.scope, v.name)}</div>
   {#if v.v === "new"}
-    <input class="ns-input" type="text" placeholder="Name" bind:value={name} oninput={typed} autocapitalize="sentences" />
+    <input class="ns-input" type="text" placeholder="Name" data-kept bind:value={name} oninput={typed} autocapitalize="sentences" />
   {/if}
   {#if older}
     <div class="ns-older" role="status">
@@ -364,7 +393,7 @@
     </div>
   {/if}
   {#if drifted}<p class="ns-problem">The note changed on {where} after this draft was begun — Save replaces {where}’s version.</p>{/if}
-  <textarea class="ns-box" bind:this={box} bind:value={edit} oninput={typed} placeholder="Write in Markdown…"></textarea>
+  <textarea class="ns-box" data-kept bind:this={box} bind:value={edit} oninput={typed} placeholder="Write in Markdown…"></textarea>
   {#if problem}<p class="ns-problem">{problem}</p>{/if}
   {#if confirmDiscard}
     <p class="ns-note">Discard your changes? The draft is gone after this.</p>

@@ -106,7 +106,7 @@
 {:else}
   <div class="ba-label">Your answer</div>
   {#if live}<p class="ba-note">A shift is running; the answer can be sent when it ends. Your draft is kept.</p>{/if}
-  <textarea class="ba-box" bind:this={box} bind:value={text} oninput={typed} placeholder="Most answers are one word…" autocapitalize="sentences"></textarea>
+  <textarea class="ba-box" data-kept bind:this={box} bind:value={text} oninput={typed} placeholder="Most answers are one word…" autocapitalize="sentences"></textarea>
   {#if problem}<p class="ba-problem">{problem}</p>{/if}
   {#if confirmDiscard}
     <p class="ba-note">Discard this answer? The draft is gone after this.</p>

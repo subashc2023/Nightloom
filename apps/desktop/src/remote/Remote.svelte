@@ -132,8 +132,24 @@
     type Tried,
   } from "./hosts";
   import { heldTap, joinDraft, loadPlace, placeFromHash, placeHash, plainError, samePlace, savePlace, triable, type Place } from "./place";
-  import { NO_PROJECT, notesProject } from "./screenProject";
-  import { NEW_CHAT_TURN, turnEndedFor } from "./turnNotice";
+  import { NO_PROJECT, callProject, notesProject, openedProject, placeProject } from "./screenProject";
+  import { LATE_NOTICE_MS, NEW_CHAT_TURN, noticeFor, turnEndedFor, type EndedTurn } from "./turnNotice";
+  import { writesInFlight } from "./client";
+  import {
+    atRisk,
+    keptSheet,
+    saveResume,
+    schemeVerdict,
+    scrollBy,
+    scrollPlace,
+    takeResume,
+    unkeptText,
+    type NotesPlace,
+    type Resume,
+    type RowBox,
+    type Scheme,
+    type ScrollPlace,
+  } from "./schemeReload";
 
   // ---- the hosts and the connection (wave 3: the Mac and Away) ------------
   /** The page's own origin; empty outside a browser. */
@@ -218,6 +234,10 @@
    *  page reads it again. A turn started elsewhere (the Mac, a curl) leaves
    *  it null, and the host's current chat at the end names it. */
   let turnChat: string | null = null;
+  /** 300 review 2: a turn the state read saw end before its notice came,
+   *  and when a notice last came (one that came first leaves none). */
+  let endedTurn: EndedTurn | null = null;
+  let noticedAt = 0;
   let toast = $state<string | null>(null);
   /** The chat a toast opens on a tap (300 A16), or null. */
   let toastChat = $state<string | null>(null);
@@ -314,6 +334,12 @@
   let openSteps = $state<Record<string, boolean>>({});
 
   const activePid = $derived(projects.find((p) => p.active)?.id ?? "");
+  /** The host lists No project as a project (serve, Away); the Mac's own
+   *  listener does not, and refuses `unfiled` on its chat routes. */
+  const listsUnfiled = $derived(projects.some((p) => p.id === NO_PROJECT));
+  /** A chat in No project on a host that cannot address it while another
+   *  project is open (300 review 1): read-only, no "new chat there". */
+  const unaddressable = $derived(chatProject === NO_PROJECT && !listsUnfiled);
   const rows = $derived(transcriptRows(events));
   const currentChat = $derived.by(() => {
     if (!chatId) return null;
@@ -331,18 +357,18 @@
   const hostWord = $derived(hostName(chatRole ?? active ?? "mac"));
   const HostWord = $derived(hostWord === "the Mac" ? "The Mac" : hostWord);
   const projectName = (pid: string | null) =>
-    pid === null || pid === activePid ? (remote.project ?? projects.find((p) => p.active)?.name ?? "Unfiled") : (projects.find((p) => p.id === pid)?.name ?? "project");
+    pid === null || pid === activePid ? (remote.project ?? projects.find((p) => p.active)?.name ?? "Unfiled") : (projects.find((p) => p.id === pid)?.name ?? (pid === NO_PROJECT ? "No project" : "project"));
   /** A wave-1 host takes actions and sends on any chat, opening it on the
    *  Mac first (blocker 665's default); an older one only reads a chat in
    *  another project. */
   const canAct = $derived(hasFeature(remote, "act"));
-  const readOnly = $derived(chatProject !== null && chatProject !== activePid && !hasFeature(remote, "send_project"));
+  const readOnly = $derived(unaddressable || (chatProject !== null && chatProject !== activePid && !hasFeature(remote, "send_project")));
   /** A host from before wave 1 would drop a photo without a word. */
   const canPhoto = $derived(hasFeature(remote, "images"));
   /** And one that takes documents (item 277): PDFs, text, office files. */
   const canFile = $derived(hasFeature(remote, "documents"));
   /** The chat's project to send with when the Mac has another open. */
-  const sendProject = $derived(chatPid ?? (chatProject !== null && chatProject !== activePid ? chatProject : null));
+  const sendProject = $derived(callProject(chatPid, chatProject, activePid, listsUnfiled));
   /** Why the log cannot be changed now: a turn running (the desktop's
    *  controls hide while one runs; the Mac refuses mid-turn, 665). */
   const actBlocked = $derived(
@@ -418,8 +444,13 @@
    *  screen; when it ended in another chat, a toast naming it that opens
    *  it on a tap. */
   function turnEndedNotice() {
-    const ran = turnEndedFor(turnChat, remote.active_chat, chatId, pendingNew !== null);
-    turnChat = null;
+    // A late notice is for the turn the read saw end, not the one a held
+    // message has started since (300 review 2).
+    const n = noticeFor(endedTurn, turnChat, remote.active_chat, Date.now());
+    endedTurn = null;
+    noticedAt = Date.now();
+    const ran = turnEndedFor(n.turn, n.host, chatId, pendingNew !== null);
+    if (!n.late || turnChat === n.turn) turnChat = null;
     if (!ran) return;
     const label = Object.values(chatsBy)
       .flatMap((l) => l ?? [])
@@ -559,6 +590,8 @@
     setTimeout(() => {
       if (turnChat === was) turnChat = null;
     }, 5000);
+    // Its notice, if it has not come yet, is for this turn (300 review 2).
+    if (Date.now() - noticedAt > LATE_NOTICE_MS) endedTurn = { turn: was, host: remote.active_chat, at: Date.now() };
     await refreshTranscript();
     await refreshChats();
     await drainQueue();
@@ -576,6 +609,7 @@
       const host = back.host && clients[back.host] ? back.host : active;
       if (back.chat) await openChat(back.chat, back.project, host);
       else startNew(back.project);
+      await applyResume();
       return;
     }
     if (!chose && chatId === null && !pendingNew && remote.active_chat) {
@@ -587,9 +621,11 @@
       draft = loadDraft(draftKey(chatId, null));
       await refreshTranscript(true);
       void grow();
+      await applyResume();
       return;
     }
     if (chatId) await refreshTranscript();
+    await applyResume();
     await drainQueue();
   }
 
@@ -872,6 +908,8 @@
     // Where he was (A21): the hash's place on a reload, the stored one on
     // a launch — read before the token's hash is cleared.
     startPlace = (fromHash ? null : placeFromHash(location.hash)) ?? loadPlace();
+    // Item 302: what the page kept when it reloaded for a scheme change.
+    pendingResume = fromHash ? null : takeResume(Date.now());
     window.addEventListener("popstate", onPopState);
     if (fromHash) {
       // Off the address bar the moment it is read: a token in the history
@@ -886,6 +924,9 @@
         abort?.abort();
         return;
       }
+      // Item 302: shown again after a scheme change while away — reload
+      // now, before the stream and reads start, if nothing is at risk.
+      if (considerReload()) return;
       if (link === "off") return;
       failures = 0;
       if (wake) wake();
@@ -893,13 +934,19 @@
     });
     // Leaving or going into the back-forward cache: the stream goes too.
     window.addEventListener("pagehide", () => abort?.abort());
+    window.addEventListener("pageshow", () => void considerReload());
     const clock = setInterval(() => (now = Date.now()), 15000);
     // The phone's own light or dark decides which (blocker 577): read here
     // rather than by a media query, so the palette blocks key on one
     // attribute; a change of the phone's setting follows at once.
     const mq = window.matchMedia("(prefers-color-scheme: light)");
-    const scheme = () => (document.documentElement.dataset.scheme = mq.matches ? "light" : "dark");
-    scheme();
+    const scheme = () => {
+      document.documentElement.dataset.scheme = mq.matches ? "light" : "dark";
+      // Item 302: Safari's bars keep the scheme the page loaded in.
+      considerReload();
+    };
+    loadedScheme = mq.matches ? "light" : "dark";
+    document.documentElement.dataset.scheme = loadedScheme;
     mq.addEventListener?.("change", scheme);
     // 300 A15: the page fits what the keyboard leaves (viewport.ts); when
     // it shrinks, the transcript moves up by as much, so the messages he
@@ -914,6 +961,140 @@
       unfit();
     };
   });
+
+  // ---- item 302: a reload on a scheme change, with everything kept ----------
+  /** The scheme the page loaded in: the one Safari's bars show. */
+  let loadedScheme: Scheme | null = null;
+  let reloading = false;
+  /** What the page kept before its scheme reload, put back once. */
+  let pendingResume: Resume | null = null;
+  /** The Notes sheet's tab and note now, and the ones to open on. */
+  let notesPlace: NotesPlace | null = null;
+  let notesResume = $state<NotesPlace | null>(null);
+
+  const phoneScheme = (): Scheme => (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+
+  /** Whether a reload now would lose something (`schemeReload.atRisk`). */
+  function reloadRisk(): boolean {
+    const fields = [...document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>("textarea, input")].map((el) => ({
+      type: el instanceof HTMLTextAreaElement ? "textarea" : (el.getAttribute("type") ?? ""),
+      value: el.value,
+      kept: el.hasAttribute("data-kept"),
+    }));
+    return atRisk({
+      attachments: photos.length,
+      writes: writesInFlight(),
+      unkept: unkeptText(fields),
+      held: document.querySelector("[data-reload-hold]") !== null,
+    });
+  }
+
+  /** Reload for the phone's scheme when the verdict says now; `true` when
+   *  the page is reloading. */
+  function considerReload(): boolean {
+    if (reloading) return true;
+    if (!loadedScheme) return false;
+    const v = schemeVerdict({ loaded: loadedScheme, now: phoneScheme(), visible: document.visibilityState === "visible", atRisk: reloadRisk() });
+    if (v !== "now") return false;
+    reloadKeeping();
+    return true;
+  }
+
+  /** The transcript's rows, by where they sit in the view. */
+  function rowBoxes(): RowBox[] {
+    if (!scroller) return [];
+    const top = scroller.getBoundingClientRect().top;
+    return [...scroller.querySelectorAll<HTMLElement>("[data-row]")].map((el) => {
+      const b = el.getBoundingClientRect();
+      return { row: Number(el.dataset.row), top: b.top - top, bottom: b.bottom - top };
+    });
+  }
+
+  /** Keep the screen, the scroll and the sheet, then reload. */
+  function reloadKeeping() {
+    reloading = true;
+    place(true);
+    const notes = sheet === "notes";
+    saveResume({
+      at: Date.now(),
+      chat: chatId,
+      scroll: chatId && scroller ? scrollPlace(rowBoxes(), nearBottom()) : null,
+      drawer,
+      sheet: keptSheet(sheet),
+      projects: projectsView ? { page: projectsView.page } : null,
+      context: contextOn,
+      notesPid: notes ? notesPid : null,
+      notes: notes ? notesPlace : null,
+    });
+    abort?.abort();
+    location.reload();
+  }
+
+  /** The transcript back where he was reading: the kept row at its offset,
+   *  again as the rows settle, until he touches the list. */
+  function restoreScroll(p: ScrollPlace) {
+    if (p.atEnd) return;
+    const gen = ++pinGen;
+    const el = scroller;
+    let mine = true;
+    const stop = () => (mine = false);
+    el?.addEventListener("touchstart", stop, { once: true, passive: true });
+    el?.addEventListener("wheel", stop, { once: true, passive: true });
+    const put = () => {
+      if (!mine || gen !== pinGen || !el || scroller !== el) return;
+      const row = el.querySelector<HTMLElement>(`[data-row="${p.row}"]`);
+      if (!row) return;
+      el.scrollTop += scrollBy(p, row.getBoundingClientRect().top - el.getBoundingClientRect().top);
+    };
+    void tick().then(() => {
+      put();
+      requestAnimationFrame(put);
+      for (const ms of [120, 400, 900, 1500]) setTimeout(put, ms);
+    });
+  }
+
+  /** After the reload: the scroll, the drawer, the Projects page, Context
+   *  and the sheet, as kept. Once. */
+  async function applyResume() {
+    const r = pendingResume;
+    pendingResume = null;
+    if (!r) return;
+    if (r.scroll && r.chat !== null && r.chat === chatId) restoreScroll(r.scroll);
+    if (r.drawer) drawer = true;
+    if (r.projects) openProjects(r.projects.page);
+    if (r.context && chatId) contextOn = true;
+    switch (r.sheet) {
+      case null:
+        break;
+      case "rail":
+        void openRail();
+        break;
+      case "running":
+        void openRunning();
+        break;
+      case "aside":
+        void openAside();
+        break;
+      case "council":
+        void openCouncil();
+        break;
+      case "nightshift":
+        openNightshift();
+        break;
+      case "newproject":
+        openNewProject();
+        break;
+      case "notes":
+        await openNotes(null, r.notesPid);
+        notesResume = r.notes;
+        break;
+      case "chat":
+        if (chatId) sheet = "chat";
+        break;
+      default:
+        sheet = r.sheet;
+    }
+  }
 
   // A card that appears at the foot (the limit's, the budget's) is
   // brought into view when he was already at the end, as a reply is.
@@ -965,7 +1146,7 @@
    *  per chat, so Back returns to the chat before — and in storage. */
   function place(replace = false) {
     const p: Place = chatId
-      ? { chat: chatId, project: chatPid, host: chatHost }
+      ? { chat: chatId, project: placeProject(chatPid, projects.length > 0), host: chatHost }
       : { chat: null, project: newProject ?? (activePid || null), host: null };
     savePlace(p);
     if (navigating) return;
@@ -997,8 +1178,11 @@
   // active project moves, `chatProject` says whether this chat is in it.
   $effect(() => {
     const pid = activePid;
-    if (chatId === null || chatPid === null || projects.length === 0) return;
-    const want = chatPid !== pid ? chatPid : null;
+    if (chatId === null || projects.length === 0) return;
+    // A chat with no project id (the Mac's unfiled ones): not the open
+    // project while one is open (300 review 1).
+    if (chatPid === null && listsUnfiled) return;
+    const want = chatPid === null ? (pid ? NO_PROJECT : null) : chatPid !== pid ? chatPid : null;
     if (chatProject !== want) chatProject = want;
   });
 
@@ -1014,11 +1198,13 @@
     chatHost = host;
     otherState = null;
     chatLabel = (chatsBy[project ?? activePid] ?? []).find((c) => c.id === id)?.label ?? null;
-    chatProject = project && project !== activePid ? project : null;
-    // Named now, while the host's active project is the drawer's (A29).
-    chatPid = project ?? (activePid || null);
+    // Named now, while the host's active project is the drawer's (A29);
+    // `unfiled` from a saved place stays No project (300 review 1).
+    const opened = openedProject(project, activePid, listsUnfiled);
+    chatProject = opened.other;
+    chatPid = opened.pid;
     // Its list, for the title, when the drawer has not read it (a reload, Back).
-    if (project && !chatsBy[project]) void loadProject(project);
+    if (project && opened.pid && !chatsBy[opened.pid]) void loadProject(opened.pid);
     place();
     pendingNew = null;
     events = [];
@@ -1038,7 +1224,7 @@
     chatLabel = null;
     chatProject = null;
     chatPid = null;
-    newProject = project && project !== activePid ? project : null;
+    newProject = project && project !== activePid && !(project === NO_PROJECT && !listsUnfiled) ? project : null;
     place();
     pendingNew = null;
     live = null;
@@ -1143,6 +1329,9 @@
     }
   }
 
+  /** The latest pin of the transcript's scroll; an earlier one stops. */
+  let pinGen = 0;
+
   function nearBottom(): boolean {
     if (!scroller) return true;
     return scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 120;
@@ -1161,13 +1350,14 @@
    *  cut short while the rows were still laying out). Instant, and again
    *  as the rows settle, until he touches the list himself. */
   function pinToEnd() {
+    const gen = ++pinGen;
     let mine = true;
     const stop = () => (mine = false);
     const el = scroller;
     el?.addEventListener("touchstart", stop, { once: true, passive: true });
     el?.addEventListener("wheel", stop, { once: true, passive: true });
     const pin = () => {
-      if (mine && scroller === el && el) el.scrollTop = el.scrollHeight;
+      if (mine && gen === pinGen && scroller === el && el) el.scrollTop = el.scrollHeight;
     };
     void tick().then(() => {
       pin();
@@ -1834,8 +2024,13 @@
   }
 
   // ---- wave 2C: notes, asides, council, new project ---------------------------------
-  function openNotes(start: { scope: NoteScope; name: string } | null = null, project: string | null = null) {
+  async function openNotes(start: { scope: NoteScope; name: string } | null = null, project: string | null = null) {
     drawer = false;
+    notesResume = null;
+    // Notes opened in the first moment after a load: the projects are read
+    // first, so the sheet names the project on screen, not the host's open
+    // one (300 review 4). An older host without them stays as it was.
+    if (project === null && projects.length === 0) await refreshProjects();
     notesStart = start;
     notesPid =
       project ??
@@ -2584,7 +2779,7 @@
       {/if}
       {#each rows as r, i (i)}
         {#if r.kind === "user"}
-          <div class="turn user" class:enter={i >= enterFrom && !still} class:removed={r.removed} use:arrive={{ channel: "phone" }}>
+          <div class="turn user" data-row={i} class:enter={i >= enterFrom && !still} class:removed={r.removed} use:arrive={{ channel: "phone" }}>
             <div class="bubble" use:press={() => openMenu(r)}>
               {#if r.images > 0}<span class="pics">{r.images} photo{r.images === 1 ? "" : "s"}</span>{/if}{r.text}
             </div>
@@ -2593,7 +2788,7 @@
             </div>
           </div>
         {:else if r.kind === "assistant"}
-          <div class="turn reply" class:enter={i >= enterFrom && !still} class:removed={r.removed} use:press={() => openMenu(r)}>
+          <div class="turn reply" data-row={i} class:enter={i >= enterFrom && !still} class:removed={r.removed} use:press={() => openMenu(r)}>
             <!-- 300 A2: words and calls in the order they happened. -->
             {#each r.seq as s, k (s.kind === "text" ? `${s.part.index}.${s.part.block}` : `t${k}.${s.tools[0]?.id}`)}
               {#if s.kind === "tools"}{@render toolBox(s.tools, `r${i}.${k}`, false, r)}
@@ -2607,7 +2802,7 @@
             {:else}{@const line = replyLine(events, r, sizes)}{#if line}<div class="stamp reply-line">{line}</div>{/if}{/if}
           </div>
         {:else}
-          <div class="turn note">{r.text}</div>
+          <div class="turn note" data-row={i}>{r.text}</div>
         {/if}
       {/each}
       {#if liveHere && live}
@@ -2754,7 +2949,7 @@
       {#if readOnly}
         <div class="readonly">
           This chat is in <b>{projectName(chatProject)}</b>; the Mac has <b>{remote.project ?? "Unfiled"}</b> open. Read it here, or start a new chat in {projectName(chatProject)}.
-          <button class="btn small" onclick={() => startNew(chatProject)}>New chat there</button>
+          {#if !unaddressable}<button class="btn small" onclick={() => startNew(chatProject)}>New chat there</button>{/if}
         </div>
       {:else}
         {#if photos.length > 0}
@@ -2777,6 +2972,7 @@
             <button class="attach" onclick={() => picker?.click()} aria-label="Attach a photo">{@render icon("plus")}</button>
           {/if}
           <textarea
+            data-kept
             bind:this={box}
             rows="1"
             placeholder={chatId ? "Reply…" : `Message ${projectName(newProject)}…`}
@@ -3087,7 +3283,7 @@
         {:else if sheet === "rail"}
           <RailSheet {rail} problem={railProblem} busy={remote.busy} onpatch={patchRail} />
         {:else if sheet === "notes" && client}
-          <NotesSheet {client} where={hostName(active ?? "mac")} host={remote.host} available={hasFeature(remote, "notes")} start={notesStart} onnote={note} ontall={(t) => (sheetTall = t)} project={notesPid} projectLabel={notesPid === null ? null : notesPid === NO_PROJECT ? "No project" : (projects.find((x) => x.id === notesPid)?.name ?? null)} />
+          <NotesSheet {client} where={hostName(active ?? "mac")} host={remote.host} available={hasFeature(remote, "notes")} start={notesStart} onnote={note} ontall={(t) => (sheetTall = t)} project={notesPid} projectLabel={notesPid === null ? null : notesPid === NO_PROJECT ? "No project" : (projects.find((x) => x.id === notesPid)?.name ?? null)} resume={notesResume} onview={(v) => (notesPlace = v)} />
         {:else if sheet === "nightshift" && client}
           <NightshiftSheet {client} host={remote.host} available={hasFeature(remote, "nightshift")} onnote={note} ontall={(t) => (sheetTall = t)} />
         {:else if sheet === "aside" && chatId}
@@ -3119,12 +3315,14 @@
           <input
             type="text"
             placeholder="Name"
+            data-kept
             bind:value={projName}
             oninput={() => saveDraft("newproject:name", projName)}
             onkeydown={(e) => e.key === "Enter" && void createProject()}
           />
           <textarea
             class="proj-inst"
+            data-kept
             rows="4"
             placeholder="Instructions for its chats (optional)"
             bind:value={projInstructions}
