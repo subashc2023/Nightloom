@@ -3398,6 +3398,9 @@ async function applyAgentDraft(updateNow: PromptLayer[] = [], take = true): Prom
   // As `applyDraft` (backlog 205).
   const chat = app.activeSessionId;
   const sent = choiceOf(d);
+  // Item 306 review: the Keeps this connect's listing can include are the
+  // ones made before it started; one landing while it runs stays owed.
+  const filesGen = filesChangedGen;
   connectStarting();
   app.connecting = true;
   app.connectError = null;
@@ -3434,7 +3437,7 @@ async function applyAgentDraft(updateNow: PromptLayer[] = [], take = true): Prom
       subagentRules: rulesFor(subagentRules.store, chat),
     });
     const res = await withDeadline(connecting, CONNECT_DEADLINE_MS, "Connecting to Claude Code");
-    filesChangedSinceConnect = false;
+    filesSeenGen = Math.max(filesSeenGen, filesGen);
     app.promptPending = await withDeadline(api.promptPending(), 5_000, "The held prompt").catch(() => null);
     app.connection = {
       provider: res.provider,
@@ -3469,14 +3472,18 @@ async function applyAgentDraft(updateNow: PromptLayer[] = [], take = true): Prom
   }
 }
 
-/** Set when a file is kept in the project (item 306), cleared by a connect:
- *  the project-notes listing a connection carries is as old as the connect. */
-let filesChangedSinceConnect = false;
+/** Counts files kept in the project (item 306); `filesSeenGen` is the count
+ *  the last finished connect started from: the project-notes listing a
+ *  connection carries is as old as the connect's start. ~~A boolean cleared
+ *  when a connect resolved~~ (review 2026-10-05: a Keep landing during an
+ *  in-flight connect was cleared by it, and the New chat went without it). */
+let filesChangedGen = 0;
+let filesSeenGen = 0;
 
 /** A file landed in the project's docspace (item 306's Keep): the next New
  *  chat turn connects first, so its prompt lists it. */
 export function projectFilesChanged(): void {
-  filesChangedSinceConnect = true;
+  filesChangedGen += 1;
 }
 
 /**
@@ -3488,7 +3495,7 @@ async function layersBeforeTurn(): Promise<void> {
   // A file kept in the project since the connect (item 306): a New chat's
   // first turn would go with the listing built before it, so it connects
   // again — nothing is cached yet, so it rewrites nothing.
-  if (filesChangedSinceConnect && app.activeSessionId === null && !app.busy && !app.connecting) {
+  if (filesChangedGen !== filesSeenGen && app.activeSessionId === null && !app.busy && !app.connecting) {
     await applyAgentDraft();
     return;
   }
