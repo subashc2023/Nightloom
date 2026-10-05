@@ -26,6 +26,7 @@
     saveNoteDraft,
     shortWhen,
     type Client,
+    type NoteDraft,
     type NoteRow,
     type NoteScope,
   } from "./client";
@@ -42,8 +43,12 @@
     onnote: (text: string) => void;
     /** The sheet is taller while a note is open or edited. */
     ontall?: (tall: boolean) => void;
+    /** The id of the project these notes are in (the host's open one;
+     *  "unfiled" for No project), so a draft is kept for this project's
+     *  note only (item 300, A20). `null` while the projects are unknown. */
+    project?: string | null;
   }
-  let { client, available, host = undefined, start = null, onnote, ontall }: Props = $props();
+  let { client, available, host = undefined, start = null, onnote, ontall, project = null }: Props = $props();
 
   type View =
     | { v: "list" }
@@ -68,6 +73,18 @@
   let confirmDiscard = $state(false);
   let drafts = $state<string[]>(noteDraftKeys());
   let box = $state<HTMLTextAreaElement | null>(null);
+  /** A draft kept before drafts named their project (A20), for the note
+   *  being edited: it may have been typed for another project, so it is
+   *  offered, not applied; it stays kept until he takes it or discards it. */
+  let older = $state<NoteDraft | null>(null);
+
+  /** This project's draft key for a note, and the old unkeyed one. */
+  const key = (s: NoteScope, n: string | null) => noteDraftKey(s, n, project);
+  const oldKey = (s: NoteScope, n: string | null) => noteDraftKey(s, n);
+  const hasOld = (s: NoteScope, n: string | null) => key(s, n) !== oldKey(s, n) && drafts.includes(oldKey(s, n));
+  /** The list's mark for a note with a kept draft. */
+  const mark = (s: NoteScope, n: string | null) =>
+    drafts.includes(key(s, n)) ? "draft kept · " : hasOld(s, n) ? "older draft kept · " : "";
 
   const FIXED: { scope: NoteScope; label: string; sub: string }[] = [
     { scope: "instructions", label: "Project instructions", sub: "AGENTS.md — every chat in this project reads it" },
@@ -122,7 +139,8 @@
 
   async function beginEdit(s: NoteScope, n: string) {
     confirmDiscard = false;
-    const kept = loadNoteDraft(noteDraftKey(s, n));
+    const kept = loadNoteDraft(key(s, n));
+    older = !kept && hasOld(s, n) ? loadNoteDraft(oldKey(s, n)) : null;
     if (text === null) {
       try {
         text = await client.readNote(s, n);
@@ -142,7 +160,8 @@
   function beginNew() {
     confirmDiscard = false;
     problem = null;
-    const kept = loadNoteDraft(noteDraftKey(scope, null));
+    const kept = loadNoteDraft(key(scope, null));
+    older = !kept && hasOld(scope, null) ? loadNoteDraft(oldKey(scope, null)) : null;
     edit = kept?.text ?? "";
     name = kept?.name ?? "";
     base = "";
@@ -151,8 +170,8 @@
   }
 
   function typed() {
-    if (view.v === "edit") saveNoteDraft(noteDraftKey(view.scope, view.name), { text: edit, base });
-    else if (view.v === "new") saveNoteDraft(noteDraftKey(view.scope, null), { text: edit, base: "", name });
+    if (view.v === "edit") saveNoteDraft(key(view.scope, view.name), { text: edit, base });
+    else if (view.v === "new") saveNoteDraft(key(view.scope, null), { text: edit, base: "", name });
   }
 
   async function save() {
@@ -176,7 +195,7 @@
     try {
       await client.writeNote(s, n, edit);
       // Saved on the Mac: only now does the draft go.
-      saveNoteDraft(noteDraftKey(s, view.v === "new" ? null : n), null);
+      saveNoteDraft(key(s, view.v === "new" ? null : n), null);
       text = edit;
       onnote(view.v === "new" ? "Note created on the Mac" : "Saved on the Mac");
       view = { v: "read", scope: s, name: n };
@@ -198,11 +217,28 @@
       return;
     }
     const s = view.scope;
-    saveNoteDraft(noteDraftKey(s, view.v === "new" ? null : view.name), null);
+    saveNoteDraft(key(s, view.v === "new" ? null : view.name), null);
     drafts = noteDraftKeys();
     confirmDiscard = false;
     problem = null;
     view = view.v === "new" ? { v: "list" } : { v: "read", scope: s, name: view.name };
+  }
+
+  /** He takes the older draft: it moves under this project's key (moved,
+   *  not dropped), and the editor shows it. */
+  function takeOlder() {
+    if (!older || (view.v !== "edit" && view.v !== "new")) return;
+    const n = view.v === "new" ? null : view.name;
+    edit = older.text;
+    if (view.v === "new") name = older.name ?? name;
+    else {
+      base = older.base;
+      drifted = text !== null && older.base !== text;
+    }
+    saveNoteDraft(key(view.scope, n), { ...older, text: edit, ...(view.v === "new" ? { name } : {}) });
+    saveNoteDraft(oldKey(view.scope, n), null);
+    older = null;
+    drafts = noteDraftKeys();
   }
 
   async function remove() {
@@ -253,7 +289,7 @@
         <button onclick={() => openFixed(f.scope)}>
           <span class="ns-grow">
             <span class="ns-name">{f.label}</span>
-            <small>{drafts.includes(noteDraftKey(f.scope, FIXED_NOTES[f.scope]!)) ? "draft kept · " : ""}{f.sub}</small>
+            <small>{mark(f.scope, FIXED_NOTES[f.scope]!)}{f.sub}</small>
           </span>
         </button>
       {/each}
@@ -267,7 +303,7 @@
             <span class="ns-grow">
               <span class="ns-name">{noteTitle(n.name)}</span>
               <small>
-                {drafts.includes(noteDraftKey(scope, n.name)) ? "draft kept · " : ""}{shortWhen(n.modified)}{n.summary && n.summary !== noteTitle(n.name) ? ` · ${n.summary}` : ""}
+                {mark(scope, n.name)}{shortWhen(n.modified)}{n.summary && n.summary !== noteTitle(n.name) ? ` · ${n.summary}` : ""}
               </small>
             </span>
           </button>
@@ -275,7 +311,7 @@
           <p class="ns-empty">{scope === "project" ? "No notes in this project yet." : "The vault is empty."}</p>
         {/each}
       </div>
-      {#if drafts.includes(noteDraftKey(scope, null))}
+      {#if drafts.includes(key(scope, null)) || hasOld(scope, null)}
         <button class="ns-link" onclick={beginNew}>A new note's draft is kept — continue it</button>
       {/if}
     {/if}
@@ -286,7 +322,7 @@
     <button class="ns-link" onclick={back}>‹ Notes</button>
     <span class="ns-grow"></span>
     {#if text !== null}
-      <button class="ns-link" onclick={() => beginEdit(v.scope, v.name)}>{drafts.includes(noteDraftKey(v.scope, v.name)) ? "Edit · draft kept" : "Edit"}</button>
+      <button class="ns-link" onclick={() => beginEdit(v.scope, v.name)}>{drafts.includes(key(v.scope, v.name)) || hasOld(v.scope, v.name) ? "Edit · draft kept" : "Edit"}</button>
     {/if}
   </div>
   <div class="ns-title">{titleOf(v.scope, v.name)}</div>
@@ -309,6 +345,17 @@
   <div class="ns-title">{v.v === "new" ? `New note in ${v.scope === "knowledge" ? "the vault" : "this project"}` : titleOf(v.scope, v.name)}</div>
   {#if v.v === "new"}
     <input class="ns-input" type="text" placeholder="Name" bind:value={name} oninput={typed} autocapitalize="sentences" />
+  {/if}
+  {#if older}
+    <div class="ns-older" role="status">
+      <p class="ns-note">A draft of this note was kept before drafts named their project — it may have been typed in another project.</p>
+      <p class="ns-quote">{older.text.trim().slice(0, 160) || "(empty)"}{older.text.trim().length > 160 ? "…" : ""}</p>
+      <div class="ns-actions">
+        <button class="ns-btn" onclick={() => (older = null)}>Not now</button>
+        <span class="ns-grow"></span>
+        <button class="ns-btn accent" onclick={takeOlder}>Use this draft</button>
+      </div>
+    </div>
   {/if}
   {#if drifted}<p class="ns-problem">The note changed on the Mac after this draft was begun — Save replaces the Mac's version.</p>{/if}
   <textarea class="ns-box" bind:this={box} bind:value={edit} oninput={typed} placeholder="Write in Markdown…"></textarea>
@@ -497,13 +544,37 @@
     outline: none;
   }
   .ns-box {
-    min-height: 45dvh;
+    /* 300 F4 (A22): tall when there is room, but it gives way to the
+       sheet's cap (the screen above the keyboard) so the title and the
+       Discard/Save row stay on screen. */
+    height: 45dvh;
+    min-height: 7.5em;
+    flex: 0 1 auto;
     resize: none;
     font-family: var(--mono);
     font-size: 16px;
     line-height: 1.45;
   }
+  .ns-older {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 12px;
+    border-radius: 12px;
+    background: var(--paper);
+    border: 1px solid var(--line2);
+    flex: none;
+  }
+  .ns-quote {
+    margin: 0;
+    font-family: var(--mono);
+    font-size: 13px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    color: var(--ink2);
+  }
   .ns-actions {
+    flex: none;
     display: flex;
     gap: 8px;
     align-items: center;

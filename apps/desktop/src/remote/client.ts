@@ -569,9 +569,15 @@ export interface NoteDraft {
   name?: string;
 }
 
-/** The key of a note's draft: `<scope>/<name>`, or `new:<scope>`. */
-export function noteDraftKey(scope: NoteScope, name: string | null): string {
-  return name === null ? `new:${scope}` : `${scope}/${name}`;
+/** The key of a note's draft: `<scope>/<name>`, or `new:<scope>`. A note
+ *  that belongs to one project (its notes, its AGENTS.md) carries the
+ *  project's id in front, `project:<id>:…` (item 300, A20: a draft typed in
+ *  Recipes was offered on Garden Planner's instructions). With no project
+ *  given, the key is the old unkeyed one, which a draft from before this
+ *  change still sits under — offered back, never dropped. */
+export function noteDraftKey(scope: NoteScope, name: string | null, project?: string | null): string {
+  const bare = name === null ? `new:${scope}` : `${scope}/${name}`;
+  return project && (scope === "project" || scope === "instructions") ? `project:${project}:${bare}` : bare;
 }
 
 function readNoteDrafts(): Record<string, NoteDraft> {
