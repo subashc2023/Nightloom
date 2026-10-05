@@ -22,9 +22,17 @@ marked.use(tilde);
  */
 const ALLOW_MATHML = { ADD_TAGS: ["semantics", "annotation"] };
 
-/** Render assistant markdown to sanitized HTML. */
-export function renderMarkdown(src: string): string {
-  const html = marked.parse(src, { async: false, gfm: true });
+/** marked's options for `renderMarkdown` (pure, for the tests). */
+export function markdownOptions(opts: { breaks?: boolean } = {}): { async: false; gfm: true; breaks: boolean } {
+  return { async: false, gfm: true, breaks: opts.breaks === true };
+}
+
+/** Render assistant markdown to sanitized HTML. `breaks` keeps a single
+ *  newline as a line break (the phone's replies, nightshift 300 A32: a
+ *  list of numbers one per line ran together as one paragraph); the
+ *  desktop's callers leave it off and render exactly as before. */
+export function renderMarkdown(src: string, opts: { breaks?: boolean } = {}): string {
+  const html = marked.parse(src, markdownOptions(opts));
   return DOMPurify.sanitize(html, ALLOW_MATHML);
 }
 
