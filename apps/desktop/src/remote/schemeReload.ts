@@ -11,7 +11,8 @@
  * It never reloads while something would be lost: a photo in the composer
  * (too big to keep, blocker 691), a text field whose words are not in
  * storage (a rename, an approval's note), a call still on its way to the
- * host (a send), or the voice orb. Then it waits for the next time the
+ * host (a send), a new chat the host has not named yet, a draft whose
+ * save to storage failed, or the voice orb. Then it waits for the next time the
  * page is hidden and shown.
  */
 
@@ -65,10 +66,17 @@ export interface Risk {
   unkept: boolean;
   /** Something that holds the page live (the voice orb). */
   held: boolean;
+  /** Item 303 (302 review 1): a new chat's first message sent, the chat not
+   *  yet named by the host. A reload now lands on an empty new chat while
+   *  the message runs in one he must find in Recents. */
+  naming: boolean;
+  /** Item 303 (302 review 2): drafts whose last save to storage failed
+   *  (`client.unsavedDrafts`) — a `data-kept` field whose words are not kept. */
+  unsavedDrafts: number;
 }
 
 export function atRisk(r: Risk): boolean {
-  return r.attachments > 0 || r.writes > 0 || r.unkept || r.held;
+  return r.attachments > 0 || r.writes > 0 || r.unkept || r.held || r.naming || r.unsavedDrafts > 0;
 }
 
 // ---- what a reload keeps ------------------------------------------------------

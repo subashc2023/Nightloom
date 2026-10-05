@@ -39,7 +39,7 @@ describe("schemeVerdict (item 302)", () => {
 });
 
 describe("atRisk and unkeptText (item 302)", () => {
-  const calm = { attachments: 0, writes: 0, unkept: false, held: false };
+  const calm = { attachments: 0, writes: 0, unkept: false, held: false, naming: false, unsavedDrafts: 0 };
 
   it("nothing at risk on a calm page", () => {
     expect(atRisk(calm)).toBe(false);
@@ -50,6 +50,13 @@ describe("atRisk and unkeptText (item 302)", () => {
     expect(atRisk({ ...calm, writes: 1 })).toBe(true);
     expect(atRisk({ ...calm, unkept: true })).toBe(true);
     expect(atRisk({ ...calm, held: true })).toBe(true);
+  });
+
+  it("item 303: a new chat the host has not named yet, or a draft whose save failed, holds the reload", () => {
+    expect(atRisk({ ...calm, naming: true })).toBe(true);
+    expect(atRisk({ ...calm, unsavedDrafts: 1 })).toBe(true);
+    // Shown and switched: later, not now.
+    expect(schemeVerdict({ loaded: "dark", now: "light", visible: true, atRisk: atRisk({ ...calm, naming: true }) })).toBe("later");
   });
 
   it("words in a kept field (composer, note editor) are safe; in an unkept one (rename) they are not", () => {

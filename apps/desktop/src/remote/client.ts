@@ -643,15 +643,18 @@ export function loadNoteDraft(key: string): NoteDraft | null {
 
 /** `null` drops the draft (Save, or a confirmed Discard); so does a draft
  *  that says nothing new (its text is the note's and no name was typed). */
-export function saveNoteDraft(key: string, draft: NoteDraft | null): void {
+export function saveNoteDraft(key: string, draft: NoteDraft | null): boolean {
   const all = readNoteDrafts();
-  if (draft && (draft.text !== draft.base || (draft.name ?? "").trim())) all[key] = draft;
+  const words = !!draft && (draft.text !== draft.base || !!(draft.name ?? "").trim());
+  if (draft && words) all[key] = draft;
   else delete all[key];
   try {
     if (Object.keys(all).length === 0) localStorage.removeItem(NOTE_DRAFTS_KEY);
     else localStorage.setItem(NOTE_DRAFTS_KEY, JSON.stringify(all));
+    return keptDraft(`note:${key}`, true, words);
   } catch {
     // Storage off: the draft lives in the sheet's state only.
+    return keptDraft(`note:${key}`, false, words);
   }
 }
 
@@ -707,6 +710,21 @@ export class Unreachable extends Error {
  *  one is out — a send cut short by a reload may never have arrived. */
 let writing = 0;
 export const writesInFlight = (): number => writing;
+
+/** Item 303 (302 review 2): the drafts whose last save failed while they
+ *  held words — storage full or blocked. A field marked `data-kept` is only
+ *  kept when its save worked, so the scheme reload counts these as at risk
+ *  (`unsavedDrafts`). Keyed by store (`chat:`, `note:`, `ns:`) and draft. */
+const unsaved = new Set<string>();
+export const unsavedDrafts = (): number => unsaved.size;
+
+/** Record a draft save's outcome; returns whether its words are in storage.
+ *  An emptied draft has nothing to lose, saved or not. */
+export function keptDraft(key: string, ok: boolean, words: boolean): boolean {
+  if (ok || !words) unsaved.delete(key);
+  else unsaved.add(key);
+  return ok;
+}
 
 /** `fetch`, counted in `writesInFlight` when it writes. */
 export async function countedFetch(url: string, init: RequestInit): Promise<Response> {
@@ -1640,15 +1658,18 @@ export function loadDraft(key: string): string {
 }
 
 /** An empty text removes the key rather than keeping a blank. */
-export function saveDraft(key: string, text: string): void {
+export function saveDraft(key: string, text: string): boolean {
   const all = readDrafts();
-  if (text.trim()) all[key] = text;
+  const words = text.trim() !== "";
+  if (words) all[key] = text;
   else delete all[key];
   try {
     if (Object.keys(all).length === 0) localStorage.removeItem(DRAFTS_KEY);
     else localStorage.setItem(DRAFTS_KEY, JSON.stringify(all));
+    return keptDraft(`chat:${key}`, true, words);
   } catch {
     // Storage off: the draft lives in the page's state only.
+    return keptDraft(`chat:${key}`, false, words);
   }
 }
 

@@ -132,9 +132,9 @@
     type Tried,
   } from "./hosts";
   import { heldTap, joinDraft, loadPlace, placeFromHash, placeHash, plainError, samePlace, savePlace, triable, type Place } from "./place";
-  import { NO_PROJECT, callProject, notesProject, openedProject, placeProject } from "./screenProject";
+  import { NO_PROJECT, callProject, notesProject, openedProject, placeProject, resolveAsk, unresolvedAsk } from "./screenProject";
   import { LATE_NOTICE_MS, NEW_CHAT_TURN, noticeFor, turnEndedFor, type EndedTurn } from "./turnNotice";
-  import { writesInFlight } from "./client";
+  import { unsavedDrafts, writesInFlight } from "./client";
   import {
     atRisk,
     keptSheet,
@@ -214,6 +214,10 @@
    *  follows the host. `null` only where the host lists no id (the Mac's
    *  unfiled chats). */
   let chatPid = $state<string | null>(null);
+  /** Item 303: the project a chat was opened with that could not be read
+   *  yet (`unfiled` before the project list loaded), resolved by the
+   *  `$effect` below once the list arrives (`resolveAsk`). */
+  let asked: { chat: string; project: string } | null = null;
   /** The host whose chat is on screen (wave 3): a chat belongs to the host
    *  that listed it, and its sends, actions and reads go there even when
    *  the other host is the one answering. Null for a new chat. */
@@ -986,6 +990,8 @@
       writes: writesInFlight(),
       unkept: unkeptText(fields),
       held: document.querySelector("[data-reload-hold]") !== null,
+      naming: pendingNew !== null,
+      unsavedDrafts: unsavedDrafts(),
     });
   }
 
@@ -1146,7 +1152,7 @@
    *  per chat, so Back returns to the chat before — and in storage. */
   function place(replace = false) {
     const p: Place = chatId
-      ? { chat: chatId, project: placeProject(chatPid, projects.length > 0), host: chatHost }
+      ? { chat: chatId, project: (asked?.chat === chatId ? asked.project : null) ?? placeProject(chatPid, projects.length > 0), host: chatHost }
       : { chat: null, project: newProject ?? (activePid || null), host: null };
     savePlace(p);
     if (navigating) return;
@@ -1179,6 +1185,17 @@
   $effect(() => {
     const pid = activePid;
     if (chatId === null || projects.length === 0) return;
+    // Opened before the list loaded (item 303): read its ask again now.
+    if (asked) {
+      const a = asked;
+      asked = null;
+      const o = a.chat === chatId ? resolveAsk(a.project, pid, listsUnfiled) : null;
+      if (o) {
+        chatPid = o.pid;
+        chatProject = o.other;
+        return;
+      }
+    }
     // A chat with no project id (the Mac's unfiled ones): not the open
     // project while one is open (300 review 1).
     if (chatPid === null && listsUnfiled) return;
@@ -1203,6 +1220,8 @@
     const opened = openedProject(project, activePid, listsUnfiled);
     chatProject = opened.other;
     chatPid = opened.pid;
+    const ask = unresolvedAsk(project, projects.length > 0);
+    asked = ask ? { chat: id, project: ask } : null;
     // Its list, for the title, when the drawer has not read it (a reload, Back).
     if (project && opened.pid && !chatsBy[opened.pid]) void loadProject(opened.pid);
     place();

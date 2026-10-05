@@ -59,6 +59,26 @@ export function openedProject(
   return { pid: project ?? (activePid || null), other: project && project !== activePid ? project : null };
 }
 
+/**
+ * Item 303 (302 review 3): a chat reopened as `unfiled` before the host's
+ * project list has loaded (it failed at startup) cannot yet tell serve,
+ * which lists `unfiled`, from the Mac, which does not. It opens as the
+ * Mac's case and the ask is kept (`unresolvedAsk`); once the list arrives
+ * it is resolved again (`resolveAsk`), so on serve its calls name
+ * `unfiled` instead of no project.
+ */
+export function unresolvedAsk(project: string | null, projectsKnown: boolean): string | null {
+  return project === NO_PROJECT && !projectsKnown ? NO_PROJECT : null;
+}
+
+/** A kept ask, once the list is known: `openedProject`'s answer for a host
+ *  that lists `unfiled`; `null` (the Mac's reading stands) for one that
+ *  does not. */
+export function resolveAsk(asked: string | null, activePid: string, listsUnfiled: boolean): { pid: string | null; other: string | null } | null {
+  if (asked === null || !listsUnfiled) return null;
+  return openedProject(asked, activePid, true);
+}
+
 /** The project a chat's calls name (`sendProject`): its own, else the
  *  display's when it is not the open one — and never `unfiled` to a host
  *  that does not list it (it would refuse the call). */

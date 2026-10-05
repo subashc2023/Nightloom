@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { NO_PROJECT, callProject, notesProject, openedProject, placeProject, screenProject, type ScreenInput } from "./screenProject";
+import { NO_PROJECT, callProject, notesProject, openedProject, placeProject, resolveAsk, screenProject, unresolvedAsk, type ScreenInput } from "./screenProject";
 
 const base: ScreenInput = { chatId: null, chatPid: null, newProject: null, activePid: "garden", hasProjects: true };
 
@@ -68,5 +68,34 @@ describe("an unfiled chat across a reload (300 review 1)", () => {
     expect(openedProject("garden", "garden", false)).toEqual({ pid: "garden", other: null });
     expect(callProject("bird", "bird", "garden", false)).toBe("bird");
     expect(callProject(null, null, "", false)).toBe(null);
+  });
+});
+
+describe("an unfiled chat restored before the project list loads (item 303, 302 review 3)", () => {
+  it("serve: opened as the Mac's case, then resolved to unfiled once the list arrives", () => {
+    // The list failed at startup: no projects known, so `unfiled` is not listed.
+    const first = openedProject(NO_PROJECT, "", false);
+    expect(first.pid).toBe(null);
+    const ask = unresolvedAsk(NO_PROJECT, false);
+    expect(ask).toBe(NO_PROJECT);
+    // Before the fix the chat then sent with no project: callProject(null, null, "", true) is null.
+    expect(callProject(first.pid, first.other, "", true)).toBe(null);
+    // The list loads and lists unfiled: the ask is read again.
+    const o = resolveAsk(ask, "", true)!;
+    expect(o.pid).toBe(NO_PROJECT);
+    expect(callProject(o.pid, o.other, "", true)).toBe(NO_PROJECT);
+    // Garden open on serve: the same, and the display says it is not Garden.
+    expect(resolveAsk(ask, "garden", true)).toEqual({ pid: NO_PROJECT, other: NO_PROJECT });
+  });
+
+  it("the Mac (no unfiled row): the ask resolves to nothing, its first reading stands", () => {
+    expect(resolveAsk(NO_PROJECT, "garden", false)).toBe(null);
+  });
+
+  it("no ask when the list is already known, or for a named project", () => {
+    expect(unresolvedAsk(NO_PROJECT, true)).toBe(null);
+    expect(unresolvedAsk("bird", false)).toBe(null);
+    expect(unresolvedAsk(null, false)).toBe(null);
+    expect(resolveAsk(null, "garden", true)).toBe(null);
   });
 });

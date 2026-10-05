@@ -9,7 +9,7 @@
  * new item are kept in localStorage on every keystroke until Send (or
  * Create) lands, or a confirmed Discard drops them.
  */
-import { ApiError, Unreachable, countedFetch } from "./client";
+import { ApiError, Unreachable, countedFetch, keptDraft } from "./client";
 
 // ---- the wire ----
 
@@ -216,15 +216,18 @@ export function loadNsDraft(key: string): NsDraft | null {
 
 /** Keep `draft` under `key`; `null`, or a draft with nothing typed, drops
  *  it (only Send/Create landing, or a confirmed Discard, pass `null`). */
-export function saveNsDraft(key: string, draft: NsDraft | null): void {
+export function saveNsDraft(key: string, draft: NsDraft | null): boolean {
   const all = readDrafts();
-  if (draft && (draft.text.trim() || (draft.title ?? "").trim())) all[key] = draft;
+  const words = !!draft && (draft.text.trim() !== "" || (draft.title ?? "").trim() !== "");
+  if (draft && words) all[key] = draft;
   else delete all[key];
   try {
     if (Object.keys(all).length === 0) localStorage.removeItem(NS_DRAFTS_KEY);
     else localStorage.setItem(NS_DRAFTS_KEY, JSON.stringify(all));
+    return keptDraft(`ns:${key}`, true, words);
   } catch {
     // Storage off: the draft lives in the sheet's state only.
+    return keptDraft(`ns:${key}`, false, words);
   }
 }
 
