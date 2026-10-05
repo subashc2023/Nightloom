@@ -3182,6 +3182,46 @@ fn office_converter() -> bool {
     nightloom_service::attach::find_soffice().is_some()
 }
 
+/// "Keep in project" (nightshift item 306): an attachment copied into the
+/// open project's files folder (`.agents/files/`), so a later chat lists
+/// and reads it without its being attached again. `data` is the bytes the
+/// model was sent (an office file's PDF, as `media_type` says); `path` is a
+/// file the Claude Code engine saved in a chat's folder, named in a sent
+/// message. Never an overwrite (`keep::keep_in_project`). A chat with no
+/// project — none open, or the import's unfiled holder — has nowhere to
+/// keep it, and says so.
+#[tauri::command]
+async fn keep_attachment(
+    state: State<'_, AppState>,
+    name: String,
+    media_type: String,
+    data: Option<String>,
+    path: Option<String>,
+) -> Result<nightloom_service::keep::Kept, String> {
+    use base64::Engine as _;
+    let project = state
+        .active()
+        .await
+        .filter(|p| !p.is_unfiled_holder())
+        .ok_or("this chat is not in a project, so there is no project to keep the file in")?;
+    let docspace = project.notes_dir();
+    let workspace = project.workspace_dir();
+    tokio::task::spawn_blocking(move || match (data, path) {
+        (Some(data), _) => {
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(data.trim())
+                .map_err(|e| format!("{name}: {e}"))?;
+            nightloom_service::keep::keep_in_project(&docspace, &name, &media_type, &bytes)
+        }
+        (None, Some(path)) => {
+            nightloom_service::keep::keep_chat_file(&workspace, &docspace, Path::new(&path))
+        }
+        (None, None) => Err(format!("{name}: nothing to keep")),
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Run one user turn on the agent engine, streaming the same `turn-event`s
 /// the provider path does.
 ///
@@ -7710,6 +7750,7 @@ fn main() {
             send,
             send_agent,
             prepare_office_attachment,
+            keep_attachment,
             office_converter,
             turn_timing_window,
             prewarm_agent,

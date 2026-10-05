@@ -230,6 +230,25 @@ export function officeConverter(): Promise<boolean> {
   return invoke("office_converter");
 }
 
+/** Where a kept attachment went (item 306): `rel` as the system prompt
+ *  lists it (`files/deck.pdf`); `already` when those bytes were there. */
+export interface KeptFile {
+  path: string;
+  rel: string;
+  already: boolean;
+}
+
+/** "Keep in project" (item 306): the bytes the model was sent (`data`), or
+ *  a file the Claude Code engine saved in a chat's folder (`path`), copied
+ *  into the open project's `.agents/files/` — never over another file. */
+export function keepAttachment(
+  name: string,
+  mediaType: string,
+  from: { data: string } | { path: string },
+): Promise<KeptFile> {
+  return invoke("keep_attachment", { name, mediaType, ...from });
+}
+
 /**
  * The recent council turns across the chats of the open project
  * (nightshift backlog 149): each chat's `<council>` records, newest first,

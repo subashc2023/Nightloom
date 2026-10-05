@@ -63,6 +63,8 @@
   import { draftEstimate, draftEstimateTitle, draftExact, draftExactTitle, EXACT_TOKENS_FROM, fmtTokens } from "./tokens";
   import { exactCounter, type ExactResult } from "./draftCount";
   import { countDraftTokens, officeConverter, pasteIntoFocus, prepareOfficeAttachment } from "./api";
+  import KeepButton from "./KeepButton.svelte";
+  import { keepKey } from "./keep";
   import { menuInterceptors } from "./state.svelte";
   import {
     canUndo,
@@ -2232,25 +2234,36 @@
     <div class="attachments">
       {#each attachments as a (a.id)}
         <div class="attachment">
-          {#if a.kind === "image"}
-            <img src={`data:${a.media_type};base64,${a.data}`} alt={a.name} />
-          {:else}
-            <span
-              class="file"
-              class:pending={a.pending}
-              use:tip={a.label ? `${a.name} — ${a.pending ? "converting; Send waits for it" : a.label}` : a.name}
+          <div class="attachment-face">
+            {#if a.kind === "image"}
+              <img src={`data:${a.media_type};base64,${a.data}`} alt={a.name} />
+            {:else}
+              <span
+                class="file"
+                class:pending={a.pending}
+                use:tip={a.label ? `${a.name} — ${a.pending ? "converting; Send waits for it" : a.label}` : a.name}
+              >
+                <span class="file-ext">{a.pending ? extOf(a.name).toUpperCase() : badgeOf(a)}</span>
+                <span class="file-name">{a.name}</span>
+                {#if a.label}<span class="file-label">{a.label}</span>{/if}
+              </span>
+            {/if}
+            <button
+              class="remove"
+              use:tip={`remove ${a.name}`}
+              aria-label="remove {a.name}"
+              onclick={() => remove(a.id)}>×</button
             >
-              <span class="file-ext">{a.pending ? extOf(a.name).toUpperCase() : badgeOf(a)}</span>
-              <span class="file-name">{a.name}</span>
-              {#if a.label}<span class="file-label">{a.label}</span>{/if}
-            </span>
-          {/if}
-          <button
-            class="remove"
-            use:tip={`remove ${a.name}`}
-            aria-label="remove {a.name}"
-            onclick={() => remove(a.id)}>×</button
-          >
+          </div>
+          <!-- Item 306: keep what the model is sent (an office file's PDF)
+               in the project's files; absent in a chat with no project. -->
+          <KeepButton
+            keyStr={keepKey(a.name, a.data)}
+            name={a.name}
+            mediaType={a.media_type}
+            from={{ data: a.data }}
+            pending={!!a.pending}
+          />
         </div>
       {/each}
     </div>
@@ -3161,6 +3174,14 @@
     gap: 0.4rem;
   }
   .attachment {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.2rem;
+  }
+  /* The chip and its × (item 306 put Keep under them, so the × keeps to
+     the chip's corner rather than the column's). */
+  .attachment-face {
     position: relative;
     line-height: 0;
   }

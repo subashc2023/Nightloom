@@ -23,6 +23,7 @@ pub mod credits;
 pub mod dream;
 pub mod grounding;
 pub mod import;
+pub mod keep;
 pub mod knowledge;
 pub mod mcp_server;
 pub mod memory_where;

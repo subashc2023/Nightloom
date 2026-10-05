@@ -4,6 +4,9 @@
   import { badgeOf } from "./attachKinds";
   import { decodeText, pastedLabel } from "./pasteAttach";
   import { splitQuotes } from "./replyQuote.svelte";
+  import KeepButton from "./KeepButton.svelte";
+  import { canKeep, imageName, keepKey, leafOf, savedFilePaths } from "./keep";
+  import { app } from "./state.svelte";
 
   /**
    * His message's bubble (nightshift backlog 283, 2026-10-02): the chat's
@@ -55,6 +58,9 @@
   let textOpen = $state<Record<number, boolean>>({});
   /** A document with bytes to show: a text one unfolds (284). */
   const isText = (d: Doc) => d.media_type.startsWith("text/") && d.data !== "";
+  /** Files the Claude Code engine saved for this message (item 277), by
+   *  the paths his text names: each can be kept too (item 306). */
+  const saved = $derived(canKeep(app.project) ? savedFilePaths(text) : []);
 </script>
 
 <div class="user-bubble">
@@ -64,6 +70,7 @@
   {#if images.length > 0}
     <div class="user-images">
       {#each images as img, j (j)}
+        <div class="user-image-col">
         {#if onopenimage}
           <button
             class="user-image-btn"
@@ -82,6 +89,15 @@
         {:else}
           <img class="user-image" src={`data:${img.media_type};base64,${img.data}`} alt="attachment" />
         {/if}
+        {#if img.data}
+          <KeepButton
+            keyStr={keepKey(imageName(j, img.media_type), img.data)}
+            name={imageName(j, img.media_type)}
+            mediaType={img.media_type}
+            from={{ data: img.data }}
+          />
+        {/if}
+        </div>
       {/each}
     </div>
   {/if}
@@ -103,6 +119,9 @@
             {doc.name}
           </span>
         {/if}
+        {#if doc.data}
+          <KeepButton keyStr={keepKey(doc.name, doc.data)} name={doc.name} mediaType={doc.media_type} from={{ data: doc.data }} />
+        {/if}
         {#if isText(doc)}
           <button
             class="user-file-toggle"
@@ -119,6 +138,17 @@
         <pre class="user-file-text">{decodeText(doc.data)}</pre>
       {/if}
     {/each}
+  {/if}
+  {#if saved.length > 0}
+    <div class="user-files">
+      {#each saved as path (path)}
+        <span class="user-file" use:tip={path}>
+          <span class="user-file-ext">FILE</span>
+          {leafOf(path)}
+        </span>
+        <KeepButton keyStr={`path|${path}`} name={leafOf(path)} mediaType="application/octet-stream" from={{ path }} />
+      {/each}
+    </div>
   {/if}
   {#if custom && body}
     {@render body()}
@@ -250,6 +280,13 @@
     font-size: 0.78rem;
     white-space: pre-wrap;
     word-break: break-word;
+  }
+  /* Item 306: a thumbnail with Keep under it. */
+  .user-image-col {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.2rem;
   }
   .user-file-ext {
     font-size: 0.62rem;
