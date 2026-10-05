@@ -952,6 +952,13 @@ export function readNote(scope: NoteScope, name: string): Promise<string> {
   return invoke("read_note", { scope, name });
 }
 
+/** A note that is not text (nightshift backlog 307) — a PDF, an image, a
+ *  deck dropped in the project's files — as the file tab draws it; null
+ *  for text, which `readNote` reads. */
+export function readNoteMedia(scope: NoteScope, name: string): Promise<FileTabData | null> {
+  return invoke("read_note_media", { scope, name });
+}
+
 /** Where a `memory_where` hit opens (backlog 296): `[scope, name]` in the
  *  note editor, or null for a file the editor does not reach. */
 export function memoryNoteFor(path: string): Promise<[NoteScope, string] | null> {

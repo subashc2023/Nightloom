@@ -5871,6 +5871,38 @@ async fn read_note(
     project::read_note(&dir, &name)
 }
 
+/// A note that is not text (nightshift backlog 307), as the file tab draws
+/// it: an image or a PDF with its bytes, anything else as `other` with its
+/// size, for Open and Reveal. `None` for text, which `read_note` reads. The
+/// note editor asks this first: a `.pdf` dropped in a project's `files/`
+/// read as a string failed with "stream did not contain valid UTF-8".
+#[tauri::command]
+async fn read_note_media(
+    state: State<'_, AppState>,
+    scope: Option<NoteScope>,
+    name: String,
+    project: Option<String>,
+) -> Result<Option<filetab::FileTab>, String> {
+    use std::io::Read;
+    let scope = scope.unwrap_or_default();
+    if scope.fixed_name().is_some() || scope == NoteScope::Models {
+        // Instruction files are text by definition; a missing one is empty.
+        return Ok(None);
+    }
+    let dir = scope_dir_in(&state, scope, project.as_deref()).await?;
+    let path = project::note_file(&dir, &name)?;
+    let mut head = vec![0u8; 512];
+    let read = match std::fs::File::open(&path).and_then(|mut f| f.read(&mut head)) {
+        Ok(n) => n,
+        // Missing or unreadable: `read_note` gives the error in its words.
+        Err(_) => return Ok(None),
+    };
+    if project::binary_kind(&path, &head[..read]).is_none() {
+        return Ok(None);
+    }
+    filetab::read_not_text(&path).map(Some)
+}
+
 /// Where a `memory_where` hit opens (nightshift backlog 296): the note
 /// editor's scope and name, or `None` for a memory file the editor does not
 /// reach, which the reply opens as a file instead.
@@ -7751,6 +7783,7 @@ fn main() {
             forget_project,
             list_notes,
             read_note,
+            read_note_media,
             memory_note_for,
             memory_strike,
             save_note,

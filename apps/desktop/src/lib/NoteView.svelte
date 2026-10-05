@@ -30,6 +30,7 @@
   import type { NoteScope } from "./types";
   import { tick } from "svelte";
   import NoteEditor from "./NoteEditor.svelte";
+  import NoteMedia from "./NoteMedia.svelte";
   import { clampCaret, loadNoteMode, saveNoteMode, type NoteMode } from "./noteMode";
   import { fieldScrollTop } from "./find";
   import NoteEditPanel from "./NoteEditPanel.svelte";
@@ -60,6 +61,8 @@
   let saved = $state("");
   let loading = $state(false);
   let error = $state<string | null>(null);
+  /** A note that is not text (backlog 307): drawn, never edited. */
+  let media = $state<api.FileTabData | null>(null);
   let preview = $state(false);
   /**
    * Plain (the textarea) or formatted (the CodeMirror editor that draws the
@@ -255,10 +258,19 @@
     text = "";
     saved = "";
     error = null;
+    media = null;
     backlinks = [];
     if (!target) return;
     loading = true;
     try {
+      // Not text — a PDF, an image, a deck in the project's files — is
+      // drawn rather than read as a string (backlog 307: "stream did not
+      // contain valid UTF-8"), and no buffer is opened on it.
+      const drawn = await api.readNoteMedia(target.scope, target.name);
+      if (drawn) {
+        media = drawn;
+        return;
+      }
       const content = await api.readNote(target.scope, target.name);
       const key = noteDraftKey(target.scope, target.name);
       saved = content;
@@ -514,6 +526,7 @@
         onclick={revert}>Revert</button
       >
     {/if}
+    {#if !media}
     <!-- Plain or formatted (backlog 150): two halves of one chip, the
          lit half the side that shows when not previewing. -->
     <span class="modes" role="group" aria-label="Editor">
@@ -546,14 +559,17 @@
       onclick={() => (noteEditUi.open = !noteEditUi.open)}
       disabled={!open}>Edit with a prompt</button
     >
+    {/if}
     <button
       class="ghost"
       use:tip={"Show the folder"}
       onclick={() => void showFolder()}>Folder</button
     >
+    {#if !media}
     <button class="save" onclick={() => void commit()} disabled={!dirty}>
       Save
     </button>
+    {/if}
   </header>
 
   <div class="body">
@@ -562,6 +578,8 @@
     <p class="err">{error}</p>
   {:else if loading}
     <p class="err quiet">Reading…</p>
+  {:else if media}
+    <NoteMedia file={media} name={open?.name ?? ""} />
   {:else if streamed || marks}
     <!-- A rewrite streaming in, or one that just landed with its changed
          lines marked (backlog 151). Read-only; a click or a key goes back
@@ -704,7 +722,7 @@
     </div>
   {/if}
   </div>
-  {#if noteEditUi.open && open}
+  {#if noteEditUi.open && open && !media}
     <NoteEditPanel
       scope={open.scope}
       name={open.name}
@@ -732,6 +750,10 @@
       what you want of this model in particular; what applies to every model
       belongs in Memory. An empty file is the same as none. Saving re-connects
       the open chat.
+    {:else if media}
+      {isVault ? "Yours, across every project" : `Shared with every chat in ${app.project?.name ?? "this project"}`}.
+      This file isn't text: the model sees its name, kind and size in its system prompt —
+      never its contents — and reads it with a tool that takes its kind (a PDF by page range).
     {:else if isVault}
       Yours, across every project — the model sees this file's name and first
       line in its system prompt and reads the rest with the file tools, at

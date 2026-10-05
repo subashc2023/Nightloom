@@ -346,6 +346,30 @@ pub fn read(target: &Path, via: Via) -> Result<FileTab, String> {
     }
 }
 
+/// A file that is not text, for the note view (nightshift backlog 307): an
+/// image or a PDF read as [`read`] reads it, anything else — a `.pptx`, a
+/// zip — as `other` with its size and no bytes read at all, so a 15 MB deck
+/// gets the Open / Reveal card rather than a "too large" refusal. A PDF past
+/// the tab's limit gets the same card.
+pub fn read_not_text(target: &Path) -> Result<FileTab, String> {
+    if let Some(("image" | "pdf", _)) = kind_by_ext(target)
+        && let Ok(tab) = read(target, Via::Folder)
+    {
+        return Ok(tab);
+    }
+    let meta = std::fs::metadata(target)
+        .map_err(|_| format!("{} is no longer there", target.display()))?;
+    Ok(FileTab {
+        path: target.to_string_lossy().into_owned(),
+        kind: "other",
+        media_type: "application/octet-stream".into(),
+        size: meta.len(),
+        text: None,
+        data: None,
+        via: Via::Folder,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -507,6 +531,25 @@ mod tests {
         let link_in_tree = tree.join("link.txt");
         std::os::unix::fs::symlink(&secret, &link_in_tree).unwrap();
         assert!(permitted(&link_in_tree, &[tree], &[]).is_err());
+    }
+
+    /// Backlog 307: a note that is not text — a PDF draws with its bytes, a
+    /// deck comes back as `other` with its size and no bytes read.
+    #[test]
+    fn a_note_that_is_not_text_reads_as_media_or_a_card() {
+        let dir = scratch("not-text");
+        let pdf = dir.join("1.3-assembly.pdf");
+        std::fs::write(&pdf, b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n").unwrap();
+        let tab = read_not_text(&pdf).unwrap();
+        assert_eq!(tab.kind, "pdf");
+        assert!(tab.data.is_some());
+        let deck = dir.join("1.3-assembly.pptx");
+        std::fs::write(&deck, b"PK\x03\x04\x14\x00\x00\x00").unwrap();
+        let tab = read_not_text(&deck).unwrap();
+        assert_eq!(tab.kind, "other");
+        assert_eq!(tab.size, 8);
+        assert!(tab.data.is_none() && tab.text.is_none());
+        assert!(read_not_text(&dir.join("gone.pdf")).is_err());
     }
 
     #[test]
