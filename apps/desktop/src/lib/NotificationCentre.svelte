@@ -25,6 +25,7 @@
   import DiffView from "./DiffView.svelte";
   import ConfirmDialog from "./ConfirmDialog.svelte";
   import CliUpdateActions from "./CliUpdateActions.svelte";
+  import { portal, anchorBelow } from "./portal";
 
   const count = $derived(centreCount());
   const counts = $derived(countsOf(app.centre.notices));
@@ -42,6 +43,31 @@
 
   let panelEl = $state<HTMLElement | null>(null);
   let bellEl = $state<HTMLElement | null>(null);
+
+  // The card's place (nightshift backlog 298). ~~Absolute under the bell,
+  // z-index 40~~ — inside the top bar's stacking context (z-index 1) no
+  // z-index could lift it over a later sibling's, so the new-chat page's
+  // title, folder bar, composer and note chips (and, in a split, the next
+  // pane) painted over and through it. Portalled to `body` and fixed by
+  // the bell's rectangle instead, as the model and gauge cards have been
+  // since backlog 163; refreshed on resize and scroll while open.
+  let panelPos = $state({ top: 0, left: 0, width: 560 });
+  function placePanel(): void {
+    if (!bellEl) return;
+    const r = bellEl.getBoundingClientRect();
+    const width = Math.min(560, window.innerWidth - 80);
+    panelPos = { ...anchorBelow({ left: r.left, right: r.right, bottom: r.bottom }, width, window.innerWidth, 6), width };
+  }
+  $effect(() => {
+    if (!app.centre.open) return;
+    placePanel();
+    window.addEventListener("resize", placePanel);
+    window.addEventListener("scroll", placePanel, true);
+    return () => {
+      window.removeEventListener("resize", placePanel);
+      window.removeEventListener("scroll", placePanel, true);
+    };
+  });
 
   function toggle() {
     app.centre.open = !app.centre.open;
@@ -130,7 +156,12 @@
   </button>
 
   {#if app.centre.open}
-    <div class="centre-panel" bind:this={panelEl}>
+    <div
+      class="centre-panel"
+      bind:this={panelEl}
+      use:portal
+      style="top: {panelPos.top}px; left: {panelPos.left}px; width: {panelPos.width}px"
+    >
       <div class="centre-head">
         <span class="centre-title">To review</span>
         <span class="spacer"></span>
@@ -259,10 +290,9 @@
     margin-left: 4px;
   }
   .centre-panel {
-    position: absolute;
-    top: calc(100% + 6px);
-    right: 0;
-    width: min(560px, calc(100vw - 80px));
+    /* Portalled and fixed (backlog 298): top, left and width are set
+       inline from the bell's rectangle. */
+    position: fixed;
     max-height: min(720px, calc(100vh - var(--titlebar-h) - 100px));
     display: flex;
     flex-direction: column;
@@ -270,7 +300,9 @@
     border: 1px solid var(--line2);
     border-radius: 10px;
     box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
-    z-index: 40;
+    /* The top bar's cards' level (80): over the composer's menus (70) and
+       the overlays, under the toasts (100) and the tooltip. */
+    z-index: 80;
     font-family: var(--sans);
     font-size: 13px;
     text-align: left;
