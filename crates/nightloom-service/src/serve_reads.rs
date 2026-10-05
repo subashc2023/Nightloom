@@ -55,6 +55,11 @@ pub struct Places {
     pub projects: Vec<Project>,
     /// The phone's current project (`None`: unfiled).
     pub active: Option<Project>,
+    /// A project the phone named that this host does not know (forgotten
+    /// on the Mac or by another phone while its Notes were open): refused
+    /// for the scopes that live in a project, never read as another one
+    /// (300 review 3: the Vault, Memory and models scopes still work).
+    pub missing: Option<String>,
 }
 
 impl Places {
@@ -68,23 +73,38 @@ impl Places {
             unfiled: unfiled.to_path_buf(),
             projects,
             active,
+            missing: None,
         }
     }
 
     /// These places with `project` as the current one (item 300 B1: the
     /// project on the phone's screen, not the host's open one): `None`
     /// keeps the current, `unfiled` is No project, and an id this host
-    /// does not know is refused rather than read as the current one.
+    /// does not know is kept as `missing`: the project and instructions
+    /// scopes refuse it rather than read the current one, and the scopes
+    /// outside any project (Vault, Memory, models) are unaffected.
     pub fn for_project(mut self, project: Option<&str>) -> Result<Self, String> {
         match project {
             None => {}
             Some(crate::serve::NO_PROJECT_ID) => self.active = None,
-            Some(id) => {
-                let found = self.projects.iter().find(|p| p.id == id).cloned();
-                self.active = Some(found.ok_or_else(|| format!("no project {id}"))?);
-            }
+            Some(id) => match self.projects.iter().find(|p| p.id == id).cloned() {
+                Some(found) => self.active = Some(found),
+                None => {
+                    self.active = None;
+                    self.missing = Some(id.to_string());
+                }
+            },
         }
         Ok(self)
+    }
+
+    /// The current project for a scope that lives in one, refusing a
+    /// project the phone named that this host does not know.
+    fn project_scope(&self) -> Result<Option<&Project>, String> {
+        match &self.missing {
+            Some(id) => Err(format!("no project {id}")),
+            None => Ok(self.active.as_ref()),
+        }
     }
 
     /// The chats folder of the current project, or the unfiled one.
@@ -282,14 +302,12 @@ fn fixed_name(scope: &str) -> Option<&'static str> {
 pub fn note_dir(places: &Places, scope: &str) -> Result<PathBuf, String> {
     match scope {
         "project" => places
-            .active
-            .as_ref()
+            .project_scope()?
             .map(Project::notes_dir)
             .ok_or_else(|| "no project is open, so there is no shared notes folder".into()),
         "knowledge" => Ok(crate::knowledge::vault_dir_in(&places.home)),
         "instructions" => places
-            .active
-            .as_ref()
+            .project_scope()?
             .map(Project::workspace_dir)
             .ok_or_else(|| "no project is open, so there are no project instructions".into()),
         "memory" | "chat" => Ok(places.home.clone()),
@@ -727,12 +745,21 @@ mod tests {
             .for_project(Some(crate::serve::NO_PROJECT_ID))
             .unwrap();
         assert!(note_write(&none, "instructions", "AGENTS.md", "x").is_err());
-        // An id this host does not know is refused, never the current one.
-        assert!(
-            places(&home, &registry, Some(&garden.id))
-                .for_project(Some("nope"))
-                .is_err()
-        );
+        // An id this host does not know is refused for the scopes in a
+        // project, never read as the current one (300 review 3) ...
+        let gone = places(&home, &registry, Some(&garden.id))
+            .for_project(Some("nope"))
+            .unwrap();
+        let err = note_write(&gone, "instructions", "AGENTS.md", "x").unwrap_err();
+        assert!(err.contains("no project nope"), "{err}");
+        assert!(note_write(&gone, "project", "a.md", "x").is_err());
+        assert!(notes_list(&gone, "project").is_err());
+        assert!(!garden_ws.join("AGENTS.md").exists(), "Garden untouched");
+        // ... while the Vault, Memory and models tabs still work.
+        note_write(&gone, "knowledge", "kept.md", "still here").unwrap();
+        assert!(notes_list(&gone, "knowledge").is_ok());
+        assert!(note_dir(&gone, "memory").is_ok());
+        assert!(notes_list(&gone, "models").is_ok());
     }
 
     #[test]

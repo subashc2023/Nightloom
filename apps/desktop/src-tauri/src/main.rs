@@ -5759,40 +5759,36 @@ async fn scope_dir(state: &AppState, scope: NoteScope) -> Result<PathBuf, String
 /// project on its screen, so a note is never written into the window's open
 /// project while he looks at another). `None` is the open project;
 /// `unfiled` is No project; an id the registry does not know is refused
-/// rather than read as the open one.
+/// rather than read as the open one — for the scopes that live in a
+/// project only, so a forgotten project leaves the Vault, Memory and models
+/// tabs working (300 review 3).
 async fn scope_dir_in(
     state: &AppState,
     scope: NoteScope,
     project: Option<&str>,
 ) -> Result<PathBuf, String> {
     let named = match project {
-        None => None,
-        Some(nightloom_service::serve::NO_PROJECT_ID) => Some(None),
-        Some(id) => Some(Some(
-            state
-                .workspaces
-                .lock()
-                .await
-                .registry
-                .projects()
-                .into_iter()
-                .find(|p| p.id == id)
-                .ok_or_else(|| format!("no project {id}"))?,
-        )),
+        None => NamedProject::Open,
+        Some(nightloom_service::serve::NO_PROJECT_ID) => NamedProject::Named(None),
+        Some(id) => {
+            let projects = state.workspaces.lock().await.registry.projects();
+            named_project(projects, id)
+        }
     };
     let project_of = async || match &named {
-        Some(p) => p.clone(),
-        None => state.active().await,
+        NamedProject::Open => Ok(state.active().await),
+        NamedProject::Named(p) => Ok(p.clone()),
+        NamedProject::Missing(id) => Err(format!("no project {id}")),
     };
     match scope {
         NoteScope::Project => project_of()
-            .await
+            .await?
             .map(|p| p.notes_dir())
             .ok_or_else(|| "no project is open, so there is no shared notes folder".to_string()),
         NoteScope::Knowledge => nightloom_service::knowledge::vault_dir()
             .ok_or_else(|| "no user config directory to keep a knowledge base in".to_string()),
         NoteScope::Instructions => project_of()
-            .await
+            .await?
             .map(|p| p.workspace_dir())
             .ok_or_else(|| "no project is open, so there are no project instructions".to_string()),
         NoteScope::Memory => project::config_dir()
@@ -5801,6 +5797,25 @@ async fn scope_dir_in(
             .ok_or_else(|| "no user config directory to keep model instructions in".to_string()),
         NoteScope::Chat => project::config_dir()
             .ok_or_else(|| "no user config directory to keep the Chat instructions in".to_string()),
+    }
+}
+
+/// The project a note call's `?project=` names (item 300 B1, review 3).
+enum NamedProject {
+    /// None named: the window's open project.
+    Open,
+    /// This project, or No project (`unfiled`).
+    Named(Option<project::Project>),
+    /// An id the registry does not know (forgotten while the phone's Notes
+    /// were open): refused by the project scopes only.
+    Missing(String),
+}
+
+/// `id` looked up among the registered `projects`.
+fn named_project(projects: Vec<project::Project>, id: &str) -> NamedProject {
+    match projects.into_iter().find(|p| p.id == id) {
+        Some(p) => NamedProject::Named(Some(p)),
+        None => NamedProject::Missing(id.to_string()),
     }
 }
 
@@ -7914,6 +7929,26 @@ mod tests {
         assert_eq!(granted, extra_folders(None, Some(&session)));
         // The home is never an extra folder.
         assert!(existing_folders((Some(real.clone()), vec![(real, "project")])).is_empty());
+    }
+
+    /// 300 review 3: a project the phone names that the registry no longer
+    /// knows is `Missing` (the project scopes refuse it; the Vault, Memory
+    /// and models scopes never look), and a known one is found by its id.
+    #[test]
+    fn a_forgotten_project_is_missing_not_the_open_one() {
+        let home = empty_log_dir("named-project");
+        let ws = home.join("garden");
+        std::fs::create_dir_all(&ws).unwrap();
+        let mut registry = Registry::load_from(home.join("projects.json"));
+        let garden = registry.create("Garden", Some(ws), None).unwrap();
+        match named_project(registry.projects(), &garden.id) {
+            NamedProject::Named(Some(p)) => assert_eq!(p.id, garden.id),
+            _ => panic!("Garden is registered"),
+        }
+        match named_project(registry.projects(), "gone") {
+            NamedProject::Missing(id) => assert_eq!(id, "gone"),
+            _ => panic!("an unknown id is missing"),
+        }
     }
 
     fn empty_log_dir(name: &str) -> PathBuf {
