@@ -58,7 +58,8 @@
   import { REMOVED_TEXT_PLACEHOLDER, REMOVED_TOOL_PLACEHOLDER } from "./edit";
   import MemoryHits from "./MemoryHits.svelte";
   import { hitsOfCalls } from "./memoryHits";
-  import { memoryRefs } from "./memoryOpen";
+  import { memoryRefs, openMemoryEdit } from "./memoryOpen";
+  import { memoryEditOf, type MemoryEdit } from "./memoryEdits";
 
   interface Footer {
     model: string;
@@ -342,6 +343,18 @@
     streaming ? [] : hitsOfCalls(segs.flatMap((s) => (s.kind === "tool" ? [s.call] : []))),
   );
   const memHits = $derived(memGroups.flatMap((g) => g.hits));
+  // Memory edits (backlog 305), per activity block: the API engine's
+  // relative paths resolve against the chat's workspace.
+  function memEditsOf(rows: { seg: Segment }[]): MemoryEdit[] {
+    const ws = app.connection?.workspace ?? app.project?.root ?? null;
+    const out: MemoryEdit[] = [];
+    for (const { seg } of rows) {
+      if (seg.kind !== "tool") continue;
+      const ed = memoryEditOf(seg.call, ws);
+      if (ed) out.push(ed);
+    }
+    return out;
+  }
   const links = $derived<ArtifactLink[]>(streaming ? [] : artifactLinks(replyText));
   let files = $state<FileCard[]>([]);
   let checked = "";
@@ -673,6 +686,20 @@
           </div>
         {/if}
       </div>
+      <!-- What the block changed in memory (backlog 305): one line per
+           memory note, AGENTS.md or thread file an edit in it wrote, outside
+           the fold so a folded block still says so; it opens the note at
+           the change. Read from the calls, so a reload draws it again. -->
+      {#each memEditsOf(g.rows) as ed, k (k)}
+        <button
+          class="mem-edit"
+          use:tip={`${ed.path} — open at the change`}
+          onclick={() => void openMemoryEdit(ed)}
+        >
+          <Icon name="note" size={12} />
+          <span>{ed.verb} <span class="mem-edit-name">{ed.label}</span></span>
+        </button>
+      {/each}
     {:else if g.seg.kind === "text"}
       {@const councilSeat = parseCouncilSeat(g.seg.text)}
       {@const councilRecord = councilSeat ? null : parseCouncilRecord(g.seg.text)}
@@ -907,6 +934,39 @@
   }
   .activity.live {
     border-left-color: var(--accent);
+  }
+  /* "Updated course-progress.md" (backlog 305): a compact link under the
+     block whose edit wrote a memory note, AGENTS.md or a thread file. */
+  .mem-edit {
+    align-self: flex-start;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 100%;
+    padding: 2px 8px 2px 6px;
+    border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+    color: var(--dim);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    min-width: 0;
+  }
+  .mem-edit > span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .mem-edit-name {
+    font-family: var(--mono);
+    color: var(--accent);
+  }
+  .mem-edit:hover .mem-edit-name {
+    color: var(--accent-ink);
+    text-decoration: underline;
+    text-underline-offset: 2px;
   }
   /* The board's measures (claude-code-ui-design-2026-09-16, board 1): rows
      28px tall on one grid — icon 18 · name 118 · argument · size — a

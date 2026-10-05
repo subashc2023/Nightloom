@@ -8,6 +8,7 @@
 import * as api from "./api";
 import { addToast, app, openContent } from "./state.svelte";
 import { findRefs, type MemoryHit } from "./memoryHits";
+import { lineOfNeedle, type MemoryEdit } from "./memoryEdits";
 
 export async function openMemoryHit(hit: MemoryHit): Promise<void> {
   try {
@@ -38,6 +39,22 @@ export async function openMemoryHit(hit: MemoryHit): Promise<void> {
   } catch (e) {
     addToast(`Could not open: ${String(e)}`);
   }
+}
+
+/**
+ * The "Updated <file>" line's click (backlog 305): the note editor at the
+ * line the edit wrote, found in the file as it is now; a file the editor
+ * does not reach opens the way a memory hit's does.
+ */
+export async function openMemoryEdit(edit: MemoryEdit): Promise<void> {
+  let line = 1;
+  try {
+    const note = await api.memoryNoteFor(edit.path);
+    if (note) line = lineOfNeedle(await api.readNote(note[0], note[1]), edit.needle, edit.skip);
+  } catch {
+    // Unreadable now (moved, deleted): the open below says so in its words.
+  }
+  await openMemoryHit({ path: edit.path, line, text: "" });
 }
 
 /** Strike the hit's line with today's date; the new line, or null. */
