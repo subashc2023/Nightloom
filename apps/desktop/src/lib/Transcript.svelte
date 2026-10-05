@@ -67,6 +67,7 @@
     JUMP_OFFSET,
     MIN_TICKS,
     activeTick,
+    replyGoing,
     scrollToLatest,
     showJumpDown,
     stepTick,
@@ -1002,6 +1003,8 @@
   // `JUMP_DOWN_SHOW`, dark at the foot and while its own click is carrying
   // the view down (`chasing`, cleared at the foot or on any upward input).
   let jumpDown = $state(false);
+  /** Item 304: a reply still coming here — the ⌄ shows the speaking dots. */
+  const speaking = $derived(replyGoing(liveNow !== null, app.busy, inPane));
   let chasing = false;
   let chaseTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -1876,19 +1879,24 @@
 {/if}
 <!-- The jump to the latest message (item 218): round, centred just above
      the composer where the Claude app keeps it, faded in only when the
-     view is scrolled up. It replaces the strip's small bottom chevron. -->
+     view is scrolled up. It replaces the strip's small bottom chevron.
+     While a reply is still coming (item 304) it shows three dots throbbing
+     out of step, like a voice, which gather into the ⌄ on hover or focus
+     and settle into it when the reply ends; still dots with less motion. -->
 <button
   class="jump-down"
   class:shown={jumpDown}
-  use:tip={"Jump to the latest message — and follow the reply again"}
-  aria-label="Jump to the latest message"
+  class:speaking
+  use:tip={speaking ? "The reply is still coming — jump to it and follow along" : "Jump to the latest message — and follow the reply again"}
+  aria-label={speaking ? "Jump to the latest message; the reply is still coming" : "Jump to the latest message"}
   aria-hidden={!jumpDown}
   tabindex={jumpDown ? 0 : -1}
   onclick={toBottom}
 >
+  <span class="jd-dots" aria-hidden="true"><i><b></b></i><i><b></b></i><i><b></b></i></span>
   <!-- A chevron drawn for this button: the shared `chev` spans 6 of its 20
        units and read as a speck at this size. -->
-  <svg class="ns-ico" viewBox="0 0 20 20" aria-hidden="true" style:width="18px" style:height="18px"
+  <svg class="ns-ico jd-arrow" viewBox="0 0 20 20" aria-hidden="true" style:width="18px" style:height="18px"
     ><path d="m5 7.5 5 5 5-5" /></svg
   >
 </button>
@@ -1961,6 +1969,105 @@
   .jump-down:hover {
     color: var(--ink);
     background: var(--well);
+  }
+  /* Item 304: the speaking dots and the ⌄ share the button; one gives way
+     to the other. On hover or focus the outer dots slide in and shrink
+     while the ⌄ grows from their middle, so the dots read as becoming it. */
+  .jd-arrow {
+    transition:
+      opacity 0.2s ease,
+      transform 0.2s ease;
+  }
+  .jd-dots {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    color: var(--accent);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease;
+  }
+  .jd-dots i {
+    display: block;
+    transition: transform 0.2s ease;
+  }
+  .jd-dots b {
+    display: block;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+  /* At rest (and with less motion) the middle one is smaller, as in the
+     Claude app's. */
+  .jd-dots i:nth-child(2) b {
+    transform: scale(0.7);
+  }
+  .jump-down.speaking .jd-dots {
+    opacity: 1;
+  }
+  .jump-down.speaking .jd-arrow {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.4);
+  }
+  .jump-down.speaking:hover .jd-dots,
+  .jump-down.speaking:focus-visible .jd-dots {
+    opacity: 0;
+  }
+  .jump-down.speaking:hover .jd-dots i:first-child,
+  .jump-down.speaking:focus-visible .jd-dots i:first-child {
+    transform: translateX(8px) scale(0.4);
+  }
+  .jump-down.speaking:hover .jd-dots i:last-child,
+  .jump-down.speaking:focus-visible .jd-dots i:last-child {
+    transform: translateX(-8px) scale(0.4);
+  }
+  .jump-down.speaking:hover .jd-dots i:nth-child(2),
+  .jump-down.speaking:focus-visible .jd-dots i:nth-child(2) {
+    transform: translateY(4px) scale(0.4);
+  }
+  .jump-down.speaking:hover .jd-arrow,
+  .jump-down.speaking:focus-visible .jd-arrow {
+    opacity: 1;
+    transform: none;
+  }
+  /* The throb: each dot swells and shrinks on its own beat (three lengths,
+     three offsets), so the three never line up into a wave the way typing
+     dots do — it reads as a voice's level, not as text. Only while shown. */
+  .jump-down.shown.speaking .jd-dots b {
+    animation: jd-throb 0.84s ease-in-out infinite;
+  }
+  .jump-down.shown.speaking .jd-dots i:nth-child(2) b {
+    animation-duration: 0.62s;
+    animation-delay: -0.31s;
+  }
+  .jump-down.shown.speaking .jd-dots i:nth-child(3) b {
+    animation-duration: 1.06s;
+    animation-delay: -0.7s;
+  }
+  @keyframes jd-throb {
+    0%,
+    100% {
+      transform: scale(0.55);
+      opacity: 0.7;
+    }
+    50% {
+      transform: scale(1.25);
+      opacity: 1;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .jump-down.shown.speaking .jd-dots b {
+      animation: none;
+    }
+    .jd-arrow,
+    .jd-dots,
+    .jd-dots i {
+      transition: none;
+    }
   }
   .transcript {
     flex: 1;

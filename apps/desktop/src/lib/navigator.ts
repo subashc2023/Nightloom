@@ -141,6 +141,17 @@ export function showJumpDown(scrollTop: number, clientHeight: number, scrollHeig
   return scrollHeight - scrollTop - clientHeight > JUMP_DOWN_SHOW;
 }
 
+/**
+ * Item 304: whether the ⌄ shows the "still speaking" dots — a reply is
+ * still coming in the chat drawn, so a reader scrolled up can see it is
+ * going and, when the dots settle into the ⌄, that it is done. The open
+ * chat's turn runs while `busy` (a tool call, an approval) as well as while
+ * its `live` turn streams; a pane's chat has only its own `live`.
+ */
+export function replyGoing(live: boolean, busy: boolean, inPane: boolean): boolean {
+  return live || (!inPane && busy);
+}
+
 /** The scroll target for the latest message: the foot of the view. */
 export function latestTop(scrollHeight: number, clientHeight: number): number {
   return Math.max(0, scrollHeight - clientHeight);

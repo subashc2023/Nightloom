@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { JUMP_DOWN_SHOW, latestTop, scrollToLatest, showJumpDown } from "./navigator";
+import { JUMP_DOWN_SHOW, latestTop, replyGoing, scrollToLatest, showJumpDown } from "./navigator";
 
 // Item 218: the round ⌄ centred above the composer. It shows when the
 // view is scrolled up past a threshold, hides at the foot, and a click
@@ -50,5 +50,19 @@ describe("scrollToLatest", () => {
 
   it("never asks for a negative top", () => {
     expect(latestTop(300, 600)).toBe(0);
+  });
+});
+
+// Item 304: the ⌄ shows the speaking dots while a reply is still coming.
+describe("replyGoing", () => {
+  it("the open chat: while its turn streams or runs (a tool call, an approval)", () => {
+    expect(replyGoing(true, true, false)).toBe(true);
+    expect(replyGoing(false, true, false)).toBe(true);
+    expect(replyGoing(false, false, false)).toBe(false);
+  });
+
+  it("a pane: its own live turn only, never the open chat's busy", () => {
+    expect(replyGoing(false, true, true)).toBe(false);
+    expect(replyGoing(true, false, true)).toBe(true);
   });
 });
