@@ -120,6 +120,7 @@
     type Hosts as HostMap,
     type Tried,
   } from "./hosts";
+  import { heldTap, joinDraft, loadPlace, placeFromHash, placeHash, plainError, samePlace, savePlace, triable, type Place } from "./place";
 
   // ---- the hosts and the connection (wave 3: the Mac and Away) ------------
   /** The page's own origin; empty outside a browser. */
@@ -178,6 +179,12 @@
   /** The project of the chat on screen when it is not the one open on the
    *  Mac (read-only here: sending would switch his desktop's project). */
   let chatProject = $state<string | null>(null);
+  /** The chat's own project, named on every call for it (item 300, A29;
+   *  blocker 1092's default: the phone keeps its own place). `chatProject`
+   *  above is the display's "not the host's active one"; this never
+   *  follows the host. `null` only where the host lists no id (the Mac's
+   *  unfiled chats). */
+  let chatPid = $state<string | null>(null);
   /** The host whose chat is on screen (wave 3): a chat belongs to the host
    *  that listed it, and its sends, actions and reads go there even when
    *  the other host is the one answering. Null for a new chat. */
@@ -195,6 +202,11 @@
   let live = $state<LiveTurn | null>(null);
   let toast = $state<string | null>(null);
   let error = $state<string | null>(null);
+  /** The host's full sentence behind `error`, shown on a tap (A14). */
+  let errorDetail = $state<string | null>(null);
+  let showDetail = $state(false);
+  /** The held message whose ✕ asks where it goes (A36). */
+  let heldAsk = $state<string | null>(null);
   let draft = $state("");
   let queue = $state<Queued[]>(loadQueue());
   let scroller = $state<HTMLElement | null>(null);
@@ -299,7 +311,7 @@
   /** And one that takes documents (item 277): PDFs, text, office files. */
   const canFile = $derived(hasFeature(remote, "documents"));
   /** The chat's project to send with when the Mac has another open. */
-  const sendProject = $derived(chatProject !== null && chatProject !== activePid ? chatProject : null);
+  const sendProject = $derived(chatPid ?? (chatProject !== null && chatProject !== activePid ? chatProject : null));
   /** Why the log cannot be changed now: a turn running (the desktop's
    *  controls hide while one runs; the Mac refuses mid-turn, 665). */
   const actBlocked = $derived(
@@ -366,14 +378,14 @@
   /** A wrong token ends the link; an unreachable Mac marks it offline; any
    *  other failure shows its sentence — unless `quiet`, for the background
    *  reads, whose failure the offline bar already says. */
-  function fail(e: unknown, quiet = false) {
+  function fail(e: unknown, quiet = false, doing: string | null = null) {
     // A host other than the one answering (a chat of the other host's) does
     // not change the link: its call fails with its own sentence, or holds.
     const other = (e instanceof ApiError || e instanceof Unreachable) && client !== null && e.base !== client.base;
     if (e instanceof ApiError && e.status === 401 && !other) {
       // The answering host refused its token: try the other, if paired.
       if (active) tried = [...tried.filter((t) => t.role !== active), { role: active, base: hosts[active]?.base ?? "", why: "refused", message: e.message }];
-      error = e.message;
+      showError(e.message, doing);
       abort?.abort();
       return;
     }
@@ -385,14 +397,29 @@
       if (link !== "off") link = "offline";
       return;
     }
-    if (!quiet) error = String(e instanceof Error ? e.message : e);
+    if (!quiet) showError(String(e instanceof Error ? e.message : e), doing);
+  }
+
+  /** The banner's line in plain words; the host's sentence behind a tap (A14). */
+  function showError(message: string, doing: string | null = null) {
+    const p = plainError(message, doing);
+    error = p.text;
+    errorDetail = p.detail;
+    showDetail = false;
   }
 
   async function refreshState() {
     if (!client) return;
     try {
       const was = remote.busy;
+      const wasProject = remote.project;
       remote = await client.state();
+      // The host's active project moved (a turn elsewhere, another phone):
+      // the drawer's active group is read for it now, not on a pull (A28).
+      if (projects.length > 0 && remote.project !== wasProject) {
+        await refreshProjects();
+        await refreshChats();
+      }
       // A new chat's id is the Mac's once its log exists (item 246).
       if (pendingNew && remote.active_chat && remote.active_chat !== pendingNew.before && chatId === null) {
         const id = remote.active_chat;
@@ -401,6 +428,8 @@
         chatId = id;
         chatHost = active;
         chatProject = null;
+        chatPid = newProject ?? (activePid || null);
+        place();
         // What he typed while it started stays his, under the new chat.
         if (typed.trim()) saveDraft(draftKey(id, null), typed);
         saveDraft(draftKey(null, newProject), "");
@@ -426,7 +455,10 @@
   async function refreshChats() {
     if (!client) return;
     try {
-      chatsBy = { ...chatsBy, [activePid]: await client.chats() };
+      // By its id when the host names one, so the list and its key agree
+      // even when the host's active project moved since `projects` was read.
+      const pid = activePid;
+      chatsBy = { ...chatsBy, [pid]: await client.chats(pid || null) };
       for (const p of projects) if (!p.active && expanded[p.id]) void loadProject(p.id);
     } catch (e) {
       fail(e, true);
@@ -472,10 +504,22 @@
     await refreshState();
     await refreshProjects();
     await refreshChats();
+    const back = startPlace;
+    startPlace = null;
+    if (!chose && chatId === null && !pendingNew && back) {
+      // Item 300 (A21, A37): the screen he was on — a reload, a
+      // home-screen launch — not the host's last chat.
+      const host = back.host && clients[back.host] ? back.host : active;
+      if (back.chat) await openChat(back.chat, back.project, host);
+      else startNew(back.project);
+      return;
+    }
     if (!chose && chatId === null && !pendingNew && remote.active_chat) {
       // The first screen: the chat the Mac is on (blocker 576's default).
       chatId = remote.active_chat;
       chatHost = active;
+      chatPid = activePid || null;
+      place();
       draft = loadDraft(draftKey(chatId, null));
       await refreshTranscript(true);
       void grow();
@@ -621,6 +665,20 @@
     const run = ++loopId;
     for (;;) {
       if (run !== loopId) return;
+      // Item 300 (A34): a page out of sight holds no stream — Safari gives
+      // a host six connections, and tabs left open used them all up. It
+      // waits here until shown (the visibility handler wakes it).
+      while (document.visibilityState === "hidden" && run === loopId) {
+        await new Promise<void>((r) => {
+          const t = setTimeout(r, 60000);
+          wake = () => {
+            clearTimeout(t);
+            r();
+          };
+        });
+        wake = null;
+      }
+      if (run !== loopId) return;
       link = failures === 0 ? "connecting" : "offline";
       const ok = await choose(run);
       if (run !== loopId) return;
@@ -739,6 +797,10 @@
   onMount(() => {
     hosts = loadHosts(origin);
     const fromHash = tokenFromHash(location.hash);
+    // Where he was (A21): the hash's place on a reload, the stored one on
+    // a launch — read before the token's hash is cleared.
+    startPlace = (fromHash ? null : placeFromHash(location.hash)) ?? loadPlace();
+    window.addEventListener("popstate", onPopState);
     if (fromHash) {
       // Off the address bar the moment it is read: a token in the history
       // is a token in a screenshot.
@@ -747,8 +809,18 @@
     } else if (paired.length > 0) void streamLoop();
     pollLoop();
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible" && client && link !== "off") void everything();
+      if (document.visibilityState === "hidden") {
+        // Let the stream go while out of sight (A34); the loop waits.
+        abort?.abort();
+        return;
+      }
+      if (link === "off") return;
+      failures = 0;
+      if (wake) wake();
+      if (client) void everything();
     });
+    // Leaving or going into the back-forward cache: the stream goes too.
+    window.addEventListener("pagehide", () => abort?.abort());
     const clock = setInterval(() => (now = Date.now()), 15000);
     // The phone's own light or dark decides which (blocker 577): read here
     // rather than by a media query, so the palette blocks key on one
@@ -759,6 +831,7 @@
     mq.addEventListener?.("change", scheme);
     return () => {
       clearInterval(clock);
+      window.removeEventListener("popstate", onPopState);
       mq.removeEventListener?.("change", scheme);
     };
   });
@@ -783,6 +856,53 @@
   });
 
   // ---- the screens ----------------------------------------------------------
+  /** Where to start: the hash's place (a reload), else the stored one (a
+   *  home-screen launch). Used once, by the first `everything`. */
+  let startPlace: Place | null = null;
+  /** Set while Back or Forward moves the page, so it adds no entry. */
+  let navigating = false;
+
+  /** Item 300 (A21, A37): the screen in the URL's hash — a history entry
+   *  per chat, so Back returns to the chat before — and in storage. */
+  function place() {
+    const p: Place = chatId
+      ? { chat: chatId, project: chatPid, host: chatHost }
+      : { chat: null, project: newProject ?? (activePid || null), host: null };
+    savePlace(p);
+    if (navigating) return;
+    const cur = placeFromHash(location.hash);
+    if (samePlace(cur, p)) return;
+    const url = location.pathname + location.search + placeHash(p);
+    try {
+      if (cur === null) history.replaceState(p, "", url);
+      else history.pushState(p, "", url);
+    } catch {
+      // A history the browser will not write (rate-limited): the screen still changes.
+    }
+  }
+
+  /** Back or Forward: show the place the entry names. */
+  function onPopState() {
+    const p = placeFromHash(location.hash);
+    if (!p || !client) return;
+    navigating = true;
+    try {
+      if (p.chat) void openChat(p.chat, p.project, p.host && clients[p.host] ? p.host : active);
+      else startNew(p.project);
+    } finally {
+      navigating = false;
+    }
+  }
+
+  // The chat's own project wins over the display's guess: when the host's
+  // active project moves, `chatProject` says whether this chat is in it.
+  $effect(() => {
+    const pid = activePid;
+    if (chatId === null || chatPid === null || projects.length === 0) return;
+    const want = chatPid !== pid ? chatPid : null;
+    if (chatProject !== want) chatProject = want;
+  });
+
   /** Show `id` (of `project` when it is not the Mac's open one). */
   async function openChat(id: string, project: string | null = null, host: HostRole | null = active) {
     chose = true;
@@ -796,6 +916,11 @@
     otherState = null;
     chatLabel = (chatsBy[project ?? activePid] ?? []).find((c) => c.id === id)?.label ?? null;
     chatProject = project && project !== activePid ? project : null;
+    // Named now, while the host's active project is the drawer's (A29).
+    chatPid = project ?? (activePid || null);
+    // Its list, for the title, when the drawer has not read it (a reload, Back).
+    if (project && !chatsBy[project]) void loadProject(project);
+    place();
     pendingNew = null;
     events = [];
     enterFrom = 0;
@@ -813,7 +938,9 @@
     chatHost = null;
     chatLabel = null;
     chatProject = null;
+    chatPid = null;
     newProject = project && project !== activePid ? project : null;
+    place();
     pendingNew = null;
     live = null;
     events = [];
@@ -1039,9 +1166,44 @@
 
   function takeBack(id: string) {
     const q = queue.find((m) => m.id === id);
+    if (!q) return;
+    // Held for another chat: ask where it goes (A36).
+    if (heldTap(q, chatId) === "ask") {
+      heldAsk = id;
+      return;
+    }
     queue = queue.filter((m) => m.id !== id);
     saveQueue(queue);
-    if (q && !draft) setDraft(q.text);
+    // Into the box, beside anything already there — never over it.
+    setDraft(joinDraft(draft, q.text));
+  }
+
+  /** A held message for another chat goes back to that chat's composer,
+   *  and that chat opens (A36): the text is never lost, nor sent here. */
+  async function editHeldInItsChat(id: string) {
+    const q = queue.find((m) => m.id === id);
+    heldAsk = null;
+    if (!q) return;
+    queue = queue.filter((m) => m.id !== id);
+    saveQueue(queue);
+    const key = draftKey(q.chat, q.chat ? null : (q.project ?? null));
+    saveDraft(key, joinDraft(loadDraft(key), q.text));
+    if (q.chat) await openChat(q.chat, q.project ?? null, q.host ?? active);
+    else startNew(q.project ?? null);
+  }
+
+  function discardHeld(id: string) {
+    heldAsk = null;
+    queue = queue.filter((m) => m.id !== id);
+    saveQueue(queue);
+    note("Held message discarded");
+  }
+
+  /** Try a refused held message again (A30). */
+  function retryHeld(id: string) {
+    queue = queue.map((q) => (q.id === id ? { ...q, failed: undefined } : q));
+    saveQueue(queue);
+    void drainQueue();
   }
 
   /** The oldest held message goes when the Mac is reachable and idle; the
@@ -1050,7 +1212,7 @@
     if (!client || link !== "online" || remote.busy || queue.length === 0) return;
     // Only the answering host's held messages: one for the other host
     // waits for it (a chat from Away is never sent to the Mac).
-    const next = nextHeldFor(queue, active);
+    const next = nextHeldFor(triable(queue), active);
     if (!next) return;
     try {
       const status = await client.send(next.chat, next.text, { project: next.project ?? null, nonce: next.nonce ?? next.id });
@@ -1067,7 +1229,13 @@
         scrollToEnd();
       }
     } catch (e) {
-      fail(e);
+      // Refused (A30): the row says so and offers Retry; it is not tried
+      // again at every turn's end, nor shown as a banner with a path.
+      if (e instanceof ApiError && e.status !== 401) {
+        const why = plainError(e.message, "send").text;
+        queue = queue.map((q) => (q.id === next.id ? { ...q, failed: why } : q));
+        saveQueue(queue);
+      } else fail(e);
     }
   }
 
@@ -1093,13 +1261,13 @@
     const t = renameText.trim();
     if (!chatClient || !chatId || !t) return;
     try {
-      await chatClient.rename(chatId, t);
+      await chatClient.rename(chatId, t, sendProject);
       sheet = null;
       note("Renamed");
       await refreshChats();
     } catch (e) {
       // The sheet stays open with his text in it.
-      fail(e);
+      fail(e, false, "rename the chat");
     }
   }
 
@@ -1107,10 +1275,10 @@
     if (!chatClient || !chatId) return;
     sheet = null;
     try {
-      await chatClient.open(chatId);
+      await chatClient.open(chatId, sendProject);
       note("Opened on the Mac");
     } catch (e) {
-      fail(e);
+      fail(e, false, "open it on the Mac");
     }
   }
 
@@ -1142,6 +1310,7 @@
         if (reply.chat && reply.chat !== chatId) {
           chatId = reply.chat;
           chatProject = null;
+          place();
           draft = loadDraft(draftKey(reply.chat, null));
           void grow();
           void refreshChats();
@@ -1316,7 +1485,7 @@
     trashed = null;
     await refreshProjects();
     await refreshChats();
-    await openChat(t.id, null, t.host ?? active);
+    await openChat(t.id, t.project, t.host ?? active);
   }
 
   async function continueTurn() {
@@ -2095,7 +2264,13 @@
     {/if}
     {#if error && link !== "off"}
       <div class="bar bad" transition:fly={{ y: -12, duration: motion(200) }}>
-        <span>{error}</span>
+        <span class="bar-text">
+          {error}
+          {#if errorDetail}
+            <button class="detail-btn" onclick={() => (showDetail = !showDetail)}>{showDetail ? "Hide details" : "Details"}</button>
+            {#if showDetail}<span class="bar-detail">{errorDetail}</span>{/if}
+          {/if}
+        </span>
         <button class="icon-btn small" onclick={() => (error = null)} aria-label="Dismiss">{@render icon("x")}</button>
       </div>
     {/if}
@@ -2266,10 +2441,22 @@
       {#if queue.length > 0}
         <div class="queue">
           {#each queue as q (q.id)}
-            <div class="held" transition:fly={{ y: 8, duration: motion(180) }}>
+            <div class="held" class:failed={!!q.failed} transition:fly={{ y: 8, duration: motion(180) }}>
               <span class="held-text">{q.text}</span>
-              <span class="held-meta">{q.chat && q.chat !== chatId ? "another chat · " : ""}held</span>
-              <button class="icon-btn small" onclick={() => takeBack(q.id)} aria-label="Take back into the composer">{@render icon("x")}</button>
+              {#if heldAsk === q.id}
+                <span class="held-ask">
+                  <button class="btn small" onclick={() => void editHeldInItsChat(q.id)}>Edit in its chat</button>
+                  <button class="btn small danger" onclick={() => discardHeld(q.id)}>Discard</button>
+                  <button class="btn small" onclick={() => (heldAsk = null)}>Keep</button>
+                </span>
+              {:else if q.failed}
+                <span class="held-meta" title={q.failed}>Couldn't send</span>
+                <button class="btn small" onclick={() => retryHeld(q.id)}>Retry</button>
+                <button class="icon-btn small" onclick={() => takeBack(q.id)} aria-label="Take it back">{@render icon("x")}</button>
+              {:else}
+                <span class="held-meta">{q.chat && q.chat !== chatId ? "another chat · " : ""}held</span>
+                <button class="icon-btn small" onclick={() => takeBack(q.id)} aria-label={q.chat === chatId ? "Take back into the composer" : "Edit or discard"}>{@render icon("x")}</button>
+              {/if}
             </div>
           {/each}
         </div>
@@ -2999,6 +3186,24 @@
     background: color-mix(in srgb, var(--failed) 16%, var(--paper));
     color: var(--failed);
   }
+  /* Item 300 (A14): the plain line, the host's sentence behind a tap. */
+  .bar .bar-detail {
+    display: block;
+    margin-top: 4px;
+    font-size: 12px;
+    opacity: 0.8;
+    overflow-wrap: anywhere;
+  }
+  .detail-btn {
+    margin-left: 6px;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    font-size: 13px;
+    text-decoration: underline;
+  }
 
   /* ---- the transcript ---- */
   .chat {
@@ -3482,6 +3687,15 @@
   .held-meta {
     font-size: 12px;
     color: var(--dim);
+  }
+  /* Item 300 (A30, A36): a refused held message, and the ✕'s question. */
+  .held.failed .held-meta {
+    color: var(--failed);
+  }
+  .held-ask {
+    display: flex;
+    gap: 4px;
+    flex-shrink: 0;
   }
   .composer {
     display: flex;

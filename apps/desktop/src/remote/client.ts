@@ -821,13 +821,17 @@ export class Client {
     return (await this.call(`/chats/${encodeURIComponent(chat)}/asides`)).json();
   }
 
-  async rename(chat: string, title: string): Promise<void> {
-    await this.call(`/chats/${encodeURIComponent(chat)}/rename`, { method: "POST", body: JSON.stringify({ title }) });
+  /** `project`: the chat's own (item 300, A13/A29) — the host never
+   *  guesses it from whichever project it has active. */
+  async rename(chat: string, title: string, project: string | null = null): Promise<void> {
+    const body: Record<string, unknown> = { title };
+    if (project) body.project = project;
+    await this.call(`/chats/${encodeURIComponent(chat)}/rename`, { method: "POST", body: JSON.stringify(body) });
   }
 
-  /** Open `chat` in the Mac's window. */
-  async open(chat: string): Promise<void> {
-    await this.call(`/chats/${encodeURIComponent(chat)}/open`, { method: "POST" });
+  /** Open `chat` in the Mac's window; `project` as `rename`'s. */
+  async open(chat: string, project: string | null = null): Promise<void> {
+    await this.call(`/chats/${encodeURIComponent(chat)}/open`, { method: "POST", ...(project ? { body: JSON.stringify({ project }) } : {}) });
   }
 
   /** A chat's log — in `project` when it is not the one open on the Mac. */
@@ -1366,6 +1370,9 @@ export interface Queued {
    *  send is recognised if that try reached the host after all. Absent
    *  (held before wave 4): the id stands in. */
   nonce?: string;
+  /** Item 300 (A30): the host refused it — the plain sentence why. It
+   *  waits for his Retry and is not tried again on its own. */
+  failed?: string;
 }
 
 export function loadQueue(): Queued[] {
