@@ -13,6 +13,7 @@
    */
   import { checkpointAction, editAction, loadDraft, rowCheckpoint, rowRemoval, saveDraft, type ChatAction, type Row, type TextPart, type ToolRow } from "./client";
   import { missingSentence } from "./hosts";
+  import { plainPreview } from "./preview";
 
   interface Props {
     chat: string;
@@ -142,7 +143,7 @@
 
 {#if mode === "menu"}
   <div class="mm-title">{heading}</div>
-  <div class="mm-quote" class:removed>{copyText || "—"}</div>
+  <div class="mm-quote" class:removed><span class="mm-quote-text">{plainPreview(copyText) || "—"}</span></div>
   {#if problem}<p class="mm-problem">{problem}</p>{/if}
   {#if blocked}<p class="mm-note">{blocked}</p>{:else if !canAct}<p class="mm-note">{missingSentence(host, "This Mac's Nightloom is older than the phone page: only Copy works until it updates.")}</p>{/if}
   <div class="mm-menu">
@@ -218,6 +219,11 @@
     background: var(--paper);
     border-radius: 12px;
     padding: 8px 12px;
+  }
+  /* The clamp on an inner box (300 A25): on the padded box the fourth
+     line showed half-cut in the bottom padding. Plain words (plainPreview),
+     three whole lines, an ellipsis. */
+  .mm-quote-text {
     overflow: hidden;
     display: -webkit-box;
     -webkit-line-clamp: 3;
@@ -225,6 +231,8 @@
     -webkit-box-orient: vertical;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
+    line-height: 1.45;
+    max-height: calc(3 * 1.45em);
   }
   .mm-quote.removed {
     opacity: 0.55;
