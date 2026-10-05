@@ -82,6 +82,16 @@ pub fn decide(
     Decision::Ask(lines.to_vec())
 }
 
+/// The ask to record: a repeat of an ask the window has not acknowledged
+/// keeps the first one's clock, so pressing ⌘Q again and again on a hung
+/// window still lets a quit through once [`ANSWER_WITHIN`] has passed.
+pub fn asked_at(asked: Option<(Instant, bool)>, now: Instant) -> (Instant, bool) {
+    match asked {
+        Some((at, false)) => (at, false),
+        _ => (now, false),
+    }
+}
+
 /// A quit was asked for: decide, and on an ask record it and tell the window.
 /// `true` when the quit may go ahead.
 fn request(app: Option<&AppHandle>) -> bool {
@@ -89,7 +99,7 @@ fn request(app: Option<&AppHandle>) -> bool {
     let d = with(|g| {
         let d = decide(&g.lines, g.confirmed, g.asked, now);
         if matches!(d, Decision::Ask(_)) {
-            g.asked = Some((now, false));
+            g.asked = Some(asked_at(g.asked, now));
         }
         d
     });
@@ -257,6 +267,21 @@ mod tests {
             decide(&lines(1), false, Some((then, true)), later),
             Decision::Ask(_)
         ));
+    }
+
+    #[test]
+    fn repeated_quits_on_a_silent_window_keep_the_first_clock() {
+        let then = Instant::now();
+        let soon = then + Duration::from_secs(2);
+        let asked = asked_at(None, then);
+        let asked = asked_at(Some(asked), soon);
+        assert_eq!(asked, (then, false));
+        assert_eq!(
+            decide(&lines(1), false, Some(asked), then + Duration::from_secs(4)),
+            Decision::Quit
+        );
+        // An acknowledged ask starts a fresh clock.
+        assert_eq!(asked_at(Some((then, true)), soon), (soon, false));
     }
 
     #[test]
