@@ -25,6 +25,7 @@ pub mod grounding;
 pub mod import;
 pub mod knowledge;
 pub mod mcp_server;
+pub mod memory_where;
 pub mod model_list;
 pub mod nightshift;
 pub mod note_edit;

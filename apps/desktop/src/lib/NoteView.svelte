@@ -35,6 +35,7 @@
   import NoteEditPanel from "./NoteEditPanel.svelte";
   import { noteEditUi, onLanded, runningTurn } from "./noteEdit.svelte";
   import { changedLines } from "./noteEdit";
+  import { lineOffset } from "./memoryHits";
 
   /**
    * Which note the editor has loaded, as `scope:name`. A plain variable, not
@@ -231,6 +232,23 @@
     void load(open);
   });
 
+  /**
+   * A memory hit on the note already open (backlog 296): move the cursor to
+   * its line — the formatted editor takes a caret only on mount, so
+   * `jump` remounts it — and leave the buffer, a draft included, as it is.
+   */
+  let jump = $state(0);
+  $effect(() => {
+    const at = app.noteAt;
+    if (!at || !open || loading || !bufferKey) return;
+    if (`${at.scope}:${at.name}` !== loaded || open.scope !== at.scope || open.name !== at.name) return;
+    caret = lineOffset(text, at.line);
+    app.noteAt = null;
+    preview = false;
+    jump += 1;
+    if (mode === "plain") void focusArea();
+  });
+
   async function load(target: { scope: NoteScope; name: string } | null) {
     bufferKey = null;
     caret = 0;
@@ -248,6 +266,15 @@
       // saved baseline, so the ● and the Revert button say what differs.
       const draft = app.noteDrafts[key];
       text = draft !== undefined && draft !== content ? draft : content;
+      // Opened from a memory hit (backlog 296): the cursor on its line,
+      // set before the editor mounts on the new buffer.
+      const at = app.noteAt;
+      if (at && at.scope === target.scope && at.name === target.name) {
+        caret = lineOffset(text, at.line);
+        app.noteAt = null;
+        preview = false;
+        if (mode === "plain") void focusArea();
+      }
       bufferKey = key;
     } catch (e) {
       error = String(e);
@@ -610,7 +637,7 @@
       {/if}
     </div>
   {:else if mode === "formatted"}
-    {#key bufferKey}
+    {#key `${bufferKey}#${jump}`}
       <NoteEditor
         bind:this={formatted}
         bind:value={text}

@@ -56,6 +56,9 @@
   import ApprovalPrompt from "./ApprovalPrompt.svelte";
   import Icon from "./Icon.svelte";
   import { REMOVED_TEXT_PLACEHOLDER, REMOVED_TOOL_PLACEHOLDER } from "./edit";
+  import MemoryHits from "./MemoryHits.svelte";
+  import { hitsOfCalls } from "./memoryHits";
+  import { memoryRefs } from "./memoryOpen";
 
   interface Footer {
     model: string;
@@ -332,6 +335,13 @@
     [app.connection?.workspace, app.project?.root].filter((r): r is string => !!r),
   );
   const replyText = $derived(textOf());
+  // `memory_where` hits (backlog 296): every place the turn's calls found,
+  // drawn under the reply as links with Strike, and the reply's own
+  // `path:line` references linked to them. Once the reply has stopped.
+  const memGroups = $derived(
+    streaming ? [] : hitsOfCalls(segs.flatMap((s) => (s.kind === "tool" ? [s.call] : []))),
+  );
+  const memHits = $derived(memGroups.flatMap((g) => g.hits));
   const links = $derived<ArtifactLink[]>(streaming ? [] : artifactLinks(replyText));
   let files = $state<FileCard[]>([]);
   let checked = "";
@@ -352,8 +362,10 @@
       .namedFiles(candidates.map((c) => c.path))
       .then((found) => {
         if (stale) return;
+        // A memory file the hits below already link is not a second card.
+        const mem = new Set(memHits.map((h) => h.path));
         files = found.flatMap((f) =>
-          f ? [{ path: f.path, label: displayPath(f.path, bases), size: f.size }] : [],
+          f && !mem.has(f.path) ? [{ path: f.path, label: displayPath(f.path, bases), size: f.size }] : [],
         );
       })
       .catch(() => {
@@ -677,7 +689,7 @@
           {#each wordDiff(before, g.seg.text) as op, k (k)}{#if op.kind === "del"}<del>{op.text}</del>{:else if op.kind === "add"}<ins>{op.text}</ins>{:else}{op.text}{/if}{/each}
         </div>
       {:else}
-        <div class="markdown">{@html renderReply(g.seg.text)}</div>
+        <div class="markdown" use:memoryRefs={{ hits: memHits, text: g.seg.text }}>{@html renderReply(g.seg.text)}</div>
       {/if}
     {:else if g.seg.kind === "removed_tool" || g.seg.kind === "removed_text"}
       {@const seg = g.seg}
@@ -750,6 +762,9 @@
         </div>
       {/each}
     </div>
+  {/if}
+  {#if memGroups.length > 0}
+    <MemoryHits groups={memGroups} />
   {/if}
   {#if footer && !streaming}
     {@const share = size ? shareOf(size.tokens, limit) : null}

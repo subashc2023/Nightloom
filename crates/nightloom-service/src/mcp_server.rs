@@ -121,7 +121,8 @@ const INSTRUCTIONS: &str = "Nightloom's tools. For the whole text of a page use 
      To find or quote one of the user's other chats use search_chats, then read_chat — when \
      the message points outside this chat (an earlier decision, 'as we discussed', a name you \
      have no context for), not on every turn; recent chats rank first. context_status says \
-     how full your context window was when this turn began.";
+     how full your context window was when this turn began. When the user asks where \
+     memory says something, use memory_where.";
 
 /// The last sentence of [`INSTRUCTIONS`], present only when the tool is: a
 /// server started for an incognito chat (`--no-remember`) must not tell the
@@ -191,7 +192,7 @@ pub fn tools_in(
             dir: d.dir,
         })
         .collect();
-    let (active, source) = match project_id {
+    let (active, source, workspace) = match project_id {
         Some(id) => {
             let registry = Registry::load_in(config);
             let project = registry
@@ -203,9 +204,17 @@ pub fn tools_in(
                     .join(&project.id)
                     .join(SESSIONS_DIR),
                 Some(project.name.clone()),
+                // From `config`, not the global store, for the reason the
+                // sessions path above is.
+                Some(project.workspace.clone().unwrap_or_else(|| {
+                    config
+                        .join(PROJECTS_DIR)
+                        .join(&project.id)
+                        .join(crate::project::WORKSPACE_DIR)
+                })),
             )
         }
-        None => (config.join(capture::UNFILED).join(SESSIONS_DIR), None),
+        None => (config.join(capture::UNFILED).join(SESSIONS_DIR), None, None),
     };
     let chats = ChatDirs { active, all };
     let mut tools: Vec<Box<dyn Tool>> = vec![
@@ -227,6 +236,11 @@ pub fn tools_in(
     tools.push(Box::new(ContextStatusTool {
         config: config.to_path_buf(),
     }));
+    // Where in memory a belief lives (nightshift backlog 296): read-only, so
+    // an incognito chat's server keeps it like the other readers.
+    tools.push(Box::new(crate::memory_where::MemoryWhere::new(
+        crate::memory_where::MemoryRoots::discover(config, workspace),
+    )));
     Ok(tools)
 }
 
@@ -1667,7 +1681,8 @@ mod tests {
                 "read_chat",
                 "remember",
                 "fetch_page",
-                "context_status"
+                "context_status",
+                "memory_where"
             ]
         );
         // The MCP spelling, not the trait's: a host reads `inputSchema`.
@@ -1831,12 +1846,19 @@ mod tests {
                 "read_chat",
                 "remember",
                 "fetch_page",
-                "context_status"
+                "context_status",
+                "memory_where"
             ]
         );
         assert_eq!(
             names(false),
-            ["search_chats", "read_chat", "fetch_page", "context_status"]
+            [
+                "search_chats",
+                "read_chat",
+                "fetch_page",
+                "context_status",
+                "memory_where"
+            ]
         );
         let with = instructions_for(&tools_in(&config, Some(&id), true).unwrap());
         let without = instructions_for(&tools_in(&config, Some(&id), false).unwrap());
