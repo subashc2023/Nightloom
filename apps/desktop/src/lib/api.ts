@@ -914,6 +914,17 @@ export function readNote(scope: NoteScope, name: string): Promise<string> {
   return invoke("read_note", { scope, name });
 }
 
+/** Where a `memory_where` hit opens (backlog 296): `[scope, name]` in the
+ *  note editor, or null for a file the editor does not reach. */
+export function memoryNoteFor(path: string): Promise<[NoteScope, string] | null> {
+  return invoke("memory_note_for", { path });
+}
+
+/** Strike a memory line with today's date (backlog 296); the new line. */
+export function memoryStrike(path: string, line: number, text: string): Promise<string> {
+  return invoke("memory_strike", { path, line, text });
+}
+
 /** Write a note. Also how one is created; an empty note is a real note. */
 export function saveNote(scope: NoteScope, name: string, content: string): Promise<Note> {
   return invoke("save_note", { scope, name, content });

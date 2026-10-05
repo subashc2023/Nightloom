@@ -1,0 +1,23 @@
+<!doctype html>
+<!-- Item 296: a reply with memory_where hits (fixture text, never his memory), snapped with
+     nightshift-code bin/snap.  &p=A..D  &w=<pane css px>  &strike=1 (the first hit struck) -->
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      body { margin: 0; background: var(--paper, #111); color: var(--ink); }
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+      #root { padding: 20px 24px; box-sizing: border-box; }
+      #cap { font: 11px/1.4 ui-monospace, monospace; color: #ddd; background: #000; padding: 4px 8px; white-space: pre; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <div id="cap"></div>
+    <script>
+      window.addEventListener("error", (e) => (document.getElementById("cap").textContent = "error: " + e.message));
+      window.addEventListener("unhandledrejection", (e) => (document.getElementById("cap").textContent = "rejection: " + e.reason));
+    </script>
+    <script type="module" src="./memory296.ts"></script>
+  </body>
+</html>

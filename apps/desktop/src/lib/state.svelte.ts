@@ -715,6 +715,9 @@ export const app = $state({
    * showing.
    */
   openNote: null as { scope: NoteScope; name: string } | null,
+  /** Open the note at this line (a `memory_where` hit, backlog 296): read
+   *  once by the note view, which puts the cursor there and clears it. */
+  noteAt: null as { scope: NoteScope; name: string; line: number } | null,
   /** Which mode the left sidebar is in: its list follows. */
   leftTab: "chats" as "chats" | "notes" | "nightshift",
   /** The rail's connection settings; any change re-connects via applyDraft(). */

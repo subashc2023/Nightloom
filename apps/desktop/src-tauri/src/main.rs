@@ -5740,6 +5740,54 @@ async fn read_note(
     project::read_note(&dir, &name)
 }
 
+/// Where a `memory_where` hit opens (nightshift backlog 296): the note
+/// editor's scope and name, or `None` for a memory file the editor does not
+/// reach, which the reply opens as a file instead.
+#[tauri::command]
+async fn memory_note_for(
+    state: State<'_, AppState>,
+    path: PathBuf,
+) -> Result<Option<(String, String)>, String> {
+    let workspace = state.active().await.map(|p| p.workspace_dir());
+    let config = project::config_dir();
+    let vault = nightloom_service::knowledge::vault_dir();
+    Ok(nightloom_service::memory_where::note_for(
+        &path,
+        config.as_deref(),
+        workspace.as_deref(),
+        vault.as_deref(),
+    )
+    .map(|(scope, name)| (scope.to_string(), name)))
+}
+
+/// *Strike* on a `memory_where` hit (backlog 296): supersede line `line` of
+/// `path` with today's date — never delete it — provided it still reads as
+/// `text`. Only a file the memory walk names for the open project: the path
+/// came from a tool result, and a strike is a write.
+#[tauri::command]
+async fn memory_strike(
+    state: State<'_, AppState>,
+    path: PathBuf,
+    line: usize,
+    text: String,
+) -> Result<String, String> {
+    use nightloom_service::memory_where as mw;
+    let config = project::config_dir().ok_or("no user config directory")?;
+    let workspace = state.active().await.map(|p| p.workspace_dir());
+    let roots = mw::MemoryRoots::discover(&config, workspace);
+    tokio::task::spawn_blocking(move || {
+        if !roots.owns(&path) {
+            return Err(format!(
+                "{} is not one of this chat's memory files, so Nightloom will not write to it",
+                path.display()
+            ));
+        }
+        mw::strike_line(&path, line, &text, chrono::Local::now().date_naive())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Write a note. Also how a new one is created — there is no separate
 /// "create", because a note is a file and an empty one is a real note.
 #[tauri::command]
@@ -7560,6 +7608,8 @@ fn main() {
             forget_project,
             list_notes,
             read_note,
+            memory_note_for,
+            memory_strike,
             save_note,
             delete_note,
             list_proposals,
