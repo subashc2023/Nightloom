@@ -498,6 +498,10 @@
       const pid = activePid;
       chatsBy = { ...chatsBy, [pid]: await client.chats(pid || null) };
       for (const p of projects) if (!p.active && expanded[p.id]) void loadProject(p.id);
+      // 300 retest: the chat on screen's own project is re-read too, so its
+      // title follows a rename or a turn (F1's Recents dropped the expanded
+      // groups this used to ride on).
+      if (chatPid && chatPid !== pid) await loadProject(chatPid);
     } catch (e) {
       fail(e, true);
     }
