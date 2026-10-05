@@ -5752,16 +5752,46 @@ impl Default for NoteScope {
 /// scope with no config directory is a machine with no home to keep a vault
 /// in.
 async fn scope_dir(state: &AppState, scope: NoteScope) -> Result<PathBuf, String> {
+    scope_dir_in(state, scope, None).await
+}
+
+/// [`scope_dir`] for a named project (item 300 B1: the phone names the
+/// project on its screen, so a note is never written into the window's open
+/// project while he looks at another). `None` is the open project;
+/// `unfiled` is No project; an id the registry does not know is refused
+/// rather than read as the open one.
+async fn scope_dir_in(
+    state: &AppState,
+    scope: NoteScope,
+    project: Option<&str>,
+) -> Result<PathBuf, String> {
+    let named = match project {
+        None => None,
+        Some(nightloom_service::serve::NO_PROJECT_ID) => Some(None),
+        Some(id) => Some(Some(
+            state
+                .workspaces
+                .lock()
+                .await
+                .registry
+                .projects()
+                .into_iter()
+                .find(|p| p.id == id)
+                .ok_or_else(|| format!("no project {id}"))?,
+        )),
+    };
+    let project_of = async || match &named {
+        Some(p) => p.clone(),
+        None => state.active().await,
+    };
     match scope {
-        NoteScope::Project => state
-            .active()
+        NoteScope::Project => project_of()
             .await
             .map(|p| p.notes_dir())
             .ok_or_else(|| "no project is open, so there is no shared notes folder".to_string()),
         NoteScope::Knowledge => nightloom_service::knowledge::vault_dir()
             .ok_or_else(|| "no user config directory to keep a knowledge base in".to_string()),
-        NoteScope::Instructions => state
-            .active()
+        NoteScope::Instructions => project_of()
             .await
             .map(|p| p.workspace_dir())
             .ok_or_else(|| "no project is open, so there are no project instructions".to_string()),
@@ -5790,12 +5820,15 @@ fn check_fixed_name(scope: NoteScope, name: &str) -> Result<(), String> {
 async fn list_notes(
     state: State<'_, AppState>,
     scope: Option<NoteScope>,
+    project: Option<String>,
 ) -> Result<Vec<Note>, String> {
     let scope = scope.unwrap_or_default();
     if scope.is_fixed_file() {
         return Err(format!("{scope:?} is one file, not a folder to list"));
     }
-    Ok(project::list_notes(&scope_dir(&state, scope).await?))
+    Ok(project::list_notes(
+        &scope_dir_in(&state, scope, project.as_deref()).await?,
+    ))
 }
 
 #[tauri::command]
@@ -5803,10 +5836,11 @@ async fn read_note(
     state: State<'_, AppState>,
     scope: Option<NoteScope>,
     name: String,
+    project: Option<String>,
 ) -> Result<String, String> {
     let scope = scope.unwrap_or_default();
     check_fixed_name(scope, &name)?;
-    let dir = scope_dir(&state, scope).await?;
+    let dir = scope_dir_in(&state, scope, project.as_deref()).await?;
     // A fixed file that does not exist yet is an empty one, not an error:
     // the editor opens on it so the user can write the first line. A model's
     // file is the same case — "+ add for this model" opens the editor on a
@@ -5878,10 +5912,15 @@ async fn save_note(
     scope: Option<NoteScope>,
     name: String,
     content: String,
+    project: Option<String>,
 ) -> Result<Note, String> {
     let scope = scope.unwrap_or_default();
     check_fixed_name(scope, &name)?;
-    project::write_note(&scope_dir(&state, scope).await?, &name, &content)
+    project::write_note(
+        &scope_dir_in(&state, scope, project.as_deref()).await?,
+        &name,
+        &content,
+    )
 }
 
 #[tauri::command]
@@ -5889,6 +5928,7 @@ async fn delete_note(
     state: State<'_, AppState>,
     scope: Option<NoteScope>,
     name: String,
+    project: Option<String>,
 ) -> Result<(), String> {
     let scope = scope.unwrap_or_default();
     if let Some(fixed) = scope.fixed_name() {
@@ -5896,7 +5936,10 @@ async fn delete_note(
             "{fixed} is not deleted from here — empty it instead"
         ));
     }
-    project::delete_note(&scope_dir(&state, scope).await?, &name)
+    project::delete_note(
+        &scope_dir_in(&state, scope, project.as_deref()).await?,
+        &name,
+    )
 }
 
 // ---- proposals: the dream's suggested edits to the fixed files ------------

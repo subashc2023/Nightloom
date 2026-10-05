@@ -45,6 +45,9 @@ pub mod feature {
     pub const PROJECTS: &str = "projects";
     /// `/api/notes…`.
     pub const NOTES: &str = "notes";
+    /// The notes routes take `?project=` (item 300 B1): the phone names
+    /// the project on its screen, never the host's open one by default.
+    pub const NOTES_PROJECT: &str = "notes_project";
     /// A send may carry `project` (a chat in another project), `images`,
     /// `documents`, `council`, or `spoken` — one name each, so the phone
     /// can offer a photo where a council is not served (a plain text send
@@ -85,6 +88,7 @@ pub mod feature {
         SEARCH,
         PROJECTS,
         NOTES,
+        NOTES_PROJECT,
         SEND_PROJECT,
         IMAGES,
         DOCUMENTS,

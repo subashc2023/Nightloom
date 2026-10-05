@@ -408,6 +408,9 @@ describe("notes (wave 2C)", () => {
   it("addresses a note by segments, keeping its slashes", () => {
     expect(notePath("project", "design/phone page.md")).toBe("/notes/project/design/phone%20page.md");
     expect(notePath("memory", "AGENTS.md")).toBe("/notes/memory/AGENTS.md");
+    // 300 B1: the project on screen rides along; none keeps the old path.
+    expect(notePath("instructions", "AGENTS.md", "a b")).toBe("/notes/instructions/AGENTS.md?project=a%20b");
+    expect(notePath("instructions", "AGENTS.md", null)).toBe("/notes/instructions/AGENTS.md");
   });
 
   it("names a new note as the listener takes it", () => {

@@ -514,6 +514,15 @@ impl ServeHost {
         ))
     }
 
+    /// Where a note call looks (item 300 B1): the project the phone has on
+    /// screen when it names one (`unfiled`: No project), else the phone's
+    /// current project. A project this host does not know is refused, never
+    /// read as the current one.
+    fn note_places(&self, project: Option<&str>) -> Result<serve_reads::Places, String> {
+        let places = self.read_places()?;
+        places.for_project(project)
+    }
+
     /// The spec a turn in `session` runs under: the desktop's connect,
     /// cut to what a turn needs — the folder by the chat's kind, the vault
     /// and extra folders granted, the preamble by the chat's layers, `auto`
@@ -2010,20 +2019,40 @@ impl Host for ServeHost {
         serve_reads::project_forget(&mut registry, &mut active, &mut chat, id)
     }
 
-    async fn notes_list(&self, scope: &str) -> Result<Vec<crate::project::Note>, String> {
-        serve_reads::notes_list(&self.read_places()?, scope)
+    async fn notes_list(
+        &self,
+        project: Option<&str>,
+        scope: &str,
+    ) -> Result<Vec<crate::project::Note>, String> {
+        serve_reads::notes_list(&self.note_places(project)?, scope)
     }
 
-    async fn note_read(&self, scope: &str, name: &str) -> Result<String, String> {
-        serve_reads::note_read(&self.read_places()?, scope, name)
+    async fn note_read(
+        &self,
+        project: Option<&str>,
+        scope: &str,
+        name: &str,
+    ) -> Result<String, String> {
+        serve_reads::note_read(&self.note_places(project)?, scope, name)
     }
 
-    async fn note_write(&self, scope: &str, name: &str, text: &str) -> Result<(), String> {
-        serve_reads::note_write(&self.read_places()?, scope, name, text)
+    async fn note_write(
+        &self,
+        project: Option<&str>,
+        scope: &str,
+        name: &str,
+        text: &str,
+    ) -> Result<(), String> {
+        serve_reads::note_write(&self.note_places(project)?, scope, name, text)
     }
 
-    async fn note_delete(&self, scope: &str, name: &str) -> Result<(), String> {
-        serve_reads::note_delete(&self.read_places()?, scope, name)
+    async fn note_delete(
+        &self,
+        project: Option<&str>,
+        scope: &str,
+        name: &str,
+    ) -> Result<(), String> {
+        serve_reads::note_delete(&self.note_places(project)?, scope, name)
     }
 
     fn sync(&self) -> Option<Arc<crate::sync::SyncServer>> {
@@ -2093,6 +2122,7 @@ impl Host for ServeHost {
             feature::SEARCH,
             feature::PROJECTS,
             feature::NOTES,
+            feature::NOTES_PROJECT,
             // Wave 5 (wave 3 B1): not compact, checkpoint, dream or
             // capture; `nightshift` the listener names itself.
             feature::BUDGET,
@@ -2528,6 +2558,7 @@ esac
                 "search",
                 "projects",
                 "notes",
+                "notes_project",
                 "budget",
                 "resume_limit"
             ])

@@ -47,8 +47,11 @@
      *  "unfiled" for No project), so a draft is kept for this project's
      *  note only (item 300, A20). `null` while the projects are unknown. */
     project?: string | null;
+    /** The name of `project` as the page shows it (item 300 B1), so the
+     *  sheet says whose notes these are; "This project" when unknown. */
+    projectLabel?: string | null;
   }
-  let { client, available, host = undefined, start = null, onnote, ontall, project = null }: Props = $props();
+  let { client, available, host = undefined, start = null, onnote, ontall, project = null, projectLabel = null }: Props = $props();
 
   type View =
     | { v: "list" }
@@ -115,7 +118,7 @@
       return;
     }
     try {
-      const got = await client.notes(s);
+      const got = await client.notes(s, project);
       if (scope === s) list = got.slice().sort((a, b) => b.modified.localeCompare(a.modified));
     } catch (e) {
       problem = say(e);
@@ -127,7 +130,7 @@
     text = null;
     problem = null;
     try {
-      text = await client.readNote(s, n);
+      text = await client.readNote(s, n, project);
     } catch (e) {
       problem = say(e);
     }
@@ -143,7 +146,7 @@
     older = !kept && hasOld(s, n) ? loadNoteDraft(oldKey(s, n)) : null;
     if (text === null) {
       try {
-        text = await client.readNote(s, n);
+        text = await client.readNote(s, n, project);
       } catch (e) {
         problem = say(e);
         if (!kept) return;
@@ -193,7 +196,7 @@
     busy = true;
     problem = null;
     try {
-      await client.writeNote(s, n, edit);
+      await client.writeNote(s, n, edit, project);
       // Saved on the Mac: only now does the draft go.
       saveNoteDraft(key(s, view.v === "new" ? null : n), null);
       text = edit;
@@ -246,7 +249,7 @@
     const { scope: s, name: n } = view;
     busy = true;
     try {
-      await client.deleteNote(s, n);
+      await client.deleteNote(s, n, project);
       onnote(`“${noteTitle(n)}” moved to the trash on the Mac`);
       view = { v: "list" };
       await load(s);
@@ -279,7 +282,7 @@
     {#if available}<button class="ns-link" onclick={beginNew}>New note</button>{/if}
   </div>
   <div class="ns-seg" role="tablist" aria-label="Which notes">
-    <button role="tab" aria-selected={scope === "project"} class:on={scope === "project"} onclick={() => load("project")}>This project</button>
+    <button role="tab" aria-selected={scope === "project"} class:on={scope === "project"} onclick={() => load("project")}>{projectLabel ?? "This project"}</button>
     <button role="tab" aria-selected={scope === "knowledge"} class:on={scope === "knowledge"} onclick={() => load("knowledge")}>Vault</button>
   </div>
   {#if problem}<p class="ns-problem">{problem}</p>{/if}
@@ -438,6 +441,12 @@
     font-size: 14px;
     cursor: pointer;
     color: var(--dim);
+    /* A project's name may be long (300 B1). */
+    min-width: 0;
+    padding: 0 8px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .ns-seg button.on {
     background: var(--well);

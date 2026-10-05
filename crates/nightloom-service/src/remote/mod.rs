@@ -399,18 +399,41 @@ pub trait Host: Send + Sync + 'static {
     async fn project_forget(&self, _id: &str) -> Result<(), String> {
         Err(NOT_AVAILABLE.into())
     }
-    /// The notes of `scope` (one of [`api::NOTE_SCOPES`]).
-    async fn notes_list(&self, _scope: &str) -> Result<Vec<crate::project::Note>, String> {
+    /// The notes of `scope` (one of [`api::NOTE_SCOPES`]). `project` is
+    /// the project the phone has on screen (`?project=`, item 300 B1):
+    /// the `project` and `instructions` scopes are that project's, `unfiled`
+    /// is No project; `None` (an older page) is the host's open project.
+    async fn notes_list(
+        &self,
+        _project: Option<&str>,
+        _scope: &str,
+    ) -> Result<Vec<crate::project::Note>, String> {
         Err(NOT_AVAILABLE.into())
     }
-    async fn note_read(&self, _scope: &str, _name: &str) -> Result<String, String> {
+    async fn note_read(
+        &self,
+        _project: Option<&str>,
+        _scope: &str,
+        _name: &str,
+    ) -> Result<String, String> {
         Err(NOT_AVAILABLE.into())
     }
-    async fn note_write(&self, _scope: &str, _name: &str, _text: &str) -> Result<(), String> {
+    async fn note_write(
+        &self,
+        _project: Option<&str>,
+        _scope: &str,
+        _name: &str,
+        _text: &str,
+    ) -> Result<(), String> {
         Err(NOT_AVAILABLE.into())
     }
     /// Delete a note — to the trash, never gone (the never-lose-work rule).
-    async fn note_delete(&self, _scope: &str, _name: &str) -> Result<(), String> {
+    async fn note_delete(
+        &self,
+        _project: Option<&str>,
+        _scope: &str,
+        _name: &str,
+    ) -> Result<(), String> {
         Err(NOT_AVAILABLE.into())
     }
     /// An aside on `chat` (item 246, wave 2). Answers once the exchange
@@ -1206,20 +1229,30 @@ async fn notes_list(State(shared): State<Arc<Shared>>, uri: Uri) -> Response {
     if let Err(e) = note_scope(&scope) {
         return bad(e);
     }
-    answer(shared.host.notes_list(&scope).await)
+    let project = note_project(&uri);
+    answer(shared.host.notes_list(project.as_deref(), &scope).await)
+}
+
+/// `?project=` on a notes route (item 300 B1): the project on the phone's
+/// screen, so a note is never read from or written into the host's open
+/// project when he is looking at another one.
+fn note_project(uri: &Uri) -> Option<String> {
+    api::query_param(uri.query(), "project").filter(|s| !s.is_empty())
 }
 
 async fn note_read(
     State(shared): State<Arc<Shared>>,
     Path((scope, name)): Path<(String, String)>,
+    uri: Uri,
 ) -> Response {
     if let Err(e) = note_scope(&scope).and_then(|()| note_name(&name)) {
         return bad(e);
     }
+    let project = note_project(&uri);
     answer(
         shared
             .host
-            .note_read(&scope, &name)
+            .note_read(project.as_deref(), &scope, &name)
             .await
             .map(|text| NoteText { text }),
     )
@@ -1228,22 +1261,36 @@ async fn note_read(
 async fn note_write(
     State(shared): State<Arc<Shared>>,
     Path((scope, name)): Path<(String, String)>,
+    uri: Uri,
     Json(body): Json<NoteText>,
 ) -> Response {
     if let Err(e) = note_scope(&scope).and_then(|()| note_name(&name)) {
         return bad(e);
     }
-    done(shared.host.note_write(&scope, &name, &body.text).await)
+    let project = note_project(&uri);
+    done(
+        shared
+            .host
+            .note_write(project.as_deref(), &scope, &name, &body.text)
+            .await,
+    )
 }
 
 async fn note_delete(
     State(shared): State<Arc<Shared>>,
     Path((scope, name)): Path<(String, String)>,
+    uri: Uri,
 ) -> Response {
     if let Err(e) = note_scope(&scope).and_then(|()| note_name(&name)) {
         return bad(e);
     }
-    done(shared.host.note_delete(&scope, &name).await)
+    let project = note_project(&uri);
+    done(
+        shared
+            .host
+            .note_delete(project.as_deref(), &scope, &name)
+            .await,
+    )
 }
 
 /// The relay as SSE: `event: <name>` / `data: <payload>` per window event,
@@ -1330,6 +1377,12 @@ mod tests {
     use std::sync::Mutex;
 
     /// A host that records what it was asked and answers from fixtures.
+    /// The fake's note key for a scope: a named project's notes are kept
+    /// apart from the open project's (item 300 B1).
+    fn fake_scope(project: Option<&str>, scope: &str) -> String {
+        project.map_or_else(|| scope.to_string(), |p| format!("{p}:{scope}"))
+    }
+
     struct FakeHost {
         sent: Mutex<Vec<(Option<String>, String)>>,
         approved: Mutex<Vec<ApproveRequest>>,
@@ -1743,13 +1796,18 @@ mod tests {
             self.forgotten.lock().unwrap().push(id.to_string());
             Ok(())
         }
-        async fn notes_list(&self, scope: &str) -> Result<Vec<crate::project::Note>, String> {
+        async fn notes_list(
+            &self,
+            project: Option<&str>,
+            scope: &str,
+        ) -> Result<Vec<crate::project::Note>, String> {
+            let scope = fake_scope(project, scope);
             Ok(self
                 .notes
                 .lock()
                 .unwrap()
                 .iter()
-                .filter(|((s, _), _)| s == scope)
+                .filter(|((s, _), _)| *s == scope)
                 .map(|((_, name), text)| crate::project::Note {
                     name: name.clone(),
                     bytes: text.len() as u64,
@@ -1758,26 +1816,42 @@ mod tests {
                 })
                 .collect())
         }
-        async fn note_read(&self, scope: &str, name: &str) -> Result<String, String> {
+        async fn note_read(
+            &self,
+            project: Option<&str>,
+            scope: &str,
+            name: &str,
+        ) -> Result<String, String> {
             self.notes
                 .lock()
                 .unwrap()
-                .get(&(scope.to_string(), name.to_string()))
+                .get(&(fake_scope(project, scope), name.to_string()))
                 .cloned()
                 .ok_or_else(|| format!("no note {name}"))
         }
-        async fn note_write(&self, scope: &str, name: &str, text: &str) -> Result<(), String> {
-            self.notes
-                .lock()
-                .unwrap()
-                .insert((scope.to_string(), name.to_string()), text.to_string());
+        async fn note_write(
+            &self,
+            project: Option<&str>,
+            scope: &str,
+            name: &str,
+            text: &str,
+        ) -> Result<(), String> {
+            self.notes.lock().unwrap().insert(
+                (fake_scope(project, scope), name.to_string()),
+                text.to_string(),
+            );
             Ok(())
         }
-        async fn note_delete(&self, scope: &str, name: &str) -> Result<(), String> {
+        async fn note_delete(
+            &self,
+            project: Option<&str>,
+            scope: &str,
+            name: &str,
+        ) -> Result<(), String> {
             self.notes
                 .lock()
                 .unwrap()
-                .remove(&(scope.to_string(), name.to_string()))
+                .remove(&(fake_scope(project, scope), name.to_string()))
                 .map(|_| ())
                 .ok_or_else(|| format!("no note {name}"))
         }
@@ -2996,6 +3070,77 @@ mod tests {
             .unwrap();
         assert_eq!(r.status(), 409);
         assert_eq!(*host.forgotten.lock().unwrap(), vec!["p2".to_string()]);
+        server.stop().await;
+    }
+
+    /// Item 300 B1: a note route carrying `?project=` reaches that
+    /// project's notes and never the host's open project's.
+    #[tokio::test]
+    async fn a_note_route_names_the_project_on_the_phone_screen() {
+        let (server, host, _tx, token) = up().await;
+        let base = format!("http://{}", server.addr());
+        let c = client();
+        let named = format!("{base}/api/notes/instructions/AGENTS.md?project=p2");
+        let r = c
+            .put(&named)
+            .bearer_auth(&token)
+            .json(&NoteText {
+                text: "Use metric units.".into(),
+            })
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 204);
+        assert!(
+            host.notes
+                .lock()
+                .unwrap()
+                .contains_key(&("p2:instructions".to_string(), "AGENTS.md".to_string())),
+            "written under the named project"
+        );
+        let (status, _) = get_json(
+            &c,
+            format!("{base}/api/notes/instructions/AGENTS.md"),
+            &token,
+        )
+        .await;
+        assert_eq!(status, 409, "the open project's instructions are untouched");
+        let (status, v) = get_json(&c, named.clone(), &token).await;
+        assert_eq!(
+            (status, v["text"].as_str()),
+            (200, Some("Use metric units."))
+        );
+        let (status, v) = get_json(
+            &c,
+            format!("{base}/api/notes?scope=project&project=p2"),
+            &token,
+        )
+        .await;
+        assert_eq!(
+            (status, v),
+            (200, serde_json::json!([])),
+            "p2 has no notes of its own"
+        );
+        let r = c
+            .delete(format!(
+                "{base}/api/notes/project/plans/today.md?project=p2"
+            ))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            r.status(),
+            409,
+            "the open project's note is not p2's to delete"
+        );
+        let (status, _) = get_json(
+            &c,
+            format!("{base}/api/notes/project/plans/today.md"),
+            &token,
+        )
+        .await;
+        assert_eq!(status, 200, "and it is still there");
         server.stop().await;
     }
 

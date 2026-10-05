@@ -787,24 +787,44 @@ impl Host for DesktopHost {
         DesktopHost::project_forget(self, id).await.map(|_| ())
     }
 
-    async fn notes_list(&self, scope: &str) -> Result<Vec<nightloom_service::Note>, String> {
+    async fn notes_list(
+        &self,
+        project: Option<&str>,
+        scope: &str,
+    ) -> Result<Vec<nightloom_service::Note>, String> {
         let scope = serde_json::from_value(serde_json::json!(scope))
             .map_err(|_| format!("no note scope {scope}"))?;
-        crate::list_notes(self.state_of(), Some(scope)).await
+        crate::list_notes(self.state_of(), Some(scope), project.map(String::from)).await
     }
 
-    async fn note_read(&self, scope: &str, name: &str) -> Result<String, String> {
-        DesktopHost::note_read(self, scope, name).await
+    async fn note_read(
+        &self,
+        project: Option<&str>,
+        scope: &str,
+        name: &str,
+    ) -> Result<String, String> {
+        DesktopHost::note_read(self, project, scope, name).await
     }
 
-    async fn note_write(&self, scope: &str, name: &str, text: &str) -> Result<(), String> {
-        DesktopHost::note_write(self, scope, name, text)
+    async fn note_write(
+        &self,
+        project: Option<&str>,
+        scope: &str,
+        name: &str,
+        text: &str,
+    ) -> Result<(), String> {
+        DesktopHost::note_write(self, project, scope, name, text)
             .await
             .map(|_| ())
     }
 
-    async fn note_delete(&self, scope: &str, name: &str) -> Result<(), String> {
-        DesktopHost::note_delete(self, scope, name).await
+    async fn note_delete(
+        &self,
+        project: Option<&str>,
+        scope: &str,
+        name: &str,
+    ) -> Result<(), String> {
+        DesktopHost::note_delete(self, project, scope, name).await
     }
 
     // ---- wave 5 (wave 3 B1) ----
@@ -903,7 +923,7 @@ const RAIL_WAIT: Duration = Duration::from_secs(30);
 /// What this host serves of §4 (item 246 design), for `/api/state`'s
 /// `features`: the phone greys out what a host lacks. (`nightshift` the
 /// listener adds itself, while a project has it.)
-pub const FEATURES: [&str; 21] = [
+pub const FEATURES: [&str; 22] = [
     "act",
     "context",
     "layers",
@@ -913,6 +933,8 @@ pub const FEATURES: [&str; 21] = [
     "search",
     "projects",
     "notes",
+    // Item 300 B1: the notes routes take `?project=`.
+    "notes_project",
     "send_project",
     "images",
     "documents",
@@ -1213,15 +1235,29 @@ impl DesktopHost {
         .await
     }
 
-    pub async fn note_read(&self, scope: &str, name: &str) -> Result<String, String> {
+    /// `project`: the project on the phone's screen (item 300 B1), `None`
+    /// for the window's open one.
+    pub async fn note_read(
+        &self,
+        project: Option<&str>,
+        scope: &str,
+        name: &str,
+    ) -> Result<String, String> {
         let scope = serde_json::from_value(serde_json::json!(scope))
             .map_err(|_| format!("no note scope {scope}"))?;
-        crate::read_note(self.state_of(), Some(scope), name.to_string()).await
+        crate::read_note(
+            self.state_of(),
+            Some(scope),
+            name.to_string(),
+            project.map(String::from),
+        )
+        .await
     }
 
     /// Write a note (a new one too); the window's lists re-read.
     pub async fn note_write(
         &self,
+        project: Option<&str>,
         scope: &str,
         name: &str,
         text: &str,
@@ -1233,6 +1269,7 @@ impl DesktopHost {
             Some(parsed),
             name.to_string(),
             text.to_string(),
+            project.map(String::from),
         )
         .await?;
         let _ = self.app.emit(
@@ -1244,8 +1281,13 @@ impl DesktopHost {
 
     /// Delete a note: its text is copied to the trash folder first
     /// (`note_trash`), and only then is the file removed.
-    pub async fn note_delete(&self, scope: &str, name: &str) -> Result<(), String> {
-        let text = self.note_read(scope, name).await?;
+    pub async fn note_delete(
+        &self,
+        project: Option<&str>,
+        scope: &str,
+        name: &str,
+    ) -> Result<(), String> {
+        let text = self.note_read(project, scope, name).await?;
         let trash = note_trash(scope, name)
             .ok_or_else(|| "no home folder to keep the deleted note in".to_string())?;
         crate::blocking(move || -> Result<(), String> {
@@ -1260,7 +1302,13 @@ impl DesktopHost {
         })?;
         let parsed = serde_json::from_value(serde_json::json!(scope))
             .map_err(|_| format!("no note scope {scope}"))?;
-        crate::delete_note(self.state_of(), Some(parsed), name.to_string()).await?;
+        crate::delete_note(
+            self.state_of(),
+            Some(parsed),
+            name.to_string(),
+            project.map(String::from),
+        )
+        .await?;
         let _ = self.app.emit(
             "remote-notes-changed",
             serde_json::json!({ "scope": scope, "name": name, "deleted": true }),

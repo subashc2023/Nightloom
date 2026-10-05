@@ -19,7 +19,8 @@
     /** The chat on screen, when it is one of this project's. */
     here: string | null;
     /** Opens its instructions (AGENTS.md) in Notes; null when this host
-     *  cannot reach them from here (notes are the open project's). */
+     *  cannot reach them from here (an older host: notes are only its open
+     *  project's; 300 B1 lifted that for one that takes `?project=`). */
     instructions: (() => void) | null;
     /** Rename and forget; null when the host cannot. Each answers a
      *  sentence when it failed. */
@@ -139,7 +140,7 @@
     {:else}
       <div class="pp-card off">
         <span class="pp-card-title">Instructions</span>
-        <span class="pp-card-sub">AGENTS.md — the phone reaches only the open project’s notes so far.</span>
+        <span class="pp-card-sub">AGENTS.md — this host’s Nightloom reaches only its open project’s notes; update it to edit these here.</span>
       </div>
     {/if}
 

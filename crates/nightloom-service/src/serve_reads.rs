@@ -71,6 +71,22 @@ impl Places {
         }
     }
 
+    /// These places with `project` as the current one (item 300 B1: the
+    /// project on the phone's screen, not the host's open one): `None`
+    /// keeps the current, `unfiled` is No project, and an id this host
+    /// does not know is refused rather than read as the current one.
+    pub fn for_project(mut self, project: Option<&str>) -> Result<Self, String> {
+        match project {
+            None => {}
+            Some(crate::serve::NO_PROJECT_ID) => self.active = None,
+            Some(id) => {
+                let found = self.projects.iter().find(|p| p.id == id).cloned();
+                self.active = Some(found.ok_or_else(|| format!("no project {id}"))?);
+            }
+        }
+        Ok(self)
+    }
+
     /// The chats folder of the current project, or the unfiled one.
     fn this_dir(&self) -> PathBuf {
         self.active
@@ -668,6 +684,55 @@ mod tests {
         settings.apply_ask(&mut spec);
         assert_eq!(spec.ask.as_ref().unwrap().mode, crate::agent::AskMode::Auto);
         assert!(spec.mcp_config.unwrap().contains("--ask"));
+    }
+
+    /// Item 300 B1: instructions saved for the project on the phone's
+    /// screen land in that project's AGENTS.md even while the host's
+    /// current project is another; an unknown id is refused; `unfiled`
+    /// has no project instructions.
+    #[test]
+    fn a_named_project_gets_its_own_instructions_not_the_current_ones() {
+        let home = scratch();
+        let mut registry = Registry::load_from(home.join("projects.json"));
+        let garden_ws = home.join("garden");
+        let bird_ws = home.join("bird");
+        std::fs::create_dir_all(&garden_ws).unwrap();
+        std::fs::create_dir_all(&bird_ws).unwrap();
+        let garden = registry
+            .create("Garden", Some(garden_ws.clone()), None)
+            .unwrap();
+        let bird = registry
+            .create("Bird log", Some(bird_ws.clone()), None)
+            .unwrap();
+        // The host is in Garden; the phone shows Bird log.
+        let p = places(&home, &registry, Some(&garden.id))
+            .for_project(Some(&bird.id))
+            .unwrap();
+        note_write(&p, "instructions", "AGENTS.md", "Use metric units.").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(bird_ws.join("AGENTS.md")).unwrap(),
+            "Use metric units."
+        );
+        assert!(!garden_ws.join("AGENTS.md").exists(), "Garden untouched");
+        // No project named: the current one, as before.
+        let cur = places(&home, &registry, Some(&garden.id))
+            .for_project(None)
+            .unwrap();
+        assert_eq!(
+            cur.active.as_ref().map(|p| p.id.clone()),
+            Some(garden.id.clone())
+        );
+        // `unfiled`: no project, so no instructions to write.
+        let none = places(&home, &registry, Some(&garden.id))
+            .for_project(Some(crate::serve::NO_PROJECT_ID))
+            .unwrap();
+        assert!(note_write(&none, "instructions", "AGENTS.md", "x").is_err());
+        // An id this host does not know is refused, never the current one.
+        assert!(
+            places(&home, &registry, Some(&garden.id))
+                .for_project(Some("nope"))
+                .is_err()
+        );
     }
 
     #[test]

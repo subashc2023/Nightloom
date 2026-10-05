@@ -294,8 +294,9 @@ export interface NoteRow {
 
 /** A note's address in the route: each path segment escaped, the `/`
  *  between them kept (the listener's `{*name}`). */
-export function notePath(scope: NoteScope, name: string): string {
-  return `/notes/${encodeURIComponent(scope)}/${name.split("/").map(encodeURIComponent).join("/")}`;
+export function notePath(scope: NoteScope, name: string, project?: string | null): string {
+  const q = project ? `?project=${encodeURIComponent(project)}` : "";
+  return `/notes/${encodeURIComponent(scope)}/${name.split("/").map(encodeURIComponent).join("/")}${q}`;
 }
 
 /** Why a new note's name will not do, or null. The listener refuses an
@@ -815,22 +816,25 @@ export class Client {
 
   // ---- wave 2C ----
 
-  async notes(scope: NoteScope): Promise<NoteRow[]> {
-    return (await this.call(`/notes?scope=${encodeURIComponent(scope)}`)).json();
+  // `project` (item 300 B1): the project on the phone's screen ("unfiled"
+  // for No project); the host's open project only when it is not given.
+  async notes(scope: NoteScope, project?: string | null): Promise<NoteRow[]> {
+    const p = project ? `&project=${encodeURIComponent(project)}` : "";
+    return (await this.call(`/notes?scope=${encodeURIComponent(scope)}${p}`)).json();
   }
 
-  async readNote(scope: NoteScope, name: string): Promise<string> {
-    const v = (await (await this.call(notePath(scope, name))).json()) as { text?: unknown };
+  async readNote(scope: NoteScope, name: string, project?: string | null): Promise<string> {
+    const v = (await (await this.call(notePath(scope, name, project))).json()) as { text?: unknown };
     return typeof v?.text === "string" ? v.text : "";
   }
 
-  async writeNote(scope: NoteScope, name: string, text: string): Promise<void> {
-    await this.call(notePath(scope, name), { method: "PUT", body: JSON.stringify({ text }) });
+  async writeNote(scope: NoteScope, name: string, text: string, project?: string | null): Promise<void> {
+    await this.call(notePath(scope, name, project), { method: "PUT", body: JSON.stringify({ text }) });
   }
 
   /** To the Mac's trash, never gone (the listener's `note_delete`). */
-  async deleteNote(scope: NoteScope, name: string): Promise<void> {
-    await this.call(notePath(scope, name), { method: "DELETE" });
+  async deleteNote(scope: NoteScope, name: string, project?: string | null): Promise<void> {
+    await this.call(notePath(scope, name, project), { method: "DELETE" });
   }
 
   async search(q: string, scope: SearchScope, signal?: AbortSignal): Promise<SearchResult> {

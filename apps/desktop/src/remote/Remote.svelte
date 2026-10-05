@@ -132,6 +132,7 @@
     type Tried,
   } from "./hosts";
   import { heldTap, joinDraft, loadPlace, placeFromHash, placeHash, plainError, samePlace, savePlace, triable, type Place } from "./place";
+  import { NO_PROJECT, notesProject } from "./screenProject";
 
   // ---- the hosts and the connection (wave 3: the Mac and Away) ------------
   /** The page's own origin; empty outside a browser. */
@@ -247,6 +248,10 @@
   // ---- wave 2C: notes, asides, council, new project, search, gestures ----
   /** The notes sheet opens on this note (a search hit), else its list. */
   let notesStart = $state<{ scope: NoteScope; name: string } | null>(null);
+  /** The project the notes sheet works in, fixed when it opens (300 B1):
+   *  the project on screen, never the host's open one, which a turn
+   *  elsewhere moves while he types. `null`: the host lists no projects. */
+  let notesPid = $state<string | null>(null);
   /** A note open or edited: the sheet takes more of the screen. */
   let sheetTall = $state(false);
   /** The aside asked from this page, per chat; folded from `aside-event`s. */
@@ -1806,9 +1811,15 @@
   }
 
   // ---- wave 2C: notes, asides, council, new project ---------------------------------
-  function openNotes(start: { scope: NoteScope; name: string } | null = null) {
+  function openNotes(start: { scope: NoteScope; name: string } | null = null, project: string | null = null) {
     drawer = false;
     notesStart = start;
+    notesPid =
+      project ??
+      notesProject(
+        { chatId, chatPid, newProject, activePid, hasProjects: projects.length > 0 },
+        hasFeature(remote, "notes_project"),
+      );
     sheetTall = false;
     sheet = "notes";
   }
@@ -2927,7 +2938,7 @@
             name={p?.name ?? "Project"}
             chats={chatsBy[pid] ?? null}
             here={chatProject === pid || (chatProject === null && activePid === pid) ? chatId : null}
-            instructions={pid === activePid && hasFeature(remote, "notes") ? () => ((projectsView = null), openNotes({ scope: "instructions", name: "AGENTS.md" })) : null}
+            instructions={hasFeature(remote, "notes") && (pid === activePid || hasFeature(remote, "notes_project")) ? () => ((projectsView = null), openNotes({ scope: "instructions", name: "AGENTS.md" }, pid)) : null}
             onrename={projectOps?.renameProject ? (name) => renameProject(pid, name) : null}
             onforget={projectOps?.forgetProject ? () => forgetProject(pid) : null}
             onchat={(id) => openProjectChat(id, pid)}
@@ -3044,7 +3055,7 @@
         {:else if sheet === "rail"}
           <RailSheet {rail} problem={railProblem} busy={remote.busy} onpatch={patchRail} />
         {:else if sheet === "notes" && client}
-          <NotesSheet {client} host={remote.host} available={hasFeature(remote, "notes")} start={notesStart} onnote={note} ontall={(t) => (sheetTall = t)} project={projects.length > 0 ? activePid || "unfiled" : null} />
+          <NotesSheet {client} host={remote.host} available={hasFeature(remote, "notes")} start={notesStart} onnote={note} ontall={(t) => (sheetTall = t)} project={notesPid} projectLabel={notesPid === null ? null : notesPid === NO_PROJECT ? "No project" : (projects.find((x) => x.id === notesPid)?.name ?? null)} />
         {:else if sheet === "nightshift" && client}
           <NightshiftSheet {client} host={remote.host} available={hasFeature(remote, "nightshift")} onnote={note} ontall={(t) => (sheetTall = t)} />
         {:else if sheet === "aside" && chatId}
