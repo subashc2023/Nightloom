@@ -72,6 +72,11 @@
     if (ok) council = null;
   }
   const approval = $derived(rail?.plan ? "plan" : rail?.ask ? "ask" : "auto");
+  /** Item 300 (A18): model, effort and thinking up top, as the Claude
+   *  app's model picker; the rest of the desktop rail folds under
+   *  Advanced (open while a change there waits for Apply). */
+  let advancedOn = $state(false);
+  const advanced = $derived(advancedOn || limits !== null || council !== null);
   const otherModel = $derived(rail?.model && !ALIASES.includes(rail.model) ? rail.model : null);
 
   async function apply(patch: RailPatch) {
@@ -99,12 +104,12 @@
 
 <div class="rs-title">Model and settings</div>
 <p class="rs-note">
-  {#if problem}{problem}{:else if !rail}Reading the Mac's rail…{:else}The Mac's rail{rail.engine ? ` · ${rail.engine === "claude-code" ? "Claude Code" : rail.engine}` : ""} — a change applies on the Mac{busy ? " from the next turn" : ""}.{/if}
+  {#if problem}{problem}{:else if !rail}Reading the settings…{:else}{rail.engine ? `${rail.engine === "claude-code" ? "Claude Code" : rail.engine} · ` : ""}A change applies {busy ? "from the next turn" : "at once"}.{/if}
 </p>
 {#if rail && !problem}
   {#if rail.error}<p class="rs-bad">{rail.error}</p>
-  {:else if rail.deferred}<p class="rs-note">Waiting for the running turn: the Mac connects with this after it ends.</p>
-  {:else if rail.connecting}<p class="rs-note">The Mac is reconnecting…</p>{/if}
+  {:else if rail.deferred}<p class="rs-note">Waiting for the running turn: the change applies after it ends.</p>
+  {:else if rail.connecting}<p class="rs-note">Reconnecting…</p>{/if}
 {/if}
 
 {#if rail}
@@ -128,113 +133,150 @@
     </div>
   {/if}
 
-  {#if rail.fallback !== undefined}
-    <div class="rs-label">When overloaded, fall back to</div>
-    <div class="rs-pills" role="radiogroup" aria-label="Fallback model">
-      <button class:on={!rail.fallback} disabled={saving} onclick={() => apply({ fallback: "" })}>none</button>
-      {#each ALIASES as a (a)}
-        <button class:on={rail.fallback === a} disabled={saving} onclick={() => apply({ fallback: a })}>{a}</button>
-      {/each}
-    </div>
-  {/if}
-
   {#if thinking}
     <div class="rs-label">Thinking</div>
     <div class="rs-pills" role="radiogroup" aria-label="Thinking">
       {#each thinking.choices as c (c.value)}
         <button class:on={(rail.thinking ?? "default") === c.value} disabled={saving} onclick={() => apply({ thinking: c.value })}>{c.label}</button>
       {/each}
-      {#if thinking.budget}<button class="on" disabled>budget (set on the Mac)</button>{/if}
+      {#if thinking.budget}<button class="on" disabled>budget (set on the desktop)</button>{/if}
     </div>
     <small class="rs-small">{thinking.note}</small>
   {/if}
 
-  {#if rail.ask !== undefined || rail.plan !== undefined}
-    <div class="rs-label">Approvals</div>
-    <div class="rs-seg" role="radiogroup" aria-label="Approvals">
-      <button class:on={approval === "auto"} disabled={saving} onclick={() => apply({ ask: false, plan: false })}>Auto</button>
-      <button class:on={approval === "ask"} disabled={saving} onclick={() => apply({ ask: true, plan: false })}>Ask</button>
-      <button class:on={approval === "plan"} disabled={saving} onclick={() => apply({ ask: true, plan: true })}>Plan</button>
-    </div>
-  {/if}
-
-  {#if rail.fork_mode !== undefined}
-    <button class="rs-switch" role="switch" aria-checked={!!rail.fork_mode} disabled={saving} onclick={() => apply({ fork_mode: !rail!.fork_mode })}>
-      <span class="rs-grow">
-        Fork helpers
-        <small>the model may fork the chat for a side task, at cache-read cost</small>
-      </span>
-      <span class="rs-knob" class:on={rail.fork_mode}></span>
-    </button>
-  {/if}
-
-  {#if shown}
-    <div class="rs-label">Subagent limits</div>
-    <div class="rs-box">
-      {#each LIMIT_ROWS as l (l.key)}
-        <div class="rs-row">
-          <span class="rs-grow">{l.label}{shown.off?.[l.key] ? " · off" : ""}</span>
-          <button class="rs-step" aria-label="Fewer" disabled={saving || shown[l.key] <= l.min} onclick={() => step(l.key, -1, l.min, l.max)}>−</button>
-          <span class="rs-num">{shown[l.key]}</span>
-          <button class="rs-step" aria-label="More" disabled={saving || shown[l.key] >= l.max} onclick={() => step(l.key, 1, l.min, l.max)}>+</button>
-        </div>
-      {/each}
-      <div class="rs-row col">
-        <span>Subagents run on</span>
-        <div class="rs-seg small" role="radiogroup" aria-label="Subagent model">
-          {#each SUBAGENT_MODELS as m (m)}
-            <button class:on={shown.model === m} disabled={saving} onclick={() => (limits = { ...shown!, model: m as SubagentModel })}>{m}</button>
-          {/each}
-        </div>
-        <small>{SUBAGENT_MODEL_LABELS[shown.model] ?? ""}</small>
-      </div>
-    </div>
-    {#if limits}
-      <div class="rs-actions">
-        <button class="rs-btn" disabled={saving} onclick={() => (limits = null)}>Undo changes</button>
-        <span class="rs-grow"></span>
-        <button class="rs-btn accent" disabled={saving} onclick={applyLimits}>Apply limits</button>
+  <button class="rs-adv" aria-expanded={advanced} onclick={() => (advancedOn = !advancedOn)}>
+    <span class="rs-grow">Advanced</span>
+    <small>fallback, approvals, subagents, council</small>
+    <span class="rs-chev" class:down={advanced} aria-hidden="true">›</span>
+  </button>
+  {#if advanced}
+    {#if rail.fallback !== undefined}
+      <div class="rs-label">When overloaded, fall back to</div>
+      <div class="rs-pills" role="radiogroup" aria-label="Fallback model">
+        <button class:on={!rail.fallback} disabled={saving} onclick={() => apply({ fallback: "" })}>none</button>
+        {#each ALIASES as a (a)}
+          <button class:on={rail.fallback === a} disabled={saving} onclick={() => apply({ fallback: a })}>{a}</button>
+        {/each}
       </div>
     {/if}
-  {/if}
 
-  {#if rail.council !== undefined}
-    <div class="rs-label">Council</div>
-    <div class="rs-box" data-part="council">
-      <div class="rs-row col">
-        <span>What it does</span>
-        <div class="rs-seg small" role="radiogroup" aria-label="Council mode">
-          <button class:on={(seats?.mode ?? "answer") === "answer"} disabled={saving} onclick={() => editCouncil((c) => (c.mode = "answer"))}>answer</button>
-          <button class:on={seats?.mode === "disproof"} disabled={saving} onclick={() => editCouncil((c) => (c.mode = "disproof"))}>disproof</button>
-        </div>
+
+    {#if rail.ask !== undefined || rail.plan !== undefined}
+      <div class="rs-label">Approvals</div>
+      <div class="rs-seg" role="radiogroup" aria-label="Approvals">
+        <button class:on={approval === "auto"} disabled={saving} onclick={() => apply({ ask: false, plan: false })}>Auto</button>
+        <button class:on={approval === "ask"} disabled={saving} onclick={() => apply({ ask: true, plan: false })}>Ask</button>
+        <button class:on={approval === "plan"} disabled={saving} onclick={() => apply({ ask: true, plan: true })}>Plan</button>
       </div>
-      {#each seats?.seats ?? [] as seat, i (i)}
+    {/if}
+
+    {#if rail.fork_mode !== undefined}
+      <button class="rs-switch" role="switch" aria-checked={!!rail.fork_mode} disabled={saving} onclick={() => apply({ fork_mode: !rail!.fork_mode })}>
+        <span class="rs-grow">
+          Fork helpers
+          <small>the model may fork the chat for a side task, at cache-read cost</small>
+        </span>
+        <span class="rs-knob" class:on={rail.fork_mode}></span>
+      </button>
+    {/if}
+
+    {#if shown}
+      <div class="rs-label">Subagent limits</div>
+      <div class="rs-box">
+        {#each LIMIT_ROWS as l (l.key)}
+          <div class="rs-row">
+            <span class="rs-grow">{l.label}{shown.off?.[l.key] ? " · off" : ""}</span>
+            <button class="rs-step" aria-label="Fewer" disabled={saving || shown[l.key] <= l.min} onclick={() => step(l.key, -1, l.min, l.max)}>−</button>
+            <span class="rs-num">{shown[l.key]}</span>
+            <button class="rs-step" aria-label="More" disabled={saving || shown[l.key] >= l.max} onclick={() => step(l.key, 1, l.min, l.max)}>+</button>
+          </div>
+        {/each}
         <div class="rs-row col">
-          <span class="rs-seat">
-            Seat {i + 1}
-            <button class="rs-x" aria-label="Remove seat {i + 1}" disabled={saving} onclick={() => editCouncil((c) => c.seats.splice(i, 1))}>×</button>
-          </span>
-          <div class="rs-seg small" role="radiogroup" aria-label="Seat {i + 1} model">
-            {#each ALIASES as m (m)}
-              <button class:on={seat.model === m} disabled={saving} onclick={() => editCouncil((c) => (c.seats[i] = { ...c.seats[i], model: m }))}>{m}</button>
+          <span>Subagents run on</span>
+          <div class="rs-seg small" role="radiogroup" aria-label="Subagent model">
+            {#each SUBAGENT_MODELS as m (m)}
+              <button class:on={shown.model === m} disabled={saving} onclick={() => (limits = { ...shown!, model: m as SubagentModel })}>{m}</button>
             {/each}
           </div>
+          <small>{SUBAGENT_MODEL_LABELS[shown.model] ?? ""}</small>
         </div>
-      {/each}
-      <button class="rs-btn" disabled={saving || (seats?.seats.length ?? 0) >= MAX_SEATS} onclick={() => editCouncil((c) => c.seats.push({ model: "sonnet" }))}>Add a seat</button>
-      {#if seatProblem}<p class="rs-bad">{seatProblem}</p>{/if}
-    </div>
-    {#if council}
-      <div class="rs-actions">
-        <button class="rs-btn" disabled={saving} onclick={() => (council = null)}>Undo changes</button>
-        <span class="rs-grow"></span>
-        <button class="rs-btn accent" data-act="council-apply" disabled={saving || !!seatProblem} onclick={applyCouncil}>Apply council</button>
       </div>
+      {#if limits}
+        <div class="rs-actions">
+          <button class="rs-btn" disabled={saving} onclick={() => (limits = null)}>Undo changes</button>
+          <span class="rs-grow"></span>
+          <button class="rs-btn accent" disabled={saving} onclick={applyLimits}>Apply limits</button>
+        </div>
+      {/if}
+    {/if}
+
+    {#if rail.council !== undefined}
+      <div class="rs-label">Council</div>
+      <div class="rs-box" data-part="council">
+        <div class="rs-row col">
+          <span>What it does</span>
+          <div class="rs-seg small" role="radiogroup" aria-label="Council mode">
+            <button class:on={(seats?.mode ?? "answer") === "answer"} disabled={saving} onclick={() => editCouncil((c) => (c.mode = "answer"))}>answer</button>
+            <button class:on={seats?.mode === "disproof"} disabled={saving} onclick={() => editCouncil((c) => (c.mode = "disproof"))}>disproof</button>
+          </div>
+        </div>
+        {#each seats?.seats ?? [] as seat, i (i)}
+          <div class="rs-row col">
+            <span class="rs-seat">
+              Seat {i + 1}
+              <button class="rs-x" aria-label="Remove seat {i + 1}" disabled={saving} onclick={() => editCouncil((c) => c.seats.splice(i, 1))}>×</button>
+            </span>
+            <div class="rs-seg small" role="radiogroup" aria-label="Seat {i + 1} model">
+              {#each ALIASES as m (m)}
+                <button class:on={seat.model === m} disabled={saving} onclick={() => editCouncil((c) => (c.seats[i] = { ...c.seats[i], model: m }))}>{m}</button>
+              {/each}
+            </div>
+          </div>
+        {/each}
+        <button class="rs-btn" disabled={saving || (seats?.seats.length ?? 0) >= MAX_SEATS} onclick={() => editCouncil((c) => c.seats.push({ model: "sonnet" }))}>Add a seat</button>
+        {#if seatProblem}<p class="rs-bad">{seatProblem}</p>{/if}
+      </div>
+      {#if council}
+        <div class="rs-actions">
+          <button class="rs-btn" disabled={saving} onclick={() => (council = null)}>Undo changes</button>
+          <span class="rs-grow"></span>
+          <button class="rs-btn accent" data-act="council-apply" disabled={saving || !!seatProblem} onclick={applyCouncil}>Apply council</button>
+        </div>
+      {/if}
     {/if}
   {/if}
 {/if}
 
 <style>
+  .rs-adv {
+    all: unset;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    min-height: 44px;
+    margin-top: 6px;
+    border-top: 1px solid var(--line);
+    padding-top: 6px;
+    font-weight: 600;
+  }
+  .rs-adv small {
+    flex-basis: 100%;
+    order: 3;
+    font-weight: 400;
+    font-size: 12px;
+    color: var(--dim);
+    margin-top: -6px;
+  }
+  .rs-chev {
+    font-size: 20px;
+    color: var(--dim);
+    transition: transform 0.2s;
+  }
+  .rs-chev.down {
+    transform: rotate(90deg);
+  }
   .rs-small {
     font-size: 12px;
     color: var(--dim);

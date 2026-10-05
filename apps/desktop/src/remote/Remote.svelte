@@ -46,7 +46,6 @@
     pastAsides,
     searchGroupLabel,
     searchSummary,
-    swipeVerdict,
     PULL_AT,
     type Aside,
     type AsideEvent,
@@ -105,6 +104,11 @@
   import ChatMenu from "./ChatMenu.svelte";
   import { chatSheetSub, fitVisual } from "./sheetLayout";
   import Hosts from "./Hosts.svelte";
+  // Item 300 (wave 8B F1): the drawer follows the finger; Recents and Projects.
+  import { dragAxis, drawerX, fingerSpeed, settleOpen } from "./client";
+  import { UNFILED, projectSummaries, recentRows } from "./recents";
+  import ProjectsSheet from "./ProjectsSheet.svelte";
+  import ProjectPage from "./ProjectPage.svelte";
   import {
     PROBE_MS,
     chooseHost,
@@ -268,8 +272,7 @@
   let pullBy = $state(0);
   let pullWhere = $state<"chat" | "drawer">("chat");
   let refreshing = $state(false);
-  /** A drag on the drawer (left, to close) or the sheet (down, to dismiss). */
-  let drawerDx = $state(0);
+  /** A drag on the sheet (down, to dismiss). */
   let sheetDy = $state(0);
   /** What the message menu is open on (wave 1C). */
   let menuOn = $state<{ row: Row; part: TextPart | null; tool: ToolRow | null } | null>(null);
@@ -1017,16 +1020,98 @@
     requestAnimationFrame(() => box?.focus());
   }
 
-  function toggleProject(pid: string) {
-    expanded = { ...expanded, [pid]: !expanded[pid] };
-    if (expanded[pid] && !chatsBy[pid]) void loadProject(pid);
-  }
-
   function openDrawer() {
     drawer = true;
-    void refreshProjects();
-    void refreshChats();
+    void loadDrawer();
+  }
+
+  // ---- item 300 (wave 8B F1): the drawer, Recents and Projects -----------------------
+  /** The drawer's left edge while a finger drags it (0 open, `-drawerW`
+   *  closed); null when no finger is on it and it rests open or closed. */
+  let dragX = $state<number | null>(null);
+  let drawerW = $state(340);
+  /** The Projects list, or one project's page (blocker 1090's default). */
+  let projectsView = $state<{ page: string | null } | null>(null);
+  /** Every chat newest first with its project tag (A23: one stable order,
+   *  not groups that move when the host's open project changes). */
+  const recents = $derived(recentRows(projects, chatsBy));
+  /** Recents has read at least one project's chats. */
+  const recentsRead = $derived(Object.keys(chatsBy).length > 0);
+  const drawerShown = $derived(drawer || dragX !== null);
+  /** How far open the drawer is, 0 to 1, for the scrim. */
+  const drawerOpenness = $derived(dragX !== null ? (dragX + drawerW) / drawerW : drawer ? 1 : 0);
+
+  /** Everything the drawer lists, read fresh: every project's chats by its
+   *  id (A28: no group waits on a read nobody started). */
+  async function loadDrawer() {
     void refreshUsage();
+    await refreshProjects();
+    await refreshRecents();
+  }
+
+  async function refreshRecents() {
+    if (!client) return;
+    if (projects.length === 0) return refreshChats();
+    const c = client;
+    const got = await Promise.all(
+      projects.map(async (p) => {
+        try {
+          return [p.id, await c.chats(p.id)] as const;
+        } catch (e) {
+          fail(e, true);
+          return null;
+        }
+      }),
+    );
+    const next = { ...chatsBy };
+    for (const g of got) if (g) next[g[0]] = g[1];
+    // The host's open project is also read as `activePid` by the chat
+    // screen: the same list, so both stay one.
+    chatsBy = next;
+  }
+
+  function openProjects(page: string | null = null) {
+    drawer = false;
+    projectsView = { page };
+    void loadDrawer();
+  }
+
+  function openProjectChat(id: string, pid: string) {
+    projectsView = null;
+    void openChat(id, pid);
+  }
+
+  function newChatIn(pid: string) {
+    projectsView = null;
+    startNew(pid === UNFILED && !projects.some((p) => p.id === UNFILED) ? null : pid);
+  }
+
+  /** Project rename and forget go through the host's routes once the
+   *  page's client has them (F3 owns client.ts; patch note 300w8-patch-F1-to-F3). */
+  type ProjectOps = { renameProject?: (id: string, name: string) => Promise<unknown>; forgetProject?: (id: string) => Promise<unknown> };
+  const projectOps = $derived(client as unknown as ProjectOps | null);
+
+  async function renameProject(pid: string, name: string): Promise<string | null> {
+    if (!projectOps?.renameProject) return "This host cannot rename a project yet.";
+    try {
+      await projectOps.renameProject(pid, name);
+      await refreshProjects();
+      return null;
+    } catch (e) {
+      return e instanceof Unreachable ? `${active ? hostName(active) : "The host"} is unreachable — try again.` : "Couldn't rename the project — try again.";
+    }
+  }
+
+  async function forgetProject(pid: string): Promise<string | null> {
+    if (!projectOps?.forgetProject) return "This host cannot forget a project yet.";
+    try {
+      await projectOps.forgetProject(pid);
+      await refreshProjects();
+      projectsView = { page: null };
+      return null;
+    } catch (e) {
+      return e instanceof Unreachable ? `${active ? hostName(active) : "The host"} is unreachable — try again.` : "Couldn't forget the project — try again.";
+    }
   }
 
   function nearBottom(): boolean {
@@ -1981,7 +2066,8 @@
   type DragOpts = {
     axis: "x" | "y";
     onmove: (d: number, x0: number, dx: number, dy: number) => void;
-    onend: (d: number, ms: number, x0: number, dx: number, dy: number) => void;
+    /** `v`: the finger's speed along `axis` as it let go, px/ms (item 300). */
+    onend: (d: number, ms: number, x0: number, dx: number, dy: number, v?: number) => void;
   };
 
   /**
@@ -1996,6 +2082,7 @@
     let t0 = 0;
     let id: number | null = null;
     let moved = false;
+    let trail: { t: number; x: number }[] = [];
     const down = (e: PointerEvent) => {
       if (e.pointerType === "mouse" && e.button !== 0) return;
       id = e.pointerId;
@@ -2003,12 +2090,15 @@
       y0 = e.clientY;
       t0 = performance.now();
       moved = false;
+      trail = [{ t: t0, x: o.axis === "x" ? x0 : y0 }];
     };
     const move = (e: PointerEvent) => {
       if (id !== e.pointerId) return;
       const dx = e.clientX - x0;
       const dy = e.clientY - y0;
       if (!moved && Math.hypot(dx, dy) > 8) moved = true;
+      trail.push({ t: performance.now(), x: o.axis === "x" ? e.clientX : e.clientY });
+      if (trail.length > 12) trail.shift();
       if (moved) o.onmove(o.axis === "x" ? dx : dy, x0, dx, dy);
     };
     const up = (e: PointerEvent) => {
@@ -2016,7 +2106,8 @@
       id = null;
       const dx = e.clientX - x0;
       const dy = e.clientY - y0;
-      o.onend(moved ? (o.axis === "x" ? dx : dy) : 0, performance.now() - t0, x0, moved ? dx : 0, moved ? dy : 0);
+      trail.push({ t: performance.now(), x: o.axis === "x" ? e.clientX : e.clientY });
+      o.onend(moved ? (o.axis === "x" ? dx : dy) : 0, performance.now() - t0, x0, moved ? dx : 0, moved ? dy : 0, moved ? fingerSpeed(trail) : 0);
     };
     const cancel = () => {
       if (id === null) return;
@@ -2049,21 +2140,44 @@
     };
   }
 
-  /** The left edge: a swipe right opens the drawer. */
+  /** Item 300 (A8): the drawer's edge follows the finger 1:1 from its first
+   *  point, both ways, and on letting go settles open or closed by where it
+   *  is and how fast the finger was going (the Claude app's sidebar). */
+  let edgeAxis: "x" | "y" | null = null;
+  /** The left edge: a swipe right pulls the drawer out with the finger. */
   const edgeDrag: DragOpts = {
     axis: "x",
-    onmove: (_d, x0, dx, dy) => {
-      if (!drawer && swipeVerdict(x0, dx, dy, false) === "open") openDrawer();
+    onmove: (_d, _x0, dx, dy) => {
+      if (drawer) return;
+      if (edgeAxis === null) {
+        edgeAxis = dragAxis(dx, dy);
+        if (edgeAxis === "x") void loadDrawer();
+      }
+      if (edgeAxis === "x") dragX = drawerX(dx, drawerW, false);
     },
-    onend: () => {},
+    onend: (_d, _ms, _x0, _dx, _dy, v = 0) => {
+      const was = edgeAxis;
+      edgeAxis = null;
+      const x = dragX;
+      dragX = null;
+      if (was === "x" && x !== null && settleOpen(x, drawerW, v)) drawer = true;
+    },
   };
-  /** The drawer follows a swipe left and closes past the mark. */
+  let navAxis: "x" | "y" | null = null;
+  /** The drawer follows a swipe left and settles the same way. */
   const drawerDrag: DragOpts = {
     axis: "x",
-    onmove: (d) => (drawerDx = Math.min(0, d)),
-    onend: (_d, _ms, x0, dx, dy) => {
-      drawerDx = 0;
-      if (swipeVerdict(x0, dx, dy, true) === "close") drawer = false;
+    onmove: (_d, _x0, dx, dy) => {
+      if (!drawer) return;
+      if (navAxis === null) navAxis = dragAxis(dx, dy);
+      if (navAxis === "x") dragX = drawerX(dx, drawerW, true);
+    },
+    onend: (_d, _ms, _x0, _dx, _dy, v = 0) => {
+      const was = navAxis;
+      navAxis = null;
+      const x = dragX;
+      dragX = null;
+      if (was === "x" && x !== null && !settleOpen(x, drawerW, v)) drawer = false;
     },
   };
   /** The sheet follows its grabber down and goes past the mark or on a
@@ -2656,16 +2770,29 @@
       {/if}
     </footer>
 
-    {#if drawer}
-      <div class="scrim" transition:fade={{ duration: motion(220) }} onclick={() => (drawer = false)} role="presentation"></div>
-      <nav
-        class="drawer"
-        class:dragging={drawerDx !== 0}
-        style:transform={drawerDx ? `translateX(${drawerDx}px)` : null}
-        transition:fly={{ x: -340, duration: motion(300), easing: cubicOut, opacity: 1 }}
-        aria-label="Chats"
-        use:drag={drawerDrag}
-      >
+    <!-- Item 300 (A7, A8): the drawer stays in the page, painted, and slides
+         as one layer: a finger moves it 1:1, letting go settles it. -->
+    <div
+      class="scrim drawer-scrim"
+      class:shown={drawerShown}
+      class:dragging={dragX !== null}
+      class:still
+      style:opacity={drawerOpenness}
+      onclick={() => (drawer = false)}
+      role="presentation"
+    ></div>
+    <nav
+      class="drawer"
+      class:dragging={dragX !== null}
+      class:closed={!drawerShown}
+      class:still
+      style:transform={dragX !== null ? `translate3d(${dragX}px, 0, 0)` : drawer ? "translate3d(0, 0, 0)" : null}
+      bind:offsetWidth={drawerW}
+      inert={!drawerShown}
+      aria-label="Chats"
+      aria-hidden={!drawerShown}
+      use:drag={drawerDrag}
+    >
         <div class="drawer-head">
           <span class="drawer-title">Nightloom</span>
           <button class="icon-btn" onclick={() => (drawer = false)} aria-label="Close">{@render icon("x")}</button>
@@ -2689,6 +2816,9 @@
           </div>
         {:else}
           <button class="new-row" onclick={() => startNew(null)}>{@render icon("new")} New chat</button>
+          {#if projects.length > 0 || hasFeature(remote, "projects")}
+            <button class="new-row quiet" onclick={() => openProjects()}>{@render icon("folder")} Projects</button>
+          {/if}
           {#if hasFeature(remote, "running")}
             <button class="new-row quiet" onclick={openRunning}>{@render icon("pulse")} Running tasks</button>
           {/if}
@@ -2717,7 +2847,7 @@
                 <button class="hit" onclick={() => ((search = ""), (found = null), void openChat(g.id, g.project?.id ?? null))}>
                   <span class="hit-head">
                     <span class="chat-label">{searchGroupLabel(g)}</span>
-                    {#if g.project && g.project.id !== activePid}<span class="tag">{g.project.name}</span>{/if}
+                    {#if g.project && g.project.id !== UNFILED}<span class="tag">{g.project.name}</span>{/if}
                   </span>
                   {#each g.rows.slice(0, 2) as h (h.index)}
                     <span class="hit-row">{h.before}<mark>{h.matched}</mark>{h.after}</span>
@@ -2748,42 +2878,56 @@
               </span>
             </div>
           {/if}
-          {#each projects.length > 0 ? projects : [{ id: "", name: remote.project ?? "Unfiled", active: true }] as p (p.id)}
-            {@const open = p.active || expanded[p.id]}
-            <div class="proj">
-              <button class="proj-head" onclick={() => (p.active ? null : toggleProject(p.id))} aria-expanded={open}>
-                <span class="proj-name">{p.name}</span>
-                {#if p.active}<span class="tag">on the Mac</span>{:else}<span class="chev" class:down={open}>{@render icon("chev")}</span>{/if}
-              </button>
-              {#if open}
-                <div class="proj-chats" transition:fly={{ y: -6, duration: motion(180) }}>
-                  {#each (chatsBy[p.active ? activePid : p.id] ?? []).filter(matches) as c (c.id)}
-                    {@const here = c.id === chatId && (p.active ? chatProject === null : chatProject === p.id)}
-                    <button class="chat-row" class:here onclick={() => openChat(c.id, p.active ? null : p.id)}>
-                      <span class="chat-label">{c.label}</span>
-                      <span class="chat-meta">
-                        {#if p.active && c.id === remote.active_chat}<span class="live-dot" class:run={remote.busy}></span>{/if}
-                        {shortWhen(c.modified)}{c.mode !== "normal" ? ` · ${c.mode}` : ""}
-                      </span>
-                    </button>
-                  {:else}
-                    <p class="empty">{chatsBy[p.active ? activePid : p.id] ? (search ? "No chats match." : "No chats yet.") : "Loading…"}</p>
-                  {/each}
-                </div>
-              {/if}
-            </div>
+          <p class="recents-head">Recents</p>
+          {#each recents.filter((r) => matches(r.chat)) as r (r.pid + "/" + r.chat.id)}
+            {@const here = r.chat.id === chatId && (chatProject ?? activePid) === r.pid}
+            <button class="chat-row" class:here onclick={() => openChat(r.chat.id, r.pid || null)}>
+              <span class="chat-label">{r.chat.label}</span>
+              <span class="chat-meta">
+                {#if r.pid === activePid && r.chat.id === remote.active_chat}<span class="live-dot" class:run={remote.busy}></span>{/if}
+                <span>{shortWhen(r.chat.modified)}{r.chat.mode !== "normal" ? ` · ${r.chat.mode}` : ""}</span>
+                {#if r.project}<span class="tag">{r.project}</span>{/if}
+              </span>
+            </button>
+          {:else}
+            <p class="empty">{recentsRead ? (search ? "No chats match." : "No chats yet.") : "Loading…"}</p>
           {/each}
-          {#if hasFeature(remote, "projects")}
-            <button class="new-row quiet" onclick={openNewProject}>{@render icon("folder")} New project</button>
-          {/if}
         </div>
         {/if}
         <UsageLine {usage} />
         <div class="drawer-foot">
           <span class="dot" class:ok={link === "online"} class:bad={link !== "online"}></span>
-          {link === "online" ? `Connected to ${active ? hostName(active) : "the Mac"}${remote.engine ? ` · ${remote.engine === "claude-code" ? "Claude Code" : remote.engine}` : ""}` : status}
+          {link === "online" ? `Connected to ${active ? hostName(active) : "the host"}${remote.engine ? ` · ${remote.engine === "claude-code" ? "Claude Code" : remote.engine}` : ""}` : status}
         </div>
       </nav>
+
+    {#if projectsView}
+      {#if projectsView.page === null}
+        <ProjectsSheet
+          projects={projectSummaries(projects, chatsBy)}
+          canNew={hasFeature(remote, "projects")}
+          onopen={(id) => (projectsView = { page: id })}
+          onnew={() => ((projectsView = null), openNewProject())}
+          onclose={() => (projectsView = null)}
+        />
+      {:else}
+        {@const pid = projectsView.page}
+        {@const p = projects.find((x) => x.id === pid)}
+        {#key pid}
+          <ProjectPage
+            id={pid}
+            name={p?.name ?? "Project"}
+            chats={chatsBy[pid] ?? null}
+            here={chatProject === pid || (chatProject === null && activePid === pid) ? chatId : null}
+            instructions={pid === activePid && hasFeature(remote, "notes") ? () => ((projectsView = null), openNotes({ scope: "instructions", name: "AGENTS.md" })) : null}
+            onrename={projectOps?.renameProject ? (name) => renameProject(pid, name) : null}
+            onforget={projectOps?.forgetProject ? () => forgetProject(pid) : null}
+            onchat={(id) => openProjectChat(id, pid)}
+            onnew={() => newChatIn(pid)}
+            onback={() => (projectsView = { page: null })}
+          />
+        {/key}
+      {/if}
     {/if}
 
     {#if contextOn && chatId && chatClient}
@@ -4025,6 +4169,60 @@
     flex-direction: column;
     padding: env(safe-area-inset-top, 0px) 0 env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
     box-shadow: 8px 0 32px rgba(0, 0, 0, 0.3);
+    /* Item 300 (A7, A8): one composited layer, kept painted; closed it sits
+       off screen (its shadow too) and hides once it has slid away. */
+    transform: translate3d(calc(-100% - 48px), 0, 0);
+    will-change: transform;
+    backface-visibility: hidden;
+    -webkit-backface-visibility: hidden;
+    transition:
+      transform 0.32s cubic-bezier(0.2, 0.8, 0.2, 1),
+      visibility 0s;
+  }
+  .drawer.closed {
+    visibility: hidden;
+    transition:
+      transform 0.32s cubic-bezier(0.2, 0.8, 0.2, 1),
+      visibility 0s linear 0.32s;
+  }
+  .drawer.still,
+  .drawer-scrim.still,
+  .drawer-scrim.dragging {
+    transition: none;
+  }
+  /* Hidden (not only transparent) once faded: Safari tints its status bar
+     from fixed layers at the top, an invisible scrim included (A38's band). */
+  .drawer-scrim {
+    pointer-events: none;
+    visibility: hidden;
+    transition:
+      opacity 0.32s cubic-bezier(0.2, 0.8, 0.2, 1),
+      visibility 0s linear 0.32s;
+  }
+  .drawer-scrim.shown {
+    pointer-events: auto;
+    visibility: visible;
+    transition:
+      opacity 0.32s cubic-bezier(0.2, 0.8, 0.2, 1),
+      visibility 0s;
+  }
+  /* The row under a dragging finger is not being pressed. */
+  .drawer.dragging .chat-row:active,
+  .drawer.dragging .new-row:active {
+    background: transparent;
+  }
+  .recents-head {
+    margin: 4px 0 2px;
+    padding: 0 10px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--dim);
+  }
+  .chat-meta .tag {
+    max-width: 55%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .drawer-head {
     display: flex;
@@ -4071,7 +4269,6 @@
   }
   .new-row:active,
   .chat-row:active,
-  .proj-head:active,
   .menu button:active:not(:disabled) {
     background: var(--well);
   }
@@ -4079,30 +4276,11 @@
     flex: 1;
     overflow-y: auto;
     padding: 4px 8px 12px;
+    /* A5: a line where the list meets the fixed rows above it. */
+    border-top: 1px solid var(--line);
   }
-  .proj-head {
-    all: unset;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    width: 100%;
-    box-sizing: border-box;
-    min-height: 44px;
-    padding: 0 10px;
-    border-radius: 10px;
-    cursor: pointer;
-    font-size: 13px;
-    font-weight: 600;
-    letter-spacing: 0.02em;
-    color: var(--dim);
-    text-transform: uppercase;
-  }
-  .proj-name {
-    flex: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
+
+
   .tag {
     font-size: 11px;
     font-weight: 500;
@@ -4114,17 +4292,9 @@
     border-radius: 999px;
     flex: none;
   }
-  .chev {
-    display: grid;
-    transition: transform 0.2s var(--ease);
-  }
-  .chev .ico {
-    width: 16px;
-    height: 16px;
-  }
-  .chev.down {
-    transform: rotate(90deg);
-  }
+
+
+
   .chat-row {
     all: unset;
     display: flex;
@@ -4302,9 +4472,30 @@
     left: 0;
     top: calc(64px + env(safe-area-inset-top, 0px));
     bottom: calc(96px + env(safe-area-inset-bottom, 0px));
-    width: 14px;
+    /* Item 300 (A8): as wide as client.ts EDGE, so a thumb a little in from
+       Safari's own back-swipe strip still catches the drawer. */
+    width: 32px;
     z-index: 5;
     touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+  }
+  /* Item 300 (A9): a long press on the chat's empty area, the bars or the
+     drawer starts no page-wide selection or magnifier; the message menu
+     (long-press a turn) has Copy, and fields stay selectable. */
+  .page,
+  .drawer {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+  }
+  .page :global(input),
+  .page :global(textarea),
+  .page :global([contenteditable="true"]) {
+    -webkit-user-select: text;
+    user-select: text;
+    -webkit-touch-callout: default;
   }
   .drawer {
     touch-action: pan-y;
@@ -4511,9 +4702,7 @@
     -webkit-appearance: none;
     appearance: none;
   }
-  .drawer-list > .new-row {
-    margin: 6px 0 0;
-  }
+
   .picker {
     display: none;
   }

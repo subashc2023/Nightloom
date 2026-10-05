@@ -64,7 +64,8 @@
     if (!e) return "Not paired on this phone.";
     if (blocked(role))
       return `This page is served over HTTPS, so it cannot call ${hostName(role)}'s plain-HTTP address until ${hostName(role)} serves HTTPS — use its own page (a second home-screen icon).`;
-    if (role === active && link === "online") return "Answering — sends, actions and reads go here.";
+    // Item 300 (A19): the green "Answering" tag says it; this line says what it means.
+    if (role === active && link === "online") return "Sends, actions and reads go here.";
     const t = tried.find((x) => x.role === role);
     if (t?.why === "refused") return "Its token was refused — pair it again from its link.";
     if (t?.why === "timeout") return `Did not answer within 1.5 s at ${addressOf(e.base)}.`;
