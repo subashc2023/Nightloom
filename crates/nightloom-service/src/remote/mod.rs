@@ -1819,6 +1819,7 @@ mod tests {
                     bytes: text.len() as u64,
                     modified: chrono::Utc::now(),
                     summary: text.lines().next().map(String::from),
+                    kind: None,
                 })
                 .collect())
         }

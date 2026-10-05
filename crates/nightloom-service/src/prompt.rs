@@ -1207,6 +1207,7 @@ The notes directory is currently empty.
         if shown < total {
             text.push_str(&more_line(total - shown));
         }
+        text.push_str(not_text_note(&notes[..shown]));
     }
     text.push_str("</project-notes>");
 
@@ -1475,6 +1476,7 @@ pub fn knowledge_segment(knowledge: &KnowledgeContext) -> Segment {
             }
         }
     }
+    text.push_str(not_text_note(&notes));
     text.push_str("</knowledge>");
 
     Segment::new(SegmentKind::Knowledge, "knowledge", text)
@@ -1499,9 +1501,24 @@ fn note_entry(prefix: &str, note: &crate::project::Note) -> String {
     let base = &note.name[prefix.len()..];
     let size = human_bytes(note.bytes);
     let indent = if prefix.is_empty() { "  " } else { "    " };
-    match &note.summary {
-        Some(summary) => format!("{indent}{base} ({size}) — {summary}\n"),
-        None => format!("{indent}{base} ({size})\n"),
+    match (&note.kind, &note.summary) {
+        // Not text (backlog 307): name, kind and size, never its bytes.
+        (Some(kind), _) => format!("{indent}{base} ({kind}, {size}) — not text\n"),
+        (None, Some(summary)) => format!("{indent}{base} ({size}) — {summary}\n"),
+        (None, None) => format!("{indent}{base} ({size})\n"),
+    }
+}
+
+/// Said once under a listing that holds a non-text file (backlog 307): what
+/// "not text" means for reading it. Empty when every file listed is text, so
+/// a folder of notes reads exactly as it did.
+fn not_text_note(notes: &[crate::project::Note]) -> &'static str {
+    if notes.iter().any(|n| n.kind.is_some()) {
+        "Files marked \"not text\" are binary: read_file returns nothing useful from them. \
+         Read one with a tool that takes its kind if you have one (a PDF by page range), \
+         look for a text copy beside it, or ask the user.\n"
+    } else {
+        ""
     }
 }
 
@@ -2135,6 +2152,82 @@ the body text",
     /// The bridge carries everything the API engine's preamble would — the
     /// instructions walk, the notes index — then the engine note, then the
     /// library prompt last, and never identity or environment.
+    /// Backlog 307, as he hit it: a PDF and a .pptx in the project's
+    /// `files/` folder made every chat in the project fail to start ("nul
+    /// byte found in provided data"), because the listing read each file's
+    /// first bytes as its summary and the CLI takes the prompt on argv.
+    /// Listed by name, kind and size now; no NUL reaches the spawn.
+    #[test]
+    fn binary_project_files_list_by_kind_and_put_no_nul_on_argv() {
+        let dir = temp_dir("binary-files");
+        let notes = dir.join(".agents");
+        let slides = notes.join("files/slides");
+        std::fs::create_dir_all(&slides).unwrap();
+        // The heads of the real files, byte for byte: a PDF's header with
+        // its binary-comment line, and a .pptx's zip local-file header.
+        std::fs::write(
+            slides.join("1.3-assembly.pdf"),
+            b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n1 0 obj\n<<>>\nstream\n\x00\x01\xff\nendstream\n",
+        )
+        .unwrap();
+        let mut pptx = b"PK\x03\x04\x14\x00\x06\x00\x08\x00\x00\x00!\x00".to_vec();
+        pptx.extend_from_slice(b"[Content_Types].xml");
+        pptx.extend(std::iter::repeat_n(0u8, 64));
+        std::fs::write(slides.join("1.3-assembly.pptx"), &pptx).unwrap();
+        std::fs::write(slides.join("blob.bin"), b"\x00\x01\x02 not text").unwrap();
+        std::fs::write(slides.join("1.3-assembly.txt"), "=== slide 1 ===\nbody").unwrap();
+        let config = PromptConfig {
+            project: Some(ProjectContext {
+                name: "ICS 51".into(),
+                notes_dir: notes.clone(),
+            }),
+            ..bare(dir.clone())
+        };
+        let text = agent_preamble(&config, None).expect("something to send");
+        assert!(!text.contains('\0'), "{text:?}");
+        assert!(!text.contains('\u{FFFD}'), "{text:?}");
+        assert!(!text.contains("PK"), "{text}");
+        assert!(!text.contains("%PDF"), "{text}");
+        assert!(
+            text.contains("files/slides/1.3-assembly.pdf (PDF, "),
+            "{text}"
+        );
+        assert!(
+            text.contains("files/slides/1.3-assembly.pptx (slide deck, "),
+            "{text}"
+        );
+        assert!(
+            text.contains("files/slides/blob.bin (binary file, "),
+            "{text}"
+        );
+        assert!(text.contains("— not text"), "{text}");
+        assert!(text.contains("a PDF by page range"), "{text}");
+        // Text is listed as it always was.
+        assert!(
+            text.contains("files/slides/1.3-assembly.txt (") && text.contains("— === slide 1 ==="),
+            "{text}"
+        );
+
+        let mut spec = crate::agent::AgentSpec::new(&dir);
+        spec.append_system_prompt = Some(text);
+        assert!(spec.args("hi").iter().all(|a| !a.contains('\0')));
+    }
+
+    /// A folder of text notes gets no "not text" sentence: the listing reads
+    /// exactly as it did before backlog 307.
+    #[test]
+    fn a_text_only_listing_has_no_not_text_note() {
+        let dir = temp_dir("text-only");
+        let notes = dir.join(".agents");
+        crate::project::write_note(&notes, "plan.md", "# Plan\n").unwrap();
+        let seg = project_notes_segment(&ProjectContext {
+            name: "p".into(),
+            notes_dir: notes,
+        });
+        assert!(seg.text.contains("plan.md (7 B) — Plan\n"), "{}", seg.text);
+        assert!(!seg.text.contains("not text"), "{}", seg.text);
+    }
+
     #[test]
     fn the_agent_bridge_orders_preamble_then_engine_note_then_library() {
         let dir = temp_dir("agent-bridge");

@@ -1242,6 +1242,16 @@ impl AgentSpec {
             a.push("true".into());
         }
         a.extend(self.extra_args.iter().cloned());
+        // No NUL in any argument (nightshift backlog 307): the OS cannot
+        // pass one, and a single NUL anywhere — a layer file's bytes in the
+        // system prompt — made every chat in a project fail to start with
+        // "nul byte found in provided data". Dropped here as the last line
+        // of defense; the layers themselves keep binary out.
+        for arg in &mut a {
+            if arg.contains('\0') {
+                *arg = arg.replace('\0', "");
+            }
+        }
         a
     }
 }
@@ -2351,6 +2361,22 @@ mod tests {
 
     /// Leaving `tools` unset must not smuggle the flag in — that is the
     /// difference between the CLI's defaults and a tool set we chose.
+    /// Backlog 307: a NUL anywhere in argv aborts the spawn ("nul byte found
+    /// in provided data"), so none survives into it, from any field.
+    #[test]
+    fn no_argument_carries_a_nul() {
+        let mut s = spec();
+        s.append_system_prompt = Some("files/a.pptx — PK\u{3}\u{4}\0\0 tail".into());
+        s.system_prompt = Some("x\0y".into());
+        let a = s.args("hi\0there");
+        assert!(a.iter().all(|x| !x.contains('\0')), "{a:?}");
+        assert!(
+            a.iter().any(|x| x == "files/a.pptx — PK\u{3}\u{4} tail"),
+            "{a:?}"
+        );
+        assert!(a.iter().any(|x| x == "xy"), "{a:?}");
+    }
+
     #[test]
     fn unset_tools_omits_the_flag() {
         assert!(!spec().args("hi").iter().any(|x| x == "--tools"));

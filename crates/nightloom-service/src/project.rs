@@ -1192,6 +1192,13 @@ pub struct Note {
     /// UTF-8 text, which is still listed rather than hidden — something the
     /// user dropped in the folder is theirs to see.
     pub summary: Option<String>,
+    /// What a non-text file is (`PDF`, `PowerPoint deck`, `PNG image`,
+    /// `binary file`); `None` for text. Nightshift backlog 307: the summary
+    /// used to be the file's first 512 bytes read lossily, so a `.pptx`
+    /// put its zip header — 76 NUL bytes — into every chat's system
+    /// prompt, and the CLI refused to start ("nul byte found").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 /// Every note in the docspace, name-sorted.
@@ -1324,6 +1331,7 @@ fn walk_notes(base: &Path, dir: &Path, depth: usize, out: &mut Vec<Note>) {
         let Ok(relative) = path.strip_prefix(base) else {
             continue;
         };
+        let (summary, kind) = summarize(&path);
         out.push(Note {
             name: relative.to_string_lossy().replace('\\', "/"),
             bytes: meta.len(),
@@ -1331,7 +1339,8 @@ fn walk_notes(base: &Path, dir: &Path, depth: usize, out: &mut Vec<Note>) {
                 .modified()
                 .map(DateTime::<Utc>::from)
                 .unwrap_or_else(|_| Utc::now()),
-            summary: summarize(&path),
+            summary,
+            kind,
         });
         if out.len() >= NOTE_LIMIT {
             return;
@@ -1339,14 +1348,88 @@ fn walk_notes(base: &Path, dir: &Path, depth: usize, out: &mut Vec<Note>) {
     }
 }
 
-/// A note's one-line gist: its first Markdown heading if it has one, else its
-/// first non-empty line. Read from the head of the file only — the index has
-/// to stay cheap enough to build on every connect.
-fn summarize(path: &Path) -> Option<String> {
+/// A note's one-line gist and, for a file that is not text, what it is.
+/// Text: its first Markdown heading if it has one, else its first non-empty
+/// line. Read from the head of the file only — the index has to stay cheap
+/// enough to build on every connect.
+///
+/// Not text — a known binary extension, a binary signature, a NUL, or bytes
+/// that are not UTF-8 — has no summary, only a kind (backlog 307). It was
+/// read lossily before, and a `.pptx`'s zip header reached the system
+/// prompt as `PK\u{3}\u{4}…` with 76 NUL bytes in it.
+fn summarize(path: &Path) -> (Option<String>, Option<String>) {
     use std::io::Read;
     let mut buf = vec![0u8; SUMMARY_PROBE];
-    let read = fs::File::open(path).ok()?.read(&mut buf).ok()?;
-    summary_of(&String::from_utf8_lossy(&buf[..read]))
+    let read = match fs::File::open(path).and_then(|mut f| f.read(&mut buf)) {
+        Ok(n) => n,
+        Err(_) => return (None, None),
+    };
+    let head = &buf[..read];
+    if let Some(kind) = binary_kind(path, head) {
+        return (None, Some(kind));
+    }
+    // Valid UTF-8 up to the probe's edge, where a character may be cut.
+    let text = match std::str::from_utf8(head) {
+        Ok(t) => t,
+        Err(e) => std::str::from_utf8(&head[..e.valid_up_to()]).unwrap_or_default(),
+    };
+    (summary_of(text).map(|s| strip_controls(&s)), None)
+}
+
+/// Control characters out of a one-line summary: a tab is a space, the
+/// rest (NUL above all) are dropped — a summary goes into a system prompt
+/// that is passed on a command line.
+fn strip_controls(s: &str) -> String {
+    s.chars()
+        .filter_map(|c| match c {
+            '\t' => Some(' '),
+            c if c.is_control() => None,
+            c => Some(c),
+        })
+        .collect()
+}
+
+/// What a file is when it is not text, from its extension and its first
+/// bytes; `None` for text. Public for the note viewer, which shows these
+/// rather than reading them as a string.
+pub fn binary_kind(path: &Path, head: &[u8]) -> Option<String> {
+    let ext = path
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    let by_ext = match ext.as_str() {
+        "pdf" => Some("PDF"),
+        "pptx" | "ppt" | "key" | "odp" => Some("slide deck"),
+        "docx" | "doc" | "pages" | "odt" | "rtf" => Some("document"),
+        "xlsx" | "xls" | "numbers" | "ods" => Some("spreadsheet"),
+        "png" => Some("PNG image"),
+        "jpg" | "jpeg" => Some("JPEG image"),
+        "gif" => Some("GIF image"),
+        "webp" => Some("WebP image"),
+        "heic" | "heif" | "tif" | "tiff" | "bmp" | "ico" => Some("image"),
+        "zip" | "gz" | "tgz" | "tar" | "7z" | "rar" | "dmg" => Some("archive"),
+        "mp3" | "m4a" | "wav" | "aac" | "flac" | "ogg" => Some("audio"),
+        "mp4" | "mov" | "m4v" | "webm" | "mkv" => Some("video"),
+        _ => None,
+    };
+    if let Some(kind) = by_ext {
+        return Some(kind.to_string());
+    }
+    if head.starts_with(b"%PDF-") {
+        return Some("PDF".to_string());
+    }
+    if head.starts_with(b"\x89PNG") {
+        return Some("PNG image".to_string());
+    }
+    if head.contains(&0) {
+        return Some("binary file".to_string());
+    }
+    match std::str::from_utf8(head) {
+        Ok(_) => None,
+        // Cut mid-character at the probe's edge: still text.
+        Err(e) if e.error_len().is_none() => None,
+        Err(_) => Some("binary file".to_string()),
+    }
 }
 
 /// A note's one-line summary from its opening bytes: the front matter's
@@ -1432,6 +1515,7 @@ pub fn write_note(dir: &Path, name: &str, content: &str) -> Result<Note, String>
     }
     fs::write(&path, content).map_err(|e| format!("cannot write {name}: {e}"))?;
     let meta = fs::metadata(&path).map_err(|e| format!("cannot stat {name}: {e}"))?;
+    let (summary, kind) = summarize(&path);
     Ok(Note {
         name: name.trim().replace('\\', "/"),
         bytes: meta.len(),
@@ -1439,7 +1523,8 @@ pub fn write_note(dir: &Path, name: &str, content: &str) -> Result<Note, String>
             .modified()
             .map(DateTime::<Utc>::from)
             .unwrap_or_else(|_| Utc::now()),
-        summary: summarize(&path),
+        summary,
+        kind,
     })
 }
 
@@ -2339,6 +2424,48 @@ mod tests {
         let err = write_note(&notes, "../escaped.md", "nope").unwrap_err();
         assert!(err.contains("outside"), "unexpected message: {err}");
         assert!(!dir.join("escaped.md").exists());
+    }
+
+    /// Backlog 307: a file that is not text has a kind and no summary —
+    /// by extension, by signature, by a NUL, or by bytes that are not UTF-8
+    /// — and text cut mid-character at the probe's edge is still text.
+    #[test]
+    fn a_binary_file_has_a_kind_and_no_summary() {
+        let p = |n: &str| PathBuf::from(n);
+        assert_eq!(
+            binary_kind(&p("a.pdf"), b"%PDF-1.7").as_deref(),
+            Some("PDF")
+        );
+        assert_eq!(binary_kind(&p("a"), b"%PDF-1.4\n").as_deref(), Some("PDF"));
+        assert_eq!(
+            binary_kind(&p("a.pptx"), b"PK\x03\x04\x00").as_deref(),
+            Some("slide deck")
+        );
+        assert_eq!(
+            binary_kind(&p("x.dat"), b"\x89PNG\r\n").as_deref(),
+            Some("PNG image")
+        );
+        assert_eq!(
+            binary_kind(&p("x.dat"), b"ab\x00cd").as_deref(),
+            Some("binary file")
+        );
+        assert_eq!(
+            binary_kind(&p("x.dat"), b"ab\xff\xfecd").as_deref(),
+            Some("binary file")
+        );
+        assert_eq!(binary_kind(&p("n.md"), b"# Title\n"), None);
+        // "é" is two bytes; the probe cut after the first is still text.
+        assert_eq!(binary_kind(&p("n.md"), b"caf\xc3"), None);
+
+        let dir = temp_dir("binary-kind");
+        fs::write(dir.join("deck.pptx"), b"PK\x03\x04\x14\x00\x00\x00").unwrap();
+        fs::write(dir.join("note.md"), "# Hello\n").unwrap();
+        let listed = list_notes(&dir);
+        assert_eq!(listed[0].name, "deck.pptx");
+        assert_eq!(listed[0].summary, None);
+        assert_eq!(listed[0].kind.as_deref(), Some("slide deck"));
+        assert_eq!(listed[1].summary.as_deref(), Some("Hello"));
+        assert_eq!(listed[1].kind, None);
     }
 
     #[test]
