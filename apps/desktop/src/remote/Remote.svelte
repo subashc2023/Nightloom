@@ -84,6 +84,11 @@
     type Try,
   } from "./client";
   import { renderMarkdown } from "../lib/markdown";
+  // Wave 8B F2 (item 300): replies in order, code blocks, the keyboard.
+  import { liveSegments } from "./client";
+  import { codeBlocks } from "./codeBlocks";
+  import { trackViewport } from "./viewport";
+  import { subagentCalls } from "../lib/subagent";
   import { arrive, launch, reducedMotion } from "../lib/sendMotion";
   import type { ApprovalRequest, AskQuestion, DocumentInput, ImageInput, SessionEvent, TurnEvent } from "../lib/types";
   import { badgeOf, extOf, looksLikeText, MAX_TEXT_BYTES, notebookText, routeOf } from "../lib/attachKinds";
@@ -194,6 +199,8 @@
   let events = $state<SessionEvent[]>([]);
   let live = $state<LiveTurn | null>(null);
   let toast = $state<string | null>(null);
+  /** The chat a toast opens on a tap (300 A16), or null. */
+  let toastChat = $state<string | null>(null);
   let error = $state<string | null>(null);
   let draft = $state("");
   let queue = $state<Queued[]>(loadQueue());
@@ -273,6 +280,10 @@
   let trashed = $state<{ id: string; label: string; project: string | null; host: HostRole | null } | null>(null);
   let renameText = $state("");
   let openTools = $state<Record<string, boolean>>({});
+  /** The gap the chat's pull opens above the first message (300 A6). */
+  const pullGap = $derived(pullWhere === "chat" ? (refreshing ? 52 : Math.round(pullBy * 0.75)) : 0);
+  /** Agent cards whose subagent steps are open (300 A1), by call id. */
+  let openSteps = $state<Record<string, boolean>>({});
 
   const activePid = $derived(projects.find((p) => p.active)?.id ?? "");
   const rows = $derived(transcriptRows(events));
@@ -322,6 +333,13 @@
   /** The other host's turn may be waiting on an approval in a chat this
    *  page is not showing it for (132 g, "at the least" line). */
   const otherWaiting = $derived(!sameHost && otherState !== null && otherState.pending.length > 0 && pendingHere.length === 0);
+  /** 300 A27: the chat on this host whose turn waits on his answer while
+   *  he reads another — a bar names it and opens it. */
+  const waitingIn = $derived.by(() => {
+    if (!sameHost || readOnly || remote.pending.length === 0 || pendingHere.length > 0) return null;
+    const id = remote.pending[0].chat ?? remote.active_chat;
+    return id && id !== chatId ? id : null;
+  });
   /** Wave B's buttons: the chat's own host serves the op (`canOp`). */
   const opOk = (op: ExtraOp) => canOp(chatState ?? remote, op);
   const opMissing = (op: ExtraOp, older: string) => (opOk(op) ? null : missingSentence((chatState ?? remote).host, older));
@@ -356,11 +374,22 @@
             : "no engine on the Mac",
   );
 
-  function note(text: string) {
+  function note(text: string, open: string | null = null) {
     toast = text;
+    toastChat = open;
     setTimeout(() => {
       if (toast === text) toast = null;
     }, 4000);
+  }
+
+  /** The host's "the turn ended" (300 A16): nothing when the reply is on
+   *  screen; when it ended in another chat, a toast naming it that opens
+   *  it on a tap. */
+  function turnEndedNotice() {
+    const ran = remote.active_chat;
+    if (!ran || ran === chatId) return;
+    const label = (chatsBy[activePid] ?? []).find((c) => c.id === ran)?.label;
+    note(label ? `Reply ready in “${label}”` : "Reply ready in another chat", ran);
   }
 
   /** A wrong token ends the link; an unreachable Mac marks it offline; any
@@ -453,7 +482,8 @@
       enterFrom = transcriptRows(got).length;
       // Only follow the end when he was already there (A12): a re-read
       // while he reads higher up leaves him where he is.
-      if (stick || near) scrollToEnd();
+      if (stick) pinToEnd();
+      else if (near) scrollToEnd();
     } catch (e) {
       fail(e, true);
     }
@@ -503,8 +533,12 @@
         // A turn is running: mark it before the next state poll does.
         if (!remote.busy) remote = { ...remote, busy: true };
         const near = nearBottom();
+        const first = live === null;
         live = foldTurnEvent(live ?? emptyTurn(), ev);
         if (near) scrollToEnd();
+        // 300 A31: a turn sent from another device — its message is on
+        // disk before the first event; read it so it shows above the reply.
+        if (first && chatId !== null && chatId === remote.active_chat) void refreshTranscript();
         break;
       }
       case "tool-approval": {
@@ -516,13 +550,17 @@
         }
         break;
       }
-      case "turn-notice":
+      case "turn-notice": {
+        let said: string;
         try {
-          note(JSON.parse(data));
+          said = JSON.parse(data);
         } catch {
-          note(data);
+          said = data;
         }
+        if (said === "the turn ended") turnEndedNotice();
+        else note(said);
         break;
+      }
       case "pass-event":
         // The Mac's dream or capture pass (wave 3 B1): its own toast on the end.
         try {
@@ -757,9 +795,16 @@
     const scheme = () => (document.documentElement.dataset.scheme = mq.matches ? "light" : "dark");
     scheme();
     mq.addEventListener?.("change", scheme);
+    // 300 A15: the page fits what the keyboard leaves (viewport.ts); when
+    // it shrinks, the transcript moves up by as much, so the messages he
+    // was reading stay above the composer.
+    const unfit = trackViewport((fit, was) => {
+      if (fit && was && scroller && fit.height < was.height) scroller.scrollTop += was.height - fit.height;
+    });
     return () => {
       clearInterval(clock);
       mq.removeEventListener?.("change", scheme);
+      unfit();
     };
   });
 
@@ -771,6 +816,26 @@
     const key = `${limitHere ? "L" : ""}${heldHere ? "B" : ""}`;
     if (key && key !== cardsSeen && nearBottom()) void tick().then(scrollToEnd);
     cardsSeen = key;
+  });
+
+  // 300 A31: an approval that arrives is brought into view — it waits on
+  // him, wherever he was reading. 300 A35: a held message's row shrinks
+  // the list from below; at the end, the end stays in view.
+  let asksSeen = new Set<string>();
+  let heldSeen = 0;
+  $effect.pre(() => {
+    const ids = pendingHere.map((r) => r.id);
+    const fresh = ids.find((id) => !asksSeen.has(id));
+    asksSeen = new Set(ids);
+    if (fresh)
+      void tick().then(() =>
+        scroller
+          ?.querySelector(`[data-approval="${CSS.escape(fresh)}"]`)
+          ?.scrollIntoView({ block: "end", behavior: reducedMotion() ? "auto" : "smooth" }),
+      );
+    const held = queue.length;
+    if (held > heldSeen && nearBottom()) void tick().then(scrollToEnd);
+    heldSeen = held;
   });
 
   // The desktop's palette (blocker 577, `/api/state.palette` from B1): B–D
@@ -845,6 +910,30 @@
   function scrollToEnd() {
     void tick().then(() => {
       if (scroller) scroller.scrollTo({ top: scroller.scrollHeight, behavior: reducedMotion() ? "auto" : "smooth" });
+    });
+  }
+
+  /** A chat just opened lands on its latest message (300 A33: a long one
+   *  opened at the top on the phone — a smooth scroll over the whole log,
+   *  cut short while the rows were still laying out). Instant, and again
+   *  as the rows settle, until he touches the list himself. */
+  function pinToEnd() {
+    let mine = true;
+    const stop = () => (mine = false);
+    const el = scroller;
+    el?.addEventListener("touchstart", stop, { once: true, passive: true });
+    el?.addEventListener("wheel", stop, { once: true, passive: true });
+    const pin = () => {
+      if (mine && scroller === el && el) el.scrollTop = el.scrollHeight;
+    };
+    void tick().then(() => {
+      pin();
+      requestAnimationFrame(pin);
+      for (const ms of [120, 400, 900]) setTimeout(pin, ms);
+      setTimeout(() => {
+        el?.removeEventListener("touchstart", stop);
+        el?.removeEventListener("wheel", stop);
+      }, 1000);
     });
   }
 
@@ -1672,7 +1761,12 @@
       pullBy = damp(y(e) - y0);
     };
     const end = async () => {
-      if (y0 === null) return;
+      // A pull that ended any way at all leaves nothing drawn (300 A6: a
+      // "Pull to refresh" pill stayed under the bar).
+      if (y0 === null) {
+        if (pullWhere === o.where) pullBy = 0;
+        return;
+      }
       y0 = null;
       const go = pullBy >= PULL_AT;
       pullBy = 0;
@@ -2008,7 +2102,22 @@
       <span class="tool-dot" class:ok={t.ok === true} class:bad={t.ok === false} class:run={t.ok === null}></span>
       <span class="tool-name">{t.name}</span>
       <span class="tool-sum">{t.summary}</span>
+      {#if t.steps}
+        <!-- 300 A1: a subagent's steps fold under its Agent card. -->
+        <button class="steps-toggle" onclick={(e) => (e.stopPropagation(), (openSteps = { ...openSteps, [t.id]: !openSteps[t.id] }))} aria-expanded={!!openSteps[t.id]}>
+          {subagentCalls(t.steps)} {subagentCalls(t.steps) === 1 ? "step" : "steps"}{@render icon("chev")}
+        </button>
+      {/if}
     </div>
+    {#if t.steps && openSteps[t.id]}
+      <div class="steps" style:margin-left="{depth * 14 + 15}px">
+        {#each t.steps.split("\n") as line, k (k)}
+          {#if line.startsWith("▸ ")}<div class="step-call"><b>{line.slice(2).split(" ")[0]}</b> {line.slice(2).split(" ").slice(1).join(" ")}</div>
+          {:else if line.startsWith("↳ ")}<div class="step-out">{line.slice(2)}</div>
+          {:else if line.trim()}<div class="step-said">{line}</div>{/if}
+        {/each}
+      </div>
+    {/if}
     {#if t.children.length > 0}{@render toolRows(t.children, depth + 1, row)}{/if}
   {/each}
 {/snippet}
@@ -2056,7 +2165,7 @@
         <span class="title">{title}</span>
         <span class="sub">
           <span class="dot" class:ok={link === "online" && !remote.busy} class:run={link === "online" && remote.busy} class:bad={link !== "online"}></span>
-          {chatId ? projectName(chatProject) : projectName(newProject)} · {status}
+          <span class="sub-text">{chatId ? projectName(chatProject) : projectName(newProject)} · {status}</span>
         </span>
       </button>
       <Hosts mode="chip" {hosts} {active} {link} onopen={() => (sheet = "hosts")} />
@@ -2105,22 +2214,35 @@
       <div class="edge" use:drag={edgeDrag} aria-hidden="true"></div>
     {/if}
     <main class="chat" bind:this={scroller} use:pull={{ where: "chat", fn: pullChat }}>
-      {#if pullWhere === "chat" && (pullBy > 0 || refreshing)}
-        <div class="pull" aria-live="polite">
-          <span class="pull-pill" class:ready={pullBy >= PULL_AT} class:spin={refreshing} style:transform="translateY({refreshing ? PULL_AT * 0.6 : pullBy * 0.6}px)">
-            {refreshing ? "Refreshing…" : pullBy >= PULL_AT ? "Release to refresh" : "Pull to refresh"}
-          </span>
-        </div>
+      <!-- 300 A6: the transcript moves down with the finger and the
+           spinner sits in the gap it opens (iOS's own pull, `inferred`),
+           then the gap closes and nothing is left under the bar. -->
+      <div class="pull-gap" class:held={pullWhere === "chat" && pullBy > 0} style:height="{pullGap}px" aria-live="polite">
+        {#if pullGap > 0}
+          <span class="pull-ring" class:ready={pullBy >= PULL_AT} class:spin={refreshing} style:opacity={Math.min(pullGap / 36, 1)} style:--turn={Math.min(pullBy / PULL_AT, 1)}></span>
+          <span class="sr-only">{refreshing ? "Refreshing…" : pullBy >= PULL_AT ? "Release to refresh" : "Pull to refresh"}</span>
+        {/if}
+      </div>
+      {#if waitingIn}
+        {@const label = (chatsBy[activePid] ?? []).find((c) => c.id === waitingIn)?.label}
+        {@const go = waitingIn}
+        <button class="wait-bar" transition:fly={{ y: -8, duration: motion(180) }} onclick={() => void openChat(go)}>
+          <span class="dot run"></span>
+          <span class="wait-text">{label ? `“${label}”` : "Another chat"} is waiting for your approval</span>
+          <b>Open</b>
+        </button>
       {/if}
       {#if chatId === null && rows.length === 0 && !liveHere}
+        <!-- 300 A17: a greeting, not a letter tile that read as a broken
+             avatar (the Claude app's empty chat, `inferred`). -->
+        {@const hour = new Date(now).getHours()}
         <div class="hello" in:fade={{ duration: motion(200) }}>
-          <div class="hello-mark">N</div>
-          <div class="hello-title">New chat</div>
+          <div class="hello-title">How can I help you this {hour < 12 ? "morning" : hour < 18 ? "afternoon" : "evening"}?</div>
           <button class="chip" onclick={() => (sheet = "project")}>
             in <b>{projectName(newProject)}</b>
             {@render icon("chev")}
           </button>
-          <p class="hello-note">Your first message starts the chat on the Mac.</p>
+          <p class="hello-note">Your first message starts the chat on {active === "away" ? "Away" : "the Mac"}.</p>
         </div>
       {/if}
       {#each rows as r, i (i)}
@@ -2135,12 +2257,13 @@
           </div>
         {:else if r.kind === "assistant"}
           <div class="turn reply" class:enter={i >= enterFrom && !still} class:removed={r.removed} use:press={() => openMenu(r)}>
-            {#if r.tools.length > 0}{@render toolBox(r.tools, `r${i}`, false, r)}{/if}
-            {#each r.parts as part (`${part.index}.${part.block}`)}
-              {#if part.removed}
-                <div class="part-gone" use:press={() => openMenu(r, part)}>[text removed]</div>
-              {:else if part.text}
-                <div class="md" use:press={() => openMenu(r, part)}>{@html renderMarkdown(part.text)}</div>
+            <!-- 300 A2: words and calls in the order they happened. -->
+            {#each r.seq as s, k (s.kind === "text" ? `${s.part.index}.${s.part.block}` : `t${k}.${s.tools[0]?.id}`)}
+              {#if s.kind === "tools"}{@render toolBox(s.tools, `r${i}.${k}`, false, r)}
+              {:else if s.part.removed}
+                <div class="part-gone" use:press={() => openMenu(r, s.part)}>[text removed]</div>
+              {:else if s.part.text}
+                <div class="md" use:press={() => openMenu(r, s.part)} use:codeBlocks={copy}>{@html renderMarkdown(s.part.text, { breaks: true })}</div>
               {/if}
             {/each}
             {#if r.removed}<div class="stamp">removed from the context — long-press to restore</div>
@@ -2152,8 +2275,10 @@
       {/each}
       {#if liveHere && live}
         <div class="turn reply live" class:enter={!still}>
-          {#if live.tools.length > 0}{@render toolBox(live.tools, "live", true)}{/if}
-          {#if live.text}<div class="md">{@html renderMarkdown(live.text)}</div>{/if}
+          {#each liveSegments(live) as s, k (k)}
+            {#if s.kind === "tools"}{@render toolBox(s.tools, `live${k}`, true)}
+            {:else}<div class="md" use:codeBlocks={copy}>{@html renderMarkdown(s.text, { breaks: true })}</div>{/if}
+          {/each}
           {#if !live.text && live.tools.length === 0}<span class="thinking"><i></i><i></i><i></i></span>{/if}
         </div>
       {:else if busyHere}
@@ -2204,7 +2329,7 @@
       {/if}
       {#each pendingHere as req (req.id)}
         {@const kind = cardKind(req)}
-        <section class="card" in:fly={{ y: 16, duration: motion(260), easing: cubicOut }}>
+        <section class="card" data-approval={req.id} in:fly={{ y: 16, duration: motion(260), easing: cubicOut }}>
           {#if kind === "question"}
             <div class="card-head">The model asks</div>
             {#each questions(req) as q, i (i)}
@@ -2262,7 +2387,10 @@
     </main>
 
     <footer class="dock">
-      {#if toast}<div class="toast" transition:fly={{ y: 8, duration: motion(180) }}>{toast}</div>{/if}
+      {#if toast && toastChat}
+        {@const go = toastChat}
+        <button class="toast toast-go" transition:fly={{ y: 8, duration: motion(180) }} onclick={() => ((toast = null), void openChat(go))}>{toast} ›</button>
+      {:else if toast}<div class="toast" transition:fly={{ y: 8, duration: motion(180) }}>{toast}</div>{/if}
       {#if queue.length > 0}
         <div class="queue">
           {#each queue as q (q.id)}
@@ -2849,7 +2977,14 @@
   .page {
     display: flex;
     flex-direction: column;
-    height: 100dvh;
+    /* 300 A15: sized and placed to the visible part of the screen
+       (viewport.ts sets --vvh/--vvtop), so the keyboard never pans the
+       header off; without the variables, the screen's height as before. */
+    position: fixed;
+    left: 0;
+    right: 0;
+    top: var(--vvtop, 0px);
+    height: var(--vvh, 100dvh);
     width: 100%;
     overflow: hidden;
     padding-top: env(safe-area-inset-top, 0px);
@@ -2869,8 +3004,7 @@
     flex-direction: column;
     gap: 14px;
   }
-  .gate-mark,
-  .hello-mark {
+  .gate-mark {
     width: 52px;
     height: 52px;
     border-radius: 16px;
@@ -2949,6 +3083,13 @@
     font-weight: 600;
     font-size: 16px;
     max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* 300 A35: a flex row cannot ellipsize its bare text; this span can. */
+  .sub-text {
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -3186,6 +3327,55 @@
     font-size: 12px;
     color: var(--dim);
   }
+  /* 300 A1: an Agent card's subagent steps, folded; tap to open. */
+  .steps-toggle {
+    all: unset;
+    margin-left: auto;
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    min-height: 32px;
+    padding: 0 2px 0 8px;
+    color: var(--accent-ink);
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .steps-toggle .ico {
+    width: 14px;
+    height: 14px;
+    transition: transform 0.15s;
+  }
+  .steps-toggle[aria-expanded="true"] .ico {
+    transform: rotate(90deg);
+  }
+  .steps {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 4px 0 6px 10px;
+    border-left: 2px solid var(--line2);
+    font-size: 12px;
+    min-width: 0;
+  }
+  .step-call,
+  .step-out {
+    font-family: var(--mono);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .step-call b {
+    font-family: var(--sans);
+    color: var(--ink);
+  }
+  .step-out {
+    color: var(--dim);
+  }
+  .step-said {
+    color: var(--ink2);
+    overflow-wrap: break-word;
+  }
   .md :global(p) {
     margin: 0 0 0.7em;
   }
@@ -3215,10 +3405,15 @@
     border: 1px solid var(--line);
     padding: 6px 10px;
     text-align: left;
+    /* 300 A24: a table scrolls sideways in its own box; its words never
+       break mid-word ("Colum / n A"), which `.turn`'s anywhere-wrap did. */
+    overflow-wrap: normal;
+    word-break: normal;
   }
   .md :global(th) {
     background: var(--sheet);
     font-weight: 600;
+    white-space: nowrap;
   }
   .md :global(img) {
     max-width: 100%;
@@ -3237,6 +3432,54 @@
   .md :global(code) {
     font-family: var(--mono);
     font-size: 0.88em;
+  }
+  /* 300 A24: a code block's header (language, Copy) and a fade at the
+     right edge while it has more to scroll to (codeBlocks.ts). */
+  .md :global(.code-box) {
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--sheet);
+    margin: 0 0 0.7em;
+    overflow: hidden;
+  }
+  .md :global(.code-head) {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 4px 0 12px;
+    font-size: 12px;
+    color: var(--dim);
+    border-bottom: 1px solid var(--line);
+    background: var(--well);
+  }
+  .md :global(.code-copy) {
+    all: unset;
+    cursor: pointer;
+    min-height: 36px;
+    padding: 0 10px;
+    color: var(--accent-ink);
+    font-size: 13px;
+    font-weight: 500;
+  }
+  .md :global(.code-body) {
+    position: relative;
+  }
+  .md :global(.code-body pre) {
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+    overflow-wrap: normal;
+    -webkit-overflow-scrolling: touch;
+  }
+  .md :global(.code-body.more)::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 28px;
+    pointer-events: none;
+    background: linear-gradient(to right, transparent, var(--sheet));
   }
   .md :global(:not(pre) > code) {
     background: var(--well);
@@ -3443,6 +3686,10 @@
     padding: 6px 10px calc(8px + env(safe-area-inset-bottom, 0px));
     background: var(--paper);
   }
+  /* The keyboard covers the home indicator: no safe-area gap above it. */
+  :global(html[data-kb]) .dock {
+    padding-bottom: 8px;
+  }
   .toast {
     position: absolute;
     left: 50%;
@@ -3457,6 +3704,12 @@
     max-width: calc(100vw - 32px);
     box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
     z-index: 3;
+  }
+  .toast-go {
+    border: 0;
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
   }
   .queue {
     max-height: 24dvh;
@@ -3884,6 +4137,77 @@
   }
   .drawer-list .pull {
     margin-bottom: 0;
+  }
+  /* 300 A6: the chat's pull — a gap above the first message, as tall as
+     the pull, with a ring that fills as he pulls and spins while it
+     refreshes. -18px cancels the column's gap, so at rest it is nothing. */
+  /* 300 A27: another chat's turn waits on his answer. */
+  .wait-bar {
+    all: unset;
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 44px;
+    padding: 0 14px;
+    border-radius: 14px;
+    background: var(--accent-soft);
+    border: 1px solid var(--accent);
+    color: var(--ink);
+    font-size: 14px;
+    cursor: pointer;
+    box-sizing: border-box;
+  }
+  .wait-text {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .wait-bar b {
+    color: var(--accent-ink);
+  }
+  .pull-gap {
+    flex: none;
+    margin-bottom: -18px;
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+    transition: height 0.25s var(--ease);
+  }
+  .pull-gap.held {
+    transition: none;
+  }
+  .pull-ring {
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: conic-gradient(var(--dim) calc(var(--turn, 0) * 360deg), transparent 0);
+    -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 2.5px));
+    mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 2.5px));
+  }
+  .pull-ring.ready {
+    background: var(--accent);
+  }
+  .pull-ring.spin {
+    background: conic-gradient(var(--accent) 0 270deg, transparent 0);
+    animation: pull-spin 0.8s linear infinite;
+  }
+  @keyframes pull-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
   }
   .pull-pill {
     display: inline-block;

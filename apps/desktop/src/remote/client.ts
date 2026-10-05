@@ -10,6 +10,7 @@ import type { SubagentLimits } from "../lib/catalog";
 import type { WireView } from "../lib/types";
 import type { ContextReply, LayerChange } from "./ContextSheet.svelte";
 import { isCouncilBlock } from "../lib/council";
+import { parseSubagentBlock } from "../lib/subagent";
 // Pure over the log (only a type import inside): the desktop's per-reply
 // sizes, so the phone's line under a reply says the Mac's number.
 import { fmtTokens, turnSizes, type TurnSize } from "../lib/tokens";
@@ -942,6 +943,12 @@ export interface ToolRow {
   block?: number;
   /** Out of the context (`elide` with this block, or the whole reply). */
   removed?: boolean;
+  /** A subagent's recorded narrative under its `Agent` call (300 A1): the
+   *  `<subagent parent=…>` block's body, one line per call and result. */
+  steps?: string;
+  /** A live turn's call: how much of the reply's text came before it, so
+   *  the card sits between the words around it (300 A2). */
+  textAt?: number;
 }
 
 /** The reply as it streams: text so far and the calls made, in order. */
@@ -1022,7 +1029,7 @@ export function foldTurnEvent(live: LiveTurn, ev: TurnEvent): LiveTurn {
     case "tool_call":
       return {
         ...live,
-        tools: [...live.tools, { id: ev.id, name: ev.name, summary: toolSummary(ev.name, ev.input), ok: null, children: [] }],
+        tools: [...live.tools, { id: ev.id, name: ev.name, summary: toolSummary(ev.name, ev.input), ok: null, children: [], textAt: live.text.length }],
       };
     case "tool_result": {
       const tools = structuredClone(live.tools);
@@ -1064,6 +1071,36 @@ export interface TextPart {
   edited: boolean;
 }
 
+/** One piece of a reply in the order it happened (300 A2): its words and
+ *  its calls interleave as the Mac draws them, a run of calls one box. */
+export type Seg = { kind: "text"; part: TextPart } | { kind: "tools"; tools: ToolRow[] };
+
+/** Append `seg` to `seq`, a run of calls joining the run before it. */
+function pushSeg(seq: Seg[], seg: Seg): void {
+  const last = seq[seq.length - 1];
+  if (seg.kind === "tools" && last?.kind === "tools") last.tools.push(...seg.tools);
+  else seq.push(seg.kind === "tools" ? { kind: "tools", tools: [...seg.tools] } : seg);
+}
+
+/** The live turn in order (300 A2): text up to each call, the call, the
+ *  rest — each call's `textAt` says where it came. */
+export function liveSegments(live: LiveTurn): ({ kind: "text"; text: string } | { kind: "tools"; tools: ToolRow[] })[] {
+  const out: ({ kind: "text"; text: string } | { kind: "tools"; tools: ToolRow[] })[] = [];
+  let at = 0;
+  for (const t of live.tools) {
+    const cut = Math.min(Math.max(t.textAt ?? at, at), live.text.length);
+    const words = live.text.slice(at, cut);
+    if (words.trim()) out.push({ kind: "text", text: words });
+    at = cut;
+    const last = out[out.length - 1];
+    if (last?.kind === "tools") last.tools.push(t);
+    else out.push({ kind: "tools", tools: [t] });
+  }
+  const rest = live.text.slice(at);
+  if (rest.trim()) out.push({ kind: "text", text: rest });
+  return out;
+}
+
 export type Row =
   | {
       kind: "user";
@@ -1088,6 +1125,8 @@ export type Row =
       parts: TextPart[];
       /** Every event of the row is out of the context. */
       removed: boolean;
+      /** Its words and calls in the order they happened (300 A2). */
+      seq: Seg[];
     }
   | { kind: "note"; text: string; at: string };
 
@@ -1192,6 +1231,7 @@ export function transcriptRows(events: SessionEvent[]): Row[] {
       case "assistant_message": {
         const parts: TextPart[] = [];
         const tools: ToolRow[] = [];
+        const seq: Seg[] = [];
         const edits = mk.blockText.get(i);
         const gone = mk.blocksGone.get(i);
         const whole = mk.removed.has(i);
@@ -1201,11 +1241,24 @@ export function transcriptRows(events: SessionEvent[]): Row[] {
         // after it says how many seats answered.
         let seats = 0;
         e.blocks.forEach((b, n) => {
+          const sub = b.type === "text" && !whole ? parseSubagentBlock(b.text) : null;
           if (b.type === "text" && isCouncilBlock(b.text)) {
             if (b.text.startsWith("<council-seat ")) seats += 1;
+          } else if (sub) {
+            // A subagent's steps fold under the Agent call that spawned it
+            // (300 A1; the desktop's Transcript does the same): never prose.
+            const parent = byTool.get(sub.parent);
+            if (parent) parent.steps = parent.steps ? `${parent.steps}\n${sub.body}` : sub.body;
+            else {
+              const row: ToolRow = { id: `sub:${i}.${n}`, name: "Agent", summary: "a subagent's steps", ok: true, children: [], index: i, block: n, removed: !!gone?.has(n), steps: sub.body };
+              tools.push(row);
+              pushSeg(seq, { kind: "tools", tools: [row] });
+            }
           } else if (b.type === "text") {
             const edit = edits?.get(n);
-            parts.push({ index: i, block: n, text: edit ?? b.text, removed: whole || !!gone?.has(n), edited: edit !== undefined });
+            const part: TextPart = { index: i, block: n, text: edit ?? b.text, removed: whole || !!gone?.has(n), edited: edit !== undefined };
+            parts.push(part);
+            pushSeg(seq, { kind: "text", part });
           } else if (b.type === "tool_use") {
             const row: ToolRow = {
               id: b.id,
@@ -1218,13 +1271,18 @@ export function transcriptRows(events: SessionEvent[]): Row[] {
               removed: whole || !!gone?.has(n),
             };
             tools.push(row);
+            pushSeg(seq, { kind: "tools", tools: [row] });
             byTool.set(b.id, row);
           }
         });
         // An edit that names one past the last block adds text to a reply
         // that had none (`blockEdits`' rule).
         const extra = edits?.get(e.blocks.length);
-        if (extra !== undefined) parts.push({ index: i, block: e.blocks.length, text: extra, removed: whole, edited: true });
+        if (extra !== undefined) {
+          const part: TextPart = { index: i, block: e.blocks.length, text: extra, removed: whole, edited: true };
+          parts.push(part);
+          pushSeg(seq, { kind: "text", part });
+        }
         const said = parts.filter((p) => !p.removed && p.text).map((p) => p.text);
         // Consecutive replies with no user turn between draw as one (the
         // desktop's backlog 121): the blocks join the row above.
@@ -1233,11 +1291,12 @@ export function transcriptRows(events: SessionEvent[]): Row[] {
           last.text = [last.text, ...said].filter(Boolean).join("\n\n");
           last.tools.push(...tools);
           last.parts.push(...parts);
+          for (const s of seq) pushSeg(last.seq, s);
           last.indexes.push(i);
           last.removed = last.removed && whole;
           last.at = e.at;
         } else {
-          rows.push({ kind: "assistant", model: e.model, text: said.join("\n\n"), tools, at: e.at, indexes: [i], parts, removed: whole });
+          rows.push({ kind: "assistant", model: e.model, text: said.join("\n\n"), tools, at: e.at, indexes: [i], parts, removed: whole, seq });
         }
         if (seats > 0) rows.push({ kind: "note", text: `council — ${seats} ${seats === 1 ? "seat" : "seats"} answered; their answers fold on the Mac`, at: e.at });
         break;
