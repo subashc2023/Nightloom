@@ -65,4 +65,9 @@ describe("replyGoing", () => {
     expect(replyGoing(false, true, true)).toBe(false);
     expect(replyGoing(true, false, true)).toBe(true);
   });
+
+  it("a parked turn runs in a chat set aside: not the one on screen (303 + 304 review)", () => {
+    expect(replyGoing(false, true, false, true)).toBe(false);
+    expect(replyGoing(false, true, false, false)).toBe(true);
+  });
 });

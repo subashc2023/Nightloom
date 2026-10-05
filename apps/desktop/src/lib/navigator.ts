@@ -146,10 +146,13 @@ export function showJumpDown(scrollTop: number, clientHeight: number, scrollHeig
  * still coming in the chat drawn, so a reader scrolled up can see it is
  * going and, when the dots settle into the ⌄, that it is done. The open
  * chat's turn runs while `busy` (a tool call, an approval) as well as while
- * its `live` turn streams; a pane's chat has only its own `live`.
+ * its `live` turn streams; a pane's chat has only its own `live`. A
+ * parked turn (`parked`: it runs in a chat set aside, while another is on
+ * screen) keeps `busy` true, but its reply is not coming here (303 + 304
+ * review).
  */
-export function replyGoing(live: boolean, busy: boolean, inPane: boolean): boolean {
-  return live || (!inPane && busy);
+export function replyGoing(live: boolean, busy: boolean, inPane: boolean, parked = false): boolean {
+  return live || (!inPane && busy && !parked);
 }
 
 /** The scroll target for the latest message: the foot of the view. */

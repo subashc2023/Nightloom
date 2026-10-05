@@ -1004,7 +1004,7 @@
   // the view down (`chasing`, cleared at the foot or on any upward input).
   let jumpDown = $state(false);
   /** Item 304: a reply still coming here — the ⌄ shows the speaking dots. */
-  const speaking = $derived(replyGoing(liveNow !== null, app.busy, inPane));
+  const speaking = $derived(replyGoing(liveNow !== null, app.busy, inPane, app.parked !== null));
   let chasing = false;
   let chaseTimer: ReturnType<typeof setTimeout> | undefined;
 
